@@ -184,15 +184,66 @@ export function Panel<Row extends Record<string, unknown>>({
     }
   }
 
+  // A PANEL THAT HAS LOADED NOTHING IS NOT THE PANEL, AND IT DOES NOT ANSWER TO THE PANEL'S NAME.
+  //
+  // This component used to emit `data-testid={testId}` from the first paint, before the fetch above had
+  // settled — so `getByTestId("panel-api-keys")` became visible over a region holding the word "Loading…" and
+  // nothing else. That is the same defect this file already refuses one line down for a different pair (a
+  // filter that matched nothing is not the empty collection and does not get its testid): a handle that reads
+  // as a state the thing is not in.
+  //
+  // IT WAS NOT A THEORY, IT WAS FOUR CALL SITES AND TWO MEASUREMENTS. Three specs already worked around it by
+  // hand — observability.spec.ts twice and approval-queue.spec.ts once, each waiting for `${testId}-loading`
+  // to reach count 0 after waiting for the panel, and observability.spec.ts says why in its own words: "a
+  // spinner is neither of the two states and would let this pass over a panel that had rendered nothing at
+  // all". The fourth site took the natural reading instead, and reveal-once.spec.ts's DOM sweep scanned a
+  // document its key had not been rendered into yet — an absence proved against an empty haystack, which is
+  // the one failure that spec exists to make impossible.
+  //
+  // AND IT REACHED THE ACCESSIBILITY EVIDENCE. lib/routes.ts requires a `readyTestId` per route precisely
+  // because "axe on a page still rendering Loading… scans a spinner and reports a clean bill of health for
+  // markup it never saw" — and almost every route names a PANEL as that signal:
+  //   `grep -o 'readyTestId: "panel-[a-z-]*"' lib/routes.ts | wc -l` → 12 of 13 routes (2026-07-31),
+  //   the exception being /runs, which names `run-button`.
+  // Measured at the instant tests/a11y.spec.ts analyzes, on the fake profile: "/" scanned four loading
+  // panels, /agents two, /environments one, /fleet one — and on three of those the still-loading panel WAS
+  // the route's own declared readiness signal. Withholding the name is what makes that field mean what it
+  // says. /fleet's remaining one is a different mechanism and is NOT closed here: panel-runner-pool-keys
+  // mounts only once a pool is selected, so its fetch has not begun when the signal fires.
+  //
+  // THE MARKUP BELOW IS WHAT THIS COMPONENT ALREADY RENDERED WHILE PENDING — the head with its heading, the
+  // note, and the same "Loading…" paragraph — so nothing moves on the screen when the rows arrive that did
+  // not move before. `aria-busy` is the machine-readable half of the word.
+  //
+  // NO FIXED HEIGHT IS RESERVED HERE, AND THAT IS A MEASUREMENT RATHER THAN AN OMISSION. A panel's height IS
+  // its row count, and the row count is exactly what has not arrived: measured on the fake profile, the same
+  // component resolves to 154px with one row (panel-organizations) and 1379px with twenty (panel-agents).
+  // A reserve sized for either is wrong by about 1200px for the other, and sizing for the larger replaces a
+  // panel that grows with a blank region that collapses — a worse jump, and a worse one to read.
+  if (rows === null && error === null) {
+    return (
+      <section className="panel" data-testid={`${testId}-loading`} aria-labelledby={`${testId}-h`} aria-busy="true">
+        <div className="panel-head">
+          <h2 id={`${testId}-h`}>{title}</h2>
+        </div>
+        {note ? <p className="muted">{note}</p> : null}
+        <p className="loading">Loading…</p>
+      </section>
+    );
+  }
+
+  // Settled. `rows` is still nullable to the compiler because a fetch that REJECTED leaves it null, and that
+  // arm renders the error rather than a list — so the empty list is the honest reading for everything below.
+  const settled: Row[] = rows ?? [];
   // The sortable columns, in the order they are declared — so the select reads like the table.
   const sortable = columns.filter((c) => c.sort !== undefined);
   // The filter matches the row AS THE API RETURNED IT rather than as this panel rendered it: a render is a
   // ReactNode and cannot be searched, and matching only the rendered columns would silently fail to find a
   // row by a field that is on the wire but not in this panel's column list. The scope is stated below.
   const matches = (row: Row) => JSON.stringify(row).toLowerCase().includes(query.trim().toLowerCase());
-  const filtered = rows === null ? null : query.trim() === "" ? rows : rows.filter(matches);
+  const filtered = query.trim() === "" ? settled : settled.filter(matches);
   const ordered =
-    filtered === null || order === AS_SERVED
+    order === AS_SERVED
       ? filtered
       : (() => {
           const [index, direction] = order.split(":");
@@ -207,8 +258,8 @@ export function Panel<Row extends Record<string, unknown>>({
           });
         })();
 
-  const shown = ordered?.length ?? 0;
-  const total = rows?.length ?? 0;
+  const shown = ordered.length;
+  const total = settled.length;
   const tools = total >= TOOLS_FROM;
 
   return (
@@ -219,7 +270,7 @@ export function Panel<Row extends Record<string, unknown>>({
             surface and the answer used to be "count the rows yourself". When a filter is narrowing the list
             it says BOTH numbers, so a filter that hides everything is legible as a filter rather than as an
             empty collection. */}
-        {rows === null || error !== null ? null : (
+        {error !== null ? null : (
           <span className="panel-count" data-testid={`${testId}-count`}>
             {shown === total ? `${String(total)} ${total === 1 ? "row" : "rows"}` : `${String(shown)} of ${String(total)} rows`}
           </span>
@@ -259,13 +310,11 @@ export function Panel<Row extends Record<string, unknown>>({
         ) : null}
       </div>
       {note ? <p className="muted">{note}</p> : null}
-      {error ? (
+      {error !== null ? (
         <p role="alert" className="form-error" data-testid={`${testId}-error`}>
           Error: {error}
         </p>
-      ) : rows === null ? (
-        <p className="loading" data-testid={`${testId}-loading`}>Loading…</p>
-      ) : rows.length === 0 ? (
+      ) : settled.length === 0 ? (
         <p className="empty" data-testid={`${testId}-empty`}>{emptyNote ?? "None yet."}</p>
       ) : (
         <>
@@ -289,7 +338,7 @@ export function Panel<Row extends Record<string, unknown>>({
                 </tr>
               </thead>
               <tbody>
-                {(ordered ?? []).map((row, i) => (
+                {ordered.map((row, i) => (
                   <tr key={String(row.id ?? row.name ?? i)}>
                     {columns.map((c) => (
                       <td key={c.header}>{c.render(row)}</td>
@@ -302,7 +351,7 @@ export function Panel<Row extends Record<string, unknown>>({
           {/* The cut, in WORDS. Not a colour, not a greyed arrow, not silence. */}
           {truncated ? (
             <p className="table-more" data-testid={`${testId}-more`}>
-              Showing {rows.length} rows — more are available.{" "}
+              Showing {settled.length} rows — more are available.{" "}
               {cursor === null ? "The server returned no cursor to continue from." : null}
             </p>
           ) : null}
