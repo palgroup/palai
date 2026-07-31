@@ -1,9 +1,9 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect, type Page } from "@playwright/test";
 
-import { CONSOLE_ROUTES } from "../lib/routes";
+import { CONSOLE_ROUTES, DYNAMIC_CONSOLE_ROUTES } from "../lib/routes";
 import { IS_REAL, WCAG_TAGS } from "./constants";
-import { announceProfile, runToTerminal, signIn } from "./profile";
+import { announceProfile, concreteDynamicPath, runToTerminal, signIn } from "./profile";
 
 // tabToTestId genuinely presses Tab until the element carrying data-testid=id holds focus — proving KEYBOARD
 // REACHABILITY. This is stronger than `.focus()`, which succeeds even on a tabindex=-1 element that Tab can
@@ -60,6 +60,45 @@ for (const route of CONSOLE_ROUTES) {
     // A scan that ran ZERO rules would report zero violations too. Rules are what makes this a measurement.
     expect(results.passes.length + results.violations.length + results.incomplete.length).toBeGreaterThan(0);
     scanned.add(route.path);
+  });
+}
+
+// THE DYNAMIC ROUTES (E29). A screen keyed by a resource id got ZERO axe coverage before this loop, and the
+// reason was structural rather than an oversight: CONSOLE_ROUTES holds paths, and `/sessions/[id]` is not
+// one. lib/routes.ts now declares how to MAKE the path — which collection to read, and what to POST when
+// that collection is empty — so this resolves a real id through the relay and scans the real screen. The
+// empty-collection arm creates rather than skips, which is what keeps this a measurement.
+const scannedDynamic = new Set<string>();
+
+for (const route of DYNAMIC_CONSOLE_ROUTES) {
+  test(`axe-core reports zero violations on ${route.pattern}`, async ({ page }) => {
+    const path = await concreteDynamicPath(page, route);
+    await page.goto(path);
+    await expect(page.getByTestId(route.readyTestId)).toBeVisible({ timeout: 15_000 });
+    // The transcript's journal is an SSE stream: scanning while frames are still landing scans a page whose
+    // rows are still appearing, which is the same defect as scanning a spinner one interaction later.
+    await page.waitForLoadState("networkidle");
+    const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+    expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
+    expect(results.passes.length + results.violations.length + results.incomplete.length).toBeGreaterThan(0);
+    // eslint-disable-next-line no-console -- the resolved path is the evidence that a real row was scanned.
+    console.log(`AXE DYNAMIC ROUTE — ${route.pattern} scanned as ${path}`);
+    scannedDynamic.add(route.pattern);
+  });
+
+  // THE SECOND TAB IS A SECOND SCREEN, and a scan of the page as it opens never looks at it. `hidden` takes
+  // the whole Debug panel out of the accessibility tree, so the first scan reports a clean bill of health for
+  // markup it did not see — the same shape as scanning a page still rendering "Loading…", one interaction
+  // later.
+  test(`axe-core reports zero violations on ${route.pattern} with its second tab open`, async ({ page }) => {
+    const path = await concreteDynamicPath(page, route);
+    await page.goto(path);
+    await expect(page.getByTestId(route.readyTestId)).toBeVisible({ timeout: 15_000 });
+    await page.waitForLoadState("networkidle");
+    await page.getByTestId("tab-debug").click();
+    await expect(page.getByTestId("session-debug")).toBeVisible();
+    const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+    expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
   });
 }
 
@@ -170,6 +209,12 @@ test("every route lib/routes.ts declares was actually scanned by axe", () => {
       "and 'the filter excluded the scans' is exactly the excuse a silent gap would hide behind.",
   ).toEqual(declared);
   expect(CONSOLE_ROUTES.every((r) => r.readyTestId !== "")).toBe(true);
+  // AND THE DYNAMIC ONES, on the same terms. A pattern declared in DYNAMIC_CONSOLE_ROUTES that no scan
+  // resolved is the same unscanned page, arriving through the one door CONSOLE_ROUTES cannot cover.
+  const declaredDynamic = DYNAMIC_CONSOLE_ROUTES.map((r) => r.pattern).sort();
+  // eslint-disable-next-line no-console -- the count is the evidence.
+  console.log(`AXE DYNAMIC COVERAGE — ${scannedDynamic.size}/${declaredDynamic.length} declared pattern(s) scanned: ${[...scannedDynamic].sort().join(", ")}`);
+  expect([...scannedDynamic].sort(), "a dynamic route declared in lib/routes.ts was never put through axe").toEqual(declaredDynamic);
   // A ROUTE WITH NO LEAD SENTENCE IS THE SAME OMISSION AS ONE WITH NO READINESS SIGNAL, and it fails the
   // same way. Every page in this console used to open with a panel or a wall of equally-weighted notes,
   // and the only h1 on any of them was the brand — so "which page is this and what is it for" had no

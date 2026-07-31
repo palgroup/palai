@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 import { expect, test, type Page } from "@playwright/test";
 
+import { type DynamicConsoleRoute } from "../lib/routes";
 import { DIVERGENCE_BY_ID } from "./divergences.mjs";
 import { CONSOLE_PASSWORD, IS_REAL, NEXT_PORT, PROFILE } from "./constants";
 
@@ -109,6 +110,48 @@ export async function signInViaForm(page: Page): Promise<void> {
   await page.getByTestId("login-button").click();
   // The form navigates to / on success. A refusal would leave the error region on screen instead.
   await expect(page.getByTestId("ceiling-note")).toBeVisible({ timeout: 15_000 });
+}
+
+// concreteDynamicPath turns a DYNAMIC route pattern into a path this run can actually visit, and it REFUSES
+// to be skippable (E29).
+//
+// A screen keyed by a resource id — a session transcript — cannot be a row in CONSOLE_ROUTES, whose whole
+// contract is "a path the generated axe loop can goto". The reading taken in E25 T8 was to avoid dynamic
+// routes entirely; a transcript is the case where that stops working, so the route declares HOW to make its
+// path concrete instead: read the first row of its collection through the relay, and CREATE one when the
+// collection is empty.
+//
+// The create arm is the whole point. Without it, a deployment holding no sessions would produce a skipped
+// scan, which is this repo's most-repeated failure — a suite reporting green for the exact condition it
+// exists to detect. With it, "there are no sessions" is not a state in which the transcript screen goes
+// unscanned; it is a state in which the scan makes one.
+//
+// Every request goes through the CONSOLE'S OWN RELAY (/api/palai/v1/*) with the browser's session cookie, so
+// the helper exercises the same public-API-only path the browser does and never holds a credential.
+export async function concreteDynamicPath(page: Page, route: DynamicConsoleRoute): Promise<string> {
+  const origin = `http://127.0.0.1:${NEXT_PORT}`;
+  const headers = await sessionHeaders(page);
+  const list = await page.request.get(`${origin}/api/palai/v1${route.sampleFrom}`, { headers });
+  if (list.status() !== 200) {
+    throw new Error(`GET ${route.sampleFrom} answered ${list.status()} — ${route.label} cannot be resolved, so nothing after this proves anything`);
+  }
+  const body = (await list.json()) as { data?: { id?: string }[] };
+  const first = body.data?.[0]?.id;
+  if (typeof first === "string" && first !== "") return route.build(first);
+
+  const created = await page.request.post(`${origin}/api/palai/v1${route.sampleFrom}`, {
+    headers: { ...headers, Origin: origin, "Content-Type": "application/json" },
+    data: route.create,
+  });
+  if (created.status() !== 201 && created.status() !== 200) {
+    throw new Error(
+      `${route.sampleFrom} holds no row and POST answered ${created.status()}, so ${route.label} has no scannable path. ` +
+        "This is a FAILURE and not a skip on purpose: an unscanned page must be a red test.",
+    );
+  }
+  const row = (await created.json()) as { id?: string };
+  if (typeof row.id !== "string" || row.id === "") throw new Error(`POST ${route.sampleFrom} returned no id`);
+  return route.build(row.id);
 }
 
 // runToTerminal starts a run on /runs and drives it to a terminal status on EITHER profile.

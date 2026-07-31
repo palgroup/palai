@@ -1347,3 +1347,313 @@ button.danger {
 button.danger:hover:not(:disabled) {
   border-color: var(--danger-text-inline);
 }
+
+/* --- SESSIONS (E29): the list and the transcript ------------------------------------------------------
+   Two screens, one rule: information lives in STRUCTURE. There is no explanatory paragraph on either — a
+   column header, a chip's micro-label, a lane badge, a relative stamp and an empty state with an action are
+   what carry it. Every pair below sits inside the measured table in §4.4 of the design spec; nothing new was
+   invented, which is what keeps tests/contrast.spec.ts able to judge it. */
+
+/* The list's primary action, at the end of the head line. `.panel-tools` then wraps to its own row so the
+   filters read as a toolbar over the table rather than as a queue behind the button. */
+.panel-action {
+  margin-left: auto;
+}
+.panel-tools[data-wrap="true"] {
+  flex-basis: 100%;
+  margin-left: 0;
+}
+
+/* The name, and the marker that says nobody chose it. `auto` is a WORD rather than an icon, because the
+   distinction it draws — a label a human typed vs the first eighty runes of a prompt — is not one any glyph
+   in this console's Unicode-only set could carry. --text-muted on --bg-page is 5.79:1 / 9.06:1. */
+.session-name {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.session-name > .name {
+  font-weight: var(--font-weight-medium);
+}
+.session-name > .name[data-unnamed="true"] {
+  font-weight: var(--font-weight-regular);
+  color: var(--text-muted);
+}
+.name-mark {
+  font-size: var(--font-size-1);
+  letter-spacing: var(--letter-spacing-1);
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-1);
+  padding: 0 var(--space-1);
+}
+
+/* An absent value is muted TEXT, never a blank cell: a blank reads as a rendering fault. */
+.cell-none {
+  color: var(--text-muted);
+}
+
+/* The id column: monospace, clipped, and the whole value in `title` — a clip that can be recovered is not a
+   silent truncation. It is an <a> to the transcript, so it is already in the tab order and needs no
+   tabindex of its own. */
+.cell-id {
+  display: inline-block;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2);
+}
+
+/* Chips. --text on --bg-inset is 14.41:1 / 13.70:1; the key is --text-muted on the same, 5.22:1 / 7.64:1.
+   INLINE-BLOCK RATHER THAN INLINE-FLEX, AND THAT IS A COPY BUG BEING FIXED RATHER THAN A LAYOUT PREFERENCE.
+   A flex container drops whitespace-only text nodes, so the key and the value are ADJACENT in innerText even
+   though `gap` separates them on screen: the chip row read "Tokens22.5k / 111" and, on a session that never
+   ran, "Duration—" — an em dash welded to a word, which is the exact shape tests/rendered-copy.ts exists to
+   catch and which it could not see, because the route it visits happens to hold a session that DID run.
+   An inline formatting context keeps the space a real character, for a reader and for a screen reader. */
+.chip {
+  display: inline-block;
+  padding: 1px var(--space-3);
+  border-radius: var(--radius-full);
+  border: var(--border-w) solid var(--border-hairline);
+  background: var(--bg-inset);
+  color: var(--text);
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-3);
+  white-space: nowrap;
+}
+.chip .chip-list {
+  display: inline-flex;
+  vertical-align: baseline;
+}
+.chip-key {
+  font-size: var(--font-size-1);
+  letter-spacing: var(--letter-spacing-1);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.chip-glyph {
+  flex: none;
+  vertical-align: -1px;
+  margin-right: var(--space-1);
+}
+.chip-list,
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.chip-row {
+  gap: var(--space-3);
+  margin: 0 0 var(--space-6);
+}
+/* A chip inside a chip (the agent chip inside the transcript's Agent chip) drops its own shell — one border
+   around two is a box in a box, and the outer one already names the field. */
+.chip .chip {
+  border: none;
+  background: none;
+  padding: 0;
+  min-height: 0;
+}
+
+/* The row overflow. The panel is IN FLOW rather than absolutely positioned, and that is a measurement:
+   `.panel` scrolls horizontally, so an absolutely-positioned menu inside it is clipped by its own container.
+   An expanding row is legible; a menu that is half a menu is not. */
+.row-menu {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+}
+.row-menu-toggle {
+  height: 1.75rem;
+  min-width: 1.75rem;
+  padding: 0 var(--space-2);
+  line-height: 1;
+}
+.row-menu-panel {
+  position: absolute;
+  top: 2rem;
+  right: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--bg-page);
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-2);
+  box-shadow: var(--shadow-2);
+}
+
+/* The rename form, small enough to sit inside a table cell. */
+.rename {
+  min-width: 16rem;
+}
+.rename-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.rename-row input {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+/* The breadcrumb: the transcript's only statement of where it sits, and the separator is generated so it is
+   never a character a copy of the trail carries. */
+.breadcrumb ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  font-size: var(--font-size-2);
+}
+.breadcrumb li + li::before {
+  content: "/";
+  margin-right: var(--space-2);
+  color: var(--text-muted);
+}
+.breadcrumb code {
+  font-size: var(--font-size-2);
+  color: var(--text-muted);
+}
+
+.session-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.session-head > .page-title {
+  margin: 0;
+}
+
+/* Tabs. The APG pattern: a roving tabindex, arrow keys, aria-selected, and a border that does NOT change
+   with selection — the border is what SC 1.4.11 judges, and the selected state is carried by the fill, the
+   underline and aria-selected, so three layers say it and none of them is the control's own boundary. */
+.tabs {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+}
+.tab[aria-selected="true"] {
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  box-shadow: inset 0 -2px 0 var(--accent-solid);
+}
+
+/* The transcript's two columns. The detail pane is a sibling rather than an overlay: an overlay would cover
+   the row that opened it, and the point of the pane is to read the two together. */
+.transcript-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 21rem;
+  gap: var(--space-5);
+  align-items: start;
+}
+@media (max-width: 72rem) {
+  .transcript-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.detail-pane pre.code {
+  max-height: 28rem;
+  overflow: auto;
+}
+.detail-pane dd {
+  overflow-wrap: anywhere;
+}
+
+/* The scrubber: where the journal's frames fall inside its own span. --accent-solid on --bg-inset measures
+   5.34:1 and the failure mark's --danger-border-control 3.44:1, both well over the 3:1 a non-text carrier
+   needs — although neither is load-bearing here, because the track is aria-hidden and everything it shows is
+   also in the caption and in the Elapsed column. */
+.scrubber {
+  margin: 0 0 var(--space-5);
+}
+.scrubber-track {
+  position: relative;
+  height: 1.25rem;
+  border-radius: var(--radius-full);
+  background: var(--bg-inset);
+  border: var(--border-w) solid var(--border-hairline);
+}
+.scrubber-mark {
+  position: absolute;
+  top: 0.1875rem;
+  width: 3px;
+  height: 0.75rem;
+  margin-left: -1.5px;
+  border-radius: var(--radius-1);
+  background: var(--accent-solid);
+}
+.scrubber-mark[data-failure="true"] {
+  background: var(--danger-border-control);
+}
+.scrubber figcaption {
+  margin-top: var(--space-2);
+  font-size: var(--font-size-2);
+  color: var(--text-muted);
+}
+
+/* The lane badge: the §47.2 lane the type already belongs to, as a word. Lanes are NOT colour-coded — the
+   existing timeline rule says why, and eight distinguishable hues is worse than none. */
+.lane-badge {
+  display: inline-block;
+  font-size: var(--font-size-1);
+  letter-spacing: var(--letter-spacing-1);
+  text-transform: uppercase;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-muted);
+  background: var(--bg-inset);
+  border-radius: var(--radius-1);
+  padding: 0 var(--space-2);
+  white-space: nowrap;
+}
+
+/* A row's own select control, and the Rendered/Raw pair. Compact, and BORDERED: a control whose only
+   boundary is a hover state is a control SC 1.4.11 cannot see, and tests/contrast.spec.ts measures every
+   button on every route. */
+.row-select {
+  height: 1.75rem;
+  padding: 0 var(--space-3);
+  font-size: var(--font-size-3);
+  font-family: var(--font-mono);
+  font-weight: var(--font-weight-regular);
+}
+.row-select[aria-pressed="true"] {
+  background: var(--accent-bg);
+  color: var(--accent-text);
+}
+tbody tr[data-selected="true"] td {
+  background: var(--accent-bg);
+}
+
+/* The error pill: a word and a glyph, with colour as the third layer — the rule .status already follows.
+   --danger-text on --danger-bg is 10.84:1 / 11.95:1. */
+.pill-error {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: var(--space-2);
+  height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  border: var(--border-w) solid var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  font-size: var(--font-size-2);
+  font-weight: var(--font-weight-medium);
+}

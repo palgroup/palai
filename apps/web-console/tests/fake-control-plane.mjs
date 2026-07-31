@@ -1083,6 +1083,109 @@ function streamEvents(sid, rid, runId, request, response) {
   timer = setTimeout(pump, FRAME_GAP_MS);
 }
 
+// --- THE SESSION COLLECTION (E29) -------------------------------------------------------------------
+//
+// GET /v1/sessions and GET /v1/sessions/{id} are registered by the real router (api/router.go:321-322) and
+// this fixture served NEITHER, which is why the Sessions screen could not be built against it. The shape
+// below is migration 000048's projection key for key — id, object, status, created_at, organization_id,
+// project_id, name, name_source, agents, input_tokens, output_tokens, first_activity_at, last_activity_at,
+// duration_ms — because the conformance sweep diffs this against the running real one and a generous fixture
+// is how a console ends up rendering a field the API does not send.
+//
+// TWENTY-FOUR ROWS, for PAGE_LIMIT's reason: the twenty-first row is the one truncation is only observable
+// past, and a Sessions list is the collection an operator meets with hundreds in it.
+//
+// THE TIMESTAMPS ARE RELATIVE TO PROCESS START, and that is the one deliberate departure from the fixture's
+// usual fixed dates. The screen's Created column renders "10 hours ago", so a row stamped 2026-07-24 would
+// read as "8 days ago" on the day it was written and "three months ago" a quarter later — a fixture whose
+// rendered value rots. Anchoring to boot makes the relative stamps stable for as long as the assertion is
+// about their SHAPE, which is what it is about.
+const SESSION_EPOCH = Date.now();
+const ses = (n) => `ses_${String(n).padStart(2, "0").repeat(16).slice(0, 32)}`;
+
+// ONE SESSION WHOSE RUN WAS REFUSED, and it exists so the transcript's ERROR PILL is shipped code rather
+// than dead code. streamEvents forks on the approval command: `denied` writes approval.denied.v1 and
+// run.canceled.v1 and ends the stream, which is a journal with two FAILING frames in it. Every other
+// fixture session replays a completed run, so without this row the pill would render on nothing and no test
+// could tell the difference between "correct" and "never reached".
+//
+// It is found by its NAME rather than by its index, because the create route unshifts rows and an index is a
+// handle that moves. A compose stack cannot produce this journal at all (DIV-UI-002: a real run journals six
+// types and canceled is not one), which is why the spec that drives it cites that row and skips there.
+const REFUSED_INDEX = 1;
+const REFUSED_NAME = "Refused release push";
+
+// The fixture's session bodies. `name_source` covers all three of the enum's values on purpose: `derived` is
+// the common case (a cut of the first prompt, which nobody chose), `operator` is a label a human typed, and
+// `none` is a session with neither — the row whose name cell must say so rather than render blank.
+const SESSIONS = Array.from({ length: 24 }, (_, i) => {
+  const createdAt = SESSION_EPOCH - (i + 1) * 3_600_000;
+  const ran = i % 7 !== 6; // one session in seven never ran: null span, null duration, zero tokens
+  const durationMs = ran ? 1_600 + i * 940 : null;
+  const named = i % 5 === 0 || i === REFUSED_INDEX;
+  const unnamed = i === 3;
+  return {
+    id: ses(i + 1),
+    object: "session",
+    status: i % 6 === 5 ? "closed" : i % 6 === 4 ? "paused" : "active",
+    created_at: new Date(createdAt).toISOString(),
+    organization_id: "org_local",
+    project_id: "prj_local",
+    name: i === REFUSED_INDEX ? REFUSED_NAME : named ? `Release rehearsal ${String(i + 1)}` : unnamed ? "" : "Push the release branch.",
+    name_source: named ? "operator" : unnamed ? "none" : "derived",
+    agents: i % 4 === 0 ? ["release-bot"] : i % 9 === 3 ? ["release-bot", "reviewer"] : [],
+    input_tokens: ran ? (i === 1 ? 22_500 : 44 + i * 13) : 0,
+    output_tokens: ran ? 111 + i * 7 : 0,
+    // THE SPAN IS OMITTED, NOT NULLED, ON A SESSION THAT NEVER RAN — and that was a fixture bug found by
+    // hand-diffing this collection against the running stack on 2026-07-31, because the conformance sweep
+    // could not run (its `before` hook drives a real run to terminal and this stack leaves runs queued).
+    // MEASURED: `GET /v1/sessions/{id}` for a session created through the API answers eleven keys —
+    // agents, created_at, id, input_tokens, name, name_source, object, organization_id, output_tokens,
+    // project_id, status — and first_activity_at / last_activity_at / duration_ms are ABSENT, because the
+    // Go projection carries them omitempty. A fixture serving `null` teaches a shape the API never sends,
+    // which is the DIV-SHP-004 defect exactly: the console would be written against a key that is not there.
+    ...(ran
+      ? {
+          first_activity_at: new Date(createdAt + 1).toISOString(),
+          last_activity_at: new Date(createdAt + durationMs).toISOString(),
+          duration_ms: durationMs,
+        }
+      : {}),
+  };
+});
+
+// EVERY FIXTURE SESSION IS PRE-APPROVED IN THE STREAM'S OWN STATE MAP, and without this line the transcript
+// screen would hang. streamEvents gates the frame after approval.requested.v1 on an approve command; a
+// session id it has never seen resolves to {approved:false} and the pump waits forever. These sessions are
+// HISTORY — their run already happened — so the journal replays to its terminal frame the way a finished
+// run's does on the real API.
+for (const row of SESSIONS) sessions.set(row.id, { approved: true, denied: false, model: MODEL });
+sessions.set(SESSIONS[REFUSED_INDEX].id, { approved: false, denied: true, model: MODEL });
+
+/** findSession is the item read AND the write path's lookup — one place decides what "no such session" means. */
+const findSession = (id) => SESSIONS.find((s) => s.id === id);
+
+/**
+ * filterSessions applies the two filters beginList actually parses for this kind — ?status= and the
+ * created_at bounds (pagination.go statusFilterKinds includes "sessions"; created_after/created_before are
+ * RFC3339). It is a real narrowing rather than a courtesy: the console's Status and Created controls send
+ * these parameters, so a fixture that ignored them would let a dropdown that changes nothing look like one
+ * that works.
+ */
+function filterSessions(url) {
+  const status = url.searchParams.get("status");
+  const after = url.searchParams.get("created_after");
+  const before = url.searchParams.get("created_before");
+  return SESSIONS.filter((row) => {
+    if (status !== null && status !== "" && row.status !== status) return false;
+    if (after !== null && after !== "" && Date.parse(row.created_at) < Date.parse(after)) return false;
+    if (before !== null && before !== "" && Date.parse(row.created_at) > Date.parse(before)) return false;
+    return true;
+  });
+}
+
+let sessionSeq = 0;
+
 // --- THE ROUTE TABLE --------------------------------------------------------------------------------
 //
 // One row per (method, path-pattern) this fixture serves. `pattern` is written in Go `net/http` ServeMux
@@ -2138,6 +2241,75 @@ export const ROUTES = [
   // proof on this surface.
   { method: "GET", pattern: "/v1/budgets", handle: (_request, response) => sendJSON(response, 200, listView([])) },
   { method: "GET", pattern: "/v1/quotas", handle: (_request, response) => sendJSON(response, 200, listView([])) },
+  // THE SESSION COLLECTION. Four rows for the four verbs api/router.go registers, and the write pair matters
+  // as much as the read pair: PATCH is how a wall of `derived` labels becomes a list an operator can read,
+  // and it is the only route in this table whose 400 is about a MISSING field rather than a malformed one
+  // (commands.go rename: an absent `name` is a request that lost its field, and succeeding at nothing is how
+  // a caller comes to believe a rename happened that did not).
+  { method: "GET", pattern: "/v1/sessions", handle: (request, response) => pageSlice(filterSessions(requestURL(request)), requestURL(request), response) },
+  {
+    method: "POST",
+    pattern: "/v1/sessions",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        if (body.name !== undefined && typeof body.name !== "string") {
+          return sendProblem(response, 400, "invalid_request", "the request body is not a valid session write");
+        }
+        sessionSeq += 1;
+        const now = new Date().toISOString();
+        const row = {
+          id: ses(900 + sessionSeq),
+          object: "session",
+          status: "active",
+          created_at: now,
+          organization_id: "org_local",
+          project_id: "prj_local",
+          name: typeof body.name === "string" ? body.name : "",
+          // A session created through the API has no runs yet, so there is no first prompt to derive a label
+          // from — `none` unless the caller supplied one. This is the row the empty state's action produces.
+          name_source: typeof body.name === "string" && body.name !== "" ? "operator" : "none",
+          agents: [],
+          input_tokens: 0,
+          output_tokens: 0,
+          // No span keys at all: this session has never run, and the real create answers exactly these
+          // eleven fields (measured against the running stack, 2026-07-31). See SESSIONS above.
+        };
+        // Newest first, which is the order the real keyset (created_at DESC, id DESC) serves.
+        SESSIONS.unshift(row);
+        sessions.set(row.id, { approved: true, denied: false, model: MODEL });
+        response.writeHead(201, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", location: `/v1/sessions/${row.id}` });
+        response.end(JSON.stringify(row));
+      }),
+  },
+  {
+    method: "GET",
+    pattern: "/v1/sessions/{session_id}",
+    handle: (_request, response, { session_id: id }) => {
+      const row = findSession(id);
+      if (row === undefined) return sendProblem(response, 404, "not_found", "no such session in this project");
+      sendJSON(response, 200, row);
+    },
+  },
+  {
+    method: "PATCH",
+    pattern: "/v1/sessions/{session_id}",
+    handle: (request, response, { session_id: id }) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        if (typeof body.name !== "string") return sendProblem(response, 400, "invalid_request", "name is required");
+        if ([...body.name].length > 200) return sendProblem(response, 400, "invalid_request", "name must be at most 200 characters");
+        const row = findSession(id);
+        if (row === undefined) return sendProblem(response, 404, "not_found", "no such session in this project");
+        row.name = body.name;
+        // CLEARING IS A REAL VALUE, and it does not leave the row claiming an operator chose an empty label:
+        // an empty name falls back to whatever the row can derive, which for these fixtures is the prompt cut
+        // they were seeded with — `derived` — or `none` for the one that never had a prompt.
+        row.name_source = body.name === "" ? (row.id === ses(4) ? "none" : "derived") : "operator";
+        if (body.name === "" && row.name_source === "derived") row.name = "Push the release branch.";
+        sendJSON(response, 200, row);
+      }),
+  },
   {
     method: "GET",
     pattern: "/v1/sessions/{session_id}/events",
