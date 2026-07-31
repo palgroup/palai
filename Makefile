@@ -9,7 +9,7 @@ SHELL := /bin/bash
 	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity uat-extensions uat-stable-release uat-wiring uat-wiring-live \
 	uat-agent-surface uat-agent-surface-live uat-tools-memory uat-tools-memory-live uat-code-and-ship uat-code-and-ship-live \
 	uat-tool-approval uat-tool-approval-live uat-fleet uat-fleet-live \
-	uat-admin-console uat-admin-console-live \
+	uat-admin-console uat-admin-console-live uat-background \
 	uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
 	release-matrix-smoke provenance-offline-verify
 
@@ -442,6 +442,20 @@ uat-admin-console:
 uat-admin-console-live:
 	@test -x scripts/uat/admin-console || { echo "admin-console UAT not implemented" >&2; exit 2; }
 	@RUN_CONSOLE_REAL=1 SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/admin-console
+
+# THE ONE COMMAND (plan §T7) — the E26 exit gate. Docker-free core plus a Docker-bound journey tier; no
+# credential anywhere, because this epic has no vendor to call. SKIP_JOURNEYS=1 opts out of the tier that
+# needs a throwaway Postgres and a real daemon, and the script SAYS SO in its closing line rather than
+# implying a tier that did not run.
+#
+# THERE IS NO `uat-background-live` AND ITS ABSENCE IS THE HONEST ANSWER. E26's §6 legs want a real
+# xcodebuild on a real Mac with its duration written down, a control-plane restart through a real service
+# manager, an overnight orphan hunt, the real rate of pgid reuse on a Mac, an observed credential exposure,
+# and an operator watching a PALAI_DISPATCH_WORKERS=0 stack land nothing. Not one of those is produced by a
+# credential, so a "live" target would be a second name for the same run.
+uat-background:
+	@test -x scripts/uat/background || { echo "background UAT not implemented" >&2; exit 2; }
+	@SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/background
 
 # E18 T1 image half of the release matrix (Docker-bound, so NOT in `make verify` — like uat-kind): builds
 # linux/amd64 + linux/arm64 for all three images, asserts each indexed tar's digest/image_id/arch against the

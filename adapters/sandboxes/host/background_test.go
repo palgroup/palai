@@ -170,16 +170,41 @@ func TestABackgroundTaskWritesItsOwnLogAndCreatesTheSessionDirectory(t *testing.
 // TestAnEscapingOutputPathIsRefusedBeforeAnythingStarts keeps the containment where both postures share
 // it. The caller is the orchestrator rather than the model, which is exactly the sentence that precedes
 // every traversal that ever shipped.
+//
+// AND IT CARRIES ITS OWN NON-VACUITY HALF, ADDED BY THE E26 T7 EXIT GATE AFTER MEASURING THAT IT DID NOT.
+// The three refusals below are ALL this test asserted, so an executor whose `Start` returned an error for
+// every input satisfied it — demonstrated by making `Start` refuse unconditionally, at which point this
+// function still reported `ok`. A refusal-only proof is the same shape as E26 T2's approval-gate RED, which
+// PASSED at the fork point because there was no spawn path at all: a guard that cannot fail reports the same
+// green as one that passes. The legal path on the SAME executor must therefore start exactly one process.
 func TestAnEscapingOutputPathIsRefusedBeforeAnythingStarts(t *testing.T) {
 	root := t.TempDir()
+	e := host.NewExecutor(0)
 	for _, path := range []string{"../escape.log", "/etc/escape.log", ""} {
-		_, err := host.NewExecutor(0).Start(context.Background(), toolbroker.ShellCommand{
+		_, err := e.Start(context.Background(), toolbroker.ShellCommand{
 			Argv:          []string{"true"},
 			WorkspaceRoot: root,
 		}, toolbroker.BackgroundSpec{TaskID: "bgt-escape", OutputPath: path})
 		if err == nil {
 			t.Fatalf("output path %q was accepted; it resolves outside the allocation", path)
 		}
+	}
+
+	// THE CONTROL: the same executor, the same command, a path INSIDE the allocation — one process starts.
+	if err := os.MkdirAll(filepath.Join(root, ".palai-session", "bg"), 0o755); err != nil {
+		t.Fatalf("create the session dir: %v", err)
+	}
+	handle, err := e.Start(context.Background(), toolbroker.ShellCommand{
+		Argv:          []string{"true"},
+		WorkspaceRoot: root,
+	}, toolbroker.BackgroundSpec{TaskID: "bgt-escape-control", OutputPath: filepath.Join(".palai-session", "bg", "bgt-escape-control.log")})
+	if err != nil {
+		t.Fatalf("a LEGAL output path was refused too (%v) — this executor refuses everything, so the three "+
+			"refusals above are statements about it rather than about path containment", err)
+	}
+	t.Cleanup(func() { _ = e.Kill(context.Background(), handle) })
+	if handle.Value == "" {
+		t.Fatal("the control start returned an empty handle: nothing was actually started")
 	}
 }
 

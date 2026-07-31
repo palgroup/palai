@@ -23,6 +23,24 @@ import (
 // rather than a silence: without it, a bundle that LOST its family claims would quietly move from "passes
 // its own gate" to "no gate recognizes it" and the sweep below would still be green.
 var promoteFamilies = map[string]string{
+	// E26's family is checked FIRST of all in PromoteGateFor, one level above E25, and this bundle inherits
+	// the dispatch hazard one layer deeper again: it carries the E25 admin-console claim, the E23
+	// tool-approval claim, the E22 code-and-ship claim, the E21 tools-memory claim, the E20 agent-surface
+	// claim, the E19 wiring claim AND E17 area claims, because it derives its inherited case set from those
+	// releases. Dispatching on any of them would reroute it to a gate that knows nothing about the six
+	// replicated semantics, the refusal controls, the two ownership postures, the exactly-once notice, the
+	// reaper's duties or the redaction sites. It is recognized by the E26 CASE IDS — and their `BGT-` prefix
+	// is part of that decision in BOTH directions, exactly as `CON-`, `FLT-`, `HIL-` and `CAS-` were.
+	//
+	// AND THE COMMENT BELOW UNDERCOUNTED, WHICH THIS ENTRY CORRECTS RATHER THAN REPEATS. Every earlier copy
+	// of it calls this "the THIRD registration point a new bundle name owes" and names two others
+	// (committedBundleSurfaces and the caseChecksumParts branch). There is a FOURTH and it is the one that
+	// decides the outcome: the `for _, c := range m.Cases` clause in PromoteGateFor itself. Without that
+	// clause a bundle registered in all three of the others still routes to a WEAKER family gate and PASSES —
+	// which is the promote-gate-family-dispatch defect this tree has already shipped once, and it is not
+	// caught by the sweep below, because the sweep asks whether SOME gate passed the bundle rather than
+	// whether the RIGHT one did.
+	"background-execution-0.1.0": "E26 background-execution (the six §2 semantics re-derived from the semantics ledger with §2.6 — the model calling another tool while the process still ran — required by name + ZERO processes started under any refusal over refusals that each carry a non-vacuity control with its unit stated + both sandbox postures outliving the call that started them and ZERO signals to a handle we could not prove was ours + exactly one notice per settled task across two ticks / two control planes / a restart / a running run / a terminal run, each naming the mutation that reddens it + the reaper's six duties, none read off our own bookkeeping + ZERO environment values in five landing sites, each DECODED before it was scanned + the composed admin-console/tool-approval/code-and-ship/tools-memory/agent-surface/wiring/extensions/eval gates)",
 	// E24's family is checked FIRST of all in PromoteGateFor, one level above E23, and this bundle inherits
 	// the dispatch hazard one layer deeper again: it carries the E23 tool-approval claim, the E22
 	// code-and-ship claim, the E21 tools-memory claim, the E20 agent-surface claim, the E19 wiring claim AND
