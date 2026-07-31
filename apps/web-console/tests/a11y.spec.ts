@@ -97,6 +97,13 @@ for (const route of DYNAMIC_CONSOLE_ROUTES) {
     await page.waitForLoadState("networkidle");
     await page.getByTestId("tab-debug").click();
     await expect(page.getByTestId("session-debug")).toBeVisible();
+    // THE TAB WRITES THE URL, so the click starts a client navigation and the RSC payload for it is still in
+    // flight — during which `document.title` is momentarily empty and axe's `document-title` rule fires. That
+    // is the same defect as scanning a page still rendering "Loading…", one interaction later, and this file
+    // already says so; the settle is what makes the scan a measurement of the page rather than of a
+    // navigation. Measured: light passed and dark failed on a machine at load 30.
+    await expect(page).toHaveURL(/segment=debug/);
+    await page.waitForLoadState("networkidle");
     const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
     expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
   });

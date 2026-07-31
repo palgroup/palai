@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 
 import { Panel, type Column } from "@/components/Panel";
-import { AgentChips, RenameSession, SessionName, Stamp } from "@/components/Session";
+import { AgentChips, CopyButton, RenameSession, SessionName, shortId, Stamp } from "@/components/Session";
 import { Status } from "@/components/Status";
 import { apiSend, RelayError } from "@/lib/api";
 import { compactTokens, type SessionRow } from "@/lib/sessions";
@@ -103,18 +103,26 @@ export default function SessionsPage() {
     {
       header: "ID",
       sort: (r) => r.id,
-      // THE ID IS THE LINK, which is why it carries no separate "open" control: the identity of the row and
-      // the way into it are the same thing. It is clipped by CSS with the full value in `title`, so the
-      // clipping is recoverable rather than silent — and it is an <a>, so it is in the tab order already.
+      // A SHORT FORM PLUS A COPY BUTTON, which is the reference's measured id cell and a correction to what
+      // this console does everywhere else: a raw 36-character id sitting in a column, which an operator can
+      // neither read nor reliably select. The short form is DERIVED from the id (shortId), the whole value
+      // is in `title` and on the clipboard, and the link is the way in — so nothing is hidden and nothing
+      // has to be retyped.
       render: (r) => (
-        <a className="cell-id" href={`/sessions/${encodeURIComponent(r.id)}`} title={r.id} data-testid="session-link">
-          {r.id}
-        </a>
+        <span className="cell-id-group">
+          <a className="cell-id" href={`/sessions/${encodeURIComponent(r.id)}`} title={r.id} data-testid="session-link">
+            {shortId(r.id)}
+          </a>
+          <CopyButton value={r.id} label="session ID" testId="session-copy-id" />
+        </span>
       ),
     },
     {
       header: "Name",
       sort: (r) => r.name,
+      // THE NAME IS A LINK TOO — measured: "ID ve Name, ikisi de detaya link — kullanıcı nereye tıklarsa
+      // tıklasın gider". A row where only the id is clickable makes the operator aim at the one cell they
+      // cannot read.
       render: (r) =>
         renaming === r.id ? (
           <RenameSession
@@ -128,7 +136,9 @@ export default function SessionsPage() {
             }}
           />
         ) : (
-          <SessionName name={r.name} source={r.name_source} />
+          <a className="cell-name-link" href={`/sessions/${encodeURIComponent(r.id)}`} data-testid="session-name-link">
+            <SessionName name={r.name} source={r.name_source} />
+          </a>
         ),
     },
     { header: "Status", sort: (r) => r.status, render: (r) => <Status value={r.status} testId="session-status" /> },
@@ -251,8 +261,19 @@ export default function SessionsPage() {
           </>
         }
         emptyNote={
+          // THE MEASURED SHAPE (design-reference/screen-inventory.md §3): a title, then one sentence saying
+          // what the thing IS — "No memory stores yet / Memory stores give agents persistent, cross-session
+          // memory". An empty screen is the one moment a reader can be taught, and `None yet.` teaches
+          // nothing. This console still says those three words on three other panels; they are the
+          // tree-wide pass's, and these two screens do not add a fourth.
           <>
-            No session matches, so there is nothing to open.{" "}
+            <p className="empty-title" data-testid="session-empty-title">
+              No sessions yet
+            </p>
+            <p className="empty-body">
+              A session is one conversation with this deployment — every run it holds, the events they
+              journal and the tokens they spend belong to it.
+            </p>
             <button type="button" className="primary" onClick={() => void createSession()} disabled={creating} data-testid="session-create-empty">
               Create one
             </button>
