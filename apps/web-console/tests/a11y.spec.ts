@@ -213,6 +213,66 @@ for (const surface of [
   });
 }
 
+// AND THE ONE SURFACE THE POPUP SCANS ABOVE STILL DO NOT REACH: AN OPEN DIALOG.
+//
+// CLAUDE.md names this as a shipped defect of this suite, in its own words: "hiçbir axe taraması açık bir
+// dialog ile koşmamıştı, çünkü döngü rotayı yüklenirken tarıyor ve expectAxeClean dialog kapandıktan sonra
+// oturuyordu — yani bir form dialog'a taşınınca kanıttan sessizce çıkıyor ve süpürme kapsam daralırken daha
+// temiz bir sayı raporluyordu." No axe scan had ever run with a dialog open, because the generated loop
+// scans a route as it loads and every expectAxeClean sits AFTER the dialog closed. A form moved into a
+// dialog therefore leaves the evidence silently, and the sweep reports a CLEANER number while covering less.
+//
+// That is not hypothetical here: two page agents are moving their create forms into components/ui/Dialog.tsx
+// right now, and app/globals.css:134 records the same shape already happening once — `button.danger` went a
+// whole epic unmeasured because "its only caller was inside a dialog, which the sweep walks the routes with
+// CLOSED".
+//
+// So this scans one. The dialog is reached the way an operator reaches it — a row menu, then the item — and
+// the assertions before the scan are what stop it being a scan of nothing: the dialog is visible, it carries
+// the alertdialog role, and its two controls are present.
+test("axe-core reports zero violations on /fleet with a destructive dialog OPEN", async ({ page }) => {
+  await page.goto("/fleet");
+  await expect(page.getByTestId("panel-runners")).toBeVisible({ timeout: 15_000 });
+  const toggles = page.getByTestId("panel-runners").locator('[data-testid^="runner-menu-"]');
+  await expect(toggles.first(), "the machines panel rendered no rows, so no dialog can be opened").toBeVisible({ timeout: 15_000 });
+
+  // The first machine whose menu offers a revoke. Walked rather than assumed: which machines are revocable
+  // is fixture state, and a hard-coded id is the thing that rots.
+  let opened = "";
+  const count = await toggles.count();
+  for (let i = 0; i < count && opened === ""; i++) {
+    const toggle = toggles.nth(i);
+    const id = (await toggle.getAttribute("data-testid"))?.replace("runner-menu-", "") ?? "";
+    await toggle.click();
+    // The popup is portalled, so it exists a frame after the click — `count()` does not auto-wait.
+    await expect(page.getByRole("menu")).toBeVisible();
+    if ((await page.getByTestId(`runner-revoke-${id}`).count()) > 0) {
+      await page.getByTestId(`runner-revoke-${id}`).click();
+      opened = id;
+    } else {
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("menu")).toHaveCount(0);
+    }
+  }
+  expect(opened, "no machine on this stack offers a revoke, so this scan would be of a closed dialog").not.toBe("");
+
+  const dialog = page.getByTestId("runner-revoke-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveAttribute("role", "alertdialog");
+  // CONTENT BEFORE THE SCAN. A dialog that answers to its name before its review region resolves is the
+  // reveal-once defect one interaction later: axe finds a shell, reports nothing, and the number looks fine.
+  await expect(page.getByTestId("runner-revoke-dialog-review")).toBeVisible();
+  await expect(page.getByTestId("runner-revoke-dialog-confirm")).toBeVisible();
+
+  const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+  expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
+  expect(results.passes.length + results.violations.length + results.incomplete.length).toBeGreaterThan(0);
+  // eslint-disable-next-line no-console -- the count is the evidence that the scan had a dialog to look at.
+  console.log(
+    `AXE DIALOG — /fleet revoke dialog for ${opened} scanned with ${String(await dialog.locator("button, a[href], input").count())} control(s) inside it`,
+  );
+});
+
 test("axe-core reports zero violations on the live-run surface after a completed run", async ({ page }) => {
   // Render everything the profile can produce and reach terminal, so every live panel present on this
   // profile — timeline, recovery, usage, artifacts, and on the fake profile the approval detail — is in the
