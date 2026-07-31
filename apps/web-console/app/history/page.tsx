@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 
-import { Panel } from "@/components/Panel";
+import { Panel, type Column } from "@/components/Panel";
+import { CopyButton, shortId, Stamp } from "@/components/Session";
 import { Status } from "@/components/Status";
 import { Timeline, type Frame } from "@/components/Timeline";
 import { apiGet, artifactHref, readSessionEvents, RelayError } from "@/lib/api";
@@ -53,8 +55,40 @@ interface ArtifactRow extends Record<string, unknown> {
 // are untrusted and the console's origin holds the operator session, so the bytes are served only through
 // /api/palai/v1/artifacts/{id}/content, which coerces the type, sets nosniff, forces an attachment
 // disposition, sanitizes the filename and denies every content source. E25 T8 changed none of that.
+//
+// WHAT THE PAGE-PARITY PASS CHANGED, measured on the built console (2026-07-31): four columns, of which the
+// first was a raw 36-character response id in mono and the third was a raw ISO timestamp, plus an "Open"
+// button in a column of its own — and a selection that lived in React state, so the back button did nothing,
+// a run could not be sent to a colleague as a link, and a reload lost the run being read.
+//
+// THE SELECTION IS IN THE URL NOW (`?run=…`), which is the pattern app/sessions/[id]/page.tsx landed and the
+// third screen in this console to use it. Everything below the table is unchanged: this page's detail,
+// journal replay and artifact list were already the right shape, and the pass touched the LIST.
+//
+// THE SESSION CELL IS A LINK, and it is the cross-reference this console did not have: a run belongs to a
+// session, /sessions/{id} replays that session's whole journal, and until now an operator holding a response
+// id had no way to reach the conversation it came from without retyping an id.
+
 export default function HistoryPage() {
-  const [selected, setSelected] = useState<RunRow | null>(null);
+  // `useSearchParams()` bails out of prerendering, and Next refuses to build a STATIC page that calls it
+  // outside a Suspense boundary. The fallback deliberately does not answer to `panel-runs` — this route's
+  // declared readiness signal — so a scan cannot analyse the placeholder and call the page clean.
+  return (
+    <Suspense fallback={<p className="loading">Loading…</p>}>
+      <RunHistory />
+    </Suspense>
+  );
+}
+
+function RunHistory() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const search = useSearchParams();
+  const selectedID = search.get("run") ?? "";
+  const [rows, setRows] = useState<RunRow[]>([]);
+  // The selected ROW comes out of the list this page just read; there is no per-run read that would answer
+  // one before the list lands, and the detail fetch below is keyed by the id rather than by the row.
+  const selected = rows.find((r) => r.id === selectedID) ?? null;
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [detailError, setDetailError] = useState("");
   const [frames, setFrames] = useState<Frame[]>([]);
@@ -62,12 +96,14 @@ export default function HistoryPage() {
 
   const sessionID = detail?.session_id ?? selected?.session_id ?? "";
 
+  // KEYED ON THE ID, NOT THE ROW. `selected` is derived from the list on every render, so a new object
+  // identity arrives with every poll and an effect depending on it would refetch the detail forever.
   useEffect(() => {
     setDetail(null);
     setDetailError("");
-    if (selected === null) return;
+    if (selectedID === "") return;
     let live = true;
-    apiGet<RunDetail>(`/responses/${encodeURIComponent(selected.id)}`)
+    apiGet<RunDetail>(`/responses/${encodeURIComponent(selectedID)}`)
       .then((body) => {
         if (live) setDetail(body);
       })
@@ -80,7 +116,7 @@ export default function HistoryPage() {
     return () => {
       live = false;
     };
-  }, [selected]);
+  }, [selectedID]);
 
   useEffect(() => {
     setFrames([]);
@@ -109,36 +145,98 @@ export default function HistoryPage() {
     };
   }, [sessionID]);
 
+  function choose(id: string) {
+    const params = new URLSearchParams(search.toString());
+    if (id === "") params.delete("run");
+    else params.set("run", id);
+    const query = params.toString();
+    // scroll:false — opening a run must not jump the reader to the top of a twenty-row list.
+    router.push(query === "" ? pathname : `${pathname}?${query}`, { scroll: false });
+  }
+
+  const columns: Column<RunRow>[] = [
+    {
+      header: "ID",
+      sort: (row) => row.id,
+      // A SHORT FORM PLUS A COPY BUTTON. It was a raw 36-character id in mono, which an operator can neither
+      // read nor reliably select — and which was not the control that opened the run either, so the one cell
+      // carrying the row's identity was the one cell that did nothing.
+      render: (row) => (
+        <span className="cell-id-group">
+          <button
+            type="button"
+            className="row-select cell-id"
+            aria-pressed={selectedID === row.id}
+            data-testid="run-open"
+            data-run-id={row.id}
+            title={row.id}
+            onClick={() => choose(selectedID === row.id ? "" : row.id)}
+          >
+            {shortId(row.id)}
+          </button>
+          <CopyButton value={row.id} label="response ID" testId="run-copy-id" />
+        </span>
+      ),
+    },
+    { header: "Status", sort: (row) => row.status, render: (row) => <Status value={row.status} testId="run-status" /> },
+    {
+      // THE CROSS-REFERENCE THIS CONSOLE DID NOT HAVE. A run belongs to a session and /sessions/{id} replays
+      // that session's whole journal; an operator holding a response id had no way to reach the conversation
+      // it came from without retyping an id by hand.
+      header: "Session",
+      render: (row) =>
+        row.session_id === undefined || row.session_id === "" ? (
+          <span className="cell-none">— none</span>
+        ) : (
+          <a className="cell-id" href={`/sessions/${encodeURIComponent(row.session_id)}`} title={row.session_id} data-testid="run-session-link">
+            {shortId(row.session_id)}
+          </a>
+        ),
+    },
+    // RELATIVE, WITH THE ABSOLUTE STAMP IN THE TITLE AND THE datetime — it was the raw ISO string, which is
+    // the one rendering a reader has to do arithmetic on.
+    { header: "Created", sort: (row) => row.created_at, render: (row) => <Stamp iso={row.created_at} /> },
+  ];
+
   return (
     <>
       <Panel<RunRow>
         title="Past runs"
         testId="panel-runs"
         fetchPath="/responses"
-        note="Newest first, and confined to the tenant this console's key is scoped to. Open a run to read the event journal it wrote and the files it left behind."
-        columns={[
-          { header: "Response", render: (row) => <code>{row.id}</code> },
-          { header: "Status", render: (row) => <Status value={row.status} /> },
-          { header: "Created", render: (row) => row.created_at },
-          {
-            header: "",
-            render: (row) => (
-              <button type="button" data-testid="run-open" onClick={() => setSelected(row)}>
-                Open
-              </button>
-            ),
-          },
-        ]}
-        emptyNote="No run has been started in this project yet. Start one on the Live runs page; it appears here as soon as it is created, and stays after the browser tab that started it is gone — which is the reason this screen exists."
+        onRows={setRows}
+        columns={columns}
+        matchOn={(row) => `${row.id} ${String(row.session_id ?? "")}`}
+        filterLabel="Search runs by response or session ID"
+        filterPlaceholder="Response or session ID…"
+        emptyNote={
+          <>
+            <p className="empty-title" data-testid="history-empty-title">
+              No runs yet
+            </p>
+            <p className="empty-body">
+              A run is one request this project made of a model — what it was asked, the events it journalled
+              and the files it left behind. It stays here after the browser tab that started it is gone, which
+              is the reason this screen exists.
+            </p>
+            <p className="empty-body">
+              <a href="/runs">Start one on Live runs</a>.
+            </p>
+          </>
+        }
       />
 
       {selected === null ? (
         <section className="panel" aria-labelledby="history-hint-h">
           <h2 id="history-hint-h">No run selected</h2>
-          <p data-testid="history-hint">
-            Choose a run above to read its detail, replay the canonical event journal it wrote, and list the
-            artifacts it produced.
-          </p>
+          <div className="empty" data-testid="history-hint">
+            <p className="empty-title">{selectedID === "" ? "No run selected" : "That run is not on this page"}</p>
+            <p className="empty-body">
+              {selectedID === ""
+                ? "Choose a run above to read its detail, replay the canonical event journal it wrote, and list the artifacts it produced."
+                : "The list is cut at twenty rows and this run is past the cut, or it belongs to another project. Load more above, or search for its id."}
+            </p>
+          </div>
         </section>
       ) : (
         <>
@@ -163,6 +261,10 @@ export default function HistoryPage() {
               <dd data-testid="run-detail-model">{detail === null ? "…" : detail.model === "" ? "—" : detail.model}</dd>
               <dt>Session</dt>
               <dd>{sessionID === "" ? "—" : sessionID}</dd>
+              <dt>Created</dt>
+              <dd>
+                <Stamp iso={selected.created_at} />
+              </dd>
               <dt>Usage</dt>
               <dd data-testid="run-detail-usage">
                 {detail?.usage === undefined
@@ -215,7 +317,7 @@ export default function HistoryPage() {
               { header: "Type", render: (row) => (row.media_type === "" ? "—" : row.media_type) },
               { header: "Size", render: (row) => <span className="num">{`${String(row.size_bytes)} bytes`}</span> },
               { header: "Scan", render: (row) => row.malware_scan_status },
-              { header: "Created", render: (row) => row.created_at },
+              { header: "Created", render: (row) => <Stamp iso={row.created_at} /> },
             ]}
             emptyNote="This run produced no files. A run only writes an artifact where the deployment gave it a workspace to write into, so an empty list here is the normal outcome for a run that answered in prose."
           />

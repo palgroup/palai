@@ -27,8 +27,17 @@ test.beforeEach(async ({ page }) => signIn(page));
 async function selectNewestRun(page: Page): Promise<string> {
   const panel = page.getByTestId("panel-runs");
   await expect(panel.locator("tbody tr").first()).toBeVisible({ timeout: 30_000 });
-  const id = (await panel.locator("tbody tr").first().locator("td").first().innerText()).trim();
-  await panel.locator("tbody tr").first().getByTestId("run-open").click();
+  // THE ID COMES OFF THE ROW'S OWN ATTRIBUTE, not out of the first cell's text (page-parity pass). That cell
+  // used to hold the whole 36-character response id; it holds the SHORT form now — a readable prefix, an
+  // ellipsis and enough tail to tell two rows apart — so reading it would hand every assertion below a
+  // truncated string and `toContainText(runID)` would compare against an ellipsis. A DRIVER edit: what this
+  // file asserts is untouched.
+  const open = panel.locator("tbody tr").first().getByTestId("run-open");
+  const id = (await open.getAttribute("data-run-id")) ?? "";
+  await open.click();
+  // The selection is in the URL now, so waiting for it is waiting for the click to have landed rather than
+  // for a re-render that may not have happened yet.
+  await expect(page).toHaveURL(new RegExp(`run=${id}`));
   return id;
 }
 
@@ -115,7 +124,15 @@ test("the history screen offers no way to START, CANCEL or DELETE a run — it i
   // eslint-disable-next-line no-console -- the enumeration is the evidence.
   console.log(`HISTORY CONTROLS — ${controls.length}: ${controls.join(" | ")}`);
   expect(controls.length, "no control was enumerated at all — this absence assertion looked at an empty page").toBeGreaterThan(0);
-  expect(controls.filter((t) => /^open$/i.test(t)).length, "the run list rendered no Open control, so the enumeration missed the list").toBeGreaterThan(0);
+  // THE POSITIVE CONTROL, BY TESTID RATHER THAN BY LABEL (page-parity pass). It looked for a button whose
+  // text was exactly "Open" — a column of its own holding one word — and the row's opening control is now the
+  // id cell itself, so the label it matched no longer exists. What this line is FOR is unchanged and is now
+  // checked more tightly: the enumeration must have reached the list, which means one opening control per
+  // rendered row rather than merely one somewhere on the page.
+  const openControls = await page.getByTestId("run-open").count();
+  const renderedRows = await page.getByTestId("panel-runs").locator("tbody tr").count();
+  expect(openControls, "the run list rendered no opening control, so the enumeration missed the list").toBeGreaterThan(0);
+  expect(openControls, "the enumeration saw a different number of rows than the list rendered").toBe(renderedRows);
   expect(controls.filter((t) => /cancel|delete|remove|start|retry/i.test(t))).toEqual([]);
 
   const writes: string[] = [];
