@@ -209,6 +209,21 @@
   --radius-4: 12px;
   --radius-full: 9999px;
 
+  /* --- MEASURED FROM THE REFERENCE CONSOLE (design-reference/design-system-measured.md §2, read off the
+     live page with getComputedStyle on 2026-07-31). These are named here so the tree-wide design pass finds
+     them already correct rather than inventing a second set; E29 applies them only to the elements the two
+     session screens own, plus the status pill the brief names as an overlap.
+
+     THE RADIUS SCALES WITH THE ELEMENT — pill 5, chip 5.5, button 8 — which is the opposite of applying one
+     radius everywhere, and it is why these are three tokens rather than a reuse of --radius-2. --- */
+  --radius-pill: 5px;
+  --radius-chip: 5.5px;
+  --radius-button: 8px;
+  --row-h-table: 46px; /* table row */
+  --row-h-thead: 32px; /* table header row */
+  --pill-h: 20px;
+  --chip-h: 25px;
+
   --border-w: 1px;
   --border-w-strong: 2px;
   --ring-w: 2px;
@@ -222,6 +237,10 @@
   --duration-3: 240ms;
   --ease-out: cubic-bezier(0.2, 0, 0, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  /* The reference console ships exactly ONE easing curve and this is it, measured. It is added rather than
+     substituted for --ease-out because collapsing this file to a single curve moves every transition in the
+     console, which is the tree-wide pass's line item and not this one's. E29's own screens use it. */
+  --ease-reference: cubic-bezier(0.165, 0.84, 0.44, 1);
 }
 
 /* ORDERING RULE — THIS BLOCK MUST COME AFTER EVERY :root DECLARATION, AND IT FAILS SILENTLY OTHERWISE.
@@ -342,6 +361,22 @@ a {
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Text for a screen reader and not for the eye. It is the ONLY way to extend a control's accessible name
+   without breaking SC 2.5.3 Label in Name, which requires the accessible name to CONTAIN the visible label —
+   an aria-label of "Rename session" over a button reading "Release rehearsal 1" would fail it. The clip-path
+   form keeps the text in the accessibility tree; display:none and visibility:hidden do not. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* ============================================================ 4. TYPOGRAPHY ================================ */
@@ -1134,13 +1169,18 @@ form > p:last-of-type {
    layer. It was redundant in a stronger sense before this — the old comment promised a colour hint and the
    stylesheet had no [data-status] rule at all. Remove the glyph and the word and the chip means nothing,
    which is the property that keeps this conforming. Every pair below measures 10.47:1 or better. */
+/* MEASURED PILL METRICS (design-system-measured.md §2): h 20px, padding 0 8px, radius 5px, 12px/15px w500.
+   The height goes UNDER --control-h-sm, and that is allowed rather than an oversight: --control-h-sm is the
+   SC 2.5.8 Target Size floor and 2.5.8 judges POINTER TARGETS. A status pill is a <span> with no handler and
+   no role — it is a reading, not a target — so the floor does not apply to it and never did. */
 .status {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  height: var(--control-h-sm);
+  height: var(--pill-h);
   padding: 0 var(--space-3);
-  border-radius: var(--radius-full);
+  line-height: 15px;
+  border-radius: var(--radius-pill);
   border: var(--border-w) solid var(--neutral-border);
   background: var(--neutral-bg);
   color: var(--neutral-text);
@@ -1216,7 +1256,12 @@ form > p:last-of-type {
 }
 
 /* An empty collection is a SENTENCE in a region that looks deliberate, never a blank strip. No icon and no
-   illustration: this console has no icon set and inventing one glyph for the occasion is worse than none. */
+   illustration: this console has no icon set and inventing one glyph for the occasion is worse than none.
+
+   IT IS A <div> RATHER THAN A <p> SINCE E29, and the change is what lets an empty state have the shape the
+   reference console was measured to use (design-reference/screen-inventory.md §3): a TITLE — "No X yet" —
+   and one sentence saying what X is FOR, because an empty screen is the single moment a reader can be
+   taught. A title cannot be a paragraph inside a paragraph. Callers passing a bare string are unaffected. */
 .empty {
   text-align: center;
   padding: var(--space-7) var(--space-5);
@@ -1226,6 +1271,20 @@ form > p:last-of-type {
   max-width: 62ch;
   margin: 0 auto;
 }
+.empty-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-5);
+  line-height: var(--line-height-5);
+  font-weight: var(--font-weight-medium);
+  color: var(--text);
+}
+.empty-body {
+  margin: 0 0 var(--space-4);
+}
+.empty-body:last-child {
+  margin-bottom: 0;
+}
+
 .loading {
   padding: var(--space-6) 0;
   color: var(--text-muted);
@@ -1656,4 +1715,122 @@ tbody tr[data-selected="true"] td {
   color: var(--danger-text);
   font-size: var(--font-size-2);
   font-weight: var(--font-weight-medium);
+}
+
+/* --- THE MEASURED INTERACTION LAYER (E29, design-reference/console-interaction-reference.md §2/§3) -------
+   Every rule below is one of the reference's measured behaviours applied to the two session screens. What
+   is deliberately NOT here is named in the report: the white-alpha border/surface pair, the 22px h1 and the
+   256px sidebar are tree-wide changes, and one of them cannot be adopted as measured at all. */
+
+/* An id is a short form plus a copy button, never a 36-character string an operator selects by hand. */
+.copy {
+  display: inline-flex;
+  align-items: center;
+}
+.copy-button {
+  height: var(--control-h-sm);
+  min-width: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  font-size: var(--font-size-2);
+  line-height: 1;
+  border-radius: var(--radius-pill);
+  transition: background var(--duration-1) var(--ease-reference), border-color var(--duration-1) var(--ease-reference);
+}
+
+/* MEASURED: table row 46px, header row 32px. Scoped to the two session screens rather than written onto the
+   shared `table` rule — the tree-wide pass owns that, and this way it finds the numbers already right here
+   instead of finding a third set. */
+[data-testid="panel-sessions"] tbody td,
+[data-testid="session-transcript"] tbody td {
+  height: var(--row-h-table);
+  padding-top: 0;
+  padding-bottom: 0;
+}
+[data-testid="panel-sessions"] thead th,
+[data-testid="session-transcript"] thead th {
+  height: var(--row-h-thead);
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+/* MEASURED CHIP: h 25px, padding 2px 6px, radius 5.5px. */
+.chip {
+  min-height: var(--chip-h);
+  padding: 2px var(--space-3);
+  border-radius: var(--radius-chip);
+}
+.name-mark,
+.lane-badge {
+  border-radius: var(--radius-pill);
+}
+.row-select,
+.tab {
+  border-radius: var(--radius-button);
+  transition: background var(--duration-1) var(--ease-reference), border-color var(--duration-1) var(--ease-reference);
+}
+
+/* The detail panel's own head: a title and the close button the reference measured, which also drops
+   ?event= from the URL. */
+.detail-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.detail-head > h2 {
+  margin: 0;
+}
+.detail-close {
+  margin-left: auto;
+  height: var(--control-h-sm);
+  padding: 0 var(--space-3);
+  font-size: var(--font-size-2);
+  border-radius: var(--radius-pill);
+}
+
+/* THE TITLE IS THE RENAME AFFORDANCE (§3, measured: "başlığın KENDİSİ bir düğme") — AND IT KEEPS A VISIBLE
+   BOUNDARY, WHICH THE REFERENCE'S DOES NOT.
+   The reference shows this control with no border until hover. That is prettier and it fails SC 1.4.11: a
+   button is a user interface component, its boundary is "visual information required to identify" it, and
+   3:1 is required at rest rather than on hover. tests/contrast.spec.ts measures every button on every route
+   and would report this at 0:1 — it does not read `:hover`, and neither does an operator who has not moved
+   the mouse there. So the anatomy is copied and the boundary is not: --border-control measures 3.69:1 light
+   and 4.45:1 dark against the page. A box around a title that can be clicked to rename it is also the
+   honest signal that it IS editable, which the hover-only version withholds until you have already found it. */
+.title-rename {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: auto;
+  padding: var(--space-1) var(--space-3);
+  margin-left: calc(var(--space-3) * -1);
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  color: inherit;
+  background: none;
+  border-color: var(--border-control);
+  border-radius: var(--radius-button);
+  white-space: normal;
+  text-align: left;
+}
+.title-rename:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-control-hover);
+}
+.title-rename .glyph {
+  font-size: var(--font-size-4);
+  color: var(--text-muted);
+}
+.cell-id-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.cell-name-link {
+  color: inherit;
+  text-decoration: none;
+}
+.cell-name-link:hover {
+  text-decoration: underline;
 }

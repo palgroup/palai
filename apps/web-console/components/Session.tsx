@@ -1,12 +1,75 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 
 import { apiSend, RelayError } from "@/lib/api";
 import { absoluteTime, relativeTime, type NameSource, type SessionRow } from "@/lib/sessions";
 
 // The four pieces both session screens render, in one file so the list and the transcript cannot disagree
 // about what a name, an agent, a token pair or a timestamp looks like.
+
+/**
+ * shortId is the reference console's id rendering, measured: `sesn_01…aeqTgR` — a readable prefix, an
+ * ellipsis, and enough of the tail to tell two ids apart at a glance.
+ *
+ * OURS ARE 36 CHARACTERS (`ses_` + 32 hex) and the whole value carries no information a reader uses: nobody
+ * reads the middle of a hash. What a reader needs is to recognise the row again and to be able to COPY the
+ * value exactly — which is why this is paired with CopyButton everywhere it appears, rather than being a
+ * clip an operator has to select by hand.
+ *
+ * A value short enough to fit is returned WHOLE. An ellipsis over a complete string is a lie about there
+ * being more.
+ */
+export function shortId(id: string): string {
+  return id.length <= 16 ? id : `${id.slice(0, 7)}…${id.slice(-6)}`;
+}
+
+/**
+ * CopyButton puts a value on the clipboard and SAYS SO in a live region — the behaviour measured beside every
+ * id cell in the reference console.
+ *
+ * THE THREE-WAY BRANCH IS components/RevealOnce.tsx's, and it is not defensive programming: Clipboard.
+ * writeText is a SECURE-CONTEXT api (MDN, verbatim: "Writing to the clipboard can only be done in a secure
+ * context"), and this tree supports an operator reaching a console over plain http on a LAN address — the
+ * compose base profile ships no TLS. So there are three states and all three are rendered: the api is
+ * absent, the write was refused, the write landed. A button that silently does nothing is the one outcome
+ * this must not have, because the operator walks away believing they hold the id.
+ *
+ * The live region is `role="status"` and starts EMPTY: a region that mounts already populated is an
+ * insertion rather than an update, and support for announcing insertions varies by screen reader.
+ */
+export function CopyButton({ value, label, testId, children }: { value: string; label: string; testId: string; children?: ReactNode }) {
+  const [said, setSaid] = useState("");
+
+  function copy() {
+    if (typeof navigator === "undefined" || typeof navigator.clipboard?.writeText !== "function") {
+      setSaid("This browser offers no clipboard to this page — select the value and copy it by hand.");
+      return;
+    }
+    navigator.clipboard.writeText(value).then(
+      () => setSaid(`${label} copied.`),
+      (err: unknown) => setSaid(`The clipboard refused the write (${err instanceof Error ? err.name : "unknown"}). Copy it by hand.`),
+    );
+  }
+
+  return (
+    <span className="copy">
+      <button type="button" className="copy-button" data-testid={testId} onClick={copy}>
+        {children ?? (
+          <span className="glyph" aria-hidden="true">
+            ⧉
+          </span>
+        )}
+        {/* SC 2.5.3 Label in Name: the accessible name must CONTAIN the visible one, so the action is
+            APPENDED to whatever is on screen rather than replacing it with an aria-label. */}
+        <span className="sr-only">{children === undefined ? `Copy ${label}` : ` — copy ${label}`}</span>
+      </button>
+      <span role="status" className="sr-only" data-testid={`${testId}-said`}>
+        {said}
+      </span>
+    </span>
+  );
+}
 
 /**
  * SessionName is the row identity, and it makes ONE distinction the API added a whole field for.

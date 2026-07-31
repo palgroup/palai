@@ -365,14 +365,19 @@ export function Panel<Row extends Record<string, unknown>>({
           Error: {error}
         </p>
       ) : settled.length === 0 ? (
-        <p className="empty" data-testid={`${testId}-empty`}>{emptyNote ?? "None yet."}</p>
+        // A <div>, not a <p> (E29): the measured empty state is a TITLE plus a sentence saying what the
+        // thing is FOR, and a title cannot be a paragraph nested in a paragraph. A caller passing a bare
+        // string renders exactly as before.
+        <div className="empty" data-testid={`${testId}-empty`}>
+          {emptyNote ?? "None yet."}
+        </div>
       ) : (
         <>
           {/* A FILTER THAT MATCHED NOTHING IS NOT AN EMPTY COLLECTION, and it does not get the empty
               collection's testid or its sentence. Conflating the two is how an operator concludes a resource
               was deleted when they have simply mistyped it. */}
           {shown === 0 ? (
-            <p className="empty" data-testid={`${testId}-no-match`}>
+            <div className="empty" data-testid={`${testId}-no-match`}>
               {query.trim() === "" ? (
                 // NARROWED BY A TOOLBAR CONTROL RATHER THAN BY THE BOX, which is a state the message above
                 // could not describe: it named a query, and with `narrow` in play there is none to name.
@@ -384,7 +389,7 @@ export function Panel<Row extends Record<string, unknown>>({
               )}{" "}
               {total} {total === 1 ? "row is" : "rows are"} loaded
               {truncated ? " and the server has more" : ""}; clear the filter to see them.
-            </p>
+            </div>
           ) : (
             <table>
               <thead>

@@ -97,6 +97,19 @@ for (const route of DYNAMIC_CONSOLE_ROUTES) {
     await page.waitForLoadState("networkidle");
     await page.getByTestId("tab-debug").click();
     await expect(page.getByTestId("session-debug")).toBeVisible();
+    // THE TAB WRITES THE URL, so the click starts a client navigation and the RSC payload for it is still in
+    // flight — during which `document.title` is momentarily empty and axe's `document-title` rule fires. That
+    // is the same defect as scanning a page still rendering "Loading…", one interaction later, and this file
+    // already says so; the settle is what makes the scan a measurement of the page rather than of a
+    // navigation. Measured: light passed and dark failed on a machine at load 30.
+    await expect(page).toHaveURL(/segment=debug/);
+    await page.waitForLoadState("networkidle");
+    // AND networkidle IS NOT ENOUGH, measured rather than assumed: with the settle above in place this still
+    // failed `document-title` on an IDLE machine (load 5.5), because the title is written by React after
+    // hydration and the network can fall quiet before that happens. `networkidle` is a proxy for the
+    // condition; this waits for the CONDITION. The same rule the rest of this file follows — assert the
+    // thing, not a stand-in for it.
+    await page.waitForFunction(() => document.title.trim().length > 0);
     const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
     expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
   });
