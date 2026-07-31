@@ -153,6 +153,11 @@ func (o *Orchestrator) resolveEnvValues(ctx context.Context, st *attemptState) (
 // The masking itself uses every value the run resolves NOW, which is a superset and therefore never masks
 // less than the task's own set.
 //
+// THE COST OF RE-RESOLVING, STATED: this puts the run's credential values in the RECONCILER's memory for
+// the length of one masking pass, on a loop that never held one before. It is the narrowest form of the
+// same exposure resolveEnvValues already accepts — a local slice, not stored, not logged, not returned —
+// and the alternative is worse in the direction that matters, because it is serving the value to a model.
+//
 // HONEST CEILING, and it is the same one RedactValues states about itself: this is literal substring
 // matching. A build that base64s a value, prints it one character per line or splits it across two commands
 // defeats it, and nothing here can prevent that — giving an agent a secret IS the agent having it. What
@@ -173,11 +178,10 @@ func (o *Orchestrator) redactTaskOutput(ctx context.Context, tenant coordinator.
 				"refusing to serve output that may contain it unmasked", key)
 		}
 	}
-	values := make([]string, 0, len(byName))
-	for _, v := range byName {
-		values = append(values, v)
-	}
-	return toolbroker.RedactValues(toolbroker.RedactSecrets(s), values), nil
+	// EnvValueList rather than a range loop, for the reason it was written: `for k := range m` is one
+	// character away from `for _, v := range m`, and a redactor fed KEY NAMES masks nothing and reports
+	// success. Both executors already take the values through it.
+	return toolbroker.RedactValues(toolbroker.RedactSecrets(s), toolbroker.EnvValueList(byName)), nil
 }
 
 // runEnvValuesByName is resolveEnvValues for a run rather than for an attempt. It fails closed on a miss

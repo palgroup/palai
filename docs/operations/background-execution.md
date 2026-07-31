@@ -93,7 +93,7 @@ be written against, not a contract the protocol enforces**. If a model treats an
 instruction from the user, that is this ceiling and not a bug in your prompt. Closing it means a
 `role`/`source` field on the `message.deliver` frame, which is a protocol version.
 
-Three more, named rather than implied:
+Four more, named rather than implied:
 
 - **The output IS redacted on the way out, and the file on disk is not.** Since E26 T6 both places a
   task's output reaches the model — a `palai.workspace.file` read and the exit notification's 2 KiB
@@ -107,10 +107,16 @@ Three more, named rather than implied:
   that — giving a build a credential is the build having it.
 - **A background process holds its environment for its whole life, which is why a task that carries one
   cannot be unbounded.** `PALAI_BACKGROUND_MAX_WALL_TIME=0` is a legitimate choice for a task with no
-  credential; a spawn on a run whose revision names an environment is **refused** under it. Anything
-  running as the same uid can read the value out of the process (`ps -E`, `/proc/<pid>/environ`) — which
-  is **equally true of a synchronous command**, same executor and same uid, and is governed by `MAC-P6`.
-  Background does not widen that exposure, it lengthens it, and the length's ceiling is the wall time.
+  credential; a spawn on a run whose revision names an environment is **refused** under it. A same-uid
+  process can reach the value — which is **equally true of a synchronous command**, same executor and
+  same uid, and is governed by `MAC-P6`. Background does not widen that exposure, it lengthens it, and
+  the length's ceiling is the wall time. **One correction to the usual wording, measured on macOS 26.3
+  rather than assumed:** `ps -E` / `ps e` does **not** print another process's environment on a Mac, not
+  even your own, and there is no `/proc`. On the **container** posture `/proc/<pid>/environ` inside the
+  sandbox does. So on the native Mac the reachable route is a debugger or the process's own files, not
+  a `ps` flag — the risk direction is unchanged, the usual demonstration of it does not work here.
+  **The narrowing path has a name and is not this epic's:** hand the value as a short-lived file handle
+  instead of an environment variable, which is already how the broker passes the push credential.
 - **There is no live progress stream.** Nobody tells the model that ten more lines arrived; it reads the
   file, or it waits for the exit.
 - **A control-plane restart does not stop a task**, and it is not supposed to: the process belongs to

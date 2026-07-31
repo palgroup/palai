@@ -292,6 +292,15 @@ func TestBothTheFileReadAndTheExitNoticeAreRedactedFromOnePlace(t *testing.T) {
 	if strings.Count(notice, "***") < 2 {
 		t.Fatalf("the notice's excerpt masked fewer than two things:\n%s", notice)
 	}
+
+	// AND THE FAIL-CLOSED ARM OF THE SAME FUNCTION, which is what background_tasks.env_keys buys the
+	// notice and cannot buy the read: a key the ROW says the task carried, whose value can no longer be
+	// resolved — an environment value deleted while the log sat on disk — WITHHOLDS the bytes rather than
+	// serving what it knows it cannot mask.
+	if _, err := f.orch.redactTaskOutput(context.Background(), f.tenant, f.runID,
+		[]string{"A_KEY_THIS_ENVIRONMENT_NO_LONGER_HAS"}, string(onDisk)); err == nil {
+		t.Fatal("output of a task carrying an unresolvable environment key was served anyway")
+	}
 }
 
 // ---------------------------------------------------------------------------------------------------
