@@ -61,6 +61,24 @@ hiçbiri `main`'e yanlış inmedi. Maliyet tespit maliyetiydi. Bu dört kural on
   `make verify`'a biner ve **ağaçtan hiç eksik değildir** — eksik olduğu şey **onu iddia eden
   invocation'dır, ki yokluğu önemli olan tek invocation odur.** Betiği okumak da bacak listesini okumak
   da bulamaz; **ikisi de tam görünür.**
+- **Bir mekanizmayı kanıtlamak, insanın kullandığı YÜZEYİ kanıtlamak değildir. 2026-07-31'de beş kusur
+  çıktı ve beşi de bu şekildi.** Konsolun auth süiti dokuz kolla kimliksiz erişimi kanıtlıyordu, saldırıyı
+  önce gösteriyordu, relay'in her export'unu AST ile sayıyordu — ve **hepsi `/api/console/login`'e `fetch`
+  ile gidiyordu.** Hiçbiri formu sürmedi, ve formun `method`'u yoktu: JS bağlanmadığı her anda parola
+  **URL'e** düşüyordu. On formdan sekizi değer taşıyordu (parola, environment secret'ı, politika dokümanı,
+  token gömülebilen clone URL'i).
+  Aynı gün, aynı şekil, dört kez daha:
+  **(a)** `PALAI_CONSOLE_PASSWORD_HASH` `webServer.env` ile enjekte ediliyordu ve worktree'de `.env.local`
+  hiç yok (gitignore) — yani **dokümanın operatöre tarif ettiği tek yol, hiçbir testin sürmediği yoldu**;
+  o yolda dotenv `$`'ları yiyip hash'i bozuyordu.
+  **(b)** `next dev` hiç hydrate olmuyordu ve süit yalnız `next start` servis ediyordu.
+  **(c)** `journey.spec.ts:66,108` `toContainText("fake")` diyor, profil dallanması yok — **real profilde
+  hiç geçemez**, ama yorumu "runs on BOTH profiles deliberately" diyor.
+  **(d)** `/runs`'taki `Agent (optional)` seçicisi hiçbir şey göndermiyor (`response-create.json` `agent_id`
+  kabul etmiyor); 61 run'ın 54'ünde agent bağı yok.
+  **Kural:** bir yüzey için yazılan her test, **o yüzeyi sürmelidir** — endpoint'i değil formu, harness'ın
+  enjekte ettiğini değil dosyanın taşıdığını, prod build'i değil operatörün koştuğu modu. Bir testin
+  "X çalışıyor" demesi, **X'e giden insan yolunun** çalıştığı anlamına gelmez.
 - **Bir süpürme yalnız BİR yönde bakar, ve iki yönde iki farklı hata vardır.** Dizinleri yürüyen bir
   tarama, **var olan ama sahipsiz** bir dizini bulur; **hiç var olmayan** bir dizini bulamaz. İçe dönük
   boşluklar için otorite **kanonik liste**, dışa dönükler için **yürüyüş**. (E26 T7: `BGT-` hiçbir
