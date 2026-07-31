@@ -45,19 +45,22 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 		}
 	}
 
-	// E29's session_list is the current chain head; E26 T1's background_tasks is the link before it.
-	// E29, like E26, E25 and E24, has exactly ONE migration and exactly one task owns it, so this pin
-	// stays true for the whole epic — that is the structural half of "two parallel tasks cannot both take
-	// 000048". THE NAME IS PINNED AS WELL AS THE NUMBER, and that is what makes this a rename guard too:
-	// `git mv` stages the OLD content, so a renumbering whose header edit is never re-added would leave a
-	// file whose name says 48 and whose marker says 47, and only the pair below catches it.
+	// usage_series is the current chain head; E29's session_list is the link before it. THE NAME IS
+	// PINNED AS WELL AS THE NUMBER, and that is what makes this a rename guard too: `git mv` stages the
+	// OLD content, so a renumbering whose header edit is never re-added would leave a file whose name says
+	// 49 and whose marker says 48, and only the pair below catches it.
+	//
+	// 000049 was taken while two other branches were also in flight, which is exactly the case the pin
+	// exists for: whichever lands second renumbers, and this assertion is what forces the rename to be
+	// finished rather than half-done. It is a pin on the CHAIN, not a claim that one epic owns one
+	// migration — E29 could hold both 48 and a later number without this line changing meaning.
 	head := migrations[len(migrations)-1]
-	if head.Version != 48 || head.Name != "session_list" {
-		t.Fatalf("chain head = %06d_%s, want 000048_session_list", head.Version, head.Name)
+	if head.Version != 50 || head.Name != "usage_step_attribution" {
+		t.Fatalf("chain head = %06d_%s, want 000050_usage_step_attribution", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 47 || penultimate.Name != "background_tasks" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000047_background_tasks", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 49 || penultimate.Name != "usage_series" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000049_usage_series", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

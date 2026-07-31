@@ -76,6 +76,7 @@ func interruptedStepEntry(sessionID, runID, requestID string) usageEntry {
 	return usageEntry{
 		sessionID: sessionID, runID: runID, meter: meterInterruptedStep, unit: unitStep,
 		dedupeKey: "mreq:" + requestID + ":" + meterInterruptedStep, quantity: 1,
+		modelRequestID: requestID,
 	}
 }
 
@@ -89,6 +90,13 @@ type usageEntry struct {
 	unit      string
 	dedupeKey string
 	quantity  int64
+	// modelRequestID names the TURN this settlement is attributed to, and is empty for the meters that
+	// do not describe one (run.admitted is the admission reservation, settled before any model call
+	// exists). It is not new information — the dedupe keys below have always been built from this same
+	// id — it is that information promoted to a column, so a reader can join a cost to a turn without
+	// string-parsing an idempotency detail. Because the identity was ALREADY per-step, storing it
+	// changes nothing about which rows collide (migration 000050).
+	modelRequestID string
 }
 
 // ledgerID derives a ledger row's stable identity from the tenant and the dedupe key, so the SAME fact
@@ -109,7 +117,7 @@ func settleUsage(ctx context.Context, tx pgx.Tx, tenant Tenant, entries ...usage
 		}
 		if _, err := tx.Exec(ctx, storage.Query("SettleUsage"),
 			ledgerID(tenant, e.dedupeKey), tenant.Organization, tenant.Project,
-			e.sessionID, e.runID, e.meter, e.quantity, e.dedupeKey, e.unit); err != nil {
+			e.sessionID, e.runID, e.meter, e.quantity, e.dedupeKey, e.unit, e.modelRequestID); err != nil {
 			return fmt.Errorf("settle usage %s: %w", e.meter, err)
 		}
 	}
@@ -124,6 +132,7 @@ func modelUsageEntries(sessionID, runID, requestID string, usage contracts.Usage
 		return usageEntry{
 			sessionID: sessionID, runID: runID, meter: meter, unit: unitToken,
 			dedupeKey: "mreq:" + requestID + ":" + meter, quantity: int64(quantity),
+			modelRequestID: requestID,
 		}
 	}
 	return []usageEntry{entry(meterInputTokens, usage.InputTokens), entry(meterOutputTokens, usage.OutputTokens)}
