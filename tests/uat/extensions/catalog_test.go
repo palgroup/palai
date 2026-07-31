@@ -83,7 +83,13 @@ var dockerBoundClasses = map[string]bool{"component-real": true, "live-provider"
 // this sweep and `go test ./tests/uat/...` reported ok for every package. It was shown RED here — four
 // directories reported at once, before BGT-003 was written and before uat.BackgroundCaseIDs existed — rather
 // than reasoned about. Ownership may live in uat.BackgroundCaseIDs; escaping the sweep may not.
-var extensionIDPrefixes = []string{"SLK-", "A2A-", "KNO-", "QUA-", "TLM-", "CAS-", "HIL-", "FLT-", "CON-", "BGT-", "UI-", "WRK-"}
+// FLC- (E28) joins as the THIRTEENTH member and the EIGHTH family whose ownership lives elsewhere, and it
+// joins after the same demonstration the CON- paragraph calls reproducible on demand and the BGT- paragraph
+// reproduced — a THIRD time, on request. Before this line existed, tests/uat/cases/FLC-001, FLC-002 and
+// FLC-003 had already shipped in T1, T2 and T3, and `go test ./tests/uat/...` reported `ok` for all twenty-two
+// packages: this sweep, the checksum sweep and every family gate. Three case directories, resolved by nothing,
+// green by silence. Ownership may live in uat.FleetConsoleCaseIDs; escaping the sweep may not.
+var extensionIDPrefixes = []string{"SLK-", "A2A-", "KNO-", "QUA-", "TLM-", "CAS-", "HIL-", "FLT-", "CON-", "BGT-", "UI-", "WRK-", "FLC-"}
 
 // expectedExtensionsCatalog is the E17 UAT catalog: every case this epic materializes (plan §T11 + §7) mapped
 // to the proof class its case.yaml must declare and the in-tree proof(s) that prove it. A missing dir, a drifted
@@ -503,8 +509,9 @@ func TestExtensionsCatalogMaterialized(t *testing.T) {
 					!slices.Contains(uat.ToolApprovalCaseIDs, e.Name()) &&
 					!slices.Contains(uat.FleetCaseIDs, e.Name()) &&
 					!slices.Contains(uat.AdminConsoleCaseIDs, e.Name()) &&
-					!slices.Contains(uat.BackgroundCaseIDs, e.Name()) {
-					t.Errorf("%s: a case dir under a guarded prefix is in NONE of expectedExtensionsCatalog, uat.AgentSurfaceCaseIDs, uat.ToolsMemoryCaseIDs, uat.CodeAndShipCaseIDs, uat.ToolApprovalCaseIDs, uat.FleetCaseIDs, uat.AdminConsoleCaseIDs or uat.BackgroundCaseIDs (add it to one, or it escapes proof resolution entirely)", e.Name())
+					!slices.Contains(uat.BackgroundCaseIDs, e.Name()) &&
+					!slices.Contains(uat.FleetConsoleCaseIDs, e.Name()) {
+					t.Errorf("%s: a case dir under a guarded prefix is in NONE of expectedExtensionsCatalog, uat.AgentSurfaceCaseIDs, uat.ToolsMemoryCaseIDs, uat.CodeAndShipCaseIDs, uat.ToolApprovalCaseIDs, uat.FleetCaseIDs, uat.AdminConsoleCaseIDs, uat.BackgroundCaseIDs or uat.FleetConsoleCaseIDs (add it to one, or it escapes proof resolution entirely)", e.Name())
 				}
 				break
 			}
@@ -526,6 +533,11 @@ func TestTheSLKCatalogsAreDisjoint(t *testing.T) {
 		"uat.FleetCaseIDs":        uat.FleetCaseIDs,
 		"uat.AdminConsoleCaseIDs": uat.AdminConsoleCaseIDs,
 		"uat.BackgroundCaseIDs":   uat.BackgroundCaseIDs,
+		// E28. The EIGHTH downstream owner, and the direction it adds is the one PromoteGateFor now rests on:
+		// `FLC-` was chosen over extending `FLT-` or `CON-` precisely so an E28 id could never match an
+		// earlier family marker and dispatch to a weaker gate, and that argument is only true while the id
+		// sets stay disjoint. The pair loop below turns it from an argument into an assertion.
+		"uat.FleetConsoleCaseIDs": uat.FleetConsoleCaseIDs,
 	}
 	for name, ids := range owners {
 		for _, id := range ids {

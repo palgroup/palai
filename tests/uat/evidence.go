@@ -349,6 +349,20 @@ type evidenceCase struct {
 	// peer here at all, because E24 T7's execution relay was never shipped.
 	BackgroundClaim string           `json:"background_claim"`
 	BackgroundProof *BackgroundProof `json:"background_proof"`
+	// The E28 T4 fleet-console claim (plan §T4 — the E28 EXIT gate) extends the same discipline to the
+	// invariants THIS epic owns: a fleet has a BIRTH PATH (a pool can be created with a posture and with the
+	// waiting room switched on, none of which any code path could do before it), a machine waits in a strict
+	// pool and is ADMITTED FROM A SCREEN, a server-minted value is shown once and survives in none of five
+	// sites, a policy form writes the WHOLE document so an approver list survives a write that named another
+	// field, every declared route is axe-scanned, an irreversible action gets a different confirmation from a
+	// reversible one on a PUBLISHED criterion, and the screens write their own ceilings by gap id. It
+	// requires its proof, and eight counters are RE-DERIVED rather than believed.
+	//
+	// WHAT IT DOES NOT CLAIM: that a real Mac was rented, enrolled and ran a build. FleetConsolePeer is
+	// structurally the literal "fake", and `FLT-P15` stands — a Mac pool is now creatable and still does not
+	// run `xcodebuild` on a Mac, which is the largest of the ceilings (g) counts.
+	FleetConsoleClaim string             `json:"fleet_console_claim"`
+	FleetConsoleProof *FleetConsoleProof `json:"fleet_console_proof"`
 }
 
 type evidenceTerm struct {
@@ -2787,8 +2801,23 @@ var committedBundleSurfaces = map[string]string{
 	// D10, CORRECTED BY E23 T7: this comment called itself "the SEVENTEENTH entry" and the entry below spoke
 	// of "the other fifteen committed bundles". Both were stale, and the first was the worse mistake — THIS
 	// IS A MAP, so no entry has an ordinal at all, and a number that cannot be wrong is a number nobody
-	// re-checks. Counted 2026-07-29: this table holds TWENTY-TWO releases and evidence/releases/ holds
-	// twenty-two directories, which the sweep pins in both directions.
+	// re-checks.
+	//
+	// AND THE CORRECTION WENT STALE, WHICH E28 T4 IS FIXING AND IS THE ONLY PART OF THIS PARAGRAPH WORTH
+	// READING (plan §3.6 D14). The E23 correction ended by writing its own count — "twenty-two releases" on
+	// 2026-07-29 — one sentence after saying that a number nobody re-checks is a number that goes wrong. It
+	// was wrong within two days (E24 T8 added one), wrong again the next day (E25 T9), and again the day
+	// after (E26 T7). The cost was zero, because TestCommittedBundleChecksumSweep walks evidence/releases and
+	// consumes this map, pinning the two against each other in both directions — the number was never load
+	// bearing, which is precisely why nobody re-checked it. THE CURE IS NOT A FRESHER NUMBER, IT IS NO
+	// NUMBER: how to obtain the count, so a reader gets today's answer instead of some Wednesday's.
+	//
+	//	awk '/^var committedBundleSurfaces/,/^}/' tests/uat/evidence.go | grep -cE '^\t[A-Za-z"].*: '
+	//	ls evidence/releases | wc -l
+	//
+	// The two must agree, and the sweep is what makes that true rather than this comment. Entries below carry
+	// DATED counts of their own; those are records of a measurement taken on a day, not claims about today,
+	// and a reader who wants today's runs the two lines above.
 	CodeAndShipBundle: SurfaceRecomputed,
 	// The E23 T7 tool-approval bundle. Its anchor is the CANONICAL vendor contract ledger digest
 	// (ToolApprovalContractsDigest), derived from the code table in evidence_tool_approval.go — so a bundle
@@ -2860,6 +2889,24 @@ var committedBundleSurfaces = map[string]string{
 	// `automation-` and before `code-and-ship-`, so it is a name that CAN win carrier rows on order — which is
 	// exactly why the rule is measured here rather than assumed from the two epics that measured it before.
 	BackgroundBundle: SurfaceRecomputed,
+	// The E28 T4 fleet-console bundle. Its anchor is the CANONICAL published-contract ledger digest
+	// (FleetConsoleContractsDigest), derived from the code table in evidence_fleet_console.go — so a bundle
+	// that dropped or reworded a §3.5 row, including the UNCONFIRMED W5 row that deliberately entered no
+	// code, would move every checksum in it. It may NOT be LegacyShapeOnly, for the reason five entries up.
+	//
+	// THE ENTRY COUNT IS NOT WRITTEN HERE, AND THAT IS THE D14 CORRECTION ONE ENTRY-BLOCK UP BEING APPLIED
+	// RATHER THAN RESTATED. Plan §T4 calls this the twenty-sixth entry; it is the sixth generation of that
+	// ordinal (the feature list said one thing, E23 T7 corrected it, E24 T8 moved it, E25 T9 moved it, E26 T7
+	// moved it), and the two commands in that paragraph answer it for whatever day this is being read on.
+	//
+	// THE SHIPPED RC IS NOT REGENERATED, MEASURED RATHER THAN INHERITED (E24 T8, E25 T9 and E26 T7 each
+	// measured the same rule for their own name, and a ceiling carried from another epic is re-measured or it
+	// is not carried). This bundle's captured_at is after release-1.0.0-rc1's, so the dated as-of rule drops
+	// it from the recomputed release index and the RC's checksums still reproduce with its manifest bytes
+	// untouched — TestTheAsOfRuleIsWhatKeepsTheShippedRCGreen is where that is asserted rather than here.
+	// `fleet-console-` sorts between `extensions-` and `integration-wiring-`, so it is a name that CAN win
+	// carrier rows on order, which is why the rule is measured for it rather than assumed.
+	FleetConsoleBundle: SurfaceRecomputed,
 	// The E18 T10 RC bundle. Its anchor is the RECOMPUTED release index over the SEVENTEEN committed bundles
 	// that predate its own capture, plus the materialized case corpus — so a checksum here cannot be
 	// hand-written: it moves the moment one of those bundles or the corpus does.
@@ -2947,6 +2994,8 @@ func caseChecksumParts(m evidenceManifest, c evidenceCase) []string {
 		return []string{c.ID, c.RunID, AdminConsoleContractsDigest()}
 	case BackgroundBundle: // tests/uat/background/bundle_test.go
 		return []string{c.ID, c.RunID, BackgroundContractsDigest()}
+	case FleetConsoleBundle: // tests/uat/fleet-console/bundle_test.go
+		return []string{c.ID, c.RunID, FleetConsoleContractsDigest()}
 	case "extensions-0.1.0": // tests/uat/extensions/bundle_test.go
 		return []string{c.ID, c.RunID, CapabilityClaimsDigest()}
 	case "managed-cloud-0.1.0": // tests/uat/managed-cloud/evidence_test.go
@@ -3681,6 +3730,29 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "background_proof (a background claim requires the semantics ledger with all six of §2 beside the shipped test that proves each and where its measurement came FROM, the refusal ledger with the processes each refusal started (zero) beside the count the SAME harness started with the refusal lifted, the ownership ledger with both sandbox postures beside the operating-system object each probe looks at and the signals sent to unprovable handles (zero), the notice ledger with the notices a SETTLED task produced under two ticks / two planes / a restart / a running run / a terminal run (exactly one each) and the mutation that reddens each, the reaper ledger with all six duties and where each outcome was read, the redaction ledger with the five places an environment value could land — each DECODED before it was scanned and each naming a harmless token it DID find — and every vendor requirement or on-machine measurement with its source and §3.5 divergence id; a 'backgrounded' marker is not proof — plan §T7)"})
 			case !c.BackgroundProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "background_proof is incomplete: a machine not honestly named \"" + BackgroundMachine + "\" (this bundle measured nothing across a boundary — there is no peer, because E24 T7's execution relay was never shipped, and the field is `Machine` for that reason), a shrunken/edited contract-and-measurement ledger or a contracts_digest that does not equal the canonical one, fewer than the six §2 semantics or a MISSING §2.6 (\"the model called another tool while the process was still running\" is the claim a weaker assertion silently drops), a semantics or reaper row measured from our own bookkeeping rather than from the kernel, the daemon, the database or a frame, a refusal that started a process — or one carrying NO non-vacuity control, which is how this epic's own approval-gate RED passed at the fork point — a posture whose process did not outlive its call or a signal sent to a handle we could not prove was ours, a wake scenario producing two notices or none, one that interrupted a run which never parked, or one naming no mutation, a missing reaper duty, or an environment VALUE found in any landing site — plus a landing site scanned without DECODING, which is a sweep that can never fail (plan §T7)"})
+			}
+		}
+
+		// The E28 T4 fleet-console anchor (plan §T4). Complete() already RE-DERIVES the pools created and the
+		// postures they were created WITH from the pool ledger (refusing a seeded pool, whose posture
+		// InsertDefaultRunnerPool wrote as a literal, and requiring `unsandboxed-host` — the value no code
+		// path in this tree could write before E28 T1), the machines that reached `pending` in a strict pool
+		// and how many were admitted FROM THE CONSOLE (at least one, or an epic whose crown claim is a screen
+		// certified it from a CLI transcript), the minted key values found in five sites after DECODING (zero,
+		// each site naming a harmless token the same scan found), the approver entries before and after a
+		// policy write (an EQUALITY, over requests that each carried all five fields — because asserting only
+		// the stored outcome passes on a server that merged), the declared and axe-scanned routes (equal, in
+		// both colour schemes, carrying the two pages this epic opened), the irreversible actions behind an
+		// alertdialog and the reversible ones left on the native confirmation (refused in BOTH directions,
+		// because the claim is a DIFFERENCE), the ceilings the screens state by gap id, and the conformance
+		// sweep's compared collections (above the pre-E28 floor) — so a proof that declares a number the bytes
+		// do not support never reaches this branch clean.
+		if c.FleetConsoleClaim != "" {
+			switch {
+			case c.FleetConsoleProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "fleet_console_proof (a fleet-console claim requires the pool ledger with every pool created beside its posture, its waiting-room switch and the PUBLIC surface it was created through, the waiting-room ledger with every machine that reached `pending` in a strict pool beside the surface it was admitted from, the key-scan ledger with the minted value's hits in the response body, the DOM, both web storages, the URL and a LATER response — each DECODED before it was scanned and each naming a harmless token it DID find — the policy ledger with the approver entries before and after each write beside the number of fields that write's REQUEST carried, the route ledger with every page lib/routes.ts declares beside the colour schemes axe scanned it in, the action ledger with every destructive action beside whether the server can undo it and which confirmation it goes through, the ceiling ledger with the gap ids the screens state and the test id rendering each, the conformance sweep's compared subjects, and every published contract with its source and §3.5 divergence id; a 'shipped' marker is not proof — plan §T4)"})
+			case !c.FleetConsoleProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "fleet_console_proof is incomplete: a peer not honestly named \"" + FleetConsolePeer + "\" (this bundle cannot claim a REAL rented Mac — every machine here is a fake runner built from the shipped enrolment package, and `FLT-P15` stands: a Mac pool is creatable and still does not run `xcodebuild` on a Mac, §6 legs 1 and 2), a shrunken/edited contract ledger or a contracts_digest that does not equal the canonical one, a pool ledger with no `unsandboxed-host` posture — the value NO code path could write before this epic, so a release without it certifies the hole rather than the fix — or one whose pool came from the SEED rather than from a public surface, no machine that actually reached `pending` or none admitted FROM THE CONSOLE, a minted key VALUE found in any of the five sites, a site scanned without DECODING first (a sweep that can never fail) or naming no probe it found, an approver list that SHRANK across a policy write, or a write whose request carried fewer than all five policy fields (asserting only the stored outcome passes on a server that merged), a route lib/routes.ts declares that axe never scanned or scanned in one colour scheme only, a route ledger missing a page this epic opened, an IRREVERSIBLE action outside an alertdialog — or a REVERSIBLE one inside it, refused in both directions because the claim is a DIFFERENCE rather than a count of dialogs — a ceiling this epic owes that no page states, or a conformance sweep that compares no more collections than it did before this epic (plan §T4)"})
 			}
 		}
 

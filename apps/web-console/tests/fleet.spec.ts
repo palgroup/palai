@@ -96,6 +96,10 @@ test("a pool is created from the console with the posture it was given", async (
   expect(row?.posture).toBe("unsandboxed-host");
   expect(row?.strict_enrollment, "the waiting room was requested at creation and the pool did not get it").toBe(true);
   await expect(page.getByTestId("panel-runner-pools")).toContainText(name);
+  // The E28 exit gate's pool row (plan §T4 group (a)). It prints the POSTURE and the SURFACE rather than a
+  // count, because a count alone is satisfied by the pool every tenant is seeded at birth — and that seed
+  // wrote 'sandboxed-linux' as a LITERAL, which is the hole this epic exists to have closed.
+  console.log(`POOL CREATED — pool=${name} posture=${String(row?.posture)} strict=${String(row?.strict_enrollment)} via=console`);
 });
 
 test("a pool's queue depth is rendered as the number it is, and zero is one of the numbers", async ({ page }) => {
@@ -375,6 +379,10 @@ test("a machine waiting in a strict pool is on this page and is admitted from it
   // IT LEFT THE ROOM. Asserted on the row's own control rather than on the section's text, because the
   // confirmation sentence names the machine that was just admitted and lives inside the section.
   await expect(page.getByTestId(`admit-${id}`)).toHaveCount(0);
+  // The E28 exit gate's waiting-room row (plan §T4 group (b)). `from=console` is the field that makes this
+  // E28's claim rather than E24's: the approve route shipped with a component test, and what had never
+  // happened is an operator admitting a machine FROM A SCREEN.
+  console.log(`WAITING ROOM — machine=${id} pool=pool_mac pending=true admitted from=console`);
 });
 
 test("a parked tool call is not on /fleet, and /fleet says which queue holds it", async ({ page }) => {

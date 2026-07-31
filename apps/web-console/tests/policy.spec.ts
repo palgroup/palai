@@ -130,6 +130,11 @@ test("setting only the pool from the console leaves the approver list intact", a
   expect(after.allowed_tools, "setting the pool erased the tool allow-list").toEqual(["git.push"]);
   expect(after.default_tools, "setting the pool erased the default tool set").toEqual(["git.push"]);
   expect(after.allowed_models, "setting the pool erased the model allow-list").toEqual(["fake"]);
+  // The E28 exit gate's policy row (plan §T4 group (d)). It is an EQUALITY rather than a zero, and the
+  // before-count is printed beside the after-count because a write measured against an already-empty list
+  // cannot show that anything survived.
+  const entries = (v: unknown): number => (Array.isArray(v) ? v.length : 0);
+  console.log(`POLICY WRITE — changed=pool approvers_before=${entries(before.approvers)} approvers_after=${entries(after.approvers)}`);
 });
 
 test("the request body carries all five policy fields, not the one that changed", async ({ page }) => {
@@ -160,6 +165,9 @@ test("the request body carries all five policy fields, not the one that changed"
     "the request named fewer than the five fields configPolicyInput carries, so the ones it omitted were erased",
   ).toEqual(["allowed_models", "allowed_tools", "approvers", "default_tools", "pool"]);
   expect(policy.approvers).toEqual([APPROVER]);
+  // The half a stored-outcome assertion cannot see, printed for the exit gate: a server that MERGED would
+  // let "the approvers survived" pass over a form still sending one field.
+  console.log(`POLICY WRITE — changed=pool fields_in_request=${Object.keys(policy).length}`);
 });
 
 test("an empty approver list is shown as permissive, in words, before it is saved", async ({ page }) => {
