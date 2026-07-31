@@ -143,7 +143,10 @@ for (const d of FORM_DIALOGS) {
     // The ACCESSIBLE NAME, asserted rather than assumed: components/FormDialog.tsx names itself with
     // `aria-label` precisely because an aria-labelledby into ResourceForm's derived heading id would produce
     // an EMPTY name if the wording changed — and an empty name is not something axe reports as a violation.
-    await expect(page.getByTestId(d.dialog)).toHaveAttribute("aria-label", d.label);
+    // The NAME rather than the attribute: ui/Dialog names itself through Base UI's <Title> and an
+    // aria-labelledby it owns, the hand-rolled one used aria-label, and an empty name is what both were
+    // written to catch. toHaveAccessibleName fails on an empty one either way.
+    await expect(page.getByTestId(d.dialog)).toHaveAccessibleName(d.label);
     await expect(page.getByTestId(d.dialog)).toHaveAttribute("aria-modal", "true");
     const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
     expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);

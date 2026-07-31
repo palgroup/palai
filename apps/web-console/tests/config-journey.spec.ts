@@ -448,7 +448,12 @@ test("the create form is a dialog: it is not on the page until asked for, and it
   // THE ACCESSIBLE NAME IS ASSERTED rather than assumed: a dangling aria-labelledby produces an EMPTY name
   // and no error, which is why components/FormDialog.tsx uses aria-label — this is what makes that a
   // measurement.
-  await expect(dialog).toHaveAttribute("aria-label", "Create an agent");
+  // THE ACCESSIBLE NAME, NOT THE ATTRIBUTE THAT HAPPENS TO CARRY IT. This asserted aria-label while the
+  // dialog was hand-rolled; components/ui/Dialog names itself with Base UI's own <Title> and an
+  // aria-labelledby it owns, so the attribute changed and the NAME did not. Asserting the name covers both
+  // mechanisms and still fails on the case the attribute check existed for — a dangling or empty reference
+  // yields an EMPTY accessible name, which axe does not report.
+  await expect(dialog).toHaveAccessibleName("Create an agent");
   // Focus moved IN, onto the field the operator opened the dialog to type into.
   await expect(page.getByTestId("agent-name-input")).toBeFocused();
 
