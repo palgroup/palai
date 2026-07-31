@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 
-import { Panel } from "@/components/Panel";
+import { AgentDiff } from "@/components/AgentDiff";
+import { NameCell, Panel } from "@/components/Panel";
 import { Picker } from "@/components/Picker";
 import { ResourceForm } from "@/components/ResourceForm";
 import { RevisePublish } from "@/components/RevisePublish";
@@ -176,9 +177,13 @@ export default function AgentsPage() {
         reloadKey={reloadKey}
         onRows={setAgents}
         note="One row per lineage. Select one below to read its revisions and add another."
+        emptyNote="No agent yet. Create one with the form below — a name is all it takes, and its executable configuration is the revision after that."
         columns={[
-          { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
-          { header: "Name", render: (r) => String(r.name ?? "") },
+          {
+            header: "Name",
+            sort: (r) => String(r.name ?? r.id ?? ""),
+            render: (r) => <NameCell name={String(r.name ?? "")} id={String(r.id ?? "")} />,
+          },
         ]}
       />
 
@@ -376,9 +381,14 @@ export default function AgentsPage() {
         ]}
       />
 
+      {/* THE DIFF MOVED HERE FROM "/" (console design pass). It reads an agent's revision lineage and diffs
+          the two most recent — which is a question about a LINEAGE, and this is the lineage screen. On the
+          landing page it was panel nine of nine, under eight registries that have nothing to do with it. */}
+      <AgentDiff />
+
       <p className="muted" data-testid="revision-t7-note">
-        <strong>Both external fields read back, and that is newer than it looks.</strong> The MCP connection
-        rider has been readable since E22; the tool set — the half that actually GRANTS the tools — was
+        <strong>Both external fields read back, and that is newer than it looks.</strong>{" "}
+        The MCP connection rider has been readable since E22; the tool set — the half that actually GRANTS the tools — was
         write-only until E25 T7, so a revision could name a set nobody could confirm. Each one&apos;s absence
         fails quietly and differently: without the set the tool is never advertised, without the connection
         it resolves to nothing even when it is.

@@ -29,9 +29,50 @@ test.beforeEach(async ({ page }) => signIn(page));
 
 const GLUED = /[\p{L}\p{N}]—|—[\p{L}\p{N}]/gu;
 
+// A FOURTH ONE SHIPPED, AND THIS GUARD WATCHED IT GO PAST (console design pass). `/policy` rendered
+//
+//     This form writes the WHOLE policy.The five fields you see here are…
+//
+// from a source line that ends `</strong> The five fields you see here are,` and wraps — the same transform,
+// the same lost space, on the page this file's own commit landed beside. The em-dash pattern above could
+// never see it, because the character the space vanished next to was a FULL STOP.
+//
+// So the sweep gains a second pattern: a sentence terminator with a capital letter welded to it. It is run
+// over PROSE ONLY — text inside <code>, <pre>, <kbd> and <samp> is excluded, because a machine value is
+// exactly where `middleware.Scope.HasScope` and `identity/store.go` legitimately look like this — and that
+// exclusion is the reason it needs its own walk instead of another regex over innerText.
+const RUN_ON = /[\p{Ll}\p{N}][.!?][\p{Lu}]/gu;
+
+/**
+ * proseText is what <main> renders MINUS the machine values, read with innerText's block awareness.
+ *
+ * IT IS innerText AND NOT A TEXT-NODE WALK, and that distinction is the whole test. A walk that joins text
+ * nodes concatenates ACROSS BLOCK BOUNDARIES — a heading's last word welds onto the paragraph under it — and
+ * the first version of this arm reported 140 of those on a clean tree. innerText inserts the line breaks a
+ * reader sees, so what remains adjacent in the string is what is adjacent on the screen.
+ *
+ * The code elements are blanked in the live DOM and restored, because there is no read-only way to ask for
+ * "innerText without these subtrees". Excluding them is not tidiness: a machine value is exactly where
+ * `middleware.Scope.HasScope` and `identity/store.go` legitimately look like a missing space.
+ */
+async function proseText(page: import("@playwright/test").Page): Promise<string> {
+  return page.evaluate(() => {
+    const main = document.querySelector("main");
+    if (main === null) return "";
+    const machine = [...main.querySelectorAll("code, pre, kbd, samp")];
+    const saved = machine.map((el) => el.textContent ?? "");
+    for (const el of machine) el.textContent = " ";
+    const text = (main as HTMLElement).innerText;
+    machine.forEach((el, i) => (el.textContent = saved[i]));
+    return text;
+  });
+}
+
 test("no rendered sentence has a space the JSX transform ate", async ({ page }) => {
   const found: string[] = [];
+  const runOn: string[] = [];
   let scanned = 0;
+  let prose = 0;
   for (const route of ["/login", ...CONSOLE_ROUTES.map((r) => r.path)]) {
     await page.goto(route);
     await expect(page.locator("main")).toBeVisible();
@@ -44,8 +85,18 @@ test("no rendered sentence has a space the JSX transform ate", async ({ page }) 
       const at = m.index ?? 0;
       found.push(`${route}: …${text.slice(Math.max(0, at - 45), at + 45).replace(/\n/g, " ")}…`);
     }
+    const words = await proseText(page);
+    prose += words.length;
+    for (const m of words.matchAll(RUN_ON)) {
+      const at = m.index ?? 0;
+      runOn.push(`${route}: …${words.slice(Math.max(0, at - 45), at + 45).replace(/\s+/g, " ")}…`);
+    }
   }
   // eslint-disable-next-line no-console -- the volume scanned is what makes "none found" mean anything.
-  console.log(`RENDERED COPY SWEEP — ${String(scanned)} characters over ${String(CONSOLE_ROUTES.length + 1)} route(s), ${String(found.length)} glued`);
+  console.log(
+    `RENDERED COPY SWEEP — ${String(scanned)} characters over ${String(CONSOLE_ROUTES.length + 1)} route(s), ` +
+      `${String(found.length)} glued; ${String(prose)} prose characters (code excluded), ${String(runOn.length)} run-on`,
+  );
   expect(found, "an em dash is touching a word. Every em dash in this console's copy is spaced, so this is a space the JSX transform trimmed away — add an explicit {\" \"}.").toEqual([]);
+  expect(runOn, "a sentence ends and the next one starts with no space between them. In prose that is always the JSX transform trimming a leading space off a text child that follows a closing tag — add an explicit {\" \"}. (Machine values are excluded from this arm, so a package path is not what tripped it.)").toEqual([]);
 });
