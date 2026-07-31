@@ -36,7 +36,12 @@ const FRAME_GAP_MS = 60;
 // upstream request. The relay does not forward incoming headers at all (it calls client.request with a method,
 // a path and a body), so this counter should be structurally pinned to zero — and "should be structurally"
 // is exactly the kind of claim this tree has learned to count instead of assert.
-const introspect = { v1Requests: 0, nonV1Requests: 0, beareredV1Requests: 0, unbeareredV1Requests: 0, cookieBearingV1Requests: 0, paths: [] };
+//
+// `nonV1Paths` arrived in E28 T2 for a reason worth keeping: `nonV1Requests` went to 1 during a full-suite run
+// and the counter could say only THAT, not WHICH — so the finding could not be triaged without editing the
+// fixture. A counter whose failure cannot be diagnosed sends the reader to a bisect. The list is bounded by
+// de-duplication, exactly like `paths`.
+const introspect = { v1Requests: 0, nonV1Requests: 0, beareredV1Requests: 0, unbeareredV1Requests: 0, cookieBearingV1Requests: 0, paths: [], nonV1Paths: [] };
 
 // Per-session interactive approval state: the SSE pump pauses at approval.requested until an approve
 // command lands on POST /v1/sessions/{id}/commands (a real round-trip through the relay).
@@ -698,6 +703,86 @@ const ADMIN = {
   // comparison when either side has no row. T2's seed gives the real side a row, so this now has to be right.
   "knowledge-bases": listView([{ id: "kb_1", object: "knowledge_base", name: "Docs KB", created_at: "2026-07-24T00:00:00Z" }]),
 };
+
+// --- THE POLICY DOCUMENT, AND IT IS AN ASSIGNMENT (E28 T2, plan §3.6 D9) -------------------------------
+//
+// THE FIDELITY THAT MATTERS HERE IS THE DESTRUCTIVE ONE. identity/store.go UpdateProjectPolicy does
+// `json.Marshal(in.ConfigPolicy)` into UpdateProjectConfigPolicy — no merge, no patch — and configPolicyInput
+// carries FOUR nil-able slices plus one `omitempty` string. So a request that names only `pool` stores
+// `{allowed_models:null, allowed_tools:null, default_tools:null, approvers:null, pool:"…"}` and the other four
+// fields are GONE. That is not a detail of the fixture: `HIL-P11` measured that an EMPTY approver list is
+// PERMISSIVE, so the wire behaviour a naive form triggers silently opens the approval gate, and a fixture
+// that merged would make tests/policy.spec.ts pass over the exact accident it exists to catch.
+//
+// The policy lives beside ADMIN.projects rather than inside it, deliberately: the LIST row stays byte-for-byte
+// what it was, because DIV-SHP-002 records that row as missing `config_policy` and `created_at` against the
+// real projection, and that ledger row can only be re-derived — or retired — by a sweep against a running
+// stack. Closing half of a divergence blind is how a ledger stops meaning anything.
+const projectPolicies = new Map([
+  [
+    "proj_local",
+    // A project that ALREADY carries an approver list and a tool allow-list, which is the precondition the
+    // crown test needs: without it "the naive form dropped `approvers`" has nothing to drop.
+    { allowed_models: ["fake"], allowed_tools: ["git.push"], default_tools: ["git.push"], approvers: ["prin_release_captain"] },
+  ],
+]);
+
+/**
+ * projectDetail is GET /v1/projects/{project_id} as identity/store.go projectView renders it: the list row's
+ * identity fields plus `config_policy` (a RawMessage with no omitempty, so it is ALWAYS a key — `null` when
+ * the project has no policy row) and `created_at`.
+ *
+ * An unknown id is SYNTHESISED rather than 404'd, for the reason the environment detail and the agent publish
+ * route already are: the sweep's arm 1 probes every pattern with a placeholder segment and reads a 404 as
+ * "the table declares a route the fixture does not serve". The real route 404s an unknown or foreign id (RLS
+ * makes absent and foreign indistinguishable) and no console path depends on either answer — the policy page
+ * only ever puts an id in this path that GET /v1/projects just handed it.
+ */
+function projectDetail(id) {
+  const row = ADMIN.projects.data.find((p) => p.id === id) ?? { id, object: "project", organization_id: "org_local", display_name: "Default Project" };
+  return { ...row, config_policy: projectPolicies.get(id) ?? null, created_at: "2026-07-24T00:00:00Z" };
+}
+
+/**
+ * assignPolicy is UpdateProjectPolicy's marshal step, verbatim in its consequences. A field absent from the
+ * request is stored as `null` — that is what a nil Go slice marshals to — and `pool` is the one `omitempty`
+ * field, so an empty pool is stored as an ABSENT key rather than an empty string.
+ */
+function assignPolicy(id, policy) {
+  const slice = (v) => (Array.isArray(v) ? v.map(String) : null);
+  const stored = {
+    allowed_models: slice(policy.allowed_models),
+    allowed_tools: slice(policy.allowed_tools),
+    default_tools: slice(policy.default_tools),
+    approvers: slice(policy.approvers),
+  };
+  if (typeof policy.pool === "string" && policy.pool !== "") stored.pool = policy.pool;
+  projectPolicies.set(id, stored);
+}
+
+// THE POOLS THE POLICY CAN NAME (E24 T2's read route, E28 T1's write half). `config_policy.pool` is a pool
+// ID and not a name — fleet/placement.go ResolvePool feeds it straight through as PolicyPoolID — so the
+// picker's option VALUE is the id and its label is what an operator recognises. Two rows, because one is how
+// a picker looks correct while offering no choice at all, and `waiting` is E28 T1's `*int64`: present here,
+// and absent on a pool the gateway could not be asked about.
+const RUNNER_POOLS = [
+  { id: "pool_default", object: "runner_pool", name: "default", posture: "sandboxed-linux", os: "", arch: "", strict_enrollment: false, created_at: "2026-07-24T00:00:00Z", waiting: 0 },
+  { id: "pool_mac", object: "runner_pool", name: "mac-pool", posture: "unsandboxed-host", os: "darwin", arch: "arm64", strict_enrollment: true, created_at: "2026-07-25T00:00:00Z", waiting: 2 },
+];
+
+// --- API KEYS, MINTED ONCE (E28 T2) ---------------------------------------------------------------------
+//
+// identity/store.go apiKeyView carries `key` with `omitempty` and sets it ONLY on the create response; every
+// read leaves it empty, so a listing can never disclose a secret. The fixture mirrors that exactly, because
+// the browser proof is "the value is in no later response body" and a generous fixture would make that
+// assertion pass for the wrong reason — or fail honestly and be blamed on the console.
+//
+// The minted row is appended to ADMIN["api-keys"].data — the array `adminList` already serves — and it
+// carries the SAME key set the seeded row carries, so the collection keeps one list shape and DIV-SHP-003
+// keeps its exact meaning. The CREATE response is a different shape on the real side too: `key` is set there
+// and nowhere else.
+let apiKeySeq = 0;
+const FIXTURE_KEY_PREFIX = "palai-sk-console-minted-";
 // The scripted canonical event stream — covers every §47.2 lane: model steps, tool activity, an approval
 // (PAUSED until approved), recovery/attempt transitions, usage, and the terminal result. The frame after
 // approval.requested is GATED on the approve command.
@@ -882,6 +967,87 @@ export const ROUTES = [
   { method: "GET", pattern: "/v1/organizations", handle: adminList("organizations") },
   { method: "GET", pattern: "/v1/projects", handle: adminList("projects") },
   { method: "GET", pattern: "/v1/api-keys", handle: adminList("api-keys") },
+
+  // --- THE POLICY DOCUMENT AND THE KEYS (E28 T2), in api/router.go:167-172's order. ---
+  {
+    method: "GET",
+    pattern: "/v1/projects/{project_id}",
+    handle: (_req, res, { project_id: id }) => sendJSON(res, 200, projectDetail(id)),
+  },
+  {
+    method: "PATCH",
+    pattern: "/v1/projects/{project_id}",
+    handle: (request, response, { project_id: id }) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        // strictDecode's two refusals, in identity/store.go's own order: an unknown field anywhere is a 400
+        // (DisallowUnknownFields), and an absent config_policy is the missing-field 400. Both matter to the
+        // console: the field set is the whole contract this page writes against, and a form that invented a
+        // sixth knob would be refused by the real API and must be refused here.
+        const known = new Set(["allowed_models", "allowed_tools", "default_tools", "approvers", "pool"]);
+        const policy = body.config_policy;
+        if (Object.keys(body).some((k) => k !== "config_policy")) {
+          return sendProblem(response, 400, "invalid_request", "the request carries an unsupported field");
+        }
+        if (policy === undefined || policy === null || typeof policy !== "object") {
+          return sendProblem(response, 400, "invalid_request", "config_policy is required");
+        }
+        if (Object.keys(policy).some((k) => !known.has(k))) {
+          return sendProblem(response, 400, "invalid_request", "the request carries an unsupported field");
+        }
+        assignPolicy(id, policy);
+        // The real route re-READS the project after the write (readProject), so the response IS the stored
+        // document rather than an echo of the request. The console's read-back leg depends on that being
+        // true here too, and an echo would make it vacuous.
+        sendJSON(response, 200, projectDetail(id));
+      }),
+  },
+  {
+    method: "POST",
+    pattern: "/v1/api-keys",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const projectID = typeof body.project_id === "string" ? body.project_id : "";
+        // `project_id is required` is the real refusal (ProvisionResult.MissingField -> 400).
+        if (projectID === "") return sendProblem(response, 400, "invalid_request", "project_id is required");
+        apiKeySeq += 1;
+        const id = `key_console_${String(apiKeySeq).padStart(4, "0")}`;
+        const scopes = Array.isArray(body.scopes) ? body.scopes.map(String) : [];
+        // A DISTINCTIVE, SINGLE-USE VALUE. The browser proof scans megabytes of DOM, storage and minified
+        // JavaScript for exactly these bytes, so a value that could match by accident would make the sweep
+        // meaningless. It authenticates nothing: this fixture accepts any non-empty bearer.
+        const key = `${FIXTURE_KEY_PREFIX}${id}-9e4c17b0f3a2`;
+        ADMIN["api-keys"].data.push({ id, object: "api_key", project_id: projectID, scopes, revoked_at: null });
+        sendJSON(response, 201, {
+          id,
+          object: "api_key",
+          organization_id: "org_local",
+          project_id: projectID,
+          principal_id: `prin_console_${String(apiKeySeq).padStart(4, "0")}`,
+          scopes,
+          key,
+        });
+      }),
+  },
+  {
+    method: "POST",
+    pattern: "/v1/api-keys/{key_id}/revoke",
+    handle: (_req, response, { key_id: id }) => {
+      const row = ADMIN["api-keys"].data.find((k) => k.id === id);
+      // SYNTHESISED on an unknown id, like the environment detail route and for the same reason (arm 1's
+      // placeholder probe). The real route 404s; no console path depends on either, because the revoke
+      // button only exists on a row the list returned.
+      if (row !== undefined) row.revoked_at = "2026-07-31T00:00:00Z";
+      // NO `key` ON THIS RESPONSE, and that is the point of the leg that reads it: apiKeyView carries the
+      // plaintext with omitempty and sets it on the create alone.
+      sendJSON(response, 200, { id, object: "api_key", project_id: "proj_local", scopes: row?.scopes ?? [], revoked_at: "2026-07-31T00:00:00Z" });
+    },
+  },
+  // The pools a policy's `pool` can name (E24 T2). renderPage's envelope, so the console's Panel/Picker meet
+  // the same {data, has_more} shape here as on a real stack.
+  { method: "GET", pattern: "/v1/runner-pools", handle: (request, response) => pageSlice(RUNNER_POOLS, requestURL(request), response) },
+
   { method: "GET", pattern: "/v1/model-connections", handle: adminList("model-connections") },
   { method: "GET", pattern: "/v1/model-routes", handle: adminList("model-routes") },
   { method: "GET", pattern: "/v1/secret-refs", handle: adminList("secret-refs") },
@@ -1674,6 +1840,7 @@ const server = createServer((request, response) => {
     introspect.beareredV1Requests += 1;
   } else {
     introspect.nonV1Requests += 1;
+    if (!introspect.nonV1Paths.includes(pathname)) introspect.nonV1Paths.push(`${method} ${pathname}`);
     return sendProblem(response, 404, "not_found");
   }
 

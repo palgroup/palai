@@ -44,7 +44,13 @@ export interface FormField {
   label: string;
   value: string;
   onChange: (value: string) => void;
-  kind?: "text" | "password" | "textarea" | "select";
+  /**
+   * `date` arrived with its first caller in E28 T2 (an API key's optional expiry), and it is a NATIVE
+   * `<input type="date">` rather than a picker: the browser supplies a calendar, a locale-correct format, a
+   * keyboard interaction and a validity check that no hand-rolled control in this console would re-earn.
+   * The caller converts the `YYYY-MM-DD` it yields to whatever the API wants.
+   */
+  kind?: "text" | "password" | "textarea" | "select" | "date";
   /** Never "off" for a credential — see the header. */
   autoComplete?: string;
   required?: boolean;
@@ -156,7 +162,7 @@ export function ResourceForm({
                 <input
                   id={id}
                   name={field.name}
-                  type={field.kind === "password" ? "password" : "text"}
+                  type={field.kind === "password" ? "password" : field.kind === "date" ? "date" : "text"}
                   autoComplete={field.autoComplete}
                   required={field.required}
                   value={field.value}

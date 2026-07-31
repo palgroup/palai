@@ -142,7 +142,9 @@ test("every console request rides the /v1 relay — no privileged backchannel, n
   if (!IS_REAL) {
     const seen = await (await request.get(`${UPSTREAM}/__introspect`)).json();
     expect(seen.beareredV1Requests, "the relay authenticated server-side").toBeGreaterThan(0);
-    expect(seen.nonV1Requests, "the relay hit a non-/v1 backchannel").toBe(0);
+    // The paths are IN the message (E28 T2): this counter went to 1 during a full-suite run and said only
+    // that, which meant the finding could not be triaged without editing the fixture.
+    expect(seen.nonV1Requests, `the relay hit a non-/v1 backchannel: ${(seen.nonV1Paths as string[]).join(", ")}`).toBe(0);
     expect(seen.unbeareredV1Requests, "the relay sent an unauthenticated /v1 request").toBe(0);
     // E25 T1 — THE OPERATOR SESSION DOES NOT LEAK UPSTREAM. The whole run above happened with a session
     // cookie set on this origin, and not one upstream request carried a Cookie header. The relay does not

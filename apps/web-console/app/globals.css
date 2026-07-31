@@ -643,6 +643,52 @@ select:hover,
 textarea:hover {
   border-color: var(--border-control-hover);
 }
+/* A CHECKBOX DRAWS ITS OWN BOUNDARY (E28 T2), AND THE SWEEP IS WHY. The first checkboxes in this console are
+   the capability set on /policy, and tests/contrast.spec.ts read them as `border=null fill=null` — a native
+   checkbox's boundary comes from the UA stylesheet, so it is drawn by something no rule in this repository can
+   measure and no token in this file controls. `appearance: none` moves it into the same --border-control the
+   rest of the form uses, which is the token that was MEASURED at 3.69:1 light and 4.45:1 dark; the checked
+   state carries the accent fill plus a glyph, so "checked" is not conveyed by colour alone.
+
+   The box is --control-h-sm rather than the UA's 13px, and that token is not a size chosen here: it is this
+   file's declared SC 2.5.8 Target Size floor ("24px — and nothing goes under it"). A native checkbox has been
+   under it all along; drawing our own is what makes the rule apply to this control too. */
+input[type="checkbox"] {
+  appearance: none;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  margin: 0 var(--space-2) 0 0;
+  vertical-align: -0.2em;
+  background: var(--bg-page);
+  border: var(--border-w) solid var(--border-control);
+  border-radius: var(--radius-1);
+  transition: border-color var(--duration-1) var(--ease-out);
+}
+input[type="checkbox"]:hover:not(:disabled) {
+  border-color: var(--border-control-hover);
+}
+input[type="checkbox"]:checked {
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+}
+input[type="checkbox"]:checked::after {
+  content: "";
+  display: block;
+  width: 0.375rem;
+  height: 0.75rem;
+  margin: 0.25rem auto 0;
+  border: solid var(--text-on-solid);
+  border-width: 0 var(--border-w-strong) var(--border-w-strong) 0;
+  transform: rotate(45deg);
+}
+/* A checkbox's label is a line of prose with a control in it, not a stacked field — so it does not inherit
+   the block label rule above. */
+fieldset > label {
+  display: block;
+  margin-bottom: var(--space-2);
+  font-weight: var(--font-weight-regular);
+}
+
 /* A DISABLED CONTROL CHANGES ITS FILL RATHER THAN ITS OPACITY. `opacity` halves the contrast of the LABEL
    text too, and 1.4.3's exemption for inactive controls is not a licence to make them unreadable. */
 input:disabled,
@@ -907,4 +953,75 @@ ol.timeline,
 /* pre.code keeps its class for the callers that already use it; the base <pre> rule above does the work. */
 pre.code {
   border: var(--border-w) solid var(--border-hairline);
+}
+
+/* --- REVEAL-ONCE (E28 T2). The design-language secret-field treatment (§5.3): a machine value is monospace
+   at --font-size-4, on the inset surface, at the panel's own weight so it is the thing the eye lands on.
+
+   THERE IS NO `user-select` DECLARATION HERE AND THERE MUST NEVER BE ONE. A minted key is 40-odd characters
+   and the whole point of showing it is that it can be taken; `user-select: none` would turn that into a
+   transcription task, which is the cost WCAG 2.2 §3.3.8's rationale names. tests/reveal-once.spec.ts asserts
+   the COMPUTED style, so adding one anywhere up the ancestor chain fails rather than merely looks tidy. */
+.reveal-value {
+  display: inline-block;
+  padding: var(--space-3) var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-4);
+  line-height: var(--line-height-5);
+  word-break: break-all;
+  background: var(--bg-inset);
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-2);
+}
+.panel.reveal-once {
+  border-color: var(--accent-border);
+  border-left-width: var(--border-w-strong);
+}
+
+/* --- CONFIRM-DESTRUCTIVE (E28 T2). The backdrop exists to stop a pointer reaching the page behind it, which
+   is what keeps focus inside the Tab trap; the dialog is centred and constrained rather than full-bleed. */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 45%);
+  z-index: 10;
+}
+.dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 11;
+  width: min(34rem, calc(100vw - var(--space-6)));
+  max-height: calc(100vh - var(--space-6));
+  overflow: auto;
+  transform: translate(-50%, -50%);
+  padding: var(--space-6);
+  background: var(--bg-page);
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-2);
+}
+.dialog > h2 {
+  margin-top: 0;
+}
+.dialog-review {
+  margin: var(--space-4) 0;
+  padding: var(--space-4);
+  background: var(--bg-inset);
+  border-radius: var(--radius-2);
+}
+.dialog-review dl {
+  margin: 0;
+}
+.dialog-actions {
+  margin-bottom: 0;
+}
+/* The destructive button carries the danger palette AND its own word — colour is never the carrier. */
+button.danger {
+  color: var(--danger-text);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+button.danger:hover:not(:disabled) {
+  border-color: var(--danger-text-inline);
 }

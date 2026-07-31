@@ -81,4 +81,9 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // console-side opinion about what "preview" ought to mean. `palai up` prints this to a terminal
   // (up.go capabilityRows) and until now the console did not show it at all.
   { path: "/capabilities", label: "Capabilities", readyTestId: "panel-capabilities", lead: "What this deployment advertises to every client and at which tier — exactly as GET /v1/capabilities answers it, with no console-side opinion about what a tier ought to mean." },
+  // E28 T2. The readiness signal is the KEY panel rather than the policy form, for the reason /environments
+  // and /repositories use a list: the forms render their markup synchronously, and the panel is the one part
+  // that can still be a spinner. It is `panel-api-keys` specifically because that collection is non-empty on
+  // every stack — a bootstrap seeds the admin key — so the scan meets rendered rows on both profiles.
+  { path: "/policy", label: "Policy & keys", readyTestId: "panel-api-keys", lead: "A project's whole configuration policy, and the keys that reach it. Saving here writes the policy document ENTIRELY — the five fields on this screen are what the project will have afterwards, and a value you cannot see is one you did not send." },
 ];
