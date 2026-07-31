@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { CONSOLE_ROUTES, DYNAMIC_CONSOLE_ROUTES } from "../lib/routes";
-import { FORM_DIALOGS } from "./constants";
+import { FORM_DIALOGS, formDialogMountCount } from "./constants";
 import { announceProfile, concreteDynamicPath, signIn } from "./profile";
 
 // WHAT AXE CANNOT SEE, MEASURED ON THE RENDERED PAGE (console design pass, spec §2.1 / §4.4 / §7).
@@ -159,6 +159,18 @@ test("every interactive control carries a 3:1 boundary against the surface behin
   // The list is a11y.spec.ts's `FORM_DIALOGS`, imported rather than re-typed: that file already asserts the
   // count of rows equals the number of `FormDialog` mounts in `app/**/page.tsx`, so a sixth dialog cannot
   // ship without a row, and importing means it cannot ship with a row this file does not know about either.
+  //
+  // AND THE LIST IS CHECKED AGAINST THE SOURCE **HERE**, not only in tests/a11y.spec.ts. Importing the rows
+  // made this sweep consistent with that one; it did not make it complete, because a sixth dialog with no row
+  // would have reddened the axe loop and left this sweep quietly measuring five of six with nothing in this
+  // file to say so. A sweep that is correct only because another file runs is a sweep whose coverage somebody
+  // else can withdraw.
+  expect(
+    formDialogMountCount(),
+    "the tree mounts a number of FormDialogs that FORM_DIALOGS does not describe, so this sweep is measuring " +
+      "some of them. A control behind a create button is measured by nothing until a test opens it.",
+  ).toBe(FORM_DIALOGS.length);
+
   const beforeDialogs = measured.length;
   for (const d of FORM_DIALOGS) {
     await page.goto(d.route);

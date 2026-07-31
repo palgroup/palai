@@ -1,11 +1,9 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect, type Page } from "@playwright/test";
 
 import { CONSOLE_ROUTES, DYNAMIC_CONSOLE_ROUTES } from "../lib/routes";
-import { FORM_DIALOGS, IS_REAL, WCAG_TAGS } from "./constants";
+import { FORM_DIALOGS, formDialogMountCount, IS_REAL, WCAG_TAGS } from "./constants";
 import { announceProfile, concreteDynamicPath, runToTerminal, signIn } from "./profile";
 
 // tabToTestId genuinely presses Tab until the element carrying data-testid=id holds focus — proving KEYBOARD
@@ -280,12 +278,9 @@ test("every route lib/routes.ts declares was actually scanned by axe", () => {
   // page is a surface that exists only after a click; if the number of them stops matching the rows in
   // FORM_DIALOGS, a dialog has shipped that no scan opens — which is the unscanned page in its newest
   // disguise, and the one this file exists to make impossible.
-  const appRoot = resolve(process.cwd(), "app");
-  let mounted = 0;
-  for (const entry of readdirSync(appRoot, { recursive: true, withFileTypes: true })) {
-    if (!entry.isFile() || entry.name !== "page.tsx") continue;
-    mounted += (readFileSync(resolve(entry.parentPath ?? appRoot, entry.name), "utf8").match(/<FormDialog[\s>]/g) ?? []).length;
-  }
+  // The walk moved to tests/constants.ts so the CONTRAST sweep can make the same assertion independently —
+  // it opens these same five dialogs, and it used to be complete only because this file happened to run.
+  const mounted = formDialogMountCount();
   // eslint-disable-next-line no-console -- the count is the evidence.
   console.log(`AXE DIALOG COVERAGE — ${scannedDialogs.size}/${String(FORM_DIALOGS.length)} declared dialog(s) scanned; ${String(mounted)} FormDialog mount(s) in app/**/page.tsx`);
   expect(scannedDialogs.size, "a dialog declared in FORM_DIALOGS was never opened by a scan").toBe(FORM_DIALOGS.length);

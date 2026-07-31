@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 // Shared between the Playwright config (which injects them into the servers) and the tests (which scan
 // for the credential + assert the relay origin).
@@ -111,3 +113,30 @@ export const FORM_DIALOGS: { route: string; open: string; dialog: string; label:
   { route: "/fleet", open: "pool-create-open", dialog: "pool-create-dialog", label: "Create a runner pool" },
   { route: "/fleet", open: "poolkey-mint-open", dialog: "poolkey-mint-dialog", label: "Mint an enrolment key" },
 ];
+
+/**
+ * formDialogMountCount is how many create dialogs the SOURCE actually mounts, walked rather than declared.
+ *
+ * IT LIVES BESIDE THE LIST IT CHECKS, AND THAT IS THE WHOLE POINT. It was inline in tests/a11y.spec.ts, so
+ * tests/contrast.spec.ts — which opens the same five dialogs to measure the controls inside them — was
+ * complete only by virtue of ANOTHER FILE running an assertion it could not see. A sixth dialog would have
+ * reddened the axe loop and left the contrast sweep quietly short, and nothing in contrast.spec.ts would have
+ * said so. Both call this now, so each sweep is complete on its own terms.
+ *
+ * `<FormDialog` in `app/**\/page.tsx` is the right thing to count because that is exactly the surface that
+ * does not exist until somebody clicks: a route walk cannot see it, and every sweep that walks routes
+ * therefore has to be told it is there.
+ *
+ * NODE BUILTINS ONLY, deliberately. playwright.config.ts imports this module at CONFIG LOAD, before any test
+ * context exists, so a `@playwright/test` import here would take the whole run down at collection — the same
+ * failure class as the spec-to-spec import that sent FORM_DIALOGS to this file in the first place.
+ */
+export function formDialogMountCount(): number {
+  const appRoot = resolve(process.cwd(), "app");
+  let mounted = 0;
+  for (const entry of readdirSync(appRoot, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || entry.name !== "page.tsx") continue;
+    mounted += (readFileSync(resolve(entry.parentPath ?? appRoot, entry.name), "utf8").match(/<FormDialog[\s>]/g) ?? []).length;
+  }
+  return mounted;
+}
