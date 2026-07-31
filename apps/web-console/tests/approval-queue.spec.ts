@@ -73,11 +73,34 @@ function relayPosts(page: Page): { url: string; body: string }[] {
   return posts;
 }
 
-/** renderedIds lists the parked rows the page is actually showing, in the order it shows them. */
+/**
+ * renderedIds lists the parked rows the page is actually showing, in the order it shows them.
+ *
+ * IT READS THE TABLE, NOT THE FACTS (page-parity pass). It used to enumerate `tool-approval-facts-*`, which
+ * worked only because every parked call rendered its whole ledger AND its own decision form inline — seven
+ * forms on one screen, which is the shape that pass removed. The queue is a table now and exactly one call's
+ * facts are on the page at a time, so the row list has to come from the rows.
+ */
 async function renderedIds(page: Page): Promise<string[]> {
   return page
-    .getByTestId(/^tool-approval-facts-/)
-    .evaluateAll((nodes) => nodes.map((n) => (n.getAttribute("data-testid") ?? "").replace("tool-approval-facts-", "")));
+    .getByTestId("approval-open")
+    .evaluateAll((nodes) => nodes.map((n) => n.getAttribute("data-approval-id") ?? ""));
+}
+
+/**
+ * openApproval selects one parked call, which is what puts its facts and its decision form on the page.
+ *
+ * THIS IS A DRIVER EDIT AND NOT AN ASSERTION EDIT: the surface moved, and a test that keeps pointing at the
+ * old shape is a test that stops watching the thing it was written for. What each leg asserts below is
+ * unchanged — the same testids, the same bytes, the same refusals — they are just reached by clicking the row
+ * first, which is what an operator now does.
+ *
+ * The selection lands in the URL, so it is asserted here once rather than in every caller.
+ */
+async function openApproval(page: Page, id: string): Promise<void> {
+  await page.locator(`[data-testid="approval-open"][data-approval-id="${id}"]`).click();
+  await expect(page).toHaveURL(new RegExp(`approval=${id}`));
+  await expect(page.getByTestId(`tool-approval-facts-${id}`)).toBeVisible({ timeout: 15_000 });
 }
 
 /** pickOpen returns the id of a parked row to answer. An absent one THROWS rather than skipping the leg. */
@@ -117,6 +140,7 @@ async function openQueue(page: Page): Promise<void> {
 test("the approval queue shows a parked gated tool call with the server's own arguments, verbatim", async ({ page }) => {
   skipOnReal("DIV-UI-006");
   await openQueue(page);
+  await openApproval(page, DECIDABLE);
 
   // THE SERVER'S SCREEN, NOT A SECOND ONE. This is byte equality against the fixture's own bytes — the same
   // bytes slack.DeriveApprovalDisplay produces (canonical JSON, keys sorted at every level by encoding/json,
@@ -136,11 +160,17 @@ test("the approval queue shows a parked gated tool call with the server's own ar
   // server computed" costs, measured rather than described.
   await expect(page.getByTestId(`tool-approval-arguments-${DECIDABLE}`)).toContainText("&lt;@U0THERS>");
 
+  // AN UN-CUT CALL CARRIES NO WARNING, and this is asserted while THAT call is the one on screen. It used to
+  // sit below the CUT assertions, which worked only because every row rendered at once; with one call open at
+  // a time it would have been a toHaveCount(0) over a row that is not rendered — a guard that cannot fail,
+  // which is the shape this tree keeps finding in its own tests.
+  await expect(page.getByTestId(`tool-approval-truncated-${DECIDABLE}`)).toHaveCount(0);
+
   // THE CUT IS THE SERVER'S ADMISSION AND THE CONSOLE REPEATS IT. `truncated` is a field, not an inference: the
   // console does not measure the string itself, and the warning says the hash binds to ALL the bytes.
+  await openApproval(page, CUT);
   await expect(page.getByTestId(`tool-approval-arguments-${CUT}`)).toHaveText(APPROVAL_ARGS_CUT);
   await expect(page.getByTestId(`tool-approval-truncated-${CUT}`)).toContainText("CUT");
-  await expect(page.getByTestId(`tool-approval-truncated-${DECIDABLE}`)).toHaveCount(0);
 
   // A MISSING OPERATOR LABEL IS A SENTENCE, NOT A BLANK — slack.NoOperatorLabel, verbatim off the wire.
   await expect(page.getByTestId(`tool-approval-operator-label-${CUT}`)).toHaveText("(no operator label)");
@@ -164,14 +194,40 @@ test("the decision carries the request hash the row displayed, and nothing on th
   // ORDER. What is claimed is per-row: every parked call has exactly one editable control, and it is its reason.
   const rendered = await renderedIds(page);
   expect(rendered.length, "the queue rendered no rows, so everything after this would be vacuous").toBeGreaterThan(2);
+  // EVERY PARKED CALL IS OPENED AND CHECKED, one at a time, which is what keeps this a per-row claim after the
+  // page-parity pass put one decision panel below the table instead of seven forms inside it. Asserting only
+  // over whichever call happened to be selected would have quietly narrowed "every parked call has exactly one
+  // editable control" to "one of them does".
+  for (const id of rendered) {
+    await openApproval(page, id);
+    // SCOPED TO THE DECISION PANEL, which is the region that answers for a call. The queue's own toolbar (a
+    // filter box and an order control) appears once the collection passes eight rows — those are controls OF
+    // THE LIST, not of any decision, and letting them into this set would make the assertion a statement about
+    // how many calls the fixture happens to be holding.
+    const perRow = await page.getByTestId("approval-decision").locator("input, textarea, select").evaluateAll((nodes) => nodes.map((n) => n.getAttribute("data-testid") ?? "<no testid>"));
+    expect(perRow, `the open call ${id} offers something other than exactly its own deny reason`).toEqual([`tool-approval-reason-${id}`]);
+  }
+  // CLOSING IS A CLIENT NAVIGATION (the selection lives in the URL), so the next assertion has to wait for
+  // the address bar rather than for the click to return — reading the panel one tick early found the previous
+  // call's reason box still on screen.
+  await page.getByTestId("approval-close").click();
+  await expect(page).not.toHaveURL(/approval=/);
+  await expect(page.getByTestId("approval-none-selected")).toBeVisible();
   // SCOPED TO <main>, AND THE NARROWING IS PAID FOR ON THE NEXT LINE (console design pass). This enumerated
   // the whole DOCUMENT, so the shell's own controls counted as controls of the queue — and the console shell
   // now carries a project picker that renders only when the deployment holds more than one project. That made
   // this assertion a statement about how many projects EARLIER SPECS had created: it passed in the light
   // project and failed in the dark one, in the same run, on the same code. An assertion whose subject is
   // "the approval queue" must be scoped to what the approval queue rendered.
+  // AND WITH NO CALL SELECTED THERE IS NOTHING TO DECIDE WITH. The loop above proves what an open call
+  // carries; this proves the closed queue carries no DECISION control at all — the state an operator meets on
+  // arrival. The list's own filter and order controls are excluded by name rather than by scope, so a control
+  // that named itself after an approval could not hide behind them.
   const controls = await page.locator("main").locator("input, textarea, select").evaluateAll((nodes) => nodes.map((n) => n.getAttribute("data-testid") ?? "<no testid>"));
-  expect(controls.sort(), "the only editable controls on the approval queue are the per-row deny reasons").toEqual(rendered.map((id) => `tool-approval-reason-${id}`).sort());
+  expect(
+    controls.filter((c) => c.startsWith("tool-approval-")),
+    `the approval queue offers a decision control before any call was opened: [${controls.join(", ")}]`,
+  ).toEqual([]);
   // The hash arm keeps the WHOLE DOCUMENT, deliberately: "nothing on the page asks the operator for a request
   // hash" is a claim about the page including its chrome, and narrowing it with the line above would have
   // quietly dropped the shell out of the one assertion that must still cover it.
@@ -179,6 +235,7 @@ test("the decision carries the request hash the row displayed, and nothing on th
   expect(everyControl.some((c) => /hash/i.test(c)), "a control asked the operator for a request hash").toBe(false);
 
   const target = await pickOpen(page, APPROVE_PREFIX);
+  await openApproval(page, target);
   const displayed = await page.getByTestId(`tool-approval-request-hash-${target}`).innerText();
   await page.getByTestId(`tool-approval-approve-${target}`).click();
   // The confirmation is read from the PAGE, not the row: the row is gone by the time the refetch lands, and a
@@ -199,7 +256,11 @@ test("the decision carries the request hash the row displayed, and nothing on th
   // ANSWERED MEANS GONE. There is no status field on this projection to read instead: the row leaving the queue
   // is the whole of what "it was answered" looks like.
   await expect(page.getByTestId(`tool-approval-facts-${target}`)).toHaveCount(0, { timeout: 15_000 });
-  await expect(page.getByTestId(`tool-approval-facts-${CUT}`)).toBeVisible();
+  // AND THE REST OF THE QUEUE IS STILL THERE — read off the TABLE now rather than off a second row's facts,
+  // because only the answered call was ever open. `?approval=` is dropped with the row it named, so the panel
+  // does not reopen on its own "no longer here" state after the refetch.
+  expect(await renderedIds(page), "answering one call emptied the queue").toContain(CUT);
+  await expect(page).not.toHaveURL(/approval=/);
 });
 
 test("a decision stripped of its request hash authorizes nothing and the screen says the hash was missing", async ({ page }) => {
@@ -217,6 +278,7 @@ test("a decision stripped of its request hash authorizes nothing and the screen 
   });
 
   await openQueue(page);
+  await openApproval(page, DECIDABLE);
   await page.getByTestId(`tool-approval-approve-${DECIDABLE}`).click();
 
   const error = page.getByTestId(`tool-approval-${DECIDABLE}-error`);
@@ -234,6 +296,7 @@ test("an approval whose arguments changed is refused as no-longer-decidable, and
   // The drift row hands out a binding and then moves on — the fixture rotates its arguments and its hash on
   // every serve, so whatever this page is holding is the PREVIOUS call. That is the one-shot binding: the
   // decision authorizes nothing rather than authorizing something else.
+  await openApproval(page, DRIFT);
   const held = await page.getByTestId(`tool-approval-request-hash-${DRIFT}`).innerText();
   await page.getByTestId(`tool-approval-approve-${DRIFT}`).click();
 
@@ -246,7 +309,10 @@ test("an approval whose arguments changed is refused as no-longer-decidable, and
   // Still parked, and the next read shows a hash that is not the one that was held — the arguments really did
   // move, which is what made the refusal real rather than canned.
   await expect(page.getByTestId(`tool-approval-facts-${DRIFT}`)).toBeVisible();
+  // THE RELOAD KEEPS THE SELECTION, and that is the point of putting it in the URL rather than in React state:
+  // the operator lands back on the call they were reading. So the second read below needs no second click.
   await page.reload();
+  await expect(page.getByTestId(`tool-approval-facts-${DRIFT}`)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId(`tool-approval-request-hash-${DRIFT}`)).not.toHaveText(held);
 });
 
@@ -259,6 +325,7 @@ test("the typed refusals get different sentences and none of them is a generic f
   // the console must not flatten them back together.
   const sentences: Record<string, string> = {};
   for (const id of [GONE, LOCKED, DRIFT]) {
+    await openApproval(page, id);
     await page.getByTestId(`tool-approval-approve-${id}`).click();
     const error = page.getByTestId(`tool-approval-${id}-error`);
     await expect(error).toBeVisible({ timeout: 15_000 });
@@ -295,6 +362,7 @@ test("a deny sends the operator's own reason verbatim, and a deny with no reason
   // typed deny reason reaches nothing and the model is handed a constant sentence, while here the field is
   // wired to ApprovalDecision.Reason — so the ceiling is closed by making the operator write the sentence.
   const target = await pickOpen(page, DENY_PREFIX);
+  await openApproval(page, target);
   const displayed = await page.getByTestId(`tool-approval-request-hash-${target}`).innerText();
   await page.getByTestId(`tool-approval-deny-${target}`).click();
   await expect(page.getByTestId(`tool-approval-${target}-error`)).toContainText("A denial needs a reason");
@@ -392,13 +460,19 @@ test("the queue renders on both profiles, states its polling period, and re-read
   // the fixture parks five calls, and a compose stack can park none (DIV-UI-006), so the real profile must show
   // the EMPTY state — which is itself the thing worth asserting, because an empty list plus a scope sentence is
   // the difference between "nothing is waiting" and "nothing of this KIND is waiting".
+  // COUNTED OFF THE TABLE (page-parity pass). It used to count `tool-approval-facts-*`, which was the parked
+  // rows only because every one of them rendered its own ledger inline; one call's facts are on the page at a
+  // time now, so counting those would report 0 on a queue holding seven.
   if (IS_REAL) {
     await expect(page.getByTestId("panel-approvals-empty")).toBeVisible();
-    expect(await page.getByTestId(/^tool-approval-facts-/).count()).toBe(0);
+    expect(await renderedIds(page)).toEqual([]);
+    // AND THE DECISION PANEL SAYS SO RATHER THAN SITTING BLANK. An empty queue is the state a real operator
+    // meets, and the panel below the table is the largest region on the screen in it.
+    await expect(page.getByTestId("approval-none-selected")).toBeVisible();
   } else {
     // Not an exact count: the specs above this one ANSWER two of the fixture's rows and an answered row leaves
     // the queue, so a number here would be an assertion about test order rather than about the console.
-    expect(await page.getByTestId(/^tool-approval-facts-/).count(), "the fixture parks gated calls and none of them rendered").toBeGreaterThan(2);
+    expect((await renderedIds(page)).length, "the fixture parks gated calls and none of them rendered").toBeGreaterThan(2);
     await expect(page.getByTestId("panel-approvals-empty")).toHaveCount(0);
   }
 
@@ -420,6 +494,7 @@ test("the queue renders on both profiles, states its polling period, and re-read
 test("the model-authored arguments render as text and the payload never executes", async ({ page }) => {
   skipOnReal("DIV-UI-006");
   await openQueue(page);
+  await openApproval(page, DECIDABLE);
 
   // The arguments are the ONE piece of model-authored prose on this screen, and the fixture's own row carries
   // active markup: `<img src=x onerror=window.__approval_xss_executed=true>`. React's default escaping is the

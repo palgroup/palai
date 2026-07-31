@@ -5,7 +5,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { test, expect, type Page } from "@playwright/test";
 
 import { CONSOLE_ROUTES, DYNAMIC_CONSOLE_ROUTES } from "../lib/routes";
-import { IS_REAL, WCAG_TAGS } from "./constants";
+import { FORM_DIALOGS, IS_REAL, WCAG_TAGS } from "./constants";
 import { announceProfile, concreteDynamicPath, runToTerminal, signIn } from "./profile";
 
 // tabToTestId genuinely presses Tab until the element carrying data-testid=id holds focus — proving KEYBOARD
@@ -131,27 +131,6 @@ for (const route of DYNAMIC_CONSOLE_ROUTES) {
   }
 }
 
-// THE CREATE DIALOGS, AND THEY WERE SCANNED BY NOTHING AT ALL UNTIL THIS LOOP.
-//
-// The generated loop above scans a route AS IT LOADS. A components/FormDialog.tsx renders only after a click,
-// so every create form that moved behind a `+ Create` button left the accessibility evidence the moment it
-// moved — five forms, on four routes, none of them scanned. It is the same hole this file already documents
-// one loop down for the transcript's second tab ("`hidden` takes the whole Debug panel out of the
-// accessibility tree, so the first scan reports a clean bill of health for markup it did not see"), and a
-// modal is the worse case of it: a dialog owns the focus trap, the accessible name and the Escape contract,
-// which is exactly the surface axe has rules for.
-//
-// THE LIST IS DECLARED AND THEN CHECKED AGAINST THE SOURCE, so a sixth dialog cannot ship unscanned. The
-// coverage test at the bottom of this file walks app/**/page.tsx for `<FormDialog` mounts and fails if the
-// count does not match the rows here — the same shape as the route coverage assertion, and for the same
-// reason: a surface nobody scans must be a red test rather than a thing somebody remembers.
-export const FORM_DIALOGS: { route: string; open: string; dialog: string; label: string }[] = [
-  { route: "/agents", open: "agent-create-open", dialog: "agent-create-dialog", label: "Create an agent" },
-  { route: "/repositories", open: "binding-create-open", dialog: "binding-create-dialog", label: "Register a repository binding" },
-  { route: "/policy", open: "key-mint-open", dialog: "key-mint-dialog", label: "Mint an API key" },
-  { route: "/fleet", open: "pool-create-open", dialog: "pool-create-dialog", label: "Create a runner pool" },
-  { route: "/fleet", open: "poolkey-mint-open", dialog: "poolkey-mint-dialog", label: "Mint an enrolment key" },
-];
 
 const scannedDialogs = new Set<string>();
 

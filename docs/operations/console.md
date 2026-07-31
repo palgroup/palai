@@ -796,6 +796,45 @@ fixed once (artifact downloads, E17 T10).
 
 ---
 
+## 4e. `/approvals` and `/history` — a queue you can triage, and a list whose ids are readable
+
+### `/approvals` was the worst screen in the console
+
+Measured before and after (built console, 2026-07-31 → 2026-08-01): `<main>` **7529 → 1917** rendered
+characters, grey prose **3626 → 606**, forms on the page **7 → 0**, table columns **1 → 5**, `<h2>` headings
+**8 → 2**. Every parked call rendered its whole ledger *and* a full decision form, inline, in a one-column
+table — so the one thing a queue exists for, seeing what is waiting, was the one thing it could not do.
+
+The table carries ID, Tool, Operator label, Run and Deadline. The decision is one panel below it, for the
+call you select, and the selection is in the URL (`?approval=…`): a reload lands on the call you were
+reading, and a parked call can be sent to a colleague as a link.
+
+**There is no `/approvals/{id}` page and there cannot be one.** `api/router.go` mounts a list and two
+decision routes — no per-approval read — and **no `/v1` route can park an approval at all**: one exists only
+when a gated tool call parks. A dynamic route would therefore be a page the accessibility sweep cannot reach
+on a real stack, which is precisely the unscanned-page hole `lib/routes.ts` exists to close.
+
+**The scope note stays**, because every clause in it changes what an *empty* queue means. So do the three
+standing facts (the principal a decision is recorded against, the two gates, the polling period) — a real
+compose stack's queue is permanently empty, so a sentence that renders only beside a selected row is one a
+real operator can never read.
+
+### `/history`
+
+Already mostly table, so the character count barely moved (2278 → 2113) and the change is in what the columns
+*are*: a readable short id that is also the opening control (it was a raw 36-character id that was not a
+control, next to a fourth column holding one button reading "Open"), a status pill, the **session as a link**,
+and a relative timestamp (it was a raw ISO string).
+
+The session link is the cross-reference this console did not have: a run belongs to a session,
+`/sessions/{id}` replays that session's journal, and an operator holding a response id previously had no way
+to reach the conversation it came from without retyping an id.
+
+Selection is in the URL (`?run=…`). A `?run=` naming a row past the twenty-row cut says so rather than
+sitting blank.
+
+---
+
 ## 5. When it does not work
 
 | Symptom | Cause | Fix |
@@ -836,6 +875,37 @@ though, is deliberately uniform — one credential means there is no half to be 
 console does not serve at all without a password; the gate is inside the relay and every exported method
 passes through it, counted rather than asserted; a cross-origin write is refused even with a valid session;
 and the operator session never rides an upstream request.
+
+### A control that moves into a dialog leaves every sweep that walks routes
+
+Written down because the page-parity passes moved five create forms behind a `+ Create X` button and **all
+three route-walking sweeps stopped seeing them at once** — each one reporting a smaller, cleaner number,
+which is the worst direction for a coverage loss to move a metric.
+
+| sweep | what it lost | closed |
+|---|---|---|
+| axe (`a11y.spec.ts`) | five dialogs, none ever scanned open — and a modal owns the focus trap, the accessible name and the Escape contract, which is exactly what axe has rules for | a generated scan per `FORM_DIALOGS` row |
+| contrast (`contrast.spec.ts`) | **144 controls, a third of the sweep** (265 → 409) | each dialog opened and measured, with a per-dialog positive control |
+| served forms (`auth.spec.ts`) | five of ten forms left the server-rendered HTML | the expectation is *derived* — `ResourceForm` mounts minus `FormDialog` mounts, per route |
+
+`app/globals.css:134` records the same failure once before, when a `button.danger` inside a dialog went
+unmeasured for an entire epic. The rule: **when a control moves behind an interaction, ask which sweeps
+walked to it, and open the thing.** `FORM_DIALOGS` in `tests/constants.ts` is the one list all of them read,
+and `a11y.spec.ts` asserts its row count equals the `FormDialog` mounts in `app/**/page.tsx`, so a sixth
+dialog is covered by all of them or none.
+
+### A panel must not answer to its name before it has content
+
+`components/Panel.tsx` withholds its `data-testid` until its rows settle, and `lib/routes.ts` requires each
+route to name the testid that means "this page has rendered". Measured on 2026-08-01 with a probe that polls
+every 20 ms for each declared signal and records what is still a spinner at the instant it appears:
+**sixteen of seventeen clean, one wrong** — `/sessions/[id]` named the transcript `<section>`, which renders
+synchronously, so it went visible while the chip row above it still said "Loading…". It did not fail, because
+the scan follows the signal with a `networkidle` wait — and that file calls networkidle "a proxy for the
+condition" twice in its own comments. A wrong signal covered by a proxy is a green that belongs to the
+harness. The signal now names the chip row, which renders only once the read has settled **in either
+direction** — a failed read gets a settled "unreadable" chip rather than a permanent spinner, or the scan
+would never fire at all.
 
 ---
 

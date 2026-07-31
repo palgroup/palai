@@ -425,10 +425,19 @@ test("a parked tool call is not on /fleet, and /fleet says which queue holds it"
   await page.goto("/approvals");
   await expect(page.getByTestId("panel-approvals")).toBeVisible({ timeout: 15_000 });
   // THE CONDITION IS ASSERTED PRESENT, not assumed: a parked call has to exist or "the fleet page does not
-  // show it" is a statement about an empty world. Its id is taken off the row's own testid rather than out
-  // of prose, so this cannot pass by matching nothing.
-  const parkedID = (await page.locator('[data-testid^="tool-approval-facts-"]').first().getAttribute("data-testid"))?.replace("tool-approval-facts-", "") ?? "";
+  // show it" is a statement about an empty world. Its id is taken off the ROW rather than out of prose, so
+  // this cannot pass by matching nothing.
+  //
+  // READ OFF THE TABLE AND THEN OPENED (page-parity pass). This used to take the id off the first
+  // `tool-approval-facts-*` on the page, which existed only because /approvals rendered every parked call's
+  // whole ledger AND its decision form inline — seven forms on one screen. The queue is a table now and the
+  // facts belong to whichever call is selected, so the row is picked first and opened second. A DRIVER edit:
+  // what this leg asserts — that the fleet page shows neither the id nor the hash, and says where the call
+  // is — is untouched.
+  const parkedID = (await page.getByTestId("approval-open").first().getAttribute("data-approval-id")) ?? "";
   expect(parkedID, "no gated tool call is parked, so this assertion would be true of an empty world").not.toBe("");
+  await page.getByTestId("approval-open").first().click();
+  await expect(page.getByTestId(`tool-approval-facts-${parkedID}`)).toBeVisible({ timeout: 15_000 });
   const hash = await page.getByTestId(`tool-approval-request-hash-${parkedID}`).innerText();
   expect(hash, "the parked call carries no request hash, which is the thing a machine enrolment does not have").not.toBe("");
 

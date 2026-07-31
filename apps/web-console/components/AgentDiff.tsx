@@ -105,7 +105,16 @@ export function AgentDiff({ agent }: { agent?: string } = {}) {
       ) : agents !== null && agents.length === 0 ? null : revisions === null ? (
         <p className="loading" data-testid="agent-diff-loading">Loading…</p>
       ) : revisions.length < 2 ? (
-        <p className="empty" data-testid="agent-diff-insufficient">Need at least two revisions to diff.</p>
+        // THE MEASURED EMPTY-STATE SHAPE, and the count is IN it: "Need at least two revisions to diff"
+        // stated a rule and left the reader to go and count the rows themselves. A lineage with one
+        // revision and a lineage with none are different situations and the second sentence says which.
+        <div className="empty" data-testid="agent-diff-insufficient">
+          <p className="empty-title">Nothing to compare yet</p>
+          <p className="empty-body">
+            A diff is between the two newest revisions of one lineage, and this one has{" "}
+            {revisions.length === 0 ? "none" : "one"}. Create another on the Revisions tab.
+          </p>
+        </div>
       ) : (
         <>
           <p className="muted">
