@@ -32,6 +32,10 @@ type Store struct {
 	journal *Journal
 	agents  *automation.Store
 	tools   *extensions.Store
+	// The E29 credential-probe seam, wired by WithModelConnectionProbes. Both nil on a store that never
+	// verifies a connection, in which case the verify route answers "nothing was checked" — never a green.
+	connectionProbers map[string]ConnectionProber
+	connectionSecrets ConnectionSecretResolver
 }
 
 // reservedBuiltinToolNames is the model-visible short name of every code-defined built-in tool, so a

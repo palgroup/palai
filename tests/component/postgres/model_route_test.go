@@ -40,7 +40,7 @@ func TestProjectModelRouteResolvesPublishedRevisionOnly(t *testing.T) {
 		t.Fatalf("ProjectModelRoute(no route) = (found=%v, err=%v), want (false, nil)", found, err)
 	}
 
-	connID, err := cs.CreateModelConnection(ctx, tenant, "provider-one", "openai-project-a")
+	connID, err := cs.CreateModelConnection(ctx, tenant, "provider-one", "openai-project-a", "")
 	if err != nil {
 		t.Fatalf("CreateModelConnection() error = %v", err)
 	}
@@ -98,7 +98,7 @@ func TestProjectModelRouteResolvesPublishedRevisionOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateModelRoute(orphan) error = %v", err)
 	}
-	orphanConn, err := cs.CreateModelConnection(ctx, orphan, "provider-one", "openai-orphan")
+	orphanConn, err := cs.CreateModelConnection(ctx, orphan, "provider-one", "openai-orphan", "")
 	if err != nil {
 		t.Fatalf("CreateModelConnection(orphan) error = %v", err)
 	}
@@ -125,7 +125,7 @@ func TestModelRouteReadsAreTenantScoped(t *testing.T) {
 	ctx := context.Background()
 	owner, intruder := seedProject(t, cs), seedProject(t, cs)
 
-	connID, err := cs.CreateModelConnection(ctx, owner, "provider-one", "openai-owner")
+	connID, err := cs.CreateModelConnection(ctx, owner, "provider-one", "openai-owner", "")
 	if err != nil {
 		t.Fatalf("CreateModelConnection() error = %v", err)
 	}
@@ -215,7 +215,7 @@ func TestModelRouteWritesAreTenantScoped(t *testing.T) {
 	ctx := context.Background()
 	owner, intruder := seedProject(t, cs), seedProject(t, cs)
 
-	connID, err := cs.CreateModelConnection(ctx, owner, "provider-one", "openai-owner")
+	connID, err := cs.CreateModelConnection(ctx, owner, "provider-one", "openai-owner", "")
 	if err != nil {
 		t.Fatalf("CreateModelConnection() error = %v", err)
 	}
@@ -240,7 +240,7 @@ func TestModelRouteWritesAreTenantScoped(t *testing.T) {
 	}
 
 	// The owner's own route cannot bind a connection from the other tenant either.
-	intruderConn, err := cs.CreateModelConnection(ctx, intruder, "provider-one", "openai-intruder")
+	intruderConn, err := cs.CreateModelConnection(ctx, intruder, "provider-one", "openai-intruder", "")
 	if err != nil {
 		t.Fatalf("CreateModelConnection(intruder) error = %v", err)
 	}
@@ -251,5 +251,122 @@ func TestModelRouteWritesAreTenantScoped(t *testing.T) {
 	// The intruder's own project is unrouted — nothing of the owner's leaks into its resolution.
 	if _, found, err := cs.ProjectModelRoute(ctx, intruder); err != nil || found {
 		t.Fatalf("ProjectModelRoute(intruder) = (found=%v, err=%v), want (false, nil)", found, err)
+	}
+}
+
+// THE CUSTOM ENDPOINT SURVIVES THE ROUND TRIP, AND THAT IS THE THIRD SHAPE THE PRODUCT PROMISES (E29).
+//
+// OpenAI and Anthropic need a family and a key; a self-hosted operator's own vLLM/Ollama/gateway needs an
+// ADDRESS, and until migration 000049 model_connections had no column for one. The only way to move that
+// endpoint was PALAI_OPENAI_COMPATIBLE_BASE_URL — read once at boot into a single adapter value — so the
+// endpoint was a property of the DEPLOYMENT: two projects on one stack could not reach two endpoints, and
+// nothing an operator could do through the API changed it.
+//
+// This drives the REAL store against the REAL schema, and asserts the address arrives on the dispatch
+// target — which is the seam the orchestrator copies onto modelbroker.Request.BaseURL and the adapter
+// dials. Two projects, two endpoints, one stack.
+func TestProjectModelRouteCarriesThePerConnectionEndpoint(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+
+	publish := func(tenant coordinator.Tenant, provider, secretRef, baseURL, model string) {
+		t.Helper()
+		connID, err := cs.CreateModelConnection(ctx, tenant, provider, secretRef, baseURL)
+		if err != nil {
+			t.Fatalf("CreateModelConnection(%s) error = %v", provider, err)
+		}
+		routeID, err := cs.CreateModelRoute(ctx, tenant, coordinator.DefaultModelRouteAlias)
+		if err != nil {
+			t.Fatalf("CreateModelRoute() error = %v", err)
+		}
+		rev, err := cs.CreateModelRouteRevision(ctx, tenant, routeID, model, connID)
+		if err != nil {
+			t.Fatalf("CreateModelRouteRevision() error = %v", err)
+		}
+		if err := cs.PublishModelRouteRevision(ctx, tenant, routeID, rev.ID); err != nil {
+			t.Fatalf("PublishModelRouteRevision() error = %v", err)
+		}
+	}
+
+	// Project A: a self-hosted vLLM. Project B: a different one. Same stack.
+	a, b := seedProject(t, cs), seedProject(t, cs)
+	publish(a, "openai-compatible", "vllm-a", "http://10.0.0.11:8000/v1/chat/completions", "qwen2.5-coder")
+	publish(b, "openai-compatible", "vllm-b", "http://10.0.0.12:8000/v1/chat/completions", "llama-3.3")
+
+	targetA, found, err := cs.ProjectModelRoute(ctx, a)
+	if err != nil || !found {
+		t.Fatalf("ProjectModelRoute(A) = (found=%v, err=%v)", found, err)
+	}
+	targetB, found, err := cs.ProjectModelRoute(ctx, b)
+	if err != nil || !found {
+		t.Fatalf("ProjectModelRoute(B) = (found=%v, err=%v)", found, err)
+	}
+	if targetA.BaseURL != "http://10.0.0.11:8000/v1/chat/completions" {
+		t.Fatalf("A's endpoint = %q, want its own — a per-project custom endpoint does not reach dispatch", targetA.BaseURL)
+	}
+	if targetB.BaseURL == targetA.BaseURL {
+		t.Fatalf("both projects resolved the SAME endpoint (%q): the endpoint is still a deployment property", targetA.BaseURL)
+	}
+
+	// A family with its own endpoint carries none, so its adapter dials exactly where it did before 000049.
+	c := seedProject(t, cs)
+	publish(c, "provider-one", "openai-c", "", "gpt-4o-mini")
+	targetC, found, err := cs.ProjectModelRoute(ctx, c)
+	if err != nil || !found {
+		t.Fatalf("ProjectModelRoute(C) = (found=%v, err=%v)", found, err)
+	}
+	if targetC.BaseURL != "" {
+		t.Fatalf("an OpenAI connection resolved endpoint %q, want empty", targetC.BaseURL)
+	}
+}
+
+// The verification stamp round-trips, and it is scoped to the tenant that owns the row. It gates NOTHING —
+// a connection stamped `credential_rejected` still resolves onto its route exactly as before — and that is
+// asserted here rather than described, because a cache that quietly became a gate would take runs down.
+func TestModelConnectionVerificationStampIsACacheNotAGate(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	tenant, other := seedProject(t, cs), seedProject(t, cs)
+
+	connID, err := cs.CreateModelConnection(ctx, tenant, "provider-one", "openai-a", "")
+	if err != nil {
+		t.Fatalf("CreateModelConnection() error = %v", err)
+	}
+	routeID, err := cs.CreateModelRoute(ctx, tenant, coordinator.DefaultModelRouteAlias)
+	if err != nil {
+		t.Fatalf("CreateModelRoute() error = %v", err)
+	}
+	rev, err := cs.CreateModelRouteRevision(ctx, tenant, routeID, "gpt-4o-mini", connID)
+	if err != nil {
+		t.Fatalf("CreateModelRouteRevision() error = %v", err)
+	}
+	if err := cs.PublishModelRouteRevision(ctx, tenant, routeID, rev.ID); err != nil {
+		t.Fatalf("PublishModelRouteRevision() error = %v", err)
+	}
+
+	// A connection nobody has probed reads back with no stamp — an absence, not a failure.
+	before, err := cs.GetModelConnection(ctx, tenant, connID)
+	if err != nil || !before.VerifiedAt.IsZero() || before.VerificationOutcome != "" {
+		t.Fatalf("an unprobed connection = (%+v, %v), want no stamp", before, err)
+	}
+
+	if err := cs.RecordModelConnectionVerification(ctx, tenant, connID, "credential_rejected"); err != nil {
+		t.Fatalf("RecordModelConnectionVerification() error = %v", err)
+	}
+	after, err := cs.GetModelConnection(ctx, tenant, connID)
+	if err != nil || after.VerificationOutcome != "credential_rejected" || after.VerifiedAt.IsZero() {
+		t.Fatalf("after a stamp = (%+v, %v), want the outcome AND its age", after, err)
+	}
+
+	// THE STAMP GATES NOTHING. A rejected credential still routes — the operator's run fails at the
+	// provider with the provider's own error, which is a better message than one this cache could invent.
+	if _, found, err := cs.ProjectModelRoute(ctx, tenant); err != nil || !found {
+		t.Fatalf("a connection stamped `credential_rejected` stopped resolving (found=%v, err=%v): the "+
+			"verification cache has become a gate", found, err)
+	}
+
+	// A foreign tenant cannot stamp it, and the refusal is the same NotFound an absent id gets.
+	if err := cs.RecordModelConnectionVerification(ctx, other, connID, "credential_accepted"); !errors.Is(err, coordinator.ErrModelConnectionNotFound) {
+		t.Fatalf("a foreign stamp = %v, want ErrModelConnectionNotFound", err)
 	}
 }

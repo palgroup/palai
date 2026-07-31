@@ -160,6 +160,8 @@ const AGENTS = Array.from({ length: 21 }, (_, i) => ({
   name: `seeded-agent-${String(i + 1).padStart(2, "0")}`,
 }));
 let agentSeq = 0;
+// The E29 connection sequence, so a console-minted id is distinguishable from the seed's.
+let connectionSeq = 0;
 
 // --- THE AGENT LINEAGE (E25 T6) --------------------------------------------------------------------------
 //
@@ -687,7 +689,13 @@ const ADMIN = {
   organizations: listView([{ id: "org_local", object: "organization", display_name: "Local Org" }]),
   projects: listView([{ id: "proj_local", object: "project", organization_id: "org_local", display_name: "Default Project" }]),
   "api-keys": listView([{ id: "key_admin", object: "api_key", project_id: "proj_local", scopes: ["provision", "responses"], revoked_at: null }]),
-  "model-connections": listView([{ id: "mc_1", object: "model_connection", provider: "fake", secret_ref: "provider-key" }]),
+  // `provider: "provider-one"`, NOT "fake". The seed used to say "fake", which is a family an operator can
+  // never select — it is the deterministic in-process adapter, deliberately absent from
+  // modelbroker.Families(). A fixture row nothing could have created is a fixture that teaches the console
+  // to render a shape the API cannot produce, which is the fake-is-more-generous-than-production trap.
+  // `base_url` is absent here for the same reason: provider-one has an endpoint of its own and the store
+  // REFUSES one on it (000049 / vetConnectionEndpoint).
+  "model-connections": listView([{ id: "mc_1", object: "model_connection", provider: "provider-one", secret_ref: "provider-key" }]),
   "model-routes": listView([{ id: "mr_1", object: "model_route", name: "default" }]),
   // `updated_at` was ABSENT here until E25 T4 and nothing could catch it, for exactly the reason T2's seed
   // exists: a bootstrap stack's secret_refs collection is EMPTY, so the sweep's item arm had no real row to
@@ -1549,6 +1557,66 @@ export const ROUTES = [
   },
 
   { method: "GET", pattern: "/v1/model-connections", handle: adminList("model-connections") },
+
+  // --- THE PROVIDER WIRING WRITE PATH (E29). ---
+  //
+  // It mirrors internal/store/model_routes.go's refusals rather than accepting whatever arrives, because a
+  // fixture more generous than production makes the console code against a shape that does not exist — this
+  // tree's own rule, and it has been paid for. The three refusals below are the three the real store makes.
+  {
+    method: "POST",
+    pattern: "/v1/model-connections",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const provider = typeof body.provider === "string" ? body.provider : "";
+        const secretRef = typeof body.secret_ref === "string" ? body.secret_ref : "";
+        const baseURL = typeof body.base_url === "string" ? body.base_url : "";
+        // A family the broker cannot dial (store: modelbroker.LookupFamily).
+        if (!["provider-one", "provider-two", "openai-compatible"].includes(provider)) {
+          return sendProblem(response, 400, "invalid_request", "provider must be one of provider-one, provider-two, openai-compatible");
+        }
+        if (secretRef === "") return sendProblem(response, 400, "invalid_request", "secret_ref is required");
+        // The endpoint rule: required by the custom family, refused on the others.
+        if (provider === "openai-compatible" && baseURL === "") {
+          return sendProblem(response, 400, "invalid_request", "base_url is required for the custom family");
+        }
+        if (provider !== "openai-compatible" && baseURL !== "") {
+          return sendProblem(response, 400, "invalid_request", "base_url is refused on a family with its own endpoint");
+        }
+        connectionSeq += 1;
+        const row = { id: `mconn_console_${String(connectionSeq).padStart(4, "0")}`, object: "model_connection", provider, secret_ref: secretRef };
+        if (baseURL !== "") row.base_url = baseURL;
+        // UNSHIFT: ListModelConnections orders by id, and a console-minted id sorts after the seed's `mc_1`
+        // on a real stack too — but the row an operator just made must be findable without scrolling, and
+        // the panel renders in received order.
+        ADMIN["model-connections"].data.unshift(row);
+        sendJSON(response, 201, row);
+      }),
+  },
+  {
+    // The credential probe. The fake CANNOT make a real network call, so it answers the one outcome that is
+    // honest for a fixture: `not_probed`, with the sentence saying nothing was checked. That is deliberate
+    // and it is the stronger fixture — a spec that passes on a scripted "credential_accepted" would be
+    // asserting the console can render a green, which is not the property worth pinning. The REAL
+    // classification is measured in Go against an httptest endpoint
+    // (internal/store TestVerifyModelConnectionMakesARealRequest).
+    method: "POST",
+    pattern: /^\/v1\/model-connections\/[^/]+\/verify$/,
+    handle: (request, response) => {
+      const id = (request.url ?? "").split("/")[3] ?? "";
+      sendJSON(response, 200, {
+        object: "model_connection_verification",
+        connection_id: id,
+        provider: "provider-one",
+        outcome: "not_probed",
+        endpoint: "https://api.openai.com/v1/models",
+        detail: "this fixture makes no network call, so NOTHING was checked",
+        checked: "that the endpoint answered and did not reject this credential — NOT that the route's model id exists, nor that a quota remains",
+      });
+    },
+  },
+
   { method: "GET", pattern: "/v1/model-routes", handle: adminList("model-routes") },
   { method: "GET", pattern: "/v1/secret-refs", handle: adminList("secret-refs") },
   { method: "GET", pattern: "/v1/knowledge-bases", handle: adminList("knowledge-bases") },

@@ -50,7 +50,7 @@ func dispatch(args []string) error {
 	// `pool` joins it for the SAME reason and closes the hole its sibling made visible (E28 T1): until this
 	// task there was a verb for a pool's enrolment KEY and none for the pool, so `--pool <pool_id>` could
 	// only ever name the one pool a tenant is born with. `palai pool create|list|set-strict`.
-	case "org", "project", "apikey", "secret", "poolkey", "pool":
+	case "org", "project", "apikey", "secret", "poolkey", "pool", "model":
 		return admin.Run(args[0], args[1:], os.Stdout, os.Stdin)
 	// `palai admin <resource> …` is the explicit spelling of the same family, and the machine lifecycle
 	// (E24 T5/T6) is reached ONLY this way — `palai admin runner approve|cordon|resume|revoke|list`. The prefix is not

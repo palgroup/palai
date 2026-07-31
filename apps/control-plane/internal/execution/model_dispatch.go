@@ -74,6 +74,11 @@ type ModelRoute struct {
 	Provider string
 	Model    string
 	Secret   modelbroker.SecretRef
+	// BaseURL is the CONNECTION's endpoint (E29, migration 000049), empty meaning the family's own. It is
+	// the seam that makes a custom OpenAI-compatible provider a PER-PROJECT property: before it the only
+	// way to move that endpoint was PALAI_OPENAI_COMPATIBLE_BASE_URL, read once at boot into a single
+	// adapter value, so one deployment had exactly one custom endpoint no matter how many projects it ran.
+	BaseURL string
 	// RevisionID / Revision are set ONLY when the route was resolved from the project's DB route. An
 	// empty RevisionID means this is the deployment default, which pins no revision.
 	RevisionID string
@@ -211,7 +216,10 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		// The credential the broker redeems at call time. A DB-routed project's ref is tenant-qualified,
 		// so the redemption is scoped to that project's own organization (E13 T8). Zero on the deployment
 		// default, which pins no revision.
-		Secret:        route.Secret,
+		Secret: route.Secret,
+		// The endpoint the CONNECTION named. Empty on the deployment default and on every OpenAI/Anthropic
+		// connection, in which case each adapter dials exactly where it did before this field existed.
+		BaseURL:       route.BaseURL,
 		RouteRevision: route.Revision,
 	}, onDelta)
 	cancelModel()

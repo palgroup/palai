@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"flag"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -295,5 +296,136 @@ func TestPoolKeyRevokeRejectsASecondPositional(t *testing.T) {
 	}
 	if cap.method != "" {
 		t.Fatalf("the rejected command still issued %s %s", cap.method, cap.path)
+	}
+}
+
+// THE CLI VERB THE CONSOLE CLAIMED EXISTED (E29).
+//
+// apps/web-console/lib/routes.ts told every operator, in the lead of the model-wiring screen: "This is a
+// read surface — every row here is created by the API or the CLI." The API half was true. THE CLI HALF WAS
+// NOT: `grep -rn 'model-connections' cmd/ | grep -v _test` returned nothing, so an operator who went looking
+// for the verb the console named found no verb at all. That sentence is now corrected AND made true, and
+// this table is the "made true" half.
+//
+// NOTE WHAT IS NOT IN ANY OF THESE ARG LISTS: a credential. A provider key is written with
+// `palai secret create` (stdin), and a connection then names the REF. That split is the whole write-only
+// discipline, and preserving it here is why there is no `--api-key` flag to add.
+func TestModelConnectionSubcommandsHitCorrectEndpoint(t *testing.T) {
+	cases := []struct {
+		name                                 string
+		args                                 []string
+		wantMethod, wantPath, wantBodySubstr string
+	}{
+		{"model create", []string{"model", "create", "--provider", "provider-one", "--secret-ref", "openai"},
+			"POST", "/v1/model-connections", `"provider":"provider-one"`},
+		// The third shape the product promises: an operator's own OpenAI-compatible endpoint.
+		{"model create custom endpoint", []string{"model", "create", "--provider", "openai-compatible", "--secret-ref", "vllm", "--endpoint", "http://10.0.0.11:8000/v1/chat/completions"},
+			"POST", "/v1/model-connections", `"base_url":"http://10.0.0.11:8000/v1/chat/completions"`},
+		{"model list", []string{"model", "list"}, "GET", "/v1/model-connections", ""},
+		{"model get", []string{"model", "get", "mconn_1"}, "GET", "/v1/model-connections/mconn_1", ""},
+		{"model verify", []string{"model", "verify", "mconn_1"}, "POST", "/v1/model-connections/mconn_1/verify", ""},
+		{"model routes", []string{"model", "routes"}, "GET", "/v1/model-routes", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cap capture
+			srv := stubServer(t, http.StatusOK, `{"object":"resource","id":"mroute_1"}`, &cap)
+			t.Setenv("PALAI_BASE_URL", srv.URL)
+			t.Setenv("PALAI_API_KEY", "admin-key-xyz")
+
+			var out bytes.Buffer
+			if err := Run(tc.args[0], tc.args[1:], &out, strings.NewReader("")); err != nil {
+				t.Fatalf("Run(%v): %v", tc.args, err)
+			}
+			if cap.method != tc.wantMethod || cap.path != tc.wantPath {
+				t.Errorf("%s %s, want %s %s", cap.method, cap.path, tc.wantMethod, tc.wantPath)
+			}
+			if tc.wantBodySubstr != "" && !strings.Contains(cap.body, tc.wantBodySubstr) {
+				t.Errorf("body = %q, want to contain %q", cap.body, tc.wantBodySubstr)
+			}
+		})
+	}
+}
+
+// NO FLAG ON THIS RESOURCE MAY CARRY A CREDENTIAL. The `model` verb registers flags for a provider family,
+// a secret REF NAME and a URL — every one of them a public fact — and the guard is written as a test rather
+// than a comment because the tempting next flag is `--api-key`, which would put a provider credential in
+// argv, in the shell history and in every `ps` on the box.
+func TestModelFlagsCarryNoCredential(t *testing.T) {
+	var f flags
+	fs := flag.NewFlagSet("model", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	f.register(fs, "model")
+
+	fs.VisitAll(func(fl *flag.Flag) {
+		for _, banned := range []string{"key", "secret-value", "value", "token", "password", "credential"} {
+			if fl.Name == banned {
+				t.Errorf("`palai model` registers --%s: a provider credential must never reach argv — "+
+					"write it with `palai secret create` (stdin) and name the REF here", fl.Name)
+			}
+		}
+	})
+}
+
+// `palai model route` IS THE HALF WITHOUT WHICH A CONNECTION IS A ROW NOTHING READS (E29).
+//
+// A run does not resolve a connection. It resolves an ALIAS, through a PUBLISHED revision, to a connection —
+// so an operator who created a connection and stopped has changed nothing observable about their deployment.
+// The three calls are asserted IN ORDER, because the order is the contract: a revision cannot exist before
+// its route, and a DRAFT revision steers nothing until the publish lands. Asserting only the last call would
+// pass on a command that published a revision of a route it never opened.
+func TestModelRoutePublishesTheRevisionItCreates(t *testing.T) {
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/v1/model-routes":
+			_, _ = io.WriteString(w, `{"id":"mroute_9","object":"model_route"}`)
+		case strings.HasSuffix(r.URL.Path, "/revisions"):
+			_, _ = io.WriteString(w, `{"id":"mrev_9","object":"model_route_revision"}`)
+		default:
+			_, _ = io.WriteString(w, `{"id":"mrev_9","published":true}`)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("PALAI_BASE_URL", srv.URL)
+	t.Setenv("PALAI_API_KEY", "admin-key-xyz")
+
+	var out bytes.Buffer
+	if err := Run("model", []string{"route", "--connection", "mconn_1", "--model", "gpt-4o-mini"}, &out, strings.NewReader("")); err != nil {
+		t.Fatalf("model route: %v", err)
+	}
+	want := []string{
+		"POST /v1/model-routes",
+		"POST /v1/model-routes/mroute_9/revisions",
+		"POST /v1/model-routes/mroute_9/revisions/mrev_9/publish",
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("calls = %v, want %v", seen, want)
+	}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Fatalf("call %d = %q, want %q (the ids must be the ones THIS command minted, not a reused one)", i, seen[i], want[i])
+		}
+	}
+}
+
+// A create that answers without an `id` stops the command instead of threading an empty string into the
+// next path. `POST /v1/model-routes//revisions` would 404, and the operator would go looking for a route
+// that was never the problem.
+func TestModelRouteRefusesAnIdlessCreate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"model_route"}`) // no id
+	}))
+	defer srv.Close()
+	t.Setenv("PALAI_BASE_URL", srv.URL)
+	t.Setenv("PALAI_API_KEY", "admin-key-xyz")
+
+	var out bytes.Buffer
+	err := Run("model", []string{"route", "--connection", "mconn_1", "--model", "gpt-4o-mini"}, &out, strings.NewReader(""))
+	if err == nil || !strings.Contains(err.Error(), "no `id`") {
+		t.Fatalf("err = %v, want a refusal naming the missing id", err)
 	}
 }

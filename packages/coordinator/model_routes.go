@@ -50,6 +50,9 @@ type ModelRouteTarget struct {
 	Provider   string
 	Model      string
 	SecretRef  string
+	// BaseURL is the CONNECTION's endpoint (000049), empty meaning the family's own. It is what makes a
+	// custom OpenAI-compatible provider a per-project property rather than a deployment-wide env var.
+	BaseURL string
 }
 
 // ModelRouteRevision is a created/published revision's projection. CreatedAt is populated only by a
@@ -69,7 +72,13 @@ type ModelConnectionRecord struct {
 	ID        string
 	Provider  string
 	SecretRef string
+	BaseURL   string
 	CreatedAt time.Time
+	// VerifiedAt / VerificationOutcome are the last credential probe's stamp. Zero/empty means no probe has
+	// ever run, which is NOT a failure and is rendered as its own state — a connection that was never
+	// verified routes exactly like one that was.
+	VerifiedAt          time.Time
+	VerificationOutcome string
 }
 
 // ModelRouteRecord is a route alias's read-back projection.
@@ -86,9 +95,12 @@ type ModelRouteRecord struct {
 func (s *Store) ProjectModelRoute(ctx context.Context, tenant Tenant) (ModelRouteTarget, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var target ModelRouteTarget
-	var provider, secretRef *string
+	// All three are LEFT-JOIN columns and therefore NULLable: a revision naming a connection that no longer
+	// resolves in this tenant returns a row with NULLs rather than no row, which is what makes the failure
+	// below FAIL CLOSED instead of falling through to the deployment credential (§27.7).
+	var provider, secretRef, baseURL *string
 	err := s.pool.QueryRow(ctx, storage.Query("ResolveProjectModelRoute"), tenant.Organization, tenant.Project, DefaultModelRouteAlias).
-		Scan(&target.RevisionID, &target.Revision, &target.Model, &provider, &secretRef)
+		Scan(&target.RevisionID, &target.Revision, &target.Model, &provider, &secretRef, &baseURL)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ModelRouteTarget{}, false, nil
 	}
@@ -100,6 +112,9 @@ func (s *Store) ProjectModelRoute(ctx context.Context, tenant Tenant) (ModelRout
 			target.RevisionID, ErrModelConnectionNotFound)
 	}
 	target.Provider, target.SecretRef = *provider, *secretRef
+	if baseURL != nil {
+		target.BaseURL = *baseURL
+	}
 	return target, true, nil
 }
 
@@ -117,9 +132,9 @@ func (s *Store) ListModelConnections(ctx context.Context, tenant Tenant) ([]Mode
 	defer rows.Close()
 	out := []ModelConnectionRecord{}
 	for rows.Next() {
-		var rec ModelConnectionRecord
-		if err := rows.Scan(&rec.ID, &rec.Provider, &rec.SecretRef, &rec.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan model connection: %w", err)
+		rec, err := scanModelConnection(rows)
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, rec)
 	}
@@ -132,14 +147,32 @@ func (s *Store) ListModelConnections(ctx context.Context, tenant Tenant) ([]Mode
 // GetModelConnection reads one connection in scope; an absent/foreign id is ErrModelConnectionNotFound.
 func (s *Store) GetModelConnection(ctx context.Context, tenant Tenant, connectionID string) (ModelConnectionRecord, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	var rec ModelConnectionRecord
-	err := s.pool.QueryRow(ctx, storage.Query("GetModelConnection"), connectionID, tenant.Organization, tenant.Project).
-		Scan(&rec.ID, &rec.Provider, &rec.SecretRef, &rec.CreatedAt)
+	rec, err := scanModelConnection(s.pool.QueryRow(ctx, storage.Query("GetModelConnection"), connectionID, tenant.Organization, tenant.Project))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ModelConnectionRecord{}, ErrModelConnectionNotFound
 	}
 	if err != nil {
-		return ModelConnectionRecord{}, fmt.Errorf("get model connection: %w", err)
+		return ModelConnectionRecord{}, err
+	}
+	return rec, nil
+}
+
+// scanModelConnection reads one connection row. Shared by the list and the get so the two projections
+// cannot drift into disagreeing about a column — the shape scanModelRouteRevision established below.
+// verified_at is NULLable (no probe has ever run); every other column is NOT NULL by 000049's default.
+func scanModelConnection(row pgx.Row) (ModelConnectionRecord, error) {
+	var (
+		rec        ModelConnectionRecord
+		verifiedAt *time.Time
+	)
+	if err := row.Scan(&rec.ID, &rec.Provider, &rec.SecretRef, &rec.BaseURL, &rec.CreatedAt, &verifiedAt, &rec.VerificationOutcome); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ModelConnectionRecord{}, err
+		}
+		return ModelConnectionRecord{}, fmt.Errorf("scan model connection: %w", err)
+	}
+	if verifiedAt != nil {
+		rec.VerifiedAt = *verifiedAt
 	}
 	return rec, nil
 }
@@ -254,13 +287,28 @@ func scanModelRouteRevision(row pgx.Row) (ModelRouteRevision, error) {
 // ponytail: project-scoped only. 000001 allows a NULL project_id (an org-wide connection), but migration
 // 000029's policy compares project_id to the scoped project, so a NULL-project row is invisible to a
 // project-scoped read — an org-wide connection would need a policy change, not a code change.
-func (s *Store) CreateModelConnection(ctx context.Context, tenant Tenant, provider, secretRef string) (string, error) {
+func (s *Store) CreateModelConnection(ctx context.Context, tenant Tenant, provider, secretRef, baseURL string) (string, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	id := newModelRoutingID("mconn")
-	if _, err := s.pool.Exec(ctx, storage.Query("InsertModelConnection"), id, tenant.Organization, tenant.Project, provider, secretRef); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("InsertModelConnection"), id, tenant.Organization, tenant.Project, provider, secretRef, baseURL); err != nil {
 		return "", fmt.Errorf("insert model connection: %w", err)
 	}
 	return id, nil
+}
+
+// RecordModelConnectionVerification stamps the outcome of a credential probe on a connection the caller
+// owns. It writes a CACHE, not a gate: nothing on the dispatch path reads these columns, so a failed stamp
+// costs an operator a display and never a run. An absent/foreign id is ErrModelConnectionNotFound.
+func (s *Store) RecordModelConnectionVerification(ctx context.Context, tenant Tenant, connectionID, outcome string) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	tag, err := s.pool.Exec(ctx, storage.Query("RecordModelConnectionVerification"), connectionID, tenant.Organization, tenant.Project, outcome)
+	if err != nil {
+		return fmt.Errorf("record model connection verification: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrModelConnectionNotFound
+	}
+	return nil
 }
 
 // CreateModelRoute opens (or returns) the named alias for a project. It is get-or-create: an alias names

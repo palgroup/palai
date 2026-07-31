@@ -17,6 +17,10 @@ type ModelRoutes struct{ client *Client }
 type ModelConnectionCreateParams struct {
 	Provider  string `json:"provider"`
 	SecretRef string `json:"secret_ref"`
+	// BaseURL is this connection's OWN endpoint (E29). Required by the `openai-compatible` family — that
+	// family has no endpoint of its own, and an empty one would dial the OpenAI API with a key minted for
+	// something else — and refused on families that do. Omit it for `provider-one`/`provider-two`.
+	BaseURL string `json:"base_url,omitempty"`
 }
 
 // ModelRouteCreateParams opens a named route alias.
@@ -36,6 +40,16 @@ type ModelRouteRevisionCreateParams struct {
 func (m *ModelRoutes) CreateConnection(ctx context.Context, params ModelConnectionCreateParams, opts ...CallOption) (*ModelConnection, error) {
 	var out ModelConnection
 	return ptrOrErr(&out, m.post(ctx, "/v1/model-connections", params, &out, opts))
+}
+
+// VerifyConnection performs a REAL credential probe against the connection's endpoint (E29): the control
+// plane redeems the connection's own credential and asks the endpoint whether it accepts it. It answers 200
+// for every outcome it reached a verdict on, INCLUDING a rejected credential — the request succeeded, and
+// the verdict is in the body. Read `outcome`: `credential_accepted`, `credential_rejected`, `unreachable`,
+// `transient`, or `not_probed`, which means nothing was checked and must never be read as a pass.
+func (m *ModelRoutes) VerifyConnection(ctx context.Context, connectionID string, opts ...CallOption) (*ModelConnectionVerification, error) {
+	var out ModelConnectionVerification
+	return ptrOrErr(&out, m.post(ctx, "/v1/model-connections/"+escapePathSegment(connectionID)+"/verify", nil, &out, opts))
 }
 
 // CreateRoute opens a named route alias for the project (201).

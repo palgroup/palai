@@ -69,14 +69,29 @@ func (a Adapter) Execute(ctx context.Context, req modelbroker.Request, secret st
 	if prober == nil {
 		prober = defaultProber()
 	}
-	record, err := prober.Probe(ctx, a.effectiveBaseURL(), secret, req.Model)
+	// THE PROBE MUST ASK THE ENDPOINT THE RUN WILL USE. The capability cache is keyed by base URL, so
+	// probing the DEPLOYMENT's endpoint while the run dials the CONNECTION's would admit a run against
+	// another server's capabilities — and cache that answer under the wrong key for the whole TTL. Since
+	// E29 the connection carries its own URL, so `req` is the authority here, exactly as it is in the
+	// embedded adapter's own endpoint resolution.
+	endpoint := a.endpointFor(req)
+	record, err := prober.Probe(ctx, endpoint, secret, req.Model)
 	if err != nil {
 		return modelbroker.Result{}, fmt.Errorf("capability probe: %w", err)
 	}
-	if err := admit(a.effectiveBaseURL(), req, record); err != nil {
+	if err := admit(endpoint, req, record); err != nil {
 		return modelbroker.Result{}, err
 	}
 	return a.Adapter.Execute(ctx, req, secret, onDelta)
+}
+
+// endpointFor resolves this request's endpoint with the same precedence the embedded adapter uses: the
+// connection's URL, else the deployment's, else the vendor default.
+func (a Adapter) endpointFor(req modelbroker.Request) string {
+	if req.BaseURL != "" {
+		return req.BaseURL
+	}
+	return a.effectiveBaseURL()
 }
 
 func (a Adapter) effectiveBaseURL() string {

@@ -106,6 +106,7 @@ func (o *Orchestrator) effectiveRoute(ctx context.Context, st *attemptState) (Mo
 			Provider:   target.Provider,
 			Model:      target.Model,
 			Secret:     TenantSecretRef(st.tenant.Organization, target.SecretRef),
+			BaseURL:    target.BaseURL,
 			RevisionID: target.RevisionID,
 			Revision:   target.Revision,
 		}

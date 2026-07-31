@@ -15,9 +15,12 @@
 -- connection_id) are never rewritten — a revise INSERTs a new revision — and the single conditional
 -- published_at merge below is the ONE legitimate mutation.
 
+-- InsertModelConnection. base_url (000049) is the CONNECTION's endpoint — '' meaning the family's own,
+-- which is every OpenAI and Anthropic row. It is vetted through packages/egress in the store BEFORE it
+-- reaches this statement; nothing downstream re-checks it, so that write path is the whole gate.
 -- name: InsertModelConnection
-INSERT INTO model_connections (id, organization_id, project_id, provider, secret_ref)
-VALUES ($1, $2, $3, $4, $5);
+INSERT INTO model_connections (id, organization_id, project_id, provider, secret_ref, base_url)
+VALUES ($1, $2, $3, $4, $5, $6);
 
 -- ModelConnectionExists verifies a connection is in the caller's scope before a revision binds it, so a
 -- revision can never name a foreign/unknown connection.
@@ -64,12 +67,22 @@ SELECT 1 FROM model_route_revisions WHERE id = $1 AND route_id = $2;
 -- No query here selects a credential value: a connection returns its secret REFERENCE name only.
 
 -- name: ListModelConnections
-SELECT id, provider, secret_ref, created_at FROM model_connections
+SELECT id, provider, secret_ref, base_url, created_at, verified_at, verification_outcome
+FROM model_connections
 WHERE organization_id = $1 AND project_id = $2
 ORDER BY id;
 
 -- name: GetModelConnection
-SELECT id, provider, secret_ref, created_at FROM model_connections
+SELECT id, provider, secret_ref, base_url, created_at, verified_at, verification_outcome
+FROM model_connections
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- RecordModelConnectionVerification stamps the last credential probe. It is a CACHE OF AN OBSERVATION and
+-- gates nothing: no dispatch path reads these columns, and a connection that was never probed routes
+-- exactly like one that was. The tenant predicate is carried here as well as by RLS, for the reason the
+-- header gives — a system-scoped or BYPASSRLS caller would otherwise stamp a foreign row.
+-- name: RecordModelConnectionVerification
+UPDATE model_connections SET verified_at = clock_timestamp(), verification_outcome = $4
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
 -- name: ListModelRoutes
@@ -102,7 +115,7 @@ WHERE id = $1 AND route_id = $2;
 -- ORDER BY is fully determined (revision, then id) so selection is deterministic even if an alias were ever
 -- to name two lineages.
 -- name: ResolveProjectModelRoute
-SELECT rev.id, rev.revision, rev.config->>'model', conn.provider, conn.secret_ref
+SELECT rev.id, rev.revision, rev.config->>'model', conn.provider, conn.secret_ref, conn.base_url
 FROM model_routes r
 JOIN model_route_revisions rev ON rev.route_id = r.id
 LEFT JOIN model_connections conn

@@ -181,14 +181,52 @@ func (e Event) MarshalJSON() ([]byte, error) {
 // ModelConnection binds a provider family to a secret REF (never a value). It is a lossless
 // wrapper so a newer server's added fields survive.
 type ModelConnection struct {
-	ID             string                     `json:"id"`
-	Object         string                     `json:"object"`
-	Provider       string                     `json:"provider"`
-	SecretRef      string                     `json:"secret_ref"`
-	ProjectID      string                     `json:"project_id,omitempty"`
-	OrganizationID string                     `json:"organization_id,omitempty"`
-	CreatedAt      string                     `json:"created_at,omitempty"`
-	Extra          map[string]json.RawMessage `json:"-"`
+	ID        string `json:"id"`
+	Object    string `json:"object"`
+	Provider  string `json:"provider"`
+	SecretRef string `json:"secret_ref"`
+	// BaseURL is this connection's own endpoint, absent when it uses the family's (E29). It is an ADDRESS,
+	// and the reason it reads back when the credential never does: an operator must be able to see which of
+	// two connections points at their own model server, and an endpoint is not a secret.
+	BaseURL string `json:"base_url,omitempty"`
+	// VerifiedAt / VerificationOutcome are the last credential probe's stamp; absent means no probe has
+	// ever run, which is not a failure. They are a CACHE and gate nothing.
+	VerifiedAt          string                     `json:"verified_at,omitempty"`
+	VerificationOutcome string                     `json:"verification_outcome,omitempty"`
+	ProjectID           string                     `json:"project_id,omitempty"`
+	OrganizationID      string                     `json:"organization_id,omitempty"`
+	CreatedAt           string                     `json:"created_at,omitempty"`
+	Extra               map[string]json.RawMessage `json:"-"`
+}
+
+// ModelConnectionVerification is one credential probe's finding (E29). `Checked` is the sentence the server
+// sends about what a probe DOES NOT establish, carried here rather than only in a doc comment so a caller
+// rendering this struct cannot present it as more than it is.
+type ModelConnectionVerification struct {
+	Object       string                     `json:"object"`
+	ConnectionID string                     `json:"connection_id"`
+	Provider     string                     `json:"provider"`
+	Outcome      string                     `json:"outcome"`
+	Status       int                        `json:"status,omitempty"`
+	Endpoint     string                     `json:"endpoint,omitempty"`
+	Detail       string                     `json:"detail,omitempty"`
+	Checked      string                     `json:"checked,omitempty"`
+	Extra        map[string]json.RawMessage `json:"-"`
+}
+
+func (m *ModelConnectionVerification) UnmarshalJSON(b []byte) error {
+	type alias ModelConnectionVerification
+	var a alias
+	if err := forwardUnmarshal(b, &a, &a.Extra); err != nil {
+		return err
+	}
+	*m = ModelConnectionVerification(a)
+	return nil
+}
+
+func (m ModelConnectionVerification) MarshalJSON() ([]byte, error) {
+	type alias ModelConnectionVerification
+	return forwardMarshal(alias(m), m.Extra)
 }
 
 func (m *ModelConnection) UnmarshalJSON(b []byte) error {

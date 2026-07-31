@@ -45,19 +45,27 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 		}
 	}
 
-	// E29's session_list is the current chain head; E26 T1's background_tasks is the link before it.
-	// E29, like E26, E25 and E24, has exactly ONE migration and exactly one task owns it, so this pin
-	// stays true for the whole epic — that is the structural half of "two parallel tasks cannot both take
-	// 000048". THE NAME IS PINNED AS WELL AS THE NUMBER, and that is what makes this a rename guard too:
-	// `git mv` stages the OLD content, so a renumbering whose header edit is never re-added would leave a
-	// file whose name says 48 and whose marker says 47, and only the pair below catches it.
+	// E29's model_connection_endpoint is the current chain head; E29's own session_list is the link before it.
+	//
+	// THE "ONE MIGRATION PER EPIC" ASSUMPTION THIS COMMENT USED TO CARRY IS FALSE, and E29 is where it broke.
+	// It read: "E29, like E26, E25 and E24, has exactly ONE migration and exactly one task owns it, so this
+	// pin stays true for the whole epic — that is the structural half of 'two parallel tasks cannot both take
+	// 000048'." E29 has two, taken by two tasks running in parallel (the session list at 48, the model
+	// connection endpoint at 49), so the structural half was never structural: it was a property of the four
+	// epics that happened to need one migration each. What actually keeps two parallel tasks off one number
+	// is THIS TEST failing on whichever lands second, and the integrator renumbering — which is what
+	// happened here, and which is the only mechanism that was ever doing the work.
+	//
+	// THE NAME IS PINNED AS WELL AS THE NUMBER, and that is what makes this a rename guard too: `git mv`
+	// stages the OLD content, so a renumbering whose header edit is never re-added would leave a file whose
+	// name says 49 and whose marker says 48, and only the pair below catches it.
 	head := migrations[len(migrations)-1]
-	if head.Version != 48 || head.Name != "session_list" {
-		t.Fatalf("chain head = %06d_%s, want 000048_session_list", head.Version, head.Name)
+	if head.Version != 49 || head.Name != "model_connection_endpoint" {
+		t.Fatalf("chain head = %06d_%s, want 000049_model_connection_endpoint", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 47 || penultimate.Name != "background_tasks" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000047_background_tasks", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 48 || penultimate.Name != "session_list" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000048_session_list", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path
