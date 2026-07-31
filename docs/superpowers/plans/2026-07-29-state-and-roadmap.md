@@ -8,6 +8,27 @@
 
 ---
 
+## SONRASI (2026-07-31) — bu belge bir KAYITTIR, güncel durum değildir
+
+Bu belge 29 Temmuz gecesinin tortusudur ve **o hâliyle bırakılmıştır**; aşağıdaki §8 "şu an koşan"
+tablosu o geceye aittir. Sonrasında kapanan:
+
+- **E24 runner fleet** (8/8, `runner-fleet-0.1.0`) — §5'in "tek runner" ve §8'in "filo" satırları KAPANDI.
+- **E25 admin console** (9/9 + tasarım geçişi, `admin-console-0.1.0`) — §4'ün "konsol 22 yüzeyin 0'ına
+  yazıyor" ve §4'ün güvenlik bölümü KAPANDI: konsolda artık kimlik kapısı var.
+- **E26 background execution** (7/7, `background-execution-0.1.0`) — bu belgede henüz yoktu.
+- **Cloud smoke'un üç bulgusu** (§3'ün 3/5/6'sı) düzeltildi; shell wall-time'ına ölçülmüş bir varsayılan
+  geldi (10m).
+
+**Hâlâ geçerli olan:** §3'ün yürünemeyen bacakları (özellikle **`linux/amd64` doğrulanmadı** — bu
+makineden kapatılamayan tek boşluk), §5'in "bir runner tool koşturmuyor" ölçümü (E24 T7 ertelendi), ve
+§8'in owner'a bağlı satırları (Azure, yayın, API-3/API-4).
+
+**Bu belgeden sonra ortaya çıkan ve burada OLMAYAN boşluk:** E24'ün filosunun ve `config_policy`'nin
+konsolda ekranı yok — E25'in planı E24 var olmadan yazıldı.
+
+---
+
 ## 0. İsimlendirme — sabitlendi
 
 | İsim | Ne | Bugünkü karşılığı |

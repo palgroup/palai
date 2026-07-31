@@ -599,6 +599,24 @@ Bu beş epic master plan yazıldığında yoktu. **Sebep tek bir cümledir:** E1
 
 **Sırada owner'ın kararı var, kodun değil:** (1) gerçek bir iOS repo ve gerçek bir ticket'la uçtan uca deneme, (2) yayın — registry (Docker Hub vs GHCR), `@palai/sdk` için npm org, ve tek CODEOWNER'la **her zaman reddeden** iki-kişilik `ApprovalGate` kuralı.
 
+---
+
+### E24–E26 — filo, konsol, ve arka plan icrası (2026-07-30/31)
+
+| Epic | Child plan | Bundle | UAT | Ne kanıtlar |
+|---|---|---|---|---|
+| **E24** | `phase-24-runner-fleet.md` | `runner-fleet-0.1.0` | FLT-001..005 | Makineler **kimlikli bir envanterdir** (id'yi sunucu mintler), havuzlar kapsamlıdır, anahtarlar iptal edilebilir ve **iptal enroll olmuşları durdurmaz**, tenant runner düzlemine girer, kapasitesiz run **park eder** |
+| **E25** | `phase-25-admin-console.md` | `admin-console-0.1.0` | CON-001..007 | Kimliksiz hiçbir yazma geçmez; yazılan hiçbir secret DEĞERİ hiçbir okuma yolundan dönmez; bir yabancı environment/depo/ajan/MCP tool'unu **`curl` yazmadan** kurar |
+| **E26** | `phase-26-background-execution.md` | `background-execution-0.1.0` | BGT-001..005 | Model bir görevi arka plana atar, **bloke olmaz**, bitince **tam bir kez** çağrılır — ve durduramayacağı bir şey başlatamaz |
+
+**E24 T7 (icra relay'i) owner kararıyla ERTELENDİ**, ve sonucu bu üç bundle'ın ortak tavanıdır: **tool'lar hâlâ control plane'in process'inde koşar, yani bir Mac ancak control plane onun üstündeyse Mac'tir.** Filo gerçektir, uzaktan **icra** değildir.
+
+**Hiçbir tier ilerlemedi** — §6 leg 1 hâlâ açık ve üçü de onu BÜYÜTTÜ. Kural: bir tool'u asenkron yapmak, o tool'un koştuğu düzlemin kanıtı değildir; bir kontrol eklemek, o kontrolün gerçek bir filoda çalıştığının kanıtı değildir.
+
+**Bu üç epic boyunca on plan iddiası yanlış ölçüldü ve hiçbiri `main`'e inmedi.** Sebepleri tek şekildeydi ve `CLAUDE.md`'ye kural olarak yazıldı: *"beyan edilmiş / adlandırılmış / rotalanmış" ifadesi "oluyor" diye okundu.*
+
+**AÇIK KALAN, ADIYLA:** E24'ün filosunun (havuzlar, anahtarlar, runner'lar) ve `config_policy`'nin (`approvers`, `pool`) **konsolda ekranı yoktur** — E25'in planı E24 var olmadan yazıldı. Yönetimi bugün yalnız CLI/API'dendir.
+
 ## 9. UAT coverage ve applicability matrisi
 
 | UAT ailesi | Epic | LP-0 | SH Beta | SH Stable | Not |
