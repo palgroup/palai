@@ -1,6 +1,10 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "@playwright/test";
 
+import { CONSOLE_ROUTES } from "../lib/routes";
 import { CONSOLE_PASSWORD, IS_REAL, NEXT_PORT, UNCONFIGURED_PORT, UPSTREAM, WCAG_TAGS } from "./constants";
 import { announceProfile, sessionHeaders, signIn, signInViaForm } from "./profile";
 
@@ -267,4 +271,157 @@ test("the login page is axe-clean and operable with the keyboard alone", async (
   // usually breaks.
   const withError = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
   expect(withError.violations, JSON.stringify(withError.violations, null, 2)).toEqual([]);
+});
+
+// CON-013: NO CONSOLE FORM CAN PUT A FIELD IN THE URL, AND THE SAFETY IS IN THE HTML RATHER THAN IN A SCRIPT
+// ARRIVING.
+//
+// OBSERVED, on a running console: the operator opened /login, typed the password, submitted — and the address
+// bar read `/login?password=<their password>`. From there it was in the browser's history, in the server's
+// access log, and in the `Referer` of every request that page made afterwards.
+//
+// THE CAUSE IS NOT A MISSING preventDefault(). components/ResourceForm.tsx calls it as its handler's first
+// statement and always has. That handler only exists once React has HYDRATED, and a `<form>` with no `method`
+// defaults to GET (HTML Living Standard, the form element's method attribute: "The missing value default and
+// invalid value default are the GET state"). So whenever hydration has not happened, the browser submits
+// NATIVELY and every named field goes into the query string. The only thing preventing the leak was
+// JavaScript attaching at all.
+//
+// AND IT IS NOT A NARROW WINDOW. Measured on `next dev` (Next 16.2.10, Turbopack) at 127.0.0.1:3203, with the
+// pre-fix component in the tree — NOTHING on the page hydrates, so every form falls back to a native GET,
+// every time:
+//
+//   /login          login-form                ?password=SENTINEL-password
+//   /agents         agent-create-form         ?agent-name=SENTINEL-agent-name
+//   /environments   environment-create-form   ?environment-name=…&environment-description=…
+//   /environments   environment-value-form    ?environment-key=…&value=SENTINEL-value      ← SecretField
+//   /fleet          pool-create-form          ?pool-name=…&pool-posture=…&pool-os=…&pool-arch=…
+//   /policy         policy-form               ?policy-allowed-models=…&…&policy-approvers=…
+//   /repositories   repository-binding-form   ?binding-provider=…&binding-identity=…&binding-clone-url=…&…
+//   /tools          mcp-connection-form       ?mcp-name=…&mcp-url=…
+//
+// Ten forms render server-side across seven routes; eight carried values, and all ten navigated with a query
+// string. `environment-value-form`'s `value` is SecretField — uncontrolled, living only in the DOM, which is
+// exactly the shape a native submit serialises into an address bar. On the same dev server, `POST
+// /api/console/login` did not appear in the network log AT ALL, and no element carried a `__reactFiber$` key
+// after six seconds.
+//
+// THE DEV/PRODUCTION DISTINCTION, STATED EXACTLY. On a production build (`next start`) the same probe reports
+// `hydrated: true` and `POST /api/console/login` DOES fire, so a production console does not leak the
+// password once hydration completes. That is not a reason to call the dev finding harmless: it is the same
+// markup either way, the operator hitting it was a real person losing a real credential, and "safe as long as
+// a bundle attaches in time" is a property no HTML attribute should have to borrow from JavaScript. The
+// dev-mode inertness itself is a SEPARATE defect and is not addressed here.
+//
+// WHY NOTHING CAUGHT IT: every login proof in this file drives /api/console/login with `fetch`, and the two
+// that do use the page (signInViaForm, the keyboard arm above) both act on a HYDRATED page and then assert
+// what the response was — never what the ADDRESS BAR then said. The endpoint was proven; the surface a human
+// uses was not.
+//
+// The value typed below is a sentinel that is not a credential anywhere. A leak assertion must never be the
+// reason a real password is written into a test, a fixture, a URL or a failure message — and this one prints
+// the URL on failure by design.
+const URL_LEAK_SENTINEL = "not-a-password-and-never-was";
+
+// THE SWEEP LOOKS IN BOTH DIRECTIONS, because one direction cannot see what the other finds.
+//
+// The SERVED sweep walks routes and reads what the server actually sent — it catches an unprotected form that
+// exists. It CANNOT catch a form that renders only behind data a bootstrap stack has none of. The SOURCE
+// sweep walks the tree for `<form` elements — it catches the one the served sweep would never render, and it
+// is the direction that makes a NEW form impossible rather than merely remembered.
+test("EVERY form the console serves is method=post — the sweep walks the route table AND the source", async () => {
+  // DIRECTION 1 — THE CANONICAL ROUTE LIST. lib/routes.ts is the console's one source of navigation, so a new
+  // page adds a row there and is swept here without anyone remembering to. `/login` is added explicitly
+  // because it is deliberately NOT in that table (it lives outside the session gate — see the axe comment on
+  // the login page), and a hand-written list of one is the honest shape of that exception.
+  //
+  // No session: the static shell renders for an anonymous client (the gate is in the relay, not the layout —
+  // see the FAIL-CLOSED test above), which is why a plain fetch is enough to see this markup.
+  const swept: string[] = [];
+  for (const path of ["/login", ...CONSOLE_ROUTES.map((r) => r.path)]) {
+    const html = await (await fetch(`${ORIGIN}${path}`)).text();
+    for (const tag of html.match(/<form[^>]*>/g) ?? []) {
+      const testId = /data-testid="([^"]+)"/.exec(tag)?.[1] ?? "(no testid)";
+      swept.push(`${path} ${testId}`);
+      expect(tag, `${path} serves a form with no method="post" — a native submit puts every named field in the query string: ${tag}`).toMatch(/method="post"/i);
+    }
+  }
+  // The sweep must have SEEN something. A regex that silently matches nothing is the failure mode this
+  // repository keeps meeting, and it would report green for the condition it exists to detect.
+  expect(swept.length, "the served sweep found no form at all — it is asserting nothing").toBeGreaterThanOrEqual(8);
+  // eslint-disable-next-line no-console -- the inventory IS the claim; a reader must see what was covered.
+  console.log(`FORM METHOD SWEEP — ${swept.length} served form(s): ${swept.join(", ")}`);
+
+  // DIRECTION 2 — THE SOURCE WALK. Every `<form` element in the tree must be ResourceForm's, because that is
+  // the one that carries the attribute. A second `<form>` anywhere else would be a form nobody gave a method,
+  // and if it renders only behind data (a selected tool, a non-empty list) the sweep above would never see it.
+  //
+  // The match is deliberately blunt: a `<form` in a COMMENT counts too, which means a file that merely
+  // discusses form markup fails this. That is the safe direction — it fails loudly and a human reads two
+  // lines — where the alternative is a parser that quietly disagrees with the compiler.
+  const roots = ["app", "components", "lib"].map((d) => resolve(process.cwd(), d));
+  const withForm: string[] = [];
+  for (const root of roots) {
+    for (const entry of readdirSync(root, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile() || !/\.tsx?$/.test(entry.name)) continue;
+      const full = resolve(entry.parentPath ?? root, entry.name);
+      if (/<form[\s>]/.test(readFileSync(full, "utf8"))) withForm.push(full.replace(`${process.cwd()}/`, ""));
+    }
+  }
+  expect(withForm, "exactly one file may contain a <form> element, and it must be the shared one that carries method=post").toEqual(["components/ResourceForm.tsx"]);
+  expect(readFileSync(resolve(process.cwd(), "components/ResourceForm.tsx"), "utf8"), "the one form element in the tree must carry method=post").toMatch(/<form[\s\S]*?method="post"[\s\S]*?>/);
+});
+
+test("the login form cannot put the password in the URL — method=post is in the HTML, so no script has to arrive", async ({ page, baseURL }) => {
+  // ARM 1 — THE SERVED BYTES for the one form that carries a credential. The sweep above covers all ten; this
+  // repeats it for login so a failure here reads as "the credential form" rather than as one row of a list.
+  const html = await (await fetch(`${ORIGIN}/login`)).text();
+  const formTag = /<form[^>]*data-testid="login-form"[^>]*>/.exec(html)?.[0] ?? "";
+  expect(formTag, "the login form must be in the SERVER-RENDERED html — a client-only form has no pre-hydration shape to assert").not.toBe("");
+  expect(formTag, `a form with no method= submits as GET and puts every named field in the query string: ${formTag}`).toMatch(/method="post"/i);
+
+  // ARM 2 — THE FAILURE MODE, REPRODUCED DETERMINISTICALLY. The page's own scripts are blocked, so React
+  // never hydrates: the same state `next dev` is in permanently, held open on a production build. Playwright's
+  // own tooling is injected into an isolated world, so fill() and click() still work here.
+  //
+  // WHY THIS RATHER THAN A `next dev` SERVER, which is the more faithful reproduction and was measured to
+  // work: (1) `next dev` and `next start` share `.next`, and this suite serves two production consoles from
+  // it while tests/profile.ts browserServedAssets() walks `.next/static` for the two secret sweeps — a dev
+  // server writing there is a change underneath the specs this task must not weaken; (2) the dev-mode
+  // hydration failure is a separate defect that is being routed for a FIX, and an arm that depends on it
+  // would silently stop testing the pre-hydration window the day it is fixed, passing for the wrong reason.
+  // Blocking the scripts asserts the property directly and cannot decay.
+  await page.route(/\/_next\/static\/.*\.js(\?.*)?$/, (route) => route.abort());
+  await page.goto("/login");
+  const form = page.getByTestId("login-form");
+  await expect(form).toBeVisible();
+  // THE ARM MUST PROVE IT IS UNHYDRATED, or it is asserting preventDefault() and nothing else — and the
+  // obvious ways to check that are BOTH vacuous, measured rather than reasoned about:
+  //
+  //   scripts allowed  {"onsubmitNull":true,"literalKey":false,"prefixedKeys":["__reactFiber$t6kmppufgoj","__reactProps$t6kmppufgoj"]}
+  //   scripts blocked  {"onsubmitNull":true,"literalKey":false,"prefixedKeys":[]}
+  //
+  // `el.onsubmit === null` is true on a HYDRATED form too (React binds synthetic events at the root and never
+  // sets the DOM property), and `"__reactProps$" in el` is false on a hydrated form too — React 19 suffixes
+  // that key with a per-render id, so the bare name is never present. Either check passes in both states and
+  // would have let this arm run against a fully hydrated page while looking rigorous. The PREFIX is the only
+  // one of the three that separates them.
+  const hydrated = await form.evaluate((el) => Object.keys(el).some((k) => k.startsWith("__reactProps$")));
+  expect(hydrated, "scripts were blocked, so React must NOT have hydrated — otherwise this arm proves preventDefault(), not the markup").toBe(false);
+
+  await page.getByTestId("password-input").fill(URL_LEAK_SENTINEL);
+  await Promise.all([page.waitForLoadState("load"), page.getByTestId("login-button").click()]);
+
+  const landed = new URL(page.url());
+  expect(landed.search, `the credential reached the URL: ${page.url()}`).toBe("");
+  expect(page.url(), "no part of a submitted field may appear in the address").not.toContain(URL_LEAK_SENTINEL);
+  // And the Referer that page would now stamp on every subsequent request carries nothing either.
+  expect(await page.evaluate(() => document.location.href).catch(() => landed.href)).not.toContain(URL_LEAK_SENTINEL);
+
+  // WHAT THIS DELIBERATELY DOES NOT CLAIM: that a pre-hydration submit SIGNS IN. It does not, and it must
+  // not — /api/console/login takes JSON, so there is no `action` that a native form-encoded POST could
+  // usefully reach (see components/ResourceForm.tsx). A pre-hydration submit is a visible failure, and a
+  // visible failure is the correct trade against a silent leak. The claim is only that the credential never
+  // travels in the address, which is the property that survives the browser's history and the access log.
+  expect(baseURL, "sanity: the arms above ran against the configured console").toBe(ORIGIN);
 });
