@@ -268,3 +268,75 @@ test("the login page is axe-clean and operable with the keyboard alone", async (
   const withError = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
   expect(withError.violations, JSON.stringify(withError.violations, null, 2)).toEqual([]);
 });
+
+// CON-013: THE PASSWORD CANNOT REACH THE URL, AND THE SAFETY IS IN THE HTML RATHER THAN IN A SCRIPT ARRIVING.
+//
+// OBSERVED, on a running console: the operator opened /login, typed the password, submitted — and the address
+// bar read `/login?password=<their password>`. From there it was in the browser's history, in the server's
+// access log, and in the `Referer` of every request that page made afterwards.
+//
+// components/ResourceForm.tsx DOES call event.preventDefault() as its handler's first statement. That handler
+// only exists once React has HYDRATED. A `<form>` with no `method` defaults to GET (HTML Living Standard, the
+// form element's method attribute: "The missing value default and invalid value default are the GET state"),
+// so in the window before the bundle lands — a cold `next dev` compile, a slow network, a chunk that 404s
+// after a bad deploy — the browser submits NATIVELY and every named field goes into the query string. The
+// defect was never a missing preventDefault; it was that the only thing preventing the leak was JavaScript
+// arriving in time.
+//
+// WHY THIS FILE'S EXISTING ARMS DID NOT CATCH IT, which is the part worth keeping: every login proof here
+// drives /api/console/login with `fetch`, and the two that do use the page (signInViaForm, the keyboard arm
+// above) both act on a HYDRATED page and then assert what the response was — never what the ADDRESS BAR then
+// said. The endpoint was proven; the surface a human uses was not.
+//
+// The value typed below is a sentinel that is not a credential anywhere. A leak assertion must never be the
+// reason a real password is written into a test, a fixture, a URL or a failure message — and this one prints
+// the URL on failure by design.
+const URL_LEAK_SENTINEL = "not-a-password-and-never-was";
+
+test("the login form cannot put the password in the URL — method=post is in the HTML, so no script has to arrive", async ({ page, baseURL }) => {
+  // ARM 1 — THE SERVED BYTES. No browser, no hydration, nothing that can be timed out: the HTML the server
+  // sends already says how a native submit travels. This is the arm that cannot go stale, because it asserts
+  // the attribute rather than a behaviour that depends on when a bundle lands.
+  const html = await (await fetch(`${ORIGIN}/login`)).text();
+  const formTag = /<form[^>]*data-testid="login-form"[^>]*>/.exec(html)?.[0] ?? "";
+  expect(formTag, "the login form must be in the SERVER-RENDERED html — a client-only form has no pre-hydration shape to assert").not.toBe("");
+  expect(formTag, `a form with no method= submits as GET and puts every named field in the query string: ${formTag}`).toMatch(/method="post"/i);
+
+  // ARM 2 — THE ACTUAL FAILURE MODE. The page's own scripts are blocked, so React never hydrates and
+  // onSubmit does not exist. This is the hydration window, held open: whatever the browser does here is what
+  // the operator got. Playwright's own tooling is injected into an isolated world, so fill() and click()
+  // still work while the page has no JavaScript of its own.
+  await page.route(/\/_next\/static\/.*\.js(\?.*)?$/, (route) => route.abort());
+  await page.goto("/login");
+  const form = page.getByTestId("login-form");
+  await expect(form).toBeVisible();
+  // THE ARM MUST PROVE IT IS UNHYDRATED, or it is asserting preventDefault() and nothing else — and the
+  // obvious ways to check that are BOTH vacuous, measured rather than reasoned about:
+  //
+  //   scripts allowed  {"onsubmitNull":true,"literalKey":false,"prefixedKeys":["__reactFiber$t6kmppufgoj","__reactProps$t6kmppufgoj"]}
+  //   scripts blocked  {"onsubmitNull":true,"literalKey":false,"prefixedKeys":[]}
+  //
+  // `el.onsubmit === null` is true on a HYDRATED form too (React binds synthetic events at the root and never
+  // sets the DOM property), and `"__reactProps$" in el` is false on a hydrated form too — React 19 suffixes
+  // that key with a per-render id, so the bare name is never present. Either check passes in both states and
+  // would have let this arm run against a fully hydrated page while looking rigorous. The PREFIX is the only
+  // one of the three that separates them.
+  const hydrated = await form.evaluate((el) => Object.keys(el).some((k) => k.startsWith("__reactProps$")));
+  expect(hydrated, "scripts were blocked, so React must NOT have hydrated — otherwise this arm proves preventDefault(), not the markup").toBe(false);
+
+  await page.getByTestId("password-input").fill(URL_LEAK_SENTINEL);
+  await Promise.all([page.waitForLoadState("load"), page.getByTestId("login-button").click()]);
+
+  const landed = new URL(page.url());
+  expect(landed.search, `the credential reached the URL: ${page.url()}`).toBe("");
+  expect(page.url(), "no part of a submitted field may appear in the address").not.toContain(URL_LEAK_SENTINEL);
+  // And the Referer that page would now stamp on every subsequent request carries nothing either.
+  expect(await page.evaluate(() => document.location.href).catch(() => landed.href)).not.toContain(URL_LEAK_SENTINEL);
+
+  // WHAT THIS DELIBERATELY DOES NOT CLAIM: that a pre-hydration submit SIGNS IN. It does not, and it must
+  // not — /api/console/login takes JSON, so there is no `action` that a native form-encoded POST could
+  // usefully reach (see components/ResourceForm.tsx). A pre-hydration submit is a visible failure, and a
+  // visible failure is the correct trade against a silent leak. The claim is only that the credential never
+  // travels in the address, which is the property that survives the browser's history and the access log.
+  expect(baseURL, "sanity: the arms above ran against the configured console").toBe(ORIGIN);
+});
