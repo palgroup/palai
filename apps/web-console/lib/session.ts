@@ -40,10 +40,28 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 const scrypt = promisify(scryptCallback) as (password: string, salt: Buffer, keylen: number, options: { N: number; r: number; p: number }) => Promise<Buffer>;
 
-// A stored hash is `scrypt$N$r$p$salt$key`, base64URL and unpadded so the whole value contains no `=` and
-// drops straight into an env file or a `NAME=value` line without quoting. scripts/hash-password.mjs is the
-// only thing that WRITES this format; this module only ever reads it. They are bound by a test rather than
-// by a shared import, because that script must stay a zero-dependency single file an operator can read.
+// A stored hash is `scrypt.N.r.p.salt.key`: base64URL, unpadded, and DOT-separated, so the whole value
+// contains no `=`, no `$`, and nothing else any reader assigns a meaning to.
+//
+// THE SEPARATOR IS A CORRECTION, NOT A STYLE CHOICE (E29). It was `$`, and the sentence here used to claim
+// the value "drops straight into an env file or a `NAME=value` line without quoting". The `=` half was true;
+// the rest was never executed, and the tree's own documented setup path was the one path no test ran.
+// MEASURED with Next's own loader on 2026-07-31: an 83-character, 6-part `$` hash appended to `.env.local`
+// reached this function as 38 characters and 1 part, because `@next/env` reads `$16384`, `$8`, `$1` and the
+// leading run of the salt as variable references and expands them to nothing. The console then answered
+// `503 console_not_configured` about a variable that was set. `set -a; . .env.local` destroys it identically
+// (62 chars); single quotes rescue it in the shell and NOT in dotenv; backslash-escaping rescues it in both
+// and then breaks `node --env-file` and a plain `NAME='…'` export (84 chars, backslashes included). Four
+// readers were measured — `@next/env`, `set -a; . file`, `node --env-file`, and a shell `NAME='…'` export —
+// and the dot form is the only one of the four candidate encodings intact in all four.
+//
+// `$` IS STILL PARSED, deliberately: a hash generated before this change is sitting in an operator's env
+// file, it is still a correct hash of their password, and nothing about it needs regenerating.
+//
+// scripts/hash-password.mjs is the only thing that WRITES this format; this module only ever reads it. They
+// are bound by a test rather than by a shared import, because that script must stay a zero-dependency single
+// file an operator can read — tests/auth.spec.ts signs in with a hash the script produced, and
+// tests/env-file.spec.ts carries one through a real `.env.local` and the real loader.
 interface StoredHash {
   N: number;
   r: number;
@@ -53,7 +71,7 @@ interface StoredHash {
 }
 
 function parseHash(value: string): StoredHash | null {
-  const parts = value.split("$");
+  const parts = value.split(/[.$]/);
   if (parts.length !== 6 || parts[0] !== "scrypt") return null;
   const [N, r, p] = [Number(parts[1]), Number(parts[2]), Number(parts[3])];
   if (!Number.isInteger(N) || !Number.isInteger(r) || !Number.isInteger(p) || N < 2 || r < 1 || p < 1) return null;
