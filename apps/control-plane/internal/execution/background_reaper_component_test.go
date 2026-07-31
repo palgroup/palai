@@ -362,6 +362,10 @@ func TestARestartedControlPlaneAdoptsItsRunningTasksFromTheRowRatherThanFromMemo
 	if killed.State != "exited" {
 		t.Fatalf("the adopted kill reported %q, want exited", killed.State)
 	}
+	if got := f.taskRows(t)[0].state; got != "killed" {
+		t.Fatalf("state after an adopted kill = %q, want killed: a kill WE performed settles the row so the "+
+			"sweep does not notify a model about a task it stopped itself", got)
+	}
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && alive(pgids[0]) {
 		time.Sleep(20 * time.Millisecond)
@@ -421,6 +425,62 @@ func TestADeadTaskNoWatcherEverSawGetsNoInventedExitCode(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("the watched task never settled")
+}
+
+// TestKillingATaskThatAlreadyFinishedClaimsNothing is the asymmetry the kill path owes the audit record.
+// Killing a finished task must stay idempotent — §3.5 P7's "cancelling twice is idempotent" — but it must
+// NOT record `killed` for a build that exited on its own, because that is a false statement in a row an
+// operator reads AND it throws away the exit code, by settling the row before the sweep can read one.
+func TestKillingATaskThatAlreadyFinishedClaimsNothing(t *testing.T) {
+	f := newReaperFixture(t)
+	if err := f.runAttemptWithScript(t, "completed", "exit 7"); err != nil {
+		t.Fatalf("ExecuteAttempt: %v", err)
+	}
+	rows := f.taskRows(t)
+	// Wait for the OPERATING SYSTEM to stop listing it, rather than for anything we recorded.
+	deadline := time.Now().Add(10 * time.Second)
+	plane := f.secondPlane(t)
+	for time.Now().Before(deadline) {
+		if _, err := plane.killAdoptedTask(context.Background(), f.tenant, f.runID, rows[0].id); err != nil {
+			t.Fatalf("killing a finished task is not idempotent: %v", err)
+		}
+		if got := f.taskRows(t)[0]; got.state != "running" {
+			t.Fatalf("killing a task that had already finished recorded %q; the row now lies about how the "+
+				"task ended and the sweep will never read its exit code", got.state)
+		}
+		if !aliveInTable(t, rows[0].handle) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// And the sweep still records the truth: the code the command chose, not the kill.
+	for time.Now().Before(deadline) {
+		f.sweepOnce(t)
+		if got := f.taskRows(t)[0]; got.state != "running" {
+			if got.state != "exited" || got.exitCode == nil || *got.exitCode != 7 {
+				t.Fatalf("after a kill of an already-finished task the sweep recorded state=%q exit_code=%v, want exited/7", got.state, got.exitCode)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("the finished task never settled")
+}
+
+// aliveInTable asks the kernel about the pgid half of a host handle. It parses the handle the way the row
+// stores it, so the question is asked about the number the ROW holds rather than one the test kept.
+func aliveInTable(t *testing.T, handle string) bool {
+	t.Helper()
+	pgidText, _, ok := strings.Cut(handle, ":")
+	if !ok {
+		t.Fatalf("malformed host handle %q", handle)
+	}
+	pgid, err := strconv.Atoi(pgidText)
+	if err != nil {
+		t.Fatalf("malformed host handle %q: %v", handle, err)
+	}
+	return alive(pgid)
 }
 
 // TestAnUnprovableHandleBecomesLostAndReceivesNoSignal is the rule the honest ceiling rests on, and it

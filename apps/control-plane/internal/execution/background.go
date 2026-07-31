@@ -311,18 +311,31 @@ func (b *backgroundTasks) KillBackground(ctx context.Context, taskID string) (to
 		return toolbroker.BackgroundTicket{}, err
 	}
 	handle := toolbroker.Handle{Posture: toolbroker.BackgroundPosture(task.Posture), Value: task.Handle}
+	// WAS IT STILL RUNNING WHEN WE WERE ASKED. The answer decides whether the row records a kill, and it
+	// has to be taken BEFORE the signal because afterwards both cases look identical. A probe that cannot
+	// answer is treated as "not ours to claim" — the sweep will say what happened.
+	wasRunning := false
+	if status, perr := b.orch.background.Probe(ctx, handle); perr == nil {
+		wasRunning = status.State == toolbroker.BackgroundRunning
+	}
 	if err := b.orch.background.Kill(ctx, handle); err != nil {
 		return toolbroker.BackgroundTicket{}, err
 	}
-	// SETTLED AS `killed` RATHER THAN LEFT FOR THE SWEEP, and the reason is what the sweep would otherwise
-	// do: it would notice the process gone, record `exited` and send the model a notification about a task
-	// the model itself had just stopped — and on a run that finished in between, that notice has no turn
-	// to land in and becomes an orphaned-notice warning an operator has to explain. A kill we performed
-	// needs no notification. A failure to record it is logged and not fatal: the process IS dead, which is
-	// what the caller asked for, and the sweep settling it as `exited` afterwards is a worse label rather
-	// than a wrong outcome.
-	if err := b.orch.spine.SettleEndedBackgroundTask(ctx, b.tenant, b.runID, task.ID, "killed"); err != nil {
-		log.Printf("background task %s was killed but its row could not be settled: %v", task.ID, err)
+	// A TASK WE ACTUALLY STOPPED IS SETTLED AS `killed` RATHER THAN LEFT FOR THE SWEEP, and the reason is
+	// what the sweep would otherwise do: notice the process gone, record `exited`, and notify the model
+	// about a task the model itself had just stopped — which on a run that finished in between becomes an
+	// orphaned-notice warning an operator has to explain. A kill we performed needs no notification.
+	//
+	// A TASK THAT HAD ALREADY FINISHED IS LEFT ALONE, and that asymmetry is the point. Recording `killed`
+	// for a build that exited on its own thirty seconds earlier would put a false statement in the audit
+	// record AND throw away the exit code the model asked about, because the sweep would then find the row
+	// already settled. Killing a finished task stays idempotent; it simply claims nothing.
+	//
+	// A failure to record is logged and not fatal: the process IS dead, which is what the caller asked for.
+	if wasRunning {
+		if err := b.orch.spine.SettleEndedBackgroundTask(ctx, b.tenant, b.runID, task.ID, "killed"); err != nil {
+			log.Printf("background task %s was killed but its row could not be settled: %v", task.ID, err)
+		}
 	}
 	// The state is read back from the operating system rather than assumed from the kill: a handle the
 	// adapter refused to signal (a pgid it cannot prove is ours) reports `lost` here, and the model is told
