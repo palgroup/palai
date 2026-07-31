@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# Fleet-console UAT — the E28 EXIT gate (plan §T4). One target, a Docker-free CORE + a Docker-bound JOURNEY
+# tier + a REAL-UPSTREAM tier, shaped exactly like E25's `admin-console`. The core is the load-bearing gate: it
+# needs no Docker and no credential — but it DOES need the console toolchain, and it EXITS rather than
+# skipping. That `exit 2` posture is inherited from scripts/uat/extensions FROM BIRTH rather than added later,
+# which is the fix E25 T9 had to make to `wiring` after finding it skipped its own crown legs in silence.
+#
+# WHY THIS TARGET CO-RUNS THE BACKING SUITES (the E17 T11 review's MUST-FIX 1, inherited verbatim through
+# E19..E26): the bundle's per-case `status` is AUTHORED deterministic data, and so are the eight ledgers the
+# fleet-console proof carries. Only what a verifier can re-derive is judged by a verifier; the rest is a
+# claim. So `evidence-verify` on its own certifies "UAT declared green", NOT "UAT green". THIS SCRIPT is what
+# makes the authored status honest: the SAME invocation that verifies the bundle also RUNS the suites that
+# back the four cases it certifies, and tests/uat/fleet-console/journey_test.go then DIFFS its declared legs
+# against the `--- PASS` and `✓` marks THIS RUN printed. A ledger row nobody produced fails the gate.
+#
+#   Docker-free core (always):
+#     1. `pnpm typecheck` in apps/web-console. E25 §3.6 D15 measured that a TypeScript error hits NO gate in
+#        this tree (next.config.ts sets `typescript: { ignoreBuildErrors: true }`), and E28 adds two pages of
+#        TSX plus print statements inside three specs.
+#     2. go test -v ./tests/uat/fleet-console/... — five gates in one package:
+#        a. the committed fleet-console-0.1.0 bundle is BYTE-identical to its generator and verifies clean
+#           through the SHIPPED verifier;
+#        b. the REFUSAL matrix: shape-consistent manifests claiming a property they did not earn, each moving
+#           ONE ledger row while the declared counter stays put — which is the only mutation that tests the
+#           re-derivation rather than the arithmetic;
+#        c. the promote gate: rc PASSES, stable is REFUSED, a dropped claim marker still routes HERE, and the
+#           eight E2x case-id families are disjoint;
+#        d. the four cases' catalog, the FLC- orphan sweep in three directions, and the guard that keeps
+#           `FLC-` inside the only sweep in the tree that walks tests/uat/cases;
+#        e. the SOURCE sweeps — the route ledger re-derived from lib/routes.ts, every destructive action
+#           resolved to its confirmation from the page sources, and every ceiling gap id found in the page
+#           that states it — plus the reachability sweep over E28's new exported surface, the component
+#           allow-list guard, and the guard that every test a bundle LEDGER names exists.
+#     3. E24's OWN reachability sweep — added because THE LEG DIFF FOUND THIS GATE NAMING IT AND NOT RUNNING
+#        IT, which is the E26 T7 defect reproduced from birth. FLC-001 claims FLT-P14 closes, and the test
+#        that proves it lives in tests/uat/fleet.
+#     4. evidence-verify RELEASE=fleet-console-0.1.0 through the shipped command (0/0/0/0).
+#     5. the automation catalog corpus + the operator-doc corpus. E28 adds a case.yaml and edits
+#        docs/operations/{known-gaps-1.0,console,runner-fleet}.md, all in owned sets — the re-verify rule this
+#        repository learned the hard way, twice.
+#     6. the console specs on the FAKE profile, in BOTH colour schemes, with `--reporter=list` rather than the
+#        config's `line`. The reporter is overridden ON PURPOSE and it is the only deviation from
+#        `pnpm test:e2e`: `line` prints a test's title when it STARTS, so a title in the output proves nothing
+#        about whether it passed, and this gate's journey test diffs PASS marks against the legs it claims.
+#        Read the diff, never the selector.
+#
+#   Journey tier (Docker, no credential — SKIP_JOURNEYS=1 to opt out):
+#     7. against a throwaway Postgres: the TENANCY corpus (E28 opened no migration, but it DID open two write
+#        routes on a tenant table, and every test in that corpus t.Skips without PALAI_SECURITY_POSTGRES_URL
+#        so a plain `go test` reports `ok` over skips — a green that certifies nothing), then the
+#        component-real legs where T1's birth path lives. THE SELECTOR IS DERIVED FROM THE TREE AND CHECKED
+#        AGAINST THE SHIPPED ONE rather than retyped: the test names come from this epic's own files, and
+#        every one of them must appear in scripts/test/component's `-run` line or this script EXITS. A retyped
+#        selector is a selector that drifts, and a `-run` matching nothing exits 0 in silence — this
+#        repository has paid for that seven times.
+#
+#   Real-upstream tier (RUN_CONSOLE_REAL=1 — `make uat-fleet-console-live`):
+#     8. the SAME spec files against a compose control plane, plus the fake-vs-real conformance sweep. It
+#        needs a RUNNING stack (`PALAI_DISPATCH_WORKERS=1 PALAI_MODEL_PROVIDER=fake palai local up`, plus
+#        PALAI_BASE_URL and PALAI_API_KEY in the environment) and the sweep REFUSES TO SKIP without them.
+#        THIS IS THE TIER THAT PRODUCES GROUP (h): the conformance sweep's compared-collection list, which
+#        E28 T3 raised from thirteen to sixteen and whose membership is printed rather than counted.
+#
+# HONEST CEILING (plan §6), and it is in this release's NAME: `fleet-console`, not "the fleet works".
+# NO REAL MAC WAS RENTED, ENROLLED OR RAN A BUILD. Every machine here is a fake runner built from the shipped
+# enrolment package, driven over a real mTLS wire against a real PostgreSQL on ONE box, and `FLT-P15` stands:
+# a `lease.offer` carries the ENGINE while every TOOL still executes in the control plane's own process, so
+# this release makes a Mac pool CREATABLE and does not make a Mac run `xcodebuild`. There is no DEPLOYED
+# console (compose is not a deployment) and no manual screen-reader pass, while axe's own published figure is
+# "on average 57% of WCAG issues" — and E28 added exactly the two things a scanner is weakest at: a MODAL
+# DIALOG whose focus trap is a FEEL, and a ONE-TIME VALUE ANNOUNCEMENT whose correctness is a TIMING.
+# NO TIER ADVANCES: `console` closes PREVIEW, and it closes PREVIEW in the epic that made it bigger — with
+# FLT-P15 open, a fleet screen implies more than it proves, and raising the tier would formalise the
+# implication the screens' own sentences exist to prevent.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# The console toolchain is REQUIRED, not optional (the same posture scripts/uat/extensions has always had and
+# scripts/uat/admin-console adopted). FIVE of this bundle's eight counters are produced by the specs below; a
+# run without them would verify a bundle whose numbers nothing in this invocation made.
+if ! command -v pnpm >/dev/null 2>&1 || [ ! -d apps/web-console/node_modules ]; then
+  echo "uat-fleet-console: the console toolchain is absent, and five of this gate's eight counters are BROWSER" >&2
+  echo "  numbers (the pool created from a screen, the machine admitted from one, the minted-value scan, the" >&2
+  echo "  policy write and the axe coverage). Install it with:" >&2
+  echo "  corepack pnpm install && (cd apps/web-console && pnpm exec playwright install chromium)" >&2
+  exit 2
+fi
+
+echo "uat-fleet-console: [1/6] the console typecheck — E28 adds two pages and prints ledger rows from three specs" >&2
+( cd apps/web-console && pnpm typecheck )
+
+echo "uat-fleet-console: [2/6] the E28 bundle + refusal matrix + promote gate + catalog + FLC- orphan sweep + the SOURCE, reachability, allow-list and ledger-name sweeps" >&2
+# -v because EXIT 0 IS NOT PROOF: the sweeps and the refusal matrix are the load-bearing half, and a package
+# that compiled to zero matching tests exits 0 exactly like a package whose tests all passed.
+go test -count=1 -v ./tests/uat/fleet-console/...
+
+# E24's OWN reachability sweep, and this leg is here because THE LEG DIFF FOUND IT MISSING ON THIS GATE'S
+# FIRST RUN — the E26 T7 shape, reproduced from birth exactly as plan §T4 asked. FLC-001 claims `FLT-P14`
+# closes: `RunnerGateway.Waiting(poolID)` counted queued attempts from E24 onward and NOTHING read it, and
+# T1 gave it a reader on the authenticated pool read while DELETING that sweep's named exception. The test
+# that proves it lives in tests/uat/fleet, which this script did not invoke, so the claim was named by a gate
+# that did not run it. The test is UNTAGGED and rides `make verify`, so it was never absent from the TREE —
+# what it was absent from was the invocation that claims it, which is the only absence that matters. Reading
+# the script or reading the leg list would have found nothing; both looked complete.
+echo "uat-fleet-console: [3/6] E24's reachability sweep — FLC-001's FLT-P14 rider, whose named exception T1 DELETED" >&2
+go test -count=1 -v -run 'TestEveryE24ExportedSurfaceHasAProductionCaller' ./tests/uat/fleet
+
+echo "uat-fleet-console: [4/6] evidence-verify RELEASE=fleet-console-0.1.0 (want 0 failed / 0 missing / 0 secret)" >&2
+RELEASE=fleet-console-0.1.0 scripts/evidence/verify
+
+echo "uat-fleet-console: [5/6] the automation catalog corpus + the operator-doc corpus" >&2
+# E28 adds a case.yaml and edits three docs in tests/docs's owned set, so neither is optional.
+go test -count=1 ./tests/uat/automation/... ./tests/docs/...
+
+echo "uat-fleet-console: [6/6] the console specs, FAKE upstream profile, BOTH colour schemes" >&2
+# --reporter=list, not the config's `line`: see the header. This is the only place this target departs from
+# `pnpm test:e2e`, and it departs so that a PASS is readable per test rather than inferred from a title.
+( cd apps/web-console && pnpm exec next build >/dev/null && pnpm exec playwright test --reporter=list )
+
+# ---- the journey tier: real PostgreSQL, no credential -------------------------------------------------------
+journeys="the E28 backing legs CO-RUN green (the pool birth path through the public API, the machine that waits and is admitted, the CLI's pool verb) + the tenancy corpus"
+if [ "${SKIP_JOURNEYS:-0}" = "1" ]; then
+  # Said plainly, because the closing line must never imply a tier that did not run.
+  echo "uat-fleet-console: the Docker-bound tier is SKIPPED (SKIP_JOURNEYS=1) — the component-real backing legs" >&2
+  echo "  and the tenancy corpus did NOT run; this invocation does not back the bundle's authored PASS for" >&2
+  echo "  FLC-001" >&2
+  journeys="Docker-bound backing legs + tenancy corpus NOT RUN (SKIP_JOURNEYS=1)"
+else
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "uat-fleet-console: docker is not available; the E28 backing legs need a throwaway Postgres" >&2
+    exit 2
+  fi
+
+  # THE SELECTOR IS DERIVED FROM THE TREE, THEN CHECKED AGAINST THE SHIPPED ONE. Retyping it is the trap this
+  # family has paid for seven times; extracting the shipped line VERBATIM would run every other epic's suites
+  # too, because that one selector carries them all. So the names come from THIS epic's own files, and every
+  # one of them must appear in scripts/test/component's `-run` line — which is the allow-list rule enforced by
+  # the script rather than only by a Go guard.
+  shipped="$(sed -n "s/^[[:space:]]*-run '\(Test[^']*\)' \\\\$/\1/p" scripts/test/component | tr '|' '\n' | sort -u)"
+  if [ -z "$shipped" ]; then
+    echo "uat-fleet-console: could not EXTRACT any -run selector from scripts/test/component — the line moved or" >&2
+    echo "  its shape changed, and a retyped copy is exactly what this refuses to hold" >&2
+    exit 1
+  fi
+  names="$(grep -hoE '^func (Test[A-Za-z0-9_]+)\(' \
+    apps/control-plane/internal/execution/runner_pool_birth_component_test.go \
+    | sed 's/^func //; s/($//; s/(//' | sort -u)"
+  if [ -z "$names" ]; then
+    echo "uat-fleet-console: no test names were derived from this epic's own component file — the selector would" >&2
+    echo "  then be empty, and a -run matching nothing exits 0 in silence" >&2
+    exit 1
+  fi
+  # THE MATCH IS A SUBSTRING, BECAUSE THAT IS WHAT `go test -run` ACTUALLY DOES. It takes an unanchored
+  # regexp over the test name, so one alternative can select a whole family — `TestPoolBirth` selects all
+  # seven of T1's birth-path tests. A `grep -qxF` here would demand each full name and report seven tests as
+  # unselected while every one of them runs, which is this check firing on its own strictness rather than on
+  # a real gap. It is written down because the first draft did exactly that, and because the OPPOSITE error
+  # (accepting a prefix so short it selects nothing meaningful) is the one that stays silent: an alternative
+  # matching nothing exits 0. tests/uat/fleet-console's Go guard uses the same substring rule, so the script
+  # and the guard cannot disagree about what "named in the allow-list" means.
+  missing=""
+  while IFS= read -r name; do
+    # An alternative SELECTS this name when the alternative is a substring of it, anywhere — `index(n, $0)`
+    # returns a 1-based position and 0 for "not found". The empty-line guard matters: an empty alternative is
+    # a substring of everything and would make this check accept anything.
+    if ! printf '%s\n' "$shipped" | awk -v n="$name" 'length($0) > 0 && index(n, $0) > 0 { found = 1 } END { exit !found }'; then
+      missing="$missing $name"
+    fi
+  done <<< "$names"
+  if [ -n "$missing" ]; then
+    echo "uat-fleet-console: these E28 tests are NOT named in scripts/test/component's -run allow-list, so the" >&2
+    echo "  component tier never runs them:$missing" >&2
+    exit 1
+  fi
+  selector="$(printf '%s' "$names" | paste -sd '|' -)"
+
+  image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  label="io.palai.uat=fleet-console"
+  container="palai-uat-fleet-console-$$-${RANDOM}"
+  # Throwaway local credential, generated per run; never written to a file, never echoed.
+  password="palai-uat-fleet-console-${RANDOM}${RANDOM}"
+  cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+  before="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  trap cleanup EXIT
+
+  docker run --detach --pull=never --name "$container" --label "$label" \
+    --env POSTGRES_DB=palai --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 "$image" >/dev/null
+  ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then ready=1; break; fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$container" >&2 || true
+    echo "uat-fleet-console: the journey postgres did not become ready" >&2
+    exit 1
+  fi
+  binding="$(docker port "$container" 5432/tcp)"; port="${binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+  # A DEAD Postgres for the fault knob: reachable-looking, connects to nothing.
+  dead_url="postgres://postgres:$password@127.0.0.1:1/palai?sslmode=disable"
+
+  echo "uat-fleet-console: [journey] the tenancy corpus against real PostgreSQL (E28 opened two WRITE routes on a tenant table)" >&2
+  set +e
+  PALAI_SECURITY_POSTGRES_URL="$url" go test -tags=security -count=1 -v ./tests/security/tenancy
+  tenancy_status=$?
+  set -e
+  if test "$tenancy_status" -ne 0; then
+    echo "uat-fleet-console: the tenancy corpus FAILED — two new write routes on runner_pools and four case.yaml files must re-run it" >&2
+    cleanup; trap - EXIT
+    exit "$tenancy_status"
+  fi
+
+  exec_url="$url"
+  if [ "${PALAI_FLEET_CONSOLE_FAULT_SUITE:-}" = "./apps/control-plane/internal/execution" ]; then
+    exec_url="$dead_url"
+    echo "uat-fleet-console: FAULT INJECTED — ./apps/control-plane/internal/execution points at a DEAD Postgres; this run MUST fail" >&2
+  fi
+  echo "uat-fleet-console: [journey] backing suite ./apps/control-plane/internal/execution (selector derived from this epic's own files)" >&2
+  set +e
+  PALAI_COMPONENT_POSTGRES_URL="$exec_url" go test -tags=component -count=1 -v \
+    -run "$selector" ./apps/control-plane/internal/execution
+  status=$?
+  set -e
+  if test "$status" -ne 0; then
+    echo "uat-fleet-console: backing suite ./apps/control-plane/internal/execution FAILED — the bundle's authored PASS for FLC-001 is not honest" >&2
+  fi
+
+  if test "$status" -eq 0; then
+    echo "uat-fleet-console: [journey] the CLI's pool verb and the fleet store's seed pin (both run UNFILTERED)" >&2
+    set +e
+    PALAI_COMPONENT_POSTGRES_URL="$exec_url" go test -tags=component -count=1 -v ./cmd/cli/internal/admin ./apps/control-plane/internal/fleet
+    status=$?
+    set -e
+    if test "$status" -ne 0; then
+      echo "uat-fleet-console: the CLI / fleet-store suites FAILED — FLC-001's cli half is not honest" >&2
+    fi
+  fi
+
+  cleanup
+  trap - EXIT
+  after="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if test "$after" -ne "$before"; then
+    echo "uat-fleet-console: the journey tier leaked a container" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then exit "$status"; fi
+fi
+
+# ---- the real-upstream tier: a running compose control plane -------------------------------------------------
+real="REAL-upstream profile + conformance sweep NOT RUN (RUN_CONSOLE_REAL unset)"
+if [ "${RUN_CONSOLE_REAL:-0}" = "1" ]; then
+  echo "uat-fleet-console: the console REAL-upstream profile + the fake-vs-real sweep (needs a compose stack)" >&2
+  # THE SWEEP IS WHAT PRODUCES GROUP (h). It refuses to skip without PALAI_BASE_URL/PALAI_API_KEY, so asking
+  # for this tier without a stack fails at config load rather than reporting a green over nothing.
+  ( cd apps/web-console && pnpm exec next build >/dev/null && PALAI_CONSOLE_PROFILE=real pnpm exec playwright test --reporter=list && pnpm sweep )
+  real="REAL-upstream profile green + the conformance sweep printed its compared-collection membership"
+fi
+
+echo "uat-fleet-console=PASS (E28 exit gate: bundle 0/0/0/0, a pool created through a PUBLIC surface with the" >&2
+echo "  POSTURE SET re-derived and required to contain \`unsandboxed-host\` — the value NO code path in this" >&2
+echo "  tree could write before T1 — a machine that reached \`pending\` in a strict pool with at least one" >&2
+echo "  ADMITTED FROM THE CONSOLE, ZERO minted key values across five sites each DECODED before it was scanned" >&2
+echo "  and each naming a harmless token it DID find, as many approver entries AFTER a policy write as before" >&2
+echo "  it over requests carrying all five fields, the declared and axe-scanned routes re-derived from" >&2
+echo "  lib/routes.ts and EQUAL in both colour schemes, every irreversible action behind an alertdialog and" >&2
+echo "  every reversible one NOT — refused in both directions — four ceiling gap ids found in the page sources" >&2
+echo "  that state them, and a conformance sweep above its pre-E28 floor, $journeys, $real)" >&2
+echo "uat-fleet-console: NO TIER ADVANCED — \`console\` closes PREVIEW, and it closes PREVIEW in the epic that" >&2
+echo "  made it BIGGER: two pages, two components, three new /v1 routes. THIS BUNDLE DOES NOT CLAIM THAT A REAL" >&2
+echo "  MAC WAS RENTED, ENROLLED OR RAN A BUILD — every machine in it is a fake runner built from the shipped" >&2
+echo "  enrolment package, and FLT-P15 stands: a lease.offer carries the ENGINE while every TOOL still runs in" >&2
+echo "  the control plane's own process, so a Mac pool is now CREATABLE and still does not run xcodebuild on a" >&2
+echo "  Mac. It claims that a fleet has a BIRTH PATH where it had none, that a machine waits where something" >&2
+echo "  can see it and is admitted from a screen, that a server-minted value survives nowhere, that a policy" >&2
+echo "  form writes the WHOLE document so an approver list HIL-P11 measured to be permissive when empty is not" >&2
+echo "  silently erased, and that the screens write their own ceilings by gap id — measured from carried" >&2
+echo "  bytes, the page sources and a run's own output rather than declared." >&2

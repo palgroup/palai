@@ -23,7 +23,25 @@ import (
 // rather than a silence: without it, a bundle that LOST its family claims would quietly move from "passes
 // its own gate" to "no gate recognizes it" and the sweep below would still be green.
 var promoteFamilies = map[string]string{
-	// E26's family is checked FIRST of all in PromoteGateFor, one level above E25, and this bundle inherits
+	// E28's family is checked FIRST of all in PromoteGateFor, one level above E26, and this bundle inherits
+	// the dispatch hazard one layer deeper again: it carries the E26 background claim, the E25 admin-console
+	// claim, the E23 tool-approval claim, the E22 code-and-ship claim, the E21 tools-memory claim, the E20
+	// agent-surface claim, the E19 wiring claim AND E17 area claims, because it derives its inherited case
+	// set from those releases. Dispatching on any of them would reroute it to a gate that knows nothing about
+	// the pool birth path, the waiting room admitted from a screen, the minted-value scan, the approver-list
+	// equality, the axe coverage, the confirmation split or the ceiling ids. It is recognized by the E28 CASE
+	// IDS — and their `FLC-` prefix is part of that decision in BOTH directions, exactly as `BGT-`, `CON-`,
+	// `FLT-`, `HIL-` and `CAS-` were.
+	//
+	// AND THIS TABLE IS THE FIFTH REGISTRATION POINT, WHICH E28's OWN PLAN §1.5 UNDERCOUNTED. That section
+	// names five (committedBundleSurfaces, the caseChecksumParts branch, extensionIDPrefixes, the
+	// PromoteGateFor dispatch, and the E17 catalog's owner list) and calls the list complete after correcting
+	// the memory that said two. It is SIX: this map is the one that fails LOUDLY for a new bundle — "in
+	// neither promoteFamilies nor unfamiliedBundles" — and it is the only place where "which gate judges this
+	// release" is written down as a decision rather than inferred from a dispatch. The correction is recorded
+	// here rather than only in a report, because the next plan will copy the number from this one.
+	"fleet-console-0.1.0": "E28 fleet-console (the pool birth path re-derived from the pool ledger with the POSTURE SET required to contain `unsandboxed-host` — the value no code path in this tree could write before T1, so a pool COUNT alone would have been satisfied by the seed every tenant gets at birth + a machine that actually reached `pending` in a strict pool and at least one ADMITTED FROM THE CONSOLE, by value, because an epic whose crown claim is a screen cannot certify it from a CLI transcript + ZERO minted key values across five sites each DECODED before it was scanned and each naming a harmless token the same scan DID find, the fifth being a LATER response that the other four pass over + the approver-entry EQUALITY across a policy write, over requests carrying all five fields, because a stored-outcome assertion alone passes on a server that merged + the declared and axe-scanned routes re-derived from lib/routes.ts and EQUAL in both colour schemes + the confirmation split refused in BOTH directions over a source sweep of every page, since a console that guards everything has stopped distinguishing rather than become more careful + the four ceiling gap ids the screens state, `FLT-P15` among them + the composed background/admin-console/tool-approval/code-and-ship/tools-memory/agent-surface/wiring/extensions/eval gates)",
+	// E26's family is checked next in PromoteGateFor, one level above E25, and this bundle inherits
 	// the dispatch hazard one layer deeper again: it carries the E25 admin-console claim, the E23
 	// tool-approval claim, the E22 code-and-ship claim, the E21 tools-memory claim, the E20 agent-surface
 	// claim, the E19 wiring claim AND E17 area claims, because it derives its inherited case set from those

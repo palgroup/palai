@@ -83,6 +83,23 @@ function expectNoTrace(found: Record<string, string>, value: string, when: strin
   }
 }
 
+/**
+ * reportSite prints one row of the E28 exit gate's key-scan ledger (plan §T4 group (c)), in the shape
+ * tests/uat/fleet-console/journey_test.go diffs against the bundle's carried numbers.
+ *
+ * IT PRINTS THE BYTE COUNT AND THE PROBE, NOT ONLY THE ZERO, and that is the whole reason it exists rather
+ * than the gate trusting the ledger. A scan over an empty haystack reports zero hits and so does a scan whose
+ * haystack was never read — this tree measured that twice, over compressed bytes in E14 T7 and over
+ * JSON-escaped ones in E20 T4 — so each site names a harmless token the SAME scan found in the SAME bytes.
+ * The probe is never the value: finding that would be the failure, not the control.
+ */
+function reportSite(site: string, haystack: string, value: string, probe: string): void {
+  const hits = haystack.split(value).length - 1;
+  const probeFound = probe !== "" && haystack.includes(probe);
+  expect(probeFound, `the ${site} scan found no probe (${probe}) — a haystack nothing was located in is a haystack nobody has shown was read`).toBe(true);
+  console.log(`KEY VALUE SCAN — site=${site} bytes=${haystack.length} hits=${hits} probe=${probe} probe_found=${probeFound}`);
+}
+
 test("a minted key survives nowhere: not the DOM, not either storage, not the URL, not a later response", async ({ page }) => {
   const bodies: NetResponse[] = [];
   const { value, id } = await mint(page);
@@ -106,14 +123,43 @@ test("a minted key survives nowhere: not the DOM, not either storage, not the UR
   page.on("response", (resp) => bodies.push(resp));
   await page.reload();
   await expect(page.getByTestId("panel-api-keys")).toBeVisible({ timeout: 15_000 });
-  expectNoTrace(await traces(page), value, "after a page reload");
+  const after = await traces(page);
+  expectNoTrace(after, value, "after a page reload");
+  // The exit gate's ledger rows (plan §T4 group (c)) for the three in-document sites. Each probe is a token
+  // that is ALLOWED to be in that haystack: the key's own id for the rebuilt DOM, and the path for the URL.
+  reportSite("dom", after.dom, value, id);
+  reportSite("url", after.url, value, "/policy");
+
+  // WEB STORAGE NEEDS A SEEDED PROBE RATHER THAN A FOUND ONE, AND THE REASON IS A MEASUREMENT: this console
+  // writes NOTHING to either storage, so the dump is empty — and an empty haystack reports zero hits exactly
+  // like a clean one. There is no naturally-occurring token to point at, so the control is the sweep finding
+  // something the test PUT there: if `dump` can see this, it could have seen the value.
+  const storageProbe = "palai-console-scan-control";
+  await page.evaluate((probe) => {
+    window.sessionStorage.setItem(probe, "a harmless value, written by the test to prove this scan reads storage");
+    window.localStorage.setItem(probe, "the same, in the other storage");
+  }, storageProbe);
+  const seeded = await traces(page);
+  expect(seeded.session.includes(value), "the minted key is in sessionStorage").toBe(false);
+  expect(seeded.local.includes(value), "the minted key is in localStorage").toBe(false);
+  reportSite("web-storage", `${seeded.session}\n${seeded.local}`, value, storageProbe);
+  await page.evaluate((probe) => {
+    window.sessionStorage.removeItem(probe);
+    window.localStorage.removeItem(probe);
+  }, storageProbe);
   // The key EXISTS — its id is on the screen. So the reload rendered the collection this value belongs to,
   // and "the value is absent" is a statement about the value rather than about an empty page.
   await expect(page.getByTestId("panel-api-keys")).toContainText(id);
 
   // 3. EVERY RESPONSE BODY the reload produced, which includes the console's own GET /v1/api-keys.
+  //
+  // THE BODIES ARE DECODED BEFORE THEY ARE SCANNED, which `resp.text()` does — Playwright applies the
+  // content encoding — and it is stated rather than assumed because a raw-byte sweep over a gzipped body can
+  // never fail: deflate bit-packs literals, so the plaintext is not IN the bytes to find. This tree measured
+  // that in E14 T7 and paid for it again in E20 T4 over JSON escaping.
   let scanned = 0;
   let sawKeyID = 0;
+  let bodyBytes = 0;
   for (const resp of bodies) {
     let body: string;
     try {
@@ -122,6 +168,7 @@ test("a minted key survives nowhere: not the DOM, not either storage, not the UR
       continue;
     }
     scanned += 1;
+    bodyBytes += body.length;
     if (body.includes(id)) sawKeyID += 1;
     expect(body.includes(value), `the minted value came back in a response body from ${resp.url()}`).toBe(false);
   }
@@ -131,6 +178,16 @@ test("a minted key survives nowhere: not the DOM, not either storage, not the UR
     "no response body carried the key's ID, so this scan has not been shown to read the api-keys body at all — " +
       "and its zero would be a statement about the haystack rather than about the secret",
   ).toBeGreaterThan(0);
+  // The two remaining ledger rows. `response-body` is what the MINT itself answered plus everything since;
+  // `later-response` is the one the other four sites pass over — a value can be gone from the DOM and still
+  // be served back by a LIST call, which is the server behaviour `poolKeyView(item, false)` exists to
+  // prevent and which the browser half has to mirror rather than assume.
+  console.log(`KEY VALUE SCAN — site=response-body bytes=${bodyBytes} hits=0 probe=${id} probe_found=${sawKeyID > 0}`);
+  const later = await page.request.get("/api/palai/v1/api-keys", { headers: await sessionHeaders(page) });
+  const laterBody = await later.text();
+  expect(laterBody.includes(id), "the LIST call did not carry the key's id, so scanning it says nothing about the value").toBe(true);
+  expect(laterBody.includes(value), "the api-keys LIST call served the minted value back").toBe(false);
+  console.log(`KEY VALUE SCAN — site=later-response bytes=${laterBody.length} hits=0 probe=${id} probe_found=true`);
 
   await revokeMinted(page, id);
 });

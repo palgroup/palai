@@ -99,28 +99,48 @@ func TestPoolSetStrictReachesTheRealRouter(t *testing.T) {
 }
 
 // TestE24HandoverBlockStillDoesNotWork is the OTHER half of RED (2), and it is a documentation claim made
-// as a test: `phase-24-runner-fleet.md:72`'s §0.2 owner handover block — the place an owner COPY-PASTES
-// from — spells three commands, and two of them name resources this CLI does not have.
+// as a test: `phase-24-runner-fleet.md:72`'s §0.2 owner handover block — the place an owner COPY-PASTES from
+// — spells three commands, and the block has to be re-measured rather than remembered.
 //
-// It is asserted rather than fixed-and-forgotten because the accident it catches is cheap and repeats: a
-// plan's §0 is prose, prose is not run, and a command that has never been executed reads exactly like one
-// that has. `palai pool …` is what T1 adds; `palai admin pool …` and `palai admin pool key …` are not, and
-// the correct spelling of the second is `palai poolkey create`.
+// CORRECTED BY E28 T4, AND THE CORRECTION IS THE POINT RATHER THAN A TIDY-UP. This test's first draft drove
+// `Run("admin pool", …)` and asserted a usage refusal. That refusal is real and it is about a string
+// `cmd/cli/main.go` NEVER PRODUCES: main.go's `case "admin"` splits the prefix off and calls
+// `admin.Run(args[1], args[2:], …)`, so what an operator typing `palai admin pool create` reaches is
+// `Run("pool", ["create", …])` — which, once T1 added the `pool` resource, WORKS. The guard was passing on an
+// input the binary cannot generate, which is the exact shape it was written to catch, one layer down.
+//
+// SO THE HONEST STATEMENT TODAY IS A SPLIT, and both halves are asserted:
+//
+//   - `palai admin pool create …` NOW WORKS. §3.6 D2 said it does not; that was true before T1 and this task
+//     made it false, because `palai admin <resource>` reaches every resource admin.Run dispatches. Verified
+//     against the real binary: it builds the request and fails on CONNECT, not on dispatch.
+//   - `palai admin pool key create --pool <id>` STILL DOES NOT WORK, and the correct spelling is
+//     `palai poolkey create --pool <id>`. It reaches `Run("pool", ["key", "create", …])`, where the flag
+//     parse dies first: the `pool` resource registers no `--pool` flag at all.
+//
+// The accident this catches is cheap and repeats: a plan's §0 is prose, prose is not run, and a command that
+// has never been executed reads exactly like one that has — including inside the test that checks it.
 func TestE24HandoverBlockStillDoesNotWork(t *testing.T) {
 	t.Setenv("PALAI_BASE_URL", "http://127.0.0.1:1")
 	t.Setenv("PALAI_API_KEY", "k")
-	for _, tc := range []struct{ resource, why string }{
-		{"admin pool", "`palai admin pool create` — main.go dispatches `admin <resource>`, and the resource here would be `pool`, so the spelling in the block is a resource named \"admin pool\" that nothing registers"},
-		{"pool key", "`palai admin pool key create --pool <id>` — the real spelling is `palai poolkey create --pool <id>`"},
-	} {
-		var out bytes.Buffer
-		err := Run(tc.resource, []string{"create"}, &out, strings.NewReader(""))
-		if err == nil {
-			t.Fatalf("`palai %s create` was accepted: %s", tc.resource, tc.why)
-		}
-		if !strings.Contains(err.Error(), "usage: palai") {
-			t.Errorf("`palai %s create` failed with %v, want the usage refusal — %s", tc.resource, err, tc.why)
-		}
+
+	// THE HALF THAT NOW WORKS. The dispatch reaches the pool create path; the only failure left is the
+	// network, and asserting "not a usage error" is what distinguishes the two.
+	var out bytes.Buffer
+	err := Run("pool", []string{"create", "--name", "mac-pool", "--posture", "unsandboxed-host", "--os", "darwin", "--arch", "arm64"}, &out, strings.NewReader(""))
+	if err != nil && strings.Contains(err.Error(), "usage: palai") {
+		t.Fatalf("`palai admin pool create …` is refused as a usage error (%v) — E28 T1 added the `pool` resource and main.go's admin prefix reaches it, so the E24 handover block's FIRST line works today and this test says otherwise", err)
+	}
+
+	// THE HALF THAT DOES NOT, with the failure REASON asserted rather than any-error-will-do: a test that
+	// accepted any error would keep passing if `pool key` started meaning something else.
+	out.Reset()
+	err = Run("pool", []string{"key", "create", "--pool", "pool_mac"}, &out, strings.NewReader(""))
+	if err == nil {
+		t.Fatal("`palai admin pool key create --pool <id>` was accepted — the real spelling is `palai poolkey create --pool <id>`, and a block an owner copy-pastes must not have two spellings that both appear to work")
+	}
+	if !strings.Contains(err.Error(), "not defined") && !strings.Contains(err.Error(), "usage: palai") {
+		t.Errorf("`palai admin pool key create` failed with %v — want the flag-parse refusal (`pool` registers no --pool flag) or the usage refusal", err)
 	}
 }
 

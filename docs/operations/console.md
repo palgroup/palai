@@ -639,8 +639,31 @@ It read 112 when `admin-console-feature-list.md` measured it, 115 after E23 T9 a
 routes, 125 after E24's runner-fleet routes landed, **130 by the time E25 T3 mounted the environment
 family** — which happened while this paragraph said 125 — 132 after E25 T7's two registry reads, and **133
 once the tool-registry contract fix mounted `GET /v1/tools/{tool_id}/revisions/{revision_id}`**, which
-happened while this paragraph said 132. **The plan's §T9 still says 115**, which was true of `0226661` and
-has been wrong by eighteen since E24 and E25 merged. Quote the command, not the count.
+happened while this paragraph said 132 — **and 135 once E28 T1 mounted `POST /v1/runner-pools` and
+`PATCH /v1/runner-pools/{pool_id}`, which happened while this paragraph said 133.** That is the SIXTH
+generation of this number, and its history is the whole argument: every one of the six was correct when it
+was written. **Run the command. Do not read the number.**
+
+**AND THERE IS A SECOND COUNT THIS FILE OWES, WHICH E28's PLAN §3.6 D10 MEASURED WRONG IN THREE DOCUMENTS AT
+ONCE.** `admin-console-feature-list.md` said the console had **22 configuration surfaces** to cover, and E25's
+plan quoted that figure into four of its own sections. It was already stale when it was written: the list
+predates E24's fleet families and E25's `environments`, so `runner-pools`, `runner-pool-keys`, `runners` and
+`environments` are all absent from it. Applying the feature list's own rule — *a family with a persistent
+CONFIGURATION write, not a run/response/session action* — to today's tree:
+
+```sh
+# every /v1 family with a write verb (33 today)
+grep -oE '"(POST|PATCH|DELETE|PUT) /v1/[a-z-]+' apps/control-plane/api/router.go \
+  | awk '{print $2}' | sed 's|/v1/||' | sort -u
+# minus the SEVEN that are run/response/session ACTIONS rather than configuration:
+#   approvals, responses, sessions, inbound, slack, tool-callbacks, webhook-deliveries
+```
+
+**Twenty-six configuration surfaces today.** E25 opened seven to writing from a screen; **E28 opens three more
+(`runner-pools`, `api-keys`, `projects`/`config_policy`) and two to reading (`runners`, `runner-pool-keys`),
+leaving fourteen.** The next epic will want to quote *fourteen* — quote the commands instead, because that
+number will be wrong by then too, and the reason it keeps being wrong is that it is a KIND of surface rather
+than a fixed set: every epic that mounts a write family moves it.
 
 **E25's own contribution is EIGHT routes, not the seven §T9 counts**: five for the environment family
 (`GET`/`POST /v1/environments`, `GET /v1/environments/{id}`, `POST /v1/environments/{id}/values`,

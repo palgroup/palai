@@ -10,6 +10,7 @@ SHELL := /bin/bash
 	uat-agent-surface uat-agent-surface-live uat-tools-memory uat-tools-memory-live uat-code-and-ship uat-code-and-ship-live \
 	uat-tool-approval uat-tool-approval-live uat-fleet uat-fleet-live \
 	uat-admin-console uat-admin-console-live uat-background \
+	uat-fleet-console uat-fleet-console-live \
 	uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
 	release-matrix-smoke provenance-offline-verify
 
@@ -456,6 +457,30 @@ uat-admin-console-live:
 uat-background:
 	@test -x scripts/uat/background || { echo "background UAT not implemented" >&2; exit 2; }
 	@SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/background
+
+# THE ONE COMMAND (plan §T4) — the E28 fleet-console exit gate. Docker-free core (the console TYPECHECK; the
+# bundle; the refusal matrix, whose every negative moves ONE ledger row and leaves the declared counter where
+# it was; the promote gate dispatched ahead of E26's; the FLC- catalog and the orphan sweep in three
+# directions; the SOURCE sweeps that re-derive the route ledger from lib/routes.ts, every destructive action's
+# confirmation from the page sources and every ceiling gap id from the page that states it; the reachability
+# sweep over E28's new exported surface; the automation and operator-doc corpora; and the console specs on the
+# FAKE profile in BOTH colour schemes), then the Docker-bound journey tier (the tenancy corpus — E28 opened no
+# migration but DID open two write routes on a tenant table — plus the component-real legs where T1's birth
+# path lives). Every earlier uat-* target above stays untouched.
+uat-fleet-console:
+	@test -x scripts/uat/fleet-console || { echo "fleet-console UAT not implemented" >&2; exit 2; }
+	@SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/fleet-console
+
+# The REAL-UPSTREAM tier, and for this epic that is what "live" means: E28 has no credential-gated leg at all
+# — there is no vendor to call, and the one thing a credential WOULD buy (a rented Mac) is §6 leg 1, which
+# this epic does not close. So the honest second command runs the SAME spec files against a compose control
+# plane and then the fake-vs-real conformance sweep, WHICH IS THE TIER THAT PRODUCES GROUP (h): the sweep's
+# compared-collection membership, which E28 T3 raised from thirteen to sixteen. It needs a running stack:
+# `PALAI_DISPATCH_WORKERS=1 PALAI_MODEL_PROVIDER=fake palai local up`, plus PALAI_BASE_URL and PALAI_API_KEY
+# exported. The sweep refuses to skip without them.
+uat-fleet-console-live:
+	@test -x scripts/uat/fleet-console || { echo "fleet-console UAT not implemented" >&2; exit 2; }
+	@RUN_CONSOLE_REAL=1 SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/fleet-console
 
 # E18 T1 image half of the release matrix (Docker-bound, so NOT in `make verify` — like uat-kind): builds
 # linux/amd64 + linux/arm64 for all three images, asserts each indexed tar's digest/image_id/arch against the
