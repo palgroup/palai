@@ -300,8 +300,11 @@ test("the login page is axe-clean and operable with the keyboard alone", async (
 //   /repositories   repository-binding-form   ?binding-provider=…&binding-identity=…&binding-clone-url=…&…
 //   /tools          mcp-connection-form       ?mcp-name=…&mcp-url=…
 //
-// Ten forms render server-side across seven routes; eight carried values, and all ten navigated with a query
-// string.
+// AT THE TIME OF THAT MEASUREMENT ten forms rendered server-side across seven routes; eight carried values,
+// and all ten navigated with a query string. It is written in the past tense on purpose — the table above is
+// a RECORD of what was measured on a tree that no longer exists, and five of those forms are now behind a
+// dialog (see the next paragraph). Re-reading it as a present-tense inventory is how a measurement becomes a
+// belief; what is true TODAY is derived below rather than described here.
 //
 // FIVE OF THE TEN HAVE LEFT THE SERVED SWEEP, AND THE COUNT IS NO LONGER A NUMBER ANYBODY TYPES. `/agents`'
 // `agent-create-form` and `/repositories`' `repository-binding-form` went behind a `+ Create` button in the
