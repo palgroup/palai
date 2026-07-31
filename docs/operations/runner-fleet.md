@@ -93,6 +93,15 @@ paragraph used to say the opposite, and it was true: until E28 the API only read
 one `default` pool at birth, and a second one meant raw SQL on the control-plane host. Two code comments had
 handed the work to "T5/T6" and both of those shipped without it.
 
+**Both spellings of the create work, and one of them stopped being broken in this epic.** `palai pool create`
+and `palai admin pool create` reach the same place — `palai admin <resource>` hands the resource straight to
+the same dispatcher — so an owner copying either from an older document gets a working command. What is
+*still* wrong is a third spelling that appeared in E24's own handover block: `palai admin pool key create`.
+There is no `key` subcommand under `pool`; the enrolment key's verb is `palai poolkey create --pool <pool_id>`.
+`TestE24HandoverBlockStillDoesNotWork` asserts both halves, and it was itself corrected by the E28 exit gate,
+which found it driving a resource string the binary never produces — a guard passing on an input that cannot
+occur, which is the same defect it exists to catch, one layer down.
+
 **Deleting a pool is still not a route**, deliberately: `runner_pool_keys` cascades from `runner_pools`, so
 deleting a pool would silently delete its enrolment keys, and what should become of the machines whose
 `pool_id` names it is a separate decision. Nothing has asked for it.
