@@ -69,6 +69,9 @@ for (const route of CONSOLE_ROUTES) {
 // that collection is empty — so this resolves a real id through the relay and scans the real screen. The
 // empty-collection arm creates rather than skips, which is what keeps this a measurement.
 const scannedDynamic = new Set<string>();
+// The second-tab scans that actually ran. Declared separately from `scannedDynamic` because a route may
+// legitimately have no second tab — what must never happen is a route DECLARING one that no scan opened.
+const scannedSecondTabs = new Set<string>();
 
 for (const route of DYNAMIC_CONSOLE_ROUTES) {
   test(`axe-core reports zero violations on ${route.pattern}`, async ({ page }) => {
@@ -87,32 +90,42 @@ for (const route of DYNAMIC_CONSOLE_ROUTES) {
   });
 
   // THE SECOND TAB IS A SECOND SCREEN, and a scan of the page as it opens never looks at it. `hidden` takes
-  // the whole Debug panel out of the accessibility tree, so the first scan reports a clean bill of health for
+  // the whole panel out of the accessibility tree, so the first scan reports a clean bill of health for
   // markup it did not see — the same shape as scanning a page still rendering "Loading…", one interaction
   // later.
-  test(`axe-core reports zero violations on ${route.pattern} with its second tab open`, async ({ page }) => {
-    const path = await concreteDynamicPath(page, route);
-    await page.goto(path);
-    await expect(page.getByTestId(route.readyTestId)).toBeVisible({ timeout: 15_000 });
-    await page.waitForLoadState("networkidle");
-    await page.getByTestId("tab-debug").click();
-    await expect(page.getByTestId("session-debug")).toBeVisible();
-    // THE TAB WRITES THE URL, so the click starts a client navigation and the RSC payload for it is still in
-    // flight — during which `document.title` is momentarily empty and axe's `document-title` rule fires. That
-    // is the same defect as scanning a page still rendering "Loading…", one interaction later, and this file
-    // already says so; the settle is what makes the scan a measurement of the page rather than of a
-    // navigation. Measured: light passed and dark failed on a machine at load 30.
-    await expect(page).toHaveURL(/segment=debug/);
-    await page.waitForLoadState("networkidle");
-    // AND networkidle IS NOT ENOUGH, measured rather than assumed: with the settle above in place this still
-    // failed `document-title` on an IDLE machine (load 5.5), because the title is written by React after
-    // hydration and the network can fall quiet before that happens. `networkidle` is a proxy for the
-    // condition; this waits for the CONDITION. The same rule the rest of this file follows — assert the
-    // thing, not a stand-in for it.
-    await page.waitForFunction(() => document.title.trim().length > 0);
-    const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
-    expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
-  });
+  //
+  // THE PAIR IS READ OFF THE ROUTE (page-parity pass). It was `tab-debug` / `session-debug` written here, in
+  // a loop over every dynamic route — so the SECOND dynamic route to exist would have driven the session
+  // transcript's own testids against a page that has neither, and the failure would have looked like a
+  // broken locator rather than like a missing declaration. A route with no `secondTab` gets no second scan,
+  // and the count printed by the coverage test at the bottom says how many were declared.
+  const second = route.secondTab;
+  if (second !== undefined) {
+    test(`axe-core reports zero violations on ${route.pattern} with its second tab open`, async ({ page }) => {
+      const path = await concreteDynamicPath(page, route);
+      await page.goto(path);
+      await expect(page.getByTestId(route.readyTestId)).toBeVisible({ timeout: 15_000 });
+      await page.waitForLoadState("networkidle");
+      await page.getByTestId(second.tabTestId).click();
+      await expect(page.getByTestId(second.panelTestId)).toBeVisible();
+      // THE TAB WRITES THE URL, so the click starts a client navigation and the RSC payload for it is still
+      // in flight — during which `document.title` is momentarily empty and axe's `document-title` rule fires.
+      // That is the same defect as scanning a page still rendering "Loading…", one interaction later, and
+      // this file already says so; the settle is what makes the scan a measurement of the page rather than of
+      // a navigation. Measured: light passed and dark failed on a machine at load 30.
+      await expect(page).toHaveURL(second.url);
+      await page.waitForLoadState("networkidle");
+      // AND networkidle IS NOT ENOUGH, measured rather than assumed: with the settle above in place this
+      // still failed `document-title` on an IDLE machine (load 5.5), because the title is written by React
+      // after hydration and the network can fall quiet before that happens. `networkidle` is a proxy for the
+      // condition; this waits for the CONDITION. The same rule the rest of this file follows — assert the
+      // thing, not a stand-in for it.
+      await page.waitForFunction(() => document.title.trim().length > 0);
+      const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+      expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
+      scannedSecondTabs.add(route.pattern);
+    });
+  }
 }
 
 // THIS TEST KEEPS ITS NAME, and the reason is a record rather than a preference: tests/uat/cases/UI-001 —
@@ -228,6 +241,15 @@ test("every route lib/routes.ts declares was actually scanned by axe", () => {
   // eslint-disable-next-line no-console -- the count is the evidence.
   console.log(`AXE DYNAMIC COVERAGE — ${scannedDynamic.size}/${declaredDynamic.length} declared pattern(s) scanned: ${[...scannedDynamic].sort().join(", ")}`);
   expect([...scannedDynamic].sort(), "a dynamic route declared in lib/routes.ts was never put through axe").toEqual(declaredDynamic);
+  // AND EVERY DECLARED SECOND TAB WAS OPENED. Without this the `secondTab` field would be a declaration with
+  // no consequence — a route could name a tab that no scan reaches and the suite would stay green, which is
+  // the same unscanned-screen hole one level down.
+  const declaredSecond = DYNAMIC_CONSOLE_ROUTES.filter((r) => r.secondTab !== undefined)
+    .map((r) => r.pattern)
+    .sort();
+  // eslint-disable-next-line no-console -- the count is the evidence.
+  console.log(`AXE SECOND-TAB COVERAGE — ${scannedSecondTabs.size}/${declaredSecond.length} declared second tab(s) opened and scanned: ${[...scannedSecondTabs].sort().join(", ")}`);
+  expect([...scannedSecondTabs].sort(), "a route declares a second tab that no axe scan opened").toEqual(declaredSecond);
   // A ROUTE WITH NO LEAD SENTENCE IS THE SAME OMISSION AS ONE WITH NO READINESS SIGNAL, and it fails the
   // same way. Every page in this console used to open with a panel or a wall of equally-weighted notes,
   // and the only h1 on any of them was the brand — so "which page is this and what is it for" had no

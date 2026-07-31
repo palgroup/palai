@@ -301,7 +301,21 @@ test("the login page is axe-clean and operable with the keyboard alone", async (
 //   /tools          mcp-connection-form       ?mcp-name=…&mcp-url=…
 //
 // Ten forms render server-side across seven routes; eight carried values, and all ten navigated with a query
-// string. `environment-value-form`'s `value` is SecretField — uncontrolled, living only in the DOM, which is
+// string.
+//
+// TWO OF THE TEN LEFT THE SERVED SWEEP (page-parity pass), AND THE ASSERTION BELOW IS UNCHANGED. `/agents`'
+// `agent-create-form` and `/repositories`' `repository-binding-form` are now behind a `+ Create` button as
+// dialogs, so they are not in the server-rendered HTML and DIRECTION 1 cannot see them: the run prints
+// `FORM METHOD SWEEP — 8 served form(s)` where it printed ten. The floor stays at 8, which is now exactly
+// tight — a third form moving behind a dialog turns this red, and that is the safe direction rather than an
+// oversight: it fails loudly and a human reads two lines.
+//
+// The PROPERTY is not weakened, and DIRECTION 2 is why it cannot be. Both dialogs wrap the same
+// components/ResourceForm.tsx, the source walk still resolves to exactly that one file, and that file still
+// carries `method="post"` — which is the direction this test's own comment calls "the one that makes a NEW
+// form impossible rather than merely remembered". What narrowed is the served INVENTORY, not the guarantee.
+//
+// `environment-value-form`'s `value` is SecretField — uncontrolled, living only in the DOM, which is
 // exactly the shape a native submit serialises into an address bar. On the same dev server, `POST
 // /api/console/login` did not appear in the network log AT ALL, and no element carried a `__reactFiber$` key
 // after six seconds.

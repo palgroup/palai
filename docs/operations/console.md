@@ -682,6 +682,120 @@ silently, and the agent will call it with no human in the loop. That is `HIL-P5`
 
 ---
 
+## 4c. `/agents` — the lineage list, and `/agents/{id}` where it is changed
+
+**Every paragraph in this section used to be on the screen.** The page-parity pass took four forms and three
+explanatory paragraphs off `/agents` and left a list; what those paragraphs said is true, and it is here
+rather than deleted. Measured before and after on the built console (2026-07-31): `<main>` fell from 3501
+rendered characters to 1810, grey prose from 1158 to 57, forms on the page from 1 to 0, table columns from
+**1** to **7**, and `<h2>` headings from 5 to 1.
+
+### An agent is a name; a revision is the configuration
+
+An agent profile is a **name with a lineage of immutable revisions**. A run is pinned to a **published**
+revision, and that pin is what makes a run reproducible. There is no PATCH and no DELETE anywhere on this
+surface (`api/router.go` mounts a create, three reads, a revision create and a publish) — so a revision is
+**superseded, never edited**, and **publishing cannot be undone**: `000019_agents.up.sql` sets `published_at`
+once and no route unsets it.
+
+The console follows that shape: the list creates and reads, and every write that changes one agent is on
+that agent's own page.
+
+### Where each control lives now
+
+| What | Where it was | Where it is |
+|---|---|---|
+| Create an agent | a form stacked under the list | a dialog behind `+ New agent` on `/agents` |
+| Choose an agent | a `<select>` on `/agents` | **gone** — the row you click is the selection |
+| Create a revision | a form stacked under that | `/agents/{id}`, the **Revisions** tab |
+| Publish a revision | the same form's table | the same table, on `/agents/{id}` |
+| Diff two revisions | panel five of five on `/agents` | `/agents/{id}?segment=compare`, the **Compare** tab |
+
+### There is no Created column, and that is the API rather than the screen
+
+`GET /v1/agents` answers `{id, object, name}` per row and `GET /v1/agents/{id}` answers the same three
+fields. `storage/queries/agents.sql`'s `ListAgentProfiles` does select `created_at` and `api.ListRow` does
+carry it — but `renderPage` puts only `row.Body` on the wire (`page.Data[i] = row.Body`), so the timestamp
+exists solely to mint a pagination cursor. **No agent timestamp is readable through the public API at all**,
+and neither is a revision's: the revision projection carries no `created_at` either. A "Created" or "Last
+updated" column here would be a field the console invented.
+
+The four lineage columns — Model, Revisions, Latest published, Status — therefore come from **one extra read
+per row** of `GET /v1/agents/{id}/revisions`, bounded to the rows on screen and capped at six in flight. A
+lineage still loading renders `…`; one that could not be read renders `— unreadable`, which is not the same
+cell as `no revisions`.
+
+### Both external fields read back, and one half is newer than it looks
+
+A revision names a **tool set** (the GRANT — the published set revision whose tools a run may reach) and an
+**MCP connection** (the CEILING — the servers it may reach at all). The MCP rider has been readable since
+E22; the tool set was **write-only until E25 T7**, so a revision could name a set nobody could confirm. Both
+are columns on the revisions table now, and each absence fails quietly and **differently**: without the set
+the tool is never advertised, without the connection it resolves to nothing even when it is.
+
+Neither is offered as free text, on purpose. A `tool_sets` id is **not reference-checked** at create or at
+publish (`automation/agents.go`, deliberately — a typo'd, draft or foreign id fails CLOSED), so a mistyped id
+is accepted by every route and then grants nothing, silently, forever. Only **published** set revisions are
+offered, for the same reason: a draft pinned there is a revision that will never advertise anything and never
+say why.
+
+### Ceilings, named
+
+- **The list is forward-only and cut at twenty.** The cut is stated in words with the server's own cursor
+  behind a `Load more`; there is no backward control because `beginList` refuses `?before=` with a 400.
+- **The row menu holds two items and both are navigations.** No rename, no delete, no duplicate — the API
+  mounts none of them, and a third entry would be a control that refuses.
+- **An environment bound here reaches the agent's SHELL**, as `KEY=value` — never something the model is
+  shown and never part of a prompt. Publishing a revision that names an environment this organization does
+  not have is refused with a **400** (not a 404: the revision id in the path is real).
+- **A browser cannot prove the keys arrive.** That loop is closed at the component tier, over the same HTTP
+  routes this screen calls:
+  `apps/control-plane/internal/execution/console_environment_run_component_test.go`.
+- **One set and one connection per revision.** The field is an array and the API takes several; the console
+  offers one of each.
+
+---
+
+## 4d. `/repositories` — the binding list, and `/repositories/{id}` for the whole record
+
+Same pass, same three moves. Measured before and after on the built console (2026-07-31): `<main>` 2197
+rendered characters with 1650 of grey prose and an eight-field registration form open on the page, under two
+standing paragraphs.
+
+**Provider + repository identity are the authoritative name.** A display name or a URL is not trusted as
+one anywhere in this system, which is why the list shows the identity rather than the clone URL.
+
+**No credential is on this surface, and it is structural rather than a courtesy.**
+`RepositoryBindingCreate` carries a `connection_ref` and no credential field at all
+(`api/repository_bindings.go:28-39`), and the read side of `secret_refs` projects `{name, version,
+updated_at}` with no value (`identity/secrets.go`). The strongest thing this screen can leak is the NAME of
+a credential — the name an operator chose. The ref is **chosen** from the secret-ref list and never typed:
+a typo'd ref is accepted by a form and then fails at CLONE TIME, inside a run, with a refusal about git
+authentication — as far from the field that caused it as a refusal can get.
+
+**Registering a binding proves nothing.** Nothing is cloned on that screen, no credential is exercised and
+no permission is checked — a wrong provider, a wrong identity or a revoked credential shows up at CLONE
+TIME, inside a run. That sentence is now in the create dialog, where somebody is about to register one,
+and in the status the create leaves behind (*"Nothing has been cloned: the first time this binding is
+exercised is a run that names it"*).
+
+**A binding cannot be changed or removed.** `api/router.go:44-46` mounts a create and two reads — no PATCH,
+no DELETE. That sentence is now on `/repositories/{id}`, which is the page an operator opens looking for the
+edit control. A binding registered wrongly is superseded by registering another and pointing runs at that
+one.
+
+**Four fields were written and never shown back.** The clone URL, the data classification, the region
+constraint and the pass-through `policy` object are on the record page; they do not fit a list, and a
+console that writes a field it never displays is the write-and-pray shape §2 forbids. The policy object is
+rendered as pretty-printed JSON exactly as the API returned it — the console passes it through verbatim on
+the way in and cannot know which keys this deployment reads, so it narrows nothing on the way out.
+
+The clone URL is **not a link**. It is fetched by the control plane, never followed by a reader, and an
+operator-supplied URL turned into a click target on the console's own origin is a defect this tree already
+fixed once (artifact downloads, E17 T10).
+
+---
+
 ## 5. When it does not work
 
 | Symptom | Cause | Fix |
