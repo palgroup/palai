@@ -146,6 +146,72 @@ test("the search box is scoped to the ID, and proves it by not finding a name th
   await expect(page.getByTestId("panel-sessions").getByTestId("session-link")).toHaveAttribute("title", data[0].id);
 });
 
+// THE DROPDOWN IS OPERABLE WITH NO MOUSE, AND IT IS THE HEADLINE OF THE COMPONENT LAYER SO IT IS MEASURED
+// RATHER THAN CITED (E29).
+//
+// The seven native <select>s became components/ui/Select over @base-ui/react, and every other test in this
+// file drives one by CLICKING — tests/profile.ts's chooseOption clicks the trigger and clicks a row. That
+// proves the popup opens and the value lands; it proves nothing at all about the keyboard, which is exactly
+// what a hand-rolled dropdown loses first and what a headless library is adopted FOR. A claim that the
+// library "supplies keyboard navigation" is a citation, and this repository does not accept citations for
+// behaviour on the shipped page.
+//
+// So this drives the whole interaction from the keyboard: Tab to the control, open it, move within the
+// listbox, commit, and dismiss the next one with Escape. The ROLES are asserted alongside, because they are
+// what a screen reader reads and they were absent from this console entirely before — measured on d8ca934b,
+// `grep -rn 'role="listbox"' components app` → 0.
+test("the status dropdown opens, moves and commits from the keyboard alone, and Escape abandons", async ({ page }) => {
+  await openList(page);
+  const trigger = page.getByTestId("session-status-filter");
+
+  // THE ROLES FIRST. A <button> that merely looks like a dropdown announces itself as a button; these three
+  // attributes are what make a screen reader say "combo box, collapsed" and then read the list.
+  await expect(trigger).toHaveJSProperty("tagName", "BUTTON");
+  await expect(trigger).toHaveAttribute("role", "combobox");
+  await expect(trigger).toHaveAttribute("aria-haspopup", "listbox");
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+
+  // GENUINELY REACHED BY Tab, not by .focus() — which succeeds on a tabindex=-1 element Tab can never reach.
+  // The same rule tests/a11y.spec.ts's tabToTestId follows, and the reason it exists.
+  for (let i = 0; i < 40 && !(await trigger.evaluate((el) => el === document.activeElement)); i++) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(trigger, "Tab never reached the status dropdown — it is not keyboard-reachable").toBeFocused();
+
+  await page.keyboard.press("Enter");
+  const listbox = page.getByRole("listbox");
+  await expect(listbox).toBeVisible();
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  const options = listbox.getByRole("option");
+  await expect(options).not.toHaveCount(0);
+
+  // ARROW MOVES THE HIGHLIGHT WITHOUT COMMITTING, which is the half a click can never exercise: the control
+  // still reads its old value while the reader walks the list.
+  const before = await trigger.getAttribute("data-value");
+  await page.keyboard.press("ArrowDown");
+  await expect(listbox.locator('[role="option"][data-highlighted]')).toHaveCount(1);
+  expect(await trigger.getAttribute("data-value"), "arrowing through the list changed the value before it was committed").toBe(before);
+
+  // ENTER COMMITS the highlighted row, and the control closes carrying it.
+  const highlighted = await listbox.locator('[role="option"][data-highlighted]').getAttribute("data-value");
+  await page.keyboard.press("Enter");
+  await expect(listbox).toHaveCount(0);
+  await expect(trigger).toHaveAttribute("data-value", String(highlighted));
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+
+  // AND ESCAPE ABANDONS rather than committing. A dropdown an operator cannot back out of with the keyboard
+  // is one they will back out of by reloading the page.
+  const committed = await trigger.getAttribute("data-value");
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("listbox")).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  expect(await trigger.getAttribute("data-value"), "Escape committed the highlighted row instead of abandoning it").toBe(committed);
+  // Focus comes BACK to the control it left, so the reader is not returned to the top of the document.
+  await expect(trigger).toBeFocused();
+});
+
 test("the Status control narrows the COLLECTION on the server, not the rows on screen", async ({ page }) => {
   const { data: all } = await served(page, "/sessions");
   const target = all.find((r) => r.status !== all[0].status)?.status ?? all[0].status;
