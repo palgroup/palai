@@ -65,6 +65,7 @@ export function RevisePublish({
   fields = [],
   buildBody,
   onCreated,
+  onChanged,
   createPath,
   listPath,
   publishPath,
@@ -83,6 +84,18 @@ export function RevisePublish({
   buildBody?: () => Record<string, unknown>;
   /** Called after a successful create with the id the server minted, so a page can clear its inputs. */
   onCreated?: (revision: Revision) => void;
+  /**
+   * Called after ANY change this component landed — a create OR a publish — once its own list has been
+   * reloaded. It exists because a page that renders a SUMMARY of this lineage beside it (app/agents/[id]
+   * reads the same collection for its chip row) has no other way to learn that a publish happened.
+   *
+   * IT IS NOT `onCreated` WITH A WIDER NAME, and the difference is a bug this component shipped with. A
+   * publish reloaded the table here and told nobody, so the summary above it kept saying "draft only" over a
+   * table whose top row read "published" — one screen contradicting itself, which is the failure a summary
+   * always invites and the reason a summary needs a signal rather than a second guess. Found by the leg that
+   * asserts the two agree (tests/config-journey.spec.ts), on the first run after the summary existed.
+   */
+  onChanged?: () => void;
   /** POST target for a draft. "" means THIS LINEAGE IS NOT CREATED FROM HERE — no form is rendered. */
   createPath: string;
   /** GET target for the lineage. "" means there is no parent selected — see `emptyNote`. */
@@ -150,6 +163,7 @@ export function RevisePublish({
       setStatus(`Revision ${String(body.id ?? "?")} created as a draft. Publish it before a run can be pinned to it.`);
       onCreated?.(body);
       await load(listPath);
+      onChanged?.();
     } catch (err: unknown) {
       setFormError(err instanceof RelayError ? err.problem.detail : "the revision could not be created");
     } finally {
@@ -166,6 +180,7 @@ export function RevisePublish({
       setStatusID(revisionID);
       setStatus(`Revision ${revisionID} is published. Publishing cannot be undone — supersede it with a new revision instead.`);
       await load(listPath);
+      onChanged?.();
     } catch (err: unknown) {
       // The SERVER's words. A publish is refused for reasons the console cannot tell apart on its own (an
       // environment that no longer exists, a revision outside this project), and each has a different fix.
@@ -224,11 +239,13 @@ export function RevisePublish({
 
       <section className="panel" data-testid={`panel-${testId}s`} aria-labelledby={`${testId}s-h`}>
         <h2 id={`${testId}s-h`}>Revisions</h2>
-        <p className="muted">
-          Newest first. <strong>A draft can be changed only by superseding it</strong> — there is no PATCH on
-          this surface — and <strong>publishing is permanent</strong>: a published revision can be superseded
-          but never un-published, which is what makes a run pinned to one reproducible.
-        </p>
+        {/* ONE SENTENCE (page-parity pass). This was three: newest-first, no PATCH, and publishing being
+            permanent — all true, all standing background, and all repeated by the create form's own note two
+            panels up. What an operator needs at the moment they look at this table is the ORDER, because it
+            decides which row is current; the irreversibility is stated on the control that causes it (the
+            publish button's own status sentence says "Publishing cannot be undone") and the rest is in
+            docs/operations/console.md §4c. */}
+        <p className="muted">Newest first — the top row is what a new pin resolves to.</p>
         {listNote ? <p className="muted">{listNote}</p> : null}
         {listError !== "" ? (
           <p role="alert" className="form-error" data-testid={`panel-${testId}s-error`}>

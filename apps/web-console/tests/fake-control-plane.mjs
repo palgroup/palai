@@ -1578,6 +1578,26 @@ export const ROUTES = [
       }),
   },
   {
+    // GET /v1/agents/{agent_id} — mounted by api/router.go:56 since E13 T4 and never served here, because
+    // nothing in the console addressed one agent until app/agents/[id] existed. The projection is
+    // store/agents.go GetAgentProfile's, field for field: {id, object, name} and nothing else. There is no
+    // created_at on this wire — the column storage/queries/agents.sql selects rides api.ListRow to mint a
+    // cursor and renderPage never serialises it — which is why the console's agent screens carry no
+    // timestamp anywhere (lib/agents.ts holds the measurement).
+    //
+    // SYNTHESISED ON AN UNKNOWN ID, like the environment-detail, binding and publish routes above and for
+    // the same reason: the conformance sweep's arm 1 probes every declared pattern with a placeholder
+    // segment, and a 404 there reads as "the table declares a route the fixture does not serve". The real
+    // route answers 404 for an unknown or foreign profile (store/agents.go NotFound), and no console path
+    // depends on either answer — every id this console puts in this path came out of a list it just read.
+    method: "GET",
+    pattern: "/v1/agents/{agent_id}",
+    handle: (_req, res, { agent_id: id }) => {
+      const row = AGENTS.find((a) => a.id === id);
+      sendJSON(res, 200, row ?? { id, object: "agent", name: `synthesised-${id}` });
+    },
+  },
+  {
     method: "GET",
     pattern: "/v1/agents/{agent_id}/revisions",
     // {data, has_more} AND NOTHING ELSE — renderPage's envelope over a page that ends the collection, which

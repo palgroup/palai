@@ -91,7 +91,11 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // `panel-agent-profiles`, NOT `panel-agents`: "/" already carries a panel by that name (it is where list
   // truncation is visible — pagination.spec.ts drives it), and two pages answering one testid is how a spec
   // ends up asserting against whichever page it happened to be on.
-  { path: "/agents", label: "Agents", group: "Build", readyTestId: "panel-agent-profiles", lead: "An agent is a name with a lineage of immutable revisions. A revision is drafted here and published once; publishing is what makes a run pinned to it reproducible, and it cannot be undone." },
+  // THE LEAD IS ONE SENTENCE AGAIN (page-parity pass). It used to be three clauses carrying the whole
+  // publish-is-irreversible rule, on a screen that then repeated it in a paragraph under the title and again
+  // in the revision panel's note. A lead says what the screen IS; the rule belongs where the publish control
+  // is, which is app/agents/[id] and docs/operations/console.md §4c.
+  { path: "/agents", label: "Agents", group: "Build", readyTestId: "panel-agent-profiles", lead: "The agents this project can run — one row per lineage, with the revisions a run can be pinned to." },
   // E25 T7. `panel-mcp-connections` is the FIRST panel on the page and the one that can still be a spinner;
   // the forms below it render synchronously. It is empty on every bootstrap stack (nothing registers an MCP
   // connection without an operator), so on both profiles this scan covers the empty state — which is the
@@ -170,6 +174,18 @@ export interface DynamicConsoleRoute {
   create: Record<string, unknown>;
   /** The concrete browser path for one row's id. */
   build: (id: string) => string;
+  /**
+   * A SECOND SCREEN BEHIND A TAB, declared so the axe loop can open it.
+   *
+   * A scan of the page as it loads never looks at the other tab: `hidden` takes the whole panel out of the
+   * accessibility tree, so the first scan reports a clean bill of health for markup it did not see — the
+   * same shape as scanning a page still rendering "Loading…", one interaction later. tests/a11y.spec.ts used
+   * to hard-code `tab-debug` and `session-debug` inside its dynamic loop, which meant the SECOND dynamic
+   * route to exist would have run the session transcript's assertions against a page that has neither. The
+   * pair is data now, and a tabbed screen that omits it simply gets no second scan — visibly, here, rather
+   * than by a locator failing on the wrong page.
+   */
+  secondTab?: { tabTestId: string; panelTestId: string; url: RegExp };
 }
 
 export const DYNAMIC_CONSOLE_ROUTES: readonly DynamicConsoleRoute[] = [
@@ -180,5 +196,27 @@ export const DYNAMIC_CONSOLE_ROUTES: readonly DynamicConsoleRoute[] = [
     sampleFrom: "/sessions",
     create: {},
     build: (id) => `/sessions/${encodeURIComponent(id)}`,
+    secondTab: { tabTestId: "tab-debug", panelTestId: "session-debug", url: /segment=debug/ },
+  },
+  // THE AGENT LINEAGE (page-parity pass). It is a resource screen for the same reason the transcript is: the
+  // revision draft, the publish and the diff are all about ONE agent, and while they lived on /agents that
+  // screen carried a picker whose only job was to re-ask which row the operator had already chosen.
+  //
+  // `create` CARRIES A NAME, because POST /v1/agents refuses a nameless one with a 400 ("name is required",
+  // store/agents.go MissingName) — an empty body here would make the empty-collection arm fail rather than
+  // create, which is exactly the silent skip this list exists to prevent. The name says where the row came
+  // from, since on a real stack it persists.
+  {
+    pattern: "/agents/[id]",
+    label: "Agent lineage",
+    // THE CHIP ROW, not the revisions panel, and that is a measurement rather than a preference:
+    // components/RevisePublish.tsx emits `panel-agent-revisions` from its FIRST paint with the word
+    // "Loading…" inside it, so a scan waiting on that name would look at a spinner. The chip row renders
+    // only once the lineage read has settled, in either direction.
+    readyTestId: "agent-chips",
+    sampleFrom: "/agents",
+    create: { name: "axe-coverage-probe" },
+    build: (id) => `/agents/${encodeURIComponent(id)}`,
+    secondTab: { tabTestId: "tab-compare", panelTestId: "panel-agent-diff", url: /segment=compare/ },
   },
 ];

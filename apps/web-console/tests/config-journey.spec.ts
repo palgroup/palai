@@ -63,6 +63,15 @@ async function createEnvironment(page: Page, name: string, keys: Record<string, 
 // createAgentWithRevision walks the whole lineage from the /agents screen and returns the ids it observed.
 // `publish` is a parameter because an UNPUBLISHED revision is one of the things under test: a draft that a
 // run refuses is the console's proof that nothing silently fell back to a default.
+//
+// THE PATH CHANGED AND THE JOURNEY FOLLOWS IT (page-parity pass). The create form is behind the list's own
+// `+ New agent` button as a dialog, and a created agent LANDS ON ITS OWN PAGE — /agents/{id} — which is
+// where its revisions are drafted, published and diffed. The old walk filled a form on the list screen and
+// then read the id out of a "choose an agent" dropdown; that dropdown existed because the revision form had
+// no other way to know which lineage it belonged to, and a detail route is what removes the question.
+//
+// The id is READ OFF THE ADDRESS BAR rather than out of a control, which is the stronger reading of the same
+// assertion: the console did not merely select the agent it made, it navigated to it.
 async function createAgentWithRevision(
   page: Page,
   opts: { agentName: string; environmentName?: string; model?: string; publish: boolean },
@@ -70,19 +79,20 @@ async function createAgentWithRevision(
   await page.goto("/agents");
   await expect(page.getByTestId("panel-agent-profiles")).toBeVisible({ timeout: 15_000 });
 
+  await page.getByTestId("agent-create-open").click();
+  await expect(page.getByTestId("agent-create-dialog")).toBeVisible();
   await page.getByTestId("agent-name-input").fill(opts.agentName);
   await page.getByTestId("agent-create-button").click();
-  await expect(page.getByTestId("agent-create-status")).toContainText(opts.agentName, { timeout: 15_000 });
 
-  // The agent select is the page's own list — the create selected the new lineage, which is what makes the
-  // revision form addressable without a second lookup. Awaited rather than read once: the list REFETCHES
-  // after the create, and the option cannot exist before that lands. If it never lands (an agent past the
-  // first page, which is what appending to the fixture used to produce), this fails and says so.
-  await expect(
-    page.getByTestId("agent-select"),
-    "the create did not select the agent it just made, so the revision form has no parent",
-  ).not.toHaveValue("", { timeout: 15_000 });
-  const agentId = await page.getByTestId("agent-select").inputValue();
+  await expect(page, "the create did not land on the agent it just made, so there is no lineage to revise").toHaveURL(/\/agents\/[^/?]+/, {
+    timeout: 15_000,
+  });
+  const agentId = decodeURIComponent(new URL(page.url()).pathname.split("/").filter((s) => s !== "").pop() ?? "");
+  expect(agentId, "the address bar carries no agent id after the create").not.toBe("agents");
+  // The NAME the server minted the row with, read back on the screen the create landed on — the same
+  // read-back discipline §2 demands of every write form.
+  await expect(page.getByTestId("agent-title")).toContainText(opts.agentName, { timeout: 15_000 });
+  await expect(page.getByTestId("agent-chips")).toBeVisible({ timeout: 15_000 });
 
   await page.getByTestId("revision-model-input").fill(opts.model ?? PINNED_MODEL);
   if (opts.environmentName !== undefined) {
@@ -218,11 +228,33 @@ test("an agent, a revision bound to an environment, and a publish — all from t
   // The environment reads back BY ID on the revision row — the field the API lets you write has a read path.
   await expect(rows.getByTestId(`revision-environment-${revisionId}`)).not.toBeEmpty();
 
+  // BOTH EXTERNAL FIELDS READ BACK, ASSERTED AS CELLS RATHER THAN AS A SENTENCE (page-parity pass). This
+  // screen used to close with a paragraph claiming it — "the MCP connection rider has been readable since
+  // E22; the tool set, the half that actually GRANTS the tools, was write-only until E25 T7" — and a spec
+  // that reads a paragraph proves the paragraph. The two cells are the claim: `tool_sets` is the GRANT and
+  // `mcp_connections` is the CEILING, each absence fails quietly and differently, and a projection that
+  // dropped either would fail here instead of leaving a true sentence over a missing column. The history is
+  // in docs/operations/console.md §4c.
+  await expect(rows.getByTestId(`revision-tool-sets-${revisionId}`)).not.toBeEmpty();
+  await expect(rows.getByTestId(`revision-mcp-connections-${revisionId}`)).not.toBeEmpty();
+
   // The publish control is GONE from a published row: a second publish is not a thing an operator can ask
   // for on a lineage that cannot be un-published.
   await expect(page.getByTestId(`publish-${revisionId}`)).toHaveCount(0);
 
+  // AND THE LINEAGE'S SUMMARY AGREES WITH ITS TABLE. The chip row is a SECOND read of the same collection
+  // (the page reads it for the chips, RevisePublish reads it for the rows), so a publish that moved one and
+  // not the other would leave a screen that contradicts itself — which is the failure a summary invites.
+  await expect(page.getByTestId("chip-state")).toContainText("published");
+  await expect(page.getByTestId("chip-model")).toContainText(PINNED_MODEL);
+
   await expectAxeClean(page);
+
+  // THE COMPARE TAB IS THE SECOND SCREEN OF THIS PAGE and it is scanned as one. It carries the diff that
+  // used to be panel five of five on the list screen, under four forms that had nothing to do with it.
+  await page.getByTestId("tab-compare").click();
+  await expect(page).toHaveURL(/segment=compare/);
+  await expect(page.getByTestId("panel-agent-diff")).toBeVisible();
 });
 
 test("the environment picker on the revision form does not degrade to free text when there is nothing to pick", async ({ page }) => {
@@ -242,13 +274,13 @@ test("the environment picker on the revision form does not degrade to free text 
   await page.goto("/agents");
   await expect(page.getByTestId("panel-agent-profiles")).toBeVisible({ timeout: 15_000 });
 
-  // AN AGENT IS CREATED FIRST, because the revision form belongs to ONE lineage and does not exist until one
-  // is chosen — a page with no agent selected renders a note in its place, which is a different absence from
-  // the one under test. Creating rather than picking an existing row is what makes this deterministic on both
+  // AN AGENT IS CREATED FIRST, because the revision form belongs to ONE lineage and lives on that lineage's
+  // own page. Creating rather than picking an existing row is what makes this deterministic on both
   // profiles: a bootstrap compose stack holds zero agents.
+  await page.getByTestId("agent-create-open").click();
   await page.getByTestId("agent-name-input").fill(`t6-empty-env-${stamp()}`);
   await page.getByTestId("agent-create-button").click();
-  await expect(page.getByTestId("agent-select")).not.toHaveValue("", { timeout: 15_000 });
+  await expect(page).toHaveURL(/\/agents\/[^/?]+/, { timeout: 15_000 });
   await expect(page.getByTestId("agent-revision-form")).toBeVisible({ timeout: 15_000 });
 
   await expect(page.getByTestId("revision-environment-select")).toHaveCount(0);
@@ -287,7 +319,86 @@ test("the environment picker on the revision form does not degrade to free text 
     await expect(page.getByTestId(note)).toContainText(wants);
     await expect(page.getByTestId(note).getByRole("link")).toHaveAttribute("href", "/tools");
   }
-  await expect(page.getByTestId("revision-t7-note")).toContainText("Both external fields read back");
+});
+
+// --- THE LIST, AND WHAT A ROW SAYS ----------------------------------------------------------------------
+
+test("every column on the Agents list is a field, and the row goes to the agent's own page", async ({ page }) => {
+  // THE SCREEN THIS REPLACES had ONE column — Name, with the id stacked under it in mono — and the row went
+  // nowhere. Measured on the built console 2026-07-31 (`document.querySelectorAll("main table thead th")`):
+  // 1 header before, 7 after. The assertion below is not the count, it is that each one is a FIELD: the id
+  // and the name come off the row GET /v1/agents returns, and the four lineage columns come off that agent's
+  // own revisions collection — which is checked here against a SECOND read through the relay, so a column
+  // that showed the wrong lineage's state would fail rather than merely look plausible.
+  await page.goto("/agents");
+  const panel = page.getByTestId("panel-agent-profiles");
+  await expect(panel).toBeVisible({ timeout: 15_000 });
+
+  const headers = await panel.locator("thead th").allInnerTexts();
+  expect(headers.slice(0, 6), "the agents table lost a column, or gained one that is not a field").toEqual([
+    "ID",
+    "Name",
+    "Model",
+    "Revisions",
+    "Latest published",
+    "Status",
+  ]);
+
+  const first = panel.locator("tbody tr").first();
+  const href = await first.getByTestId("agent-link").getAttribute("href");
+  expect(href, "the id cell is not a link to the agent's own page").toMatch(/^\/agents\/.+/);
+  // BOTH cells go to the same place — an operator aiming at the one part of the row they cannot read is a
+  // row that is clickable in the wrong place.
+  expect(await first.getByTestId("agent-name-link").getAttribute("href")).toBe(href);
+
+  const id = decodeURIComponent(String(href).replace("/agents/", ""));
+  const lineage = await page.evaluate(async (agent) => {
+    const res = await fetch(`/api/palai/v1/agents/${encodeURIComponent(agent)}/revisions`, { headers: { Accept: "application/json" } });
+    const body = (await res.json()) as { data?: { status?: string; revision_number?: number }[] };
+    const rows = body.data ?? [];
+    return {
+      count: rows.length,
+      state: rows.some((r) => r.status === "published") ? "published" : rows.length > 0 ? "draft only" : "no revisions",
+    };
+  }, id);
+
+  // The cells are not read until the per-row lineage fetch has landed; the count is the last of the four to
+  // settle, so waiting on it is waiting on all of them.
+  await expect(first.getByTestId("agent-revision-count")).toHaveText(String(lineage.count), { timeout: 15_000 });
+  await expect(first.getByTestId("agent-status")).toContainText(lineage.state);
+
+  // AND THE ROW OPENS. Nothing in this console's lists went anywhere before /sessions; this is the second.
+  await first.getByTestId("agent-name-link").click();
+  await expect(page).toHaveURL(new RegExp(`/agents/${id.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}$`));
+  await expect(page.getByTestId("agent-chips")).toBeVisible({ timeout: 15_000 });
+});
+
+test("the create form is a dialog: it is not on the page until asked for, and it closes on Escape", async ({ page }) => {
+  // A CREATE FORM THAT IS ALWAYS OPEN IS A FORM THE OPERATOR SCROLLS PAST ON EVERY VISIT. This screen used
+  // to carry four of them; the assertion is that the list is the page and the form is a mode.
+  await page.goto("/agents");
+  await expect(page.getByTestId("panel-agent-profiles")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("agent-name-input")).toHaveCount(0);
+  // No form element at all until the dialog exists — the same enumeration tests/auth.spec.ts makes about
+  // where a form may live, asked about whether one is on screen.
+  expect(await page.locator("main form").count(), "a form is rendered on the agents list before anything asked for one").toBe(0);
+
+  await page.getByTestId("agent-create-open").click();
+  const dialog = page.getByTestId("agent-create-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveAttribute("aria-modal", "true");
+  // THE ACCESSIBLE NAME IS ASSERTED rather than assumed: a dangling aria-labelledby produces an EMPTY name
+  // and no error, which is why components/FormDialog.tsx uses aria-label — this is what makes that a
+  // measurement.
+  await expect(dialog).toHaveAttribute("aria-label", "Create an agent");
+  // Focus moved IN, onto the field the operator opened the dialog to type into.
+  await expect(page.getByTestId("agent-name-input")).toBeFocused();
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  // And BACK, onto the control that opened it. A keyboard operator who cancels and lands at the top of the
+  // document has lost the list they were working in.
+  await expect(page.getByTestId("agent-create-open")).toBeFocused();
 });
 
 // --- THE RUN --------------------------------------------------------------------------------------------

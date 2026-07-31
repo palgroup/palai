@@ -1864,3 +1864,52 @@ tbody tr[data-selected="true"] td {
 .cell-name-link:hover {
   text-decoration: underline;
 }
+
+/* --- PAGE PARITY: the list screens, and the create form that is now a mode ------------------------------
+   Three rules, all of them for markup that already existed on /sessions and now exists on /agents too. They
+   are LAST in the file on purpose: this pass runs beside the primitive-layer pass, and a block appended at
+   the end is a block a merge can take whole. Nothing above this line was edited. */
+
+/* A ROW MENU ITEM MAY BE A LINK. `/sessions`' menu holds one button (Rename is the session's whole write
+   surface); an agent's two items are both NAVIGATIONS — a link is what gives them the middle click, the
+   context menu and the "link" role a button would have to fake — so they are styled as the menu's items
+   rather than as prose links inside a popover. */
+.row-menu-panel a {
+  padding: var(--space-1) var(--space-2);
+  color: var(--text);
+  text-decoration: none;
+  border-radius: var(--radius-1);
+  white-space: nowrap;
+}
+.row-menu-panel a:hover {
+  background: var(--bg-hover);
+}
+
+/* A FORM INSIDE THE DIALOG. `.panel` is borderless and unpadded since the card came off every screen, so a
+   ResourceForm nested here needs nothing except its heading not to push the dialog's own top padding down —
+   `.dialog > h2` cannot reach it, because the heading is inside the section. */
+.dialog .panel > h2:first-child {
+  margin-top: 0;
+}
+
+/* THE DETAIL PAGE'S TITLE, on a route that has no PageHeader (lib/routes.ts holds paths; `/agents/[id]` is
+   not one, so components/Chrome.tsx renders nothing above it). `.session-head` already does this for the
+   transcript; this is the same rule without the rename affordance's flex row. */
+.breadcrumb + .page-title,
+.breadcrumb + p + .page-title {
+  margin-top: var(--space-3);
+}
+
+/* THE TAB PANEL STACKS ITS SECTIONS. `.content` is the flex column that spaces every top-level section on a
+   page, and a tab panel is one of those children — so the two sections inside it (the draft form and the
+   revisions table) had no gap between them at all, which put a submit button hard against the next heading.
+   The `[hidden]` rule below is NOT belt-and-braces: `display: flex` here would otherwise beat the UA
+   stylesheet's `[hidden] { display: none }` and make the closed tab visible on every page that uses one. */
+.tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.tab-panel[hidden] {
+  display: none;
+}
