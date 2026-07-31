@@ -330,11 +330,32 @@ func uncertainSideEffectProjection() ([]byte, error) {
 
 // CreateSession opens a session within the request's verified scope (spec §9.1). The id is
 // minted here (one place mints session ids); the coordinator inserts it active and reads back
-// the projection this renders.
-func (s *Store) CreateSession(ctx context.Context, scope middleware.Scope) (api.SessionResult, error) {
-	view, err := s.spine.CreateSession(ctx, tenantOf(scope), middleware.NewID("ses"))
+// the projection this renders. name is the optional operator label (E29) and is "" for a body that
+// omitted it, in which case the projection derives one from the first prompt instead.
+func (s *Store) CreateSession(ctx context.Context, scope middleware.Scope, name string) (api.SessionResult, error) {
+	view, err := s.spine.CreateSession(ctx, tenantOf(scope), middleware.NewID("ses"), name)
 	if err != nil {
 		return api.SessionResult{}, err
+	}
+	body, err := marshalSession(scope, view)
+	if err != nil {
+		return api.SessionResult{}, err
+	}
+	return api.SessionResult{Body: body, Found: true}, nil
+}
+
+// RenameSession sets a session's operator label within the request's verified scope (E29). This, not
+// the create-time name, is the write path a Sessions screen actually needs: a session opened
+// implicitly by POST /v1/responses never passed through CreateSession and has no label to have been
+// given one. An unknown or foreign id is a miss (Found=false → 404) and writes nothing, the same
+// no-existence-disclosure contract retrieval has.
+func (s *Store) RenameSession(ctx context.Context, scope middleware.Scope, id, name string) (api.SessionResult, error) {
+	view, err := s.spine.RenameSession(ctx, tenantOf(scope), id, name)
+	if err != nil {
+		return api.SessionResult{}, err
+	}
+	if !view.Found {
+		return api.SessionResult{}, nil
 	}
 	body, err := marshalSession(scope, view)
 	if err != nil {
@@ -512,15 +533,43 @@ func (s *Store) AcceptCommand(ctx context.Context, scope middleware.Scope, sessi
 
 // marshalSession renders a session projection. organization_id/project_id come from the
 // verified scope, never a request field (spec §39.2).
+//
+// The E29 fields — label, agents, metered tokens, activity span — are rendered here and NOT re-derived
+// per row: the store hands back one already-populated SessionView per session, so a page of 50 is one
+// query. Agents is normalised to a non-nil slice so the field is `[]` rather than `null` on a session
+// whose runs pinned no agent; a screen must not have to tell those apart, because they are the same
+// fact. duration_ms is computed from the two timestamps here, in one place, so it cannot disagree
+// with them.
 func marshalSession(scope middleware.Scope, view coordinator.SessionView) ([]byte, error) {
-	return json.Marshal(contracts.Session{
+	out := contracts.Session{
 		ID:             contracts.SessionID(view.ID),
 		Object:         "session",
 		Status:         view.State,
 		CreatedAt:      view.CreatedAt.UTC().Format(time.RFC3339Nano),
 		OrganizationID: contracts.OrganizationID(scope.Organization),
 		ProjectID:      contracts.ProjectID(scope.Project),
-	})
+		Name:           view.Name,
+		NameSource:     view.NameSource,
+		Agents:         view.Agents,
+		InputTokens:    int(view.InputTokens),
+		OutputTokens:   int(view.OutputTokens),
+	}
+	if out.Agents == nil {
+		out.Agents = []string{}
+	}
+	if view.FirstActivityAt != nil {
+		first := view.FirstActivityAt.UTC().Format(time.RFC3339Nano)
+		out.FirstActivityAt = &first
+	}
+	if view.LastActivityAt != nil {
+		last := view.LastActivityAt.UTC().Format(time.RFC3339Nano)
+		out.LastActivityAt = &last
+	}
+	if view.FirstActivityAt != nil && view.LastActivityAt != nil {
+		ms := int(view.LastActivityAt.Sub(*view.FirstActivityAt).Milliseconds())
+		out.DurationMs = &ms
+	}
+	return json.Marshal(out)
 }
 
 // marshalCommand renders a command projection from the durable row.

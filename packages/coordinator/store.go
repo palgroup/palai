@@ -870,8 +870,10 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	// Create the durable resources and the birth event atomically. A chained
 	// response reuses the resolved session (createSession is false); a fresh one opens it.
 	if createSession {
+		// No label: an implicitly-opened session has none to give. The projection derives one from
+		// this very response's prompt, and PATCH /v1/sessions/{id} replaces it (E29).
 		if _, err := tx.Exec(ctx, storage.Query("InsertSession"),
-			sessionID, tenant.Organization, tenant.Project); err != nil {
+			sessionID, tenant.Organization, tenant.Project, ""); err != nil {
 			return Admission{}, fmt.Errorf("insert session: %w", err)
 		}
 	}

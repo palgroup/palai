@@ -187,7 +187,13 @@ func (f *fakeControlPlane) RecordAttachDenied(_ context.Context, _, _, _, _ stri
 
 // SessionManager — STEP 3's message command. AcceptCommand accepts a steer for a known session; an
 // unknown session is a 404 with no existence disclosure.
-func (f *fakeControlPlane) CreateSession(_ context.Context, _ middleware.Scope) (api.SessionResult, error) {
+func (f *fakeControlPlane) CreateSession(_ context.Context, _ middleware.Scope, _ string) (api.SessionResult, error) {
+	return api.SessionResult{}, nil
+}
+
+// RenameSession is present so the fake still satisfies api.SessionManager; the §35.1 conformance suite
+// never labels a session, so it answers a clean miss rather than pretending to store one.
+func (f *fakeControlPlane) RenameSession(_ context.Context, _ middleware.Scope, _, _ string) (api.SessionResult, error) {
 	return api.SessionResult{}, nil
 }
 

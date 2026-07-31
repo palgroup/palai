@@ -307,7 +307,10 @@ func (probeEvents) RecordAttachDenied(context.Context, string, string, string, s
 
 type probeSessions struct{}
 
-func (probeSessions) CreateSession(context.Context, middleware.Scope) (SessionResult, error) {
+func (probeSessions) CreateSession(context.Context, middleware.Scope, string) (SessionResult, error) {
+	return SessionResult{}, nil
+}
+func (probeSessions) RenameSession(context.Context, middleware.Scope, string, string) (SessionResult, error) {
 	return SessionResult{}, nil
 }
 func (probeSessions) GetSession(context.Context, middleware.Scope, string) (SessionResult, error) {

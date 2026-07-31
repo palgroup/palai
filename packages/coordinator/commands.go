@@ -94,9 +94,11 @@ func (s *Store) AcceptCommand(ctx context.Context, tenant Tenant, sessionID stri
 
 	// The session must be visible in scope; a foreign/unknown id is a 404, never an FK error.
 	// Its lifecycle state gates new work: a closed session rejects everything but its own exit.
+	// SessionStateInScope, not the rendering read: this path wants one word, inside a transaction, and
+	// the session projection now carries three lateral aggregates it would compute and discard.
 	var sessionState string
-	if err := tx.QueryRow(ctx, storage.Query("GetSessionInScope"), sessionID, tenant.Organization, tenant.Project).
-		Scan(new(string), &sessionState, new(time.Time)); errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRow(ctx, storage.Query("SessionStateInScope"), sessionID, tenant.Organization, tenant.Project).
+		Scan(new(string), &sessionState); errors.Is(err, pgx.ErrNoRows) {
 		return Command{SessionNotFound: true}, nil
 	} else if err != nil {
 		return Command{}, fmt.Errorf("resolve command session: %w", err)
@@ -331,7 +333,10 @@ func applyForkSessionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, parentSes
 	if childSessionID == "" {
 		return fmt.Errorf("fork_session requires a child session id")
 	}
-	if _, err := tx.Exec(ctx, storage.Query("InsertSession"), childSessionID, tenant.Organization, tenant.Project); err != nil {
+	// The fork opens its child unlabelled rather than copying the parent's name (E29): a fork is a new
+	// line of work, and inheriting a label would put two rows on the Sessions screen claiming to be the
+	// same thing. It derives one from the copied history, or the operator renames it.
+	if _, err := tx.Exec(ctx, storage.Query("InsertSession"), childSessionID, tenant.Organization, tenant.Project, ""); err != nil {
 		return fmt.Errorf("insert fork child session: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("ForkCopyResponses"), parentSessionID, tenant.Organization, tenant.Project, childSessionID); err != nil {

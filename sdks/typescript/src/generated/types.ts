@@ -273,13 +273,25 @@ export interface ResponseCreateRequest {
 }
 
 export interface Session {
+  agents: string[];
   created_at: string;
+  duration_ms?: number | null;
+  first_activity_at?: string | null;
   id: SessionId;
+  input_tokens: number;
+  last_activity_at?: string | null;
   metadata?: Record<string, unknown>;
+  name: string;
+  name_source: string;
   object: string;
   organization_id?: OrganizationId;
+  output_tokens: number;
   project_id?: ProjectId;
   status: string;
+}
+
+export interface SessionWrite {
+  name?: string | null;
 }
 
 export interface Skill {

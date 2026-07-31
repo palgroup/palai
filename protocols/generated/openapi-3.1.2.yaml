@@ -245,8 +245,96 @@
       }
     },
     "/v1/sessions": {
+      "get": {
+        "description": "A tenant-scoped, cursor-paged page of sessions. Each row carries the whole Sessions screen — label, the agent profiles its runs pinned, metered tokens and the activity span — so rendering a page costs one request and not one per row. `agents` is plural because the association is per-run: a session may have used none, one, or several. Ordered newest-first by (created_at, id); that order is total, so `next_cursor` cannot skip or repeat a row across a page boundary.",
+        "operationId": "listSessions",
+        "parameters": [
+          {
+            "description": "Page size, 1..100 (default 20).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from a previous page's next_cursor. Bound to the calling tenant: a cursor minted for another tenant is a 400 invalid_cursor, never a silently empty page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by session lifecycle state.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "created_after",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "created_before",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../schemas/common/pagination.json"
+                }
+              }
+            },
+            "description": "A page of sessions.",
+            "headers": {
+              "API-Version": {
+                "$ref": "#/components/headers/ApiVersion"
+              },
+              "Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "summary": "List sessions"
+      },
       "post": {
         "operationId": "createSession",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../schemas/execution/session-write.json"
+              }
+            }
+          },
+          "description": "Optional session label. Absent leaves the session unlabelled, and its projection then derives one from the first prompt.",
+          "required": false
+        },
         "responses": {
           "201": {
             "content": {
@@ -316,6 +404,52 @@
           }
         },
         "summary": "Fetch a session"
+      },
+      "patch": {
+        "description": "Sets the session's operator label. This is the write path that matters: a session opened implicitly by POST /v1/responses never passed through session creation, so a create-time name would leave exactly the sessions a list is full of with no way to be labelled. The label is NOT unique — several sessions may share one. `name` must be present; an empty string clears the operator label and returns the row to its derived one.",
+        "operationId": "updateSession",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../schemas/execution/session-write.json"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../schemas/execution/session.json"
+                }
+              }
+            },
+            "description": "The renamed session resource.",
+            "headers": {
+              "API-Version": {
+                "$ref": "#/components/headers/ApiVersion"
+              },
+              "Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "summary": "Rename a session"
       }
     },
     "/v1/sessions/{session_id}/commands": {

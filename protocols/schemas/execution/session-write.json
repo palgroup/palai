@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/session-write.json",
+  "title": "SessionWrite",
+  "type": "object",
+  "description": "The body of POST /v1/sessions and PATCH /v1/sessions/{session_id}. One field, because a session's label is the only thing about a session a caller supplies — everything else on the resource is either minted by the server or aggregated from the session's own runs and meters.",
+  "required": [],
+  "properties": {
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200,
+      "description": "The display label. ABSENT and EMPTY are different values here, which is why the type admits null: absent (or null) means the caller is not setting a label — on create the session simply has none and its projection derives one from the first prompt, and on PATCH it is a 400, because a rename that renames nothing is a request that lost its field. An empty string is a real value that CLEARS the operator label and returns the row to the derived one."
+    }
+  },
+  "additionalProperties": false
+}

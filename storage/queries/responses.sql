@@ -379,9 +379,12 @@ FROM idempotency_records
 WHERE organization_id = $1 AND project_id = $2 AND principal_id = $3
   AND method = $4 AND route = $5 AND idempotency_key = $6;
 
+-- $4 is the operator's label (E29, migration 000048) and is '' for every implicit creation: admission
+-- and fork_session both open a session on the caller's behalf, and neither has a name to give it. The
+-- projection derives one from the first prompt in that case, and PATCH /v1/sessions/{id} replaces it.
 -- name: InsertSession
-INSERT INTO sessions (id, organization_id, project_id)
-VALUES ($1, $2, $3);
+INSERT INTO sessions (id, organization_id, project_id, name)
+VALUES ($1, $2, $3, $4);
 
 -- name: InsertResponse
 INSERT INTO responses (id, organization_id, project_id, session_id, state, input, store)

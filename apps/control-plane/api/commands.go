@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,13 +17,22 @@ import (
 // conformance HTTP tier (which never touches sessions) passes nil, so the routes stay unmounted
 // there. Every method is scoped by the verified identity, never a request-body field (§39.2).
 type SessionManager interface {
-	CreateSession(ctx context.Context, scope middleware.Scope) (SessionResult, error)
+	CreateSession(ctx context.Context, scope middleware.Scope, name string) (SessionResult, error)
 	GetSession(ctx context.Context, scope middleware.Scope, id string) (SessionResult, error)
 	// ListSessions is the E13 T4 read side: a tenant-scoped page of sessions, confined by RLS,
 	// with cursor + status/created_at filters.
 	ListSessions(ctx context.Context, scope middleware.Scope, q ListQuery) ([]ListRow, error)
+	// RenameSession sets a session's operator label (E29). It is a separate verb from CreateSession
+	// because most sessions are never created through it: admission opens one implicitly on the first
+	// POST /v1/responses, so a create-time name would leave exactly the sessions a Sessions screen is
+	// full of with no way to be labelled.
+	RenameSession(ctx context.Context, scope middleware.Scope, id, name string) (SessionResult, error)
 	AcceptCommand(ctx context.Context, scope middleware.Scope, sessionID string, req contracts.CommandCreateRequest) (CommandResult, error)
 }
+
+// maxSessionNameRunes bounds an operator label. It counts RUNES, matching the schema's maxLength (JSON
+// Schema counts characters, not bytes), so "Gece Doğrulama" costs 14 here and not 16.
+const maxSessionNameRunes = 200
 
 // SessionResult is a session projection. Found is false for an unknown or foreign id (404).
 type SessionResult struct {
@@ -44,13 +54,25 @@ type sessionHandler struct {
 
 // create opens a session (spec §9.1 POST /v1/sessions). It is 201 + Location + the session
 // projection. Session creation is cheap and unkeyed: a retried create mints a new session.
+//
+// The body is OPTIONAL and carries at most a label (E29). An absent body is the pre-E29 request
+// verbatim, so every existing caller is unchanged; a present one is decoded strictly, so a typo'd
+// field is a 400 rather than a name the caller believes it set and did not.
 func (h *sessionHandler) create(w http.ResponseWriter, r *http.Request) {
 	scope, ok := middleware.ScopeFrom(r.Context())
 	if !ok {
 		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	out, err := h.sessions.CreateSession(r.Context(), scope)
+	req, ok := decodeSessionWrite(w, r)
+	if !ok {
+		return
+	}
+	name := ""
+	if req.Name != nil {
+		name = *req.Name
+	}
+	out, err := h.sessions.CreateSession(r.Context(), scope, name)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -101,6 +123,68 @@ func (h *sessionHandler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	renderPage(w, r, "sessions", scope, rows, q.Limit)
+}
+
+// rename sets a session's operator label (E29 PATCH /v1/sessions/{session_id}). It is 200 with the
+// re-read projection, so the caller sees the label AND the name_source that now reports "operator".
+//
+// `name` must be PRESENT. An empty string is a real value — it clears the label and returns the row to
+// its derived one — but an absent field is a 400: a rename request that carries no name is a request
+// that lost its field, and silently succeeding at nothing is how a caller comes to believe a rename
+// happened that did not.
+func (h *sessionHandler) rename(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	req, ok := decodeSessionWrite(w, r)
+	if !ok {
+		return
+	}
+	if req.Name == nil {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "name is required")
+		return
+	}
+	out, err := h.sessions.RenameSession(r.Context(), scope, r.PathValue("session_id"), *req.Name)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	if !out.Found {
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such session in this project")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(out.Body)
+}
+
+// decodeSessionWrite reads the shared {name} body both session write routes take. An EMPTY body is a
+// valid absent-name request (POST /v1/sessions has always been bodyless and stays so). Decoding is
+// STRICT — an unknown field is a 400 — for the reason this tree keeps rediscovering: a silently
+// ignored field is a caller acting on a change that never landed.
+func decodeSessionWrite(w http.ResponseWriter, r *http.Request) (contracts.SessionWrite, bool) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body could not be read")
+		return contracts.SessionWrite{}, false
+	}
+	var req contracts.SessionWrite
+	if len(bytes.TrimSpace(raw)) > 0 {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body is not a valid session write")
+			return contracts.SessionWrite{}, false
+		}
+	}
+	if req.Name != nil && len([]rune(*req.Name)) > maxSessionNameRunes {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request",
+			"name must be at most 200 characters")
+		return contracts.SessionWrite{}, false
+	}
+	return req, true
 }
 
 // command accepts a durable command against a session (spec §22.4, §9.2). Acceptance means

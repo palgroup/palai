@@ -320,6 +320,8 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("POST /v1/sessions", sh.create)
 		mux.HandleFunc("GET /v1/sessions", sh.list)
 		mux.HandleFunc("GET /v1/sessions/{session_id}", sh.get)
+		// PATCH, not PUT: the body carries one field and replaces only that field (E29).
+		mux.HandleFunc("PATCH /v1/sessions/{session_id}", sh.rename)
 		mux.HandleFunc("POST /v1/sessions/{session_id}/commands", sh.command)
 	}
 

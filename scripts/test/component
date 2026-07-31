@@ -376,9 +376,24 @@ run_postgres() {
   fi
   # The coordinator's admission pin-check (verifyPublishedRevision) has same-package component tests
   # that drive its query-error propagation against the real spine.
+  # THE THREE E29 SESSION-LIST NAMES ARE SPELLED OUT ONE BY ONE, for the reason this line keeps
+  # teaching: this package is selected by an allow-list, so a component test added beside its
+  # subject runs only if its NAME is here — and it is not missing from the tree, it is missing from
+  # the one invocation that would have run it, which reads as complete either way. Not one word
+  # already on this line is a substring of any of them. They drive the ENRICHED session row against a
+  # real Postgres: one seeded fixture asserting the operator label beats the derived one, that the
+  # derived one comes from the first NON-RETRACTED response (a turn the human took back must not
+  # reappear on a list screen), that a template-pinned run contributes no agent identity, that a
+  # sibling project's ledger rows are not summed into this session's tokens — the narrowing RLS
+  # deliberately does not do for usage_ledger — and that a session which never ran has no span rather
+  # than a zero one. One holds the keyset order total across a microsecond clock tie by paging over
+  # it. One holds the rename to being a LABEL: two sessions may carry the same name, and a foreign id
+  # is a miss that writes nothing.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
-      go test -tags=component -count=1 -v -run 'TestVerifyPublishedRevision|TestMigrationBoundedLockTimesOut' ./packages/coordinator
+      go test -tags=component -count=1 -v \
+        -run 'TestVerifyPublishedRevision|TestMigrationBoundedLockTimesOut|TestSessionListRowCarriesLabelAgentTokensAndSpan|TestSessionListPagesTotallyOrderedAcrossAClockTie|TestSessionRenameIsALabelNotAnIdentity' \
+        ./packages/coordinator
     status=$?
   fi
   # The E13 Task 2 tenancy provisioning store drives the real spine: second-tenant provisioning (MCI-001),
@@ -428,9 +443,18 @@ run_postgres() {
   # so a test whose name it does not match is a test this tier never runs. The E20 journey does not begin
   # with "TestSlack", so without this alternation it would have ridden `make test-component` reporting
   # nothing at all — this repository's signature failure, eleven findings deep.
+  # TestSessionListJourneyRendersTheScreenFromOneCall is named for the same reason, and it is the E29
+  # session-list journey: the shipped router with ONLY the session family mounted, over a real Postgres,
+  # creating a labelled session and a bodyless one through POST, renaming through PATCH, and reading the
+  # whole Sessions screen — label, the agents its runs pinned, metered tokens, activity span — out of ONE
+  # GET /v1/sessions. It exists on top of the coordinator's own tests because those prove the SQL and
+  # cannot prove the route: a field can be selected, scanned, and then dropped by the marshaller, which
+  # looks like success from either side alone.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
-      go test -tags=component -count=1 -v -run 'TestA2ARealAdmitterBirthsRun|TestSlack|TestAgentSurfaceJourney' ./apps/control-plane/internal/store
+      go test -tags=component -count=1 -v \
+        -run 'TestA2ARealAdmitterBirthsRun|TestSlack|TestAgentSurfaceJourney|TestSessionListJourneyRendersTheScreenFromOneCall' \
+        ./apps/control-plane/internal/store
     status=$?
   fi
   # The E24 T1 runner registry against a REAL Postgres with RLS enforced (apps/control-plane/internal/fleet

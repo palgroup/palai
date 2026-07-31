@@ -63,6 +63,13 @@ func (s *Store) ListResponses(ctx context.Context, tenant Tenant, p ListParams) 
 
 // ListSessions returns a tenant-scoped page of sessions newest-first (spec §9.1, E13 T4). It reuses
 // the SessionView projection GetSession returns, so a list row and a GET render identically.
+//
+// ONE query returns the whole enriched page, laterals included (E29). That is the property the
+// Sessions screen is built on: a 50-row page that needed a follow-up per row would be 50 requests, so
+// the label, the agents, the tokens and the span are joined here rather than fetched per row. The
+// method's shape is what enforces it — it takes no per-row callback and hands back rows already
+// populated, so a caller has nothing to fan out over. TestListSessionsIssuesExactlyOneQuery holds the
+// body to it.
 func (s *Store) ListSessions(ctx context.Context, tenant Tenant, p ListParams) ([]SessionView, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListSessions"),
@@ -74,9 +81,12 @@ func (s *Store) ListSessions(ctx context.Context, tenant Tenant, p ListParams) (
 	var out []SessionView
 	for rows.Next() {
 		v := SessionView{Found: true}
-		if err := rows.Scan(&v.ID, &v.State, &v.CreatedAt); err != nil {
+		var derived *string
+		if err := rows.Scan(&v.ID, &v.State, &v.CreatedAt, &v.Name, &derived, &v.Agents,
+			&v.InputTokens, &v.OutputTokens, &v.FirstActivityAt, &v.LastActivityAt); err != nil {
 			return nil, fmt.Errorf("scan session row: %w", err)
 		}
+		resolveSessionName(&v, derived)
 		out = append(out, v)
 	}
 	if err := rows.Err(); err != nil {

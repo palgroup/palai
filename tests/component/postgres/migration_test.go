@@ -2441,3 +2441,114 @@ func seedBackgroundTaskParents(t *testing.T, ctx context.Context, conn interface
 	}
 	return org, project, session, response, run, call
 }
+
+// TestMigration48SessionListIndexesAndLabel is the 000048 half of the Sessions screen, and the three
+// things it checks are the three that would be silently absent otherwise.
+//
+// FIRST, the label exists and is NOT unique. The reference screen shows several sessions carrying one
+// name, so a unique index here would reject a legitimate rename — the check is that two sessions in the
+// same project can hold the same name, which is what a later "tidy this up with a unique index" would
+// break.
+//
+// SECOND, the four indexes are present BY NAME. Three of them are why the enriched row is affordable at
+// all, and the fourth is a repair: `sessions` had carried only its primary key since 000001, so every
+// page of every session list sequentially scanned and sorted the whole table. An index that quietly
+// stopped being created would not fail a single behavioural test — the query returns the same rows —
+// which is exactly why it is asserted here rather than trusted.
+//
+// THIRD, the plan. Asserting the index EXISTS is not asserting the query USES it: a wrong column order
+// leaves the index in the catalogue and the Seq Scan in the plan. So the list query's own shape is run
+// through EXPLAIN and the plan is required to contain no sequential scan of `sessions`.
+func TestMigration48SessionListIndexesAndLabel(t *testing.T) {
+	cs := openHarness(t)
+	ctx := storage.WithSystemScope(context.Background())
+	pool := cs.Pool()
+
+	// A second boot re-runs the whole chain; every object is IF NOT EXISTS / idempotent.
+	if err := cs.Migrate(context.Background()); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !columnExists(t, pool, "sessions", "name") {
+		t.Fatal("after apply, sessions.name is missing")
+	}
+	for _, index := range []string{
+		"sessions_tenant_keyset_idx",
+		"responses_session_created_idx",
+		"runs_session_created_idx",
+		"usage_ledger_session_idx",
+	} {
+		if !indexExists(t, pool, index) {
+			t.Fatalf("after apply, 000048's %s is missing — the session list and its aggregates go back to sequential scans", index)
+		}
+	}
+
+	org, project := newID("org"), newID("prj")
+	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, org)
+	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
+	// Two sessions, ONE label. A name is a label, not an identity.
+	for _, id := range []string{newID("ses"), newID("ses")} {
+		exec(t, pool, `INSERT INTO sessions (id, organization_id, project_id, name) VALUES ($1,$2,$3,$4)`,
+			id, org, project, "Gece Doğrulama")
+	}
+	var shared int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM sessions WHERE organization_id=$1 AND project_id=$2 AND name='Gece Doğrulama'`,
+		org, project).Scan(&shared); err != nil {
+		t.Fatalf("count shared labels: %v", err)
+	}
+	if shared != 2 {
+		t.Fatalf("two sessions sharing one label = %d rows, want 2 — the label must not be unique", shared)
+	}
+
+	// The plan. `sessions` is tiny in this harness and a tiny table is where Postgres prefers a
+	// sequential scan whatever indexes exist, so the planner is told — for this statement only, SET
+	// LOCAL, dying with the tx — that a sequential scan is expensive.
+	//
+	// WHAT THIS CATCHES AND WHAT IT DOES NOT, because a plan assertion that overstates itself is worse
+	// than none. It catches the index disappearing (the plan then has nothing to name) and it catches a
+	// Sort reappearing, which is the shape the pre-000048 list had. It does NOT catch a wrong column
+	// ORDER: measured 2026-07-31 on a fresh database, an index built as (created_at DESC, id DESC,
+	// organization_id, project_id) produces a plan textually identical to the correct one — same Index
+	// Scan, same "Index Cond: organization_id AND project_id" — and differs only in estimated cost
+	// (15.16 vs 8.17). EXPLAIN cannot tell them apart, so neither can this test. The column order is
+	// held by review and by the migration's own comment, not here.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin plan tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatalf("disable seqscan: %v", err)
+	}
+	rows, err := tx.Query(ctx, `EXPLAIN SELECT id, state, created_at, name FROM sessions
+	     WHERE organization_id = $1 AND project_id = $2
+	     ORDER BY created_at DESC, id DESC LIMIT 21`, org, project)
+	if err != nil {
+		t.Fatalf("explain session page: %v", err)
+	}
+	var plan strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			rows.Close()
+			t.Fatalf("scan plan line: %v", err)
+		}
+		plan.WriteString(line)
+		plan.WriteString("\n")
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate plan: %v", err)
+	}
+	if !strings.Contains(plan.String(), "sessions_tenant_keyset_idx") {
+		t.Fatalf("the session page's plan does not use sessions_tenant_keyset_idx; its column order no longer "+
+			"matches (organization_id, project_id) equality followed by the (created_at DESC, id DESC) keyset.\n%s",
+			plan.String())
+	}
+	// And no Sort: the index supplies the order, which is the whole reason its trailing columns carry
+	// their direction. A Sort here means every page re-sorts what it read.
+	if strings.Contains(plan.String(), "Sort") {
+		t.Fatalf("the session page SORTS; the keyset index is supposed to supply (created_at DESC, id DESC) directly.\n%s",
+			plan.String())
+	}
+}

@@ -13,7 +13,7 @@ export type { CreateOptions, RetrieveOptions, StreamOptions } from "./resources/
 // any of them marks a module server-only — none is re-exported from ./index.browser (the browser
 // entrypoint carries no credential path; that is the browser-direct-token DROP, enforced positively).
 export { Sessions, SessionCommands } from "./resources/sessions.ts";
-export type { SteerParams, InterruptParams } from "./resources/sessions.ts";
+export type { SteerParams, InterruptParams, SessionCreateParams } from "./resources/sessions.ts";
 export { Agents } from "./resources/agents.ts";
 export type { AgentProfile, AgentRevision } from "./resources/agents.ts";
 export { Artifacts } from "./resources/artifacts.ts";
