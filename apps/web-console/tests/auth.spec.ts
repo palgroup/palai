@@ -387,9 +387,25 @@ test("EVERY form the console serves is method=post — the sweep walks the route
   //
   // So the expectation is COMPUTED. `components/ResourceForm.tsx` is structurally the console's only form
   // element — direction 2 below asserts exactly that, over the whole tree — so every form the console can
-  // serve is one `<ResourceForm` mount in one `app/**/page.tsx`, and counting those mounts per page gives
-  // the number that page must serve. The comparison is per ROUTE rather than in total: a form that moves
-  // between two pages keeps the total identical and is caught here.
+  // serve is one `<ResourceForm` mount, and counting the mounts a page makes gives the number that page must
+  // serve. The comparison is per ROUTE rather than in total: a form that moves between two pages keeps the
+  // total identical and is caught here.
+  //
+  // WHAT THIS WALK COUNTS IS NARROWER THAN "EVERY FORM THE CONSOLE CAN SERVE", and the difference is measured
+  // rather than assumed away. It reads `app/**/page.tsx` only, so what it sees is a mount a PAGE makes
+  // directly; a mount made by a component the page renders is invisible to it. Two exist today
+  // (`grep -c '<ResourceForm' components/*.tsx` → ApprovalRow.tsx 1, RevisePublish.tsx 1, 2026-08-01) and
+  // NEITHER perturbs the comparison, for a reason that is a property of those files rather than of this walk:
+  // ApprovalRow's form renders once per FETCHED approval row (app/approvals/page.tsx passes it as a column
+  // renderer), and RevisePublish's sits behind `createPath === ""` on `/agents/[id]`. Both are therefore
+  // absent from server-rendered HTML, so both sides read zero and agree.
+  //
+  // The direction that stays dangerous is a component form that renders at FIRST PAINT: the served count
+  // gains a form this walk never predicted and the comparison below goes red naming the route — loudly, which
+  // is the correct outcome. The direction that is merely uncovered is `/agents/[id]`: a form on a dynamic
+  // segment, which the served loop cannot fetch. Its `method="post"` is carried by DIRECTION 2 (one form
+  // element in the tree, and it has the attribute) and by nothing in this direction — stated because the
+  // `unswept` guard below reads as though it covers that case, and one indirection is all it takes to leave.
   //
   // A MOUNT THE SERVER CANNOT RENDER IS SUBTRACTED FROM THE SOURCE, NOT EXCUSED BY A SMALLER NUMBER — and
   // the subtrahend is counted rather than declared. components/FormDialog.tsx is the shell a create form is
@@ -424,8 +440,31 @@ test("EVERY form the console serves is method=post — the sweep walks the route
   // A FORM ON A ROUTE THIS SWEEP NEVER VISITS IS THE HOLE THE DERIVATION OPENS, so it is closed first: a page
   // mounting a form must be one of the paths fetched above. A dynamic segment (`app/sessions/[id]`) cannot be
   // fetched by this loop, so a form appearing there would otherwise be swept by nothing at all.
+  //
+  // IT CLOSES THE DIRECT CASE AND ONLY THE DIRECT CASE, which is worth saying because the sentence above reads
+  // wider than the code under it. `mountsPerRoute` is built from `<ResourceForm` in a page.tsx, so this refuses
+  // a dynamic route that mounts a form ITSELF and cannot see one mounted by a component that route renders —
+  // and `/agents/[id]` is exactly that today, via components/RevisePublish.tsx. The inventory below is what
+  // makes that visible instead of merely true.
   const unswept = [...mountsPerRoute.keys()].filter((path) => !routes.includes(path));
   expect(unswept, "a page mounts a form on a route the served sweep cannot fetch — lib/routes.ts declares the swept paths, and a dynamic segment is not one of them").toEqual([]);
+
+  // THE MOUNTS THE DERIVATION CANNOT SEE, COUNTED RATHER THAN ASSUMED ABSENT. This is not an assertion and
+  // deliberately not one: there is no static way to tell a mount that renders at first paint from one behind
+  // fetched data, and a hand-kept list of "component forms that are fine" is the ledger this whole derivation
+  // exists to avoid. What it is instead is EVIDENCE — the count is printed next to the derivation it is not
+  // part of, so a form moving from a page into a component is a visible line in the report rather than a
+  // silent subtraction from both sides at once.
+  const componentsRoot = resolve(process.cwd(), "components");
+  const componentMounts: string[] = [];
+  for (const entry of readdirSync(componentsRoot, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || !/\.tsx?$/.test(entry.name)) continue;
+    const full = resolve(entry.parentPath ?? componentsRoot, entry.name);
+    const n = (readFileSync(full, "utf8").match(/<ResourceForm[\s>]/g) ?? []).length;
+    if (n > 0) componentMounts.push(`${entry.name}=${String(n)}`);
+  }
+  // eslint-disable-next-line no-console -- an uncounted mount is the shape this file keeps having to re-measure.
+  console.log(`FORM MOUNTS OUTSIDE THE PAGE WALK — components/: ${componentMounts.sort().join(", ") || "(none)"}`);
   const expected = [...mountsPerRoute.entries()]
     .filter(([, served]) => served > 0)
     .map(([path, served]) => `${path}=${String(served)}`)
