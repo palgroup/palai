@@ -247,8 +247,15 @@ test("the connection ref is a HANDLE chosen from the secret-ref list, never a ty
     // rendered by the popup and there is nothing to enumerate until it exists. Opening it is therefore not a
     // detour around the assertion — it is the assertion, and it now also proves the popup renders at all.
     await picker.click();
-    const offered = await page
-      .getByRole("listbox")
+    // AND THE POPUP MUST HAVE ROWS BEFORE THEY ARE READ. `evaluateAll` is a SNAPSHOT with no auto-wait, so a
+    // read taken between the click and the popup mounting returns [] and compares an empty list against a
+    // non-empty one — or, if the expectation were the other way round, passes having looked at nothing. That is
+    // the defect tests/reveal-once.spec.ts hit: a container visible before its rows resolved, and a positive
+    // control that found nothing. `expect` retries; `evaluateAll` does not, so the wait is explicit.
+    const listbox = page.getByRole("listbox");
+    await expect(listbox).toBeVisible();
+    await expect(listbox.locator('[role="option"]')).not.toHaveCount(0);
+    const offered = await listbox
       .locator('[role="option"]')
       .evaluateAll((els) => els.map((el) => el.getAttribute("data-value") ?? "").filter((v) => v !== ""));
     expect(offered.sort()).toEqual([...listed].sort());

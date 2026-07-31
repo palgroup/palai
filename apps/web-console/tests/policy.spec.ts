@@ -321,8 +321,12 @@ test("Tab cannot leave the open dialog, and Escape cancels it", async ({ page })
   // performed the action anyway would be the worst possible reading of "the least destructive default".
   const after = await api(page, "get", `/api-keys/${encodeURIComponent(key)}`);
   expect(((await after.json()) as { revoked_at?: string | null }).revoked_at ?? null, "Escape revoked the key").toBeNull();
-  // And focus came back to the control that opened it.
-  await expect(page.getByTestId(`revoke-${key}`)).toBeFocused();
+  // AND FOCUS CAME BACK TO A CONTROL THAT IS STILL ON SCREEN, which is the `⋯` and no longer the item
+  // inside it (E29 component layer). The revoke used to be a button in the row; it is now a menu item, and a
+  // menu item does not survive its own menu closing — so restoring focus TO it would mean restoring focus to
+  // a detached node, i.e. to <body>, i.e. to the top of the document. The trigger is the nearest thing that
+  // still exists and it is where a keyboard reader expects to be: back at the row they opened.
+  await expect(page.getByTestId(`key-menu-${key}`)).toBeFocused();
 });
 
 test("window.confirm is still the confirmation for the REVERSIBLE actions", async ({ page }) => {

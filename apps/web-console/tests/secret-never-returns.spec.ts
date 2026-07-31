@@ -250,17 +250,49 @@ test("the environment picker is a select over the ids the list returned, never a
   await expect(page.getByTestId("environment-create-status")).toContainText("Created", { timeout: 15_000 });
 
   const picker = page.getByTestId("value-environment-select");
-  await expect(picker).toHaveJSProperty("tagName", "SELECT");
+  // THE CHECK WAS `tagName === "SELECT"` AND THAT WAS NEVER THE CLAIM — the claim is this test's own title,
+  // a picker over the ids the list returned and never a free-text box (E29 component layer).
+  //
+  // It was also VACUOUS IN THE ONE STATE IT EXISTS TO CATCH: a <select> holding ZERO options satisfies
+  // `tagName === "SELECT"`, and an unsatisfiable dropdown is precisely the degradation components/Picker.tsx's
+  // rule was written to prevent — "an empty dropdown is a control that cannot be satisfied". A test that
+  // passes during the failure it was written to detect is the shape this tree has paid for repeatedly.
+  //
+  // So the three things the title actually asserts are asserted separately, and the third is the one the tag
+  // check could never make: it is not a text box, it advertises a listbox, and OPENING it yields rows.
+  await expect(picker).toHaveJSProperty("tagName", "BUTTON");
+  await expect(picker).toHaveAttribute("role", "combobox");
+  await expect(picker).toHaveAttribute("aria-haspopup", "listbox");
   // ResourceForm renders `${testId}-empty` in the control's PLACE when a select has no options, so this
   // locator finding nothing is the positive statement that the control itself is present.
   await expect(page.getByTestId("value-environment-select-empty")).toHaveCount(0);
 
   // The environment is never a free-text field. Asserted over the whole form rather than over the one testid,
   // so a second hand-rolled text box would fail too.
+  //
+  // ONE NODE IS EXCLUDED AND THE EXCLUSION IS PROVEN RATHER THAN TRUSTED (E29 component layer).
+  // `input:not([type])` was written to catch a hand-rolled box that forgot its type attribute. @base-ui/react's
+  // Select renders a form-serialisation <input> with no type, carrying the chosen handle, so the enumeration
+  // below began reporting the picker itself as a free-text field — the opposite of what this test says.
+  //
+  // The claim is about what an operator can TYPE, and the exclusion is therefore aria-hidden + tabindex="-1"
+  // together: out of the accessibility tree for a screen reader AND out of the tab order for a keyboard. Each
+  // excluded node is then CHECKED to be exactly that — a clipped 1x1 box, not focusable by Tab — because "the
+  // node I filtered out was harmless" is the sentence a real free-text box would hide behind later.
   const form = page.getByTestId("environment-value-form");
-  const textInputs = await form.locator('input[type="text"], input:not([type])').evaluateAll((els) =>
-    els.map((el) => el.getAttribute("data-testid") ?? el.getAttribute("name") ?? "<unnamed>"),
-  );
+  const excluded = form.locator('input[aria-hidden="true"][tabindex="-1"]');
+  expect(await excluded.count(), "the picker renders no serialisation input — this exclusion is stale").toBe(1);
+  for (const node of await excluded.all()) {
+    const box = await node.boundingBox();
+    expect((box?.width ?? 0) <= 1 && (box?.height ?? 0) <= 1, "an excluded input is big enough to be typed into").toBe(true);
+    expect(
+      await node.evaluate((el) => (el as HTMLInputElement).tabIndex === -1 && el.getAttribute("aria-hidden") === "true"),
+      "an excluded input is reachable after all",
+    ).toBe(true);
+  }
+  const textInputs = await form
+    .locator('input[type="text"]:not([aria-hidden="true"]), input:not([type]):not([aria-hidden="true"])')
+    .evaluateAll((els) => els.map((el) => el.getAttribute("data-testid") ?? el.getAttribute("name") ?? "<unnamed>"));
   expect(textInputs, "the value form must carry exactly one text field (the KEY NAME) and no free-text environment box").toEqual([
     "value-key-input",
   ]);
@@ -278,8 +310,27 @@ test("the environment picker is a select over the ids the list returned, never a
     return ((await res.json()) as { data?: { id: string }[] }).data?.map((e) => e.id) ?? [];
   });
   expect(listed.length, "the upstream listed no environments after a create — this comparison would be vacuous").toBeGreaterThan(0);
-  const offered = await picker.locator("option").evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value).filter((v) => v !== ""));
+  // READ WITH THE LISTBOX OPEN. A native <select> held its options in the DOM whether or not it was open;
+  // a listbox is rendered by its popup and there is nothing to enumerate until it exists. Opening it is not a
+  // detour around the assertion — it IS the assertion, and it proves the popup renders at all, which is the
+  // half the old `tagName` check silently skipped.
+  await picker.click();
+  // AND THE POPUP MUST HAVE ROWS BEFORE THEY ARE READ. `evaluateAll` is a SNAPSHOT with no auto-wait, so a
+  // read taken between the click and the popup mounting returns [] and compares an empty list against a
+  // non-empty one — or, if the expectation were the other way round, passes having looked at nothing. That is
+  // the defect tests/reveal-once.spec.ts hit: a container visible before its rows resolved, and a positive
+  // control that found nothing. `expect` retries; `evaluateAll` does not, so the wait is explicit.
+  const listbox = page.getByRole("listbox");
+  await expect(listbox).toBeVisible();
+  await expect(listbox.locator('[role="option"]')).not.toHaveCount(0);
+  const offered = await listbox
+    .locator('[role="option"]')
+    .evaluateAll((els) => els.map((el) => el.getAttribute("data-value") ?? "").filter((v) => v !== ""));
   expect(offered.sort()).toEqual([...listed].sort());
+  // Closed again, so the axe scan below looks at the form rather than at an open popup — that surface has its
+  // own scans in tests/a11y.spec.ts and conflating the two would make neither legible.
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
 
   // AXE OVER THE POPULATED FORM, deterministically and on both profiles. The generated scan in
   // tests/a11y.spec.ts visits this route in whatever state the upstream happens to be in — which is the EMPTY
