@@ -395,6 +395,33 @@ async function seedBothStacks() {
     seeded[label]["/v1/tools/{tool_id}/revisions/{revision_id}|revision_id"] = revisionBody.id;
   }
 
+  // E28 T2 SEEDS NO ROW — IT SEEDS AN ID, and that is the whole difference between a compared route and a
+  // skipped one. `GET /v1/projects/{project_id}` is the route the policy screen reads its `config_policy`
+  // from, and arm 3 substitutes a PROBE token into every wildcard it has no seed for — which on a real stack
+  // is an unknown project, answers 404, and makes the arm `continue` in silence. That is the trap E25 T6
+  // found on agent revisions, and this route walks straight into it: the bootstrap project ALREADY exists, so
+  // there is nothing to create and it would have been easy to assume the comparison was happening.
+  //
+  // Each side gets ITS OWN id, because the two stacks are different databases. The real one is READ rather
+  // than written down: DIV-SHP-002 records that the fixture's project id (`proj_local`) is off by a letter
+  // from the one identity/store.go seeds (`prj_local`), which is exactly the kind of constant that goes stale.
+  for (const [label, doFetch] of [
+    ["real", realFetch],
+    ["fixture", fakeFetch],
+  ]) {
+    const list = await doFetch("/v1/projects");
+    const listBody = await list.json().catch(() => ({}));
+    const id = listBody.data?.[0]?.id;
+    assert.ok(
+      typeof id === "string" && id !== "",
+      `the sweep could not read a project id on the ${label} side: GET /v1/projects returned ${list.status} ` +
+        "with no first row. Every stack has a bootstrap project, so this is a real failure — and without the " +
+        "id the project DETAIL route is compared against a probe token, which 404s and passes by comparing " +
+        "nothing.",
+    );
+    seeded[label].project_id = id;
+  }
+
   // E25 T8 SEEDS A RUN ON EACH SIDE, which populates TWO collections at once and is why it is one seed
   // rather than two: GET /v1/responses gets its first row, and so does GET /v1/usage/ledger — a run settles
   // `run.admitted` inside the ADMISSION transaction (coordinator/usage.go), so the ledger row exists the
