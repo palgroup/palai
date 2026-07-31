@@ -66,7 +66,13 @@ func (h *agentHandler) createRevision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := h.agents.CreateAgentRevision(r.Context(), scope, r.PathValue("agent_id"), raw)
-	h.write(w, r, out, err, http.StatusCreated, "/v1/agent-revisions/")
+	// No Location: `/v1/agent-revisions/<id>` was never a mounted prefix, so following it 404'd (E29 T2;
+	// the router.go note above the tool-revision routes describes the same class). What is missing here is
+	// not a capability — a revision IS readable, at GET /v1/agents/{agent_id}/revisions — but an ADDRESS: a
+	// Location declares a collection member, this collection is /v1/agents/{id}/revisions, and its singular
+	// member is not mounted. Writing the correct-looking wrong address was the other option and it is worse
+	// than writing none. The id is in the 201 body either way.
+	h.write(w, r, out, err, http.StatusCreated, "")
 }
 
 // publishRevision publishes a draft agent revision (POST /v1/agents/{agent_id}/revisions/{revision_id}/publish).
@@ -87,7 +93,12 @@ func (h *agentHandler) createTemplateRevision(w http.ResponseWriter, r *http.Req
 		return
 	}
 	out, err := h.agents.CreateRunTemplateRevision(r.Context(), scope, r.PathValue("template"), raw)
-	h.write(w, r, out, err, http.StatusCreated, "/v1/run-template-revisions/")
+	// No Location: `/v1/run-template-revisions/<id>` was never mounted (E29 T2). Unlike an agent revision
+	// this one has no correct address to point at either — run_template_revisions is read by NO layer: no
+	// route, and the only SELECT over the table is a published-or-not boolean. A caller can pass this id to
+	// POST /v1/responses and can never read it back; that is a gap for a later epic to close with a query, a
+	// projection and a route. Until then the honest header is no header.
+	h.write(w, r, out, err, http.StatusCreated, "")
 }
 
 // publishTemplateRevision publishes a draft run-template revision.

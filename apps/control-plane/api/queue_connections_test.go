@@ -19,6 +19,7 @@ type fakeQueueAPI struct {
 	items                      []automation.QueueConnectionItem
 	lastWindow                 automation.ListWindow
 	listedOrg, listedProject   string
+	gotOrg, gotProject, gotID  string
 }
 
 func (f *fakeQueueAPI) CreateQueueConnection(_ context.Context, org, project string, in automation.QueueConnectionInput) (string, error) {
@@ -29,6 +30,16 @@ func (f *fakeQueueAPI) CreateQueueConnection(_ context.Context, org, project str
 func (f *fakeQueueAPI) ListQueueConnections(_ context.Context, org, project string, w automation.ListWindow) ([]automation.QueueConnectionItem, error) {
 	f.listedOrg, f.listedProject, f.lastWindow = org, project, w
 	return f.items, nil
+}
+
+func (f *fakeQueueAPI) GetQueueConnectionItem(_ context.Context, org, project, id string) (automation.QueueConnectionItem, bool, error) {
+	f.gotOrg, f.gotProject, f.gotID = org, project, id
+	for _, it := range f.items {
+		if it.ID == id {
+			return it, true, nil
+		}
+	}
+	return automation.QueueConnectionItem{}, false, nil
 }
 
 // publicResolver resolves every name to a routable public address, so the create-time egress vet exercises
@@ -60,8 +71,27 @@ func TestQueueConnectionCreateTakesTenantFromTheVerifiedScope(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d, want 201", resp.StatusCode)
 	}
-	if loc := resp.Header.Get("Location"); loc != "/v1/queue-connections/qconn_1" {
+	loc := resp.Header.Get("Location")
+	if loc != "/v1/queue-connections/qconn_1" {
 		t.Fatalf("Location = %q, want /v1/queue-connections/qconn_1", loc)
+	}
+	// The header is FOLLOWED, not merely compared. Asserting the string alone is what let this address name
+	// a route nobody mounted from the family's first day until E29 T2: the test was green the whole time,
+	// because it proved the header was WRITTEN and never that it resolved.
+	fake.items = []automation.QueueConnectionItem{{ID: "qconn_1", Name: "orders", Kind: "local", Direction: "inbound"}}
+	followed := do(t, "GET", base+loc, "", nil)
+	if followed.StatusCode != http.StatusOK {
+		t.Fatalf("following the create's Location %q = %d, want 200; a 201 must not name an address the router does not serve", loc, followed.StatusCode)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(followed.Body).Decode(&got); err != nil {
+		t.Fatalf("decode the followed body: %v", err)
+	}
+	if got["id"] != "qconn_1" || got["object"] != "queue_connection" {
+		t.Fatalf("followed body = %v, want the created connection in the list's projection", got)
+	}
+	if fake.gotOrg != "org_1" || fake.gotProject != "prj_1" {
+		t.Fatalf("read ran in (%s, %s), want the verified scope — a singular read takes its tenant from the bearer like the create does", fake.gotOrg, fake.gotProject)
 	}
 	if fake.createdOrg != "org_1" || fake.createdProject != "prj_1" {
 		t.Fatalf("connection created in (%s, %s), want the verified scope (org_1, prj_1)", fake.createdOrg, fake.createdProject)

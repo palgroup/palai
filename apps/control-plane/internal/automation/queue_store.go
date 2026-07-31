@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -109,14 +110,45 @@ func (s *QueueStore) ListQueueConnections(ctx context.Context, org, project stri
 	defer rows.Close()
 	var out []QueueConnectionItem
 	for rows.Next() {
-		var it QueueConnectionItem
-		if err := rows.Scan(&it.ID, &it.Name, &it.Kind, &it.Direction, &it.Capacity, &it.Visibility,
-			&it.MaxDeliveries, &it.Enabled, &it.Config, &it.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan queue connection row: %w", err)
+		it, err := scanQueueConnectionItem(rows)
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, it)
 	}
 	return out, rows.Err()
+}
+
+// GetQueueConnectionItem returns one connection in the SAME projection the list serves, or found=false for
+// an unknown or foreign id (E29 T2: the address the create's 201 Location has always named). RLS confines
+// the read to the caller's tenant, and the query's own org/project predicate is defence in depth behind it;
+// a foreign id is therefore indistinguishable from an absent one, which is the intended answer.
+func (s *QueueStore) GetQueueConnectionItem(ctx context.Context, org, project, connID string) (QueueConnectionItem, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	rows, err := s.pool.Query(ctx, storage.Query("GetQueueConnectionItem"), connID, org, project)
+	if err != nil {
+		return QueueConnectionItem{}, false, fmt.Errorf("get queue connection: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return QueueConnectionItem{}, false, rows.Err()
+	}
+	it, err := scanQueueConnectionItem(rows)
+	if err != nil {
+		return QueueConnectionItem{}, false, err
+	}
+	return it, true, rows.Err()
+}
+
+// scanQueueConnectionItem is the ONE place a connection row becomes an item. The list and the singular read
+// share it so their projections cannot drift into disagreeing about what a connection is.
+func scanQueueConnectionItem(rows pgx.Rows) (QueueConnectionItem, error) {
+	var it QueueConnectionItem
+	if err := rows.Scan(&it.ID, &it.Name, &it.Kind, &it.Direction, &it.Capacity, &it.Visibility,
+		&it.MaxDeliveries, &it.Enabled, &it.Config, &it.CreatedAt); err != nil {
+		return QueueConnectionItem{}, fmt.Errorf("scan queue connection row: %w", err)
+	}
+	return it, nil
 }
 
 // queueConn holds a connection's resolved tuning knobs, loaded once so the hot Publish/Consume path does

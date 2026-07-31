@@ -22,6 +22,10 @@ import (
 type QueueConnectionAPI interface {
 	CreateQueueConnection(ctx context.Context, org, project string, in automation.QueueConnectionInput) (string, error)
 	ListQueueConnections(ctx context.Context, org, project string, w automation.ListWindow) ([]automation.QueueConnectionItem, error)
+	// GetQueueConnectionItem reads one connection in the list's projection. It is the address the create's
+	// 201 Location names; found=false covers both an unknown id and another tenant's, which are the same
+	// answer to a caller (E29 T2).
+	GetQueueConnectionItem(ctx context.Context, org, project, id string) (automation.QueueConnectionItem, bool, error)
 }
 
 type queueConnectionHandler struct {
@@ -218,12 +222,40 @@ func (h *queueConnectionHandler) listConnections(w http.ResponseWriter, r *http.
 	}
 	rows := make([]ListRow, 0, len(items))
 	for _, it := range items {
-		body, _ := json.Marshal(map[string]any{
-			"id": it.ID, "object": "queue_connection", "name": it.Name, "kind": it.Kind,
-			"direction": it.Direction, "capacity": it.Capacity, "visibility_seconds": it.Visibility,
-			"max_deliveries": it.MaxDeliveries, "enabled": it.Enabled, "config": it.Config,
-		})
+		body, _ := json.Marshal(queueConnectionBody(it))
 		rows = append(rows, ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: body})
 	}
 	renderPage(w, r, "queue_connection", scope, rows, q.Limit)
+}
+
+// getConnection reads one connection (GET /v1/queue-connections/{connection_id}). This is the address the
+// create's 201 Location has named since the family shipped, and which nothing served until E29 T2: following
+// the header used to reach net/http's own not-found. An unknown id and another tenant's id are the same 404
+// — the read runs under RLS, so a foreign row is not visible to distinguish.
+func (h *queueConnectionHandler) getConnection(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	it, found, err := h.queues.GetQueueConnectionItem(r.Context(), scope.Organization, scope.Project, r.PathValue("connection_id"))
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	if !found {
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such queue connection in this project")
+		return
+	}
+	writeJSON(w, http.StatusOK, queueConnectionBody(it))
+}
+
+// queueConnectionBody is the ONE projection of a connection this API serves. The list and the singular read
+// share it, so a caller that follows the create's Location gets the same shape the list showed it.
+func queueConnectionBody(it automation.QueueConnectionItem) map[string]any {
+	return map[string]any{
+		"id": it.ID, "object": "queue_connection", "name": it.Name, "kind": it.Kind,
+		"direction": it.Direction, "capacity": it.Capacity, "visibility_seconds": it.Visibility,
+		"max_deliveries": it.MaxDeliveries, "enabled": it.Enabled, "config": it.Config,
+	}
 }

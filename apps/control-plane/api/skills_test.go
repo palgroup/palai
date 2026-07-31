@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -41,7 +42,8 @@ func skillTestServer(t *testing.T, reg *fakeSkillRegistry) string {
 }
 
 // TestSkillManagementSurface pins the /v1/skills routes (spec §20.2, §28.15-28.16, TOL-011): a valid
-// create is a 201 with a Location; install-by-URL is a 201; enable is a 200; list is a 200; an unsafe
+// create is a 201 carrying the minted id and NO Location; install-by-URL is the same; enable is a 200; list
+// is a 200 (the two absent headers are E29 T2 — neither address is mounted); an unsafe
 // archive / denied source is a 400; a name collision or a scan-findings enable is a 409; an unknown
 // skill/revision is a 404.
 func TestSkillManagementSurface(t *testing.T) {
@@ -53,18 +55,34 @@ func TestSkillManagementSurface(t *testing.T) {
 	}
 	base := skillTestServer(t, reg)
 
-	// Create a skill: 201 with a Location pointing at the minted id.
+	// Create a skill: 201, and NO Location. Until E29 T2 this asserted the header equalled
+	// "/v1/skills/skill_1" — an address the router has never mounted, so the test was green while pinning a
+	// header a client could only follow into a 404. The header is gone rather than the route added, because a
+	// singular read would serve the list's three-field projection ({id, object, name}) and answer none of the
+	// questions a caller has; the projection and the route belong in one later change. The direction the
+	// assert gained: a written Location is a RESOLVED address, so the honest state here is no header at all.
 	resp := do(t, "POST", base+"/v1/skills", `{"name":"commit-convention"}`, nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create skill status = %d, want 201", resp.StatusCode)
 	}
-	if loc := resp.Header.Get("Location"); loc != "/v1/skills/skill_1" {
-		t.Fatalf("create skill Location = %q, want /v1/skills/skill_1", loc)
+	if loc := resp.Header.Get("Location"); loc != "" {
+		t.Fatalf("create skill Location = %q, want none: /v1/skills/{id} is not mounted, so any address here is one a client cannot follow", loc)
+	}
+	if body := readBody(t, resp); !strings.Contains(body, `"skill_1"`) {
+		t.Fatalf("create skill body = %s, want the minted id — dropping the Location must not drop the only way to learn it", body)
 	}
 
-	// Install a revision by URL: 201.
-	if resp := do(t, "POST", base+"/v1/skills/skill_1/revisions", `{"source_url":"https://example.com/skill.tgz"}`, nil); resp.StatusCode != http.StatusCreated {
+	// Install a revision by URL: 201, and no Location either — `/v1/skill-revisions/` is the exact twin of
+	// the `/v1/tool-revisions/` prefix router.go describes, named in a 201 and mounted by no epic.
+	resp = do(t, "POST", base+"/v1/skills/skill_1/revisions", `{"source_url":"https://example.com/skill.tgz"}`, nil)
+	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("install revision status = %d, want 201", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "" {
+		t.Fatalf("install revision Location = %q, want none: /v1/skill-revisions/{id} is not mounted", loc)
+	}
+	if body := readBody(t, resp); !strings.Contains(body, `"skillrev_1"`) {
+		t.Fatalf("install revision body = %s, want the revision id — enable takes it, and the body is now its only source", body)
 	}
 
 	// Enable a revision: 200.

@@ -112,6 +112,14 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("GET /v1/tool-sets/{set}/revisions/{revision_id}", th.getSetRevision)
 		// The address POST /v1/tools/{tool_id}/revisions has named in its 201 Location since E12. It was
 		// `/v1/tool-revisions/<id>`, a prefix no epic ever mounted, so following the header 404'd.
+		//
+		// That was one instance of a CLASS, and the class was not swept when the instance was fixed: on
+		// 2026-07-31 seven more Location prefixes still answered net/http's own not-found. The rule is now
+		// mechanical and total — see location_guard_test.go, which parses every Location this package writes
+		// and follows each one against a router this file builds. A Location either resolves, or it is not
+		// written; there is no exception list, because the header's absence is honest and a header naming an
+		// address nothing serves is not. Five of the seven closed by losing the header and each says why at
+		// the write; this one and the queue-connection create closed by gaining the route.
 		mux.HandleFunc("GET /v1/tools/{tool_id}/revisions/{revision_id}", th.getRevision)
 		mux.HandleFunc("POST /v1/tools/{tool_id}/revisions", th.createRevision)
 		mux.HandleFunc("POST /v1/tools/{tool_id}/revisions/{revision_id}/publish", th.publishRevision)
@@ -335,6 +343,7 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		qh := &queueConnectionHandler{queues: cfg.queues, resolver: resolver}
 		mux.HandleFunc("POST /v1/queue-connections", qh.createConnection)
 		mux.HandleFunc("GET /v1/queue-connections", qh.listConnections)
+		mux.HandleFunc("GET /v1/queue-connections/{connection_id}", qh.getConnection)
 	}
 
 	// The Slack workspace REGISTRATION surface (E19 T9, spec §36): register a workspace binding with its
