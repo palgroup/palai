@@ -57,6 +57,14 @@ hiçbiri `main`'e yanlış inmedi. Maliyet tespit maliyetiydi. Bu dört kural on
 - **Bir kontrolün var olması, koştuğunun kanıtı değildir.** `scripts/test/component`'in `-run`
   allow-list'inde adı olmayan bir test hiç koşmaz ve gate yeşil görünür. Çalışan tek yöntem:
   **shipped selector'ı koştur, `--- PASS`'i gate'in iddia ettiği bacaklarla diff'le, string'i asla okuma.**
+  Bu imza bu ağaçta **yedi kez** çıktı ve en net hâli şudur: bir test **untagged** olabilir, yani
+  `make verify`'a biner ve **ağaçtan hiç eksik değildir** — eksik olduğu şey **onu iddia eden
+  invocation'dır, ki yokluğu önemli olan tek invocation odur.** Betiği okumak da bacak listesini okumak
+  da bulamaz; **ikisi de tam görünür.**
+- **Bir süpürme yalnız BİR yönde bakar, ve iki yönde iki farklı hata vardır.** Dizinleri yürüyen bir
+  tarama, **var olan ama sahipsiz** bir dizini bulur; **hiç var olmayan** bir dizini bulamaz. İçe dönük
+  boşluklar için otorite **kanonik liste**, dışa dönükler için **yürüyüş**. (E26 T7: `BGT-` hiçbir
+  prefix listesinde değildi *ve* BGT-003'ün dizini hiç yoktu — biri yürüyüşle, diğeri listeyle bulundu.)
 - **Bir taramanın yeşil olması, taradığının kanıtı değildir.** `go test ./tests/security/tenancy/...`
   `matched no packages` yazıp **exit 0** döner (paket `//go:build security`); doğrusu
   `TEST=tenancy scripts/test/security`.
