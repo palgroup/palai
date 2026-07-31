@@ -201,8 +201,9 @@ test("every interactive control carries a 3:1 boundary against the surface behin
     const inside = await measureBoundaries(page, `${d.route} (${d.dialog})`);
     // THE POSITIVE CONTROL, PER DIALOG. A dialog that rendered nothing measurable would otherwise contribute
     // zero rows and pass — the same empty-haystack shape reveal-once.spec.ts was caught by this morning.
-    expect(inside.length, `${d.dialog} opened and offered no measurable control — this sweep would be judging an empty dialog`).toBeGreaterThan(1);
-    measured.push(...inside);
+    expect(inside.boundaries.length, `${d.dialog} opened and offered no measurable control — this sweep would be judging an empty dialog`).toBeGreaterThan(1);
+    measured.push(...inside.boundaries);
+    exempted.push(...inside.exempted);
   }
   // eslint-disable-next-line no-console -- the delta is the evidence that opening them was worth doing.
   console.log(`CONTROL BOUNDARY DIALOGS — ${String(FORM_DIALOGS.length)} dialog(s) opened, ${String(measured.length - beforeDialogs)} control(s) that the closed-route walk never measured`);

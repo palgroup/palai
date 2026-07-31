@@ -191,6 +191,8 @@ export async function resetFakeFixture(): Promise<void> {
   if (PROFILE === "real") return;
   const res = await fetch(`${UPSTREAM}/__reset`, { method: "POST" });
   if (!res.ok) throw new Error(`the fake fixture refused to reset (${res.status}) — a spec that believes it is isolated and is not will fail somewhere else entirely`);
+}
+
 // --- DRIVING components/ui/Select (E29 component layer) --------------------------------------------------
 //
 // The seven native `<select>`s became a Base UI listbox, and Playwright's `selectOption` only speaks to a
