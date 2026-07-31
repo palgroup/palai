@@ -117,3 +117,41 @@ def test_model_routes_read_back_listview():
     client.close()
     assert view["object"] == "list"
     assert view["data"][0]["id"] == "mc_1"
+
+
+def test_session_create_carries_the_label_and_stays_bodyless_without_one():
+    """The label must REACH the wire, and the bodyless create must stay byte-identical.
+
+    A resource method that accepts a name and quietly drops it looks exactly like one that works, from
+    the caller's side and from the status code. And an SDK that started posting ``{}`` on the
+    pre-existing bodyless create would change every request on the wire while breaking nothing visibly.
+    """
+    captured, handler = _capture()
+    client = Palai(api_key="k", base_url=BASE, transport=httpx.MockTransport(handler))
+    client.sessions.create(name="Gece Doğrulama")
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/v1/sessions"
+    assert captured["body"] == {"name": "Gece Doğrulama"}
+
+    captured2, handler2 = _capture()
+    client2 = Palai(api_key="k", base_url=BASE, transport=httpx.MockTransport(handler2))
+    client2.sessions.create()
+    assert captured2["body"] is None
+
+
+def test_session_rename_patches_the_label_and_an_empty_name_reaches_the_wire():
+    """An empty label is a REAL value that clears the operator name.
+
+    Dropping it as falsy is the one way this call quietly does nothing while reporting success.
+    """
+    captured, handler = _capture()
+    client = Palai(api_key="k", base_url=BASE, transport=httpx.MockTransport(handler))
+    client.sessions.rename("ses_1", "Gece Doğrulama")
+    assert captured["method"] == "PATCH"
+    assert captured["path"] == "/v1/sessions/ses_1"
+    assert captured["body"] == {"name": "Gece Doğrulama"}
+
+    captured2, handler2 = _capture()
+    client2 = Palai(api_key="k", base_url=BASE, transport=httpx.MockTransport(handler2))
+    client2.sessions.rename("ses_1", "")
+    assert captured2["body"] == {"name": ""}

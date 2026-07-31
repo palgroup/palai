@@ -31,6 +31,14 @@ check-generated:
 # generated types above), and nothing else in verify typechecks src/ or runs the suite.
 	@pnpm --dir sdks/typescript run typecheck
 	@pnpm --dir sdks/typescript test
+# The PYTHON SDK rides it for the same reason and it did not until now. Its suite has existed the
+# whole time — `ls sdks/python/tests/*.py | wc -l` → 7 on 2026-07-31 — and NO make target, no
+# scripts/test tier and no workflow ever invoked it. That is this repository's signature failure in
+# its purest form: the tests are not missing from the tree, they are missing from every invocation,
+# and reading either the tree or the tier list finds nothing wrong. `uv` is already warmed by
+# bootstrap, and the conformance runner under sdks/python/conformance is a DIFFERENT thing — it
+# proves the shared corpus, not this surface.
+	@uv run --locked --project sdks/python pytest sdks/python/tests -q
 
 lint:
 	@git diff --check

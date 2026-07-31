@@ -75,6 +75,33 @@ test("sessions.create posts and returns the session handle", async () => {
   assertAuthenticated(calls[0]!);
 });
 
+test("sessions.create sends the label when given one and stays bodyless when not", async () => {
+  const { fetch: f, calls } = recordingFetch(() => json(201, { id: "ses_1", object: "session", status: "open" }));
+  const client = newClient(f);
+  await client.sessions.create({ name: "Gece Doğrulama" });
+  assert.equal(JSON.parse(calls[0]!.body!).name, "Gece Doğrulama");
+  // The bodyless create is the pre-existing call and must stay byte-identical: an SDK that started
+  // posting `{}` would break nothing visibly and change every request on the wire.
+  await client.sessions.create();
+  assert.equal(calls[1]?.body, undefined);
+});
+
+test("sessions.rename PATCHes the label and clears it with an empty string", async () => {
+  const { fetch: f, calls } = recordingFetch((call) =>
+    json(200, { id: "ses_1", object: "session", status: "open", name: JSON.parse(call.body!).name, name_source: "operator" }),
+  );
+  const client = newClient(f);
+  const renamed = await client.sessions.rename("ses_1", "Gece Doğrulama");
+  assert.equal(calls[0]?.method, "PATCH");
+  assert.ok(calls[0]?.url.endsWith("/v1/sessions/ses_1"));
+  assert.equal(JSON.parse(calls[0]!.body!).name, "Gece Doğrulama");
+  assert.equal(renamed.name, "Gece Doğrulama");
+  // An empty label is a REAL value that clears the operator name — it must reach the wire, not be
+  // dropped as falsy, which is the one way this call quietly does nothing.
+  await client.sessions.rename("ses_1", "");
+  assert.equal(JSON.parse(calls[1]!.body!).name, "");
+});
+
 test("sessions.retrieve gets by id", async () => {
   const { fetch: f, calls } = recordingFetch(() => json(200, { id: "ses_1", object: "session", status: "open" }));
   const session = await newClient(f).sessions.retrieve("ses_1");

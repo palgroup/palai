@@ -109,8 +109,36 @@ class Sessions:
         self._client = client
         self.commands = SessionCommands(client)
 
-    def create(self, *, timeout_ms: float | None = None, max_retries: int | None = None) -> Any:
-        return self._client.request("POST", "/v1/sessions", timeout_ms=timeout_ms, max_retries=max_retries)
+    def create(
+        self, *, name: str | None = None, timeout_ms: float | None = None, max_retries: int | None = None
+    ) -> Any:
+        # ``name`` is the optional display label; without one the session's projection derives a label
+        # from its first prompt. Omitting it sends NO body, which is the pre-existing call byte for byte.
+        body = None if name is None else {"name": name}
+        return self._client.request(
+            "POST", "/v1/sessions", body=body, timeout_ms=timeout_ms, max_retries=max_retries
+        )
+
+    def rename(
+        self, session_id: str, name: str, *, timeout_ms: float | None = None, max_retries: int | None = None
+    ) -> Any:
+        """Set a session's display label and return the re-read session.
+
+        This, and not the create-time name, is the call a session list needs: most sessions are never
+        created through :meth:`create` at all — posting a response opens one implicitly — so they reach a
+        list screen with no label to have been given one. An EMPTY string is meaningful: it clears the
+        operator label and returns the row to its derived one.
+        """
+        # Setting a label to X twice leaves it X, so a connection torn after the server committed is safe
+        # to re-send. That is a property of this call, not of PATCH.
+        return self._client.request(
+            "PATCH",
+            f"/v1/sessions/{enc(session_id)}",
+            body={"name": name},
+            idempotent=True,
+            timeout_ms=timeout_ms,
+            max_retries=max_retries,
+        )
 
     def retrieve(self, session_id: str, *, timeout_ms: float | None = None, max_retries: int | None = None) -> Any:
         return self._client.request(

@@ -14,6 +14,12 @@ export interface SteerParams {
 }
 export type InterruptParams = SteerParams;
 
+// SessionCreateParams carries the one thing a caller may supply when opening a session: its display
+// label. Omitting it is the pre-existing bodyless create, unchanged.
+export interface SessionCreateParams {
+  name?: string;
+}
+
 // SessionCommands is the durable command surface of a session (spec §9.2, §22.4) — E08's steering
 // product, used from the SDK for the first time. steer and interrupt are both send_message
 // deliveries; the delivery mode is the only difference (queue is the default fire path and not
@@ -65,9 +71,34 @@ export class Sessions {
   }
 
   // create opens a standalone session (201). Creation is cheap and unkeyed — a retried create mints
-  // a new session — so it carries no idempotency key.
-  async create(options: CallOptions = {}): Promise<Session> {
-    const result = await this.#client.request<Session>("POST", "/v1/sessions", callArgs(options));
+  // a new session — so it carries no idempotency key. `name` is the optional display label; without
+  // one the session's projection derives a label from its first prompt (see `rename`).
+  async create(params: SessionCreateParams = {}, options: CallOptions = {}): Promise<Session> {
+    const args = callArgs(options);
+    const result = await this.#client.request<Session>(
+      "POST",
+      "/v1/sessions",
+      params.name === undefined ? args : { body: { name: params.name }, ...args },
+    );
+    return result.body;
+  }
+
+  // rename sets a session's display label and returns the re-read session, so the caller sees both
+  // the label and the `name_source` that now reads "operator".
+  //
+  // This, and not the create-time name, is the call a session list needs: most sessions are never
+  // created through `create` at all — posting a response opens one implicitly — so they reach a list
+  // screen with no label to have been given one. Passing an EMPTY string is meaningful: it clears the
+  // operator label and returns the row to its derived one.
+  async rename(sessionID: string, name: string, options: CallOptions = {}): Promise<Session> {
+    const result = await this.#client.request<Session>("PATCH", `/v1/sessions/${enc(sessionID)}`, {
+      body: { name },
+      // Setting a label to X twice leaves it X, so a connection torn after the server committed is
+      // safe to re-send. That is a property of THIS call, not of PATCH, which is why it is declared
+      // here rather than in the transport's method table.
+      idempotent: true,
+      ...callArgs(options),
+    });
     return result.body;
   }
 
