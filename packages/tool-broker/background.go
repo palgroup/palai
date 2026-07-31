@@ -170,7 +170,15 @@ type BackgroundTicket struct {
 // to the tool_calls row that spawned it (migration 000047's UNIQUE (tool_call_id)), and a task whose row
 // named the wrong call would be a process no ledger entry accounts for. ExecEnv.CallID is where a tool
 // reads it — the broker stamps it on a copy of the env before invoking Exec.
+//
+// RedactOutput is the THIRD method and it is on this seam rather than beside it, because a background
+// task is the reason it exists (E26 T6, §3.6 D8): a process writing its own log file bypasses both
+// redactors, which act on a CAPTURED Go string, and the file tool reading that log had never masked
+// anything. The implementation re-resolves the run's environment values at READ time — the row holds key
+// names and never values — so this is the seam through which a tool reaches a credential set it must not
+// otherwise be able to see. It returns an ERROR rather than the unmasked bytes when it cannot mask.
 type BackgroundTasks interface {
 	StartBackground(ctx context.Context, cmd ShellCommand, callID contracts.ToolCallID) (BackgroundTicket, error)
 	KillBackground(ctx context.Context, taskID string) (BackgroundTicket, error)
+	RedactOutput(ctx context.Context, s string) (string, error)
 }

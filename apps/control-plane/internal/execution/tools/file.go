@@ -41,7 +41,7 @@ func FileTool() toolbroker.Tool {
 
 // fileExec dispatches one file operation against the confined workspace. It is the Exec surface the
 // broker calls with the per-attempt ExecEnv.
-func fileExec(_ context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
+func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
 	if env.WorkspaceRoot == "" {
 		return nil, fmt.Errorf("file tool: no workspace bound for this run")
 	}
@@ -61,7 +61,26 @@ func fileExec(_ context.Context, env toolbroker.ExecEnv, args map[string]any) (m
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"path": path, "content": string(data), "truncated": truncated, "size": len(data)}, nil
+		content := string(data)
+		// REDACTION ON THE WAY OUT (E26 T6, §3.6 D8). A background task writes its own log file, which
+		// bypasses both redactors — they act on a CAPTURED Go string — and this read is one of the two
+		// places those bytes reach a model. The other is the exit notice's excerpt, and BOTH call the same
+		// function behind this seam so they cannot diverge.
+		//
+		// IT IS APPLIED TO EVERY READ RATHER THAN TO PATHS THAT LOOK LIKE A LOG, deliberately: deciding
+		// which paths carry a credential would be a path comparison deciding a security outcome, and this
+		// tree's own history is that every such comparison has shipped defeated. Masking more costs a
+		// substring pass; masking the wrong set costs the credential.
+		//
+		// AN ERROR REFUSES THE READ. The seam only errors when it cannot mask what it knows may be there,
+		// and returning the bytes then would be the one outcome the whole path exists to prevent.
+		if env.Background != nil {
+			content, err = env.Background.RedactOutput(ctx, content)
+			if err != nil {
+				return nil, fmt.Errorf("file tool: %w", err)
+			}
+		}
+		return map[string]any{"path": path, "content": content, "truncated": truncated, "size": len(data)}, nil
 	case "write":
 		if env.ReadOnly {
 			return nil, fmt.Errorf("file tool: workspace is read-only for this run")

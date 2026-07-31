@@ -62,20 +62,18 @@ const backgroundOrphanedWarning = "background_notice_orphaned"
 
 // BackgroundTailLimit bounds what a notification quotes from the task's log: the last 2 KiB.
 //
-// AND THIS EXCERPT IS NOT REDACTED, WHICH IS SAID HERE RATHER THAN LEFT TO BE FOUND. T2 recorded that a
-// background task's log file is not redacted on the way out (§3.6 D8): a process writing its own file
-// bypasses both RedactSecrets and RedactValues, which act on a CAPTURED Go string, and
-// palai.workspace.file has never redacted anything it reads. The tail below crosses the same boundary
-// those bytes already cross — so a model learns nothing here it could not read from the file — but it
-// does so into a DURABLE ROW: commands.payload, and then delivered_messages when the boundary pump
-// applies it. THAT IS AN ASYMMETRY WITH THE SYNCHRONOUS PATH AND IT IS NEW: a synchronous shell result
-// is redacted before it reaches tool_calls.result, and this one is not.
+// AND THIS EXCERPT ARRIVES ALREADY REDACTED SINCE E26 T6, which is said here because for two tasks this
+// comment said the opposite. T2 recorded that a background task's log is not masked on the way out
+// (§3.6 D8) — a process writing its own file bypasses both RedactSecrets and RedactValues, which act on
+// a CAPTURED Go string — and T4 widened it, because this excerpt lands in a DURABLE ROW
+// (commands.payload, then delivered_messages) where the synchronous path's equivalent had been masked
+// before it reached tool_calls.result.
 //
-// It is T6's to close and T6 must close BOTH landing sites — the notice composed here and the file read
-// — from the same place: background_tasks.env_keys holds the key NAMES precisely so a read path can
-// re-resolve the values and mask them, and coordinator.BackgroundTask carries them to this file's
-// caller. Until then an operator running background tasks that carry credentials should read
-// docs/operations/background-execution.md's ceiling section.
+// T6 CLOSED BOTH LANDING SITES FROM ONE PLACE, and the redaction is the OBSERVER's rather than this
+// file's: execution.redactTaskOutput masks the tail before it is handed over, and the identical call
+// masks a palai.workspace.file read of the same path. That is why BackgroundTask.EnvKeys exists — key
+// NAMES, never values, re-resolved at read time — and why the coordinator, which owns the transaction
+// and not the credentials, never sees either.
 //
 // THE BOUND IS THE FEATURE, not a safety margin. A model backgrounds a five-minute build precisely so
 // it does not have to hold that build's output (E26 T2's returned body carries none either); a

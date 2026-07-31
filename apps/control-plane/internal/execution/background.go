@@ -40,13 +40,12 @@ import (
 // changeset and does not enter a checksum — while palai.workspace.file still reads it, because it is an
 // ordinary path under the allocation root.
 //
-// AND THE READ OF THAT FILE IS NOT REDACTED TODAY, WHICH IS T6's AND IS WRITTEN HERE SO IT IS FOUND. A
-// synchronous shell result is redacted on the way back (host/exec.go, workspace/exec.go apply
-// RedactSecrets/RedactValues to the CAPTURED GO STRING); a process writing its own log file bypasses
-// both, and palai.workspace.file has never redacted anything it reads. So a background command that
-// echoes one of the attempt's environment values puts that value where the model can read it raw — the
-// exposure E26 §3.6 D8 names, whose fix is a redacting read path that re-resolves the task's env_keys at
-// READ time, because the row holds key names and never values.
+// AND THE READ OF THAT FILE IS REDACTED SINCE T6, THE FILE ITSELF IS NOT. A synchronous shell result is
+// redacted on the way back (host/exec.go, workspace/exec.go apply RedactSecrets/RedactValues to the
+// CAPTURED GO STRING); a process writing its own log file bypasses both, so the redaction moved to the
+// READ path — redactTaskOutput, re-resolving the task's env_keys at read time because the row holds key
+// names and never values (§3.6 D8). The bytes on disk stay verbatim, which is what an operator debugging
+// a build wants and is why the file is 0600 under a subtree Snapshot skips whole.
 const backgroundLogDir = ".palai-session/bg"
 
 // errBackgroundDisabled is the kill switch's answer, and it is a REFUSAL rather than a downgrade. A
@@ -246,6 +245,24 @@ func (b *backgroundTasks) StartBackground(ctx context.Context, cmd toolbroker.Sh
 		deadline = &at
 	}
 
+	// UNBOUNDED PLUS A CREDENTIAL IS REFUSED (E26 T6, §0.4's price for choosing option (b)). A value handed
+	// over in cmd.Env lives in the kernel's environ copy for the WHOLE LIFE of the process, so a task with
+	// no ceiling is a credential with no expiry — and §0.4 bought the right to hand one over by promising
+	// the exposure would be bounded. This is where that promise is kept.
+	//
+	// IT IS A CODE GATE AND NOT A CHECK CONSTRAINT, and the difference is a user decision the database
+	// cannot see: `PALAI_BACKGROUND_MAX_WALL_TIME=0` is a legitimate choice for a task that carries nothing,
+	// so `deadline_at IS NULL` cannot be forbidden by the column. What is forbidden is the PAIR, and the
+	// pair is only knowable here, where the environment and the ceiling are both in hand.
+	//
+	// It refuses BEFORE the process exists, like every other refusal in this function.
+	if deadline == nil && len(cmd.Env) > 0 {
+		return toolbroker.BackgroundTicket{}, fmt.Errorf("refused: this run carries %d environment value(s) and "+
+			"PALAI_BACKGROUND_MAX_WALL_TIME is 0 (unbounded). A background process holds its environment for its whole "+
+			"life, so an unbounded task would hold a credential without expiry; set a ceiling or run this command "+
+			"synchronously", len(cmd.Env))
+	}
+
 	handle, err := b.orch.background.Start(ctx, cmd, spec)
 	if err != nil {
 		return toolbroker.BackgroundTicket{}, err
@@ -345,6 +362,25 @@ func (b *backgroundTasks) KillBackground(ctx context.Context, taskID string) (to
 		state = status.State
 	}
 	return toolbroker.BackgroundTicket{TaskID: task.ID, OutputPath: task.OutputPath, State: state}, nil
+}
+
+// RedactOutput masks this run's credentials in bytes read back OUT of its workspace (E26 T6). It is the
+// file tool's half of the one redaction place, and it delegates without deciding anything: the policy,
+// the two redactors and the fail-closed rule are all in redactTaskOutput, so this site cannot drift from
+// the notice's.
+//
+// IT PASSES NO `carried` SET, and the reason is worth writing down rather than discovering later. The
+// notice knows exactly which keys ITS task held, because the row records them; a file read knows only a
+// path, and deciding which task a path names would be a path comparison deciding a security outcome —
+// which every such comparison in this tree has shipped defeated at least once. So the read masks with
+// every value the run resolves NOW, and the one case that leaves open is named: a key deleted from the
+// environment after the task wrote its log is a value nothing can re-resolve and therefore nothing can
+// mask, and the READ (unlike the notice) has no record that it was ever there.
+func (b *backgroundTasks) RedactOutput(ctx context.Context, s string) (string, error) {
+	if b.orch == nil {
+		return s, nil
+	}
+	return b.orch.redactTaskOutput(ctx, b.tenant, b.runID, nil, s)
 }
 
 // BackgroundKiller is what this orchestrator hands the coordinator so that CANCELLING A RUN ENDS ITS LIVE
@@ -485,7 +521,7 @@ func (o *Orchestrator) observeBackgroundTask(ctx context.Context, task coordinat
 	default:
 		state = string(toolbroker.BackgroundExited)
 	}
-	tail, note := o.backgroundTail(task)
+	tail, note := o.backgroundTail(ctx, task)
 	return coordinator.BackgroundOutcome{State: state, ExitCode: status.ExitCode, Tail: tail, TailNote: note}, true, nil
 }
 
@@ -586,11 +622,17 @@ func sweepBackgroundLogs(ctx context.Context, store ReconcileStore) error {
 // retention reaper already removed — each yields a note the model is told instead of an excerpt, because
 // losing the exit is strictly worse than losing the excerpt.
 //
-// ponytail: THIS EXCERPT IS NOT REDACTED, AND NEITHER IS THE FILE palai.workspace.file READS. The bytes
-// here cross the same boundary as an ordinary read of the same path (E26 T2's recorded gap, §3.6 D8) —
-// this widens nothing — but T6 owns the redacting read path, and when it lands THIS CALL IS ONE OF THE
-// TWO IT HAS TO COVER. The row's env_keys column exists for exactly that: the keys are on task.EnvKeys.
-func (o *Orchestrator) backgroundTail(task coordinator.BackgroundTask) (tail string, note string) {
+// IT IS REDACTED FROM THE SAME PLACE THE FILE READ IS (E26 T6, §3.6 D8), and that is the whole of what
+// this task changed here: the excerpt below lands in commands.payload and then in delivered_messages —
+// DURABLE rows — where a synchronous shell result would already have been masked before reaching
+// tool_calls.result. redactTaskOutput re-resolves the row's env_keys at THIS moment, because the row
+// holds key names and never values, and it is the identical call palai.workspace.file makes.
+//
+// A FAILURE TO REDACT WITHHOLDS THE EXCERPT AND KEEPS THE NOTIFICATION. That is the fail-closed direction
+// in the shape this function already had one for: an unreadable file, a missing allocation and now an
+// unmaskable value all produce a NOTE the model is told, and the exit — which is the thing the model is
+// waiting for — still lands.
+func (o *Orchestrator) backgroundTail(ctx context.Context, task coordinator.BackgroundTask) (tail string, note string) {
 	if task.AllocationRoot == "" {
 		return "", "this run has no workspace allocation on this machine, so its output file could not be located"
 	}
@@ -616,5 +658,10 @@ func (o *Orchestrator) backgroundTail(task coordinator.BackgroundTask) (tail str
 	if _, err := f.ReadAt(buf, offset); err != nil && len(buf) > 0 {
 		return "", "the output file could not be read"
 	}
-	return string(buf), ""
+	redacted, err := o.redactTaskOutput(ctx, task.Tenant, task.RunID, task.EnvKeys, string(buf))
+	if err != nil {
+		log.Printf("redact the output excerpt of background task %s: %v", task.ID, err)
+		return "", "the output excerpt was withheld because this run's environment values could not be re-resolved to mask them"
+	}
+	return redacted, ""
 }

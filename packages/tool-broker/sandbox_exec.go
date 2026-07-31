@@ -58,8 +58,29 @@ type ExecEnv struct {
 	// and the executor masks its values in captured output (RedactValues) before the result is returned.
 	//
 	// Scope and expiry are the ATTEMPT itself — the run's answer to the worker pattern's
-	// fence/scope/expiry triple (internal/workers/store.go RedeemSecretHandle). There is no handle to
-	// redeem and no deadline to check because the value's whole life is one Execute call.
+	// fence/scope/expiry triple (internal/workers/store.go RedeemSecretHandle) — FOR A SYNCHRONOUS CALL.
+	//
+	// THAT SENTENCE USED TO END "there is no handle to redeem and no deadline to check because the value's
+	// whole life is one Execute call", AND E26 MEASURED IT FALSE (§0.4, §3.6 D9). It is corrected here
+	// rather than left to rot, which is this tree's pattern (host/exec.go, workspace/exec.go) and the
+	// failure E24 T8 found written in twenty-six places because nobody renewed it.
+	//
+	// A BACKGROUND START IS ALSO AN EXECUTE, and the process it starts OUTLIVES the call: a value handed
+	// over here reaches exec.Cmd.Env (host) or container.Config.Env (oci) and then lives in the kernel's
+	// environ copy for the whole life of that process. Killing the control plane does not take it back,
+	// and no code change can make it otherwise. A test says so — the started command reads its own
+	// environment at a moment the TEST releases, strictly after Start returned
+	// (adapters/sandboxes/host: TestAnEnvironmentValueOutlivesTheExecuteCallThatHandedItOver).
+	//
+	// SO THE TRIPLE COMES BACK, and E26 T6 is where each part is answered for a task rather than for a
+	// call: the SCOPE is still the pinned revision's key names, the EXPIRY is the task's own deadline_at
+	// (a task carrying a value cannot be created without one), and the FENCE is the background_tasks row —
+	// killable by id, killed by its run's cancellation, ended by the reaper. There is a handle to redeem
+	// after all, and it is a row.
+	//
+	// ONE CONSEQUENCE LANDS BACK HERE: redaction of a background task's output cannot be the executor's,
+	// because the process writes its own file rather than returning a captured string. It moved to the
+	// READ path (execution.redactTaskOutput), which re-resolves those key names at read time.
 	EnvValues map[string]string
 }
 
