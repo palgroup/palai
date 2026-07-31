@@ -1,7 +1,6 @@
 "use client";
 
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Panel, type Column } from "@/components/Panel";
 import { CopyButton, shortId, Stamp } from "@/components/Session";
@@ -9,6 +8,7 @@ import { Status } from "@/components/Status";
 import { Timeline, type Frame } from "@/components/Timeline";
 import { apiGet, artifactHref, readSessionEvents, RelayError } from "@/lib/api";
 import { isTerminal, laneFor } from "@/lib/timeline";
+import { useQueryParam } from "@/lib/urlState";
 
 interface RunRow extends Record<string, unknown> {
   id: string;
@@ -70,21 +70,11 @@ interface ArtifactRow extends Record<string, unknown> {
 // id had no way to reach the conversation it came from without retyping an id.
 
 export default function HistoryPage() {
-  // `useSearchParams()` bails out of prerendering, and Next refuses to build a STATIC page that calls it
-  // outside a Suspense boundary. The fallback deliberately does not answer to `panel-runs` — this route's
-  // declared readiness signal — so a scan cannot analyse the placeholder and call the page clean.
-  return (
-    <Suspense fallback={<p className="loading">Loading…</p>}>
-      <RunHistory />
-    </Suspense>
-  );
-}
-
-function RunHistory() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const search = useSearchParams();
-  const selectedID = search.get("run") ?? "";
+  // lib/urlState.ts rather than next/navigation's useSearchParams, for the reason its own header gives and
+  // that app/approvals/page.tsx records having paid for: this route is STATICALLY PRERENDERED, and the
+  // Suspense boundary useSearchParams needs there puts its FALLBACK in the served HTML — so the page stops
+  // server-rendering its markup. `push`, because every write happens because somebody opened a run.
+  const [selectedID, choose] = useQueryParam("run", "push");
   const [rows, setRows] = useState<RunRow[]>([]);
   // The selected ROW comes out of the list this page just read; there is no per-run read that would answer
   // one before the list lands, and the detail fetch below is keyed by the id rather than by the row.
@@ -144,15 +134,6 @@ function RunHistory() {
       controller.abort();
     };
   }, [sessionID]);
-
-  function choose(id: string) {
-    const params = new URLSearchParams(search.toString());
-    if (id === "") params.delete("run");
-    else params.set("run", id);
-    const query = params.toString();
-    // scroll:false — opening a run must not jump the reader to the top of a twenty-row list.
-    router.push(query === "" ? pathname : `${pathname}?${query}`, { scroll: false });
-  }
 
   const columns: Column<RunRow>[] = [
     {

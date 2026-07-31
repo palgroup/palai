@@ -1,11 +1,11 @@
 "use client";
 
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ApprovalRow, type ToolApproval } from "@/components/ApprovalRow";
 import { Panel, type Column } from "@/components/Panel";
 import { CopyButton, shortId, Stamp } from "@/components/Session";
+import { useQueryParam } from "@/lib/urlState";
 
 // THE APPROVAL QUEUE — a screen for the surface E23 T9 opened, and the NAME of what it does not show
 // (E25 T5, plan §T5).
@@ -52,31 +52,27 @@ import { CopyButton, shortId, Stamp } from "@/components/Session";
 // on a per-project channel, subscribe THEN and delete the interval.
 export const POLL_MS = 10_000;
 
-// THE SUSPENSE BOUNDARY IS REQUIRED, AND IT IS A BUILD ERROR RATHER THAN A PREFERENCE. `useSearchParams()`
-// forces a client bail-out during prerendering, and Next refuses to build a STATIC page that calls it outside
-// one: "useSearchParams() should be wrapped in a suspense boundary at page /approvals". The two screens that
-// already put state in the URL are both DYNAMIC routes (`/sessions/[id]`, `/agents/[id]`), which is why this
-// is the first place in the console to meet it — a `[id]` segment makes the page server-rendered on demand
-// and there is no prerender to bail out of.
-//
-// The fallback is what a reader sees for the instant before hydration, and it is deliberately NOT the panel's
-// name or its spinner: `panel-approvals` is this route's declared readiness signal (lib/routes.ts), so a
-// fallback answering to it would let an axe scan analyse a placeholder and call the page clean.
 export default function ApprovalsPage() {
-  return (
-    <Suspense fallback={<p className="loading">Loading…</p>}>
-      <ApprovalQueue />
-    </Suspense>
-  );
-}
-
-function ApprovalQueue() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const search = useSearchParams();
-  // THE URL IS THE SOURCE, not a mirror: `selected` is read out of it on every render rather than being state
-  // that is also written to the address bar, so the two can never disagree.
-  const selected = search.get("approval") ?? "";
+  // lib/urlState.ts, NOT next/navigation's useSearchParams, and the difference is a defect this page shipped
+  // for one afternoon. `/approvals` is STATICALLY PRERENDERED, useSearchParams forces a client bail-out, and
+  // Next refuses to build a static page that calls it outside a Suspense boundary — so the first version of
+  // this screen wrapped itself in one and the build went green. What that costs is written in urlState.ts's
+  // own header: the boundary's FALLBACK is what lands in the served HTML, so the page stopped
+  // server-rendering its markup entirely. Nothing here caught it — this page mounts no create form of its own,
+  // so it never contributed to the served-form sweep in either direction — and it was found by reading the
+  // helper the Govern half had written for exactly this.
+  //
+  // AND THE SENTENCE ABOVE COST A RED TEST BEFORE IT WAS TRUE. It originally spelled the shared form
+  // component's name as a JSX tag, in prose — and tests/auth.spec.ts's derived form count matches that
+  // opening tag with a regex over each page's SOURCE, brackets and all. So a comment claiming this page
+  // mounts none made the derivation expect a form the server never sends, and the sweep went red on a
+  // sentence rather than on a screen. That guard's own header calls a comment match "the safe direction" for
+  // its source walk, and it is; for a DERIVATION it is the unsafe one, and this is what that looks like from
+  // the other side. Component names are written here without their brackets for the same reason
+  // components/RevisePublish.tsx spells out "form element" instead of quoting the markup.
+  //
+  // `push`, not `replace`: every write here happens because somebody chose a call, so Back should undo it.
+  const [selected, choose] = useQueryParam("approval", "push");
 
   const [rows, setRows] = useState<ToolApproval[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
@@ -86,17 +82,6 @@ function ApprovalQueue() {
     const timer = setInterval(() => setReloadKey((n) => n + 1), POLL_MS);
     return () => clearInterval(timer);
   }, []);
-
-  function choose(id: string) {
-    const params = new URLSearchParams(search.toString());
-    // A parameter set to nothing is DELETED rather than emptied — `?approval=` is a URL that says a call is
-    // selected and does not say which.
-    if (id === "") params.delete("approval");
-    else params.set("approval", id);
-    const query = params.toString();
-    // scroll:false — selecting a call must not jump the reader to the top of the queue.
-    router.push(query === "" ? pathname : `${pathname}?${query}`, { scroll: false });
-  }
 
   // THE SELECTED ROW IS FOUND IN THE LIST THIS PAGE JUST READ, never fetched on its own — there is no route
   // that would answer one. A `?approval=` naming a row the queue no longer holds therefore renders the "it is
