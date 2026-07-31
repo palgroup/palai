@@ -254,7 +254,18 @@ export function RevisePublish({
         ) : revisions === null ? (
           <p className="loading" data-testid={`panel-${testId}s-loading`}>Loading…</p>
         ) : revisions.length === 0 ? (
-          <p className="empty" data-testid={`panel-${testId}s-empty`}>No revisions yet.</p>
+          // THE MEASURED EMPTY-STATE SHAPE (design-reference/screen-inventory.md §3): a title, then one
+          // sentence saying what the thing IS. This read "No revisions yet." — three words that teach
+          // nothing at the one moment a reader can be taught, on the panel a first-day operator meets on
+          // every lineage in the tree. The sentence is true of all three lineages this component serves
+          // (agent, tool, tool set), which is why it is here rather than a per-caller prop.
+          <div className="empty" data-testid={`panel-${testId}s-empty`}>
+            <p className="empty-title">No revisions yet</p>
+            <p className="empty-body">
+              A revision is an immutable configuration, and the newest PUBLISHED one is what a pin resolves
+              to — so nothing can be pinned to this lineage until one exists.
+            </p>
+          </div>
         ) : (
           <table>
             <thead>
