@@ -20,9 +20,10 @@ A fresh `palai up` with no Slack has **zero agents, zero repositories, zero envi
 tools**. This is the order that takes it to an agent that runs your code with your credentials, entirely from
 the console. Each step names the screen and the page that goes deeper.
 
-1. **Set the console password.** `node apps/web-console/scripts/hash-password.mjs` reading from stdin, then
-   export `PALAI_CONSOLE_PASSWORD_HASH`. **Without it the console serves nothing** — not a read, not a write,
-   not a sign-in (§2). Restart the console after setting it: the hash is read from the process environment.
+1. **Set the console password.** `printf %s '…' | node apps/web-console/scripts/hash-password.mjs --write`,
+   which writes `PALAI_CONSOLE_PASSWORD_HASH` into `apps/web-console/.env.local` for you (§2). **Without it
+   the console serves nothing** — not a read, not a write, not a sign-in. Restart the console after setting
+   it: the hash is read from the process environment.
 2. **Give the console a narrow key.** `palai apikey create --project <prj_id> --scope provision --scope
    approve` (§3), or mint it from `/policy` (§3b) — the screen offers the two capabilities by name and says
    what each opens. Skipping this leaves the console holding a key with EVERY capability; the door is shut,
@@ -86,15 +87,24 @@ this origin is a write proxy holding a control-plane credential.
 The password is read from **stdin** — never from a command line, where it would land in `ps`, in your shell
 history and in any process listing the machine keeps.
 
+**One command, and it is the whole step:**
+
 ```sh
-printf %s 'a-long-console-password' | node scripts/hash-password.mjs
-# → PALAI_CONSOLE_PASSWORD_HASH=scrypt$16384$8$1$…$…
+printf %s 'a-long-console-password' | node apps/web-console/scripts/hash-password.mjs --write
+# → wrote PALAI_CONSOLE_PASSWORD_HASH to …/apps/web-console/.env.local (mode 600)
 ```
 
-Append it straight to your env file:
+`--write` puts the line in `apps/web-console/.env.local` itself — the path is resolved from the script, so it
+does not matter which directory you run it from — and it **replaces** any `PALAI_CONSOLE_PASSWORD_HASH=` line
+already there instead of appending a second one. Every other line in the file (your `PALAI_API_KEY`) is kept.
+Restart the console afterwards.
+
+Without `--write` it prints the line instead, for a systemd unit, a secret store, or an env var you export
+yourself:
 
 ```sh
-printf %s 'a-long-console-password' | node scripts/hash-password.mjs >> apps/web-console/.env.local
+printf %s 'a-long-console-password' | node apps/web-console/scripts/hash-password.mjs
+# → PALAI_CONSOLE_PASSWORD_HASH=scrypt.16384.8.1.…….……
 ```
 
 From the repo root the same script is reachable as
@@ -103,20 +113,39 @@ From the repo root the same script is reachable as
 Notes that matter:
 
 - **The hash is not a secret in the way the password is**, but it is not public either: the cookie's signing
-  key is derived from it, so anyone holding it can mint sessions. Treat it as a credential.
+  key is derived from it, so anyone holding it can mint sessions. Treat it as a credential. `--write` sets the
+  file to mode `600` for that reason.
 - **`echo` adds a newline.** The script strips one trailing newline and says so on stderr; `printf %s` avoids
   the ambiguity entirely.
 - **Changing the password invalidates every live session.** That is deliberate, and it is the *only*
   revocation this design has (see §6).
-- The parameters (`16384$8$1`) are stored inside the hash, so raising them later does not invalidate a hash
+- The parameters (`16384.8.1`) are stored inside the hash, so raising them later does not invalidate a hash
   you generate today.
+- **The separator used to be `$`, and if you have a hash from before, it still works.** The reader accepts
+  both. You do not have to regenerate anything — but see the box below before you put an old one in a file.
+
+> **Why the separator is a dot, and the one thing to watch for.** `scrypt$16384$8$1$…` appended to
+> `.env.local` did not survive being read back: **every dotenv reader expands `$`**. Measured on 2026-07-31
+> with Next's own loader (`@next/env`, which is what `next start` uses), an 83-character six-part hash on disk
+> reached the console as **38 characters and one part** — `$16384`, `$8`, `$1` and the head of the salt were
+> read as variable names and expanded to nothing. (Reproduce it and you will get a different *length*: how
+> much of the salt is eaten depends on where its first `-` falls. Six parts collapsing to one is the
+> invariant.) `set -a; . .env.local` destroyed it the same way, and
+> quoting did not save it. The console then answered `503 console_not_configured` — *"is not set (or is not a
+> valid scrypt hash)"* — about a variable that **was** set, which is an hour spent looking for the wrong
+> thing. Four readers were measured — `@next/env`, `set -a; . file`, `node --env-file` and a shell
+> `NAME='…'` export — and the dot form is the only encoding intact in all four (backslash-escaping fixes the
+> first two and breaks the last two), so there is now one form of the value and it is correct everywhere.
+> **If you are still carrying a `$` hash, keep it in an exported
+> environment variable — do not append it to an env file.** `apps/web-console/tests/env-file.spec.ts` runs
+> this whole path, generator to loader, on every suite run.
 
 Then start the console with all three variables:
 
 ```sh
 PALAI_BASE_URL=http://127.0.0.1:8080 \
 PALAI_API_KEY=palai-sk-… \
-PALAI_CONSOLE_PASSWORD_HASH='scrypt$16384$8$1$…$…' \
+PALAI_CONSOLE_PASSWORD_HASH='scrypt.16384.8.1.…….……' \
   pnpm --filter @palai/web-console dev
 ```
 
@@ -124,6 +153,31 @@ Open **`/login`** first. The console does not redirect an unauthenticated visito
 so `/` renders its frame and every panel shows its error state until you have a session. That is the honest
 shape of "the door is shut" for a Next app, and it is the price of *not* putting a check in the layout
 (where Partial Rendering would make it unreliable).
+
+### `next dev` and `127.0.0.1` — a whole hour, and worth one paragraph
+
+If you develop against the console, know this one. Next's dev server refuses cross-site requests to `/_next/*`
+against an allow-list it builds as `['**.localhost', 'localhost', …allowedDevOrigins]` plus whatever
+`--hostname` was passed (`server/lib/router-utils/block-cross-site-dev.ts`, Next 16.2.10). **`127.0.0.1` is a
+different string and is in none of those by default**, so the HMR websocket — the one `/_next` request a
+browser makes carrying an `Origin` header — is refused, and with Turbopack the page then **never hydrates**.
+
+The failure is silent in the worst way: every chunk loads `200`, React's own DevTools banner prints, the
+document says `complete`, and there is *no* hydration error — because hydration never started. What you see is
+a console where nothing is clickable and the login form does a plain `GET /login?password=…`, putting the
+password in the URL bar. `next start` on the same commit is unaffected; this is dev only.
+
+`apps/web-console/next.config.ts` now sets `allowedDevOrigins: ["127.0.0.1"]`, which is dev-only and relaxes
+nothing in production. Measured on 2026-07-31 with one `next dev` process, only the hostname differing:
+
+| URL | `preventDefault` ran | `__reactFiber$` on the DOM | HMR upgrade |
+|---|---|---|---|
+| `http://127.0.0.1:3230/login` *(before)* | no | absent | refused |
+| `http://localhost:3230/login` | yes | present | `101` |
+| `http://127.0.0.1:3230/login` *(after)* | yes | present | `101` |
+
+That single-variable comparison is also what rules out the other suspects — `turbopack.root`,
+`transpilePackages`, a stale `.next`, the pnpm workspace layout — since all four are identical across the rows.
 
 ### `Secure` and plain HTTP
 
@@ -544,12 +598,14 @@ silently, and the agent will call it with no human in the loop. That is `HIL-P5`
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Every panel shows `503 console_not_configured` | no `PALAI_CONSOLE_PASSWORD_HASH`, or it is not a valid `scrypt$…` string | generate one (§2) and restart the process — it is read per request, but the process must have it in its env |
+| Every panel shows `503 console_not_configured` | no `PALAI_CONSOLE_PASSWORD_HASH`, or it is not a valid `scrypt.…` string | generate one (§2) and restart the process — it is read per request, but the process must have it in its env |
+| `503 console_not_configured` and the variable **is** in `.env.local` | an old `scrypt$…` hash in an env file: the reader expands `$16384`, `$8`, `$1` and part of the salt, and the console receives a stump (§2) | re-run the generator with `--write`; the format it writes now has no `$` in it |
 | Sign-in appears to succeed, then everything is `401` | the `Secure` cookie was dropped — plain HTTP on a non-loopback address | reach the console over loopback or put TLS in front (§2) |
 | Sign-in returns `403 origin_mismatch` | the request's `Origin` does not match its `Host` — usually a reverse proxy rewriting `Host`, or a hand-rolled `curl` with no `Origin` | make the proxy preserve `Host` (Caddy's `reverse_proxy` does by default); for `curl`, send `-H "Origin: <the console's own origin>"` |
 | A write returns `403 origin_mismatch` but reads work | same cause. Reads are not Origin-checked on purpose: a top-level navigation carries no `Origin`, and `SameSite=Strict` is what protects reads | as above |
 | `401 the password was not accepted` and you are sure it is right | a trailing newline in the hashed password (`echo` instead of `printf %s`), or the hash belongs to a different password | re-generate with `printf %s` (§2) |
 | Everything is `400 only /v1/* public-API paths are relayed` | the browser asked the relay for something that is not a `/v1` path | that is the public-API-only guard working; there is no backchannel to reach for |
+| Under `next dev`, nothing on the page responds and sign-in lands on `/login?password=…` | the page never hydrated: Next's dev server blocked the HMR websocket because the browser's origin is not in its dev allow-list (§2, "`next dev` and `127.0.0.1`") | `next.config.ts` sets `allowedDevOrigins: ["127.0.0.1"]`; for any other host add it there. Not a production symptom — `next start` is unaffected |
 
 The refusal codes are stable and distinct on purpose: `503 console_not_configured` (no hash), `401
 authentication_required` (no session), `403 origin_mismatch` (cross-origin write). A **sign-in** refusal,
@@ -615,7 +671,8 @@ silence is not a design freedom.
 | The gate, the cookie, the hash format reader | `apps/web-console/lib/session.ts` |
 | The sign-in route (the ONE non-relay same-origin path) | `apps/web-console/app/api/console/login/route.ts` |
 | The sign-in form | `apps/web-console/app/login/page.tsx` |
-| The hash generator (stdin, zero dependencies) | `apps/web-console/scripts/hash-password.mjs` |
+| The hash generator (stdin, zero dependencies, `--write`) | `apps/web-console/scripts/hash-password.mjs` |
+| The proof that the documented setup path works | `apps/web-console/tests/env-file.spec.ts` |
 | The gated relay | `apps/web-console/app/api/palai/v1/[...path]/route.ts`, `app/api/palai/stream/route.ts` |
 | The approval queue and one parked call | `apps/web-console/app/approvals/page.tsx`, `components/ApprovalRow.tsx` |
 | The policy form, the fleet screen, and the two components they share | `apps/web-console/app/policy/page.tsx`, `app/fleet/page.tsx`, `components/RevealOnce.tsx`, `components/ConfirmDestructive.tsx` |

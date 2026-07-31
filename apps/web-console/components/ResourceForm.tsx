@@ -110,6 +110,37 @@ export function ResourceForm({
       {note ? <p className="muted">{note}</p> : null}
       <form
         data-testid={testId ? `${testId}-form` : undefined}
+        // method="post" IS THE SECURITY PROPERTY, AND IT IS IN THE HTML BECAUSE IT CANNOT DEPEND ON A SCRIPT
+        // ARRIVING (CON-013). Observed on a running console: the operator submitted the sign-in form and the
+        // address bar read `/login?password=<their password>` — from there, the browser history, the access
+        // log, and the Referer of every later request from that page.
+        //
+        // The preventDefault() below was already there and was never the defect. It only exists once React has
+        // HYDRATED, and a <form> with no method defaults to GET (HTML Living Standard, the form element's
+        // method attribute: "The missing value default and invalid value default are the GET state"). So in
+        // the window before the bundle lands — a cold `next dev` compile, a slow link, a chunk 404ing after a
+        // bad deploy — the browser submits natively and every named field goes into the query string. The
+        // safety lived in JavaScript arriving in time; now it lives in the markup, and the handler below is
+        // what makes the submit a fetch rather than what makes it safe.
+        //
+        // THERE IS DELIBERATELY NO `action`, and the omission is the decision rather than an oversight. The
+        // twelve callers of this component write to twelve different endpoints
+        // (`grep -rn '<ResourceForm' app components --exclude=ResourceForm.tsx | wc -l` → 12, 2026-07-31; the
+        // --exclude is load-bearing, since without it this very comment is the thirteenth match), so an
+        // `action` could only ever be a per-caller prop — a thirteenth thing
+        // to get right, silent when wrong. And it would not buy a working submit anyway: the sign-in route
+        // parses with `request.json()` (app/api/console/login/route.ts:28) and every other write goes through
+        // the relay, which forwards the raw body (app/api/palai/v1/[...path]/route.ts:206) to a JSON API. A
+        // form-encoded native POST is refused at whichever of those it reaches.
+        //
+        // So a pre-hydration submit posts to the PAGE ITSELF, and what that does was measured rather than
+        // assumed: `curl -X POST -d password=sentinel http://127.0.0.1:3299/login` → HTTP 200, Next re-renders
+        // the page route (it is not a 405 — a page route does not refuse POST, it ignores it). The operator
+        // therefore gets the sign-in form back, empty, with no session: a failure they can SEE. That is the
+        // trade, stated plainly — a visible nothing-happened instead of an invisible credential in the address
+        // bar, browser history and access log. The fields travel in the request BODY, which no navigation
+        // history and no ordinary access log records.
+        method="post"
         onSubmit={(event) => {
           // A plain fetch, not a Server Action: a Server Action is a second write path the public-API-only
           // network proof cannot see (§3.5 N8), and preventing the default keeps the role="alert" refusal on
