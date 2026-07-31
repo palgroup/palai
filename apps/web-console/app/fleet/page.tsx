@@ -663,12 +663,19 @@ export default function FleetPage() {
           { header: "Last seen", render: (r) => (r.last_seen_at === undefined ? "— never" : String(r.last_seen_at)) },
           {
             header: "Lifecycle",
+            // A PENDING MACHINE IS OFFERED NO CORDON, and that is the server's shape rather than tidiness:
+            // `cordon` and `resume` answer 404 for a machine in the waiting room, because a cordon would
+            // erase the fact that nobody had admitted it and the resume after it would then look
+            // legitimate. What a waiting machine CAN be given is the other answer — revoke refuses the
+            // enrolment — so that control stays.
             render: (r) =>
               r.state === "revoked" ? (
                 <>— decommissioned</>
               ) : (
                 <>
-                  {r.state === "cordoned" ? (
+                  {r.state === "pending" ? (
+                    <>— awaiting approval, below</>
+                  ) : r.state === "cordoned" ? (
                     <button type="button" data-testid={`runner-resume-${String(r.id ?? "")}`} onClick={() => void move(r, "resume")}>
                       Resume {String(r.id ?? "")}
                     </button>

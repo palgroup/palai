@@ -781,6 +781,9 @@ const RUNNER_POOLS = [
 ];
 let poolSeq = 0;
 
+/** poolView is the create/patch response: the stored row WITHOUT the live queue depth — see createRunnerPool. */
+const poolView = ({ waiting: _live, ...row }) => row;
+
 // --- THE POOL KEYS (E24 T3's surface, driven from a screen by E28 T3) -----------------------------------
 //
 // poolKeyView's shape, verbatim: {id, object, pool_id, key_prefix, created_at} always, `key` on the CREATE
@@ -1297,9 +1300,13 @@ export const ROUTES = [
         // page limit on any deployment with twenty pools, and the picker below would not offer the pool the
         // operator had just made — the exact defect E25 T6 found on the agents collection.
         RUNNER_POOLS.unshift(pool);
-        // THE SAME PROJECTION THE LISTING RENDERS. A create answering a different shape is what T1's
-        // one-projection rule exists to prevent, and a fixture that diverged here would hide it.
-        sendJSON(response, 201, pool);
+        // THE SAME RENDERER AS THE LISTING — AND ONE KEY FEWER, WHICH WAS MEASURED RATHER THAN ASSUMED.
+        // `runnerPoolView` is shared, but only ListRunnerPools decorates its items with the live gateway's
+        // queue depth (internal/fleet/api.go), so a CREATE response carries no `waiting` at all. Verified on a
+        // running compose stack (2026-07-31): POST answers 201 with {arch, created_at, id, name, object, os,
+        // posture, strict_enrollment} and the listing's row adds `waiting`. A fixture that echoed the stored
+        // row here would teach a create response the real one does not send.
+        sendJSON(response, 201, poolView(pool));
       }),
   },
   {
@@ -1320,7 +1327,8 @@ export const ROUTES = [
         // probes a PATCH with NO body, which this route refuses at the 400 above before any lookup happens.
         if (pool === undefined) return sendProblem(response, 404, "not_found", "no such runner pool in this project");
         pool.strict_enrollment = body.strict_enrollment;
-        sendJSON(response, 200, pool);
+        // No `waiting` here either, and for the same reason: SetRunnerPoolStrictEnrollment is not decorated.
+        sendJSON(response, 200, poolView(pool));
       }),
   },
   {
@@ -1409,7 +1417,12 @@ export const ROUTES = [
       if (row === undefined) {
         return sendJSON(response, 200, runnerView({ id, object: "runner", pool_id: "pool_default", state: action === "resume" ? "active" : `${action}ed`, created_at: "2026-07-24T00:00:00Z" }));
       }
-      if (row.state === "revoked") return sendProblem(response, 404, "not_found", "no such runner in this project");
+      // A REVOKED machine cannot move, and a PENDING one cannot be cordoned or resumed — SetState's own
+      // shape: a cordon would erase the fact that nobody had admitted it, and the resume after it would
+      // then look legitimate. Only `revoke` reaches a machine in the waiting room, as its refusal.
+      if (row.state === "revoked" || (row.state === "pending" && action !== "revoke")) {
+        return sendProblem(response, 404, "not_found", "no such runner in this project");
+      }
       row.state = action === "resume" ? "active" : action === "cordon" ? "cordoned" : "revoked";
       sendJSON(response, 200, runnerView(row));
     },

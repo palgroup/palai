@@ -17,11 +17,15 @@ import { announceProfile, sessionHeaders, signIn, skipOnReal } from "./profile";
 // waiting room — which is HERE and not on /approvals, for the server's own reason: a machine enrolment has no
 // request_hash to bind to.
 //
-// WHAT RUNS WHERE. Everything that needs a MACHINE runs on the fixture and says so, citing DIV-UI-009: a
-// compose stack enrols no machines and cannot be made to, because a runner is a host agent that dials the
-// runner plane with a pool key and a CSR, and no /v1 route puts a row in `runners`. Everything else — the
-// page, the pool list, CREATING a pool, the strict switch, the key panel, minting and revoking a key, the
-// empty states, the three ceilings, the two scope sentences and axe — runs on both.
+// WHAT RUNS WHERE, AND THIS PARAGRAPH WAS WRONG FIRST. It said everything needing a MACHINE runs on the
+// fixture, reasoning that a compose stack enrols none. It enrols ONE: deploy/compose starts a `runner`
+// service and `palai local up` mints it a token, so the real profile has `runner-local`, active, in
+// `pool_default` — and the conformance sweep now compares its row. Four things genuinely cannot exist there
+// and only those four skip, citing DIV-UI-009: a SECOND machine (compose runs one), a PENDING one (the only
+// pool is not strict when the runner enrols, and taking a pool strict does not re-ask about what is already
+// in it), the two 403 admissions (one key, every capability, an unconfigured and therefore permissive
+// approver list), and a NON-ZERO live count. Everything else runs on both profiles — including the machine
+// table with a real row, the cordon confirmation, and the revoke dialog's single-read network assertion.
 test.beforeAll(() => announceProfile("fleet.spec.ts"));
 test.beforeEach(async ({ page }) => signIn(page));
 
@@ -41,6 +45,20 @@ async function api(page: Page, method: "get" | "post" | "patch", path: string, d
 async function open(page: Page) {
   await page.goto("/fleet");
   await expect(page.getByTestId("panel-runner-pools")).toBeVisible({ timeout: 15_000 });
+}
+
+/**
+ * firstMachineWith returns the id of the first machine in the TABLE offering `action`.
+ *
+ * SELECTED FROM THE RENDERED LIST RATHER THAN PINNED, and that is what lets the legs below run on the real
+ * profile: a compose stack enrols exactly ONE machine (`runner-local`, active, in `pool_default`) and its id
+ * is a fresh hash on every stack. Scoped to the machines panel because `runner-revoke-` is also the prefix of
+ * the dialog's own testids, and a locator that matched those would depend on whether one was open.
+ */
+async function firstMachineWith(page: Page, action: "cordon" | "revoke"): Promise<string> {
+  const button = page.getByTestId("panel-runners").locator(`[data-testid^="runner-${action}-"]`).first();
+  await expect(button, `no machine on this stack offers ${action}`).toBeVisible({ timeout: 15_000 });
+  return (await button.getAttribute("data-testid"))?.replace(`runner-${action}-`, "") ?? "";
 }
 
 /** singleReadWatcher records every GET /v1/runners/{id} the BROWSER makes — the network assertion below. */
@@ -83,13 +101,21 @@ test("a pool is created from the console with the posture it was given", async (
 test("a pool's queue depth is rendered as the number it is, and zero is one of the numbers", async ({ page }) => {
   // `RunnerPoolItem.Waiting` answers the one question an operator of a fleet actually asks — why is nothing
   // running in my Mac pool — and zero is the answer that means the pool is keeping up.
-  skipOnReal("DIV-UI-009");
+  //
+  // `pool_default` is the id BOTH stacks carry: the fixture seeds it and `InsertDefaultRunnerPool` writes it
+  // on every real bootstrap, so this runs on both profiles rather than being a fixture assertion.
   await open(page);
-
   const zero = page.getByTestId("pool-waiting-pool_default");
   await expect(zero).toHaveAttribute("data-waiting-known", "true");
   await expect(zero).toHaveText(/^0\b/);
+});
 
+test("a pool with runs queued renders the count the gateway gave it", async ({ page }) => {
+  // The other half, and it needs a pool with attempts parked for want of a free machine — which on a real
+  // stack means holding a run open across the read. Zero alone would pass over a console that rendered a
+  // constant, so this is the leg that makes the number the SERVER's.
+  skipOnReal("DIV-UI-009");
+  await open(page);
   const busy = page.getByTestId("pool-waiting-pool_mac");
   await expect(busy).toHaveAttribute("data-waiting-known", "true");
   await expect(busy).toHaveText(/^2\b/);
@@ -117,6 +143,10 @@ test("a deployment whose gateway could not be asked renders no queue depth rathe
 
   await open(page);
   const cells = page.locator('[data-testid^="pool-waiting-"]');
+  // WAIT FOR A ROW, NOT FOR THE PANEL. `panel-runner-pools` is visible while it still says "Loading…", and
+  // the intercept adds a round trip — so counting straight after `open` measured zero on the real profile and
+  // the loop below then asserted nothing at all. The count assertion under it is what caught that.
+  await expect(cells.first(), "the pool panel rendered no rows").toBeVisible({ timeout: 15_000 });
   const count = await cells.count();
   expect(count, "no pool rows rendered, so this assertion would be about nothing").toBeGreaterThan(0);
   for (let i = 0; i < count; i++) {
@@ -225,20 +255,21 @@ test("cordon goes through the native confirmation and revoke does not", async ({
   // operation, screen-reader announcement, focus trap) a hand-rolled dialog has to re-earn. A revoke cannot
   // satisfy leg 1 and gets the component. Converting the reversible half is a RED TEST rather than a review
   // question, which is what this leg is for.
-  skipOnReal("DIV-UI-009");
   let confirms = 0;
   page.on("dialog", (dialog) => {
     confirms += 1;
     void dialog.dismiss();
   });
   await open(page);
-  await page.getByTestId("runner-cordon-run_active_01").click();
+  const id = await firstMachineWith(page, "cordon");
+  const before = (await (await api(page, `get`, `/runners/${id}`)).json()) as { state?: string };
+  await page.getByTestId(`runner-cordon-${id}`).click();
   expect(confirms, "the reversible cordon no longer goes through window.confirm").toBe(1);
   await expect(page.getByTestId("runner-revoke-dialog")).toHaveCount(0);
 
   // Dismissed, so nothing moved — which is also the proof that the native dialog is still load-bearing.
-  const after = (await (await api(page, "get", "/runners/run_active_01")).json()) as { state?: string };
-  expect(after.state, "a DISMISSED window.confirm cordoned the machine anyway").toBe("active");
+  const after = (await (await api(page, "get", `/runners/${id}`)).json()) as { state?: string };
+  expect(after.state, "a DISMISSED window.confirm cordoned the machine anyway").toBe(before.state);
 });
 
 test("the revoke dialog cannot open without the single read that carries the lease count", async ({ page }) => {
@@ -247,25 +278,40 @@ test("the revoke dialog cannot open without the single read that carries the lea
   // instants presented as one". SC 3.3.4's Confirmed leg contains the word "reviewing", which is a DATA call
   // rather than a sentence — so a dialog that rendered a plausible number out of the list row would satisfy
   // every text assertion and review nothing. This asserts the request.
-  skipOnReal("DIV-UI-009");
   const reads = singleReadWatcher(page);
   await open(page);
-  await expect(page.getByTestId("panel-runners")).toContainText("run_active_02", { timeout: 15_000 });
+  const id = await firstMachineWith(page, "revoke");
   expect(reads, "the page read a machine singly before anything asked it to").toEqual([]);
 
-  await page.getByTestId("runner-revoke-run_active_02").click();
+  await page.getByTestId(`runner-revoke-${id}`).click();
   const dialog = page.getByTestId("runner-revoke-dialog");
   await expect(dialog).toBeVisible({ timeout: 15_000 });
-  expect(reads, "the revoke dialog opened without GET /v1/runners/{runner_id} — its lease count is therefore not a live read").toContain("run_active_02");
+  expect(reads, "the revoke dialog opened without GET /v1/runners/{runner_id} — its lease count is therefore not a live read").toContain(id);
 
   await expect(dialog).toHaveAttribute("role", "alertdialog");
   await expect(dialog).toHaveAttribute("aria-modal", "true");
   const review = page.getByTestId("runner-revoke-dialog-review");
-  await expect(review).toContainText("run_active_02");
-  await expect(review, "the machine's label is half of 'which machine is this'").toContainText("mac-mini-01");
-  await expect(review, "the lease count is the whole reason for the single read").toContainText("2");
+  await expect(review).toContainText(id);
+  await expect(page.getByTestId("runner-revoke-leases"), "the lease count is the whole reason for the single read").toBeVisible();
   // THE SERVER'S OWN SENTENCE (execution/runner_gateway.go:328).
   await expect(page.getByTestId("runner-revoke-dialog-message")).toContainText(/decommissioned, not paused/i);
+  // NOTHING WAS REVOKED — the dialog was opened and left. Asserted over the API rather than over the row,
+  // because a row that failed to refresh looks identical to one that was never touched, and on the real
+  // profile this is the stack's only machine.
+  const after = (await (await api(page, "get", `/runners/${id}`)).json()) as { state?: string };
+  expect(after.state, "opening the dialog revoked the machine").not.toBe("revoked");
+});
+
+test("the review names the machine's label and the count the gateway gave for it", async ({ page }) => {
+  // The half that needs a machine actually SERVING something: zero alone would pass over a dialog rendering a
+  // constant, and the number is the one an operator decides to unplug on.
+  skipOnReal("DIV-UI-009");
+  await open(page);
+  await page.getByTestId("runner-revoke-run_active_02").click();
+  const review = page.getByTestId("runner-revoke-dialog-review");
+  await expect(review).toBeVisible({ timeout: 15_000 });
+  await expect(review, "the machine's label is half of 'which machine is this'").toContainText("mac-mini-01");
+  await expect(page.getByTestId("runner-revoke-leases")).toContainText(/^2 lease/);
 });
 
 test("a machine whose lease count could not be read says so rather than showing a zero", async ({ page }) => {
@@ -276,7 +322,6 @@ test("a machine whose lease count could not be read says so rather than showing 
   // Reached by rewriting the single read at the browser boundary, for the reason the pool leg above is: the
   // live gateway is deployment-wide (fleet/api.go `decorate` sets the pointer for every machine or for none),
   // so a per-machine absence is not a wire either stack can send.
-  skipOnReal("DIV-UI-009");
   await page.route("**/api/palai/v1/runners/**", async (route) => {
     if (route.request().method() !== "GET") return route.fallback();
     const upstream = await route.fetch();
@@ -286,7 +331,7 @@ test("a machine whose lease count could not be read says so rather than showing 
   });
 
   await open(page);
-  await page.getByTestId("runner-revoke-run_active_02").click();
+  await page.getByTestId(`runner-revoke-${await firstMachineWith(page, "revoke")}`).click();
   const leases = page.getByTestId("runner-revoke-leases");
   await expect(leases).toBeVisible({ timeout: 15_000 });
   await expect(leases).toContainText(/could not be asked/i);
@@ -294,9 +339,10 @@ test("a machine whose lease count could not be read says so rather than showing 
 });
 
 test("a machine serving nothing says zero, which is a different answer from 'nobody asked'", async ({ page }) => {
-  skipOnReal("DIV-UI-009");
+  // Runs on BOTH: an idle compose stack's single machine serves nothing, so its single read carries
+  // `active_leases: 0` — the value that means the Mac can be unplugged.
   await open(page);
-  await page.getByTestId("runner-revoke-run_active_01").click();
+  await page.getByTestId(`runner-revoke-${await firstMachineWith(page, "revoke")}`).click();
   const leases = page.getByTestId("runner-revoke-leases");
   await expect(leases).toBeVisible({ timeout: 15_000 });
   await expect(leases).toContainText(/^0 lease/);

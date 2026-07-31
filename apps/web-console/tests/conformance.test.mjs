@@ -660,34 +660,38 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
     // built on had never had an item shape compared. GET /v1/usage does NOT raise it and cannot: it answers
     // totals under `meters`, not a `data` page, so it has no item to compare. The thirteen: the eleven above
     // plus responses and usage-ledger.
-    // E28 T3 RAISES IT TO 14, AND THE RAISE IS ONE COLLECTION RATHER THAN THE THREE THE PAGE READS.
+    // E28 T3 RAISES IT TO 16, AND THE NUMBER ABOVE WAS TWO SHORT BEFORE IT ADDED ANYTHING.
     //
-    // `/fleet` reads three: `runner-pools`, `runner-pool-keys` and `runners`. Only the middle one is a new
-    // ITEM comparison, and each of the other two is a measurement rather than a shortfall:
+    // MEASURED, and the measurement corrected two guesses in one run (2026-07-31, real compose stack):
     //
-    //   runner-pools    — both sides have had a row all along (every tenant is seeded a default pool at
-    //                     birth), so if it was already inside the count, this raise is a no-op for it and the
-    //                     printed `comparedSubjects` line above says which. The thirteen the paragraphs above
-    //                     enumerate do NOT name it, which is either a stale enumeration or a route whose
-    //                     envelope differs — and the membership list, not this number, is what answers that.
-    //   runner-pool-keys — genuinely new: the collection is EMPTY on every bootstrap stack because nothing
-    //                     mints a pool key without an operator, and the seed above mints one on each side.
-    //   runners         — CANNOT be raised, for E25 T5's reason exactly. A row in `runners` is written by
-    //                     fleet.Store.Register over the RUNNER PLANE, which a host agent dials with a pool
-    //                     key and a CSR; no /v1 route puts one there, and compose starts no runner. So the
-    //                     real side is an empty page, the ENVELOPE is still compared, and DIV-UI-009 records
-    //                     it. A baseline nudged up by a seed that cannot exist is worse than one that holds.
+    //   runner-pools    — was ALREADY comparable and had been all along, because every tenant is seeded a
+    //                     default pool at birth. The thirteen the paragraphs above enumerate never named it,
+    //                     so that enumeration was stale by one and the assertion under it was passing with
+    //                     room to spare. This is why the membership is PRINTED: a bare count could not have
+    //                     said so, and reading it is what found this.
+    //   runner-pool-keys — genuinely new, and the seed above is what makes it comparable: the collection is
+    //                     empty on every bootstrap stack, since nothing mints a pool key without an operator.
+    //   runners         — ALSO already comparable, and the reason this comment does not say otherwise is that
+    //                     a first draft of DIV-UI-009 did. It claimed a compose stack enrols no machines,
+    //                     reasoning from the runner plane being a listener a host agent dials. deploy/compose
+    //                     starts a `runner` SERVICE and `palai local up` mints it a token: the real side has
+    //                     one active machine, and this arm compares its row. A ledger is worth exactly the
+    //                     truth of its lines, and this is the line the sweep corrected.
+    //
+    // The sixteen, as the run prints them: organizations, projects, api-keys, runner-pools, runner-pool-keys,
+    // runners, secret-refs, knowledge-bases, agent-revisions, tools, tool-revisions, tool-sets,
+    // repository-bindings, environments, responses, usage-ledger.
     assert.ok(
-      itemsCompared >= 14,
+      itemsCompared >= 16,
       `only ${itemsCompared} collections had a row on BOTH sides (${comparedSubjects.join(", ")}), so this arm ` +
         "compared almost no item shapes — the bootstrap seeds organizations/projects/api-keys and this sweep " +
         "seeds a knowledge base, an environment, one environment value (which is a secret_refs row), a " +
         "repository binding, an agent, a published agent revision, a tool, a published tool revision, a " +
         "published tool-set revision, a RUN (which settles a usage ledger row in the same transaction) and a " +
-        "POOL ENROLMENT KEY. Fourteen of those fifteen can be compared; GET /v1/agents cannot, because its " +
-        "envelope differs irreducibly (see DIV-SHP-004), and GET /v1/runners cannot be seeded at all on the " +
-        "real side (DIV-UI-009). Fewer than fourteen means either the real stack is not seeded or a seed did " +
-        "not land, and this arm would pass vacuously",
+        "POOL ENROLMENT KEY — while the bootstrap ALSO seeds a runner pool and `palai local up` enrols one " +
+        "MACHINE. Sixteen of those seventeen can be compared; GET /v1/agents cannot, because its envelope " +
+        "differs irreducibly (see DIV-SHP-004). Fewer than sixteen means either the real stack is not seeded " +
+        "or a seed did not land, and this arm would pass vacuously",
     );
   });
 
@@ -901,6 +905,49 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
       "registering an MCP connection, DISCOVERING it, and approving what it found",
       `GET /v1/mcp-connections answers 200 with ${connPage.data?.length ?? 0} row(s) — there is nothing to discover ` +
         "on a hermetic stack, while both E25 T7 read routes are seeded and compared by this same sweep",
+    );
+
+    // DIV-UI-009 (E28 T3): the fleet screen RENDERS on the real profile with a REAL machine in it — compose
+    // starts a `runner` service and `palai local up` mints it a token — and this arm is why that row says so.
+    // Its first draft claimed a compose stack enrols no machines at all; the first run of this sweep answered
+    // one row and the claim died. What is genuinely unreachable there is narrower: a SECOND machine, a
+    // `pending` one, and a non-zero live count. Each is re-derived, so a stack that ever grows a second runner
+    // or a strict pool at boot fails here rather than leaving three skips standing on a stale sentence.
+    const fleet = await realFetch("/v1/runners");
+    assert.equal(fleet.status, 200, `GET /v1/runners on the real stack returned ${fleet.status} — the registry is unmounted, which DIV-UI-009 does not claim`);
+    const machines = (await fleet.json()).data ?? [];
+    assert.ok(
+      machines.length < 2,
+      `the real stack holds ${machines.length} machines — the concurrency notice's condition (two or more ` +
+        "enrolled) is now reachable there, so DIV-UI-009 is stale and tests/fleet.spec.ts must stop skipping it",
+    );
+    const pending = machines.filter((m) => m.state === "pending");
+    assert.deepEqual(
+      pending.map((m) => m.id),
+      [],
+      `the real stack holds ${pending.length} PENDING machine(s) — a waiting room can be populated there, so ` +
+        "DIV-UI-009 is stale and the admission legs must stop skipping on the real profile",
+    );
+    // THE LIVE COUNTS ARE ZERO ON AN IDLE STACK, and that is the third unreachable state — read off the
+    // machine's own single read and the pool page rather than reasoned about. Note what is NOT asserted here:
+    // that no pool is strict. tests/fleet.spec.ts CREATES strict pools on this same stack, so a sweep run
+    // after a real-profile browser run would fail on its own leftovers — an assertion a sibling suite can
+    // invalidate is a false alarm waiting to happen, and the operative fact is the absence of a PENDING
+    // MACHINE, which is asserted above and which no console action can produce.
+    const realPools = (await (await realFetch("/v1/runner-pools")).json()).data ?? [];
+    const queued = realPools.filter((p) => typeof p.waiting === "number" && p.waiting > 0);
+    assert.deepEqual(
+      queued.map((p) => p.id),
+      [],
+      `a real pool reports a non-zero queue depth (${queued.map((p) => `${p.id}=${p.waiting}`).join(", ")}), so the ` +
+        "non-zero rendering is reachable on the real profile and DIV-UI-009 is stale",
+    );
+    requireLedgerRow(
+      "ui",
+      "a fleet with a SECOND machine, a machine WAITING to be admitted, and a non-zero live count",
+      `GET /v1/runners answers 200 with ${machines.length} row(s), state(s) {${[...new Set(machines.map((m) => m.state))].join(",")}}, ` +
+        `over ${realPools.length} pool(s) whose queue depths are all zero — the screen and its machine table are ` +
+        "real on this profile; a second machine, a pending one and a non-zero live count are not",
     );
   });
 
