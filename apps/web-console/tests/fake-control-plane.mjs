@@ -782,6 +782,7 @@ const RUNNER_POOLS = [
 // keeps its exact meaning. The CREATE response is a different shape on the real side too: `key` is set there
 // and nowhere else.
 let apiKeySeq = 0;
+let projectSeq = 0;
 const FIXTURE_KEY_PREFIX = "palai-sk-console-minted-";
 // The scripted canonical event stream — covers every §47.2 lane: model steps, tool activity, an approval
 // (PAUSED until approved), recovery/attempt transitions, usage, and the terminal result. The frame after
@@ -968,7 +969,29 @@ export const ROUTES = [
   { method: "GET", pattern: "/v1/projects", handle: adminList("projects") },
   { method: "GET", pattern: "/v1/api-keys", handle: adminList("api-keys") },
 
-  // --- THE POLICY DOCUMENT AND THE KEYS (E28 T2), in api/router.go:167-172's order. ---
+  // --- THE POLICY DOCUMENT AND THE KEYS (E28 T2), in api/router.go:165-172's order. ---
+  {
+    method: "POST",
+    pattern: "/v1/projects",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        // `display_name` is the ONLY field CreateProject accepts (strictDecode), and it is not required —
+        // identity/store.go inserts whatever it was given, empty included.
+        if (Object.keys(body).some((k) => k !== "display_name")) {
+          return sendProblem(response, 400, "invalid_request", "the request carries an unsupported field");
+        }
+        projectSeq += 1;
+        const id = `prj_console_${String(projectSeq).padStart(4, "0")}`;
+        const row = { id, object: "project", organization_id: "org_local", display_name: typeof body.display_name === "string" ? body.display_name : "" };
+        // UNSHIFT, for the reason the agents route does it: a spec that creates a project and then picks it
+        // must find it, and a fixture that appends teaches an ordering the real list does not have.
+        ADMIN.projects.data.unshift(row);
+        // The CREATE response carries `config_policy: null` explicitly — identity/store.go builds the view
+        // with `json.RawMessage("null")` rather than leaving the field absent.
+        sendJSON(response, 201, { ...row, config_policy: null });
+      }),
+  },
   {
     method: "GET",
     pattern: "/v1/projects/{project_id}",
@@ -1029,6 +1052,17 @@ export const ROUTES = [
           key,
         });
       }),
+  },
+  {
+    // The single-key read (api/router.go:171). It is what lets a spec assert "Escape revoked nothing" over
+    // the API rather than over a rendered row — a row that simply failed to refresh looks identical.
+    method: "GET",
+    pattern: "/v1/api-keys/{key_id}",
+    handle: (_req, response, { key_id: id }) => {
+      const row = ADMIN["api-keys"].data.find((k) => k.id === id);
+      // Synthesised on an unknown id, like the sibling routes and for the same arm-1 reason.
+      sendJSON(response, 200, row ?? { id, object: "api_key", project_id: "proj_local", scopes: [], revoked_at: null });
+    },
   },
   {
     method: "POST",

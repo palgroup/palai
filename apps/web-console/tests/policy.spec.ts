@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Request as NetRequest } from "@playwright/test";
+import { expect, test, type Page, type Request as NetRequest } from "@playwright/test";
 
-import { WCAG_TAGS } from "./constants";
+import { NEXT_PORT, WCAG_TAGS } from "./constants";
 import { announceProfile, sessionHeaders, signIn } from "./profile";
 
 // THE POLICY DOCUMENT IS WRITTEN WHOLE, OR THE APPROVAL GATE OPENS (E28 T2, plan §3.6 D9).
@@ -28,52 +28,105 @@ import { announceProfile, sessionHeaders, signIn } from "./profile";
 test.beforeAll(() => announceProfile("policy.spec.ts"));
 test.beforeEach(async ({ page }) => signIn(page));
 
-// The seeded project and the policy it already carries. `proj_local` is the fixture's project id; on the real
-// profile the page reads whatever the stack seeds, and the assertions below are about what the form SENT
-// rather than about these particular strings — see the wire leg.
-const PROJECT = "proj_local";
+// THE SUBJECT IS SEEDED, NOT NAMED, and that is a profile portability fix rather than tidiness. The first
+// draft of this file wrote `proj_local` — which is the FIXTURE's project id and, per DIV-SHP-002, off by a
+// letter from the `prj_local` identity/store.go actually seeds. On the real profile every assertion here
+// would have read a 404 and this spec would have failed for a reason that has nothing to do with what it
+// proves. Each run creates its OWN project and gives it the policy the crown test needs, so the precondition
+// is a step rather than an assumption and no shared row's approver list is mutated.
+const APPROVER = "prin_release_captain";
+const SEEDED = { allowed_models: ["fake"], allowed_tools: ["git.push"], default_tools: ["git.push"], approvers: [APPROVER] };
+
+/**
+ * api is a relay call with the browser context's session, for the SETUP and READ-BACK steps.
+ *
+ * `Origin` is stamped explicitly and that is not boilerplate: lib/session.ts refuses a mutation whose Origin
+ * does not match the Host (403 `origin_mismatch`, the CSRF second layer), and a Playwright APIRequestContext
+ * sends none — which is the same reason tests/profile.ts's signIn sets one. Leaving it off makes every write
+ * here a 403 that reads like a permissions problem.
+ */
+async function api(page: Page, method: "get" | "post" | "patch", path: string, data?: unknown) {
+  const origin = `http://127.0.0.1:${NEXT_PORT}`;
+  const headers = { ...(await sessionHeaders(page)), Origin: origin };
+  return page.request[method](`${origin}/api/palai/v1${path}`, { headers, ...(data === undefined ? {} : { data }) });
+}
+
+/** seedProject creates a project and assigns it the policy this file's assertions are about. */
+async function seedProject(page: Page): Promise<string> {
+  const created = await api(page, "post", "/projects", { display_name: `t2-policy-${Date.now()}` });
+  expect(created.status(), "the sweep subject could not be created").toBeLessThan(300);
+  const id = ((await created.json()) as { id?: string }).id ?? "";
+  expect(id, "POST /v1/projects returned no id").not.toBe("");
+  const patched = await api(page, "patch", `/projects/${encodeURIComponent(id)}`, { config_policy: SEEDED });
+  expect(patched.status(), "the subject's policy could not be seeded").toBe(200);
+  return id;
+}
 
 /** readPolicy reads the stored document back THROUGH THE RELAY, i.e. over the same public API the form uses. */
-async function readPolicy(page: import("@playwright/test").Page, projectID: string): Promise<Record<string, unknown>> {
-  const res = await page.request.get(`/api/palai/v1/projects/${encodeURIComponent(projectID)}`, { headers: await sessionHeaders(page) });
+async function readPolicy(page: Page, projectID: string): Promise<Record<string, unknown>> {
+  const res = await api(page, "get", `/projects/${encodeURIComponent(projectID)}`);
   expect(res.status(), "the project could not be read back — the assertion below would be about nothing").toBe(200);
   const body = (await res.json()) as { config_policy?: Record<string, unknown> | null };
   return body.config_policy ?? {};
 }
 
+/**
+ * mintKey creates the key the dialog legs act on, and it is created rather than named for a second reason
+ * beyond portability: the first draft revoked `key_admin`, which on a real stack is not a key id at all — and
+ * if it had been, it would have been THE BOOTSTRAP KEY the rest of the suite authenticates with.
+ */
+async function mintKey(page: Page, projectID: string): Promise<string> {
+  const res = await api(page, "post", "/api-keys", { project_id: projectID, scopes: ["provision"] });
+  expect(res.status(), "the key the dialog legs act on could not be minted").toBeLessThan(300);
+  const id = ((await res.json()) as { id?: string }).id ?? "";
+  expect(id, "POST /v1/api-keys returned no id").not.toBe("");
+  return id;
+}
+
+/** anyPoolID is the first pool the API offers. The fixture's `pool_mac` does not exist on a real stack. */
+async function anyPoolID(page: Page): Promise<string> {
+  const res = await api(page, "get", "/runner-pools");
+  expect(res.status(), "GET /v1/runner-pools did not answer — the pool picker has nothing to offer").toBe(200);
+  const id = ((await res.json()) as { data?: { id?: string }[] }).data?.[0]?.id ?? "";
+  expect(id, "no runner pool exists on this stack — every tenant is seeded one at birth, so this is a real failure").not.toBe("");
+  return id;
+}
+
 test("setting only the pool from the console leaves the approver list intact", async ({ page }) => {
+  const PROJECT = await seedProject(page);
+  const POOL = await anyPoolID(page);
+
   // THE PRECONDITION IS ASSERTED, NOT ASSUMED. If the project carried no approvers, "the approvers survived"
   // would be true of a form that erased them — the classic vacuous pass.
   const before = await readPolicy(page, PROJECT);
-  expect(before.approvers, "the seeded project must already carry approvers or this test proves nothing").toEqual(["prin_release_captain"]);
+  expect(before.approvers, "the seeded project must already carry approvers or this test proves nothing").toEqual([APPROVER]);
   expect(before.allowed_tools, "the seeded project must already carry an allow-list or the second half proves nothing").toEqual(["git.push"]);
 
   await page.goto("/policy");
   await expect(page.getByTestId("panel-api-keys")).toBeVisible({ timeout: 15_000 });
 
-  // THE FORM READ THE CURRENT DOCUMENT. This is the fix's mechanism made visible: a form that writes the
-  // whole document has to SHOW the whole document first, and an operator who cannot see a field cannot be
-  // said to have chosen to keep it.
-  await expect(page.getByTestId("policy-approvers-input")).toHaveValue("prin_release_captain");
+  // Choose the subject, then assert THE FORM READ ITS CURRENT DOCUMENT. This is the fix's mechanism made
+  // visible: a form that writes the whole document has to SHOW the whole document first, and an operator who
+  // cannot see a field cannot be said to have chosen to keep it.
+  await page.getByTestId("policy-project-select").selectOption(PROJECT);
+  await expect(page.getByTestId("policy-approvers-input")).toHaveValue(APPROVER);
   await expect(page.getByTestId("policy-allowed-tools-input")).toHaveValue("git.push");
 
   // Set ONLY the pool — the one action the operator came to perform.
-  await page.getByTestId("policy-project-select").selectOption(PROJECT);
-  await expect(page.getByTestId("policy-approvers-input")).toHaveValue("prin_release_captain");
-  await page.getByTestId("policy-pool-select").selectOption("pool_mac");
+  await page.getByTestId("policy-pool-select").selectOption(POOL);
   await page.getByTestId("policy-save-button").click();
   await expect(page.getByTestId("policy-status")).toBeVisible({ timeout: 15_000 });
 
   // THE READ-BACK, over the public API. Not the form's own state — a form that lost the field would still
   // be showing it.
   const after = await readPolicy(page, PROJECT);
-  expect(after.pool, "the pool the operator actually came to set was not written").toBe("pool_mac");
+  expect(after.pool, "the pool the operator actually came to set was not written").toBe(POOL);
   expect(
     after.approvers,
     "SETTING THE POOL ERASED THE APPROVER LIST. PATCH /v1/projects/{id} is an assignment (identity/store.go:269-275) " +
       "and HIL-P11 measured that an empty approver list is PERMISSIVE, so this console just opened the approval " +
       "gate to every principal in the project.",
-  ).toEqual(["prin_release_captain"]);
+  ).toEqual([APPROVER]);
   expect(after.allowed_tools, "setting the pool erased the tool allow-list").toEqual(["git.push"]);
   expect(after.default_tools, "setting the pool erased the default tool set").toEqual(["git.push"]);
   expect(after.allowed_models, "setting the pool erased the model allow-list").toEqual(["fake"]);
@@ -84,6 +137,8 @@ test("the request body carries all five policy fields, not the one that changed"
   // property the console is responsible for — every field present in one request — against the bytes the
   // browser actually sent. The real API does not merge, so these are the same claim on a real stack; asserting
   // both is what keeps that from being an assumption about the fixture.
+  const PROJECT = await seedProject(page);
+  const POOL = await anyPoolID(page);
   const patches: NetRequest[] = [];
   page.on("request", (req) => {
     if (req.method() === "PATCH" && req.url().includes("/api/palai/v1/projects/")) patches.push(req);
@@ -92,7 +147,8 @@ test("the request body carries all five policy fields, not the one that changed"
   await page.goto("/policy");
   await expect(page.getByTestId("panel-api-keys")).toBeVisible({ timeout: 15_000 });
   await page.getByTestId("policy-project-select").selectOption(PROJECT);
-  await page.getByTestId("policy-pool-select").selectOption("pool_mac");
+  await expect(page.getByTestId("policy-approvers-input")).toHaveValue(APPROVER);
+  await page.getByTestId("policy-pool-select").selectOption(POOL);
   await page.getByTestId("policy-save-button").click();
   await expect(page.getByTestId("policy-status")).toBeVisible({ timeout: 15_000 });
 
@@ -103,18 +159,19 @@ test("the request body carries all five policy fields, not the one that changed"
     Object.keys(policy).sort(),
     "the request named fewer than the five fields configPolicyInput carries, so the ones it omitted were erased",
   ).toEqual(["allowed_models", "allowed_tools", "approvers", "default_tools", "pool"]);
-  expect(policy.approvers).toEqual(["prin_release_captain"]);
+  expect(policy.approvers).toEqual([APPROVER]);
 });
 
 test("an empty approver list is shown as permissive, in words, before it is saved", async ({ page }) => {
   // HIL-P11 ON SCREEN. Writing a ceiling where the operator can act on it does not close it, and this screen
   // does not claim otherwise — what it prevents is the false confidence of an empty box that looks locked.
+  const PROJECT = await seedProject(page);
   await page.goto("/policy");
   await expect(page.getByTestId("panel-api-keys")).toBeVisible({ timeout: 15_000 });
   await page.getByTestId("policy-project-select").selectOption(PROJECT);
 
   // Full list: no warning.
-  await expect(page.getByTestId("policy-approvers-input")).toHaveValue("prin_release_captain");
+  await expect(page.getByTestId("policy-approvers-input")).toHaveValue(APPROVER);
   await expect(page.getByTestId("policy-approvers-permissive")).toHaveCount(0);
 
   await page.getByTestId("policy-approvers-input").fill("");
@@ -144,9 +201,10 @@ test("the pool control stays a dropdown and never degrades to a free-text box", 
 // window.confirm IS NOT REPLACED ANYWHERE, and the last test in this file is what keeps that true.
 
 test("the revoke dialog is an alertdialog that reviews what is about to die", async ({ page }) => {
+  const key = await mintKey(page, await seedProject(page));
   await page.goto("/policy");
   await expect(page.getByTestId("panel-api-keys")).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId("revoke-key_admin").click();
+  await page.getByTestId(`revoke-${key}`).click();
 
   const dialog = page.getByTestId("key-revoke-dialog");
   await expect(dialog).toBeVisible();
@@ -163,7 +221,7 @@ test("the revoke dialog is an alertdialog that reviews what is about to die", as
 
   // THE REVIEW HALF. "Are you sure?" confirms nothing; the operator must be able to see WHICH key.
   const review = page.getByTestId("key-revoke-dialog-review");
-  await expect(review).toContainText("key_admin");
+  await expect(review).toContainText(key);
   await expect(review).toContainText(/capabilit/i);
 
   // FOCUS STARTS ON CANCEL. No accessibility requirement is claimed for this (§3.5 W5 is UNCONFIRMED) — it
@@ -176,9 +234,10 @@ test("the revoke dialog is an alertdialog that reviews what is about to die", as
 });
 
 test("Tab cannot leave the open dialog, and Escape cancels it", async ({ page }) => {
+  const key = await mintKey(page, await seedProject(page));
   await page.goto("/policy");
   await expect(page.getByTestId("panel-api-keys")).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId("revoke-key_admin").click();
+  await page.getByTestId(`revoke-${key}`).click();
   await expect(page.getByTestId("key-revoke-dialog")).toBeVisible();
 
   // TWENTY PRESSES, FORWARD AND BACK. The dialog holds two controls, so twenty presses is nine full cycles —
@@ -196,11 +255,13 @@ test("Tab cannot leave the open dialog, and Escape cancels it", async ({ page })
 
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("key-revoke-dialog")).toHaveCount(0);
-  // NOTHING WAS REVOKED. An Escape that cancelled the dialog and performed the action would be the worst
-  // possible reading of "the least destructive default".
-  await expect(page.getByTestId("panel-api-keys")).not.toContainText("2026-07-31");
+  // NOTHING WAS REVOKED — asserted over the API rather than over the rendered row, because a row that failed
+  // to refresh would look the same as one that was never revoked. An Escape that cancelled the dialog and
+  // performed the action anyway would be the worst possible reading of "the least destructive default".
+  const after = await api(page, "get", `/api-keys/${encodeURIComponent(key)}`);
+  expect(((await after.json()) as { revoked_at?: string | null }).revoked_at ?? null, "Escape revoked the key").toBeNull();
   // And focus came back to the control that opened it.
-  await expect(page.getByTestId("revoke-key_admin")).toBeFocused();
+  await expect(page.getByTestId(`revoke-${key}`)).toBeFocused();
 });
 
 test("window.confirm is still the confirmation for the REVERSIBLE actions", async ({ page }) => {
