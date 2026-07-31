@@ -15,8 +15,8 @@
 -- failure mode worse than an error. Naming the dedupe unique keeps the replay a no-op while a genuine id
 -- collision (or any unique constraint added later) raises 23505 loudly instead of dropping revenue.
 -- name: SettleUsage
-INSERT INTO usage_ledger (id, organization_id, project_id, session_id, run_id, meter, quantity, unit, dedupe_key)
-VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), $6, $7, $9, $8)
+INSERT INTO usage_ledger (id, organization_id, project_id, session_id, run_id, meter, quantity, unit, dedupe_key, model_request_id)
+VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), $6, $7, $9, $8, nullif($10, ''))
 ON CONFLICT (organization_id, project_id, dedupe_key) DO NOTHING;
 
 -- ExhaustedBudget returns the caller's first budget whose cumulative settled usage since period_start
@@ -183,7 +183,7 @@ ORDER BY g.bucket_start, p.meter, p.unit;
 -- ORDER BY stays (occurred_at DESC, id DESC): total, which a keyset cursor requires. Narrowing the WHERE
 -- does not change the ordering, so a cursor minted on an unfiltered page still resolves.
 -- name: ListUsageLedger
-SELECT id, schema_version, project_id, session_id, run_id, meter, quantity, unit, occurred_at
+SELECT id, schema_version, project_id, session_id, run_id, meter, quantity, unit, occurred_at, model_request_id
 FROM usage_ledger
 WHERE organization_id = $1 AND ($2 = '' OR project_id = $2)
   AND ($3::timestamptz IS NULL OR occurred_at >= $3)

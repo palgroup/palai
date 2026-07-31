@@ -55,12 +55,12 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	// finished rather than half-done. It is a pin on the CHAIN, not a claim that one epic owns one
 	// migration — E29 could hold both 48 and a later number without this line changing meaning.
 	head := migrations[len(migrations)-1]
-	if head.Version != 49 || head.Name != "usage_series" {
-		t.Fatalf("chain head = %06d_%s, want 000049_usage_series", head.Version, head.Name)
+	if head.Version != 50 || head.Name != "usage_step_attribution" {
+		t.Fatalf("chain head = %06d_%s, want 000050_usage_step_attribution", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 48 || penultimate.Name != "session_list" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000048_session_list", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 49 || penultimate.Name != "usage_series" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000049_usage_series", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

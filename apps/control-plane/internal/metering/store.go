@@ -80,16 +80,20 @@ type summaryView struct {
 // exporter reads. schema_version travels WITH the row (not just in the docs) so an exporter can tell
 // which field contract produced an entry it did not write.
 type ledgerEntryView struct {
-	ID            string    `json:"id"`
-	Object        string    `json:"object"`
-	SchemaVersion int       `json:"schema_version"`
-	ProjectID     string    `json:"project_id"`
-	SessionID     string    `json:"session_id,omitempty"`
-	RunID         string    `json:"run_id,omitempty"`
-	Meter         string    `json:"meter"`
-	Quantity      float64   `json:"quantity"`
-	Unit          string    `json:"unit"`
-	OccurredAt    time.Time `json:"occurred_at"`
+	ID            string `json:"id"`
+	Object        string `json:"object"`
+	SchemaVersion int    `json:"schema_version"`
+	ProjectID     string `json:"project_id"`
+	SessionID     string `json:"session_id,omitempty"`
+	RunID         string `json:"run_id,omitempty"`
+	// ModelRequestID is the TURN this settlement is attributed to (migration 000050), omitted for the
+	// meters that describe no model call. It is rendered here because a column nothing reads must not be
+	// stored: this is what lets a dashboard join a cost to the turn that incurred it.
+	ModelRequestID string    `json:"model_request_id,omitempty"`
+	Meter          string    `json:"meter"`
+	Quantity       float64   `json:"quantity"`
+	Unit           string    `json:"unit"`
+	OccurredAt     time.Time `json:"occurred_at"`
 }
 
 type listView struct {
@@ -295,9 +299,9 @@ func (s *Store) ListUsageLedger(ctx context.Context, scope middleware.Scope, q a
 	out := []api.ListRow{}
 	for rows.Next() {
 		v := ledgerEntryView{Object: "usage_ledger_entry"}
-		var session, run *string
+		var session, run, modelRequest *string
 		if err := rows.Scan(&v.ID, &v.SchemaVersion, &v.ProjectID, &session, &run,
-			&v.Meter, &v.Quantity, &v.Unit, &v.OccurredAt); err != nil {
+			&v.Meter, &v.Quantity, &v.Unit, &v.OccurredAt, &modelRequest); err != nil {
 			return nil, fmt.Errorf("scan usage ledger entry: %w", err)
 		}
 		if session != nil {
@@ -305,6 +309,9 @@ func (s *Store) ListUsageLedger(ctx context.Context, scope middleware.Scope, q a
 		}
 		if run != nil {
 			v.RunID = *run
+		}
+		if modelRequest != nil {
+			v.ModelRequestID = *modelRequest
 		}
 		// The keyset coordinates are the ledger's own (occurred_at, id) — the same pair the shared
 		// cursor carries for every other list.
