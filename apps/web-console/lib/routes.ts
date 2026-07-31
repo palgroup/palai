@@ -87,6 +87,10 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // collections are EMPTY on a bootstrap stack — nothing creates a repository binding or an agent without
   // Slack — so on the real profile these scans cover the empty state, which is the state a first-day
   // operator meets and the one the create forms sit above.
+  // THE LEAD IS UNCHANGED and that is deliberate: it already carries the ceiling in one sentence, which is
+  // what the page-parity pass wants a lead to do. The two paragraphs that stood under it moved to the
+  // controls they govern — the reachability note into the create dialog, the "cannot be changed" note onto
+  // the binding's own page, where an operator goes looking for the edit control that does not exist.
   { path: "/repositories", label: "Repositories", group: "Build", readyTestId: "panel-repository-bindings", lead: "The repositories a coding run can attach a workspace to. Registering a binding checks nothing — the first thing that exercises one is a run." },
   // `panel-agent-profiles`, NOT `panel-agents`: "/" already carries a panel by that name (it is where list
   // truncation is visible — pagination.spec.ts drives it), and two pages answering one testid is how a spec
@@ -218,5 +222,25 @@ export const DYNAMIC_CONSOLE_ROUTES: readonly DynamicConsoleRoute[] = [
     create: { name: "axe-coverage-probe" },
     build: (id) => `/agents/${encodeURIComponent(id)}`,
     secondTab: { tabTestId: "tab-compare", panelTestId: "panel-agent-diff", url: /segment=compare/ },
+  },
+  // THE BINDING RECORD (page-parity pass). Four of its nine fields — the clone URL, the data classification,
+  // the region constraint and the pass-through policy object — were on NO screen: the console wrote them and
+  // never showed them back. They do not fit a list, so they are here.
+  //
+  // `create` carries the three fields POST /v1/repository-bindings requires, and the clone URL is an
+  // `https:` one because the scheme gate is checked FIRST (api/repository_bindings.go) — a `file:` probe
+  // would make the empty-collection arm fail rather than create. NO `secondTab`: one record, one view, and a
+  // tab strip over a single definition list would be chrome around a thing with no second side.
+  {
+    pattern: "/repositories/[id]",
+    label: "Repository binding",
+    readyTestId: "panel-binding-record",
+    sampleFrom: "/repository-bindings",
+    create: {
+      provider: "github",
+      repository_identity: "palai-example/axe-coverage-probe",
+      clone_url: "https://example.invalid/palai-example/axe-coverage-probe.git",
+    },
+    build: (id) => `/repositories/${encodeURIComponent(id)}`,
   },
 ];

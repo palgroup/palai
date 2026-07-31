@@ -668,6 +668,35 @@ say why.
 
 ---
 
+## 4d. `/repositories` — the binding list, and `/repositories/{id}` for the whole record
+
+Same pass, same three moves. Measured before and after on the built console (2026-07-31): `<main>` 2197
+rendered characters with 1650 of grey prose and an eight-field registration form open on the page, under two
+standing paragraphs.
+
+**Registering a binding proves nothing.** Nothing is cloned on that screen, no credential is exercised and
+no permission is checked — a wrong provider, a wrong identity or a revoked credential shows up at CLONE
+TIME, inside a run. That sentence is now in the create dialog, where somebody is about to register one,
+and in the status the create leaves behind (*"Nothing has been cloned: the first time this binding is
+exercised is a run that names it"*).
+
+**A binding cannot be changed or removed.** `api/router.go:44-46` mounts a create and two reads — no PATCH,
+no DELETE. That sentence is now on `/repositories/{id}`, which is the page an operator opens looking for the
+edit control. A binding registered wrongly is superseded by registering another and pointing runs at that
+one.
+
+**Four fields were written and never shown back.** The clone URL, the data classification, the region
+constraint and the pass-through `policy` object are on the record page; they do not fit a list, and a
+console that writes a field it never displays is the write-and-pray shape §2 forbids. The policy object is
+rendered as pretty-printed JSON exactly as the API returned it — the console passes it through verbatim on
+the way in and cannot know which keys this deployment reads, so it narrows nothing on the way out.
+
+The clone URL is **not a link**. It is fetched by the control plane, never followed by a reader, and an
+operator-supplied URL turned into a click target on the console's own origin is a defect this tree already
+fixed once (artifact downloads, E17 T10).
+
+---
+
 ## 5. When it does not work
 
 | Symptom | Cause | Fix |

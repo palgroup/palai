@@ -132,6 +132,11 @@ test("a repository binding is registered from the console and reads back on the 
   await page.goto("/repositories");
   await expect(page.getByTestId("panel-repository-bindings")).toBeVisible({ timeout: 15_000 });
 
+  // THE FORM IS BEHIND THE LIST'S OWN BUTTON (page-parity pass). It used to be eight fields open on the page
+  // under two standing paragraphs, so the list this screen is named for was the third thing on it.
+  await page.getByTestId("binding-create-open").click();
+  await expect(page.getByTestId("binding-create-dialog")).toBeVisible();
+
   const identity = `palai-example/console-t6-${stamp()}`;
   await page.getByTestId("binding-provider-input").fill("github");
   await page.getByTestId("binding-identity-input").fill(identity);
@@ -151,9 +156,30 @@ test("a repository binding is registered from the console and reads back on the 
   await expect(panel).toContainText(identity, { timeout: 15_000 });
   await expect(panel).toContainText("main");
 
-  // AND THE CEILING IS ON THE SCREEN: registering a binding did not clone anything.
-  await expect(page.getByTestId("binding-reachability-note")).toContainText("does not prove");
+  // AND THE CEILING IS ON THE SCREEN: registering a binding did not clone anything. The sentence is on the
+  // STATUS the create left behind, which is the one place an operator is certain to be looking at the moment
+  // it matters.
+  await expect(page.getByTestId("repository-binding-status")).toContainText("Nothing has been cloned");
+
+  await expectAxeClean(page);
+
+  // THE ROW OPENS, AND THE FOUR FIELDS A LIST CANNOT CARRY ARE THERE. Before this pass the console WROTE a
+  // clone URL, a data classification, a region constraint and a policy object and showed none of them back —
+  // the write-and-pray shape §2 forbids, arriving through the one door a list-only screen leaves open.
+  await page.getByTestId("panel-repository-bindings").locator("tbody tr").first().getByTestId("binding-identity-link").click();
+  await expect(page.getByTestId("panel-binding-record")).toBeVisible({ timeout: 15_000 });
+  const record = page.getByTestId("binding-record");
+  await expect(record).toContainText(identity);
+  await expect(record).toContainText(`https://github.com/${identity}.git`);
+  await expect(record).toContainText("internal");
+  await expect(record).toContainText("eu-central-1");
+  await expect(page.getByTestId("binding-policy")).toContainText("require_approval");
+  await expect(page.getByTestId("binding-operations")).toContainText("clone");
+
+  // AND THE SENTENCE THAT USED TO BE THE LIST'S SECOND PARAGRAPH IS HERE, which is where an operator looks
+  // for the edit control that does not exist.
   await expect(page.getByTestId("binding-correction-note")).toContainText("no way to change or remove");
+  await expect(page.getByTestId("binding-reachability-note"), "the reachability ceiling is in the create dialog now, not on the record").toHaveCount(0);
 
   await expectAxeClean(page);
 });
@@ -165,6 +191,7 @@ test("the connection ref is a HANDLE chosen from the secret-ref list, never a ty
   // disguise. What holds in every state is that no text field on this form takes a credential or a ref.
   await page.goto("/repositories");
   await expect(page.getByTestId("panel-repository-bindings")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("binding-create-open").click();
 
   const form = page.getByTestId("repository-binding-form");
   const textFields = await form.locator('input[type="text"], input:not([type]), textarea').evaluateAll((els) =>
