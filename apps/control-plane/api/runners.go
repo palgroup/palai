@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -81,7 +82,41 @@ type RunnerPoolItem struct {
 	Arch             string
 	StrictEnrollment bool
 	CreatedAt        time.Time
+	// Waiting is how many attempts are queued for this pool with no machine free to take them — the number
+	// `RunnerGateway.Waiting(poolID)` has counted since E24 and that nothing read until E28 T1 (`FLT-P14`).
+	// It answers the one question an operator of a fleet actually asks: why is nothing running in my Mac
+	// pool.
+	//
+	// IT IS HERE AND NOT ON /healthz/runner, which is the gap row's own placement decision: the value is per
+	// POOL and pool ids are TENANT-SCOPED NAMES, so publishing a set of them on an unauthenticated endpoint
+	// — where its sibling `Connected()` lives — would be an information-disclosure choice nobody made.
+	//
+	// A POINTER, ActiveLeases's pattern applied verbatim: "nobody could ask the gateway" and "nothing is
+	// waiting" are different answers, and zero is the one that means the pool is keeping up. A deployment
+	// with no runner listener bound renders no field at all rather than a confident 0.
+	Waiting *int64
 }
+
+// RunnerPoolCreate is what `POST /v1/runner-pools` was asked to create (E28 T1). It is a struct rather than
+// the decoded body so the store never sees a caller's JSON: the route validates the posture and the name,
+// and the tenant comes from the verified scope and from nowhere else.
+type RunnerPoolCreate struct {
+	Name             string
+	Posture          string
+	OS               string
+	Arch             string
+	StrictEnrollment bool
+}
+
+// ErrRunnerPoolNameTaken is 000045's UNIQUE (organization_id, project_id, name) index rendered as an answer
+// rather than as a 500. It is declared HERE rather than in internal/fleet because the api package is
+// imported BY the stores and cannot import them back — the same direction RunnerListWindow is declared in.
+var ErrRunnerPoolNameTaken = errors.New("api: a runner pool with that name already exists in this project")
+
+// runnerPoolPostures is the pair migration 000045 declares in its CHECK. Validating on the ROUTE makes a
+// typo a named 400 instead of a 23514 the handler could only render as "internal_error"; the CHECK stays
+// the last defence rather than the first.
+var runnerPoolPostures = map[string]bool{"sandboxed-linux": true, "unsandboxed-host": true}
 
 // RunnerPoolKeyItem is one enrolment key's operator-facing projection (E24 T3). Value is set ONLY on
 // the create response — the one time the value is shown — and is `omitempty` so a listing physically
@@ -133,6 +168,20 @@ type RunnerRegistryAPI interface {
 	// rather than an interface of its own because there is one implementation and one mount, and a
 	// second seam would be an abstraction bought before anything asked for it.
 	ListRunnerPools(ctx context.Context, org, project string, w RunnerListWindow) ([]RunnerPoolItem, error)
+	// CreateRunnerPool writes ONE pool for this tenant (E28 T1) — the birth path E24 left absent, and the
+	// reason this interface has it: before it, `InsertDefaultRunnerPool` was the only statement that wrote a
+	// pool row and it wrote the name, the posture and the strict flag as LITERALS, so a rented-Mac pool could
+	// not exist and `strict_enrollment` could not be switched on by anything outside a test file.
+	//
+	// It returns ErrRunnerPoolNameTaken for a name this project already uses, so a duplicate is a 409 rather
+	// than a 500 — an operator who typed a name twice is not told their control plane is broken.
+	CreateRunnerPool(ctx context.Context, org, project string, in RunnerPoolCreate) (RunnerPoolItem, error)
+	// SetRunnerPoolStrictEnrollment opens or closes ONE pool's waiting room. It is the ONLY field a pool can
+	// be patched through, and that is a correctness requirement rather than a limitation: a machine INHERITS
+	// its pool's posture at enrolment, so moving a populated pool's posture would retroactively change what
+	// the machines already in it ARE. found=false is an unknown or foreign id, rendered as the same
+	// non-disclosing 404 the lifecycle verbs give.
+	SetRunnerPoolStrictEnrollment(ctx context.Context, org, project, poolID string, strict bool) (RunnerPoolItem, bool, error)
 	// MintRunnerPoolKey mints an enrolment key for one of this tenant's pools and returns its value
 	// EXACTLY ONCE. found=false is a pool that is not the caller's (or does not exist), rendered 404.
 	MintRunnerPoolKey(ctx context.Context, org, project, poolID string, expiresAt *time.Time) (RunnerPoolKeyItem, bool, error)
@@ -219,14 +268,124 @@ func (h *runnerHandler) listRunnerPools(w http.ResponseWriter, r *http.Request) 
 	}
 	rows := make([]ListRow, 0, len(items))
 	for _, it := range items {
-		body, _ := json.Marshal(map[string]any{
-			"id": it.ID, "object": "runner_pool", "name": it.Name, "posture": it.Posture,
-			"os": it.OS, "arch": it.Arch, "strict_enrollment": it.StrictEnrollment,
-			"created_at": it.CreatedAt,
-		})
+		body, _ := json.Marshal(runnerPoolView(it))
 		rows = append(rows, ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: body})
 	}
 	renderPage(w, r, "runner_pool", scope, rows, q.Limit)
+}
+
+// THE POOL WRITE SURFACE (E28 T1), and it is two routes because a pool has exactly two operator decisions:
+// what it IS, taken once at creation, and whether enrolling into it needs a human, taken whenever.
+//
+// WHAT WAS MEASURED BEFORE THEM. `POST /v1/runner-pools` was not in this router; `grep -rn "UPDATE
+// runner_pools" … | grep -v _test` answered 0; and `InsertDefaultRunnerPool` wrote `'default'`,
+// `'sandboxed-linux'` and `false` as literals. So every tenant had exactly one pool, forever, and
+// `approveRunner` below — correctly written, correctly gated — decided a state no operator could produce.
+
+// createRunnerPool creates one pool (POST /v1/runner-pools).
+//
+// THE VALIDATION IS HERE AND THE DATABASE'S CHECK IS THE LAST DEFENCE, NOT THE FIRST. A posture outside the
+// two 000045 declares would come back as a 23514 this handler could only render as `internal_error`, which
+// tells an operator their control plane is broken when what happened is that they typed `macos`.
+func (h *runnerHandler) createRunnerPool(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorizeAdmin(w, r)
+	if !ok {
+		return
+	}
+	if scope.Project == "" {
+		// A pool with no project is a pool nothing can enrol into: fleet.Store.Register refuses one, because
+		// 000045's tenant policy for `runners` narrows on a project. Refusing here keeps a created pool
+		// USABLE rather than merely written.
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request",
+			"a runner pool belongs to a project; use an API key scoped to one")
+		return
+	}
+	var body struct {
+		Name             string `json:"name"`
+		Posture          string `json:"posture"`
+		OS               string `json:"os"`
+		Arch             string `json:"arch"`
+		StrictEnrollment bool   `json:"strict_enrollment"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 4096))
+	// A field this route does not know is a knob a caller believes exists. Refusing beats ignoring, which is
+	// the rule identity.configPolicyInput's comment records two epics learning the hard way.
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body could not be read")
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "name is required and must not be blank")
+		return
+	}
+	if !runnerPoolPostures[body.Posture] {
+		// A POOL IS A POSTURE, so there is no default to fall back on: a pool created without one would place
+		// runs somewhere nobody described.
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request",
+			"posture must be one of sandboxed-linux, unsandboxed-host")
+		return
+	}
+	item, err := h.runners.CreateRunnerPool(r.Context(), scope.Organization, scope.Project, RunnerPoolCreate{
+		Name: strings.TrimSpace(body.Name), Posture: body.Posture, OS: body.OS, Arch: body.Arch,
+		StrictEnrollment: body.StrictEnrollment,
+	})
+	switch {
+	case errors.Is(err, ErrRunnerPoolNameTaken):
+		middleware.WriteProblem(w, r, http.StatusConflict, "already_exists",
+			"this project already has a runner pool with that name")
+		return
+	case err != nil:
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	// THE SAME PROJECTION THE LISTING RENDERS. A create that answered in a different shape would make every
+	// consumer code against two shapes, and the first one to diverge would do so silently.
+	writeJSON(w, http.StatusCreated, runnerPoolView(item))
+}
+
+// patchRunnerPool switches one pool's waiting room (PATCH /v1/runner-pools/{pool_id}).
+//
+// ONE FIELD, AND `posture` IS DELIBERATELY NOT AMONG THEM — a correctness requirement rather than a
+// limitation. internal/fleet's Register makes an enrolling machine INHERIT the pool's posture ("the machine
+// inherits the pool's posture: having agreed (or said nothing), what it IS is what the pool is"), so moving
+// a populated pool's posture would retroactively change what the machines already in it ARE, and the rows
+// recording what they were would silently disagree with the pool they are in. A pool's posture is decided
+// once, at creation. Renaming is absent for a smaller reason: nothing asked for it.
+func (h *runnerHandler) patchRunnerPool(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorizeAdmin(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		// A POINTER, so "not named" and "named false" are different requests: a PATCH that silently did
+		// nothing would read to an operator exactly like a PATCH that worked.
+		StrictEnrollment *bool `json:"strict_enrollment"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 4096))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request",
+			"the request body could not be read; strict_enrollment is the only field this route accepts")
+		return
+	}
+	if body.StrictEnrollment == nil {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request",
+			"strict_enrollment is required; a pool's posture is fixed at creation because its machines inherit it")
+		return
+	}
+	item, found, err := h.runners.SetRunnerPoolStrictEnrollment(r.Context(), scope.Organization, scope.Project,
+		r.PathValue("pool_id"), *body.StrictEnrollment)
+	switch {
+	case err != nil:
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	case !found:
+		// The same answer for "not yours" and "not there", the posture every other route on this surface takes.
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such runner pool in this project")
+		return
+	}
+	writeJSON(w, http.StatusOK, runnerPoolView(item))
 }
 
 // getRunner reads one enrolled machine (GET /v1/runners/{runner_id}).
@@ -447,6 +606,21 @@ func poolKeyView(item RunnerPoolKeyItem, withValue bool) map[string]any {
 		// Named for what it MEANS, not for what it lists: these machines keep running, and the field name
 		// is where an operator learns that without reading a runbook.
 		view["enrolled_runners_still_running"] = machines
+	}
+	return view
+}
+
+// runnerPoolView is the ONE projection the list, the create and the patch render, so a create cannot
+// answer in a shape the read will not repeat. `waiting` is rendered only when the gateway could be asked —
+// see RunnerPoolItem.Waiting for why absence and zero are different answers.
+func runnerPoolView(it RunnerPoolItem) map[string]any {
+	view := map[string]any{
+		"id": it.ID, "object": "runner_pool", "name": it.Name, "posture": it.Posture,
+		"os": it.OS, "arch": it.Arch, "strict_enrollment": it.StrictEnrollment,
+		"created_at": it.CreatedAt,
+	}
+	if it.Waiting != nil {
+		view["waiting"] = *it.Waiting
 	}
 	return view
 }

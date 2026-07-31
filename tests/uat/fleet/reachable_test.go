@@ -89,26 +89,19 @@ var e24ExportedSurface = map[string][]string{
 	},
 }
 
-// unreachableWithAFiledGap is the ONE symbol this sweep found with no production reach, kept as a NAMED
-// exception with its gap id rather than deleted from the target list — because a target quietly removed is a
-// hole nobody meets again.
+// unreachableWithAFiledGap is EMPTY, and it is kept rather than deleted because the mechanism is the point:
+// a symbol this sweep finds with no production reach is named here with its gap id instead of being dropped
+// from the target list, since a target quietly removed is a hole nobody meets again.
 //
-// THE FINDING, AND IT IS THIS GATE EARNING ITS PLACE FOR THE FIFTH TIME. `RunnerGateway.Waiting(poolID)`
-// counts the attempts queued for a pool with no free machine. Its own doc comment says it is "the number
-// behind the one question an operator of a fleet actually asks — why is nothing running in my Mac pool —
-// which before E24 had no answer at all". It still has no answer: nothing exposes it. Not
-// `/healthz/runner` (which reports `sessions` from the sibling `Connected()` on the same type), not
-// palai_runner_sessions, not `/v1/runners`, not `palai up`.
-//
-// IT IS FILED RATHER THAN FIXED HERE, and the reason is a real decision rather than scope-guarding: the value
-// is PER POOL, and the endpoint that exposes its sibling is UNAUTHENTICATED. Publishing a tenant-scoped pool
-// id set on `/healthz/runner` is an information-disclosure choice, and the production Caddyfile proxies only
-// `/v1/*` so the alternative home is a per-pool field on the authenticated runner-pool read. That is a T2/T5
-// surface decision, not an exit-gate edit, and making it silently from here is how a gate starts shipping
-// design. FLT-P14 carries it with the one-line fix.
-var unreachableWithAFiledGap = map[string]string{
-	"Waiting": "FLT-P14 — counts the attempts queued for a pool with no free machine and NOTHING reads it, so the question it was written to answer still has no answer. Fix: one per-pool field on the authenticated runner-pool read (api/runners.go), NOT on the unauthenticated /healthz/runner where its sibling Connected() lives, because pool ids are tenant-scoped names",
-}
+// IT HELD ONE ENTRY AND E28 T1 CLOSED IT. `RunnerGateway.Waiting(poolID)` counts the attempts queued for a
+// pool with no free machine — "the number behind the one question an operator of a fleet actually asks",
+// says its own doc comment — and nothing read it from E24 until E28. What kept it filed rather than fixed
+// was a placement decision this file refused to make from an exit gate: the value is PER POOL, pool ids are
+// TENANT-SCOPED NAMES, and the endpoint exposing its sibling `Connected()` is UNAUTHENTICATED. E28 T1 put it
+// where `FLT-P14` said it belonged — a per-pool field on the authenticated runner-pool read
+// (`RegistryAPI.ListRunnerPools`, rendered by `api.runnerPoolView`) — and the loop below is what made the
+// step unskippable: a listed symbol that HAS gained reach fails, so the exception could not be left behind.
+var unreachableWithAFiledGap = map[string]string{}
 
 // TestEveryE24ExportedSurfaceHasAProductionCaller is the sweep. A symbol with no production reach fails with
 // the epic task that added it named, because "which task shipped this unreachable" is the first question a

@@ -85,6 +85,10 @@ type flags struct {
 	approvers     string
 	name          string
 	pool          string
+	posture       string
+	osName        string
+	arch          string
+	strict        bool
 }
 
 // multiFlag collects a repeatable string flag (--scope run --scope provision).
@@ -120,6 +124,15 @@ func (f *flags) register(fs *flag.FlagSet, resource string) {
 		fs.StringVar(&f.expiresAt, "expires-at", "", "RFC3339 expiry, optional (create)")
 	case "secret":
 		fs.StringVar(&f.name, "name", "", "secret name (create) — the VALUE is read from stdin")
+	case "pool":
+		// THE POOL ITSELF (E28 T1), and every flag here is a public fact about a machine's shape. There is
+		// nothing a credential could ride: a pool has no secret — its enrolment key is a separate row and the
+		// `poolkey` resource below.
+		fs.StringVar(&f.name, "name", "", "pool name, unique within the project (create)")
+		fs.StringVar(&f.posture, "posture", "", "sandboxed-linux (a container runner) or unsandboxed-host (a rented Mac) — fixed at creation, because machines INHERIT it (create)")
+		fs.StringVar(&f.osName, "os", "", "the OS machines in this pool report, e.g. darwin (create, optional)")
+		fs.StringVar(&f.arch, "arch", "", "the architecture machines in this pool report, e.g. arm64 (create, optional)")
+		fs.BoolVar(&f.strict, "strict", false, "enrolling into this pool needs a human approval (create, set-strict) — omit on set-strict to close the waiting room")
 	case "poolkey":
 		// There is deliberately no flag carrying a key value: a pool key only ever comes OUT of `create`,
 		// and everything else names it by id. Nothing here can put a credential in argv.
@@ -172,6 +185,10 @@ var positionalArity = map[string]int{
 	"project/create": 0, "project/list": 0, "project/get": 1, "project/set-policy": 1,
 	"apikey/create": 0, "apikey/list": 0, "apikey/get": 1, "apikey/revoke": 1,
 	"secret/create": 0, "secret/list": 0, "secret/get": 1, "secret/rotate": 1,
+	// A pool is created with flags and its waiting room is switched on ONE pool named by id (E28 T1) — the
+	// same one-subject-one-command shape `runner approve` has, and for the same reason: opening a waiting
+	// room across several pools with one command is not a thing an operator should do by accident.
+	"pool/create": 0, "pool/list": 0, "pool/set-strict": 1,
 	// A pool key is minted with flags and revoked by ID. `create` takes no positional for the same reason
 	// `secret create` takes none: the only string that could go there is a credential.
 	"poolkey/create": 0, "poolkey/list": 0, "poolkey/revoke": 1,
@@ -282,6 +299,42 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 				return err
 			}
 			return c.do(http.MethodPost, "/v1/secret-refs/"+esc(pos[0])+"/rotate", body(map[string]any{"value": value}))
+		}
+	// THE POOL'S BIRTH PATH (E28 T1) — `palai pool create|list|set-strict`.
+	//
+	// It exists because a fleet whose pools cannot be created is a fleet with one pool, named `default`,
+	// posture `sandboxed-linux`, forever: `InsertDefaultRunnerPool` wrote those as LITERALS and there was no
+	// UPDATE anywhere in the tree. So `poolkey --pool <pool_id>` above could only ever name that one pool,
+	// `config_policy.pool` could only ever place a project in it, and `palai admin runner approve` decided a
+	// state — a machine in a STRICT pool's waiting room — that no operator could produce.
+	//
+	// `set-strict` is a subcommand rather than a flag on a general `update` because it is the only thing
+	// about a pool that can change: a machine INHERITS its pool's posture at enrolment, so a `--posture` on
+	// an existing pool would retroactively change what the machines in it ARE. The server refuses it; this
+	// spelling means an operator never types it.
+	case "pool":
+		switch sub {
+		case "create":
+			if f.name == "" || f.posture == "" {
+				return errors.New("pool create requires --name <n> and --posture <sandboxed-linux|unsandboxed-host> (a pool IS a posture, so there is no default)")
+			}
+			b := map[string]any{
+				"name": f.name, "posture": f.posture, "strict_enrollment": f.strict,
+			}
+			if f.osName != "" {
+				b["os"] = f.osName
+			}
+			if f.arch != "" {
+				b["arch"] = f.arch
+			}
+			return c.do(http.MethodPost, "/v1/runner-pools", body(b))
+		case "list":
+			return c.do(http.MethodGet, "/v1/runner-pools", nil)
+		case "set-strict":
+			// The flag's ABSENCE closes the waiting room, which is why the body always names the field: a PATCH
+			// that omitted it would be refused by the route, and an operator who wants it off has to be able to
+			// say so with the same command that turned it on.
+			return c.do(http.MethodPatch, "/v1/runner-pools/"+esc(pos[0]), body(map[string]any{"strict_enrollment": f.strict}))
 		}
 	// The runner-pool enrolment key (E24 T3). `create` prints the value ONCE — it is the same
 	// create-only field `apikey create` returns, and the same rule applies: the CLI prints it and
@@ -558,6 +611,7 @@ func usageErr(resource string) error {
 		"project": "create --display-name <n> | list | get <prj_id> | set-policy <prj_id> [--allowed-models <a,b>] [--approvers <p,q>] [--pool <pool_id>] (set-policy REPLACES the whole policy)",
 		"apikey":  "create --project <prj_id> [--scope <s>]... | list | get <key_id> | revoke <key_id>",
 		"secret":  "create --name <n> (value on stdin) | list | get <name> | rotate <name> (value on stdin)",
+		"pool":    "create --name <n> --posture <sandboxed-linux|unsandboxed-host> [--os <o>] [--arch <a>] [--strict] | list | set-strict <pool_id> [--strict] (posture is fixed at creation: machines inherit it)",
 		"poolkey": "create --pool <pool_id> [--expires-at <rfc3339>] (value printed once) | list --pool <pool_id> | revoke <key_id>",
 		// Spelled with its prefix, because that is the only spelling that works: the lifecycle is reached as
 		// `palai admin runner …` so it cannot be confused with the local runner container.
