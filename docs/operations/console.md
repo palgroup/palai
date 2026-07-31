@@ -876,6 +876,37 @@ console does not serve at all without a password; the gate is inside the relay a
 passes through it, counted rather than asserted; a cross-origin write is refused even with a valid session;
 and the operator session never rides an upstream request.
 
+### A control that moves into a dialog leaves every sweep that walks routes
+
+Written down because the page-parity passes moved five create forms behind a `+ Create X` button and **all
+three route-walking sweeps stopped seeing them at once** — each one reporting a smaller, cleaner number,
+which is the worst direction for a coverage loss to move a metric.
+
+| sweep | what it lost | closed |
+|---|---|---|
+| axe (`a11y.spec.ts`) | five dialogs, none ever scanned open — and a modal owns the focus trap, the accessible name and the Escape contract, which is exactly what axe has rules for | a generated scan per `FORM_DIALOGS` row |
+| contrast (`contrast.spec.ts`) | **144 controls, a third of the sweep** (265 → 409) | each dialog opened and measured, with a per-dialog positive control |
+| served forms (`auth.spec.ts`) | five of ten forms left the server-rendered HTML | the expectation is *derived* — `ResourceForm` mounts minus `FormDialog` mounts, per route |
+
+`app/globals.css:134` records the same failure once before, when a `button.danger` inside a dialog went
+unmeasured for an entire epic. The rule: **when a control moves behind an interaction, ask which sweeps
+walked to it, and open the thing.** `FORM_DIALOGS` in `tests/constants.ts` is the one list all of them read,
+and `a11y.spec.ts` asserts its row count equals the `FormDialog` mounts in `app/**/page.tsx`, so a sixth
+dialog is covered by all of them or none.
+
+### A panel must not answer to its name before it has content
+
+`components/Panel.tsx` withholds its `data-testid` until its rows settle, and `lib/routes.ts` requires each
+route to name the testid that means "this page has rendered". Measured on 2026-08-01 with a probe that polls
+every 20 ms for each declared signal and records what is still a spinner at the instant it appears:
+**sixteen of seventeen clean, one wrong** — `/sessions/[id]` named the transcript `<section>`, which renders
+synchronously, so it went visible while the chip row above it still said "Loading…". It did not fail, because
+the scan follows the signal with a `networkidle` wait — and that file calls networkidle "a proxy for the
+condition" twice in its own comments. A wrong signal covered by a proxy is a green that belongs to the
+harness. The signal now names the chip row, which renders only once the read has settled **in either
+direction** — a failed read gets a settled "unreadable" chip rather than a permanent spinner, or the scan
+would never fire at all.
+
 ---
 
 ## 6b. Contract divergences — published docs × this console
