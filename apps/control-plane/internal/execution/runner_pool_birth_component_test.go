@@ -218,7 +218,20 @@ func TestPoolBirthReachesTheWaitingRoomAndTheApproveRoute(t *testing.T) {
 		t.Fatalf("the machine enrolled as %q into an unsandboxed-host pool", machinePosture)
 	}
 
-	machine := parkIdentity(t, b.gatewayFixture, identity)
+	// THE MACHINE PARKS ONCE AND STAYS PARKED, which is what a real runner's loop does — and it is ONE park
+	// rather than a park now and a lease session later, because two waiters on one machine are two competing
+	// consumers of the same offer. The first draft of this test held both (`parkIdentity` for the pending
+	// phase and `OpenLease` for the relay) and passed in isolation twice; under the full postgres tier it
+	// failed with "the approved machine never obtained the lease", because the OTHER waiter had taken it.
+	// A race that only shows under load is still a race, so the shape is corrected rather than retried.
+	sessCtx, cancelSession := context.WithCancel(ctx)
+	defer cancelSession()
+	leaseReady := make(chan *runner.LeaseSession, 1)
+	go func() {
+		if ls, err := b.session(identity).OpenLease(sessCtx); err == nil {
+			leaseReady <- ls
+		}
+	}()
 	waitConnected(t, b.gateway, 1)
 	tenant := coordinator.Tenant{Organization: b.org, Project: b.prj}
 	starved, cancelStarved := context.WithTimeout(ctx, 3*time.Second)
@@ -227,8 +240,8 @@ func TestPoolBirthReachesTheWaitingRoomAndTheApproveRoute(t *testing.T) {
 		t.Fatalf("Dial into the created strict pool = %v, want ErrPoolHasNoRunner — a waiting room a Dial can reach is not a waiting room", err)
 	}
 	select {
-	case lease := <-machine.lease:
-		t.Fatalf("the pending machine was offered lease %s", lease.LeaseID)
+	case <-leaseReady:
+		t.Fatal("the pending machine was offered a lease: strict enrolment a Dial can still reach is not a waiting room")
 	default:
 	}
 
@@ -267,17 +280,9 @@ func TestPoolBirthReachesTheWaitingRoomAndTheApproveRoute(t *testing.T) {
 		t.Fatalf("runners.state = %q after the approve route, want active", got)
 	}
 
-	// The admitted machine takes the lease and a run's traffic passes THROUGH it. The lease session is
-	// opened here rather than reusing the park loop above because a relayed frame needs the session handle,
-	// and the park loop returns only the offer.
-	sessCtx, cancelSession := context.WithCancel(ctx)
-	defer cancelSession()
-	leaseReady := make(chan *runner.LeaseSession, 1)
-	go func() {
-		if ls, err := b.session(identity).OpenLease(sessCtx); err == nil {
-			leaseReady <- ls
-		}
-	}()
+	// THE SAME MACHINE, over the connection it has been holding the whole time, now takes the lease and a
+	// run's traffic passes THROUGH it — which is what makes the approval reach the machine's own session
+	// rather than only its row.
 	attempt := b.tenantAttempt(tenant, poolID, "run_birth_ok", "att_birth_ok")
 	ch, err := b.gateway.Dial(ctx, attempt)
 	if err != nil {
