@@ -50,6 +50,11 @@ type Tenant struct {
 // Store owns a connection pool against the durable spine schema.
 type Store struct {
 	pool *pgxpool.Pool
+	// background ends one background task's operating-system object on behalf of a run CANCELLATION
+	// (E26 T5). Injected by the composition root rather than constructed here, because this package must
+	// not learn what a process group or a container id is — the same reason BackgroundObserver is a
+	// function. NIL means this deployment starts no background tasks and therefore has none to end.
+	background BackgroundKiller
 }
 
 // Claim is a fenced lease grant over a durable job.

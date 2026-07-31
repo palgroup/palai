@@ -320,6 +320,18 @@ func (s *Store) CancelRunReconciled(ctx context.Context, tenant Tenant, response
 	if _, err := s.CancelChildren(ctx, tenant, runID, canceledProjection); err != nil {
 		return "", err
 	}
+	// AND THE RUN'S LIVE BACKGROUND WORK (E26 T5). Until now this function drove the run canceled,
+	// cancelled its children and finalized the response — and signalled NO PROCESS ANYWHERE (§3.6 D10).
+	// The worker's context is the process root rather than per-run, so nothing else was going to end them
+	// either: a backgrounded `xcodebuild` survived the cancellation of the run that owned it and kept a
+	// Mac busy for an hour, which is the orphan this epic is named after.
+	//
+	// It runs after the transition and the children rather than before, for one reason: a cancel that
+	// killed processes and then failed to cancel the run would have destroyed work AND left the run
+	// running. Killing last means the worst case is a process outliving its run by one reaper tick.
+	if err := s.killRunBackgroundTasks(ctx, tenant, runID); err != nil {
+		return "", err
+	}
 	// Finalize the response as canceled/uncertain ONLY if the run is GENUINELY canceled. finalize.go
 	// applies run→completed and then compiles the changeset BEFORE finalizing the response, so a cancel
 	// landing in that gap sees run=completed but response still open; writing an empty canceled projection

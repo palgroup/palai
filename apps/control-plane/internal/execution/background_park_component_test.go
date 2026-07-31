@@ -110,6 +110,11 @@ func newParkFixture(t *testing.T) *parkFixture {
 	exec := host.NewExecutor(0)
 	f.orch = NewOrchestrator(repo, nil, modelbroker.New(modelbroker.Config{}), toolbroker.New(tools.ShellTool(), tools.FileTool()))
 	f.orch.SetShellRunner(exec)
+	// SetBackgroundRunner also wires the cancellation killer onto the orchestrator's OWN spine
+	// (repo.Spine()), which in production is the same *coordinator.Store startDispatch cancels through.
+	// This fixture holds a second handle to the same database for its seeding, so a cancellation proof
+	// must go through f.orch.spine rather than through f.spine — otherwise it would be measuring a store
+	// production never builds.
 	f.orch.SetBackgroundRunner(exec)
 	return f
 }

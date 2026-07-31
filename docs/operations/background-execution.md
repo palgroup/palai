@@ -106,5 +106,85 @@ Three more, named rather than implied:
 - **There is no live progress stream.** Nobody tells the model that ten more lines arrived; it reads the
   file, or it waits for the exit.
 - **A control-plane restart does not stop a task**, and it is not supposed to: the process belongs to
-  the RUN. What it does lose is the in-memory handle registry, so `palai.workspace.background_kill` by
-  id fails until the reaper adopts the row.
+  the RUN. Since E26 T5 it does not lose the handle either — there is no in-memory registry any more, and
+  a restarted plane resolves a task id straight from the row. See "the restart, and the machine it does
+  not survive" below for the part that genuinely does not survive.
+
+## The four ceilings, and what each one refuses
+
+Every one of them is read from the environment **at the moment it is used** — three at spawn, one on the
+sweep — so a change takes effect on the next call rather than on the next restart.
+
+| Variable | Default | What happens at the limit |
+|---|---|---|
+| `PALAI_BACKGROUND_MAX_WALL_TIME` | **`60m`** | the reaper **kills** the task, records `expired` and the model is told |
+| `PALAI_BACKGROUND_MAX_PER_RUN` | **`5`** | the next spawn of that run is **refused**, not queued |
+| `PALAI_BACKGROUND_MAX_PER_HOST` | **`20`** | the next spawn on the machine is **refused**, not queued |
+| `PALAI_BACKGROUND_LOG_TTL` | **`24h`** | the output file of a settled task is deleted |
+
+Four things about that table are decisions rather than defaults, and each is likely to matter to you
+before the numbers do.
+
+**Unset means bounded, and unbounded has to be written.** `PALAI_BACKGROUND_MAX_WALL_TIME=0` is the only
+way to say "no ceiling", and a value this binary cannot parse falls back to 60 minutes rather than to
+infinity. That is the opposite of `PALAI_FLEET_PARK_TTL`, where unset means never — and deliberately so:
+there is no honest default for how long a rented Mac takes to arrive, and there is one for how long a
+build may hold a machine.
+
+**The enforcer is the reaper, not a timeout.** The deadline is a column, read on the reconciler's 30s
+sweep, so enforcement is accurate to a tick and **does not happen at all on a stack with
+`PALAI_DISPATCH_WORKERS=0`** — the same first paragraph as the notification. A `context` would have been
+accurate to the millisecond and would also have died with the process the task exists to outlive.
+
+**A ceiling refuses; it never queues.** A queue would be a delay the model cannot see: it would believe
+five builds were running while a sixth waited. A refusal is an answer — wait, kill one, or run it
+synchronously. The machine ceiling is counted **across all tenants**, because the machine is shared; a
+per-tenant twenty would give the Mac twenty times as many tenants as you have.
+
+**The log collector walks directories, not rows.** It looks under each active allocation's
+`.palai-session/bg/`, deletes files whose mtime is past the TTL, and **skips any file whose task is still
+`running`** — a build printing nothing for a day is not a finished build. The `background_tasks` row is
+never deleted; it is the audit record that a process existed, and you need the `lost` ones to stay.
+
+```sql
+-- tasks the reaper ended for outliving their ceiling
+SELECT id, run_id, started_at, finished_at FROM background_tasks
+WHERE state = 'expired' ORDER BY finished_at DESC LIMIT 50;
+```
+
+## Cancelling a run
+
+Cancelling a run now **kills every live background task it owns** — `palai runs cancel`, the API's
+cancel, and anything else that routes through `CancelRunReconciled`. Before E26 T5 it did not: the run
+went `canceled`, its children were cancelled, its response was finalized, and the build kept compiling.
+
+Two consequences worth knowing:
+
+- The rows go to `killed` and are **stamped as settled without a notification**, because a cancelled run
+  has no turn left to read one and whoever cancelled it already knows.
+- A task whose handle cannot be **proven** to be ours goes to `lost` and **receives no signal**, on a
+  cancellation exactly as everywhere else. The cancel still succeeds. So does a cancel whose kill failed
+  for a transient reason — the reaper meets that task again on the next tick, rather than the whole
+  cancellation failing and leaving the run itself running.
+
+## The restart, and the machine it does not survive
+
+A restarted control plane **adopts** what the rows describe: it probes each `running` task (a
+`ContainerInspect` in the container posture, a pgid plus start-time comparison on the host), leaves the
+live ones alone, settles the dead ones — with `exit_code` **NULL** where it cannot know — and marks the
+unprovable ones `lost`. It can kill an adopted task by id, and a run adopted with a live task still
+parks on it.
+
+**Adoption only works on the same machine, and that is a consequence rather than an omission.** If you
+move the control plane to another host, the host posture's pgids mean nothing there and every task
+becomes `lost`; in the container posture the containers stay on the old daemon and this one cannot see
+them. Both follow from there being exactly one machine: the execution relay that would let a run's shell
+live somewhere other than the control plane's own host was planned for E24 and never shipped. Nothing
+closes this before that relay does.
+
+Practically: **drain before you move a control plane to a different host**, and before you do, look at
+what is running.
+
+```sql
+SELECT count(*) FROM background_tasks WHERE state = 'running';
+```

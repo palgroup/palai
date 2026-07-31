@@ -64,12 +64,12 @@ type Orchestrator struct {
 	// got a blocking call is blocked in exactly the way the feature exists to prevent. main.go injects it
 	// via SetBackgroundRunner where the wired shell runner can also detach.
 	background toolbroker.BackgroundRunner
-	// bgTasks maps a task id to the handle that can stop it, for the tasks THIS process started (E26 T2).
-	// It is guarded by bgMu because several attempts of several runs dispatch concurrently through one
-	// orchestrator. See rememberBackgroundTask in background.go for the ceiling this carries and the
-	// durable row (migration 000047) that replaces it.
-	bgMu    sync.Mutex
-	bgTasks map[string]*backgroundTask
+	// bgSpawn serialises the CEILING CHECK and the start it guards (E26 T5, §0.3). It is all that is left
+	// of a map from task id to handle: the durable background_tasks row replaced that map in T5, because a
+	// map dies with the process that made it and the whole point of a background task is to outlive that
+	// process. What remains needs a lock for a different reason — the concurrency count and the spawn are
+	// two statements, and several attempts of several runs dispatch concurrently through one orchestrator.
+	bgSpawn sync.Mutex
 	// tasks is the durable session-scoped task/todo registry the task/todo tools persist through
 	// (spec §11). It is always the spine (the control plane owns the DB), so it is wired at
 	// construction; a stack opts into the durable primitives by registering the task/todo tools.
@@ -167,7 +167,19 @@ func (o *Orchestrator) SetShellRunner(s toolbroker.ShellRunner) { o.shell = s }
 // Left unset — which is every deployment before E26 and every posture that cannot detach — the dispatch
 // is bit-unchanged: the same SetShellRunner/SetHookFirer/SetPublisher discipline, where an unwired seam
 // means the feature is simply absent rather than half-present.
-func (o *Orchestrator) SetBackgroundRunner(b toolbroker.BackgroundRunner) { o.background = b }
+//
+// IT ALSO WIRES THE CANCELLATION KILLER, IN THE SAME CALL AND DELIBERATELY (E26 T5). A deployment that
+// can START a background task and cannot END one when its run is cancelled is precisely the orphan this
+// epic exists to prevent — and E26 T2 already found one instance of that shape by omission, where every
+// deployment granting the shell tool could begin a build and none could stop it because the kill tool sat
+// on a different conditional. Two setters would be two chances to wire one and forget the other; one
+// setter makes the broken state unrepresentable.
+func (o *Orchestrator) SetBackgroundRunner(b toolbroker.BackgroundRunner) {
+	o.background = b
+	if o.spine != nil {
+		o.spine.SetBackgroundKiller(o.BackgroundKiller())
+	}
+}
 
 // BackgroundRunner reports the detached runner this orchestrator was wired with. It exists so a
 // COMPOSITION-ROOT test can ask what production actually wired, which is the only kind of test that
