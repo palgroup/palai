@@ -422,6 +422,53 @@ async function seedBothStacks() {
     seeded[label].project_id = id;
   }
 
+  // E28 T3 SEEDS A POOL ID AND ONE ENROLMENT KEY ON EACH SIDE, and it is one seed for two purposes.
+  //
+  // The id first, for the same reason the project id above is read rather than written down: every stack has
+  // a pool — a tenant is seeded one at birth (`InsertDefaultRunnerPool`) — so there is nothing to create, and
+  // `GET /v1/runner-pools/{pool_id}/keys` would otherwise be probed with a token that is not a pool on either
+  // side. The fixture's `pool_mac` does not exist on a real stack and the real bootstrap's id is not written
+  // anywhere here, so both are READ.
+  //
+  // Then the key, because that collection is EMPTY on every bootstrap stack: nothing mints a pool key without
+  // an operator, so its item shape had never been compared. It is minted and LEFT — not revoked afterwards —
+  // because a revoked row carries `revoked_at` and an un-revoked one omits it, so revoking one side's would
+  // manufacture the shape difference this arm exists to find. It authenticates nothing that is not already
+  // reachable: the caller already holds a `provision` key, which is what mints it.
+  for (const [label, doFetch] of [
+    ["real", realFetch],
+    ["fixture", fakeFetch],
+  ]) {
+    const pools = await doFetch("/v1/runner-pools");
+    const poolBody = await pools.json().catch(() => ({}));
+    const poolID = poolBody.data?.[0]?.id;
+    assert.ok(
+      typeof poolID === "string" && poolID !== "",
+      `the sweep could not read a runner pool id on the ${label} side: GET /v1/runner-pools returned ` +
+        `${pools.status} with no first row. Every tenant is seeded a default pool at birth, so this is a ` +
+        "real failure — and without the id the key route is compared against a probe token, which answers " +
+        "an empty list and passes by comparing nothing.",
+    );
+    seeded[label].pool_id = poolID;
+
+    const key = await doFetch(`/v1/runner-pools/${encodeURIComponent(poolID)}/keys`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    const keyBody = await key.json().catch(() => ({}));
+    assert.ok(
+      key.status === 200 || key.status === 201,
+      `the sweep could not mint a pool enrolment key on the ${label} side: ` +
+        `POST /v1/runner-pools/{pool_id}/keys returned ${key.status} (${keyBody.code ?? "?"}). Without a row ` +
+        "on both sides the key listing's item shape is compared against an empty list, which is the " +
+        "pass-over-nothing this seed exists to end.",
+    );
+    // NOTHING IS RECORDED ABOUT THE VALUE, not even its length: the response carries a live enrolment
+    // credential, and a sweep that printed one in an assertion message would be the leak this suite's other
+    // arms exist to deny.
+  }
+
   // E25 T8 SEEDS A RUN ON EACH SIDE, which populates TWO collections at once and is why it is one seed
   // rather than two: GET /v1/responses gets its first row, and so does GET /v1/usage/ledger — a run settles
   // `run.admitted` inside the ADMISSION transaction (coordinator/usage.go), so the ledger row exists the
@@ -613,16 +660,34 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
     // built on had never had an item shape compared. GET /v1/usage does NOT raise it and cannot: it answers
     // totals under `meters`, not a `data` page, so it has no item to compare. The thirteen: the eleven above
     // plus responses and usage-ledger.
+    // E28 T3 RAISES IT TO 14, AND THE RAISE IS ONE COLLECTION RATHER THAN THE THREE THE PAGE READS.
+    //
+    // `/fleet` reads three: `runner-pools`, `runner-pool-keys` and `runners`. Only the middle one is a new
+    // ITEM comparison, and each of the other two is a measurement rather than a shortfall:
+    //
+    //   runner-pools    — both sides have had a row all along (every tenant is seeded a default pool at
+    //                     birth), so if it was already inside the count, this raise is a no-op for it and the
+    //                     printed `comparedSubjects` line above says which. The thirteen the paragraphs above
+    //                     enumerate do NOT name it, which is either a stale enumeration or a route whose
+    //                     envelope differs — and the membership list, not this number, is what answers that.
+    //   runner-pool-keys — genuinely new: the collection is EMPTY on every bootstrap stack because nothing
+    //                     mints a pool key without an operator, and the seed above mints one on each side.
+    //   runners         — CANNOT be raised, for E25 T5's reason exactly. A row in `runners` is written by
+    //                     fleet.Store.Register over the RUNNER PLANE, which a host agent dials with a pool
+    //                     key and a CSR; no /v1 route puts one there, and compose starts no runner. So the
+    //                     real side is an empty page, the ENVELOPE is still compared, and DIV-UI-009 records
+    //                     it. A baseline nudged up by a seed that cannot exist is worse than one that holds.
     assert.ok(
-      itemsCompared >= 13,
+      itemsCompared >= 14,
       `only ${itemsCompared} collections had a row on BOTH sides (${comparedSubjects.join(", ")}), so this arm ` +
         "compared almost no item shapes — the bootstrap seeds organizations/projects/api-keys and this sweep " +
         "seeds a knowledge base, an environment, one environment value (which is a secret_refs row), a " +
         "repository binding, an agent, a published agent revision, a tool, a published tool revision, a " +
-        "published tool-set revision and a RUN (which settles a usage ledger row in the same transaction). " +
-        "Thirteen of those fourteen can be compared; GET /v1/agents cannot, because its envelope differs " +
-        "irreducibly (see DIV-SHP-004). Fewer than thirteen means either the real stack is not seeded or a " +
-        "seed did not land, and this arm would pass vacuously",
+        "published tool-set revision, a RUN (which settles a usage ledger row in the same transaction) and a " +
+        "POOL ENROLMENT KEY. Fourteen of those fifteen can be compared; GET /v1/agents cannot, because its " +
+        "envelope differs irreducibly (see DIV-SHP-004), and GET /v1/runners cannot be seeded at all on the " +
+        "real side (DIV-UI-009). Fewer than fourteen means either the real stack is not seeded or a seed did " +
+        "not land, and this arm would pass vacuously",
     );
   });
 
