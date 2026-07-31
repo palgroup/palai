@@ -111,19 +111,26 @@ test("the documented command lands one working hash in .env.local, and running i
   expect(snapshot(resolve(APP_DIR, ".env.local")), "the test wrote apps/web-console/.env.local — the fail-closed console in auth.spec.ts would stop being unconfigured").toBe(appEnvBefore);
 });
 
-// A HASH GENERATED BEFORE THE SEPARATOR CHANGED STILL OPENS THE DOOR, ASSERTED AGAINST A REAL CONSOLE.
+// A LEGACY `$` HASH IS REFUSED, AND THE REFUSAL SAYS WHY — THE COMPATIBILITY CLAIM IS WITHDRAWN.
 //
-// lib/session.ts now splits on `[.$]` so nobody has to regenerate. That is a claim about a running process,
-// not about a regex, and reading the regex is exactly the "declared, therefore it happens" mistake this
-// tree's CLAUDE.md is written about — so a real `next start` is spawned with a legacy `$` hash in its
-// environment and the real login route is asked.
+// This test asserted the opposite yesterday and PASSED, and how it passed is the finding. `lib/session.ts`
+// splits on `[.$]`, so the parse handles both forms; the value never reaches the parse. Measured 2026-08-01
+// with `@next/env`, the loader this console actually runs under:
 //
-// The environment, NOT a .env.local, and that is the honest scope: a `$` hash routed through .env.local was
-// never intact (test one measured it), so the installs that work today are the ones that export it. Those are
-// what must not break.
+//   PALAI_CONSOLE_PASSWORD_HASH='scrypt$16384$8$1$SALT$KEY'  →  loadEnvConfig(dir)  →  'scrypt6384'
+//
+// dotenv-expand rewrites values ALREADY IN process.env, not only the ones it reads out of a file — and it
+// runs whenever any `.env` file is present. A git worktree has none, which is where the old version of this
+// test ran and why it was green. **Its green was a property of the harness, not of the product**, on the one
+// surface whose entire purpose is the path an operator actually walks. That is this tree's recurring defect
+// landing on the fix written to cure it.
+//
+// The value is DESTROYED rather than reshaped, so nothing can be compatible with it. What is left is a
+// recognisable signature, and the console owes the operator the reason rather than a generic "not set"
+// about a variable they can see is set.
 //
 // The wrong-password arm is not decoration: without it, a console that accepted anything would pass.
-test("a `$`-separated hash from before the fix still opens a real console", async () => {
+test("a `$`-separated hash from before the fix is refused, and the refusal names the cause", async () => {
   const legacy = legacyDollarHash(CONSOLE_PASSWORD);
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
@@ -137,8 +144,17 @@ test("a `$`-separated hash from before the fix still opens a real console", asyn
     await waitForConsole(base);
     const accepted = await postPassword(base, CONSOLE_PASSWORD);
     const refused = await postPassword(base, `${CONSOLE_PASSWORD}-wrong`);
-    expect(accepted, "a legacy `$` hash no longer opens the console — every operator who exported one is locked out").toBe(204);
-    expect(refused, "this console accepted a wrong password, so the arm above proves nothing").toBe(401);
+    expect(accepted, "a legacy `$` hash opened the console — then the value survived the env loader here and this test is measuring a machine with no .env file, which is the exact way its predecessor was green while wrong").toBe(401);
+    expect(refused, "the wrong password must be refused too, or the arm above proves only that this console refuses everything").toBe(401);
+
+    // AND THE REFUSAL NAMES THE CAUSE. A 503 that says "not set" about a variable the operator can see is
+    // set is what turns a five-minute fix into an hour, so the relay's problem detail is asserted rather
+    // than assumed — including the one command that repairs it.
+    const relay = await fetch(`${base}/api/palai/v1/agents`);
+    expect(relay.status, "the relay must answer 503 console_not_configured, not 401 — the console has no usable hash at all").toBe(503);
+    const detail = ((await relay.json()) as { detail?: string }).detail ?? "";
+    expect(detail.includes("separators stripped"), `the refusal did not name the cause: ${detail}`).toBe(true);
+    expect(detail.includes("--write"), `the refusal did not name the command that fixes it: ${detail}`).toBe(true);
   } finally {
     child.kill("SIGTERM");
   }

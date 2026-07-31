@@ -108,6 +108,23 @@ export default defineConfig({
       env: {
         PALAI_API_KEY: API_KEY,
         PALAI_BASE_URL: UPSTREAM,
+        // EXPLICITLY EMPTY, NOT ABSENT, AND THAT DISTINCTION IS THE WHOLE CONTROL.
+        //
+        // `next start` runs in apps/web-console and loads apps/web-console/.env.local — which exists on any
+        // machine set up the way docs/operations/console.md prescribes, and holds a real hash. Omitting the
+        // variable here let that file supply one, so THE FAIL-CLOSED CONSOLE WAS CONFIGURED and the test
+        // asserting it "serves nothing" measured a console that served everything: it answered 401 (needs a
+        // session) where it must answer 503 (has no credential at all).
+        //
+        // It passed for months because CI and a git worktree have no .env.local — the green was a property
+        // of the harness, not of the product, on the one control whose entire job is to prove the product
+        // refuses. env-file.spec.ts:111 anticipated exactly this ("the fail-closed console in auth.spec.ts
+        // would stop being unconfigured") and guarded against a TEST writing the file, not against an
+        // operator having one.
+        //
+        // Measured 2026-08-01: @next/env leaves a value already present in process.env alone, and treats ""
+        // as present. So an explicit empty string is immune to any .env file, while an absent key is not.
+        PALAI_CONSOLE_PASSWORD_HASH: "",
       },
       url: `http://127.0.0.1:${UNCONFIGURED_PORT}/login`,
       timeout: 120_000,

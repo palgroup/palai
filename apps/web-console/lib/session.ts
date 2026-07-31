@@ -70,6 +70,27 @@ interface StoredHash {
   key: Buffer;
 }
 
+// mangledLegacy recognises what is LEFT of a pre-E29 `$` hash after an env loader has expanded it, so the
+// refusal can say what happened instead of "not set (or is not a valid scrypt hash)" about a variable the
+// operator can see with their own eyes.
+//
+// MEASURED 2026-08-01, and it corrects a claim this file shipped yesterday. The `$` form was said to still
+// work when it arrives through the ENVIRONMENT rather than through a file — and its test passed. It passed
+// because a git worktree has no `.env.local`, and `@next/env` only runs its expansion when it loads a file
+// at all. With any `.env` file present — that is, on every real installation — dotenv-expand rewrites the
+// values ALREADY IN process.env too:
+//
+//   PALAI_CONSOLE_PASSWORD_HASH='scrypt$16384$8$1$SALT$KEY'  →  loadEnvConfig()  →  'scrypt6384'
+//
+// So the compatibility guarantee was true only where nobody runs, and its green was a property of the
+// harness rather than of the product. It is withdrawn here rather than left to fail silently: the value is
+// DESTROYED, not merely reshaped, so no reader can recover it and there is nothing to be compatible with.
+// What is left is one recognisable signature — the `scrypt` prefix with the separators gone — and an
+// instruction the operator can act on.
+function looksLikeExpandedLegacyHash(value: string): boolean {
+  return value.startsWith("scrypt") && !value.includes(".") && !value.includes("$");
+}
+
 function parseHash(value: string): StoredHash | null {
   const parts = value.split(/[.$]/);
   if (parts.length !== 6 || parts[0] !== "scrypt") return null;
@@ -180,11 +201,26 @@ function sameOrigin(request: Request): boolean {
 export function requireSession(request: Request): Response | null {
   const stored = storedHash();
   if (stored === null) {
+    // The mangled-legacy arm exists because the generic message sends an operator looking for a variable
+    // that IS set, and they can see it is set. Naming the cause is the difference between a five-minute
+    // fix and an hour.
+    const raw = process.env.PALAI_CONSOLE_PASSWORD_HASH?.trim() ?? "";
+    if (looksLikeExpandedLegacyHash(raw)) {
+      return problem(
+        503,
+        "console_not_configured",
+        "PALAI_CONSOLE_PASSWORD_HASH arrived with its separators stripped, which is what an env loader does to " +
+          "the pre-2026-08 `$`-separated hash: dotenv expands `$16384`, `$8` and `$1` as variable references and " +
+          "the value is destroyed before this console reads it — in the file AND in the environment, whenever any " +
+          "`.env` file is present. It cannot be recovered. Re-derive it once: " +
+          "`printf %s 'your-password' | node scripts/hash-password.mjs --write` — see docs/operations/console.md.",
+      );
+    }
     return problem(
       503,
       "console_not_configured",
       "PALAI_CONSOLE_PASSWORD_HASH is not set (or is not a valid scrypt hash), so this console serves nothing. " +
-        "Generate one with `node scripts/hash-password.mjs` reading the password from stdin — see docs/operations/console.md.",
+        "Generate one with `node scripts/hash-password.mjs --write` reading the password from stdin — see docs/operations/console.md.",
     );
   }
   if (!validSession(request, stored.raw)) {
