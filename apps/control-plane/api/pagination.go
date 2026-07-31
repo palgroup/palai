@@ -61,6 +61,13 @@ type ListQuery struct {
 	Status     string
 	CreatedGTE *time.Time
 	CreatedLTE *time.Time
+	// SessionID and Meter narrow the USAGE LEDGER and nothing else. They are on this shared struct because
+	// that is the type every store list read consumes, but beginList does NOT parse them: a parameter read
+	// by the shared parse would be accepted on every list on this surface and honoured by one, which is the
+	// accepted-and-ignored shape this repository keeps paying for. The usage handler reads them itself, so
+	// a filter exists exactly where it is enforced. Empty means unfiltered, never "match the empty value".
+	SessionID string
+	Meter     string
 }
 
 // ListRow is one row a store list returns: its keyset coordinates plus the already-marshaled

@@ -24,10 +24,20 @@ import { announceProfile, sessionHeaders, signIn } from "./profile";
 test.beforeAll(() => announceProfile("reveal-once.spec.ts"));
 test.beforeEach(async ({ page }) => signIn(page));
 
-/** mint drives the console's own form and returns the value the screen displayed, plus the key's id. */
+/** mint drives the console's own form and returns the value the screen displayed, plus the key's id.
+ *
+ * THE ONE `.click()` BELOW IS A DRIVER CHANGE AND NOT A WEAKENING, and it is written down because this file
+ * is one nobody may weaken. The mint form moved behind the key panel's `+ Mint key` button as a dialog
+ * (page-parity-govern pass), so the form has to be OPENED before it can be filled — Playwright's `.check()`
+ * requires a visible element, which is the whole reason this helper had to change at all. Not one assertion
+ * in this file moved: the value is still proven present in the DOM while it is shown, absent from every
+ * enumerated place afterwards, and every one of the five sites still reports the probe it found, which is
+ * what keeps a zero a statement about the secret rather than about an empty haystack. */
 async function mint(page: Page): Promise<{ value: string; id: string }> {
   await page.goto("/policy");
   await expect(page.getByTestId("panel-api-keys")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("key-mint-open").click();
+  await expect(page.getByTestId("key-mint-dialog")).toBeVisible();
   await page.getByTestId("key-scope-provision").check();
   await page.getByTestId("key-mint-button").click();
   const shown = page.getByTestId("key-reveal-value");

@@ -2,6 +2,8 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 
+import { Button } from "@/components/ui/Button";
+
 // THE OTHER DIRECTION FROM SecretField (E28 T2, plan §3.6 D21).
 //
 // SecretField handles a value the HUMAN writes and the screen never shows again. This handles a value the
@@ -100,9 +102,8 @@ export function RevealOnce({
       </p>
       {canCopy() ? (
         <p>
-          <button
-            type="button"
-            data-testid={`${testId}-copy`}
+          <Button
+            testId={`${testId}-copy`}
             onClick={() => {
               setCopyError("");
               setCopied(false);
@@ -115,7 +116,7 @@ export function RevealOnce({
             }}
           >
             Copy
-          </button>
+          </Button>
           {copied ? (
             <span className="form-status" data-testid={`${testId}-copied`}>
               {" "}
@@ -150,9 +151,9 @@ export function RevealOnce({
         is in this one place on the screen and in no storage, no URL and no later response.
       </p>
       <p>
-        <button type="button" data-testid={`${testId}-dismiss`} onClick={onDismiss}>
+        <Button testId={`${testId}-dismiss`} onClick={onDismiss}>
           I have it — dismiss
-        </button>
+        </Button>
       </p>
     </section>
   );

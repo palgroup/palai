@@ -35,7 +35,19 @@ func consoleDir(t *testing.T) string {
 
 // routeDeclPattern matches one row of lib/routes.ts. It is anchored on the object literal's own fields rather
 // than on a line number, so reordering the list or reformatting it does not move the measurement.
-var routeDeclPattern = regexp.MustCompile(`\{ path: "([^"]+)", label: "[^"]*", readyTestId: "([^"]+)", lead: "`)
+var routeDeclPattern = regexp.MustCompile(`\{ path: "([^"]+)"[^}]*?readyTestId: "([^"]+)"[^}]*?\}`)
+
+// routeRowStart counts the rows that EXIST, so the parse can be checked for TOTALITY rather than merely for
+// being non-empty. It broke on 2026-07-31 when the console's sidebar grouping added a `group:` field between
+// `label` and `readyTestId`: the old pattern required those two to be adjacent, matched nothing, and the
+// zero-match guard below caught it — loudly, and only because somebody wrote that guard.
+//
+// A PARTIAL parse is the failure that guard could NOT see. Fourteen rows in the file and twelve matched
+// reports twelve routes, and every count derived from it is quietly short — which is the same shape as the
+// empty parse and considerably harder to notice. The pattern is now anchored only on the two fields it
+// actually reads and is bounded by the literal's own closing brace, so an added field cannot displace it;
+// the totality check is what makes that claim testable rather than hopeful.
+var routeRowStart = regexp.MustCompile(`\{ path: "`)
 
 // declaredRoutes parses apps/web-console/lib/routes.ts — the SINGLE source of both the navigation and the axe
 // sweep — and returns the paths in file order with their readiness signals.
@@ -48,6 +60,12 @@ func declaredRoutes(t *testing.T) []struct{ Path, ReadyTestID string } {
 	matches := routeDeclPattern.FindAllStringSubmatch(string(raw), -1)
 	if len(matches) == 0 {
 		t.Fatal("no route rows parsed out of lib/routes.ts — the literal's SHAPE changed, and a parser that matches nothing reports an empty list exactly like a console with no pages")
+	}
+	// AND THE PARSE MUST BE TOTAL, not merely non-empty. A pattern that matches SOME rows reports a shorter
+	// console and every count derived from it is quietly wrong — the same failure as the empty parse, minus
+	// the noise that makes it findable.
+	if declared := len(routeRowStart.FindAllString(string(raw), -1)); declared != len(matches) {
+		t.Fatalf("lib/routes.ts declares %d route rows and the parser read %d — a partial parse reports a smaller console than the one that ships", declared, len(matches))
 	}
 	out := make([]struct{ Path, ReadyTestID string }, 0, len(matches))
 	for _, m := range matches {

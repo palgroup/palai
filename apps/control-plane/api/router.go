@@ -259,6 +259,9 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("GET /v1/quotas", uh.listQuotas)
 		mux.HandleFunc("GET /v1/usage", uh.summary)
 		mux.HandleFunc("GET /v1/usage/ledger", uh.ledger)
+		// The bucketed chart source. A sibling route rather than a mode on GET /v1/usage, so the shipped
+		// usage_summary response keeps exactly one shape — see usageHandler.series for the trade.
+		mux.HandleFunc("GET /v1/usage/series", uh.series)
 	}
 
 	// DB-backed model routing (spec §27.2/§27.6, E13 Task 8, MCI-006): a project binds its own provider

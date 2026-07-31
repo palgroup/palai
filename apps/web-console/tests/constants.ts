@@ -1,5 +1,14 @@
 import { execFileSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
+// NOTHING IN THIS FILE MAY RUN AT MODULE SCOPE, and nothing may import `@playwright/test`.
+// playwright.config.ts imports this module at CONFIG LOAD — before any test context exists — so a top-level
+// call here executes on every single run before collection, and a `@playwright/test` import there fails the
+// whole run outright. Export functions and plain data; let the caller decide when to pay. (Recorded after
+// `formDialogMountCount` moved here from a spec: the next value somebody wants will be tempting to compute
+// once at the top, and that is the shape to refuse.)
+//
 // Shared between the Playwright config (which injects them into the servers) and the tests (which scan
 // for the credential + assert the relay origin).
 //
@@ -84,3 +93,64 @@ function realEnv(name: string): string {
 
 export const UPSTREAM = IS_REAL ? realEnv("PALAI_BASE_URL").replace(/\/+$/, "") : `http://127.0.0.1:${UPSTREAM_PORT}`;
 export const API_KEY = IS_REAL ? realEnv("PALAI_API_KEY") : FAKE_API_KEY;
+
+// THE CREATE DIALOGS THE SWEEPS OPEN. Declared HERE rather than in a spec because TWO specs need the
+// same five rows — tests/a11y.spec.ts scans each dialog with axe, tests/contrast.spec.ts measures the
+// controls inside it — and Playwright refuses a spec-to-spec import outright ("test file X should not
+// import test file Y"). A second hand-typed copy is what a declaration table exists to prevent.
+//
+// THE CREATE DIALOGS, AND THEY WERE SCANNED BY NOTHING AT ALL UNTIL THIS LOOP.
+//
+// The generated axe loop scans a route AS IT LOADS. A components/FormDialog.tsx renders only after a click,
+// so every create form that moved behind a `+ Create` button left the accessibility evidence the moment it
+// moved — five forms, on four routes, none of them scanned. It is the same hole this file already documents
+// in tests/a11y.spec.ts for the transcript's second tab ("`hidden` takes the whole Debug panel out of the
+// accessibility tree, so the first scan reports a clean bill of health for markup it did not see"), and a
+// modal is the worse case of it: a dialog owns the focus trap, the accessible name and the Escape contract,
+// which is exactly the surface axe has rules for.
+//
+// THE LIST IS DECLARED AND THEN CHECKED AGAINST THE SOURCE, so a sixth dialog cannot ship unscanned. The
+// coverage test at the bottom of tests/a11y.spec.ts walks app/**/page.tsx for `<FormDialog` mounts and fails if the
+// count does not match the rows here — the same shape as the route coverage assertion, and for the same
+// reason: a surface nobody scans must be a red test rather than a thing somebody remembers.
+export const FORM_DIALOGS: { route: string; open: string; dialog: string; label: string }[] = [
+  { route: "/agents", open: "agent-create-open", dialog: "agent-create-dialog", label: "Create an agent" },
+  { route: "/repositories", open: "binding-create-open", dialog: "binding-create-dialog", label: "Register a repository binding" },
+  { route: "/policy", open: "key-mint-open", dialog: "key-mint-dialog", label: "Mint an API key" },
+  { route: "/fleet", open: "pool-create-open", dialog: "pool-create-dialog", label: "Create a runner pool" },
+  { route: "/fleet", open: "poolkey-mint-open", dialog: "poolkey-mint-dialog", label: "Mint an enrolment key" },
+];
+
+/**
+ * formDialogMountCount is how many create dialogs the SOURCE actually mounts, walked rather than declared.
+ *
+ * IT LIVES BESIDE THE LIST IT CHECKS, AND THAT IS THE WHOLE POINT. It was inline in tests/a11y.spec.ts, so
+ * tests/contrast.spec.ts — which opens the same five dialogs to measure the controls inside them — was
+ * complete only by virtue of ANOTHER FILE running an assertion it could not see. A sixth dialog would have
+ * reddened the axe loop and left the contrast sweep quietly short, and nothing in contrast.spec.ts would have
+ * said so. Both call this now, so each sweep is complete on its own terms.
+ *
+ * `<FormDialog` in `app/**\/page.tsx` is the right thing to count because that is exactly the surface that
+ * does not exist until somebody clicks: a route walk cannot see it, and every sweep that walks routes
+ * therefore has to be told it is there.
+ *
+ * NODE BUILTINS ONLY, deliberately. playwright.config.ts imports this module at CONFIG LOAD, before any test
+ * context exists, so a `@playwright/test` import here would take the whole run down at collection — the same
+ * failure class as the spec-to-spec import that sent FORM_DIALOGS to this file in the first place.
+ *
+ * AND IT IS A FUNCTION RATHER THAN A CONST, WHICH IS THE HALF THE PARAGRAPH ABOVE DOES NOT COVER. The
+ * tempting shape for a value that never changes during a run is `export const FORM_DIALOG_MOUNTS =
+ * countThem()` — and at module scope that walks the whole app tree on EVERY config load, including the ones
+ * that have nothing to do with these two specs, and takes the run down before collection if it ever throws
+ * on a permission or a half-written file. A caller pays for the walk when it needs the number; nobody else
+ * pays for it at all. See the file header: this module must stay side-effect-free.
+ */
+export function formDialogMountCount(): number {
+  const appRoot = resolve(process.cwd(), "app");
+  let mounted = 0;
+  for (const entry of readdirSync(appRoot, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || entry.name !== "page.tsx") continue;
+    mounted += (readFileSync(resolve(entry.parentPath ?? appRoot, entry.name), "utf8").match(/<FormDialog[\s>]/g) ?? []).length;
+  }
+  return mounted;
+}

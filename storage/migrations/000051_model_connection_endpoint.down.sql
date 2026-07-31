@@ -1,5 +1,5 @@
--- Reverse 000049. Guarded on the target still existing, because MigrationDown() is one concatenated chain
--- and re-running it must stay a clean no-op — 000048's, 000047's and 000046's reversals are written the
+-- Reverse 000051. Guarded on the target still existing, because MigrationDown() is one concatenated chain
+-- and re-running it must stay a clean no-op — 000050's, 000049's and 000048's reversals are written the
 -- same way.
 --
 -- THE HONEST SHAPE OF THIS ROLLBACK: dropping base_url discards every custom endpoint an operator typed,
@@ -15,7 +15,7 @@ ALTER TABLE IF EXISTS model_connections DROP COLUMN IF EXISTS base_url;
 DO $$
 BEGIN
     IF to_regclass('public.schema_migrations') IS NOT NULL THEN
-        DELETE FROM schema_migrations WHERE version = 49;
+        DELETE FROM schema_migrations WHERE version = 51;
     END IF;
 END
 $$;

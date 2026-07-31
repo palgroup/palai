@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { CONSOLE_ROUTES, DYNAMIC_CONSOLE_ROUTES } from "../lib/routes";
+import { FORM_DIALOGS, formDialogMountCount } from "./constants";
 import { announceProfile, concreteDynamicPath, signIn } from "./profile";
 
 // WHAT AXE CANNOT SEE, MEASURED ON THE RENDERED PAGE (console design pass, spec §2.1 / §4.4 / §7).
@@ -84,7 +85,7 @@ function parseRGB(value: string): [number, number, number] {
  * `elementFromPoint` is deliberately NOT used: a control inside a scroll container may be off-screen while
  * still being a control the operator will reach. The ancestor walk is the property SC 1.4.11 is about.
  */
-async function measureBoundaries(page: Page, route: string): Promise<Boundary[]> {
+async function measureBoundaries(page: Page, route: string): Promise<{ boundaries: Boundary[]; exempted: string[] }> {
   const raw = await page.evaluate(() => {
     const opaqueBehind = (el: Element): string => {
       for (let node: Element | null = el.parentElement; node !== null; node = node.parentElement) {
@@ -94,6 +95,7 @@ async function measureBoundaries(page: Page, route: string): Promise<Boundary[]>
       }
       return getComputedStyle(document.documentElement).backgroundColor;
     };
+    const exempted: string[] = [];
     const out: { tag: string; testId: string; border: string | null; fill: string | null; surface: string }[] = [];
     for (const el of document.querySelectorAll("input, select, textarea, button")) {
       const style = getComputedStyle(el);
@@ -102,6 +104,29 @@ async function measureBoundaries(page: Page, route: string): Promise<Boundary[]>
       // own text ("inactive user interface components"). Both are skipped rather than measured and excused.
       if (style.display === "none" || style.visibility === "hidden" || box.width === 0 || box.height === 0) continue;
       if ((el as HTMLInputElement).disabled) continue;
+      // AND A NODE THAT IS NOT A USER INTERFACE COMPONENT AT ALL — which is a narrower exemption than it
+      // looks, and it is recorded rather than silent (see `exempted` below).
+      //
+      // SC 1.4.11 judges "user interface components", defined in WCAG's glossary as "parts of the content
+      // that are perceived by users as a single control for a distinct function". An element carrying BOTH
+      // aria-hidden="true" AND tabindex="-1" is perceived by nobody: it is out of the accessibility tree for
+      // a screen reader and out of the tab order for a keyboard, so there is no user for whom it is a
+      // control. Requiring a visible boundary on it would be requiring one on something no one can see.
+      //
+      // WHAT MADE THIS NECESSARY, MEASURED: @base-ui/react's Select renders a form-serialisation <input>
+      // (select/root/SelectRoot.mjs:470) styled with its own `visuallyHidden` — clipPath inset(50%),
+      // border 0, 1x1px. It is 1px rather than 0px, so the size guard above does not catch it, and its UA
+      // background against the page scores 1.03:1. Before this rule the sweep reported 16 such nodes as
+      // failing controls. They are not controls; the seven TRIGGERS are, they are <button>s, and every one
+      // is still measured — which the count printed below is the evidence for.
+      //
+      // BOTH CONDITIONS ARE REQUIRED. aria-hidden alone would exempt a focusable control that is merely
+      // mislabelled — a real defect this sweep should keep reporting — and tabindex="-1" alone would exempt
+      // a control reachable by click and announced by a screen reader.
+      if (el.getAttribute("aria-hidden") === "true" && el.getAttribute("tabindex") === "-1") {
+        exempted.push(`${el.tagName.toLowerCase()}[${el.getAttribute("id") ?? el.getAttribute("name") ?? ""}]`);
+        continue;
+      }
       const surface = opaqueBehind(el);
       const drawsBorder = style.borderTopStyle !== "none" && parseFloat(style.borderTopWidth) > 0;
       const own = style.backgroundColor;
@@ -114,15 +139,18 @@ async function measureBoundaries(page: Page, route: string): Promise<Boundary[]>
         surface,
       });
     }
-    return out;
+    return { out, exempted };
   });
-  return raw.map((r) => ({
-    route,
-    tag: r.tag,
-    testId: r.testId,
-    border: r.border === null ? null : contrastRatio(r.border, r.surface),
-    fill: r.fill === null ? null : contrastRatio(r.fill, r.surface),
-  }));
+  return {
+    boundaries: raw.out.map((r) => ({
+      route,
+      tag: r.tag,
+      testId: r.testId,
+      border: r.border === null ? null : contrastRatio(r.border, r.surface),
+      fill: r.fill === null ? null : contrastRatio(r.fill, r.surface),
+    })),
+    exempted: raw.exempted,
+  };
 }
 
 // EVERY ROUTE THE CONSOLE DECLARES, PLUS /login. The login page is not in lib/routes.ts (it is outside the
@@ -132,6 +160,9 @@ const ROUTES = ["/login", ...CONSOLE_ROUTES.map((r) => r.path)];
 
 test("every interactive control carries a 3:1 boundary against the surface behind it (SC 1.4.11)", async ({ page }) => {
   const measured: Boundary[] = [];
+  // Every node the sweep DECLINED to judge, so the exemption above cannot grow without showing up in the
+  // line this test prints. An exemption nobody can see is the shape of a green suite that measures nothing.
+  const exempted: string[] = [];
   // The dynamic routes are resolved to concrete paths and swept with the rest (E29). A transcript screen
   // carries controls no static route does — a row-select per event, the Rendered/Raw pair, a tab strip — and
   // a compact bordered control is exactly the shape that fails this criterion while looking fine.
@@ -143,8 +174,51 @@ test("every interactive control carries a 3:1 boundary against the surface behin
     // clean sweep of nothing. `main` is always present; the controls are what is being counted below.
     await expect(page.locator("main")).toBeVisible();
     await page.waitForLoadState("networkidle");
-    measured.push(...(await measureBoundaries(page, route)));
+    const swept = await measureBoundaries(page, route);
+    measured.push(...swept.boundaries);
+    exempted.push(...swept.exempted);
   }
+
+  // EVERY CONTROL BEHIND A DIALOG, WHICH THIS SWEEP HAD STOPPED MEASURING ENTIRELY.
+  //
+  // The loop above walks routes with their dialogs CLOSED, so a control that moves behind a `+ Create X`
+  // button leaves this measurement — and the report gets SMALLER and CLEANER while the coverage shrinks,
+  // which is the worst way for a number to move. It is not hypothetical: the page-parity passes moved five
+  // forms into dialogs (an agent name, eight repository-binding fields, an API-key mint, two fleet forms),
+  // which is roughly forty controls, and app/globals.css:134 records that a `button.danger` inside one went
+  // unmeasured for an entire epic exactly this way.
+  //
+  // The list is `FORM_DIALOGS` in tests/constants.ts, imported rather than re-typed — and it is CHECKED
+  // AGAINST THE SOURCE right here, one line down, rather than only in tests/a11y.spec.ts.
+  //
+  // Those are two separate properties and this comment used to conflate them, which is the defect this file
+  // spends its whole length refusing. Importing the rows made this sweep CONSISTENT with the axe loop; it did
+  // not make it COMPLETE. A sixth dialog with no row would have reddened that loop and left this sweep
+  // quietly measuring five of six, with nothing in this file to say so. A sweep that is correct only because
+  // another file runs is a sweep whose coverage somebody else can withdraw — so the mount count is asserted
+  // in both places, and one synthetic mount produces two failures rather than one.
+  expect(
+    formDialogMountCount(),
+    "the tree mounts a number of FormDialogs that FORM_DIALOGS does not describe, so this sweep is measuring " +
+      "some of them. A control behind a create button is measured by nothing until a test opens it.",
+  ).toBe(FORM_DIALOGS.length);
+
+  const beforeDialogs = measured.length;
+  for (const d of FORM_DIALOGS) {
+    await page.goto(d.route);
+    // The opener lives in a PANEL's head, so it does not exist until that panel has settled.
+    await expect(page.getByTestId(d.open)).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId(d.open).click();
+    await expect(page.getByTestId(d.dialog)).toBeVisible();
+    const inside = await measureBoundaries(page, `${d.route} (${d.dialog})`);
+    // THE POSITIVE CONTROL, PER DIALOG. A dialog that rendered nothing measurable would otherwise contribute
+    // zero rows and pass — the same empty-haystack shape reveal-once.spec.ts was caught by this morning.
+    expect(inside.boundaries.length, `${d.dialog} opened and offered no measurable control — this sweep would be judging an empty dialog`).toBeGreaterThan(1);
+    measured.push(...inside.boundaries);
+    exempted.push(...inside.exempted);
+  }
+  // eslint-disable-next-line no-console -- the delta is the evidence that opening them was worth doing.
+  console.log(`CONTROL BOUNDARY DIALOGS — ${String(FORM_DIALOGS.length)} dialog(s) opened, ${String(measured.length - beforeDialogs)} control(s) that the closed-route walk never measured`);
 
   // A SWEEP THAT MEASURED NOTHING WOULD PASS. The count is the evidence that it looked at anything at all.
   expect(measured.length, "no control was measured on any route — the sweep found nothing to judge").toBeGreaterThan(10);
@@ -152,10 +226,28 @@ test("every interactive control carries a 3:1 boundary against the surface behin
   const strongest = (b: Boundary) => Math.max(b.border ?? 0, b.fill ?? 0);
   const failing = measured.filter((b) => strongest(b) < 3);
   const worst = [...measured].sort((a, b) => strongest(a) - strongest(b))[0];
+  // THE COUNT IS NOT A CONSTANT AND MUST NEVER BE ASSERTED ON — measured across the two colour-scheme
+  // projects in one run: 415 controls / 146 inside dialogs in the first, 506 / 185 in the second. Same code,
+  // same five dialogs. The fixture is STATEFUL and the first project populates it, so by the second several
+  // `Picker`s have options and render as a `<select>` where they had rendered their `emptyNote` — a control
+  // that exists because a collection stopped being empty.
+  //
+  // AND THAT ASYMMETRY IS THIS SWEEP'S ALONE, which is worth knowing before anybody tries to make it
+  // symmetrical with the served-form sweep in tests/auth.spec.ts. That one derives a count too and CANNOT
+  // drift this way: it reads server-rendered bytes with no session cookie, and every page here is a client
+  // component whose data arrives in an effect — so no collection has been read at render time and no control
+  // can appear because one filled up. Rendered property versus source property, the same line that decides
+  // why that sweep does not need to open these dialogs at all. What is asserted below is `0 below 3:1`; the
+  // number beside it is evidence of what was looked at, never a threshold.
   // eslint-disable-next-line no-console -- the numbers ARE the measurement; a bare pass/fail proves nothing.
   console.log(
-    `CONTROL BOUNDARY SWEEP — ${String(measured.length)} control(s) on ${String(ROUTES.length + dynamic.length)} route(s), ` +
+    `CONTROL BOUNDARY SWEEP — ${String(measured.length)} control(s) on ${String(ROUTES.length + dynamic.length)} route(s) ` +
+      `plus ${String(FORM_DIALOGS.length)} open dialog(s), ` +
       `${String(failing.length)} below 3:1; weakest ${worst.tag}[${worst.testId}] on ${worst.route} at ${String(strongest(worst))}:1`,
+  );
+  // eslint-disable-next-line no-console -- the exemptions are part of the measurement, not a footnote.
+  console.log(
+    `CONTROL BOUNDARY SWEEP — ${String(exempted.length)} node(s) exempted as aria-hidden + tabindex=-1: ${[...new Set(exempted)].sort().join(", ")}`,
   );
   expect(
     failing.map((b) => `${b.route} ${b.tag}[${b.testId}] border=${String(b.border)} fill=${String(b.fill)}`),

@@ -425,3 +425,111 @@ func TestBudgetScopeNarrowingAcrossSiblingProjects(t *testing.T) {
 		t.Fatalf("org-wide rejection = %+v, want used 140 of 100 (the sibling's spend, summed across the org)", *limit)
 	}
 }
+
+// TestTwoModelCallsInOneRunAreAttributedToTheirOwnSteps is the attribution contract, and it is written
+// as two calls in ONE run because that is the only shape that can tell the two possible worlds apart.
+//
+// THE MEASUREMENT THAT PROVOKED IT SAID "one ledger row per run":
+//
+//	SELECT meter, count(*), count(DISTINCT run_id) FROM usage_ledger GROUP BY meter;   (live, 2026-07-31)
+//	  -> model.input_tokens 61 rows / 61 runs
+//
+// which reads as an aggregate that has thrown per-step detail away. It is not. The same numbers appear
+// when settlement is per-step and every run happens to make exactly one model call, and that is this
+// deployment: 61 model_requests across 61 runs, calls_per_run = 1 for every one of them. A run with a
+// SECOND call is the discriminator, and no run on that stack had ever made one.
+//
+// So this test asserts what the reported defect claimed was impossible: two calls, two attributed rows
+// per meter, quantities that differ (so nothing is silently summing them), each naming its OWN step —
+// and the run-level total still equal to their sum, because a per-step ledger that double-counts is
+// worse than the aggregate it was thought to be.
+func TestTwoModelCallsInOneRunAreAttributedToTheirOwnSteps(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	tenant, sessionID, runID := seedRun(t, cs.Pool())
+
+	// Deliberately different quantities: equal ones would let a bug that attributes both rows to one
+	// step still produce a plausible-looking total.
+	first := contracts.Usage{InputTokens: 30, OutputTokens: 12, TotalTokens: 42}
+	second := contracts.Usage{InputTokens: 7, OutputTokens: 100, TotalTokens: 107}
+	for _, c := range []struct {
+		requestID string
+		usage     contracts.Usage
+	}{{"mr_turn1", first}, {"mr_turn2", second}} {
+		if _, err := cs.CommitModelResult(ctx, tenant, sessionID, "", runID, c.requestID,
+			[]byte(`{"output":"ok"}`), "model_step.completed.v1", []byte(`{}`), c.usage); err != nil {
+			t.Fatalf("CommitModelResult(%s) error = %v", c.requestID, err)
+		}
+	}
+
+	// Four rows: two meters x two steps. Three would mean a step was folded into another.
+	assertCount(t, cs.Pool(), 4,
+		`SELECT count(*) FROM usage_ledger WHERE run_id=$1 AND meter LIKE 'model.%'`, runID)
+
+	// Each row names the step it came from, in a COLUMN — not inside dedupe_key, which is an idempotency
+	// detail whose format nothing constrains and which a reader would have to string-parse.
+	for _, c := range []struct {
+		requestID string
+		meter     string
+		want      float64
+	}{
+		{"mr_turn1", "model.input_tokens", 30},
+		{"mr_turn1", "model.output_tokens", 12},
+		{"mr_turn2", "model.input_tokens", 7},
+		{"mr_turn2", "model.output_tokens", 100},
+	} {
+		var got float64
+		if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx),
+			`SELECT quantity FROM usage_ledger WHERE run_id=$1 AND model_request_id=$2 AND meter=$3`,
+			runID, c.requestID, c.meter).Scan(&got); err != nil {
+			t.Fatalf("read %s/%s: %v", c.requestID, c.meter, err)
+		}
+		if got != c.want {
+			t.Fatalf("%s %s = %v, want %v", c.requestID, c.meter, got, c.want)
+		}
+	}
+
+	// The run-level total is unchanged by being attributed: it is still the sum of its steps.
+	var total float64
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx),
+		`SELECT coalesce(sum(quantity), 0) FROM usage_ledger WHERE run_id=$1 AND meter LIKE 'model.%'`, runID).Scan(&total); err != nil {
+		t.Fatalf("sum settled model usage: %v", err)
+	}
+	if want := float64(first.TotalTokens + second.TotalTokens); total != want {
+		t.Fatalf("run total = %v, want %v (the sum of the two steps — a per-step ledger must not double-count)", total, want)
+	}
+
+	// Redelivering ONE of the two steps settles nothing new: the identity is still per (step, meter), so
+	// attribution and idempotency are the same fact rather than two that can disagree.
+	if _, err := cs.CommitModelResult(ctx, tenant, sessionID, "", runID, "mr_turn2",
+		[]byte(`{"output":"ok"}`), "model_step.completed.v1", []byte(`{}`), second); err != nil {
+		t.Fatalf("CommitModelResult(redeliver turn2) error = %v", err)
+	}
+	assertCount(t, cs.Pool(), 4,
+		`SELECT count(*) FROM usage_ledger WHERE run_id=$1 AND meter LIKE 'model.%'`, runID)
+}
+
+// TestNullModelRequestIdMeansNotAModelStep pins the meaning of the NULL, which is the half of a
+// nullable column that usually goes unwritten and later reads as "unknown". Here it is not unknown: a
+// run.admitted row is the ADMISSION reservation, settled before the run executes, and there is no model
+// call for it to belong to. The invariant is one sentence — every `model.` and `step.` row carries a
+// step, every `run.` row does not — and it is asserted here rather than as a CHECK constraint because
+// this INSERT rides inside the transaction that commits a model result: a metering rule that can abort
+// a completed step is a worse failure than an unattributed row.
+func TestNullModelRequestIdMeansNotAModelStep(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	tenant, sessionID, runID := seedRun(t, cs.Pool())
+	if _, err := cs.CommitModelResult(ctx, tenant, sessionID, "", runID, "mr_step1",
+		[]byte(`{"output":"ok"}`), "model_step.completed.v1", []byte(`{}`),
+		contracts.Usage{InputTokens: 3, OutputTokens: 4, TotalTokens: 7}); err != nil {
+		t.Fatalf("CommitModelResult error = %v", err)
+	}
+
+	// Not one model-step row may be unattributed...
+	assertCount(t, cs.Pool(), 0,
+		`SELECT count(*) FROM usage_ledger WHERE run_id=$1 AND (meter LIKE 'model.%' OR meter LIKE 'step.%') AND model_request_id IS NULL`, runID)
+	// ...and not one run-level row may claim a step it never had. seedRun's admission wrote that row.
+	assertCount(t, cs.Pool(), 0,
+		`SELECT count(*) FROM usage_ledger WHERE run_id=$1 AND meter LIKE 'run.%' AND model_request_id IS NOT NULL`, runID)
+}

@@ -1,8 +1,9 @@
+
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect, type Page } from "@playwright/test";
 
 import { CONSOLE_ROUTES, DYNAMIC_CONSOLE_ROUTES } from "../lib/routes";
-import { IS_REAL, WCAG_TAGS } from "./constants";
+import { FORM_DIALOGS, formDialogMountCount, IS_REAL, WCAG_TAGS } from "./constants";
 import { announceProfile, concreteDynamicPath, runToTerminal, signIn } from "./profile";
 
 // tabToTestId genuinely presses Tab until the element carrying data-testid=id holds focus — proving KEYBOARD
@@ -69,6 +70,9 @@ for (const route of CONSOLE_ROUTES) {
 // that collection is empty — so this resolves a real id through the relay and scans the real screen. The
 // empty-collection arm creates rather than skips, which is what keeps this a measurement.
 const scannedDynamic = new Set<string>();
+// The second-tab scans that actually ran. Declared separately from `scannedDynamic` because a route may
+// legitimately have no second tab — what must never happen is a route DECLARING one that no scan opened.
+const scannedSecondTabs = new Set<string>();
 
 for (const route of DYNAMIC_CONSOLE_ROUTES) {
   test(`axe-core reports zero violations on ${route.pattern}`, async ({ page }) => {
@@ -87,18 +91,67 @@ for (const route of DYNAMIC_CONSOLE_ROUTES) {
   });
 
   // THE SECOND TAB IS A SECOND SCREEN, and a scan of the page as it opens never looks at it. `hidden` takes
-  // the whole Debug panel out of the accessibility tree, so the first scan reports a clean bill of health for
+  // the whole panel out of the accessibility tree, so the first scan reports a clean bill of health for
   // markup it did not see — the same shape as scanning a page still rendering "Loading…", one interaction
   // later.
-  test(`axe-core reports zero violations on ${route.pattern} with its second tab open`, async ({ page }) => {
-    const path = await concreteDynamicPath(page, route);
-    await page.goto(path);
-    await expect(page.getByTestId(route.readyTestId)).toBeVisible({ timeout: 15_000 });
-    await page.waitForLoadState("networkidle");
-    await page.getByTestId("tab-debug").click();
-    await expect(page.getByTestId("session-debug")).toBeVisible();
+  //
+  // THE PAIR IS READ OFF THE ROUTE (page-parity pass). It was `tab-debug` / `session-debug` written here, in
+  // a loop over every dynamic route — so the SECOND dynamic route to exist would have driven the session
+  // transcript's own testids against a page that has neither, and the failure would have looked like a
+  // broken locator rather than like a missing declaration. A route with no `secondTab` gets no second scan,
+  // and the count printed by the coverage test at the bottom says how many were declared.
+  const second = route.secondTab;
+  if (second !== undefined) {
+    test(`axe-core reports zero violations on ${route.pattern} with its second tab open`, async ({ page }) => {
+      const path = await concreteDynamicPath(page, route);
+      await page.goto(path);
+      await expect(page.getByTestId(route.readyTestId)).toBeVisible({ timeout: 15_000 });
+      await page.waitForLoadState("networkidle");
+      await page.getByTestId(second.tabTestId).click();
+      await expect(page.getByTestId(second.panelTestId)).toBeVisible();
+      // THE TAB WRITES THE URL, so the click starts a client navigation and the RSC payload for it is still
+      // in flight — during which `document.title` is momentarily empty and axe's `document-title` rule fires.
+      // That is the same defect as scanning a page still rendering "Loading…", one interaction later, and
+      // this file already says so; the settle is what makes the scan a measurement of the page rather than of
+      // a navigation. Measured: light passed and dark failed on a machine at load 30.
+      await expect(page).toHaveURL(second.url);
+      await page.waitForLoadState("networkidle");
+      // AND networkidle IS NOT ENOUGH, measured rather than assumed: with the settle above in place this
+      // still failed `document-title` on an IDLE machine (load 5.5), because the title is written by React
+      // after hydration and the network can fall quiet before that happens. `networkidle` is a proxy for the
+      // condition; this waits for the CONDITION. The same rule the rest of this file follows — assert the
+      // thing, not a stand-in for it.
+      await page.waitForFunction(() => document.title.trim().length > 0);
+      const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+      expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
+      scannedSecondTabs.add(route.pattern);
+    });
+  }
+}
+
+
+const scannedDialogs = new Set<string>();
+
+for (const d of FORM_DIALOGS) {
+  test(`axe-core reports zero violations with ${d.dialog} open`, async ({ page }) => {
+    await page.goto(d.route);
+    // The opener is inside a PANEL's head, so it does not exist until that panel has settled — the same
+    // readiness rule the route loop follows, applied one interaction later.
+    await expect(page.getByTestId(d.open)).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId(d.open).click();
+    await expect(page.getByTestId(d.dialog)).toBeVisible();
+    // The ACCESSIBLE NAME, asserted rather than assumed: components/FormDialog.tsx names itself with
+    // `aria-label` precisely because an aria-labelledby into ResourceForm's derived heading id would produce
+    // an EMPTY name if the wording changed — and an empty name is not something axe reports as a violation.
+    // The NAME rather than the attribute: ui/Dialog names itself through Base UI's <Title> and an
+    // aria-labelledby it owns, the hand-rolled one used aria-label, and an empty name is what both were
+    // written to catch. toHaveAccessibleName fails on an empty one either way.
+    await expect(page.getByTestId(d.dialog)).toHaveAccessibleName(d.label);
+    await expect(page.getByTestId(d.dialog)).toHaveAttribute("aria-modal", "true");
     const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
     expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
+    expect(results.passes.length + results.violations.length + results.incomplete.length).toBeGreaterThan(0);
+    scannedDialogs.add(d.dialog);
   });
 }
 
@@ -141,6 +194,110 @@ test("the WCAG 2.1/2.2 tags genuinely select rules the 2.0 tags do not", async (
   // eslint-disable-next-line no-console -- the number is the evidence; a silent widening is the trap.
   console.log(`AXE TAG WIDENING — 2.0 tags select ${narrow.size} rules, WCAG_TAGS selects ${wide.size}; added: ${added.join(", ")}`);
   expect(added).toEqual(["autocomplete-valid", "avoid-inline-spacing", "target-size"]);
+});
+
+// THE POPUPS, WHICH ARE THE ONE SURFACE NO OTHER MEASUREMENT IN THIS SUITE REACHES (E29 component layer).
+//
+// The generated loop above scans each route as it opens, with every listbox and menu CLOSED — and a closed
+// popup renders nothing, so those scans report a clean bill of health for markup they never saw. That is the
+// same defect as scanning a page still rendering "Loading…", and this file already says so about the second
+// tab; the component layer adds two more instances of it.
+//
+// tests/contrast.spec.ts cannot close the gap either, and for a structural reason rather than a timing one:
+// its sweep selects `input, select, textarea, button`, and a listbox row is a `<div role="option">` while a
+// menu row is a `<div role="menuitem">`. Neither would be measured even with the popup open.
+//
+// So the popups are scanned HERE, open, by the same tag set as every other scan in this file. What that
+// buys concretely: colour-contrast on the row text and on the highlighted/selected states, aria-required-
+// children on the listbox, target-size (WCAG 2.2) on rows this console sizes itself, and the
+// aria-hidden/focus wiring around a portalled popup — none of which any other leg looks at.
+for (const surface of [
+  { name: "a listbox", open: "session-status-filter", expect: '[role="listbox"]' },
+  { name: "a row menu", open: "session-menu", expect: '[role="menu"]' },
+]) {
+  test(`axe-core reports zero violations on /sessions with ${surface.name} open`, async ({ page }) => {
+    await page.goto("/sessions");
+    await expect(page.getByTestId("panel-sessions")).toBeVisible({ timeout: 15_000 });
+    // A ROW MUST EXIST BEFORE THE ROW MENU DOES. Opening a control that is not there would fail on the click
+    // rather than on the scan, which is the right failure — but the wait is what makes the scan a
+    // measurement of a populated list rather than of an empty one.
+    await expect(page.getByTestId("panel-sessions").locator("tbody tr").first()).toBeVisible({ timeout: 15_000 });
+    await page.waitForLoadState("networkidle");
+
+    await page.getByTestId(surface.open).first().click();
+    const popup = page.locator(surface.expect);
+    await expect(popup, `${surface.name} did not open, so the scan below would be of a closed control`).toBeVisible();
+    // AND IT HAS CONTENT. A popup that answers to its name before its rows resolve is exactly the shape
+    // tests/reveal-once.spec.ts failed on this morning: the container is visible, the scan finds nothing to
+    // judge, and the result is a green scan of an empty box.
+    await expect(popup.locator('[role="option"], [role="menuitem"]')).not.toHaveCount(0);
+
+    const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+    expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
+    expect(results.passes.length + results.violations.length + results.incomplete.length).toBeGreaterThan(0);
+    // eslint-disable-next-line no-console -- the row count is the evidence the scan had something to judge.
+    console.log(`AXE POPUP — ${surface.name} on /sessions scanned with ${String(await popup.locator('[role="option"], [role="menuitem"]').count())} row(s)`);
+  });
+}
+
+// AND THE ONE SURFACE THE POPUP SCANS ABOVE STILL DO NOT REACH: AN OPEN DIALOG.
+//
+// CLAUDE.md names this as a shipped defect of this suite, in its own words: "hiçbir axe taraması açık bir
+// dialog ile koşmamıştı, çünkü döngü rotayı yüklenirken tarıyor ve expectAxeClean dialog kapandıktan sonra
+// oturuyordu — yani bir form dialog'a taşınınca kanıttan sessizce çıkıyor ve süpürme kapsam daralırken daha
+// temiz bir sayı raporluyordu." No axe scan had ever run with a dialog open, because the generated loop
+// scans a route as it loads and every expectAxeClean sits AFTER the dialog closed. A form moved into a
+// dialog therefore leaves the evidence silently, and the sweep reports a CLEANER number while covering less.
+//
+// That is not hypothetical here: two page agents are moving their create forms into components/ui/Dialog.tsx
+// right now, and app/globals.css:134 records the same shape already happening once — `button.danger` went a
+// whole epic unmeasured because "its only caller was inside a dialog, which the sweep walks the routes with
+// CLOSED".
+//
+// So this scans one. The dialog is reached the way an operator reaches it — a row menu, then the item — and
+// the assertions before the scan are what stop it being a scan of nothing: the dialog is visible, it carries
+// the alertdialog role, and its two controls are present.
+test("axe-core reports zero violations on /fleet with a destructive dialog OPEN", async ({ page }) => {
+  await page.goto("/fleet");
+  await expect(page.getByTestId("panel-runners")).toBeVisible({ timeout: 15_000 });
+  const toggles = page.getByTestId("panel-runners").locator('[data-testid^="runner-menu-"]');
+  await expect(toggles.first(), "the machines panel rendered no rows, so no dialog can be opened").toBeVisible({ timeout: 15_000 });
+
+  // The first machine whose menu offers a revoke. Walked rather than assumed: which machines are revocable
+  // is fixture state, and a hard-coded id is the thing that rots.
+  let opened = "";
+  const count = await toggles.count();
+  for (let i = 0; i < count && opened === ""; i++) {
+    const toggle = toggles.nth(i);
+    const id = (await toggle.getAttribute("data-testid"))?.replace("runner-menu-", "") ?? "";
+    await toggle.click();
+    // The popup is portalled, so it exists a frame after the click — `count()` does not auto-wait.
+    await expect(page.getByRole("menu")).toBeVisible();
+    if ((await page.getByTestId(`runner-revoke-${id}`).count()) > 0) {
+      await page.getByTestId(`runner-revoke-${id}`).click();
+      opened = id;
+    } else {
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("menu")).toHaveCount(0);
+    }
+  }
+  expect(opened, "no machine on this stack offers a revoke, so this scan would be of a closed dialog").not.toBe("");
+
+  const dialog = page.getByTestId("runner-revoke-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveAttribute("role", "alertdialog");
+  // CONTENT BEFORE THE SCAN. A dialog that answers to its name before its review region resolves is the
+  // reveal-once defect one interaction later: axe finds a shell, reports nothing, and the number looks fine.
+  await expect(page.getByTestId("runner-revoke-dialog-review")).toBeVisible();
+  await expect(page.getByTestId("runner-revoke-dialog-confirm")).toBeVisible();
+
+  const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+  expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
+  expect(results.passes.length + results.violations.length + results.incomplete.length).toBeGreaterThan(0);
+  // eslint-disable-next-line no-console -- the count is the evidence that the scan had a dialog to look at.
+  console.log(
+    `AXE DIALOG — /fleet revoke dialog for ${opened} scanned with ${String(await dialog.locator("button, a[href], input").count())} control(s) inside it`,
+  );
 });
 
 test("axe-core reports zero violations on the live-run surface after a completed run", async ({ page }) => {
@@ -215,6 +372,31 @@ test("every route lib/routes.ts declares was actually scanned by axe", () => {
   // eslint-disable-next-line no-console -- the count is the evidence.
   console.log(`AXE DYNAMIC COVERAGE — ${scannedDynamic.size}/${declaredDynamic.length} declared pattern(s) scanned: ${[...scannedDynamic].sort().join(", ")}`);
   expect([...scannedDynamic].sort(), "a dynamic route declared in lib/routes.ts was never put through axe").toEqual(declaredDynamic);
+  // AND EVERY DECLARED SECOND TAB WAS OPENED. Without this the `secondTab` field would be a declaration with
+  // no consequence — a route could name a tab that no scan reaches and the suite would stay green, which is
+  // the same unscanned-screen hole one level down.
+  const declaredSecond = DYNAMIC_CONSOLE_ROUTES.filter((r) => r.secondTab !== undefined)
+    .map((r) => r.pattern)
+    .sort();
+  // eslint-disable-next-line no-console -- the count is the evidence.
+  console.log(`AXE SECOND-TAB COVERAGE — ${scannedSecondTabs.size}/${declaredSecond.length} declared second tab(s) opened and scanned: ${[...scannedSecondTabs].sort().join(", ")}`);
+  expect([...scannedSecondTabs].sort(), "a route declares a second tab that no axe scan opened").toEqual(declaredSecond);
+  // AND THE CREATE DIALOGS, DERIVED FROM THE SOURCE RATHER THAN COUNTED BY HAND. A `<FormDialog` mount in a
+  // page is a surface that exists only after a click; if the number of them stops matching the rows in
+  // FORM_DIALOGS, a dialog has shipped that no scan opens — which is the unscanned page in its newest
+  // disguise, and the one this file exists to make impossible.
+  // The walk moved to tests/constants.ts so the CONTRAST sweep can make the same assertion independently —
+  // it opens these same five dialogs, and it used to be complete only because this file happened to run.
+  const mounted = formDialogMountCount();
+  // eslint-disable-next-line no-console -- the count is the evidence.
+  console.log(`AXE DIALOG COVERAGE — ${scannedDialogs.size}/${String(FORM_DIALOGS.length)} declared dialog(s) scanned; ${String(mounted)} FormDialog mount(s) in app/**/page.tsx`);
+  expect(scannedDialogs.size, "a dialog declared in FORM_DIALOGS was never opened by a scan").toBe(FORM_DIALOGS.length);
+  expect(
+    mounted,
+    "the tree mounts a number of FormDialogs that FORM_DIALOGS does not describe. A create form behind a " +
+      "button is scanned by nothing until a test opens it, so a mount with no row here is an unscanned modal.",
+  ).toBe(FORM_DIALOGS.length);
+
   // A ROUTE WITH NO LEAD SENTENCE IS THE SAME OMISSION AS ONE WITH NO READINESS SIGNAL, and it fails the
   // same way. Every page in this console used to open with a panel or a wall of equally-weighted notes,
   // and the only h1 on any of them was the brand — so "which page is this and what is it for" had no

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { NEXT_PORT } from "./constants";
-import { announceProfile, sessionHeaders, signIn, skipOnReal } from "./profile";
+import { announceProfile, chooseOption, chosenValue, sessionHeaders, signIn, skipOnReal } from "./profile";
 
 // THE FLEET SCREEN, AND THE STATE E24 SHIPPED A DECISION FOR THAT NOTHING COULD SHOW (E28 T3, plan §T3).
 //
@@ -56,9 +56,48 @@ async function open(page: Page) {
  * the dialog's own testids, and a locator that matched those would depend on whether one was open.
  */
 async function firstMachineWith(page: Page, action: "cordon" | "revoke"): Promise<string> {
-  const button = page.getByTestId("panel-runners").locator(`[data-testid^="runner-${action}-"]`).first();
-  await expect(button, `no machine on this stack offers ${action}`).toBeVisible({ timeout: 15_000 });
-  return (await button.getAttribute("data-testid"))?.replace(`runner-${action}-`, "") ?? "";
+  // THE ROW ACTIONS MOVED INTO A ROW-END ⋯ MENU (page-parity pass), so a row's control does not EXIST until
+  // its menu is open. The menus are walked in order and the first one offering `action` is the answer, which
+  // is the same claim this helper always made — a machine on THIS stack that offers this control — and the
+  // menu is LEFT OPEN, so the caller's own click finds the control where the helper found it.
+  //
+  // Opening a menu makes no request, which the single-read leg below depends on: it asserts that nothing has
+  // read a machine singly before the dialog asked.
+  const toggles = page.getByTestId("panel-runners").locator('[data-testid^="runner-menu-"]');
+  await expect(toggles.first(), "the machines panel rendered no rows at all").toBeVisible({ timeout: 15_000 });
+  const count = await toggles.count();
+  for (let i = 0; i < count; i++) {
+    const toggle = toggles.nth(i);
+    const id = (await toggle.getAttribute("data-testid"))?.replace("runner-menu-", "") ?? "";
+    await toggle.click();
+    // THE MENU IS AWAITED BEFORE IT IS PROBED, and that is a real behavioural difference rather than a
+    // flake being papered over (E29 component layer). The old `⋯` was React state: the panel re-rendered
+    // synchronously with the click, so `count()` — which does NOT auto-wait — saw the item immediately.
+    // components/ui/Menu.tsx portals the popup to <body> and positions it with Floating UI, which lands a
+    // frame later, so an immediate `count()` reads zero and the walk reports "none of the seven carried it".
+    // Measured: exactly that, on all seven rows.
+    await expect(page.getByRole("menu"), `the ${id} row menu did not open`).toBeVisible();
+    if ((await page.getByTestId(`runner-${action}-${id}`).count()) > 0) return id;
+    // Escape rather than a second click on the trigger: a click while open is a toggle in both
+    // implementations, but Escape is the one the menu itself owns and it leaves focus on the trigger, so the
+    // next iteration starts from a known place.
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toHaveCount(0);
+  }
+  throw new Error(`no machine on this stack offers ${action} — ${String(count)} row menu(s) were opened and none carried it`);
+}
+
+/**
+ * openRowMenu opens one row's ⋯ so the control inside it can be clicked.
+ *
+ * The wait is the same one findMachineOffering needs and for the same reason: the popup is portalled, so it
+ * exists a frame after the click. Every caller here clicks something INSIDE the menu next, and a Playwright
+ * click auto-waits — so this would usually work without the wait and fail on a slow machine, which is the
+ * worst of both. Waiting for the menu says what the helper is for.
+ */
+async function openRowMenu(page: Page, testId: string): Promise<void> {
+  await page.getByTestId(testId).click();
+  await expect(page.getByRole("menu"), `the ${testId} menu did not open`).toBeVisible();
 }
 
 /** singleReadWatcher records every GET /v1/runners/{id} the BROWSER makes — the network assertion below. */
@@ -80,8 +119,12 @@ test("a pool is created from the console with the posture it was given", async (
   const name = `t3-fleet-${Date.now()}`;
   await open(page);
 
+  // THE CREATE FORM IS BEHIND THE PANEL'S `+ Create pool` BUTTON (page-parity-govern pass). A driver change:
+  // every assertion below is the one it was, made against the same form.
+  await page.getByTestId("pool-create-open").click();
+  await expect(page.getByTestId("pool-create-dialog")).toBeVisible();
   await page.getByTestId("pool-name-input").fill(name);
-  await page.getByTestId("pool-posture-select").selectOption("unsandboxed-host");
+  await chooseOption(page, "pool-posture-select", "unsandboxed-host");
   await page.getByTestId("pool-os-input").fill("darwin");
   await page.getByTestId("pool-arch-input").fill("arm64");
   await page.getByTestId("pool-strict-input").check();
@@ -173,6 +216,7 @@ test("an existing pool's waiting room is switched on from the console", async ({
   expect(id).not.toBe("");
 
   await open(page);
+  await openRowMenu(page, `pool-menu-${id}`);
   await page.getByTestId(`pool-strict-${id}`).click();
   await expect(page.getByTestId("pool-strict-status")).toContainText(id, { timeout: 15_000 });
 
@@ -187,9 +231,12 @@ test("a pool key is shown once, and nothing reads it back", async ({ page }) => 
   // nothing else (api/runners.go:282 vs :298,:320). Runs on BOTH profiles — minting a pool key is a real
   // write against a real control plane.
   await open(page);
-  const pool = await page.getByTestId("poolkey-pool-select").inputValue();
+  const pool = await chosenValue(page, "poolkey-pool-select");
   expect(pool, "the key panel has no pool selected, so the mint below would be about nothing").not.toBe("");
 
+  // Same move, same reason: the mint is behind the key panel's `+ Mint key`.
+  await page.getByTestId("poolkey-mint-open").click();
+  await expect(page.getByTestId("poolkey-mint-dialog")).toBeVisible();
   await page.getByTestId("poolkey-mint-button").click();
   const value = page.getByTestId("poolkey-reveal-value");
   await expect(value).toBeVisible({ timeout: 15_000 });
@@ -213,10 +260,13 @@ test("revoking a pool key shows the machines it already admitted and does not st
   // operator not shown them reads "revoked" as "removed" and believes one call decommissioned a fleet.
   skipOnReal("DIV-UI-009");
   await open(page);
-  await page.getByTestId("poolkey-pool-select").selectOption("pool_mac");
+  await chooseOption(page, "poolkey-pool-select", "pool_mac");
   // SELECTED BY PREFIX, NOT BY A FIXED ID. A revoked key stays revoked, so the fixture re-seeds a fresh
   // revocable one with a new id — the approval queue's rule, and the reason is that this suite runs twice
   // (once per colour scheme) against one fixture process.
+  const menu = page.locator('[data-testid^="poolkey-menu-rpk_seeded_"]').first();
+  await expect(menu).toBeVisible({ timeout: 15_000 });
+  await menu.click();
   const revocable = page.locator('[data-testid^="revoke-poolkey-rpk_seeded_"]').first();
   await expect(revocable).toBeVisible({ timeout: 15_000 });
   await revocable.click();
@@ -311,6 +361,7 @@ test("the review names the machine's label and the count the gateway gave for it
   // constant, and the number is the one an operator decides to unplug on.
   skipOnReal("DIV-UI-009");
   await open(page);
+  await openRowMenu(page, "runner-menu-run_active_02");
   await page.getByTestId("runner-revoke-run_active_02").click();
   const review = page.getByTestId("runner-revoke-dialog-review");
   await expect(review).toBeVisible({ timeout: 15_000 });
@@ -393,10 +444,19 @@ test("a parked tool call is not on /fleet, and /fleet says which queue holds it"
   await page.goto("/approvals");
   await expect(page.getByTestId("panel-approvals")).toBeVisible({ timeout: 15_000 });
   // THE CONDITION IS ASSERTED PRESENT, not assumed: a parked call has to exist or "the fleet page does not
-  // show it" is a statement about an empty world. Its id is taken off the row's own testid rather than out
-  // of prose, so this cannot pass by matching nothing.
-  const parkedID = (await page.locator('[data-testid^="tool-approval-facts-"]').first().getAttribute("data-testid"))?.replace("tool-approval-facts-", "") ?? "";
+  // show it" is a statement about an empty world. Its id is taken off the ROW rather than out of prose, so
+  // this cannot pass by matching nothing.
+  //
+  // READ OFF THE TABLE AND THEN OPENED (page-parity pass). This used to take the id off the first
+  // `tool-approval-facts-*` on the page, which existed only because /approvals rendered every parked call's
+  // whole ledger AND its decision form inline — seven forms on one screen. The queue is a table now and the
+  // facts belong to whichever call is selected, so the row is picked first and opened second. A DRIVER edit:
+  // what this leg asserts — that the fleet page shows neither the id nor the hash, and says where the call
+  // is — is untouched.
+  const parkedID = (await page.getByTestId("approval-open").first().getAttribute("data-approval-id")) ?? "";
   expect(parkedID, "no gated tool call is parked, so this assertion would be true of an empty world").not.toBe("");
+  await page.getByTestId("approval-open").first().click();
+  await expect(page.getByTestId(`tool-approval-facts-${parkedID}`)).toBeVisible({ timeout: 15_000 });
   const hash = await page.getByTestId(`tool-approval-request-hash-${parkedID}`).innerText();
   expect(hash, "the parked call carries no request hash, which is the thing a machine enrolment does not have").not.toBe("");
 

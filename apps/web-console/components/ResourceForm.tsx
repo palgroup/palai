@@ -2,7 +2,9 @@
 
 import type { ReactNode } from "react";
 
+import { Button } from "@/components/ui/Button";
 import { Picker, type PickerOption } from "@/components/Picker";
+import { Field, FieldControl } from "@/components/ui/Field";
 
 // THE FORM DISCIPLINE, ESTABLISHED ONCE (E25 T2, plan §3.5 N11). E25 adds six configuration forms across
 // T4/T5/T6 and every one of them owes the same four things. They are written here so those tasks inherit them
@@ -15,7 +17,7 @@ import { Picker, type PickerOption } from "@/components/Picker";
 //      Identification (A): the error is "described to the user IN TEXT".
 //   3. STATUS IN TEXT, NEVER COLOUR ALONE — a glyph plus a word, the same rule Status.tsx and Panel.tsx
 //      already follow (a red border says nothing to a screen reader and nothing to a colourblind operator).
-//   4. EVERY CONTROL KEYBOARD-REACHABLE: real <input>/<textarea>/<button> elements in document order, no
+//   4. EVERY CONTROL KEYBOARD-REACHABLE: real <input>/<textarea>/<Button> elements in document order, no
 //      tabindex, no div-with-onClick. tests/a11y.spec.ts presses Tab until it reaches a control, so anything
 //      dropped out of the tab order fails rather than merely looking fine.
 //
@@ -151,7 +153,6 @@ export function ResourceForm({
       >
         {fields.map((field) => {
           const id = `field-${field.name}`;
-          const describedBy = field.hint ? `${id}-hint` : undefined;
           // The select arm — INCLUDING the options-less rule in the header — moved to components/Picker.tsx in
           // E25 T6, when three standalone pickers appeared that are not form fields (an agent chooser, and the
           // agent + revision pins on /runs). The rule and the `${testId}-empty` contract are now written once
@@ -175,39 +176,32 @@ export function ResourceForm({
               />
             );
           }
+          // THE FOUR PARTS ARE THE PRIMITIVE'S NOW (E29 component layer), AND THE STRING THAT BOUND THEM IS
+          // GONE. What was here was a label, a control, a hint and an `aria-describedby` COMPUTED as
+          // `${id}-hint` — a string that has to match an id written eight lines below it, with nothing in the
+          // tree able to say when it stops matching. components/ui/Field.tsx over @base-ui/react makes the
+          // association a registration instead: Field.Description registers itself on the root and the
+          // control's aria-describedby is composed from it.
+          //
+          // THE ID IS STILL WRITTEN HERE, and deliberately: `field-<name>` is a contract this suite reads
+          // (tests/secret-never-returns.spec.ts asserts `label[for="field-environment"]` has count 0 when the
+          // environment collection is empty). Passing it keeps that assertion about the real markup rather
+          // than about a selector that matches nothing anywhere.
           return (
-            <div key={field.name}>
-              <label htmlFor={id}>{field.label}</label>
-              {field.kind === "textarea" ? (
-                <textarea
-                  id={id}
-                  name={field.name}
-                  rows={2}
-                  required={field.required}
-                  value={field.value}
-                  aria-describedby={describedBy}
-                  onChange={(e) => field.onChange(e.target.value)}
-                  data-testid={field.testId}
-                />
-              ) : (
-                <input
-                  id={id}
-                  name={field.name}
-                  type={field.kind === "password" ? "password" : field.kind === "date" ? "date" : "text"}
-                  autoComplete={field.autoComplete}
-                  required={field.required}
-                  value={field.value}
-                  aria-describedby={describedBy}
-                  onChange={(e) => field.onChange(e.target.value)}
-                  data-testid={field.testId}
-                />
-              )}
-              {field.hint ? (
-                <p className="muted" id={`${id}-hint`}>
-                  {field.hint}
-                </p>
-              ) : null}
-            </div>
+            <Field key={field.name} label={field.label} hint={field.hint}>
+              <FieldControl
+                id={id}
+                name={field.name}
+                multiline={field.kind === "textarea"}
+                rows={field.kind === "textarea" ? 2 : undefined}
+                type={field.kind === "password" ? "password" : field.kind === "date" ? "date" : "text"}
+                autoComplete={field.autoComplete}
+                required={field.required}
+                value={field.value}
+                onChange={(e) => field.onChange(e.target.value)}
+                data-testid={field.testId}
+              />
+            </Field>
           );
         })}
         {children}
@@ -228,9 +222,9 @@ export function ResourceForm({
           </p>
         )}
         <p>
-          <button type="submit" disabled={submitting} data-testid={submitTestId}>
+          <Button type="submit" disabled={submitting} testId={submitTestId}>
             {submitting ? (submittingLabel ?? `${submitLabel}…`) : submitLabel}
-          </button>
+          </Button>
           {actions ? <> {actions}</> : null}
         </p>
       </form>

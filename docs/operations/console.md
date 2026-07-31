@@ -8,7 +8,8 @@ Until E25 T1 it had **no authentication of any kind**. This page is about what c
 importantly, what did not.
 
 > **Installation to configured agent, on one page.** §0 is the whole path in order; §1-§3 are the door and
-> the key; §4 is the approval queue; §4b is tool registration. The environment screen keeps its own page
+> the key; §3b-§3e are the screens behind it — policy and keys, the fleet, metering, and the two read-only
+> registries; §4 is the approval queue; §4b is tool registration. The environment screen keeps its own page
 > (`environments.md`) and the MCP chain keeps its own runbook (`jira-mcp-connection.md`), because both are
 > longer than a step; §0 links to them where they belong in the sequence.
 
@@ -317,6 +318,13 @@ Four sections, in the order an operator acquires them.
 A pool is a **posture** plus the shape of machine expected in it. `sandboxed-linux` is a container the control
 plane isolates; `unsandboxed-host` is a real machine, which is what a rented Mac is.
 
+**Until E28 T1's form existed a tenant had exactly one pool, forever**: the only statement that wrote a pool
+row wrote its name, its posture and its enrolment mode as literals, so a rented-Mac pool could not exist and
+the waiting room could not be switched on.
+
+**A revoked machine identity stays listed.** The machines table does not drop it, because decommissioning is
+a fact worth keeping visible — a list that hid it would make the revocation invisible the moment it worked.
+
 The create form is `POST /v1/runner-pools`. **The posture cannot be changed afterwards and that is
 correctness, not a limitation**: a machine INHERITS its pool's posture when it enrols, so moving a populated
 pool would retroactively change what the machines already in it are. The only field the PATCH route accepts is
@@ -400,6 +408,86 @@ certificate was issued before anybody was asked. Both screens say so and each li
 - **`FLT-P13`: an admission admits an ENROLMENT, not a machine.** The same Mac asks again after every reboot.
 - **`FLC-P3`: this screen polls nothing.** A machine that starts waiting while the browser is closed is here
   when you open it, and not before.
+
+---
+
+## 3d. `/usage` — what has been spent, and what caps it
+
+`/usage` is the **read** half of the metering surface, over four routes that were all mounted long before a
+screen showed them: `GET /v1/usage` (per-meter totals for the caller's scope), `GET /v1/usage/ledger` (the
+settled rows), `GET /v1/budgets` and `GET /v1/quotas` (the limits admission enforces).
+
+The screen carries one sentence per table. The rest of what it used to say is here, because it is about the
+metering model rather than about the screen.
+
+### The scope is the key's, and there is no selector
+
+There is **no organization or project selector on this page and that is deliberate**: the scope comes from
+the verified identity behind the console's own API key, never from a query parameter. A dropdown here would
+be a control that either does nothing or names somebody else's tenant.
+
+### What puts a row in each table
+
+- **A meter** appears once a run *settles* usage. `coordinator/usage.go` names three: `run.admitted`
+  (unit `run`, settled inside the admission transaction, so a real stack has this row the moment a run is
+  created) and `model.input_tokens` / `model.output_tokens` (unit `token`).
+- **A ledger row** is settled *exactly once* against the model request or run that produced it, so a
+  redelivery adds nothing. **A zero-quantity fact is never written** — `settleUsage` skips it — which is the
+  usual reason a completed run appears in `/history` and nowhere in the ledger.
+- **A budget** is a cumulative cap on a meter prefix: admission refuses a run once settled usage since the
+  period start reaches the limit. **A quota** is the same limit inside a rolling window.
+
+### Ceilings, named
+
+- **Nothing on this screen is a bill.** The metering surface reports consumption and caps it. It carries no
+  price, no invoice and no adjustment entry, anywhere.
+- **`GET /v1/usage` takes no time window.** `summaryView` answers lifetime totals for the scope and the route
+  parses no bounds, so **"spent today" is not answerable from the summary**. The LEDGER is windowed
+  (`?created_after` / `?created_before`) and the totals are not. This is why the overview's token card is
+  labelled all-time rather than daily: a card labelled "today" would be a lifetime figure with a false label.
+- **The write half is E26.** `POST /v1/budgets` and `POST /v1/quotas` exist, are gated on `provision`, and the
+  relay would forward either — so the absence of a form is a *choice*, it is stated on the screen, and
+  `tests/observability.spec.ts` asserts the absence rather than trusting it. There is no CLI verb for either.
+
+---
+
+## 3e. `/capabilities` and `/registry` — what is advertised, and how a model is reached
+
+Two read-only screens, and neither has any write at all.
+
+### `/capabilities` — the tiers are the API's, verbatim
+
+`GET /v1/capabilities` is the discovery surface every client reads to learn what a deployment supports
+without probing each route, and `palai up` has printed it to a terminal since E22.
+
+**The SET differs between deployments by design.** `a2a`, `slack`, `queues`, `knowledge` and
+`capability-workers` are advertised **only where the binary mounted them** (`api/capabilities.go`), so a
+console rendering a fixed list of names would silently hide the one a deployment stopped mounting. A
+capability this binary did not mount is **absent** from the table rather than shown as unavailable, because
+discovery never claims what a deployment cannot serve.
+
+**The tier word is not the console's to soften.** It is recomputed at the exit gate from per-case outcomes
+(`uat.CapabilityTierProof`) and served bit-equal to that recompute, so a prettified word on the screen would
+be a console disagreeing with the gate that decided it. `tests/observability.spec.ts` diffs the rendered
+table against the route's own answer for exactly this reason.
+
+The posture panel shows `maturity`, `isolation` and the configured `store:false` retention TTL — the two
+fields `palai up` prints above the same table, plus the knob the reaper honours. **A TTL of 0 is the
+*disabled* posture**, not a TTL of zero seconds, and the screen says so in words.
+
+### `/registry` — model connections, routes, and knowledge bases
+
+Read-only projections of how a model is reached. **`/v1` mounts no console-reachable create for any of the
+three**, so the absence of a form is the API's shape rather than a simplification.
+
+- **A model connection binds a provider to a secret REF — a NAME.** The value behind it is written
+  server-side and is readable through no route, this console included.
+- **A model route** is E16 T1's read-back of the E13 write-only route surface: a route is created by the
+  provisioning API, and this screen is where it becomes visible.
+- **A knowledge base** is what a retrieval tool searches, created and indexed outside this console. Its
+  projection carries `name` and not `display_name` (`knowledge/views.go`), which the fixture got wrong until
+  E25 T2 because a bootstrap stack's collection is empty and the conformance sweep skips an item comparison
+  when either side has no row.
 
 ---
 
@@ -594,6 +682,159 @@ silently, and the agent will call it with no human in the loop. That is `HIL-P5`
 
 ---
 
+## 4c. `/agents` — the lineage list, and `/agents/{id}` where it is changed
+
+**Every paragraph in this section used to be on the screen.** The page-parity pass took four forms and three
+explanatory paragraphs off `/agents` and left a list; what those paragraphs said is true, and it is here
+rather than deleted. Measured before and after on the built console (2026-07-31): `<main>` fell from 3501
+rendered characters to 1810, grey prose from 1158 to 57, forms on the page from 1 to 0, table columns from
+**1** to **7**, and `<h2>` headings from 5 to 1.
+
+### An agent is a name; a revision is the configuration
+
+An agent profile is a **name with a lineage of immutable revisions**. A run is pinned to a **published**
+revision, and that pin is what makes a run reproducible. There is no PATCH and no DELETE anywhere on this
+surface (`api/router.go` mounts a create, three reads, a revision create and a publish) — so a revision is
+**superseded, never edited**, and **publishing cannot be undone**: `000019_agents.up.sql` sets `published_at`
+once and no route unsets it.
+
+The console follows that shape: the list creates and reads, and every write that changes one agent is on
+that agent's own page.
+
+### Where each control lives now
+
+| What | Where it was | Where it is |
+|---|---|---|
+| Create an agent | a form stacked under the list | a dialog behind `+ New agent` on `/agents` |
+| Choose an agent | a `<select>` on `/agents` | **gone** — the row you click is the selection |
+| Create a revision | a form stacked under that | `/agents/{id}`, the **Revisions** tab |
+| Publish a revision | the same form's table | the same table, on `/agents/{id}` |
+| Diff two revisions | panel five of five on `/agents` | `/agents/{id}?segment=compare`, the **Compare** tab |
+
+### There is no Created column, and that is the API rather than the screen
+
+`GET /v1/agents` answers `{id, object, name}` per row and `GET /v1/agents/{id}` answers the same three
+fields. `storage/queries/agents.sql`'s `ListAgentProfiles` does select `created_at` and `api.ListRow` does
+carry it — but `renderPage` puts only `row.Body` on the wire (`page.Data[i] = row.Body`), so the timestamp
+exists solely to mint a pagination cursor. **No agent timestamp is readable through the public API at all**,
+and neither is a revision's: the revision projection carries no `created_at` either. A "Created" or "Last
+updated" column here would be a field the console invented.
+
+The four lineage columns — Model, Revisions, Latest published, Status — therefore come from **one extra read
+per row** of `GET /v1/agents/{id}/revisions`, bounded to the rows on screen and capped at six in flight. A
+lineage still loading renders `…`; one that could not be read renders `— unreadable`, which is not the same
+cell as `no revisions`.
+
+### Both external fields read back, and one half is newer than it looks
+
+A revision names a **tool set** (the GRANT — the published set revision whose tools a run may reach) and an
+**MCP connection** (the CEILING — the servers it may reach at all). The MCP rider has been readable since
+E22; the tool set was **write-only until E25 T7**, so a revision could name a set nobody could confirm. Both
+are columns on the revisions table now, and each absence fails quietly and **differently**: without the set
+the tool is never advertised, without the connection it resolves to nothing even when it is.
+
+Neither is offered as free text, on purpose. A `tool_sets` id is **not reference-checked** at create or at
+publish (`automation/agents.go`, deliberately — a typo'd, draft or foreign id fails CLOSED), so a mistyped id
+is accepted by every route and then grants nothing, silently, forever. Only **published** set revisions are
+offered, for the same reason: a draft pinned there is a revision that will never advertise anything and never
+say why.
+
+### Ceilings, named
+
+- **The list is forward-only and cut at twenty.** The cut is stated in words with the server's own cursor
+  behind a `Load more`; there is no backward control because `beginList` refuses `?before=` with a 400.
+- **The row menu holds two items and both are navigations.** No rename, no delete, no duplicate — the API
+  mounts none of them, and a third entry would be a control that refuses.
+- **An environment bound here reaches the agent's SHELL**, as `KEY=value` — never something the model is
+  shown and never part of a prompt. Publishing a revision that names an environment this organization does
+  not have is refused with a **400** (not a 404: the revision id in the path is real).
+- **A browser cannot prove the keys arrive.** That loop is closed at the component tier, over the same HTTP
+  routes this screen calls:
+  `apps/control-plane/internal/execution/console_environment_run_component_test.go`.
+- **One set and one connection per revision.** The field is an array and the API takes several; the console
+  offers one of each.
+
+---
+
+## 4d. `/repositories` — the binding list, and `/repositories/{id}` for the whole record
+
+Same pass, same three moves. Measured before and after on the built console (2026-07-31): `<main>` 2197
+rendered characters with 1650 of grey prose and an eight-field registration form open on the page, under two
+standing paragraphs.
+
+**Provider + repository identity are the authoritative name.** A display name or a URL is not trusted as
+one anywhere in this system, which is why the list shows the identity rather than the clone URL.
+
+**No credential is on this surface, and it is structural rather than a courtesy.**
+`RepositoryBindingCreate` carries a `connection_ref` and no credential field at all
+(`api/repository_bindings.go:28-39`), and the read side of `secret_refs` projects `{name, version,
+updated_at}` with no value (`identity/secrets.go`). The strongest thing this screen can leak is the NAME of
+a credential — the name an operator chose. The ref is **chosen** from the secret-ref list and never typed:
+a typo'd ref is accepted by a form and then fails at CLONE TIME, inside a run, with a refusal about git
+authentication — as far from the field that caused it as a refusal can get.
+
+**Registering a binding proves nothing.** Nothing is cloned on that screen, no credential is exercised and
+no permission is checked — a wrong provider, a wrong identity or a revoked credential shows up at CLONE
+TIME, inside a run. That sentence is now in the create dialog, where somebody is about to register one,
+and in the status the create leaves behind (*"Nothing has been cloned: the first time this binding is
+exercised is a run that names it"*).
+
+**A binding cannot be changed or removed.** `api/router.go:44-46` mounts a create and two reads — no PATCH,
+no DELETE. That sentence is now on `/repositories/{id}`, which is the page an operator opens looking for the
+edit control. A binding registered wrongly is superseded by registering another and pointing runs at that
+one.
+
+**Four fields were written and never shown back.** The clone URL, the data classification, the region
+constraint and the pass-through `policy` object are on the record page; they do not fit a list, and a
+console that writes a field it never displays is the write-and-pray shape §2 forbids. The policy object is
+rendered as pretty-printed JSON exactly as the API returned it — the console passes it through verbatim on
+the way in and cannot know which keys this deployment reads, so it narrows nothing on the way out.
+
+The clone URL is **not a link**. It is fetched by the control plane, never followed by a reader, and an
+operator-supplied URL turned into a click target on the console's own origin is a defect this tree already
+fixed once (artifact downloads, E17 T10).
+
+---
+
+## 4e. `/approvals` and `/history` — a queue you can triage, and a list whose ids are readable
+
+### `/approvals` was the worst screen in the console
+
+Measured before and after (built console, 2026-07-31 → 2026-08-01): `<main>` **7529 → 1917** rendered
+characters, grey prose **3626 → 606**, forms on the page **7 → 0**, table columns **1 → 5**, `<h2>` headings
+**8 → 2**. Every parked call rendered its whole ledger *and* a full decision form, inline, in a one-column
+table — so the one thing a queue exists for, seeing what is waiting, was the one thing it could not do.
+
+The table carries ID, Tool, Operator label, Run and Deadline. The decision is one panel below it, for the
+call you select, and the selection is in the URL (`?approval=…`): a reload lands on the call you were
+reading, and a parked call can be sent to a colleague as a link.
+
+**There is no `/approvals/{id}` page and there cannot be one.** `api/router.go` mounts a list and two
+decision routes — no per-approval read — and **no `/v1` route can park an approval at all**: one exists only
+when a gated tool call parks. A dynamic route would therefore be a page the accessibility sweep cannot reach
+on a real stack, which is precisely the unscanned-page hole `lib/routes.ts` exists to close.
+
+**The scope note stays**, because every clause in it changes what an *empty* queue means. So do the three
+standing facts (the principal a decision is recorded against, the two gates, the polling period) — a real
+compose stack's queue is permanently empty, so a sentence that renders only beside a selected row is one a
+real operator can never read.
+
+### `/history`
+
+Already mostly table, so the character count barely moved (2278 → 2113) and the change is in what the columns
+*are*: a readable short id that is also the opening control (it was a raw 36-character id that was not a
+control, next to a fourth column holding one button reading "Open"), a status pill, the **session as a link**,
+and a relative timestamp (it was a raw ISO string).
+
+The session link is the cross-reference this console did not have: a run belongs to a session,
+`/sessions/{id}` replays that session's journal, and an operator holding a response id previously had no way
+to reach the conversation it came from without retyping an id.
+
+Selection is in the URL (`?run=…`). A `?run=` naming a row past the twenty-row cut says so rather than
+sitting blank.
+
+---
+
 ## 5. When it does not work
 
 | Symptom | Cause | Fix |
@@ -634,6 +875,37 @@ though, is deliberately uniform — one credential means there is no half to be 
 console does not serve at all without a password; the gate is inside the relay and every exported method
 passes through it, counted rather than asserted; a cross-origin write is refused even with a valid session;
 and the operator session never rides an upstream request.
+
+### A control that moves into a dialog leaves every sweep that walks routes
+
+Written down because the page-parity passes moved five create forms behind a `+ Create X` button and **all
+three route-walking sweeps stopped seeing them at once** — each one reporting a smaller, cleaner number,
+which is the worst direction for a coverage loss to move a metric.
+
+| sweep | what it lost | closed |
+|---|---|---|
+| axe (`a11y.spec.ts`) | five dialogs, none ever scanned open — and a modal owns the focus trap, the accessible name and the Escape contract, which is exactly what axe has rules for | a generated scan per `FORM_DIALOGS` row |
+| contrast (`contrast.spec.ts`) | **144 controls, a third of the sweep** (265 → 409) | each dialog opened and measured, with a per-dialog positive control |
+| served forms (`auth.spec.ts`) | five of ten forms left the server-rendered HTML | the expectation is *derived* — `ResourceForm` mounts minus `FormDialog` mounts, per route |
+
+`app/globals.css:134` records the same failure once before, when a `button.danger` inside a dialog went
+unmeasured for an entire epic. The rule: **when a control moves behind an interaction, ask which sweeps
+walked to it, and open the thing.** `FORM_DIALOGS` in `tests/constants.ts` is the one list all of them read,
+and `a11y.spec.ts` asserts its row count equals the `FormDialog` mounts in `app/**/page.tsx`, so a sixth
+dialog is covered by all of them or none.
+
+### A panel must not answer to its name before it has content
+
+`components/Panel.tsx` withholds its `data-testid` until its rows settle, and `lib/routes.ts` requires each
+route to name the testid that means "this page has rendered". Measured on 2026-08-01 with a probe that polls
+every 20 ms for each declared signal and records what is still a spinner at the instant it appears:
+**sixteen of seventeen clean, one wrong** — `/sessions/[id]` named the transcript `<section>`, which renders
+synchronously, so it went visible while the chip row above it still said "Loading…". It did not fail, because
+the scan follows the signal with a `networkidle` wait — and that file calls networkidle "a proxy for the
+condition" twice in its own comments. A wrong signal covered by a proxy is a green that belongs to the
+harness. The signal now names the chip row, which renders only once the read has settled **in either
+direction** — a failed read gets a settled "unreadable" chip rather than a permanent spinner, or the scan
+would never fire at all.
 
 ---
 

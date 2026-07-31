@@ -61,6 +61,24 @@ hiçbiri `main`'e yanlış inmedi. Maliyet tespit maliyetiydi. Bu dört kural on
   `make verify`'a biner ve **ağaçtan hiç eksik değildir** — eksik olduğu şey **onu iddia eden
   invocation'dır, ki yokluğu önemli olan tek invocation odur.** Betiği okumak da bacak listesini okumak
   da bulamaz; **ikisi de tam görünür.**
+- **Bir mekanizmayı kanıtlamak, insanın kullandığı YÜZEYİ kanıtlamak değildir. 2026-07-31'de beş kusur
+  çıktı ve beşi de bu şekildi.** Konsolun auth süiti dokuz kolla kimliksiz erişimi kanıtlıyordu, saldırıyı
+  önce gösteriyordu, relay'in her export'unu AST ile sayıyordu — ve **hepsi `/api/console/login`'e `fetch`
+  ile gidiyordu.** Hiçbiri formu sürmedi, ve formun `method`'u yoktu: JS bağlanmadığı her anda parola
+  **URL'e** düşüyordu. On formdan sekizi değer taşıyordu (parola, environment secret'ı, politika dokümanı,
+  token gömülebilen clone URL'i).
+  Aynı gün, aynı şekil, dört kez daha:
+  **(a)** `PALAI_CONSOLE_PASSWORD_HASH` `webServer.env` ile enjekte ediliyordu ve worktree'de `.env.local`
+  hiç yok (gitignore) — yani **dokümanın operatöre tarif ettiği tek yol, hiçbir testin sürmediği yoldu**;
+  o yolda dotenv `$`'ları yiyip hash'i bozuyordu.
+  **(b)** `next dev` hiç hydrate olmuyordu ve süit yalnız `next start` servis ediyordu.
+  **(c)** `journey.spec.ts:66,108` `toContainText("fake")` diyor, profil dallanması yok — **real profilde
+  hiç geçemez**, ama yorumu "runs on BOTH profiles deliberately" diyor.
+  **(d)** `/runs`'taki `Agent (optional)` seçicisi hiçbir şey göndermiyor (`response-create.json` `agent_id`
+  kabul etmiyor); 61 run'ın 54'ünde agent bağı yok.
+  **Kural:** bir yüzey için yazılan her test, **o yüzeyi sürmelidir** — endpoint'i değil formu, harness'ın
+  enjekte ettiğini değil dosyanın taşıdığını, prod build'i değil operatörün koştuğu modu. Bir testin
+  "X çalışıyor" demesi, **X'e giden insan yolunun** çalıştığı anlamına gelmez.
 - **Bir süpürme yalnız BİR yönde bakar, ve iki yönde iki farklı hata vardır.** Dizinleri yürüyen bir
   tarama, **var olan ama sahipsiz** bir dizini bulur; **hiç var olmayan** bir dizini bulamaz. İçe dönük
   boşluklar için otorite **kanonik liste**, dışa dönükler için **yürüyüş**. (E26 T7: `BGT-` hiçbir
@@ -78,3 +96,19 @@ hiçbiri `main`'e yanlış inmedi. Maliyet tespit maliyetiydi. Bu dört kural on
   kullanılıyorsa, gidiş-dönüşü gerçek bir bağımlılığa karşı doğrula.
 - **Kendi konfigürasyonunu kuran bir test, production'ın kurduğu konfigürasyonu hiç görmez.** Kanıtları
   production kablolamasından geçir.
+
+- **Bir testin YEŞİLİ, harness'ın bir özelliği olabilir — ürünün değil.** 2026-07-31 gecesinde konsolun
+  dört kanıtı, CI'ın ve git worktree'sinin sağladığı ama gerçek bir kurulumun sağlamadığı bir koşul yüzünden
+  geçiyordu: `apps/web-console/.env.local`'in **yokluğu** — yani dokümanın her operatöre yarattırdığı dosya.
+  En keskini: *"parolası olmayan bir konsol hiçbir şey servis etmez"* testi, sunucusunu değişkeni **atlayarak**
+  başlatıyordu; `next start` uygulama dizininden `.env.local` okuyunca o konsol **yapılandırılmış** hâle
+  geliyor ve 503 yerine 401 dönüyordu. **Ürünün reddettiğini kanıtlayan test, servis eden bir konsolu
+  ölçüyordu.** Aynı gece bu sınıfın dördüncü örneği erişilebilirlikteydi: hiçbir axe taraması **açık bir
+  dialog** ile koşmamıştı, çünkü döngü rotayı yüklenirken tarıyor ve `expectAxeClean` dialog kapandıktan
+  sonra oturuyordu — yani bir form dialog'a taşınınca kanıttan sessizce çıkıyor ve **süpürme kapsam
+  daralırken daha temiz bir sayı raporluyordu.**
+  *Kural:* bir test bir **reddi** iddia ediyorsa, reddedilen koşulu **kimin sağladığını** sor. Harness onu
+  **yoklukla** sağlıyorsa, operatörün makinesi **varlıkla** sağlayacaktır. Koşulunu **sahiplenen** bir test
+  yaz (kendi dosyasını yazsın, kendi boş değerini açıkça geçsin), bir yokluğu devralan değil. Ve süiti,
+  dokümanın tarif ettiği gibi kurulmuş bir makinede **en az bir kez** koştur: bu dördünün üçü worktree'de
+  görünmezdi, ki her agent orada çalışır.

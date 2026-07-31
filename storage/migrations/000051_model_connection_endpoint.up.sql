@@ -1,4 +1,4 @@
--- 000049 (E29 provider wiring): the ENDPOINT a model connection dials.
+-- 000051 (E29 provider wiring): the ENDPOINT a model connection dials.
 --
 -- WHAT WAS MISSING. `model_connections` (000001) carries a provider family and a secret reference, which is
 -- everything an OpenAI or an Anthropic connection needs — those families have one endpoint and it is
@@ -39,4 +39,4 @@ ALTER TABLE model_connections ADD COLUMN IF NOT EXISTS base_url TEXT NOT NULL DE
 ALTER TABLE model_connections ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
 ALTER TABLE model_connections ADD COLUMN IF NOT EXISTS verification_outcome TEXT NOT NULL DEFAULT '';
 
-INSERT INTO schema_migrations (version) VALUES (49) ON CONFLICT DO NOTHING;
+INSERT INTO schema_migrations (version) VALUES (51) ON CONFLICT DO NOTHING;

@@ -5468,6 +5468,14 @@
             ]
           },
           {
+            "path": "/sessions",
+            "ready_test_id": "panel-sessions",
+            "axe_scanned_in": [
+              "light",
+              "dark"
+            ]
+          },
+          {
             "path": "/runs",
             "ready_test_id": "run-button",
             "axe_scanned_in": [
@@ -5554,10 +5562,18 @@
               "light",
               "dark"
             ]
+          },
+          {
+            "path": "/registry",
+            "ready_test_id": "panel-model-connections",
+            "axe_scanned_in": [
+              "light",
+              "dark"
+            ]
           }
         ],
-        "routes_declared": 12,
-        "routes_axe_scanned": 12,
+        "routes_declared": 14,
+        "routes_axe_scanned": 14,
         "action_ledger": [
           {
             "action": "runner-revoke-dialog",

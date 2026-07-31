@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { Button } from "@/components/ui/Button";
 import { ResourceForm } from "@/components/ResourceForm";
 import { apiSend, RelayError, type Problem } from "@/lib/api";
 
@@ -248,9 +249,9 @@ export function ApprovalRow({ approval, onDecided }: { approval: ToolApproval; o
         error={error}
         onSubmit={() => decide(true)}
         actions={
-          <button type="button" data-testid={`tool-approval-deny-${id}`} disabled={busy} onClick={() => void decide(false)}>
+          <Button testId={`tool-approval-deny-${id}`} disabled={busy} onClick={() => void decide(false)}>
             Deny with this reason
-          </button>
+          </Button>
         }
       />
     </>

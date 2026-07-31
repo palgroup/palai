@@ -1,9 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { shortId } from "../components/Session";
 import { compactTokens, LANE_LABEL, type SessionRow } from "../lib/sessions";
 import { laneFor } from "../lib/timeline";
 import { NEXT_PORT } from "./constants";
-import { announceProfile, sessionHeaders, signIn, skipOnReal } from "./profile";
+import { announceProfile, chooseOption, chooseOptionByLabel, resetFakeFixture, sessionHeaders, signIn, skipOnReal } from "./profile";
 
 // THE TWO SESSION SCREENS, DRIVEN THROUGH THE BROWSER (E29).
 //
@@ -16,6 +17,11 @@ import { announceProfile, sessionHeaders, signIn, skipOnReal } from "./profile";
 // The API's answer is fetched through the CONSOLE'S RELAY with the browser's own session cookie, so even the
 // cross-check travels the public-API-only path and no spec here ever holds a credential.
 test.beforeAll(() => announceProfile("sessions.spec.ts"));
+
+// THIS FILE MUTATES THE SHARED FIXTURE — it renames sessions — and the suite runs two colour-scheme
+// projects over ONE fake process, so the second project inherits the first one's renames. It did: 16
+// assertions failed here in chromium-fake-dark and all 22 passed when that project ran alone (2026-08-01).
+test.beforeAll(resetFakeFixture);
 test.beforeEach(async ({ page }) => signIn(page));
 
 const ORIGIN = `http://127.0.0.1:${NEXT_PORT}`;
@@ -64,9 +70,24 @@ test("every column on the Sessions list is the field it is named after", async (
   // a "the table has six columns" test and fails here.
   const first = data[0];
   const cells = rows.first().locator("td");
-  await expect(cells.nth(0)).toHaveText(first.id);
-  await expect(cells.nth(0).locator("a")).toHaveAttribute("href", `/sessions/${first.id}`);
+
+  // THE ID CELL IS A SHORT FORM, and the short form is DERIVED from the id rather than being a constant:
+  // its head is a prefix of the real id and its tail is a suffix. A cell rendering a fixed placeholder would
+  // pass "the column is not empty" and fails here. The WHOLE value stays reachable — in `title`, in the
+  // link's href, and on the clipboard.
+  const link = cells.nth(0).getByTestId("session-link");
+  await expect(link).toHaveAttribute("title", first.id);
+  await expect(link).toHaveAttribute("href", `/sessions/${first.id}`);
+  const shown = (await link.textContent()) ?? "";
+  expect(shown).toBe(shortId(first.id));
+  const [head, tail] = shown.split("…");
+  expect(first.id.startsWith(head), `${shown} is not a clipping of ${first.id}`).toBe(true);
+  expect(first.id.endsWith(tail)).toBe(true);
+  expect(shown.length).toBeLessThan(first.id.length);
+
+  // The NAME is a link to the same place — measured: whichever cell the operator aims at, they arrive.
   if (first.name !== "") await expect(cells.nth(1)).toContainText(first.name);
+  await expect(cells.nth(1).getByTestId("session-name-link")).toHaveAttribute("href", `/sessions/${first.id}`);
   await expect(cells.nth(2)).toContainText(first.status);
   await expect(cells.nth(4)).toHaveText(`${compactTokens(first.input_tokens)} / ${compactTokens(first.output_tokens)}`);
   // The Created cell is BOTH forms: the relative one a reader sees, and the machine one in `datetime`.
@@ -127,7 +148,73 @@ test("the search box is scoped to the ID, and proves it by not finding a name th
 
   await page.getByTestId("panel-sessions-filter").fill(data[0].id);
   await expect(page.getByTestId("panel-sessions").locator("tbody tr")).toHaveCount(1);
-  await expect(page.getByTestId("panel-sessions").locator("tbody tr td").first()).toHaveText(data[0].id);
+  await expect(page.getByTestId("panel-sessions").getByTestId("session-link")).toHaveAttribute("title", data[0].id);
+});
+
+// THE DROPDOWN IS OPERABLE WITH NO MOUSE, AND IT IS THE HEADLINE OF THE COMPONENT LAYER SO IT IS MEASURED
+// RATHER THAN CITED (E29).
+//
+// The seven native <select>s became components/ui/Select over @base-ui/react, and every other test in this
+// file drives one by CLICKING — tests/profile.ts's chooseOption clicks the trigger and clicks a row. That
+// proves the popup opens and the value lands; it proves nothing at all about the keyboard, which is exactly
+// what a hand-rolled dropdown loses first and what a headless library is adopted FOR. A claim that the
+// library "supplies keyboard navigation" is a citation, and this repository does not accept citations for
+// behaviour on the shipped page.
+//
+// So this drives the whole interaction from the keyboard: Tab to the control, open it, move within the
+// listbox, commit, and dismiss the next one with Escape. The ROLES are asserted alongside, because they are
+// what a screen reader reads and they were absent from this console entirely before — measured on d8ca934b,
+// `grep -rn 'role="listbox"' components app` → 0.
+test("the status dropdown opens, moves and commits from the keyboard alone, and Escape abandons", async ({ page }) => {
+  await openList(page);
+  const trigger = page.getByTestId("session-status-filter");
+
+  // THE ROLES FIRST. A <button> that merely looks like a dropdown announces itself as a button; these three
+  // attributes are what make a screen reader say "combo box, collapsed" and then read the list.
+  await expect(trigger).toHaveJSProperty("tagName", "BUTTON");
+  await expect(trigger).toHaveAttribute("role", "combobox");
+  await expect(trigger).toHaveAttribute("aria-haspopup", "listbox");
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+
+  // GENUINELY REACHED BY Tab, not by .focus() — which succeeds on a tabindex=-1 element Tab can never reach.
+  // The same rule tests/a11y.spec.ts's tabToTestId follows, and the reason it exists.
+  for (let i = 0; i < 40 && !(await trigger.evaluate((el) => el === document.activeElement)); i++) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(trigger, "Tab never reached the status dropdown — it is not keyboard-reachable").toBeFocused();
+
+  await page.keyboard.press("Enter");
+  const listbox = page.getByRole("listbox");
+  await expect(listbox).toBeVisible();
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  const options = listbox.getByRole("option");
+  await expect(options).not.toHaveCount(0);
+
+  // ARROW MOVES THE HIGHLIGHT WITHOUT COMMITTING, which is the half a click can never exercise: the control
+  // still reads its old value while the reader walks the list.
+  const before = await trigger.getAttribute("data-value");
+  await page.keyboard.press("ArrowDown");
+  await expect(listbox.locator('[role="option"][data-highlighted]')).toHaveCount(1);
+  expect(await trigger.getAttribute("data-value"), "arrowing through the list changed the value before it was committed").toBe(before);
+
+  // ENTER COMMITS the highlighted row, and the control closes carrying it.
+  const highlighted = await listbox.locator('[role="option"][data-highlighted]').getAttribute("data-value");
+  await page.keyboard.press("Enter");
+  await expect(listbox).toHaveCount(0);
+  await expect(trigger).toHaveAttribute("data-value", String(highlighted));
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+
+  // AND ESCAPE ABANDONS rather than committing. A dropdown an operator cannot back out of with the keyboard
+  // is one they will back out of by reloading the page.
+  const committed = await trigger.getAttribute("data-value");
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("listbox")).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  expect(await trigger.getAttribute("data-value"), "Escape committed the highlighted row instead of abandoning it").toBe(committed);
+  // Focus comes BACK to the control it left, so the reader is not returned to the top of the document.
+  await expect(trigger).toBeFocused();
 });
 
 test("the Status control narrows the COLLECTION on the server, not the rows on screen", async ({ page }) => {
@@ -140,7 +227,7 @@ test("the Status control narrows the COLLECTION on the server, not the rows on s
   // is what separates "narrowed the collection" from "hid some of what was already here".
   const [request] = await Promise.all([
     page.waitForRequest((r) => r.url().includes("/api/palai/v1/sessions?") && r.url().includes(`status=${encodeURIComponent(target)}`)),
-    page.getByTestId("session-status-filter").selectOption(target),
+    chooseOption(page, "session-status-filter", target),
   ]);
   expect(new URL(request.url()).searchParams.get("status")).toBe(target);
 
@@ -153,7 +240,7 @@ test("the Created control sends an RFC3339 lower bound the API actually parses",
   await openList(page);
   const [request] = await Promise.all([
     page.waitForRequest((r) => r.url().includes("/api/palai/v1/sessions?") && r.url().includes("created_after=")),
-    page.getByTestId("session-created-filter").selectOption("24h"),
+    chooseOption(page, "session-created-filter", "24h"),
   ]);
   const bound = new URL(request.url()).searchParams.get("created_after") ?? "";
   // Parseable AND in the past AND roughly a day back: a bound the server rejects is a filter that 400s, and
@@ -173,9 +260,13 @@ test("the Agent control narrows what is on screen, and the count says both numbe
   expect(without > 0 && without < total, "every session has the same agent-ness, so a narrowing cannot be observed").toBe(true);
   await openList(page);
 
-  // The option's words are the cell's words — they select the same rows, so they must not drift apart.
-  await expect(page.getByTestId("session-agent-filter")).toContainText("No revision pinned");
-  await page.getByTestId("session-agent-filter").selectOption("__no_agent__");
+  // The row's words are the cell's words — they select the same rows, so they must not drift apart. Read
+  // by OPENING the listbox rather than off the closed control: a trigger shows the CURRENT choice and no
+  // longer carries every option's text, so `toContainText` on it would have quietly become a test of the
+  // placeholder. chooseOptionByLabel asserts exactly one row carries the words and returns its value, which
+  // binds the two halves — the words and the filter they apply — in one assertion instead of two.
+  const chosen = await chooseOptionByLabel(page, "session-agent-filter", "No revision pinned");
+  expect(chosen, "the row reading 'No revision pinned' does not select the no-agent filter").toBe("__no_agent__");
   await expect(page.getByTestId("panel-sessions").locator("tbody tr")).toHaveCount(without);
   // "N of M rows" is the honesty: this control hid rows rather than un-fetching them, and the header says so.
   await expect(page.getByTestId("panel-sessions-count")).toHaveText(`${String(without)} of ${String(total)} rows`);
@@ -203,7 +294,9 @@ test("the transcript replays the session's own journal, in sequence, with an ela
   const { data } = await served(page, "/sessions");
   await openTranscript(page, data[0].id);
 
-  await expect(page.getByTestId("breadcrumb-session")).toHaveText(data[0].id);
+  // The breadcrumb's id is a COPY BUTTON carrying the short form (measured §3), so the assertion is that the
+  // clipping is derived from the id — not that the cell prints 36 characters nobody can read.
+  await expect(page.getByTestId("breadcrumb-session")).toContainText(shortId(data[0].id));
   const rows = page.getByTestId("session-transcript").locator("tbody tr");
   await expect(rows.first()).toBeVisible({ timeout: 15_000 });
   const count = await rows.count();
@@ -287,13 +380,22 @@ test("selecting an event opens the detail pane, and Raw is the frame the journal
   const rows = page.getByTestId("session-transcript").locator("tbody tr");
   await expect(rows.first()).toBeVisible({ timeout: 15_000 });
 
+  // DISABLED, NOT HIDDEN, BEFORE A SELECTION — the reference's rule and the reverse of this console's habit
+  // of rendering only what applies. An affordance that does not exist until after the interaction that
+  // needs it cannot be discovered.
   await expect(page.getByTestId("detail-empty")).toBeVisible();
+  await expect(page.getByTestId("detail-rendered")).toBeVisible();
+  await expect(page.getByTestId("detail-raw")).toBeVisible();
+  await expect(page.getByTestId("detail-raw")).toBeDisabled();
+
   const type = await rows.first().getByTestId("event-open").textContent();
   await rows.first().getByTestId("event-open").click();
 
   // Rendered: the frame's fields, labelled.
   await expect(page.getByTestId("detail-rendered-body")).toContainText(type ?? "");
   await expect(page.getByTestId("detail-rendered-body")).toContainText("Sequence");
+
+  await expect(page.getByTestId("detail-raw")).toBeEnabled();
 
   // Raw: the same frame as JSON. The two must agree — a Rendered view assembled from something other than
   // the frame in front of it is the defect a Raw toggle exists to make visible.
@@ -312,7 +414,7 @@ test("the event-type control narrows the transcript and the count keeps both num
   const total = await rows.count();
 
   const type = (await rows.first().getByTestId("event-open").textContent()) ?? "";
-  await page.getByTestId("transcript-type").selectOption(type);
+  await chooseOption(page, "transcript-type", type);
   const kept = await rows.count();
   expect(kept).toBeGreaterThan(0);
   expect(kept).toBeLessThan(total);
@@ -347,6 +449,104 @@ test("a refused run wears an error pill and a completed one does not", async ({ 
   await expect(page.getByTestId("event-error")).toHaveCount(0);
 });
 
+test("the selected event and the open tab are in the URL, so a reload lands where the reader was", async ({ page }) => {
+  // THE SINGLE BIGGEST THING THIS CONSOLE DID NOT DO. No screen anywhere puts state in the address bar, so
+  // every selection dies on reload, the back button leaves the page, and a row cannot be sent to anybody.
+  // The reference's shape is `?event=…&segment=debug`, and all four consequences are asserted here.
+  const { data } = await served(page, "/sessions");
+  await openTranscript(page, data[0].id);
+  const rows = page.getByTestId("session-transcript").locator("tbody tr");
+  await expect(rows.first()).toBeVisible({ timeout: 15_000 });
+
+  // Nothing selected, nothing in the URL: an empty `?event=` would be a URL claiming a selection it cannot name.
+  expect(new URL(page.url()).search).toBe("");
+
+  // toHaveURL, never expect(page.url()): router.push resolves AFTER the click does, so a synchronous read of
+  // the address bar is a race that passes on a fast machine and fails on a loaded one.
+  await rows.nth(2).getByTestId("event-open").click();
+  await expect(rows.nth(2).getByTestId("event-open")).toHaveAttribute("aria-pressed", "true");
+  await expect(page).toHaveURL(/[?&]event=3(&|$)/);
+
+  // A RELOAD LANDS ON THE SAME ROW. This is the assertion local state cannot pass: the selection is read
+  // back out of the address bar rather than remembered.
+  await page.reload();
+  await expect(page.getByTestId("session-transcript")).toBeVisible({ timeout: 15_000 });
+  await page.waitForLoadState("networkidle");
+  await expect(page.getByTestId("session-transcript").locator("tbody tr").nth(2).getByTestId("event-open")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("detail-rendered-body")).toBeVisible();
+
+  // The tab too, and it composes with the selection rather than replacing it.
+  await page.getByTestId("tab-debug").click();
+  await expect(page.getByTestId("session-debug")).toBeVisible();
+  await expect(page).toHaveURL(/segment=debug/);
+  // The two parameters COMPOSE — opening a tab must not throw away which row was being read.
+  await expect(page).toHaveURL(/[?&]event=3(&|$)/);
+
+  // THE BACK BUTTON UNDOES A STEP rather than leaving the page — which is what `push` buys and `replace`
+  // would have thrown away.
+  await page.goBack();
+  await expect(page.getByTestId("session-transcript")).toBeVisible();
+  await expect(page).not.toHaveURL(/segment=/);
+  await expect(page).toHaveURL(/[?&]event=3(&|$)/);
+
+  // And the close control drops the parameter, so the URL never outlives the state it describes.
+  await page.getByTestId("detail-close").click();
+  await expect(page.getByTestId("detail-empty")).toBeVisible();
+  await expect(page).not.toHaveURL(/event=/);
+});
+
+test("a session id is copied WHOLE, and a refused clipboard is said out loud rather than swallowed", async ({ page, context }) => {
+  const { data } = await served(page, "/sessions");
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await openList(page);
+
+  // THE VALUE ON THE CLIPBOARD IS THE FULL ID, not the clipping on screen. That is the whole point of the
+  // button: the cell is short so it can be read, and the copy is complete so it can be used.
+  await page.getByTestId("panel-sessions").getByTestId("session-copy-id").first().click();
+  await expect(page.getByTestId("session-copy-id-said").first()).toHaveText("session ID copied.");
+  const clipped = await page.evaluate(() => navigator.clipboard.readText());
+  expect(clipped).toBe(data[0].id);
+  expect(clipped.length).toBeGreaterThan(shortId(data[0].id).length);
+});
+
+test("a clipboard that refuses the write is reported, never silent", async ({ page }) => {
+  // NotAllowedError is what writeText throws when the clipboard is denied (MDN). A button that swallows it
+  // leaves an operator believing they hold an id they do not — and this console reaches for the clipboard on
+  // a surface it may be served to over plain http, where the API is not there at all.
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: () => Promise.reject(new DOMException("Write permission denied.", "NotAllowedError")) },
+      configurable: true,
+    });
+  });
+  await openList(page);
+  await page.getByTestId("panel-sessions").getByTestId("session-copy-id").first().click();
+  await expect(page.getByTestId("session-copy-id-said").first()).toContainText("NotAllowedError");
+  await expect(page.getByTestId("session-copy-id-said").first()).toContainText("by hand");
+});
+
+test("the transcript's title IS the rename control, and its accessible name still contains what it reads", async ({ page }) => {
+  const { data } = await served(page, "/sessions");
+  await openTranscript(page, data[0].id);
+
+  // Measured: the heading itself is the button, not a heading with a button beside it.
+  const title = page.getByTestId("session-title").getByTestId("session-rename-open");
+  await expect(title).toBeVisible();
+  const visible = (await page.getByTestId("session-title").locator(".name").textContent()) ?? "";
+  expect(visible).not.toBe("");
+
+  // SC 2.5.3 Label in Name: the accessible name must CONTAIN the visible label. An aria-label of "Rename
+  // session" over a button reading the session's name would fail the criterion while looking helpful — the
+  // sr-only suffix is what makes this both discoverable and conforming, and this is the assertion that says
+  // so rather than the comment.
+  const accessible = (await title.evaluate((el) => (el as HTMLElement).innerText || el.textContent || "")) ?? "";
+  const name = await title.getAttribute("aria-label");
+  expect(name, "an aria-label here would REPLACE the visible label and break SC 2.5.3").toBe(null);
+  expect((await title.textContent()) ?? "").toContain(visible);
+  expect((await title.textContent()) ?? "").toContain("rename");
+  expect(accessible.length).toBeGreaterThan(0);
+});
+
 test("the Debug tab shows the row and the frames as served, and the tab strip is keyboard-operable", async ({ page }) => {
   const { data } = await served(page, "/sessions");
   await openTranscript(page, data[0].id);
@@ -375,9 +575,20 @@ test("renaming from the list replaces a derived label with an operator one", asy
   const label = `Named by the console ${String(Date.now())}`;
   await openList(page);
 
-  const row = page.getByTestId("panel-sessions").locator("tbody tr").filter({ hasText: id });
+  // FILTERED BY THE LINK'S title, NOT BY ROW TEXT: the ID cell renders the SHORT form now, so a row no
+  // longer contains its own full id as text and `hasText: id` matches nothing. The title attribute is where
+  // the whole value lives, which makes this both correct and a check that it still lives there.
+  const row = page
+    .getByTestId("panel-sessions")
+    .locator("tbody tr")
+    .filter({ has: page.locator(`[data-testid="session-link"][title="${id}"]`) });
   await row.getByTestId("session-menu").click();
-  await row.getByTestId("session-rename-open").click();
+  // THE ITEM IS ADDRESSED ON THE PAGE, NOT IN THE ROW, and that is the portal rather than a looser selector
+  // (E29 component layer). components/ui/Menu.tsx renders the popup as a child of <body> so it escapes the
+  // panel's horizontal scroll clip — app/globals.css used to keep the old panel in flow precisely because it
+  // could not — so the item is no longer a descendant of its own <tr>. One menu is open at a time, which is
+  // what keeps this unambiguous.
+  await page.getByTestId("session-rename-open").click();
 
   // ESCAPE ABANDONS. The control is deliberately not a <form> (see components/Session.tsx: a form with no
   // method=post is the CON-013 hazard), so Enter and Escape are wired BY HAND — which makes them the two
@@ -388,13 +599,20 @@ test("renaming from the list replaces a derived label with an operator one", asy
   await expect(row).not.toContainText("abandoned");
 
   await row.getByTestId("session-menu").click();
-  await row.getByTestId("session-rename-open").click();
+  await page.getByTestId("session-rename-open").click();
   await row.getByTestId("session-rename-input").fill(label);
   await row.getByTestId("session-rename-input").press("Enter");
 
   // On screen: the new label, and the `auto` marker GONE — which is the whole point of the write. A rename
   // that left the row still marked as derived would be a console saying nobody chose a name somebody typed.
-  const renamed = page.getByTestId("panel-sessions").locator("tbody tr").filter({ hasText: id });
+  // Matched on the link's `title`, not on the row's text — the SECOND place this file made that mistake.
+  // The ID cell renders the SHORT form now, so a row no longer contains its own id as text and `hasText`
+  // matches nothing. Filtering on the title is also a check in its own right: the whole value must still be
+  // there for a copy button and an href to be honest.
+  const renamed = page
+    .getByTestId("panel-sessions")
+    .locator("tbody tr")
+    .filter({ has: page.locator(`[data-testid="session-link"][title="${id}"]`) });
   await expect(renamed).toContainText(label, { timeout: 15_000 });
   await expect(renamed.locator(".name-mark")).toHaveCount(0);
 
@@ -432,22 +650,27 @@ test("creating a session adds a row, and the empty state offers the same action"
 
   // THE EMPTY STATE FIRST, reached by a filter that matches nothing rather than by an empty deployment: it
   // must be one sentence and an action, never a blank region with "None yet." on it.
-  await page.getByTestId("session-status-filter").selectOption("deleted");
-  await expect(page.getByTestId("panel-sessions-empty")).toBeVisible();
-  await expect(page.getByTestId("panel-sessions-empty")).not.toContainText("None yet");
+  await chooseOption(page, "session-status-filter", "deleted");
+  const empty = page.getByTestId("panel-sessions-empty");
+  await expect(empty).toBeVisible();
+  // THE MEASURED SHAPE: a title, then one sentence saying what the thing IS, then the action. "None yet."
+  // is three words that teach nothing, and an empty screen is the one moment a reader can be taught.
+  await expect(empty).not.toContainText("None yet");
+  await expect(page.getByTestId("session-empty-title")).toHaveText("No sessions yet");
+  await expect(empty.locator(".empty-body")).toContainText("A session is one conversation");
   await expect(page.getByTestId("session-create-empty")).toBeVisible();
 
-  await page.getByTestId("session-status-filter").selectOption("");
-  const firstBefore = (await page.getByTestId("panel-sessions").locator("tbody tr td").first().textContent()) ?? "";
+  await chooseOption(page, "session-status-filter", "");
+  const firstBefore = (await page.getByTestId("panel-sessions").getByTestId("session-link").first().getAttribute("title")) ?? "";
   expect(firstBefore).not.toBe("");
   await page.getByTestId("session-create").click();
 
   // NEWEST FIRST, so the created session is row one — and the ROW COUNT is deliberately not the assertion:
   // the list is cut at a page, so creating a row pushes the last one off and the count never moves. A test
   // that watched the count would pass whether or not the write landed.
-  await expect(page.getByTestId("panel-sessions").locator("tbody tr td").first()).not.toHaveText(firstBefore, { timeout: 15_000 });
+  await expect(page.getByTestId("panel-sessions").getByTestId("session-link").first()).not.toHaveAttribute("title", firstBefore, { timeout: 15_000 });
   const { data } = await served(page, "/sessions");
-  await expect(page.getByTestId("panel-sessions").locator("tbody tr td").first()).toHaveText(data[0].id);
+  await expect(page.getByTestId("panel-sessions").getByTestId("session-link").first()).toHaveAttribute("title", data[0].id);
   // A session created through the API has never run, so there is no first prompt to derive a label from.
   expect(data[0].name_source).toBe("none");
   await expect(page.getByTestId("panel-sessions").locator("tbody tr").first()).toContainText("unnamed");

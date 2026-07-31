@@ -1,7 +1,9 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
+import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
 import { apiGet, RelayError } from "@/lib/api";
 
 export interface Column<Row> {
@@ -280,8 +282,17 @@ export function Panel<Row extends Record<string, unknown>>({
   // Settled. `rows` is still nullable to the compiler because a fetch that REJECTED leaves it null, and that
   // arm renders the error rather than a list — so the empty list is the honest reading for everything below.
   const settled: Row[] = rows ?? [];
-  // The sortable columns, in the order they are declared — so the select reads like the table.
+  // The sortable columns, in the order they are declared — so the listbox reads like the table.
   const sortable = columns.filter((c) => c.sort !== undefined);
+  // The order rows, flattened. `AS_SERVED` first, then two per sortable column — the same list the two
+  // <option> elements per column used to produce, and the same `<index>:<direction>` value `ordered` parses.
+  const orderOptions = [
+    { value: AS_SERVED, label: "Order as served" },
+    ...sortable.flatMap((c, i) => [
+      { value: `${String(i)}:asc`, label: `${c.header} A → Z` },
+      { value: `${String(i)}:desc`, label: `${c.header} Z → A` },
+    ]),
+  ];
   // The filter matches the row AS THE API RETURNED IT rather than as this panel rendered it: a render is a
   // ReactNode and cannot be searched, and matching only the rendered columns would silently fail to find a
   // row by a field that is on the wire but not in this panel's column list. The scope is stated below.
@@ -339,15 +350,7 @@ export function Panel<Row extends Record<string, unknown>>({
               onChange={(e) => setQuery(e.target.value)}
             />
             {sortable.length === 0 ? null : (
-              <select aria-label={`Order ${title}`} data-testid={`${testId}-sort`} value={order} onChange={(e) => setOrder(e.target.value)}>
-                <option value={AS_SERVED}>Order as served</option>
-                {sortable.map((c, i) => (
-                  <Fragment key={c.header}>
-                    <option value={`${String(i)}:asc`}>{c.header} A → Z</option>
-                    <option value={`${String(i)}:desc`}>{c.header} Z → A</option>
-                  </Fragment>
-                ))}
-              </select>
+              <Select label={`Order ${title}`} testId={`${testId}-sort`} value={order} onValueChange={setOrder} options={orderOptions} />
             )}
             {/* The scope of the box, stated. Over a collection the server cut at twenty, a filter that says
                 nothing will fail to find a row that exists and look like an answer. */}
@@ -365,14 +368,19 @@ export function Panel<Row extends Record<string, unknown>>({
           Error: {error}
         </p>
       ) : settled.length === 0 ? (
-        <p className="empty" data-testid={`${testId}-empty`}>{emptyNote ?? "None yet."}</p>
+        // A <div>, not a <p> (E29): the measured empty state is a TITLE plus a sentence saying what the
+        // thing is FOR, and a title cannot be a paragraph nested in a paragraph. A caller passing a bare
+        // string renders exactly as before.
+        <div className="empty" data-testid={`${testId}-empty`}>
+          {emptyNote ?? "None yet."}
+        </div>
       ) : (
         <>
           {/* A FILTER THAT MATCHED NOTHING IS NOT AN EMPTY COLLECTION, and it does not get the empty
               collection's testid or its sentence. Conflating the two is how an operator concludes a resource
               was deleted when they have simply mistyped it. */}
           {shown === 0 ? (
-            <p className="empty" data-testid={`${testId}-no-match`}>
+            <div className="empty" data-testid={`${testId}-no-match`}>
               {query.trim() === "" ? (
                 // NARROWED BY A TOOLBAR CONTROL RATHER THAN BY THE BOX, which is a state the message above
                 // could not describe: it named a query, and with `narrow` in play there is none to name.
@@ -384,7 +392,7 @@ export function Panel<Row extends Record<string, unknown>>({
               )}{" "}
               {total} {total === 1 ? "row is" : "rows are"} loaded
               {truncated ? " and the server has more" : ""}; clear the filter to see them.
-            </p>
+            </div>
           ) : (
             <table>
               <thead>
@@ -417,9 +425,9 @@ export function Panel<Row extends Record<string, unknown>>({
             </p>
           ) : null}
           {truncated && cursor !== null ? (
-            <button type="button" data-testid={`${testId}-load-more`} onClick={() => void loadMore()} disabled={loadingMore}>
+            <Button testId={`${testId}-load-more`} onClick={() => void loadMore()} disabled={loadingMore}>
               {loadingMore ? "Loading…" : "Load more"}
-            </button>
+            </Button>
           ) : null}
         </>
       )}

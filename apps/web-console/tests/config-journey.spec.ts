@@ -2,7 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { test, expect, type Page } from "@playwright/test";
 
 import { WCAG_TAGS } from "./constants";
-import { announceProfile, signIn, skipOnReal } from "./profile";
+import { announceProfile, chooseOption, chooseOptionByLabel, chosenValue, signIn, skipOnReal } from "./profile";
 
 // THE CONFIGURATION JOURNEY — a stranger stands up a repository and an agent from a screen, and RUNS it
 // (E25 T6, plan §T6, CON-006).
@@ -63,6 +63,15 @@ async function createEnvironment(page: Page, name: string, keys: Record<string, 
 // createAgentWithRevision walks the whole lineage from the /agents screen and returns the ids it observed.
 // `publish` is a parameter because an UNPUBLISHED revision is one of the things under test: a draft that a
 // run refuses is the console's proof that nothing silently fell back to a default.
+//
+// THE PATH CHANGED AND THE JOURNEY FOLLOWS IT (page-parity pass). The create form is behind the list's own
+// `+ New agent` button as a dialog, and a created agent LANDS ON ITS OWN PAGE — /agents/{id} — which is
+// where its revisions are drafted, published and diffed. The old walk filled a form on the list screen and
+// then read the id out of a "choose an agent" dropdown; that dropdown existed because the revision form had
+// no other way to know which lineage it belonged to, and a detail route is what removes the question.
+//
+// The id is READ OFF THE ADDRESS BAR rather than out of a control, which is the stronger reading of the same
+// assertion: the console did not merely select the agent it made, it navigated to it.
 async function createAgentWithRevision(
   page: Page,
   opts: { agentName: string; environmentName?: string; model?: string; publish: boolean },
@@ -70,29 +79,27 @@ async function createAgentWithRevision(
   await page.goto("/agents");
   await expect(page.getByTestId("panel-agent-profiles")).toBeVisible({ timeout: 15_000 });
 
+  await page.getByTestId("agent-create-open").click();
+  await expect(page.getByTestId("agent-create-dialog")).toBeVisible();
   await page.getByTestId("agent-name-input").fill(opts.agentName);
   await page.getByTestId("agent-create-button").click();
-  await expect(page.getByTestId("agent-create-status")).toContainText(opts.agentName, { timeout: 15_000 });
 
-  // The agent select is the page's own list — the create selected the new lineage, which is what makes the
-  // revision form addressable without a second lookup. Awaited rather than read once: the list REFETCHES
-  // after the create, and the option cannot exist before that lands. If it never lands (an agent past the
-  // first page, which is what appending to the fixture used to produce), this fails and says so.
-  await expect(
-    page.getByTestId("agent-select"),
-    "the create did not select the agent it just made, so the revision form has no parent",
-  ).not.toHaveValue("", { timeout: 15_000 });
-  const agentId = await page.getByTestId("agent-select").inputValue();
+  await expect(page, "the create did not land on the agent it just made, so there is no lineage to revise").toHaveURL(/\/agents\/[^/?]+/, {
+    timeout: 15_000,
+  });
+  const agentId = decodeURIComponent(new URL(page.url()).pathname.split("/").filter((s) => s !== "").pop() ?? "");
+  expect(agentId, "the address bar carries no agent id after the create").not.toBe("agents");
+  // The NAME the server minted the row with, read back on the screen the create landed on — the same
+  // read-back discipline §2 demands of every write form.
+  await expect(page.getByTestId("agent-title")).toContainText(opts.agentName, { timeout: 15_000 });
+  await expect(page.getByTestId("agent-chips")).toBeVisible({ timeout: 15_000 });
 
   await page.getByTestId("revision-model-input").fill(opts.model ?? PINNED_MODEL);
   if (opts.environmentName !== undefined) {
     // FOUND BY ITS LABEL, selected by the value that label carries. The label is what an operator reads, so a
     // picker that offered the right id under the wrong name would fail here; going straight to the id would
     // not have noticed.
-    const picker = page.getByTestId("revision-environment-select");
-    const option = picker.locator("option").filter({ hasText: opts.environmentName });
-    await expect(option, "the environment the operator just created is not on the revision form's picker").toHaveCount(1);
-    await picker.selectOption(String(await option.getAttribute("value")));
+    await chooseOptionByLabel(page, "revision-environment-select", opts.environmentName);
   }
   await page.getByTestId("agent-revision-create-button").click();
   await expect(page.getByTestId("agent-revision-status")).toContainText("draft", { timeout: 15_000 });
@@ -111,8 +118,8 @@ async function createAgentWithRevision(
 async function runWithRevision(page: Page, agentId: string, revisionId: string): Promise<void> {
   await page.goto("/runs");
   await expect(page.getByTestId("run-button")).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId("run-agent-select").selectOption(agentId);
-  await page.getByTestId("run-revision-select").selectOption(revisionId);
+  await chooseOption(page, "run-agent-select", agentId);
+  await chooseOption(page, "run-revision-select", revisionId);
   await page.getByTestId("run-button").click();
 }
 
@@ -121,6 +128,11 @@ async function runWithRevision(page: Page, agentId: string, revisionId: string):
 test("a repository binding is registered from the console and reads back on the list", async ({ page }) => {
   await page.goto("/repositories");
   await expect(page.getByTestId("panel-repository-bindings")).toBeVisible({ timeout: 15_000 });
+
+  // THE FORM IS BEHIND THE LIST'S OWN BUTTON (page-parity pass). It used to be eight fields open on the page
+  // under two standing paragraphs, so the list this screen is named for was the third thing on it.
+  await page.getByTestId("binding-create-open").click();
+  await expect(page.getByTestId("binding-create-dialog")).toBeVisible();
 
   const identity = `palai-example/console-t6-${stamp()}`;
   await page.getByTestId("binding-provider-input").fill("github");
@@ -141,9 +153,30 @@ test("a repository binding is registered from the console and reads back on the 
   await expect(panel).toContainText(identity, { timeout: 15_000 });
   await expect(panel).toContainText("main");
 
-  // AND THE CEILING IS ON THE SCREEN: registering a binding did not clone anything.
-  await expect(page.getByTestId("binding-reachability-note")).toContainText("does not prove");
+  // AND THE CEILING IS ON THE SCREEN: registering a binding did not clone anything. The sentence is on the
+  // STATUS the create left behind, which is the one place an operator is certain to be looking at the moment
+  // it matters.
+  await expect(page.getByTestId("repository-binding-status")).toContainText("Nothing has been cloned");
+
+  await expectAxeClean(page);
+
+  // THE ROW OPENS, AND THE FOUR FIELDS A LIST CANNOT CARRY ARE THERE. Before this pass the console WROTE a
+  // clone URL, a data classification, a region constraint and a policy object and showed none of them back —
+  // the write-and-pray shape §2 forbids, arriving through the one door a list-only screen leaves open.
+  await page.getByTestId("panel-repository-bindings").locator("tbody tr").first().getByTestId("binding-identity-link").click();
+  await expect(page.getByTestId("panel-binding-record")).toBeVisible({ timeout: 15_000 });
+  const record = page.getByTestId("binding-record");
+  await expect(record).toContainText(identity);
+  await expect(record).toContainText(`https://github.com/${identity}.git`);
+  await expect(record).toContainText("internal");
+  await expect(record).toContainText("eu-central-1");
+  await expect(page.getByTestId("binding-policy")).toContainText("require_approval");
+  await expect(page.getByTestId("binding-operations")).toContainText("clone");
+
+  // AND THE SENTENCE THAT USED TO BE THE LIST'S SECOND PARAGRAPH IS HERE, which is where an operator looks
+  // for the edit control that does not exist.
   await expect(page.getByTestId("binding-correction-note")).toContainText("no way to change or remove");
+  await expect(page.getByTestId("binding-reachability-note"), "the reachability ceiling is in the create dialog now, not on the record").toHaveCount(0);
 
   await expectAxeClean(page);
 });
@@ -155,11 +188,31 @@ test("the connection ref is a HANDLE chosen from the secret-ref list, never a ty
   // disguise. What holds in every state is that no text field on this form takes a credential or a ref.
   await page.goto("/repositories");
   await expect(page.getByTestId("panel-repository-bindings")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("binding-create-open").click();
 
   const form = page.getByTestId("repository-binding-form");
-  const textFields = await form.locator('input[type="text"], input:not([type]), textarea').evaluateAll((els) =>
-    els.map((el) => el.getAttribute("data-testid") ?? el.getAttribute("name") ?? "<unnamed>"),
-  );
+  // THE SELECTOR EXCLUDES ONE NODE AND PROVES THE EXCLUSION RATHER THAN ASSERTING IT (E29 component layer).
+  //
+  // `input:not([type])` was written to catch a hand-rolled text box that forgot its type attribute. The
+  // connection-ref control is now a components/ui/Select, and @base-ui/react's Select renders a
+  // form-serialisation <input> with no type, carrying the chosen handle — so the enumeration below started
+  // reporting `binding-connection-ref` as a free-text field, which is the opposite of what this test says.
+  //
+  // The claim is about what an operator can TYPE. So the exclusion is aria-hidden + tabindex="-1" — the same
+  // pair tests/contrast.spec.ts exempts, for the same reason: no screen reader has it and no keyboard reaches
+  // it. And the exclusion is CHECKED below rather than trusted, because "the node I excluded is unreachable"
+  // is exactly the sentence that would hide a real free-text box the day the markup changes.
+  const excluded = form.locator('input[aria-hidden="true"][tabindex="-1"]');
+  for (const node of await excluded.all()) {
+    expect(await node.evaluate((el) => (el as HTMLInputElement).readOnly || el.getAttribute("aria-hidden") === "true"), "an excluded node is not actually unreachable").toBe(true);
+    // A 1x1 clipped box is not a control an operator can put a value into. If one ever renders at a size a
+    // pointer could hit, this is what fails.
+    const box = await node.boundingBox();
+    expect((box?.width ?? 0) <= 1 && (box?.height ?? 0) <= 1, "an excluded input is large enough to be typed into").toBe(true);
+  }
+  const textFields = await form
+    .locator('input[type="text"]:not([aria-hidden="true"]), input:not([type]):not([aria-hidden="true"]), textarea')
+    .evaluateAll((els) => els.map((el) => el.getAttribute("data-testid") ?? el.getAttribute("name") ?? "<unnamed>"));
   expect(
     textFields.sort(),
     "the binding form's free-text fields are enumerated: a connection_ref or a credential box among them would " +
@@ -189,7 +242,22 @@ test("the connection ref is a HANDLE chosen from the secret-ref list, never a ty
       const res = await fetch("/api/palai/v1/secret-refs", { headers: { Accept: "application/json" } });
       return ((await res.json()) as { data?: { name: string }[] }).data?.map((r) => r.name) ?? [];
     });
-    const offered = await picker.locator("option").evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value).filter((v) => v !== ""));
+    // READ WITH THE LISTBOX OPEN (E29 component layer). A native <select> kept its options in the DOM
+    // whether or not it was open, so `picker.locator("option")` found them on a closed control; a listbox is
+    // rendered by the popup and there is nothing to enumerate until it exists. Opening it is therefore not a
+    // detour around the assertion — it is the assertion, and it now also proves the popup renders at all.
+    await picker.click();
+    // AND THE POPUP MUST HAVE ROWS BEFORE THEY ARE READ. `evaluateAll` is a SNAPSHOT with no auto-wait, so a
+    // read taken between the click and the popup mounting returns [] and compares an empty list against a
+    // non-empty one — or, if the expectation were the other way round, passes having looked at nothing. That is
+    // the defect tests/reveal-once.spec.ts hit: a container visible before its rows resolved, and a positive
+    // control that found nothing. `expect` retries; `evaluateAll` does not, so the wait is explicit.
+    const listbox = page.getByRole("listbox");
+    await expect(listbox).toBeVisible();
+    await expect(listbox.locator('[role="option"]')).not.toHaveCount(0);
+    const offered = await listbox
+      .locator('[role="option"]')
+      .evaluateAll((els) => els.map((el) => el.getAttribute("data-value") ?? "").filter((v) => v !== ""));
     expect(offered.sort()).toEqual([...listed].sort());
   } else {
     await expect(empty).toContainText("no secret refs");
@@ -218,11 +286,33 @@ test("an agent, a revision bound to an environment, and a publish — all from t
   // The environment reads back BY ID on the revision row — the field the API lets you write has a read path.
   await expect(rows.getByTestId(`revision-environment-${revisionId}`)).not.toBeEmpty();
 
+  // BOTH EXTERNAL FIELDS READ BACK, ASSERTED AS CELLS RATHER THAN AS A SENTENCE (page-parity pass). This
+  // screen used to close with a paragraph claiming it — "the MCP connection rider has been readable since
+  // E22; the tool set, the half that actually GRANTS the tools, was write-only until E25 T7" — and a spec
+  // that reads a paragraph proves the paragraph. The two cells are the claim: `tool_sets` is the GRANT and
+  // `mcp_connections` is the CEILING, each absence fails quietly and differently, and a projection that
+  // dropped either would fail here instead of leaving a true sentence over a missing column. The history is
+  // in docs/operations/console.md §4c.
+  await expect(rows.getByTestId(`revision-tool-sets-${revisionId}`)).not.toBeEmpty();
+  await expect(rows.getByTestId(`revision-mcp-connections-${revisionId}`)).not.toBeEmpty();
+
   // The publish control is GONE from a published row: a second publish is not a thing an operator can ask
   // for on a lineage that cannot be un-published.
   await expect(page.getByTestId(`publish-${revisionId}`)).toHaveCount(0);
 
+  // AND THE LINEAGE'S SUMMARY AGREES WITH ITS TABLE. The chip row is a SECOND read of the same collection
+  // (the page reads it for the chips, RevisePublish reads it for the rows), so a publish that moved one and
+  // not the other would leave a screen that contradicts itself — which is the failure a summary invites.
+  await expect(page.getByTestId("chip-state")).toContainText("published");
+  await expect(page.getByTestId("chip-model")).toContainText(PINNED_MODEL);
+
   await expectAxeClean(page);
+
+  // THE COMPARE TAB IS THE SECOND SCREEN OF THIS PAGE and it is scanned as one. It carries the diff that
+  // used to be panel five of five on the list screen, under four forms that had nothing to do with it.
+  await page.getByTestId("tab-compare").click();
+  await expect(page).toHaveURL(/segment=compare/);
+  await expect(page.getByTestId("panel-agent-diff")).toBeVisible();
 });
 
 test("the environment picker on the revision form does not degrade to free text when there is nothing to pick", async ({ page }) => {
@@ -242,13 +332,13 @@ test("the environment picker on the revision form does not degrade to free text 
   await page.goto("/agents");
   await expect(page.getByTestId("panel-agent-profiles")).toBeVisible({ timeout: 15_000 });
 
-  // AN AGENT IS CREATED FIRST, because the revision form belongs to ONE lineage and does not exist until one
-  // is chosen — a page with no agent selected renders a note in its place, which is a different absence from
-  // the one under test. Creating rather than picking an existing row is what makes this deterministic on both
+  // AN AGENT IS CREATED FIRST, because the revision form belongs to ONE lineage and lives on that lineage's
+  // own page. Creating rather than picking an existing row is what makes this deterministic on both
   // profiles: a bootstrap compose stack holds zero agents.
+  await page.getByTestId("agent-create-open").click();
   await page.getByTestId("agent-name-input").fill(`t6-empty-env-${stamp()}`);
   await page.getByTestId("agent-create-button").click();
-  await expect(page.getByTestId("agent-select")).not.toHaveValue("", { timeout: 15_000 });
+  await expect(page).toHaveURL(/\/agents\/[^/?]+/, { timeout: 15_000 });
   await expect(page.getByTestId("agent-revision-form")).toBeVisible({ timeout: 15_000 });
 
   await expect(page.getByTestId("revision-environment-select")).toHaveCount(0);
@@ -287,7 +377,91 @@ test("the environment picker on the revision form does not degrade to free text 
     await expect(page.getByTestId(note)).toContainText(wants);
     await expect(page.getByTestId(note).getByRole("link")).toHaveAttribute("href", "/tools");
   }
-  await expect(page.getByTestId("revision-t7-note")).toContainText("Both external fields read back");
+});
+
+// --- THE LIST, AND WHAT A ROW SAYS ----------------------------------------------------------------------
+
+test("every column on the Agents list is a field, and the row goes to the agent's own page", async ({ page }) => {
+  // THE SCREEN THIS REPLACES had ONE column — Name, with the id stacked under it in mono — and the row went
+  // nowhere. Measured on the built console 2026-07-31 (`document.querySelectorAll("main table thead th")`):
+  // 1 header before, 7 after. The assertion below is not the count, it is that each one is a FIELD: the id
+  // and the name come off the row GET /v1/agents returns, and the four lineage columns come off that agent's
+  // own revisions collection — which is checked here against a SECOND read through the relay, so a column
+  // that showed the wrong lineage's state would fail rather than merely look plausible.
+  await page.goto("/agents");
+  const panel = page.getByTestId("panel-agent-profiles");
+  await expect(panel).toBeVisible({ timeout: 15_000 });
+
+  const headers = await panel.locator("thead th").allInnerTexts();
+  expect(headers.slice(0, 6), "the agents table lost a column, or gained one that is not a field").toEqual([
+    "ID",
+    "Name",
+    "Model",
+    "Revisions",
+    "Latest published",
+    "Status",
+  ]);
+
+  const first = panel.locator("tbody tr").first();
+  const href = await first.getByTestId("agent-link").getAttribute("href");
+  expect(href, "the id cell is not a link to the agent's own page").toMatch(/^\/agents\/.+/);
+  // BOTH cells go to the same place — an operator aiming at the one part of the row they cannot read is a
+  // row that is clickable in the wrong place.
+  expect(await first.getByTestId("agent-name-link").getAttribute("href")).toBe(href);
+
+  const id = decodeURIComponent(String(href).replace("/agents/", ""));
+  const lineage = await page.evaluate(async (agent) => {
+    const res = await fetch(`/api/palai/v1/agents/${encodeURIComponent(agent)}/revisions`, { headers: { Accept: "application/json" } });
+    const body = (await res.json()) as { data?: { status?: string; revision_number?: number }[] };
+    const rows = body.data ?? [];
+    return {
+      count: rows.length,
+      state: rows.some((r) => r.status === "published") ? "published" : rows.length > 0 ? "draft only" : "no revisions",
+    };
+  }, id);
+
+  // The cells are not read until the per-row lineage fetch has landed; the count is the last of the four to
+  // settle, so waiting on it is waiting on all of them.
+  await expect(first.getByTestId("agent-revision-count")).toHaveText(String(lineage.count), { timeout: 15_000 });
+  await expect(first.getByTestId("agent-status")).toContainText(lineage.state);
+
+  // AND THE ROW OPENS. Nothing in this console's lists went anywhere before /sessions; this is the second.
+  await first.getByTestId("agent-name-link").click();
+  await expect(page).toHaveURL(new RegExp(`/agents/${id.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}$`));
+  await expect(page.getByTestId("agent-chips")).toBeVisible({ timeout: 15_000 });
+});
+
+test("the create form is a dialog: it is not on the page until asked for, and it closes on Escape", async ({ page }) => {
+  // A CREATE FORM THAT IS ALWAYS OPEN IS A FORM THE OPERATOR SCROLLS PAST ON EVERY VISIT. This screen used
+  // to carry four of them; the assertion is that the list is the page and the form is a mode.
+  await page.goto("/agents");
+  await expect(page.getByTestId("panel-agent-profiles")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("agent-name-input")).toHaveCount(0);
+  // No form element at all until the dialog exists — the same enumeration tests/auth.spec.ts makes about
+  // where a form may live, asked about whether one is on screen.
+  expect(await page.locator("main form").count(), "a form is rendered on the agents list before anything asked for one").toBe(0);
+
+  await page.getByTestId("agent-create-open").click();
+  const dialog = page.getByTestId("agent-create-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveAttribute("aria-modal", "true");
+  // THE ACCESSIBLE NAME IS ASSERTED rather than assumed: a dangling aria-labelledby produces an EMPTY name
+  // and no error, which is why components/FormDialog.tsx uses aria-label — this is what makes that a
+  // measurement.
+  // THE ACCESSIBLE NAME, NOT THE ATTRIBUTE THAT HAPPENS TO CARRY IT. This asserted aria-label while the
+  // dialog was hand-rolled; components/ui/Dialog names itself with Base UI's own <Title> and an
+  // aria-labelledby it owns, so the attribute changed and the NAME did not. Asserting the name covers both
+  // mechanisms and still fails on the case the attribute check existed for — a dangling or empty reference
+  // yields an EMPTY accessible name, which axe does not report.
+  await expect(dialog).toHaveAccessibleName("Create an agent");
+  // Focus moved IN, onto the field the operator opened the dialog to type into.
+  await expect(page.getByTestId("agent-name-input")).toBeFocused();
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  // And BACK, onto the control that opened it. A keyboard operator who cancels and lands at the top of the
+  // document has lost the list they were working in.
+  await expect(page.getByTestId("agent-create-open")).toBeFocused();
 });
 
 // --- THE RUN --------------------------------------------------------------------------------------------
@@ -340,12 +514,16 @@ test("a run started with an UNPUBLISHED revision is refused honestly and falls b
   // running.
   await page.goto("/runs");
   await expect(page.getByTestId("run-button")).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId("run-agent-select").selectOption(agentId);
-  const option = page.getByTestId("run-revision-select").locator(`option[value="${revisionId}"]`);
+  await chooseOption(page, "run-agent-select", agentId);
+  // THE ROW IS READ WHERE IT LIVES: inside the open popup. The words are the point of this leg — a draft
+  // that is offered without being LABELLED a draft is a control that leads straight to a refusal — so the
+  // listbox is opened, the row is read, and the same row is then clicked. One interaction, not two.
+  await page.getByTestId("run-revision-select").click();
+  const option = page.getByRole("listbox").locator(`[role="option"][data-value="${revisionId}"]`);
   await expect(option).toHaveText(/draft/);
   await expect(option).toHaveText(/cannot be run/);
-
-  await page.getByTestId("run-revision-select").selectOption(revisionId);
+  await option.click();
+  await expect(page.getByTestId("run-revision-select")).toHaveAttribute("data-value", revisionId);
   await page.getByTestId("run-button").click();
 
   // THE SERVER'S OWN SENTENCE, in a role="alert" region — api/responses.go answers 409

@@ -26,13 +26,24 @@ interface AgentRow {
 // rows), so "the first row" was never even "the first agent" in any sense an operator would recognise; it was
 // the first row of whichever page arrived. The default is still row zero, so the panel shows what it always
 // showed on a single-agent deployment.
-export function AgentDiff() {
+//
+// AND IT TAKES ONE INSTEAD, WHEN THE PAGE ALREADY KNOWS (page-parity pass). On app/agents/[id]/page.tsx the
+// agent is the SUBJECT of the route, so a picker there would ask the operator to re-choose the row they
+// clicked to get here — and it would offer them the other twenty, on a page about one. With `agent` set the
+// chooser is not rendered and the agents list is never fetched: this component's second read was only ever
+// there to fill that control.
+export function AgentDiff({ agent }: { agent?: string } = {}) {
+  const pinned = agent !== undefined && agent !== "";
   const [agents, setAgents] = useState<AgentRow[] | null>(null);
-  const [selected, setSelected] = useState("");
+  const [selected, setSelected] = useState(agent ?? "");
   const [revisions, setRevisions] = useState<Revision[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (pinned) {
+      setSelected(agent);
+      return;
+    }
     let live = true;
     apiGet<{ data?: AgentRow[] }>("/agents")
       .then((body) => {
@@ -48,7 +59,7 @@ export function AgentDiff() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [pinned, agent]);
 
   useEffect(() => {
     if (selected === "") {
@@ -71,8 +82,8 @@ export function AgentDiff() {
 
   return (
     <section className="panel" data-testid="panel-agent-diff" aria-labelledby="agent-diff-h">
-      <h2 id="agent-diff-h">Agent revisions &amp; diff</h2>
-      {agents === null ? null : (
+      <h2 id="agent-diff-h">{pinned ? "Newest two revisions, diffed" : "Agent revisions & diff"}</h2>
+      {pinned || agents === null ? null : (
         <Picker
           id="agent-diff-select"
           label="Agent"
@@ -94,7 +105,16 @@ export function AgentDiff() {
       ) : agents !== null && agents.length === 0 ? null : revisions === null ? (
         <p className="loading" data-testid="agent-diff-loading">Loading…</p>
       ) : revisions.length < 2 ? (
-        <p className="empty" data-testid="agent-diff-insufficient">Need at least two revisions to diff.</p>
+        // THE MEASURED EMPTY-STATE SHAPE, and the count is IN it: "Need at least two revisions to diff"
+        // stated a rule and left the reader to go and count the rows themselves. A lineage with one
+        // revision and a lineage with none are different situations and the second sentence says which.
+        <div className="empty" data-testid="agent-diff-insufficient">
+          <p className="empty-title">Nothing to compare yet</p>
+          <p className="empty-body">
+            A diff is between the two newest revisions of one lineage, and this one has{" "}
+            {revisions.length === 0 ? "none" : "one"}. Create another on the Revisions tab.
+          </p>
+        </div>
       ) : (
         <>
           <p className="muted">

@@ -2,27 +2,35 @@
 
 import { useEffect, useState } from "react";
 
+import { Menu } from "@/components/ui/Menu";
+import { Button } from "@/components/ui/Button";
 import { ConfirmDestructive } from "@/components/ConfirmDestructive";
-import { Panel } from "@/components/Panel";
+import { FormDialog } from "@/components/FormDialog";
+import { NameCell, Panel } from "@/components/Panel";
 import { Picker, type PickerOption } from "@/components/Picker";
 import { ResourceForm } from "@/components/ResourceForm";
 import { RevealOnce } from "@/components/RevealOnce";
+import { CopyButton, shortId, Stamp } from "@/components/Session";
 import { Status } from "@/components/Status";
 import { apiGet, apiSend, RelayError } from "@/lib/api";
+import { useQueryParam } from "@/lib/urlState";
 
-// THE FLEET SCREEN — POOLS, KEYS, MACHINES, THE WAITING ROOM, AND THE THREE THINGS IT REFUSES TO IMPLY
-// (E28 T3, plan §T3).
+// THE FLEET SCREEN — POOLS, KEYS, MACHINES, THE WAITING ROOM, AND THE THREE THINGS IT REFUSES TO IMPLY.
 //
-// WHAT WAS MEASURED BEFORE IT. E24 shipped the whole read surface and E24 T6 shipped the waiting room's door
-// — `POST /v1/runners/{runner_id}/approve`, correctly gated on `approve` rather than `provision` — and
-// `grep -rc "runner-pools\|/v1/runners\|runner_pool" apps/web-console/{app,lib,components}` answered 0 in
-// every file. E24 handed the screens to E25 as "free once console auth lands" and E25's plan was written
-// before E24 existed, so neither plan carried the other's row and the surface fell between them. E28 T1 then
-// found the half underneath: a pool could not be CREATED at all, so the state this page shows could not be
-// produced either.
+// WHAT THIS PASS CHANGED, MEASURED FIRST (2026-07-31, `PROSE MEASURE /fleet`): 6646 characters of page, of
+// which 4635 sat in EIGHTEEN paragraphs over sixty characters. It was the longest screen in the console and
+// most of it was prose. The three ceilings that changed what an operator CONCLUDES stayed exactly as they
+// were — FLT-P15 open at the top, FLT-P4/P12/P13 one disclosure down, the concurrency notice on the machine
+// count — and everything that merely described a column moved into the column, into an empty state, or into
+// docs/operations/console.md §3c which already carried the long form.
 //
-// FOUR SECTIONS, IN THE ORDER AN OPERATOR ACQUIRES THEM: a pool exists, a key admits machines into it,
-// machines are in it, and one of them is asking to be let in.
+// FOUR TABLES INSTEAD OF TWO. The waiting room was a `<ul>` of sentences with a button glued to each; it is
+// a table with the same columns as the machine list above it, because it holds the same kind of row and an
+// operator comparing "what is in" against "what is asking to get in" was comparing a table to a paragraph.
+//
+// THE SELECTED POOL IS IN THE ADDRESS BAR (`/fleet?pool=pool_mac`) — the pattern app/sessions/[id]/page.tsx
+// landed. Both the key table and the mint act on it, and until now the choice existed only in React state:
+// unlinkable, lost on reload, and invisible to the back button.
 //
 // THREE THINGS THIS PAGE WILL NOT INVENT.
 //
@@ -30,7 +38,9 @@ import { apiGet, apiSend, RelayError } from "@/lib/api";
 //      the last time the machine AUTHENTICATED (enrol, connect, renew). Nothing polls and nothing expires a
 //      row, so a stale stamp means 'has not authenticated since', NOT 'is down'. The item deliberately
 //      carries no `healthy` field, because there is nothing behind one." A dot rendered from that stamp is a
-//      status the server does not have, and an operator would act on it.
+//      status the server does not have, and an operator would act on it. The Last seen column is a relative
+//      Stamp, which is the honest form of a stamp with no polling behind it, and the note above the table
+//      says what it means.
 //   2. NO FLATTENING OF A POINTER. A pool's `waiting` and a machine's `active_leases` are `*int64` on
 //      purpose: "could not ask the gateway" and "nothing is waiting" / "serving nothing" are different
 //      answers, and the second of each is the one that means it is safe to unplug the Mac. The JSON key is
@@ -40,9 +50,11 @@ import { apiGet, apiSend, RelayError } from "@/lib/api";
 //      why: "A MACHINE ENROLMENT HAS NO REQUEST HASH TO BIND TO", while the /v1/approvals decision route
 //      requires one. Both screens name the other's.
 //
-// AND IT WRITES THREE CEILINGS, all of them measured gap rows rather than caution: `FLT-P15` (a Mac runs the
-// ENGINE and not the tools), the control plane's concurrency bound (`dispatchWorkerFleetWarning`'s sentence),
-// and `FLT-P12`/`FLT-P4` (with the waiting room closed, the pool key is the whole admission control).
+// BOTH FORMS ARE DIALOGS NOW, BEHIND THE PRIMARY ACTION OF THE PANEL THEY ADD A ROW TO. They sat open in the
+// middle of the page, between the pool table and the key table, so the screen's spine was table-form-table-
+// form and the two tables an operator came to read were the first and fourth things on it.
+// components/FormDialog.tsx is the shell (page-parity pass); tests/auth.spec.ts's served-form sweep derives
+// its expected count as ResourceForm mounts MINUS FormDialog mounts, so this move needed no number lowered.
 
 interface PoolRow extends Record<string, unknown> {
   id?: string;
@@ -51,6 +63,7 @@ interface PoolRow extends Record<string, unknown> {
   os?: string;
   arch?: string;
   strict_enrollment?: boolean;
+  created_at?: string;
   /** ABSENT when the gateway could not be asked. `undefined` and `0` are different answers — see the header. */
   waiting?: number;
 }
@@ -104,6 +117,26 @@ interface RevokedPoolKey {
 const detail = (err: unknown, fallback: string) => (err instanceof RelayError ? err.problem.detail : fallback);
 const code = (err: unknown) => (err instanceof RelayError ? err.problem.code : "");
 
+/** shape is the os/arch pair every fleet table carries, rendered once so the three cannot disagree. */
+function Shape({ os, arch }: { os?: string; arch?: string }) {
+  if (String(os ?? "") === "" && String(arch ?? "") === "") return <span className="cell-none">— any</span>;
+  return <code>{`${String(os === undefined || os === "" ? "any" : os)}/${String(arch === undefined || arch === "" ? "any" : arch)}`}</code>;
+}
+
+/** IdCell is the reference console's identity cell: a readable prefix, the whole value in `title` and on the
+ *  clipboard. Machine and pool ids are hashes; nobody reads the middle of a hash. */
+function IdCell({ id, label }: { id: string; label: string }) {
+  if (id === "") return <span className="cell-none">— none</span>;
+  return (
+    <span className="cell-id-group">
+      <code className="cell-id" title={id}>
+        {shortId(id)}
+      </code>
+      <CopyButton value={id} label={label} testId={`copy-${id}`} />
+    </span>
+  );
+}
+
 export default function FleetPage() {
   const [poolReload, setPoolReload] = useState(0);
   const [pools, setPools] = useState<PoolRow[]>([]);
@@ -114,12 +147,17 @@ export default function FleetPage() {
   const [poolArch, setPoolArch] = useState("");
   const [poolStrict, setPoolStrict] = useState(false);
   const [creating, setCreating] = useState(false);
+  /** The two create dialogs. A create form is a MODE; the panel's own button is what enters it. */
+  const [poolOpen, setPoolOpen] = useState(false);
+  const [mintOpen, setMintOpen] = useState(false);
   const [createError, setCreateError] = useState("");
   const [createStatus, setCreateStatus] = useState("");
   const [strictStatus, setStrictStatus] = useState("");
   const [strictError, setStrictError] = useState("");
 
-  const [keyPool, setKeyPool] = useState("");
+  // THE POOL THE KEY HALF ACTS ON, IN THE ADDRESS BAR. `replace` rather than `push`, because it is also
+  // written on ARRIVAL when the URL names no pool — see lib/urlState.ts.
+  const [keyPool, setKeyPool] = useQueryParam("pool", "replace");
   const [keyReload, setKeyReload] = useState(0);
   const [minting, setMinting] = useState(false);
   const [mintError, setMintError] = useState("");
@@ -136,18 +174,28 @@ export default function FleetPage() {
   const [runners, setRunners] = useState<RunnerRow[]>([]);
   const [lifecycleError, setLifecycleError] = useState("");
   // THE DIALOG'S SUBJECT IS THE SINGLE READ'S ANSWER, not the list row — which is why this state holds a
-  // RunnerDetail and is set only after GET /v1/runners/{runner_id} returns. See revokeRunner below.
+  // RunnerDetail and is set only after GET /v1/runners/{runner_id} returns. See openRevoke below.
   const [revokingRunner, setRevokingRunner] = useState<RunnerDetail | null>(null);
   const [runnerRevokeBusy, setRunnerRevokeBusy] = useState(false);
+  /** The open row menu, by id. One at a time, because two open menus over a table is two answers to "what
+   *  can I do to this row" and only one of them is about the row under the pointer.
+   *
+   *  A MENU ITEM DOES NOT CLOSE IT, and that is a focus requirement rather than a preference:
+   *  components/ConfirmDestructive.tsx returns focus to the element that was focused when it opened, and an
+   *  element removed from the DOM in the same click cannot receive it — Escape would then drop focus to
+   *  <body>, which is the one outcome a modal's cancel must not have. The toggle and Escape close it. */
 
   const [admitStatus, setAdmitStatus] = useState("");
   const [admitErrors, setAdmitErrors] = useState<Record<string, string>>({});
 
   // The key panel opens on a REAL pool. A picker that opens empty invites a mint against nothing, and every
-  // stack has at least one pool — the tenant is seeded one at birth.
+  // stack has at least one pool — the tenant is seeded one at birth. A pool id this deployment does not have
+  // is IGNORED rather than selected, so a hand-typed query string cannot open the mint on nothing.
   useEffect(() => {
-    setKeyPool((current) => (current === "" ? String(pools[0]?.id ?? "") : current));
-  }, [pools]);
+    if (pools.length === 0) return;
+    if (pools.some((p) => p.id === keyPool)) return;
+    setKeyPool(String(pools[0]?.id ?? ""));
+  }, [pools, keyPool, setKeyPool]);
 
   async function createPool() {
     setCreating(true);
@@ -168,6 +216,7 @@ export default function FleetPage() {
             : "Enrolling into it needs only a key — anything holding one joins without being asked about."),
       );
       setPoolName("");
+      setPoolOpen(false);
       setPoolReload((n) => n + 1);
     } catch (err: unknown) {
       setCreateError(detail(err, "the pool could not be created"));
@@ -203,6 +252,7 @@ export default function FleetPage() {
     setMinted(null);
     try {
       setMinted(await apiSend<MintedPoolKey>("POST", `/runner-pools/${encodeURIComponent(keyPool)}/keys`));
+      setMintOpen(false);
       setKeyReload((n) => n + 1);
     } catch (err: unknown) {
       setMintError(detail(err, "the enrolment key could not be minted"));
@@ -316,23 +366,9 @@ export default function FleetPage() {
 
   return (
     <>
-      {/* WHAT THIS PAGE DOES NOT HOLD, FIRST, for the reason /approvals says it first: a queue whose scope is
-          unstated teaches an operator that everything pending is on one screen. */}
-      <p className="muted" data-testid="fleet-approvals-scope-note">
-        <strong>This screen holds machines, not tool calls.</strong> A gated tool call parks a RUN and waits
-        on <a href="/approvals">Approvals</a>; it is never here. The two are separate on purpose and the
-        reason is the server&apos;s: a machine enrolment has <strong>no request hash to bind to</strong> —
-        there are no arguments, no parked call, and the certificate was issued before anybody was asked — so
-        it cannot ride the approval route, whose decision requires one.
-      </p>
-
-      {/* THE STANDING FACTS ABOUT THIS DEPLOYMENT'S FLEET. Collapsed for the reason /approvals collapses its
-          three: they are true on every visit and unchanged by anything on screen, and four paragraphs of
-          equal weight before the first panel is how a screen stops being read. Still text, still in the DOM,
-          still keyboard-reachable, and the summary says what is inside. */}
-      {/* FLT-P15 STAYS OPEN, and the test for that is /approvals': it changes what you CONCLUDE from
-          everything else on the page, every single visit. "Three active Macs" plus this sentence and "three
-          active Macs" without it are different screens. */}
+      {/* FLT-P15 STAYS OPEN AND STAYS FIRST. It changes what you CONCLUDE from everything else on the page,
+          every single visit: "three active Macs" plus this sentence and "three active Macs" without it are
+          different screens. */}
       <p className="muted" data-testid="fleet-remote-execution-note">
         <strong>
           A machine in a pool runs the ENGINE of a run placed there. Every tool still runs in the control
@@ -341,12 +377,14 @@ export default function FleetPage() {
         A lease offer carries an image digest — that is the engine — and the shell commands, the file writes
         and the git calls happen where the control plane is. So a Mac in this list does not run{" "}
         <code>xcodebuild</code> unless the control plane is on it, and enrolling more Macs does not change
-        that (<code>FLT-P15</code>: remote execution was deferred and has never shipped). Read this before
-        anything else here, because it bounds what all of it is worth.
+        that (<code>FLT-P15</code>: remote execution was deferred and has never shipped).
       </p>
 
+      {/* THE STANDING FACTS, COLLAPSED. They are true on every visit and unchanged by anything on screen —
+          the test this console applies to decide what collapses. Still text, still in the DOM, still
+          keyboard-reachable, and the summary says what is inside. */}
       <details className="notes" data-testid="fleet-standing-notes">
-        <summary>What a pool key alone can do, and what an admission actually admits</summary>
+        <summary>What a pool key alone can do, what an admission admits, and which queue is not here</summary>
         <p className="muted" data-testid="fleet-strict-note">
           <strong>With enrolment open, whoever holds a pool key is a machine in that pool.</strong> Nothing
           attests what an enrolling host actually is — the posture it declares is compared against the
@@ -359,6 +397,16 @@ export default function FleetPage() {
           every reboot, because what was approved was this certificate rather than this hardware
           (<code>FLT-P13</code>).
         </p>
+        {/* THE SCOPE NOTE MOVED IN HERE WITH THEM (it was the first paragraph on the page). It is the same
+            kind of fact — permanently true, unchanged by anything on screen — and tests/fleet.spec.ts reads
+            it by testid and by its link, both of which a details element keeps in the document. */}
+        <p className="muted" data-testid="fleet-approvals-scope-note">
+          <strong>This screen holds machines, not tool calls.</strong> A gated tool call parks a RUN and waits
+          on <a href="/approvals">Approvals</a>; it is never here. The reason is the server&apos;s: a machine
+          enrolment has <strong>no request hash to bind to</strong> — no arguments, no parked call, and the
+          certificate was issued before anybody was asked — so it cannot ride the approval route, whose
+          decision requires one.
+        </p>
       </details>
 
       {/* --- 1. THE POOLS ------------------------------------------------------------------------------ */}
@@ -368,34 +416,32 @@ export default function FleetPage() {
         fetchPath="/runner-pools"
         reloadKey={poolReload}
         onRows={setPools}
-        note="A pool is a POSTURE plus the shape of machine expected in it. A machine inherits its pool's posture when it enrols, which is why a pool's posture cannot be changed afterwards — it would retroactively change what the machines already in it are."
+        action={
+          <button type="button" className="primary" data-testid="pool-create-open" onClick={() => setPoolOpen(true)}>
+            + Create pool
+          </button>
+        }
         columns={[
-          { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
-          { header: "Name", render: (r) => String(r.name ?? "") },
-          { header: "Posture", render: (r) => <code>{String(r.posture ?? "")}</code> },
+          { header: "ID", sort: (r) => String(r.id ?? ""), render: (r) => <IdCell id={String(r.id ?? "")} label="pool ID" /> },
           {
-            header: "Shape",
-            render: (r) =>
-              String(r.os ?? "") === "" && String(r.arch ?? "") === "" ? (
-                <>— any</>
-              ) : (
-                <code>{`${String(r.os ?? "any")}/${String(r.arch ?? "any")}`}</code>
-              ),
+            header: "Name",
+            sort: (r) => String(r.name ?? ""),
+            // THE NAME IS A LINK TO THIS PAGE WITH THE POOL NAMED, which is the only "detail" a pool has in
+            // this API: there is no GET /v1/runner-pools/{id}, so the row's destination is the key table
+            // below, scoped to it. An ANCHOR rather than a button, deliberately — it is a real address a
+            // reader can copy, open in a second tab, or send to somebody.
+            render: (r) => (
+              <a className="cell-name-link" href={`/fleet?pool=${encodeURIComponent(String(r.id ?? ""))}`} data-testid={`pool-select-${String(r.id ?? "")}`}>
+                <NameCell name={String(r.name ?? "")} id="" />
+              </a>
+            ),
           },
+          { header: "Posture", sort: (r) => String(r.posture ?? ""), render: (r) => <code>{String(r.posture ?? "")}</code> },
+          { header: "Shape", render: (r) => <Shape os={r.os} arch={r.arch} /> },
           {
             header: "Enrolment",
-            render: (r) => (
-              <>
-                <Status value={r.strict_enrollment === true ? "waiting room" : "open"} testId={`pool-mode-${String(r.id ?? "")}`} />{" "}
-                <button
-                  type="button"
-                  data-testid={`pool-strict-${String(r.id ?? "")}`}
-                  onClick={() => void setStrict(r, r.strict_enrollment !== true)}
-                >
-                  {r.strict_enrollment === true ? "Open enrolment" : "Require approval"}
-                </button>
-              </>
-            ),
+            sort: (r) => (r.strict_enrollment === true ? "waiting room" : "open"),
+            render: (r) => <Status value={r.strict_enrollment === true ? "waiting room" : "open"} testId={`pool-mode-${String(r.id ?? "")}`} />,
           },
           {
             // THE POINTER, UNFLATTENED. See the header: absence is "the gateway could not be asked" and 0 is
@@ -410,9 +456,56 @@ export default function FleetPage() {
               </span>
             ),
           },
+          { header: "Created", sort: (r) => String(r.created_at ?? ""), render: (r) => <Stamp iso={r.created_at} /> },
+          {
+            header: "",
+            render: (r) => {
+              const id = String(r.id ?? "");
+              const strict = r.strict_enrollment === true;
+              return (
+                <div className="row-menu">
+                  <Menu
+                    label={`Actions for pool ${id}`}
+                    trigger={<span aria-hidden="true">⋯</span>}
+                    triggerClassName="row-menu-toggle"
+                    triggerTestId={`pool-menu-${id}`}
+                    // TWO ITEMS, AND THAT IS THE API: a pool's whole write surface after creation is
+                    // PATCH /v1/runner-pools/{id} with `strict_enrollment`, and there is no delete.
+                    // Selecting it is not a write; it is where the keys below are read from.
+                    items={[
+                      { label: strict ? "Open enrolment" : "Require approval", testId: `pool-strict-${id}`, onSelect: () => void setStrict(r, !strict) },
+                      { label: "Show enrolment keys", testId: `pool-keys-${id}`, onSelect: () => setKeyPool(id) },
+                    ]}
+                  />
+                </div>
+              );
+            },
+          },
         ]}
+        emptyNote={
+          <>
+            <p className="empty-title">No runner pools</p>
+            <p className="empty-body">
+              A pool is a POSTURE plus the shape of machine expected in it, and it is what a run is placed
+              into. Every tenant is seeded one at birth, so an empty table here means the read did not reach
+              the collection it named.
+            </p>
+          </>
+        }
       />
 
+      {/* THE CREATE OUTCOME IS ON THE LIST, NOT IN THE DIALOG. The dialog closes on success, so a status
+          rendered inside it would be a confirmation that vanishes at the moment it is earned — and what this
+          sentence says (which posture the pool got, and whether enrolling into it now needs a human) is the
+          thing the operator opened the form to decide. Same shape as app/repositories/page.tsx. */}
+      {createStatus === "" ? null : (
+        <p role="status" className="form-status" data-testid="pool-create-status">
+          <span className="glyph" aria-hidden="true">
+            ✔
+          </span>{" "}
+          {createStatus}
+        </p>
+      )}
       {strictStatus === "" ? null : (
         <p role="status" className="form-status" data-testid="pool-strict-status">
           <span className="glyph" aria-hidden="true">
@@ -430,85 +523,92 @@ export default function FleetPage() {
         </p>
       )}
 
-      <ResourceForm
-        title="Create a runner pool"
-        testId="pool-create"
-        note={
-          <>
-            Until this form existed a tenant had exactly one pool, forever: the only statement that wrote a
-            pool row wrote its name, its posture and its enrolment mode as literals, so a rented-Mac pool
-            could not exist and the waiting room could not be switched on.
-          </>
-        }
-        fields={[
-          {
-            name: "pool-name",
-            label: "Name",
-            value: poolName,
-            onChange: setPoolName,
-            required: true,
-            hint: "Unique within this project. A second pool with the same name is refused rather than created.",
-            testId: "pool-name-input",
-          },
-          {
-            name: "pool-posture",
-            label: "Posture",
-            kind: "select",
-            value: posture,
-            onChange: setPosture,
-            options: [
-              { value: "sandboxed-linux", label: "sandboxed-linux — a container the control plane isolates" },
-              { value: "unsandboxed-host", label: "unsandboxed-host — a real machine, e.g. a rented Mac" },
-            ],
-            testId: "pool-posture-select",
-            hint: "Decided once and never afterwards: a machine inherits it at enrolment, so changing it would change what the machines already here are.",
-            emptyNote: <>No postures are available, which cannot happen — this list is fixed in the schema.</>,
-          },
-          {
-            name: "pool-os",
-            label: "Operating system (optional)",
-            value: poolOS,
-            onChange: setPoolOS,
-            hint: "The shape this pool expects, e.g. darwin. Leave it empty to accept any.",
-            testId: "pool-os-input",
-          },
-          {
-            name: "pool-arch",
-            label: "Architecture (optional)",
-            value: poolArch,
-            onChange: setPoolArch,
-            hint: "e.g. arm64. Leave it empty to accept any.",
-            testId: "pool-arch-input",
-          },
-        ]}
-        submitLabel="Create pool"
-        submittingLabel="Creating…"
-        submitTestId="pool-create-button"
-        submitting={creating}
-        error={createError}
-        status={createStatus}
-        onSubmit={createPool}
-      >
-        <fieldset data-testid="pool-strict-fieldset">
-          <legend>Enrolment</legend>
-          <label htmlFor="pool-strict-input">
-            <input
-              id="pool-strict-input"
-              type="checkbox"
-              checked={poolStrict}
-              data-testid="pool-strict-input"
-              aria-describedby="pool-strict-hint"
-              onChange={(e) => setPoolStrict(e.target.checked)}
-            />{" "}
-            Require a human to admit each machine
-          </label>
-          <p className="muted" id="pool-strict-hint">
-            With this off, any machine holding a valid pool key joins immediately. With it on, it waits in the
-            room below until somebody admits it — and admitting takes the <code>approve</code> capability,
-            which <code>provision</code> deliberately does not cover.
-          </p>
-        </fieldset>
-      </ResourceForm>
+      {/* THE CREATE FORM IS BEHIND THE PANEL'S OWN BUTTON. It was five fields and a fieldset sitting open
+          between the pool table and the key table, read past on every visit by an operator who came to look
+          at a machine. It closes on success, so the new row in the table above is what is left on screen. */}
+      {poolOpen ? (
+        <FormDialog
+          label="Create a runner pool"
+          testId="pool-create-dialog"
+          onClose={() => {
+            setPoolOpen(false);
+            setCreateError("");
+          }}
+        >
+          <ResourceForm
+            title="Create a runner pool"
+            testId="pool-create"
+            fields={[
+              {
+                name: "pool-name",
+                label: "Name",
+                value: poolName,
+                onChange: setPoolName,
+                required: true,
+                hint: "Unique within this project. A second pool with the same name is refused rather than created.",
+                testId: "pool-name-input",
+              },
+              {
+                name: "pool-posture",
+                label: "Posture",
+                kind: "select",
+                value: posture,
+                onChange: setPosture,
+                options: [
+                  { value: "sandboxed-linux", label: "sandboxed-linux — a container the control plane isolates" },
+                  { value: "unsandboxed-host", label: "unsandboxed-host — a real machine, e.g. a rented Mac" },
+                ],
+                testId: "pool-posture-select",
+                hint: "Decided once and never afterwards: a machine inherits it at enrolment, so changing it would change what the machines already here are.",
+                emptyNote: <>No postures are available, which cannot happen — this list is fixed in the schema.</>,
+              },
+              {
+                name: "pool-os",
+                label: "Operating system (optional)",
+                value: poolOS,
+                onChange: setPoolOS,
+                hint: "The shape this pool expects, e.g. darwin. Leave it empty to accept any.",
+                testId: "pool-os-input",
+              },
+              {
+                name: "pool-arch",
+                label: "Architecture (optional)",
+                value: poolArch,
+                onChange: setPoolArch,
+                hint: "e.g. arm64. Leave it empty to accept any.",
+                testId: "pool-arch-input",
+              },
+            ]}
+            submitLabel="Create pool"
+            submittingLabel="Creating…"
+            submitTestId="pool-create-button"
+            submitting={creating}
+            error={createError}
+            status={createStatus}
+            onSubmit={createPool}
+          >
+            <fieldset data-testid="pool-strict-fieldset">
+              <legend>Enrolment</legend>
+              <label htmlFor="pool-strict-input">
+                <input
+                  id="pool-strict-input"
+                  type="checkbox"
+                  checked={poolStrict}
+                  data-testid="pool-strict-input"
+                  aria-describedby="pool-strict-hint"
+                  onChange={(e) => setPoolStrict(e.target.checked)}
+                />{" "}
+                Require a human to admit each machine
+              </label>
+              <p className="muted" id="pool-strict-hint">
+                With this off, any machine holding a valid pool key joins immediately. With it on, it waits in the
+                room below until somebody admits it — and admitting takes the <code>approve</code> capability,
+                which <code>provision</code> deliberately does not cover.
+              </p>
+            </fieldset>
+          </ResourceForm>
+        </FormDialog>
+      ) : null}
 
       {/* --- 2. THE KEYS ------------------------------------------------------------------------------- */}
       <Picker
@@ -522,7 +622,7 @@ export default function FleetPage() {
         }}
         options={poolOptions}
         testId="poolkey-pool-select"
-        hint="Enrolment keys belong to one pool. Minting here admits machines into THAT pool and no other."
+        hint="Enrolment keys belong to one pool: minting here admits machines into THAT pool and no other. The choice is in the address bar, so it survives a reload and can be sent to somebody."
         emptyNote={
           <>
             <strong>No pools are readable.</strong> Create one above before minting an enrolment key.
@@ -536,29 +636,63 @@ export default function FleetPage() {
           testId="panel-runner-pool-keys"
           fetchPath={`/runner-pools/${encodeURIComponent(keyPool)}/keys`}
           reloadKey={keyReload}
+          action={
+            <button type="button" className="primary" data-testid="poolkey-mint-open" onClick={() => setMintOpen(true)}>
+              + Mint key
+            </button>
+          }
           note="Metadata only. A key's value exists in the mint response and nowhere else — the store keeps no copy, so there is no route that reads one back."
           emptyNote={
             <>
-              <strong>This pool has no enrolment key.</strong> Nothing can join it until one is minted: a
-              machine enrols by presenting a key and a certificate request.
+              <p className="empty-title">This pool has no enrolment key</p>
+              <p className="empty-body">
+                Nothing can join it until one is minted: a machine enrols by presenting a key and a
+                certificate request, and no other path into a pool exists.
+              </p>
             </>
           }
           columns={[
-            { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
-            { header: "Prefix", render: (r) => <code>{String(r.key_prefix ?? "")}</code> },
-            { header: "Created", render: (r) => String(r.created_at ?? "") },
-            { header: "Expires", render: (r) => (r.expires_at === undefined ? "— never" : String(r.expires_at)) },
-            { header: "Last used", render: (r) => (r.last_used_at === undefined ? "— never" : String(r.last_used_at)) },
+            { header: "ID", sort: (r) => String(r.id ?? ""), render: (r) => <IdCell id={String(r.id ?? "")} label="pool key ID" /> },
+            { header: "Prefix", sort: (r) => String(r.key_prefix ?? ""), render: (r) => <code>{String(r.key_prefix ?? "")}</code> },
             {
-              header: "Revoke",
-              render: (r) =>
-                r.revoked_at === undefined ? (
-                  <button type="button" data-testid={`revoke-poolkey-${String(r.id ?? "")}`} onClick={() => setRevokingKey(r)}>
-                    Revoke {String(r.id ?? "")}
-                  </button>
-                ) : (
-                  <>revoked {String(r.revoked_at)}</>
-                ),
+              // A STATE, NOT A COLUMN CALLED "Revoke" WITH A BUTTON IN IT. The row's action moved to the ⋯;
+              // what belongs in a column is what the row IS.
+              header: "Status",
+              sort: (r) => (r.revoked_at === undefined ? "live" : "revoked"),
+              render: (r) => (
+                <span title={r.revoked_at === undefined ? "This key still admits machines." : `Revoked ${String(r.revoked_at)}`}>
+                  <Status value={r.revoked_at === undefined ? "live" : "revoked"} testId={`poolkey-state-${String(r.id ?? "")}`} />
+                </span>
+              ),
+            },
+            { header: "Created", sort: (r) => String(r.created_at ?? ""), render: (r) => <Stamp iso={r.created_at} /> },
+            {
+              header: "Expires",
+              sort: (r) => String(r.expires_at ?? ""),
+              render: (r) => (r.expires_at === undefined ? <span className="cell-none">— never</span> : <Stamp iso={r.expires_at} />),
+            },
+            {
+              header: "Last used",
+              sort: (r) => String(r.last_used_at ?? ""),
+              render: (r) => (r.last_used_at === undefined ? <span className="cell-none">— never</span> : <Stamp iso={r.last_used_at} />),
+            },
+            {
+              header: "",
+              render: (r) => {
+                const id = String(r.id ?? "");
+                if (r.revoked_at !== undefined) return <span className="cell-none">—</span>;
+                return (
+                  <div className="row-menu">
+                    <Menu
+                      label={`Actions for enrolment key ${id}`}
+                      trigger={<span aria-hidden="true">⋯</span>}
+                      triggerClassName="row-menu-toggle"
+                      triggerTestId={`poolkey-menu-${id}`}
+                      items={[{ label: `Revoke ${id}`, testId: `revoke-poolkey-${id}`, danger: true, onSelect: () => setRevokingKey(r) }]}
+                    />
+                  </div>
+                );
+              },
             },
           ]}
         />
@@ -568,10 +702,12 @@ export default function FleetPage() {
         // THE COUNT, AND THE SENTENCE THAT MAKES IT MEAN SOMETHING. api/runners.go names the field
         // `enrolled_runners_still_running` rather than `enrolled_runners` for exactly this: an operator not
         // shown them reads "revoked" as "removed" and believes one call decommissioned a fleet.
-        <p role="status" className="status" data-glyph="warn" data-testid="poolkey-revoke-status">
+        // eslint-disable-next-line -- see the TODO above the concurrency notice below.
+        <p role="status" className="form-status" data-glyph="warn" data-testid="poolkey-revoke-status">
           <span className="glyph" aria-hidden="true">
             !
           </span>{" "}
+          <span>
           <strong>
             {String(keyRevoked.id ?? "")} is revoked and {String(revokedKeyMachines.length)} machine(s) it
             already admitted are still running.
@@ -581,6 +717,7 @@ export default function FleetPage() {
           {revokedKeyMachines.length === 0
             ? "This key had admitted nothing, so nothing survives it."
             : `Decommission each of them separately if that is what you meant: ${revokedKeyMachines.map((m) => `${String(m.id ?? "")} (${String(m.label ?? "no label")})`).join(", ")}.`}
+          </span>
         </p>
       )}
       {keyRevokeError === "" ? null : (
@@ -592,24 +729,38 @@ export default function FleetPage() {
         </p>
       )}
 
-      <ResourceForm
-        title="Mint an enrolment key"
-        testId="poolkey-mint"
-        note={
-          <>
-            The value is shown <strong>once</strong>, here, and is retrievable from nowhere afterwards. It is
-            what a machine presents when it first dials the runner plane, so it belongs in that machine&apos;s
-            configuration and nowhere else.
-          </>
-        }
-        fields={[]}
-        submitLabel="Mint key"
-        submittingLabel="Minting…"
-        submitTestId="poolkey-mint-button"
-        submitting={minting}
-        error={mintError}
-        onSubmit={mintKey}
-      />
+      {/* SAME MOVE, AND THIS ONE HAD NO FIELDS AT ALL — a section, a heading, a paragraph and one button,
+          which is a lot of page for a control that takes no input. It closes on success, leaving the reveal
+          region holding the one-time value as the only thing on screen. */}
+      {mintOpen ? (
+        <FormDialog
+          label="Mint an enrolment key"
+          testId="poolkey-mint-dialog"
+          onClose={() => {
+            setMintOpen(false);
+            setMintError("");
+          }}
+        >
+          <ResourceForm
+            title="Mint an enrolment key"
+            testId="poolkey-mint"
+            note={
+              <>
+                The value is shown <strong>once</strong>, here, and is retrievable from nowhere afterwards. It is
+                what a machine presents when it first dials the runner plane, so it belongs in that machine&apos;s
+                configuration and nowhere else.
+              </>
+            }
+            fields={[]}
+            submitLabel="Mint key"
+            submittingLabel="Minting…"
+            submitTestId="poolkey-mint-button"
+            submitting={minting}
+            error={mintError}
+            onSubmit={mintKey}
+          />
+        </FormDialog>
+      ) : null}
 
       {minted === null ? null : (
         <RevealOnce
@@ -645,50 +796,71 @@ export default function FleetPage() {
         fetchPath="/runners"
         reloadKey={runnerReload}
         onRows={setRunners}
-        note="Every machine that has enrolled, whatever it is doing now. A revoked identity stays listed — decommissioning is a fact worth keeping visible."
+        // A REVOKED IDENTITY STAYS LISTED, and that is worth one sentence because a list that dropped them
+        // would make a decommissioning invisible the moment it succeeded.
+        note="Every machine that has enrolled, whatever it is doing now — a revoked identity stays in the table, because decommissioning is a fact worth keeping visible."
         emptyNote={
           <>
-            <strong>No machine has enrolled.</strong> A machine joins by dialling the runner plane with a pool
-            key and a certificate request; nothing on this screen or anywhere else in the public API can put
-            one here.
+            <p className="empty-title">No machine has enrolled</p>
+            <p className="empty-body">
+              A machine joins by dialling the runner plane with a pool key and a certificate request. Nothing
+              on this screen or anywhere else in the public API can put one here, so an empty table is the
+              normal shape of a deployment whose runs are placed by the control plane&apos;s own workers.
+            </p>
           </>
         }
         columns={[
-          { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
-          { header: "Pool", render: (r) => <code>{String(r.pool_id ?? "")}</code> },
-          { header: "Label", render: (r) => String(r.label ?? "— none") },
-          { header: "State", render: (r) => <Status value={String(r.state ?? "unknown")} testId={`runner-state-${String(r.id ?? "")}`} /> },
-          { header: "Shape", render: (r) => <code>{`${String(r.os ?? "?")}/${String(r.arch ?? "?")}`}</code> },
-          { header: "Posture", render: (r) => <code>{String(r.posture ?? "")}</code> },
-          { header: "Last seen", render: (r) => (r.last_seen_at === undefined ? "— never" : String(r.last_seen_at)) },
+          { header: "ID", sort: (r) => String(r.id ?? ""), render: (r) => <IdCell id={String(r.id ?? "")} label="machine ID" /> },
           {
-            header: "Lifecycle",
+            header: "Label",
+            sort: (r) => String(r.label ?? ""),
+            render: (r) => <NameCell name={String(r.label ?? "")} id="" />,
+          },
+          {
+            header: "State",
+            sort: (r) => String(r.state ?? ""),
+            render: (r) => <Status value={String(r.state ?? "unknown")} testId={`runner-state-${String(r.id ?? "")}`} />,
+          },
+          { header: "Pool", sort: (r) => String(r.pool_id ?? ""), render: (r) => <code>{String(r.pool_id ?? "")}</code> },
+          { header: "Shape", render: (r) => <Shape os={r.os} arch={r.arch} /> },
+          { header: "Posture", sort: (r) => String(r.posture ?? ""), render: (r) => <code>{String(r.posture ?? "")}</code> },
+          {
+            header: "Last seen",
+            sort: (r) => String(r.last_seen_at ?? ""),
+            render: (r) => (r.last_seen_at === undefined ? <span className="cell-none">— never</span> : <Stamp iso={r.last_seen_at} />),
+          },
+          {
+            header: "",
             // A PENDING MACHINE IS OFFERED NO CORDON, and that is the server's shape rather than tidiness:
             // `cordon` and `resume` answer 404 for a machine in the waiting room, because a cordon would
             // erase the fact that nobody had admitted it and the resume after it would then look
             // legitimate. What a waiting machine CAN be given is the other answer — revoke refuses the
             // enrolment — so that control stays.
-            render: (r) =>
-              r.state === "revoked" ? (
-                <>— decommissioned</>
-              ) : (
-                <>
-                  {r.state === "pending" ? (
-                    <>— awaiting approval, below</>
-                  ) : r.state === "cordoned" ? (
-                    <button type="button" data-testid={`runner-resume-${String(r.id ?? "")}`} onClick={() => void move(r, "resume")}>
-                      Resume {String(r.id ?? "")}
-                    </button>
-                  ) : (
-                    <button type="button" data-testid={`runner-cordon-${String(r.id ?? "")}`} onClick={() => void move(r, "cordon")}>
-                      Cordon {String(r.id ?? "")}
-                    </button>
-                  )}{" "}
-                  <button type="button" className="danger" data-testid={`runner-revoke-${String(r.id ?? "")}`} onClick={() => void openRevoke(r)}>
-                    Revoke {String(r.id ?? "")}
-                  </button>
-                </>
-              ),
+            render: (r) => {
+              const id = String(r.id ?? "");
+              if (r.state === "revoked") return <span className="cell-none">— decommissioned</span>;
+              return (
+                <div className="row-menu">
+                  <Menu
+                    label={`Actions for machine ${id}`}
+                    trigger={<span aria-hidden="true">⋯</span>}
+                    triggerClassName="row-menu-toggle"
+                    triggerTestId={`runner-menu-${id}`}
+                    // A PENDING MACHINE HAS NO LIFECYCLE ITEM — it is admitted from the waiting room below,
+                    // not cordoned — so the list is BUILT rather than rendered with a null in it. A menu that
+                    // holds a hole announces its own item count wrong to a screen reader.
+                    items={[
+                      ...(r.state === "pending"
+                        ? []
+                        : r.state === "cordoned"
+                          ? [{ label: `Resume ${id}`, testId: `runner-resume-${id}`, onSelect: () => void move(r, "resume") }]
+                          : [{ label: `Cordon ${id}`, testId: `runner-cordon-${id}`, onSelect: () => void move(r, "cordon") }]),
+                      { label: `Revoke ${id}`, testId: `runner-revoke-${id}`, danger: true, onSelect: () => void openRevoke(r) },
+                    ]}
+                  />
+                </div>
+              );
+            },
           },
         ]}
       />
@@ -706,11 +878,18 @@ export default function FleetPage() {
           this when PALAI_DISPATCH_WORKERS=1 AND at least two machines are enrolled. The worker count is read
           by the control-plane PROCESS and appears on no /v1 route, so the console cannot check it and says
           so — a screen that implied it had read the value would be claiming a measurement it never took. */}
+      {/* TODO(component-layer): Callout — a WARNING BLOCK. `.status` is a PILL (app/globals.css: inline-flex,
+          fixed --pill-h, `white-space: nowrap`), and a four-sentence paragraph wearing it does not wrap:
+          measured 2026-07-31 on the fake profile, this notice rendered as ONE line and took the full-page
+          screenshot from 1440 to 3296 CSS pixels wide. `.form-status` is the block-shaped sibling and wraps,
+          so it is what these three carry until a warn-toned block exists; `data-glyph="warn"` stays on them
+          as the hook. */}
       {runners.length < 2 ? null : (
-        <p className="status" data-glyph="warn" data-testid="fleet-concurrency-note">
+        <p className="form-status" data-glyph="warn" data-testid="fleet-concurrency-note">
           <span className="glyph" aria-hidden="true">
             !
           </span>{" "}
+          <span>
           <strong>
             {String(runners.length)} machines are enrolled, and concurrent runs are bounded by the control
             plane, not the fleet.
@@ -720,18 +899,28 @@ export default function FleetPage() {
           never reached. <strong>This console cannot read it:</strong> it is read by the control-plane process
           and no <code>/v1</code> route publishes it, so this notice is shown on the machine count alone.
           Check it where the stack is configured, and raise <code>PALAI_RUNNER_CONCURRENCY</code> with it.
+          </span>
         </p>
       )}
 
       {/* --- 4. THE WAITING ROOM ----------------------------------------------------------------------- */}
+      {/* IT IS A TABLE NOW, WITH THE MACHINE LIST'S OWN COLUMNS. It was a `<ul>` of sentences with a button
+          glued to the end of each, so an operator comparing what is IN the fleet against what is asking to
+          get in was comparing a table to a paragraph. It is still derived from the rows above rather than
+          from a second fetch, so a truncation notice there applies here too — which is the whole reason it
+          is not a Panel of its own. */}
       <section className="panel" data-testid="waiting-room" aria-labelledby="waiting-room-h">
-        <h2 id="waiting-room-h">Waiting room</h2>
+        <div className="panel-head">
+          <h2 id="waiting-room-h">Waiting room</h2>
+          <span className="panel-count">
+            {waitingRoom.length} {waitingRoom.length === 1 ? "machine" : "machines"}
+          </span>
+        </div>
         <p className="muted">
-          Machines that presented a valid enrolment key into a pool with strict enrolment and are waiting for
-          a human. Admitting one needs the <code>approve</code> capability, which <code>provision</code>{" "}
-          deliberately does not cover — a key that could provision could add itself to the approver list it is
-          about to be checked against. This list is derived from the table above, so a truncation notice there
-          applies here too.
+          Machines that presented a valid enrolment key into a pool with strict enrolment. Admitting one takes
+          the <code>approve</code> capability, which <code>provision</code> deliberately does not cover. This
+          table is derived from the machine list above rather than from a second read, so a truncation notice
+          there applies here too.
         </p>
         {admitStatus === "" ? null : (
           <p role="status" className="form-status" data-testid="admit-status">
@@ -742,68 +931,99 @@ export default function FleetPage() {
           </p>
         )}
         {waitingRoom.length === 0 ? (
-          <p className="empty" data-testid="waiting-room-empty">
-            <strong>No machine is waiting.</strong> That is what an open pool always looks like: with strict
-            enrolment off, a machine holding a valid key joins without asking, so an empty room here does not
-            mean nothing joined.
-          </p>
+          <div className="empty" data-testid="waiting-room-empty">
+            <p className="empty-title">No machine is waiting</p>
+            <p className="empty-body">
+              That is what an open pool always looks like: with strict enrolment off, a machine holding a
+              valid key joins without asking, so an empty room here does not mean nothing joined.
+            </p>
+          </div>
         ) : (
-          <ul>
-            {waitingRoom.map((row) => {
-              const id = String(row.id ?? "");
-              const refusal = admitErrors[id] ?? "";
-              return (
-                <li key={id}>
-                  <code>{id}</code> — {String(row.label ?? "no label")}, asking to join{" "}
-                  <code>{String(row.pool_id ?? "")}</code> as{" "}
-                  <code>{`${String(row.os ?? "?")}/${String(row.arch ?? "?")}`}</code>{" "}
-                  <button type="button" data-testid={`admit-${id}`} onClick={() => void admit(row)}>
-                    Admit {id}
-                  </button>
-                  {refusal === "" ? null : (
-                    <p role="alert" className="form-error" data-testid={`admit-${id}-error`}>
-                      <span className="glyph" aria-hidden="true">
-                        ✖
-                      </span>{" "}
-                      {/* THREE REFUSALS, THREE NEXT ACTIONS. The server distinguishes them; flattening them
-                          into one sentence sends an operator to the wrong file. */}
-                      {refusal === "approver_not_authorized" ? (
-                        <>
-                          <strong>This key is not in the project&apos;s approver list.</strong> The key holds
-                          the <code>approve</code> capability and the project&apos;s{" "}
-                          <code>config_policy.approvers</code> does not name the principal it resolves to. Add{" "}
-                          <code>key:&lt;api_key_id&gt;</code> to that list on <a href="/policy">Policy</a>, or
-                          admit this machine with a key that is already on it.
-                        </>
-                      ) : refusal === "insufficient_scope" ? (
-                        <>
-                          <strong>
-                            This key has no <code>approve</code> capability.
-                          </strong>{" "}
-                          That is a different gate from the approver list and a different fix: mint a key
-                          holding <code>approve</code> and start the console with it. It is deliberately not
-                          covered by <code>provision</code>, so an administrator is not an approver by
-                          default.
-                        </>
-                      ) : refusal === "not_found" ? (
-                        <>
-                          <strong>No such machine is waiting for approval.</strong> Three causes are{" "}
-                          <strong>indistinguishable</strong> here and the server refuses to say which — it is
-                          not yours, it does not exist, or it is no longer admissible because it was cordoned
-                          or revoked. Re-read the list before deciding which happened.
-                        </>
-                      ) : (
-                        <>
-                          The admission was refused with <code>{refusal}</code>, which this screen has no
-                          sentence for. That is a gap in this page rather than a description of what happened.
-                        </>
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">ID</th>
+                <th scope="col">Label</th>
+                <th scope="col">Asking to join</th>
+                <th scope="col">Shape</th>
+                <th scope="col">Waiting since</th>
+                <th scope="col">Admit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {waitingRoom.map((row) => {
+                const id = String(row.id ?? "");
+                const refusal = admitErrors[id] ?? "";
+                return (
+                  <tr key={id}>
+                    <td>
+                      <IdCell id={id} label="machine ID" />
+                    </td>
+                    <td>
+                      <NameCell name={String(row.label ?? "")} id="" />
+                    </td>
+                    <td>
+                      <code>{String(row.pool_id ?? "")}</code>
+                    </td>
+                    <td>
+                      <Shape os={row.os} arch={row.arch} />
+                    </td>
+                    <td>{row.last_seen_at === undefined ? <span className="cell-none">— never</span> : <Stamp iso={row.last_seen_at} />}</td>
+                    <td>
+                      {/* SC 2.5.3 Label in Name: the accessible name must CONTAIN the visible one, so the
+                          machine is APPENDED to "Admit" rather than replacing it with an aria-label. Seven
+                          buttons each reading a 16-character hash is a column of noise; seven buttons all
+                          reading "Admit" are indistinguishable to a screen reader. This is both. */}
+                      <Button variant="primary" testId={`admit-${id}`} onClick={() => void admit(row)}>
+                        Admit
+                        <span className="sr-only"> {id}</span>
+                      </Button>
+                      {refusal === "" ? null : (
+                        <p role="alert" className="form-error" data-testid={`admit-${id}-error`}>
+                          <span className="glyph" aria-hidden="true">
+                            ✖
+                          </span>{" "}
+                          {/* THREE REFUSALS, THREE NEXT ACTIONS. The server distinguishes them; flattening
+                              them into one sentence sends an operator to the wrong file. */}
+                          {refusal === "approver_not_authorized" ? (
+                            <>
+                              <strong>This key is not in the project&apos;s approver list.</strong> The key holds
+                              the <code>approve</code> capability and the project&apos;s{" "}
+                              <code>config_policy.approvers</code> does not name the principal it resolves to. Add{" "}
+                              <code>key:&lt;api_key_id&gt;</code> to that list on <a href="/policy">Policy</a>, or
+                              admit this machine with a key that is already on it.
+                            </>
+                          ) : refusal === "insufficient_scope" ? (
+                            <>
+                              <strong>
+                                This key has no <code>approve</code> capability.
+                              </strong>{" "}
+                              That is a different gate from the approver list and a different fix: mint a key
+                              holding <code>approve</code> and start the console with it. It is deliberately not
+                              covered by <code>provision</code>, so an administrator is not an approver by
+                              default.
+                            </>
+                          ) : refusal === "not_found" ? (
+                            <>
+                              <strong>No such machine is waiting for approval.</strong> Three causes are{" "}
+                              <strong>indistinguishable</strong> here and the server refuses to say which — it is
+                              not yours, it does not exist, or it is no longer admissible because it was cordoned
+                              or revoked. Re-read the list before deciding which happened.
+                            </>
+                          ) : (
+                            <>
+                              The admission was refused with <code>{refusal}</code>, which this screen has no
+                              sentence for. That is a gap in this page rather than a description of what happened.
+                            </>
+                          )}
+                        </p>
                       )}
-                    </p>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         )}
       </section>
 

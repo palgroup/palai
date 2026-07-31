@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { Button } from "@/components/ui/Button";
 import { Panel } from "@/components/Panel";
 import { ResourceForm } from "@/components/ResourceForm";
 import { SecretField, takeSecret } from "@/components/SecretField";
@@ -354,9 +355,9 @@ export default function EnvironmentsPage() {
                   <td>{k.updated_at ?? "—"}</td>
                   <td>
                     {/* The label says BINDING, like the dialog and like the API's own response note. */}
-                    <button type="button" data-testid={`unbind-${k.key}`} onClick={() => void unbind(k.key)}>
+                    <Button testId={`unbind-${k.key}`} onClick={() => void unbind(k.key)}>
                       Unbind {k.key}
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))}

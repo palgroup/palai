@@ -912,6 +912,7 @@ const FleetConsolePolicyLedger = `[
 // that list and a link to the login page from inside a session is a link to nowhere.
 const FleetConsoleRouteLedger = `[
   {"path": "/", "ready_test_id": "panel-organizations", "axe_scanned_in": ["light", "dark"]},
+  {"path": "/sessions", "ready_test_id": "panel-sessions", "axe_scanned_in": ["light", "dark"]},
   {"path": "/runs", "ready_test_id": "run-button", "axe_scanned_in": ["light", "dark"]},
   {"path": "/environments", "ready_test_id": "panel-environments", "axe_scanned_in": ["light", "dark"]},
   {"path": "/approvals", "ready_test_id": "panel-approvals", "axe_scanned_in": ["light", "dark"]},
@@ -922,7 +923,8 @@ const FleetConsoleRouteLedger = `[
   {"path": "/usage", "ready_test_id": "panel-usage-meters", "axe_scanned_in": ["light", "dark"]},
   {"path": "/capabilities", "ready_test_id": "panel-capabilities", "axe_scanned_in": ["light", "dark"]},
   {"path": "/policy", "ready_test_id": "panel-api-keys", "axe_scanned_in": ["light", "dark"]},
-  {"path": "/fleet", "ready_test_id": "panel-runner-pools", "axe_scanned_in": ["light", "dark"]}
+  {"path": "/fleet", "ready_test_id": "panel-runner-pools", "axe_scanned_in": ["light", "dark"]},
+  {"path": "/registry", "ready_test_id": "panel-model-connections", "axe_scanned_in": ["light", "dark"]}
 ]`
 
 // FleetConsoleActionLedger is group (f), RE-DERIVED from the console's page sources by

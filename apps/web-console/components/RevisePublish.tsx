@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
+import { Button } from "@/components/ui/Button";
 import { ResourceForm, type FormField } from "@/components/ResourceForm";
 import { apiGet, apiSend, RelayError } from "@/lib/api";
 
@@ -65,6 +66,7 @@ export function RevisePublish({
   fields = [],
   buildBody,
   onCreated,
+  onChanged,
   createPath,
   listPath,
   publishPath,
@@ -83,6 +85,18 @@ export function RevisePublish({
   buildBody?: () => Record<string, unknown>;
   /** Called after a successful create with the id the server minted, so a page can clear its inputs. */
   onCreated?: (revision: Revision) => void;
+  /**
+   * Called after ANY change this component landed — a create OR a publish — once its own list has been
+   * reloaded. It exists because a page that renders a SUMMARY of this lineage beside it (app/agents/[id]
+   * reads the same collection for its chip row) has no other way to learn that a publish happened.
+   *
+   * IT IS NOT `onCreated` WITH A WIDER NAME, and the difference is a bug this component shipped with. A
+   * publish reloaded the table here and told nobody, so the summary above it kept saying "draft only" over a
+   * table whose top row read "published" — one screen contradicting itself, which is the failure a summary
+   * always invites and the reason a summary needs a signal rather than a second guess. Found by the leg that
+   * asserts the two agree (tests/config-journey.spec.ts), on the first run after the summary existed.
+   */
+  onChanged?: () => void;
   /** POST target for a draft. "" means THIS LINEAGE IS NOT CREATED FROM HERE — no form is rendered. */
   createPath: string;
   /** GET target for the lineage. "" means there is no parent selected — see `emptyNote`. */
@@ -150,6 +164,7 @@ export function RevisePublish({
       setStatus(`Revision ${String(body.id ?? "?")} created as a draft. Publish it before a run can be pinned to it.`);
       onCreated?.(body);
       await load(listPath);
+      onChanged?.();
     } catch (err: unknown) {
       setFormError(err instanceof RelayError ? err.problem.detail : "the revision could not be created");
     } finally {
@@ -166,6 +181,7 @@ export function RevisePublish({
       setStatusID(revisionID);
       setStatus(`Revision ${revisionID} is published. Publishing cannot be undone — supersede it with a new revision instead.`);
       await load(listPath);
+      onChanged?.();
     } catch (err: unknown) {
       // The SERVER's words. A publish is refused for reasons the console cannot tell apart on its own (an
       // environment that no longer exists, a revision outside this project), and each has a different fix.
@@ -222,22 +238,55 @@ export function RevisePublish({
         </p>
       )}
 
-      <section className="panel" data-testid={`panel-${testId}s`} aria-labelledby={`${testId}s-h`}>
+      {/* THE NAME IS WITHHELD UNTIL THE ROWS SETTLE, which is components/Panel.tsx's rule applied to the one
+          panel in this console that was not following it (found by page-parity).
+
+          This section emitted `panel-<testId>s` from its FIRST PAINT with "Loading…" inside it, so anything
+          waiting on the panel got a truthy answer about a region holding a spinner. That is the defect
+          tests/reveal-once.spec.ts failed on this morning, and the one the popup and dialog scans in
+          tests/a11y.spec.ts exist to stop: a container that answers to its name before it has content makes
+          every downstream measurement look clean while looking at nothing. An axe scan arriving here would
+          have reported zero violations for a table it never saw.
+
+          ONE SECTION, NOT TWO. Panel.tsx returns a separate pending section because it returns EARLY; doing
+          that here would put a second `id="<testId>s-h"` in the document for aria-labelledby to point at,
+          which trades this defect for an ambiguous accessible name. Swapping the testid on the one section
+          buys the same property — the wait cannot be satisfied early — and moves nothing on screen, which is
+          the other half of Panel's rule. `aria-busy` is the machine-readable half of the word. */}
+      <section
+        className="panel"
+        data-testid={listError === "" && revisions === null ? `panel-${testId}s-loading` : `panel-${testId}s`}
+        aria-labelledby={`${testId}s-h`}
+        aria-busy={listError === "" && revisions === null ? "true" : undefined}
+      >
         <h2 id={`${testId}s-h`}>Revisions</h2>
-        <p className="muted">
-          Newest first. <strong>A draft can be changed only by superseding it</strong> — there is no PATCH on
-          this surface — and <strong>publishing is permanent</strong>: a published revision can be superseded
-          but never un-published, which is what makes a run pinned to one reproducible.
-        </p>
+        {/* ONE SENTENCE (page-parity pass). This was three: newest-first, no PATCH, and publishing being
+            permanent — all true, all standing background, and all repeated by the create form's own note two
+            panels up. What an operator needs at the moment they look at this table is the ORDER, because it
+            decides which row is current; the irreversibility is stated on the control that causes it (the
+            publish button's own status sentence says "Publishing cannot be undone") and the rest is in
+            docs/operations/console.md §4c. */}
+        <p className="muted">Newest first — the top row is what a new pin resolves to.</p>
         {listNote ? <p className="muted">{listNote}</p> : null}
         {listError !== "" ? (
           <p role="alert" className="form-error" data-testid={`panel-${testId}s-error`}>
             Error: {listError}
           </p>
         ) : revisions === null ? (
-          <p className="loading" data-testid={`panel-${testId}s-loading`}>Loading…</p>
+          <p className="loading">Loading…</p>
         ) : revisions.length === 0 ? (
-          <p className="empty" data-testid={`panel-${testId}s-empty`}>No revisions yet.</p>
+          // THE MEASURED EMPTY-STATE SHAPE (design-reference/screen-inventory.md §3): a title, then one
+          // sentence saying what the thing IS. This read "No revisions yet." — three words that teach
+          // nothing at the one moment a reader can be taught, on the panel a first-day operator meets on
+          // every lineage in the tree. The sentence is true of all three lineages this component serves
+          // (agent, tool, tool set), which is why it is here rather than a per-caller prop.
+          <div className="empty" data-testid={`panel-${testId}s-empty`}>
+            <p className="empty-title">No revisions yet</p>
+            <p className="empty-body">
+              A revision is an immutable configuration, and the newest PUBLISHED one is what a pin resolves
+              to — so nothing can be pinned to this lineage until one exists.
+            </p>
+          </div>
         ) : (
           <table>
             <thead>
@@ -277,9 +326,9 @@ export function RevisePublish({
                       {published ? (
                         <span>— already published</span>
                       ) : (
-                        <button type="button" data-testid={`publish-${id}`} onClick={() => void publish(rev)}>
+                        <Button testId={`publish-${id}`} onClick={() => void publish(rev)}>
                           Publish {id}
-                        </button>
+                        </Button>
                       )}
                     </td>
                   </tr>
