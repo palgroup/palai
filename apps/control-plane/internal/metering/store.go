@@ -214,7 +214,8 @@ func (s *Store) ListUsageLedger(ctx context.Context, scope middleware.Scope, q a
 		afterTime, afterID = &q.After.CreatedAt, q.After.ID
 	}
 	rows, err := s.pool.Query(ctx, storage.Query("ListUsageLedger"),
-		scope.Organization, scope.Project, q.CreatedGTE, q.CreatedLTE, afterTime, afterID, q.Limit)
+		scope.Organization, scope.Project, q.CreatedGTE, q.CreatedLTE, afterTime, afterID, q.Limit,
+		q.SessionID, q.Meter)
 	if err != nil {
 		return nil, fmt.Errorf("list usage ledger: %w", err)
 	}

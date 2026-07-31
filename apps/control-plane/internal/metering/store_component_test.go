@@ -240,3 +240,85 @@ func mustDecode(t *testing.T, body []byte, v any) {
 		t.Fatalf("decode %s: %v", body, err)
 	}
 }
+
+// settleForSession is settle with a session attached. The plain helper leaves session_id NULL, which is
+// exactly the row a session filter must NOT return — so both shapes have to exist in the fixture for the
+// filter to be shown to discriminate rather than merely to run.
+func settleForSession(t *testing.T, cs *coordinator.Store, org, project, session, meter, unit string, quantity float64) {
+	t.Helper()
+	if _, err := cs.Pool().Exec(storage.WithSystemScope(context.Background()),
+		`INSERT INTO usage_ledger (id, organization_id, project_id, session_id, run_id, meter, quantity, unit, dedupe_key)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $1)`,
+		newID("use"), org, project, session, newID("run"), meter, quantity, unit); err != nil {
+		t.Fatalf("settle %s for session: %v", meter, err)
+	}
+}
+
+// A DASHBOARD ASKS "WHAT DID THIS SESSION COST", AND THE ANSWER USED TO BE EVERY SESSION'S ROWS.
+//
+// Measured against the live stack on 2026-07-31 before this change:
+// `/v1/usage/ledger?limit=20&session_id=ses_YOK` → 20 rows, for a session that does not exist. The row has
+// carried session_id since the table was created and the shared keyset parse has always read
+// created_after/created_before — so the WINDOW worked. What did not exist was the narrowing, and an
+// accepted-and-ignored filter is worse than an absent one: it returns other sessions' rows under a heading
+// that names one session, and the operator reads the heading.
+//
+// This runs against a real Postgres deliberately. The handler test proves the parameter reaches the store;
+// only the database can prove the predicate discriminates — and the two cases that matter are a row
+// belonging to ANOTHER session and a row belonging to NO session (session_id NULL), because `= $8` excludes
+// the NULL row silently and that is correct here but must be shown rather than assumed.
+func TestLedgerNarrowsBySessionAndMeterAndLeavesTheUnfilteredPageWhole(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	store := metering.New(cs.Pool())
+	org, project, _ := tenant(t, cs)
+	scope := middleware.Scope{Organization: org, Project: project}
+
+	wanted, other := newID("ses"), newID("ses")
+	settleForSession(t, cs, org, project, wanted, "model.input_tokens", "token", 10)
+	settleForSession(t, cs, org, project, wanted, "model.output_tokens", "token", 20)
+	settleForSession(t, cs, org, project, other, "model.input_tokens", "token", 30)
+	settle(t, cs, org, project, "run.admitted", "run", 1) // no session at all — session_id NULL
+
+	all, err := store.ListUsageLedger(ctx, scope, api.ListQuery{Limit: 50})
+	if err != nil {
+		t.Fatalf("unfiltered ListUsageLedger error = %v", err)
+	}
+	if len(all) != 4 {
+		t.Fatalf("unfiltered page returned %d rows, want all 4 — an empty filter must be NO predicate, not a match for the empty value", len(all))
+	}
+
+	bySession, err := store.ListUsageLedger(ctx, scope, api.ListQuery{Limit: 50, SessionID: wanted})
+	if err != nil {
+		t.Fatalf("session-filtered ListUsageLedger error = %v", err)
+	}
+	if len(bySession) != 2 {
+		t.Fatalf("session filter returned %d rows, want the 2 belonging to %s (the other session's row and the session-less row must both be excluded)", len(bySession), wanted)
+	}
+
+	byMeter, err := store.ListUsageLedger(ctx, scope, api.ListQuery{Limit: 50, Meter: "model.input_tokens"})
+	if err != nil {
+		t.Fatalf("meter-filtered ListUsageLedger error = %v", err)
+	}
+	if len(byMeter) != 2 {
+		t.Fatalf("meter filter returned %d rows, want the 2 input-token entries", len(byMeter))
+	}
+
+	both, err := store.ListUsageLedger(ctx, scope, api.ListQuery{Limit: 50, SessionID: wanted, Meter: "model.input_tokens"})
+	if err != nil {
+		t.Fatalf("both-filtered ListUsageLedger error = %v", err)
+	}
+	if len(both) != 1 {
+		t.Fatalf("session+meter returned %d rows, want the single intersection — two filters must compose, not replace one another", len(both))
+	}
+
+	// A filter for a session that does not exist returns NOTHING. This is the assertion the live stack
+	// failed: it answered with a full page.
+	none, err := store.ListUsageLedger(ctx, scope, api.ListQuery{Limit: 50, SessionID: "ses_does_not_exist"})
+	if err != nil {
+		t.Fatalf("absent-session ListUsageLedger error = %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("a filter for a session that does not exist returned %d rows, want 0 — it was returning other sessions' rows under that session's name", len(none))
+	}
+}
