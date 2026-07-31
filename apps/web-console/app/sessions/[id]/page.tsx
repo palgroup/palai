@@ -229,7 +229,20 @@ export default function SessionTranscriptPage() {
           what makes a chip a reading rather than a decoration. There is no ENVIRONMENT chip, and its absence
           is the honest one: the session projection carries no environment and nothing in /v1 associates the
           two, so a chip here would be a field this console invented. */}
-      {session === null ? (
+      {/* THE CHIP ROW CARRIES THIS ROUTE'S READINESS SIGNAL (lib/routes.ts), so it must render in BOTH settled
+          states and in neither pending one. A failed session read used to leave "Loading…" on screen forever
+          — the same conflation app/agents/[id]/page.tsx refuses between a spinner and a settled panel — and
+          with the signal pointed here that would be a scan that never fires rather than one that fires early.
+          The refusal itself is announced above, in the server's own words; this only stops claiming to load. */}
+      {sessionError !== "" ? (
+        <ul className="chip-row" data-testid="session-chips">
+          <li>
+            <span className="chip" data-testid="chip-status">
+              <span className="chip-key">Session</span> <span className="cell-none">— unreadable</span>
+            </span>
+          </li>
+        </ul>
+      ) : session === null ? (
         <p className="loading">Loading…</p>
       ) : (
         <ul className="chip-row" data-testid="session-chips">

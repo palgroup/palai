@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { CONSOLE_ROUTES, DYNAMIC_CONSOLE_ROUTES } from "../lib/routes";
-import { FORM_DIALOGS } from "./a11y.spec";
+import { FORM_DIALOGS } from "./constants";
 import { announceProfile, concreteDynamicPath, signIn } from "./profile";
 
 // WHAT AXE CANNOT SEE, MEASURED ON THE RENDERED PAGE (console design pass, spec §2.1 / §4.4 / §7).

@@ -196,7 +196,17 @@ export const DYNAMIC_CONSOLE_ROUTES: readonly DynamicConsoleRoute[] = [
   {
     pattern: "/sessions/[id]",
     label: "Session transcript",
-    readyTestId: "session-transcript",
+    // THE CHIP ROW, NOT THE TRANSCRIPT SECTION — measured, 2026-08-01. `session-transcript` is the <section>
+    // the transcript renders SYNCHRONOUSLY, so it became visible while the chip row above it was still a
+    // "Loading…" paragraph: a scan firing on that signal analyses a page whose summary has not arrived. A
+    // probe that polls every 20ms for each declared signal and records what is still loading at the instant
+    // it appears reported `STILL LOADING: loading` for this route and `clean` for the other sixteen.
+    //
+    // It did not fail, and that is the uncomfortable half: tests/a11y.spec.ts follows the signal with a
+    // `waitForLoadState("networkidle")`, so the chips had landed by the time axe looked. This file's own
+    // comments call networkidle "a proxy for the condition" and the dynamic loop says so twice — a wrong
+    // signal compensated for by a proxy is a green that belongs to the harness.
+    readyTestId: "session-chips",
     sampleFrom: "/sessions",
     create: {},
     build: (id) => `/sessions/${encodeURIComponent(id)}`,
