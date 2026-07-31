@@ -104,6 +104,12 @@ for (const route of DYNAMIC_CONSOLE_ROUTES) {
     // navigation. Measured: light passed and dark failed on a machine at load 30.
     await expect(page).toHaveURL(/segment=debug/);
     await page.waitForLoadState("networkidle");
+    // AND networkidle IS NOT ENOUGH, measured rather than assumed: with the settle above in place this still
+    // failed `document-title` on an IDLE machine (load 5.5), because the title is written by React after
+    // hydration and the network can fall quiet before that happens. `networkidle` is a proxy for the
+    // condition; this waits for the CONDITION. The same rule the rest of this file follows — assert the
+    // thing, not a stand-in for it.
+    await page.waitForFunction(() => document.title.trim().length > 0);
     const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
     expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
   });
