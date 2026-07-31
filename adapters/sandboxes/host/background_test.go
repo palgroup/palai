@@ -453,3 +453,65 @@ func waitForLog(t *testing.T, path, marker string) string {
 	t.Fatalf("%s never contained %q", path, marker)
 	return ""
 }
+
+// TestAnEnvironmentValueOutlivesTheExecuteCallThatHandedItOver is E26 T6's FIRST RED, and what it
+// measures is a SENTENCE this tree wrote about itself (§3.6 D9, §0.4):
+//
+//	"Scope and expiry are the ATTEMPT itself … There is no handle to redeem and no deadline to check
+//	 because the value's whole life is one Execute call."  (tool-broker/sandbox_exec.go, E25 T3)
+//
+// For a background task that is STRUCTURALLY FALSE and no code change can make it true: a value handed
+// over in exec.Cmd.Env lives in the kernel's environ copy for the whole life of the PROCESS, and Start
+// returns while that process is still running.
+//
+// THE MEASUREMENT IS AN ORDERING, NOT A SLEEP. The command blocks on a file only the TEST can create,
+// so the moment it reads its own environment is strictly after Start returned: nothing here is timing.
+//
+// WHY THE PROCESS READS ITS OWN ENVIRON RATHER THAN US READING IT FROM OUTSIDE: `ps -Eww` on this
+// posture's actual target discloses no environment at all (macOS withholds it even for one's own
+// processes), and /proc/<pid>/environ is Linux-only. The process's own read proves the same kernel copy
+// exists — it is where printenv reads from — and it is the one spelling that answers on both platforms,
+// which is the rule processStartTimeAndState already follows for `ps`.
+func TestAnEnvironmentValueOutlivesTheExecuteCallThatHandedItOver(t *testing.T) {
+	const sentinel = "e26-t6-host-environ-sentinel-93b1f0"
+	root, spec := bgWorkspace(t)
+	e := host.NewExecutor(0)
+
+	release := filepath.Join(root, "release")
+	// `printenv` reads the environment the KERNEL holds for this process, and it runs only once the test
+	// has created a file that does not exist yet.
+	handle, err := e.Start(context.Background(), toolbroker.ShellCommand{
+		Argv:          []string{"while [ ! -f " + release + " ]; do sleep 0.05; done; printenv DEPLOY_TOKEN"},
+		Shell:         true,
+		WorkspaceRoot: root,
+		Env:           map[string]string{"DEPLOY_TOKEN": sentinel},
+	}, spec)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { _ = e.Kill(context.Background(), handle) })
+
+	// START HAS RETURNED. Under the sentence above, the value's life ended here.
+	logPath := filepath.Join(root, spec.OutputPath)
+	if data, rerr := os.ReadFile(logPath); rerr == nil && strings.Contains(string(data), sentinel) {
+		t.Fatalf("the command read its environment BEFORE the release file existed, so this proves nothing about ordering:\n%s", data)
+	}
+	if err := os.WriteFile(release, []byte("go"), 0o600); err != nil {
+		t.Fatalf("release the waiting command: %v", err)
+	}
+
+	body := waitForLog(t, logPath, sentinel)
+	if !strings.Contains(body, sentinel) {
+		t.Fatalf("the value was gone from the process environ after Start returned:\n%s", body)
+	}
+	// AND THE CORRECTION IS PART OF THE PROOF. A comment that still claims the old life is a comment that
+	// rotted; this tree's pattern is to renew the sentence in place (host/exec.go, workspace/exec.go), and
+	// E24 T8 found the same belief written in twenty-six places because nobody did.
+	source, err := os.ReadFile("../../../packages/tool-broker/sandbox_exec.go")
+	if err != nil {
+		t.Fatalf("read the sentence under test: %v", err)
+	}
+	if strings.Contains(string(source), "the value's whole life is one Execute call") {
+		t.Fatal("sandbox_exec.go still claims the value's whole life is one Execute call, which the process above just disproved")
+	}
+}

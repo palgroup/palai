@@ -93,16 +93,30 @@ be written against, not a contract the protocol enforces**. If a model treats an
 instruction from the user, that is this ceiling and not a bug in your prompt. Closing it means a
 `role`/`source` field on the `message.deliver` frame, which is a protocol version.
 
-Three more, named rather than implied:
+Four more, named rather than implied:
 
-- **The output is not redacted, and the notification's excerpt is not either.** A synchronous shell
-  result is masked before it is stored; a background task writes its own file, which nothing masks, and
-  `palai.workspace.file` has never masked anything it reads. Since the exit notification quotes the last
-  2 KiB of that file, those bytes also land in a durable row (`commands.payload`, then
-  `delivered_messages`) — which the synchronous path does not do. **If your background commands receive
-  credentials in their environment, assume anything they print is readable and stored.** Closing this is
-  E26 T6's, and `background_tasks.env_keys` — key names, never values — exists so a read path can
-  re-resolve and mask them.
+- **The output IS redacted on the way out, and the file on disk is not.** Since E26 T6 both places a
+  task's output reaches the model — a `palai.workspace.file` read and the exit notification's 2 KiB
+  excerpt — mask it from the same code, applying both redactors: the shape-based one (API-key and
+  bearer-token patterns) and the value-based one, which **re-resolves this run's environment values at
+  read time** from `background_tasks.env_keys` (key names, never values). So a build that echoes its own
+  environment lands `***` in `commands.payload`, in `delivered_messages` and in `tool_calls.result`.
+  **The bytes on the allocation are untouched**, which is what an operator wants when debugging and is
+  the reason the file is `0600` under `.palai-session`. Redaction is literal substring matching: a
+  command that base64s a value or prints it one character per line defeats it, and nothing can prevent
+  that — giving a build a credential is the build having it.
+- **A background process holds its environment for its whole life, which is why a task that carries one
+  cannot be unbounded.** `PALAI_BACKGROUND_MAX_WALL_TIME=0` is a legitimate choice for a task with no
+  credential; a spawn on a run whose revision names an environment is **refused** under it. A same-uid
+  process can reach the value — which is **equally true of a synchronous command**, same executor and
+  same uid, and is governed by `MAC-P6`. Background does not widen that exposure, it lengthens it, and
+  the length's ceiling is the wall time. **One correction to the usual wording, measured on macOS 26.3
+  rather than assumed:** `ps -E` / `ps e` does **not** print another process's environment on a Mac, not
+  even your own, and there is no `/proc`. On the **container** posture `/proc/<pid>/environ` inside the
+  sandbox does. So on the native Mac the reachable route is a debugger or the process's own files, not
+  a `ps` flag — the risk direction is unchanged, the usual demonstration of it does not work here.
+  **The narrowing path has a name and is not this epic's:** hand the value as a short-lived file handle
+  instead of an environment variable, which is already how the broker passes the push credential.
 - **There is no live progress stream.** Nobody tells the model that ten more lines arrived; it reads the
   file, or it waits for the exit.
 - **A control-plane restart does not stop a task**, and it is not supposed to: the process belongs to
