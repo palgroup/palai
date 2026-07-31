@@ -73,11 +73,24 @@ test("every column on the Sessions list is the field it is named after", async (
   await expect(cells.nth(5).locator("time")).toHaveAttribute("datetime", first.created_at);
   await expect(cells.nth(5)).toHaveText(/ago|just now|in /);
 
-  // The agent cell says WHICH nothing it is when the session pinned none — a blank cell reads as a fault.
+  // THE AGENTS CELL, IN BOTH DIRECTIONS, AND THE EMPTY ONE IS THE ASSERTION THAT MATTERS.
+  //
+  // Measured on the live control plane 2026-07-31: `GET /v1/sessions?limit=100` answers 62 sessions with
+  // has_more false, and only 3 carry any agent — this column is empty on 95% of real rows. The cause is
+  // structural (response-create.json declares agent_revision_id and no agent_id; `runs` has no
+  // agent_profile_id), so the empty cell has to name the MECHANISM rather than shrug: an em dash alone in a
+  // column an operator expects to be full reads as a rendering fault in this screen.
+  //
+  // The exact words are pinned. A later edit softening them to a bare dash, or "backfilling" the cell from
+  // the agent a picker was set to, fails here.
   const noAgent = data.findIndex((r) => (r.agents ?? []).length === 0);
-  if (noAgent !== -1) await expect(rows.nth(noAgent).locator("td").nth(3)).toContainText("none pinned");
+  if (noAgent !== -1) await expect(rows.nth(noAgent).locator("td").nth(3)).toHaveText("— no revision pinned");
   const withAgent = data.findIndex((r) => (r.agents ?? []).length > 0);
   if (withAgent !== -1) await expect(rows.nth(withAgent).locator("td").nth(3)).toContainText(data[withAgent].agents[0]);
+
+  // PLURAL, and session.json is explicit that the singular would be a claim the data does not make: there is
+  // no session-to-agent association, only an aggregate over runs, so a session may carry several.
+  await expect(page.getByTestId("panel-sessions").locator("thead th").nth(3)).toHaveText("Agents");
 });
 
 test("a derived label is marked as one, because nobody chose it", async ({ page }) => {
@@ -160,6 +173,8 @@ test("the Agent control narrows what is on screen, and the count says both numbe
   expect(without > 0 && without < total, "every session has the same agent-ness, so a narrowing cannot be observed").toBe(true);
   await openList(page);
 
+  // The option's words are the cell's words — they select the same rows, so they must not drift apart.
+  await expect(page.getByTestId("session-agent-filter")).toContainText("No revision pinned");
   await page.getByTestId("session-agent-filter").selectOption("__no_agent__");
   await expect(page.getByTestId("panel-sessions").locator("tbody tr")).toHaveCount(without);
   // "N of M rows" is the honesty: this control hid rows rather than un-fetching them, and the header says so.

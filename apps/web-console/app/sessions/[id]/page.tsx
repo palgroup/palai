@@ -186,7 +186,7 @@ export default function SessionTranscriptPage() {
           </li>
           <li>
             <span className="chip" data-testid="chip-agent">
-              <span className="chip-key">Agent</span>{" "}
+              <span className="chip-key">Agents</span>{" "}
               <AgentChips agents={session.agents ?? []} />
             </span>
           </li>

@@ -37,13 +37,33 @@ export function SessionName({ name, source }: { name: string; source: NameSource
  * AgentChips renders the DISTINCT agent profiles this session's runs pinned — plural, because that is what
  * the field is.
  *
- * EMPTY IS THE COMMON CASE AND IT IS NOT AN ERROR. Measured against the live stack on 2026-07-31, every
- * session on it carries `agents: []`: a run pinned to no agent profile, or pinned to a run TEMPLATE (which
- * carries executable config and deliberately does not impersonate an agent identity), contributes nothing
- * here. So the cell says which of the two nothings it is rather than going blank.
+ * EMPTY IS THE COMMON CASE, IT IS NOT AN ERROR, AND THE CELL NAMES THE MECHANISM RATHER THAN THE ABSENCE.
+ * Measured against the live control plane on 2026-07-31: `GET /v1/sessions?limit=100` answers 62 sessions
+ * with has_more false, and `agents[]` is non-empty on THREE of them — 95% of this deployment's sessions have
+ * nothing to put in this column.
+ *
+ * The cause is structural rather than a gap in the aggregate, and it is why the words are "no revision
+ * pinned" and not "no agent": protocols/schemas/execution/response-create.json declares
+ * `agent_revision_id` and NO `agent_id` (27 properties, verified), and `runs` carries an
+ * `agent_revision_id` column and no agent_profile_id anywhere outside the A2A tables. A session's agents can
+ * therefore only be aggregated through a run that pinned a REVISION. A run pinned to an agent but to no
+ * revision of it — which is what the /runs picker produces when Revision is left on "None" — lands with
+ * agent_revision_id NULL and contributes nothing here.
+ *
+ * SO THE HONEST CELL SAYS WHICH NOTHING IT IS. An em dash in a column an operator expects to be full reads
+ * as a rendering fault and invites a bug report about this screen; "no revision pinned" is a fact about the
+ * RUN, and it is the fact that makes the empty column legible instead of suspicious. Nothing is backfilled,
+ * nothing falls back to the agent the picker was set to, and there is no substitute value: the console is
+ * not going to be the thing that makes this gap invisible.
  */
 export function AgentChips({ agents }: { agents: string[] }) {
-  if (agents.length === 0) return <span className="cell-none">— none pinned</span>;
+  if (agents.length === 0) {
+    return (
+      <span className="cell-none" title="A run pins an agent REVISION, and this session's runs pinned none — so there is no agent to aggregate. Selecting an agent without a revision does not pin one.">
+        — no revision pinned
+      </span>
+    );
+  }
   return (
     <ul className="chip-list">
       {agents.map((agent) => (

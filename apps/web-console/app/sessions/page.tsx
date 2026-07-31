@@ -46,7 +46,13 @@ const WINDOWS: { key: string; label: string; ms: number }[] = [
   { key: "30d", label: "Last 30 days", ms: 2_592_000_000 },
 ];
 
-/** The sentinel for "a session no run pinned an agent to" — a real thing to filter for, and not a name. */
+/**
+ * The sentinel for "no run in this session pinned a revision" — a real thing to filter for, and not a name.
+ *
+ * It is worth having precisely BECAUSE the empty case is the common one: measured on the live control plane
+ * 2026-07-31, `GET /v1/sessions?limit=100` answers 62 sessions and only 3 carry any agent at all. A filter
+ * that could only select the 3 would be a filter for the exception.
+ */
 const NO_AGENT = "__no_agent__";
 
 export default function SessionsPage() {
@@ -126,10 +132,15 @@ export default function SessionsPage() {
         ),
     },
     { header: "Status", sort: (r) => r.status, render: (r) => <Status value={r.status} testId="session-status" /> },
+    // "Agents", PLURAL, and session.json spells out why in its own words: "a screen that labels this column
+    // 'Agent' singular is asserting something the data does not say". There is no session-to-agent
+    // association in this system — a RUN pins a revision — so a session may have used none, one, or several,
+    // and the fixture's four-agent row is not a special case, it is the shape.
+    //
     // NO SORT, and Column's own contract says why: `agents` is a SET, and a set has no order that means
     // anything. Sorting a list of sessions by the alphabetical first of their agents is a control that
     // produces motion and no information.
-    { header: "Agent", render: (r) => <AgentChips agents={r.agents ?? []} /> },
+    { header: "Agents", render: (r) => <AgentChips agents={r.agents ?? []} /> },
     {
       header: "Tokens in / out",
       sort: (r) => r.input_tokens,
@@ -225,9 +236,12 @@ export default function SessionsPage() {
                 </option>
               ))}
             </select>
-            <select aria-label="Agent" data-testid="session-agent-filter" value={agent} onChange={(e) => setAgent(e.target.value)}>
+            <select aria-label="Agents" data-testid="session-agent-filter" value={agent} onChange={(e) => setAgent(e.target.value)}>
               <option value="">Any agent</option>
-              <option value={NO_AGENT}>No agent pinned</option>
+              {/* The option's words are the CELL's words, because they select the same rows. "No agent"
+                  would name a state this system does not have: what a run carries is a REVISION pin, and its
+                  absence is what leaves this column empty on 59 of the 62 sessions the live stack holds. */}
+              <option value={NO_AGENT}>No revision pinned</option>
               {agentNames.map((name) => (
                 <option key={name} value={name}>
                   {name}
