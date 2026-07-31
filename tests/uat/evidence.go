@@ -335,6 +335,20 @@ type evidenceCase struct {
 	// structurally the literal "fake" — compose is not a deployment, and axe is not a screen reader.
 	AdminConsoleClaim string             `json:"admin_console_claim"`
 	AdminConsoleProof *AdminConsoleProof `json:"admin_console_proof"`
+	// The E26 T7 background claim (plan §T7 — the E26 EXIT gate) extends the same discipline to the
+	// invariants THIS epic owns: a tool call returns a PROCESS rather than a result and that process outlives
+	// the call, THE MODEL IS NOT BLOCKED (another tool call completed while the process was still alive),
+	// every refusal starts zero processes and carries its own non-vacuity control, an exit calls the model
+	// back exactly once across two ticks / two planes / a restart, a reaper enforces a ceiling, a
+	// cancellation, an adoption and a collector from the operating system rather than from our own record,
+	// and a credential's value lands in none of the five places a background task could put one. It requires
+	// its proof, and six counters are RE-DERIVED rather than believed.
+	//
+	// WHAT IT DOES NOT CLAIM: a live progress stream (CAS-P2 narrows, it does not close), and a task
+	// surviving a control-plane MOVE. BackgroundMachine is structurally the literal "local" — there is no
+	// peer here at all, because E24 T7's execution relay was never shipped.
+	BackgroundClaim string           `json:"background_claim"`
+	BackgroundProof *BackgroundProof `json:"background_proof"`
 }
 
 type evidenceTerm struct {
@@ -2826,6 +2840,26 @@ var committedBundleSurfaces = map[string]string{
 	// is absent, and 31 when it is present. One row is the whole margin, and it is the row that would have made
 	// the plan's "a new bundle name reddens the RC" fear true for the first time since E22.
 	AdminConsoleBundle: SurfaceRecomputed,
+	// The E26 T7 background-execution bundle. Its anchor is the CANONICAL vendor contract and on-machine
+	// measurement ledger digest (BackgroundContractsDigest), derived from the code table in
+	// evidence_background.go — so a bundle that dropped or reworded a §3.5 row, or deleted the macOS `ps -E`
+	// measurement, would move every checksum in it. It may NOT be LegacyShapeOnly, for the reason four entries
+	// up.
+	//
+	// AND THE COUNT ABOVE MOVED AGAIN, WHICH IS THE WHOLE POINT OF WRITING IT WITH ITS COMMAND. The E22 entry's
+	// comment records this table at twenty-two on 2026-07-29 and the E25 entry re-counted it at twenty-four on
+	// 2026-07-30. COUNTED 2026-07-31 with `ls evidence/releases | wc -l`: TWENTY-FIVE releases here and
+	// twenty-five directories, which the sweep pins in both directions. Plan §T7 said twenty-three and was
+	// stale before it was read — E25's exit gate had landed in between.
+	//
+	// THE RC WAS NOT REGENERATED, MEASURED RATHER THAN INHERITED (plan §T7 named the release index as a
+	// concern; E24 T8 and E25 T9 each measured that the as-of rule closes it, and a ceiling inherited from
+	// another epic is re-measured or it is not carried). This bundle is captured a day after
+	// admin-console-0.1.0 and six after release-1.0.0-rc1, so the dated recompute drops it and the RC's
+	// checksums still reproduce with its manifest bytes untouched. `background-execution-` sorts after
+	// `automation-` and before `code-and-ship-`, so it is a name that CAN win carrier rows on order — which is
+	// exactly why the rule is measured here rather than assumed from the two epics that measured it before.
+	BackgroundBundle: SurfaceRecomputed,
 	// The E18 T10 RC bundle. Its anchor is the RECOMPUTED release index over the SEVENTEEN committed bundles
 	// that predate its own capture, plus the materialized case corpus — so a checksum here cannot be
 	// hand-written: it moves the moment one of those bundles or the corpus does.
@@ -2911,6 +2945,8 @@ func caseChecksumParts(m evidenceManifest, c evidenceCase) []string {
 		return []string{c.ID, c.RunID, FleetContractsDigest()}
 	case AdminConsoleBundle: // tests/uat/admin-console/bundle_test.go
 		return []string{c.ID, c.RunID, AdminConsoleContractsDigest()}
+	case BackgroundBundle: // tests/uat/background/bundle_test.go
+		return []string{c.ID, c.RunID, BackgroundContractsDigest()}
 	case "extensions-0.1.0": // tests/uat/extensions/bundle_test.go
 		return []string{c.ID, c.RunID, CapabilityClaimsDigest()}
 	case "managed-cloud-0.1.0": // tests/uat/managed-cloud/evidence_test.go
@@ -3113,6 +3149,10 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 	// write passed without a session", "every page was scanned" and "no written secret value came back" ship
 	// unverified behind seven green rows.
 	findings = append(findings, verifyE25AdminConsolePresence(m)...)
+	// And for E26: a manifest carrying the background CASES must carry the anchor that judges them, or "the
+	// model was not blocked", "no refused call started a process" and "an exit notified exactly once" ship
+	// unverified behind five green rows.
+	findings = append(findings, verifyE26BackgroundPresence(m)...)
 
 	// A bundle whose checksums were CORRECTED, or that is shape-only, must SAY SO in the manifest (plan §2
 	// honest-naming): the note is where a reader who opens this file meets the correction or the ceiling.
@@ -3622,6 +3662,25 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "admin_console_proof (an admin-console claim requires the relay ledger with every exported HTTP method beside the identity gate it opens with (the two counts EQUAL, re-derived, with the one non-relay export pinned to the login door), the route ledger with every page lib/routes.ts declares beside the colour schemes axe scanned it in (declared and scanned EQUAL, re-derived), the byte-scan ledger with the sentinel hits in the DOM, in every response body and in every browser-served source map (zero, re-derived, each layer naming a harmless token it DID find), the query ledger with the statement names touching `ciphertext` (exactly two, re-derived over a corpus that proves the parser still parses), the conformance sweep's compared subjects and its pre-E25 floor (risen), the divergence-ledger rows this epic measured WRONG with each one's re-observation, the shipped runbook's steps on the public API alone, the approvals decided from the screen and the ones refused on a request-hash mismatch, and every vendor requirement or on-machine measurement with its source and §3.5 divergence id; a 'configured' marker is not proof — plan §T9)"})
 			case !c.AdminConsoleProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "admin_console_proof is incomplete: a peer not honestly named \"" + AdminConsolePeer + "\" (this bundle cannot claim a DEPLOYED console or a real operator — compose is not a deployment and axe is not a screen reader, §6 leg 8), a shrunken/edited contract-and-measurement ledger or a contracts_digest that does not equal the canonical one, an exported relay method NOT opening with the session gate — or a second non-relay export, which is a second unauthenticated write path — a route lib/routes.ts declares that axe never scanned, or scanned in one colour scheme only (the light-only scan is the hole this epic closed), a route row with no readiness signal or a BLANK lead, a sentinel found in a DOM node, a response body or a source map, a byte-scan layer that scanned nothing or names no probe it found (a haystack nobody has shown was read), a third SQL statement touching `ciphertext` — a `RevealEnvironmentValue` lands HERE — a query corpus small enough to mean the parser stopped parsing, a conformance sweep that compares no more item shapes than it did before this epic or whose subject list does not match its own count, a repaired divergence row with no RE-OBSERVATION (repairing a ledger on a source read is the move that put the false sentences in it), a runbook step that needed anything below /v1, or an approval that APPLIED while its request hash did NOT match — plus a queue that never decided anything or never refused a stale binding (plan §T9)"})
+			}
+		}
+
+		// The E26 T7 background anchor (plan §T7). Complete() already RE-DERIVES the six replicated semantics
+		// from the semantics ledger (refusing a liveness claim read off our own bookkeeping, and requiring the
+		// DEFINING one — the model was not blocked), the processes started under a refusal from the refusal
+		// ledger (zero, over refusals that each carry a positive control, because at the fork point the zero
+		// was free), the postures whose process outlived the call and the signals sent to handles we could not
+		// prove were ours (zero), the notices a settled task produced in every wake scenario (exactly one, each
+		// naming the mutation that reddens it), the reaper's six duties with where each outcome was read, and
+		// the environment values found in the five landing sites after DECODING (zero, each site naming a
+		// harmless token the same scan found) — so a proof that declares a zero over bytes saying otherwise
+		// never reaches this branch clean.
+		if c.BackgroundClaim != "" {
+			switch {
+			case c.BackgroundProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "background_proof (a background claim requires the semantics ledger with all six of §2 beside the shipped test that proves each and where its measurement came FROM, the refusal ledger with the processes each refusal started (zero) beside the count the SAME harness started with the refusal lifted, the ownership ledger with both sandbox postures beside the operating-system object each probe looks at and the signals sent to unprovable handles (zero), the notice ledger with the notices a SETTLED task produced under two ticks / two planes / a restart / a running run / a terminal run (exactly one each) and the mutation that reddens each, the reaper ledger with all six duties and where each outcome was read, the redaction ledger with the five places an environment value could land — each DECODED before it was scanned and each naming a harmless token it DID find — and every vendor requirement or on-machine measurement with its source and §3.5 divergence id; a 'backgrounded' marker is not proof — plan §T7)"})
+			case !c.BackgroundProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "background_proof is incomplete: a machine not honestly named \"" + BackgroundMachine + "\" (this bundle measured nothing across a boundary — there is no peer, because E24 T7's execution relay was never shipped, and the field is `Machine` for that reason), a shrunken/edited contract-and-measurement ledger or a contracts_digest that does not equal the canonical one, fewer than the six §2 semantics or a MISSING §2.6 (\"the model called another tool while the process was still running\" is the claim a weaker assertion silently drops), a semantics or reaper row measured from our own bookkeeping rather than from the kernel, the daemon, the database or a frame, a refusal that started a process — or one carrying NO non-vacuity control, which is how this epic's own approval-gate RED passed at the fork point — a posture whose process did not outlive its call or a signal sent to a handle we could not prove was ours, a wake scenario producing two notices or none, one that interrupted a run which never parked, or one naming no mutation, a missing reaper duty, or an environment VALUE found in any landing site — plus a landing site scanned without DECODING, which is a sweep that can never fail (plan §T7)"})
 			}
 		}
 

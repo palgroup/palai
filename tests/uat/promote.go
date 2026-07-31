@@ -69,7 +69,28 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return []Refusal{{Detail: "manifest is not valid JSON: " + err.Error()}}
 	}
-	// The E25 admin-console family is checked FIRST, ahead of E24 and E23, and for the reason every clause
+	// The E26 background family is checked FIRST, ahead of E25, and for the reason every clause below repeats
+	// one level down: it is now the most specific policy in the tree and it COMPOSES the admin-console gate
+	// underneath itself (which composes tool-approval, code-and-ship, tools-memory, agent-surface, wiring, the
+	// E17 tier table and the eval gate). An E26 bundle DERIVES its inherited case set from the E25 release, so
+	// it also carries the E25 admin-console claim, the E23 tool-approval claim, the E22 code-and-ship claim,
+	// the E21 tools-memory claim, the E20 agent-surface claim and E17 area claims — without this clause it
+	// would reroute to AdminConsolePromoteGate, which knows nothing about the six replicated semantics, the
+	// refusal controls, the two ownership postures, the exactly-once notice, the reaper's duties or the
+	// redaction sites, and would pass it: every background guard would be optional in practice.
+	//
+	// THE FAMILY IS RECOGNIZED BY THE E26 CASE IDS, NOT BY THE background_claim THIS GATE ENFORCES. That is
+	// also why E26's ids carry the `BGT-` prefix: an id already inside AdminConsoleCaseIDs, FleetCaseIDs,
+	// ToolApprovalCaseIDs, CodeAndShipCaseIDs, ToolsMemoryCaseIDs or AgentSurfaceCaseIDs would have matched an
+	// EARLIER family marker and dispatched to a WEAKER gate, and a `SLK-`/`WRK-`/`UI-` id outside all of them
+	// would have regenerated a shipped bundle — the promote-gate-family-dispatch defect, reachable from a
+	// naming choice in two directions.
+	for _, c := range m.Cases {
+		if carriesE26BackgroundCase(c) {
+			return BackgroundPromoteGate(raw, target)
+		}
+	}
+	// The E25 admin-console family is checked next, ahead of E24 and E23, and for the reason every clause
 	// below repeats one level down: it is now the most specific policy in the tree and it COMPOSES the
 	// tool-approval gate underneath itself (which composes code-and-ship, tools-memory, agent-surface,
 	// wiring, the E17 tier table and the eval gate). An E25 bundle DERIVES its inherited case set from the
