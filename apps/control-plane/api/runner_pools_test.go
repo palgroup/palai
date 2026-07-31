@@ -43,6 +43,13 @@ type fakeRunnerRegistry struct {
 	approvedScope  middleware.Scope
 	approvedRunner string
 	approveRefused bool
+	// The E28 T1 birth path: what a create reached the store with, which pool a strict switch named, and the
+	// two scripted refusals. strictSet is a pointer so "asked for false" and "never asked" stay apart.
+	createdPool RunnerPoolCreate
+	nameTaken   bool
+	strictPool  string
+	strictSet   *bool
+	poolFound   bool
 }
 
 func (f *fakeRunnerRegistry) ListRunners(context.Context, string, string, RunnerListWindow) ([]RunnerItem, error) {
@@ -56,6 +63,30 @@ func (f *fakeRunnerRegistry) GetRunner(context.Context, string, string, string) 
 func (f *fakeRunnerRegistry) ListRunnerPools(_ context.Context, org, project string, _ RunnerListWindow) ([]RunnerPoolItem, error) {
 	f.askedOrg, f.askedProject = org, project
 	return f.pools, nil
+}
+
+// CreateRunnerPool and SetRunnerPoolStrictEnrollment are E28 T1's birth path. They record what reached the
+// store so a route test can assert WHAT was asked for rather than that something answered 201 — and
+// `nameTaken`/`poolFound` script the two refusals the routes translate (a 409 and a non-disclosing 404).
+func (f *fakeRunnerRegistry) CreateRunnerPool(_ context.Context, org, project string, in RunnerPoolCreate) (RunnerPoolItem, error) {
+	f.askedOrg, f.askedProject = org, project
+	if f.nameTaken {
+		return RunnerPoolItem{}, ErrRunnerPoolNameTaken
+	}
+	f.createdPool = in
+	return RunnerPoolItem{
+		ID: "pool_created", Name: in.Name, Posture: in.Posture, OS: in.OS, Arch: in.Arch,
+		StrictEnrollment: in.StrictEnrollment, CreatedAt: time.Unix(1_700_000_000, 0).UTC(),
+	}, nil
+}
+
+func (f *fakeRunnerRegistry) SetRunnerPoolStrictEnrollment(_ context.Context, org, project, poolID string, strict bool) (RunnerPoolItem, bool, error) {
+	f.askedOrg, f.askedProject = org, project
+	f.strictPool, f.strictSet = poolID, &strict
+	if !f.poolFound {
+		return RunnerPoolItem{}, false, nil
+	}
+	return RunnerPoolItem{ID: poolID, Name: "mac-pool", Posture: "unsandboxed-host", StrictEnrollment: strict}, true, nil
 }
 
 func runnerPoolsRouter(t *testing.T, registry RunnerRegistryAPI) *httptest.Server {

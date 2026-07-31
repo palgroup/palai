@@ -176,10 +176,50 @@ INSERT INTO runner_pools (id, organization_id, project_id, name, posture, strict
 VALUES ($1, $2, $3, 'default', 'sandboxed-linux', false)
     ON CONFLICT DO NOTHING;
 
+-- name: InsertRunnerPool
+-- A pool an OPERATOR created (E28 T1), and the statement above is why this one exists rather than being a
+-- parameterised version of it: `InsertDefaultRunnerPool` writes the row every tenant is BORN with, and
+-- every installation alive today has it, so its three literals stay literal and a second pool is a second
+-- statement. Two statements, two subjects.
+--
+-- NO `ON CONFLICT`: the (organization_id, project_id, name) index 000045 R1 adds is what makes a duplicate
+-- name a 409 an operator can act on, and swallowing the conflict here would answer 201 for a pool that was
+-- not created.
+--
+-- project_id is NOT NULLABLE HERE even though the column allows it: fleet.Store.Register refuses to enrol a
+-- machine into a project-less pool (000045's tenant policy for `runners` narrows on a project), so a pool
+-- created without one would be a row nothing could ever join. The route refuses it before this runs.
+INSERT INTO runner_pools (id, organization_id, project_id, name, posture, os, arch, strict_enrollment)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING created_at;
+
+-- name: SetRunnerPoolStrictEnrollment
+-- The waiting room's switch (E28 T1). ONE column, and the reason the statement takes no other is a
+-- correctness requirement rather than a scope decision: a machine INHERITS its pool's posture at enrolment
+-- (internal/fleet/store.go, "the machine inherits the pool's posture"), so an UPDATE that could move a
+-- populated pool's posture would retroactively change what the machines already in it ARE.
+--
+-- The predicate carries the tenant as well as the id, so a pool that is not the caller's returns no row and
+-- the handler answers 404 without learning whether it exists elsewhere.
+UPDATE runner_pools
+   SET strict_enrollment = $4
+ WHERE organization_id = $1
+   AND ($2 = '' OR project_id = $2)
+   AND id = $3
+RETURNING id, organization_id, project_id, name, posture, os, arch, strict_enrollment, created_at;
+
 -- name: ListRunnerPools
 -- The tenant-scoped keyset page of pools: (created_at, id) DESC, the ordering api/pagination.go mints
 -- its cursor from. $7 is the over-fetch (page size + 1) so the handler detects a further page without a
--- second round trip. Read-only surface (E24 T2) — creating and deleting a pool is T5/T6's.
+-- second round trip.
+--
+-- E28 T1 CORRECTED THE COMMENT THAT USED TO STAND HERE. It read "creating and deleting a pool is T5/T6's",
+-- and the same sentence stood in api/router.go; T5 and T6 both shipped and neither opened either. Creating
+-- a pool is now `POST /v1/runner-pools` (InsertRunnerPool above) and its waiting room is switched by
+-- `PATCH /v1/runner-pools/{pool_id}`. DELETING one is still absent, deliberately: `runner_pool_keys` has
+-- ON DELETE CASCADE on this table (000045 R2), so removing a pool would silently remove its enrolment
+-- keys, and what happens to the machines whose `pool_id` points here is a separate decision nobody has
+-- asked for. This comment names no future owner, because a comment cannot schedule work.
 SELECT id, organization_id, project_id, name, posture, os, arch, strict_enrollment, created_at
   FROM runner_pools
  WHERE organization_id = $1

@@ -51,12 +51,19 @@ func (s *Store) ListRunnerPools(ctx context.Context, org, project string, w api.
 	}
 	out := make([]api.RunnerPoolItem, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, api.RunnerPoolItem{
-			ID: row.ID, Name: row.Name, Posture: row.Posture, OS: row.OS, Arch: row.Arch,
-			StrictEnrollment: row.StrictEnrollment, CreatedAt: row.CreatedAt,
-		})
+		out = append(out, poolItem(row))
 	}
 	return out, nil
+}
+
+// poolItem projects one pool. `Waiting` is deliberately not set here: it is not a stored fact, and the only
+// thing that knows it is the live gateway — see RegistryAPI.ListRunnerPools, which is the one place a
+// runtime fact joins a stored one on this surface.
+func poolItem(row Pool) api.RunnerPoolItem {
+	return api.RunnerPoolItem{
+		ID: row.ID, Name: row.Name, Posture: row.Posture, OS: row.OS, Arch: row.Arch,
+		StrictEnrollment: row.StrictEnrollment, CreatedAt: row.CreatedAt,
+	}
 }
 
 // THE KEY SURFACE ADAPTER (E24 T3). It hangs off PoolEnrollmentKeys rather than Store because the two
@@ -147,6 +154,52 @@ func (a *RegistryAPI) ApproveRunner(ctx context.Context, scope middleware.Scope,
 		a.live.ApproveRunner(admission.Runner.ID)
 	}
 	return a.decorate(admission.Runner), api.ApprovalOutcome{Found: true, Applied: admission.Admitted}, nil
+}
+
+// CreateRunnerPool implements api.RunnerRegistryAPI (E28 T1). The name collision comes back as the api
+// package's typed value so the handler renders a 409 without parsing a SQLSTATE — and it is translated
+// HERE rather than raised there because this is the only layer that has seen the driver's error.
+func (s *Store) CreateRunnerPool(ctx context.Context, org, project string, in api.RunnerPoolCreate) (api.RunnerPoolItem, error) {
+	row, err := s.CreatePool(ctx, org, project, Pool{
+		Name: in.Name, Posture: in.Posture, OS: in.OS, Arch: in.Arch, StrictEnrollment: in.StrictEnrollment,
+	})
+	if errors.Is(err, ErrPoolNameTaken) {
+		return api.RunnerPoolItem{}, api.ErrRunnerPoolNameTaken
+	}
+	if err != nil {
+		return api.RunnerPoolItem{}, err
+	}
+	return poolItem(row), nil
+}
+
+// SetRunnerPoolStrictEnrollment implements api.RunnerRegistryAPI (E28 T1).
+func (s *Store) SetRunnerPoolStrictEnrollment(ctx context.Context, org, project, poolID string, strict bool) (api.RunnerPoolItem, bool, error) {
+	row, found, err := s.SetStrictEnrollment(ctx, org, project, poolID, strict)
+	if err != nil || !found {
+		return api.RunnerPoolItem{}, false, err
+	}
+	return poolItem(row), true, nil
+}
+
+// ListRunnerPools shadows the embedded Store's so the page carries each pool's LIVE queue depth (E28 T1's
+// rider, closing `FLT-P14`). `RunnerGateway.Waiting(poolID)` had counted the attempts queued for a pool with
+// no free machine since E24 and NOTHING had ever read it, so the question it was written to answer — why is
+// nothing running in my Mac pool — still had no answer.
+//
+// IT IS ON THE LIST RATHER THAN A SINGLE READ, unlike ActiveLeases, and the difference is that there is no
+// single-pool route: the gap row named this placement itself ("the authenticated runner-pool read"). What
+// it borrows from ActiveLeases verbatim is the POINTER, because a deployment that bound no runner listener
+// could not ask, and "could not ask" is not "nothing is waiting".
+func (a *RegistryAPI) ListRunnerPools(ctx context.Context, org, project string, w api.RunnerListWindow) ([]api.RunnerPoolItem, error) {
+	items, err := a.Store.ListRunnerPools(ctx, org, project, w)
+	if err != nil || a.live == nil {
+		return items, err
+	}
+	for i := range items {
+		waiting := int64(a.live.Waiting(items[i].ID))
+		items[i].Waiting = &waiting
+	}
+	return items, nil
 }
 
 // GetRunner shadows the embedded Store's so a single machine's read carries its LIVE lease count. It is

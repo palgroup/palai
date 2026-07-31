@@ -33,6 +33,20 @@ type fakeFleet struct {
 	// scope is the verified scope an APPROVE carried (E24 T6). The lifecycle verbs take org/project strings;
 	// an approval takes the whole scope because the principal is derived from its key id.
 	scope middleware.Scope
+	// The E28 T1 birth path: what the control plane was asked to CREATE, and which pool it was asked to open
+	// the waiting room on. `strict` is a pointer so "asked for false" and "never asked" stay different
+	// answers — the same reason api.RunnerItem.ActiveLeases is one.
+	created  createdPool
+	strictID string
+	strict   *bool
+}
+
+// createdPool is what a `pool create` reached the control plane with. It is declared here rather than
+// reusing the api type so that pool_test.go's RED is a BEHAVIOURAL failure (the CLI has no `pool` resource,
+// so `execute` returns usageErr) rather than a compile error against a type that does not exist yet.
+type createdPool struct {
+	Name, Posture, OS, Arch string
+	StrictEnrollment        bool
 }
 
 func (f *fakeFleet) ListRunners(context.Context, string, string, capi.RunnerListWindow) ([]capi.RunnerItem, error) {
@@ -48,7 +62,30 @@ func (f *fakeFleet) GetRunner(_ context.Context, _, _, id string) (capi.RunnerIt
 }
 
 func (f *fakeFleet) ListRunnerPools(context.Context, string, string, capi.RunnerListWindow) ([]capi.RunnerPoolItem, error) {
-	return []capi.RunnerPoolItem{}, nil
+	if f.created.Name == "" {
+		return []capi.RunnerPoolItem{}, nil
+	}
+	// The pool the create made, so `palai pool list` has something to render and the CLI's read half is
+	// asserted against a pool that was actually created rather than a canned row.
+	return []capi.RunnerPoolItem{{
+		ID: "pool_created", Name: f.created.Name, Posture: f.created.Posture,
+		OS: f.created.OS, Arch: f.created.Arch, StrictEnrollment: f.created.StrictEnrollment,
+		CreatedAt: time.Unix(1700000000, 0).UTC(),
+	}}, nil
+}
+
+// CreateRunnerPool and SetRunnerPoolStrictEnrollment are the E28 T1 surface `palai pool` fronts.
+func (f *fakeFleet) CreateRunnerPool(_ context.Context, _, _ string, in capi.RunnerPoolCreate) (capi.RunnerPoolItem, error) {
+	f.created = createdPool{Name: in.Name, Posture: in.Posture, OS: in.OS, Arch: in.Arch, StrictEnrollment: in.StrictEnrollment}
+	return capi.RunnerPoolItem{
+		ID: "pool_created", Name: in.Name, Posture: in.Posture, OS: in.OS, Arch: in.Arch,
+		StrictEnrollment: in.StrictEnrollment, CreatedAt: time.Unix(1700000000, 0).UTC(),
+	}, nil
+}
+
+func (f *fakeFleet) SetRunnerPoolStrictEnrollment(_ context.Context, _, _, poolID string, strict bool) (capi.RunnerPoolItem, bool, error) {
+	f.strictID, f.strict = poolID, &strict
+	return capi.RunnerPoolItem{ID: poolID, Name: "mac-pool", Posture: "unsandboxed-host", StrictEnrollment: strict}, true, nil
 }
 
 func (f *fakeFleet) MintRunnerPoolKey(context.Context, string, string, string, *time.Time) (capi.RunnerPoolKeyItem, bool, error) {

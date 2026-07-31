@@ -360,8 +360,25 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		rh := &runnerHandler{runners: cfg.runners}
 		mux.HandleFunc("GET /v1/runners", rh.listRunners)
 		mux.HandleFunc("GET /v1/runners/{runner_id}", rh.getRunner)
-		// The pools those machines are in (E24 T2). Read-only: creating and deleting a pool is T5/T6's.
+		// The pools those machines are in (E24 T2), and THE BIRTH PATH THAT WAS MISSING (E28 T1).
+		//
+		// THE COMMENT THAT STOOD HERE SAID "Read-only: creating and deleting a pool is T5/T6's", and the same
+		// sentence stood over ListRunnerPools in storage/queries/runners.sql. T5 shipped the machine lifecycle,
+		// T6 shipped the waiting room, and neither opened either — so a fleet's pools could not be created at
+		// all, an `unsandboxed-host` (rented Mac) pool could not exist, and `strict_enrollment` could not be
+		// switched on outside two test files. That left `approve` below deciding a state no operator could
+		// produce. A comment can name what is true; it cannot schedule work, and this one is written to state
+		// rather than to defer.
+		//
+		// CREATE and PATCH are gated on `provision` like the key surface, because deciding where a tenant's
+		// runs execute is org administration. DELETE is absent, deliberately: `runner_pool_keys` carries ON
+		// DELETE CASCADE on `runner_pools` (000045 R2), so deleting a pool would silently delete its enrolment
+		// keys, and what becomes of the machines whose `pool_id` names it is a separate decision nobody has
+		// asked for. PATCH takes ONE field — `strict_enrollment` — and api/runners.go says why `posture` is
+		// not among them.
 		mux.HandleFunc("GET /v1/runner-pools", rh.listRunnerPools)
+		mux.HandleFunc("POST /v1/runner-pools", rh.createRunnerPool)
+		mux.HandleFunc("PATCH /v1/runner-pools/{pool_id}", rh.patchRunnerPool)
 		// The pool's ENROLMENT KEYS (E24 T3) — the one write half of this surface, and the reason it
 		// exists is that a fleet credential has no other home: the runner plane authenticates machines,
 		// not people, so minting and revoking a key is an operator action over the public API or it is

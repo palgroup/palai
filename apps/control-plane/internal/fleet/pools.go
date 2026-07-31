@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/palgroup/palai/storage"
 )
@@ -95,9 +96,71 @@ func (s *Store) Pool(ctx context.Context, poolID string) (Pool, bool, error) {
 	return p, true, nil
 }
 
+// ErrPoolNameTaken is returned by CreatePool when this project already has a pool by that name — 000045
+// R1's UNIQUE (organization_id, project_id, name) surfacing as an answer rather than as a 500. It is a
+// typed value rather than a raw pgx error so the handler renders a 409 without parsing a SQLSTATE.
+var ErrPoolNameTaken = errors.New("fleet: a runner pool with that name already exists in this project")
+
+// CreatePool writes ONE operator-created pool and returns it (E28 T1).
+//
+// WHY THIS EXISTS AT ALL, because it is the measurement this task was written for: before it, the only
+// statement that wrote a pool row was InsertDefaultRunnerPool, which writes 'default', 'sandboxed-linux'
+// and false as LITERALS, and there was no UPDATE anywhere. So a second pool could not exist, an
+// `unsandboxed-host` (rented Mac) pool could not exist, and `strict_enrollment` could not be turned on —
+// which left E24 T6's approve route deciding a state no operator could produce.
+//
+// TENANT-SCOPED, unlike Register: this is reached through the public API, where the verified bearer scope
+// is the only tenant authority, so it publishes it and RLS confines it. Register runs system-scoped because
+// the enrolment wire genuinely carries no tenant; an operator's request does.
+func (s *Store) CreatePool(ctx context.Context, org, project string, in Pool) (Pool, error) {
+	if org == "" || project == "" {
+		// A project-less pool is one nothing can enrol into (Register refuses it), so refusing here keeps a
+		// created pool USABLE rather than merely written.
+		return Pool{}, ErrUnknownPool
+	}
+	row := Pool{
+		ID: s.mintID("pool"), Organization: org, Project: project, Name: in.Name,
+		Posture: in.Posture, OS: in.OS, Arch: in.Arch, StrictEnrollment: in.StrictEnrollment,
+	}
+	ctx = storage.WithTenant(ctx, org, project)
+	err := s.pool.QueryRow(ctx, storage.Query("InsertRunnerPool"),
+		row.ID, row.Organization, row.Project, row.Name, row.Posture, row.OS, row.Arch, row.StrictEnrollment).
+		Scan(&row.CreatedAt)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return Pool{}, ErrPoolNameTaken
+	}
+	if err != nil {
+		return Pool{}, fmt.Errorf("insert runner pool: %w", err)
+	}
+	return row, nil
+}
+
+// SetStrictEnrollment opens or closes ONE pool's waiting room (E28 T1) and returns the pool as it now
+// stands. found=false is a pool that is not the caller's, or is not there — the same non-disclosing answer
+// the machine lifecycle gives, for the same reason.
+//
+// THE ONLY MUTABLE FIELD, and that is a correctness requirement: Register makes a machine inherit the
+// pool's posture, so changing a populated pool's posture would retroactively change what its machines ARE.
+func (s *Store) SetStrictEnrollment(ctx context.Context, org, project, poolID string, strict bool) (Pool, bool, error) {
+	if poolID == "" {
+		return Pool{}, false, nil
+	}
+	ctx = storage.WithTenant(ctx, org, project)
+	var p Pool
+	err := s.pool.QueryRow(ctx, storage.Query("SetRunnerPoolStrictEnrollment"), org, project, poolID, strict).
+		Scan(&p.ID, &p.Organization, &p.Project, &p.Name, &p.Posture, &p.OS, &p.Arch, &p.StrictEnrollment, &p.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Pool{}, false, nil
+	}
+	if err != nil {
+		return Pool{}, false, fmt.Errorf("set runner pool strict enrollment: %w", err)
+	}
+	return p, true, nil
+}
+
 // ListPools returns the tenant-scoped keyset page of pools, newest first — the read behind
-// GET /v1/runner-pools. Reads only: creating and deleting a pool is an operator action T5/T6 own, and
-// a surface that can only be read cannot be mis-used to move a fleet.
+// GET /v1/runner-pools.
 func (s *Store) ListPools(ctx context.Context, org, project string, window ListWindow) ([]Pool, error) {
 	if window.Limit <= 0 {
 		window.Limit = 21

@@ -46,7 +46,11 @@ func dispatch(args []string) error {
 		return supportBundle(args[1:])
 	// poolkey joins the admin family for the reason apikey is in it: it is a thin client over one
 	// existing endpoint each, and a runner-pool enrolment key is tenancy administration.
-	case "org", "project", "apikey", "secret", "poolkey":
+	//
+	// `pool` joins it for the SAME reason and closes the hole its sibling made visible (E28 T1): until this
+	// task there was a verb for a pool's enrolment KEY and none for the pool, so `--pool <pool_id>` could
+	// only ever name the one pool a tenant is born with. `palai pool create|list|set-strict`.
+	case "org", "project", "apikey", "secret", "poolkey", "pool":
 		return admin.Run(args[0], args[1:], os.Stdout, os.Stdin)
 	// `palai admin <resource> …` is the explicit spelling of the same family, and the machine lifecycle
 	// (E24 T5/T6) is reached ONLY this way — `palai admin runner approve|cordon|resume|revoke|list`. The prefix is not
