@@ -181,11 +181,14 @@ func (o *Orchestrator) SetBackgroundRunner(b toolbroker.BackgroundRunner) {
 	}
 }
 
-// BackgroundRunner reports the detached runner this orchestrator was wired with. It exists so a
-// COMPOSITION-ROOT test can ask what production actually wired, which is the only kind of test that
-// would have caught a shell wall time that was unbounded on one posture and refused every call on the
-// other while every sandbox test — each building its own config — stayed green.
-func (o *Orchestrator) BackgroundRunner() toolbroker.BackgroundRunner { return o.background }
+// THERE IS NO BackgroundRunner() ACCESSOR, AND ITS ABSENCE IS A DELETION. T5 shipped one whose doc comment
+// said it existed "so a COMPOSITION-ROOT test can ask what production actually wired" — and the E26 T7
+// reachability sweep measured that NOTHING ASKED, not production and not one test. That is the same sentence
+// E25 T9 found on host.Executor.WallTime and filed as CON-P9, one epic later and word for word. WallTime was
+// filed rather than deleted because the number it reports means something to an operator (zero means
+// UNBOUNDED); this returned an interface value that means nothing to anybody. The composition root's wiring
+// is asserted where it is decided instead — backgroundRunnerFor, in main_test.go, on the value the posture
+// actually binds.
 
 // SetHookFirer injects the hook dispatcher the five pinned points fire through (spec §28.17, E12 T8). Left
 // unset, no hook fires — the dispatch is bit-unchanged (the same discipline as SetShellRunner/SetPublisher).

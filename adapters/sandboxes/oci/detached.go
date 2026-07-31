@@ -49,15 +49,13 @@ type DetachedStatus struct {
 	ExitCode *int
 }
 
-// NewDockerDetachedDriver connects to the daemon described by the standard Docker environment, sharing
-// the batch driver's client construction and hardening.
-func NewDockerDetachedDriver() (DetachedDriver, error) {
-	apiClient, err := client.New(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		return nil, fmt.Errorf("create Docker client: %w", err)
-	}
-	return &dockerDriver{client: apiClient}, nil
-}
+// THERE IS NO NewDockerDetachedDriver, AND ITS ABSENCE IS A DELETION RATHER THAN AN OMISSION. T1 shipped
+// one — a byte-for-byte copy of NewDockerDriver's body returning the same *dockerDriver behind a second
+// interface — and the E26 T7 reachability sweep found NOTHING CALLED IT. Production reaches the three
+// methods below by type-asserting the driver NewDockerDriver already built (workspace/background.go), which
+// is the correct shape: one client, one daemon connection, one hardening path. A second constructor for the
+// same concrete type is a second place a future change would have to be made twice, and this repository has
+// shipped "built, tested, reachable from nothing" five times before this one.
 
 // StartDetached creates and starts one hardened container from the SAME createOptions the batch and
 // interactive paths create from, and returns without removing it. The container id is the handle.
