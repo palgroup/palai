@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 
+import { Select } from "@/components/ui/Select";
 import { apiGet } from "@/lib/api";
 import { CONSOLE_ROUTES, NAV_GROUPS } from "@/lib/routes";
 import { rememberedProject, rememberProject } from "@/lib/scope";
@@ -162,19 +163,14 @@ function Scope() {
         <span className="scope-id">{org === undefined ? "" : String(org.id ?? "")}</span>
       </p>
       {many ? (
-        <select
+        <Select
           className="scope-select"
-          aria-label="Project"
-          data-testid="scope-project-select"
+          label="Project"
+          testId="scope-project-select"
           value={project}
-          onChange={(e) => choose(e.target.value)}
-        >
-          {(projects ?? []).map((p) => (
-            <option key={String(p.id)} value={String(p.id)}>
-              {String(p.display_name ?? p.id ?? "")}
-            </option>
-          ))}
-        </select>
+          onValueChange={choose}
+          options={(projects ?? []).map((p) => ({ value: String(p.id), label: String(p.display_name ?? p.id ?? "") }))}
+        />
       ) : (
         <p className="scope-line">
           <span className="scope-name">{chosen === undefined ? "—" : String(chosen.display_name ?? chosen.id ?? "—")}</span>

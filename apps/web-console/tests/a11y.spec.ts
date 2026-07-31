@@ -169,6 +169,50 @@ test("the WCAG 2.1/2.2 tags genuinely select rules the 2.0 tags do not", async (
   expect(added).toEqual(["autocomplete-valid", "avoid-inline-spacing", "target-size"]);
 });
 
+// THE POPUPS, WHICH ARE THE ONE SURFACE NO OTHER MEASUREMENT IN THIS SUITE REACHES (E29 component layer).
+//
+// The generated loop above scans each route as it opens, with every listbox and menu CLOSED — and a closed
+// popup renders nothing, so those scans report a clean bill of health for markup they never saw. That is the
+// same defect as scanning a page still rendering "Loading…", and this file already says so about the second
+// tab; the component layer adds two more instances of it.
+//
+// tests/contrast.spec.ts cannot close the gap either, and for a structural reason rather than a timing one:
+// its sweep selects `input, select, textarea, button`, and a listbox row is a `<div role="option">` while a
+// menu row is a `<div role="menuitem">`. Neither would be measured even with the popup open.
+//
+// So the popups are scanned HERE, open, by the same tag set as every other scan in this file. What that
+// buys concretely: colour-contrast on the row text and on the highlighted/selected states, aria-required-
+// children on the listbox, target-size (WCAG 2.2) on rows this console sizes itself, and the
+// aria-hidden/focus wiring around a portalled popup — none of which any other leg looks at.
+for (const surface of [
+  { name: "a listbox", open: "session-status-filter", expect: '[role="listbox"]' },
+  { name: "a row menu", open: "session-menu", expect: '[role="menu"]' },
+]) {
+  test(`axe-core reports zero violations on /sessions with ${surface.name} open`, async ({ page }) => {
+    await page.goto("/sessions");
+    await expect(page.getByTestId("panel-sessions")).toBeVisible({ timeout: 15_000 });
+    // A ROW MUST EXIST BEFORE THE ROW MENU DOES. Opening a control that is not there would fail on the click
+    // rather than on the scan, which is the right failure — but the wait is what makes the scan a
+    // measurement of a populated list rather than of an empty one.
+    await expect(page.getByTestId("panel-sessions").locator("tbody tr").first()).toBeVisible({ timeout: 15_000 });
+    await page.waitForLoadState("networkidle");
+
+    await page.getByTestId(surface.open).first().click();
+    const popup = page.locator(surface.expect);
+    await expect(popup, `${surface.name} did not open, so the scan below would be of a closed control`).toBeVisible();
+    // AND IT HAS CONTENT. A popup that answers to its name before its rows resolve is exactly the shape
+    // tests/reveal-once.spec.ts failed on this morning: the container is visible, the scan finds nothing to
+    // judge, and the result is a green scan of an empty box.
+    await expect(popup.locator('[role="option"], [role="menuitem"]')).not.toHaveCount(0);
+
+    const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+    expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
+    expect(results.passes.length + results.violations.length + results.incomplete.length).toBeGreaterThan(0);
+    // eslint-disable-next-line no-console -- the row count is the evidence the scan had something to judge.
+    console.log(`AXE POPUP — ${surface.name} on /sessions scanned with ${String(await popup.locator('[role="option"], [role="menuitem"]').count())} row(s)`);
+  });
+}
+
 test("axe-core reports zero violations on the live-run surface after a completed run", async ({ page }) => {
   // Render everything the profile can produce and reach terminal, so every live panel present on this
   // profile — timeline, recovery, usage, artifacts, and on the fake profile the approval detail — is in the

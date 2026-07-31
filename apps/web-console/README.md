@@ -101,6 +101,49 @@ directions: it must occur, and nothing else may join it.
 - `app/api/palai/stream/route.ts` — starts a run and re-projects the canonical SSE event stream to the
   browser as ndjson (lane-tagged), staying open across an approval pause.
 
+## The primitive layer (`components/ui/`, E29)
+
+Everything under `components/` was a DOMAIN component until this landed — `AgentDiff`, `ApprovalPanel`,
+`Timeline` — and nothing under it was a control. Measured on `d8ca934b` (2026-07-31):
+
+| | |
+|---|---|
+| `grep -rn '<select' --include='*.tsx' components app \| wc -l` | 7, every one native |
+| `grep -rn 'role="menu"\|role="listbox"\|role="dialog"' … \| wc -l` | 0 |
+| `grep -rn '<button' --include='*.tsx' components app \| wc -l` | 39 (38 elements + one in a comment) |
+
+Seven primitives now sit under `components/ui/`, built on **[@base-ui/react](https://base-ui.com) 1.6.0** —
+the MUI team's headless library, which supplies roles, keyboard behaviour, dismissal and Floating UI
+positioning and **ships no styles at all**, so every pixel comes from `app/globals.css`'s tokens:
+
+| primitive | what consumes it |
+|---|---|
+| `Button` | 16 files, every button in the console |
+| `Select` | `Picker`, `Panel`'s sort, `Chrome`'s scope, the three session filters, the transcript's type filter |
+| `Menu` | the session row's `⋯` |
+| `Dialog` | `ConfirmDestructive` |
+| `Badge` | `Status` |
+| `Tabs` | the session transcript's Transcript/Debug strip |
+| `Field` | `ResourceForm`, `Picker` |
+
+**Import per component (`@base-ui/react/select`), never the barrel** — the package is tree-shakeable and the
+barrel is not. The cost is a real number: the built client JS went from **897,670 → 1,135,499 bytes raw**
+and **274,741 → 358,458 gzipped** (+30.5%), measured with
+
+```
+find .next/static -type f -name '*.js' -print0 | xargs -0 stat -f%z | awk '{s+=$1} END {print s}'
+find .next/static -type f -name '*.js' -print0 | xargs -0 -n1 gzip -c | wc -c
+```
+
+Three of the library's behaviours break assertions this suite already ships, and each is written down where
+it bites: `Select.Root` renders a 1×1 `aria-hidden` `<input>` for form serialisation (it is counted by any
+`locator("input")` and by the contrast sweep); the focus trap redirects one `requestAnimationFrame` late, so
+`components/ui/Dialog.tsx` keeps a synchronous Tab wrap on top; and `inert` is never set — containment is
+`aria-hidden` on the other `<body>` children. Read those files before changing them.
+
+A test drives a listbox with `chooseOption` / `chooseOptionByLabel` / `chosenValue` from `tests/profile.ts`.
+Playwright's `selectOption()` and `inputValue()` only speak to a native `<select>`.
+
 ## Develop
 
 ```

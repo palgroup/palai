@@ -841,7 +841,7 @@ details.notes > :last-child {
   margin-left: auto;
 }
 .panel-tools input[type="search"],
-.panel-tools select {
+.panel-tools .ui-select-trigger {
   width: auto;
   max-width: 16rem;
 }
@@ -979,7 +979,6 @@ label {
 input[type="text"],
 input[type="password"],
 input[type="search"],
-select,
 textarea {
   font: inherit;
   font-size: var(--font-size-4);
@@ -993,20 +992,20 @@ textarea {
   transition: border-color var(--duration-1) var(--ease-out);
 }
 
-/* A NATIVE SELECT ARROW IS THE LOUDEST "UNSTYLED FORM" SIGNAL A DARK CONSOLE CAN EMIT. Measured
-   2026-07-31: `appearance: auto` on every select here, so the operating system drew its own control on top
-   of a box this stylesheet had already styled — the one element on the page that did not belong to the
-   design. The chevron is an inline SVG in the background so it needs no icon font and no component, and
-   the right padding reserves its lane. `appearance: none` keeps the keyboard behaviour, the listbox and
-   the accessibility tree exactly as they were: only the paint changes. */
-select {
-  appearance: none;
-  -webkit-appearance: none;
-  padding-right: calc(var(--space-3) * 2 + 10px);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23b0b4ba' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right var(--space-3) center;
-}
+/* THE NATIVE SELECT AND THE CHEVRON PAINTED ONTO IT ARE BOTH GONE (E29 component layer), and the second
+   half is the interesting one. The stopgap here was `appearance: none` plus a data-URI arrow, and the arrow
+   had a colour baked into the URL: `stroke='%23b0b4ba'`, which is this file's own `--slate-11` AS REDEFINED
+   IN THE DARK BLOCK. So both schemes drew the dark scheme's chevron — 2.03:1 against --bg-page in light,
+   where the token it was copied from measures 5.79:1. A colour inside a URL cannot follow a token and no
+   rule in this repository can measure it; components/ui/Select.tsx renders the same path as an inline SVG
+   taking `currentColor`, where it can.
+
+   THE ELEMENT IS GONE, AND THE COUNT IS THE ARGUMENT SO IT CARRIES ITS OWN COMMAND:
+   `grep -rn '<select' --include='*.tsx' components app` → 6 (2026-08-01), and every one of the six is a
+   sentence in a comment — this file's own prose about the change, plus components/ui/Select.tsx's. Zero
+   elements. Nothing is left for a `select` selector to match, so the rules that named one are removed rather
+   than kept "just in case": a dead selector is indistinguishable from a live one when read. */
+
 /* A CONTROL IS AS WIDE AS ITS CONTENT NEEDS, NOT AS WIDE AS THE PAGE. At `width: 100%` inside a 90rem
    panel, a password field and a repository name were both 1350px of empty box — which reads as an
    unfinished layout and gives the eye no clue how long the value is meant to be. The textarea is allowed
@@ -1014,7 +1013,7 @@ select {
 input[type="text"],
 input[type="password"],
 input[type="search"],
-select {
+.ui-select-trigger {
   max-width: 34rem;
 }
 textarea {
@@ -1026,7 +1025,6 @@ textarea {
 }
 input[type="text"]:hover,
 input[type="password"]:hover,
-select:hover,
 textarea:hover {
   border-color: var(--border-control-hover);
 }
@@ -1079,7 +1077,6 @@ fieldset > label {
 /* A DISABLED CONTROL CHANGES ITS FILL RATHER THAN ITS OPACITY. `opacity` halves the contrast of the LABEL
    text too, and 1.4.3's exemption for inactive controls is not a licence to make them unreadable. */
 input:disabled,
-select:disabled,
 textarea:disabled {
   background: var(--bg-inset);
   color: var(--text-muted);
@@ -1191,6 +1188,132 @@ form > p:last-of-type {
   flex-wrap: wrap;
   gap: var(--space-3);
   margin: var(--space-5) 0 0;
+}
+
+/* --- THE PRIMITIVE LAYER (E29 component layer) ---------------------------------------------------------
+   components/ui/ over @base-ui/react@1.6.0. The library ships NO styles — it supplies roles, keyboard
+   behaviour and Floating UI positioning — so everything a reader sees is written here, out of the same
+   tokens the rest of this file uses. Nothing below introduces a colour: every value is a layer-2 alias.
+
+   THE POPUPS ARE THE ONE SURFACE tests/contrast.spec.ts CANNOT REACH, and that is stated rather than
+   glossed. Its sweep walks the routes with every popup CLOSED, and a Select item is a `<div role="option">`
+   which its selector (`input, select, textarea, button`) would not match even if it were open. So the
+   popups are measured by an axe scan taken with one OPEN — tests/a11y.spec.ts, "with a listbox open" and
+   "with a row menu open" — which is the arm that judges the text pairs below. */
+
+/* THERE IS NO `.ui-button-sm`, and components/ui/Button.tsx records why: `.copy-button` (24px, space-2),
+   `.row-menu-toggle` (28px, space-2) and `.detail-close` (24px, space-3, margin-left auto) are three
+   geometries rather than one, so a shared quiet size would have been a fourth that nothing asks for. The
+   `.ui-button` class the primitive always writes adds no declaration of its own — it takes §8's plain
+   `button` rule, and a variant adds `.primary` or `.danger`, both of which already existed. That is the
+   whole of "the paint is unchanged by construction". */
+
+/* The select trigger is a <button>, so it inherits §8's button rule — its boundary, radius, height and
+   focus ring are the ones already measured at 3.69:1 light / 4.45:1 dark, and tests/contrast.spec.ts sees
+   it for exactly that reason. What is overridden here is what makes it read as a FIELD rather than as an
+   action: a value is left-aligned regular text with the chevron pushed to the far edge, and it does not
+   take the button's filled hover — it darkens its border, which is what every input on this surface does. */
+.ui-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 0 var(--space-3);
+  font-weight: var(--font-weight-regular);
+  text-align: left;
+}
+.ui-select-trigger:hover:not(:disabled) {
+  background: var(--bg-page);
+  border-color: var(--border-control-hover);
+}
+.ui-select-trigger:active:not(:disabled) {
+  background: var(--bg-page);
+}
+/* The value truncates and the chevron never does: a lane the arrow always owns is what keeps a long option
+   from pushing the affordance off the end of the control. */
+.ui-select-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-select-icon {
+  flex: none;
+  color: var(--text-muted);
+}
+
+/* THE POPUP IS ONE SHAPE FOR BOTH THE LISTBOX AND THE MENU, which is the whole argument for a layer: they
+   are the same object on screen and they were about to be written twice. `--anchor-width` and
+   `--available-height` are set on the positioner by Base UI, so the popup is never narrower than the
+   control it belongs to and never taller than the space under it. */
+.ui-select-positioner,
+.ui-menu-positioner {
+  z-index: 20;
+}
+.ui-select-popup,
+.ui-menu-popup {
+  min-width: var(--anchor-width);
+  max-height: min(20rem, var(--available-height));
+  overflow-y: auto;
+  padding: var(--space-1);
+  background: var(--bg-page);
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-2);
+  box-shadow: var(--shadow-2);
+}
+.ui-menu-popup {
+  min-width: 10rem;
+}
+.ui-select-item,
+.ui-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h-sm);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-1);
+  font-size: var(--font-size-4);
+  color: var(--text);
+  white-space: nowrap;
+  cursor: pointer;
+}
+/* `[data-highlighted]` is the keyboard/pointer cursor and `[data-selected]` is the state. They are DIFFERENT
+   colours on purpose: collapsing them makes "the row I am on" and "the row that is chosen" the same signal,
+   and arrowing through a list then looks like it is changing the value. */
+.ui-select-item[data-highlighted],
+.ui-menu-item[data-highlighted] {
+  background: var(--bg-hover);
+}
+.ui-select-item[data-selected] {
+  background: var(--accent-bg);
+  color: var(--accent-text);
+}
+/* THE DESTRUCTIVE ROW takes --danger-text (step 12) rather than --danger-text-inline (step 11), and the
+   two-line reason is in components/ui/Menu.tsx: step 11 reads 4.27:1 on a HIGHLIGHTED row, under SC 1.4.3.
+   Step 12 measures 12.13 / 10.18 light and 13.81 / 10.56 dark on this popup's two surfaces. */
+.ui-menu-item[data-danger] {
+  color: var(--danger-text);
+}
+.ui-menu-item[data-danger][data-highlighted] {
+  background: var(--danger-bg);
+}
+/* Only the LISTBOX has a disabled row. components/ui/Menu.tsx records why a menu does not: all six callers
+   remove an item that does not apply rather than showing a dead one, which is the rule Picker already
+   follows for a select with no options. */
+.ui-select-item[data-disabled] {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+/* The tick's lane is reserved whether or not the tick is there, so the labels line up in one column rather
+   than shifting by a character when the selection moves. */
+.ui-select-check {
+  flex: none;
+  width: 0.75rem;
+  color: var(--accent-text);
+}
+.ui-select-item-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ============================================================ 9. STATUS + FEEDBACK ========================= */
@@ -1486,7 +1609,17 @@ button.danger:hover:not(:disabled) {
 
 /* The id column: monospace, clipped, and the whole value in `title` — a clip that can be recovered is not a
    silent truncation. It is an <a> to the transcript, so it is already in the tab order and needs no
-   tabindex of its own. */
+   tabindex of its own.
+
+   THE LINE BOX IS 24px BECAUSE SC 2.5.8 SAYS SO, AND IT WAS 20px UNTIL AN AXE SCAN FINALLY SAW IT (E29
+   component layer). Measured by the new "with a listbox open" scan in tests/a11y.spec.ts, verbatim: "Target
+   has insufficient size (101.2px by 20px, should be at least 24px by 24px). Target has insufficient space to
+   its closest neighbors. Safe clickable space has a diameter of 11.2px instead of at least 24px." The
+   neighbour is the copy button 4px away (--space-1 on .cell-id-group), which is itself exactly 24px — so
+   this link was the only target in the pair under the floor.
+   `line-height` rather than `min-height`: `inline-block` with `overflow: hidden` is what makes the ellipsis
+   work, and a flex box would take the text node out of the block formatting context that `text-overflow`
+   needs. A 1.5rem line box on a 12px font grows the target and moves no text. */
 .cell-id {
   display: inline-block;
   max-width: 14rem;
@@ -1496,6 +1629,7 @@ button.danger:hover:not(:disabled) {
   vertical-align: bottom;
   font-family: var(--font-mono);
   font-size: var(--font-size-2);
+  line-height: var(--control-h-sm);
 }
 
 /* Chips. --text on --bg-inset is 14.41:1 / 13.70:1; the key is --text-muted on the same, 5.22:1 / 7.64:1.
@@ -1554,11 +1688,14 @@ button.danger:hover:not(:disabled) {
   min-height: 0;
 }
 
-/* The row overflow. The panel is IN FLOW rather than absolutely positioned, and that is a measurement:
-   `.panel` scrolls horizontally, so an absolutely-positioned menu inside it is clipped by its own container.
-   An expanding row is legible; a menu that is half a menu is not. */
+/* The row overflow. THE CLIP THIS COMMENT USED TO DESCRIBE IS GONE RATHER THAN WORKED AROUND (E29
+   component layer). What was written here was a measurement and a surrender: "`.panel` scrolls
+   horizontally, so an absolutely-positioned menu inside it is clipped by its own container. An expanding row
+   is legible; a menu that is half a menu is not." — so the panel was kept IN FLOW and the row grew taller
+   every time the menu opened. components/ui/Menu.tsx portals the popup to the document body and anchors it
+   with Floating UI, which is outside every overflow ancestor: the row no longer moves and `.row-menu-panel`
+   is deleted rather than retired. This wrapper is now only the cell's right-alignment. */
 .row-menu {
-  position: relative;
   display: flex;
   justify-content: flex-end;
 }
@@ -1567,20 +1704,6 @@ button.danger:hover:not(:disabled) {
   min-width: 1.75rem;
   padding: 0 var(--space-2);
   line-height: 1;
-}
-.row-menu-panel {
-  position: absolute;
-  top: 2rem;
-  right: 0;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  background: var(--bg-page);
-  border: var(--border-w) solid var(--border-hairline);
-  border-radius: var(--radius-2);
-  box-shadow: var(--shadow-2);
 }
 
 /* The rename form, small enough to sit inside a table cell. */

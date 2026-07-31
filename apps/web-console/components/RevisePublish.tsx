@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
+import { Button } from "@/components/ui/Button";
 import { ResourceForm, type FormField } from "@/components/ResourceForm";
 import { apiGet, apiSend, RelayError } from "@/lib/api";
 
@@ -294,9 +295,9 @@ export function RevisePublish({
                       {published ? (
                         <span>— already published</span>
                       ) : (
-                        <button type="button" data-testid={`publish-${id}`} onClick={() => void publish(rev)}>
+                        <Button testId={`publish-${id}`} onClick={() => void publish(rev)}>
                           Publish {id}
-                        </button>
+                        </Button>
                       )}
                     </td>
                   </tr>

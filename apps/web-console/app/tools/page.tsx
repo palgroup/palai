@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { Button } from "@/components/ui/Button";
 import { Panel } from "@/components/Panel";
 import { Picker } from "@/components/Picker";
 import { ResourceForm } from "@/components/ResourceForm";
@@ -359,14 +360,13 @@ export default function ToolsPage() {
           </p>
         )}
         <p>
-          <button
-            type="button"
-            data-testid="discover-button"
+          <Button
+            testId="discover-button"
             disabled={discoverTarget === "" || discovering}
             onClick={() => void discover()}
           >
             {discovering ? "Discovering…" : "Discover tools"}
-          </button>
+          </Button>
         </p>
       </section>
 
@@ -495,9 +495,9 @@ export default function ToolsPage() {
               if (rev.status !== "published") return <span>— publish it first</span>;
               if (pins.includes(id)) return <span data-testid={`pinned-${id}`}>pinned below</span>;
               return (
-                <button type="button" data-testid={`pin-${id}`} onClick={() => setPins((current) => [...current, id])}>
+                <Button testId={`pin-${id}`} onClick={() => setPins((current) => [...current, id])}>
                   Add to the set
-                </button>
+                </Button>
               );
             },
           },
@@ -521,9 +521,9 @@ export default function ToolsPage() {
             {pins.map((id) => (
               <li key={id}>
                 {id}{" "}
-                <button type="button" data-testid={`unpin-${id}`} onClick={() => setPins((c) => c.filter((p) => p !== id))}>
+                <Button testId={`unpin-${id}`} onClick={() => setPins((c) => c.filter((p) => p !== id))}>
                   Remove {id}
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
@@ -581,9 +581,9 @@ export default function ToolsPage() {
           {
             header: "Contents",
             render: (rev) => (
-              <button type="button" data-testid={`contents-${String(rev.id ?? "")}`} onClick={() => void showContents(rev)}>
+              <Button testId={`contents-${String(rev.id ?? "")}`} onClick={() => void showContents(rev)}>
                 Show contents
-              </button>
+              </Button>
             ),
           },
         ]}

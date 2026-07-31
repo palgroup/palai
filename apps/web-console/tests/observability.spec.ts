@@ -190,7 +190,20 @@ test("the metering screen is the READ half only — no control sets a budget or 
   // holds, and the relay would forward either. So "you cannot set a limit here" is a claim about this SCREEN
   // and is checked on the screen: no form, no number input, no submit.
   await expect(page.locator("form")).toHaveCount(0);
-  await expect(page.locator("input")).toHaveCount(0);
+  // AN INPUT AN OPERATOR CAN SEE, which is a distinction this line did not have to make until the toolbar's
+  // filters became components/ui/Select (E29 component layer): @base-ui/react's Select renders a
+  // form-serialisation <input> per control — 1x1, clipped, aria-hidden="true", tabindex="-1" — so a bare
+  // `locator("input")` counts one per dropdown and reports a read-only screen as carrying a control.
+  //
+  // The claim is "no control on this screen SETS a limit", and a node no user can see, focus or type into
+  // cannot be one. The exclusion is the same pair tests/contrast.spec.ts exempts, and it is PROVEN rather
+  // than trusted: every excluded node is asserted to be at most a pixel, so an input that grew into a real
+  // control would fail here rather than disappear from the count.
+  for (const hidden of await page.locator('input[aria-hidden="true"][tabindex="-1"]').all()) {
+    const box = await hidden.boundingBox();
+    expect((box?.width ?? 0) <= 1 && (box?.height ?? 0) <= 1, "an excluded input is big enough to be typed into").toBe(true);
+  }
+  await expect(page.locator('input:not([aria-hidden="true"])')).toHaveCount(0);
   const controls = await page.locator("button").evaluateAll((els) => els.map((e) => (e.textContent ?? "").trim()));
   // eslint-disable-next-line no-console -- the enumeration is the evidence.
   console.log(`USAGE CONTROLS — ${controls.length}: ${controls.join(" | ") || "<none>"}`);

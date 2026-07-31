@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { Button } from "@/components/ui/Button";
 import { Panel } from "@/components/Panel";
 import { Status } from "@/components/Status";
 import { Timeline, type Frame } from "@/components/Timeline";
@@ -123,9 +124,9 @@ export default function HistoryPage() {
           {
             header: "",
             render: (row) => (
-              <button type="button" data-testid="run-open" onClick={() => setSelected(row)}>
+              <Button testId="run-open" onClick={() => setSelected(row)}>
                 Open
-              </button>
+              </Button>
             ),
           },
         ]}

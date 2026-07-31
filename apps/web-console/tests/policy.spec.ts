@@ -2,7 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page, type Request as NetRequest } from "@playwright/test";
 
 import { NEXT_PORT, WCAG_TAGS } from "./constants";
-import { announceProfile, sessionHeaders, signIn } from "./profile";
+import { announceProfile, chooseOption, sessionHeaders, signIn } from "./profile";
 
 // THE POLICY DOCUMENT IS WRITTEN WHOLE, OR THE APPROVAL GATE OPENS (E28 T2, plan §3.6 D9).
 //
@@ -108,12 +108,12 @@ test("setting only the pool from the console leaves the approver list intact", a
   // Choose the subject, then assert THE FORM READ ITS CURRENT DOCUMENT. This is the fix's mechanism made
   // visible: a form that writes the whole document has to SHOW the whole document first, and an operator who
   // cannot see a field cannot be said to have chosen to keep it.
-  await page.getByTestId("policy-project-select").selectOption(PROJECT);
+  await chooseOption(page, "policy-project-select", PROJECT);
   await expect(page.getByTestId("policy-approvers-input")).toHaveValue(APPROVER);
   await expect(page.getByTestId("policy-allowed-tools-input")).toHaveValue("git.push");
 
   // Set ONLY the pool — the one action the operator came to perform.
-  await page.getByTestId("policy-pool-select").selectOption(POOL);
+  await chooseOption(page, "policy-pool-select", POOL);
   await page.getByTestId("policy-save-button").click();
   await expect(page.getByTestId("policy-status")).toBeVisible({ timeout: 15_000 });
 
@@ -151,9 +151,9 @@ test("the request body carries all five policy fields, not the one that changed"
 
   await page.goto("/policy");
   await expect(page.getByTestId("panel-api-keys")).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId("policy-project-select").selectOption(PROJECT);
+  await chooseOption(page, "policy-project-select", PROJECT);
   await expect(page.getByTestId("policy-approvers-input")).toHaveValue(APPROVER);
-  await page.getByTestId("policy-pool-select").selectOption(POOL);
+  await chooseOption(page, "policy-pool-select", POOL);
   await page.getByTestId("policy-save-button").click();
   await expect(page.getByTestId("policy-status")).toBeVisible({ timeout: 15_000 });
 
@@ -176,7 +176,7 @@ test("an empty approver list is shown as permissive, in words, before it is save
   const PROJECT = await seedProject(page);
   await page.goto("/policy");
   await expect(page.getByTestId("panel-api-keys")).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId("policy-project-select").selectOption(PROJECT);
+  await chooseOption(page, "policy-project-select", PROJECT);
 
   // Full list: no warning.
   await expect(page.getByTestId("policy-approvers-input")).toHaveValue(APPROVER);
@@ -196,7 +196,17 @@ test("the pool control stays a dropdown and never degrades to a free-text box", 
   await expect(page.getByTestId("panel-api-keys")).toBeVisible({ timeout: 15_000 });
   const pool = page.getByTestId("policy-pool-select");
   await expect(pool).toBeVisible();
-  expect(await pool.evaluate((el) => el.tagName)).toBe("SELECT");
+  // THE CLAIM IS UNCHANGED AND THE CHECK IS STRONGER (E29 component layer). It used to read
+  // `tagName === "SELECT"`, which a <select> holding ZERO options would also have satisfied — the very
+  // degradation Picker's rule exists to prevent, passing the test written to catch it. The control is now a
+  // components/ui/Select, so the three things are asserted separately: it is not a text box, it advertises a
+  // listbox, and OPENING it yields rows. The last one is what the tag check could never do.
+  expect(await pool.evaluate((el) => el.tagName), "the pool control is not a button-triggered listbox").toBe("BUTTON");
+  await expect(pool).toHaveAttribute("aria-haspopup", "listbox");
+  await expect(page.locator('input[type="text"][data-testid="policy-pool-select"]')).toHaveCount(0);
+  await pool.click();
+  const options = page.getByRole("listbox").getByRole("option");
+  await expect(options, "the pool listbox opened with nothing in it — a control that cannot be satisfied").not.toHaveCount(0);
 });
 
 // --- THE IRREVERSIBLE CONFIRMATION (plan §3.5 W1/W2/W5) -------------------------------------------------
@@ -263,6 +273,13 @@ test("Tab cannot leave the open dialog, and Escape cancels it", async ({ page })
   // TWENTY PRESSES, FORWARD AND BACK. The dialog holds two controls, so twenty presses is nine full cycles —
   // enough that a trap which only holds for one lap fails here. Focus is read as "is the active element
   // inside the dialog", which is the property that matters and not "is it one of two ids".
+  //
+  // THE ASSERTION IS UNCHANGED ACROSS THE E29 COMPONENT LAYER, AND THAT IS THE POINT. The dialog is now
+  // portalled and its focus management is @base-ui/react's — whose Tab redirect runs one
+  // requestAnimationFrame after the key, which this cadence outruns: measured, forty presses reached
+  // `.skip-link`, `.brand` and `key-mint-button` on the page behind. components/ui/Dialog.tsx therefore
+  // keeps a synchronous keydown wrap, and this line is what says so — a trap that only holds for a human is
+  // not what this test was written to accept.
   const inside = () => page.evaluate(() => document.querySelector('[data-testid="key-revoke-dialog"]')?.contains(document.activeElement) === true);
   for (let i = 0; i < 20; i++) {
     await page.keyboard.press("Tab");
@@ -273,8 +290,32 @@ test("Tab cannot leave the open dialog, and Escape cancels it", async ({ page })
     expect(await inside(), `Shift+Tab press ${String(i + 1)} moved focus out of the dialog`).toBe(true);
   }
 
+  // THE REST OF THE DOCUMENT IS HIDDEN FROM A SCREEN READER WHILE THIS IS OPEN, and that is a property the
+  // inline dialog never had: it carried aria-modal="true" and nothing else, so an AT that ignores the
+  // attribute could walk straight into the page behind it. The portalled popup is a body-level node and
+  // every OTHER body-level node is marked, which is the mechanism rather than the promise. Measured here as
+  // "the page's own container is hidden", so it cannot pass by finding some unrelated marked node.
+  const contained = await page.evaluate(() => {
+    const main = document.querySelector("main");
+    for (let n: Element | null = main; n !== null; n = n.parentElement) {
+      if (n.getAttribute("aria-hidden") === "true") return true;
+    }
+    return false;
+  });
+  expect(contained, "the page behind the open dialog is still exposed to a screen reader").toBe(true);
+
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("key-revoke-dialog")).toHaveCount(0);
+  // AND THE MARKING IS UNDONE. A containment that is never lifted is a console that goes silent after one
+  // dialog, which is a worse failure than never containing at all — and it is invisible on screen.
+  const released = await page.evaluate(() => {
+    const main = document.querySelector("main");
+    for (let n: Element | null = main; n !== null; n = n.parentElement) {
+      if (n.getAttribute("aria-hidden") === "true") return false;
+    }
+    return true;
+  });
+  expect(released, "the page stayed hidden from a screen reader after the dialog closed").toBe(true);
   // NOTHING WAS REVOKED — asserted over the API rather than over the rendered row, because a row that failed
   // to refresh would look the same as one that was never revoked. An Escape that cancelled the dialog and
   // performed the action anyway would be the worst possible reading of "the least destructive default".

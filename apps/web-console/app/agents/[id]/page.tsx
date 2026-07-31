@@ -3,6 +3,7 @@
 import { usePathname, useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { Button } from "@/components/ui/Button";
 import { AgentDiff } from "@/components/AgentDiff";
 import { RevisePublish } from "@/components/RevisePublish";
 import { CopyButton, shortId } from "@/components/Session";
@@ -269,16 +270,15 @@ export default function AgentPage() {
 
       <div className="tabs" role="tablist" aria-label="Agent views">
         {TABS.map((t) => (
-          <button
+          <Button
             key={t.id}
             id={`tab-${t.id}`}
             role="tab"
-            type="button"
             className="tab"
             aria-selected={tab === t.id}
             aria-controls={`panel-${t.id}`}
             tabIndex={tab === t.id ? 0 : -1}
-            data-testid={`tab-${t.id}`}
+            testId={`tab-${t.id}`}
             onClick={() => chooseTab(t.id)}
             onKeyDown={(e) => {
               if (e.key === "ArrowRight") moveTab(t.id, 1);
@@ -286,7 +286,7 @@ export default function AgentPage() {
             }}
           >
             {t.label}
-          </button>
+          </Button>
         ))}
       </div>
 

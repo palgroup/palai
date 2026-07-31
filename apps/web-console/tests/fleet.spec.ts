@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { NEXT_PORT } from "./constants";
-import { announceProfile, sessionHeaders, signIn, skipOnReal } from "./profile";
+import { announceProfile, chooseOption, chosenValue, sessionHeaders, signIn, skipOnReal } from "./profile";
 
 // THE FLEET SCREEN, AND THE STATE E24 SHIPPED A DECISION FOR THAT NOTHING COULD SHOW (E28 T3, plan §T3).
 //
@@ -101,7 +101,7 @@ test("a pool is created from the console with the posture it was given", async (
   await open(page);
 
   await page.getByTestId("pool-name-input").fill(name);
-  await page.getByTestId("pool-posture-select").selectOption("unsandboxed-host");
+  await chooseOption(page, "pool-posture-select", "unsandboxed-host");
   await page.getByTestId("pool-os-input").fill("darwin");
   await page.getByTestId("pool-arch-input").fill("arm64");
   await page.getByTestId("pool-strict-input").check();
@@ -208,7 +208,7 @@ test("a pool key is shown once, and nothing reads it back", async ({ page }) => 
   // nothing else (api/runners.go:282 vs :298,:320). Runs on BOTH profiles — minting a pool key is a real
   // write against a real control plane.
   await open(page);
-  const pool = await page.getByTestId("poolkey-pool-select").inputValue();
+  const pool = await chosenValue(page, "poolkey-pool-select");
   expect(pool, "the key panel has no pool selected, so the mint below would be about nothing").not.toBe("");
 
   await page.getByTestId("poolkey-mint-button").click();
@@ -234,7 +234,7 @@ test("revoking a pool key shows the machines it already admitted and does not st
   // operator not shown them reads "revoked" as "removed" and believes one call decommissioned a fleet.
   skipOnReal("DIV-UI-009");
   await open(page);
-  await page.getByTestId("poolkey-pool-select").selectOption("pool_mac");
+  await chooseOption(page, "poolkey-pool-select", "pool_mac");
   // SELECTED BY PREFIX, NOT BY A FIXED ID. A revoked key stays revoked, so the fixture re-seeds a fresh
   // revocable one with a new id — the approval queue's rule, and the reason is that this suite runs twice
   // (once per colour scheme) against one fixture process.

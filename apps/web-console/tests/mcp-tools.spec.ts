@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { IS_REAL } from "./constants";
-import { announceProfile, signIn, skipOnReal } from "./profile";
+import { announceProfile, chooseOptionByLabel, signIn, skipOnReal } from "./profile";
 
 // THE MCP CONNECTION AND TOOL-APPROVAL SCREEN (E25 T7, plan §T7, CON-007).
 //
@@ -72,18 +72,13 @@ async function discoverAll(page: Page): Promise<void> {
   await expect(page.getByTestId("discover-result")).toContainText("getJiraIssue");
 }
 
-/** chooseTool selects a lineage by the canonical name shown in the picker's option label. */
+/** chooseTool selects a lineage by the canonical name shown in the picker's row. */
 async function chooseTool(page: Page, canonical: string): Promise<void> {
-  const select = page.getByTestId("tool-select");
-  await expect(select).toBeVisible();
-  // BY THE OPTION'S OWN VALUE, read off the option whose text carries the canonical name. The id is minted
-  // by the fixture and the label is `<canonical> (<id>)`, so this is the only way to select without either
-  // hardcoding an id or matching a label by shape.
-  const option = select.locator("option", { hasText: canonical });
-  await expect(option).toHaveCount(1);
-  const value = await option.getAttribute("value");
-  expect(value, `no option in the tool picker carries ${canonical}`).not.toBeNull();
-  await select.selectOption(value ?? "");
+  // BY THE ROW'S OWN VALUE, read off the row whose text carries the canonical name. The id is minted by the
+  // fixture and the label is `<canonical> (<id>)`, so this is the only way to select without either
+  // hardcoding an id or matching a label by shape. chooseOptionByLabel is that, over the listbox the native
+  // <select> became — and it asserts the count of matching rows exactly as this did.
+  await chooseOptionByLabel(page, "tool-select", canonical);
 }
 
 /**
