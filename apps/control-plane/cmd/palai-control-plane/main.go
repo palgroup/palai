@@ -675,13 +675,10 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 					// rebuilt here so the probe that decides a task is done is the same one the park gate and
 					// the kill tool use — a second prober would be a second answer to "is it still running".
 					backgroundObserver = orch.BackgroundObserver()
-					// AND THE KILL HALF (E26 T5): cancelling a run must end its live background work.
-					// Before this line CancelRunReconciled drove the run canceled, cancelled its children,
-					// finalized the response and signalled NO PROCESS ANYWHERE (§3.6 D10) — a backgrounded
-					// build outlived the cancellation of the run that owned it. Injected on the spine
-					// rather than passed as an argument because CancelRunReconciled is reached from the
-					// API edge as well as from here, and both must kill.
-					spine.SetBackgroundKiller(orch.BackgroundKiller())
+					// THE CANCELLATION KILLER TAKES NO LINE HERE AND THAT IS THE POINT (E26 T5):
+					// SetBackgroundRunner above wired it, on this same spine, because a deployment that can
+					// start a build it cannot stop is the orphan this epic exists to prevent — and E26 T2
+					// found one instance of exactly that shape, granted by omission across two conditionals.
 				}
 			}
 		}

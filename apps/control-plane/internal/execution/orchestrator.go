@@ -167,7 +167,19 @@ func (o *Orchestrator) SetShellRunner(s toolbroker.ShellRunner) { o.shell = s }
 // Left unset — which is every deployment before E26 and every posture that cannot detach — the dispatch
 // is bit-unchanged: the same SetShellRunner/SetHookFirer/SetPublisher discipline, where an unwired seam
 // means the feature is simply absent rather than half-present.
-func (o *Orchestrator) SetBackgroundRunner(b toolbroker.BackgroundRunner) { o.background = b }
+//
+// IT ALSO WIRES THE CANCELLATION KILLER, IN THE SAME CALL AND DELIBERATELY (E26 T5). A deployment that
+// can START a background task and cannot END one when its run is cancelled is precisely the orphan this
+// epic exists to prevent — and E26 T2 already found one instance of that shape by omission, where every
+// deployment granting the shell tool could begin a build and none could stop it because the kill tool sat
+// on a different conditional. Two setters would be two chances to wire one and forget the other; one
+// setter makes the broken state unrepresentable.
+func (o *Orchestrator) SetBackgroundRunner(b toolbroker.BackgroundRunner) {
+	o.background = b
+	if o.spine != nil {
+		o.spine.SetBackgroundKiller(o.BackgroundKiller())
+	}
+}
 
 // BackgroundRunner reports the detached runner this orchestrator was wired with. It exists so a
 // COMPOSITION-ROOT test can ask what production actually wired, which is the only kind of test that

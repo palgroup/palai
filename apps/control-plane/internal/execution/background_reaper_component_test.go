@@ -294,7 +294,11 @@ func TestCancellingARunKillsEveryLiveBackgroundTaskOfIt(t *testing.T) {
 	f := newReaperFixture(t)
 	pgids := f.spawnTasks(t, 3)
 
-	if _, err := f.spine.CancelRunReconciled(context.Background(), f.tenant, f.responseID, f.runID,
+	// THROUGH THE ORCHESTRATOR'S OWN SPINE, which is the store production cancels through: main.go's
+	// startDispatch builds the orchestrator over repo and cancels over repo.Spine(), one value. This
+	// fixture's f.spine is a second handle it opened for seeding, and using it here would prove a
+	// cancellation against a store production never builds.
+	if _, err := f.orch.spine.CancelRunReconciled(context.Background(), f.tenant, f.responseID, f.runID,
 		[]byte(`{"status":"canceled"}`), []byte(`{"status":"uncertain"}`)); err != nil {
 		t.Fatalf("CancelRunReconciled: %v", err)
 	}

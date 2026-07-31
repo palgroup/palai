@@ -110,11 +110,12 @@ func newParkFixture(t *testing.T) *parkFixture {
 	exec := host.NewExecutor(0)
 	f.orch = NewOrchestrator(repo, nil, modelbroker.New(modelbroker.Config{}), toolbroker.New(tools.ShellTool(), tools.FileTool()))
 	f.orch.SetShellRunner(exec)
+	// SetBackgroundRunner also wires the cancellation killer onto the orchestrator's OWN spine
+	// (repo.Spine()), which in production is the same *coordinator.Store startDispatch cancels through.
+	// This fixture holds a second handle to the same database for its seeding, so a cancellation proof
+	// must go through f.orch.spine rather than through f.spine — otherwise it would be measuring a store
+	// production never builds.
 	f.orch.SetBackgroundRunner(exec)
-	// AND THE KILL SEAM ON THE SPINE, exactly as startDispatch wires it (E26 T5): cancelling a run reaches
-	// a live process through the coordinator, which must not learn what a process group is. A fixture that
-	// omitted this would prove a cancellation against a store production does not build.
-	cs.SetBackgroundKiller(f.orch.BackgroundKiller())
 	return f
 }
 
