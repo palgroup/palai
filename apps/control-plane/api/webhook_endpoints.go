@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -19,6 +20,8 @@ import (
 type WebhookAPI interface {
 	CreateEndpoint(ctx context.Context, org, project string, c automation.EndpointCreate) (string, error)
 	ListEndpoints(ctx context.Context, org, project string) ([]automation.EndpointView, error)
+	GetEndpoint(ctx context.Context, org, project, id string) (*automation.EndpointView, bool, error)
+	DeleteEndpoint(ctx context.Context, org, project, id string) (bool, error)
 	ListDeliveries(ctx context.Context, org, project, state string, limit int) ([]automation.DeliveryView, error)
 	GetDelivery(ctx context.Context, org, project, id string) (*automation.DeliveryView, bool, error)
 	ListAttempts(ctx context.Context, org, project, deliveryID string) ([]automation.AttemptView, error)
@@ -116,13 +119,82 @@ func (h *webhookHandler) createEndpoint(w http.ResponseWriter, r *http.Request) 
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
 	}
-	// No Location: `/v1/webhook-endpoints/<id>` is not mounted, so following the header 404'd (E29 T2).
-	// This one is a header removed under protest — the family SHOULD have a singular read, and the comment
-	// six lines above depends on something stronger still ("a duplicate endpoint is operator-visible +
-	// deletable" is the stated reason this create takes no Idempotency-Key, and nothing in the tree deletes
-	// or disables an endpoint). Both belong to the task that opens GET and DELETE on this family; when the
-	// route lands, this header comes back with it and the guard accepts it.
+	// The Location header, returned by E29 T3 on exactly the condition E29 T2 named when it removed it: the
+	// family now has a singular read, so `/v1/webhook-endpoints/<id>` resolves and following the header lands
+	// on the resource instead of Go's bare mux miss. The dangling-Location guard accepts it by probing the
+	// shipped router, not by being told.
+	w.Header().Set("Location", "/v1/webhook-endpoints/"+id)
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+}
+
+// getEndpoint reads one endpoint (spec §21.4 GET /v1/webhook-endpoints/{endpoint_id}). It renders the SAME
+// automation.EndpointView the list does — the projection lives in one place precisely so the two routes
+// cannot drift into describing two different resources.
+//
+// It is NOT provision-gated, and deliberately so: it is the singular form of a list that has been readable
+// by any key since E11, and a caller that can enumerate every endpoint but not fetch one by id would be
+// meeting an incoherent surface. The DELETE beside it IS gated, because destroying configuration is the
+// org-admin act, not reading it.
+func (h *webhookHandler) getEndpoint(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	endpoint, found, err := h.webhooks.GetEndpoint(r.Context(), scope.Organization, scope.Project, r.PathValue("endpoint_id"))
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	if !found {
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such webhook endpoint in this project")
+		return
+	}
+	writeJSON(w, http.StatusOK, endpoint)
+}
+
+// deleteEndpoint unregisters an endpoint (spec §21.4 DELETE /v1/webhook-endpoints/{endpoint_id}). It is the
+// capability the create comment above has claimed since E11 and which nothing provided until E29 T3.
+//
+// 204 THEN 404, WHICH IS WHAT IDEMPOTENT MEANS HERE. DELETE is idempotent because a second call produces no
+// further EFFECT — not because it produces the same status. The second call finds nothing, changes nothing,
+// and says the resource is absent, which is true. The two destructive routes this tree already ships
+// (DELETE /v1/schedules/{id}, DELETE /v1/slack-connections/{id}) answer exactly this way, and one posture
+// across three routes is worth more to an operator than re-arguing it here.
+//
+// 409 WHEN A TRIGGER REVISION PINS IT. That is the one referrer whose foreign key still refuses the delete,
+// and the refusal is kept: a trigger revision is immutable live configuration that will send to this
+// endpoint the next time it fires. The alternative — deleting anyway — would leave a trigger pointed at
+// nothing. The typed answer names what is in the way; a leaked constraint violation would be a 500 nobody
+// can act on.
+//
+// WHAT IT DOES NOT TAKE. Delivery rows survive their endpoint, with the deleted id still on them. A delivery
+// records a payload this deployment actually sent, and unregistering the address does not un-send it.
+// Migration 000052 is what makes that true — the ON DELETE CASCADE it removed would have erased the trail.
+func (h *webhookHandler) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	if !scope.HasScope(provisionScope) {
+		middleware.WriteProblem(w, r, http.StatusForbidden, "insufficient_scope", "this API key lacks the provision capability")
+		return
+	}
+	deleted, err := h.webhooks.DeleteEndpoint(r.Context(), scope.Organization, scope.Project, r.PathValue("endpoint_id"))
+	switch {
+	case errors.Is(err, automation.ErrEndpointPinned):
+		middleware.WriteProblem(w, r, http.StatusConflict, "endpoint_pinned",
+			"a trigger revision names this endpoint as its callback target; remove or re-publish that trigger first")
+		return
+	case err != nil:
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	case !deleted:
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such webhook endpoint in this project")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // listEndpoints returns the scope's endpoints (spec §21.4 GET /v1/webhook-endpoints).
@@ -199,11 +271,18 @@ func (h *webhookHandler) redeliver(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("delivery_id")
 	found, err := h.webhooks.Redeliver(r.Context(), scope.Organization, scope.Project, id)
-	if err != nil {
+	switch {
+	// A delivery can outlive its endpoint from E29 T3 onward, and re-queuing one of those would answer 202
+	// for work that can never happen — the pump's due-scan joins webhook_endpoints, so nothing would ever
+	// attempt it. The delivery record is still readable; there is simply nowhere to send it.
+	case errors.Is(err, automation.ErrDeliveryEndpointDeleted):
+		middleware.WriteProblem(w, r, http.StatusConflict, "endpoint_deleted",
+			"the endpoint this delivery was addressed to has been deleted, so it cannot be sent again")
+		return
+	case err != nil:
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
-	}
-	if !found {
+	case !found:
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such webhook delivery")
 		return
 	}

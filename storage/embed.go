@@ -623,6 +623,24 @@ var migrationUp51 string
 //go:embed migrations/000051_model_connection_endpoint.down.sql
 var migrationDown51 string
 
+// 000052 (E29 T3): a webhook endpoint becomes deletable, and the delete stops future sending without
+// erasing what was already sent. It DROPS the ON DELETE CASCADE that webhook_deliveries.endpoint_id has
+// carried since 000020, so a delivery — an audit record of a payload this deployment actually sent —
+// outlives the endpoint it was addressed to, with its endpoint_id left unresolvable on purpose. What stops
+// the sending instead is DueDeliveries' inner join to webhook_endpoints. The migration file carries the
+// full argument, including what dropping the key trades away and why that is affordable.
+//
+// NOTE FOR THE INTEGRATOR: written as 000052 against a tip of 000051, which is the next contiguous number
+// from main. The `desired-config` branch also took 000052 in parallel; whichever lands second renumbers —
+// a rename plus the two markers (the file's `VALUES (52)` and the down file's `WHERE version = 52`) plus
+// this embed var, since nothing here depends on any migration after 000020.
+//
+//go:embed migrations/000052_webhook_delivery_trail_survives_its_endpoint.up.sql
+var migrationUp52 string
+
+//go:embed migrations/000052_webhook_delivery_trail_survives_its_endpoint.down.sql
+var migrationDown52 string
+
 // The runner registry statements (E24 T1, migration 000045). They back internal/fleet, which the
 // runner gateway takes as an interface — see the package comment there for why the store does not
 // live inside execution.
@@ -721,13 +739,13 @@ var knowledgeSQL string
 // (E11 Task 4 webhooks + events cursor rider) land in parallel and interleave here at merge; 000021 (E11
 // Task 2 triggers) opens from the tip of both; 000022 (E11 Task 3 schedules) opens from the tip of 000021.
 func MigrationUp() string {
-	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14 + "\n" + migrationUp15 + "\n" + migrationUp16 + "\n" + migrationUp17 + "\n" + migrationUp18 + "\n" + migrationUp19 + "\n" + migrationUp20 + "\n" + migrationUp21 + "\n" + migrationUp22 + "\n" + migrationUp23 + "\n" + migrationUp24 + "\n" + migrationUp25 + "\n" + migrationUp26 + "\n" + migrationUp27 + "\n" + migrationUp28 + "\n" + migrationUp29 + "\n" + migrationUp30 + "\n" + migrationUp31 + "\n" + migrationUp32 + "\n" + migrationUp33 + "\n" + migrationUp34 + "\n" + migrationUp35 + "\n" + migrationUp36 + "\n" + migrationUp37 + "\n" + migrationUp38 + "\n" + migrationUp39 + "\n" + migrationUp40 + "\n" + migrationUp41 + "\n" + migrationUp42 + "\n" + migrationUp43 + "\n" + migrationUp44 + "\n" + migrationUp45 + "\n" + migrationUp46 + "\n" + migrationUp47 + "\n" + migrationUp48 + "\n" + migrationUp49 + "\n" + migrationUp50 + "\n" + migrationUp51
+	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14 + "\n" + migrationUp15 + "\n" + migrationUp16 + "\n" + migrationUp17 + "\n" + migrationUp18 + "\n" + migrationUp19 + "\n" + migrationUp20 + "\n" + migrationUp21 + "\n" + migrationUp22 + "\n" + migrationUp23 + "\n" + migrationUp24 + "\n" + migrationUp25 + "\n" + migrationUp26 + "\n" + migrationUp27 + "\n" + migrationUp28 + "\n" + migrationUp29 + "\n" + migrationUp30 + "\n" + migrationUp31 + "\n" + migrationUp32 + "\n" + migrationUp33 + "\n" + migrationUp34 + "\n" + migrationUp35 + "\n" + migrationUp36 + "\n" + migrationUp37 + "\n" + migrationUp38 + "\n" + migrationUp39 + "\n" + migrationUp40 + "\n" + migrationUp41 + "\n" + migrationUp42 + "\n" + migrationUp43 + "\n" + migrationUp44 + "\n" + migrationUp45 + "\n" + migrationUp46 + "\n" + migrationUp47 + "\n" + migrationUp48 + "\n" + migrationUp49 + "\n" + migrationUp50 + "\n" + migrationUp51 + "\n" + migrationUp52
 }
 
 // MigrationDown reverses MigrationUp in the opposite order: each migration drops its added
 // objects before the earlier one drops the tables that carried them.
 func MigrationDown() string {
-	return migrationDown51 + "\n" + migrationDown50 + "\n" + migrationDown49 + "\n" + migrationDown48 + "\n" + migrationDown47 + "\n" + migrationDown46 + "\n" + migrationDown45 + "\n" + migrationDown44 + "\n" + migrationDown43 + "\n" + migrationDown42 + "\n" + migrationDown41 + "\n" + migrationDown40 + "\n" + migrationDown39 + "\n" + migrationDown38 + "\n" + migrationDown37 + "\n" + migrationDown36 + "\n" + migrationDown35 + "\n" + migrationDown34 + "\n" + migrationDown33 + "\n" + migrationDown32 + "\n" + migrationDown31 + "\n" + migrationDown30 + "\n" + migrationDown29 + "\n" + migrationDown28 + "\n" + migrationDown27 + "\n" + migrationDown26 + "\n" + migrationDown25 + "\n" + migrationDown24 + "\n" + migrationDown23 + "\n" + migrationDown22 + "\n" + migrationDown21 + "\n" + migrationDown20 + "\n" + migrationDown19 + "\n" + migrationDown18 + "\n" + migrationDown17 + "\n" + migrationDown16 + "\n" + migrationDown15 + "\n" + migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
+	return migrationDown52 + "\n" + migrationDown51 + "\n" + migrationDown50 + "\n" + migrationDown49 + "\n" + migrationDown48 + "\n" + migrationDown47 + "\n" + migrationDown46 + "\n" + migrationDown45 + "\n" + migrationDown44 + "\n" + migrationDown43 + "\n" + migrationDown42 + "\n" + migrationDown41 + "\n" + migrationDown40 + "\n" + migrationDown39 + "\n" + migrationDown38 + "\n" + migrationDown37 + "\n" + migrationDown36 + "\n" + migrationDown35 + "\n" + migrationDown34 + "\n" + migrationDown33 + "\n" + migrationDown32 + "\n" + migrationDown31 + "\n" + migrationDown30 + "\n" + migrationDown29 + "\n" + migrationDown28 + "\n" + migrationDown27 + "\n" + migrationDown26 + "\n" + migrationDown25 + "\n" + migrationDown24 + "\n" + migrationDown23 + "\n" + migrationDown22 + "\n" + migrationDown21 + "\n" + migrationDown20 + "\n" + migrationDown19 + "\n" + migrationDown18 + "\n" + migrationDown17 + "\n" + migrationDown16 + "\n" + migrationDown15 + "\n" + migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
 }
 
 var namedQueries = parseNamedQueries(usageSQL, agentsSQL, jobsSQL, eventsSQL, responsesSQL, identitySQL, provisioningSQL, secretsSQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL, recoverySQL, webhooksSQL, triggersSQL, schedulesSQL, toolsSQL, remoteToolsSQL, mcpSQL, skillsSQL, hooksSQL, modelRoutesSQL, metricsSQL, slackSQL, knowledgeSQL, queuesSQL, a2aSQL, workersSQL, runnersSQL, environmentsSQL, backgroundSQL)

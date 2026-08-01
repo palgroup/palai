@@ -1,0 +1,50 @@
+-- 000052 (E29 T3): a webhook endpoint becomes deletable, and deleting one stops sending WITHOUT erasing
+-- what was already sent.
+--
+-- WHY THERE IS A MIGRATION HERE AT ALL. The plan for this task said there was no ON DELETE CASCADE and
+-- instructed the task to VERIFY there was none. There was one, and it had been there since 000020:
+--
+--     endpoint_id TEXT NOT NULL REFERENCES webhook_endpoints (id) ON DELETE CASCADE
+--
+-- and delivery_attempts.delivery_id cascades off webhook_deliveries in turn, so the DELETE route this task
+-- opens would have removed an endpoint, every delivery ever fanned out to it, and every HTTP attempt beneath
+-- those deliveries — three tables, two hops, no warning. Measured on 2026-08-01 by deleting one endpoint row
+-- on a real Postgres: 3/3 deliveries and 3/3 attempts went with it. That is E28's runner_pool_keys lesson
+-- arriving a second time, and it is the reason the route could not simply be written.
+--
+-- THE DECISION. A delivery row is an AUDIT RECORD. It says this deployment sent this event to this address
+-- at this time and got this back, and that remains true after the address is unregistered. Deleting an
+-- endpoint is a statement about the FUTURE — stop sending — and it carries no entitlement to rewrite the
+-- past. So the endpoint row goes and the delivery rows stay, with their endpoint_id still holding the id of
+-- the endpoint that no longer exists.
+--
+-- THAT DANGLING id IS THE POINT, NOT AN OVERSIGHT. ON DELETE SET NULL was the obvious alternative and it is
+-- refused: the id is the evidence of WHERE the payload went, and a reader who cannot tell "sent to an
+-- endpoint since removed" from "sent nowhere" has lost the fact the row exists to record. The read surface
+-- shows the unresolvable id as it is and says why it does not resolve.
+--
+-- WHAT IS TRADED AWAY, STATED PLAINLY. Dropping the constraint also drops the guarantee that an INSERT into
+-- webhook_deliveries names an endpoint that exists. That is affordable here and it is worth writing down why
+-- rather than leaving the next reader to re-derive it: both writers obtain endpoint_id from a row they have
+-- just read. The pump's fan-out inserts one delivery per (endpoint, event) for endpoints it selected from
+-- this very table (FanOutEndpoints), and the callback enqueue takes its id from
+-- trigger_revisions.callback_endpoint_id — which is itself still a foreign key onto webhook_endpoints, and
+-- one this migration deliberately leaves alone. There is no path on which a caller supplies this id.
+--
+-- WHAT STOPS THE SENDING, since it is no longer the foreign key. DueDeliveries INNER JOINs
+-- webhook_endpoints, so a pending delivery whose endpoint is gone drops out of the due scan and is never
+-- attempted again. The delete is enforced by that join, and a component test asserts it rather than assuming
+-- it.
+--
+-- THE OTHER REFERRER IS UNTOUCHED AND THAT IS ALSO A DECISION. trigger_revisions.callback_endpoint_id
+-- references this table with no delete action, so Postgres REFUSES to delete an endpoint a trigger revision
+-- pins. That refusal is kept: unlike a delivery, a trigger revision is live configuration that will send to
+-- this endpoint the next time it fires, and deleting out from under it would leave a trigger pointed at
+-- nothing. The store turns that constraint violation into a typed refusal naming the reason, so an operator
+-- gets an answer they can act on instead of a 500.
+--
+-- NO NEW TABLE, therefore no palai_apply_tenant_policy call: webhook_deliveries has been under 000029's
+-- catalogue loop since that migration ran, and dropping a constraint changes nothing about its policy.
+ALTER TABLE webhook_deliveries DROP CONSTRAINT IF EXISTS webhook_deliveries_endpoint_id_fkey;
+
+INSERT INTO schema_migrations (version) VALUES (52) ON CONFLICT DO NOTHING;

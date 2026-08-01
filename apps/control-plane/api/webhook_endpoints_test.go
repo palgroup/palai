@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -19,18 +20,58 @@ func (fakeVerifier) VerifyAPIKey(context.Context, string) (middleware.Scope, err
 	return middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1"}, nil
 }
 
-// fakeWebhookAPI records what reached the store seam and scripts a redeliver miss.
+// fakeWebhookAPI records what reached the store seam and scripts a redeliver miss. `endpoints` is the
+// durable half: the create writes into it and the delete removes from it, so a test can assert what the
+// SECOND delete of one id did rather than only what it answered.
 type fakeWebhookAPI struct {
 	created     *automation.EndpointCreate
 	redeliverOK bool
+	endpoints   map[string]automation.EndpointView
+	deletes     int
+	// pinned marks an id the store refuses to delete because a trigger revision points at it — the
+	// automation.ErrEndpointPinned arm, which the handler must render as a 409 rather than a 500.
+	pinned string
 }
 
 func (f *fakeWebhookAPI) CreateEndpoint(_ context.Context, _, _ string, c automation.EndpointCreate) (string, error) {
 	f.created = &c
+	if f.endpoints != nil {
+		f.endpoints["whe_created"] = automation.EndpointView{ID: "whe_created", URL: c.URL}
+	}
 	return "whe_created", nil
 }
 func (f *fakeWebhookAPI) ListEndpoints(context.Context, string, string) ([]automation.EndpointView, error) {
-	return nil, nil
+	if f.endpoints == nil {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(f.endpoints))
+	for id := range f.endpoints {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]automation.EndpointView, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, f.endpoints[id])
+	}
+	return out, nil
+}
+func (f *fakeWebhookAPI) GetEndpoint(_ context.Context, _, _, id string) (*automation.EndpointView, bool, error) {
+	view, ok := f.endpoints[id]
+	if !ok {
+		return nil, false, nil
+	}
+	return &view, true, nil
+}
+func (f *fakeWebhookAPI) DeleteEndpoint(_ context.Context, _, _, id string) (bool, error) {
+	f.deletes++
+	if id == f.pinned {
+		return false, automation.ErrEndpointPinned
+	}
+	if _, ok := f.endpoints[id]; !ok {
+		return false, nil
+	}
+	delete(f.endpoints, id)
+	return true, nil
 }
 func (f *fakeWebhookAPI) ListDeliveries(context.Context, string, string, string, int) ([]automation.DeliveryView, error) {
 	return nil, nil

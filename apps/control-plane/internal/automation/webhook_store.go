@@ -3,13 +3,34 @@ package automation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/palgroup/palai/storage"
+)
+
+// The two typed refusals the delete path can produce (E29 T3). Both exist so a caller gets an answer they
+// can act on instead of a 500, and both are sentinels rather than status codes because the store layer does
+// not know what protocol it is being read over.
+var (
+	// ErrEndpointPinned is a delete refused because a trigger revision names this endpoint as its callback
+	// target. It is the one referrer of webhook_endpoints that still blocks a delete, and it blocks it on
+	// purpose: unlike a delivery — a record of something already sent — a trigger revision is live
+	// configuration that will send to this endpoint the next time it fires, and a revision is immutable, so
+	// there is no edit that unpins it. Removing the trigger, or publishing a revision that names no
+	// callback, is what frees the endpoint.
+	ErrEndpointPinned = errors.New("automation: webhook endpoint is pinned by a trigger revision's callback target")
+
+	// ErrDeliveryEndpointDeleted is a redelivery refused because the endpoint the delivery was addressed to
+	// has been unregistered. The delivery row is still there and still readable — that is the whole point of
+	// keeping it — but there is nowhere left to send it, and the pump would never pick it up because
+	// DueDeliveries joins webhook_endpoints. Answering "accepted" would be accepting work that cannot happen.
+	ErrDeliveryEndpointDeleted = errors.New("automation: the endpoint this delivery was addressed to has been deleted")
 )
 
 // WebhookStore is the pgx-backed repository for the webhook pump and API (spec §21.4-21.6). It shares
@@ -256,19 +277,36 @@ func (s *WebhookStore) CreateEndpoint(ctx context.Context, org, project string, 
 	return out, err
 }
 
-// EndpointView is a listed endpoint projection (no secret material).
+// EndpointView is the endpoint projection — one shape, rendered by both the list and the singular read.
+//
+// It carries no secret material and it carries the DELIVERY POLICY, which are two separate decisions about
+// the ten fields EndpointCreate accepts. Four of them joined here in E29 T3 because they are behavioural
+// configuration an operator must be able to read back: what this deployment will do when it sends. The
+// secret refs joined on the same grounds plus one more — a *_ref is a HANDLE, and the value behind it is
+// readable through no route, which is E25's environment-value rule applied to this family.
+//
+// fixed_headers is the one field of the six that stayed OUT, and not because it is uninteresting. It is a
+// free map the operator writes, an Authorization header for the receiver is an ordinary thing to put in it,
+// and reflecting it back would make a read route a credential read. There is deliberately no field for it
+// here: the exclusion is structural, so it cannot be re-added by filling something in.
 type EndpointView struct {
-	ID           string            `json:"id"`
-	URL          string            `json:"url"`
-	Enabled      bool              `json:"enabled"`
-	EventFilter  []string          `json:"event_filter"`
-	APIRevision  string            `json:"api_revision,omitempty"`
-	AllowPrivate bool              `json:"allow_private_destination"`
-	CreatedAt    time.Time         `json:"created_at"`
-	Extra        map[string]string `json:"-"`
+	ID                   string    `json:"id"`
+	URL                  string    `json:"url"`
+	Enabled              bool      `json:"enabled"`
+	EventFilter          []string  `json:"event_filter"`
+	APIRevision          string    `json:"api_revision,omitempty"`
+	SigningSecretRef     string    `json:"signing_secret_ref"`
+	SigningSecretRefNext string    `json:"signing_secret_ref_next"`
+	TimeoutMS            int       `json:"timeout_ms"`
+	MaxAttempts          int       `json:"max_attempts"`
+	RetryWindowSeconds   int       `json:"retry_window_seconds"`
+	AllowPrivate         bool      `json:"allow_private_destination"`
+	CreatedAt            time.Time `json:"created_at"`
 }
 
-// ListEndpoints returns the scope's endpoints, newest first.
+// ListEndpoints returns the scope's endpoints, newest first and then by id — a TOTAL order, so two reads of
+// an unchanged table return one sequence. See ListWebhookEndpoints in webhooks.sql for what the tiebreaker
+// is doing there.
 func (s *WebhookStore) ListEndpoints(ctx context.Context, org, project string) ([]EndpointView, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListWebhookEndpoints"), org, project)
@@ -279,7 +317,10 @@ func (s *WebhookStore) ListEndpoints(ctx context.Context, org, project string) (
 	out := []EndpointView{}
 	for rows.Next() {
 		var e EndpointView
-		if err := rows.Scan(&e.ID, &e.URL, &e.Enabled, &e.EventFilter, &e.APIRevision, &e.AllowPrivate, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.URL, &e.Enabled, &e.EventFilter, &e.APIRevision,
+			&e.SigningSecretRef, &e.SigningSecretRefNext,
+			&e.TimeoutMS, &e.MaxAttempts, &e.RetryWindowSeconds,
+			&e.AllowPrivate, &e.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -370,14 +411,78 @@ func (s *WebhookStore) ListAttempts(ctx context.Context, org, project, deliveryI
 	return out, rows.Err()
 }
 
-// Redeliver revives a dead/pending delivery with the same id + payload (spec §21.6). Returns false if
-// no such delivery exists in scope.
+// Redeliver revives a dead/pending delivery with the same id + payload (spec §21.6). Returns false if no
+// such delivery exists in scope, and ErrDeliveryEndpointDeleted if the delivery is there but the endpoint it
+// was addressed to has been unregistered — see that error's comment for why those are different answers.
 func (s *WebhookStore) Redeliver(ctx context.Context, org, project, id string) (bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var out string
 	err := s.pool.QueryRow(ctx, storage.Query("RedeliverDelivery"), id, org, project).Scan(&out)
 	if err == pgx.ErrNoRows {
+		// The UPDATE matched nothing for one of two reasons and they deserve different answers. Ask which.
+		var exists int
+		switch probeErr := s.pool.QueryRow(ctx, storage.Query("DeliveryExists"), id, org, project).Scan(&exists); {
+		case probeErr == pgx.ErrNoRows:
+			return false, nil
+		case probeErr != nil:
+			return false, probeErr
+		default:
+			return false, ErrDeliveryEndpointDeleted
+		}
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// GetEndpoint reads one endpoint in the verified scope. The projection is the list's, character for
+// character (GetWebhookEndpoint in webhooks.sql sits next to ListWebhookEndpoints for that reason): a caller
+// that got a different shape from the two routes would be looking at two resources.
+func (s *WebhookStore) GetEndpoint(ctx context.Context, org, project, id string) (*EndpointView, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	var e EndpointView
+	err := s.pool.QueryRow(ctx, storage.Query("GetWebhookEndpoint"), id, org, project).Scan(
+		&e.ID, &e.URL, &e.Enabled, &e.EventFilter, &e.APIRevision,
+		&e.SigningSecretRef, &e.SigningSecretRefNext,
+		&e.TimeoutMS, &e.MaxAttempts, &e.RetryWindowSeconds,
+		&e.AllowPrivate, &e.CreatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return &e, true, nil
+}
+
+// DeleteEndpoint unregisters an endpoint in the verified scope and reports whether a row went. It is the
+// capability the create's own comment has claimed since E11 ("a duplicate endpoint is operator-visible +
+// deletable") and which nothing in the tree provided until E29 T3.
+//
+// It is IDEMPOTENT in the sense that matters: calling it a second time produces no further effect. It
+// reports false rather than true on that second call, and the route above turns that into a 404 — the same
+// posture DELETE /v1/schedules/{id} and DELETE /v1/slack-connections/{id} already take, so an operator meets
+// one answer across the three destructive routes rather than two.
+//
+// WHAT IT DOES NOT TAKE WITH IT. Migration 000052 dropped the ON DELETE CASCADE that would have carried
+// every delivery and every attempt away with the endpoint. A delivery is an audit record of a payload this
+// deployment actually sent, and unregistering the address does not un-send it; the surviving rows keep the
+// deleted id, unresolvable on purpose. Future sending stops because DueDeliveries inner-joins this table.
+func (s *WebhookStore) DeleteEndpoint(ctx context.Context, org, project, id string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	var out string
+	err := s.pool.QueryRow(ctx, storage.Query("DeleteWebhookEndpoint"), id, org, project).Scan(&out)
+	if err == pgx.ErrNoRows {
 		return false, nil
+	}
+	// 23503 here can only be trigger_revisions.callback_endpoint_id, the one referrer this table keeps that
+	// refuses a delete. Rendering it as a typed refusal is the difference between telling an operator which
+	// configuration is in the way and handing them a 500. It is classified by SQLSTATE rather than by
+	// matching the constraint name, because a name is a string a migration can rename.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+		return false, ErrEndpointPinned
 	}
 	if err != nil {
 		return false, err
