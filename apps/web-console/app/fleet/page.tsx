@@ -614,6 +614,7 @@ export default function FleetPage() {
       <Picker
         id="poolkey-pool"
         label="Pool"
+        manage={{ href: "/policy", label: "Manage which project uses a pool" }}
         value={keyPool}
         onChange={(value) => {
           setKeyPool(value);

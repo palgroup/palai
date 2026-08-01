@@ -201,6 +201,7 @@ export default function SessionsPage() {
       <Panel<SessionRow>
         title="Sessions"
         testId="panel-sessions"
+        pageTitle
         fetchPath={fetchPath}
         reloadKey={reload}
         columns={columns}

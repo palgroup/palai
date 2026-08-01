@@ -115,6 +115,11 @@ export interface FormField {
   emptyNote?: ReactNode;
   /** kind "select" only: the placeholder row's label, when one is wanted. */
   placeholder?: string;
+  /**
+   * kind "select" only: the screen that manages what this field chooses from, linked beside its label.
+   * components/Picker.tsx carries the measurement and the reason it is more than `emptyNote`.
+   */
+  manage?: { href: string; label: string };
 }
 
 export function ResourceForm({
@@ -331,6 +336,7 @@ function SectionRow({
                 options={field.options ?? []}
                 placeholder={field.placeholder}
                 emptyNote={field.emptyNote}
+                manage={field.manage}
                 testId={field.testId}
                 hint={field.hint === undefined || field.hint === "" ? undefined : field.hint}
                 required={field.required}

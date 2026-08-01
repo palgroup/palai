@@ -40,6 +40,7 @@ export function Picker({
   testId,
   hint,
   required,
+  manage,
 }: {
   /** The control's DOM id; the label points at it and the hint is derived from it. */
   id: string;
@@ -55,20 +56,48 @@ export function Picker({
   testId?: string;
   hint?: ReactNode;
   required?: boolean;
+  /**
+   * THE SCREEN THAT MANAGES WHAT THIS PICKER CHOOSES FROM, linked beside the label.
+   *
+   * MEASURED on the reference's Create-session dialog: every picker in it carries `Manage <resource> ↗` at
+   * the right end of its label row. It is strictly more than this component's `emptyNote` and the difference
+   * is not a matter of degree — `emptyNote` is rendered ONLY when the collection is empty, so an operator
+   * whose list has four environments and needs a fifth is offered nothing at all. That is the more common
+   * case, and it was the one with no answer on screen.
+   *
+   * `emptyNote` STAYS AND IS NOT REPLACED. It says why an empty list is empty, in this deployment's own
+   * terms, and a bare link cannot: "nothing registers an MCP connection without an operator" is a fact, not
+   * a destination. When both are present the empty arm renders the sentence AND the link.
+   */
+  manage?: { href: string; label: string };
 }) {
   // THE PLACEHOLDER IS A ROW, NOT A PROP, and it was already: the native version prepended
   // `<option value="">`. Keeping it an option means "no choice yet" is a value the listbox can be ON, which
   // is what makes it selectable with the keyboard and readable to a screen reader.
   const rows = placeholder === undefined ? options : [{ value: "", label: placeholder }, ...options];
+  // The link is one element in two places — the label row when there is a control, and the end of the note
+  // when there is not — so a rename of the destination cannot leave one of the two pointing at the old page.
+  const manageLink =
+    manage === undefined ? undefined : (
+      <a
+        className="field-manage"
+        href={manage.href}
+        data-testid={testId === undefined ? undefined : `${testId}-manage`}
+      >
+        {manage.label}
+        <span aria-hidden="true"> ↗</span>
+      </a>
+    );
   if (options.length === 0) {
     return (
       <p className="muted" data-testid={testId === undefined ? undefined : `${testId}-empty`}>
         {emptyNote}
+        {manageLink === undefined ? null : <> {manageLink}</>}
       </p>
     );
   }
   return (
-    <Field label={label} hint={hint}>
+    <Field label={label} hint={hint} action={manageLink}>
       <Select id={id} name={name} required={required} value={value} onValueChange={onChange} options={rows} testId={testId} />
     </Field>
   );

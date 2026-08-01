@@ -43,8 +43,27 @@ export async function POST(request: Request): Promise<Response> {
   // authenticated upstream. The API refuses an unenforceable schema either way; this is about
   // sending a well-formed request, not about the API's own guarantee.
   let outputSchema: Record<string, unknown> | null = null;
+  // THE OPTIONAL SESSION, AND ITS ABSENCE IS THE DIFFERENCE BETWEEN THE TWO THINGS THIS PAGE CAN DO.
+  //
+  // MEASURED IN THE CODE RATHER THAN INFERRED (packages/coordinator/store.go:742 and
+  // apps/control-plane/api/responses.go:289): with no `session_id` the admission mints a fresh session
+  // (`createSession = true`) and the run is a SINGLE SHOT — one request, one response, nothing before it.
+  // With one, admission resolves that session inside the tenant, requires it to be ACTIVE, and appends to
+  // it: `sessionID, createSession = existingID, false`. The model then sees the earlier turns.
+  //
+  // THE CONSOLE COULD NEVER DO THE SECOND ONE. `session_id` has been on the wire contract the whole time
+  // (protocols/schemas/execution/response-create.json declares it, sdks/typescript's
+  // ResponseCreateRequest carries it), and app/runs/page.tsx only ever READ the id back off the `meta`
+  // frame — `setSessionId(String(f.sessionId ?? ""))` — and never sent one. So every run this console has
+  // ever started opened a new session, and the owner's "single shot bir şey görmüyorum" is exactly right:
+  // there was nothing on the screen that said which of the two was happening, because only one of them
+  // could.
+  //
+  // Absent means the upstream body carries NO `session_id` key, so an unchained run stays bit-identical to
+  // what this handler has always sent — the same rule the pin and the output contract above follow.
+  let sessionID = "";
   try {
-    const body = (await request.json()) as { prompt?: unknown; agent_revision_id?: unknown; output_schema?: unknown };
+    const body = (await request.json()) as { prompt?: unknown; agent_revision_id?: unknown; output_schema?: unknown; session_id?: unknown };
     if (typeof body.prompt !== "string" || body.prompt.trim() === "") {
       return problemResponse(400, "invalid_request", "a non-empty 'prompt' string is required");
     }
@@ -54,6 +73,12 @@ export async function POST(request: Request): Promise<Response> {
         return problemResponse(400, "invalid_request", "'agent_revision_id', when present, must be a non-empty string");
       }
       agentRevisionID = body.agent_revision_id;
+    }
+    if (body.session_id !== undefined && body.session_id !== null && body.session_id !== "") {
+      if (typeof body.session_id !== "string") {
+        return problemResponse(400, "invalid_request", "'session_id', when present, must be a non-empty string");
+      }
+      sessionID = body.session_id;
     }
     if (body.output_schema !== undefined && body.output_schema !== null && body.output_schema !== "") {
       if (typeof body.output_schema !== "string") {
@@ -88,6 +113,7 @@ export async function POST(request: Request): Promise<Response> {
           // output contract each add no key at all.
           {
             input: prompt,
+            ...(sessionID === "" ? {} : { session_id: sessionID }),
             ...(agentRevisionID === "" ? {} : { agent_revision_id: agentRevisionID }),
             ...(outputSchema === null ? {} : { output: { format: "json_schema", schema: outputSchema, strict: true } }),
           },

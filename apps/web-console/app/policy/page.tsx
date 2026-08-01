@@ -394,6 +394,7 @@ export default function PolicyPage() {
             options: poolOptions,
             placeholder: "Inherit this tenant's default pool",
             testId: "policy-pool-select",
+            manage: { href: "/fleet", label: "Manage runner pools" },
             hint: "Where this project's runs are placed. One pool, because a project's runs go to one posture.",
             // A ONE-POOL FLEET STILL GETS A DROPDOWN. Every deployment before E28 T1 had exactly one pool,
             // and a free-text fallback here would accept a pool id that does not exist — refused several

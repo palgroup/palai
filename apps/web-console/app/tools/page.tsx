@@ -323,6 +323,7 @@ export default function ToolsPage() {
             options: refOptions,
             placeholder: "None — an unauthenticated server",
             testId: "mcp-secret-select",
+            manage: { href: "/", label: "Manage secret refs" },
             hint: "The NAME of a stored secret, never its value. Palai resolves it at request time and sends it as the Authorization header; store the whole header value, scheme included.",
             // NO FREE-TEXT FALLBACK (the T4 rule): a typo'd ref does not fail here, it fails at DISCOVER
             // with `http status 401`, which reads as a credential the server rejected rather than a
@@ -362,6 +363,7 @@ export default function ToolsPage() {
           options={connectionOptions}
           placeholder="Choose a connection…"
           testId="discover-connection-select"
+          manage={{ href: "/registry", label: "Manage model wiring" }}
           emptyNote={
             <>
               <strong>Register a connection first.</strong> There is nothing to discover yet.

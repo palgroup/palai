@@ -1,5 +1,6 @@
 "use client";
 
+import { Bars, type Slice } from "@/components/Bars";
 import { NameCell, Panel } from "@/components/Panel";
 import { CopyButton, shortId } from "@/components/Session";
 import { Stat, useTally } from "@/components/Stat";
@@ -93,6 +94,26 @@ export default function OverviewPage() {
   const tokensIn = meter("model.input_tokens");
   const tokensOut = meter("model.output_tokens");
 
+  // THE SLICES ARE DECLARED, NOT DISCOVERED, and that is what makes a zero mean something. Grouping the rows
+  // by whatever `status` string arrived would draw only the states this page happened to fetch — so "no run
+  // failed" and "this console does not know about failures" would render identically, which is the shape of
+  // defect the tally cards one section up already refuse. The vocabulary is api/responses.go's own lifecycle.
+  const runsBy = (states: string[]) => runs.rows.filter((r) => states.includes(String(r.status ?? r.state ?? ""))).length;
+  const runSlices: Slice[] = [
+    { label: "running", value: runsBy(["running", "in_progress"]), tone: "live" },
+    { label: "queued", value: runsBy(["queued", "provisioning"]), tone: "info" },
+    { label: "awaiting a decision", value: runsBy(["requires_action"]), tone: "warn" },
+    { label: "completed", value: runsBy(["completed"]), tone: "ok" },
+    { label: "failed, cancelled or expired", value: runsBy(["failed", "cancelled", "expired"]), tone: "danger" },
+  ];
+  // api/runners.go's lifecycle. `pending` is the one an operator has to act on, so it takes the warn band
+  // that /approvals uses — the fleet screen's own admission control is what answers it.
+  const runnerSlices: Slice[] = [
+    { label: "active", value: activeRunners, tone: "ok" },
+    { label: "awaiting admission", value: pending, tone: "warn" },
+    { label: "cordoned", value: cordoned, tone: "neutral" },
+  ];
+
   return (
     <>
       {/* THE FIGURES FIRST, at the weight the reference gives them. Each card states the ceiling of its own
@@ -179,9 +200,62 @@ export default function OverviewPage() {
         </div>
       </section>
 
+      {/* THE DISTRIBUTIONS. "ne grafik var ne başka bir şey" — the strip of numbers above answers HOW MANY
+          and nothing answered WHICH KIND, so a screen holding twenty runs said "20 recorded, 3 of them ended
+          badly" in a sentence at 12px and left the shape of it to the reader.
+
+          THESE TWO, AND NOT A TIME SERIES, and components/Bars.tsx carries the measurement: the volume chart
+          an operator actually wants needs GET /v1/usage/series, which the control plane has and
+          tests/fake-control-plane.mjs does not serve — so it would draw an error on the profile the whole
+          suite runs on, and the fixture's ledger is two rows at one identical timestamp.
+
+          BOTH ARE OVER THE ROWS THIS PAGE FETCHED, which for /responses is a page of twenty. The panel says
+          so under the chart rather than leaving the reader to infer it from a figure that stopped moving. */}
+      <section className="chart-grid" data-testid="panel-distributions" aria-label="Distributions">
+        <div className="chart-card">
+          <h2>Runs by state</h2>
+          <Bars
+            testId="chart-run-states"
+            tally={runs}
+            slices={runSlices}
+            empty="This project has never started a run, so there is no distribution to draw."
+          />
+          <p className="stat-meta">
+            {runs.atLeast
+              ? "Over the first page of runs — the server has more, so this is the shape of the newest twenty rather than of the project."
+              : "Over every run this project has recorded."}
+          </p>
+        </div>
+        <div className="chart-card">
+          <h2>Machines by state</h2>
+          <Bars
+            testId="chart-runner-states"
+            tally={runners}
+            slices={runnerSlices}
+            empty="No machine has enrolled. Runs are placed by the control plane's own workers, which do not appear here."
+          />
+          {/* THE FLEET COMPLAINT, ANSWERED WHERE IT WAS MADE: "fleette anasının amı kadar şey görünüyor hiç
+              anlamlı değil kim nerede nasıl". WHERE and HOW are the pool and the posture, and neither is on
+              the runner row — api/runners.go carries `state` and the pool id, and the POSTURE lives on the
+              pool. So this chart answers HOW MANY ARE IN WHICH STATE and points at the screen that answers
+              the rest, rather than inventing a column. */}
+          <p className="stat-meta">
+            State is what a runner row carries. Which pool a machine joined and the posture it inherited are
+            on <a href="/fleet">the fleet screen</a>.
+          </p>
+        </div>
+      </section>
+
       {/* THE COLLECTIONS THAT IDENTIFY THE DEPLOYMENT, under the figures and at a lower weight. Each is a
           real table now: an id you can read and copy, the attribute that names the row, and the stamp that
-          says how old it is. */}
+          says how old it is.
+
+          THEY ARE A TWO-COLUMN GRID NOW AND THEY WERE A COLUMN OF FOUR — "muz gibiii uzun sayfalar var aq".
+          Four full-width tables of two columns each is a page that scrolls for no reason: none of them is
+          wide, and stacking them made the fourth invisible without a scroll. All four stay on this path and
+          that is not a choice — tests/public-api-only.spec.ts reads panel-organizations and panel-secret-refs
+          here, tests/pagination.spec.ts drives panel-agents here, and none of the three may be weakened. */}
+      <div className="registry-grid">
       <Panel
         title="Organizations"
         testId="panel-organizations"
@@ -290,6 +364,7 @@ export default function OverviewPage() {
           </>
         }
       />
+      </div>
 
       {/* THE STANDING CAVEAT, AT THE BOTTOM, WHICH IS WHERE A STANDING CAVEAT BELONGS. It was the first thing
           on this page for three epics — three sentences of permanent background above every number and every

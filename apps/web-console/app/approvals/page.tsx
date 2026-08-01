@@ -212,6 +212,7 @@ export default function ApprovalsPage() {
       <Panel<ToolApproval>
         title="Pending tool approvals"
         testId="panel-approvals"
+        pageTitle
         fetchPath="/approvals"
         reloadKey={reloadKey}
         onRows={setRows}

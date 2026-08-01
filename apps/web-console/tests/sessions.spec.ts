@@ -288,7 +288,7 @@ test("the Agent control narrows what is on screen, and the count says both numbe
   await expect(page.getByTestId("panel-sessions-count")).toHaveText(`${String(without)} of ${String(total)} rows`);
 });
 
-test("the list is forward-only: the cut is stated in words and continued with the server's own cursor", async ({ page }) => {
+test("the list pages with arrows, and the backward one is a REPLAY rather than a ?before=", async ({ page }) => {
   const { data, has_more } = await served(page, "/sessions");
   expect(has_more, "the sessions collection fits in one page here, so truncation cannot be observed").toBe(true);
   const backward: string[] = [];
@@ -297,10 +297,40 @@ test("the list is forward-only: the cut is stated in words and continued with th
   });
   await openList(page);
 
-  await expect(page.getByTestId("panel-sessions-more")).toContainText("more are available");
-  await page.getByTestId("panel-sessions-load-more").click();
-  await expect(page.getByTestId("panel-sessions").locator("tbody tr")).not.toHaveCount(data.length);
-  // beginList answers ?before= with a 400, so a backward control could never work — and nothing here asks.
+  // THE CUT IS STILL A SENTENCE, which is the property the old "Load more" note carried and the one that
+  // must not be lost when a control becomes a pair of arrows: a greyed arrow is a COLOUR, and this console's
+  // rule is that a truncation is said in words. It now names the page as well, because with a REPLACING
+  // pager "20 rows" alone no longer means "the first 20".
+  const pager = page.getByTestId("panel-sessions-more");
+  await expect(pager).toContainText("more are available");
+  await expect(pager).toContainText("Page 1");
+
+  // ON PAGE ONE THE BACKWARD ARROW IS DISABLED, and that is the assertion that replaces "no backward control
+  // exists". The API's refusal is about the WIRE (beginList answers ?before= with a 400), and an arrow that
+  // is present but unusable at the one position where going back is meaningless is not a control that can
+  // ever issue that request.
+  await expect(page.getByTestId("panel-sessions-page-back")).toBeDisabled();
+
+  const firstPage = await page.getByTestId("panel-sessions").locator("tbody tr td:first-child").allInnerTexts();
+  await page.getByTestId("panel-sessions-page-next").click();
+  await expect(pager).toContainText("Page 2", { timeout: 15_000 });
+
+  // PAGE TWO IS DISJOINT FROM PAGE ONE. A pager that re-fetched page one would leave the row COUNT identical
+  // and a count-only assertion would call that a pass — which is exactly the trap the append-in-place
+  // version of this test was written against.
+  const secondPage = await page.getByTestId("panel-sessions").locator("tbody tr td:first-child").allInnerTexts();
+  expect(secondPage.filter((id) => firstPage.includes(id)), "page two re-served rows page one already had").toEqual([]);
+  expect(secondPage.length, "page two is empty").toBeGreaterThan(0);
+
+  // AND BACK RETURNS THE SAME ROWS, which is what makes the replay a replay rather than a second forward
+  // step wearing an arrow.
+  await page.getByTestId("panel-sessions-page-back").click();
+  await expect(pager).toContainText("Page 1", { timeout: 15_000 });
+  await expect(page.getByTestId("panel-sessions").locator("tbody tr")).toHaveCount(data.length);
+  expect(await page.getByTestId("panel-sessions").locator("tbody tr td:first-child").allInnerTexts()).toEqual(firstPage);
+
+  // beginList answers ?before= with a 400. The backward arrow re-issues a FORWARD request with a cursor the
+  // server minted, so this stays empty — and it is the assertion that actually protects the API's refusal.
   expect(backward, "a request carried ?before=, which the API refuses with a 400").toEqual([]);
 });
 

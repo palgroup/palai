@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { Button } from "@/components/ui/Button";
+import { usePageList } from "@/components/Chrome";
 import { Select } from "@/components/ui/Select";
 import { apiGet, RelayError } from "@/lib/api";
 
@@ -143,6 +143,7 @@ export function Panel<Row extends Record<string, unknown>>({
   matchOn,
   narrow,
   footnote,
+  pageTitle = false,
 }: {
   title: string;
   testId: string;
@@ -180,6 +181,23 @@ export function Panel<Row extends Record<string, unknown>>({
    * says so, which is the same honesty the filter box already carries.
    */
   narrow?: (row: Row) => boolean;
+  /**
+   * THIS PANEL *IS* THE PAGE, so its heading, its count and its action belong to the page's title line.
+   *
+   * MEASURED, ON EIGHT OF OUR SCREENS: `/sessions` rendered `<h1>Sessions</h1>` and then `<h2>Sessions</h2>`
+   * with the count and the create button beside it, forty pixels lower, with one sentence in between. The
+   * page said its own name twice. The reference has ONE title, the count badge on the same line (`API keys ⁴`)
+   * and the primary action at the far right of it — components/Chrome.tsx's usePageList is the seam that
+   * gets the count from here to there.
+   *
+   * The <h2> does not disappear from the accessibility tree, it stops being DRAWN twice: the section takes
+   * `aria-label` instead of `aria-labelledby`, so the region is still named for a screen reader and the name
+   * is still the same word.
+   *
+   * EXACTLY ONE PANEL PER PAGE MAY SET IT. A second claimant is a defect and ListChromeProvider warns rather
+   * than silently choosing.
+   */
+  pageTitle?: boolean;
 }) {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -187,6 +205,11 @@ export function Panel<Row extends Record<string, unknown>>({
   const [truncated, setTruncated] = useState(false);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  // THE TRAIL: the `after` value that produced each page from the first to the one on screen, in order.
+  // `trail[0]` is always `null` (page one is the unparameterised read) and `trail.length` is the page
+  // number. See `back()` for why this is the honest way to build a backward control against an API whose
+  // backward pagination is a 400.
+  const [trail, setTrail] = useState<(string | null)[]>([null]);
   // THE FILTER AND THE ORDER ARE CLIENT-SIDE, OVER THE ROWS THIS PANEL HAS ACTUALLY FETCHED, and the UI says
   // so in words. /v1 offers no `?q=` on any collection and no `?order=` on any either, so a box that claimed
   // to search the collection would be a box that silently fails to find the twenty-first row. What it does
@@ -221,28 +244,58 @@ export function Panel<Row extends Record<string, unknown>>({
     };
   }, [fetchPath, reloadKey]);
 
-  // loadMore continues from the SERVER's cursor. The console never computes an offset: a real cursor is an
-  // HMAC'd keyset position bound to the tenant (api/pagination.go encodeCursor), so a client-side guess is
-  // rejected as a foreign cursor.
-  async function loadMore() {
-    if (cursor === null) return;
+  // --- PAGING --------------------------------------------------------------------------------------------
+  //
+  // IT IS A `‹ ›` PAIR NOW AND IT WAS A "Load more" BUTTON, and the change is not cosmetic — the two are
+  // different models. Load-more APPENDED, so page four was 80 rows in one scroll and "which page am I on"
+  // had no answer; measured on the reference, a list ends in two 32x32 arrow buttons at the bottom LEFT and
+  // shows one page at a time.
+  //
+  // THE BACKWARD ARROW DOES NOT USE BACKWARD PAGINATION, and that distinction is the whole of why it is
+  // allowed to exist. `beginList` REFUSES `?before=` with a 400 ("backward pagination is not supported",
+  // api/pagination.go:179) and `renderPage` never populates `previous_cursor` — so a control that asked the
+  // server to go back would be a control that cannot work, which is exactly what tests/pagination.spec.ts
+  // was written to keep out of this console.
+  //
+  // What `back()` does instead is REPLAY: the console remembers the cursor it used to reach each page, and
+  // going back re-issues that same forward request. Every request this panel makes is still `?after=` with a
+  // value the SERVER minted, page one is still the unparameterised read, and `?before=` still never leaves
+  // the browser. tests/pagination.spec.ts asserts all three, and the absence assertion it carries is now
+  // about the WIRE (no `?before=` request) rather than about the absence of a button, because the wire is
+  // the property the API's refusal is actually about.
+  //
+  // A REPLAY IS NOT A CACHE, deliberately: the row may have changed since, and showing a remembered copy of
+  // page one would be a console that lies about the present to save a request.
+  async function goto(after: string | null, nextTrail: (string | null)[]) {
     setLoadingMore(true);
     try {
       const sep = fetchPath.includes("?") ? "&" : "?";
-      const body = await apiGet<Page<Row>>(`${fetchPath}${sep}after=${encodeURIComponent(cursor)}`);
-      // Appended outside the state updater, not inside it: an updater must stay pure (React may call it
-      // twice), and onRows is a side effect. `rows` is current here — loadMore only runs from a click, behind
-      // the loadingMore guard.
-      const next = [...(rows ?? []), ...(selectRef.current?.(body as Record<string, unknown>) ?? body.data ?? [])];
+      const url = after === null ? fetchPath : `${fetchPath}${sep}after=${encodeURIComponent(after)}`;
+      const body = await apiGet<Page<Row>>(url);
+      // REPLACED, not appended. Assigned outside the state updater because an updater must stay pure (React
+      // may call it twice) and onRows is a side effect.
+      const next = selectRef.current?.(body as Record<string, unknown>) ?? body.data ?? [];
       setRows(next);
       setTruncated(body.has_more === true);
       setCursor(body.next_cursor ?? null);
+      setTrail(nextTrail);
       onRowsRef.current?.(next);
     } catch (err: unknown) {
-      setError(err instanceof RelayError ? err.problem.detail : "failed to load more");
+      setError(err instanceof RelayError ? err.problem.detail : "failed to load the next page");
     } finally {
       setLoadingMore(false);
     }
+  }
+  /** forward continues from the SERVER's cursor and records it as this page's own `after`. */
+  async function forward() {
+    if (cursor === null) return;
+    await goto(cursor, [...trail, cursor]);
+  }
+  /** back re-issues the forward request that produced the previous page. See the note above. */
+  async function back() {
+    if (trail.length < 2) return;
+    const nextTrail = trail.slice(0, -1);
+    await goto(nextTrail[nextTrail.length - 1], nextTrail);
   }
 
   // A PANEL THAT HAS LOADED NOTHING IS NOT THE PANEL, AND IT DOES NOT ANSWER TO THE PANEL'S NAME.
@@ -281,18 +334,6 @@ export function Panel<Row extends Record<string, unknown>>({
   // component resolves to 154px with one row (panel-organizations) and 1379px with twenty (panel-agents).
   // A reserve sized for either is wrong by about 1200px for the other, and sizing for the larger replaces a
   // panel that grows with a blank region that collapses — a worse jump, and a worse one to read.
-  if (rows === null && error === null) {
-    return (
-      <section className="panel" data-testid={`${testId}-loading`} aria-labelledby={`${testId}-h`} aria-busy="true">
-        <div className="panel-head">
-          <h2 id={`${testId}-h`}>{title}</h2>
-        </div>
-        {note ? <p className="muted">{note}</p> : null}
-        <p className="loading">Loading…</p>
-      </section>
-    );
-  }
-
   // Settled. `rows` is still nullable to the compiler because a fetch that REJECTED leaves it null, and that
   // arm renders the error rather than a list — so the empty list is the honest reading for everything below.
   const settled: Row[] = rows ?? [];
@@ -335,20 +376,63 @@ export function Panel<Row extends Record<string, unknown>>({
   // narrowed in the first place, and hiding them under the eight-row floor would remove the only way back.
   const showTools = total >= TOOLS_FROM || tools !== undefined;
 
-  return (
-    <section className="panel" data-testid={testId} aria-labelledby={`${testId}-h`}>
-      <div className="panel-head">
-        <h2 id={`${testId}-h`}>{title}</h2>
-        {/* THE COUNT, IN THE HEADING. "How many are there" is the first question asked of every list on this
-            surface and the answer used to be "count the rows yourself". When a filter is narrowing the list
-            it says BOTH numbers, so a filter that hides everything is legible as a filter rather than as an
-            empty collection. */}
-        {error !== null ? null : (
-          <span className="panel-count" data-testid={`${testId}-count`}>
-            {shown === total ? `${String(total)} ${total === 1 ? "row" : "rows"}` : `${String(shown)} of ${String(total)} rows`}
-          </span>
+  // THE COUNT, IN THE HEADING. "How many are there" is the first question asked of every list on this
+  // surface and the answer used to be "count the rows yourself". When a filter is narrowing the list it says
+  // BOTH numbers, so a filter that hides everything is legible as a filter rather than as an empty
+  // collection.
+  const countLabel =
+    error !== null
+      ? undefined
+      : shown === total
+        ? `${String(total)} ${total === 1 ? "row" : "rows"}`
+        : `${String(shown)} of ${String(total)} rows`;
+  const countBadge =
+    countLabel === undefined ? undefined : (
+      <span className="panel-count" data-testid={`${testId}-count`}>
+        {countLabel}
+      </span>
+    );
+
+  // PUBLISHED TO THE PAGE'S TITLE LINE, and it is a HOOK, so it is called unconditionally — which is why
+  // the whole derivation above moved up here with it, out of the settled arm. A panel that has not settled
+  // publishes nothing at all: a badge reading "0 rows" over a list that is still arriving is a number the
+  // operator would read as an answer, which is the same defect as a testid that appears over a spinner.
+  usePageList(
+    testId,
+    rows === null ? null : { countLabel, countTestId: `${testId}-count`, action },
+    pageTitle,
+  );
+
+  if (rows === null && error === null) {
+    return (
+      <section
+        className="panel"
+        data-testid={`${testId}-loading`}
+        aria-busy="true"
+        {...(pageTitle ? { "aria-label": title } : { "aria-labelledby": `${testId}-h` })}
+      >
+        {pageTitle ? null : (
+          <div className="panel-head">
+            <h2 id={`${testId}-h`}>{title}</h2>
+          </div>
         )}
-        {action === undefined ? null : <div className="panel-action">{action}</div>}
+        {note ? <p className="muted">{note}</p> : null}
+        <p className="loading">Loading…</p>
+      </section>
+    );
+  }
+
+
+  return (
+    <section
+      className="panel"
+      data-testid={testId}
+      {...(pageTitle ? { "aria-label": title } : { "aria-labelledby": `${testId}-h` })}
+    >
+      <div className="panel-head" data-page-title={pageTitle ? "true" : undefined}>
+        {pageTitle ? null : <h2 id={`${testId}-h`}>{title}</h2>}
+        {pageTitle ? null : countBadge}
+        {pageTitle || action === undefined ? null : <div className="panel-action">{action}</div>}
         {showTools && error === null ? (
           <div className="panel-tools" data-wrap={action === undefined ? undefined : "true"}>
             {tools}
@@ -439,17 +523,41 @@ export function Panel<Row extends Record<string, unknown>>({
               {footnote}
             </p>
           )}
-          {/* The cut, in WORDS. Not a colour, not a greyed arrow, not silence. */}
-          {truncated ? (
-            <p className="table-more" data-testid={`${testId}-more`}>
-              Showing {settled.length} rows — more are available.{" "}
-              {cursor === null ? "The server returned no cursor to continue from." : null}
-            </p>
-          ) : null}
-          {truncated && cursor !== null ? (
-            <Button testId={`${testId}-load-more`} onClick={() => void loadMore()} disabled={loadingMore}>
-              {loadingMore ? "Loading…" : "Load more"}
-            </Button>
+          {/* THE PAGER: two arrows at the bottom left, measured. It renders only when there IS more than one
+              page — a pair of dead arrows under a four-row table is chrome saying "there might be more".
+
+              THE CUT IS STILL STATED IN WORDS beside them, which is the property the old "Load more" note
+              carried and the one that must not be lost: a greyed arrow is a colour, and this console's rule
+              is that a truncation is a sentence. It now says WHICH page as well, because with a replacing
+              pager "20 rows" alone stops meaning "the first 20". */}
+          {truncated || trail.length > 1 ? (
+            <div className="pager" data-testid={`${testId}-pager`}>
+              <button
+                type="button"
+                className="pager-arrow"
+                data-testid={`${testId}-page-back`}
+                onClick={() => void back()}
+                disabled={loadingMore || trail.length < 2}
+                aria-label={`Show the previous page of ${title}`}
+              >
+                <span aria-hidden="true">‹</span>
+              </button>
+              <button
+                type="button"
+                className="pager-arrow"
+                data-testid={`${testId}-page-next`}
+                onClick={() => void forward()}
+                disabled={loadingMore || !truncated || cursor === null}
+                aria-label={`Show the next page of ${title}`}
+              >
+                <span aria-hidden="true">›</span>
+              </button>
+              <p className="pager-note" data-testid={`${testId}-more`}>
+                {loadingMore ? "Loading…" : `Page ${String(trail.length)} — ${String(settled.length)} rows`}
+                {truncated ? ", more are available" : ", the last page"}
+                {truncated && cursor === null ? ". The server returned no cursor to continue from." : "."}
+              </p>
+            </div>
           ) : null}
         </>
       )}

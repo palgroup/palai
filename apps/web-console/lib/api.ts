@@ -111,12 +111,17 @@ export async function readSessionEvents(
 // `agentRevisionId` is the OPTIONAL pin (E25 T6). Omitted — not sent as an empty string — when no revision is
 // chosen, so an unpinned run's request body stays exactly `{prompt}` and the relay's upstream body stays
 // exactly `{input}`. tests/config-journey.spec.ts asserts that on the WIRE rather than by outcome.
+// `sessionId` is what makes a run a TURN rather than a SINGLE SHOT. Omitted, the admission mints a fresh
+// session and the model sees nothing before this prompt; present, admission resolves that session, requires
+// it to be ACTIVE, and appends to it (packages/coordinator/store.go:742). app/api/palai/stream/route.ts
+// carries the measurement and the reason this console could never do the second one until now.
 export async function streamRun(
   prompt: string,
   onFrame: (frame: Record<string, unknown>) => void,
   signal?: AbortSignal,
   agentRevisionId?: string,
   outputSchema?: string,
+  sessionId?: string,
 ): Promise<void> {
   const res = await fetch(`${RELAY}/stream`, {
     method: "POST",
@@ -126,6 +131,7 @@ export async function streamRun(
       // Each optional key is OMITTED rather than sent empty, so an unpinned, unconstrained run's
       // request body stays exactly `{prompt}` and the relay's upstream body exactly `{input}` —
       // the property tests/config-journey.spec.ts asserts on the WIRE.
+      ...(sessionId === undefined || sessionId === "" ? {} : { session_id: sessionId }),
       ...(agentRevisionId === undefined || agentRevisionId === "" ? {} : { agent_revision_id: agentRevisionId }),
       ...(outputSchema === undefined || outputSchema.trim() === "" ? {} : { output_schema: outputSchema }),
     }),
