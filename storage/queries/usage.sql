@@ -106,7 +106,12 @@ SELECT meter, unit, sum(quantity), count(*)
 FROM usage_ledger
 WHERE organization_id = $1 AND ($2 = '' OR project_id = $2)
 GROUP BY meter, unit
-ORDER BY meter;
+-- ORDER BY (meter, unit), which is the GROUP BY's own key and therefore TOTAL. `ORDER BY meter` alone
+-- was not: nothing constrains a meter to a single unit, so two rows sharing a meter would come back in
+-- whatever order the aggregate happened to produce. No meter carries two units TODAY, so this was
+-- latent rather than live — but it is the same defect UsageSeries's own header (twelve lines below)
+-- warns about for `ORDER BY bucket_start`, and the fix costs one word.
+ORDER BY meter, unit;
 
 -- UsageSeries is the BUCKETED read behind GET /v1/usage/series: quantity per meter per time bucket for
 -- the caller's scope, so a dashboard draws a chart from one aggregate instead of paging the ledger.
