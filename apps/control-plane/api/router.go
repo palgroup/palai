@@ -315,6 +315,10 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		// their key is wrong when they paste it rather than when an agent needs it. POST because it leaves
 		// the process and stamps the row.
 		mux.HandleFunc("POST /v1/model-connections/{connection_id}/verify", mh.verifyConnection)
+		// The models list (E29). The provider's OWN catalogue for THIS connection's credential, so a model
+		// picker never needs a model name typed into this tree. A GET because it writes nothing — the
+		// verify above is a POST for its stamp, not for its egress.
+		mux.HandleFunc("GET /v1/model-connections/{connection_id}/models", mh.connectionModels)
 		mux.HandleFunc("GET /v1/model-routes", mh.listRoutes)
 		mux.HandleFunc("GET /v1/model-routes/{route_id}", mh.getRoute)
 		mux.HandleFunc("GET /v1/model-routes/{route_id}/revisions", mh.listRevisions)

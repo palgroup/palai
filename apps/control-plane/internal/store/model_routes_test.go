@@ -165,8 +165,8 @@ func TestVerifyModelConnectionMakesARealRequest(t *testing.T) {
 		ID: "mconn_1", Provider: "openai-compatible", SecretRef: "vllm",
 		BaseURL: srv.URL + "/v1/chat/completions",
 	}
-	s := (&Store{}).WithModelConnectionProbes(
-		map[string]ConnectionProber{"openai-compatible": providerone.Adapter{}},
+	s := (&Store{}).WithModelConnectionInspectors(
+		map[string]ConnectionInspector{"openai-compatible": providerone.Adapter{}},
 		func(org, ref string) ([]byte, bool, error) { return []byte("sk-the-operators-key"), true, nil },
 	)
 
@@ -198,10 +198,10 @@ func TestVerifyModelConnectionNeverInventsAGreen(t *testing.T) {
 	resolves := func(org, ref string) ([]byte, bool, error) { return []byte("sk-x"), true, nil }
 
 	cases := map[string]*Store{
-		"no prober wired for the family": (&Store{}).WithModelConnectionProbes(map[string]ConnectionProber{}, resolves),
-		"no secret store wired":          (&Store{}).WithModelConnectionProbes(map[string]ConnectionProber{"provider-one": providerone.Adapter{}}, nil),
-		"the secret ref does not resolve": (&Store{}).WithModelConnectionProbes(
-			map[string]ConnectionProber{"provider-one": providerone.Adapter{}},
+		"no prober wired for the family": (&Store{}).WithModelConnectionInspectors(map[string]ConnectionInspector{}, resolves),
+		"no secret store wired":          (&Store{}).WithModelConnectionInspectors(map[string]ConnectionInspector{"provider-one": providerone.Adapter{}}, nil),
+		"the secret ref does not resolve": (&Store{}).WithModelConnectionInspectors(
+			map[string]ConnectionInspector{"provider-one": providerone.Adapter{}},
 			func(org, ref string) ([]byte, bool, error) { return nil, false, nil }),
 	}
 	for name, s := range cases {
@@ -218,7 +218,7 @@ func TestVerifyModelConnectionNeverInventsAGreen(t *testing.T) {
 	// An endpoint whose shape yields no models list: the probe declines rather than guessing at a URL.
 	weird := coordinator.ModelConnectionRecord{ID: "mconn_2", Provider: "openai-compatible", SecretRef: "k",
 		BaseURL: "https://gateway.example.test/completions"}
-	s := (&Store{}).WithModelConnectionProbes(map[string]ConnectionProber{"openai-compatible": providerone.Adapter{}}, resolves)
+	s := (&Store{}).WithModelConnectionInspectors(map[string]ConnectionInspector{"openai-compatible": providerone.Adapter{}}, resolves)
 	if probe := s.probeConnection(context.Background(), tenant, weird); probe.Outcome != modelbroker.ProbeUnsupported {
 		t.Fatalf("unusual endpoint shape: outcome = %q, want %q", probe.Outcome, modelbroker.ProbeUnsupported)
 	}

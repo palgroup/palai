@@ -143,6 +143,20 @@ export interface ModelConnection {
   verified_at?: string;
 }
 
+export interface ModelListing {
+  complete: boolean;
+  connection_id: OpaqueId;
+  data?: Record<string, unknown>[];
+  detail: string;
+  endpoint?: string;
+  fetched_at: string;
+  listed: string;
+  object: string;
+  outcome: string;
+  provider: string;
+  status?: number;
+}
+
 export interface ModelRoute {
   created_at?: string;
   id: OpaqueId;
