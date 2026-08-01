@@ -1,9 +1,11 @@
 "use client";
 
+import { LaneStrip } from "@/components/LaneStrip";
 import { NameCell, Panel } from "@/components/Panel";
 import { CopyButton, shortId } from "@/components/Session";
 import { Stat, useTally } from "@/components/Stat";
-import { compactTokens } from "@/lib/sessions";
+import { absoluteTime, compactTokens } from "@/lib/sessions";
+import { positionAt, windowOf } from "@/lib/strip";
 
 // THE OVERVIEW — "what is this deployment doing right now", answered in figures, with the collections that
 // identify it underneath.
@@ -70,6 +72,76 @@ function IdCell({ id, label }: { id: string; label: string }) {
  *  "not completed" would have called a FAILED run live, which is the opposite of what this card is for. */
 const RUNNING = new Set(["queued", "provisioning", "running", "in_progress", "requires_action"]);
 
+/**
+ * NowStrip is the lane strip at deployment scale: what this project has been doing, placed in time.
+ *
+ * FOUR CHANNELS, AND EACH ONE IS A COLLECTION THIS PAGE ALREADY READ. There is no sixth fetch and no new
+ * endpoint — the runs and approvals below the cards are the same rows the cards counted, which is what keeps
+ * the trace and the figures from being able to disagree. The channels reuse four LANE hues rather than
+ * inventing a second palette, and the reuse is the argument: "in flight" is the lifecycle lane, "waiting on
+ * you" is the approval lane, "completed" is the outcome lane, and a run that ended badly is the failure
+ * override — the same four things they mean inside a transcript, one scale up.
+ *
+ * `live` is set from the in-flight channel and nothing else, which is what makes the console's one animation
+ * a statement rather than an ornament: a deployment with nothing running does not pulse.
+ */
+function NowStrip({ runs, approvals }: { runs: Record<string, unknown>[]; approvals: Record<string, unknown>[] }) {
+  const stamp = (r: Record<string, unknown>) => String(r.created_at ?? "");
+  const state = (r: Record<string, unknown>) => String(r.status ?? r.state ?? "");
+  const inFlight = runs.filter((r) => RUNNING.has(state(r)));
+  const failed = runs.filter((r) => /fail|cancel|expire|timed/.test(state(r)));
+  const done = runs.filter((r) => !RUNNING.has(state(r)) && !/fail|cancel|expire|timed/.test(state(r)));
+  const window = windowOf([...runs, ...approvals].map(stamp));
+  if (window === null) return null;
+
+  // The channels, in the order a run passes through them. Each is dropped when empty, so the strip's own
+  // height says how many kinds of thing this deployment currently has.
+  const rows: { lane: string; label: string; source: Record<string, unknown>[]; failure?: boolean }[] = [
+    { lane: "progress", label: "In flight", source: inFlight },
+    { lane: "approval", label: "Waiting on you", source: approvals },
+    { lane: "terminal", label: "Completed", source: done },
+    { lane: "terminal", label: "Ended badly", source: failed, failure: true },
+  ];
+  const channels = rows
+    .filter((row) => row.source.length > 0)
+    .map((row) => {
+      // The LATEST tick in the channel is the one that carries the ring — computed from the stamps rather
+      // than from the array's order, because /v1 serves newest-first and the strip reads left-to-right.
+      const times = row.source.map((r) => Date.parse(stamp(r))).filter((t) => !Number.isNaN(t));
+      const newest = times.length === 0 ? NaN : Math.max(...times);
+      return {
+        lane: row.lane,
+        label: row.label,
+        failure: row.failure,
+        marks: row.source.map((r, i) => {
+          const at = Date.parse(stamp(r));
+          return {
+            key: `${String(r.id ?? i)}`,
+            at: positionAt(at, window),
+            failure: row.failure,
+            latest: at === newest && row.lane === "progress" ? true : undefined,
+          };
+        }),
+      };
+    });
+
+  return (
+    <LaneStrip
+      scale="now"
+      testId="now-strip"
+      captionTestId="now-strip-caption"
+      live={inFlight.length > 0}
+      channels={channels}
+      axis={[absoluteTime(new Date(window.start).toISOString()), absoluteTime(new Date(window.end).toISOString())]}
+      caption={
+        inFlight.length === 0
+          ? `${String(runs.length)} runs and ${String(approvals.length)} parked approvals, oldest first. Nothing is running.`
+          : `${String(runs.length)} runs and ${String(approvals.length)} parked approvals, oldest first. ${String(inFlight.length)} still in flight.`
+      }
+    />
+  );
+}
+
 export default function OverviewPage() {
   const approvals = useTally("/approvals");
   const runs = useTally("/responses");
@@ -102,6 +174,16 @@ export default function OverviewPage() {
         <div className="panel-head">
           <h2 id="panel-deployment-h">Right now</h2>
         </div>
+        {/* THE STRIP, ABOVE THE FIGURES — the same object the transcript and the sessions list carry, at the
+            scale of the whole deployment. Six counts answer "how many"; the strip answers "when", which is
+            the question a count cannot be made to answer and the one an operator opens this screen with.
+
+            EVERY TICK IS A ROW THE API SERVED, at that row's own created_at. Nothing is bucketed, nothing is
+            interpolated and there is no synthetic "now" mark: the window is the earliest and latest stamp in
+            what was read, so the trace always fills its own track rather than crowding into the last 3% of a
+            clock-anchored one. A channel with no rows is not drawn — a deployment where nothing has failed
+            has no failure channel, which is a stronger statement than an empty red row. */}
+        <NowStrip runs={runs.rows} approvals={approvals.rows} />
         <div className="stat-grid">
           <Stat
             label="Waiting on you"

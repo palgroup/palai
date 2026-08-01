@@ -94,18 +94,31 @@ test("every column on the Sessions list is the field it is named after", async (
   await expect(cells.nth(5).locator("time")).toHaveAttribute("datetime", first.created_at);
   await expect(cells.nth(5)).toHaveText(/ago|just now|in /);
 
-  // THE AGENTS CELL, IN BOTH DIRECTIONS, AND THE EMPTY ONE IS THE ASSERTION THAT MATTERS.
+  // THE AGENTS CELL, IN BOTH DIRECTIONS, AND THE EMPTY ONE IS STILL THE ASSERTION THAT MATTERS.
   //
   // Measured on the live control plane 2026-07-31: `GET /v1/sessions?limit=100` answers 62 sessions with
   // has_more false, and only 3 carry any agent — this column is empty on 95% of real rows. The cause is
   // structural (response-create.json declares agent_revision_id and no agent_id; `runs` has no
-  // agent_profile_id), so the empty cell has to name the MECHANISM rather than shrug: an em dash alone in a
-  // column an operator expects to be full reads as a rendering fault in this screen.
+  // agent_profile_id), so the emptiness has to name the MECHANISM rather than shrug.
   //
-  // The exact words are pinned. A later edit softening them to a bare dash, or "backfilling" the cell from
-  // the agent a picker was set to, fails here.
+  // THE MECHANISM MOVED AND THE REQUIREMENT DID NOT (E30 visual identity). It used to be the cell's own text,
+  // fifteen identical copies of "— no revision pinned" down one column, which is a wall a reader stops
+  // seeing after the second row. The explanation is now in the cell's `title` and, once, with its count,
+  // under the table. So this asserts the SAME property in three places instead of one string in one place —
+  // and it is strictly stronger, because a bare dash with no explanation anywhere now fails where before
+  // only the wording was pinned. Backfilling the cell from the agent a picker was set to still fails here.
   const noAgent = data.findIndex((r) => (r.agents ?? []).length === 0);
-  if (noAgent !== -1) await expect(rows.nth(noAgent).locator("td").nth(3)).toHaveText("— no revision pinned");
+  if (noAgent !== -1) {
+    const cell = rows.nth(noAgent).locator("td").nth(3);
+    await expect(cell).toHaveText("—");
+    await expect(cell.locator("[data-testid=agents-none]")).toHaveAttribute("title", /revision/i);
+    const footnote = page.getByTestId("panel-sessions-footnote");
+    await expect(footnote, "the emptiness left the cells and must therefore be stated once under the table").toContainText("pinned no agent revision");
+    // The COUNT is what makes the footnote a reading rather than a slogan: it must be the number of empty
+    // cells this page actually drew, not a constant somebody typed.
+    const without = data.filter((r) => (r.agents ?? []).length === 0).length;
+    await expect(footnote).toContainText(`${String(without)} of the ${String(data.length)} sessions`);
+  }
   const withAgent = data.findIndex((r) => (r.agents ?? []).length > 0);
   if (withAgent !== -1) await expect(rows.nth(withAgent).locator("td").nth(3)).toContainText(data[withAgent].agents[0]);
 
@@ -360,7 +373,7 @@ test("the scrubber puts one mark per frame inside the journal's own span, and sa
   await expect(rows.first()).toBeVisible({ timeout: 15_000 });
   const events = await rows.count();
 
-  const marks = page.getByTestId("transcript-scrubber").locator(".scrubber-mark");
+  const marks = page.getByTestId("transcript-scrubber").locator(".strip-mark");
   await expect(marks).toHaveCount(events);
   // Every mark is INSIDE the track. A NaN or an out-of-range percentage puts a mark nowhere, and a track of
   // marks nobody can see is the failure this assertion exists for.

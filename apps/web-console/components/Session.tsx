@@ -114,17 +114,24 @@ export function SessionName({ name, source }: { name: string; source: NameSource
  * revision of it — which is what the /runs picker produces when Revision is left on "None" — lands with
  * agent_revision_id NULL and contributes nothing here.
  *
- * SO THE HONEST CELL SAYS WHICH NOTHING IT IS. An em dash in a column an operator expects to be full reads
- * as a rendering fault and invites a bug report about this screen; "no revision pinned" is a fact about the
- * RUN, and it is the fact that makes the empty column legible instead of suspicious. Nothing is backfilled,
- * nothing falls back to the agent the picker was set to, and there is no substitute value: the console is
- * not going to be the thing that makes this gap invisible.
+ * SO THE HONEST CELL SAYS WHICH NOTHING IT IS — AND IT SAYS IT ONCE, NOT FIFTEEN TIMES (E30 visual identity).
+ *
+ * The sentence above is still the right sentence and it was in the wrong PLACE. Rendered per row, "— no
+ * revision pinned" became fifteen identical lines down one column, which is a wall of text carrying one bit
+ * of information: it is loud, it is repeated, and after the second row a reader stops seeing it. The fact is
+ * about the COLLECTION rather than about any row in it, so it moved to the collection: the cell is the em
+ * dash this console uses for every absent value, the whole explanation is on `title` where an operator who
+ * wonders can reach it, and app/sessions/page.tsx prints the fact once, with its count, under the table.
+ *
+ * NOTHING IS SOFTENED. Nothing is backfilled, nothing falls back to the agent the picker was set to, there is
+ * no substitute value, and the words under the table are the words that used to be in the cell. What changed
+ * is that the console stopped saying the same true thing fifteen times in a column an eye has to read past.
  */
 export function AgentChips({ agents }: { agents: string[] }) {
   if (agents.length === 0) {
     return (
-      <span className="cell-none" title="A run pins an agent REVISION, and this session's runs pinned none — so there is no agent to aggregate. Selecting an agent without a revision does not pin one.">
-        — no revision pinned
+      <span className="cell-none" title="A run pins an agent REVISION, and this session's runs pinned none — so there is no agent to aggregate. Selecting an agent without a revision does not pin one." data-testid="agents-none">
+        —
       </span>
     );
   }
