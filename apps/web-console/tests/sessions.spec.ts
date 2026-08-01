@@ -102,10 +102,26 @@ test("every column on the Sessions list is the field it is named after", async (
   // agent_profile_id), so the empty cell has to name the MECHANISM rather than shrug: an em dash alone in a
   // column an operator expects to be full reads as a rendering fault in this screen.
   //
-  // The exact words are pinned. A later edit softening them to a bare dash, or "backfilling" the cell from
-  // the agent a picker was set to, fails here.
+  // THE MECHANISM MOVED AND THE REQUIREMENT DID NOT (E30 reference match). The words used to be the cell's
+  // own text, fifteen identical copies of "— no revision pinned" down one column — a wall a reader stops
+  // seeing after the second row, where the reference leaves an empty cell QUIET. The explanation is now on
+  // the cell's `title` and, once with its count, under the table.
+  //
+  // SO THIS ASSERTS THE SAME PROPERTY IN THREE PLACES INSTEAD OF ONE STRING IN ONE PLACE, and it is strictly
+  // stronger than what it replaces: a bare dash with no explanation ANYWHERE now fails, where before only the
+  // wording was pinned. "Backfilling" the cell from the agent a picker was set to still fails here.
   const noAgent = data.findIndex((r) => (r.agents ?? []).length === 0);
-  if (noAgent !== -1) await expect(rows.nth(noAgent).locator("td").nth(3)).toHaveText("— no revision pinned");
+  if (noAgent !== -1) {
+    const cell = rows.nth(noAgent).locator("td").nth(3);
+    await expect(cell).toHaveText("—");
+    await expect(cell.locator("[data-testid=agents-none]")).toHaveAttribute("title", /revision/i);
+    const footnote = page.getByTestId("panel-sessions-footnote");
+    await expect(footnote, "the emptiness left the cells and must therefore be stated once under the table").toContainText("pinned no agent revision");
+    // The COUNT is what makes the footnote a reading rather than a slogan: it must be the number of empty
+    // cells this page actually drew, not a constant somebody typed.
+    const without = data.filter((r) => (r.agents ?? []).length === 0).length;
+    await expect(footnote).toContainText(`${String(without)} of the ${String(data.length)} sessions`);
+  }
   const withAgent = data.findIndex((r) => (r.agents ?? []).length > 0);
   if (withAgent !== -1) await expect(rows.nth(withAgent).locator("td").nth(3)).toContainText(data[withAgent].agents[0]);
 

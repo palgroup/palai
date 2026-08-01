@@ -37,8 +37,37 @@ import { Field, FieldControl } from "@/components/ui/Field";
 // satisfied, and the tempting alternative — degrade to a free-text box — invites an operator to type an id
 // that does not exist, which then fails at admission with a refusal about something else entirely.
 
+// THE TWO-COLUMN SECTION ARRIVED IN E30, AND EVERY CALLER GOT IT WITHOUT BEING EDITED.
+//
+// The reference lays a configuration screen out as rows: the section's NAME and a one-sentence description on
+// the left at 224px, the fields on the right at 516px, 28px between them, 768px in total. Ours stacked a
+// label over a field down one column and let the controls stretch across a 78rem page. app/globals.css §11
+// carries the measurements and the argument; what matters here is that the shape is the DEFAULT rather than
+// an option: `title` and `note` — two props this component has always taken — become the left column, and
+// `fields` becomes the right. Twelve call sites, no diff, new geometry.
+//
+// `sections` is for the screens that genuinely have more than one: a detail page whose General / Multiagent /
+// Skills / Tools rows are four sections of ONE record, which is the reference's agent page exactly.
+
 /** FormOption is Picker's option shape — one spelling, so a caller can hand the same list to either. */
 export type FormOption = PickerOption;
+
+/**
+ * A named group of fields, with the one sentence that says what the group is for.
+ *
+ * `note` IS ONE SENTENCE AND THE 224px COLUMN IS WHAT ENFORCES IT (design-system-measured.md §5, rule 8:
+ * "Her bölüm açıklaması tek cümle + `Learn more`. Paragrafları süpür."). Nothing here truncates or refuses a
+ * longer one — a component that silently cut an author's prose would be worse than the paragraph — but a
+ * three-sentence note becomes a twelve-line column the author has to look at, which is the cheapest pressure
+ * toward the rule that exists.
+ */
+export interface FormSection {
+  title: string;
+  note?: ReactNode;
+  fields: FormField[];
+  /** The section's own control — the reference's `+ Add subagent` — at the foot of the RIGHT column. */
+  action?: ReactNode;
+}
 
 export interface FormField {
   /** Field name; also the source of the control's id, so the label can never be orphaned. */
@@ -70,6 +99,7 @@ export interface FormField {
 export function ResourceForm({
   title,
   fields,
+  sections,
   submitLabel,
   submittingLabel,
   submitTestId,
@@ -84,6 +114,14 @@ export function ResourceForm({
 }: {
   title: string;
   fields: FormField[];
+  /**
+   * More than one named group, for a record whose configuration genuinely has sections.
+   *
+   * When it is absent — which is every caller today — the component makes ONE section out of `title`,
+   * `note` and `fields`, so a screen that never heard of this prop still renders in the measured geometry.
+   * When it is present, `title` and `note` stay where they are: the page's own heading above the rows.
+   */
+  sections?: FormSection[];
   submitLabel: string;
   submittingLabel?: string;
   submitTestId?: string;
@@ -106,10 +144,18 @@ export function ResourceForm({
    */
   children?: ReactNode;
 }) {
+  const headingId = `${title.replace(/\W+/g, "-").toLowerCase()}-h`;
   return (
-    <section className="panel" data-testid={testId} aria-labelledby={`${title.replace(/\W+/g, "-").toLowerCase()}-h`}>
-      <h2 id={`${title.replace(/\W+/g, "-").toLowerCase()}-h`}>{title}</h2>
-      {note ? <p className="muted">{note}</p> : null}
+    <section className="panel" data-testid={testId} aria-labelledby={headingId}>
+      {/* THE HEADING IS IN THE ROW WHEN THERE IS ONE ROW. A single-section form's name belongs in the left
+          column beside its fields — that is the geometry — so rendering it here as well would print it
+          twice. With `sections` the heading is the PAGE's, above rows that each carry their own name. */}
+      {sections === undefined ? null : (
+        <>
+          <h2 id={headingId}>{title}</h2>
+          {note ? <p className="muted">{note}</p> : null}
+        </>
+      )}
       <form
         data-testid={testId ? `${testId}-form` : undefined}
         // method="post" IS THE SECURITY PROPERTY, AND IT IS IN THE HTML BECAUSE IT CANNOT DEPEND ON A SCRIPT
@@ -151,6 +197,89 @@ export function ResourceForm({
           void onSubmit();
         }}
       >
+        {/* `children` GOES INSIDE THE SECTION BODY on the single-section path, and that is not cosmetic: its one
+            caller is SecretField, and a credential field rendered outside the 516px column would be the one
+            control on the screen at a different width — which is exactly the raggedness the measure fixes.
+            With `sections`, a caller placing extra markup has already chosen where it goes. */}
+        {sections === undefined ? (
+          <SectionRow title={title} note={note} fields={fields} headingId={headingId}>
+            {children}
+          </SectionRow>
+        ) : (
+          <>
+            {sections.map((section) => (
+              <SectionRow
+                key={section.title}
+                title={section.title}
+                note={section.note}
+                fields={section.fields}
+                action={section.action}
+              />
+            ))}
+            {children}
+          </>
+        )}
+        {error === "" ? null : (
+          <p role="alert" className="form-error" data-testid={testId ? `${testId}-error` : undefined}>
+            <span className="glyph" aria-hidden="true">
+              ✖
+            </span>{" "}
+            {error}
+          </p>
+        )}
+        {status === "" ? null : (
+          <p className="form-status" data-testid={testId ? `${testId}-status` : undefined}>
+            <span className="glyph" aria-hidden="true">
+              ✔
+            </span>{" "}
+            {status}
+          </p>
+        )}
+        <p>
+          <Button type="submit" disabled={submitting} testId={submitTestId}>
+            {submitting ? (submittingLabel ?? `${submitLabel}…`) : submitLabel}
+          </Button>
+          {actions ? <> {actions}</> : null}
+        </p>
+      </form>
+    </section>
+  );
+}
+
+/**
+ * SectionRow is one two-column row: the name and its sentence on the left, the fields on the right.
+ *
+ * IT IS A HEADING AND NOT A STYLED SPAN. A section groups controls, and a group with a visible name that is
+ * not in the heading outline is a group a screen reader cannot navigate to — `aria-labelledby` pointing at a
+ * real heading is what makes the two agree. The level is h2 for the same reason it always was: these sit
+ * directly under the page's h1, and axe's `heading-order` judges the sequence rather than the size.
+ */
+function SectionRow({
+  title,
+  note,
+  fields,
+  action,
+  headingId,
+  children,
+}: {
+  title: string;
+  note?: ReactNode;
+  fields: FormField[];
+  action?: ReactNode;
+  /** Passed only by the single-section path, where the section's heading IS the panel's accessible name. */
+  headingId?: string;
+  children?: ReactNode;
+}) {
+  const id = headingId ?? `section-${title.replace(/\W+/g, "-").toLowerCase()}`;
+  return (
+    <div className="section-row" role="group" aria-labelledby={id}>
+      <div className="section-aside">
+        <h2 className="section-title" id={id}>
+          {title}
+        </h2>
+        {note === undefined || note === "" ? null : <p className="section-note">{note}</p>}
+      </div>
+      <div className="section-body">
         {fields.map((field) => {
           const id = `field-${field.name}`;
           // The select arm — INCLUDING the options-less rule in the header — moved to components/Picker.tsx in
@@ -205,29 +334,8 @@ export function ResourceForm({
           );
         })}
         {children}
-        {error === "" ? null : (
-          <p role="alert" className="form-error" data-testid={testId ? `${testId}-error` : undefined}>
-            <span className="glyph" aria-hidden="true">
-              ✖
-            </span>{" "}
-            {error}
-          </p>
-        )}
-        {status === "" ? null : (
-          <p className="form-status" data-testid={testId ? `${testId}-status` : undefined}>
-            <span className="glyph" aria-hidden="true">
-              ✔
-            </span>{" "}
-            {status}
-          </p>
-        )}
-        <p>
-          <Button type="submit" disabled={submitting} testId={submitTestId}>
-            {submitting ? (submittingLabel ?? `${submitLabel}…`) : submitLabel}
-          </Button>
-          {actions ? <> {actions}</> : null}
-        </p>
-      </form>
-    </section>
+        {action === undefined ? null : <div className="section-actions">{action}</div>}
+      </div>
+    </div>
   );
 }

@@ -7,7 +7,7 @@
    `H S% L%` with NO `hsl()` wrapper; layer 2 is the semantic roles built on it. RULE BODIES USE LAYER 2 ONLY.
 
    WHY COMPONENTS RATHER THAN COLOURS, in the reference's own words: alpha becomes composable —
-   `hsl(var(--_slate-12) / 45%)` — so an opacity does not need a token of its own. What that buys HERE is
+   `hsl(var(--_sand-12) / 45%)` — so an opacity does not need a token of its own. What that buys HERE is
    smaller than it buys there and the difference is worth stating rather than glossing: their variants are
    opacities of one colour, ours are Radix STEPS, so this does not collapse --ok-bg / --ok-border / --ok-text
    into anything. It collapses the places we hard-coded an rgba: the shadow scale below (eight literals across
@@ -42,7 +42,7 @@
    the token commit fixes.
 
    SECTION ORDER IS FIXED: 1 tokens · 2 reset+base · 3 accessibility · 4 typography · 5 layout · 6 table ·
-   7 form · 8 controls · 9 status+feedback · 10 domain. */
+   7 form · 8 controls · 9 status+feedback · 10 domain · 11 the sectioned form. */
 
 /* ============================================================ 1. TOKENS ==================================== */
 
@@ -56,16 +56,31 @@
      resolves to, and having it here means an overlay ON a solid fill can be written as
      `hsl(var(--_white) / 12%)` without minting a token for that opacity. That is the whole point of layer 1. */
   --_white: 0 0% 100%;
-  --_slate-1: 240 20% 99.0196%; /* #fcfcfd */
-  --_slate-2: 240 20% 98.0392%; /* #f9f9fb */
-  --_slate-3: 240 11.1111% 94.7059%; /* #f0f0f3 */
-  --_slate-4: 240 9.5238% 91.7647%; /* #e8e8ec */
-  --_slate-5: 230 10.7143% 89.0196%; /* #e0e1e6 */
-  --_slate-6: 240 10.1449% 86.4706%; /* #d9d9e0 */
-  --_slate-9: 230.7692 5.9361% 57.0588%; /* #8b8d98 */
-  --_slate-10: 226.1538 5.3942% 52.7451%; /* #80838d */
-  --_slate-11: 220 5.8824% 40%; /* #60646c */
-  --_slate-12: 210 12.5% 12.549%; /* #1c2024 */
+  /* --- THE GREY IS SAND, NOT SLATE, AND THAT IS THE REFERENCE'S OWN MEASUREMENT (E30 reference match).
+     design-system-measured.md §1, verbatim: "Gri nötr değil: açık uçta sarımsı (`60 14% 98%`), koyu uçta
+     neredeyse nötr (`0 0% 4.3%`). Sıcak bir gri." — the reference's grey is WARM, yellowish at the light end,
+     and its measured body is `rgb(26,26,25)`, which is 60° hue at 2% saturation. Ours was Radix SLATE, whose
+     hue is 210-240 — a BLUE grey. On a full screen that is the single most visible difference between the two
+     consoles and no amount of type or spacing work compensates for it.
+
+     Radix SAND is the same twelve-step architecture at hue 45-60, so this is a scale swap rather than an
+     invention: every step still carries Radix's published contrast guarantees, and the role mapping, the step
+     numbers and every rule body below are untouched. `node scripts/measure-contrast.mjs` re-derives all 41
+     pairs from this file after the swap.
+
+     HOW CLOSE IT LANDS, measured rather than claimed: the reference's body is `#1a1a19` and sand step 2 in
+     the dark block below is `#191918` — one 8-bit level per channel. See the dark block's own note for why
+     the ladder starts at step 2 there. --- */
+  --_sand-1: 60 20% 99.0196%; /* #fdfdfc */
+  --_sand-2: 60 7.6923% 97.451%; /* #f9f9f8 */
+  --_sand-3: 30 6.6667% 94.1176%; /* #f1f0ef */
+  --_sand-4: 40 6.383% 90.7843%; /* #e9e8e6 */
+  --_sand-5: 45 6.4516% 87.8431%; /* #e2e1de */
+  --_sand-6: 45 5.1282% 84.7059%; /* #dad9d6 */
+  --_sand-9: 60 2.9787% 53.9216%; /* #8d8d86 */
+  --_sand-10: 60 2.3622% 49.8039%; /* #82827c */
+  --_sand-11: 60 2.5907% 37.8431%; /* #63635e */
+  --_sand-12: 48 8.1967% 11.9608%; /* #21201c */
   /* THE ACCENT IS IRIS AND THE STATE COLOUR IS BLUE, AND THEY USED TO BE THE SAME SCALE — which is why a
      selected row and an "in progress" chip were the same colour, and why the console had no colour of its
      own. The design spec named this as the thing a token system cannot give ("the palette is MIT and
@@ -101,23 +116,23 @@
   /* --- LAYER 2: surfaces. Page and panel are the SAME colour on purpose: measured on the old palette, the
      panel fill carried 1.06:1 (light) and 1.09:1 (dark), i.e. a surface hierarchy that did not exist. The
      separation is carried by a hairline + a shadow instead of by a fill nobody can see. --- */
-  --bg-page: hsl(var(--_slate-1));
-  --bg-subtle: hsl(var(--_slate-2)); /* table head band */
-  --bg-inset: hsl(var(--_slate-3)); /* code block, kv label column, disabled control */
-  --bg-hover: hsl(var(--_slate-4));
-  --bg-active: hsl(var(--_slate-5));
+  --bg-page: hsl(var(--_sand-1));
+  --bg-subtle: hsl(var(--_sand-2)); /* table head band */
+  --bg-inset: hsl(var(--_sand-3)); /* code block, kv label column, disabled control */
+  --bg-hover: hsl(var(--_sand-4));
+  --bg-active: hsl(var(--_sand-5));
 
   /* --- LAYER 2: text --- */
-  --text: hsl(var(--_slate-12));
-  --text-muted: hsl(var(--_slate-11));
+  --text: hsl(var(--_sand-12));
+  --text-muted: hsl(var(--_sand-11));
   --text-on-solid: hsl(var(--_white)); /* the ONE semantic token the dark block inverts */
 
   /* --- LAYER 2: borders. The distinction is the whole of SC 1.4.11: a hairline is structural decoration, a
      control border is the only thing that says where an input IS. They are not the same colour and must
      never be collapsed back into one token. --- */
-  --border-hairline: hsl(var(--_slate-6)); /* row separators, panel edge — decorative, SC 1.4.11 does not apply */
-  --border-control: hsl(var(--_slate-10)); /* interactive control boundary — 3.69/3.60/3.33 light, 4.45/4.15/3.75 dark */
-  --border-control-hover: hsl(var(--_slate-11));
+  --border-hairline: hsl(var(--_sand-6)); /* row separators, panel edge — decorative, SC 1.4.11 does not apply */
+  --border-control: hsl(var(--_sand-10)); /* interactive control boundary — 3.69/3.60/3.33 light, 4.45/4.15/3.75 dark */
+  --border-control-hover: hsl(var(--_sand-11));
 
   /* --- LAYER 2: accent. Measured with tests/contrast.spec.ts's own formula, light | dark:
      --accent-text on --bg-page 5.92 | 8.97, on --bg-subtle 5.78 | 8.37, on --bg-inset 5.34 | 7.57, on
@@ -136,7 +151,7 @@
      both schemes, and named so nothing else reaches for iris step 9 by accident — it is the one step in this
      file that is decoration and carries no contrast obligation (the word beside it is what names the
      product; the <svg> is aria-hidden). */
-  --brand-mark-quiet: hsl(var(--_slate-9));
+  --brand-mark-quiet: hsl(var(--_sand-9));
   --brand-mark-live: hsl(var(--_iris-9));
 
   /* --- LAYER 2: status. Five states x 3, plus two inline text colours.
@@ -167,9 +182,9 @@
   --info-bg: hsl(var(--_blue-3));
   --info-border: hsl(var(--_blue-6));
   --info-text: hsl(var(--_blue-12));
-  --neutral-bg: hsl(var(--_slate-3));
-  --neutral-border: hsl(var(--_slate-6));
-  --neutral-text: hsl(var(--_slate-12));
+  --neutral-bg: hsl(var(--_sand-3));
+  --neutral-border: hsl(var(--_sand-6));
+  --neutral-text: hsl(var(--_sand-12));
 
   /* --- Typography. system-ui is KEPT: zero network requests, no font-src in any CSP, no FOUT, nothing new
      on the audit surface of a console whose whole claim is that it talks to one origin. What is given up is
@@ -255,6 +270,16 @@
   --radius-button: 8px;
   --row-h-table: 46px; /* table row */
   --row-h-thead: 32px; /* table header row */
+
+  /* --- THE SECTIONED FORM'S GEOMETRY (E30), measured off the reference's agent-detail page 2026-08-01 with
+     getComputedStyle: a 768px row, a 224px aside, a 28px gap, a 516px body. 224 + 28 + 516 = 768. §11 is
+     where they are used and why the narrow measure is the decision rather than the two columns. --- */
+  --section-w: 48rem; /* 768px */
+  --section-aside-w: 14rem; /* 224px */
+  --section-body-w: 32.25rem; /* 516px */
+  --section-gap: 1.75rem; /* 28px */
+  /* 15px, measured. NOT a numbered step — see .section-title for why it is carried as a role instead. */
+  --font-size-section: 0.9375rem;
   --pill-h: 20px;
   --chip-h: 25px;
 
@@ -300,16 +325,33 @@
    dark mode would quietly get the light shadows with no test anywhere able to say so. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --_slate-1: 240 5.5556% 7.0588%; /* #111113 */
-    --_slate-2: 220 5.8824% 10%; /* #18191b */
-    --_slate-3: 225 5.7143% 13.7255%; /* #212225 */
-    --_slate-4: 210 7.1429% 16.4706%; /* #272a2d */
-    --_slate-5: 214.2857 7.0707% 19.4118%; /* #2e3135 */
-    --_slate-6: 213.3333 7.6923% 22.9412%; /* #363a3f */
-    --_slate-9: 218.5714 6.25% 43.9216%; /* #696e77 */
-    --_slate-10: 221.5385 5.1793% 49.2157%; /* #777b84 */
-    --_slate-11: 216 6.7568% 70.9804%; /* #b0b4ba */
-    --_slate-12: 220 9.0909% 93.5294%; /* #edeef0 */
+    --_sand-1: 60 3.0303% 6.4706%; /* #111110 */
+    --_sand-2: 60 2.0408% 9.6078%; /* #191918 */
+    --_sand-3: 60 1.4925% 13.1373%; /* #222221 */
+    --_sand-4: 60 2.439% 16.0784%; /* #2a2a28 */
+    --_sand-5: 60 3.1579% 18.6275%; /* #31312e */
+    --_sand-6: 45 3.5088% 22.3529%; /* #3b3a37 */
+    --_sand-9: 46.6667 4.2254% 41.7647%; /* #6f6d66 */
+    --_sand-10: 52.5 3.3333% 47.0588%; /* #7c7b74 */
+    --_sand-11: 45 5.1282% 69.4118%; /* #b5b3ad */
+    --_sand-12: 60 5.5556% 92.9412%; /* #eeeeec */
+
+    /* THE DARK LADDER STARTS AT STEP 2, AND THAT IS THE ONE MEASURED VALUE THIS FILE BENDS ITS OWN RULE FOR.
+       design-system-measured.md §2 reads the reference's body as `rgb(26,26,25)` and its surface (pill and
+       chip fill) as `rgba(255,255,255,0.05)` over it, which composites to `#232322`. Sand's dark steps are
+       1 `#111110`, 2 `#191918`, 3 `#222221` — so the reference's body IS step 2 and its surface IS step 3,
+       each within one 8-bit level. Keeping page on step 1 would have put our console a visible shade darker
+       than the thing we are matching, on every pixel of every screen.
+
+       --bg-subtle AND --bg-inset ARE THE SAME VALUE HERE, DELIBERATELY, and that is the reference's own
+       architecture rather than a collapse: it has ONE surface token (0.05 white) doing both jobs — the table
+       head band and the pill fill are the same colour there. Two role names over one value is what lets the
+       LIGHT scheme, which the reference does not have and which we still ship, keep them apart. */
+    --bg-page: hsl(var(--_sand-2));
+    --bg-subtle: hsl(var(--_sand-3));
+    --bg-inset: hsl(var(--_sand-3));
+    --bg-hover: hsl(var(--_sand-4));
+    --bg-active: hsl(var(--_sand-5));
     --_iris-3: 237 38.4615% 20.3922%; /* #202248 */
     --_iris-6: 239.1304 36.1257% 37.451%; /* #3d3e82 */
     --_iris-9: 240 60% 59.8039%; /* #5b5bd6 */
@@ -334,7 +376,7 @@
     /* A solid fill is LIGHT in dark mode, so the text on it goes dark. This inversion is the structural fix
        for the skip link: it hard-coded `color: #fff` on a background that lightens here, which measured
        2.63:1 against a required 4.5:1 — on the first Tab stop of every page. Nothing hard-codes it now. */
-    --text-on-solid: hsl(var(--_slate-1));
+    --text-on-solid: hsl(var(--_sand-1));
 
     /* TWO NUMBERS. This block used to re-state both shadow values in full; with the alphas as tokens it
        changes only how dark they are, and the three-step structure above is inherited. A drop shadow is
@@ -588,6 +630,7 @@ header.sidebar {
   /* Its own scroll, so a long nav never pushes the page and never scrolls away from a long table. */
   position: sticky;
   top: 0;
+  min-height: 100vh;
   max-height: 100vh;
   overflow-y: auto;
 }
@@ -647,21 +690,39 @@ header.sidebar {
   color: var(--text-muted);
 }
 
-/* The scope block: a hairline card on the same fill as the rail, because a fill difference at 1.06:1 is not
-   a difference (the token block's own measurement). */
+/* THE SCOPE READOUT, AT THE FOOT OF THE RAIL AND WITHOUT A BOX (E30).
+   It was a bordered, rounded, filled card at the TOP of the sidebar holding four lines of small text with
+   nothing saying which line was an organisation and which was a project — so the first thing on every page
+   in this console was a box that read as broken. Three changes, one idea: it sits at the foot, because a
+   standing readout is not a starting point; it has no frame, because a card around a permanent fact is a
+   card that can never be dismissed; and each row names its own ROLE in a gutter, which is the difference
+   between a readout and a stack.
+
+   `margin-top: auto` needs the rail to be at least a screen tall to have spare space to push into, hence the
+   min-height on .sidebar-inner — undone at the mobile breakpoint, where the rail is a wrapping header and
+   there is no foot to sit at. */
 .scope {
+  margin-top: auto;
+  padding-top: var(--space-5);
+  border-top: var(--border-w) solid var(--border-hairline);
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  background: var(--bg-page);
-  border: var(--border-w) solid var(--border-hairline);
-  border-radius: var(--radius-2);
+  gap: var(--space-3);
 }
 .scope-line {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 3.25rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0 var(--space-2);
   margin: 0;
+}
+.scope-role {
+  font-size: var(--font-size-1);
+  line-height: var(--line-height-2);
+  letter-spacing: var(--letter-spacing-1);
+  text-transform: uppercase;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-muted);
 }
 .scope-name {
   font-size: var(--font-size-3);
@@ -669,7 +730,10 @@ header.sidebar {
   font-weight: var(--font-weight-medium);
   color: var(--text);
 }
+/* The id sits UNDER the name in the value column, never beside the role — an id is the same fact spelled for
+   a machine, so it is subordinate to the name rather than a third field. */
 .scope-id {
+  grid-column: 2;
   font-family: var(--font-mono);
   font-size: var(--font-size-2);
   line-height: var(--line-height-2);
@@ -677,6 +741,7 @@ header.sidebar {
   overflow-wrap: anywhere;
 }
 .scope-select {
+  grid-column: 2;
   max-width: 100%;
 }
 
@@ -747,6 +812,7 @@ nav[aria-label="Primary"] {
   }
   .sidebar-inner {
     position: static;
+    min-height: 0;
     max-height: none;
     overflow-y: visible;
     gap: var(--space-4);
@@ -761,6 +827,10 @@ nav[aria-label="Primary"] {
     flex-direction: row;
     flex-wrap: wrap;
     gap: var(--space-1);
+  }
+  /* No foot to sit at when the rail is a wrapping header, so the readout simply follows the nav. */
+  .scope {
+    margin-top: 0;
   }
   .content {
     padding: var(--space-6) var(--space-5) var(--space-8);
@@ -970,7 +1040,10 @@ thead th {
   /* MEASURED PARITY, 2026-07-31: the reference's column head is 13px at weight 500 and is NOT uppercased.
      Ours was 11px semibold uppercase — three devices stacked on one label, which shouts at the reader and
      makes the head compete with the data it introduces. Keeping the tracking and the muted colour is
-     enough separation; the size does the rest. */
+     enough separation; the size does the rest.
+     THE 32px HEIGHT IS HERE NOW rather than on two screens — design-system-measured.md §2, and E30 is the
+     tree-wide pass the old scoped rule was waiting for. */
+  height: var(--row-h-thead);
   font-size: var(--font-size-3);
   line-height: var(--line-height-3);
   letter-spacing: var(--letter-spacing-1);
@@ -978,7 +1051,7 @@ thead th {
   color: var(--text-muted);
   background: var(--bg-subtle);
   text-align: left;
-  padding: var(--space-2) var(--space-4);
+  padding: 0 var(--space-4);
   border-bottom: var(--border-w) solid var(--border-hairline);
   white-space: nowrap;
 }
@@ -991,11 +1064,25 @@ thead th:last-child {
   border-top-right-radius: var(--radius-2);
 }
 
+/* THE 46px ROW, TREE-WIDE (design-system-measured.md §2). `height` on a table cell is a MINIMUM rather than a
+   cap — a cell holding a rename control or a wrapped sentence grows past it and the row follows, which is
+   what makes one number safe on nineteen tables of very different content. `vertical-align: middle` is what
+   the height buys: at 46px with top alignment a one-line cell floats above the row it belongs to. */
 tbody td {
+  height: var(--row-h-table);
   text-align: left;
-  vertical-align: top;
-  padding: var(--space-3) var(--space-4);
+  vertical-align: middle;
+  padding: var(--space-2) var(--space-4);
   border-bottom: var(--border-w) solid var(--border-hairline);
+}
+/* A cell that holds a BLOCK — a rename control, a wrapped list of chips — goes back to top alignment, because
+   a multi-line cell centred against a single-line neighbour reads as misaligned rather than as centred. */
+tbody td:has(.rename),
+tbody td:has(.chip-list),
+tbody td:has(pre) {
+  vertical-align: top;
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-3);
 }
 tbody td:first-child {
   padding-left: var(--space-5);
@@ -1142,11 +1229,20 @@ textarea:disabled {
 }
 
 /* A field's spacing lives on the wrapper ResourceForm/Picker/SecretField already render, so no markup moves:
-   each is a <div> holding a label, a control and an optional hint. */
-form > div {
+   each is a <div> holding a label, a control and an optional hint.
+
+   THE SECOND SELECTOR IS THE E30 FIX AND IT WAS A REAL DEFECT FOR ONE BUILD. `form > div` is a CHILD
+   combinator, and the sectioned layout puts a `.section-body` between the form element and its fields — so
+   the moment §11 landed, every field on every screen lost its spacing at once and the labels sat directly on
+   the hint above them. Nothing failed: axe does not judge margins and the contrast sweep does not either. It
+   was found by looking at a screenshot, which is the only thing that could have found it, and it is written
+   down because the next wrapper somebody inserts will break it the same way. */
+form > div,
+.section-body > div {
   margin-bottom: var(--space-5);
 }
-form > div > .muted {
+form > div > .muted,
+.section-body > div > .muted {
   margin: var(--space-2) 0 0;
 }
 
@@ -1986,21 +2082,9 @@ tbody tr[data-selected="true"] td {
   transition: background var(--duration-1) var(--ease), border-color var(--duration-1) var(--ease);
 }
 
-/* MEASURED: table row 46px, header row 32px. Scoped to the two session screens rather than written onto the
-   shared `table` rule — the tree-wide pass owns that, and this way it finds the numbers already right here
-   instead of finding a third set. */
-[data-testid="panel-sessions"] tbody td,
-[data-testid="session-transcript"] tbody td {
-  height: var(--row-h-table);
-  padding-top: 0;
-  padding-bottom: 0;
-}
-[data-testid="panel-sessions"] thead th,
-[data-testid="session-transcript"] thead th {
-  height: var(--row-h-thead);
-  padding-top: 0;
-  padding-bottom: 0;
-}
+/* THE ROW HEIGHTS MOVED TO THE SHARED TABLE RULE (E30 reference match). What was here scoped 46px/32px to
+   the two session screens with the note "the tree-wide pass owns that" — this is that pass, so the numbers
+   are in §6 on `tbody td` / `thead th` and every table in the console has them. Nothing is left here. */
 
 /* MEASURED CHIP: h 25px, padding 2px 6px, radius 5.5px. */
 .chip {
@@ -2295,4 +2379,180 @@ tbody tr[data-selected="true"] td {
 .template-errors ul {
   margin: var(--space-2) 0 0;
   padding-left: var(--space-6);
+}
+
+/* ============================================================ 11. THE SECTIONED FORM ======================= */
+
+/* THE TWO-COLUMN SECTION ROW — the reference's most copyable shape, and the one thing this console had
+   nowhere (E30 reference match). Measured with getComputedStyle on the reference's agent-detail page,
+   2026-08-01, and taken as values rather than approximated:
+
+     row          display:flex   gap:28px   padding:0   width:768px
+     left  224px  the section's title and its ONE-SENTENCE description
+     right 516px  the fields
+     section title        15px / 20px  w580
+     section description  14px / 20px  w400, secondary colour
+     field control        height 32px, filling its column
+
+   224 + 28 + 516 = 768, which is the whole geometry.
+
+   THE 768px IS THE POINT, NOT THE TWO COLUMNS. Our forms stretched a password field and a repository name
+   across a 78rem page — 1350px of empty box, which is what makes a screen read as a field on a monitor
+   rather than as a document somebody fills in. A measure this narrow is why the reference's detail pages
+   read as documents. `min(48rem, 100%)` rather than a flat 48rem so the row is still a row on a narrow
+   window; under 56rem it stacks, because a 224px column of prose beside a 516px column of fields does not
+   survive a phone.
+
+   IT IS A PRIMITIVE AND NOT MARKUP ON ONE PAGE. components/ResourceForm.tsx renders every one of its twelve
+   callers into this shape by default — the heading and the note it already took become the left column and
+   the fields become the right — so a screen inherits the geometry without being edited. That is why this is
+   a stylesheet block and a component prop rather than a page. */
+
+.section-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--section-gap);
+  width: min(var(--section-w), 100%);
+  margin: 0 0 var(--space-7);
+}
+.section-row:last-child {
+  margin-bottom: 0;
+}
+.section-aside {
+  flex: 0 0 var(--section-aside-w);
+  max-width: var(--section-aside-w);
+}
+/* MEASURED 15px / 20px AT WEIGHT 580, and 15 is deliberately NOT a numbered step in §1's scale: that ladder
+   runs 11 · 12 · 13 · 14 · 16 · 18 · 22 · 28 · 36 and the reference's is finer here. Inserting a step would
+   renumber every rule in this file for one element, so the measurement is carried as a role token instead —
+   named for what it is, with the number it was read from.
+
+   ON THE 580: it is the variable-font intermediate the reference's scale ships, and whether this console
+   RENDERS it depends on the platform's system-ui carrying a weight axis. That is MEASURED rather than
+   assumed — tests/contrast.spec.ts's "the type scale's 580" leg lays out the same string at 400/500/580/600
+   and compares rendered widths, because getComputedStyle reports the SPECIFIED weight and would say "580" on
+   a machine that drew 600. The verdict is printed on every run, so "580 silently became 600" is a line in
+   the log rather than a belief. */
+.section-title {
+  margin: 0;
+  font-size: var(--font-size-section);
+  line-height: var(--line-height-3);
+  letter-spacing: var(--letter-spacing-5);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text);
+}
+/* ONE SENTENCE, AND THE COLUMN IS WHAT ENFORCES IT (design-system-measured.md §5 rule 8: "Her bölüm
+   açıklaması tek cümle + `Learn more`. Paragrafları süpür."). A 224px column turns a three-sentence note
+   into a twelve-line wall the author has to look at, which is the cheapest possible pressure toward the
+   rule. `Learn more` rides at the end of the same paragraph rather than on its own line — it is part of the
+   sentence, not an action. */
+.section-note {
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-4);
+  line-height: var(--line-height-4);
+  color: var(--text-muted);
+}
+.section-body {
+  flex: 1 1 var(--section-body-w);
+  min-width: 0;
+  max-width: var(--section-body-w);
+}
+/* A field inside the section fills its column rather than taking §7's 34rem cap: the column IS the measure
+   now, and two different widths on one row is what made the old forms look ragged. */
+.section-body input[type="text"],
+.section-body input[type="password"],
+.section-body input[type="search"],
+.section-body textarea,
+.section-body .ui-select-trigger {
+  max-width: 100%;
+}
+.section-body > div:last-child {
+  margin-bottom: 0;
+}
+/* The section's own control — the reference's `+ Add subagent`, `+ Add skill`, `+ Add MCP server` — at the
+   foot of the RIGHT column, where the thing it adds will appear. */
+.section-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+.section-row + .section-row {
+  border-top: var(--border-w) solid var(--border-hairline);
+  padding-top: var(--space-7);
+}
+
+/* UNDER 56rem THE ROW STACKS. The aside keeps its order — a section's name still comes before its fields —
+   and gives up its fixed width, which is the only honest thing a 224px column can do on a 375px screen. */
+@media (max-width: 56rem) {
+  .section-row {
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+  .section-aside,
+  .section-body {
+    flex: 1 1 auto;
+    max-width: 100%;
+  }
+}
+
+/* --- THE DETAIL PAGE'S HEAD (console-interaction-reference.md §4, measured 2026-08-01) ------------------
+   Breadcrumb · title with its status pill INLINE · a quiet metadata line · the tab row · a control row.
+
+   THE METADATA LINE IS NOT A CHIP ROW, and that is the correction. Ours put the id, the revision count and
+   the model into five bordered chips under the title — five boxes for facts nobody acts on. The reference
+   puts the same facts in one muted line: the full id and `Last updated 6 days ago`, in the secondary colour,
+   with no box at all. A chip is for a value you can click; a reading is a reading. */
+.detail-head-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: var(--space-3) 0 0;
+}
+.detail-head-row > .page-title {
+  margin: 0;
+}
+.detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-4);
+  margin: var(--space-2) 0 var(--space-5);
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-3);
+  color: var(--text-muted);
+}
+.detail-meta code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+/* The control row under the tabs: the version selector on the left, the view toggle pushed right. */
+.detail-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+.detail-controls > .panel-tools {
+  margin-left: auto;
+}
+.detail-controls label {
+  margin: 0;
+}
+/* The version selector reads as one control: a label and its value on one line, not a stacked field. */
+.inline-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.inline-field > label {
+  margin: 0;
+  white-space: nowrap;
+}
+.inline-field .ui-select-trigger {
+  width: auto;
+  min-width: 9rem;
 }
