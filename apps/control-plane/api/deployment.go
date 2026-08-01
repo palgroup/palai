@@ -141,6 +141,10 @@ type deploymentSetting struct {
 	// different facts about the same machine.
 	Desired    string `json:"desired"`
 	DesiredSet bool   `json:"desired_set"`
+	// ValueGrammar names the shape a written value must have — the STANDARD LIBRARY CALL this binary's own
+	// reader makes, so a console can tell an operator "a Go duration" instead of leaving them to discover
+	// that `10min` is not one by watching it not take effect. Empty when the setting is not writable.
+	ValueGrammar string `json:"value_grammar,omitempty"`
 	// Drift is DesiredSet && Desired != Value: this process is not running what the document asks for, so
 	// a bring-up is pending. It compares the raw environment STRINGS, which is what the next bring-up will
 	// export — see desiredDrift for why comparing behaviour instead gets PALAI_DISPATCH_WORKERS backwards.
@@ -655,7 +659,9 @@ func deployment(desired DesiredConfigAPI) http.HandlerFunc {
 				ReaderFile: entry.ReaderFile, ReaderFunc: entry.ReaderFunc,
 				Writable: isWritable,
 			}
-			if !isWritable {
+			if isWritable {
+				row.ValueGrammar = entry.DesiredValue
+			} else {
 				row.NotWritableBecause = nonDesiredReason[entry.Name]
 			}
 			if doc != nil {

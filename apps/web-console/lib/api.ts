@@ -36,8 +36,13 @@ export async function apiGet<T = unknown>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-// apiSend writes a /v1 resource through the relay (POST/PATCH/DELETE).
-export async function apiSend<T = unknown>(method: "POST" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
+// apiSend writes a /v1 resource through the relay (POST/PUT/PATCH/DELETE).
+//
+// PUT joined the union with E29's desired configuration, and the relay grew a PUT export in the same
+// change. Widening this type WITHOUT that export would have compiled and shipped a form that gets a 405 —
+// a Next.js Route Handler serves only the methods it exports — which is the "declared, and nothing
+// happens" defect the /deployment screen exists to expose.
+export async function apiSend<T = unknown>(method: "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${RELAY}/v1${path}`, {
     method,
     headers: { "Content-Type": "application/json", Accept: "application/json" },
