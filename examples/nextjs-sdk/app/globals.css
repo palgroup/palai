@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+/* THE DEMO'S SURFACE, and the values are MEASURED rather than chosen.
+   design-reference/measured-2026-08-01.md read them off a live console with getComputedStyle:
+   rail rgb(13,13,13) DARKER than the page rgb(26,26,25) — the reverse of what this tree assumed —
+   h1 22/28 w500, item text rgb(195,194,183), muted rgb(137,135,129), accent rgb(155,135,245).
+   Guessing when a measurement exists is the one thing this tree does not forgive. */
+@theme {
+  --color-rail: rgb(13 13 13);
+  --color-page: rgb(26 26 25);
+  --color-ink: rgb(255 255 255);
+  --color-ink-dim: rgb(195 194 183);
+  --color-ink-muted: rgb(137 135 129);
+  --color-accent: rgb(155 135 245);
+  --color-line: rgb(52 52 50);
+}
+
+:root {
+  --background: var(--color-page);
+  --foreground: var(--color-ink);
+  --radius: 0.75rem; /* 12px — the measured dialog/panel radius */
+}
+
+html, body {
+  background: var(--color-page);
+  color: var(--color-ink);
+}
+
+/* KEYBOARD FOCUS STAYS VISIBLE. A demo that removes the ring to look tidy is a demo that cannot be
+   operated without a mouse, and the quality floor for this screen includes being driven from a keyboard. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* REDUCED MOTION IS HONOURED, not approximated: the streaming surfaces below animate, and someone who
+   asked their OS to stop that asked for a reason. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
