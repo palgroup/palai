@@ -105,7 +105,26 @@ export function Dialog({
         <BaseDialog.Popup
           ref={popup}
           className="dialog"
-          role={alert ? "alertdialog" : undefined}
+          // `"dialog"` RATHER THAN `undefined`, AND THE NON-ALERT PATH HAD NEVER BEEN RENDERED UNTIL NOW.
+          //
+          // This read `alert ? "alertdialog" : undefined`, on the assumption that Base UI supplies
+          // `role="dialog"` itself when we do not. MEASURED, 2026-08-01, on the first two non-alert callers
+          // (components/McpCatalogue.tsx and components/AgentTemplates.tsx) — it does not:
+          //
+          //   <div data-open="" id="_R_2j4av5ulb_" tabindex="-1" data-base-ui-focusable=""
+          //        aria-modal="true" data-testid="catalogue-dialog" class="dialog"
+          //        aria-labelledby="base-ui-_r_7_" aria-describedby="base-ui-_r_8_">
+          //
+          // No role at all — so `aria-modal="true"` sat on a plain <div>, which axe-core reports as
+          // `aria-allowed-attr`, impact CRITICAL: "ARIA attribute is not allowed: aria-modal="true"".
+          //
+          // IT WAS INVISIBLE BECAUSE THE BRANCH WAS DEAD. components/ConfirmDestructive.tsx was the only
+          // consumer of this primitive and it passes `alert` unconditionally, so every render this file had
+          // ever produced took the "alertdialog" arm. The default arm — the one a caller gets by NOT asking
+          // for an alert, which is what the tree tells new code to do — shipped broken and no scan could
+          // have caught it, because no scan had a non-alert dialog to open. Both new callers failed on
+          // their first axe scan.
+          role={alert ? "alertdialog" : "dialog"}
           aria-modal="true"
           data-testid={testId}
           initialFocus={initialFocus}
