@@ -456,6 +456,17 @@ function approvalRow(a) {
     operator_label: a.operator_label,
     arguments: a.arguments,
     truncated: a.truncated,
+    // `kind` is UNCONDITIONAL on the real row (api.PendingApproval has no omitempty on it) and the
+    // publication fields are omitempty, so a tool row carries the word "tool" and none of the rest.
+    kind: a.kind ?? "tool",
+    ...(a.publication_id === undefined ? {} : {
+      publication_id: a.publication_id,
+      operation: a.operation,
+      remote: a.remote,
+      branch: a.branch,
+      base: a.base,
+      head_sha: a.head_sha,
+    }),
   };
 }
 
@@ -474,6 +485,39 @@ const approvals = new Map(
       operator_label: "Files a ticket in the team's Jira project — everyone in the company can read it.",
       arguments: APPROVAL_ARGS_JIRA,
       truncated: false,
+    },
+    {
+      // A PUBLICATION APPROVAL, IN THE QUEUE, because as of 2026-08-01 the real one is. It used to be
+      // structurally impossible: PendingToolApprovalsForTenant JOINs tool_calls and a publication's approvals
+      // row carries publication_id with an EMPTY tool_call_id, so GET /v1/approvals answered {"data":[]} while
+      // the row sat in the table — and POST /v1/approvals/{id}/approve answered 404 on it even with the
+      // correct hash. Both halves are fixed (store/approvals.go merges PendingPublicationApprovals; the decide
+      // route falls through to decidePublicationApproval), and this fixture has to move with them or it
+      // becomes a fake that mirrors a bug production no longer has.
+      //
+      // tool_call_id is DELIBERATELY EMPTY. That is the real shape, and it is what a console must not render
+      // as a tool.
+      id: "apvl_console_publication",
+      tool_call_id: "",
+      run_id: "run_console_apvl",
+      session_id: "ses_console_apvl",
+      response_id: "resp_console_apvl",
+      request_hash: "sha256:9ub11ca7",
+      expires_at: "2026-07-30T12:35:00Z",
+      created_at: "2026-07-30T12:00:30Z",
+      kind: "publication",
+      // The real row sets identity to the OPERATION and operator_label to the publication's own recorded
+      // sentence; neither is model prose.
+      identity: "push_branch",
+      operator_label: "push agent/ws_console/run_console_apvl @ adad39c1 -> https://github.com/palai-example/demo.git",
+      arguments: "{}",
+      truncated: false,
+      publication_id: "pub_console_0001",
+      operation: "push_branch",
+      remote: "https://github.com/palai-example/demo.git",
+      branch: "agent/ws_console/run_console_apvl",
+      base: "main",
+      head_sha: "adad39c1a6cae35efd7e8c6a8dfd088ce34c833f",
     },
     {
       id: "apvl_console_0002",
@@ -610,6 +654,38 @@ function ensureDecisionRows() {
       operator_label: "Files a ticket in the team's Jira project — everyone in the company can read it.",
       arguments: `{\n  "project": "OPS",\n  "summary": "release notes for 0.1.1"\n}`,
       truncated: false,
+    });
+  }
+
+  // THE PUBLICATION FAMILY RE-PARKS TOO, and it needs its own pool for the same reason the two above do: an
+  // answered row LEAVES the queue, the light and dark projects run the same specs against THIS one fake, and
+  // a single hand-written row therefore passes on whichever profile reaches it first and fails on the other.
+  // Measured exactly that way before this block existed.
+  if (![...approvals.values()].some((a) => a.decided === undefined && a.id.startsWith("apvl_console_publication_decide"))) {
+    decisionSeq += 1;
+    const id = `apvl_console_publication_decide_${decisionSeq}`;
+    approvals.set(id, {
+      id,
+      // EMPTY, which is the real shape: a publication's approvals row carries publication_id instead, and
+      // that is precisely why the tool-only queue could never return one.
+      tool_call_id: "",
+      run_id: "run_console_apvl",
+      session_id: "ses_console_apvl",
+      response_id: "resp_console_apvl",
+      request_hash: `sha256:9ub11c${String(decisionSeq).padStart(2, "0")}`,
+      expires_at: "2026-07-30T12:45:00Z",
+      created_at: `2026-07-30T13:${String(decisionSeq).padStart(2, "0")}:30Z`,
+      kind: "publication",
+      identity: "open_pull_request",
+      operator_label: "open a pull request from agent/ws_console/run_console_apvl into main",
+      arguments: "{}",
+      truncated: false,
+      publication_id: `pub_console_decide_${decisionSeq}`,
+      operation: "open_pull_request",
+      remote: "https://github.com/palai-example/demo.git",
+      branch: "agent/ws_console/run_console_apvl",
+      base: "main",
+      head_sha: "adad39c1a6cae35efd7e8c6a8dfd088ce34c833f",
     });
   }
 }

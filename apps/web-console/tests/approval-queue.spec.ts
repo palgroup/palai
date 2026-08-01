@@ -385,48 +385,68 @@ test("a deny sends the operator's own reason verbatim, and a deny with no reason
   await expect(page.getByTestId(`tool-approval-facts-${target}`)).toHaveCount(0, { timeout: 15_000 });
 });
 
-test("the queue says what it does NOT cover while a publication approval is parked in a live run", async ({ page }) => {
-  // DIV-UI-001: a compose run reaches no approval.requested.v1 at all, so there is no publication approval to
-  // park on the real profile. The SENTENCE is asserted on both profiles by the test below this one; what needs
-  // the fixture is the half that makes it a measurement rather than a claim — a publication approval genuinely
-  // parked, in another tab, while this queue does not show it.
+test("a publication approval is IN the queue, with the remote and branch the write is going to", async ({ page }) => {
+  // DIV-UI-001: a compose run reaches no approval.requested.v1 at all, so no publication approval can be
+  // parked on the real profile — the row this test reads is the fixture's, mirroring the shape the control
+  // plane now returns (tool_call_id EMPTY, kind "publication", the destination carried alongside).
+  //
+  // THE CONTROL PLANE'S HALF IS PROVEN AGAINST A REAL STORE, not here and not against this fixture: driven on
+  // a live native stack on 2026-08-01, GET /v1/approvals returned the row and
+  // POST /v1/approvals/{id}/approve took the publication pending_approval -> approved, the command to
+  // `applied`, and the parked run waiting -> completed. What this spec owns is the SCREEN: that the row is on
+  // it, that it says where the write is going, and that the button answers it.
   skipOnReal("DIV-UI-001");
 
-  await page.goto("/runs");
-  await page.getByTestId("run-button").click();
-  await expect(page.getByTestId("approval-panel")).toBeVisible({ timeout: 15_000 });
-  const publicationHash = await page.getByTestId("approval-request-hash").innerText();
-  expect(publicationHash, "the publication approval carries the binding this queue must not claim to cover").not.toBe("");
-
-  // A SECOND TAB in the same browser context — the run's stream stays open, so the publication really is still
-  // waiting while the queue is read. Closing the first page would have made this "a queue that does not show an
-  // approval nobody is waiting on", which proves nothing.
   const queue = await page.context().newPage();
   try {
     await queue.goto("/approvals");
     await expect(queue.getByTestId("panel-approvals")).toBeVisible({ timeout: 15_000 });
 
-    // IT IS NOT IN THE LIST — checked by the publication's own facts, not by counting rows.
+    // THIS ASSERTION USED TO BE ITS OWN NEGATION, and inverting it is the point of the change rather than a
+    // side effect. It read "a publication approval appeared in the TOOL approval queue" -> toBe(false), and
+    // the page said so too. Measured 2026-08-01: that exclusion was not a boundary, it was a hole. The row was
+    // invisible here AND undecidable by id (404 with the correct hash), and the only path the page pointed at
+    // — approve inside a live run's stream — accepted the click and applied nothing, three times, until the
+    // approval EXPIRED and released the run with nobody having decided.
     const listed = await queue.getByTestId("panel-approvals").innerText();
-    expect(listed.includes(publicationHash), "a publication approval appeared in the TOOL approval queue").toBe(false);
-    expect(listed.includes("push_branch"), "the publication's operation appeared in the tool approval queue").toBe(false);
-    expect(listed.includes("pub_1"), "the publication's id appeared in the tool approval queue").toBe(false);
+    expect(listed.includes("push_branch"), "the publication's operation is missing from the queue").toBe(true);
 
-    // AND THE PAGE SAYS SO, with the way to the surface that does show it. A silently empty half is the failure
-    // mode this sentence exists to prevent: an operator who learns "approvals live here" will miss the ones
-    // that do not.
+    // AND THE PAGE NO LONGER CLAIMS OTHERWISE.
     const scope = queue.getByTestId("approvals-scope-note");
-    await expect(scope).toContainText("Publication approvals are not here");
-    await expect(scope).toContainText("tool approvals only");
-    await expect(scope.locator('a[href="/runs"]')).toHaveCount(1);
+    await expect(scope).not.toContainText("Publication approvals are not here");
+    await expect(scope).toContainText("gated tool calls and publications");
     await expect(scope, "an empty queue must not read as 'nothing is waiting'").toContainText("does not mean nothing is waiting");
+
+    // THE DESTINATION IS THE POINT, and it is read the way an operator reaches it — by selecting the row they
+    // are about to answer. A publication's `arguments` are `{}` (a push carries none), so without these three
+    // the decision screen would name an operation and show an empty object, and the human would be authorizing
+    // a write to a repository the screen never named. None of it is the model's: remote, branch and base come
+    // from the run's binding, which is why a model cannot name where its own push goes.
+    const pubRow = "apvl_console_publication";
+    await openApproval(queue, pubRow);
+    await expect(queue.getByTestId(`tool-approval-remote-${pubRow}`)).toHaveText("https://github.com/palai-example/demo.git");
+    await expect(queue.getByTestId(`tool-approval-branch-${pubRow}`)).toHaveText("agent/ws_console/run_console_apvl");
+    await expect(queue.getByTestId(`tool-approval-base-${pubRow}`)).toHaveText("main");
+
+    // A TOOL ROW RENDERS NONE OF IT rather than rendering it empty — the two families are not the same
+    // question and a screen that showed "pushing  onto base " for a Jira ticket would be worse than silent.
+    await openApproval(queue, "apvl_console_0001");
+    await expect(queue.getByTestId("tool-approval-destination-apvl_console_0001")).toHaveCount(0);
+
+    // AND IT IS DECIDABLE FROM HERE, which is the half that makes the other half worth anything. A row that
+    // could be read and not answered would be the same defect wearing a better screen.
+    //
+    // A DIFFERENT ROW ANSWERS, for the fixture's own stated reason: the queue is stateful, an answered row
+    // leaves it, and the light and dark projects share one fake — so reading and answering the same row passed
+    // on whichever profile arrived first and failed on the other.
+    const pubDecide = await pickOpen(queue, "apvl_console_publication_decide");
+    await openApproval(queue, pubDecide);
+    await queue.getByTestId(`tool-approval-approve-${pubDecide}`).click();
+    await expect(queue.getByTestId("approvals-decision-status")).toContainText("approved", { timeout: 15_000 });
+    await expect(queue.getByTestId(`tool-approval-facts-${pubDecide}`)).toHaveCount(0, { timeout: 15_000 });
   } finally {
     await queue.close();
   }
-
-  // The publication is STILL parked — the queue read nothing and decided nothing on the other surface.
-  await expect(page.getByTestId("approval-panel")).toBeVisible();
-  await expect(page.getByTestId("terminal-status")).toHaveCount(0);
 });
 
 test("the queue names the key a decision is recorded against, and the two gates in front of it", async ({ page }) => {
