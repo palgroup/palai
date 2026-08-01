@@ -111,13 +111,19 @@ export async function streamRun(
   onFrame: (frame: Record<string, unknown>) => void,
   signal?: AbortSignal,
   agentRevisionId?: string,
+  outputSchema?: string,
 ): Promise<void> {
   const res = await fetch(`${RELAY}/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(
-      agentRevisionId === undefined || agentRevisionId === "" ? { prompt } : { prompt, agent_revision_id: agentRevisionId },
-    ),
+    body: JSON.stringify({
+      prompt,
+      // Each optional key is OMITTED rather than sent empty, so an unpinned, unconstrained run's
+      // request body stays exactly `{prompt}` and the relay's upstream body exactly `{input}` —
+      // the property tests/config-journey.spec.ts asserts on the WIRE.
+      ...(agentRevisionId === undefined || agentRevisionId === "" ? {} : { agent_revision_id: agentRevisionId }),
+      ...(outputSchema === undefined || outputSchema.trim() === "" ? {} : { output_schema: outputSchema }),
+    }),
     signal,
   });
   if (!res.ok || res.body === null) throw await toProblem(res);

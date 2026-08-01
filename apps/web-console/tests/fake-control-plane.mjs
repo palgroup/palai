@@ -41,7 +41,18 @@ const FRAME_GAP_MS = 60;
 // and the counter could say only THAT, not WHICH — so the finding could not be triaged without editing the
 // fixture. A counter whose failure cannot be diagnosed sends the reader to a bisect. The list is bounded by
 // de-duplication, exactly like `paths`.
-const introspect = { v1Requests: 0, nonV1Requests: 0, beareredV1Requests: 0, unbeareredV1Requests: 0, cookieBearingV1Requests: 0, paths: [], nonV1Paths: [] };
+const introspect = { v1Requests: 0, nonV1Requests: 0, beareredV1Requests: 0, unbeareredV1Requests: 0, cookieBearingV1Requests: 0, paths: [], nonV1Paths: [], lastCreateOutput: null };
+
+// THE `output` FIELD OF THE LAST POST /v1/responses, VERBATIM (spec §22.7).
+//
+// It is recorded because the relay calls the upstream SERVER-SIDE: a browser-side page.route cannot see
+// that request, so a spec that only checked the rendered result could not tell "the console sent the
+// schema" from "the console sent nothing and the fake answered the same way regardless". That is the exact
+// class of vacuous assertion this feature exists to remove — a caller believing a schema was in force —
+// so the console's own proof asserts on the WIRE rather than the outcome.
+//
+// `null` means the last create carried NO `output` key at all, which is what an unconstrained run must
+// send: not `{}`, not `{"format":"text"}`, absent.
 
 // Per-session interactive approval state: the SSE pump pauses at approval.requested until an approve
 // command lands on POST /v1/sessions/{id}/commands (a real round-trip through the relay).
@@ -2260,6 +2271,33 @@ export const ROUTES = [
         // a session or an idempotency record behind. The fixture leaves nothing behind either — newRun() is
         // called only after both gates pass — which is what makes the console's "this run did not start"
         // sentence checkable rather than decorative.
+        // Record the output contract this create actually carried, before any refusal below can return.
+        introspect.lastCreateOutput = body.output ?? null;
+        // The §22.7 admission refusals the REAL API makes (packages/outputcontract Parse/Check, surfaced by
+        // api/responses.go validateCreate as a 400 invalid_request). The fixture mirrors the two an operator
+        // can trip from this console — a format it does not implement, and a schema keyword it will not
+        // enforce — because a console that renders a refusal it can never receive is a console whose refusal
+        // path is untested. It is deliberately NOT a reimplementation of Check: it names the same two
+        // classes, and the authority stays the Go package.
+        if (body.output !== undefined && body.output !== null) {
+          const format = body.output.format;
+          if (format !== undefined && format !== "text" && format !== "json_schema") {
+            return sendProblem(response, 400, "invalid_request",
+              `invalid output contract: output.format "${format}" is not supported (accepted: "text", "json_schema")`);
+          }
+          const schema = body.output.schema;
+          if (schema !== undefined && schema !== null) {
+            const unenforceable = ["$ref", "oneOf", "anyOf", "allOf", "not", "pattern", "const"].find((k) => k in schema);
+            if (unenforceable !== undefined) {
+              return sendProblem(response, 400, "invalid_request",
+                `invalid output contract: schema uses "${unenforceable}" at the output, which this server does not enforce`);
+            }
+            if (schema.type === undefined) {
+              return sendProblem(response, 400, "invalid_request",
+                'invalid output contract: schema at the output declares no "type"; an untyped schema constrains nothing and would validate any answer');
+            }
+          }
+        }
         const pin = typeof body.agent_revision_id === "string" ? body.agent_revision_id : "";
         let model = MODEL;
         if (pin !== "") {

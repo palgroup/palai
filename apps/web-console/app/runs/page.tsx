@@ -64,6 +64,11 @@ export default function RunsPage() {
   // the relay omits the field entirely then, so the upstream body is bit-identical to before.
   const [agents, setAgents] = useState<AgentRow[] | null>(null);
   const [agentId, setAgentId] = useState("");
+  // The §22.7 output contract as the operator typed it, and the parse refusal shown beside the box.
+  // The RAW TEXT is state, not a parsed object: re-serialising the operator's document would lose
+  // their formatting on every keystroke, and the text is what the relay is given anyway.
+  const [outputSchema, setOutputSchema] = useState("");
+  const [schemaError, setSchemaError] = useState("");
   const [revisions, setRevisions] = useState<RevisionRow[]>([]);
   // The pickers read page ONE of each collection. Both are newest-first and neither offers a continuation, so
   // the cut is said in words rather than left to look like the whole list (§2). What an operator pins is a
@@ -199,12 +204,29 @@ export default function RunsPage() {
   }
 
   async function run() {
+    // Parse before anything else — before reset(), so a syntax error does not clear the previous
+    // run's timeline, and before setRunning, so the button does not flicker into a disabled state for
+    // a request that was never sent. An empty box is not an error: it is the default.
+    if (outputSchema.trim() !== "") {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(outputSchema);
+      } catch (err) {
+        setSchemaError(`The output schema is not valid JSON: ${(err as Error).message}`);
+        return;
+      }
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        setSchemaError("The output schema must be a JSON object, for example {\"type\":\"object\", ...}.");
+        return;
+      }
+    }
+    setSchemaError("");
     reset();
     setRunning(true);
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      await streamRun(prompt, onFrame, controller.signal, revisionId);
+      await streamRun(prompt, onFrame, controller.signal, revisionId, outputSchema);
       // The run reached its terminal — load the artifacts it produced (through the relay).
       const rid = responseIdRef.current;
       if (rid !== "") {
@@ -311,6 +333,47 @@ export default function RunsPage() {
             here</strong>.
           </p>
         ) : null}
+
+        {/* THE OUTPUT CONTRACT (spec §22.7). Optional, and empty means exactly what it has always
+            meant: free-form text, nothing validated.
+
+            THE PARSE HAPPENS BEFORE SUBMIT, AND THE REFUSAL IS SHOWN. A malformed schema posted to
+            the API comes back as a 400 whose detail is about JSON syntax, which is a slow and
+            confusing way to learn about a missing brace in a box that is still on screen. The check
+            below is a convenience for the operator, NOT the guarantee: the relay parses it again and
+            the API refuses any schema it cannot enforce. A console that treated its own parse as the
+            guarantee would be the same defect this screen's feature exists to fix.
+
+            role="alert" and a glyph-plus-word, per the ResourceForm discipline: a refusal is
+            announced without moving focus, and never signalled by colour alone. */}
+        <label htmlFor="output-schema-input">Output JSON Schema (optional)</label>
+        <p id="output-schema-hint" className="hint">
+          Leave empty for free-form text. With a schema, the model is <strong>constrained</strong> to it and
+          the answer is <strong>validated</strong> before the run is called completed — a run whose output does
+          not satisfy it fails rather than returning prose. Draft 2020-12; <code>$ref</code>, <code>oneOf</code>{" "}
+          and other keywords this server cannot enforce are refused rather than silently ignored.
+        </p>
+        <textarea
+          id="output-schema-input"
+          data-testid="output-schema-input"
+          aria-describedby="output-schema-hint"
+          rows={4}
+          spellCheck={false}
+          value={outputSchema}
+          placeholder={'{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}'}
+          onChange={(e) => {
+            setOutputSchema(e.target.value);
+            if (schemaError !== "") setSchemaError("");
+          }}
+        />
+        {schemaError === "" ? null : (
+          <p role="alert" className="form-error" data-testid="output-schema-error">
+            <span className="glyph" aria-hidden="true">
+              ✖
+            </span>{" "}
+            {schemaError}
+          </p>
+        )}
 
         {runError === "" ? null : (
           <p role="alert" className="form-error" data-testid="run-error">
