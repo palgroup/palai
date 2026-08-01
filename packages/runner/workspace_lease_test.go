@@ -3,6 +3,7 @@ package runner
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/palgroup/palai/packages/contracts"
@@ -59,8 +60,15 @@ func TestParseLeaseOfferCarriesWorkspace(t *testing.T) {
 
 // TestWorkspaceUnderRoot proves carry (b): a lease's workspace path must sit under the runner's
 // managed allocation root before it is bind-mounted, so a control plane cannot make the runner mount
-// an arbitrary host path. A path inside the root passes; a sibling or a traversal outside is
-// rejected; an empty root or path disables the check.
+// an arbitrary host path. A path inside the root passes; a sibling or a traversal outside is rejected;
+// an empty PATH is a workspace-less lease and passes.
+//
+// AN EMPTY ROOT USED TO PASS HERE AND NOW REFUSES. That assertion is not deleted, it is INVERTED, and the
+// inversion is kept in this test rather than only in the new one because a reader who remembers the old
+// behaviour should meet the correction where they expect the old line. The reason is measured and lives in
+// serve.go'"'"'s header: no shipped file ever gave a runner PALAI_WORKSPACE_ROOT, so "an empty root disables
+// the check" described every deployment rather than an old one, which made the check dead code everywhere.
+// TestAnUnsetAllocationRootRefusesAWorkspaceBearingLease is the full argument.
 func TestWorkspaceUnderRoot(t *testing.T) {
 	root := t.TempDir()
 	realRoot, err := filepath.EvalSymlinks(root)
@@ -82,9 +90,11 @@ func TestWorkspaceUnderRoot(t *testing.T) {
 	if err := workspaceUnderRoot(filepath.Join(realRoot, "..", "escape"), realRoot); err == nil {
 		t.Fatal("a traversal above the root was accepted")
 	}
-	// No configured root, or no workspace, disables the check (pre-E09 behaviour).
-	if err := workspaceUnderRoot(outside, ""); err != nil {
-		t.Fatalf("empty root should disable the check: %v", err)
+	// An unset root REFUSES a lease that carries a path — see the header. A workspace-less lease still
+	// passes, with or without a root: there is nothing to place, so there is nothing to refuse.
+	if err := workspaceUnderRoot(outside, ""); err == nil {
+		t.Fatal("an unset allocation root admitted a workspace path; the §24 boundary is off on exactly the " +
+			"configuration every shipped compose file produces")
 	}
 	if err := workspaceUnderRoot("", realRoot); err != nil {
 		t.Fatalf("empty path (workspace-less lease) should pass: %v", err)
@@ -113,5 +123,73 @@ func TestAdmitWorkspaceMountRequiresRunnerOptInForUnsafeBind(t *testing.T) {
 	}
 	if err := admitWorkspaceMount(unsafe, root, true); err != nil {
 		t.Fatalf("unsafe bind rejected despite runner opt-in: %v", err)
+	}
+}
+
+// TestAnUnsetAllocationRootRefusesAWorkspaceBearingLease is the §24 boundary closing on the one
+// configuration every deployment in this tree actually has.
+//
+// WHAT WAS MEASURED, 2026-08-01. `workspaceUnderRoot` returned nil for an empty root — "an empty root
+// disables the check (no managed root configured)" — and NO SHIPPED FILE GIVES A RUNNER THAT ROOT:
+//
+//	runner `environment:` block carries PALAI_WORKSPACE_ROOT?
+//	  deploy/compose/compose.yaml               NO
+//	  deploy/compose/production.yml             NO
+//	  deploy/compose/native-control-plane.yml   NO   <- binds the PATH as a volume, sets no variable
+//	  deploy/airgap/airgap.yml                  NO
+//	docker inspect <live runner> | grep -c PALAI_WORKSPACE_ROOT   -> 0
+//
+// So the branch that "disables the check" was not a compatibility path for old deployments. It was the
+// path EVERY deployment took, which made admitWorkspaceMount's non-unsafe arm dead code and the comment
+// above it — "so a control plane cannot make the runner mount an arbitrary host path such as /etc" —
+// false everywhere.
+//
+// IT WAS NOT EXPLOITABLE AND THAT IS THE POINT. Workspaces are off on compose (`GET /v1/capabilities`
+// reports `workspaces = unavailable`, because the CONTROL PLANE's root is unset too), so no lease carries
+// a WorkspaceHostPath at all. The hole ARMS ITSELF when an operator turns the feature on: main.go:677
+// starts provisioning when the control plane's PALAI_WORKSPACE_ROOT is set, and nothing requires the
+// runner's. One variable name, two planes, two meanings — set the one that makes the feature work and the
+// one that guards it stays silent.
+//
+// SO AN EMPTY ROOT NOW REFUSES A LEASE THAT CARRIES A PATH. A runner that cannot tell whether a path is
+// inside its managed root has no basis on which to mount it, and the fail-open direction hands that
+// decision to the control plane — which is the trust boundary §24 draws. A workspace-LESS lease is
+// untouched: it has nothing to check and it is what every non-coding run sends.
+func TestAnUnsetAllocationRootRefusesAWorkspaceBearingLease(t *testing.T) {
+	somewhere := t.TempDir()
+
+	err := workspaceUnderRoot(somewhere, "")
+	if err == nil {
+		t.Fatal("a lease carrying a workspace path was admitted by a runner with NO managed allocation root. " +
+			"The under-root check is the §24 boundary that stops a control plane naming an arbitrary host path, " +
+			"and an unset PALAI_WORKSPACE_ROOT on the runner switches it off — which is the configuration every " +
+			"shipped compose file produces")
+	}
+	// THE MESSAGE HAS TO NAME THE VARIABLE. "unexpected nil" or "invalid root" sends an operator to read Go
+	// source; the whole reason this deployment surface exists is that the answer was only in `docker inspect`.
+	if !strings.Contains(err.Error(), "PALAI_WORKSPACE_ROOT") {
+		t.Errorf("the refusal does not name the variable that would fix it: %v", err)
+	}
+
+	// A WORKSPACE-LESS LEASE IS UNTOUCHED. Every non-coding run sends one, so refusing here would take the
+	// product down rather than close a boundary.
+	if err := workspaceUnderRoot("", ""); err != nil {
+		t.Errorf("a lease with no workspace was refused by a runner with no root: %v", err)
+	}
+
+	// AND THE SAME THROUGH THE ADMISSION FUNCTION, which is what serve.go actually calls — a check that is
+	// right in a helper and unreachable from the caller is this tree's most-found defect.
+	if err := admitWorkspaceMount(Lease{WorkspaceHostPath: somewhere}, "", false); err == nil {
+		t.Fatal("admitWorkspaceMount admitted a workspace-bearing lease with no allocation root")
+	}
+	// The unsafe arm is unchanged and still needs the runner's own opt-in: it is a DIFFERENT decision, made
+	// explicitly by the operator, and it does not become weaker because the ordinary path got stricter.
+	unsafe := Lease{WorkspaceHostPath: somewhere, WorkspaceUnsafe: true}
+	if err := admitWorkspaceMount(unsafe, "", false); err == nil {
+		t.Error("an unsafe bind was admitted with no runner opt-in")
+	}
+	if err := admitWorkspaceMount(unsafe, "", true); err != nil {
+		t.Errorf("an opted-in unsafe bind was refused because the root is empty; the unsafe arm never consulted "+
+			"the root and must not start now: %v", err)
 	}
 }

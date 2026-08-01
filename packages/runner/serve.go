@@ -346,10 +346,43 @@ func serveLease(ctx context.Context, supervisor *StreamSupervisor, leaseSession 
 
 // workspaceUnderRoot verifies a lease's workspace host path sits under the runner's managed
 // allocation root before it is bind-mounted, so a compromised or buggy control plane cannot make
-// the runner mount an arbitrary host path such as /etc (spec §30.13, carry (b)). An empty root
-// disables the check (no managed root configured); an empty path is a workspace-less lease. Both the
-// root and the path are symlink-resolved so a symlinked allocation cannot smuggle an out-of-root
-// target past the prefix comparison.
+// the runner mount an arbitrary host path such as /etc (spec §30.13, carry (b)). Both the root and the
+// path are symlink-resolved so a symlinked allocation cannot smuggle an out-of-root target past the
+// prefix comparison.
+//
+// AN UNSET ROOT REFUSES A LEASE THAT CARRIES A PATH, AND THAT REVERSES A DECISION RATHER THAN FIXING AN
+// OVERSIGHT. This function used to return nil for an empty root — "disables the check (no managed root
+// configured)" — and packages/runner/workspace_lease_test.go asserted it. The reversal is measured, not
+// preferred. On 2026-08-01 no shipped file gave a runner that root:
+//
+//	runner `environment:` block carries PALAI_WORKSPACE_ROOT?
+//	  deploy/compose/compose.yaml               NO
+//	  deploy/compose/production.yml             NO
+//	  deploy/compose/native-control-plane.yml   NO   <- binds the PATH as a volume, sets no variable
+//	  deploy/airgap/airgap.yml                  NO
+//	docker inspect <live runner> | grep -c PALAI_WORKSPACE_ROOT   -> 0
+//
+// So "pre-E09 behaviour" was not a compatibility path some old deployment was on. It was the path EVERY
+// deployment was on, which made the arm above it dead code and its own comment — "so a control plane
+// cannot make the runner mount an arbitrary host path such as /etc" — false everywhere it shipped.
+//
+// IT WAS NOT EXPLOITABLE, AND THAT IS WHY IT SURVIVED. Workspaces are off on compose (the CONTROL PLANE's
+// root is unset too, so `GET /v1/capabilities` reports `workspaces = unavailable` and no lease carries a
+// path at all). The hole ARMS ITSELF the moment an operator turns the feature on: the control plane starts
+// provisioning when ITS PALAI_WORKSPACE_ROOT is set (palai-control-plane/main.go:677) and nothing requires
+// the runner's. One variable name, two planes, two meanings — set the one that makes the feature work and
+// the one that guards it stays silent.
+//
+// A runner that cannot tell whether a path is inside its managed root has no basis on which to mount it,
+// and failing open hands that decision to the control plane, which is precisely the party §24 draws the
+// boundary against. An empty PATH is untouched: that is a workspace-less lease, which is what every
+// non-coding run sends.
+//
+// WHAT THIS BREAKS, AND WHY THE SAME COMMIT FIXES IT: the NATIVE posture is the one shipped configuration
+// where workspaces work, and its overlay bound ${PALAI_WORKSPACE_ROOT} into the runner as a VOLUME while
+// setting no variable — so this refusal would have refused every coding run on it. deploy/compose/
+// native-control-plane.yml now sets the variable in the runner'"'"'s environment block beside the bind, and
+// TestTheNativeOverlayGivesTheRunnerTheRootItBindsIntoIt is the guard that keeps the two in step.
 // admitWorkspaceMount decides whether the runner may bind-mount a lease's workspace. A normal
 // allocation must sit under the runner's managed root, so a control plane cannot make the runner mount
 // an arbitrary host path (spec §30.13). An unsafe local bind (REP-012) is exempt from that check — but
@@ -366,8 +399,14 @@ func admitWorkspaceMount(lease Lease, allocationRoot string, allowUnsafeBind boo
 }
 
 func workspaceUnderRoot(path, root string) error {
-	if path == "" || root == "" {
+	if path == "" {
+		// A workspace-less lease. There is nothing to place, so there is nothing to refuse.
 		return nil
+	}
+	if root == "" {
+		return errors.New("this lease carries a workspace to bind-mount and this runner has no managed allocation " +
+			"root, so it cannot tell whether the path is one it minted — set PALAI_WORKSPACE_ROOT on the runner to the " +
+			"same host directory the control plane allocates under (spec §30.13, §24)")
 	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {

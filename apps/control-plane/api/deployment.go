@@ -135,6 +135,9 @@ const (
 	// PREVIOUS configuration, and the remedy is a bring-up somebody has to choose to run. Calling it
 	// blocking would put a red banner on a healthy deployment for as long as one setting was pending.
 	warnDesiredPending = "desired_config_pending"
+	// warnWorkspaceRootPlane: this deployment provisions workspaces, and the SAME variable name has a second
+	// reader on a plane this process cannot see. Advisory, and it clears the moment workspaces are off.
+	warnWorkspaceRootPlane = "workspace_root_runner_plane"
 
 	severityBlocking = "blocking"
 	severityAdvisory = "advisory"
@@ -177,6 +180,16 @@ type deploymentSetting struct {
 	// different facts about the same machine.
 	Desired    string `json:"desired"`
 	DesiredSet bool   `json:"desired_set"`
+	// Plane names WHICH PROCESS reads this setting: `control_plane` is this one, `runner_pool` is a machine's
+	// own runner. It is on the wire because a row whose value this process cannot observe must be
+	// DISTINGUISHABLE from one that is genuinely unset — those are opposite facts wearing the same empty
+	// string, and this surface exists because opposite facts wearing one word cost an evening.
+	Plane string `json:"plane"`
+	// Observable is false when the setting is read on ANOTHER plane. The value/set/drift fields are then
+	// empty because this process holds no copy — not because the setting is unset on the machine that does
+	// read it. deployment.go's header calls the alternative "a confident wrong answer, which is worse than
+	// the silence this surface replaces".
+	Observable bool `json:"observable"`
 	// ValueGrammar names the shape a written value must have — the STANDARD LIBRARY CALL this binary's own
 	// reader makes, so a console can tell an operator "a Go duration" instead of leaving them to discover
 	// that `10min` is not one by watching it not take effect. Empty when the setting is not writable.
@@ -533,6 +546,51 @@ var deploymentCatalogue = []catalogueEntry{
 	},
 
 	// --- what this process says it is -----------------------------------------------------------------
+	// --- THE RUNNER PLANE. Read by cmd/runner, NOT by this process ------------------------------------
+	//
+	// TWO ENTRIES, AND THE REASON THEY ARE HERE IS THE REASON THEY WERE NOT. The compose walk
+	// (TestEveryComposeSettingIsCataloguedOrDeclaredUnreported) can only see what compose SETS, and
+	// compose.yaml's runner block sets neither of these — measured 2026-08-01, `docker inspect` on the live
+	// runner found 0 of 3 for WORKSPACE_ROOT/POSTURE/POOL. So a one-directional sweep reported a complete
+	// catalogue while two variables the runner binary reads were in it nowhere. That is the shape CLAUDE.md
+	// names: a walk finds what exists and only a LIST finds what does not.
+	//
+	// THEY CARRY value="" ON EVERY DEPLOYMENT AND THAT IS THE POINT, not a defect in the rows. This process
+	// holds no copy of a runner-scoped variable — which is exactly why PALAI_RUNNER_CONCURRENCY stays in
+	// unreportedSettings rather than becoming a third entry here: it is a NUMBER an operator would read as
+	// this deployment's concurrency, and reporting an unset copy of it would be the confident wrong answer
+	// deployment.go's header refuses. These two are different: their VALUE is not what a reader wants, their
+	// EXISTENCE is. `Effect` says what the runner does with each and `Default` says what a runner that was
+	// given nothing falls back to, which is the question an operator debugging an unplaced run actually has.
+	//
+	// They are on the runner plane, so desiredWritable() never admits them (the plane check in
+	// DecodeDesiredSettings refuses a control-plane document that names one) and the runner plane has no
+	// writer at all yet. Catalogued now because a catalogue that omits what nothing sets is a catalogue that
+	// will keep omitting it.
+	{
+		Name: "PALAI_RUNNER_POSTURE", Group: "fleet", Kind: kindValue, Plane: planeRunnerPool,
+		Default: "unset — the machine declares no posture and the registry places it on its pool's own (fleet/store.go)",
+		Effect: "What KIND of machine this runner is, declared by the machine at enrolment: `sandboxed-linux` is a " +
+			"container runner, `unsandboxed-host` is a rented Mac. The registry REFUSES an enrolment whose declared posture " +
+			"disagrees with its pool's, so this is the one runner-reported field that can turn a bring-up into a refusal.",
+		Mutability: mutabilityBringUp,
+		ChangeWith: "set it on the RUNNER and restart that machine's runner; the pool's own posture is changed through " +
+			"POST/PATCH /v1/runner-pools, and the two must agree",
+		ReaderFile: "cmd/runner/main.go", ReaderFunc: "loadConfig",
+	},
+	{
+		Name: "PALAI_RUNNER_POOL", Group: "fleet", Kind: kindValue, Plane: planeRunnerPool,
+		Default: "unset — the machine names no pool and the registry places it on the deployment default",
+		Effect: "WHICH POOL this machine enrols into, and therefore which pool's posture and strict-enrolment rules " +
+			"apply to it. It is the only per-machine configuration axis this product has: a runner's os and arch are " +
+			"reported (and, measured 2026-08-01, reported EMPTY — cmd/runner sends neither), so a pool is how machines are " +
+			"told apart.",
+		Mutability: mutabilityBringUp,
+		ChangeWith: "set it on the RUNNER and restart that machine's runner; an already-enrolled machine keeps the pool " +
+			"it joined with",
+		ReaderFile: "cmd/runner/main.go", ReaderFunc: "loadConfig",
+	},
+
 	{
 		Name: "PALAI_VERSION", Group: "version", Kind: kindValue, Default: "the version stamp baked into this image at build time",
 		Effect:     "Overrides the baked release stamp, which decides the §48.2 support window and what an upgrade records as applied_by.",
@@ -630,6 +688,13 @@ var nonDesiredReason = map[string]string{
 		"model_connections its own base_url, vetted through packages/egress and resolved per request, so an endpoint is a property of a " +
 		"connection rather than of the machine. Writing the deployment-wide one here would re-create the limitation 000051 removed — one " +
 		"custom endpoint per stack — and cost a bring-up to change.",
+
+	// --- read on ANOTHER plane, so this surface has no write path to offer at all --------------------
+	"PALAI_RUNNER_POSTURE": "read by a RUNNER, not by this process. The desired document is keyed by plane and " +
+		"the runner plane has no reader: cmd/runner takes its environment at exec and nothing hands it a document. A pool's " +
+		"posture — which the registry DOES enforce against a machine's declaration — is set through POST/PATCH /v1/runner-pools.",
+	"PALAI_RUNNER_POOL": "read by a RUNNER, not by this process. See PALAI_RUNNER_POSTURE; a machine names its pool at " +
+		"enrolment and an already-enrolled machine keeps the pool it joined with.",
 
 	// --- what this process says it is ------------------------------------------------------------------
 	"PALAI_VERSION": "the release stamp, which decides the §48.2 support window and what an upgrade records as applied_by. It is " +
@@ -741,24 +806,39 @@ func deployment(desired DesiredConfigAPI) http.HandlerFunc {
 
 		body := deploymentBody{Object: "deployment", Settings: make([]deploymentSetting, 0, len(deploymentCatalogue))}
 		for _, entry := range deploymentCatalogue {
-			raw, set := os.LookupEnv(entry.Name)
 			_, isWritable := writable[entry.Name]
 			row := deploymentSetting{
-				Name: entry.Name, Group: entry.Group, Value: reportedValue(raw), Set: set && raw != "",
+				Name: entry.Name, Group: entry.Group,
 				Default: entry.Default, Kind: entry.Kind, Effect: entry.Effect,
 				Mutability: entry.Mutability, ChangeWith: entry.ChangeWith,
 				ReaderFile: entry.ReaderFile, ReaderFunc: entry.ReaderFunc,
-				Writable: isWritable,
+				Writable: isWritable, Plane: planeOf(entry),
+				Observable: planeOf(entry) == planeControlPlane,
+			}
+			// THE ENV IS READ ONLY FOR THIS PROCESS'S OWN PLANE, and the guard is here rather than on the
+			// value it produces. A runner-plane variable that happens to be exported in the CONTROL PLANE's
+			// shell would otherwise be read, reported, and taken for the machine's — this process reporting
+			// its own copy and labelling it somebody else's, which is the exact thing PALAI_RUNNER_CONCURRENCY
+			// is left out of the catalogue to avoid. Skipping the lookup makes that impossible rather than
+			// unlikely.
+			if row.Observable {
+				raw, set := os.LookupEnv(entry.Name)
+				row.Value, row.Set = reportedValue(raw), set && raw != ""
 			}
 			if isWritable {
 				row.ValueGrammar = entry.DesiredValue
 			} else {
 				row.NotWritableBecause = nonDesiredReason[entry.Name]
 			}
-			if doc != nil {
+			if doc != nil && row.Observable {
 				// The desired value is compared against the RAW environment, not against `row.Value` — which
 				// is reportedValue()'s redacted rendering. Comparing the redaction would report drift on any
 				// value carrying userinfo forever, because the redacted form can never equal what was written.
+				//
+				// AND ONLY ON THE OBSERVABLE PLANE. Drift is "this process is not running what was saved";
+				// for a setting this process does not read, there is nothing to compare and a computed
+				// answer would be a claim about a machine.
+				raw := os.Getenv(entry.Name)
 				row.Desired, row.DesiredSet = doc.Settings[entry.Name]
 				row.Drift = row.DesiredSet && row.Desired != raw
 			}
@@ -806,6 +886,38 @@ func deploymentWarnings() []deploymentWarning {
 			Remedy: "Recreate the control-plane with PALAI_DISPATCH_WORKERS=1 or higher. `make local-up` and deploy/compose/compose.yaml " +
 				"default it to 0; the production overlay defaults it to 1.",
 			Settings: []string{"PALAI_DISPATCH_WORKERS"},
+		})
+	}
+	// THE VARIABLE WITH TWO READERS. PALAI_WORKSPACE_ROOT means "allocate workspaces here" to this process
+	// (main.go:677, and it is what makes GET /v1/capabilities advertise `workspaces`) and "refuse to
+	// bind-mount a leased path outside here" to a RUNNER (cmd/runner/main.go:120). One name, two planes,
+	// two jobs — which is why the desired document is keyed by plane and why this warning exists.
+	//
+	// IT CLAIMS ONLY WHAT THIS PROCESS KNOWS, and that is the whole care in it. It does NOT say the runner's
+	// copy is missing: this process holds no copy of a runner-scoped variable and deployment.go's header
+	// records what a reader that forgets produces — "a confident wrong answer, which is worse than the
+	// silence this surface replaces". What it says is that turning workspaces on HERE created a requirement
+	// THERE, and names both so the operator can go and look.
+	//
+	// MEASURED 2026-08-01: not one shipped file put PALAI_WORKSPACE_ROOT in a runner's environment block
+	// (compose.yaml, production.yml, native-control-plane.yml, airgap.yml — all NO; `docker inspect` on the
+	// live runner → 0), and an unset root used to DISABLE the runner's check entirely. It now refuses, so
+	// the failure is a refused lease rather than an arbitrary host mount — which is the safe direction and
+	// still a stack that does not work until somebody is told.
+	if os.Getenv("PALAI_WORKSPACE_ROOT") != "" {
+		out = append(out, deploymentWarning{
+			Code: warnWorkspaceRootPlane, Severity: severityAdvisory,
+			Headline: "Workspaces are provisioned here, and every machine that mounts one needs the same variable set on ITS side.",
+			Detail: "PALAI_WORKSPACE_ROOT is set on this control plane, so runs get workspaces allocated under " +
+				quotedOrUnset(os.Getenv("PALAI_WORKSPACE_ROOT")) + ". The same variable name is read a SECOND time by each runner " +
+				"(cmd/runner/main.go), where it does a different job: the runner refuses to bind-mount a leased workspace that does " +
+				"not sit under it — the boundary that stops a control plane naming an arbitrary host path. This process holds no copy " +
+				"of a runner's environment and does not claim yours is missing; what it can say is that switching workspaces on here " +
+				"created a requirement there.",
+			Remedy: "Give each runner PALAI_WORKSPACE_ROOT with the SAME host path this control plane allocates under. " +
+				"deploy/compose/native-control-plane.yml sets it beside the bind it already had; a hand-rolled runner may not, and " +
+				"a runner without it now REFUSES a workspace-bearing lease rather than mounting it.",
+			Settings: []string{"PALAI_WORKSPACE_ROOT"},
 		})
 	}
 	if !liveModelProviderConfigured() {

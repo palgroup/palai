@@ -168,8 +168,9 @@ export function DesiredConfig({ reloadKey, onSaved }: { reloadKey: number; onSav
             {fleet.pools === 1 ? "" : "s"}
           </>
         )}
-        . <strong>Nothing here is per-machine.</strong> Saving changes nothing about the running process either: every
-        setting below is read from that process&apos;s environment, which is fixed when it starts.{" "}
+        . <strong>Nothing here is per-machine.</strong>{" "}
+        Saving changes nothing about the running process either: every setting below is read from that process&apos;s
+        environment, which is fixed when it starts.{" "}
         <code>palai up</code> on the machine reads this document and starts the process with it.
       </p>
 

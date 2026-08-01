@@ -44,6 +44,21 @@ export interface DeploymentSetting extends Record<string, unknown> {
   not_writable_because?: string;
   /** The shape a written value must have — "integer" | "rate" | "duration" | "token". See DESIRED_HELP. */
   value_grammar?: string;
+  /**
+   * WHICH PROCESS reads this setting: "control_plane" or "runner_pool". Served so a screen can tell an
+   * unobservable row apart from an unset one — see `observable`.
+   */
+  plane?: string;
+  /**
+   * False when the setting is read on ANOTHER plane. `value` and `set` are then empty because the control
+   * plane holds no copy, NOT because the machine that reads it has none. Those are opposite facts and the
+   * empty string is identical for both, which is exactly the confusion this whole screen exists to end —
+   * so the cell must say which one it is instead of rendering "— unset" for both.
+   *
+   * Absent from an older control plane, which reads as `undefined`; `!== false` therefore treats an
+   * unknown as observable, matching how that deployment behaved.
+   */
+  observable?: boolean;
   /** What the desired document asks for. `desired_set` distinguishes "decided" from "no opinion". */
   desired?: string;
   desired_set?: boolean;

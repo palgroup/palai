@@ -44,6 +44,8 @@ function deploymentBody(options: { desired?: Record<string, string>; drifted?: s
     writable,
     not_writable_because: refusal,
     value_grammar: grammar,
+    plane: name.startsWith("PALAI_RUNNER_") ? "runner_pool" : "control_plane",
+    observable: !name.startsWith("PALAI_RUNNER_"),
     desired: desiredValues[name] ?? "",
     desired_set: name in desiredValues,
     drift: drifted.includes(name),
@@ -53,6 +55,15 @@ function deploymentBody(options: { desired?: Record<string, string>; drifted?: s
     settings: [
       row("PALAI_DISPATCH_WORKERS", "1", true, "integer", ""),
       row("PALAI_QUEUE_DEADLINE", "", true, "duration", ""),
+      // A RUNNER-PLANE row: catalogued, and NOT observable from here. The API never looks up this
+      // process's copy of it, so value/set are empty for a reason the cell has to state.
+      row(
+        "PALAI_RUNNER_POOL",
+        "",
+        false,
+        "",
+        "read by a RUNNER, not by this process. The desired document is keyed by plane and the runner plane has no reader.",
+      ),
       row(
         "PALAI_SECRET_MASTER_KEY_FILE",
         "/run/secrets/master_key",
@@ -268,4 +279,41 @@ test("the panel says which scope it configures, and names the one it does not", 
   await expect(elsewhere).toContainText("runner pool");
   await expect(elsewhere).toContainText("PALAI_RUNNER_CONCURRENCY");
   await expect(page.getByTestId("panel-deployment-settings").locator("table")).not.toContainText("PALAI_RUNNER_CONCURRENCY");
+});
+
+// LEG 5 — A SETTING THIS PROCESS DOES NOT READ IS NOT RENDERED AS "UNSET".
+//
+// This is the founding mistake of the screen, applied to itself. /deployment exists because "unset" meant
+// two opposite things (unset PALAI_DISPATCH_WORKERS runs ONE worker; unset PALAI_S3_ENDPOINT means there
+// is no object store at all) and the table said the same word for both. Cataloguing a RUNNER-scoped
+// setting creates the sharpest version of that: unset PALAI_RUNNER_POOL on a machine means it took the
+// default pool, while "unset" HERE would mean the control plane holds no copy of a variable it never reads
+// — a statement about a different computer.
+//
+// The API refuses to look up a foreign plane's variable at all (so this process's own copy can never be
+// reported as the machine's), and the cell says which kind of empty it is.
+test("a setting read on another plane says so instead of reporting this process's empty copy", async ({ page }) => {
+  await serveDeployment(
+    page,
+    { before: deploymentBody({ desired: { PALAI_DISPATCH_WORKERS: "4" }, drifted: [], revision: 2 }) },
+    { status: 200, json: {} },
+  );
+  await page.goto("/deployment");
+  await expect(page.getByTestId("panel-deployment-settings")).toBeVisible({ timeout: 15_000 });
+
+  const table = page.getByTestId("panel-deployment-settings").locator("table");
+  const runnerRow = table.locator("tr", { hasText: "PALAI_RUNNER_POOL" });
+  await expect(runnerRow).toContainText("read on the machines");
+  await expect(runnerRow).toContainText("not this process");
+  // AND NOT the word the unset rows use, which is what would collapse the two facts back together.
+  await expect(runnerRow).not.toContainText("— unset");
+
+  // A genuinely unset CONTROL-PLANE row still says "unset" with its fallback, or the branch above has
+  // swallowed the whole column.
+  const localRow = table.locator("tr", { hasText: "PALAI_QUEUE_DEADLINE" });
+  await expect(localRow).toContainText("— unset");
+  await expect(localRow).toContainText("uses:");
+
+  // It is not offered as writable either: the runner plane has no reader for a desired document.
+  await expect(runnerRow).toContainText("not settable here");
 });

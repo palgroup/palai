@@ -442,18 +442,80 @@ func TestEverySettingsPlaneIsTheOneItsReaderRunsIn(t *testing.T) {
 		planes[derived]++
 	}
 
-	// THE COUNT IS ASSERTED, not just the agreement. A catalogue that silently acquired a runner-plane entry
-	// would pass every check above and change what this surface IS — it reports the control-plane process's
-	// own environment, and deployment.go's header says a control plane reporting a runner-scoped variable
-	// would be "a confident wrong answer, which is worse than the silence this surface replaces".
-	if planes[planeRunnerPool] != 0 {
-		t.Errorf("%d catalogue entries are on the runner plane. This surface reports THIS PROCESS's environment; "+
-			"a runner-scoped row here would be this process reporting its own (unset) copy and labelling it the "+
-			"machine's", planes[planeRunnerPool])
+	// BOTH PLANES ARE PRESENT, and the catalogue would be less honest with only one. PALAI_RUNNER_POSTURE
+	// and PALAI_RUNNER_POOL are read by cmd/runner and set by NO shipped compose file, so the compose walk —
+	// which can only see what compose sets — reported a complete catalogue while two variables the runner
+	// binary reads were in it nowhere. A walk finds what exists; only a list finds what does not.
+	if planes[planeRunnerPool] == 0 {
+		t.Error("no catalogue entry is on the runner plane, so every assertion about plane handling below is " +
+			"vacuous — and the two settings cmd/runner reads and compose sets nowhere are uncatalogued again")
 	}
-	if planes[planeControlPlane] != len(deploymentCatalogue) {
-		t.Errorf("%d of %d entries are on the control plane; every catalogued setting is read by this process",
-			planes[planeControlPlane], len(deploymentCatalogue))
+	if planes[planeControlPlane]+planes[planeRunnerPool] != len(deploymentCatalogue) {
+		t.Errorf("%d + %d planes ≠ %d entries", planes[planeControlPlane], planes[planeRunnerPool], len(deploymentCatalogue))
+	}
+}
+
+// TestARunnerPlaneRowNeverReportsThisProcessesCopyOfIt is the property that REPLACED "no runner-plane
+// entry exists", and it is the one that matters.
+//
+// Cataloguing a runner-scoped setting creates the exact trap deployment.go's header refuses for
+// PALAI_RUNNER_CONCURRENCY: the handler does os.LookupEnv on every catalogued name, so a runner variable
+// that happens to be exported in the CONTROL PLANE's own shell would be read, reported, and taken by a
+// reader for the machine's value. "A confident wrong answer, which is worse than the silence this surface
+// replaces."
+//
+// So the handler does not look it up at all, and this drives the SHIPPED router with the variable set to a
+// sentinel to prove it. `observable:false` is what the row carries instead — which a screen can render as
+// "this is read on the machines, not here", distinct from "— unset", because those are opposite facts and
+// the empty string is the same for both.
+func TestARunnerPlaneRowNeverReportsThisProcessesCopyOfIt(t *testing.T) {
+	var runnerPlane []catalogueEntry
+	for _, entry := range deploymentCatalogue {
+		if planeOf(entry) == planeRunnerPool {
+			runnerPlane = append(runnerPlane, entry)
+		}
+	}
+	if len(runnerPlane) == 0 {
+		t.Fatal("no runner-plane entry to test; this guard would pass vacuously")
+	}
+	// The trap, set deliberately: the control-plane process holds a value for a variable it does not read.
+	for _, entry := range runnerPlane {
+		t.Setenv(entry.Name, "PALAI-WRONG-PLANE-SENTINEL")
+	}
+	body, raw := deploymentBodyOf(t, bareRouter())
+
+	if strings.Contains(raw, "PALAI-WRONG-PLANE-SENTINEL") {
+		t.Error("this process's own copy of a RUNNER-scoped variable reached the response body. It would be read " +
+			"as the machine's value, and it is not — this process is not the reader")
+	}
+	for _, entry := range runnerPlane {
+		row, ok := settingNamed(body, entry.Name)
+		if !ok {
+			t.Errorf("%s is catalogued and not reported. It is in the catalogue precisely because no compose file "+
+				"sets it and the compose walk could never find it", entry.Name)
+			continue
+		}
+		if row.Observable {
+			t.Errorf("%s is reported as observable by a process that does not read it", entry.Name)
+		}
+		if row.Value != "" || row.Set {
+			t.Errorf("%s reports value=%q set=%v; this process holds no copy of a runner-scoped variable", entry.Name, row.Value, row.Set)
+		}
+		if row.Plane != planeRunnerPool {
+			t.Errorf("%s reports plane %q on the wire, so a screen cannot tell it apart from an unset local setting", entry.Name, row.Plane)
+		}
+		if row.Writable {
+			t.Errorf("%s is offered as writable; the runner plane has no reader for a desired document", entry.Name)
+		}
+		if row.Default == "" {
+			t.Errorf("%s carries no default. Its VALUE is not what a reader wants — its existence and what a runner "+
+				"without it falls back to are, and that is the whole reason to catalogue an unobservable setting", entry.Name)
+		}
+	}
+
+	// AND A CONTROL-PLANE ROW IS STILL OBSERVABLE, or the skip above is skipping everything.
+	if row, _ := settingNamed(body, "PALAI_DISPATCH_WORKERS"); !row.Observable {
+		t.Error("a control-plane setting reports observable=false; the plane skip is disabling the whole surface")
 	}
 }
 
@@ -556,5 +618,57 @@ func TestASettingCannotBeWrittenIntoAPlaneItIsNotReadOn(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "wrong plane") {
 		t.Errorf("the refusal does not say the plane is the problem: %v", err)
+	}
+}
+
+// TestTurningWorkspacesOnWarnsAboutTheOtherPlanesCopy is the screen's half of the two-reader finding.
+//
+// PALAI_WORKSPACE_ROOT is read by this process (allocate workspaces here) and by every runner (refuse to
+// bind-mount a leased path outside here). Setting it HERE turns the feature on; the boundary that guards
+// the feature lives THERE. Measured 2026-08-01: no shipped file gave a runner its copy, and an unset root
+// used to disable the runner's check entirely — so the deployment that made workspaces work was exactly
+// the deployment whose boundary was off.
+//
+// THE WARNING CLAIMS NOTHING ABOUT THE RUNNER'S STATE, and that restraint is the test. This process holds
+// no copy of a runner-scoped variable; a surface that reported one would be doing the thing deployment.go
+// refuses to do for PALAI_RUNNER_CONCURRENCY — "a confident wrong answer, which is worse than the silence
+// this surface replaces". So the assertion is that it names both readers and the remedy, and that it says
+// so without asserting the other plane is misconfigured.
+func TestTurningWorkspacesOnWarnsAboutTheOtherPlanesCopy(t *testing.T) {
+	t.Setenv("PALAI_WORKSPACE_ROOT", "/srv/palai/workspaces")
+	body, _ := deploymentBodyOf(t, bareRouter())
+
+	warn, ok := warningCoded(body, warnWorkspaceRootPlane)
+	if !ok {
+		t.Fatalf("workspaces are provisioned and nothing said the machines that mount them need the same variable. "+
+			"warnings = %+v", body.Warnings)
+	}
+	if warn.Severity != severityAdvisory {
+		t.Errorf("severity = %q, want %q: the deployment works, and what is uncertain is a boundary on a plane this "+
+			"process cannot read — a blocking band would be a red screen on a healthy stack", warn.Severity, severityAdvisory)
+	}
+	for _, want := range []string{"PALAI_WORKSPACE_ROOT", "cmd/runner", "bind-mount"} {
+		if !strings.Contains(warn.Detail, want) {
+			t.Errorf("the detail does not name %q — an operator cannot act on a warning that does not say which "+
+				"two things are involved:\n  %s", want, warn.Detail)
+		}
+	}
+	if !strings.Contains(warn.Remedy, "SAME host path") {
+		t.Errorf("the remedy does not say the two values must match. A runner checking against a DIFFERENT root "+
+			"refuses every coding run, which is a stack that looks configured and works for nothing:\n  %s", warn.Remedy)
+	}
+	// IT MUST NOT CLAIM THE RUNNER IS MISCONFIGURED. This process cannot see a runner's environment, and the
+	// catalogue refuses to report PALAI_RUNNER_CONCURRENCY for exactly that reason.
+	if strings.Contains(warn.Headline, "is not set") || strings.Contains(warn.Detail, "your runners do not") {
+		t.Errorf("the warning asserts a runner's state, which this process cannot observe: %s / %s", warn.Headline, warn.Detail)
+	}
+
+	// AND IT CLEARS. Workspaces off means no lease carries a path, so there is nothing on the other plane to
+	// arm — a banner that never clears is the wallpaper this tree keeps deleting.
+	t.Setenv("PALAI_WORKSPACE_ROOT", "")
+	body, _ = deploymentBodyOf(t, bareRouter())
+	if _, ok := warningCoded(body, warnWorkspaceRootPlane); ok {
+		t.Error("the warning still fires with workspaces off; no lease can carry a workspace path, so there is " +
+			"nothing for a runner to place or refuse")
 	}
 }

@@ -207,6 +207,22 @@ export default function DeploymentPage() {
 // off. Those are opposite facts wearing the same word, so the fallback is rendered rather than left to a
 // reader who would have to know the code to tell them apart.
 function ValueCell({ row }: { row: DeploymentSetting }) {
+  // A SETTING THIS PROCESS DOES NOT READ IS NOT "UNSET", and rendering it that way would be the sharpest
+  // possible version of this screen's own founding mistake: two opposite facts wearing one word. Unset
+  // PALAI_RUNNER_POOL on a runner means the machine took the default pool; "unset" HERE would mean the
+  // control plane holds no copy of a variable it never reads — a statement about the wrong computer.
+  if (row.observable === false) {
+    return (
+      <span className="cell-name">
+        <span className="name" data-unnamed="true">
+          — read on the machines
+        </span>
+        <span className="muted">
+          not this process&apos;s to report. A runner that was given nothing uses: {row.default}
+        </span>
+      </span>
+    );
+  }
   if (!row.set) {
     return (
       <span className="cell-name">
