@@ -306,3 +306,53 @@ FROM approvals a
 JOIN tool_calls t ON t.id = a.tool_call_id
 JOIN runs r ON r.id = t.run_id
 WHERE a.id = $1 AND a.organization_id = $2 AND a.project_id = $3;
+
+-- PendingPublicationApprovalsForTenant is the PUBLICATION half of the Slack-less read, and it exists
+-- because PendingToolApprovalsForTenant above JOINs tool_calls — so a publication approval, whose
+-- approvals row carries publication_id and an EMPTY tool_call_id, could never match it. Measured
+-- 2026-08-01: a push recorded approvals row apr_93e6ef29542cf765 while GET /v1/approvals answered
+-- {"data":[]}, and the console's own /approvals page told the operator to go watch Live runs instead.
+-- A human cannot decide what they cannot see, which is the sentence the tool half was written under;
+-- this is the same sentence applied to the family it left out.
+--
+-- IT MIRRORS ITS SIBLING'S ORDER AND CURSOR EXACTLY — ascending (created_at, id), cursor compared with
+-- `>` — because the two are merged into ONE page by the caller and a half that disagreed about direction
+-- would interleave into a cursor that skips rows. These are questions and the oldest is closest to its
+-- deadline.
+--
+-- AN ELAPSED-BUT-UNSWEPT ROW IS INCLUDED, for the same reason stated on the tool half: p.state is the
+-- authority on whether the question is open, expires_at is a deadline the reaper enforces, and filtering
+-- on the clock here would make this read a second opinion that disagrees with the sweep for the seconds
+-- between them.
+-- name: PendingPublicationApprovalsForTenant
+SELECT a.id, p.id, p.run_id, p.session_id, coalesce(p.response_id, ''), p.operation,
+       coalesce(p.args::text, '{}'), coalesce(a.request_hash, ''), p.state, a.expires_at,
+       a.decided_by, a.created_at, p.remote, p.branch, p.base, p.head_sha, coalesce(p.display, '')
+FROM approvals a
+JOIN publications p ON p.id = a.publication_id
+WHERE p.state = 'pending_approval' AND a.organization_id = $1 AND a.project_id = $2
+  AND ($3::timestamptz IS NULL OR a.created_at >= $3)
+  AND ($4::timestamptz IS NULL OR a.created_at <= $4)
+  AND ($5::timestamptz IS NULL OR (a.created_at, a.id) > ($5, $6))
+ORDER BY a.created_at, a.id
+LIMIT $7;
+
+-- PublicationApprovalByID resolves ONE pending publication approval from the id the list above handed
+-- out, so POST /v1/approvals/{approval_id}/approve can reach the publication family. Its sibling
+-- ToolApprovalByID could not: it JOINs tool_calls, so a publication id fell through to "no such
+-- approval" — a 404 on a row that exists, measured with the correct request_hash on 2026-08-01.
+--
+-- NO ORDER BY AND NO LIMIT, and the reason is ToolApprovalByID's verbatim: approvals.id is the table's
+-- PRIMARY KEY (000013) and publications.id is one too, so this statement returns at most one row. It is
+-- named here rather than assumed because an unordered single-row read is exactly the shape that has
+-- decided a security outcome twice in this tree.
+--
+-- A row belonging to another tenant does not match, so a foreign id is indistinguishable from an unknown
+-- one and the surface answers 404 without confirming it exists.
+-- name: PublicationApprovalByID
+SELECT a.id, p.id, p.run_id, p.session_id, coalesce(p.response_id, ''), p.operation,
+       coalesce(p.args::text, '{}'), coalesce(a.request_hash, ''), p.state, a.expires_at,
+       a.decided_by, a.created_at, p.remote, p.branch, p.base, p.head_sha, coalesce(p.display, '')
+FROM approvals a
+JOIN publications p ON p.id = a.publication_id
+WHERE a.id = $1 AND a.organization_id = $2 AND a.project_id = $3 AND p.state = 'pending_approval';

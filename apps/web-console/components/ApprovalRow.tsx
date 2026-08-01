@@ -47,6 +47,17 @@ export interface ToolApproval extends Record<string, unknown> {
   operator_label?: string;
   arguments?: string;
   truncated?: boolean;
+  // THE PUBLICATION FAMILY (2026-08-01). `kind` is "tool" or "publication"; the rest are empty on a tool
+  // row. They are on this row because a publication's `arguments` are `{}` — a push carries none — so
+  // without them the screen for "may this write leave the machine" would say the operation name and an
+  // empty object, and an operator would be approving a write to a repository the screen never names.
+  kind?: string;
+  publication_id?: string;
+  operation?: string;
+  remote?: string;
+  branch?: string;
+  base?: string;
+  head_sha?: string;
 }
 
 // DENY_NEEDS_A_REASON is the console's OWN requirement, and the asymmetry with the hash below is deliberate.
@@ -188,6 +199,27 @@ export function ApprovalRow({ approval, onDecided }: { approval: ToolApproval; o
         </dd>
         <dt>What the operator wrote about it at registration</dt>
         <dd data-testid={`tool-approval-operator-label-${id}`}>{approval.operator_label ?? ""}</dd>
+        {/* WHERE THE WRITE IS GOING, on a publication row only. None of it is the model's: remote, branch and
+            base are resolved from the run's repository binding, which is exactly why a model cannot name the
+            destination of its own push. A tool row renders none of this rather than rendering it empty. */}
+        {approval.kind === "publication" ? (
+          <>
+            <dt>Where this write is going</dt>
+            <dd data-testid={`tool-approval-destination-${id}`}>
+              <code data-testid={`tool-approval-remote-${id}`}>{approval.remote ?? ""}</code>
+              {" — pushing "}
+              <code data-testid={`tool-approval-branch-${id}`}>{approval.branch ?? ""}</code>
+              {" onto base "}
+              <code data-testid={`tool-approval-base-${id}`}>{approval.base ?? ""}</code>
+              {approval.head_sha ? (
+                <>
+                  {" at "}
+                  <code data-testid={`tool-approval-head-${id}`}>{approval.head_sha}</code>
+                </>
+              ) : null}
+            </dd>
+          </>
+        ) : null}
         <dt>Arguments — exactly what will be sent</dt>
         <dd>
           {/* A <pre>, because the server's canonical rendering is whitespace-significant and the indentation is

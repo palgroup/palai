@@ -599,3 +599,102 @@ func (s *Store) PendingToolApprovalForSession(ctx context.Context, tenant Tenant
 	a.Arguments = []byte(args)
 	return a, true, nil
 }
+
+// PendingPublicationApproval is one open PUBLICATION question in the list projection — a push, a pull
+// request or a merge waiting on a human. It is a SEPARATE type from PendingToolApproval rather than a
+// widened one, because the two families answer different questions and share only the approvals row: a
+// gated tool call is "may this argv run", a publication is "may this write leave the machine, to WHICH
+// remote and WHICH branch". Collapsing them would force one of the two to carry fields it never fills.
+//
+// Remote/Branch/Base/HeadSHA are carried because they are the only thing on the screen that says WHERE
+// the write is going. They come from the publication row, which the registry wrote from the run's
+// binding — never from the model, which cannot name a destination (§30.8).
+type PendingPublicationApproval struct {
+	ApprovalID    string
+	PublicationID string
+	RunID         string
+	SessionID     string
+	ResponseID    string
+	Operation     string
+	Arguments     []byte
+	RequestHash   string
+	State         string
+	ExpiresAt     *time.Time
+	DecidedBy     string
+	CreatedAt     time.Time
+	Remote        string
+	Branch        string
+	Base          string
+	HeadSHA       string
+	Display       string
+}
+
+// PendingPublicationApprovals reads the publications in a project awaiting a human, OLDEST first, within
+// the same window type the tool half uses — so one caller can ask both families for one page and merge
+// them on a shared (created_at, id) order.
+//
+// IT EXISTS BECAUSE THE TOOL HALF STRUCTURALLY CANNOT RETURN THESE. PendingToolApprovalsForTenant joins
+// tool_calls; a publication approval's row carries publication_id and an empty tool_call_id. Measured
+// 2026-08-01: a pending push was invisible on GET /v1/approvals while its row sat in the table.
+func (s *Store) PendingPublicationApprovals(ctx context.Context, tenant Tenant, w ToolApprovalWindow) ([]PendingPublicationApproval, error) {
+	if w.Limit <= 0 {
+		return nil, nil
+	}
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("PendingPublicationApprovalsForTenant"),
+		tenant.Organization, tenant.Project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending publication approvals: %w", err)
+	}
+	defer rows.Close()
+	var out []PendingPublicationApproval
+	for rows.Next() {
+		a, err := scanPendingPublicationApproval(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read pending publication approvals: %w", err)
+	}
+	return out, nil
+}
+
+// PublicationApprovalByID resolves one PENDING publication approval from the id the list handed out, so a
+// decision route keyed on /v1/approvals/{approval_id} can reach the publication family at all. found is
+// false for an unknown id, a foreign one, and one whose publication is no longer pending — all three
+// indistinguishable, so this cannot become an oracle.
+func (s *Store) PublicationApprovalByID(ctx context.Context, tenant Tenant, approvalID string) (PendingPublicationApproval, bool, error) {
+	if approvalID == "" {
+		return PendingPublicationApproval{}, false, nil
+	}
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	a, err := scanPendingPublicationApproval(s.pool.QueryRow(ctx, storage.Query("PublicationApprovalByID"),
+		approvalID, tenant.Organization, tenant.Project))
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return PendingPublicationApproval{}, false, nil
+	case err != nil:
+		return PendingPublicationApproval{}, false, err
+	}
+	return a, true, nil
+}
+
+// scanPendingPublicationApproval reads one row of the publication list projection. Both statements select
+// the same seventeen columns in the same order, so one scanner serves both and a column added to one
+// without the other fails to compile rather than silently mis-binding — the discipline
+// scanPendingToolApproval states for its own pair.
+func scanPendingPublicationApproval(row pgx.Row) (PendingPublicationApproval, error) {
+	var (
+		a    PendingPublicationApproval
+		args string
+	)
+	if err := row.Scan(&a.ApprovalID, &a.PublicationID, &a.RunID, &a.SessionID, &a.ResponseID, &a.Operation,
+		&args, &a.RequestHash, &a.State, &a.ExpiresAt, &a.DecidedBy, &a.CreatedAt,
+		&a.Remote, &a.Branch, &a.Base, &a.HeadSHA, &a.Display); err != nil {
+		return PendingPublicationApproval{}, fmt.Errorf("scan publication approval: %w", err)
+	}
+	a.Arguments = []byte(args)
+	return a, nil
+}

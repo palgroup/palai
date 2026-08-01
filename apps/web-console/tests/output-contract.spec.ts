@@ -70,7 +70,26 @@ test("a run with an empty box sends NO output key at all", async ({ page, reques
 
   // Absent, not `{}` and not `{"format":"text"}`: an unconstrained run's upstream body must stay exactly
   // what it was before §22.7 existed. The opt-in fence, asserted on the wire.
-  expect(await lastCreateOutput(request)).toBeNull();
+  //
+  // POLLED, AND THE ONE-SHOT READ THAT WAS HERE WAS FLAKY. Measured 2026-08-01, this spec run three times
+  // in isolation: 7 passed, 1 FAILED, 7 passed — and the failure printed the CITY schema, which is the
+  // PREVIOUS test's body still sitting in the fixture. The fixture is not at fault: it assigns
+  // `introspect.lastCreateOutput = body.output ?? null` on every create (fake-control-plane.mjs:2363), so
+  // an output-less create does reset it.
+  //
+  // The bug was WHERE THIS WAITED. The assertion is about the wire, and it waited on a UI state — a
+  // `status` that has left "idle" says the console has begun, not that its relay's server-side POST has
+  // reached the upstream and been recorded. Between those two moments the last create is still the one
+  // before, so the read sees a schema this run never sent.
+  //
+  // Polling until it is null is the same assertion made where it belongs, and it cannot pass vacuously: the
+  // previous test leaves a non-null value, so null is reachable ONLY by this run's create landing.
+  await expect
+    .poll(() => lastCreateOutput(request), {
+      message: "the empty-box run's create never reached the upstream, or it carried an `output` key it must not have",
+      timeout: 15_000,
+    })
+    .toBeNull();
 });
 
 test("malformed JSON is refused before submit, and the refusal is shown", async ({ page, request }) => {

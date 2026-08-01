@@ -141,14 +141,48 @@ test("a `$`-separated hash cannot survive the loader, and the console says so wh
   // that is ALREADY destroyed, which is deterministic everywhere.
 
   // ARM ONE: the destruction, measured against @next/env in a directory this test controls.
+  //
+  // THE SALT IS FIXED, AND THE REASON IS A DEFECT I SHIPPED IN THIS TEST. It used to call
+  // legacyDollarHash(), whose salt and key are `randomBytes(16).toString("base64url")` — and this arm then
+  // asserted that NO `$` survived the loader. Measured 2026-08-01 by running the isolated test three times:
+  // PASS, PASS, FAIL, on identical input. The failure printed the value and the value explained itself:
+  //
+  //   scrypt$16384$8$1$-KMee_LqlXWv_G_Gk4G4bQ
+  //
+  // The salt segment is gone and the key segment is INTACT, because `dotenv-expand` only expands `$NAME`
+  // where NAME is a valid identifier. A base64url segment beginning with a letter or `_` is one and gets
+  // eaten; one beginning with `-` or a digit is not, and its `$` survives. Whether a random 16 bytes
+  // base64url-encodes to something identifier-shaped is a COIN FLIP, so both assertions here were coin
+  // flips too — including the `.not.toBe(legacy)` one, which fails outright when BOTH segments happen to
+  // start with a non-identifier character and the whole hash arrives untouched.
+  //
+  // AND THAT IS THE PRODUCT FACT, WHICH IS WORTH MORE THAN THE ASSERTION WAS: a legacy `$` hash's survival
+  // depends on the operator's random salt. The same documented format works on one machine and is destroyed
+  // on the next, with nothing to tell them apart. That is why the dot separator is not merely tidier — it is
+  // the only one whose behaviour does not vary per install.
+  //
+  // So the salts below are FIXED and each one names which side of that line it is on. `S` is
+  // identifier-shaped, `-` is not; the first proves the destruction, the second proves the survival, and
+  // neither can flip.
   const dir = mkdtempSync(join(tmpdir(), "palai-legacy-"));
   try {
-    const legacy = legacyDollarHash(CONSOLE_PASSWORD);
-    writeFileSync(join(dir, ".env.local"), `${PREFIX}${legacy}\n`, { mode: 0o600 });
+    // Identifier-shaped segments: `$salt` and `$key` are both valid references, both expand to nothing.
+    const eaten = "scrypt$16384$8$1$Salt0123456789ab$Key0123456789abcdef";
+    writeFileSync(join(dir, ".env.local"), `${PREFIX}${eaten}\n`, { mode: 0o600 });
     const loaded = loadThroughNextEnv(dir);
     expect(loaded, "@next/env produced nothing at all from a file that has a hash in it").not.toBe(undefined);
-    expect(loaded, "a `$` hash survived @next/env — then dotenv-expand changed behaviour and the dot separator is no longer load-bearing").not.toBe(legacy);
+    expect(loaded, "a `$` hash survived @next/env — then dotenv-expand changed behaviour and the dot separator is no longer load-bearing").not.toBe(eaten);
     expect((loaded ?? "").includes("$"), `the loader left a "$" in the value: ${String(loaded)}`).toBe(false);
+
+    // NOT identifier-shaped: `$-Salt…` is not a reference, so this one arrives WHOLE. It is asserted rather
+    // than merely tolerated, because an operator whose salt happens to look like this has a working legacy
+    // hash and would be told by any weaker test that the format cannot work at all.
+    const survives = "scrypt$16384$8$1$-Salt0123456789a$-Key0123456789abcde";
+    writeFileSync(join(dir, ".env.local"), `${PREFIX}${survives}\n`, { mode: 0o600 });
+    expect(
+      loadThroughNextEnv(dir),
+      "a `$` hash whose segments are NOT identifier-shaped no longer survives — dotenv-expand changed and the per-install coin flip this documents is gone",
+    ).toBe(survives);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
