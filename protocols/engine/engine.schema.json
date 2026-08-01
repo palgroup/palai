@@ -112,6 +112,17 @@
                 "description": "Prior-response conversation history the engine folds in before input (spec §9, §22.2). The controller assembles it from the session's earlier responses; a purged response is carried as a redacted_content marker, and a first response omits it.",
                 "type": "array",
                 "items": {"type": "object"}
+              },
+              "output_contract": {
+                "description": "The run's OUTPUT CONTRACT (spec §22.7), absent when the request named no format — which is every run that does not opt in. The controller resolves it at admission and ALSO applies it itself: it renders the schema as the provider's own decoding constraint on every model request of the run, and it validates the final answer before the response may be called completed. The engine is given it because the engine owns the loop and the terminal frame — it is the only participant that can end a run failed with schema_validation_failed at the boundary where the answer is produced, and the only one that could later spend a bounded repair step on it (§22.7). The controller's own validation is NOT redundant with the engine's: `engine` is a caller-selectable request field, so a third-party engine that ignores this object must still be unable to produce a completed run whose output violates the caller's schema.",
+                "type": "object",
+                "required": ["format", "schema"],
+                "properties": {
+                  "format": {"type": "string", "enum": ["json_schema"], "description": "Only json_schema reaches the engine; a text contract demands nothing and the field is omitted entirely."},
+                  "name": {"type": "string", "description": "The schema's name, forwarded to providers that require one."},
+                  "schema": {"type": "object", "description": "The JSON Schema 2020-12 document the final output must satisfy."},
+                  "strict": {"type": "boolean", "description": "Whether the provider was asked to CONSTRAIN decoding rather than merely be instructed by the schema. Server-side validation runs either way."}
+                }
               }
             }
           }

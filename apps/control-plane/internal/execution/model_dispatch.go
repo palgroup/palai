@@ -210,6 +210,12 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		// production: the model chooses whether to call — the forced (tool_choice:required) pattern
 		// is a test seam only (E09 T4, tools/live), never set here.
 		Tools: advertised,
+		// The run's §22.7 output contract, rendered as the provider's own decoding constraint. nil
+		// for every run that named no format, which keeps a text run's provider request BIT-IDENTICAL
+		// to the pre-§22.7 one (the T1 advertising-regression discipline). This is the line that was
+		// missing: the field, the adapters that send it and the endpoint check that refuses it all
+		// shipped long ago, and nothing ever assigned it.
+		OutputSchema: brokerOutputSchema(st.outputContract),
 		// A ChildRun runs under its parent-intersected budget (spec §25.18); a root run stays
 		// unbounded here (0). Enforcement is the broker's Reservation.Admit at settle.
 		Reservation: modelbroker.Reservation{MaxTotalTokens: st.childBudget},

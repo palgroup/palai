@@ -171,3 +171,21 @@ UPDATE runs
 SET skill_pins = $4
 WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND skill_pins IS NULL
 RETURNING id;
+
+-- LatestPublishedAgentRevision resolves an AGENT to the revision a run pinning `agent_id` executes:
+-- its highest-numbered PUBLISHED revision, in the caller's own scope. Returns no rows when the agent
+-- does not exist there (a 404 that discloses nothing about other tenants) — which is DIFFERENT from
+-- the agent existing with nothing published, and the caller distinguishes the two by first asking
+-- AgentProfileExists.
+--
+-- ORDER BY revision_number DESC IS LOAD-BEARING, NOT DECORATION. `LIMIT` without a total order has
+-- decided an outcome wrongly twice in this tree, and here it would pick an ARBITRARY published
+-- revision each time the planner felt like it — two identical requests running two different
+-- agents' configurations, non-reproducibly. revision_number is UNIQUE per profile (000019), so this
+-- order is total and the row is exactly one.
+-- name: LatestPublishedAgentRevision
+SELECT id
+FROM agent_revisions
+WHERE profile_id = $1 AND organization_id = $2 AND project_id = $3 AND published_at IS NOT NULL
+ORDER BY revision_number DESC
+LIMIT 1;

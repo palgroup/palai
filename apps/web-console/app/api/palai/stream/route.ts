@@ -33,8 +33,18 @@ export async function POST(request: Request): Promise<Response> {
   // would have to decide what a revision named "" means, and the honest answer is that the browser sent a
   // control it should not have.
   let agentRevisionID = "";
+  // The OPTIONAL §22.7 output contract. Same shape of decision as the pin above: absent means the
+  // upstream body carries no `output` key at all, so an unconstrained run is bit-identical to what
+  // this handler has always sent.
+  //
+  // THE SCHEMA IS PARSED HERE AND NOT ONLY IN THE BROWSER. The browser parses it too, to show the
+  // operator a syntax error next to the box they typed it in rather than after a round trip — but a
+  // relay that trusted the browser's parse would be trusting a client with what it forwards to an
+  // authenticated upstream. The API refuses an unenforceable schema either way; this is about
+  // sending a well-formed request, not about the API's own guarantee.
+  let outputSchema: Record<string, unknown> | null = null;
   try {
-    const body = (await request.json()) as { prompt?: unknown; agent_revision_id?: unknown };
+    const body = (await request.json()) as { prompt?: unknown; agent_revision_id?: unknown; output_schema?: unknown };
     if (typeof body.prompt !== "string" || body.prompt.trim() === "") {
       return problemResponse(400, "invalid_request", "a non-empty 'prompt' string is required");
     }
@@ -44,6 +54,21 @@ export async function POST(request: Request): Promise<Response> {
         return problemResponse(400, "invalid_request", "'agent_revision_id', when present, must be a non-empty string");
       }
       agentRevisionID = body.agent_revision_id;
+    }
+    if (body.output_schema !== undefined && body.output_schema !== null && body.output_schema !== "") {
+      if (typeof body.output_schema !== "string") {
+        return problemResponse(400, "invalid_request", "'output_schema', when present, must be a JSON string");
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body.output_schema);
+      } catch (err) {
+        return problemResponse(400, "invalid_request", `'output_schema' is not valid JSON: ${(err as Error).message}`);
+      }
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return problemResponse(400, "invalid_request", "'output_schema' must be a JSON object");
+      }
+      outputSchema = parsed as Record<string, unknown>;
     }
   } catch {
     return problemResponse(400, "invalid_request", "request body must be JSON with a 'prompt' string");
@@ -59,8 +84,13 @@ export async function POST(request: Request): Promise<Response> {
       };
       try {
         const palaiStream = client.responses.stream(
-          // The spread is what keeps the unpinned body bit-unchanged: an absent pin adds no key at all.
-          { input: prompt, ...(agentRevisionID === "" ? {} : { agent_revision_id: agentRevisionID }) },
+          // The spreads are what keep the plain body bit-unchanged: an absent pin and an absent
+          // output contract each add no key at all.
+          {
+            input: prompt,
+            ...(agentRevisionID === "" ? {} : { agent_revision_id: agentRevisionID }),
+            ...(outputSchema === null ? {} : { output: { format: "json_schema", schema: outputSchema, strict: true } }),
+          },
           { signal: request.signal },
         );
         enqueue({ type: "status", status: "streaming" });

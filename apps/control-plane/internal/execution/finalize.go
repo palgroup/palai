@@ -135,6 +135,25 @@ func (o *Orchestrator) finalize(ctx context.Context, st *attemptState, frame con
 		return fmt.Errorf("engine terminal frame has unknown outcome %q", outcome)
 	}
 
+	// THE §22.7 BACKSTOP. A run that was given a schema and produced an answer that does not satisfy
+	// it has NOT completed, whatever the engine says. The reference engine checks this itself and
+	// terminates `failed` at the boundary where the answer is produced (loop.py:_finish) — but
+	// `engine` is a caller-selectable request field, so the engine is a seam a third party fills.
+	// The check that must hold for EVERY engine is the one the control plane performs on the bytes
+	// it is about to call a success. The redundancy is deliberate: the engine's check gives a good
+	// terminal at the right boundary, this one makes the guarantee unconditional.
+	//
+	// It downgrades ONLY completed. A run that already failed, was canceled, timed out or exhausted
+	// its budget keeps its outcome: it never claimed to satisfy anything.
+	var schemaProblem *contracts.Problem
+	if outcome == "completed" {
+		if problem := validateTerminalOutput(st, frame); problem != nil {
+			schemaProblem = problem
+			outcome = "failed"
+			terminal = terminalCommands["failed"]
+		}
+	}
+
 	// THE BACKGROUND PARK (E26 T3, §2.3). The model has said it is done; the operating system says a
 	// process this run started is still running. Finishing here would strand that process — nothing
 	// would fold its exit back in, because a terminal run has no next turn — so the run is RELEASED to
@@ -207,7 +226,14 @@ func (o *Orchestrator) finalize(ctx context.Context, st *attemptState, frame con
 	if len(st.childRunIDs) > 0 {
 		proj["child_runs"] = st.childRunIDs
 	}
-	if problem := terminalProblem(terminal.status); problem != nil {
+	// A schema failure carries its OWN problem rather than the generic "the run failed during
+	// execution": the caller stated a contract, and the actionable fact is which part of it the
+	// answer missed. The invalid output stays in the projection above — §22.7 keeps it as the
+	// diagnostic artifact, and it is the same caller, so naming a field in the detail discloses
+	// nothing the response body does not already carry.
+	if schemaProblem != nil {
+		proj["error"] = schemaProblem
+	} else if problem := terminalProblem(terminal.status); problem != nil {
 		proj["error"] = problem
 	}
 	projection, err := json.Marshal(proj)
