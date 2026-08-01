@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
 )
 
@@ -200,5 +201,31 @@ func TestScheduleListRoutes(t *testing.T) {
 	// opened, schedule_occurrences did not, and the two kinds are deliberately separate.
 	if bad := do(t, "GET", base+"/v1/schedules/sch_1/occurrences?status=admitted", ``, nil); bad.StatusCode != http.StatusBadRequest {
 		t.Fatalf("occurrences ?status=admitted = %d, want 400", bad.StatusCode)
+	}
+}
+
+// TestTheShippedOccurrenceLogIsNotRetroGated draws the line E29 T1 nearly crossed. The NEW list carries the
+// `provision` gate (it answers what an operator provisioned, the E25 T7 precedent); the occurrence log,
+// which shipped in E11 with no gate, does NOT — adding one is a contract change, and a key with a narrowed
+// scope set that reads that log today would start receiving 403 for an epic that promised to open reads.
+//
+// It is written as a test rather than left to the comment because the mistake is invisible in review: both
+// handlers begin with an authorize-shaped line, the difference is one identifier, and the fleet of keys
+// this would break all carry an EMPTY scope set in development — which HasScope treats as holding
+// everything. The failure would have appeared only on a deployment that narrowed its keys, which is the
+// deployment that took the security advice.
+func TestTheShippedOccurrenceLogIsNotRetroGated(t *testing.T) {
+	fake := &fakeScheduleAPI{occurrences: []automation.OccurrenceView{{OccurrenceID: "occ_1", State: "admitted"}}}
+	narrow := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1", Scopes: []string{"responses"}}}
+	srv := httptest.NewServer(NewRouter(narrow, nil, nil, nil, nil, nil, nil, nil, fake, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
+	t.Cleanup(srv.Close)
+
+	if resp := do(t, "GET", srv.URL+"/v1/schedules/sch_1/occurrences", ``, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("a key WITHOUT `provision` reading the shipped occurrence log = %d, want 200.\n"+
+			"That route shipped in E11 ungated; narrowing it now is a contract change, not a read route.", resp.StatusCode)
+	}
+	// The other side of the same line: the route this task ADDED does carry the gate.
+	if resp := do(t, "GET", srv.URL+"/v1/schedules", ``, nil); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("a key without `provision` reading the NEW list = %d, want 403", resp.StatusCode)
 	}
 }

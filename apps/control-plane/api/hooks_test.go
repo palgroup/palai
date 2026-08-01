@@ -146,3 +146,29 @@ func TestHookRoutesUnmountedWhenNil(t *testing.T) {
 		}
 	}
 }
+
+// TestHookReadsRequireProvisionAndTheShippedWritesDoNot draws the same line schedules draws: the two reads
+// E29 T1 added answer what an operator provisioned and carry the gate; the E12 create and kill-switch
+// shipped ungated and stay that way, because narrowing a shipped route is a contract change.
+func TestHookReadsRequireProvisionAndTheShippedWritesDoNot(t *testing.T) {
+	reg := &fakeHookRegistry{
+		create:  HookResult{Body: []byte(`{"id":"hook_1","object":"hook"}`)},
+		disable: HookResult{Body: []byte(`{"id":"hook_1","object":"hook","disabled":true}`)},
+		get:     HookResult{Body: []byte(`{"id":"hook_1","object":"hook"}`)},
+	}
+	narrow := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1", Scopes: []string{"responses"}}}
+	srv := httptest.NewServer(NewRouter(narrow, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, reg, nil, nil, SSEConfig{}, nil, nil))
+	t.Cleanup(srv.Close)
+
+	for _, path := range []string{"/v1/hooks", "/v1/hooks/hook_1"} {
+		if resp := do(t, "GET", srv.URL+path, ``, nil); resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("a key without `provision` reading the NEW %s = %d, want 403", path, resp.StatusCode)
+		}
+	}
+	if resp := do(t, "POST", srv.URL+"/v1/hooks", `{"name":"guard"}`, nil); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("a key without `provision` on the SHIPPED create = %d, want 201 — retro-gating it is a contract change", resp.StatusCode)
+	}
+	if resp := do(t, "POST", srv.URL+"/v1/hooks/hook_1/disable", ``, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("a key without `provision` on the SHIPPED disable = %d, want 200", resp.StatusCode)
+	}
+}

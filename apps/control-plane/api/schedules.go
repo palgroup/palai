@@ -234,9 +234,17 @@ func (h *scheduleHandler) listSchedules(w http.ResponseWriter, r *http.Request) 
 // The keyset column is planned_at rather than created_at (the occurrence's own order is the order it was
 // PLANNED in), so the shared cursor's position carries the planned instant. The created_at bounds still
 // mean created_at — see the query.
+// IT IS NOT `provision`-GATED, AND THE TWO NEW LISTS BESIDE IT ARE. That asymmetry is not an oversight and
+// it cost a revert to get right: this route SHIPPED in E11 with no capability gate, and adding one now is a
+// contract change — a key with a narrowed scope set that reads this log today would start receiving 403.
+// The gate belongs on routes that did not exist yesterday, which is exactly the line the E25 T7 precedent
+// draws and which listSchedules' own comment cites. "In practice almost every key has an empty scope set
+// and would not notice" is the reasoning that makes a silent contract change, so it is not the reasoning
+// used. Pinned by TestTheShippedOccurrenceLogIsNotRetroGated.
 func (h *scheduleHandler) listOccurrences(w http.ResponseWriter, r *http.Request) {
-	scope, ok := h.authorize(w, r)
+	scope, ok := middleware.ScopeFrom(r.Context())
 	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
 	q, ok := beginList(w, r, "schedule_occurrences", scope)
@@ -267,13 +275,13 @@ func listWindow(q ListQuery) automation.ListWindow {
 	return window
 }
 
-// authorize resolves the verified scope and enforces the `provision` capability for the E29 T1 reads.
+// authorize resolves the verified scope and enforces the `provision` capability for the ONE route E29 T1
+// added to this family: GET /v1/schedules.
 //
-// THE ASYMMETRY WITH THE SHIPPED WRITES IS DELIBERATE, for the reason hookHandler.authorize spells out and
-// the E25 T7 tool-revision reads set the precedent for: these answer what an operator provisioned, so they
-// sit with the provisioned surfaces; retro-gating create/pause/resume/delete would be a contract change.
-// The occurrence log is gated with them because it is the same question asked over time — WHEN this
-// project's automation fired, and against which trigger.
+// THE ASYMMETRY WITH EVERY SHIPPED ROUTE IS DELIBERATE, for the reason hookHandler.authorize spells out and
+// the E25 T7 tool-revision reads set the precedent for: a new read answering what an operator provisioned
+// sits with the provisioned surfaces, and retro-gating create/pause/resume/delete/get-by-id — or the
+// occurrence log — would be a contract change rather than a read route.
 // HONEST CEILING: a key with an EMPTY scope set holds `provision` implicitly, so this separates a narrowed
 // key from a broad one and never an operator from an operator.
 func (h *scheduleHandler) authorize(w http.ResponseWriter, r *http.Request) (middleware.Scope, bool) {
