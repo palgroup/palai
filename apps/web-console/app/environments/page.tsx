@@ -268,13 +268,21 @@ export default function EnvironmentsPage() {
         testId="environment-value"
         note={
           <>
-            <strong>Create and rotate are the same operation</strong> — <code>secret_refs</code> is
-            append-only, so writing a key that already exists adds a new version rather than replacing one.
-            Key names must match <code>^[A-Z][A-Z0-9_]*$</code> and may not start with <code>PALAI_</code>;
-            names the sandbox reserves (<code>PATH</code>, <code>HOME</code>, and others that depend on the
-            posture) are refused again at execution time, before any process starts.
+            <strong>Create and rotate are the same operation</strong> — writing a key that already exists adds
+            a new version rather than replacing one.
           </>
         }
+        caveat={{
+          summary: "What a key name may be, and which names the sandbox refuses",
+          body: (
+            <p className="muted">
+              <code>secret_refs</code> is append-only, which is why a write is a rotation. Key names must match{" "}
+              <code>^[A-Z][A-Z0-9_]*$</code> and may not start with <code>PALAI_</code>; names the sandbox
+              reserves (<code>PATH</code>, <code>HOME</code>, and others that depend on the posture) are refused
+              again at execution time, before any process starts.
+            </p>
+          ),
+        }}
         fields={[
           {
             name: "environment",

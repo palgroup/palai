@@ -974,7 +974,16 @@ export default function FleetPage() {
                           machine is APPENDED to "Admit" rather than replacing it with an aria-label. Seven
                           buttons each reading a 16-character hash is a column of noise; seven buttons all
                           reading "Admit" are indistinguishable to a screen reader. This is both. */}
-                      <Button variant="primary" testId={`admit-${id}`} onClick={() => void admit(row)}>
+                      {/* NOT `variant="primary"`, AND THE COUNT IS THE ARGUMENT (E31). Five rows in this
+                          table each carried one, and this screen already has two real primaries in its
+                          heads — `+ Create pool` and `+ Mint key`. Seven filled controls on one page is a
+                          page with no primary action at all, which is the opposite of what the weight is
+                          for. The reference puts its per-row actions in a plain control or a `⋯` menu and
+                          keeps the filled one for the head; this is that rule, applied where we broke it.
+                          Nothing about the action changed — same word, same testid, same handler, and the
+                          default button's boundary is the --border-control this suite measures at 3.80:1
+                          light / 4.14:1 dark. */}
+                      <Button testId={`admit-${id}`} onClick={() => void admit(row)}>
                         Admit
                         <span className="sr-only"> {id}</span>
                       </Button>

@@ -129,9 +129,13 @@ pairs.push({ group: "focus", what: "ring on page", fg: "--focus-ring", bg: "--bg
 pairs.push({ group: "focus", what: "ring on band", fg: "--focus-ring", bg: "--bg-subtle", floor: 3 });
 pairs.push({ group: "focus", what: "ring on hovered row", fg: "--focus-ring", bg: "--bg-hover", floor: 3 });
 
-for (const tone of ["ok", "warn", "danger", "info", "neutral"]) {
+for (const tone of ["ok", "warn", "danger", "info", "live", "neutral"]) {
   pairs.push({ group: `status ${tone}`, what: "word on its fill", fg: `--${tone}-text`, bg: `--${tone}-bg`, floor: 4.5 });
   pairs.push({ group: `status ${tone}`, what: "body text on its fill", fg: "--text", bg: `--${tone}-bg`, floor: 4.5 });
+  // The pill's BORDER against the page behind it. It is not a control boundary — a status pill is a <span>
+  // with no handler and no role, so SC 1.4.11 does not judge it — but a band whose border vanishes into the
+  // page is a band with no shape, and shape is one of the three carriers.
+  pairs.push({ group: `status ${tone}`, what: "its border on the page", fg: `--${tone}-border`, bg: "--bg-page", floor: 1.3 });
 }
 pairs.push({ group: "status ok", what: "inline text on page", fg: "--ok-text-inline", bg: "--bg-page", floor: 4.5 });
 pairs.push({ group: "status danger", what: "inline text on page", fg: "--danger-text-inline", bg: "--bg-page", floor: 4.5 });

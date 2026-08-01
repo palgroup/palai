@@ -199,6 +199,51 @@ lines in a card at the top of the rail, is an unframed readout at its **foot** w
 gutter; its "empty dropdown" was never styling — `String(row.display_name ?? row.id)` keeps a `display_name`
 of `""`, because `""` is neither null nor undefined, so the fallback could not fire.
 
+### The sixth status band, and the measurement that picked its hue (E31)
+
+`active`, `running`, `provisioning` and `queued` matched nothing in `components/Status.tsx`'s classifier and
+fell through to `neutral` — so on a list where nineteen of twenty sessions are active, the one column that
+says what a session is *doing* was twenty identical grey pills. `revoked` (→ danger) and `pause`/`hold`
+(→ warn, `‖`) were the two halves of the same defect that needed no new token; this is the third.
+
+**The hue could not be taken from the reference, and that is a measurement rather than a shrug.**
+`design-reference/` records exactly four chromatic families — `--_violet-450` (247.6°), `--_red-450` (0°),
+`--_green-450` (120°), `--_brand-clay` (14.8°) — and the only colour it records for a pill at all is its
+*surface*, `rgba(255,255,255,0.05)`, which is a **neutral**. The reference gives a running state no hue, so
+there is no value to copy; and none of its four families is unclaimed, since violet is the accent slot (ours
+is iris, and a status band wearing the link and focus colour would make a running session look like a
+control), red is `danger`, green is `ok`, and clay is the brand colour the brief says to substitute ours for.
+
+So the hue is ours, chosen on one criterion — distance from the bands it shares a column with. Taken:
+red 0° · amber 46° · grass 131° · blue 206° · iris 240°. **Teal at 172°** sits 41° from grass and 34° from
+blue, the two readings a running pill is next to: `ok` ("this finished") and `info` ("this is waiting").
+Cyan was the obvious pick and is rejected for exactly that reason — at 190° it is 16° from `info`'s blue,
+and *waiting* against *running* is the one adjacency this column cannot afford.
+
+| | word on its fill (L \| D) | body text on its fill | border on page |
+|---|---|---|---|
+| `live` (teal) | 10.85 \| 11.42 | 14.67 \| 12.68 | 1.48 \| 2.10 |
+
+`▸` is U+25B8, which carries no Unicode emoji property, so it needs no variation selector — colour is the
+third carrier here exactly as it is for the other five bands. `node scripts/measure-contrast.mjs` →
+**51 pairs, 0 under floor**.
+
+### `caveat`: the note's background half, at full measure
+
+The 224px column made a real problem visible rather than causing one. The reference's rule is one sentence
+per section; several of ours were three — but three sentences of operator-critical fact ("create and rotate
+are the same operation", "a field you cannot see is a field you did not send"). Cutting them to fit trades a
+true safety statement for a layout. `ResourceForm` now takes a `caveat`: the note keeps its first sentence in
+the column, the rest renders full-width under the rows in the `details.notes` shape this stylesheet already
+argues for. Applied to `/environments`, `/registry` and `/policy` — the three longest.
+
+### One prop off `/fleet`
+
+Five `Admit` buttons in one table each carried `variant="primary"`, on a screen that already has two real
+primaries in its heads. Seven filled controls on one page is a page with no primary action at all. Same word,
+same testid, same handler — the default button's boundary is the `--border-control` this suite measures at
+3.80:1 light / 4.14:1 dark.
+
 ## The primitive layer (`components/ui/`, E29)
 
 Everything under `components/` was a DOMAIN component until this landed — `AgentDiff`, `ApprovalPanel`,

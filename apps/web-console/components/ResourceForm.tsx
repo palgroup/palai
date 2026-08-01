@@ -69,6 +69,27 @@ export interface FormSection {
   action?: ReactNode;
 }
 
+/**
+ * A standing caveat: the part of a note that is background rather than instruction.
+ *
+ * IT EXISTS BECAUSE THE 224px COLUMN MADE A REAL PROBLEM VISIBLE RATHER THAN CAUSING ONE. The reference's
+ * rule is one sentence per section (design-system-measured.md §5 rule 8, "Paragrafları süpür"), and several
+ * of this console's notes are three — but they are three sentences of operator-critical fact: "create and
+ * rotate are the same operation", "the value is shown once and is retrievable from nowhere afterwards". The
+ * tempting fix is to cut them to fit, and that trades a true safety statement for a layout, which is the
+ * wrong direction. So the note keeps its FIRST sentence in the column, where it says what the section is,
+ * and the rest moves here — full width, every word, under the rows.
+ *
+ * `<details>` is the shape app/globals.css already argues for (`details.notes`, "STANDING CAVEATS COLLAPSE,
+ * THE LEAD DOES NOT"): still text, still in the DOM, still keyboard-reachable, and the summary says what is
+ * inside rather than "more".
+ */
+export interface FormCaveat {
+  /** What is inside, in words. Never "More" — a summary that does not say is a summary nobody opens. */
+  summary: string;
+  body: ReactNode;
+}
+
 export interface FormField {
   /** Field name; also the source of the control's id, so the label can never be orphaned. */
   name: string;
@@ -100,6 +121,7 @@ export function ResourceForm({
   title,
   fields,
   sections,
+  caveat,
   submitLabel,
   submittingLabel,
   submitTestId,
@@ -122,6 +144,8 @@ export function ResourceForm({
    * When it is present, `title` and `note` stay where they are: the page's own heading above the rows.
    */
   sections?: FormSection[];
+  /** The background half of a long note, full width under the rows. See FormCaveat for why it is not in the column. */
+  caveat?: FormCaveat;
   submitLabel: string;
   submittingLabel?: string;
   submitTestId?: string;
@@ -218,6 +242,14 @@ export function ResourceForm({
             ))}
             {children}
           </>
+        )}
+        {/* FULL WIDTH, UNDER THE ROWS, AND BEFORE THE SUBMIT. A caveat an operator needs while filling the
+            form cannot sit below the button that ends it. */}
+        {caveat === undefined ? null : (
+          <details className="notes form-caveat">
+            <summary>{caveat.summary}</summary>
+            {caveat.body}
+          </details>
         )}
         {error === "" ? null : (
           <p role="alert" className="form-error" data-testid={testId ? `${testId}-error` : undefined}>

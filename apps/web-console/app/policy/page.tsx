@@ -332,18 +332,26 @@ export default function PolicyPage() {
         // collapses — and as a sibling it drifted onto the wrong form the first time the page was reordered.
         note={
           <span data-testid="policy-assignment-note">
-            {/* THE EXPLICIT SPACE IS LOAD-BEARING, and tests/rendered-copy.spec.ts is why it is written as
-                one: the same sentence lost the same space the FIRST time this note was authored, on this
-                page, and the guard added after that caught this move too. A text child that starts on the
-                line after a closing tag has its leading whitespace trimmed by the JSX transform. */}
+            {/* THE EXPLICIT SPACES ARE LOAD-BEARING, and tests/rendered-copy.spec.ts is why they are written
+                out: the same sentence lost the same space the FIRST time this note was authored, on this
+                page, and the guard added after that caught the next move too. A text child that starts on
+                the line after a closing tag has its leading whitespace trimmed by the JSX transform — which
+                is exactly the shape of edit this split is, so every boundary here is explicit. */}
             <strong>This form writes the WHOLE policy.</strong>{" "}
-            The five fields below are, after you save, the entirety of the project&apos;s{" "}
-            <code>config_policy</code> —{" "}
-            <code>PATCH /v1/projects/{"{id}"}</code> replaces the stored document rather than merging into it,
-            which is why the form reads the current policy before it shows you anything. A field you cannot
-            see is a field you did not send.
+            The five fields below are, after you save, the entirety of this project&apos;s{" "}
+            <code>config_policy</code>.
           </span>
         }
+        caveat={{
+          summary: "Why the form reads the policy first, and what a field you cannot see means",
+          body: (
+            <p className="muted">
+              <code>PATCH /v1/projects/{"{id}"}</code> replaces the stored document rather than merging into
+              it, which is why the form reads the current policy before it shows you anything. A field you
+              cannot see is a field you did not send.
+            </p>
+          ),
+        }}
         fields={[
           {
             name: "policy-allowed-models",
