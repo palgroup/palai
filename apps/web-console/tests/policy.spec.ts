@@ -2,7 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page, type Request as NetRequest } from "@playwright/test";
 
 import { NEXT_PORT, WCAG_TAGS } from "./constants";
-import { announceProfile, chooseOption, sessionHeaders, signIn } from "./profile";
+import { announceProfile, chooseOption, resetFakeFixture, sessionHeaders, signIn } from "./profile";
 
 // THE POLICY DOCUMENT IS WRITTEN WHOLE, OR THE APPROVAL GATE OPENS (E28 T2, plan §3.6 D9).
 //
@@ -26,6 +26,12 @@ import { announceProfile, chooseOption, sessionHeaders, signIn } from "./profile
 // the fixture's PATCH reproduces the real marshal step field for field (tests/fake-control-plane.mjs
 // assignPolicy), so a form that passes here passes against a real control plane for the same reason.
 test.beforeAll(() => announceProfile("policy.spec.ts"));
+
+// THIS FILE MINTS AND REVOKES API KEYS — ADMIN["api-keys"] grows and rows change under it — so it starts
+// from the fixture as authored rather than from what the previous test left. Without this the revoke
+// dialog's focus-trap assertion failed on Tab press 1 while passing in a solo run, and the dialog was
+// innocent: a probe showed the trap containing focus exactly as designed.
+test.beforeAll(resetFakeFixture);
 test.beforeEach(async ({ page }) => signIn(page));
 
 // THE SUBJECT IS SEEDED, NOT NAMED, and that is a profile portability fix rather than tidiness. The first
@@ -281,6 +287,15 @@ test("Tab cannot leave the open dialog, and Escape cancels it", async ({ page })
   // keeps a synchronous keydown wrap, and this line is what says so — a trap that only holds for a human is
   // not what this test was written to accept.
   const inside = () => page.evaluate(() => document.querySelector('[data-testid="key-revoke-dialog"]')?.contains(document.activeElement) === true);
+
+  // FOCUS ENTERS THE DIALOG BEFORE THE TRAP CAN DO ANYTHING, and asserting that is the point rather than a
+  // wait bolted on. The revoke action lives behind a row `⋯` menu, and a menu restores focus to its trigger
+  // when it closes — so for one frame after the dialog opens, document.activeElement is still the menu item
+  // OUTSIDE it. Measured 2026-08-01: t0 = DIV.ui-menu-item, 16ms = BUTTON.ui-button inside, and stable
+  // thereafter. Tabbing at t0 measured a dialog focus had not reached yet, and the trap lives on the
+  // popup's own onKeyDown — a key pressed while focus is outside never reaches it, so the trap could not
+  // have helped. This asserts the property the operator depends on and removes the race in one line.
+  await expect.poll(inside, { message: "focus never entered the dialog — a dialog opened from a menu must take focus from it" }).toBe(true);
   for (let i = 0; i < 20; i++) {
     await page.keyboard.press("Tab");
     expect(await inside(), `Tab press ${String(i + 1)} moved focus out of the dialog`).toBe(true);
@@ -358,3 +373,4 @@ test("window.confirm is still the confirmation for the REVERSIBLE actions", asyn
   await expect(page.getByTestId("panel-environment-keys")).toContainText("CONFIRM_PROBE");
   await expect(page.getByTestId("key-revoke-dialog")).toHaveCount(0);
 });
+

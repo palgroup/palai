@@ -1180,6 +1180,14 @@ sessions.set(SESSIONS[REFUSED_INDEX].id, { approved: false, denied: true, model:
 // when the light project published trev_console_0001.
 const SESSIONS_PRISTINE = structuredClone(SESSIONS);
 
+// AND THE SAME FOR ADMIN, because sessions were not the only collection a spec writes. /policy mints API
+// keys and revokes them (`ADMIN["api-keys"].data.push`, `row.revoked_at = …`), so by the tenth test in
+// policy.spec.ts that list is longer and differently shaped than the fixture authored — which is why the
+// revoke dialog's focus trap failed there and passed when the test ran alone. Measured 2026-08-01: a probe
+// inside a solo run showed the trap working exactly as designed (two controls, focus contained), so the
+// defect was never in the dialog.
+const ADMIN_PRISTINE = structuredClone(ADMIN);
+
 /** findSession is the item read AND the write path's lookup — one place decides what "no such session" means. */
 const findSession = (id) => SESSIONS.find((s) => s.id === id);
 
@@ -2537,7 +2545,9 @@ const server = createServer((request, response) => {
   if (method === "POST" && pathname === "/__reset") {
     SESSIONS.length = 0;
     for (const row of structuredClone(SESSIONS_PRISTINE)) SESSIONS.push(row);
-    return sendJSON(response, 200, { reset: ["sessions"], count: SESSIONS.length });
+    const fresh = structuredClone(ADMIN_PRISTINE);
+    for (const key of Object.keys(ADMIN)) ADMIN[key] = fresh[key];
+    return sendJSON(response, 200, { reset: ["sessions", ...Object.keys(ADMIN)], sessions: SESSIONS.length });
   }
   // The route table as this server dispatches from it — the runtime half of the conformance sweep's
   // "the table IS the surface" claim (the sweep also imports ROUTES directly, and asserts the two agree).
