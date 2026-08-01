@@ -13,6 +13,7 @@ import (
 	"github.com/palgroup/palai/adapters/sandboxes/host"
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
+	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
@@ -671,6 +672,15 @@ func TestEveryDesiredValueThisBinaryAcceptsIsParsedByItsOwnReader(t *testing.T) 
 			// exactly like a real answer. The grammar cannot refuse `Provider-One` (it is a legal token and a
 			// legal provider name for a future adapter), so only the space form is listed.
 			refused: map[string]string{"provider one": "fake", "provider-one\n": "fake"},
+		},
+		{
+			setting: "PALAI_TOOL_ERROR_BUDGET",
+			read:    func() string { return strconv.Itoa(execution.ToolErrorBudget()) },
+			// `0` is unbounded and reads back as 0 — an operator typed it. Everything unparseable falls back
+			// to 16 rather than to infinity, which is the direction that matters: a typo must not remove a
+			// ceiling. The grammar refuses the two shapes a human actually produces.
+			accepted: map[string]string{"32": "32", "0": "0"},
+			refused:  map[string]string{"sixteen": "16", "16 ": "16"},
 		},
 		{
 			setting:  "PALAI_MODEL",

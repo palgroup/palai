@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"fmt"
 
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
@@ -42,8 +41,11 @@ func registryTool(name, kind string) toolbroker.Tool {
 		},
 		OutputSchema: map[string]any{"type": "object"},
 		Exec: func(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
+			// An ANSWER (toolbroker.Answer, answer.go): this deployment wired no registry, nothing was
+			// written, and a model told so can carry on without its checklist instead of the run ending
+			// nowhere. ApplyTask's own error stays a fault — it is a database write.
 			if env.Tasks == nil {
-				return nil, fmt.Errorf("%s tool: no durable task registry wired for this run", name)
+				return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable, "%s tool: no durable task registry wired for this run", name)
 			}
 			op := map[string]any{}
 			for k, v := range args {

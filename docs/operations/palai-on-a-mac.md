@@ -308,6 +308,19 @@ make it wait, and `cmd/runner/main.go` `log.Fatalf`s on a failed enroll with no 
 it — a runner started before the control plane listens is a *dead container*, not a retrying one.
 `UpNative` therefore starts Postgres and the object store, then the control plane, then the runner.
 
+**The runner is the instance; the class is that NOTHING here restarts.** Measured 2026-08-01:
+`deploy/compose/compose.yaml` declares four services — postgres, object-store, control-plane, runner
+— and **none of them carries a `restart:` key**; meanwhile `grep -c 'log.Fatalf\|log.Fatal('` finds
+**6** fatal exits in `cmd/runner/main.go` and **19** in the control plane's own `main.go`. So the
+control plane is the *more* likely of the two to die on a bad start, and it dies just as permanently.
+This is not theoretical: on this machine, a `palai up --native` over an already-running container
+control plane left the native process dead with
+`serve: listen tcp 127.0.0.1:53902: bind: address already in use`, a stale pid file, and a bring-up
+that reported the stack as up — because `--native` profiles the in-compose control plane out of the
+target set rather than STOPPING one a previous non-native `up` left running. **Run `palai local down`
+before switching posture**, and read any "service X must start before service Y" note here as one
+case of a stack where a mis-ordered start is a dead process rather than a slow one.
+
 ### 4.1 It was brought up, on this machine, on 2026-07-28
 
 The paragraph that used to sit here said a full bring-up "has not been run". It has now.
@@ -383,13 +396,22 @@ removed both volumes.
   doctor's check requires that image to exist. It passed only because a container stack on this
   machine had built it. On a Mac that has only ever run natively, expect that check red; it is a
   doctor check written for the container topology, not a broken stack.
-- **A run offered the shell tool with no workspace HANGS rather than failing.** With
-  `config_policy.default_tools` set to `palai.workspace.shell`, `palai up`'s own trivial proof run
-  (which binds no repository) had the model call `{"argv": ["echo","ok"]}`; the tool refused with "no
-  workspace bound for this run", and because the shell tool is `ClassIrreversible` the call went
-  `uncertain` → `manual_resolution` and the run never reached a terminal state. `palai up` then blamed
-  dispatch ("PALAI_DISPATCH_WORKERS must be >= 1"), which was not the cause. This is why the Slack
-  path binds the workspace tools only when a repository exists — measured now, not reasoned about.
+- **A run offered the shell tool with no workspace HANGS rather than failing — FIXED 2026-08-01, and it
+  was never about the shell tool.** With `config_policy.default_tools` set to `palai.workspace.shell`,
+  `palai up`'s own trivial proof run (which binds no repository) had the model call
+  `{"argv": ["echo","ok"]}`; the tool refused with "no workspace bound for this run", and because the
+  shell tool is `ClassIrreversible` the call went `uncertain` → `manual_resolution` and the run never
+  reached a terminal state. `palai up` then blamed dispatch ("PALAI_DISPATCH_WORKERS must be >= 1"),
+  which was not the cause.
+
+  **What this measurement had actually found was every tool error, not this one.** Three days later the
+  same shape was reproduced with the FILE tool on a missing filename and on a correctly-refused
+  traversal, and the cause was one line in the dispatcher: an `Exec` error was returned up rather than
+  turned into a tool result. A tool's refusal is now delivered to the model as a result and the run
+  carries on; a genuine fault still fails the attempt. **`docs/operations/tool-errors.md` is the page**,
+  and it carries the bound that came with it (`PALAI_TOOL_ERROR_BUDGET`, default 16). The Slack path
+  still binds the workspace tools only when a repository exists, which remains the right default for a
+  different reason: a tool that cannot work should not be advertised.
 
 ---
 
@@ -455,9 +477,20 @@ regression this fences, so it goes red. It skips only when there is no stack at 
 
 **Two things this measurement settles that were previously assumed:**
 
-- **`runner_leases` is a dead table.** It has no writer anywhere in the tree and is always empty, so
-  "N live leases" cannot be read from it. The observable lease is the dispatch worker holding a job
-  (`durable_jobs.lease_owner`) and, physically, the engine container the runner started.
+- **`runner_leases` is a dead table** — and it is ONE OF THREE, which is the more useful form of the
+  same fact. It has no writer anywhere in the tree and is always empty, so "N live leases" cannot be
+  read from it. The observable lease is the dispatch worker holding a job (`durable_jobs.lease_owner`)
+  and, physically, the engine container the runner started.
+
+  Swept 2026-08-01 — every table `storage/migrations/*.up.sql` creates, against every `INSERT INTO` /
+  `UPDATE` in shipped (non-test) Go and SQL: **96 tables, 3 with no writer** — `runner_leases`,
+  `inbox` and `messages`, all three created by `000001_core` and never written since. (`usage_events`
+  was the fourth and migration `000034` DROPPed it, which is what retiring one properly looks like.)
+  `inbox` and `messages` have no mention in shipped code at all; `runner_leases` has exactly one, and
+  it is not a writer — `install_backup.go`'s `bootInfraTables`, so backup/restore classifies an
+  always-empty table as boot infrastructure. **Read this as a class, not as three names**: a table
+  this tree creates is not evidence that anything fills it, and the query that decides an operational
+  question ("how many leases are live?") has to be run against a table with a demonstrated writer.
 - **Nothing serialises the path in code.** The gateway hands out engines over an unbuffered channel
   with no lock (`RunnerGateway.Dial`), and the runner parks N independent lease loops on one enrolled
   identity (`packages/runner/serve.go`). Concurrency here was **configuration only** — no code change

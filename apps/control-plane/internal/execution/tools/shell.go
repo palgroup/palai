@@ -45,16 +45,29 @@ func ShellTool() toolbroker.Tool {
 // shellExec runs one sandboxed command. It classifies any egress destination named in the argv into
 // an audit finding (the sandbox itself denies all egress), then runs the argv through the injected
 // sandbox shell runner and returns its bounded, redacted result.
+// THE THREE PRE-FLIGHT REFUSALS BELOW ARE ANSWERS (toolbroker.Answer, answer.go) AND THE TWO RUN
+// FAILURES BELOW THEM ARE NOT, and the line between them is where the command starts. Nothing has been
+// executed at the top of this function, so "there is no shell posture on this deployment", "this run has
+// no workspace" and "argv is not an array of strings" are all statements about a call that did not
+// happen — the model is told and the run continues. Once env.Shell.Run or StartBackground is entered a
+// process may exist, and a process that may exist is exactly what `uncertain` is for, so those keep
+// today's abort.
+//
+// A NON-ZERO EXIT CODE WAS NEVER ON THIS PATH AT ALL and still is not: it is a field of a successful
+// result (`exit_code`), which is why `false` completed cleanly while a missing workspace wedged the run.
+// That asymmetry was the whole diagnosis, and this is the half of it that changes.
 func shellExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
 	if env.Shell == nil {
-		return nil, fmt.Errorf("shell tool: no sandbox shell runner wired for this run")
+		return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable,
+			"shell tool: no sandbox shell runner wired for this run")
 	}
 	if env.WorkspaceRoot == "" {
-		return nil, fmt.Errorf("shell tool: no workspace bound for this run")
+		return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable,
+			"shell tool: no workspace bound for this run")
 	}
 	argv, err := toArgv(args["argv"])
 	if err != nil {
-		return nil, fmt.Errorf("shell tool: %w", err)
+		return nil, toolbroker.Answerf(toolbroker.AnswerInvalidArguments, "shell tool: %w", err)
 	}
 	shellMode, _ := args["shell"].(bool)
 
@@ -89,10 +102,13 @@ func shellExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any)
 	// first, and nothing has started while they think about it.
 	if background, _ := args["background"].(bool); background {
 		if env.Background == nil {
-			return nil, fmt.Errorf("shell tool: %w", toolbroker.ErrBackgroundUnsupported)
+			// Still pre-flight: the deployment does not do background tasks, and nothing was spawned.
+			return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable, "shell tool: %w", toolbroker.ErrBackgroundUnsupported)
 		}
 		ticket, err := env.Background.StartBackground(ctx, cmd, env.CallID)
 		if err != nil {
+			// NOT an answer: a spawn that returned an error may still have left a process behind, and a
+			// task nobody is watching is the orphan this seam exists to prevent.
 			return nil, fmt.Errorf("shell tool: %w", err)
 		}
 		out := map[string]any{
@@ -111,6 +127,10 @@ func shellExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any)
 
 	res, err := env.Shell.Run(ctx, cmd)
 	if err != nil {
+		// NOT an answer, and this is the deliberate one. A missing binary is exit 127 with a result, a
+		// wall-time kill is `timed_out: true` with a result — both come back through the success path
+		// above. An ERROR here means the runner could not tell us what the command did, which is the one
+		// shell outcome that genuinely is uncertain.
 		return nil, err
 	}
 

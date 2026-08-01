@@ -347,3 +347,66 @@ func envMapOf(env []string) map[string]string {
 	}
 	return out
 }
+
+// TestTheToolErrorBudgetReachesTheNativeControlPlane. MEASURED 2026-08-01, and the measurement is the
+// reason this test exists rather than a review comment: with `PALAI_TOOL_ERROR_BUDGET=2` written in
+// .env.local, a native run was handed FOUR tool refusals and completed. nativeEnv MERGES over
+// os.Environ(), and .env.local is read through `get` rather than exported into this process — so a
+// variable that lives only in that file and is not named here never reaches the child. A ceiling an
+// operator can write in the file the documentation points them at, and that the process never sees, is
+// a ceiling that does not exist.
+func TestTheToolErrorBudgetReachesTheNativeControlPlane(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PALAI_HOME", home)
+	// Prove it is NOT inherited from this process: the value can only arrive through the dotenv reader.
+	// t.Setenv registers the restore, then the Unsetenv makes it genuinely ABSENT — `t.Setenv(k, "")`
+	// leaves `k=` in os.Environ, which nativeEnv inherits, and would have made the second half of this
+	// test pass for the wrong reason.
+	t.Setenv("PALAI_TOOL_ERROR_BUDGET", "sentinel")
+	if err := os.Unsetenv("PALAI_TOOL_ERROR_BUDGET"); err != nil {
+		t.Fatalf("unset: %v", err)
+	}
+	p, err := resolvePaths()
+	if err != nil {
+		t.Fatalf("resolve paths: %v", err)
+	}
+	if err := os.MkdirAll(p.secretsDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(p.pgPassword, []byte("hunter2"), 0o600); err != nil {
+		t.Fatalf("write pg password: %v", err)
+	}
+	cfg := Config{Project: "palai-test", APIPort: 18080, RunnerPort: 18443, PgPort: 15432, S3Port: 18333}
+
+	env, err := nativeEnv(cfg, p, getFrom(map[string]string{"PALAI_TOOL_ERROR_BUDGET": "2"}), "sha256:x", ":18443", "/tmp/w")
+	if err != nil {
+		t.Fatalf("nativeEnv: %v", err)
+	}
+	if got := envMapOf(env)["PALAI_TOOL_ERROR_BUDGET"]; got != "2" {
+		t.Fatalf("PALAI_TOOL_ERROR_BUDGET = %q, want %q from .env.local", got, "2")
+	}
+	// And an operator who set nothing gets the binary's own default rather than an empty string, which
+	// the control plane would read as unparseable.
+	env, err = nativeEnv(cfg, p, getFrom(nil), "sha256:x", ":18443", "/tmp/w")
+	if err != nil {
+		t.Fatalf("nativeEnv: %v", err)
+	}
+	if _, set := envMapOf(env)["PALAI_TOOL_ERROR_BUDGET"]; set {
+		t.Fatal("an unset budget was passed as an empty variable; unset must stay unset so the binary's default applies")
+	}
+}
+
+// TestTheContainerPostureAlsoCarriesTheToolErrorBudget is the same claim for the OTHER deployment. The
+// two postures build their environments in completely different places — a Go map here, a compose
+// `environment:` block there — so a variable added to one and not the other is the everyday way a knob
+// comes to work on a Mac and do nothing in Docker.
+func TestTheContainerPostureAlsoCarriesTheToolErrorBudget(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(moduleRoot(t), "deploy", "compose", "compose.yaml"))
+	if err != nil {
+		t.Fatalf("read compose.yaml: %v", err)
+	}
+	if !strings.Contains(string(raw), "PALAI_TOOL_ERROR_BUDGET: ${PALAI_TOOL_ERROR_BUDGET:-}") {
+		t.Fatal("compose.yaml does not pass PALAI_TOOL_ERROR_BUDGET to the control plane: the budget " +
+			"documented in docs/operations/tool-errors.md would be unsettable on a container stack")
+	}
+}

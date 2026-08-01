@@ -74,6 +74,16 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 			if storedHash != "" && storedHash != requestHash {
 				return fmt.Errorf("tool_call %q replayed with diverged content (hash %s != %s): same id, different request", callID, requestHash, storedHash)
 			}
+			// A REPLAYED REFUSAL COUNTS AGAINST THE SAME BUDGET THE FRESH ONE DID. A reclaimed attempt
+			// rebuilds the same transcript, so the model ends up looking at the same N refusals it was
+			// looking at before the kill; a counter that only saw fresh executions would reset to zero on
+			// every reclaim and the bound would be one a crash loop could walk straight through.
+			if isAnswerResult(stored) {
+				st.toolAnswerErrors++
+				if exceedsToolAnswerErrorBudget(st.toolAnswerErrors) {
+					return errToolAnswerBudget
+				}
+			}
 			// Replay the committed result LABELED; no re-execute, no re-commit (§26.7, TOL-001/016). before_tool
 			// (effect-scoped) does NOT re-fire — the effect already ran. after_tool (delivery-scoped) DOES
 			// re-fire here: it acts on the DELIVERED view, so a crash between an after_tool deny/redact and the
@@ -237,18 +247,58 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	// them. So a run waiting for a human holds no credential in memory while it waits — the park left this
 	// function before this line was reached.
 	//
-	// The map's whole life is the Execute call below. `env` is a per-dispatch local (execEnv mints a fresh
-	// value each call), it is not read again after :249, and it is never marshalled, journaled or logged:
-	// the four resolver lookups above take `env` BEFORE this line, so none of them can see a value either.
+	// The map's whole life is the Execute call below and the redaction immediately after it. `env` is a
+	// per-dispatch local (execEnv mints a fresh value each call) and it is never marshalled, journaled or
+	// logged: the four resolver lookups above take `env` BEFORE this line, so none of them can see a value
+	// either.
+	//
+	// ONE READ AFTER Execute, AND IT IS A SUBTRACTION. answerResult hands EnvValues to RedactValues so a
+	// tool's REFUSAL — which is committed to the ledger and delivered to the model — cannot carry a value
+	// this attempt was given ("connect to postgres://user:<password>@…" is the everyday form). That call
+	// can only REMOVE values from a string; it never puts one anywhere. This sentence used to say the map
+	// was not read again at all, and it stopped being true the moment a tool error became a result.
 	if env.EnvValues, err = o.resolveEnvValues(ctx, st); err != nil {
 		return err
 	}
 
 	// 3. Execute + commit + deliver. Execute runs the PATCHED args (a transform hook's replacement, or the
 	// model's original when no transform fired), so the ledger row and the effect agree (honest audit).
-	outcome, err := o.tools.Execute(ctx, contracts.ToolCallID(callID), name, execArgs, st.attempt.Fence, env)
-	if err != nil {
-		return fmt.Errorf("execute tool %q (%s): %w", name, callID, err)
+	outcome, execErr := o.tools.Execute(ctx, contracts.ToolCallID(callID), name, execArgs, st.attempt.Fence, env)
+	if execErr != nil {
+		// AN ANSWER IS A RESULT; EVERYTHING ELSE STILL ABORTS (toolbroker/answer.go). This one branch is
+		// the fix: before it, EVERY Exec error came back up this return and killed the attempt with the
+		// tool_call row still `executing`, so the next attempt's consult classified the row `uncertain`
+		// and the reconciler escalated it to `manual_resolution` — where nothing resolves it and the run
+		// sits `running` forever. Reproduced 2026-08-01 on a native stack: `read "README"` (missing) and
+		// `read "../../../../etc/passwd"` (correctly REFUSED) both ended the run permanently, while
+		// `shell false` — a non-zero EXIT CODE, which is a result FIELD — completed cleanly.
+		//
+		// AsAnswer is the whole test, and the unclassified error keeps the old behaviour by construction.
+		answer, isAnswer := toolbroker.AsAnswer(execErr)
+		if !isAnswer {
+			return fmt.Errorf("execute tool %q (%s): %w", name, callID, execErr)
+		}
+		// The answer takes the SAME path a success takes from here — commit, publication park, after_tool,
+		// deliver — rather than a second delivery path beside it. That is not tidiness: commit-before-
+		// deliver is load-bearing (§26.7), and a parallel path would be a second place for it to drift.
+		// The row therefore reaches `completed` with the refusal as its result, which is the honest record
+		// (the call happened; its outcome was "no") and which makes a replay after a kill serve the same
+		// refusal instead of re-running the tool.
+		//
+		// The class comes off the failed outcome when the broker resolved the tool, and falls back to the
+		// class the pre-write already recorded when it did not (an unknown tool never resolved one) — so
+		// the committed row never claims a class the row's own marker disagrees with.
+		committedClass := outcome.ReplayClass
+		if committedClass == "" {
+			committedClass = class
+		}
+		outcome = toolbroker.Outcome{
+			Result:      answerResult(name, answer, env),
+			Usage:       contracts.Usage{ToolCalls: 1}, // a refusal is a tool call: it is counted like one
+			ReplayClass: committedClass,
+			Unretained:  outcome.Unretained,
+		}
+		st.toolAnswerErrors++
 	}
 	st.usage = addUsage(st.usage, outcome.Usage)
 
@@ -279,6 +329,13 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	if _, err := o.spine.CommitToolResult(ctx, st.tenant, st.sessionID, st.responseID, runID,
 		st.attempt.Fence, callID, name, arguments, committedResult, string(outcome.ReplayClass), requestHash, toolCallCompletedEvent, payload); err != nil {
 		return err
+	}
+
+	// 3b. THE BOUND (see toolAnswerErrorBudget). It sits AFTER the commit and BEFORE the delivery, on
+	// purpose: the row is closed with the refusal that was actually produced — no dangling `executing`
+	// marker for a reconciler to find — and the model is simply not handed one more thing to answer.
+	if st.toolAnswerErrors > 0 && exceedsToolAnswerErrorBudget(st.toolAnswerErrors) {
+		return errToolAnswerBudget
 	}
 
 	// 4. THE PUBLICATION PARK (E23 T3). A call that left a human OWING AN ANSWER is not answered to the

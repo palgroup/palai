@@ -45,12 +45,16 @@ func BackgroundKillTool() toolbroker.Tool {
 // which handle a task id names and whether this run may name it at all, so a task id belonging to another
 // run is refused there rather than trusted here.
 func backgroundKillExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
+	// The two pre-flight refusals are ANSWERS (toolbroker.Answer, answer.go): nothing has been signalled,
+	// and a model that named no task id can supply one on the next turn. KillBackground's own error is
+	// left a fault — the seam may have signalled a process before it failed, and this tool is precisely
+	// the one whose "did it happen?" must not be answered by guessing.
 	if env.Background == nil {
-		return nil, fmt.Errorf("background kill tool: %w", toolbroker.ErrBackgroundUnsupported)
+		return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable, "background kill tool: %w", toolbroker.ErrBackgroundUnsupported)
 	}
 	taskID, _ := args["task_id"].(string)
 	if strings.TrimSpace(taskID) == "" {
-		return nil, fmt.Errorf("background kill tool: task_id is required")
+		return nil, toolbroker.Answerf(toolbroker.AnswerInvalidArguments, "background kill tool: task_id is required")
 	}
 	ticket, err := env.Background.KillBackground(ctx, taskID)
 	if err != nil {

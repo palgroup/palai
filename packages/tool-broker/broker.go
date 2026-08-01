@@ -322,6 +322,16 @@ func (b *Broker) RequiresApprovalResolved(ctx context.Context, env ExecEnv, name
 // kill-after-execute is detectable as uncertain (spec §26.7): every class whose re-execution is unsafe
 // or needs reconciliation — irreversible, reversible, interactive. Pure re-runs freely and idempotent
 // resends settle one object, so neither needs the marker.
+//
+// ANY GUARD ABOUT "WHICH TOOLS CAN WEDGE A RUN" KEYS ON THIS FUNCTION, NEVER ON A TOOL NAME, and that
+// is a correction paid for once already. The 2026-08-01 tool-error wedge was reproduced first through
+// the FILE tool and had been recorded three days earlier, in an operations doc, as a fact about the
+// SHELL tool. They are different classes — file is ClassReversible, shell is ClassIrreversible — and
+// they wedge for the identical reason: both answer true here, so both leave a durable `executing` row
+// that survives a failed attempt, and the next attempt's ledger consult drives it to `uncertain` and
+// then to `manual_resolution`, which nothing resolves. A guard written against "the shell tool" would
+// have missed the file tool, and a guard written against "the file tool" would miss the next one. The
+// property is the PRE-WRITE, and this is where it is decided.
 func NeedsPreWrite(class ReplayClass) bool {
 	switch class {
 	case ClassIrreversible, ClassReversible, ClassInteractive:
@@ -358,9 +368,13 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 		// Static-set miss: fall back to the injected per-tenant registry lookup (E12). A hit runs the
 		// resolved tool through the SAME fence/ledger/replay machinery below; it never enters b.tools, so
 		// resolution stays tenant-scoped. A clean miss (or no lookup) is still ErrUnknownTool.
+		//
+		// A CLEAN MISS IS AN ANSWER; A FAILED LOOKUP IS NOT (answer.go). The model naming a tool that does
+		// not exist is the model being wrong and is told so; the registry lookup itself erroring is a
+		// database talking, and that keeps aborting the attempt.
 		if b.lookup == nil {
 			b.mu.Unlock()
-			return Outcome{}, fmt.Errorf("%w: %s", ErrUnknownTool, name)
+			return Outcome{}, Answerf(AnswerUnknownTool, "%w: %s", ErrUnknownTool, name)
 		}
 		resolved, found, err := b.lookup(ctx, env, name)
 		if err != nil {
@@ -369,7 +383,7 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 		}
 		if !found {
 			b.mu.Unlock()
-			return Outcome{}, fmt.Errorf("%w: %s", ErrUnknownTool, name)
+			return Outcome{}, Answerf(AnswerUnknownTool, "%w: %s", ErrUnknownTool, name)
 		}
 		tool = resolved
 	}
@@ -384,9 +398,14 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 
 	// Strict validation happens before the row or fence is touched, so a rejected
 	// argument set produces no side effect and no wasted fence.
+	//
+	// AND THAT LAST CLAUSE IS EXACTLY WHY AN INPUT REJECTION IS AN ANSWER (answer.go): the tool did not
+	// run, so nothing is ambiguous, and "your arguments were wrong" is the single most correctable thing
+	// a model can be told. The OUTPUT rejection further down is deliberately NOT an answer — by then the
+	// effect has already happened.
 	if err := validate(tool.InputSchema, args); err != nil {
 		b.mu.Unlock()
-		return Outcome{}, fmt.Errorf("%w: input: %v", ErrInvalidArguments, err)
+		return Outcome{}, Answerf(AnswerInvalidArguments, "%w: input: %v", ErrInvalidArguments, err)
 	}
 
 	r := b.rows[callID]
@@ -424,11 +443,22 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 	defer b.mu.Unlock()
 	if invokeErr != nil {
 		r.state, _, _ = statemachines.Apply(r.state, statemachines.ToolCallCmdFail, statemachines.ToolCallTable)
-		return Outcome{State: r.state, Hash: r.hash}, fmt.Errorf("tool %s: %w", name, invokeErr)
+		// The class and the no-persist property ride the FAILED outcome too. They are properties of the
+		// TOOL, not of the call going well, and the dispatcher needs both to commit an answer error onto
+		// the same ledger row a success would have taken — an outcome that dropped them would have the
+		// row claim `pure` for a reversible tool and would write down the bytes of an unretained one.
+		return Outcome{State: r.state, Hash: r.hash, ReplayClass: tool.replayClass(), Unretained: tool.Unretained},
+			fmt.Errorf("tool %s: %w", name, invokeErr)
 	}
+	// AN OUTPUT-SCHEMA FAILURE IS NOT AN ANSWER, and the asymmetry with the input check above is the
+	// point: the tool RAN. Whatever it does to the world it has already done, and the honest state of a
+	// side effect whose receipt we cannot read is uncertain — which is precisely the machine that already
+	// exists for it. Handing the model "that tool's output was malformed" would close a row nobody has
+	// reconciled.
 	if err := validate(tool.OutputSchema, result); err != nil {
 		r.state, _, _ = statemachines.Apply(r.state, statemachines.ToolCallCmdFail, statemachines.ToolCallTable)
-		return Outcome{State: r.state, Hash: r.hash}, fmt.Errorf("%w: output: %v", ErrInvalidArguments, err)
+		return Outcome{State: r.state, Hash: r.hash, ReplayClass: tool.replayClass(), Unretained: tool.Unretained},
+			fmt.Errorf("%w: output: %v", ErrInvalidArguments, err)
 	}
 	final, _, err := statemachines.Apply(r.state, statemachines.ToolCallCmdComplete, statemachines.ToolCallTable)
 	if err != nil {

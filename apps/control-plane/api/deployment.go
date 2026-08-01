@@ -369,6 +369,19 @@ var deploymentCatalogue = []catalogueEntry{
 		DesiredValue: desiredDuration,
 	},
 	{
+		Name: "PALAI_TOOL_ERROR_BUDGET", Group: "execution", Kind: kindValue, Default: "16",
+		Effect: "How many tool REFUSALS one attempt may hand a model before the run ends with a named " +
+			"terminal failure (`tool_error_budget_exhausted`). A tool error is delivered to the model AS A " +
+			"RESULT so it can correct itself — which is what stopped a guessed filename, and a correctly " +
+			"refused traversal, from wedging a run forever — and this is the bound that replaced the " +
+			"accidental stop that wedge used to be. It counts refusals, not tool calls: a run making " +
+			"progress is not bounded by it. `0` is unbounded and has to be written; a value this binary " +
+			"cannot parse falls back to 16 rather than to infinity. docs/operations/tool-errors.md.",
+		Mutability: mutabilityBringUp, ChangeWith: changeDesired,
+		ReaderFile: "apps/control-plane/internal/execution/tool_answer.go", ReaderFunc: "toolAnswerErrorBudget",
+		DesiredValue: desiredInt,
+	},
+	{
 		Name: "PALAI_WORKSPACE_ROOT", Group: "execution", Kind: kindPath, Default: "none — no workspace is provisioned and GET /v1/capabilities reports workspaces `unavailable`",
 		Effect:     "The host directory coding workspaces are allocated under. Its presence is what makes this deployment advertise the `workspaces` capability at all.",
 		Mutability: mutabilityBringUp, ChangeWith: changeCP,
