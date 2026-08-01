@@ -40,7 +40,20 @@ func capabilities(cfg routerConfig) http.HandlerFunc {
 		}
 		caps := map[string]string{
 			"responses": "preview",
-			"sessions":  "unavailable",
+			// `sessions` READ "unavailable" UNTIL 2026-08-01, AND IT WAS A DISCOVERY LIE IN THE RARER
+			// DIRECTION: usually a word in this tree claims more than the code does, and this one claimed
+			// less. Sessions are served — POST /v1/sessions, GET/PATCH /v1/sessions/{id}, the commands
+			// route, the events stream — and a two-turn conversation carries context across turns.
+			// Measured on a live stack against a real provider: turn 1 "my favourite colour is teal" ->
+			// "OK" (71 input tokens), turn 2 "what is my favourite colour?" -> "Teal" (89 input tokens —
+			// the first turn replayed into the second's context).
+			//
+			// IT SURVIVED BECAUSE OF THE CONTRAST THREE LINES DOWN: `workspaces` DERIVES from a writer
+			// (workspacesCapability reads the env the provisioner is gated on) while this one was TYPED, and
+			// a map holding one measured entry beside one hand-written entry reads as uniformly measured.
+			// TestSessionsCapabilityAgreesWithTheServedSurface is what stops it rotting back — it drives the
+			// session surface and then reads this word off the same router.
+			"sessions": "preview",
 			// Coding workspaces are reachable end to end (a session attaches a repository binding, the root
 			// run auto-provisions — E09 T10) only where the deployment configured a host allocation root, so
 			// discovery derives it from PALAI_WORKSPACE_ROOT the same way it reads the retention TTL — a

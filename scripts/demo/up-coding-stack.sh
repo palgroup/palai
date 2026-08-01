@@ -314,10 +314,19 @@ has no workspace, it calls the file tool anyway, and a tool error wedges the run
 clears the grant before the bring-up and restores it after; running \`palai up\` BY HAND on this
 project will hang for three minutes and then lie about the stack's health.
 
-WHAT IS NOT: approving that publication from HTTP or the console. GET /v1/approvals carries TOOL
-approvals only; POST /v1/approvals/{id}/approve 404s on a publication id; and an approve posted to
-POST /v1/sessions/{id}/commands is accepted (202) and then never applied, because the only thing
-that drains it runs inside a live attempt and a run parked on an approval has none. Slack is
-currently the only surface that applies a publication decision. Read docs/operations/approvals.md
-before promising anyone a pull request.
+APPROVING THAT PUBLICATION NOW WORKS FROM HTTP AND FROM THE CONSOLE, and it did not until
+2026-08-01. GET /v1/approvals returns the row (with the remote and branch the write is going to) and
+POST /v1/approvals/{id}/approve applies it — publication pending_approval -> approved, the durable
+command -> applied, and the parked run waiting -> completed.
+
+What it used to do, so an older stack is recognisable: the list answered {"data":[]} while the row
+existed, the decide route 404'd on a publication id even with the correct hash, and an approve posted
+to POST /v1/sessions/{id}/commands was accepted (202) and never applied — the only thing that drains
+that queue runs inside a live attempt, and a run parked on an approval has none. It then EXPIRED and
+released the run half an hour later with nobody having decided. If you see that, the control plane
+predates the fix.
+
+ONE THING THE SCREEN STILL DOES NOT SAY: which CREDENTIAL the write will be made under. The
+publication row carries the destination and nothing about the identity, so an operator can see WHERE,
+not AS WHOM.
 EOF
