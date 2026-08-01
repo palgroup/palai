@@ -89,14 +89,14 @@ type Request struct {
 	RouteRevision int           `json:"route_revision"`
 	ModelStepID   string        `json:"model_step_id"`
 	Model         string        `json:"model"`
-	Messages       []Message     `json:"messages"`
-	Tools          []ToolSchema  `json:"tools,omitempty"`
-	ForceToolCall  bool          `json:"force_tool_call,omitempty"`
-	OutputSchema   *OutputSchema `json:"output_schema,omitempty"`
-	Deadline       time.Time     `json:"deadline"`
-	Privacy        PrivacyFlags  `json:"privacy,omitempty"`
-	Reservation    Reservation   `json:"reservation"`
-	Secret         SecretRef     `json:"secret"`
+	Messages      []Message     `json:"messages"`
+	Tools         []ToolSchema  `json:"tools,omitempty"`
+	ForceToolCall bool          `json:"force_tool_call,omitempty"`
+	OutputSchema  *OutputSchema `json:"output_schema,omitempty"`
+	Deadline      time.Time     `json:"deadline"`
+	Privacy       PrivacyFlags  `json:"privacy,omitempty"`
+	Reservation   Reservation   `json:"reservation"`
+	Secret        SecretRef     `json:"secret"`
 }
 
 // ToolCall is a tool the model asked to run. Arguments is the provider-generated
