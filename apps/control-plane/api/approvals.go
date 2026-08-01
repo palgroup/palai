@@ -64,6 +64,24 @@ type PendingApproval struct {
 	OperatorLabel string `json:"operator_label"`
 	Arguments     string `json:"arguments"`
 	Truncated     bool   `json:"truncated"`
+
+	// Kind names WHICH FAMILY this row is, and it is not decoration: the two are decided through
+	// different throats and only one of them carries a tool call. A client that rendered both without
+	// distinguishing them would show `tool_call_id: ""` on every publication and call it a tool.
+	// "tool" | "publication".
+	Kind string `json:"kind"`
+
+	// The publication family's destination, empty on a tool row. THIS IS THE ONLY THING ON THE SCREEN
+	// THAT SAYS WHERE THE WRITE IS GOING, and an operator approving a write to somebody's repository
+	// cannot make that decision from an operation name alone. None of it is the model's: remote, branch
+	// and base are resolved from the run's repository binding (RunPublicationTarget), which is why "open
+	// the PR against dev" is an operator's configuration and not something a model can ask for.
+	PublicationID string `json:"publication_id,omitempty"`
+	Operation     string `json:"operation,omitempty"`
+	Remote        string `json:"remote,omitempty"`
+	Branch        string `json:"branch,omitempty"`
+	Base          string `json:"base,omitempty"`
+	HeadSHA       string `json:"head_sha,omitempty"`
 }
 
 // ApprovalDecision is one HTTP caller's answer. There is deliberately NO approver field: the principal is

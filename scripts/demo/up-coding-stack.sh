@@ -162,8 +162,29 @@ if [ -f "${PALAI_HOME}/config.json" ]; then
   fi
 fi
 
+
 echo "==> palai up --native"
+# THE PROOF STEP CAN FAIL FOR A REASON THAT IS NOT A BROKEN STACK, so its exit code is captured rather
+# than trusted, and this script then PROVES LIVENESS ITSELF below.
+#
+# The clear above is a fast path and it only fires when the API is already reachable — on a COLD start
+# there is nothing to clear it through, the grant is still in the database from last time, and step [5/6]
+# wedges exactly as described. Measured both ways on 2026-08-01: warm start -> proof PASSES (46 in / 1 out);
+# cold start -> `NOT PROVEN ... still "in_progress" after 3m0s` on a stack whose /v1/capabilities answers
+# 200 the moment it is asked.
+#
+# Tolerating a non-zero exit is only honest if something else checks the same thing, so nothing below is
+# skipped: the capability probe, the runner-boundary probe and the grant all run, and a stack that is
+# genuinely down fails at the probe with the bring-up's own output already on screen.
+set +e
 palai up --env-file "$ENV_FILE" --native
+UP_STATUS=$?
+set -e
+if [ $UP_STATUS -ne 0 ]; then
+  echo "    NOTE: \`palai up\` exited $UP_STATUS. If that was step [5/6] NOT PROVEN, it is the known"
+  echo "          workspace-tool wedge on a project that already grants them, not a broken stack —"
+  echo "          the probes below decide which it was."
+fi
 
 BASE_URL="$(python3 -c "import json;print(json.load(open('${PALAI_HOME}/config.json'))['base_url'])")"
 API_KEY="$(cat "${PALAI_HOME}/api-key")"
@@ -171,6 +192,40 @@ API_KEY="$(cat "${PALAI_HOME}/api-key")"
 echo "==> confirming the workspaces capability is actually ON (not merely configured)"
 CAPS="$(curl -fsS -H "Authorization: Bearer ${API_KEY}" "${BASE_URL}/v1/capabilities")"
 echo "$CAPS" | python3 -c "import sys,json;c=json.load(sys.stdin)['capabilities'];print('    workspaces =',c['workspaces']);sys.exit(0 if c['workspaces']=='available' else 1)"
+
+# THE ROUND TRIP THIS SCRIPT OWNS, replacing the one it just tolerated failing.
+#
+# It runs in the ONE window where it cannot hit the wedge: the API is up (so the grant can be cleared
+# through it, which a cold start could not do earlier) and the workspace tools are NOT yet granted, so the
+# model has none to call and no tool can error. The grant goes on afterwards.
+echo "==> clearing project default_tools (now that the API is reachable) and proving a live round trip"
+curl -fsS -X PATCH -H "Authorization: Bearer ${API_KEY}" -H "Content-Type: application/json" \
+  -d '{"config_policy":{"default_tools":[]}}' "${BASE_URL}/v1/projects/${PROJECT_ID}" > /dev/null
+
+PROOF_ID="$(curl -fsS -X POST -H "Authorization: Bearer ${API_KEY}" -H "Content-Type: application/json" \
+  -H "Idempotency-Key: up-proof-$(date +%s)-$$" \
+  -d '{"input":"Reply with exactly: PALAI-UP-OK"}' "${BASE_URL}/v1/responses" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")"
+
+PROOF_STATE=""
+for _ in $(seq 1 60); do
+  PROOF_JSON="$(curl -fsS -H "Authorization: Bearer ${API_KEY}" "${BASE_URL}/v1/responses/${PROOF_ID}")"
+  PROOF_STATE="$(printf '%s' "$PROOF_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))")"
+  case "$PROOF_STATE" in completed|failed|cancelled|incomplete) break ;; esac
+  sleep 2
+done
+if [ "$PROOF_STATE" != "completed" ]; then
+  echo "    ROUND TRIP NOT PROVEN: ${PROOF_ID} ended '${PROOF_STATE}' — this stack is not serving" >&2
+  exit 1
+fi
+printf '%s' "$PROOF_JSON" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+txt=(d.get('output') or [{}])[0].get('content','')
+u=d.get('usage') or {}
+print(f\"    round trip  {d['id']} -> {d['status']}  model={d.get('model')}  {u.get('input_tokens')} in / {u.get('output_tokens')} out\")
+print(f\"    said        {txt!r}\")
+"
 
 echo "==> confirming the §24 trust boundary is armed on the RUNNER too, not just the control plane"
 # MEASURED 2026-08-01: not one shipped compose file used to put PALAI_WORKSPACE_ROOT in a runner's

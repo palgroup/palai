@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/palgroup/palai/adapters/integrations/slack"
 	"github.com/palgroup/palai/apps/control-plane/api"
@@ -14,8 +16,10 @@ import (
 // The HTTP half of the generic approval gate (E23 T9). It is the adapter between api.ApprovalAPI and the
 // coordinator, and it is deliberately thin in both directions:
 //
-//	GET  /v1/approvals                       → coordinator.PendingToolApprovals + the SHARED screen
-//	POST /v1/approvals/{id}/approve|deny     → coordinator.DecideToolApproval  — the single throat
+//	GET  /v1/approvals                       → coordinator.PendingToolApprovals
+//	                                         + coordinator.PendingPublicationApprovals, merged on one order
+//	POST /v1/approvals/{id}/approve|deny     → coordinator.DecideToolApproval  — the tool throat
+//	                                         → coordinator.ApplyApprovalDecision — the publication throat
 //
 // TWO THINGS IT MUST NOT DO, and both are the reason the file is this short. It must not reimplement any
 // part of a decision: DecideToolApproval applies the approver policy, checks the deadline, checks the
@@ -59,12 +63,49 @@ func (s *Store) ListPendingApprovals(ctx context.Context, scope middleware.Scope
 		}
 		display := approvalDisplayFor(p.ToolName, label, p.Arguments)
 		out = append(out, api.PendingApproval{
-			ID: p.ApprovalID, Object: "approval", ToolCallID: p.ToolCallID, RunID: p.RunID,
+			ID: p.ApprovalID, Object: "approval", Kind: "tool", ToolCallID: p.ToolCallID, RunID: p.RunID,
 			SessionID: p.SessionID, ResponseID: p.ResponseID, RequestHash: p.RequestHash,
 			ExpiresAt: p.ExpiresAt, CreatedAt: p.CreatedAt,
 			Identity: display.Identity, OperatorLabel: display.OperatorLabel,
 			Arguments: display.Arguments, Truncated: display.Truncated,
 		})
+	}
+
+	// THE PUBLICATION FAMILY, which this list could not return at all before. The read above JOINs
+	// tool_calls, so a push/pull-request/merge waiting on a human was invisible here while its row sat in
+	// the table — measured 2026-08-01, and the console's own /approvals page told the operator to go watch
+	// Live runs instead, which was the sentence that turned out to be untrue.
+	pubs, err := s.spine.PendingPublicationApprovals(ctx, tenant, window)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range pubs {
+		out = append(out, api.PendingApproval{
+			ID: p.ApprovalID, Object: "approval", Kind: "publication", RunID: p.RunID,
+			SessionID: p.SessionID, ResponseID: p.ResponseID, RequestHash: p.RequestHash,
+			ExpiresAt: p.ExpiresAt, CreatedAt: p.CreatedAt,
+			// The publication's OWN recorded sentence is the operator label; the destination fields below
+			// are what it is a label FOR. There is no model prose here for the same reason the tool half
+			// states at its derivation: nothing on this screen may be written by the thing being approved.
+			Identity: p.Operation, OperatorLabel: p.Display, Arguments: string(p.Arguments),
+			PublicationID: p.PublicationID, Operation: p.Operation,
+			Remote: p.Remote, Branch: p.Branch, Base: p.Base, HeadSHA: p.HeadSHA,
+		})
+	}
+
+	// ONE PAGE, ONE ORDER. Both reads are ascending (created_at, id) and the caller's cursor is compared
+	// against that same pair, so the merge has to restore it across the two families or a next_cursor
+	// minted from the last row would skip every row of the other family with an earlier timestamp.
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	// Each read was given the caller's limit, so the merge can hold up to twice it. Truncating here keeps
+	// the +1 over-fetch the page envelope reads as has_more meaningful rather than doubled.
+	if window.Limit > 0 && len(out) > window.Limit {
+		out = out[:window.Limit]
 	}
 	return out, nil
 }
@@ -91,7 +132,10 @@ func (s *Store) DecideApproval(ctx context.Context, scope middleware.Scope, appr
 		return api.ApprovalOutcome{}, fmt.Errorf("read the approval to decide: %w", err)
 	}
 	if !found {
-		return api.ApprovalOutcome{}, nil
+		// NOT-A-TOOL-APPROVAL IS NOT NOT-AN-APPROVAL. ToolApprovalByID joins tool_calls, so a publication
+		// approval misses it and used to fall straight out of here as 404 "no such approval" — on a row
+		// that exists, with the correct request_hash, measured 2026-08-01.
+		return s.decidePublicationApproval(ctx, scope, tenant, approvalID, d)
 	}
 	applied, err := s.spine.DecideToolApproval(ctx, tenant, coordinator.ToolApprovalDecision{
 		ToolCallID:  parked.ToolCallID,
@@ -107,4 +151,103 @@ func (s *Store) DecideApproval(ctx context.Context, scope middleware.Scope, appr
 		return api.ApprovalOutcome{}, fmt.Errorf("apply the approval decision: %w", err)
 	}
 	return api.ApprovalOutcome{Found: true, Applied: applied}, nil
+}
+
+// decidePublicationApproval applies an HTTP caller's answer to a PUBLICATION — a push, a pull request or
+// a merge — and it exists because the surface above could accept one and never apply it.
+//
+// THE DEADLOCK IT CLOSES, measured 2026-08-01 rather than reasoned about. POST /v1/sessions/{id}/commands
+// with kind=approve returned 202 and the decision was never applied: AcceptCommand only QUEUES, and the
+// queue's single production drainer is command_pump.go:91 inside pumpCommands(st *attemptState) — which
+// needs a live attempt. A run parked on a publication approval has none, because orchestrator.go:720-725
+// ends the attempt and releases compute the moment it parks, deliberately, so no engine is held while a
+// human reads. Three approve commands sat `queued` while the publication stayed `pending_approval` and the
+// run stayed `waiting`; the console rendered its button, emitted command.accepted.v1, and changed nothing.
+//
+// SO THIS IS NOT A NEW MECHANISM. orchestrator.go:724 already states the contract in its own words — "the
+// decision (or the expiry reaper) opens a fresh attempt through the one wake" — and Slack's path honours it
+// by calling ApplyApprovalDecision DIRECTLY, in one transaction that also wakes the parked run. This makes
+// the HTTP surface honour the same contract. The command is still minted first, exactly as slack_decision.go
+// mints it, so the boundary pump applies the SAME command under the SAME one-shot hash if it ever wins the
+// race; losing that race is not failing.
+//
+// IT GOES THROUGH ApplyApprovalDecision AND NOTHING ELSE. That is where config_policy.approvers is
+// enforced — "the one throat both surfaces pass through", asserted by an untagged guard that counts the
+// production call sites of ApproverAllowed. A second path that transitioned a publication itself would be a
+// privilege hole wearing a bugfix's clothes.
+func (s *Store) decidePublicationApproval(ctx context.Context, scope middleware.Scope, tenant coordinator.Tenant,
+	approvalID string, d api.ApprovalDecision) (api.ApprovalOutcome, error) {
+
+	pub, found, err := s.spine.PublicationApprovalByID(ctx, tenant, approvalID)
+	if err != nil {
+		return api.ApprovalOutcome{}, fmt.Errorf("read the publication approval to decide: %w", err)
+	}
+	if !found {
+		// Unknown, foreign, or no longer pending — indistinguishable, so this cannot become an oracle.
+		return api.ApprovalOutcome{}, nil
+	}
+	// THE ONE-SHOT BINDING IS CHECKED HERE TOO, and not only inside the throat. ApplyApprovalDecision
+	// compares the hash against the row it locks, but it treats a MISMATCH as "authorizes nothing and
+	// settles the command" — which would burn this approval's command on a hash the caller got wrong.
+	// Refusing at the edge leaves the approval decidable, which is what a mistyped hash deserves.
+	if d.RequestHash != pub.RequestHash {
+		return api.ApprovalOutcome{Found: true, Applied: false}, nil
+	}
+
+	kind := "deny"
+	if d.Approve {
+		kind = "approve"
+	}
+	approver := coordinator.ApproverPrincipal(coordinator.ApproverSurfaceKey, "", scope.APIKeyID)
+	payload, err := json.Marshal(map[string]string{"request_hash": d.RequestHash, "approver": approver})
+	if err != nil {
+		return api.ApprovalOutcome{}, err
+	}
+
+	// The durable command first, the same shape and for the same reason slack_decision.go mints one: a
+	// publication's decision is a command on the run so that whichever side reaches it first applies the
+	// same one under the same hash.
+	commandID := middleware.NewID("cmd")
+	acc, err := s.spine.AcceptCommand(ctx, tenant, pub.SessionID, coordinator.CommandInput{
+		CommandID: commandID, Kind: kind, Payload: payload,
+	})
+	switch {
+	case err != nil:
+		return api.ApprovalOutcome{}, fmt.Errorf("accept the publication approval command: %w", err)
+	case acc.SessionNotFound:
+		return api.ApprovalOutcome{}, nil
+	case acc.State != "queued":
+		// Durably refused at accept (a closed session, no pending approval by the time it committed). The
+		// row stands as the audit trail of the attempt; nothing was authorized.
+		return api.ApprovalOutcome{Found: true, Applied: false}, nil
+	}
+
+	switch _, err := s.spine.ApplyApprovalDecision(ctx, tenant, pub.SessionID, pub.ResponseID, pub.RunID,
+		commandID, kind, d.RequestHash, approver); {
+	case errors.Is(err, coordinator.ErrApproverNotAuthorized):
+		return api.ApprovalOutcome{Found: true, Unauthorized: true}, nil
+	case errors.Is(err, coordinator.ErrCommandNotPending):
+		// The boundary pump (or an expiry sweep) settled the command first. Those are different facts and
+		// only the publication's own state separates them: a decision that authorized nothing must never be
+		// reported as applied. This is slack_decision.go's rule, verbatim, for the same reason.
+		state, ok, serr := s.spine.PublicationState(ctx, tenant, pub.PublicationID)
+		if serr != nil {
+			return api.ApprovalOutcome{}, fmt.Errorf("read the publication after a settled command: %w", serr)
+		}
+		return api.ApprovalOutcome{Found: true, Applied: ok && state == decidedPublicationState(kind)}, nil
+	case err != nil:
+		return api.ApprovalOutcome{}, fmt.Errorf("apply the publication approval decision: %w", err)
+	}
+	return api.ApprovalOutcome{Found: true, Applied: true}, nil
+}
+
+// decidedPublicationState is the state a publication lands in for each decision — the pair
+// ApplyApprovalDecision writes. It is duplicated from the Slack path's private helper rather than
+// exported across that package boundary; the two are asserted to agree by the component test that drives
+// both surfaces to the same terminal state.
+func decidedPublicationState(kind string) string {
+	if kind == "approve" {
+		return "approved"
+	}
+	return "denied"
 }

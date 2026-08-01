@@ -32,10 +32,24 @@ import { useQueryParam } from "@/lib/urlState";
 // file exists to abolish. A pane on a scanned route is covered by the scan the route already has.
 //
 // WHAT THIS QUEUE DOES NOT COVER IS STILL ON THE SCREEN (plan §3.6 D4) and is the one paragraph that stayed.
-// It is not decoration: it changes what an EMPTY queue MEANS. GET /v1/approvals carries TOOL approvals only —
-// a publication approval (a push, a pull request, a merge) has no list route at all and lives inside a live
-// run's stream, and a machine waiting for admission cannot ride this queue because a machine enrolment has no
-// request hash to bind a decision to. An operator who learns "approvals live here" would miss both.
+// It is not decoration: it changes what an EMPTY queue MEANS. A machine waiting for admission cannot ride
+// this queue because a machine enrolment has no request hash to bind a decision to.
+//
+// PUBLICATION APPROVALS USED TO BE THE OTHER EXCLUSION HERE, AND THE SENTENCE THAT EXCLUDED THEM WAS FALSE
+// IN THE DIRECTION THAT COSTS MOST. It read: a push, a pull request or a merge "is approved inside a live
+// run's stream ... watch it on Live runs". Measured 2026-08-01: it is not. The stream does carry
+// approval.requested.v1, so the panel on /runs renders and the operator does get a button — and pressing it
+// emitted command.accepted.v1 and changed nothing, three times in a row, while the publication stayed
+// pending_approval and the run stayed waiting. AcceptCommand only QUEUES, and the queue's one production
+// drainer runs inside a live attempt, which a parked run does not have. The approval then EXPIRED, releasing
+// the run half an hour later with nobody having decided anything.
+//
+// Both halves are fixed now and BOTH were needed: GET /v1/approvals returns the publication family
+// (store/approvals.go merges PendingPublicationApprovals into this page), and the decide route reaches it
+// (decidePublicationApproval mints the durable command and applies it through ApplyApprovalDecision — the
+// same throat Slack passes through, so the approver policy is enforced in one place). A row here now carries
+// `kind`, plus the remote/branch/base the write is going to, because an operator approving a write to
+// somebody's repository cannot make that call from an operation name alone.
 //
 // THE THREE STANDING FACTS — the principal a decision is recorded against, the two gates in front of it, and
 // the polling period — are in the collapsed <details> they were already in, and they stay ON THIS PAGE rather
@@ -159,11 +173,10 @@ export default function ApprovalsPage() {
           text child that begins on the line after a closing tag, which shipped "not here— a push" the first
           time this sentence was rewritten and was caught by the spec on the next run. */}
       <p className="muted" data-testid="approvals-scope-note">
-        This queue holds <strong>tool approvals only</strong>.{" "}
-        <strong>Publication approvals are not here</strong>{" "}
-        — a push, a pull request or a merge is approved inside a live run&apos;s stream, because the public API
-        has no list route for one; watch it on <a href="/runs">Live runs</a>.{" "}
-        <strong>A machine waiting to be admitted is not here either</strong>: an enrolment has no{" "}
+        This queue holds <strong>gated tool calls and publications</strong> — a push, a pull request or a
+        merge appears here with the <strong>remote and branch</strong> it is about to write to, so you can see
+        where a write is going before you allow it.{" "}
+        <strong>A machine waiting to be admitted is not here</strong>: an enrolment has no{" "}
         <strong>request hash</strong> to bind a decision to, and everything decided here binds to one — those
         are on <a href="/fleet">Fleet</a>. So an empty queue{" "}
         <strong>does not mean nothing is waiting</strong> for you.
