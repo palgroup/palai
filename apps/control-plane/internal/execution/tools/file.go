@@ -2,7 +2,9 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	iofs "io/fs"
 	"path/filepath"
 	"strings"
 
@@ -41,12 +43,27 @@ func FileTool() toolbroker.Tool {
 
 // fileExec dispatches one file operation against the confined workspace. It is the Exec surface the
 // broker calls with the per-attempt ExecEnv.
+//
+// EVERY REFUSAL AND EVERY FAILED READ HERE IS AN ANSWER (toolbroker.Answer, answer.go), and the rule
+// that decides it is one sentence: A READ THAT FAILED CHANGED NOTHING. read/list/stat/checksum touch no
+// state, so there is no such thing as a half-applied one and nothing about them can be uncertain — the
+// model asked for a path that is not there, or is not readable, or is not inside the workspace, and the
+// answer to all three is to say so and let it try again. Before this, every one of them killed the
+// attempt and left the pre-written ledger row to be escalated to manual_resolution, so `read "README"`
+// instead of `read "repo/README"` ended the run permanently.
+//
+// THE WRITE PATH IS NOT COVERED BY THAT SENTENCE and is classified by sentinel instead — see below.
 func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
 	if env.WorkspaceRoot == "" {
-		return nil, fmt.Errorf("file tool: no workspace bound for this run")
+		// The case docs/operations/palai-on-a-mac.md §4.1 measured on 2026-07-28 and wrote down: a run
+		// offered a workspace tool with no workspace bound HUNG rather than failing. Nothing ran, so it is
+		// an answer, and a model told this can say so instead of the run never ending.
+		return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable, "file tool: no workspace bound for this run")
 	}
 	fs, err := workspace.NewWorkspaceFS(env.WorkspaceRoot)
 	if err != nil {
+		// NOT an answer, deliberately: the allocation root this run was handed is unusable, which is the
+		// deployment being broken rather than the model being wrong. It keeps today's abort.
 		return nil, fmt.Errorf("file tool: %w", err)
 	}
 	op, _ := args["op"].(string)
@@ -55,11 +72,11 @@ func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) 
 	switch op {
 	case "read":
 		if likelySecretPath(path) {
-			return nil, fmt.Errorf("file tool: refusing to read likely-secret path %q", path)
+			return nil, toolbroker.Answerf(toolbroker.AnswerRefused, "file tool: refusing to read likely-secret path %q", path)
 		}
 		data, truncated, err := fs.Read(path, maxFileReadBytes)
 		if err != nil {
-			return nil, err
+			return nil, toolbroker.Answer(fileAnswerCode(err), err)
 		}
 		content := string(data)
 		// REDACTION ON THE WAY OUT (E26 T6, §3.6 D8). A background task writes its own log file, which
@@ -83,11 +100,21 @@ func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) 
 		return map[string]any{"path": path, "content": content, "truncated": truncated, "size": len(data)}, nil
 	case "write":
 		if env.ReadOnly {
-			return nil, fmt.Errorf("file tool: workspace is read-only for this run")
+			return nil, toolbroker.Answerf(toolbroker.AnswerRefused, "file tool: workspace is read-only for this run")
 		}
 		content, _ := args["content"].(string)
 		report, err := fs.Write(path, []byte(content))
 		if err != nil {
+			// A WRITE IS THE ONE OPERATION HERE THAT CAN LAND HALFWAY, so the read rule above does not
+			// apply and the classification is by SENTINEL rather than by "it failed". ErrPathEscape and
+			// ErrNotRegular are raised by resolve/assertRegularOrAbsent, both of which run BEFORE the temp
+			// file is created — so those two, and only those two, are provably pre-effect and answerable.
+			// Every other Write error (staging, rename, reading the prior content) sits at or after the
+			// mutation and keeps today's abort, because a rename that may or may not have happened is
+			// exactly what `uncertain` is for.
+			if errors.Is(err, workspace.ErrPathEscape) || errors.Is(err, workspace.ErrNotRegular) {
+				return nil, toolbroker.Answer(fileAnswerCode(err), err)
+			}
 			return nil, err
 		}
 		return map[string]any{
@@ -97,7 +124,7 @@ func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) 
 	case "list":
 		entries, err := fs.List(path)
 		if err != nil {
-			return nil, err
+			return nil, toolbroker.Answer(fileAnswerCode(err), err)
 		}
 		items := make([]any, 0, len(entries))
 		for _, e := range entries {
@@ -107,17 +134,41 @@ func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) 
 	case "stat":
 		st, err := fs.Stat(path)
 		if err != nil {
-			return nil, err
+			return nil, toolbroker.Answer(fileAnswerCode(err), err)
 		}
 		return map[string]any{"path": st.Path, "is_dir": st.IsDir, "size": st.Size}, nil
 	case "checksum":
 		sum, err := fs.Checksum(path)
 		if err != nil {
-			return nil, err
+			return nil, toolbroker.Answer(fileAnswerCode(err), err)
 		}
 		return map[string]any{"path": path, "checksum": sum}, nil
 	default:
-		return nil, fmt.Errorf("file tool: unknown op %q", op)
+		return nil, toolbroker.Answerf(toolbroker.AnswerInvalidArguments, "file tool: unknown op %q", op)
+	}
+}
+
+// fileAnswerCode names a workspace-filesystem failure for the model. It reads the SENTINELS
+// (workspace.ErrPathEscape / ErrNotRegular) and the standard io/fs ones through errors.Is, never the
+// message text — the messages are built by fmt.Errorf at four different call sites and would be four
+// things to keep in step. An unrecognised cause is AnswerFailed rather than a guess: the model still
+// learns the read did not work, which is the part it can act on.
+//
+// A REFUSED TRAVERSAL COMES BACK AS `refused`, NOT AS AN ERROR CODE THAT SOUNDS LIKE A BUG. That naming
+// is the security case's whole point: the control fired, /etc/passwd was not read, and the run carries on
+// with the model told exactly why.
+func fileAnswerCode(err error) string {
+	switch {
+	case errors.Is(err, workspace.ErrPathEscape):
+		return toolbroker.AnswerRefused
+	case errors.Is(err, workspace.ErrNotRegular):
+		return toolbroker.AnswerRefused
+	case errors.Is(err, iofs.ErrNotExist):
+		return toolbroker.AnswerNotFound
+	case errors.Is(err, iofs.ErrPermission):
+		return "permission_denied"
+	default:
+		return toolbroker.AnswerFailed
 	}
 }
 

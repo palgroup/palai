@@ -322,6 +322,17 @@ type attemptState struct {
 	// on the orchestrator, or anywhere else that outlives one Execute call. Nil for every run whose
 	// revision names no environment, which is every run in every deployment before E25.
 	envKeys []envKey
+	// toolAnswerErrors counts the tool REFUSALS this attempt has handed the model — a tool error delivered
+	// as a result rather than raised as a fault (tool_answer.go). It is what bounds a model that keeps
+	// asking for a file that is not there. It counts REPLAYED refusals too, so a reclaimed attempt
+	// rebuilding the same transcript arrives at the same number rather than starting over.
+	//
+	// HONEST CEILING, AND IT IS THE WHOLE OF WHAT THIS FIELD CLAIMS: it is per ATTEMPT, in memory. A run
+	// whose attempts are torn down and reopened by something OTHER than a replay of the same transcript —
+	// a park, a pause, a resume — starts a fresh count. Making it per-run needs the count to be durable,
+	// which is a column and a migration; the refusals themselves already are (every one is a committed
+	// tool_calls row), so that upgrade is a query away when a deployment needs it.
+	toolAnswerErrors int
 }
 
 // fanoutUsed is the number of children this attempt has already dispatched: the local ChildRuns plus the
@@ -723,6 +734,12 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 				// is held while somebody reads — and the decision (or the expiry reaper) opens a fresh
 				// attempt through the one wake. Exactly as a pause ends and resume reopens.
 				return nil
+			case errors.Is(err, errToolAnswerBudget):
+				// The model has been handed more tool refusals than the budget allows (tool_answer.go).
+				// NAMED, NOT RETRIED — the same shape as errContextOverflow above: a conversation that made
+				// sixteen refused calls replays into the same sixteen, so the retry ladder would spend its
+				// attempts reproducing them before dead-lettering into the generic failure this avoids.
+				return o.failToolAnswerBudget(ctx, st)
 			case err != nil:
 				return abortIfTerminal(err)
 			}
@@ -960,6 +977,30 @@ func (o *Orchestrator) failContextOverflow(ctx context.Context, st *attemptState
 		"usage":  st.usage,
 		"model":  st.model,
 		"error":  problem,
+	})
+	return o.spine.FinalizeResponse(ctx, st.tenant, st.responseID, "failed", projection)
+}
+
+// failToolAnswerBudget drives the run to an explicit, NAMED terminal failure when its model has been
+// handed more tool refusals than the deployment's budget allows (tool_answer.go). It is
+// failContextOverflow's shape, deliberately: one terminal transition, one projection, and nil returned
+// so the attempt ends cleanly instead of failing the job into the retry ladder.
+//
+// The refusals themselves are already durable — every one of them was COMMITTED to its tool_calls row
+// before this was reached — so the operator this failure is addressed to can read exactly which call
+// kept being refused, which is the thing a generic "internal error" never told anybody.
+func (o *Orchestrator) failToolAnswerBudget(ctx context.Context, st *attemptState) error {
+	switch _, err := o.spine.ApplyRunTransition(ctx, st.tenant, string(st.attempt.RunID), statemachines.RunCmdFail); {
+	case errors.Is(err, coordinator.ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):
+		return nil // another path already settled this run; its projection stands
+	case err != nil:
+		return err
+	}
+	projection, _ := json.Marshal(map[string]any{
+		"output": st.output,
+		"usage":  st.usage,
+		"model":  st.model,
+		"error":  toolAnswerBudgetProblem(st.toolAnswerErrors),
 	})
 	return o.spine.FinalizeResponse(ctx, st.tenant, st.responseID, "failed", projection)
 }
