@@ -2254,10 +2254,21 @@ pre.code {
    1350px, and inside a 672px column that cap makes a field stop two thirds of the way across for no reason. */
 .dialog .section-row {
   display: block;
+  width: 100%;
 }
+/* BOTH HALVES GO FULL WIDTH, and forgetting the aside is a defect this pass shipped for one build and found
+   in a screenshot. Switching the ROW to `display: block` leaves `.section-aside`'s own
+   `flex: 0 0 224px; max-width: 224px` in force — outside a flex container the flex shorthand does nothing but
+   the max-width still binds — so the section's explanatory paragraph rendered as a twelve-line ribbon 224px
+   wide above full-width fields. Inside a dialog that paragraph is a LEAD over the fields, not a margin note
+   beside them. */
+.dialog .section-aside,
 .dialog .section-body {
   width: 100%;
   max-width: none;
+}
+.dialog .section-aside {
+  margin-bottom: var(--space-5);
 }
 .dialog input[type="text"],
 .dialog input[type="password"],
