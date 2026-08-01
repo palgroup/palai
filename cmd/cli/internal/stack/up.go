@@ -107,6 +107,27 @@ func Bootstrap(envFile string, native bool) error {
 	if err := applyConcurrencyEnv(get); err != nil {
 		return err
 	}
+	// THE MACHINE'S OWN DESIRED CONFIGURATION, read off the control plane that is already running and
+	// exported BEFORE compose is driven, so the values are in the environment compose interpolates from
+	// (see desired.go for the sequencing and for why a failure here is silent). This is the reader that
+	// makes the panel's write mean something: without it the desired document is a table nobody consults.
+	//
+	// It is applied AFTER the three blocks above and overwrites them where they overlap, which matters for
+	// exactly one setting: applyConcurrencyEnv defaults PALAI_DISPATCH_WORKERS to 1 so the live round-trip
+	// below can be proven, and a machine whose operator saved a different number should get theirs. The one
+	// value this command still owns outright is PALAI_MODEL_PROVIDER — `palai up` REFUSES to run on the
+	// fake adapter, so it is re-asserted after the document is applied rather than before it.
+	desired := readDesiredFromRunningStack()
+	applied, err := applyDesiredEnv(desired)
+	if err != nil {
+		return err
+	}
+	if len(applied) > 0 {
+		fmt.Fprintf(os.Stderr, "        desired    revision %d from this machine: %s\n", desired.revision, strings.Join(applied, ", "))
+		if err := os.Setenv("PALAI_MODEL_PROVIDER", liveSelector); err != nil {
+			return err
+		}
+	}
 
 	// The Slack knobs the CONTAINER needs must be exported before compose creates it: a running
 	// control-plane never re-reads its environment, so a socket switched on after the fact stays off
@@ -155,6 +176,20 @@ func Bootstrap(envFile string, native bool) error {
 		fmt.Fprintf(os.Stderr, "[4/6] health    doctor: %d/%d green — NOT green: %s\n",
 			len(report.Checks)-len(red), len(report.Checks), strings.Join(red, "; "))
 	}
+
+	// THE DESIRED CONFIGURATION, VERIFIED against the machine's own report of what it is running.
+	//
+	// This is where the claim "the panel writes it and the bring-up applies it" becomes a transcript rather
+	// than a design note. It reads GET /v1/deployment back, repairs a first-install drift with one
+	// control-plane recreate, and REFUSES the command if the machine is still not running what was saved —
+	// the same discipline the live round trip below applies to the model provider. A bring-up that reported
+	// success on a stack running something other than the operator's document would be the "declared, and
+	// nothing happens" defect wearing this command's own report.
+	desiredLine, err := verifyDesiredApplied(api, func() error { return recreateControlPlane(cfg, p) })
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "        config    %s\n", desiredLine)
 
 	// [5/6] The point of the whole command.
 	fmt.Fprintln(os.Stderr, "[5/6] proof     one real single-step run...")
