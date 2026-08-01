@@ -80,7 +80,7 @@ func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) 
 		}
 		data, truncated, err := fs.Read(path, maxFileReadBytes)
 		if err != nil {
-			return nil, toolbroker.Answer(fileAnswerCode(err), err)
+			return nil, fileAnswer(env, fileAnswerCode(err), err)
 		}
 		content := string(data)
 		// REDACTION ON THE WAY OUT (E26 T6, §3.6 D8). A background task writes its own log file, which
@@ -117,7 +117,7 @@ func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) 
 			// mutation and keeps today's abort, because a rename that may or may not have happened is
 			// exactly what `uncertain` is for.
 			if errors.Is(err, workspace.ErrPathEscape) || errors.Is(err, workspace.ErrNotRegular) {
-				return nil, toolbroker.Answer(fileAnswerCode(err), err)
+				return nil, fileAnswer(env, fileAnswerCode(err), err)
 			}
 			return nil, err
 		}
@@ -128,7 +128,7 @@ func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) 
 	case "list":
 		entries, err := fs.List(path)
 		if err != nil {
-			return nil, toolbroker.Answer(fileAnswerCode(err), err)
+			return nil, fileAnswer(env, fileAnswerCode(err), err)
 		}
 		items := make([]any, 0, len(entries))
 		for _, e := range entries {
@@ -138,18 +138,53 @@ func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) 
 	case "stat":
 		st, err := fs.Stat(path)
 		if err != nil {
-			return nil, toolbroker.Answer(fileAnswerCode(err), err)
+			return nil, fileAnswer(env, fileAnswerCode(err), err)
 		}
 		return map[string]any{"path": st.Path, "is_dir": st.IsDir, "size": st.Size}, nil
 	case "checksum":
 		sum, err := fs.Checksum(path)
 		if err != nil {
-			return nil, toolbroker.Answer(fileAnswerCode(err), err)
+			return nil, fileAnswer(env, fileAnswerCode(err), err)
 		}
 		return map[string]any{"path": path, "checksum": sum}, nil
 	default:
 		return nil, toolbroker.Answerf(toolbroker.AnswerInvalidArguments, "file tool: unknown op %q", op)
 	}
+}
+
+// fileAnswer wraps a workspace-filesystem failure as the model's answer, with the allocation's absolute
+// host path folded down to `<workspace>`.
+//
+// MEASURED ON A LIVE RUN, 2026-08-01. The first refusal this change ever delivered to a real model read:
+//
+//	read "README": open /Users/salih/palai-toolerr/workspaces/alloc_de9207d0b141e8a2/README: no such file
+//
+// The useful half is already there — exec.go's own wrapper names the RELATIVE path the model asked for —
+// and the tail is an *fs.PathError carrying the host path, which now travels into the model's context
+// (and, for a hosted provider, off this machine) and into a durable tool_calls row. It tells the model
+// nothing it can act on: every path it may name is workspace-relative by construction.
+//
+// THIS IS HYGIENE, NOT CONTAINMENT, and the distinction matters because this tree has been bitten by
+// path comparisons that were load-bearing. Nothing is decided here: if the substitution misses, the
+// outcome is exactly today's message, and the refusal itself was made by resolve()'s sentinels long
+// before this function is reached.
+// IT FOLDS THE RESOLVED ROOT AS WELL AS THE DECLARED ONE, and that is not belt-and-braces — it is the
+// only version that works on the target platform. NewWorkspaceFS EvalSymlinks's the root, so every path
+// in an *fs.PathError is the REAL one, while ExecEnv carries the DECLARED one; on macOS a workspace under
+// /var reports as /private/var and a substitution that read only the name it was handed would walk
+// straight through the everyday alias. Same trap as the bring-up's world-writable-parent check, which
+// this tree already had to learn to resolve.
+func fileAnswer(env toolbroker.ExecEnv, code string, err error) error {
+	msg := err.Error()
+	root := env.WorkspaceRoot
+	if root == "" {
+		return toolbroker.Answerf(code, "%s", msg)
+	}
+	if real, rerr := filepath.EvalSymlinks(root); rerr == nil && real != root {
+		msg = strings.ReplaceAll(msg, real, "<workspace>")
+	}
+	msg = strings.ReplaceAll(msg, root, "<workspace>")
+	return toolbroker.Answerf(code, "%s", msg)
 }
 
 // fileAnswerCode names a workspace-filesystem failure for the model. It reads the SENTINELS

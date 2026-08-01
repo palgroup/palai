@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -184,6 +185,41 @@ func TestAnAllocationRootThatDoesNotExistIsRefusedBeforeAnyRead(t *testing.T) {
 		map[string]any{"op": "read", "path": "anything"})
 	if _, ok := toolbroker.AsAnswer(err); !ok {
 		t.Fatalf("a read that reached the filesystem and failed = %v, want an answer (it changed nothing)", err)
+	}
+}
+
+// TestARefusalDoesNotCarryTheHostPathOffThisMachine. MEASURED on a live run on 2026-08-01: the first
+// refusal this change delivered to a real model read
+// `read "README": open /Users/salih/palai-toolerr/workspaces/alloc_de92…/README: no such file`. A refusal
+// now travels into a model's context — for a hosted provider, off this machine — and into a durable row,
+// and the operator's home directory is no part of anything the model can act on: every path it may name
+// is workspace-relative by construction.
+//
+// The second half is the one that would silently not work: NewWorkspaceFS resolves the root through
+// symlinks, so on macOS a /var workspace reports as /private/var. t.TempDir() gives exactly that shape,
+// which is why this test can tell the two-substitution version from the one-substitution one.
+func TestARefusalDoesNotCarryTheHostPathOffThisMachine(t *testing.T) {
+	root := realTempDir(t)
+	_, err := FileTool().Exec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: root},
+		map[string]any{"op": "read", "path": "README"})
+	answer, ok := toolbroker.AsAnswer(err)
+	if !ok {
+		t.Fatalf("missing file = %v, want an answer", err)
+	}
+	msg := answer.Error()
+	if strings.Contains(msg, root) {
+		t.Fatalf("the refusal carries the declared host root:\n  %s", msg)
+	}
+	if real, rerr := filepath.EvalSymlinks(root); rerr == nil && strings.Contains(msg, real) {
+		t.Fatalf("the refusal carries the RESOLVED host root (the /var -> /private/var alias):\n  %s", msg)
+	}
+	// Non-vacuity: the message still says what happened and still names the path the MODEL asked for,
+	// which is the whole reason to deliver it.
+	if !strings.Contains(msg, "README") || !strings.Contains(msg, "no such file") {
+		t.Fatalf("the refusal was gutted rather than folded: %q", msg)
+	}
+	if !strings.Contains(msg, "<workspace>") {
+		t.Fatalf("the refusal names no workspace at all: %q", msg)
 	}
 }
 
