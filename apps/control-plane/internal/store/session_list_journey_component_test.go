@@ -279,3 +279,64 @@ func pageJSON(t *testing.T, v any) string {
 	}
 	return string(raw)
 }
+
+// TestSessionsCapabilityAgreesWithTheServedSurface is the guard on a WORD, and it exists because that word
+// was wrong for as long as anyone can tell.
+//
+// GET /v1/capabilities reported `sessions: "unavailable"` while POST /v1/sessions returned 201 and a
+// conversation carried context across turns. It was a hardcoded string in capabilities.go — no gate, no
+// writer, nothing to make it false when the surface changed — sitting three lines above `workspaces`, which
+// derives from the environment variable the provisioner is actually gated on. One measured entry beside one
+// typed entry in the same map reads as uniformly measured, which is exactly how the typed one survived.
+//
+// WHAT THIS ASSERTS IS AN AGREEMENT, NOT A VALUE. It drives the session surface on a router built over a REAL
+// store, and then reads the capability word off THE SAME ROUTER. So it fails in both directions: setting the
+// word back to "unavailable" while sessions serve fails here, and a deployment that genuinely stopped serving
+// sessions would fail at the drive rather than pass on a stale word.
+//
+// THE CEILING, stated because the word `preview` is a maturity claim and this test does not earn it: a
+// component router has no model provider, so "a turn recalls the previous turn" is not provable here. That
+// half was measured live (capabilities.go carries the transcript). What is provable here — and what the word
+// most needs to stop claiming falsely — is that the surface EXISTS and answers.
+func TestSessionsCapabilityAgreesWithTheServedSurface(t *testing.T) {
+	f := newSessionListFixture(t)
+
+	// 1. The surface serves: open a session, name it, read it back through the shipped routes.
+	status, body := f.do(t, http.MethodPost, "/v1/sessions", `{"name":"capability agreement"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("POST /v1/sessions = %d, want 201 — if this deployment truly cannot open a session, the word below is the least of it: %s", status, body)
+	}
+	var opened struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &opened); err != nil || opened.ID == "" {
+		t.Fatalf("POST /v1/sessions body carried no id (%v): %s", err, body)
+	}
+	status, body = f.do(t, http.MethodGet, "/v1/sessions/"+opened.ID, "")
+	if status != http.StatusOK {
+		t.Fatalf("GET /v1/sessions/%s = %d, want 200: %s", opened.ID, status, body)
+	}
+
+	// 2. The word, off the SAME router. A second router would let the two drift, which is the whole failure
+	// this guards.
+	status, body = f.do(t, http.MethodGet, "/v1/capabilities", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET /v1/capabilities = %d, want 200: %s", status, body)
+	}
+	var discovery struct {
+		Capabilities map[string]string `json:"capabilities"`
+	}
+	if err := json.Unmarshal(body, &discovery); err != nil {
+		t.Fatalf("decode capabilities: %v: %s", err, body)
+	}
+	word, advertised := discovery.Capabilities["sessions"]
+	if !advertised {
+		t.Fatal("GET /v1/capabilities does not advertise `sessions` at all — a served surface that discovery omits is the same defect as one it calls unavailable")
+	}
+	if word == "unavailable" {
+		t.Fatalf("GET /v1/capabilities says sessions = %q, and this test just opened session %s and read it back through the shipped routes. "+
+			"`unavailable` is a NEGATIVE claim — it tells an integrator this deployment does not serve the surface — and it is false here.",
+			word, opened.ID)
+	}
+}

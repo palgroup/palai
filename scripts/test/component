@@ -465,7 +465,7 @@ run_postgres() {
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v \
-        -run 'TestA2ARealAdmitterBirthsRun|TestSlack|TestAgentSurfaceJourney|TestSessionListJourneyRendersTheScreenFromOneCall|TestDesiredConfigJourneyWritesADocumentTheDeploymentReadReports' \
+        -run 'TestA2ARealAdmitterBirthsRun|TestSlack|TestAgentSurfaceJourney|TestSessionListJourneyRendersTheScreenFromOneCall|TestSessionsCapabilityAgreesWithTheServedSurface|TestDesiredConfigJourneyWritesADocumentTheDeploymentReadReports' \
         ./apps/control-plane/internal/store
     status=$?
   fi
