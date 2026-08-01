@@ -26,7 +26,11 @@ func seedRoutedProject(t *testing.T, cs *coordinator.Store, exec func(string, ..
 		return tenant
 	}
 	ctx := context.Background()
-	connID, err := cs.CreateModelConnection(ctx, tenant, "provider-one", secretRef)
+	// The empty base URL is the provider-one shape and it is what this test wants: the family has an
+	// endpoint of its own, so the connection names none and the adapter dials where it always did. The
+	// per-connection endpoint (000051) is exercised where it means something, in the openai-compatible
+	// cases in tests/component/postgres/model_route_test.go.
+	connID, err := cs.CreateModelConnection(ctx, tenant, "provider-one", secretRef, "")
 	if err != nil {
 		t.Fatalf("CreateModelConnection: %v", err)
 	}

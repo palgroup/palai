@@ -1,6 +1,6 @@
 import { test, expect, type Response as NetResponse } from "@playwright/test";
 
-import { announceProfile, signIn } from "./profile";
+import { announceProfile, chooseOption, signIn } from "./profile";
 
 // THE SCREEN THAT MAKES THE HEADLINE PROMISE TRUE (E29 provider wiring).
 //
@@ -59,7 +59,10 @@ test("the custom family asks for an endpoint and the other families do not", asy
   // OpenAI has an endpoint of its own, so the console does not ask for one.
   await expect(page.getByTestId("connection-endpoint-input")).toHaveCount(0);
 
-  await page.getByTestId("connection-provider-select").selectOption("openai-compatible");
+  // chooseOption, NOT selectOption. This spec was written against a native <select>; the Base UI primitive
+  // layer landed on main in the meantime and the seven native selects became a real listbox, so
+  // `selectOption` — which requires a <select> element — no longer addresses this control at all.
+  await chooseOption(page, "connection-provider-select", "openai-compatible");
   const endpoint = page.getByTestId("connection-endpoint-input");
   await expect(endpoint).toBeVisible();
 

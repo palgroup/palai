@@ -142,7 +142,11 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // where a deployment's least-consulted configuration should not be. `panel-model-connections` is the
   // first panel and the one that can still be a spinner. All three are empty on a bootstrap stack, so on
   // the real profile this scan covers their empty states.
-  { path: "/registry", label: "Model wiring", group: "Govern", readyTestId: "panel-model-connections", lead: "How a model is reached from this deployment: the provider connections, the routes that name them, and the knowledge bases a run can retrieve from. This is a read surface — every row here is created by the API or the CLI." },
+  // E29. THE LEAD USED TO END "This is a read surface — every row here is created by the API or the CLI",
+  // and BOTH halves were wrong. The CLI half was false when it was written — there was no `palai model` verb
+  // until E29 added one — and the read-surface half stopped being true the moment this screen grew a create
+  // form. A lead that tells an operator a screen cannot do the thing they came to do is worse than no lead.
+  { path: "/registry", label: "Model wiring", group: "Govern", readyTestId: "panel-model-connections", lead: "How a model is reached from this deployment: the provider connections, the routes that name them, and the knowledge bases a run can retrieve from. Add an OpenAI, Anthropic or custom OpenAI-compatible connection here, and verify its credential against the endpoint before a run needs it." },
 ];
 
 /**

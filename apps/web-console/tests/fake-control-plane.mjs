@@ -1611,10 +1611,14 @@ export const ROUTES = [
     // asserting the console can render a green, which is not the property worth pinning. The REAL
     // classification is measured in Go against an httptest endpoint
     // (internal/store TestVerifyModelConnectionMakesARealRequest).
+    // THE PATTERN IS A STRING WITH A `{name}` WILDCARD, NOT A RegExp. compile() below calls
+    // `pattern.replace`, so a RegExp here throws at module load and the fixture never binds its port —
+    // which is not a failing spec but every console spec failing to start, reported as a webServer error.
+    // The wildcard's name is what reaches the handler as `groups`.
     method: "POST",
-    pattern: /^\/v1\/model-connections\/[^/]+\/verify$/,
-    handle: (request, response) => {
-      const id = (request.url ?? "").split("/")[3] ?? "";
+    pattern: "/v1/model-connections/{connection_id}/verify",
+    handle: (request, response, groups) => {
+      const id = groups.connection_id ?? "";
       sendJSON(response, 200, {
         object: "model_connection_verification",
         connection_id: id,
@@ -1629,6 +1633,43 @@ export const ROUTES = [
 
   { method: "GET", pattern: "/v1/model-routes", handle: adminList("model-routes") },
   { method: "GET", pattern: "/v1/secret-refs", handle: adminList("secret-refs") },
+  {
+    // WRITING THE CREDENTIAL — the first half of the console's two-call connection flow (E29). The
+    // connection surface stores a REF, so a screen that takes a key must seal it here first and then name
+    // it; without this route the console could only bind refs somebody had already created by CLI, which is
+    // the gap the whole screen exists to close.
+    //
+    // The refusals and the projection are identity/secrets.go's: `{name, value}` in, and metadata out —
+    // `{name, object, version, updated_at}` per secretRefView, with NO value on the response. That absence
+    // is the fixture's most important property: secret-never-returns.spec.ts and provider-wiring.spec.ts
+    // both sweep every response body for the sentinel they typed, and a fixture that echoed `value` would
+    // turn a real leak assertion into a fixture artefact.
+    //
+    // A REPEAT NAME VERSIONS RATHER THAN REPLACING, because secret_refs is append-only and the real store
+    // computes the next version in putVersion(). A fixture that answered `version: 1` forever would let a
+    // rotation display bug ship.
+    method: "POST",
+    pattern: "/v1/secret-refs",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const name = typeof body.name === "string" ? body.name : "";
+        const value = typeof body.value === "string" ? body.value : "";
+        if (name === "") return sendProblem(response, 400, "invalid_request", "name is required");
+        if (value === "") return sendProblem(response, 400, "invalid_request", "value is required");
+        const rows = ADMIN["secret-refs"].data;
+        const existing = rows.find((r) => r.name === name);
+        const updatedAt = new Date().toISOString();
+        if (existing !== undefined) {
+          existing.version += 1;
+          existing.updated_at = updatedAt;
+          return sendJSON(response, 201, { name, object: "secret_ref", version: existing.version, updated_at: updatedAt });
+        }
+        const row = { name, object: "secret_ref", version: 1, updated_at: updatedAt };
+        rows.unshift(row);
+        sendJSON(response, 201, row);
+      }),
+  },
   { method: "GET", pattern: "/v1/knowledge-bases", handle: adminList("knowledge-bases") },
   { method: "GET", pattern: "/v1/agents", handle: (request, response) => pageSlice(AGENTS, requestURL(request), response) },
 
