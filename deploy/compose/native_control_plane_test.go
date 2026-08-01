@@ -70,3 +70,46 @@ func TestNativeOverlayBindsTheWorkspaceAtTheSameAbsolutePath(t *testing.T) {
 		t.Fatalf("%s no longer binds the workspace root at the identical absolute path on both sides", nativeOverlay)
 	}
 }
+
+// TestTheNativeOverlayGivesTheRunnerTheRootItBindsIntoIt is the fourth property, and it was missing for
+// as long as the overlay has existed.
+//
+// THE BIND AND THE VARIABLE DO DIFFERENT JOBS. The volume above makes the allocation root REACHABLE
+// inside the runner container. PALAI_WORKSPACE_ROOT in the runner's own environment is what makes the
+// runner CHECK it: packages/runner's workspaceUnderRoot refuses to bind-mount a leased path that does not
+// sit under this root — the §24 boundary against a control plane naming an arbitrary host path such as
+// /etc.
+//
+// Until this guard existed the overlay shipped the mount and not the variable, so the runner's root was
+// EMPTY. Measured 2026-08-01, across every shipped file:
+//
+//	runner `environment:` block carries PALAI_WORKSPACE_ROOT?   compose.yaml NO, production.yml NO,
+//	native-control-plane.yml NO, airgap.yml NO;  docker inspect <live runner> -> 0
+//
+// and an empty root used to DISABLE the check. So the boundary was off on the one shipped posture where
+// workspaces work at all. serve.go now refuses instead of admitting, which turns that silence into a
+// failed run — the safe direction, and still a broken deployment unless this line is here.
+//
+// IT ASSERTS THE VALUES ARE THE SAME EXPRESSION, not merely that both exist. A runner checking against a
+// different root than the control plane allocates under refuses every coding run, which is a stack that
+// looks configured and works for nothing.
+func TestTheNativeOverlayGivesTheRunnerTheRootItBindsIntoIt(t *testing.T) {
+	overlay := readOverlay(t)
+	const envLine = `PALAI_WORKSPACE_ROOT: "${PALAI_WORKSPACE_ROOT}"`
+	if !strings.Contains(overlay, envLine) {
+		t.Fatalf("%s binds ${PALAI_WORKSPACE_ROOT} into the runner and does not set it in the runner's "+
+			"environment. The bind makes the path reachable; the VARIABLE is what makes the runner refuse a "+
+			"leased path outside it (packages/runner workspaceUnderRoot, §24). Without it the runner's root is "+
+			"empty, and this is the only shipped posture where workspaces run", nativeOverlay)
+	}
+	// The env line must sit in the RUNNER's block, not the control-plane's — the control plane is not a
+	// compose service in this overlay at all, so a stray copy there would configure nothing while reading
+	// as if it did.
+	runner := overlay[strings.Index(overlay, "  runner:"):]
+	if !strings.Contains(runner, envLine) {
+		t.Fatalf("%s sets PALAI_WORKSPACE_ROOT outside the runner service block", nativeOverlay)
+	}
+	if !strings.Contains(runner, `"${PALAI_WORKSPACE_ROOT}:${PALAI_WORKSPACE_ROOT}"`) {
+		t.Fatalf("%s no longer binds the root into the same runner it configures", nativeOverlay)
+	}
+}

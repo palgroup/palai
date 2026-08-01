@@ -49,6 +49,15 @@ var nonTenantTables = map[string]bool{
 	"schema_revisions":  true,
 	"host_quarantine":   true,
 	"session_sequences": true,
+	// deployment_desired is the 000052 desired-configuration journal (E29): the configuration of the
+	// PROCESS, appended by the admin panel and applied by the next bring-up. It is outside RLS because it
+	// carries no tenant column, and it carries no tenant column ON PURPOSE rather than by omission — four
+	// of the eleven settings it may hold are the ADMISSION BOUNDS that exist to hold a tenant
+	// (PALAI_MAX_CONCURRENT_RUNS, PALAI_MAX_QUEUED_RUNS, PALAI_REQUEST_RATE_PER_SEC, PALAI_REQUEST_BURST),
+	// so a per-tenant home for them would let a tenant raise the limit that bounds it. With no tenant
+	// column there is nothing a later policy could key on, and the check above turns that into a test: add
+	// organization_id to this table and this allowlist entry becomes a FAILURE rather than an exemption.
+	"deployment_desired": true,
 }
 
 // suite holds the two connections the corpus contrasts: the migration owner (which seeds fixtures

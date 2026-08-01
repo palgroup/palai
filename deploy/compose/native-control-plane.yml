@@ -51,6 +51,24 @@ services:
     environment:
       # Same DNS name the certificate carries; only the resolution changes (see 2 above).
       PALAI_CONTROLLER_URL: "https://control-plane:${PALAI_RUNNER_PORT}"
+      # THE RUNNER'S OWN COPY OF THE ALLOCATION ROOT, and it is a DIFFERENT job from the bind below.
+      #
+      # The volume makes the path REACHABLE inside the container. This variable is what makes the runner
+      # CHECK it: packages/runner's workspaceUnderRoot refuses to bind-mount a leased path that does not
+      # sit under this root, which is the §24 boundary against a control plane naming an arbitrary host
+      # path. Until this line existed the runner got the mount and not the variable, so the check saw an
+      # empty root — and an empty root used to mean "disabled". Measured 2026-08-01: not one shipped
+      # compose file put PALAI_WORKSPACE_ROOT in a runner's environment block, and `docker inspect` on the
+      # live runner found zero. The boundary was off on every deployment, including this one, which is the
+      # only shipped posture where workspaces work at all.
+      #
+      # IT MUST BE THE SAME VALUE THE BIND USES. Both sides interpolate the same variable, and the bind is
+      # "${PALAI_WORKSPACE_ROOT}:${PALAI_WORKSPACE_ROOT}" — identical host and container paths (see 3
+      # above) — so the root the runner checks against is the root the control plane allocates under.
+      # deploy/compose/native_control_plane_test.go asserts the two stay in step; a bind whose variable
+      # this block did not carry would refuse every coding run instead of admitting every host path, which
+      # is the safe direction and still a broken deployment.
+      PALAI_WORKSPACE_ROOT: "${PALAI_WORKSPACE_ROOT}"
     extra_hosts:
       - "control-plane:host-gateway"
     volumes:

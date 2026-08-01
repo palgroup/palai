@@ -99,6 +99,30 @@ services:
       # E15 T2: overrides the baked version stamp (§48.2 window / applied_by). Unset = the image's stamp.
       PALAI_VERSION: ${PALAI_VERSION:-}
       PALAI_RETENTION_STORE_FALSE_TTL: ${PALAI_RETENTION_STORE_FALSE_TTL:-}
+      # THE FIVE BOUNDS THIS FILE NEVER PASSED. Measured on main at 444a1576, 2026-08-01:
+      #
+      #   grep -c 'PALAI_MAX_CONCURRENT_RUNS' compose.yaml production.yml   -> 0, 0
+      #   docker inspect <control-plane> --format '{{range .Config.Env}}…'
+      #     | grep -c 'PALAI_QUEUE_DEADLINE\|PALAI_REQUEST_*\|PALAI_MAX_*'  -> 0
+      #
+      # main.go has read all five since they were written — edgeLimitsFromEnv (main.go:1969) and
+      # orch.SetQueueDeadline (main.go:604) — and every one of their readers coerces an unset value to
+      # ZERO, which each of these four spells "unbounded". So every compose deployment that has ever
+      # existed admits an unlimited request rate, an unlimited burst, and an unlimited number of
+      # concurrent and queued runs per tenant, and times no run out on queue age. The variables were not
+      # missing from the binary; they were missing from the one file that could hand them to it, and
+      # GET /v1/deployment reported them as "unset — unbounded" beside a change_with sentence
+      # ("recreate the control-plane with the new value") naming a command that could not work, because
+      # there was no value to recreate with.
+      #
+      # Unset keeps every existing deployment BYTE-IDENTICAL: `${X:-}` passes an empty string, envInt and
+      # envFloat and envDuration all read that as their zero, which is what an absent variable already
+      # gave them. What changes is that a value can now arrive.
+      PALAI_QUEUE_DEADLINE: ${PALAI_QUEUE_DEADLINE:-}
+      PALAI_REQUEST_RATE_PER_SEC: ${PALAI_REQUEST_RATE_PER_SEC:-}
+      PALAI_REQUEST_BURST: ${PALAI_REQUEST_BURST:-}
+      PALAI_MAX_CONCURRENT_RUNS: ${PALAI_MAX_CONCURRENT_RUNS:-}
+      PALAI_MAX_QUEUED_RUNS: ${PALAI_MAX_QUEUED_RUNS:-}
       # Issued runner-cert lifetime; unset = 5m production default. A short value (the
       # fault-live renewal proof) makes the runner renew mid-session over the renew endpoint.
       PALAI_RUNNER_CERT_TTL: ${PALAI_RUNNER_CERT_TTL:-}

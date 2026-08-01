@@ -182,6 +182,25 @@ export async function POST(request: Request, ctx: { params: Promise<{ path: stri
   return relayJSON("POST", path, await readBody(request));
 }
 
+// PUT relays the ONE upstream route that uses it: PUT /v1/deployment/desired, the machine's desired
+// configuration. It is a PUT because the write REPLACES the whole document — which is what makes "stop
+// deciding this setting" expressible as an absent key — and a PATCH would advertise a merge the server does
+// not perform.
+//
+// IT DID NOT EXIST UNTIL THIS ROUTE DID, and that is worth a line: a Next.js Route Handler serves exactly
+// the methods it EXPORTS, so the desired-configuration form would have shipped against a relay that answers
+// 405 — a form declared and wired to nothing, on the one screen built to expose that defect. The gate below
+// is the same two statements every other method opens with, and tests/relay-gate.spec.ts counts this export
+// with the rest (its floor moves 6 -> 7).
+export async function PUT(request: Request, ctx: { params: Promise<{ path: string[] }> }): Promise<Response> {
+  const refused = requireSession(request);
+  if (refused !== null) return refused;
+
+  const path = await upstreamPath(ctx, request);
+  if (path === null) return problem(400, "invalid_request", "only /v1/* public-API paths are relayed");
+  return relayJSON("PUT", path, await readBody(request));
+}
+
 export async function PATCH(request: Request, ctx: { params: Promise<{ path: string[] }> }): Promise<Response> {
   const refused = requireSession(request);
   if (refused !== null) return refused;

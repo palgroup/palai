@@ -1,8 +1,12 @@
 "use client";
 
+import { useState } from "react";
+
 import { DeploymentNotice } from "@/components/DeploymentNotice";
 import { NameCell, Panel } from "@/components/Panel";
 import { mutabilityLabel, type DeploymentSetting } from "@/lib/deployment";
+
+import { DesiredConfig } from "./DesiredConfig";
 
 // WHAT THIS MACHINE IS RUNNING WITH.
 //
@@ -54,13 +58,25 @@ function markSharedRemedy(rows: DeploymentSetting[]): DeploymentSetting[] {
 export const SHARED_REMEDY_COMMAND = "docker compose up -d --force-recreate control-plane";
 
 export default function DeploymentPage() {
+  // ONE COUNTER, TWO READERS. Saving a desired value changes what BOTH the panel above and the table below
+  // report — the table's `desired`/`drift` columns come from the same GET /v1/deployment the panel reads —
+  // so a save that refreshed only the form would leave the table claiming the old document until a reload.
+  // That is the shape of a console disagreeing with itself about the machine it is showing.
+  const [reloadKey, setReloadKey] = useState(0);
+
   return (
     <>
       {/* EVERY warning, above the table. A row in a table is not a warning: the value that cost an evening
           was visible in `docker inspect` all along, and being visible is what it had already failed at. */}
-      <DeploymentNotice path="/deployment" />
+      <DeploymentNotice path="/deployment" reloadKey={reloadKey} />
+
+      {/* DESIRED BEFORE EFFECTIVE, and the order is the answer to "why is this machine running this?".
+          The table below says what IS; this says what was ASKED FOR and whether the two agree. A reader who
+          meets the table first has no way to know a save is pending. */}
+      <DesiredConfig reloadKey={reloadKey} onSaved={() => setReloadKey((n) => n + 1)} />
 
       <Panel<DeploymentSetting>
+        reloadKey={reloadKey}
         title="Effective configuration"
         testId="panel-deployment-settings"
         fetchPath="/deployment"
@@ -105,6 +121,16 @@ export default function DeploymentPage() {
             header: "Value",
             sort: (row) => row.value,
             render: (row) => <ValueCell row={row} />,
+          },
+          {
+            // DESIRED AGAINST EFFECTIVE, IN THE SAME ROW. The whole cost of the configuration being
+            // invisible was that the operator had to go somewhere else to find it; a desired value on a
+            // different screen from the effective one reproduces that with two screens instead of a
+            // `docker inspect`. Drift is stated IN TEXT ("pending a bring-up"), never by colour alone —
+            // the rule Status.tsx and Panel.tsx already follow.
+            header: "Saved for this machine",
+            sort: (row) => (row.desired_set === true ? row.desired ?? "" : ""),
+            render: (row) => <DesiredCell row={row} />,
           },
           {
             header: "Changing it",
@@ -181,6 +207,22 @@ export default function DeploymentPage() {
 // off. Those are opposite facts wearing the same word, so the fallback is rendered rather than left to a
 // reader who would have to know the code to tell them apart.
 function ValueCell({ row }: { row: DeploymentSetting }) {
+  // A SETTING THIS PROCESS DOES NOT READ IS NOT "UNSET", and rendering it that way would be the sharpest
+  // possible version of this screen's own founding mistake: two opposite facts wearing one word. Unset
+  // PALAI_RUNNER_POOL on a runner means the machine took the default pool; "unset" HERE would mean the
+  // control plane holds no copy of a variable it never reads — a statement about the wrong computer.
+  if (row.observable === false) {
+    return (
+      <span className="cell-name">
+        <span className="name" data-unnamed="true">
+          — read on the machines
+        </span>
+        <span className="muted">
+          not this process&apos;s to report. A runner that was given nothing uses: {row.default}
+        </span>
+      </span>
+    );
+  }
   if (!row.set) {
     return (
       <span className="cell-name">
@@ -199,6 +241,52 @@ function ValueCell({ row }: { row: DeploymentSetting }) {
           a path is not a key. GET /v1/deployment returns no credential value at all — the catalogue is an
           allow-list, so a variable nobody has decided about is invisible rather than published. */}
       {row.kind === "path" ? <span className="muted">a filesystem path — never the contents</span> : null}
+    </span>
+  );
+}
+
+// DesiredCell renders what was SAVED for this machine against what the process holds.
+//
+// FOUR STATES AND EACH ONE IS A DIFFERENT SENTENCE, because collapsing any two of them is how a screen
+// starts lying about a machine:
+//
+//   drift      — saved, and the process is not running it. A bring-up is pending, and the cell says the
+//                word "pending" rather than relying on a colour a screen reader does not read.
+//   agreed     — saved, and the process is running it. This is the state an operator wants to confirm.
+//   writable   — nothing saved, but something COULD be. The cell says so, so the empty space reads as an
+//                offer rather than as an absence of capability.
+//   refused    — the catalogue will not take a value for this setting, and the REASON is the cell. This is
+//                twenty-four of the thirty-five rows, and printing the reason here is what stops an
+//                operator concluding the console is unfinished.
+function DesiredCell({ row }: { row: DeploymentSetting }) {
+  if (row.desired_set === true) {
+    return (
+      <span className="cell-name">
+        <code>{row.desired}</code>
+        {row.drift === true ? (
+          <span className="name">pending a bring-up — this process holds {row.set ? `“${row.value}”` : "no value"}</span>
+        ) : (
+          <span className="muted">this process is running it</span>
+        )}
+      </span>
+    );
+  }
+  if (row.writable === true) {
+    return (
+      <span className="cell-name">
+        <span className="name" data-unnamed="true">
+          — not saved
+        </span>
+        <span className="muted">can be saved here</span>
+      </span>
+    );
+  }
+  return (
+    <span className="cell-name">
+      <span className="name" data-unnamed="true">
+        — not settable here
+      </span>
+      <span className="muted">{row.not_writable_because}</span>
     </span>
   );
 }

@@ -456,10 +456,16 @@ run_postgres() {
   # GET /v1/sessions. It exists on top of the coordinator's own tests because those prove the SQL and
   # cannot prove the route: a field can be selected, scanned, and then dropped by the marshaller, which
   # looks like success from either side alone.
+  # TestDesiredConfigJourneyWritesADocumentTheDeploymentReadReports is E29's desired configuration, and it
+  # is named here for the SAME reason a third time: the shipped router with only that seam mounted, over a
+  # real Postgres, writing a document through PUT /v1/deployment/desired and reading it back out of
+  # GET /v1/deployment. Two of its four properties are DATABASE guarantees no Go test can assert — the
+  # append-only REVOKE denying the runtime role UPDATE and DELETE, and "current" meaning the highest
+  # REVISION rather than whatever an unordered LIMIT returns.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v \
-        -run 'TestA2ARealAdmitterBirthsRun|TestSlack|TestAgentSurfaceJourney|TestSessionListJourneyRendersTheScreenFromOneCall' \
+        -run 'TestA2ARealAdmitterBirthsRun|TestSlack|TestAgentSurfaceJourney|TestSessionListJourneyRendersTheScreenFromOneCall|TestDesiredConfigJourneyWritesADocumentTheDeploymentReadReports' \
         ./apps/control-plane/internal/store
     status=$?
   fi

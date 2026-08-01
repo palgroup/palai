@@ -586,8 +586,9 @@ path in it is a route this console serves.
   directions, so a new compose setting that nobody catalogued is a red test rather than a silent gap.
 - **A `*_FILE` variable's value is a path, and the screen says which cells are handles.** No credential value
   reaches this surface; a URL's userinfo is stripped before the value is published.
-- **There is no write path here at all** — not for the settings that need a bring-up, and not for the three
-  that have a live override, because the live override already has its own surface (`/registry`).
+- **The write path writes a DOCUMENT, never the running process** — see §3g below. Eleven of the
+  thirty-five settings can be saved for this machine; twenty-four are refused, each with a stated reason.
+  Nothing here edits a value the process is already holding, because nothing can.
 - **`palai config validate` still knows four things this screen cannot, and the split is structural.** Of
   its five checks (`cmd/cli/internal/stack/configvalidate.go`), exactly one — `dispatch_workers`, the
   `>= 1` threshold — is a property of the running process, and the screen now carries it as the blocking
@@ -597,6 +598,193 @@ path in it is a route this console serves.
   A `/v1` route cannot answer those and must not try — a control plane reporting what it believes is on the
   host's disk is a confident wrong answer of exactly the kind the runner-scoped omission above avoids. Run
   `palai config validate` on the machine; the screen is what you read from anywhere else.
+
+---
+
+## 3g. The desired configuration — pushing config from the panel to the machine
+
+The screen above is a **read**. This is the other half of the requirement that produced it: *no config should
+live locally; it must be pushed from the admin panel to the machine, set up there, and be visible.*
+
+### It cannot mean "edit the running process", and the measurement says why
+
+Measured on a running stack, 2026-08-01:
+
+```
+curl -s -H "Authorization: Bearer $(cat .palai/api-key)" http://127.0.0.1:$PORT/v1/deployment \
+  | jq -r '.settings[].mutability' | sort | uniq -c
+  32 bring_up
+   3 bring_up_default_only
+```
+
+Thirty-two of thirty-five are read from the process environment, which is fixed at `exec`. There is no live
+write path for them, and inventing one would be the exact defect this repository keeps finding — a control
+that is declared and does nothing.
+
+So the panel writes a **desired configuration**: a document stored on the machine (migration `000052`,
+`deployment_desired`), which the **next bring-up** reads and turns into the process's environment. The
+screen then shows **effective** against **desired**, so the gap between them is a row on a screen instead of
+something you discover with `docker inspect`.
+
+### The round trip, end to end
+
+```
+PUT /v1/deployment/desired          {"settings":{"PALAI_DISPATCH_WORKERS":"3","PALAI_QUEUE_DEADLINE":"12m",
+                                                 "PALAI_MAX_CONCURRENT_RUNS":"7"}}
+  → {"object":"deployment_desired","revision":1,...}
+
+GET /v1/deployment                  PALAI_DISPATCH_WORKERS effective="4" desired="3" drift=true
+                                    desired.pending=true, warning `desired_config_pending`
+
+palai up                            desired    revision 1 from this machine: PALAI_DISPATCH_WORKERS, …
+                                    config     revision 1 applied — 3 setting(s)
+
+GET /v1/deployment                  PALAI_DISPATCH_WORKERS effective="3" desired="3" drift=false
+docker inspect <control-plane>      PALAI_DISPATCH_WORKERS=3   PALAI_MAX_CONCURRENT_RUNS=7
+                                    PALAI_QUEUE_DEADLINE=12m
+```
+
+**`palai up` is the applier and no other command is.** `cmd/cli/internal/stack/desired.go` reads the
+document off the machine and exports it into the environment it drives compose with, then re-reads
+`GET /v1/deployment` and **refuses to report success** if the machine is still not running what was saved.
+`docker compose up -d --force-recreate control-plane` does **not** apply the document — compose interpolates
+`${PALAI_*}` from the shell that invokes it, which knows nothing about it. The screen's `Changing it` column
+says so on every writable row.
+
+### What can be saved, and what is refused
+
+Eleven settings are writable and all eleven are a **number, a duration, or a model selector**:
+`PALAI_DISPATCH_WORKERS`, `PALAI_QUEUE_DEADLINE`, `PALAI_RETENTION_STORE_FALSE_TTL`,
+`PALAI_SANDBOX_WALL_TIME`, `PALAI_REQUEST_RATE_PER_SEC`, `PALAI_REQUEST_BURST`,
+`PALAI_MAX_CONCURRENT_RUNS`, `PALAI_MAX_QUEUED_RUNS`, `PALAI_RUNNER_CERT_TTL`, `PALAI_MODEL_PROVIDER`,
+`PALAI_MODEL`.
+
+The other twenty-four are refused, and every refusal is an instance of one rule: **the panel writes
+operational bounds and routing defaults — never identity, images, the address this process is reached on, or
+a destination a credential is sent to.** Each row on the screen carries its own sentence. The nine
+filesystem paths are refused **structurally**: `desiredWritable()` drops `Kind == kindPath` before it looks
+at anything else, so opening one up takes deleting a filter rather than editing a row.
+
+### A value the reader would not parse is refused at the door
+
+Every reader in the control plane coerces silently, and each one coerces differently — `envInt`/`envFloat`/
+`envDuration` to zero, `envDurationOr` to a named default, `DispatchWorkers` to 1. `main.go:996` already
+records the consequence: `PALAI_SANDBOX_WALL_TIME=10min` is ten minutes to a reader, unparseable to Go, and
+the **default** to this binary. So the write surface refuses anything its own reader would coerce, and
+`TestEveryDesiredValueThisBinaryAcceptsIsParsedByItsOwnReader` drives every accepted value through the real
+reader — and every refused one too, asserting the coercion that makes the refusal necessary.
+
+### It is SCOPED, and this panel is the control-plane scope
+
+There are **three** scopes in this product, and this screen is the first. Measured on the running stack,
+2026-08-01:
+
+```
+curl .../v1/deployment   | jq 'keys'          → ["object","settings","warnings"]   (no machine axis)
+curl .../v1/runners      | jq '.data|length'  → 3
+curl .../v1/runner-pools | jq '.data|length'  → 17
+```
+
+- **the control-plane PROCESS** — the 35 settings here. One process, shared by every project and every
+  machine on the deployment. **Nothing on this screen is per-machine**, and the screen says so in words.
+- **the POOL** — the unit a machine belongs to, and the configuration unit for machines today. It already
+  has a write path (`/v1/runner-pools`); posture and strict enrolment are *enforced* by the registry.
+- **the RUNNER** — everything the control plane holds about one is *reported* by the machine or minted at
+  enrolment. No per-runner setting exists for any surface to write.
+
+So `deployment_desired` is keyed **`(plane, scope_id, revision)`**, not flat. The `plane` vocabulary is
+`control_plane` (a singleton, empty `scope_id`) and `runner_pool` (`scope_id` = a pool id). Today
+**only `control_plane` has a reader** — `palai up` — and a `runner_pool` write is **refused with the reason**
+rather than stored: nothing hands `cmd/runner` a document, it reads its environment at `exec`. Storing one
+would be a row nobody consults with a screen reporting success.
+
+**The scope is `pool_id` and never os/arch.** All three enrolled runners report `os=""` and `arch=""`;
+`cmd/runner` never sends them (`GOOS`/`GOARCH` appear only in the capability worker) and
+`runner_gateway.go`'s `enrolRequest` calls them "inventory". Selecting machines by either would select on a
+field nothing populates.
+
+### One variable with two readers is why the plane is in the key
+
+The pool count is the obvious argument. The load-bearing one is a single variable:
+
+| | control plane | `cmd/runner` |
+|---|---|---|
+| `PALAI_RUNNER_CONCURRENCY` | — | `main.go:117` — the one genuinely per-machine knob |
+| `PALAI_SANDBOX_IMAGE` | `main.go:69, 926` | — |
+| `PALAI_SHELL_NATIVE` | `main.go:69, 927` | — |
+| `PALAI_WORKSPACE_ROOT` | `main.go:677` | `cmd/runner/main.go:120` |
+
+`PALAI_WORKSPACE_ROOT` has **two readers with two different jobs under one name**: the control plane
+*allocates* workspaces under it, and the runner refuses to bind-mount a leased path that does not sit under
+it — a §24 trust-boundary check whose own comment records that *"unset disables the check"*. A flat
+document forces one string into both planes, and one reaching only the control plane would move the
+allocation root while leaving the check that guards it switched off.
+
+**Each catalogue entry's plane is derived from its reader citation** (`planeMatchesReader`), so the claim
+inherits the proof `TestEveryCatalogueCitationResolvesToARealReader` already gives. A citation into a
+directory neither prefix list knows is a **refusal**, not a default.
+
+### The two-reader variable was hiding a live boundary hole
+
+`PALAI_WORKSPACE_ROOT`'s second reader is the runner, where it refuses to bind-mount a leased workspace
+outside the managed root — the §24 boundary against a control plane naming an arbitrary host path. Measured
+2026-08-01, **no shipped file ever gave a runner that variable**:
+
+```
+runner `environment:` block carries PALAI_WORKSPACE_ROOT?
+  compose.yaml NO   production.yml NO   native-control-plane.yml NO   airgap.yml NO
+docker inspect <live runner> | grep -c PALAI_WORKSPACE_ROOT   → 0
+```
+
+…and an empty root **disabled the check**. So "pre-E09 behaviour" described every deployment rather than an
+old one. It was not exploitable — workspaces are off on compose, so no lease carries a path — but it armed
+itself the moment an operator turned the feature on, because the control plane starts provisioning when
+**its** copy is set and nothing required the runner's.
+
+Fixed in the same change, both halves: an unset root now **refuses** a workspace-bearing lease (a runner
+that cannot tell whether a path is one it minted has no basis to mount it), and
+`native-control-plane.yml` — the one shipped posture where workspaces run — now sets the variable in the
+runner's environment beside the bind it already had. A workspace-*less* lease is untouched.
+
+`/deployment` raises **`workspace_root_runner_plane`** (advisory) whenever workspaces are provisioned here.
+It names both readers and the remedy, and deliberately does **not** claim the runner's copy is missing:
+this process holds no copy of a runner-scoped variable, and a surface that reported one would be giving the
+confident wrong answer this catalogue refuses for `PALAI_RUNNER_CONCURRENCY`.
+
+### Two settings are catalogued that this process cannot observe
+
+`PALAI_RUNNER_POSTURE` and `PALAI_RUNNER_POOL` are read by `cmd/runner` and set by **no** shipped compose
+file — so the compose walk, which can only see what compose *sets*, reported a complete catalogue while two
+variables the runner binary reads were in it nowhere. A walk finds what exists; only a list finds what does
+not.
+
+Cataloguing them creates a trap: the handler does `os.LookupEnv` on every catalogued name, so a runner
+variable exported in the *control plane's* shell would be read and taken for the machine's. It therefore
+**skips the lookup for a foreign plane**, and the row carries `observable: false`. The screen renders
+**"— read on the machines"**, never "— unset" — those are opposite facts sharing one word, which is exactly
+the confusion this screen was built to end.
+
+`PALAI_RUNNER_CONCURRENCY` stays *out* of the catalogue for the opposite reason: its value is a **number** an
+operator would read as this deployment's concurrency. These two are catalogued because their *existence*,
+not their value, is what a reader needs.
+
+### Where the document lives, and why it is not `config_policy`
+
+`deployment_desired` (migration `000052`) is **append-only** — one row per revision **per scope**, holding
+that scope's whole document, with `REVOKE UPDATE, DELETE` re-asserted on every boot. "We must be able to see it" is half the
+requirement, and a mutable row answers only the present tense.
+
+It carries **no `organization_id`**, and that absence is a security property rather than an omission. Four
+of the eleven writable settings are the **admission bounds that exist to hold a tenant**
+(`PALAI_MAX_CONCURRENT_RUNS`, `PALAI_MAX_QUEUED_RUNS`, `PALAI_REQUEST_RATE_PER_SEC`, `PALAI_REQUEST_BURST`);
+storing them anywhere a tenant could reach would let a tenant raise the limit that bounds it. `config_policy`
+is a per-**project** JSONB column and is therefore the wrong home twice over.
+
+### With no document saved, the screen says what IS in control
+
+A machine nobody has configured from the panel reports `desired: null`, and the panel says so in words: its
+settings come from the compose file and the environment it was started with. A blank panel would read as
+"nothing is configured" when the truth is that something else is configuring it.
 
 ---
 

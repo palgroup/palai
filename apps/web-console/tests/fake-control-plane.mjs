@@ -2395,6 +2395,18 @@ export const ROUTES = [
             change_with: "recreate the control-plane with the new value (`palai up`)",
             reader_file: "apps/control-plane/api/deployment.go",
             reader_func: "DispatchWorkers",
+            // THE DESIRED HALF (E29). These five fields exist on EVERY row the real control plane serves, and
+            // the values below are what a real stack with no saved document answers: writable where the
+            // catalogue says so, and desired_set false everywhere because nothing has been written. A fixture
+            // that omitted `writable` would leave the console's Edit control DISABLED — so the a11y sweep
+            // could not open the dialog, and the panel would be measured in a state the real profile never has.
+            writable: true,
+            value_grammar: "integer",
+            plane: "control_plane",
+            observable: true,
+            desired: "",
+            desired_set: false,
+            drift: false,
           },
           {
             name: "PALAI_MODEL_PROVIDER",
@@ -2410,6 +2422,13 @@ export const ROUTES = [
               "for ONE project, publish a model route (POST /v1/model-routes) — it is resolved per attempt and overrides this with no restart",
             reader_file: "apps/control-plane/cmd/palai-control-plane/main.go",
             reader_func: "modelBrokerFromEnv",
+            writable: true,
+            value_grammar: "token",
+            plane: "control_plane",
+            observable: true,
+            desired: "",
+            desired_set: false,
+            drift: false,
           },
           // AN UNSET ROW, because "unset" is the state this screen most has to render well: it is the
           // difference between "one worker" and "no object store at all", and both wear the same word.
@@ -2425,6 +2444,14 @@ export const ROUTES = [
             change_with: "recreate the control-plane with the new value (`palai up`)",
             reader_file: "apps/control-plane/cmd/palai-control-plane/main.go",
             reader_func: "shellRunnerFromEnv",
+            writable: false,
+            plane: "control_plane",
+            observable: true,
+            not_writable_because:
+              "an IMAGE REFERENCE, for the same reason: it is the container every workspace shell call runs inside, with the workspace mounted. Choosing it is a supply-chain decision made at install time, not a setting.",
+            desired: "",
+            desired_set: false,
+            drift: false,
           },
           // A PATH ROW. The compose stack passes this (compose.yaml:126), and it is what makes the credential
           // rule visible on the screen: the master key's PATH is reported and the key never is.
@@ -2441,6 +2468,41 @@ export const ROUTES = [
               "a stored secret is rotated live through POST /v1/secret-refs and needs no restart; changing the MASTER KEY's location needs a recreate",
             reader_file: "apps/control-plane/cmd/palai-control-plane/main.go",
             reader_func: "main",
+            writable: false,
+            plane: "control_plane",
+            observable: true,
+            not_writable_because:
+              "a path, and the sharpest one: it names the file the ENTIRE secret store redeems through. Moving it from a form points the store at a file the operator chose and the process reads at boot with no further question.",
+            desired: "",
+            desired_set: false,
+            drift: false,
+          },
+          // A RUNNER-PLANE ROW. The real catalogue carries two (PALAI_RUNNER_POSTURE, PALAI_RUNNER_POOL):
+          // cmd/runner reads them and NO compose file sets them, so the compose walk could never find them
+          // and only a list could. `observable: false` is the load-bearing field — the control plane never
+          // looks up its own copy of a variable it does not read, so value/set are empty for a reason the
+          // console has to STATE rather than render as "— unset". Those are opposite facts sharing one word,
+          // which is the confusion this whole screen exists to end.
+          {
+            name: "PALAI_RUNNER_POOL",
+            group: "fleet",
+            value: "",
+            set: false,
+            default: "unset — the machine names no pool and the registry places it on the deployment default",
+            kind: "value",
+            effect: "WHICH POOL this machine enrols into, and therefore which pool's posture and strict-enrolment rules apply to it.",
+            mutability: "bring_up",
+            change_with: "set it on the RUNNER and restart that machine's runner",
+            reader_file: "cmd/runner/main.go",
+            reader_func: "loadConfig",
+            writable: false,
+            plane: "runner_pool",
+            observable: false,
+            not_writable_because:
+              "read by a RUNNER, not by this process. The desired document is keyed by plane and the runner plane has no reader.",
+            desired: "",
+            desired_set: false,
+            drift: false,
           },
         ],
         warnings: [
@@ -2455,6 +2517,15 @@ export const ROUTES = [
             settings: ["PALAI_MODEL_PROVIDER", "PALAI_MODEL"],
           },
         ],
+        // NULL, NOT AN EMPTY OBJECT, and it matches what the real profile's stack answers: nothing has ever
+        // written a desired document to it. The two are DIFFERENT facts — "nobody has configured this
+        // machine from the panel" versus "somebody saved a document with nothing in it" — and the console
+        // renders a different sentence for each, so a fixture that flattened them would prove the wrong one.
+        //
+        // When it is NOT null the real body carries `plane` and `scope_id` beside the revision, because a
+        // document is scoped: `control_plane` is this process, `runner_pool` is a pool's machines. Only the
+        // first has a reader today.
+        desired: null,
       }),
   },
   {

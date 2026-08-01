@@ -38,11 +38,15 @@ import { test, expect } from "@playwright/test";
 const HTTP_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
 const API_ROOT = resolve(process.cwd(), "app", "api");
 
-// The relay serves five HTTP methods today (four on the /v1 catch-all, one on the stream), plus the login
-// route's own POST — six. This FLOOR is not the check: every discovered export is checked whatever the
-// count. It is the anti-vacuity guard, and it has already earned its place by catching a scan that found
-// one method of five and was about to report zero ungated.
-const KNOWN_HTTP_METHOD_FLOOR = 6;
+// The relay serves six HTTP methods today (FIVE on the /v1 catch-all — GET/POST/PUT/PATCH/DELETE — and one
+// on the stream), plus the login route's own POST: seven. PUT arrived with E29's desired-configuration
+// write path, and its absence would have been invisible in exactly the way this file's header describes: a
+// Route Handler serves only the methods it EXPORTS, so the form would have shipped against a 405.
+//
+// This FLOOR is not the check: every discovered export is checked whatever the count. It is the
+// anti-vacuity guard, and it has already earned its place by catching a scan that found one method of five
+// and was about to report zero ungated.
+const KNOWN_HTTP_METHOD_FLOOR = 7;
 
 function routeFiles(dir: string): string[] {
   const out: string[] = [];

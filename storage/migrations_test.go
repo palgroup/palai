@@ -56,16 +56,20 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	// assertion below is what forces that rename to be FINISHED rather than half-done: the file name, the
 	// `VALUES (51)` marker inside it and the embed var all have to agree before this test goes green.
 	//
-	// It is a pin on the CHAIN, not a claim that one epic owns one migration — E29 holds both 48 and 51,
+	// It is a pin on the CHAIN, not a claim that one epic owns one migration — E29 holds 48, 51 and now 52,
 	// and the "one migration per epic" reasoning an earlier revision of this comment carried was never
 	// structural, only a property of the four epics that happened to need one each.
 	head := migrations[len(migrations)-1]
-	if head.Version != 52 || head.Name != "webhook_delivery_trail_survives_its_endpoint" {
-		t.Fatalf("chain head = %06d_%s, want 000052_webhook_delivery_trail_survives_its_endpoint", head.Version, head.Name)
+	if head.Version != 53 || head.Name != "deployment_desired" {
+		t.Fatalf("chain head = %06d_%s, want 000053_deployment_desired", head.Version, head.Name)
 	}
+	// The penultimate moved when THIS branch was the one renumbered. desired-config wrote 000052 against a
+	// tip of 000051; E29 T3 took 000052 in parallel and landed first, so this became 000053 at merge and the
+	// pair below is the second half of that rename — head and penultimate together are what force the file
+	// name, the `VALUES (53)` marker and the embed var to agree before this test goes green.
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 51 || penultimate.Name != "model_connection_endpoint" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000051_model_connection_endpoint", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 52 || penultimate.Name != "webhook_delivery_trail_survives_its_endpoint" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000052_webhook_delivery_trail_survives_its_endpoint", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

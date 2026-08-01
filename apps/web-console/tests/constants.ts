@@ -119,6 +119,7 @@ export const FORM_DIALOGS: { route: string; open: string; dialog: string; label:
   { route: "/policy", open: "key-mint-open", dialog: "key-mint-dialog", label: "Mint an API key" },
   { route: "/fleet", open: "pool-create-open", dialog: "pool-create-dialog", label: "Create a runner pool" },
   { route: "/fleet", open: "poolkey-mint-open", dialog: "poolkey-mint-dialog", label: "Mint an enrolment key" },
+  { route: "/deployment", open: "desired-config-edit", dialog: "desired-config-dialog", label: "Edit desired configuration" },
 ];
 
 /**
@@ -195,9 +196,24 @@ export function primitiveDialogMountCount(): number {
  * reddened the axe loop and left the contrast sweep quietly short, and nothing in contrast.spec.ts would have
  * said so. Both call this now, so each sweep is complete on its own terms.
  *
- * `<FormDialog` in `app/**\/page.tsx` is the right thing to count because that is exactly the surface that
- * does not exist until somebody clicks: a route walk cannot see it, and every sweep that walks routes
- * therefore has to be told it is there.
+ * `<FormDialog` is the right thing to count because that is exactly the surface that does not exist until
+ * somebody clicks: a route walk cannot see it, and every sweep that walks routes therefore has to be told it
+ * is there.
+ *
+ * IT WALKED `app/**\/page.tsx` UNTIL E29 AND THAT WAS THE SAME BLIND SPOT PRIMITIVE_DIALOGS WAS WRITTEN
+ * ABOUT, one axis over. That comment records the primitive escaping on the wrong COMPONENT NAME and the
+ * wrong DIRECTORY; this one escaped on the wrong FILENAME. A dialog owned by a route lives just as happily
+ * in `app/deployment/DesiredConfig.tsx` as in `app/deployment/page.tsx` — it is the same click, on the same
+ * route, equally invisible to a route walk — and the counter would have stayed at five while a sixth
+ * shipped unscanned. Measured on this branch before the widening:
+ *
+ *   grep -rln '<FormDialog[ >]' --include='page.tsx' app | wc -l         -> 5   (what it counted)
+ *   grep -rn  '<FormDialog[ >]' --include='*.tsx' app components         -> 6   (what exists)
+ *
+ * So it now walks every `.tsx` under `app/` AND `components/`, which is what primitiveDialogMountCount has
+ * always done for the primitive — the two counters no longer disagree about what a mount is. FormDialog.tsx
+ * itself DEFINES the component and never mounts it, so it needs no exclusion by name (the same reasoning the
+ * primitive's walk records); the check is on content, which keeps a rename from silently zeroing this.
  *
  * NODE BUILTINS ONLY, deliberately. playwright.config.ts imports this module at CONFIG LOAD, before any test
  * context exists, so a `@playwright/test` import here would take the whole run down at collection — the same
@@ -211,11 +227,13 @@ export function primitiveDialogMountCount(): number {
  * pays for it at all. See the file header: this module must stay side-effect-free.
  */
 export function formDialogMountCount(): number {
-  const appRoot = resolve(process.cwd(), "app");
   let mounted = 0;
-  for (const entry of readdirSync(appRoot, { recursive: true, withFileTypes: true })) {
-    if (!entry.isFile() || entry.name !== "page.tsx") continue;
-    mounted += (readFileSync(resolve(entry.parentPath ?? appRoot, entry.name), "utf8").match(/<FormDialog[\s>]/g) ?? []).length;
+  for (const dir of ["app", "components"]) {
+    const root = resolve(process.cwd(), dir);
+    for (const entry of readdirSync(root, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".tsx")) continue;
+      mounted += (readFileSync(resolve(entry.parentPath ?? root, entry.name), "utf8").match(/<FormDialog[\s>]/g) ?? []).length;
+    }
   }
   return mounted;
 }

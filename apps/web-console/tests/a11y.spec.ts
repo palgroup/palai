@@ -402,7 +402,7 @@ test("every route lib/routes.ts declares was actually scanned by axe", () => {
   const mounted = formDialogMountCount();
   const declaredDialogs = FORM_DIALOGS.length + PRIMITIVE_DIALOGS.length;
   // eslint-disable-next-line no-console -- the count is the evidence.
-  console.log(`AXE DIALOG COVERAGE — ${scannedDialogs.size}/${String(declaredDialogs)} declared dialog(s) scanned; ${String(mounted)} FormDialog mount(s) in app/**/page.tsx`);
+  console.log(`AXE DIALOG COVERAGE — ${scannedDialogs.size}/${String(declaredDialogs)} declared dialog(s) scanned; ${String(mounted)} FormDialog mount(s) under app/ and components/`);
   expect(scannedDialogs.size, "a dialog declared in FORM_DIALOGS or PRIMITIVE_DIALOGS was never opened by a scan").toBe(declaredDialogs);
   expect(
     mounted,

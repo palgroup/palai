@@ -226,6 +226,16 @@ func main() {
 		// master key could list names it can never fill. One `if`, two families, no way to mount half of it.
 		routerOpts = append(routerOpts, api.WithEnvironments(secretStore))
 	}
+	// The DESIRED configuration (E29, migration 000052): what this MACHINE should be running with, written
+	// by the admin panel and applied by the next bring-up.
+	//
+	// UNCONDITIONAL on `repo`, unlike the two above, and the difference is real. Those need a master key
+	// because they seal values; this stores no credential at all — its allow-list refuses every path-kind
+	// setting structurally and every destination a credential is sent to by name — so the only thing it
+	// needs is a durable spine, which this composition root always has by the time it gets here. Gating it
+	// on the master key would leave the write path unmounted on exactly the deployments that have the most
+	// configuration and the least tooling to change it.
+	routerOpts = append(routerOpts, api.WithDesiredConfig(repo))
 	// The A2A 1.0 server projection (E17 T2, spec §38): the DB-backed interface + task store over the same
 	// spine pool, wired behind the api.Admitter so an inbound A2A message admits through the SAME §20.9 path a
 	// POST /v1/responses takes (no invented run identity, §34.1) under the SAME per-project caps. Mounting it
