@@ -1267,7 +1267,21 @@ func repositoryPublisherFromEnv() execution.Publisher {
 		log.Printf("repository publisher: app broker: %v (publication disabled)", err)
 		return nil
 	}
-	publisher := &execution.RepositoryPublisher{Broker: broker}
+	publisher := &execution.RepositoryPublisher{
+		Broker: broker,
+		// THE BINDING'S OWN CREDENTIAL, on the way OUT. The clone half has resolved this since E13 T9
+		// (SetConnectionSecrets, above); the publish half was blind to it, so a tenant's panel-provisioned
+		// credential was honoured inbound and every push and pull request went out as the deployment App.
+		// It is the SAME function, passed rather than re-implemented, so one place in this tree turns a
+		// connection_ref into a credential.
+		ConnectionSecrets: repositoryConnectionSecret,
+		// And the pull-request client per binding, over that credential and the binding's own owner/repo.
+		// PALAI_GITHUB_REPO below stays the fallback for ref-less bindings; it is why a stack could
+		// otherwise open pull requests against exactly one repository however many bindings it served.
+		PRClientFor: func(token, owner, repo string) (repositories.PullRequestClient, error) {
+			return repositories.NewTokenPullRequestClient(token, "", owner, repo)
+		},
+	}
 	switch {
 	case owner == "" || repo == "":
 		// A push publishes without this (its remote comes from the binding); a pull request cannot, and

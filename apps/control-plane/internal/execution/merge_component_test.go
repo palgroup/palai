@@ -110,7 +110,7 @@ func newMergeHarness(t *testing.T) *mergeHarness {
 func (h *mergeHarness) pumpMerge() int {
 	h.t.Helper()
 	if err := publishApproved(context.Background(), h.spine, h.merger, h.tenant,
-		h.runID, h.sessionID, h.respID, h.root, 1); err != nil {
+		h.runID, h.sessionID, h.respID, h.root, 1, publicationCredential{}); err != nil {
 		h.t.Fatalf("publishApproved: %v", err)
 	}
 	return len(h.merger.targets)

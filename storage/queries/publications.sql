@@ -327,9 +327,24 @@ WHERE a.id = $1 AND a.organization_id = $2 AND a.project_id = $3;
 -- name: PendingPublicationApprovalsForTenant
 SELECT a.id, p.id, p.run_id, p.session_id, coalesce(p.response_id, ''), p.operation,
        coalesce(p.args::text, '{}'), coalesce(a.request_hash, ''), p.state, a.expires_at,
-       a.decided_by, a.created_at, p.remote, p.branch, p.base, p.head_sha, coalesce(p.display, '')
+       a.decided_by, a.created_at, p.remote, p.branch, p.base, p.head_sha, coalesce(p.display, ''),
+       coalesce(bind.connection_ref, ''), coalesce(bind.repository_identity, '')
 FROM approvals a
 JOIN publications p ON p.id = a.publication_id
+LEFT JOIN LATERAL (
+    -- THE BINDING THIS RUN PREPARED FROM, and it is a LATERAL with its own ORDER BY + LIMIT 1 rather than a
+    -- plain join for a reason this tree has paid for: preparation_receipts holds a row PER PREPARE, so a
+    -- plain join multiplies the approval row by however many times the run prepared. The order is
+    -- RunPublicationTarget's verbatim (prepared_at DESC, id DESC) so the credential shown here is the
+    -- credential that read will resolve at publish time — two different orders would show one identity and
+    -- write under another.
+    SELECT rb.connection_ref, rb.repository_identity
+    FROM preparation_receipts pr
+    JOIN repository_bindings rb ON rb.id = pr.repository_binding_id
+    WHERE pr.run_id = p.run_id AND pr.organization_id = p.organization_id AND pr.project_id = p.project_id
+    ORDER BY pr.prepared_at DESC, pr.id DESC
+    LIMIT 1
+) bind ON TRUE
 WHERE p.state = 'pending_approval' AND a.organization_id = $1 AND a.project_id = $2
   AND ($3::timestamptz IS NULL OR a.created_at >= $3)
   AND ($4::timestamptz IS NULL OR a.created_at <= $4)
@@ -352,7 +367,22 @@ LIMIT $7;
 -- name: PublicationApprovalByID
 SELECT a.id, p.id, p.run_id, p.session_id, coalesce(p.response_id, ''), p.operation,
        coalesce(p.args::text, '{}'), coalesce(a.request_hash, ''), p.state, a.expires_at,
-       a.decided_by, a.created_at, p.remote, p.branch, p.base, p.head_sha, coalesce(p.display, '')
+       a.decided_by, a.created_at, p.remote, p.branch, p.base, p.head_sha, coalesce(p.display, ''),
+       coalesce(bind.connection_ref, ''), coalesce(bind.repository_identity, '')
 FROM approvals a
 JOIN publications p ON p.id = a.publication_id
+LEFT JOIN LATERAL (
+    -- THE BINDING THIS RUN PREPARED FROM, and it is a LATERAL with its own ORDER BY + LIMIT 1 rather than a
+    -- plain join for a reason this tree has paid for: preparation_receipts holds a row PER PREPARE, so a
+    -- plain join multiplies the approval row by however many times the run prepared. The order is
+    -- RunPublicationTarget's verbatim (prepared_at DESC, id DESC) so the credential shown here is the
+    -- credential that read will resolve at publish time — two different orders would show one identity and
+    -- write under another.
+    SELECT rb.connection_ref, rb.repository_identity
+    FROM preparation_receipts pr
+    JOIN repository_bindings rb ON rb.id = pr.repository_binding_id
+    WHERE pr.run_id = p.run_id AND pr.organization_id = p.organization_id AND pr.project_id = p.project_id
+    ORDER BY pr.prepared_at DESC, pr.id DESC
+    LIMIT 1
+) bind ON TRUE
 WHERE a.id = $1 AND a.organization_id = $2 AND a.project_id = $3 AND p.state = 'pending_approval';

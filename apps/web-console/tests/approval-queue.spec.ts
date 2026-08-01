@@ -428,6 +428,26 @@ test("a publication approval is IN the queue, with the remote and branch the wri
     await expect(queue.getByTestId(`tool-approval-branch-${pubRow}`)).toHaveText("agent/ws_console/run_console_apvl");
     await expect(queue.getByTestId(`tool-approval-base-${pubRow}`)).toHaveText("main");
 
+    // AND WHOSE IDENTITY THE WRITE IS MADE UNDER, which is the other half of the same decision. Until
+    // 2026-08-01 there was exactly one possible answer (the deployment's App), so the row did not say —
+    // and the moment a binding could carry its OWN panel-provisioned credential, an operator authorising a
+    // write to their repository could see WHERE it was going and not AS WHOM.
+    await expect(queue.getByTestId(`tool-approval-credential-${pubRow}`))
+      .toContainText("this repository binding's own credential");
+    // The HANDLE is shown so two tenant credentials are distinguishable. It is not a token and cannot be
+    // redeemed from a browser; the bytes are resolved server-side at publish time.
+    await expect(queue.getByTestId(`tool-approval-credential-ref-${pubRow}`)).toHaveText("rcon_acme_pat");
+
+    // THE OTHER WORD MUST RENDER TOO. A screen that only ever said "the binding's own credential" would
+    // never show the sentence an operator most needs to notice — that this write goes out as the
+    // DEPLOYMENT, under an identity the tenant did not provision. The decide row carries no ref.
+    const appRow = await pickOpen(queue, "apvl_console_publication_decide");
+    await openApproval(queue, appRow);
+    await expect(queue.getByTestId(`tool-approval-credential-${appRow}`))
+      .toContainText("the deployment's GitHub App");
+    await expect(queue.getByTestId(`tool-approval-credential-ref-${appRow}`)).toHaveCount(0);
+    await openApproval(queue, pubRow);
+
     // A TOOL ROW RENDERS NONE OF IT rather than rendering it empty — the two families are not the same
     // question and a screen that showed "pushing  onto base " for a Jira ticket would be worse than silent.
     await openApproval(queue, "apvl_console_0001");

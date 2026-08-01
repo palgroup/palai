@@ -82,7 +82,25 @@ type PendingApproval struct {
 	Branch        string `json:"branch,omitempty"`
 	Base          string `json:"base,omitempty"`
 	HeadSHA       string `json:"head_sha,omitempty"`
+
+	// WHOSE IDENTITY THE WRITE WILL BE MADE UNDER. The destination fields above say WHERE; these say AS
+	// WHOM, and an operator authorising a write to their repository needs both.
+	//
+	// CredentialRef is an OPAQUE HANDLE and never a token — the credential bytes are resolved server-side
+	// at publish time and reach no screen and no wire. Empty means this write goes out under the
+	// deployment's own GitHub App, which is what `credential` spells out in words so an empty field is
+	// never read as "unknown".
+	CredentialRef string `json:"credential_ref,omitempty"`
+	Credential    string `json:"credential,omitempty"`
 }
+
+// Credential words for a publication approval. They are two fixed strings rather than a rendering of the
+// ref, because the question an operator is answering is "whose identity is this" and a handle does not
+// answer it — the handle is there so they can tell two tenant credentials apart, not so they can decode it.
+const (
+	CredentialDeploymentApp = "the deployment's GitHub App"
+	CredentialBindingOwn    = "this repository binding's own credential"
+)
 
 // ApprovalDecision is one HTTP caller's answer. There is deliberately NO approver field: the principal is
 // stamped server-side from the verified key (the contracts.CommandCreateRequest rule, E23 T2), and the

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/palgroup/palai/adapters/repositories"
@@ -151,6 +152,11 @@ type PublishTarget struct {
 	Org           string
 	Project       string
 	AttemptFence  uint64 // binds the minted push credential to this attempt (§28.11)
+	// ConnectionRef is the binding's own credential handle, empty for a binding that takes the
+	// deployment-global App. NEVER a token — the publisher resolves it server-side.
+	ConnectionRef string
+	// Identity is the binding's owner/repo, for the pull-request client.
+	Identity string
 }
 
 // PublicationPump is the store seam the approval pump reads approved publications from and records
@@ -177,7 +183,22 @@ func (o *Orchestrator) pumpApprovedPublications(ctx context.Context, st *attempt
 	if o.publisher == nil {
 		return nil
 	}
-	return publishApproved(ctx, o.spine, o.publisher, st.tenant, string(st.attempt.RunID), st.sessionID, st.responseID, st.attempt.WorkspaceHostPath, st.attempt.Fence)
+	// THE BINDING'S OWN CREDENTIAL AND REPOSITORY, read here rather than inside publishApproved so that
+	// function stays a pure body a fake store can drive. Both come from RunPublicationTarget — the same
+	// read that already resolves the remote, branch and base, and infrastructure-owned for the same
+	// reason: the model supplies no destination and now supplies no identity either.
+	//
+	// A run with no binding (found=false) yields the zero value, which is exactly today's behaviour: the
+	// deployment-global App. That is the ONLY fallback, and it is a fallback to "this binding never asked
+	// for its own credential" rather than to "we could not resolve the one it asked for".
+	var cred publicationCredential
+	switch t, found, err := o.spine.RunPublicationTarget(ctx, st.tenant, string(st.attempt.RunID)); {
+	case err != nil:
+		return err
+	case found:
+		cred = publicationCredential{ConnectionRef: t.ConnectionRef, Identity: t.Identity}
+	}
+	return publishApproved(ctx, o.spine, o.publisher, st.tenant, string(st.attempt.RunID), st.sessionID, st.responseID, st.attempt.WorkspaceHostPath, st.attempt.Fence, cred)
 }
 
 // publishApproved is the pure boundary-pump body: it reads the run's DURABLE approved-but-unpublished
@@ -186,7 +207,16 @@ func (o *Orchestrator) pumpApprovedPublications(ctx context.Context, st *attempt
 // (REP-010) rather than a silent server-log loop: the operation is idempotent, so the next boundary (or
 // E10) re-drives it, and the model/user sees the failure to choose rebase/merge/wait. It takes the store
 // as a seam so the pump is provable with a fake store + a real bare remote, no database.
-func publishApproved(ctx context.Context, spine PublicationPump, publisher Publisher, tenant coordinator.Tenant, runID, sessionID, responseID, workspaceRoot string, fence uint64) error {
+// publicationCredential is the binding's own credential handle and repository identity, read ONCE per
+// boundary and handed to every publish in that batch. It is a struct rather than two more positional
+// parameters because publishApproved already takes eight — and because the two travel together by nature:
+// both are "what this binding decided", read from one row.
+type publicationCredential struct {
+	ConnectionRef string
+	Identity      string
+}
+
+func publishApproved(ctx context.Context, spine PublicationPump, publisher Publisher, tenant coordinator.Tenant, runID, sessionID, responseID, workspaceRoot string, fence uint64, cred publicationCredential) error {
 	approved, err := spine.ApprovedPublicationsForRun(ctx, tenant, runID)
 	if err != nil {
 		return err
@@ -205,6 +235,7 @@ func publishApproved(ctx context.Context, spine PublicationPump, publisher Publi
 		receipt, perr := publisher.Publish(pubCtx, PublishTarget{
 			Publication: pub, WorkspaceRoot: workspaceRoot,
 			Org: tenant.Organization, Project: tenant.Project, AttemptFence: fence,
+			ConnectionRef: cred.ConnectionRef, Identity: cred.Identity,
 		})
 		cancel()
 		if perr != nil {
@@ -231,6 +262,16 @@ type RepositoryPublisher struct {
 	Broker    repositories.Broker
 	PRClient  repositories.PullRequestClient // nil disables PR publication (push-only stacks)
 	Protected []string                       // policy-widened protected branches (default main/master always)
+	// ConnectionSecrets resolves a binding's OWN credential handle to its bytes, server-side. It is the
+	// same function the clone half already uses (main.repositoryConnectionSecret), passed in rather than
+	// re-implemented, so exactly one place in this tree turns a connection_ref into a credential.
+	//
+	// nil — or a target carrying no ConnectionRef — keeps the deployment-global behaviour untouched.
+	ConnectionSecrets func(org, ref string) ([]byte, error)
+	// PRClientFor builds a pull-request client over an ALREADY-RESOLVED token, for one owner/repo. It is a
+	// factory rather than a client because after this change both the credential and the repository are
+	// per-binding: one stack serves many bindings, and PRClient above can only ever serve one.
+	PRClientFor func(token, owner, repo string) (repositories.PullRequestClient, error)
 }
 
 // Publish executes one approved publication (spec §30.9-30.10). The credential rides only the broker
@@ -242,6 +283,62 @@ func (p *RepositoryPublisher) Publish(ctx context.Context, target PublishTarget)
 		Organization: target.Org, Project: target.Project,
 		Run: pub.RunID, AttemptFence: target.AttemptFence, ToolCall: pub.ID,
 	}
+
+	// WHICH CREDENTIAL THIS WRITE IS MADE UNDER, resolved before anything leaves the machine.
+	//
+	// A binding that names its own connection_ref publishes under THAT credential; a binding without one
+	// keeps the deployment-global App. This is the clone half's rule (E13 T9) applied to the way OUT, and
+	// until now the two disagreed: a tenant provisioned a credential in the admin panel, it was honoured
+	// inbound, and every push and pull request went out as the deployment's App.
+	//
+	// A MISS IS AN ERROR AND THERE IS NO FALLBACK. main.repositoryConnectionSecret says that for clone;
+	// here it is stronger, because falling back does not fail — it SUCCEEDS AS THE WRONG IDENTITY. It
+	// lands a branch, or opens a pull request, in somebody's repository, and the receipt says the
+	// deployment's App did it. Returning an error is what makes that impossible by construction rather
+	// than by a check somebody can delete.
+	broker, prClient := p.Broker, p.PRClient
+	if target.ConnectionRef != "" {
+		if p.ConnectionSecrets == nil {
+			return nil, fmt.Errorf("publish %s: the binding names credential %q and no connection-secret "+
+				"resolver is wired: refusing to publish under the deployment App", pub.ID, target.ConnectionRef)
+		}
+		tokenBytes, err := p.ConnectionSecrets(target.Org, target.ConnectionRef)
+		if err != nil {
+			return nil, fmt.Errorf("publish %s: resolve binding credential %q: %w (refusing to fall back to "+
+				"the deployment App)", pub.ID, target.ConnectionRef, err)
+		}
+		token := strings.TrimSpace(string(tokenBytes))
+		if token == "" {
+			return nil, fmt.Errorf("publish %s: binding credential %q resolved empty: refusing to publish",
+				pub.ID, target.ConnectionRef)
+		}
+		// THE TOKEN BROKER GIVES NO SCOPE NARROWING, and that is the tenant's trade rather than a defect
+		// this code can fix. broker.go's own comment says it: the App broker mints a token whose
+		// permissions match the scope, while this hands back the one durable credential the tenant
+		// supplied — "a PAT's rights are whatever the tenant granted it". A tenant choosing to hold its own
+		// credential also chooses to scope it themselves, and the alternative (declining to publish under
+		// a tenant credential at all) is the feature the owner asked for.
+		broker = repositories.NewTokenBroker(token)
+
+		// The pull-request client is rebuilt per binding too, because owner/repo is now the BINDING's
+		// (target.Identity) rather than PALAI_GITHUB_REPO. That env var is why one stack could open pull
+		// requests against exactly one repository however many bindings it served — while publish.go's own
+		// comment already claimed "Owner/repo come from the binding, not the model".
+		prClient = nil
+		if p.PRClientFor != nil && needsPRClient(pub.Operation) {
+			owner, repo, ok := splitIdentity(target.Identity)
+			if !ok {
+				return nil, fmt.Errorf("publish %s: the binding's repository_identity %q is not owner/repo, so "+
+					"no pull-request client can be built for it", pub.ID, target.Identity)
+			}
+			c, err := p.PRClientFor(token, owner, repo)
+			if err != nil {
+				return nil, fmt.Errorf("publish %s: build a pull-request client for %s: %w", pub.ID, target.Identity, err)
+			}
+			prClient = c
+		}
+	}
+
 	switch pub.Operation {
 	case "push_branch":
 		if target.WorkspaceRoot == "" {
@@ -252,7 +349,7 @@ func (p *RepositoryPublisher) Publish(ctx context.Context, target PublishTarget)
 			return nil, fmt.Errorf("publish push %s: secrets dir: %w", pub.ID, err)
 		}
 		defer os.RemoveAll(secrets)
-		receipt, err := repositories.PushBranch(ctx, p.Broker, repositories.PushRequest{
+		receipt, err := repositories.PushBranch(ctx, broker, repositories.PushRequest{
 			Remote: pub.Remote, RepoDir: filepath.Join(target.WorkspaceRoot, workspace.RepoDir),
 			Branch: pub.Branch, HeadSHA: pub.HeadSHA, Protected: p.Protected, SecretsDir: secrets, Audience: audience,
 		})
@@ -264,12 +361,12 @@ func (p *RepositoryPublisher) Publish(ctx context.Context, target PublishTarget)
 			"remote_sha": receipt.RemoteSHA, "reconciled": receipt.Reconciled,
 		}, nil
 	case "open_pull_request":
-		if p.PRClient == nil {
+		if prClient == nil {
 			return nil, fmt.Errorf("publish pull request %s: no pull-request client wired", pub.ID)
 		}
 		// ponytail: E09 opens with a deterministic default title/body; the model's proposed title/body
 		// are recorded on the publication (args) for a later policy-filtered pass, not yet applied.
-		pr, err := repositories.OpenPullRequest(ctx, p.PRClient, repositories.OpenPRInput{
+		pr, err := repositories.OpenPullRequest(ctx, prClient, repositories.OpenPRInput{
 			HeadBranch: pub.Branch, Base: pub.Base, Title: "Agent changes: " + pub.Branch, Body: pub.Display,
 		})
 		if err != nil {
@@ -277,7 +374,7 @@ func (p *RepositoryPublisher) Publish(ctx context.Context, target PublishTarget)
 		}
 		return map[string]any{"pull_request_id": pr.ID, "url": pr.URL, "number": pr.Number, "draft": pr.Draft}, nil
 	case "merge_pull_request":
-		if p.PRClient == nil {
+		if prClient == nil {
 			return nil, fmt.Errorf("publish merge %s: no pull-request client wired", pub.ID)
 		}
 		// The local protected-branch policy is checked for a merge too — on the HEAD, the same branch and the
@@ -293,7 +390,7 @@ func (p *RepositoryPublisher) Publish(ctx context.Context, target PublishTarget)
 		}
 		number, _ := pub.Args["pull_request_number"].(float64) // JSONB round-trip: numbers decode as float64
 		method, _ := pub.Args["merge_method"].(string)
-		receipt, err := repositories.MergePullRequest(ctx, p.PRClient, repositories.MergeInput{
+		receipt, err := repositories.MergePullRequest(ctx, prClient, repositories.MergeInput{
 			// The head is the APPROVED publication's own, sent as `sha`. GitHub marks the field optional;
 			// making it mandatory is what buys the race guard for free (P16, 409 on a moved head).
 			Number: int(number), HeadSHA: pub.HeadSHA, Method: method,
@@ -306,4 +403,23 @@ func (p *RepositoryPublisher) Publish(ctx context.Context, target PublishTarget)
 	default:
 		return nil, fmt.Errorf("publish %s: unknown operation %q", pub.ID, pub.Operation)
 	}
+}
+
+// needsPRClient reports whether an operation talks to the provider API rather than to Git. A push needs a
+// broker and no client, so a binding whose identity is unusable must not fail a PUSH — only the two
+// operations that actually need the API.
+func needsPRClient(operation string) bool {
+	return operation == "open_pull_request" || operation == "merge_pull_request"
+}
+
+// splitIdentity parses a binding's `owner/repo`. It refuses anything else rather than guessing: the
+// pull-request client addresses /repos/{owner}/{repo}, and a half-parsed identity would address the wrong
+// repository under a credential that may well have access to it.
+func splitIdentity(identity string) (owner, repo string, ok bool) {
+	i := strings.IndexByte(identity, '/')
+	if i <= 0 || i == len(identity)-1 {
+		return "", "", false
+	}
+	owner, repo = identity[:i], identity[i+1:]
+	return owner, repo, !strings.Contains(repo, "/")
 }

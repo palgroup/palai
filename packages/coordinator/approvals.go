@@ -627,6 +627,22 @@ type PendingPublicationApproval struct {
 	Base          string
 	HeadSHA       string
 	Display       string
+	// ConnectionRef is the binding's OWN credential handle, empty when this write goes out under the
+	// deployment-global GitHub App. It is an OPAQUE HANDLE and never a token — the bytes live in the
+	// secret-ref store and are resolved server-side at publish time.
+	//
+	// It is on the approval row because an operator authorising a write to their repository has to be able
+	// to see WHOSE identity it will be made under. Before 2026-08-01 there was only one possible answer, so
+	// the question did not arise; now a binding can carry its own credential and the screen must say which.
+	//
+	// IT IS READ LIVE FROM THE BINDING RATHER THAN SNAPSHOT ONTO THE PUBLICATION, and that is the safer of
+	// two imperfect options. A stored copy would be a second copy of the truth and could go stale — the row
+	// would show the credential that was named when the publication was requested while the pump resolved
+	// whatever the binding says NOW. Reading live means the screen shows what the publish will actually
+	// use. The residual window is read -> publish, which is the same window the approval itself has.
+	ConnectionRef string
+	// Identity is the binding's owner/repo, the repository the write lands in.
+	Identity string
 }
 
 // PendingPublicationApprovals reads the publications in a project awaiting a human, OLDEST first, within
@@ -682,7 +698,7 @@ func (s *Store) PublicationApprovalByID(ctx context.Context, tenant Tenant, appr
 }
 
 // scanPendingPublicationApproval reads one row of the publication list projection. Both statements select
-// the same seventeen columns in the same order, so one scanner serves both and a column added to one
+// the same nineteen columns in the same order, so one scanner serves both and a column added to one
 // without the other fails to compile rather than silently mis-binding — the discipline
 // scanPendingToolApproval states for its own pair.
 func scanPendingPublicationApproval(row pgx.Row) (PendingPublicationApproval, error) {
@@ -692,7 +708,8 @@ func scanPendingPublicationApproval(row pgx.Row) (PendingPublicationApproval, er
 	)
 	if err := row.Scan(&a.ApprovalID, &a.PublicationID, &a.RunID, &a.SessionID, &a.ResponseID, &a.Operation,
 		&args, &a.RequestHash, &a.State, &a.ExpiresAt, &a.DecidedBy, &a.CreatedAt,
-		&a.Remote, &a.Branch, &a.Base, &a.HeadSHA, &a.Display); err != nil {
+		&a.Remote, &a.Branch, &a.Base, &a.HeadSHA, &a.Display,
+		&a.ConnectionRef, &a.Identity); err != nil {
 		return PendingPublicationApproval{}, fmt.Errorf("scan publication approval: %w", err)
 	}
 	a.Arguments = []byte(args)

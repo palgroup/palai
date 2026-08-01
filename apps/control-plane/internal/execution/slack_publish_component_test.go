@@ -376,7 +376,7 @@ func (h *publishHarness) runState() string {
 func (h *publishHarness) pump() int {
 	h.t.Helper()
 	if err := publishApproved(context.Background(), h.spine, h.publisher, h.tenant,
-		h.runID, h.sessionID, h.respID, h.root, 1); err != nil {
+		h.runID, h.sessionID, h.respID, h.root, 1, publicationCredential{}); err != nil {
 		h.t.Fatalf("publishApproved: %v", err)
 	}
 	return len(h.publisher.targets)

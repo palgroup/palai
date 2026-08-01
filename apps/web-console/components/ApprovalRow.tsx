@@ -58,6 +58,11 @@ export interface ToolApproval extends Record<string, unknown> {
   branch?: string;
   base?: string;
   head_sha?: string;
+  // WHOSE identity the write is made under. credential_ref is an OPAQUE HANDLE, never a token; `credential`
+  // is the deployment-App-vs-binding-credential sentence the API writes, so this screen renders a decision
+  // rather than re-deriving one.
+  credential_ref?: string;
+  credential?: string;
 }
 
 // DENY_NEEDS_A_REASON is the console's OWN requirement, and the asymmetry with the hash below is deliberate.
@@ -204,6 +209,18 @@ export function ApprovalRow({ approval, onDecided }: { approval: ToolApproval; o
             destination of its own push. A tool row renders none of this rather than rendering it empty. */}
         {approval.kind === "publication" ? (
           <>
+            <dt>Whose credential this is written under</dt>
+            <dd data-testid={`tool-approval-credential-${id}`}>
+              {approval.credential ?? ""}
+              {approval.credential_ref ? (
+                <>
+                  {" — "}
+                  {/* THE HANDLE, so two tenant credentials are distinguishable. It is not a token and
+                      cannot be redeemed from here; the bytes never leave the control plane. */}
+                  <code data-testid={`tool-approval-credential-ref-${id}`}>{approval.credential_ref}</code>
+                </>
+              ) : null}
+            </dd>
             <dt>Where this write is going</dt>
             <dd data-testid={`tool-approval-destination-${id}`}>
               <code data-testid={`tool-approval-remote-${id}`}>{approval.remote ?? ""}</code>

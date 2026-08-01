@@ -313,14 +313,53 @@ func OpenPullRequest(ctx context.Context, client PullRequestClient, in OpenPRInp
 // carries it only in a one-shot Authorization header — never a log or the model context.
 //
 // ponytail: exercised deterministically against an httptest GitHub double (publish_github_test.go);
-// the real github.com round-trip is the gated live wave. Owner/repo come from the binding, not the
-// model.
+// the real github.com round-trip is the gated live wave.
+//
+// WHERE OWNER/REPO COME FROM, stated exactly, because this comment used to say "Owner/repo come from the
+// binding, not the model" and that was FALSE for every deployment — main.go built this client from
+// PALAI_GITHUB_REPO / PALAI_GIT_REPO, so one stack could open pull requests against exactly ONE repository
+// however many bindings it served. A comment asserting the property the code lacked, on the line a reader
+// would check it.
+//
+// Since 2026-08-01 it is true for a binding that carries its own connection_ref: that path builds this
+// client per publication from the binding's repository_identity (RepositoryPublisher.PRClientFor). It is
+// still the ENV VAR for a binding without one, which is the deployment-global path and unchanged. So the
+// honest sentence is: owner/repo come from the binding when the binding brought its own credential, and
+// from the deployment otherwise — never from the model, which is the half that was always true.
 type githubPRClient struct {
 	cfg   GitHubAppConfig
 	key   *rsa.PrivateKey
 	owner string
 	repo  string
 	now   func() time.Time
+	// static is a credential the CALLER already holds — the token a repository binding's connection_ref
+	// resolved to. When set, token() returns it and no App JWT is signed and no installation token is
+	// minted; `key` is then nil and MUST NOT be dereferenced.
+	//
+	// It is the pull-request twin of tokenBroker (broker.go), and it exists for the same reason: an
+	// installation token and a PAT are both redeemed as `x-access-token`, so the API path does not care
+	// which one it holds. What differs is narrowing — see token().
+	static string
+}
+
+// NewTokenPullRequestClient builds a PR client over an ALREADY-RESOLVED token, for one owner/repo. It is
+// the seam that lets a repository binding's own credential open and merge pull requests, instead of every
+// publication in the deployment going out under the global App.
+//
+// NO KEY IS PARSED because none is needed, and no network call is made here.
+func NewTokenPullRequestClient(token, baseURL, owner, repo string) (PullRequestClient, error) {
+	if strings.TrimSpace(token) == "" {
+		return nil, fmt.Errorf("github pr client: no credential supplied")
+	}
+	if owner == "" || repo == "" {
+		return nil, fmt.Errorf("github pr client: owner and repo are required")
+	}
+	cfg := GitHubAppConfig{BaseURL: baseURL}
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = "https://api.github.com"
+	}
+	cfg.HTTPClient = &http.Client{Timeout: 30 * time.Second}
+	return &githubPRClient{cfg: cfg, owner: owner, repo: repo, now: time.Now, static: token}, nil
 }
 
 // NewGitHubPullRequestClient builds a PR client for one repository from the App config. It parses the
@@ -412,7 +451,20 @@ func (c *githubPRClient) base() string {
 	return strings.TrimRight(c.cfg.BaseURL, "/") + "/repos/" + c.owner + "/" + c.repo
 }
 
+// token returns the credential for one API call.
+//
+// TWO SOURCES, AND THEY DIFFER IN NARROWING RATHER THAN IN FORM. A tenant-supplied token (the binding's
+// connection_ref) is returned as-is: its rights are whatever the tenant granted it, and this client cannot
+// narrow them — broker.go's tokenBroker says the same of the Git half. The App path mints a token whose
+// permissions match ScopePullRequest, so the deployment-global identity stays least-privilege.
+//
+// A tenant that holds its own credential is choosing to scope it itself. That is the trade the owner asked
+// for — a credential provisioned ONCE from the admin panel instead of an App installation per machine —
+// and stating it here is better than quietly implying a narrowing that does not happen.
 func (c *githubPRClient) token(ctx context.Context) (string, error) {
+	if c.static != "" {
+		return c.static, nil
+	}
 	token, _, err := mintGitHubInstallationToken(ctx, c.cfg, c.key, c.now(), ScopePullRequest)
 	return token, err
 }
