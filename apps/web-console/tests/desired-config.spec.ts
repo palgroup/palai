@@ -66,6 +66,8 @@ function deploymentBody(options: { desired?: Record<string, string>; drifted?: s
       Object.keys(desiredValues).length === 0 && options.revision === undefined
         ? null
         : {
+            plane: "control_plane",
+            scope_id: "",
             revision: options.revision ?? 1,
             written_at: "2026-08-01T00:00:00Z",
             written_by: "prin_local",
@@ -103,6 +105,15 @@ async function serveDeployment(
     const saved = puts.length > 0 && onPut.status < 400;
     return route.fulfill({ status: 200, json: saved ? (bodies.after ?? bodies.before) : bodies.before });
   });
+  // THE FLEET COUNTS the scope sentence names. Served here because the panel reads them, and a spec that
+  // let them fall through to the fake upstream would be asserting on the fixture's fleet rather than on
+  // this console's sentence.
+  await page.route("**/api/palai/v1/runners", (route) =>
+    route.fulfill({ status: 200, json: { object: "list", data: [{ id: "rnr_1" }, { id: "rnr_2" }, { id: "rnr_3" }] } }),
+  );
+  await page.route("**/api/palai/v1/runner-pools", (route) =>
+    route.fulfill({ status: 200, json: { object: "list", data: [{ id: "pool_a" }, { id: "pool_b" }] } }),
+  );
   await page.route("**/api/palai/v1/deployment/desired", (route) => {
     puts.push({ method: route.request().method(), body: JSON.parse(route.request().postData() ?? "null") });
     return route.fulfill({ status: onPut.status, json: onPut.json });
@@ -226,4 +237,35 @@ test("each setting's row shows what was saved for this machine against what the 
   const refused = table.locator("tr", { hasText: "PALAI_SECRET_MASTER_KEY_FILE" });
   await expect(refused).toContainText("not settable here");
   await expect(refused).toContainText("the ENTIRE secret store redeems through");
+});
+
+// LEG 4 — THE SCOPE, IN WORDS, ON THE SCREEN.
+//
+// This is the leg the owner's question produced: "makine başına ayarlayabiliyor muyum bunu?" — can this be
+// configured per machine? There are THREE scopes in this product (the control-plane process, the pool a
+// machine belongs to, and the runner) and this panel is the first. A screen that said "this machine's
+// configuration" would be wrong about which machines a change reaches and about how many there are.
+//
+// SO IT SAYS BOTH HALVES, and the second is the one a screen usually omits: what this is NOT, and where
+// the thing you came for actually lives. An operator who finds no per-machine setting and is told nothing
+// concludes the product cannot do it.
+test("the panel says which scope it configures, and names the one it does not", async ({ page }) => {
+  await serveDeployment(page, { before: deploymentBody({}) }, { status: 200, json: {} });
+  await page.goto("/deployment");
+  await expect(page.getByTestId("panel-desired-config")).toBeVisible({ timeout: 15_000 });
+
+  const scope = page.getByTestId("desired-config-scope-sentence");
+  await expect(scope).toContainText("control-plane process");
+  await expect(scope).toContainText("Nothing here is per-machine");
+  // THE COUNTS MAKE IT A SIZE RATHER THAN A HEDGE. "No setting here is per-machine" is a claim a reader
+  // cannot size; the same claim with 3 machines and 2 pools in it says how much is not being configured.
+  await expect(scope).toContainText("3 machines in 2 pools");
+
+  // AND WHERE MACHINES ARE CONFIGURED. PALAI_RUNNER_CONCURRENCY is the one genuinely per-machine knob and
+  // it is absent from the table BY DESIGN — the control plane holds no copy, so reporting it would be this
+  // process reporting its own unset variable and labelling it the machine's.
+  const elsewhere = page.getByTestId("desired-config-not-per-machine");
+  await expect(elsewhere).toContainText("runner pool");
+  await expect(elsewhere).toContainText("PALAI_RUNNER_CONCURRENCY");
+  await expect(page.getByTestId("panel-deployment-settings").locator("table")).not.toContainText("PALAI_RUNNER_CONCURRENCY");
 });

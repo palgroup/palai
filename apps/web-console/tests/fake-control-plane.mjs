@@ -2486,6 +2486,10 @@ export const ROUTES = [
         // written a desired document to it. The two are DIFFERENT facts — "nobody has configured this
         // machine from the panel" versus "somebody saved a document with nothing in it" — and the console
         // renders a different sentence for each, so a fixture that flattened them would prove the wrong one.
+        //
+        // When it is NOT null the real body carries `plane` and `scope_id` beside the revision, because a
+        // document is scoped: `control_plane` is this process, `runner_pool` is a pool's machines. Only the
+        // first has a reader today.
         desired: null,
       }),
   },

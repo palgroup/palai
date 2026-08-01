@@ -30,9 +30,12 @@ import (
 //  2. A refused setting never lands. The refusal is a 400 AND the table is unchanged.
 //  3. The journal is APPEND-ONLY, enforced by 000052's self-re-asserting REVOKE rather than by convention:
 //     the runtime role is denied UPDATE and DELETE by Postgres.
-//  4. "The current document" is the highest REVISION, and the read says so with an explicit ORDER BY. An
-//     unordered LIMIT 1 has decided a security outcome in this tree twice, and here the row it returns is
-//     the one a bring-up turns into the process's environment — an arbitrary row is an arbitrary machine.
+//  4. "The current document" is the highest REVISION UNDER ONE SCOPE, and the read says so with an explicit
+//     scope predicate and ORDER BY. An unordered LIMIT 1 has decided a security outcome in this tree twice;
+//     here the row it returns is the one a bring-up turns into the process's environment, so an arbitrary
+//     row is an arbitrary machine — and without the scope predicate a pool's document written later would
+//     be handed to the CONTROL PLANE's bring-up, which is worse than none because it would look like it
+//     worked.
 func TestDesiredConfigJourneyWritesADocumentTheDeploymentReadReports(t *testing.T) {
 	url := os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
 	if url == "" {
@@ -67,6 +70,12 @@ func TestDesiredConfigJourneyWritesADocumentTheDeploymentReadReports(t *testing.
 	if body.Desired.Revision != 1 {
 		t.Errorf("first revision = %d, want 1", body.Desired.Revision)
 	}
+	// THE SCOPE IS ON THE WIRE. A screen that could not tell which process a document configures would
+	// render the control plane's settings under a heading a reader takes as "this machine" — the misreading
+	// the plane was put in the key to prevent, and one a body without these two fields makes unavoidable.
+	if body.Desired.Plane != "control_plane" || body.Desired.Scope != "" {
+		t.Errorf("desired scope = %q/%q, want the control-plane singleton", body.Desired.Plane, body.Desired.Scope)
+	}
 	if !body.Desired.Pending {
 		t.Errorf("desired asks for PALAI_DISPATCH_WORKERS=6 against a process holding 1, and the surface reports "+
 			"no pending bring-up. drifted = %v", body.Desired.Drifted)
@@ -85,6 +94,15 @@ func TestDesiredConfigJourneyWritesADocumentTheDeploymentReadReports(t *testing.
 	if got := revisionCount(t, repo); got != 1 {
 		t.Errorf("the journal holds %d revisions after a REFUSED write; a 400 that still appended would make the "+
 			"refusal cosmetic", got)
+	}
+
+	// --- 2b. A PLANE WITH NO READER IS REFUSED, NOT STORED --------------------------------------------
+	// Nothing hands cmd/runner a document — it reads its environment at exec — so a runner_pool row would
+	// change no machine while the screen reported a save. The refusal is the honest shape and the schema is
+	// ready for the day it stops being one: the CHECK carries the value, the key carries the scope.
+	put(t, ts.URL, `{"plane":"runner_pool","scope_id":"pool_default","settings":{}}`, http.StatusBadRequest)
+	if got := revisionCount(t, repo); got != 1 {
+		t.Errorf("the journal holds %d revisions after a refused runner_pool write", got)
 	}
 
 	// --- 3. APPEND-ONLY, ENFORCED BY THE DATABASE -----------------------------------------------------
@@ -156,6 +174,8 @@ type desiredBody struct {
 		Writable   bool   `json:"writable"`
 	} `json:"settings"`
 	Desired *struct {
+		Plane    string   `json:"plane"`
+		Scope    string   `json:"scope_id"`
 		Revision int64    `json:"revision"`
 		Pending  bool     `json:"pending"`
 		Drifted  []string `json:"drifted"`

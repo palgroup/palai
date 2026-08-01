@@ -8,6 +8,16 @@ import { Button } from "@/components/ui/Button";
 import { apiGet, apiSend, RelayError } from "@/lib/api";
 import { DESIRED_HELP, type DeploymentBody, type DeploymentSetting } from "@/lib/deployment";
 
+// THE FLEET COUNTS, read so the scope sentence below can be a NUMBER rather than a hedge. "No setting here
+// is per-machine" is a claim a reader has no way to size; "…and this deployment has 3 machines in 17
+// pools" is the same claim with the thing it is about in it. A failed read renders the sentence without
+// the counts rather than blocking the panel — a diagnostic that cannot read its own source says less, not
+// something wrong.
+interface FleetCounts {
+  runners: number | null;
+  pools: number | null;
+}
+
 // THE DESIRED CONFIGURATION — what this machine SHOULD be running with, saved on the machine.
 //
 // THIS IS AN EDIT SURFACE ON A SCREEN WHOSE OWN HEADER SAYS THERE IS NO EDIT CONTROL, so the distinction
@@ -38,6 +48,7 @@ interface SaveResult {
 
 export function DesiredConfig({ reloadKey, onSaved }: { reloadKey: number; onSaved: () => void }) {
   const [body, setBody] = useState<DeploymentBody | null>(null);
+  const [fleet, setFleet] = useState<FleetCounts>({ runners: null, pools: null });
   const [loadError, setLoadError] = useState("");
   const [open, setOpen] = useState(false);
   // `edits` is the whole document being composed, keyed by setting name. It starts as what the server holds,
@@ -59,6 +70,26 @@ export function DesiredConfig({ reloadKey, onSaved }: { reloadKey: number; onSav
   useEffect(() => {
     void load();
   }, [load, reloadKey]);
+
+  // The fleet counts are read ONCE and never with the deployment read: they answer a different question
+  // (how many machines is this NOT configuring) and a failure to answer it must not take the panel down.
+  useEffect(() => {
+    let live = true;
+    const count = async (path: string) => {
+      const page = await apiGet<{ data?: unknown[] }>(path);
+      return Array.isArray(page.data) ? page.data.length : null;
+    };
+    void Promise.all([count("/runners"), count("/runner-pools")])
+      .then(([runners, pools]) => {
+        if (live) setFleet({ runners, pools });
+      })
+      .catch(() => {
+        /* the scope sentence renders without its counts; see FleetCounts */
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const settings = body?.settings ?? [];
   const writable = settings.filter((row) => row.writable === true);
@@ -123,10 +154,34 @@ export function DesiredConfig({ reloadKey, onSaved }: { reloadKey: number; onSav
         </Button>
       </header>
 
-      <p className="muted">
-        What this machine should be running with, stored ON the machine. Saving here changes nothing about the running
-        process — every setting below is read from the control-plane process&apos;s environment, which is fixed when it
-        starts. <code>palai up</code> on the machine reads this document and starts the process with it.
+      {/* WHAT IT CONFIGURES, IN THE FIRST SENTENCE. It used to say "what this machine should be running
+          with", which is wrong in the direction that matters: there are three scopes in this product —
+          the control-plane PROCESS, the POOL a machine belongs to, and the RUNNER — and this is the first.
+          A reader who takes "machine" literally is wrong about which machines a change reaches. */}
+      <p className="muted" data-testid="desired-config-scope-sentence">
+        The <strong>control-plane process&apos;s</strong> configuration, stored on the machine that runs it. One process,
+        shared by every project and every machine on this deployment
+        {fleet.runners === null || fleet.pools === null ? null : (
+          <>
+            {" "}
+            — currently {fleet.runners} machine{fleet.runners === 1 ? "" : "s"} in {fleet.pools} pool
+            {fleet.pools === 1 ? "" : "s"}
+          </>
+        )}
+        . <strong>Nothing here is per-machine.</strong> Saving changes nothing about the running process either: every
+        setting below is read from that process&apos;s environment, which is fixed when it starts.{" "}
+        <code>palai up</code> on the machine reads this document and starts the process with it.
+      </p>
+
+      {/* AND WHAT IT IS NOT, named rather than left as an absence. An operator who came here for
+          per-machine configuration and finds none must learn that the axis exists elsewhere — otherwise
+          they conclude the product cannot do it. PALAI_RUNNER_CONCURRENCY is the one genuinely per-machine
+          knob and the control plane holds no copy of it, which is why it is not even listed below. */}
+      <p className="muted" data-testid="desired-config-not-per-machine">
+        To configure <strong>machines</strong>, use a runner pool on Fleet — a pool&apos;s posture and enrolment are
+        enforced by the registry. The one per-machine knob, <code>PALAI_RUNNER_CONCURRENCY</code>, lives on the runner
+        container itself: this process holds no copy of it, so it is not on this screen at all rather than reported as
+        unset.
       </p>
 
       {loadError === "" ? null : (
@@ -146,7 +201,8 @@ export function DesiredConfig({ reloadKey, onSaved }: { reloadKey: number; onSav
       ) : (
         <>
           <p className="muted" data-testid="desired-config-revision">
-            Revision {desired.revision}, saved by {desired.written_by} at {desired.written_at}.
+            Revision {desired.revision} for the {desired.plane ?? "control_plane"} scope, saved by {desired.written_by} at{" "}
+            {desired.written_at}.
           </p>
           {desired.pending ? (
             <p role="status" className="form-status" data-testid="desired-config-pending">

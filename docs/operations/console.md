@@ -674,10 +674,60 @@ the **default** to this binary. So the write surface refuses anything its own re
 `TestEveryDesiredValueThisBinaryAcceptsIsParsedByItsOwnReader` drives every accepted value through the real
 reader — and every refused one too, asserting the coercion that makes the refusal necessary.
 
+### It is SCOPED, and this panel is the control-plane scope
+
+There are **three** scopes in this product, and this screen is the first. Measured on the running stack,
+2026-08-01:
+
+```
+curl .../v1/deployment   | jq 'keys'          → ["object","settings","warnings"]   (no machine axis)
+curl .../v1/runners      | jq '.data|length'  → 3
+curl .../v1/runner-pools | jq '.data|length'  → 17
+```
+
+- **the control-plane PROCESS** — the 35 settings here. One process, shared by every project and every
+  machine on the deployment. **Nothing on this screen is per-machine**, and the screen says so in words.
+- **the POOL** — the unit a machine belongs to, and the configuration unit for machines today. It already
+  has a write path (`/v1/runner-pools`); posture and strict enrolment are *enforced* by the registry.
+- **the RUNNER** — everything the control plane holds about one is *reported* by the machine or minted at
+  enrolment. No per-runner setting exists for any surface to write.
+
+So `deployment_desired` is keyed **`(plane, scope_id, revision)`**, not flat. The `plane` vocabulary is
+`control_plane` (a singleton, empty `scope_id`) and `runner_pool` (`scope_id` = a pool id). Today
+**only `control_plane` has a reader** — `palai up` — and a `runner_pool` write is **refused with the reason**
+rather than stored: nothing hands `cmd/runner` a document, it reads its environment at `exec`. Storing one
+would be a row nobody consults with a screen reporting success.
+
+**The scope is `pool_id` and never os/arch.** All three enrolled runners report `os=""` and `arch=""`;
+`cmd/runner` never sends them (`GOOS`/`GOARCH` appear only in the capability worker) and
+`runner_gateway.go`'s `enrolRequest` calls them "inventory". Selecting machines by either would select on a
+field nothing populates.
+
+### One variable with two readers is why the plane is in the key
+
+The pool count is the obvious argument. The load-bearing one is a single variable:
+
+| | control plane | `cmd/runner` |
+|---|---|---|
+| `PALAI_RUNNER_CONCURRENCY` | — | `main.go:117` — the one genuinely per-machine knob |
+| `PALAI_SANDBOX_IMAGE` | `main.go:69, 926` | — |
+| `PALAI_SHELL_NATIVE` | `main.go:69, 927` | — |
+| `PALAI_WORKSPACE_ROOT` | `main.go:677` | `cmd/runner/main.go:120` |
+
+`PALAI_WORKSPACE_ROOT` has **two readers with two different jobs under one name**: the control plane
+*allocates* workspaces under it, and the runner refuses to bind-mount a leased path that does not sit under
+it — a §24 trust-boundary check whose own comment records that *"unset disables the check"*. A flat
+document forces one string into both planes, and one reaching only the control plane would move the
+allocation root while leaving the check that guards it switched off.
+
+**Each catalogue entry's plane is derived from its reader citation** (`planeMatchesReader`), so the claim
+inherits the proof `TestEveryCatalogueCitationResolvesToARealReader` already gives. A citation into a
+directory neither prefix list knows is a **refusal**, not a default.
+
 ### Where the document lives, and why it is not `config_policy`
 
-`deployment_desired` (migration `000052`) is **append-only** — one row per revision, holding the whole
-document, with `REVOKE UPDATE, DELETE` re-asserted on every boot. "We must be able to see it" is half the
+`deployment_desired` (migration `000052`) is **append-only** — one row per revision **per scope**, holding
+that scope's whole document, with `REVOKE UPDATE, DELETE` re-asserted on every boot. "We must be able to see it" is half the
 requirement, and a mutable row answers only the present tense.
 
 It carries **no `organization_id`**, and that absence is a security property rather than an omission. Four

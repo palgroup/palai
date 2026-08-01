@@ -58,6 +58,17 @@ export interface DeploymentSetting extends Record<string, unknown> {
  * is not.
  */
 export interface DeploymentDesired {
+  /**
+   * WHICH PROCESS this document configures. `control_plane` is the singleton every project and every
+   * machine on the deployment shares; `runner_pool` scopes a pool's machines and this deployment cannot
+   * apply one yet (nothing hands cmd/runner a document — it reads its environment at exec).
+   *
+   * It is SERVED rather than assumed, and that is the whole reason the field exists: a screen that could
+   * not tell the scope would render process-wide settings under a heading a reader takes as "this
+   * machine", which is wrong about which machines a change reaches and about how many there are.
+   */
+  plane?: string;
+  scope_id?: string;
   revision: number;
   written_at: string;
   written_by: string;
