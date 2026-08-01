@@ -87,9 +87,13 @@ type AdmitRequest struct {
 	// workspace the root run auto-provisions. Empty leaves the response non-coding.
 	RepositoryBindingID string
 	RepositoryRef       string
+	// AgentID pins the run to whatever the named AGENT has currently published; the store resolves it
+	// to that agent's highest-numbered published revision INSIDE the admission transaction, so the run
+	// records a concrete revision and stays reproducible.
+	AgentID string
 	// AgentRevisionID / RunTemplateRevisionID pin the run's executable config to a published revision
-	// (spec §10, AGT-001). At most one is set (validateCreate rejects both). Empty leaves the run
-	// profile-free.
+	// (spec §10, AGT-001). At most one of these three is set (validateCreate rejects any pair). Empty
+	// leaves the run profile-free.
 	AgentRevisionID       string
 	RunTemplateRevisionID string
 	// MaxConcurrentRuns / MaxQueuedRuns are the §20.12 per-project run caps the handler resolves from
@@ -220,7 +224,10 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 
 	// The pinned executable-config revision (spec §10, AGT-001): agent_revision_id OR
 	// run_template_revision_id, typed contract fields so they ride the semantic request hash.
-	agentRevisionID, templateRevisionID := "", ""
+	agentID, agentRevisionID, templateRevisionID := "", "", ""
+	if req.AgentID != nil {
+		agentID = *req.AgentID
+	}
 	if req.AgentRevisionID != nil {
 		agentRevisionID = *req.AgentRevisionID
 	}
@@ -288,6 +295,7 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 		OutputContract:        outputContract,
 		RepositoryBindingID:   bindingID,
 		RepositoryRef:         repositoryRef,
+		AgentID:               agentID,
 		AgentRevisionID:       agentRevisionID,
 		RunTemplateRevisionID: templateRevisionID,
 		MaxConcurrentRuns:     h.limits.MaxConcurrentRuns,
@@ -310,12 +318,24 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	// A pin naming an unknown revision is a tenant-scoped 404; a pin onto a draft is a 409 — a draft
 	// revision cannot be run until it is published (spec §10, AGT-001).
+	// The pin refusals, worded for the field the caller actually sent. An operator who wrote
+	// `agent_id` and is told "no such agent revision" goes hunting for a typo in a revision id they
+	// never supplied — and the 409 is worse, because "publish the draft" is the wrong instruction for
+	// an agent that has no revision to publish. Two fields, two vocabularies, same two statuses.
 	if out.PinnedRevisionNotFound {
-		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such agent revision or run template in this project")
+		detail := "no such agent revision or run template in this project"
+		if agentID != "" {
+			detail = "no such agent in this project"
+		}
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", detail)
 		return
 	}
 	if out.PinnedRevisionNotPublished {
-		middleware.WriteProblem(w, r, http.StatusConflict, "revision_not_published", "the pinned revision is a draft; publish it before running it")
+		detail := "the pinned revision is a draft; publish it before running it"
+		if agentID != "" {
+			detail = "this agent has no published revision; publish one before running it by agent_id, or name an exact agent_revision_id"
+		}
+		middleware.WriteProblem(w, r, http.StatusConflict, "revision_not_published", detail)
 		return
 	}
 	// The durable budget/quota gate (E13 T6). It shares the §20.10 registered 429 quota_exceeded with
@@ -540,6 +560,16 @@ func validateCreate(req contracts.ResponseCreateRequest) error {
 	// revision carries identity, a template is profile-free, so one request cannot mean both.
 	if req.AgentRevisionID != nil && req.RunTemplateRevisionID != nil {
 		return errors.New("agent_revision_id and run_template_revision_id are mutually exclusive")
+	}
+	// agent_id joins the same exclusion. It names an agent and lets the server pick that agent's
+	// current published revision; agent_revision_id names an exact revision. A request carrying both
+	// is either redundant or contradictory and there is no reading of it that is obviously right, so
+	// it is refused rather than silently resolved in one of the two directions.
+	if req.AgentID != nil && req.AgentRevisionID != nil {
+		return errors.New("agent_id and agent_revision_id are mutually exclusive: agent_id runs the agent's current published revision, agent_revision_id pins an exact one")
+	}
+	if req.AgentID != nil && req.RunTemplateRevisionID != nil {
+		return errors.New("agent_id and run_template_revision_id are mutually exclusive")
 	}
 	// The output contract (spec §22.7). Refused HERE, at admission, because a schema this server
 	// cannot enforce must never become a run: the alternative is the defect this whole change

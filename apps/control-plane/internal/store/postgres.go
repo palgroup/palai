@@ -112,6 +112,7 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 			OutputContract:        req.OutputContract,
 			RepositoryBindingID:   req.RepositoryBindingID,
 			RepositoryRef:         req.RepositoryRef,
+			AgentID:               req.AgentID,
 			AgentRevisionID:       req.AgentRevisionID,
 			RunTemplateRevisionID: req.RunTemplateRevisionID,
 			MaxConcurrentRuns:     req.MaxConcurrentRuns,

@@ -2,6 +2,7 @@
 package contracts
 
 type ResponseCreateRequest struct {
+	AgentID               *string          `json:"agent_id,omitempty"`
 	AgentRevisionID       *string          `json:"agent_revision_id,omitempty"`
 	Background            bool             `json:"background,omitempty"`
 	Budget                map[string]any   `json:"budget,omitempty"`

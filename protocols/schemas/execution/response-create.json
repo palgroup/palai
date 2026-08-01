@@ -76,6 +76,10 @@
     "repository": {"type": "object"},
     "callback": {"type": "object"},
     "metadata": {"type": "object", "maxProperties": 64},
+    "agent_id": {
+      "type": ["string", "null"],
+      "description": "Run this AGENT, at whatever it has currently published. The server resolves it to that agent's highest-numbered PUBLISHED revision at admission and pins the run to it, so the run is reproducible from its recorded agent_revision_id even though the request did not name one. An unknown agent is a 404; an agent with no published revision is a 409, never a silent fall-through to the project's own config. Mutually exclusive with agent_revision_id (which pins an EXACT revision and is what you want when the answer must not move under you) and with run_template_revision_id. Before 2026-08-01 this field was ACCEPTED AND DROPPED: additionalProperties is true on this object, so `{\"agent_id\":\"agt_01\"}` returned 202 and ran the project's default config with no agent attached and nothing said."
+    },
     "agent_revision_id": {"type": ["string", "null"]},
     "run_template_revision_id": {"type": ["string", "null"]},
     "engine": {"type": ["string", "null"]}

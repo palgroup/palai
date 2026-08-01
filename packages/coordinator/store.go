@@ -657,6 +657,10 @@ type AdmissionInput struct {
 	// revision exists in scope and is published before reserving idempotency — an unknown revision is a
 	// 404 and a draft is a 409, both leaving no idempotency record and no run. Empty leaves the run
 	// profile-free (the pre-E11 behaviour), so an absent pin resolves config exactly as before.
+	// AgentID names an AGENT rather than a revision (spec §10). Admission resolves it, in the same
+	// transaction, to that agent's highest-numbered PUBLISHED revision and pins the run to THAT id, so
+	// the run stays reproducible from its recorded revision. Empty means the request named no agent.
+	AgentID               string
 	AgentRevisionID       string
 	RunTemplateRevisionID string
 	// MaxConcurrentRuns / MaxQueuedRuns are the §20.12 basic-tier per-project admission caps the caller
@@ -773,8 +777,28 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	// idempotency, so an unknown pin is a clean 404 and a draft is a 409 (spec §10, AGT-001) — no
 	// idempotency record, no run started against config a draft could still change. At most one pin is
 	// set (the API rejects both).
-	if in.AgentRevisionID != "" {
-		switch adm, ok, err := verifyPublishedRevision(ctx, tx, "AgentRevisionPublished", in.AgentRevisionID, tenant); {
+	// `agent_id` names an AGENT rather than a revision: resolve it, HERE and inside this transaction,
+	// to that agent's highest-numbered published revision, and pin the run to the id it resolved to.
+	// The run therefore records a concrete agent_revision_id and stays reproducible even though the
+	// request named none — resolving at dispatch instead would let a publish between admission and
+	// execution change what runs.
+	//
+	// Before 2026-08-01 this field was accepted and dropped: `additionalProperties: true` on
+	// response-create.json meant {"agent_id":"agt_01"} returned 202, ran the project's default
+	// config, and mentioned no agent anywhere in the response.
+	agentRevisionID := in.AgentRevisionID
+	if in.AgentID != "" {
+		resolved, adm, ok, err := resolvePublishedAgent(ctx, tx, in.AgentID, tenant)
+		switch {
+		case err != nil:
+			return Admission{}, err
+		case !ok:
+			return adm, nil
+		}
+		agentRevisionID = resolved
+	}
+	if agentRevisionID != "" {
+		switch adm, ok, err := verifyPublishedRevision(ctx, tx, "AgentRevisionPublished", agentRevisionID, tenant); {
 		case err != nil:
 			return Admission{}, err
 		case !ok:
@@ -887,7 +911,7 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertRun"),
 		in.RunID, tenant.Organization, tenant.Project, sessionID, in.ResponseID, nullableJSON(in.Delegations),
-		nullableText(in.AgentRevisionID), nullableText(in.RunTemplateRevisionID), nullableJSON(in.OutputContract)); err != nil {
+		nullableText(agentRevisionID), nullableText(in.RunTemplateRevisionID), nullableJSON(in.OutputContract)); err != nil {
 		// The session already holds a non-terminal root run: one-active-root (spec §22.3). The
 		// partial unique index (runs_one_active_root_per_session) rejects the second root run at
 		// the DB, so a concurrent chain loses here rather than in an app-code check-then-insert
@@ -985,6 +1009,40 @@ func withSessionID(body []byte, sessionID string) ([]byte, error) {
 		return nil, fmt.Errorf("encode response body: %w", err)
 	}
 	return out, nil
+}
+
+// resolvePublishedAgent turns an `agent_id` into the revision the run pins: the agent's
+// highest-numbered PUBLISHED revision in the caller's scope.
+//
+// The two failures are told apart deliberately, because they need different actions from the
+// caller. An agent that does not exist here is PinnedRevisionNotFound (404) — the same
+// no-existence-disclosure answer a foreign revision id gets, so probing this route reveals nothing
+// about another tenant's agents. An agent that DOES exist but has published nothing is
+// PinnedRevisionNotPublished (409): "create and publish a revision", not "check your id". Collapsing
+// them into one status would send an operator hunting for a typo in an id that is perfectly correct.
+//
+// What it must NEVER do is fall through to the project's own configuration. That is precisely the
+// old behaviour — a request naming an agent, silently running something else — and it is the reason
+// this field is being implemented rather than merely accepted.
+func resolvePublishedAgent(ctx context.Context, tx pgx.Tx, agentID string, tenant Tenant) (string, Admission, bool, error) {
+	var revisionID string
+	switch err := tx.QueryRow(ctx, storage.Query("LatestPublishedAgentRevision"),
+		agentID, tenant.Organization, tenant.Project).Scan(&revisionID); {
+	case errors.Is(err, pgx.ErrNoRows):
+		// No published revision. Distinguish "no such agent" from "nothing published yet".
+		var exists int
+		switch err := tx.QueryRow(ctx, storage.Query("AgentProfileExists"),
+			agentID, tenant.Organization, tenant.Project).Scan(&exists); {
+		case errors.Is(err, pgx.ErrNoRows):
+			return "", Admission{PinnedRevisionNotFound: true}, false, nil
+		case err != nil:
+			return "", Admission{}, false, fmt.Errorf("verify agent exists: %w", err)
+		}
+		return "", Admission{PinnedRevisionNotPublished: true}, false, nil
+	case err != nil:
+		return "", Admission{}, false, fmt.Errorf("resolve published agent revision: %w", err)
+	}
+	return revisionID, Admission{}, true, nil
 }
 
 // verifyPublishedRevision checks a pinned revision (agent or template) exists in scope and is

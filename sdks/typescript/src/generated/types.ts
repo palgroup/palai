@@ -246,6 +246,7 @@ export interface Response {
 }
 
 export interface ResponseCreateRequest {
+  agent_id?: string | null;
   agent_revision_id?: string | null;
   background?: boolean;
   budget?: Record<string, unknown>;
