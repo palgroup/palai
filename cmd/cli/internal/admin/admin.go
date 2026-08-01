@@ -162,7 +162,10 @@ func (f *flags) register(fs *flag.FlagSet, resource string) {
 		// happens to panic on the collision, which is a kinder failure than the one that was available.
 		fs.StringVar(&f.connBaseURL, "endpoint", "", "the chat-completions URL for the openai-compatible family (create) — REQUIRED by it, refused on the others")
 		fs.StringVar(&f.connection, "connection", "", "the connection id a route dispatches through (route)")
-		fs.StringVar(&f.model, "model", "", "the model id to send on the provider wire, e.g. gpt-4o-mini (route)")
+		// The example used to be a literal model id. It is a command instead, because the id an operator
+		// should type is one their OWN credential can see — `palai model models <mconn_id>` prints exactly
+		// that list, and a name suggested here is a name that goes stale in a help string.
+		fs.StringVar(&f.model, "model", "", "the model id to send on the provider wire (route) — list the ids this connection can reach with `palai model models <mconn_id>`")
 		fs.StringVar(&f.routeName, "route", "", "route alias (route) — defaults to `default`, which is the only alias a run resolves today")
 	}
 }
