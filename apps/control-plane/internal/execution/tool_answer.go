@@ -54,7 +54,7 @@ const defaultToolAnswerErrorBudget = 16
 // that is exactly how the shell wall time came to be unbounded on the host while every sandbox test was
 // green. A malformed or negative value falls back to the default rather than silently unbounding.
 func toolAnswerErrorBudget() int {
-	raw, set := os.LookupEnv("PALAI_TOOL_ERROR_BUDGET")
+	raw, set := lookupBudgetEnv()
 	if !set {
 		return defaultToolAnswerErrorBudget
 	}
@@ -64,6 +64,11 @@ func toolAnswerErrorBudget() int {
 	}
 	return n // 0 = unbounded, and somebody typed it
 }
+
+// lookupBudgetEnv is the single read of the variable's name, so a test can ask whether a machine has one
+// set without spelling the string a second time — a second spelling is how a renamed variable comes to
+// be read by production and by nothing that checks it.
+func lookupBudgetEnv() (string, bool) { return os.LookupEnv("PALAI_TOOL_ERROR_BUDGET") }
 
 // exceedsToolAnswerErrorBudget reports whether a count has passed the deployment's budget.
 func exceedsToolAnswerErrorBudget(count int) bool {

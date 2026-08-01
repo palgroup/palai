@@ -62,8 +62,12 @@ func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) 
 	}
 	fs, err := workspace.NewWorkspaceFS(env.WorkspaceRoot)
 	if err != nil {
-		// NOT an answer, deliberately: the allocation root this run was handed is unusable, which is the
-		// deployment being broken rather than the model being wrong. It keeps today's abort.
+		// NOT an answer, deliberately, and it is a NARROWER branch than it looks: NewWorkspaceFS only
+		// refuses a root that is blank or that EvalSymlinks cannot resolve — i.e. an allocation that was
+		// never provisioned, or one that has gone away underneath a live run. That is the deployment
+		// being broken rather than the model being wrong, so it keeps today's abort. A root that exists
+		// and is merely unusable constructs fine and fails inside the read below, where it is an answer
+		// (TestAnAllocationRootThatDoesNotExistIsRefusedBeforeAnyRead pins both halves).
 		return nil, fmt.Errorf("file tool: %w", err)
 	}
 	op, _ := args["op"].(string)
