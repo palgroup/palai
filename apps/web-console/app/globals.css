@@ -2132,3 +2132,167 @@ tbody tr[data-selected="true"] td {
 .tab-panel[hidden] {
   display: none;
 }
+
+/* --- THE MCP CATALOGUE AND THE TEMPLATE GALLERY -------------------------------------------------------
+   Two surfaces added by the mcp-templates pass. NO NEW TOKEN AND NO NEW COLOUR: every value below is an
+   existing custom property, so both colour schemes are inherited rather than re-derived — which is also why
+   there is no `prefers-color-scheme` block here. The two dialogs are widened by TEST ID rather than by a
+   new prop on components/ui/Dialog.tsx: the primitive's 34rem is right for a confirmation, and a directory
+   of thirty-five servers is not a confirmation. Widening it there would have changed every existing modal. */
+[data-testid="catalogue-dialog"],
+[data-testid="template-dialog"] {
+  width: min(52rem, calc(100vw - var(--space-6)));
+}
+
+.catalogue-body > section + section {
+  margin-top: var(--space-7);
+}
+.catalogue-list {
+  list-style: none;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.catalogue-entry {
+  padding: var(--space-4);
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-2);
+}
+.catalogue-entry-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.catalogue-entry h4 {
+  margin: 0;
+}
+.catalogue-entry p {
+  margin: var(--space-2) 0 0;
+}
+.catalogue-url code {
+  overflow-wrap: anywhere;
+}
+/* The refusal is the sentence an operator acts on, so it is the one block here that is not muted grey. */
+.catalogue-refusal {
+  padding: var(--space-3);
+  background: var(--warn-bg);
+  border: var(--border-w) solid var(--warn-border);
+  border-radius: var(--radius-1);
+  color: var(--warn-text);
+}
+.catalogue-evidence {
+  font-size: 0.8125rem;
+}
+.catalogue-entry .ui-button {
+  margin-top: var(--space-4);
+}
+
+.template-gallery {
+  list-style: none;
+  margin: var(--space-5) 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: var(--space-4);
+}
+.template-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-2);
+}
+.template-card h3 {
+  margin: 0;
+}
+.template-card p {
+  margin: 0;
+}
+.template-card .ui-button {
+  margin-top: auto;
+}
+.template-integrations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* THE EDITOR. The gutter and the textarea MUST share a line-height or the numbers drift from the lines they
+   count — that is the whole contract of this block, and it is why both sides name the same variable.
+
+   THE BORDER IS ON THE TEXTAREA, NOT ON THIS WRAPPER, AND THAT IS A CORRECTION THE SWEEP MADE.
+   The first draft put `border: var(--border-w) solid var(--border-control)` here and `border: 0` on the
+   textarea, which looks identical and is not: tests/contrast.spec.ts measures the boundary of each
+   INTERACTIVE CONTROL, and a textarea whose own border is 0 reports 0:1 against SC 1.4.11's 3:1. Measured —
+   `weakest textarea[template-yaml] on /agents (template-dialog) at 0:1`. A wrapper is not a control, and a
+   boundary drawn by an ancestor is a boundary that a control-level sweep cannot see and a high-contrast
+   mode need not honour. */
+.yaml-editor {
+  --yaml-line-height: 1.5rem;
+  display: flex;
+  border-radius: var(--radius-2);
+  overflow: hidden;
+  background: var(--bg-inset);
+}
+.yaml-gutter {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-3) var(--space-2);
+  overflow: hidden;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  border: var(--border-w) solid var(--border-control);
+  border-right: 0;
+  border-radius: var(--radius-2) 0 0 var(--radius-2);
+  user-select: none;
+}
+.yaml-line {
+  line-height: var(--yaml-line-height);
+}
+/* A line the parser complained about. The colour is the SECOND carrier — the error list below the editor
+   names the line number in words, which is what a screen reader reads. */
+.yaml-line-bad {
+  font-weight: 600;
+  color: var(--danger-text);
+}
+.yaml-text {
+  flex: 1;
+  padding: var(--space-3);
+  /* The control's OWN boundary — see the note on .yaml-editor. */
+  border: var(--border-w) solid var(--border-control);
+  border-radius: 0 var(--radius-2) var(--radius-2) 0;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: var(--yaml-line-height);
+  color: var(--text);
+  background: transparent;
+}
+.template-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: var(--space-4) 0;
+}
+.template-errors {
+  padding: var(--space-3);
+  background: var(--danger-bg);
+  border: var(--border-w) solid var(--danger-border);
+  border-radius: var(--radius-1);
+  color: var(--danger-text);
+}
+.template-errors p {
+  margin: 0;
+}
+.template-errors ul {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-6);
+}

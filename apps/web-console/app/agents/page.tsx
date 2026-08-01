@@ -5,6 +5,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { Menu } from "@/components/ui/Menu";
+import { AgentTemplates } from "@/components/AgentTemplates";
 import { FormDialog } from "@/components/FormDialog";
 import { Panel, type Column } from "@/components/Panel";
 import { ResourceForm } from "@/components/ResourceForm";
@@ -233,6 +234,10 @@ export default function AgentsPage() {
 
   return (
     <>
+      {/* BELOW THE LIST, NOT ABOVE IT. The list is what this screen IS and what an operator with agents
+          comes back for; the gallery is for the first day. It routes to the new agent's own page for the
+          same reason createAgent does — the thing you do next is write or publish a revision, and that
+          lives there. */}
       <Panel<AgentRow>
         title="Agents"
         testId="panel-agent-profiles"
@@ -263,6 +268,8 @@ export default function AgentsPage() {
           </>
         }
       />
+
+      <AgentTemplates onCreated={(id) => router.push(`/agents/${encodeURIComponent(id)}`)} />
 
       {creating ? (
         <FormDialog

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
+import { McpCatalogue } from "@/components/McpCatalogue";
 import { Panel } from "@/components/Panel";
 import { Picker } from "@/components/Picker";
 import { ResourceForm } from "@/components/ResourceForm";
@@ -266,6 +267,22 @@ export default function ToolsPage() {
             and an argv, which is a deployment decision rather than a form field — register one with the API
             if you need it. Registering dials nothing: <strong>Discover</strong> is the first call that
             reaches the server.
+            <br />
+            {/* THE DIRECTORY, so the first question on this form is "which server" rather than "what is its
+                URL". It also answers the question this form cannot: whether the server this deployment is
+                about to be pointed at can be authenticated at all. */}
+            Not sure of the URL, or whether a server can be connected here at all?{" "}
+            <McpCatalogue
+              onPick={(entry) => {
+                setName(entry.id);
+                setUrl(entry.url);
+                setRegisterError("");
+                setRegisterStatus(
+                  `Filled in ${entry.name}. Nothing has been registered yet — check the name and the ` +
+                    "credential, then submit.",
+                );
+              }}
+            />
           </>
         }
         fields={[

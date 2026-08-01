@@ -1,7 +1,13 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { CONSOLE_ROUTES, DYNAMIC_CONSOLE_ROUTES } from "../lib/routes";
-import { FORM_DIALOGS, formDialogMountCount } from "./constants";
+import {
+  FORM_DIALOGS,
+  formDialogMountCount,
+  PRIMITIVE_DIALOG_EXEMPT,
+  PRIMITIVE_DIALOGS,
+  primitiveDialogMountCount,
+} from "./constants";
 import { announceProfile, concreteDynamicPath, signIn } from "./profile";
 
 // WHAT AXE CANNOT SEE, MEASURED ON THE RENDERED PAGE (console design pass, spec §2.1 / §4.4 / §7).
@@ -202,9 +208,17 @@ test("every interactive control carries a 3:1 boundary against the surface behin
     "the tree mounts a number of FormDialogs that FORM_DIALOGS does not describe, so this sweep is measuring " +
       "some of them. A control behind a create button is measured by nothing until a test opens it.",
   ).toBe(FORM_DIALOGS.length);
+  // AND THE PRIMITIVE'S OWN MOUNT COUNT, for the same reason and with the same independence: this sweep must
+  // not be complete only because tests/a11y.spec.ts happens to run. A `<Dialog>` in components/ is invisible
+  // to the FormDialog walk above — wrong component, wrong directory — so it needs its own assertion here.
+  expect(
+    primitiveDialogMountCount(),
+    "a component mounts the ui/Dialog primitive that neither PRIMITIVE_DIALOGS nor PRIMITIVE_DIALOG_EXEMPT " +
+      "describes, so this sweep is measuring some of them.",
+  ).toBe(PRIMITIVE_DIALOGS.length + PRIMITIVE_DIALOG_EXEMPT.length);
 
   const beforeDialogs = measured.length;
-  for (const d of FORM_DIALOGS) {
+  for (const d of [...FORM_DIALOGS, ...PRIMITIVE_DIALOGS]) {
     await page.goto(d.route);
     // The opener lives in a PANEL's head, so it does not exist until that panel has settled.
     await expect(page.getByTestId(d.open)).toBeVisible({ timeout: 15_000 });
@@ -218,7 +232,7 @@ test("every interactive control carries a 3:1 boundary against the surface behin
     exempted.push(...inside.exempted);
   }
   // eslint-disable-next-line no-console -- the delta is the evidence that opening them was worth doing.
-  console.log(`CONTROL BOUNDARY DIALOGS — ${String(FORM_DIALOGS.length)} dialog(s) opened, ${String(measured.length - beforeDialogs)} control(s) that the closed-route walk never measured`);
+  console.log(`CONTROL BOUNDARY DIALOGS — ${String(FORM_DIALOGS.length + PRIMITIVE_DIALOGS.length)} dialog(s) opened, ${String(measured.length - beforeDialogs)} control(s) that the closed-route walk never measured`);
 
   // A SWEEP THAT MEASURED NOTHING WOULD PASS. The count is the evidence that it looked at anything at all.
   expect(measured.length, "no control was measured on any route — the sweep found nothing to judge").toBeGreaterThan(10);
@@ -242,7 +256,7 @@ test("every interactive control carries a 3:1 boundary against the surface behin
   // eslint-disable-next-line no-console -- the numbers ARE the measurement; a bare pass/fail proves nothing.
   console.log(
     `CONTROL BOUNDARY SWEEP — ${String(measured.length)} control(s) on ${String(ROUTES.length + dynamic.length)} route(s) ` +
-      `plus ${String(FORM_DIALOGS.length)} open dialog(s), ` +
+      `plus ${String(FORM_DIALOGS.length + PRIMITIVE_DIALOGS.length)} open dialog(s), ` +
       `${String(failing.length)} below 3:1; weakest ${worst.tag}[${worst.testId}] on ${worst.route} at ${String(strongest(worst))}:1`,
   );
   // eslint-disable-next-line no-console -- the exemptions are part of the measurement, not a footnote.

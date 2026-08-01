@@ -122,6 +122,71 @@ export const FORM_DIALOGS: { route: string; open: string; dialog: string; label:
 ];
 
 /**
+ * THE DIALOGS BUILT ON THE `components/ui/Dialog` PRIMITIVE, which the list above structurally cannot hold.
+ *
+ * THE HOLE THIS CLOSES WAS MEASURED, 2026-08-01, on 3f53c5f9 before the catalogue existed:
+ *
+ *   grep -rn '<Dialog[ >]' --include='*.tsx' app components | grep -v components/ui/Dialog.tsx | wc -l → 1
+ *   grep -rn '<FormDialog' --include='*.tsx' app components | grep -v components/FormDialog.tsx | wc -l → 5
+ *
+ * FORM_DIALOGS describes those five and `formDialogMountCount()` counts them, so a sixth FormDialog cannot
+ * ship unscanned. NOTHING COUNTED THE OTHER ONE. `formDialogMountCount()` walks `app/**\/page.tsx` for the
+ * string `<FormDialog`, and it is blind on BOTH axes to the primitive: wrong component name, wrong
+ * directory. A `<Dialog>` mounted inside `components/` is invisible to it, and the tree's own guidance is to
+ * prefer the primitive — so every dialog written from here on would have landed in the blind spot, and the
+ * guard would have stayed green while doing it.
+ *
+ * The one pre-existing primitive mount, components/ConfirmDestructive.tsx, IS scanned — by a hand-written
+ * test ("axe-core reports zero violations on /fleet with a destructive dialog OPEN", tests/a11y.spec.ts).
+ * That is why it is exempt below rather than a row here: it is a generic wrapper opened from many screens,
+ * not a dialog belonging to one route, and the bespoke test already opens it where it matters.
+ *
+ * A new component that mounts `<Dialog` and appears in neither list fails the coverage assertion at the
+ * bottom of tests/a11y.spec.ts. That is the whole point — the same shape as the FormDialog guard, on the
+ * component the tree is being told to use.
+ */
+export const PRIMITIVE_DIALOGS: { route: string; open: string; dialog: string; label: string }[] = [
+  { route: "/tools", open: "catalogue-open", dialog: "catalogue-dialog", label: "Known MCP servers" },
+  // Opening a template dialog needs a CARD, so the trigger is one template's own button rather than a
+  // generic "open" — the gallery has no single opener and inventing one for the sweep would be a control
+  // that exists only for the sweep.
+  { route: "/agents", open: "template-open-incident-commander", dialog: "template-dialog", label: "Incident commander" },
+];
+
+/**
+ * Components that mount the primitive but are covered by a NAMED bespoke scan instead of the generated loop.
+ * Each entry must say which test opens it, because an exemption whose reason is not written down is how a
+ * list like this rots into a suppression.
+ */
+export const PRIMITIVE_DIALOG_EXEMPT: { file: string; scannedBy: string }[] = [
+  {
+    file: "ConfirmDestructive.tsx",
+    scannedBy: 'tests/a11y.spec.ts — "axe-core reports zero violations on /fleet with a destructive dialog OPEN"',
+  },
+];
+
+/**
+ * primitiveDialogMountCount is how many FILES mount the Dialog primitive, walked rather than declared.
+ *
+ * It counts FILES, not occurrences, because the unit that needs a scan is the dialog a component owns —
+ * AgentTemplates.tsx mounts one `<Dialog` and shows three different templates through it, and that is one
+ * surface to scan, not three. Node builtins only, for the reason `formDialogMountCount` gives: this module
+ * is imported at Playwright config load, before any test context exists.
+ */
+export function primitiveDialogMountCount(): number {
+  const root = resolve(process.cwd(), "components");
+  let files = 0;
+  for (const entry of readdirSync(root, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".tsx")) continue;
+    const path = resolve(entry.parentPath ?? root, entry.name);
+    // The primitive itself DEFINES `<BaseDialog.…>`; it never mounts `<Dialog`, so it needs no exclusion by
+    // name. Checking the content rather than the filename is what keeps a rename from silently zeroing this.
+    if (/<Dialog[\s>]/.test(readFileSync(path, "utf8"))) files += 1;
+  }
+  return files;
+}
+
+/**
  * formDialogMountCount is how many create dialogs the SOURCE actually mounts, walked rather than declared.
  *
  * IT LIVES BESIDE THE LIST IT CHECKS, AND THAT IS THE WHOLE POINT. It was inline in tests/a11y.spec.ts, so

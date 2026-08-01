@@ -3,7 +3,15 @@ import AxeBuilder from "@axe-core/playwright";
 import { test, expect, type Page } from "@playwright/test";
 
 import { CONSOLE_ROUTES, DYNAMIC_CONSOLE_ROUTES } from "../lib/routes";
-import { FORM_DIALOGS, formDialogMountCount, IS_REAL, WCAG_TAGS } from "./constants";
+import {
+  FORM_DIALOGS,
+  formDialogMountCount,
+  IS_REAL,
+  PRIMITIVE_DIALOG_EXEMPT,
+  PRIMITIVE_DIALOGS,
+  primitiveDialogMountCount,
+  WCAG_TAGS,
+} from "./constants";
 import { announceProfile, concreteDynamicPath, runToTerminal, signIn } from "./profile";
 
 // tabToTestId genuinely presses Tab until the element carrying data-testid=id holds focus — proving KEYBOARD
@@ -132,7 +140,11 @@ for (const route of DYNAMIC_CONSOLE_ROUTES) {
 
 const scannedDialogs = new Set<string>();
 
-for (const d of FORM_DIALOGS) {
+// BOTH DIALOG FAMILIES GO THROUGH ONE LOOP. The scan does not care which component built the modal — it
+// cares that a surface which only exists after a click gets looked at — and keeping two loops would have
+// meant the primitive's rows depending on someone noticing the first loop existed. See PRIMITIVE_DIALOGS in
+// tests/constants.ts for what was uncounted before this.
+for (const d of [...FORM_DIALOGS, ...PRIMITIVE_DIALOGS]) {
   test(`axe-core reports zero violations with ${d.dialog} open`, async ({ page }) => {
     await page.goto(d.route);
     // The opener is inside a PANEL's head, so it does not exist until that panel has settled — the same
@@ -388,14 +400,33 @@ test("every route lib/routes.ts declares was actually scanned by axe", () => {
   // The walk moved to tests/constants.ts so the CONTRAST sweep can make the same assertion independently —
   // it opens these same five dialogs, and it used to be complete only because this file happened to run.
   const mounted = formDialogMountCount();
+  const declaredDialogs = FORM_DIALOGS.length + PRIMITIVE_DIALOGS.length;
   // eslint-disable-next-line no-console -- the count is the evidence.
-  console.log(`AXE DIALOG COVERAGE — ${scannedDialogs.size}/${String(FORM_DIALOGS.length)} declared dialog(s) scanned; ${String(mounted)} FormDialog mount(s) in app/**/page.tsx`);
-  expect(scannedDialogs.size, "a dialog declared in FORM_DIALOGS was never opened by a scan").toBe(FORM_DIALOGS.length);
+  console.log(`AXE DIALOG COVERAGE — ${scannedDialogs.size}/${String(declaredDialogs)} declared dialog(s) scanned; ${String(mounted)} FormDialog mount(s) in app/**/page.tsx`);
+  expect(scannedDialogs.size, "a dialog declared in FORM_DIALOGS or PRIMITIVE_DIALOGS was never opened by a scan").toBe(declaredDialogs);
   expect(
     mounted,
     "the tree mounts a number of FormDialogs that FORM_DIALOGS does not describe. A create form behind a " +
       "button is scanned by nothing until a test opens it, so a mount with no row here is an unscanned modal.",
   ).toBe(FORM_DIALOGS.length);
+
+  // AND THE SAME ASSERTION FOR THE PRIMITIVE, which had none until now. The FormDialog walk above looks for
+  // `<FormDialog` in `app/**/page.tsx` and is therefore blind to a `<Dialog>` inside `components/` — which
+  // is the component this tree tells new code to prefer. See PRIMITIVE_DIALOGS in tests/constants.ts.
+  const primitives = primitiveDialogMountCount();
+  const accountedFor = PRIMITIVE_DIALOGS.length + PRIMITIVE_DIALOG_EXEMPT.length;
+  // eslint-disable-next-line no-console -- the count is the evidence, and so are the exemptions.
+  console.log(
+    `AXE PRIMITIVE-DIALOG COVERAGE — ${String(primitives)} component(s) mount <Dialog>; ` +
+      `${String(PRIMITIVE_DIALOGS.length)} scanned by the loop, ${String(PRIMITIVE_DIALOG_EXEMPT.length)} exempt: ` +
+      PRIMITIVE_DIALOG_EXEMPT.map((e) => `${e.file} (${e.scannedBy})`).join("; "),
+  );
+  expect(
+    primitives,
+    "a component mounts the ui/Dialog primitive and appears in neither PRIMITIVE_DIALOGS nor " +
+      "PRIMITIVE_DIALOG_EXEMPT. A modal behind a click is scanned by nothing until a test opens it, and the " +
+      "FormDialog walk above cannot see this one — wrong component, wrong directory.",
+  ).toBe(accountedFor);
 
   // A ROUTE WITH NO LEAD SENTENCE IS THE SAME OMISSION AS ONE WITH NO READINESS SIGNAL, and it fails the
   // same way. Every page in this console used to open with a panel or a wall of equally-weighted notes,
