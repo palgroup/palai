@@ -514,7 +514,7 @@ func TestPauseAndDeleteStopAdmission(t *testing.T) {
 	if _, found, err := ss.GetSchedule(ctx, org, project, deleted); err != nil || found {
 		t.Fatalf("GetSchedule after delete = (found:%v, %v), want (false, nil)", found, err)
 	}
-	if occs, err := ss.ListOccurrences(ctx, org, project, deleted, 100); err != nil || len(occs) != 1 {
+	if occs, err := ss.ListOccurrences(ctx, org, project, deleted, ListWindow{Limit: 100}); err != nil || len(occs) != 1 {
 		t.Fatalf("ListOccurrences after delete = (%d, %v), want the 1 preserved row", len(occs), err)
 	}
 	// Advance the clock a minute and re-fire: the deleted schedule admits no new occurrence.

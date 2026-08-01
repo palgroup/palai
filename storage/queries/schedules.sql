@@ -56,15 +56,61 @@ SET deleted_at = clock_timestamp(), updated_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND deleted_at IS NULL
 RETURNING id;
 
--- ListScheduleOccurrences reads a schedule's occurrences newest-first (GET
--- /v1/schedules/{id}/occurrences). Tenant-scoped through the parent schedule.
+-- ListSchedules pages a project's schedules newest-first (GET /v1/schedules, E29 T1). Tenant-scoped by
+-- (organization_id, project_id) AND by RLS; cursor + created_at bounds + the ?status= lifecycle filter.
+--
+-- `deleted_at IS NULL` IS THE LOAD-BEARING PREDICATE HERE. DeleteSchedule is a SOFT delete
+-- (SoftDeleteSchedule above) so an occurrence log and its deliveries survive retention, and GetSchedule
+-- has filtered tombstones since E11. A list that read the table without this clause would resurrect every
+-- deleted schedule and disagree with the singular read about whether a schedule exists at all.
+--
+-- $7 is the status filter: NULL/'' means unfiltered. The VALUE is validated at the route before it reaches
+-- here (an unknown state is a 400, not an empty page), so this predicate never carries the rejection.
+-- ORDER BY is TOTAL — (created_at DESC, id DESC) — because created_at is a clock_timestamp() and two
+-- creates inside one microsecond tie; a partial order under LIMIT leaves the row at a page boundary free
+-- to be skipped or repeated.
+-- name: ListSchedules
+SELECT id, name, trigger_id, kind, cron_expr, timezone, misfire_policy, misfire_grace_seconds,
+       max_catch_up, jitter_seconds, status, status_reason, revision, next_fire_at, one_time_at,
+       starts_at, ends_at, created_at, updated_at
+FROM schedules
+WHERE organization_id = $1 AND project_id = $2 AND deleted_at IS NULL
+  AND ($3::timestamptz IS NULL OR created_at >= $3)
+  AND ($4::timestamptz IS NULL OR created_at <= $4)
+  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+  AND ($7::text IS NULL OR status = $7)
+ORDER BY created_at DESC, id DESC
+LIMIT $8;
+
+-- ListScheduleOccurrences pages a schedule's occurrences newest-first (GET /v1/schedules/{id}/occurrences).
+-- Tenant-scoped through the parent schedule.
+--
+-- IT DOES NOT FILTER deleted_at, and that is deliberate rather than an oversight: a soft-deleted schedule's
+-- occurrences stay queryable under retention (the SoftDeleteSchedule comment above and PendingOccurrences
+-- below both rest on it), and a firing that already happened is an audit record. The parent's own 404 is
+-- what keeps a caller from reaching this by guessing — the schedule id is the key.
+--
+-- THE KEYSET IS (planned_at, occurrence_id) AND BOTH DIRECTIONS ARE DESC. The tiebreaker used to be
+-- ASCENDING, which is a total order too but not one the shared cursor can page: renderPage/decodeCursor
+-- express a position as "every row strictly before (k, id)" and that only holds when both columns descend.
+-- The tie is REACHABLE — UNIQUE is (schedule_id, schedule_revision, planned_at), so two revisions can plan
+-- the same instant — so this is not a theoretical tiebreaker.
+--
+-- The shared created_at bounds bind to o.created_at, the real column of that name, NOT to planned_at. They
+-- differ for real: under the catch_up misfire policy an occurrence is CREATED now for an instant PLANNED
+-- days ago. o.created_at is in the projection for the same reason — a filter on a column no response
+-- returns is a filter no caller can aim.
 -- name: ListScheduleOccurrences
-SELECT o.occurrence_id, o.schedule_revision, o.planned_at, o.admitted_at, o.state, o.delivery_id, o.reason
+SELECT o.occurrence_id, o.schedule_revision, o.planned_at, o.admitted_at, o.state, o.delivery_id, o.reason,
+       o.created_at
 FROM schedule_occurrences o
 JOIN schedules s ON s.id = o.schedule_id
 WHERE o.schedule_id = $1 AND s.organization_id = $2 AND s.project_id = $3
-ORDER BY o.planned_at DESC, o.occurrence_id
-LIMIT $4;
+  AND ($4::timestamptz IS NULL OR o.created_at >= $4)
+  AND ($5::timestamptz IS NULL OR o.created_at <= $5)
+  AND ($6::timestamptz IS NULL OR (o.planned_at, o.occurrence_id) < ($6, $7))
+ORDER BY o.planned_at DESC, o.occurrence_id DESC
+LIMIT $8;
 
 -- DueSchedules lists active, non-deleted schedules whose next_fire_at is due (<= now) — the ticker's
 -- due-scan sweep unit. System-wide (not tenant-scoped: the ticker is a system loop, like the webhook

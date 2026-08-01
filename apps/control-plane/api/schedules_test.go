@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
@@ -11,15 +12,20 @@ import (
 
 // fakeScheduleAPI records what reached the store seam and scripts its outcomes.
 type fakeScheduleAPI struct {
-	createIn    *automation.ScheduleInput
-	createErr   error
-	reviseIn    *automation.ScheduleInput
-	reviseFound bool
-	pausedTo    *bool
-	pauseFound  bool
-	deleteFound bool
-	getFound    bool
-	occurrences []automation.OccurrenceView
+	createIn     *automation.ScheduleInput
+	createErr    error
+	reviseIn     *automation.ScheduleInput
+	reviseFound  bool
+	pausedTo     *bool
+	pauseFound   bool
+	deleteFound  bool
+	getFound     bool
+	occurrences  []automation.OccurrenceView
+	schedules    []automation.ScheduleView
+	listStatus   *string
+	listWindow   *automation.ListWindow
+	occWindow    *automation.ListWindow
+	listCalledAt int
 }
 
 func (f *fakeScheduleAPI) CreateSchedule(_ context.Context, _, _, _ string, in automation.ScheduleInput) (string, error) {
@@ -43,7 +49,13 @@ func (f *fakeScheduleAPI) SetPaused(_ context.Context, _, _, _ string, paused bo
 func (f *fakeScheduleAPI) DeleteSchedule(context.Context, string, string, string) (bool, error) {
 	return f.deleteFound, nil
 }
-func (f *fakeScheduleAPI) ListOccurrences(context.Context, string, string, string, int) ([]automation.OccurrenceView, error) {
+func (f *fakeScheduleAPI) ListSchedules(_ context.Context, _, _ string, w automation.ListWindow, status string) ([]automation.ScheduleView, error) {
+	f.listWindow, f.listStatus = &w, &status
+	f.listCalledAt++
+	return f.schedules, nil
+}
+func (f *fakeScheduleAPI) ListOccurrences(_ context.Context, _, _, _ string, w automation.ListWindow) ([]automation.OccurrenceView, error) {
+	f.occWindow = &w
 	return f.occurrences, nil
 }
 
@@ -125,5 +137,68 @@ func TestScheduleManagementSurface(t *testing.T) {
 	fake.occurrences = []automation.OccurrenceView{{OccurrenceID: "occ_1", State: "admitted"}}
 	if resp := do(t, "GET", base+"/v1/schedules/sch_1/occurrences", ``, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("list occurrences status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestScheduleListRoutes pins the two E29 T1 reads at the handler boundary: the page envelope, the +1
+// over-fetch, the ?status= admission and — the half that matters — the REFUSAL of a status the column
+// cannot hold, written by the route rather than left to SQL.
+func TestScheduleListRoutes(t *testing.T) {
+	fake := &fakeScheduleAPI{}
+	base := scheduleTestServer(t, fake)
+
+	fake.schedules = []automation.ScheduleView{{ID: "sch_1", Name: "nightly", Status: "active"}}
+	resp := do(t, "GET", base+"/v1/schedules?limit=5", ``, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/schedules status = %d, want 200", resp.StatusCode)
+	}
+	if body := readBody(t, resp); !strings.Contains(body, `"data"`) || !strings.Contains(body, `"sch_1"`) {
+		t.Fatalf("list body = %s, want the shared page envelope carrying the row", body)
+	}
+	// The handler over-fetches by one so renderPage can answer has_more without a second query. Forwarding
+	// the bare limit would report has_more=false on a page that is exactly full — a truncation nothing says.
+	if fake.listWindow == nil || fake.listWindow.Limit != 6 {
+		t.Fatalf("list reached the store with window %+v, want Limit 6 (the +1 over-fetch of ?limit=5)", fake.listWindow)
+	}
+
+	// ?status= is admitted for this kind and reaches the store as a filter.
+	if resp := do(t, "GET", base+"/v1/schedules?status=paused", ``, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("?status=paused status = %d, want 200", resp.StatusCode)
+	}
+	if fake.listStatus == nil || *fake.listStatus != "paused" {
+		t.Fatalf("?status=paused reached the store as %v, want \"paused\"", fake.listStatus)
+	}
+
+	// AND A STATUS THE COLUMN CANNOT HOLD IS REFUSED HERE, BEFORE ANY STORE CALL. The call count is what
+	// proves "before": a 400 written after the query still ran the query, and a route that answers 200 with
+	// an empty page tells a client "none are in that state" when the truth is "that state does not exist".
+	calls := fake.listCalledAt
+	bad := do(t, "GET", base+"/v1/schedules?status=banana", ``, nil)
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("?status=banana status = %d, want 400", bad.StatusCode)
+	}
+	if fake.listCalledAt != calls {
+		t.Fatal("?status=banana reached the store; an unknown lifecycle state must be refused at the edge")
+	}
+	if body := readBody(t, bad); !strings.Contains(body, "active") || !strings.Contains(body, "paused") || !strings.Contains(body, "failed") {
+		t.Fatalf("?status=banana problem = %s, want it to NAME the three states the column admits", body)
+	}
+
+	// The occurrence log rides the same envelope and the same over-fetch.
+	fake.occurrences = []automation.OccurrenceView{{OccurrenceID: "occ_1", State: "admitted"}}
+	occ := do(t, "GET", base+"/v1/schedules/sch_1/occurrences?limit=5", ``, nil)
+	if occ.StatusCode != http.StatusOK {
+		t.Fatalf("occurrences status = %d, want 200", occ.StatusCode)
+	}
+	if body := readBody(t, occ); !strings.Contains(body, `"data"`) || !strings.Contains(body, `"occ_1"`) {
+		t.Fatalf("occurrences body = %s, want the shared page envelope", body)
+	}
+	if fake.occWindow == nil || fake.occWindow.Limit != 6 {
+		t.Fatalf("occurrences reached the store with window %+v, want Limit 6", fake.occWindow)
+	}
+	// The occurrence log carries no lifecycle-state column either, so ?status= is refused on it — schedules
+	// opened, schedule_occurrences did not, and the two kinds are deliberately separate.
+	if bad := do(t, "GET", base+"/v1/schedules/sch_1/occurrences?status=admitted", ``, nil); bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("occurrences ?status=admitted = %d, want 400", bad.StatusCode)
 	}
 }

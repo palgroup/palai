@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -108,16 +109,34 @@ type HookInput struct {
 
 // Hook is a registered hook's committed shape (management + read-back). Config carries only NON-secret
 // wiring; a credential is the SecretRef handle.
+//
+// Disabled and DisabledAt are ONE fact read two ways, and both are here on purpose: Disabled is the word
+// POST /v1/hooks/{id}/disable already answers with, so the read and the write agree; DisabledAt is the
+// instant, which is the thing that write leaves unanswerable. Disabled is derived — it is never scanned
+// separately, so the two can never disagree.
 type Hook struct {
-	ID        string
-	Name      string
-	HookPoint string
-	Category  string
-	Executor  string
-	Config    map[string]any
-	SecretRef string
-	TimeoutMS *int
-	Disabled  bool
+	ID         string
+	Name       string
+	HookPoint  string
+	Category   string
+	Executor   string
+	Config     map[string]any
+	SecretRef  string
+	TimeoutMS  *int
+	Disabled   bool
+	DisabledAt *time.Time
+	CreatedAt  time.Time
+}
+
+// HookWindow is a keyset page request over the hooks registry (the automation ListWindow shape, kept local
+// because extensions does not depend on automation). Limit is the row count to fetch; the caller
+// over-fetches by one to detect a further page.
+type HookWindow struct {
+	CreatedGTE     *time.Time
+	CreatedLTE     *time.Time
+	AfterCreatedAt *time.Time
+	AfterID        string
+	Limit          int
 }
 
 // DecodeHookInput strictly decodes + validates the create body: the closed-set point/category/executor, the
@@ -221,25 +240,69 @@ func (s *Store) CreateHook(ctx context.Context, org, project string, raw []byte)
 	return Hook{ID: id, Name: in.Name, HookPoint: in.HookPoint, Category: in.Category, Executor: in.Executor, Config: in.Config, SecretRef: in.SecretRef, TimeoutMS: in.TimeoutMS}, nil
 }
 
-// GetHook reads a hook's committed shape (admin read-back + the CRUD roundtrip), disabled or not.
+// GetHook reads a hook's committed shape (admin read-back + the CRUD roundtrip), disabled or not. It backs
+// GET /v1/hooks/{id} (E29 T1) — the first production caller this method has had since E12 wrote and
+// component-tested it.
 func (s *Store) GetHook(ctx context.Context, org, project, id string) (Hook, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	h := Hook{ID: id}
 	var configJSON []byte
 	var secretRef *string
 	err := s.pool.QueryRow(ctx, storage.Query("GetHook"), id, org, project).
-		Scan(&h.ID, &h.Name, &h.HookPoint, &h.Category, &h.Executor, &configJSON, &secretRef, &h.TimeoutMS, &h.Disabled)
+		Scan(&h.ID, &h.Name, &h.HookPoint, &h.Category, &h.Executor, &configJSON, &secretRef, &h.TimeoutMS, &h.DisabledAt, &h.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Hook{}, ErrHookNotFound
 	}
 	if err != nil {
 		return Hook{}, fmt.Errorf("read hook: %w", err)
 	}
+	hydrateHook(&h, configJSON, secretRef)
+	return h, nil
+}
+
+// ListHooks pages a project's hooks newest-first, tenant-scoped and RLS-confined (GET /v1/hooks, E29 T1).
+//
+// IT RETURNS DISABLED HOOKS. That is the difference between this and loadHooks below, and it is the reason
+// loadHooks could not be reused: loadHooks answers "what will fire at this point", which is the dispatch
+// loop's question, and it filters both by point and by disabled_at. A management list that inherited
+// either filter would make the admin kill-switch unobservable — disable is the only write on this family
+// and this list is its only read-back.
+//
+// The projection is GetHook's, field for field, so a list row and a singular read are one shape.
+func (s *Store) ListHooks(ctx context.Context, org, project string, w HookWindow) ([]Hook, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	rows, err := s.pool.Query(ctx, storage.Query("ListHooks"),
+		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list hooks: %w", err)
+	}
+	defer rows.Close()
+	var out []Hook
+	for rows.Next() {
+		var (
+			h          Hook
+			configJSON []byte
+			secretRef  *string
+		)
+		if err := rows.Scan(&h.ID, &h.Name, &h.HookPoint, &h.Category, &h.Executor, &configJSON, &secretRef,
+			&h.TimeoutMS, &h.DisabledAt, &h.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan hook: %w", err)
+		}
+		hydrateHook(&h, configJSON, secretRef)
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// hydrateHook completes a scanned row: the decoded non-secret config, the secret HANDLE (never a value),
+// and the derived Disabled boolean. Deriving it in ONE place is what keeps Disabled and DisabledAt from
+// ever disagreeing.
+func hydrateHook(h *Hook, configJSON []byte, secretRef *string) {
 	h.Config = decodeSchema(configJSON)
 	if secretRef != nil {
 		h.SecretRef = *secretRef
 	}
-	return h, nil
+	h.Disabled = h.DisabledAt != nil
 }
 
 // loadedHook is a hook resolved from the registry, ready to fire: the non-secret wiring the dispatcher

@@ -92,6 +92,11 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	if schedules != nil {
 		sh := &scheduleHandler{schedules: schedules}
 		mux.HandleFunc("POST /v1/schedules", sh.createSchedule)
+		// GET /v1/schedules (E29 T1). Before it, a schedule was findable only by an id its creator kept —
+		// and asking for the collection did not even 404, it answered 405, because POST was mounted at this
+		// exact address. A surface that says "this address exists, just not for reading" is the sharpest
+		// possible statement of the hole.
+		mux.HandleFunc("GET /v1/schedules", sh.listSchedules)
 		mux.HandleFunc("GET /v1/schedules/{schedule_id}", sh.getSchedule)
 		mux.HandleFunc("PATCH /v1/schedules/{schedule_id}", sh.reviseSchedule)
 		mux.HandleFunc("POST /v1/schedules/{schedule_id}/pause", sh.pauseSchedule)
@@ -163,6 +168,17 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	if hooks != nil {
 		hh := &hookHandler{hooks: hooks}
 		mux.HandleFunc("POST /v1/hooks", hh.createHook)
+		// The read half (E29 T1). This family shipped in E12 with a create and a kill-switch and NOT ONE GET:
+		// a hook fires inside every run's dispatch loop, and neither the set of them nor any one of them
+		// could be read back — `disable` was a write whose only confirmation was its own 200. The singular
+		// read was CHEAP the whole time (extensions.Store.GetHook was written and component-tested against a
+		// real Postgres in E12 and had no production caller until this line); the list was not, and needed a
+		// query of its own, because the dispatch loop's read filters out exactly the rows a management list
+		// exists to show.
+		//
+		// The 201 at POST /v1/hooks names /v1/hooks/{id} again for the same reason — see createHook.
+		mux.HandleFunc("GET /v1/hooks", hh.listHooks)
+		mux.HandleFunc("GET /v1/hooks/{id}", hh.getHook)
 		mux.HandleFunc("POST /v1/hooks/{id}/disable", hh.disableHook)
 	}
 
