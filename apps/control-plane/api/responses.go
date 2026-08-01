@@ -82,6 +82,16 @@ type AdmitRequest struct {
 	// need it and neither has the body: model dispatch (which turns it into the provider's own
 	// constraint) and finalize (which checks the answer before the run may be called completed).
 	OutputContract []byte
+	// Instructions is the request's `instructions` string — the run-specific instruction layer of
+	// spec §25.12 (layer 5), "" when the request named none.
+	//
+	// It is stored on the RUN for the same reason OutputContract above is: the reader is model
+	// dispatch, once per step, and it does not hold the request body. Until migration 000055 nothing
+	// stored it and nothing applied it. Measured against a real provider on 2026-08-01: the same
+	// input with a 320-word `instructions` and with none both produced usage.input_tokens 48, and a
+	// one-word instruction was not obeyed — while the SAME instruction placed in `input` was. The
+	// field has been in this server's published schema for the life of that schema.
+	Instructions string
 	// RepositoryBindingID / RepositoryRef carry the contracted `repository` field (spec §30.1, E09
 	// Task 10): resolved from the raw body like Delegations, they attach a session-scoped coding
 	// workspace the root run auto-provisions. Empty leaves the response non-coding.
@@ -293,6 +303,7 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 		Store:                 store,
 		Delegations:           delegations,
 		OutputContract:        outputContract,
+		Instructions:          req.Instructions,
 		RepositoryBindingID:   bindingID,
 		RepositoryRef:         repositoryRef,
 		AgentID:               agentID,

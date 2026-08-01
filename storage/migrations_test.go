@@ -64,16 +64,15 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	// each was cut when 51 was the tip. Whichever lands second renames — filename pair, `VALUES (52)`
 	// marker, embed var, and this assertion — and this test is what makes the rename finish.
 	head := migrations[len(migrations)-1]
-	if head.Version != 54 || head.Name != "run_output_contract" {
-		t.Fatalf("chain head = %06d_%s, want 000054_run_output_contract", head.Version, head.Name)
+	if head.Version != 55 || head.Name != "run_instructions" {
+		t.Fatalf("chain head = %06d_%s, want 000055_run_instructions", head.Version, head.Name)
 	}
-	// The penultimate moved when THIS branch was the one renumbered. desired-config wrote 000052 against a
-	// tip of 000051; E29 T3 took 000052 in parallel and landed first, so this became 000053 at merge and the
-	// pair below is the second half of that rename — head and penultimate together are what force the file
-	// name, the `VALUES (53)` marker and the embed var to agree before this test goes green.
+	// The penultimate moves every time a new head lands, and asserting BOTH is what forces a renumber
+	// to finish: a rename that updated the filename pair but not the `VALUES (n)` marker or the embed
+	// var leaves these two disagreeing. 000054 was itself renumbered from 52 on the way in.
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 53 || penultimate.Name != "deployment_desired" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000053_deployment_desired", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 54 || penultimate.Name != "run_output_contract" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000054_run_output_contract", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

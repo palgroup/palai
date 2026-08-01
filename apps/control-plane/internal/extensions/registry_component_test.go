@@ -283,15 +283,15 @@ func TestRegistryToolsLoadIntoBrokerEffectiveSet(t *testing.T) {
 		t.Fatalf("coordinator.Open: %v", err)
 	}
 	t.Cleanup(cs.Close)
-	_, _, _, toolSetTools, _, err := cs.PinnedExecConfig(ctx, coordinator.Tenant{Organization: org, Project: project}, runID)
+	pinned, err := cs.PinnedExecConfig(ctx, coordinator.Tenant{Organization: org, Project: project}, runID)
 	if err != nil {
 		t.Fatalf("PinnedExecConfig: %v", err)
 	}
-	if !contains(toolSetTools, "fetch") {
-		t.Fatalf("effective tool_set tools = %v, want the pinned short name fetch", toolSetTools)
+	if !contains(pinned.ToolSetTools, "fetch") {
+		t.Fatalf("effective tool_set tools = %v, want the pinned short name fetch", pinned.ToolSetTools)
 	}
-	if contains(toolSetTools, "lookup") {
-		t.Fatalf("effective tool_set tools = %v, want the UNPINNED lookup absent", toolSetTools)
+	if contains(pinned.ToolSetTools, "lookup") {
+		t.Fatalf("effective tool_set tools = %v, want the UNPINNED lookup absent", pinned.ToolSetTools)
 	}
 
 	// (2) The broker's per-tenant lookup resolves fetch and runs it through the fenced path.
@@ -477,12 +477,12 @@ func TestPinnedRunConfigToolOrderStable(t *testing.T) {
 
 	want := []string{"apple", "zebra"} // sorted, regardless of insertion order
 	for i := 0; i < 3; i++ {
-		_, _, _, tools, _, err := cs.PinnedExecConfig(ctx, tenant, runID)
+		pinned, err := cs.PinnedExecConfig(ctx, tenant, runID)
 		if err != nil {
 			t.Fatalf("PinnedExecConfig read %d: %v", i, err)
 		}
-		if len(tools) != 2 || tools[0] != want[0] || tools[1] != want[1] {
-			t.Fatalf("read %d tool_set tools = %v, want deterministic sorted %v", i, tools, want)
+		if len(pinned.ToolSetTools) != 2 || pinned.ToolSetTools[0] != want[0] || pinned.ToolSetTools[1] != want[1] {
+			t.Fatalf("read %d tool_set tools = %v, want deterministic sorted %v", i, pinned.ToolSetTools, want)
 		}
 	}
 }
@@ -517,11 +517,11 @@ func TestLookupToolIsTenantIsolated(t *testing.T) {
 		t.Fatalf("coordinator.Open: %v", err)
 	}
 	t.Cleanup(cs.Close)
-	_, _, _, tools, _, err := cs.PinnedExecConfig(ctx, coordinator.Tenant{Organization: orgA, Project: projectA}, runA)
+	pinned, err := cs.PinnedExecConfig(ctx, coordinator.Tenant{Organization: orgA, Project: projectA}, runA)
 	if err != nil {
 		t.Fatalf("PinnedExecConfig A: %v", err)
 	}
-	if len(tools) != 0 {
-		t.Fatalf("tenant A effective tool_set tools = %v, want empty (B's set is out of scope)", tools)
+	if len(pinned.ToolSetTools) != 0 {
+		t.Fatalf("tenant A effective tool_set tools = %v, want empty (B's set is out of scope)", pinned.ToolSetTools)
 	}
 }

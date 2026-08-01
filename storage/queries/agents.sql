@@ -130,8 +130,16 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- PinRunSkills — the resolver reads it back verbatim (never re-resolving "latest"), so a mid-run enable
 -- of a new revision leaves this read unchanged. NULL for a skill-less run (the resolver then carries no
 -- skills and the config hash + provider request stay bit-identical to a skill-less run).
+-- instructions is the pinned revision's own instruction layer (spec §25.12 layer 3). IT WAS THE
+-- MISSING COLUMN: agent CRUD has written agent_revisions.instructions since E11 and no query on the
+-- execution path ever selected it, so a run could pin a revision, record the pin correctly, and tell
+-- the model none of what that revision said. Measured against a real provider on 2026-08-01: a run
+-- pinning a revision whose instructions were 320 words measured the same usage.input_tokens (48) as
+-- a run pinning nothing. COALESCEd to '' so a profile-free run, or a revision that set no
+-- instructions, contributes no layer and its provider request stays bit-identical.
 SELECT COALESCE(ar.id, rtr.id)              AS revision_id,
        COALESCE(ar.model, rtr.model, '')    AS model,
+       COALESCE(ar.instructions, rtr.instructions, '') AS instructions,
        COALESCE(ar.tools, rtr.tools)        AS tools,
        COALESCE((
            SELECT array_agg(DISTINCT t.model_visible_name ORDER BY t.model_visible_name)

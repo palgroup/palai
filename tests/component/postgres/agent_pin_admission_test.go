@@ -71,12 +71,13 @@ func TestUnpublishedRevisionCannotBePinnedOrRun(t *testing.T) {
 	if out3.Replayed || out3.Conflict || out3.PinnedRevisionNotFound || out3.PinnedRevisionNotPublished {
 		t.Fatalf("published pin admission = %+v, want a fresh create", out3)
 	}
-	revID, model, tools, _, _, err := cs.PinnedExecConfig(ctx, tenant, ok.RunID)
+	pinned, err := cs.PinnedExecConfig(ctx, tenant, ok.RunID)
 	if err != nil {
 		t.Fatalf("PinnedExecConfig() error = %v", err)
 	}
-	if revID != pubRev || model != "model-pinned" || len(tools) != 1 || tools[0] != "file" {
-		t.Fatalf("resolved pin = %s/%s/%v, want %s/model-pinned/[file]", revID, model, tools, pubRev)
+	if pinned.RevisionID != pubRev || pinned.Model != "model-pinned" || len(pinned.Tools) != 1 || pinned.Tools[0] != "file" {
+		t.Fatalf("resolved pin = %s/%s/%v, want %s/model-pinned/[file]",
+			pinned.RevisionID, pinned.Model, pinned.Tools, pubRev)
 	}
 }
 
@@ -105,12 +106,13 @@ func TestRunTemplateRevisionStartsProfileFreeRun(t *testing.T) {
 	}
 
 	// The run resolves the template's config, and NO agent profile exists for this tenant.
-	revID, model, tools, _, _, err := cs.PinnedExecConfig(ctx, tenant, in.RunID)
+	pinned, err := cs.PinnedExecConfig(ctx, tenant, in.RunID)
 	if err != nil {
 		t.Fatalf("PinnedExecConfig() error = %v", err)
 	}
-	if revID != templateRev || model != "template-model" || len(tools) != 1 || tools[0] != "shell" {
-		t.Fatalf("resolved template pin = %s/%s/%v, want %s/template-model/[shell]", revID, model, tools, templateRev)
+	if pinned.RevisionID != templateRev || pinned.Model != "template-model" || len(pinned.Tools) != 1 || pinned.Tools[0] != "shell" {
+		t.Fatalf("resolved template pin = %s/%s/%v, want %s/template-model/[shell]",
+			pinned.RevisionID, pinned.Model, pinned.Tools, templateRev)
 	}
 	var profiles int
 	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM agent_profiles WHERE organization_id=$1 AND project_id=$2`,

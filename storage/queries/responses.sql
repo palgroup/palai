@@ -84,11 +84,13 @@ WHERE response_id = $1 AND organization_id = $2 AND project_id = $3;
 -- RunDelegation reads a run's per-run execution context: its depth, its delegation JSON —
 -- {"emit":[...]} on a root run configured to delegate, {"spec":{...}} on a child run, NULL on a
 -- plain run (spec §25.18) — and its output_contract, the §22.7 JSON Schema its answer must satisfy
--- (NULL when the request named no format, migration 000052). By primary key, so the orchestrator
--- reads all three once per attempt: to seed run.start delegations, to route a child's own
--- model/budget, and to carry ONE output contract to both the model dispatcher and the finalizer.
+-- (NULL when the request named no format, migration 000054) — and its instructions, the run-specific
+-- instruction layer of spec §25.12 (NULL when the request named none, migration 000055). By primary
+-- key, so the orchestrator reads all four once per attempt: to seed run.start delegations, to route a
+-- child's own model/budget, to carry ONE output contract to both the model dispatcher and the
+-- finalizer, and to place the caller's instructions on every model request of the run.
 -- name: RunDelegation
-SELECT depth, delegation, output_contract
+SELECT depth, delegation, output_contract, instructions
 FROM runs
 WHERE id = $1;
 
@@ -393,8 +395,8 @@ INSERT INTO responses (id, organization_id, project_id, session_id, state, input
 VALUES ($1, $2, $3, $4, 'queued', $5, $6);
 
 -- name: InsertRun
-INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, delegation, agent_revision_id, run_template_revision_id, output_contract)
-VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8, $9);
+INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, delegation, agent_revision_id, run_template_revision_id, output_contract, instructions)
+VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8, $9, $10);
 
 -- PurgeExpiredStoreFalse is the retention sweep (spec §8.3, §20.9): it purges the
 -- content of store=false responses whose terminal state has aged past the configured

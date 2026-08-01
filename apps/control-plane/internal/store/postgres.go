@@ -110,6 +110,7 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 			Store:                 req.Store,
 			Delegations:           req.Delegations,
 			OutputContract:        req.OutputContract,
+			Instructions:          req.Instructions,
 			RepositoryBindingID:   req.RepositoryBindingID,
 			RepositoryRef:         req.RepositoryRef,
 			AgentID:               req.AgentID,

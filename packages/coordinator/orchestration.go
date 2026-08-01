@@ -94,14 +94,31 @@ type RunContext struct {
 	// the provider's own decoding constraint, and finalize, which checks the answer. One read means
 	// the document asked of the model and the document checked afterwards cannot differ.
 	OutputContract []byte
+	// Instructions is the RUN-SPECIFIC instruction layer (spec §25.12 layer 5): the `instructions`
+	// string the create request carried, or "" when it named none (migration 000055). Like
+	// OutputContract it is read HERE, once per attempt, and carried on the attempt state to its
+	// reader — model dispatch, which places it as a system turn on every model request of the run.
+	//
+	// It is on the run rather than re-read from the request because the reader does not hold the
+	// request body. Before migration 000055 nothing stored it at all: measured against a real
+	// provider on 2026-08-01, a 320-word `instructions` and no `instructions` produced the same
+	// usage.input_tokens (48). The published schema declared the field; the execution path never
+	// saw it.
+	Instructions string
 }
 
 // RunContextFor reads a run's per-run execution context by primary key.
 func (s *Store) RunContextFor(ctx context.Context, runID string) (RunContext, error) {
-	var out RunContext
+	var (
+		out          RunContext
+		instructions *string
+	)
 	if err := s.pool.QueryRow(ctx, storage.Query("RunDelegation"), runID).
-		Scan(&out.Depth, &out.Delegation, &out.OutputContract); err != nil {
+		Scan(&out.Depth, &out.Delegation, &out.OutputContract, &instructions); err != nil {
 		return RunContext{}, fmt.Errorf("read run context for %s: %w", runID, err)
+	}
+	if instructions != nil {
+		out.Instructions = *instructions
 	}
 	return out, nil
 }
