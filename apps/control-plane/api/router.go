@@ -35,6 +35,12 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	// with RequireIdempotencyKey; the OpenAPI cancelResponse operation defines no key parameter.
 	mux.HandleFunc("POST /v1/responses/{response_id}/cancel", responses.cancel)
 	mux.HandleFunc("GET /v1/capabilities", capabilities(cfg))
+	// The machine's own effective configuration (see deployment.go). UNCONDITIONAL, and unlike every
+	// mount-gated surface below it that is not a shortcut: it reports THIS PROCESS's environment, which
+	// exists whatever else was wired, and a binary that answered nothing here would reproduce the hole it
+	// was added to close. It is gated on the `provision` capability inside the handler rather than by a
+	// mount, because there is no optional seam to derive a mount from.
+	mux.HandleFunc("GET /v1/deployment", deployment)
 
 	// Repository-binding registration (spec §30.1): a project registers the external repository its
 	// coding sessions attach via the `repository` field. A durable, unkeyed create — nil in tiers that

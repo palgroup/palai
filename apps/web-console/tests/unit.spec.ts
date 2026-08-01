@@ -13,6 +13,8 @@ import {
   positionOf,
   relativeTime,
 } from "../lib/sessions";
+import { WARNING_SCREENS, warningsFor } from "../lib/deployment";
+import { CONSOLE_ROUTES } from "../lib/routes";
 import { laneFor } from "../lib/timeline";
 
 // The runnable check for the §47.2 lane table: if the mapping drifts (a tool event landing in the model
@@ -225,4 +227,40 @@ test("every §47.2 lane has a word, so a badge can never render undefined", () =
   expect(Object.keys(LANE_LABEL).sort()).toEqual([...lanes].sort());
   // And no lane wears a speaker's name — the transcript labels lanes, not authors.
   expect(Object.values(LANE_LABEL).filter((v) => /^(user|assistant|human|system)$/i.test(v))).toEqual([]);
+});
+
+// THE WARNING-TO-SCREEN MAP CANNOT NAME A SCREEN THAT DOES NOT EXIST (machine-config).
+//
+// GET /v1/deployment raises a warning when a configured value changes what the product DOES; the API names
+// no console path, because which screen would LIE is the only part of the question the console can answer.
+// That makes WARNING_SCREENS a join maintained by hand, and a hand-maintained join between two lists is
+// exactly where a renamed route silently unhooks a banner — the page keeps rendering, the warning simply
+// stops appearing, and nothing fails. This is the check that makes it fail.
+test("every screen the deployment warnings map to is a route this console serves", () => {
+  const declared = new Set(CONSOLE_ROUTES.map((r) => r.path));
+  const codes = Object.keys(WARNING_SCREENS);
+  expect(codes.length, "an empty map means no warning reaches any screen").toBeGreaterThan(0);
+  for (const code of codes) {
+    const screens = WARNING_SCREENS[code] ?? [];
+    expect(screens.length, `${code} maps to no screen, so it can never be shown`).toBeGreaterThan(0);
+    for (const path of screens) {
+      expect(declared, `${code} names ${path}, which CONSOLE_ROUTES does not declare`).toContain(path);
+    }
+    // EVERY warning reaches /deployment, whatever else it reaches. That screen's whole subject is the
+    // configuration, so a warning it did not carry would be a warning with no home when the screen it was
+    // aimed at is not the one the operator is on.
+    expect(screens, `${code} does not reach /deployment`).toContain("/deployment");
+  }
+});
+
+// warningsFor selects by SCREEN, and the negative half is the load-bearing one: a banner repeated on every
+// page is chrome, and a reader stops seeing chrome.
+test("warningsFor gives a screen only the warnings that screen is responsible for", () => {
+  const dispatch = { code: "dispatch_workers_zero", severity: "blocking", headline: "", detail: "", remedy: "", settings: [] };
+  const unknown = { code: "a_code_no_screen_claims", severity: "advisory", headline: "", detail: "", remedy: "", settings: [] };
+  expect(warningsFor("/runs", [dispatch, unknown])).toEqual([dispatch]);
+  expect(warningsFor("/deployment", [dispatch, unknown])).toEqual([dispatch]);
+  // /history shows a dispatch-off run as `queued`, which is the truth — the screen reports a state rather
+  // than promising a result, so it carries no banner.
+  expect(warningsFor("/history", [dispatch, unknown])).toEqual([]);
 });

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { ApprovalPanel, type PendingApproval } from "@/components/ApprovalPanel";
+import { DeploymentNotice } from "@/components/DeploymentNotice";
 import { Picker } from "@/components/Picker";
 import { Status } from "@/components/Status";
 import { Timeline, type Frame } from "@/components/Timeline";
@@ -234,6 +235,14 @@ export default function RunsPage() {
 
   return (
     <>
+      {/* THE DEPLOYMENT'S OWN WARNING, ABOVE THE BUTTON THAT WOULD OTHERWISE LIE (machine-config).
+          This screen's lead promises "Start a run and watch it happen". Measured 2026-08-01: a stack
+          brought up with `make local-up` takes PALAI_DISPATCH_WORKERS=0 (compose.yaml:82), so five runs
+          were accepted here and every one sat at run.queued.v1 forever with nothing on any screen saying
+          why. It goes ABOVE the prompt rather than beside the result, because the point is to be read
+          before the button is pressed. */}
+      <DeploymentNotice path="/runs" />
+
       <section className="panel" aria-labelledby="run-h">
         <h2 id="run-h">Start a run</h2>
         <label htmlFor="prompt-input">Prompt</label>

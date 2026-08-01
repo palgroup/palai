@@ -499,6 +499,107 @@ three**, so the absence of a form is the API's shape rather than a simplificatio
 
 ---
 
+## 3f. `/deployment` — what this machine is actually running with
+
+Measured on `main` at `cf0efd63` (2026-08-01):
+
+```
+grep -oE 'PALAI_[A-Z_]+' deploy/compose/compose.yaml | sort -u   → 24 settings
+of those, readable from any /v1 route                            → 0
+```
+
+Every knob that decides what a deployment **does** lived in container environment, and no screen could show
+one of them. The cost is not hypothetical. A stack brought up with `make local-up` takes
+`PALAI_DISPATCH_WORKERS=0` from `deploy/compose/compose.yaml:82`; the console accepted five runs and every
+one sat at `run.queued.v1` forever. **Nothing on any screen said the deployment had no dispatcher** — the
+value was eventually found with `docker inspect`, which is not an operator interface.
+
+`GET /v1/deployment` (`apps/control-plane/api/deployment.go`) is that read surface, and this screen is its
+console. It is gated on the **`provision`** capability, the same authority the tenancy surface requires: a
+narrow project-scoped key handed to a run has no business enumerating the machine it is running on.
+
+### This is not `/policy`, and the distinction is the point
+
+`/policy` writes a **project's** `config_policy` document — a JSONB column on the `projects` table
+(`storage/migrations/000005_config_revisions.up.sql:16`), behind a project picker, replaced whole on save.
+Nothing on `/deployment` is a property of a project: a dispatch worker count belongs to the process every
+project on this deployment shares. Putting a machine-wide switch behind a project picker would make it look
+per-project to the one reader who most needs to know it is not.
+
+### There is no edit control, and that is a finding rather than a limitation
+
+Every setting reported here is read from the control-plane **process's environment**, which is fixed at
+`exec`. Even the handful read per job rather than at boot (`execution/execute_run.go`'s `ExecuteRun` closes
+over `PALAI_ENGINE_IMAGE` when the handler is built) are reading a value nothing in this tree can change
+without replacing the process. A field that looked editable and needed a restart to take effect is the
+"declared, and nothing happens" defect this repository keeps finding — so the screen states what changes
+each setting instead:
+
+- **`Needs a bring-up`** — recreate the process with the new value.
+- **`Default only — overridable live`** — the environment value decides only the fallback, and a shipped
+  runtime write-path changes the behaviour with no restart. `PALAI_MODEL_PROVIDER`, `PALAI_MODEL` and
+  `PALAI_OPENAI_COMPATIBLE_BASE_URL` are the three: a project that publishes a model route dispatches
+  through it instead, resolved per attempt by `execution.effectiveRoute`.
+
+Each row also names **who reads the variable** — a file and a function. That citation is checked rather than
+typed: `TestEveryCatalogueCitationResolvesToARealReader` parses the named file and asserts the named
+function's source actually mentions the variable, so a mutability claim cannot outlive the code behind it.
+
+### An unset setting says what the process uses instead
+
+"Unset" alone is the wrong answer and it is the one a naive table gives. Unset `PALAI_DISPATCH_WORKERS` runs
+**one** worker; unset `PALAI_S3_ENDPOINT` means there is **no object store at all**, and artifact retrieval,
+the checkpoint and snapshot sinks, retention's byte deletion and the orphan collector are off with it. Two
+opposite facts wearing the same word, so the fallback is rendered beside it.
+
+### Two values get a banner, on the screen that would otherwise lie
+
+A row in a table is not a warning — the value that cost the evening was visible in `docker inspect` all
+along, and being visible is what it had already failed at. So `GET /v1/deployment` also returns
+**warnings**, and `/runs` renders the ones that contradict its own promise ("Start a run and watch it
+happen"), above the prompt rather than beside the result:
+
+- **`dispatch_workers_zero` (blocking)** — the deployment admits runs and executes none. The reconciler, the
+  dead-letter sweep, approval expiry and capacity-park expiry are off with it, so nothing times the run out
+  either.
+- **`model_provider_fake` (advisory)** — the deployment default route is chosen by an **exact match** on
+  `provider-one`, so every other value, *including a provider name this binary can otherwise speak to and
+  including a typo*, falls through to the deterministic fake adapter. Its output is fabricated and renders
+  exactly like a real answer. Advisory rather than blocking because `fake` is the shipped default of every
+  deterministic tier and a legitimate posture — what is not legitimate is showing the output without saying
+  where it came from.
+
+The API names no console path. Which screen would lie is the only part of the question the console can
+answer, so the mapping lives in `apps/web-console/lib/deployment.ts` and `tests/unit.spec.ts` asserts every
+path in it is a route this console serves.
+
+### Ceilings, named
+
+- **It reports this process's environment and nothing else.** `PALAI_RUNNER_CONCURRENCY` is **absent**, and
+  deliberately: it is set on the **runner** container, and `cmd/cli/internal/stack/upgrade.go` already
+  records what happens to a reader that forgets — "reading a runner-scoped var off the control-plane
+  container always misses it". A confident wrong answer is worse than the absence. What this deployment can
+  observe about a machine's capacity is on `/fleet`.
+- **The catalogue is an allow-list, not a deny-list.** A variable nobody has decided about is **invisible**
+  rather than published, so the failure mode of adding a new secret-bearing variable tomorrow is a missing
+  row. `deploy/compose/compose.yaml` is walked on every test run and diffed against the catalogue in both
+  directions, so a new compose setting that nobody catalogued is a red test rather than a silent gap.
+- **A `*_FILE` variable's value is a path, and the screen says which cells are handles.** No credential value
+  reaches this surface; a URL's userinfo is stripped before the value is published.
+- **There is no write path here at all** — not for the settings that need a bring-up, and not for the three
+  that have a live override, because the live override already has its own surface (`/registry`).
+- **`palai config validate` still knows four things this screen cannot, and the split is structural.** Of
+  its five checks (`cmd/cli/internal/stack/configvalidate.go`), exactly one — `dispatch_workers`, the
+  `>= 1` threshold — is a property of the running process, and the screen now carries it as the blocking
+  warning above. The other four read the **operator's own filesystem**: the env file's interpolation
+  contract, whether the master key and bootstrap key on disk are the dev-default literals
+  `production-entrypoint.sh` rejects, the edge certificate pair, and the overlay Caddyfile's path matcher.
+  A `/v1` route cannot answer those and must not try — a control plane reporting what it believes is on the
+  host's disk is a confident wrong answer of exactly the kind the runner-scoped omission above avoids. Run
+  `palai config validate` on the machine; the screen is what you read from anywhere else.
+
+---
+
 ## 4. The approval queue — what it decides, and what it does not show
 
 `/approvals` is the console's screen for the surface E23 T9 opened: **`GET /v1/approvals`**, plus
