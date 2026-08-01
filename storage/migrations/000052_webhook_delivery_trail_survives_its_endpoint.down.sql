@@ -17,9 +17,23 @@
 --
 -- To cross this line: decide what the orphaned deliveries are worth. Export them if the audit trail is
 -- wanted, then delete them; the ADD CONSTRAINT succeeds once no delivery names a missing endpoint.
-ALTER TABLE IF EXISTS webhook_deliveries
-    ADD CONSTRAINT webhook_deliveries_endpoint_id_fkey
-    FOREIGN KEY (endpoint_id) REFERENCES webhook_endpoints (id) ON DELETE CASCADE;
+-- Guarded on the table existing AND the constraint not already being there, so re-running the concatenated
+-- chain is a clean no-op. The guard is a PRESENCE check and deliberately NOT an exception handler: swallowing
+-- errors here would swallow the orphan failure above, which is the one outcome this statement must keep.
+DO $$
+BEGIN
+    IF to_regclass('public.webhook_deliveries') IS NOT NULL
+       AND NOT EXISTS (
+           SELECT 1 FROM pg_constraint
+           WHERE conname = 'webhook_deliveries_endpoint_id_fkey'
+             AND conrelid = 'public.webhook_deliveries'::regclass
+       ) THEN
+        ALTER TABLE webhook_deliveries
+            ADD CONSTRAINT webhook_deliveries_endpoint_id_fkey
+            FOREIGN KEY (endpoint_id) REFERENCES webhook_endpoints (id) ON DELETE CASCADE;
+    END IF;
+END
+$$;
 
 -- Guarded so the reversal stays idempotent even after 000001 has dropped schema_migrations.
 DO $$
