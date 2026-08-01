@@ -225,6 +225,82 @@ func TestInstructionLayersComposeInSpecOrder(t *testing.T) {
 	}
 }
 
+// twoStepProvider proposes one tool call on its first request and finishes on its second, recording
+// the messages of both. It exists to make the run MULTI-STEP, which is the only shape that can show
+// the duplication failure below.
+type twoStepProvider struct {
+	mu       sync.Mutex
+	requests [][]modelbroker.Message
+}
+
+func (p *twoStepProvider) Execute(_ context.Context, req modelbroker.Request, _ string, _ func(modelbroker.Delta)) (modelbroker.Result, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, append([]modelbroker.Message(nil), req.Messages...))
+	step := len(p.requests)
+	p.mu.Unlock()
+	res := modelbroker.Result{
+		ModelRequestID: req.ModelRequestID,
+		Model:          "fake",
+		Usage:          contracts.Usage{InputTokens: 5, OutputTokens: 3, TotalTokens: 8},
+		Attempts:       1,
+	}
+	if step > 1 {
+		res.ProviderRequestID, res.Output, res.FinishReason = "prov_final", "12", "stop"
+		return res, nil
+	}
+	res.ProviderRequestID, res.FinishReason = "prov_tool", "tool_calls"
+	res.ToolCalls = []modelbroker.ToolCall{{ID: "call_add", Name: "palai.conformance.math.add", Arguments: `{"a":7,"b":5}`}}
+	return res, nil
+}
+
+// TestInstructionsAppearExactlyOncePerStepAndDoNotAccumulate is the duplication guard, and it is the
+// failure mode the control-plane-side placement makes possible in exchange for making the layer
+// unbypassable.
+//
+// The instruction turns are inserted into the messages the ENGINE produced, on every model step. If
+// they were ever fed back into the engine's own conversation — or inserted into a list that already
+// carried them — step 2 would carry the instruction twice, step 3 three times, and a long run would
+// drift further from its stated configuration the longer it ran, while every single-step test in
+// this file stayed green. Nothing about a one-step run can detect that.
+//
+// It holds because the controller inserts into a NEW slice each step and never sends those turns
+// back across the engine boundary: the engine's context accumulates assistant and tool turns only.
+func TestInstructionsAppearExactlyOncePerStepAndDoNotAccumulate(t *testing.T) {
+	h := newHarness(t)
+	provider := &twoStepProvider{}
+	stop := h.runWorker(h.newOrchestratorWithAdapter(subprocessDialer{engineDir: h.engineDir}, provider))
+	defer stop()
+
+	revID := h.publishRevisionWithInstructions(t, `{"instructions":"`+revisionInstruction+`"}`)
+	responseID, _, _ := h.admitWith(`{"input":"add 7 and 5",`+
+		`"agent_revision_id":"`+revID+`","instructions":"`+requestInstruction+`"}`, newID("idem"))
+	h.awaitResponseState(responseID, "completed", 60*time.Second)
+
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.requests) < 2 {
+		t.Fatalf("provider saw %d model requests, want at least 2 — this case cannot detect accumulation "+
+			"on a single-step run, so a run that did not reach step 2 is an inconclusive test, not a pass",
+			len(provider.requests))
+	}
+	for step, messages := range provider.requests {
+		for _, want := range []string{revisionInstruction, requestInstruction} {
+			seen := 0
+			for _, m := range messages {
+				if strings.Contains(m.Content, want) {
+					seen++
+				}
+			}
+			if seen != 1 {
+				t.Fatalf("step %d carried %q %d times, want exactly 1.\n  system turns: %q\n"+
+					"An instruction layer that accumulates makes a long run drift further from its "+
+					"configuration the longer it runs, and no single-step case can see it.",
+					step+1, want, seen, systemTexts(messages))
+			}
+		}
+	}
+}
+
 // TestInstructionFreeRunIsBitUnchanged is the regression fence. A run that names no instructions and
 // pins no revision must reach the provider with EXACTLY the message list it had before this feature:
 // the engine's kernel turn and the user input, and nothing else. Instructions are opt-in and the
