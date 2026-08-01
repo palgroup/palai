@@ -2,6 +2,7 @@ package execution
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -44,7 +45,7 @@ func TestTheToolErrorBudgetDefaultsRatherThanUnboundsItself(t *testing.T) {
 // was green (docs/operations/palai-on-a-mac.md §1).
 func TestABudgetlessDeploymentIsBoundedAtSixteen(t *testing.T) {
 	// No t.Setenv: this asserts the value on a machine with nothing set, which is every fresh deployment.
-	if _, set := lookupBudgetEnv(); set {
+	if _, set := os.LookupEnv("PALAI_TOOL_ERROR_BUDGET"); set {
 		t.Skip("PALAI_TOOL_ERROR_BUDGET is set in this environment; the unset reading is not measurable here")
 	}
 	if got := toolAnswerErrorBudget(); got != 16 {
@@ -69,8 +70,8 @@ func TestARefusalIsDistinguishableFromASuccessThatHasAStatusField(t *testing.T) 
 		`{"task_id":"bgt_1","output_path":"/w/x.log","status":"running"}`, // the background shell success
 		`{"exit_code":1,"stdout":"","stderr":"","timed_out":false}`,       // `false`: a non-zero EXIT CODE
 		`{"path":"repo/README","content":"Hello World!","size":13}`,       // an ordinary read
-		`{"status":"error"}`,                                              // status without a coded error object
-		`{"status":"denied","reason":"policy"}`,                           // a before_tool DENY: not a tool refusal
+		`{"status":"error"}`,                    // status without a coded error object
+		`{"status":"denied","reason":"policy"}`, // a before_tool DENY: not a tool refusal
 		`not json at all`,
 		``,
 	}

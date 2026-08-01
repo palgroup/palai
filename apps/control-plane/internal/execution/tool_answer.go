@@ -54,7 +54,7 @@ const defaultToolAnswerErrorBudget = 16
 // that is exactly how the shell wall time came to be unbounded on the host while every sandbox test was
 // green. A malformed or negative value falls back to the default rather than silently unbounding.
 func toolAnswerErrorBudget() int {
-	raw, set := lookupBudgetEnv()
+	raw, set := os.LookupEnv("PALAI_TOOL_ERROR_BUDGET")
 	if !set {
 		return defaultToolAnswerErrorBudget
 	}
@@ -65,10 +65,12 @@ func toolAnswerErrorBudget() int {
 	return n // 0 = unbounded, and somebody typed it
 }
 
-// lookupBudgetEnv is the single read of the variable's name, so a test can ask whether a machine has one
-// set without spelling the string a second time — a second spelling is how a renamed variable comes to
-// be read by production and by nothing that checks it.
-func lookupBudgetEnv() (string, bool) { return os.LookupEnv("PALAI_TOOL_ERROR_BUDGET") }
+// ToolErrorBudget exposes the reader the dispatcher actually calls, and it exists for exactly one
+// caller: the composition root's TestEveryDesiredValueThisBinaryAcceptsIsParsedByItsOwnReader, which
+// drives every value the write surface ACCEPTS through the REAL reader. That guard is the one that
+// stops the panel showing one number while the process runs another, and it can only do its job if the
+// reader is reachable from where it lives. A test-local copy of the parse would be the defect it fences.
+func ToolErrorBudget() int { return toolAnswerErrorBudget() }
 
 // exceedsToolAnswerErrorBudget reports whether a count has passed the deployment's budget.
 func exceedsToolAnswerErrorBudget(count int) bool {

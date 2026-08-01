@@ -347,7 +347,8 @@ func TestDesiredWriteAcceptsTheValuesAnOperatorActuallyTypes(t *testing.T) {
 		"PALAI_MAX_QUEUED_RUNS":"100",
 		"PALAI_RUNNER_CERT_TTL":"5m",
 		"PALAI_MODEL_PROVIDER":"provider-one",
-		"PALAI_MODEL":"gpt-4o-mini"
+		"PALAI_MODEL":"gpt-4o-mini",
+		"PALAI_TOOL_ERROR_BUDGET":"32"
 	}}`
 	got, err := DecodeDesiredSettings([]byte(body))
 	if err != nil {
