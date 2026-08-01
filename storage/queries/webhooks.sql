@@ -15,11 +15,62 @@ INSERT INTO webhook_endpoints (
     (SELECT COALESCE(max(journal_id), 0) FROM events) + $15)
 RETURNING id;
 
+-- ListWebhookEndpoints and GetWebhookEndpoint share ONE projection, and they are written next to each other
+-- so they stay that way: two reads of a resource that disagree about its shape are two resources as far as a
+-- caller is concerned.
+--
+-- The projection carries the DELIVERY POLICY (timeout_ms, max_attempts, retry_window_seconds) and the secret
+-- HANDLES, because an operator who set a timeout has to be able to read it back — otherwise the only record
+-- of what a deployment does is what somebody remembers typing. A signing_secret_ref is a handle and not a
+-- value; what is behind it stays unreadable through every route.
+--
+-- fixed_headers is DELIBERATELY ABSENT and that is the one exclusion. It is a free map the operator writes,
+-- an Authorization header for the receiver is a normal thing to put in it, and returning it would turn a
+-- read route into a credential read.
+--
+-- `, id DESC` IS THE TIEBREAKER AND IT IS NOT DECORATION. created_at is a microsecond timestamptz and nothing
+-- forbids two rows from sharing one, so `ORDER BY created_at DESC` alone is a PARTIAL order: both orders of a
+-- tied pair are correct answers and which one comes back is decided by where the rows physically sit, which
+-- the caller cannot see. Measured on 2026-08-01: the same query returned [high low] for one tied pair and
+-- [low high] for an identically-shaped one whose rows had been written in the other order. id is the PRIMARY
+-- KEY, so adding it makes the order TOTAL.
 -- name: ListWebhookEndpoints
-SELECT id, url, enabled, event_filter, api_revision, allow_private_destination, created_at
+SELECT id, url, enabled, event_filter, api_revision,
+       signing_secret_ref, signing_secret_ref_next,
+       timeout_ms, max_attempts, retry_window_seconds,
+       allow_private_destination, created_at
 FROM webhook_endpoints
 WHERE organization_id = $1 AND project_id = $2
-ORDER BY created_at DESC;
+ORDER BY created_at DESC, id DESC;
+
+-- GetWebhookEndpoint is the singular read, and its column list is character-for-character the list's above.
+-- name: GetWebhookEndpoint
+SELECT id, url, enabled, event_filter, api_revision,
+       signing_secret_ref, signing_secret_ref_next,
+       timeout_ms, max_attempts, retry_window_seconds,
+       allow_private_destination, created_at
+FROM webhook_endpoints
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- DeleteWebhookEndpoint unregisters an endpoint (spec §21.4). Tenant-scoped by the verified identity, so an
+-- id belonging to another project matches nothing and is reported as absent rather than as forbidden — one
+-- tenant learns nothing about another tenant's ids.
+--
+-- IT TAKES EXACTLY ONE ROW AND THAT IS ENFORCED BY THE SCHEMA, NOT BY THIS STATEMENT. Migration 000052
+-- dropped the ON DELETE CASCADE from webhook_deliveries.endpoint_id precisely so this DELETE cannot reach
+-- the delivery trail: a delivery records a payload this deployment already sent, and unregistering an
+-- address does not un-send it. The surviving deliveries keep the deleted endpoint's id, unresolvable and
+-- shown as such. A component test re-reads pg_constraint and fails if any referrer of this table ever
+-- acquires a destructive delete action again.
+--
+-- trigger_revisions.callback_endpoint_id still references this table with no delete action, so an endpoint a
+-- trigger revision pins CANNOT be deleted: Postgres raises 23503 and the store renders it as a typed refusal.
+-- That one is kept on purpose — a trigger revision is live configuration that will send to this endpoint the
+-- next time it fires, not a record of the past.
+-- name: DeleteWebhookEndpoint
+DELETE FROM webhook_endpoints
+WHERE id = $1 AND organization_id = $2 AND project_id = $3
+RETURNING id;
 
 -- FanOutEndpoints returns the enabled endpoints and their current durable cursor, so the pump can
 -- scan the journal past each endpoint's high-water mark. Not tenant-scoped: the pump is a system loop
@@ -102,18 +153,41 @@ WHERE id = $1;
 -- RedeliverDelivery revives a delivery on operator request with the SAME id and payload (spec §21.6):
 -- it re-queues the row and resets the retry budget/window so a dead delivery can actually re-attempt.
 -- Tenant-scoped and idempotent — re-calling on an already-pending row is a no-op.
+--
+-- THE EXISTS CLAUSE CLOSES A HOLE E29 T3 OPENED. Before endpoints were deletable, every delivery had a live
+-- endpoint and this UPDATE could not lie. Now a delivery can outlive its endpoint by design, and re-queuing
+-- one of those would move the row to `pending` and answer 202 for work that can never happen: DueDeliveries
+-- INNER JOINs webhook_endpoints, so the pump would never pick it up. Matching nothing here is what lets the
+-- store tell "no such delivery" apart from "its endpoint is gone" and answer the second one honestly.
 -- name: RedeliverDelivery
-UPDATE webhook_deliveries
+UPDATE webhook_deliveries d
 SET state = 'pending', attempt_count = 0, first_attempt_at = NULL, next_attempt_at = clock_timestamp(), updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
-RETURNING id;
+WHERE d.id = $1 AND d.organization_id = $2 AND d.project_id = $3
+  AND EXISTS (SELECT 1 FROM webhook_endpoints e WHERE e.id = d.endpoint_id)
+RETURNING d.id;
 
+-- DeliveryExists distinguishes the two ways RedeliverDelivery can match nothing: a delivery that is not
+-- there at all (404) and one whose endpoint has been deleted (a refusal that names the reason). Without it
+-- the second would be reported as the first, which would tell an operator their delivery record had
+-- vanished when it is still readable.
+-- name: DeliveryExists
+SELECT 1 FROM webhook_deliveries WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- ListWebhookDeliveries. `, id DESC` is the tiebreaker, and the LIMIT below is why it matters MORE here than
+-- on the endpoint list: under a partial order the page BOUNDARY moves. Two rows sharing a created_at can
+-- both land on page one, or one can be served on page one and again on page two, or fall between the two and
+-- never be served at all — and a reader who loses a delivery record is told nothing. Measured on 2026-08-01
+-- with three rows tied on created_at and LIMIT 2: one fixture's first page was [high mid] and an
+-- identically-shaped one's was [low high], so a row that appeared in one page was absent from the other.
+--
+-- This tree has already had an ORDER BY that could not distinguish two rows decide a security outcome twice.
+-- id is the PRIMARY KEY, so the order is now TOTAL and the page boundary is a property of the query.
 -- name: ListWebhookDeliveries
 SELECT id, endpoint_id, event_id, event_type, state, attempt_count, next_attempt_at, created_at, updated_at
 FROM webhook_deliveries
 WHERE organization_id = $1 AND project_id = $2
   AND ($3 = '' OR state = $3)
-ORDER BY created_at DESC
+ORDER BY created_at DESC, id DESC
 LIMIT $4;
 
 -- name: GetWebhookDelivery

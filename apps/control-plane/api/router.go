@@ -332,10 +332,17 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	// Outbound webhook endpoints + deliveries (spec §21.4-21.6). Durable project configuration and an
 	// operator-facing delivery view + idempotent redelivery — nil in tiers that do not exercise
 	// webhooks (the Docker-free conformance HTTP tier, the SSE read-path e2e).
+	//
+	// The singular GET and the DELETE arrived in E29 T3, eighteen epics after the create whose comment
+	// already described an endpoint as "operator-visible + deletable". The DELETE is `provision`-gated
+	// inside the handler and the GET is not: the read is the singular form of a list any key has been able
+	// to enumerate since E11, while destroying configuration is the org-admin act.
 	if webhooks != nil {
 		wh := &webhookHandler{webhooks: webhooks, resolver: net.DefaultResolver}
 		mux.HandleFunc("POST /v1/webhook-endpoints", wh.createEndpoint)
 		mux.HandleFunc("GET /v1/webhook-endpoints", wh.listEndpoints)
+		mux.HandleFunc("GET /v1/webhook-endpoints/{endpoint_id}", wh.getEndpoint)
+		mux.HandleFunc("DELETE /v1/webhook-endpoints/{endpoint_id}", wh.deleteEndpoint)
 		mux.HandleFunc("GET /v1/webhook-deliveries", wh.listDeliveries)
 		mux.HandleFunc("GET /v1/webhook-deliveries/{delivery_id}", wh.getDelivery)
 		mux.HandleFunc("POST /v1/webhook-deliveries/{delivery_id}/redeliver", wh.redeliver)

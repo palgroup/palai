@@ -45,8 +45,8 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 		}
 	}
 
-	// E29's model_connection_endpoint is the current chain head; usage_step_attribution is the link before
-	// it. THE NAME IS PINNED AS WELL AS THE NUMBER, and that is what makes this a rename guard too:
+	// E29's webhook_delivery_trail_survives_its_endpoint is the current chain head; model_connection_endpoint
+	// is the link before it. THE NAME IS PINNED AS WELL AS THE NUMBER, and that is what makes this a rename guard too:
 	// `git mv` stages the OLD content, so a renumbering whose header edit is never re-added would leave a
 	// file whose name says 51 and whose marker says 49, and only the pair below catches it.
 	//
@@ -60,12 +60,12 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	// and the "one migration per epic" reasoning an earlier revision of this comment carried was never
 	// structural, only a property of the four epics that happened to need one each.
 	head := migrations[len(migrations)-1]
-	if head.Version != 51 || head.Name != "model_connection_endpoint" {
-		t.Fatalf("chain head = %06d_%s, want 000051_model_connection_endpoint", head.Version, head.Name)
+	if head.Version != 52 || head.Name != "webhook_delivery_trail_survives_its_endpoint" {
+		t.Fatalf("chain head = %06d_%s, want 000052_webhook_delivery_trail_survives_its_endpoint", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 50 || penultimate.Name != "usage_step_attribution" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000050_usage_step_attribution", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 51 || penultimate.Name != "model_connection_endpoint" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000051_model_connection_endpoint", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

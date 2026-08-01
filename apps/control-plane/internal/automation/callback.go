@@ -116,11 +116,21 @@ func (s *TriggerStore) armCallback(ctx context.Context, d callbackDue) error {
 	// The callback rides T4's outbound pump as a normal webhook_deliveries row. ON CONFLICT(endpoint_id,
 	// event_id) makes a re-arm a no-op, so a crash between enqueue and the state mark never double-delivers.
 	// ponytail: an enqueue error is left transient — logged and retried next sweep — NOT dead-lettered. The
-	// one structural "endpoint gone" case (an FK violation on endpoint_id) is unreachable: the endpoint
-	// cannot be deleted while a pinned revision references it (trigger_revisions.callback_endpoint_id is a
-	// RESTRICT FK). Every other enqueue error is a transient DB blip that SHOULD retry; a persistent one
-	// means the DB is down, which stalls the whole sweep, not just this callback. Add terminal-error
-	// classification here only if a reachable non-retryable enqueue error ever appears.
+	// one structural "endpoint gone" case is unreachable, and E29 T3 changed BOTH halves of why, in opposite
+	// directions, so the reasoning is restated rather than inherited:
+	//
+	//   - There is no longer an FK on webhook_deliveries.endpoint_id to violate. Migration 000052 dropped it
+	//     so that deleting an endpoint stops future sending without erasing the delivery trail, which means
+	//     this INSERT can no longer fail that way at all.
+	//   - The endpoint still cannot be deleted while a pinned revision names it —
+	//     trigger_revisions.callback_endpoint_id remains a delete-refusing FK, deliberately left in place by
+	//     that same migration — so the endpoint this enqueue targets is present by construction. What used to
+	//     be true because nothing could delete an endpoint at ALL is now true because the delete route
+	//     refuses this particular one, and DeleteEndpoint renders that refusal as a typed 409.
+	//
+	// Every other enqueue error is a transient DB blip that SHOULD retry; a persistent one means the DB is
+	// down, which stalls the whole sweep, not just this callback. Add terminal-error classification here only
+	// if a reachable non-retryable enqueue error ever appears.
 	if _, err := tx.Exec(ctx, storage.Query("InsertDelivery"),
 		newID("whd"), d.org, d.project, d.endpointID, d.sessionID, "cb:"+d.deliveryID, "trigger.callback.v1", envelope); err != nil {
 		return fmt.Errorf("enqueue callback delivery: %w", err)

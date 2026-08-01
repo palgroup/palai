@@ -111,7 +111,7 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 	environment := newID("env")
 	tool, toolRevision, setRevision := newID("tool"), newID("trev"), newID("tsrev")
 	toolCall, backgroundTask := newID("call"), newID("bgt")
-	runnerPool := newID("pool")
+	runnerPool, webhookEndpoint := newID("pool"), newID("whe")
 	trigger, schedule, deletedSchedule, occurrence, hook := newID("trg"), newID("sch"), newID("sch"), newID("occ"), newID("hook")
 	stmts := []struct {
 		sql  string
@@ -221,6 +221,22 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 		  VALUES ($1,$2,$3,'deny-external-writes','before_tool','policy','remote_http',
 		          '{"url":"https://hooks.example.test/deny"}'::jsonb,$4)`,
 			[]any{hook, org, project, "HOOK_SIGNING_KEY"}},
+		// The E29 T3 webhook endpoint (000020, PROJECT-scoped). Like the pool above, this table has been
+		// tenant-policied for epics and covered by the catalogue sweeps only VACUOUSLY — nothing seeded a row.
+		//
+		// WHAT MAKES IT WORTH A ROW NOW, and it is a different reason from every other seed here: T3 opened
+		// `DELETE /v1/webhook-endpoints/{id}`, and DELETE is the verb this corpus had never issued. The three
+		// tests below this seed cover a WHERE-less SELECT, a foreign INSERT and a foreign UPDATE; the
+		// destructive verb was never asked about, so the policy's coverage of it was an assumption. A
+		// cross-tenant delete here does not disclose anything — it stops another tenant's outbound
+		// notifications and tells nobody, which is a failure they discover from the absence of alerts.
+		//
+		// url is a real address and signing_secret_ref a real handle for the same reason the tool description
+		// above is real text: a cross-tenant READ of this row hands one tenant the address another sends its
+		// events to, and the name of the secret that signs them.
+		{`INSERT INTO webhook_endpoints (id, organization_id, project_id, url, signing_secret_ref)
+		  VALUES ($1,$2,$3,$4,'secret_ref_tenancyseed')`,
+			[]any{webhookEndpoint, org, project, "https://hooks." + org + ".example/events"}},
 	}
 	for _, stmt := range stmts {
 		if _, err := s.owner.Exec(ctx, stmt.sql, stmt.args...); err != nil {
@@ -508,6 +524,66 @@ func TestForeignPoolWriteAndUpdateAreRejected(t *testing.T) {
 	}
 	if !strict {
 		t.Fatal("the foreign tenant's pool is no longer strict; the UPDATE matched nothing and the row changed anyway")
+	}
+}
+
+// TestForeignDeleteIsRejected is the corpus's THIRD VERB, and it was missing until E29 T3. Every test above
+// this one drives a SELECT, an INSERT or an UPDATE; nothing had ever issued a DELETE on the runtime role, so
+// the policy's coverage of the destructive verb was an assumption rather than a measurement. A sweep looks in
+// one direction, and this one had never looked here.
+//
+// It became worth measuring because T3 shipped `DELETE /v1/webhook-endpoints/{id}` — the first route in this
+// family that destroys a row. The application's own SQL carries an organization_id + project_id predicate,
+// and that predicate is exactly the kind of claim this corpus exists to distrust: the WHERE-LESS form below
+// is the shape an application bug produces, and the DATABASE has to be what stops it.
+//
+// The consequence is the reason this is not merely another canary. A cross-tenant read discloses; a
+// cross-tenant DELETE of a webhook endpoint stops another tenant's outbound notifications and tells nobody —
+// they find out from the alerts that never arrived.
+func TestForeignDeleteIsRejected(t *testing.T) {
+	s := newSuite(t)
+	ctx := context.Background()
+
+	// A DELETE with no tenant predicate AT ALL, issued under org A's GUC. It must reach exactly org A's row.
+	s.asOrg(t, s.orgA, func(tx pgx.Tx) {
+		tag, err := tx.Exec(ctx, `DELETE FROM webhook_endpoints`)
+		if err != nil {
+			t.Fatalf("the where-less delete errored rather than being confined: %v", err)
+		}
+		// NON-VACUITY, and it is the half that matters most for a delete: a policy that made every row
+		// invisible would also report zero, and this test would pass while proving nothing. One row is the
+		// caller's own, and it has to go.
+		if tag.RowsAffected() != 1 {
+			t.Fatalf("a where-less DELETE touched %d row(s), want exactly the caller's own 1. Zero would mean this "+
+				"test proves nothing (no row was ever visible); more than one would mean it reached another tenant.",
+				tag.RowsAffected())
+		}
+	})
+
+	// A DELETE that NAMES the foreign tenant — the deliberate attack rather than the accidental omission —
+	// matches nothing. A second transaction, because the first was rolled back.
+	s.asOrg(t, s.orgA, func(tx pgx.Tx) {
+		tag, err := tx.Exec(ctx, `DELETE FROM webhook_endpoints WHERE organization_id = $1`, s.orgB)
+		if err != nil {
+			t.Fatalf("the foreign delete errored rather than matching nothing: %v", err)
+		}
+		if tag.RowsAffected() != 0 {
+			t.Fatalf("a DELETE naming the foreign organization removed %d of their webhook endpoint(s); their "+
+				"outbound notifications stop and nothing tells them", tag.RowsAffected())
+		}
+	})
+
+	// Read as the OWNER, so the check is not itself confined by the policy it is checking. Both rows are
+	// still there — the transactions above were rolled back, so this also confirms the corpus left the
+	// fixture intact for whatever runs next.
+	var surviving int
+	if err := s.owner.QueryRow(ctx,
+		`SELECT count(*) FROM webhook_endpoints WHERE organization_id = ANY($1)`,
+		[]string{s.orgA, s.orgB}).Scan(&surviving); err != nil {
+		t.Fatalf("re-read both tenants' endpoints: %v", err)
+	}
+	if surviving != 2 {
+		t.Fatalf("%d of the 2 seeded webhook endpoints survive", surviving)
 	}
 }
 
