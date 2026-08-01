@@ -55,7 +55,16 @@ LIMIT 1;
 -- merge_method rides the same read since E23 T6, and it rides it for the same reason the base does: HOW a
 -- pull request lands is a deployment decision an operator made once on the binding, not a per-call choice
 -- an agent argues for. Unset reads as '' and MergePullRequest defaults it to `merge`.
-SELECT rb.clone_url, pr.branch, rb.default_branch, coalesce(rb.policy->>'merge_method', '')
+--
+-- connection_ref and repository_identity ride it since 2026-08-01, and for the reason the merge_method
+-- comment gives twice over: WHICH CREDENTIAL a write is made under is a deployment decision an operator
+-- made once on the binding, not a per-call choice. Until then the publish half could not see either —
+-- clone resolved the binding's own credential (E13 T9) while push and pull request used the
+-- deployment-global App, so a tenant's panel-provisioned credential was honoured inbound and ignored
+-- outbound. repository_identity replaces PALAI_GITHUB_REPO for the pull-request client, which is why one
+-- stack could previously open pull requests against exactly one repository.
+SELECT rb.clone_url, pr.branch, rb.default_branch, coalesce(rb.policy->>'merge_method', ''),
+       coalesce(rb.connection_ref, ''), coalesce(rb.repository_identity, '')
 FROM preparation_receipts pr
 JOIN repository_bindings rb ON rb.id = pr.repository_binding_id
 WHERE pr.run_id = $1 AND pr.organization_id = $2 AND pr.project_id = $3

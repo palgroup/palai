@@ -1,6 +1,7 @@
 package execution
 
 import (
+	"errors"
 	"context"
 	"os"
 	"os/exec"
@@ -72,7 +73,7 @@ func TestApprovalPumpSkipsExpiredApproval(t *testing.T) {
 	pump.expired["pub_stale"] = true // its approval elapsed between approval and this boundary
 	publisher := &RepositoryPublisher{Broker: repositories.NewLocalBroker()}
 
-	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Organization: "org", Project: "prj"}, "run_1", "ses_1", "resp_1", root, 7); err != nil {
+	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Organization: "org", Project: "prj"}, "run_1", "ses_1", "resp_1", root, 7, publicationCredential{}); err != nil {
 		t.Fatalf("publishApproved() error = %v", err)
 	}
 	// The expired one was checked but never published, and its branch never reached the remote.
@@ -118,7 +119,7 @@ func TestApprovalPumpPublishesApprovedPushToRemote(t *testing.T) {
 	publisher := &RepositoryPublisher{Broker: repositories.NewLocalBroker()}
 
 	tenant := coordinator.Tenant{Organization: "org", Project: "prj"}
-	if err := publishApproved(ctx, pump, publisher, tenant, "run_1", "ses_1", "resp_1", root, 7); err != nil {
+	if err := publishApproved(ctx, pump, publisher, tenant, "run_1", "ses_1", "resp_1", root, 7, publicationCredential{}); err != nil {
 		t.Fatalf("publishApproved() error = %v", err)
 	}
 	// The pump recorded the external receipt, and the remote ref really points at the approved head.
@@ -146,7 +147,7 @@ func TestApprovalPumpOpensApprovedPullRequest(t *testing.T) {
 	pump := newFakePump(pub)
 	publisher := &RepositoryPublisher{Broker: repositories.NewLocalBroker(), PRClient: &stubPRClient{}}
 
-	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Organization: "org", Project: "prj"}, "run_1", "ses_1", "resp_1", "", 1); err != nil {
+	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Organization: "org", Project: "prj"}, "run_1", "ses_1", "resp_1", "", 1, publicationCredential{}); err != nil {
 		t.Fatalf("publishApproved(PR) error = %v", err)
 	}
 	receipt, ok := pump.published["pub_pr"]
@@ -173,7 +174,7 @@ func TestApprovalPumpWarnsOnPublishFailure(t *testing.T) {
 	pump := newFakePump(pub)
 	publisher := &RepositoryPublisher{Broker: repositories.NewLocalBroker()}
 
-	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Organization: "org", Project: "prj"}, "run_1", "ses_1", "resp_1", root, 1); err != nil {
+	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Organization: "org", Project: "prj"}, "run_1", "ses_1", "resp_1", root, 1, publicationCredential{}); err != nil {
 		t.Fatalf("publishApproved() error = %v, want a warning not a fatal error", err)
 	}
 	if _, published := pump.published["pub_bad"]; published {
@@ -250,5 +251,74 @@ func gitAt(t *testing.T, dir string) func(args ...string) string {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 		return strings.TrimSpace(string(out))
+	}
+}
+
+// TestPublishUnderABindingCredentialNeverFallsBackToTheDeploymentApp is the RED this task was written
+// around, and it asserts the DANGEROUS direction rather than the happy one.
+//
+// THE OWNER'S COMPLAINT, which is what makes this a defect and not a gap: a credential is provisioned ONCE
+// from the admin panel and stored server-side, so that no machine needs a token on it. The CLONE half has
+// honoured that since E13 T9 — a binding naming a connection_ref clones under its own tenant's credential,
+// and main.repositoryConnectionSecret states "A MISS IS AN ERROR: a binding that deliberately names its
+// own credential must never silently clone under the deployment-global App". The PUBLISH half did not
+// honour it at all: RepositoryPublisher held one deployment-global broker and the PR client was built from
+// the App config plus PALAI_GITHUB_REPO, so push and pull request were blind to the binding.
+//
+// WHAT SILENCE WOULD COST HERE IS WORSE THAN ON THE CLONE SIDE, and that asymmetry is the whole point. A
+// clone under the wrong credential fails or reads something it should not. A PUBLISH under the wrong
+// credential WRITES TO SOMEBODY'S REPOSITORY AS THE WRONG IDENTITY — it lands a branch, or opens a pull
+// request, authored by the deployment's App instead of the tenant's own credential, and the receipt says
+// it was them. That must be impossible by construction rather than prevented by a check somebody can
+// delete, which is why the assertion below is "nothing was published" and not "an error was logged".
+//
+// The resolver here REFUSES. A binding that names a credential the server cannot resolve must publish
+// NOTHING; falling back to the deployment App is precisely the silent substitution this test exists to
+// forbid.
+func TestPublishUnderABindingCredentialNeverFallsBackToTheDeploymentApp(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	head := seedWorkspaceRepo(t, root)
+	bare := seedBareRemote(t)
+
+	pub := coordinator.Publication{
+		ID: "pub_conn", RunID: "run_1", Operation: "push_branch",
+		Remote: bare, Branch: "agent/ses/conn", HeadSHA: head, State: "approved",
+	}
+	pump := newFakePump(pub)
+
+	// The binding names its own credential and the store cannot produce it.
+	var askedOrg, askedRef string
+	publisher := &RepositoryPublisher{
+		Broker: repositories.NewLocalBroker(), // the deployment-global broker, which MUST NOT be used
+		ConnectionSecrets: func(org, ref string) ([]byte, error) {
+			askedOrg, askedRef = org, ref
+			return nil, errors.New("no such secret ref")
+		},
+	}
+
+	tenant := coordinator.Tenant{Organization: "org", Project: "prj"}
+	err := publishApproved(ctx, pump, publisher, tenant, "run_1", "ses_1", "resp_1", root, 7,
+		publicationCredential{ConnectionRef: "rcon_tenant_pat", Identity: "acme/widgets"})
+
+	// The pump's contract is that a publish failure WARNS and leaves the row approved rather than failing
+	// the attempt, so publishApproved itself returns nil — the refusal is visible in what did NOT happen.
+	if err != nil {
+		t.Fatalf("publishApproved() error = %v", err)
+	}
+	if askedRef != "rcon_tenant_pat" || askedOrg != "org" {
+		t.Fatalf("the publisher resolved (org=%q ref=%q); want the BINDING's own ref under the run's org — "+
+			"a publisher that never asks is a publisher using the deployment App", askedOrg, askedRef)
+	}
+	if _, published := pump.published["pub_conn"]; published {
+		t.Fatal("a publication whose binding credential did not resolve was PUBLISHED — it fell back to the " +
+			"deployment-global App and wrote to the repository as the wrong identity")
+	}
+	if _, err := repoRef(bare, "agent/ses/conn"); err == nil {
+		t.Fatal("the branch reached the remote under the deployment App credential; want no push at all")
+	}
+	if len(pump.warned) == 0 {
+		t.Fatal("nothing was published and nothing was warned: the operator has no way to learn the " +
+			"binding's credential is unresolvable")
 	}
 }

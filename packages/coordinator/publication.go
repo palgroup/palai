@@ -143,6 +143,22 @@ type PublicationTarget struct {
 	// it lives beside the base for the same reason: both decide how work lands, and neither is the
 	// model's to name.
 	MergeMethod string
+	// ConnectionRef is the binding's OWN credential handle (repository_bindings.connection_ref), empty
+	// when the binding takes the deployment-global App. It is an OPAQUE HANDLE and never a token: the
+	// bytes live in the secret-ref store and are resolved server-side at publish time, exactly as the
+	// clone half already resolves them (main.repositoryConnectionSecret, E13 T9).
+	//
+	// It rides THIS read because the publish half had no other way to learn it. Clone was
+	// panel-provisioned and tenant-scoped; push and pull request were deployment-global and blind to the
+	// binding — so a tenant who provisioned a credential in the admin panel had it honoured on the way IN
+	// and ignored on the way OUT.
+	ConnectionRef string
+	// Identity is the binding's `owner/repo` (repository_bindings.repository_identity). The pull-request
+	// client needs it, and until now it came from PALAI_GITHUB_REPO / PALAI_GIT_REPO — a DEPLOYMENT-WIDE
+	// env var, so one stack could open pull requests against exactly one repository no matter how many
+	// bindings it had. publish.go's own comment already claimed "Owner/repo come from the binding, not the
+	// model"; this is the read that makes that sentence true.
+	Identity string
 }
 
 // RunPublicationTarget resolves a run's publication destination — the remote/branch/base a push or PR
@@ -152,7 +168,7 @@ func (s *Store) RunPublicationTarget(ctx context.Context, tenant Tenant, runID s
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var t PublicationTarget
 	err := s.pool.QueryRow(ctx, storage.Query("RunPublicationTarget"), runID, tenant.Organization, tenant.Project).
-		Scan(&t.Remote, &t.Branch, &t.Base, &t.MergeMethod)
+		Scan(&t.Remote, &t.Branch, &t.Base, &t.MergeMethod, &t.ConnectionRef, &t.Identity)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PublicationTarget{}, false, nil
 	}
