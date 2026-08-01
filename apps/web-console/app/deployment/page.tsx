@@ -68,7 +68,7 @@ export default function DeploymentPage() {
     <>
       {/* EVERY warning, above the table. A row in a table is not a warning: the value that cost an evening
           was visible in `docker inspect` all along, and being visible is what it had already failed at. */}
-      <DeploymentNotice path="/deployment" key={`notice-${reloadKey}`} />
+      <DeploymentNotice path="/deployment" reloadKey={reloadKey} />
 
       {/* DESIRED BEFORE EFFECTIVE, and the order is the answer to "why is this machine running this?".
           The table below says what IS; this says what was ASKED FOR and whether the two agree. A reader who

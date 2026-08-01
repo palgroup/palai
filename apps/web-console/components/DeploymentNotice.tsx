@@ -18,7 +18,13 @@ import { warningsFor, type DeploymentBody, type DeploymentWarning } from "@/lib/
 // alternative is an error strip about a diagnostic on every page that carries one, which trains a reader to
 // ignore the region where the real warning will appear. The screen is no worse off than before this
 // component existed; a broken diagnostic that shouts is worse than one that is quiet.
-export function DeploymentNotice({ path }: { path: string }) {
+//
+// reloadKey (E29) is how a screen that CHANGES the deployment tells this to look again. /deployment's
+// desired-configuration panel writes a document, which can raise or clear the `desired_config_pending`
+// warning — and a banner that only reflects the state at page load would report a pending bring-up after
+// the operator cleared it, or stay silent after they created one. Every other caller passes nothing and
+// keeps the mount-once behaviour it had.
+export function DeploymentNotice({ path, reloadKey = 0 }: { path: string; reloadKey?: number }) {
   const [warnings, setWarnings] = useState<DeploymentWarning[]>([]);
 
   useEffect(() => {
@@ -33,7 +39,7 @@ export function DeploymentNotice({ path }: { path: string }) {
     return () => {
       live = false;
     };
-  }, [path]);
+  }, [path, reloadKey]);
 
   if (warnings.length === 0) return null;
   return (
