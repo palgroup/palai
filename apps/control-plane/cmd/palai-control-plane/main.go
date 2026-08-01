@@ -510,7 +510,13 @@ func migrateAndExit() bool {
 // stack at zero runs no dead-letter sweep, no approval expiry, no capacity-park expiry and — since
 // E26 T4 — no background exit notification. deploy/compose/compose.yaml ships `:-0`; the production
 // overlay ships `:-1`. See docs/operations/background-execution.md, first paragraph.
-func dispatchWorkerCount() int { return envIntDefault("PALAI_DISPATCH_WORKERS", 1) }
+//
+// IT DELEGATES rather than reading the variable itself, and that is the E29 machine-configuration change.
+// GET /v1/deployment reports this posture to an operator, and a screen that read the environment with its
+// own copy of the default would be a second answer to a question that must have one — the shape of every
+// defect this tree's CLAUDE.md is about. api.DispatchWorkers is now the single reader; this function stays
+// because the sentence above it is still true: production's reading is what a test must be able to ask.
+func dispatchWorkerCount() int { return api.DispatchWorkers() }
 
 // startDispatch launches the durable dispatch workers and the reconciler that drive
 // admitted response.run jobs. With a runner listener bound (gateway != nil) the worker

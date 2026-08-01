@@ -126,6 +126,16 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // console-side opinion about what "preview" ought to mean. `palai up` prints this to a terminal
   // (up.go capabilityRows) and until now the console did not show it at all.
   { path: "/capabilities", label: "Capabilities", group: "Govern", readyTestId: "panel-capabilities", lead: "What this deployment advertises to every client and at which tier — exactly as GET /v1/capabilities answers it, with no console-side opinion about what a tier ought to mean." },
+  // THE MACHINE'S OWN CONFIGURATION (machine-config). Beside /capabilities, which is its sibling: one says
+  // what this deployment advertises, the other says what it is running with. Measured on main at cf0efd63:
+  // compose.yaml sets 24 PALAI_* settings and ZERO of them were readable from any /v1 route, so this screen
+  // did not exist and could not have.
+  //
+  // "Deployment", NOT "Machine", although the owner's word was makine: /fleet is already the screen about
+  // machines (the runners a run is placed on), and two screens both called that is how an operator ends up
+  // on the wrong one. `panel-deployment-settings` is the one panel and the only thing here that can still
+  // be a spinner; the warnings above it render from the same fetch.
+  { path: "/deployment", label: "Deployment", group: "Govern", readyTestId: "panel-deployment-settings", lead: "What this deployment is actually running with — every setting of the control-plane process, what it uses when a setting is unset, and which of them a running stack cannot be told to change." },
   // E28 T2. The readiness signal is the KEY panel rather than the policy form, for the reason /environments
   // and /repositories use a list: the forms render their markup synchronously, and the panel is the one part
   // that can still be a spinner. It is `panel-api-keys` specifically because that collection is non-empty on

@@ -2365,6 +2365,100 @@ export const ROUTES = [
   },
   {
     method: "GET",
+    pattern: "/v1/deployment",
+    // THE MACHINE'S EFFECTIVE CONFIGURATION (machine-config). The keys are api/deployment.go's
+    // deploymentSetting/deploymentWarning verbatim; the ROWS are a subset, and the subset is chosen so this
+    // fixture answers what the REAL PROFILE's stack answers rather than a shape invented to be convenient.
+    //
+    // tests/divergences.mjs records the compose stack this suite's real profile runs against:
+    // `PALAI_DISPATCH_WORKERS=1 PALAI_MODEL_PROVIDER=fake palai local up`. So on both profiles the
+    // dispatcher is ON (no blocking warning) and the model provider IS the fake adapter (one advisory
+    // warning). A fixture that scripted the blocking warning would make the /runs banner assertable here
+    // and NOT on the real profile — the fixture proving a console behaviour the real stack contradicts,
+    // which is the exact class E17 T10's own gate found. The blocking arm is asserted by intercepting the
+    // relay in tests/deployment.spec.ts, which is a statement about this console's rendering and is
+    // therefore true on both profiles.
+    handle: (_request, response) =>
+      sendJSON(response, 200, {
+        object: "deployment",
+        settings: [
+          {
+            name: "PALAI_DISPATCH_WORKERS",
+            group: "execution",
+            value: "1",
+            set: true,
+            default: "1",
+            kind: "value",
+            effect:
+              "How many durable dispatch workers run. ZERO IS NOT 'SLOWER', IT IS OFF: startDispatch returns before it builds anything, so the deployment admits runs through POST /v1/responses and executes none.",
+            mutability: "bring_up",
+            change_with: "recreate the control-plane with the new value (`palai up`)",
+            reader_file: "apps/control-plane/api/deployment.go",
+            reader_func: "DispatchWorkers",
+          },
+          {
+            name: "PALAI_MODEL_PROVIDER",
+            group: "model",
+            value: "fake",
+            set: true,
+            default: "fake",
+            kind: "value",
+            effect:
+              "The DEPLOYMENT-DEFAULT model route. Exactly one value — `provider-one` — selects a live provider; every other value falls through to the deterministic fake adapter.",
+            mutability: "bring_up_default_only",
+            change_with:
+              "for ONE project, publish a model route (POST /v1/model-routes) — it is resolved per attempt and overrides this with no restart",
+            reader_file: "apps/control-plane/cmd/palai-control-plane/main.go",
+            reader_func: "modelBrokerFromEnv",
+          },
+          // AN UNSET ROW, because "unset" is the state this screen most has to render well: it is the
+          // difference between "one worker" and "no object store at all", and both wear the same word.
+          {
+            name: "PALAI_SANDBOX_IMAGE",
+            group: "shell",
+            value: "",
+            set: false,
+            default: "none — there is no shell tool; a shell call fails cleanly rather than escaping",
+            kind: "value",
+            effect: "The pinned command image the workspace shell tool runs inside.",
+            mutability: "bring_up",
+            change_with: "recreate the control-plane with the new value (`palai up`)",
+            reader_file: "apps/control-plane/cmd/palai-control-plane/main.go",
+            reader_func: "shellRunnerFromEnv",
+          },
+          // A PATH ROW. The compose stack passes this (compose.yaml:126), and it is what makes the credential
+          // rule visible on the screen: the master key's PATH is reported and the key never is.
+          {
+            name: "PALAI_SECRET_MASTER_KEY_FILE",
+            group: "identity",
+            value: "/run/secrets/master_key",
+            set: true,
+            default: "unset — the DB-backed secret store is DISABLED",
+            kind: "path",
+            effect: "The file holding the master key the envelope-encrypted secret store redeems through.",
+            mutability: "bring_up",
+            change_with:
+              "a stored secret is rotated live through POST /v1/secret-refs and needs no restart; changing the MASTER KEY's location needs a recreate",
+            reader_file: "apps/control-plane/cmd/palai-control-plane/main.go",
+            reader_func: "main",
+          },
+        ],
+        warnings: [
+          {
+            code: "model_provider_fake",
+            severity: "advisory",
+            headline: "Every run without a published model route is answered by the deterministic fake adapter.",
+            detail:
+              'The deployment default route is chosen by an exact match on `provider-one`; PALAI_MODEL_PROVIDER is "fake", so the fallback is the fake adapter. Its output is fabricated and renders exactly like a real answer.',
+            remedy:
+              "A project that publishes a model route (POST /v1/model-routes) dispatches through that instead, with no restart.",
+            settings: ["PALAI_MODEL_PROVIDER", "PALAI_MODEL"],
+          },
+        ],
+      }),
+  },
+  {
+    method: "GET",
     pattern: "/v1/usage",
     handle: (_request, response) =>
       sendJSON(response, 200, {

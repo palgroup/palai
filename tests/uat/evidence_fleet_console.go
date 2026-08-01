@@ -922,6 +922,7 @@ const FleetConsoleRouteLedger = `[
   {"path": "/history", "ready_test_id": "panel-runs", "axe_scanned_in": ["light", "dark"]},
   {"path": "/usage", "ready_test_id": "panel-usage-meters", "axe_scanned_in": ["light", "dark"]},
   {"path": "/capabilities", "ready_test_id": "panel-capabilities", "axe_scanned_in": ["light", "dark"]},
+  {"path": "/deployment", "ready_test_id": "panel-deployment-settings", "axe_scanned_in": ["light", "dark"]},
   {"path": "/policy", "ready_test_id": "panel-api-keys", "axe_scanned_in": ["light", "dark"]},
   {"path": "/fleet", "ready_test_id": "panel-runner-pools", "axe_scanned_in": ["light", "dark"]},
   {"path": "/registry", "ready_test_id": "panel-model-connections", "axe_scanned_in": ["light", "dark"]}

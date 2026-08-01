@@ -5548,6 +5548,14 @@
             ]
           },
           {
+            "path": "/deployment",
+            "ready_test_id": "panel-deployment-settings",
+            "axe_scanned_in": [
+              "light",
+              "dark"
+            ]
+          },
+          {
             "path": "/policy",
             "ready_test_id": "panel-api-keys",
             "axe_scanned_in": [
@@ -5572,8 +5580,8 @@
             ]
           }
         ],
-        "routes_declared": 14,
-        "routes_axe_scanned": 14,
+        "routes_declared": 15,
+        "routes_axe_scanned": 15,
         "action_ledger": [
           {
             "action": "runner-revoke-dialog",
