@@ -75,18 +75,28 @@ type Request struct {
 	// derives it from the run and model-request identity and the adapter forwards it, so a
 	// reclaimed attempt that re-routes the same request produces exactly one provider
 	// effect even when the crash window between routing and commit re-opens the call.
-	IdempotencyKey string        `json:"idempotency_key,omitempty"`
-	RouteRevision  int           `json:"route_revision"`
-	ModelStepID    string        `json:"model_step_id"`
-	Model          string        `json:"model"`
-	Messages       []Message     `json:"messages"`
-	Tools          []ToolSchema  `json:"tools,omitempty"`
-	ForceToolCall  bool          `json:"force_tool_call,omitempty"`
-	OutputSchema   *OutputSchema `json:"output_schema,omitempty"`
-	Deadline       time.Time     `json:"deadline"`
-	Privacy        PrivacyFlags  `json:"privacy,omitempty"`
-	Reservation    Reservation   `json:"reservation"`
-	Secret         SecretRef     `json:"secret"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// BaseURL is the endpoint the CONNECTION named, empty meaning "wherever the adapter points" (E29
+	// provider wiring). It is what makes a custom OpenAI-compatible endpoint a per-project property rather
+	// than a per-deployment one: before this field the only way to move the endpoint was
+	// PALAI_OPENAI_COMPATIBLE_BASE_URL, read once at boot and baked into a single adapter value, so two
+	// projects on one stack could not reach two endpoints and the console could not name one at all.
+	//
+	// IT IS AN ADDRESS, NEVER A CREDENTIAL. The value is vetted through packages/egress before it is ever
+	// stored, and any error that quotes it redacts userinfo and query first (redactBaseURL) — a gateway
+	// URL can carry a token, and this string reaches logs and run outcomes.
+	BaseURL       string        `json:"base_url,omitempty"`
+	RouteRevision int           `json:"route_revision"`
+	ModelStepID   string        `json:"model_step_id"`
+	Model         string        `json:"model"`
+	Messages      []Message     `json:"messages"`
+	Tools         []ToolSchema  `json:"tools,omitempty"`
+	ForceToolCall bool          `json:"force_tool_call,omitempty"`
+	OutputSchema  *OutputSchema `json:"output_schema,omitempty"`
+	Deadline      time.Time     `json:"deadline"`
+	Privacy       PrivacyFlags  `json:"privacy,omitempty"`
+	Reservation   Reservation   `json:"reservation"`
+	Secret        SecretRef     `json:"secret"`
 }
 
 // ToolCall is a tool the model asked to run. Arguments is the provider-generated
@@ -181,4 +191,51 @@ func (r Result) Validate() error {
 // arrive.
 type ModelAdapter interface {
 	Execute(ctx context.Context, req Request, secret string, onDelta func(Delta)) (Result, error)
+}
+
+// ProbeOutcome is what a credential probe OBSERVED. Each value states what was measured, not how it feels,
+// because the difference decides what an operator does next: a rejected credential is a key to re-paste, an
+// unreachable endpoint is a URL or a firewall, and a transient answer is a reason to try again rather than
+// to go hunting.
+type ProbeOutcome string
+
+const (
+	// ProbeAccepted: the endpoint answered and did NOT reject the credential. It is the strongest thing a
+	// probe can honestly say — see CredentialProber for what it deliberately does not claim.
+	ProbeAccepted ProbeOutcome = "credential_accepted"
+	// ProbeRejected: the endpoint answered 401/403. The key is wrong, expired, or revoked.
+	ProbeRejected ProbeOutcome = "credential_rejected"
+	// ProbeUnreachable: no HTTP answer at all — DNS, connection refused, TLS, or a timeout.
+	ProbeUnreachable ProbeOutcome = "unreachable"
+	// ProbeTransient: an answer that is neither an auth verdict nor a failure to reach — 429, 5xx. Trying
+	// again later is the right move, and reporting it as a failure would send the operator after a key
+	// that is fine.
+	ProbeTransient ProbeOutcome = "transient"
+	// ProbeUnsupported: NO probe was performed, and this value exists so that fact can never be rendered
+	// as a pass. A verify action that answers green when it measured nothing is worse than no button: it
+	// converts an operator's uncertainty into false confidence, which is the failure this whole surface is
+	// meant to prevent. Detail says exactly what could not be done.
+	ProbeUnsupported ProbeOutcome = "not_probed"
+)
+
+// Probe is one credential probe's finding. Endpoint is REDACTED (no userinfo, no query) because it travels
+// into an API response and a log; Detail is a sentence for a human and never carries the credential.
+type Probe struct {
+	Outcome  ProbeOutcome `json:"outcome"`
+	Status   int          `json:"status,omitempty"`
+	Endpoint string       `json:"endpoint"`
+	Detail   string       `json:"detail"`
+}
+
+// CredentialProber is the optional half of an adapter: can this credential actually reach this endpoint?
+// It backs the console's verify action, and the whole reason it is a real network call is that a check
+// which only measures "the string is non-empty" is a green that means nothing — an operator who trusts it
+// finds out at 3am instead.
+//
+// WHAT A PROBE DOES NOT CLAIM, and the verify surface repeats this in the operator's own words: that the
+// MODEL id is valid, that a quota exists, or that a tool-calling run will succeed. It claims exactly that
+// the endpoint answered and did not reject this credential. Anything more needs a real generation, which
+// is a bill this button must not silently run up.
+type CredentialProber interface {
+	ProbeCredential(ctx context.Context, baseURL, secret string) Probe
 }

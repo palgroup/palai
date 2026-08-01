@@ -279,6 +279,10 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		// connection/route/revision. Admin ListView envelope, provision-gated, tenant-scoped under RLS.
 		mux.HandleFunc("GET /v1/model-connections", mh.listConnections)
 		mux.HandleFunc("GET /v1/model-connections/{connection_id}", mh.getConnection)
+		// The credential probe (E29). A real HTTP call to the connection's endpoint, so an operator learns
+		// their key is wrong when they paste it rather than when an agent needs it. POST because it leaves
+		// the process and stamps the row.
+		mux.HandleFunc("POST /v1/model-connections/{connection_id}/verify", mh.verifyConnection)
 		mux.HandleFunc("GET /v1/model-routes", mh.listRoutes)
 		mux.HandleFunc("GET /v1/model-routes/{route_id}", mh.getRoute)
 		mux.HandleFunc("GET /v1/model-routes/{route_id}/revisions", mh.listRevisions)

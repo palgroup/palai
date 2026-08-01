@@ -263,10 +263,32 @@ class ModelRoutes:
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    def create_connection(self, provider: str, secret_ref: str, *, timeout_ms: float | None = None) -> Any:
-        return self._client.request(
-            "POST", "/v1/model-connections", body={"provider": provider, "secret_ref": secret_ref}, timeout_ms=timeout_ms
-        )
+    def create_connection(
+        self, provider: str, secret_ref: str, *, base_url: str | None = None, timeout_ms: float | None = None
+    ) -> Any:
+        """Bind a provider family to a secret REF.
+
+        ``base_url`` is this connection's OWN endpoint (E29). It is REQUIRED by the
+        ``openai-compatible`` family — that family has no endpoint of its own, and an empty one would
+        dial the OpenAI API with a key minted for something else — and refused on families that do
+        have one. Omit it for ``provider-one`` / ``provider-two``.
+        """
+        body: dict[str, Any] = {"provider": provider, "secret_ref": secret_ref}
+        if base_url is not None:
+            body["base_url"] = base_url
+        return self._client.request("POST", "/v1/model-connections", body=body, timeout_ms=timeout_ms)
+
+    def verify_connection(self, connection_id: str, *, timeout_ms: float | None = None) -> Any:
+        """Run a REAL credential probe against this connection's endpoint (E29).
+
+        The control plane redeems this connection's own credential and asks the endpoint whether it
+        accepts it. It answers 200 for every outcome it reached a verdict on, INCLUDING a rejected
+        credential — the request succeeded and the verdict is in the body, because a 4xx would blame
+        the caller's request for the operator's key. Read ``outcome``: ``credential_accepted``,
+        ``credential_rejected``, ``unreachable``, ``transient``, or ``not_probed`` — which means
+        NOTHING was checked and must never be read as a pass.
+        """
+        return self._client.request("POST", f"/v1/model-connections/{enc(connection_id)}/verify", timeout_ms=timeout_ms)
 
     def create_route(self, name: str, *, timeout_ms: float | None = None) -> Any:
         return self._client.request("POST", "/v1/model-routes", body={"name": name}, timeout_ms=timeout_ms)

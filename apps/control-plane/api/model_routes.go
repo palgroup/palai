@@ -21,6 +21,11 @@ type ModelRouteAPI interface {
 	CreateModelRouteRevision(ctx context.Context, scope middleware.Scope, routeID string, body []byte) (ProvisionResult, error)
 	PublishModelRouteRevision(ctx context.Context, scope middleware.Scope, routeID, revisionID string) (ProvisionResult, error)
 
+	// VerifyModelConnection performs a REAL credential probe against the connection's endpoint (E29). It is
+	// a POST because it leaves the process and writes a stamp — a GET that dials a third party is a GET
+	// that a cache, a prefetcher or a link preview can fire.
+	VerifyModelConnection(ctx context.Context, scope middleware.Scope, connectionID string) (ProvisionResult, error)
+
 	// The E16 T1 read-back half (the E13 T10 write-only gap): every connection/route/revision is
 	// readable within the caller's scope. LISTs render the admin ListView envelope (a full, small,
 	// tenant-scoped set — no cursor); a singular GET renders one projection, or NotFound (404) for an
@@ -82,6 +87,23 @@ func (h *modelRouteHandler) publishRevision(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	out, err := h.routes.PublishModelRouteRevision(r.Context(), scope, r.PathValue("route_id"), r.PathValue("revision_id"))
+	h.write(w, r, out, err, http.StatusOK)
+}
+
+// verifyConnection runs a real credential probe against the connection's endpoint
+// (POST /v1/model-connections/{connection_id}/verify, E29).
+//
+// IT RETURNS 200 FOR EVERY OUTCOME the probe reached a verdict on, including a REJECTED credential, and
+// that is deliberate. The request succeeded: the control plane asked the endpoint and got an answer. A 4xx
+// here would say the operator's REQUEST was malformed, which sends them to re-read the API when what they
+// need to re-read is their key. The verdict is in the body, where a console can render it as a sentence.
+// 404 is kept for its one real meaning: no such connection in this tenant.
+func (h *modelRouteHandler) verifyConnection(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorize(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.routes.VerifyModelConnection(r.Context(), scope, r.PathValue("connection_id"))
 	h.write(w, r, out, err, http.StatusOK)
 }
 

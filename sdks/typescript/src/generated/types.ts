@@ -131,6 +131,7 @@ export interface Message {
 }
 
 export interface ModelConnection {
+  base_url?: string;
   created_at?: string;
   id: OpaqueId;
   object: string;
@@ -138,6 +139,8 @@ export interface ModelConnection {
   project_id?: ProjectId;
   provider: string;
   secret_ref: string;
+  verification_outcome?: string;
+  verified_at?: string;
 }
 
 export interface ModelRoute {

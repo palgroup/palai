@@ -46,7 +46,7 @@ func (a Adapter) Execute(ctx context.Context, req modelbroker.Request, secret st
 	if err != nil {
 		return modelbroker.Result{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL(), bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.endpoint(req), bytes.NewReader(body))
 	if err != nil {
 		return modelbroker.Result{}, err
 	}
@@ -82,6 +82,18 @@ func (a Adapter) baseURL() string {
 		return a.BaseURL
 	}
 	return DefaultBaseURL
+}
+
+// endpoint resolves where THIS request goes, and the precedence is the point (E29 provider wiring):
+// the request's own base URL (the tenant's connection row) beats the adapter's field (the deployment's
+// env), which beats the vendor default. A deployment-wide setting must never silently override a
+// project's own connection — that is spec §27.7's "a route cannot silently select something else",
+// applied to the endpoint rather than to the model.
+func (a Adapter) endpoint(req modelbroker.Request) string {
+	if req.BaseURL != "" {
+		return req.BaseURL
+	}
+	return a.baseURL()
 }
 
 func (a Adapter) client() *http.Client {

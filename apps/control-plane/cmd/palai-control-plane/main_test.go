@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/coordinator"
+	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
@@ -519,4 +521,42 @@ func firstParagraphAfterTitle(doc string) string {
 		para = append(para, trimmed)
 	}
 	return strings.Join(para, " ")
+}
+
+// THE ENV VAR IS THE GATE, NOT THE FALLBACK — and that is the whole model-connections feature.
+//
+// modelBrokerFromEnv's own comment says the env selection "is the FALLBACK, not the whole story: a project
+// with a published model route dispatches through that route's model and its own connection credential".
+// The route half is true. The ADAPTER half was not: the three real families were registered only INSIDE the
+// `PALAI_MODEL_PROVIDER == "provider-one"` branch, so on the deployment this feature exists for — a fresh
+// self-host whose operator has typed no key into .env.local — the broker knew exactly one adapter, `fake`,
+// and a connection created through POST /v1/model-connections routed to modelbroker.ErrUnknownProvider.
+//
+// A row nobody can dispatch to is the same defect as a row nobody reads. This test is why the adapter map
+// is now built OUTSIDE the branch: the env var chooses the deployment DEFAULT ROUTE, never which providers
+// this binary can speak to.
+//
+// It never reaches a network: broker.Route looks the adapter up FIRST and redeems the credential SECOND, so
+// an unresolvable secret ref stops the call one step past the assertion this test makes.
+func TestModelBrokerSpeaksEveryProviderFamilyOnABootstrapDeployment(t *testing.T) {
+	t.Setenv("PALAI_MODEL_PROVIDER", "") // a self-host that has configured nothing
+	broker, route := modelBrokerFromEnv()
+
+	// The DEPLOYMENT DEFAULT is unchanged: a stack that configured no provider still runs the
+	// deterministic fake, and no existing deployment moves.
+	if route.Provider != "fake" || route.Model != "fake" {
+		t.Fatalf("deployment default moved: got provider=%q model=%q, want the fake route", route.Provider, route.Model)
+	}
+
+	// But a PROJECT that created its own connection routes to a real family, and the broker must know it.
+	for _, family := range []string{"provider-one", "provider-two", "openai-compatible"} {
+		_, err := broker.Route(context.Background(), family, modelbroker.Request{
+			Model:  "any",
+			Secret: modelbroker.SecretRef("tenant:org_x/unresolvable"),
+		}, nil)
+		if errors.Is(err, modelbroker.ErrUnknownProvider) {
+			t.Fatalf("a bootstrap deployment cannot dispatch to %q: an operator-created model connection "+
+				"naming this family is a row nothing can route to (err=%v)", family, err)
+		}
+	}
 }

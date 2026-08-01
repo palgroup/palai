@@ -26,10 +26,7 @@ import (
 	"github.com/palgroup/palai/adapters/integrations/a2a"
 	mcpclient "github.com/palgroup/palai/adapters/integrations/mcp"
 	"github.com/palgroup/palai/adapters/integrations/webhook"
-	fake "github.com/palgroup/palai/adapters/models/fake"
-	openaicompatible "github.com/palgroup/palai/adapters/models/openai_compatible"
-	providerone "github.com/palgroup/palai/adapters/models/provider_one"
-	providertwo "github.com/palgroup/palai/adapters/models/provider_two"
+	"github.com/palgroup/palai/adapters/models/registry"
 	"github.com/palgroup/palai/adapters/repositories"
 	"github.com/palgroup/palai/adapters/sandboxes/host"
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
@@ -216,6 +213,14 @@ func main() {
 	}
 	if secretStore != nil {
 		routerOpts = append(routerOpts, api.WithSecretRefs(secretStore))
+		// THE VERIFY ACTION'S REAL WORK (E29), on the SAME condition and the SAME store as the secret-ref
+		// surface, for the reason the environment surface rides it: a credential probe has to REDEEM the
+		// credential, and without a master key there is nothing to redeem. It resolves through `dbSecret` —
+		// byte-for-byte the resolver the model broker itself uses — so the probe checks what a run would
+		// actually send rather than a second read path that could disagree with it. A stack with no master
+		// key mounts the route and answers "nothing was checked", which is the honest answer and never a
+		// green.
+		repo.WithModelConnectionProbes(connectionProbers(), dbSecret)
 		// The environment surface (E25 T3) rides the SAME condition and the SAME store, and the coupling is
 		// the design: an environment value IS a secret_refs version, so an environment surface without a
 		// master key could list names it can never fill. One `if`, two families, no way to mount half of it.
@@ -753,42 +758,71 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 // a tenant-qualified ref (minted by a DB route) redeems from the T3 secret store under that tenant's own
 // organization, and an unqualified ref redeems from the env bridge below.
 func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute) {
+	// THE ADAPTER MAP IS BUILT UNCONDITIONALLY, AND THAT IS THE FIX E29 EXISTS FOR.
+	//
+	// It used to be built INSIDE the `PALAI_MODEL_PROVIDER == "provider-one"` branch below. The comment
+	// above this function said the env selection was "the FALLBACK, not the whole story", and for the ROUTE
+	// that was true — a published route did override the model and the credential. But the ADAPTER map was
+	// not a fallback, it was a GATE: on any other value, including the unset one a fresh self-host has, the
+	// broker knew exactly one adapter named `fake`. So on the only deployment the model-connections feature
+	// exists for — an operator who has typed no key into .env.local and is wiring their provider through the
+	// console — a connection created over POST /v1/model-connections resolved onto a route and then died at
+	// Broker.Route with `unknown_provider`. A shipped, mounted, routed surface that nothing could dispatch
+	// to.
+	//
+	// The env var now decides ONE thing: the deployment DEFAULT ROUTE, for a project that has published no
+	// route of its own. WHICH PROVIDERS THIS BINARY CAN SPEAK TO IS NOT A DEPLOYMENT SETTING — it is a
+	// property of the binary, and it is adapters/models/registry, where a test pins the family list and the
+	// adapter map to each other in BOTH directions.
+	//
+	// PALAI_OPENAI_COMPATIBLE_BASE_URL survives as the deployment-wide fallback endpoint for the custom
+	// family, so a deployment that set it keeps working unchanged; a connection carrying its own base URL
+	// (migration 000049) wins over it, per request.
+	adapters := registry.Adapters(registry.Options{
+		OpenAICompatibleBaseURL: os.Getenv("PALAI_OPENAI_COMPATIBLE_BASE_URL"),
+	})
+	// The credential resolver is the same in both branches: a tenant-qualified ref (minted by a DB route)
+	// redeems from the T3 secret store under that tenant's own organization, and an unqualified ref redeems
+	// from the env bridge. The `fake` entry is unconditional for the same reason the adapter map is — a
+	// project may route to a family the deployment default is not.
+	broker := modelbroker.New(modelbroker.Config{Adapters: adapters, Secrets: execution.RouteSecretResolver{
+		Lookup: dbSecret,
+		// Both sources, always, for the same reason the adapter map is unconditional: which credential
+		// sources exist is a property of the binary, and a project may route to a family the deployment
+		// default is not. `fake` dials nothing, so its "credential" is a placeholder the broker still
+		// insists on redeeming.
+		Fallback: modelbroker.ChainResolver{
+			modelbroker.EnvResolver{
+				modelbroker.SecretRef("provider-one"):      "PALAI_SECRET_PROVIDER_ONE",
+				modelbroker.SecretRef("provider-two"):      "PALAI_SECRET_PROVIDER_TWO",
+				modelbroker.SecretRef("openai-compatible"): "PALAI_SECRET_OPENAI_COMPATIBLE",
+			},
+			modelbroker.StaticResolver{modelbroker.SecretRef("fake"): "unused"},
+		},
+	}})
+
 	if os.Getenv("PALAI_MODEL_PROVIDER") == "provider-one" {
 		model := os.Getenv("PALAI_MODEL")
 		if model == "" {
 			model = "gpt-4o-mini"
 		}
-		// The second family (E16 T5) rides the same registry so a DB-published route can
-		// dispatch to provider-two (Anthropic) or the OpenAI-compatible adapter with its own
-		// connection credential; the env deployment DEFAULT below stays provider-one. The
-		// OpenAI-compatible base URL comes from env (empty → OpenAI's endpoint).
-		broker := modelbroker.New(modelbroker.Config{
-			Adapters: map[string]modelbroker.ModelAdapter{
-				"provider-one":      providerone.Adapter{},
-				"provider-two":      providertwo.Adapter{},
-				"openai-compatible": openaicompatible.Adapter{Adapter: providerone.Adapter{BaseURL: os.Getenv("PALAI_OPENAI_COMPATIBLE_BASE_URL")}},
-			},
-			Secrets: execution.RouteSecretResolver{
-				Lookup: dbSecret,
-				Fallback: modelbroker.EnvResolver{
-					modelbroker.SecretRef("provider-one"):      "PALAI_SECRET_PROVIDER_ONE",
-					modelbroker.SecretRef("provider-two"):      "PALAI_SECRET_PROVIDER_TWO",
-					modelbroker.SecretRef("openai-compatible"): "PALAI_SECRET_OPENAI_COMPATIBLE",
-				},
-			},
-		})
 		return broker, execution.ModelRoute{Provider: "provider-one", Model: model, Secret: modelbroker.SecretRef("provider-one")}
 	}
-	broker := modelbroker.New(modelbroker.Config{
-		Adapters: map[string]modelbroker.ModelAdapter{"fake": fake.Adapter{Script: fake.Script{
-			ProviderRequestID: "fake-local", Model: "fake", Output: "ok",
-		}}},
-		Secrets: execution.RouteSecretResolver{
-			Lookup:   dbSecret,
-			Fallback: modelbroker.StaticResolver{modelbroker.SecretRef("fake"): "unused"},
-		},
-	})
-	return broker, execution.ModelRoute{Provider: "fake", Model: "fake", Secret: modelbroker.SecretRef("fake")}
+	// No configured provider: the deployment default stays the deterministic fake adapter, exactly as
+	// before, and every existing deployment's runs are bit-unchanged.
+	return broker, execution.ModelRoute{Provider: registry.FakeFamily, Model: "fake", Secret: modelbroker.SecretRef("fake")}
+}
+
+// connectionProbers adapts the adapter registry's probers to the store's seam. It is a conversion rather
+// than a direct pass because the store must not import the adapters — the store is what api.ModelRouteAPI
+// is satisfied by, and a wire-format dependency there would put every provider adapter behind the
+// management surface.
+func connectionProbers() map[string]store.ConnectionProber {
+	out := map[string]store.ConnectionProber{}
+	for family, prober := range registry.Probers() {
+		out[family] = prober
+	}
+	return out
 }
 
 // repositoryBrokerFromEnv builds the credential broker the root-run clone runs behind (spec §30.2-30.3):

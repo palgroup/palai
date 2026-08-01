@@ -47,6 +47,10 @@ func (f *fakeModelRoutes) PublishModelRouteRevision(_ context.Context, s middlew
 	f.lastScope, f.lastRoute, f.lastRev = s, routeID, revisionID
 	return f.out, nil
 }
+func (f *fakeModelRoutes) VerifyModelConnection(_ context.Context, s middleware.Scope, connectionID string) (ProvisionResult, error) {
+	f.lastScope, f.lastConn = s, connectionID
+	return f.out, nil
+}
 func (f *fakeModelRoutes) ListModelConnections(_ context.Context, s middleware.Scope) (ProvisionResult, error) {
 	f.lastScope = s
 	return f.out, nil
@@ -240,5 +244,54 @@ func TestModelRoutesUnmountedWithoutOption(t *testing.T) {
 		t.Fatalf("unmounted model-route list status = %d, want 404", r.StatusCode)
 	} else {
 		r.Body.Close()
+	}
+}
+
+// THE VERIFY ACTION IS MOUNTED, TENANT-SCOPED, AND SAYS 200 EVEN WHEN THE CREDENTIAL IS BAD (E29).
+//
+// The last clause is the one worth a test. A rejected credential is a SUCCESSFUL verification — the control
+// plane asked the endpoint and got an answer — and rendering it as a 4xx would tell the operator their
+// REQUEST was wrong, sending them to re-read the API when what they need to re-read is their key. 404 keeps
+// its one real meaning: no such connection in this tenant, indistinguishable from another tenant's.
+func TestVerifyModelConnectionIsMountedAndScoped(t *testing.T) {
+	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	fake := &fakeModelRoutes{out: ProvisionResult{Body: []byte(`{"object":"model_connection_verification","outcome":"credential_rejected"}`)}}
+	srv := modelRouteTestServer(t, admin, WithModelRoutes(fake))
+
+	resp := do(t, "POST", srv+"/v1/model-connections/mconn_1/verify", ``, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("verify status = %d, want 200 — a REJECTED credential is a successful verification, and a "+
+			"4xx would blame the operator's request for their key", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if fake.lastConn != "mconn_1" {
+		t.Fatalf("verify reached the store with %q, want mconn_1", fake.lastConn)
+	}
+	if fake.lastScope.Organization != "org_1" || fake.lastScope.Project != "prj_1" {
+		t.Fatalf("verify scope = %+v, want the verified identity (never a path or body field)", fake.lastScope)
+	}
+
+	fake.out = ProvisionResult{NotFound: true}
+	resp = do(t, "POST", srv+"/v1/model-connections/foreign/verify", ``, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("verify of a foreign connection = %d, want a non-disclosing 404", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// The probe is behind the SAME provision capability as every other model-routing route. It redeems a
+// credential and dials a third party; a run-scoped key must not be able to make the control plane do either.
+func TestVerifyModelConnectionRequiresProvisionCapability(t *testing.T) {
+	limited := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Scopes: []string{"responses"}}}
+	fake := &fakeModelRoutes{out: ProvisionResult{Body: []byte(`{}`)}}
+	srv := modelRouteTestServer(t, limited, WithModelRoutes(fake))
+
+	resp := do(t, "POST", srv+"/v1/model-connections/mconn_1/verify", ``, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("verify with a non-provision key = %d, want 403", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if fake.lastConn != "" {
+		t.Fatalf("the store was reached with %q despite the refusal", fake.lastConn)
 	}
 }

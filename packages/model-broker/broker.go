@@ -52,6 +52,34 @@ func (r EnvResolver) Redeem(ref SecretRef) (string, error) {
 	return v, nil
 }
 
+// ChainResolver tries each resolver in order and returns the first hit. It exists because a deployment's
+// credential sources are plural and always were: the env bridge for the deployment default, a static entry
+// for the deterministic fake. Before E29 that plurality was expressed by building a DIFFERENT broker per
+// case, which is exactly how the adapter map came to be gated on an env var — the two concerns were welded
+// together in one constructor. Only an ErrUnknownSecret falls through; a real failure (a store outage, a
+// decrypt failure) stops the chain, because continuing would let a superseded source answer for a live one.
+type ChainResolver []SecretResolver
+
+// Redeem returns the first resolver's hit, or the LAST resolver's error so the message names the source the
+// caller most likely meant.
+func (c ChainResolver) Redeem(ref SecretRef) (string, error) {
+	var lastErr error = fmt.Errorf("%w: %s", ErrUnknownSecret, ref)
+	for _, r := range c {
+		if r == nil {
+			continue
+		}
+		v, err := r.Redeem(ref)
+		if err == nil {
+			return v, nil
+		}
+		if !errors.Is(err, ErrUnknownSecret) {
+			return "", err
+		}
+		lastErr = err
+	}
+	return "", lastErr
+}
+
 // Config constructs a Broker. Diagnostics, if set, receives non-secret routing
 // breadcrumbs; the credential is never written to it.
 type Config struct {

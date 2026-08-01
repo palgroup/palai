@@ -45,22 +45,27 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 		}
 	}
 
-	// usage_series is the current chain head; E29's session_list is the link before it. THE NAME IS
-	// PINNED AS WELL AS THE NUMBER, and that is what makes this a rename guard too: `git mv` stages the
-	// OLD content, so a renumbering whose header edit is never re-added would leave a file whose name says
-	// 49 and whose marker says 48, and only the pair below catches it.
+	// E29's model_connection_endpoint is the current chain head; usage_step_attribution is the link before
+	// it. THE NAME IS PINNED AS WELL AS THE NUMBER, and that is what makes this a rename guard too:
+	// `git mv` stages the OLD content, so a renumbering whose header edit is never re-added would leave a
+	// file whose name says 51 and whose marker says 49, and only the pair below catches it.
 	//
-	// 000049 was taken while two other branches were also in flight, which is exactly the case the pin
-	// exists for: whichever lands second renumbers, and this assertion is what forces the rename to be
-	// finished rather than half-done. It is a pin on the CHAIN, not a claim that one epic owns one
-	// migration — E29 could hold both 48 and a later number without this line changing meaning.
+	// THIS PIN HAS NOW DONE ITS JOB TWICE ON ONE NUMBER. 000049 was taken by three branches in flight at
+	// once — usage_series, usage_step_attribution and this one — and the model_connection_endpoint branch
+	// was parked long enough that the other two landed first. It renumbered 49 -> 51 at merge, and the
+	// assertion below is what forces that rename to be FINISHED rather than half-done: the file name, the
+	// `VALUES (51)` marker inside it and the embed var all have to agree before this test goes green.
+	//
+	// It is a pin on the CHAIN, not a claim that one epic owns one migration — E29 holds both 48 and 51,
+	// and the "one migration per epic" reasoning an earlier revision of this comment carried was never
+	// structural, only a property of the four epics that happened to need one each.
 	head := migrations[len(migrations)-1]
-	if head.Version != 50 || head.Name != "usage_step_attribution" {
-		t.Fatalf("chain head = %06d_%s, want 000050_usage_step_attribution", head.Version, head.Name)
+	if head.Version != 51 || head.Name != "model_connection_endpoint" {
+		t.Fatalf("chain head = %06d_%s, want 000051_model_connection_endpoint", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 49 || penultimate.Name != "usage_series" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000049_usage_series", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 50 || penultimate.Name != "usage_step_attribution" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000050_usage_step_attribution", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

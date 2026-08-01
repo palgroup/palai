@@ -11,6 +11,28 @@ import { callArgs, enc, type CallOptions, type ListView } from "./shared.ts";
 export interface ModelConnectionCreateParams {
   provider: string;
   secret_ref: string;
+  /**
+   * This connection's OWN endpoint (E29). REQUIRED by the `openai-compatible` family — that family has no
+   * endpoint of its own, and an empty one would dial the OpenAI API with a key minted for something else —
+   * and refused on families that do have one. Omit for `provider-one` / `provider-two`.
+   */
+  base_url?: string;
+}
+
+/**
+ * One credential probe's finding (E29). `outcome` is the verdict; `not_probed` means NOTHING was checked
+ * and must never be rendered as a pass. `checked` is the server's own sentence about what a probe does not
+ * establish — the model id's validity above all — carried in the payload so a UI cannot overstate it.
+ */
+export interface ModelConnectionVerification {
+  object: string;
+  connection_id: string;
+  provider: string;
+  outcome: "credential_accepted" | "credential_rejected" | "unreachable" | "transient" | "not_probed";
+  status?: number;
+  endpoint?: string;
+  detail?: string;
+  checked?: string;
 }
 export interface ModelRouteCreateParams {
   name: string;
@@ -35,6 +57,16 @@ export class ModelRoutes {
   // createConnection binds a provider family to a secret-ref handle (201).
   async createConnection(params: ModelConnectionCreateParams, options: CallOptions = {}): Promise<ModelConnection> {
     const r = await this.#client.request<ModelConnection>("POST", "/v1/model-connections", { body: params, ...callArgs(options) });
+    return r.body;
+  }
+
+  // verifyConnection performs a REAL credential probe against the connection's endpoint (E29): the control
+  // plane redeems this connection's own credential and asks the endpoint whether it accepts it. It resolves
+  // (200) for every outcome it reached a verdict on, INCLUDING a rejected credential — the request
+  // succeeded and the verdict is in the body, because a 4xx would blame the caller's request for the
+  // operator's key. Only an unknown connection rejects, with a 404.
+  async verifyConnection(connectionID: string, options: CallOptions = {}): Promise<ModelConnectionVerification> {
+    const r = await this.#client.request<ModelConnectionVerification>("POST", `/v1/model-connections/${enc(connectionID)}/verify`, callArgs(options));
     return r.body;
   }
 

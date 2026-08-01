@@ -89,6 +89,15 @@ type flags struct {
 	osName        string
 	arch          string
 	strict        bool
+	// The E29 model-wiring flags. Every one is a PUBLIC fact — a family name, a secret REF name, a URL, a
+	// model id. None can carry a credential, and admin_test.go's TestModelFlagsCarryNoCredential is what
+	// keeps the next one from doing so.
+	provider    string
+	secretRef   string
+	connBaseURL string
+	connection  string
+	model       string
+	routeName   string
 }
 
 // multiFlag collects a repeatable string flag (--scope run --scope provision).
@@ -141,6 +150,20 @@ func (f *flags) register(fs *flag.FlagSet, resource string) {
 	case "runner":
 		// No flags at all. Every subcommand either takes no argument (`list`) or names ONE machine by the
 		// id the server minted, so there is nothing to configure and nothing that could carry a credential.
+	case "model":
+		// THE PROVIDER WIRING (E29). There is deliberately NO flag carrying a provider key, for exactly the
+		// reason `secret` has none: a value in argv is a value in the shell history and in every `ps` on the
+		// box. The key is written with `palai secret create` (stdin) and named here by its REF.
+		fs.StringVar(&f.provider, "provider", "", "provider family: provider-one (OpenAI), provider-two (Anthropic) or openai-compatible (your own endpoint) — create")
+		fs.StringVar(&f.secretRef, "secret-ref", "", "the name of a secret written with `palai secret create` (create) — the REF, never the value")
+		// `--endpoint`, NOT `--base-url`: the global flag registered at the top of this function is already
+		// called --base-url and it means the CONTROL PLANE's address. Two different addresses under one
+		// spelling is how an operator points a connection at their own control plane; the flag package
+		// happens to panic on the collision, which is a kinder failure than the one that was available.
+		fs.StringVar(&f.connBaseURL, "endpoint", "", "the chat-completions URL for the openai-compatible family (create) — REQUIRED by it, refused on the others")
+		fs.StringVar(&f.connection, "connection", "", "the connection id a route dispatches through (route)")
+		fs.StringVar(&f.model, "model", "", "the model id to send on the provider wire, e.g. gpt-4o-mini (route)")
+		fs.StringVar(&f.routeName, "route", "", "route alias (route) — defaults to `default`, which is the only alias a run resolves today")
 	}
 }
 
@@ -199,6 +222,11 @@ var positionalArity = map[string]int{
 	// thing an operator should be able to do by accident, and a human approval that could name several is a
 	// human approval nobody read.
 	"runner/list": 0, "runner/cordon": 1, "runner/resume": 1, "runner/revoke": 1, "runner/approve": 1,
+	// The provider wiring (E29). `create` and `route` take flags only — the one string that could go in a
+	// positional is a credential, which is the same reason `secret create` takes none. `verify` names ONE
+	// connection: probing several with one command is a bill and a burst of outbound requests nobody asked
+	// for, and an operator reading a single verdict knows which row it belongs to.
+	"model/create": 0, "model/list": 0, "model/get": 1, "model/verify": 1, "model/route": 0, "model/routes": 0,
 }
 
 // execute maps (resource, subcommand) to the one E13 endpoint it fronts and dispatches it. It first enforces
@@ -277,6 +305,45 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 			return c.do(http.MethodGet, "/v1/api-keys/"+esc(pos[0]), nil)
 		case "revoke":
 			return c.do(http.MethodPost, "/v1/api-keys/"+esc(pos[0])+"/revoke", nil)
+		}
+	// THE PROVIDER WIRING (E29) — `palai model create|list|get|verify|route|routes`.
+	//
+	// IT EXISTS BECAUSE THE CONSOLE SAID IT DID. apps/web-console/lib/routes.ts led the model-wiring screen
+	// with "This is a read surface — every row here is created by the API or the CLI", and
+	// `grep -rn 'model-connections' cmd/ | grep -v _test` returned NOTHING. The API half was true; an
+	// operator who followed the CLI half found no verb.
+	//
+	// `route` is TWO calls behind one subcommand, and that is a judgement rather than an oversight: a
+	// connection alone routes nothing — a run resolves an alias, through a PUBLISHED revision, to a
+	// connection — so an operator who has created a connection and stopped has done nothing observable. The
+	// three underlying verbs stay on the API for anyone who wants the revision lifecycle; this is the path
+	// that ends with a run reaching the provider.
+	case "model":
+		switch sub {
+		case "create":
+			if f.provider == "" || f.secretRef == "" {
+				return errors.New("model create requires --provider <provider-one|provider-two|openai-compatible> and --secret-ref <name> " +
+					"(write the key first with `palai secret create --name <name>`, value on stdin)")
+			}
+			b := map[string]any{"provider": f.provider, "secret_ref": f.secretRef}
+			if f.connBaseURL != "" {
+				b["base_url"] = f.connBaseURL
+			}
+			return c.do(http.MethodPost, "/v1/model-connections", body(b))
+		case "list":
+			return c.do(http.MethodGet, "/v1/model-connections", nil)
+		case "get":
+			return c.do(http.MethodGet, "/v1/model-connections/"+esc(pos[0]), nil)
+		case "verify":
+			// A REAL probe: the control plane redeems this connection's credential and asks the endpoint
+			// whether it accepts it. It answers 200 even when the credential is REJECTED — the request
+			// succeeded and the verdict is in the body — so read `outcome`, and read `not_probed` as
+			// "nothing was checked", never as a pass.
+			return c.do(http.MethodPost, "/v1/model-connections/"+esc(pos[0])+"/verify", nil)
+		case "route":
+			return c.routeThroughConnection(f)
+		case "routes":
+			return c.do(http.MethodGet, "/v1/model-routes", nil)
 		}
 	case "secret":
 		switch sub {
@@ -411,6 +478,40 @@ func (c *Client) do(method, path string, payload []byte) error {
 		return c.renderProblem(resp.StatusCode, raw)
 	}
 	return c.renderSuccess(raw)
+}
+
+// createAndReadID POSTs a create and returns the server-minted id, rendering the response as `do` does so
+// the operator still sees each step of a multi-call subcommand happen. It is the ONE place this CLI reads a
+// field out of a response body: every other subcommand fronts exactly one endpoint and needs nothing from
+// what came back.
+//
+// A create with no `id` is an ERROR rather than an empty string threaded into the next path — that is how a
+// POST to /v1/model-routes//revisions gets built, and a 404 on a path with a doubled slash sends an
+// operator looking for a route that was never the problem.
+func (c *Client) createAndReadID(path string, payload map[string]any) (string, error) {
+	req, err := http.NewRequest(http.MethodPost, c.BaseURL+path, bytes.NewReader(body(payload)))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("POST %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return "", c.renderProblem(resp.StatusCode, raw)
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil || out.ID == "" {
+		return "", fmt.Errorf("POST %s returned %d with no `id`, so the next step has nothing to name", path, resp.StatusCode)
+	}
+	return out.ID, c.renderSuccess(raw)
 }
 
 // renderSuccess writes the response to Out: raw bytes in --json mode, indented JSON otherwise (a non-JSON
@@ -604,6 +705,39 @@ func writeLine(w io.Writer, b []byte) error {
 	return err
 }
 
+// routeThroughConnection points the project's runs at a connection: open the alias, add a revision naming
+// the model and the connection, publish it. Three server calls, because that is what the revision lifecycle
+// IS — a draft never steers a run, and publishing is the moment the routing changes.
+//
+// IT IS NOT ATOMIC, and the error says which step failed rather than pretending otherwise: a failure after
+// the alias exists leaves an alias with no published revision, which routes nothing and is therefore safe —
+// the project keeps running on the deployment default. Re-running the command is the repair (alias creation
+// is get-or-create).
+func (c *Client) routeThroughConnection(f *flags) error {
+	if f.connection == "" || f.model == "" {
+		return errors.New("model route requires --connection <mconn_id> and --model <model id> (`palai model list` prints the connection ids)")
+	}
+	alias := f.routeName
+	if alias == "" {
+		// The ONLY alias a run resolves today (coordinator.DefaultModelRouteAlias). A different one is
+		// accepted because the API accepts it, and it will route nothing until a config layer can ask for it.
+		alias = "default"
+	}
+	routeID, err := c.createAndReadID("/v1/model-routes", map[string]any{"name": alias})
+	if err != nil {
+		return fmt.Errorf("open the route alias %q: %w", alias, err)
+	}
+	revisionID, err := c.createAndReadID("/v1/model-routes/"+esc(routeID)+"/revisions",
+		map[string]any{"model": f.model, "connection_id": f.connection})
+	if err != nil {
+		return fmt.Errorf("add a revision to route %s (the alias exists and routes nothing, which is safe — re-run to repair): %w", routeID, err)
+	}
+	if err := c.do(http.MethodPost, "/v1/model-routes/"+esc(routeID)+"/revisions/"+esc(revisionID)+"/publish", nil); err != nil {
+		return fmt.Errorf("publish revision %s (it is a DRAFT and steers nothing until published): %w", revisionID, err)
+	}
+	return nil
+}
+
 // usageErr names the subcommands a resource accepts.
 func usageErr(resource string) error {
 	subs := map[string]string{
@@ -616,6 +750,9 @@ func usageErr(resource string) error {
 		// Spelled with its prefix, because that is the only spelling that works: the lifecycle is reached as
 		// `palai admin runner …` so it cannot be confused with the local runner container.
 		"runner": "list | approve <runner_id> | cordon <runner_id> | resume <runner_id> | revoke <runner_id> (revoke is IRREVERSIBLE)",
+		// The provider wiring (E29). `create` never takes a key: write it with `palai secret create` and
+		// name the REF here.
+		"model": "create --provider <provider-one|provider-two|openai-compatible> --secret-ref <name> [--endpoint <url>] | list | get <mconn_id> | verify <mconn_id> | route --connection <mconn_id> --model <id> | routes",
 	}
 	return fmt.Errorf("usage: palai %s <%s>", resource, subs[resource])
 }
