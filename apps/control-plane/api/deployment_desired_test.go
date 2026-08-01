@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -268,4 +269,132 @@ func composeInterpolatedNames(t *testing.T, relative string) map[string]bool {
 		}
 	}
 	return out
+}
+
+// TestDesiredWriteRefusesEveryHostileBody is requirement 3's behavioural leg — the structural one above
+// proves a path cannot ENTER the writable set; this one proves the decoder refuses everything else that
+// tries to reach it.
+//
+// The cases are not invented. Each one is a shape this tree has actually shipped, or one the value's
+// journey makes reachable: the journey is JSON body -> JSONB document -> `palai up` -> os.Setenv -> a
+// `docker compose` environment -> `${VAR}` interpolation into a YAML scalar.
+func TestDesiredWriteRefusesEveryHostileBody(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string // a substring the refusal must carry, so the message is asserted and not just the error
+	}{
+		{"a path smuggled in by name", `{"settings":{"PALAI_SECRET_MASTER_KEY_FILE":"/tmp/mine"}}`,
+			"not writable from this surface"},
+		{"the shell posture", `{"settings":{"PALAI_SHELL_NATIVE":"unsandboxed-host"}}`,
+			"DELETES a security boundary"},
+		{"the object store a credential is sent to", `{"settings":{"PALAI_S3_ENDPOINT":"https://attacker.example"}}`,
+			"credential exfiltration"},
+		{"an image reference", `{"settings":{"PALAI_ENGINE_IMAGE":"evil@sha256:aa"}}`,
+			"arbitrary container execution"},
+		{"the address this API is reached on", `{"settings":{"PALAI_LISTEN_ADDR":"127.0.0.1:1"}}`,
+			"cannot be reached to change it back"},
+		{"a variable nobody catalogued", `{"settings":{"PALAI_SECRET_PROVIDER_ONE":"sk-live-aaa"}}`,
+			"not a setting this deployment declares"},
+		{"a credential-bearing variable", `{"settings":{"PALAI_DATABASE_URL":"postgres://u:p@h/d"}}`,
+			"not a setting this deployment declares"},
+		{"an unknown top-level field", `{"settings":{},"apply":true}`, "carry no other field"},
+		{"no settings field at all", `{}`, "`settings` is required"},
+		{"a duration a human reads and Go does not", `{"settings":{"PALAI_SANDBOX_WALL_TIME":"10min"}}`,
+			"write `10m`"},
+		{"an integer that is a word", `{"settings":{"PALAI_DISPATCH_WORKERS":"four"}}`, "strconv.Atoi"},
+		{"an integer with a sign the reader normalises away", `{"settings":{"PALAI_DISPATCH_WORKERS":"+4"}}`,
+			"does not survive a round trip"},
+		{"an integer with leading whitespace", `{"settings":{"PALAI_DISPATCH_WORKERS":" 4"}}`, "strconv.Atoi"},
+		{"a negative bound", `{"settings":{"PALAI_MAX_QUEUED_RUNS":"-1"}}`, "negative"},
+		{"a rate that is not finite", `{"settings":{"PALAI_REQUEST_RATE_PER_SEC":"Inf"}}`, "finite"},
+		{"a newline, which edits the YAML rather than the value", "{\"settings\":{\"PALAI_MODEL\":\"gpt-4o\\n      PALAI_SHELL_NATIVE: unsandboxed-host\"}}",
+			"control character"},
+		{"a second round of compose interpolation", `{"settings":{"PALAI_MODEL":"${PALAI_SECRET_PROVIDER_ONE}"}}`,
+			"$ ` \\ \" '"},
+		{"an empty value, which is a third state", `{"settings":{"PALAI_MODEL":""}}`, "Remove the key"},
+		{"a value longer than any this deployment parses", `{"settings":{"PALAI_MODEL":"` + strings.Repeat("a", 300) + `"}}`,
+			"at most 256"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := DecodeDesiredSettings([]byte(tc.body))
+			if err == nil {
+				t.Fatalf("accepted %s and stored %v. Every one of these reaches os.Setenv and then a compose "+
+					"interpolation; the body is assumed hostile", tc.body, got)
+			}
+			if !errors.Is(err, ErrDesiredRefused) {
+				t.Errorf("refusal is not an ErrDesiredRefused: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("refusal does not say why.\n  got:  %v\n  want it to contain: %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestDesiredWriteAcceptsTheValuesAnOperatorActuallyTypes is the other direction, and it is not decoration:
+// a validator that refuses everything passes every test above and ships a form nobody can use.
+func TestDesiredWriteAcceptsTheValuesAnOperatorActuallyTypes(t *testing.T) {
+	const body = `{"settings":{
+		"PALAI_DISPATCH_WORKERS":"4",
+		"PALAI_QUEUE_DEADLINE":"15m",
+		"PALAI_RETENTION_STORE_FALSE_TTL":"720h",
+		"PALAI_SANDBOX_WALL_TIME":"1h30m",
+		"PALAI_REQUEST_RATE_PER_SEC":"12.5",
+		"PALAI_REQUEST_BURST":"40",
+		"PALAI_MAX_CONCURRENT_RUNS":"8",
+		"PALAI_MAX_QUEUED_RUNS":"100",
+		"PALAI_RUNNER_CERT_TTL":"5m",
+		"PALAI_MODEL_PROVIDER":"provider-one",
+		"PALAI_MODEL":"gpt-4o-mini"
+	}}`
+	got, err := DecodeDesiredSettings([]byte(body))
+	if err != nil {
+		t.Fatalf("refused a document naming every writable setting with a value its own reader parses: %v", err)
+	}
+	if len(got) != len(DesiredWritableSettings()) {
+		t.Fatalf("accepted %d of %d writable settings; this document names all of them, so any shortfall is a "+
+			"setting the panel advertises and the decoder will not take", len(got), len(DesiredWritableSettings()))
+	}
+	// The empty document is the "go back to every deployment default" operation and must be spelled, not
+	// stumbled into: it is accepted here and refused above when `settings` is absent entirely.
+	if _, err := DecodeDesiredSettings([]byte(`{"settings":{}}`)); err != nil {
+		t.Fatalf(`{"settings":{}} is the clear-everything operation and was refused: %v`, err)
+	}
+}
+
+// TestDesiredDriftComparesTheStringTheBringUpWillExport pins the comparison, and it pins the ONE case where
+// the obvious alternative gets the answer backwards.
+//
+// PALAI_DISPATCH_WORKERS unset is ONE worker to DispatchWorkers() and ZERO to compose.yaml, which defaults
+// it to 0. So a drift check comparing BEHAVIOUR would read desired="1" against an unset process as "no
+// drift, nothing to do" and leave the operator on the queued-only stack this entire surface exists to
+// expose. The comparison is on the raw string, because the raw string is what the next bring-up exports.
+func TestDesiredDriftComparesTheStringTheBringUpWillExport(t *testing.T) {
+	doc := &DesiredDocument{Settings: map[string]string{
+		"PALAI_DISPATCH_WORKERS": "1",
+		"PALAI_MODEL":            "gpt-4o-mini",
+	}}
+	unsetProcess := func(string) string { return "" }
+	drifted := desiredDrift(doc, unsetProcess)
+	if len(drifted) != 2 {
+		t.Fatalf("drift against a process holding neither value = %v, want both. A desired PALAI_DISPATCH_WORKERS=1 "+
+			"against an unset process is REAL drift: compose.yaml defaults that variable to 0, so 'unset' and '1' are "+
+			"opposite deployments even though DispatchWorkers() reads them as the same number", drifted)
+	}
+	if drifted[0] != "PALAI_DISPATCH_WORKERS" || drifted[1] != "PALAI_MODEL" {
+		t.Errorf("drift = %v, want it sorted so a screen and a CLI print the same list", drifted)
+	}
+
+	matching := func(name string) string { return doc.Settings[name] }
+	if drifted := desiredDrift(doc, matching); len(drifted) != 0 {
+		t.Errorf("a process holding exactly the desired values still reports drift %v — a pending banner that never "+
+			"clears is the wallpaper this tree keeps deleting", drifted)
+	}
+	if drifted := desiredDrift(nil, unsetProcess); drifted != nil {
+		t.Errorf("no desired document at all reported drift %v. A machine nobody has written a desired configuration "+
+			"for is not drifted from anything, and saying it is would tell an operator the panel is in control when "+
+			"the compose file still is", drifted)
+	}
 }

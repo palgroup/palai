@@ -56,16 +56,16 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	// assertion below is what forces that rename to be FINISHED rather than half-done: the file name, the
 	// `VALUES (51)` marker inside it and the embed var all have to agree before this test goes green.
 	//
-	// It is a pin on the CHAIN, not a claim that one epic owns one migration — E29 holds both 48 and 51,
+	// It is a pin on the CHAIN, not a claim that one epic owns one migration — E29 holds 48, 51 and now 52,
 	// and the "one migration per epic" reasoning an earlier revision of this comment carried was never
 	// structural, only a property of the four epics that happened to need one each.
 	head := migrations[len(migrations)-1]
-	if head.Version != 51 || head.Name != "model_connection_endpoint" {
-		t.Fatalf("chain head = %06d_%s, want 000051_model_connection_endpoint", head.Version, head.Name)
+	if head.Version != 52 || head.Name != "deployment_desired" {
+		t.Fatalf("chain head = %06d_%s, want 000052_deployment_desired", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 50 || penultimate.Name != "usage_step_attribution" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000050_usage_step_attribution", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 51 || penultimate.Name != "model_connection_endpoint" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000051_model_connection_endpoint", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

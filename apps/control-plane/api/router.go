@@ -40,7 +40,17 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	// exists whatever else was wired, and a binary that answered nothing here would reproduce the hole it
 	// was added to close. It is gated on the `provision` capability inside the handler rather than by a
 	// mount, because there is no optional seam to derive a mount from.
-	mux.HandleFunc("GET /v1/deployment", deployment)
+	mux.HandleFunc("GET /v1/deployment", deployment(cfg.desired))
+
+	// The DESIRED configuration (E29, migration 000052): what this machine SHOULD be running with. The READ
+	// rides GET /v1/deployment above, because desired and effective are one answer and serving them apart
+	// would let a client render one against a stale copy of the other. Only the WRITE is its own route, and
+	// it is mount-gated: a deployment with no durable spine has nowhere to keep a document, and a route that
+	// accepted one and dropped it would be the defect this whole surface exists to expose.
+	if cfg.desired != nil {
+		dh := &desiredHandler{desired: cfg.desired}
+		mux.HandleFunc("PUT /v1/deployment/desired", dh.put)
+	}
 
 	// Repository-binding registration (spec §30.1): a project registers the external repository its
 	// coding sessions attach via the `repository` field. A durable, unkeyed create — nil in tiers that

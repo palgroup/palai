@@ -93,6 +93,12 @@ var allTables = []string{
 	// thing from the tool_calls row that spawned it — the process outlives that row, which is exactly why
 	// it needs one of its own.
 	"background_tasks",
+	// The E29 desired-configuration journal (000052): what this MACHINE should be running with, appended
+	// one revision at a time by the admin panel and read by the next bring-up. It carries NO
+	// organization_id and that absence is deliberate — four of its writable settings are the admission
+	// bounds that exist to hold a tenant — so it is also a BY-NAME entry in tests/security/tenancy's
+	// nonTenantTables, which is where a reader looking for "why is this one outside RLS" will look.
+	"deployment_desired",
 	"schema_migrations",
 }
 

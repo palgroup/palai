@@ -78,6 +78,18 @@ type routerConfig struct {
 	// listener, not on this router (see WithCapabilityWorkers). It carries no handler because there is
 	// nothing for the router to mount; it exists so discovery derives the claim from the live mount.
 	capabilityWorkers bool
+	// desired is the desired-configuration store (E29, migration 000052); nil ⇒ the PUT route is unmounted
+	// and GET /v1/deployment reports NO desired block at all — which is honest for a control plane with no
+	// durable spine, and distinct from reporting an empty document.
+	desired DesiredConfigAPI
+}
+
+// WithDesiredConfig mounts the desired-configuration write path and gives GET /v1/deployment its desired
+// half. A trailing option for the same reason as WithSecretRefs: only production and its dedicated tests
+// wire it, so every other caller compiles unchanged and a tier that passes none serves the effective
+// configuration exactly as it did before.
+func WithDesiredConfig(desired DesiredConfigAPI) RouterOption {
+	return func(c *routerConfig) { c.desired = desired }
 }
 
 // WithEdgeLimits supplies the §20.12 request-rate limiter and per-project admission caps.

@@ -94,6 +94,11 @@ const (
 const (
 	warnDispatchOff = "dispatch_workers_zero"
 	warnModelFake   = "model_provider_fake"
+	// warnDesiredPending: an operator saved a configuration this process is not running. ADVISORY rather
+	// than blocking, and the distinction is the honest one — the machine is working, it is working with the
+	// PREVIOUS configuration, and the remedy is a bring-up somebody has to choose to run. Calling it
+	// blocking would put a red banner on a healthy deployment for as long as one setting was pending.
+	warnDesiredPending = "desired_config_pending"
 
 	severityBlocking = "blocking"
 	severityAdvisory = "advisory"
@@ -122,6 +127,24 @@ type deploymentSetting struct {
 	// somebody's recollection of it.
 	ReaderFile string `json:"reader_file"`
 	ReaderFunc string `json:"reader_func"`
+	// Writable reports whether the panel may write a DESIRED value for this setting. It is served rather
+	// than derived by each client, so a console and a CLI cannot disagree about which of thirty-five
+	// controls exist — and a client written against an older deployment gets `false` and renders nothing,
+	// which is the safe direction.
+	Writable bool `json:"writable"`
+	// NotWritableBecause is the sentence from nonDesiredReason, empty when Writable. It is served for the
+	// same reason the effect prose is: an operator who cannot change something on this screen is entitled
+	// to the reason without reading Go source, and twenty-four of the thirty-five are in that position.
+	NotWritableBecause string `json:"not_writable_because,omitempty"`
+	// Desired is what the desired document asks for, and DesiredSet distinguishes "the operator decided
+	// this" from "no opinion" — an empty Desired with DesiredSet false is the second, and the two are
+	// different facts about the same machine.
+	Desired    string `json:"desired"`
+	DesiredSet bool   `json:"desired_set"`
+	// Drift is DesiredSet && Desired != Value: this process is not running what the document asks for, so
+	// a bring-up is pending. It compares the raw environment STRINGS, which is what the next bring-up will
+	// export — see desiredDrift for why comparing behaviour instead gets PALAI_DISPATCH_WORKERS backwards.
+	Drift bool `json:"drift"`
 }
 
 // deploymentWarning is a configured value that changes what the product DOES, in a way a screen showing
@@ -144,6 +167,11 @@ type deploymentBody struct {
 	Object   string              `json:"object"`
 	Settings []deploymentSetting `json:"settings"`
 	Warnings []deploymentWarning `json:"warnings"`
+	// Desired is the desired document's own metadata, or NULL when no operator has ever written one — which
+	// is a fact a screen must be able to state plainly. A machine with no desired document is running on its
+	// compose file's defaults, and rendering an empty object here would let a screen imply the panel is in
+	// control when the compose file still is.
+	Desired *desiredView `json:"desired"`
 }
 
 // catalogueEntry is one declared setting. The catalogue is an ALLOW-LIST and that is the whole of the
@@ -169,6 +197,18 @@ const (
 	cpMain    = "apps/control-plane/cmd/palai-control-plane/main.go"
 	changeCP  = "recreate the control-plane with the new value (`palai up`, or `docker compose up -d --force-recreate control-plane`)"
 	changeAll = "recreate the whole stack with the new value (`palai up`)"
+	// changeDesired is what a WRITABLE setting's remedy became, and the second sentence is a CORRECTION to
+	// what this catalogue used to tell every operator.
+	//
+	// changeCP names two commands as equivalent and for a desired-configuration setting they are not.
+	// `palai up` reads the desired document off the machine and exports it (cmd/cli/internal/stack/desired.go);
+	// `docker compose up -d --force-recreate control-plane` interpolates ${PALAI_X} from the SHELL THAT
+	// INVOKES IT, which knows nothing about the document. An operator who saved a value in the panel and then
+	// ran the compose command would recreate the process with the value it already had and see the pending
+	// banner survive a restart, with nothing on any screen able to say why.
+	changeDesired = "save it here (it is written to this machine's desired configuration) and then run `palai up` on the machine — " +
+		"the bring-up reads that document and exports it into the environment it starts the control plane with. " +
+		"`docker compose up -d --force-recreate control-plane` does NOT apply it: compose interpolates from the shell that runs it, not from the document"
 )
 
 // deploymentCatalogue is the ordered, declared configuration of this process. ORDER IS THE SCREEN'S: the
@@ -182,7 +222,7 @@ var deploymentCatalogue = []catalogueEntry{
 	{
 		Name: "PALAI_DISPATCH_WORKERS", Group: "execution", Kind: kindValue, Default: "1",
 		Effect:     "How many durable dispatch workers run. ZERO IS NOT 'SLOWER', IT IS OFF: startDispatch returns before it builds anything, so the deployment admits runs through POST /v1/responses and executes none — and with it go the reconciler, the dead-letter sweep, approval expiry, capacity-park expiry and the background-exit notification.",
-		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		Mutability: mutabilityBringUp, ChangeWith: changeDesired,
 		// The reader is this file's own DispatchWorkers, and main.dispatchWorkerCount delegates to it, so
 		// the number this surface reports and the number startDispatch gates on are the same number.
 		ReaderFile: "apps/control-plane/api/deployment.go", ReaderFunc: "DispatchWorkers",
@@ -192,7 +232,7 @@ var deploymentCatalogue = []catalogueEntry{
 		Name: "PALAI_MODEL_PROVIDER", Group: "model", Kind: kindValue, Default: "fake",
 		Effect:     "The DEPLOYMENT-DEFAULT model route. Exactly one value — `provider-one` — selects a live provider; every other value, including a provider name this binary can otherwise speak to and including a typo, falls through to the deterministic fake adapter, whose answers are fabricated and render exactly like real ones.",
 		Mutability: mutabilityDefaultOnly,
-		ChangeWith: "for ONE project, publish a model route (POST /v1/model-routes) — it is resolved per attempt and overrides this with no restart; to change the fallback every project without a route gets, " + changeCP,
+		ChangeWith: "for ONE project, publish a model route (POST /v1/model-routes) — it is resolved per attempt and overrides this with no restart; to change the fallback every project without a route gets, " + changeDesired,
 		ReaderFile: cpMain, ReaderFunc: "modelBrokerFromEnv",
 		DesiredValue: desiredToken,
 	},
@@ -200,7 +240,7 @@ var deploymentCatalogue = []catalogueEntry{
 		Name: "PALAI_MODEL", Group: "model", Kind: kindValue, Default: "gpt-4o-mini (only when PALAI_MODEL_PROVIDER=provider-one; otherwise the fake adapter's `fake`)",
 		Effect:     "The model id the deployment-default route names. Read only on the `provider-one` branch — with any other provider it is inert.",
 		Mutability: mutabilityDefaultOnly,
-		ChangeWith: "a published project model route names its own model; otherwise " + changeCP,
+		ChangeWith: "a published project model route names its own model; otherwise " + changeDesired,
 		ReaderFile: cpMain, ReaderFunc: "modelBrokerFromEnv",
 		DesiredValue: desiredToken,
 	},
@@ -220,7 +260,7 @@ var deploymentCatalogue = []catalogueEntry{
 	{
 		Name: "PALAI_QUEUE_DEADLINE", Group: "execution", Kind: kindValue, Default: "disabled — a run never expires on queue age",
 		Effect:     "How long an admitted run may wait in the queue before dispatch times it out, ahead of any billable compute (§20.12).",
-		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		Mutability: mutabilityBringUp, ChangeWith: changeDesired,
 		ReaderFile: cpMain, ReaderFunc: "startDispatch",
 		DesiredValue: desiredDuration,
 	},
@@ -247,7 +287,7 @@ var deploymentCatalogue = []catalogueEntry{
 	{
 		Name: "PALAI_SANDBOX_WALL_TIME", Group: "shell", Kind: kindValue, Default: "10m",
 		Effect:     "The wall time ONE shell call runs under. The container posture refuses a non-positive bound.",
-		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		Mutability: mutabilityBringUp, ChangeWith: changeDesired,
 		ReaderFile: cpMain, ReaderFunc: "sandboxWallTime",
 		DesiredValue: desiredDuration,
 	},
@@ -268,7 +308,7 @@ var deploymentCatalogue = []catalogueEntry{
 	{
 		Name: "PALAI_RETENTION_STORE_FALSE_TTL", Group: "storage", Kind: kindValue, Default: "disabled — nothing is reaped, and GET /v1/capabilities advertises a TTL of 0",
 		Effect:     "How long a `store:false` response survives before the retention reaper deletes it. Unset starts no reaper at all, so no arbitrary production default is imposed.",
-		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		Mutability: mutabilityBringUp, ChangeWith: changeDesired,
 		ReaderFile: cpMain, ReaderFunc: "startRetention",
 		DesiredValue: desiredDuration,
 	},
@@ -302,25 +342,25 @@ var deploymentCatalogue = []catalogueEntry{
 	// --- the edge's bounds ----------------------------------------------------------------------------
 	{
 		Name: "PALAI_REQUEST_RATE_PER_SEC", Group: "edge", Kind: kindValue, Default: "unbounded",
-		Effect: "Sustained request rate the API edge admits per key.", Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		Effect: "Sustained request rate the API edge admits per key.", Mutability: mutabilityBringUp, ChangeWith: changeDesired,
 		ReaderFile: cpMain, ReaderFunc: "edgeLimitsFromEnv",
 		DesiredValue: desiredRate,
 	},
 	{
 		Name: "PALAI_REQUEST_BURST", Group: "edge", Kind: kindValue, Default: "unbounded",
-		Effect: "Burst allowance above the sustained rate.", Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		Effect: "Burst allowance above the sustained rate.", Mutability: mutabilityBringUp, ChangeWith: changeDesired,
 		ReaderFile: cpMain, ReaderFunc: "edgeLimitsFromEnv",
 		DesiredValue: desiredInt,
 	},
 	{
 		Name: "PALAI_MAX_CONCURRENT_RUNS", Group: "edge", Kind: kindValue, Default: "unbounded",
-		Effect: "How many runs one tenant may have in flight before admission refuses.", Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		Effect: "How many runs one tenant may have in flight before admission refuses.", Mutability: mutabilityBringUp, ChangeWith: changeDesired,
 		ReaderFile: cpMain, ReaderFunc: "edgeLimitsFromEnv",
 		DesiredValue: desiredInt,
 	},
 	{
 		Name: "PALAI_MAX_QUEUED_RUNS", Group: "edge", Kind: kindValue, Default: "unbounded",
-		Effect: "How many runs one tenant may have queued before admission refuses.", Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		Effect: "How many runs one tenant may have queued before admission refuses.", Mutability: mutabilityBringUp, ChangeWith: changeDesired,
 		ReaderFile: cpMain, ReaderFunc: "edgeLimitsFromEnv",
 		DesiredValue: desiredInt,
 	},
@@ -367,7 +407,7 @@ var deploymentCatalogue = []catalogueEntry{
 	},
 	{
 		Name: "PALAI_RUNNER_CERT_TTL", Group: "fleet", Kind: kindValue, Default: "5m",
-		Effect: "The lifetime of an issued runner certificate; a short value makes a runner renew mid-session.", Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		Effect: "The lifetime of an issued runner certificate; a short value makes a runner renew mid-session.", Mutability: mutabilityBringUp, ChangeWith: changeDesired,
 		ReaderFile: cpMain, ReaderFunc: "startRunnerGateway",
 		DesiredValue: desiredDuration,
 	},
@@ -576,32 +616,81 @@ func DispatchWorkers() int {
 // authority the tenancy surface requires — because this is an OPERATOR read: it names the object store,
 // the sandbox image, the GitHub App and every path the process holds open. A narrow project-scoped key
 // handed to a run has no business enumerating the machine it is running on.
-func deployment(w http.ResponseWriter, r *http.Request) {
-	scope, ok := middleware.ScopeFrom(r.Context())
-	if !ok {
-		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
-		return
-	}
-	if !scope.HasScope(provisionScope) {
-		middleware.WriteProblem(w, r, http.StatusForbidden, "insufficient_scope", "this API key lacks the provision capability")
-		return
-	}
+func deployment(desired DesiredConfigAPI) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		scope, ok := middleware.ScopeFrom(r.Context())
+		if !ok {
+			middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+			return
+		}
+		if !scope.HasScope(provisionScope) {
+			middleware.WriteProblem(w, r, http.StatusForbidden, "insufficient_scope", "this API key lacks the provision capability")
+			return
+		}
 
-	body := deploymentBody{Object: "deployment", Settings: make([]deploymentSetting, 0, len(deploymentCatalogue))}
-	for _, entry := range deploymentCatalogue {
-		raw, set := os.LookupEnv(entry.Name)
-		body.Settings = append(body.Settings, deploymentSetting{
-			Name: entry.Name, Group: entry.Group, Value: reportedValue(raw), Set: set && raw != "",
-			Default: entry.Default, Kind: entry.Kind, Effect: entry.Effect,
-			Mutability: entry.Mutability, ChangeWith: entry.ChangeWith,
-			ReaderFile: entry.ReaderFile, ReaderFunc: entry.ReaderFunc,
-		})
-	}
-	body.Warnings = deploymentWarnings()
+		// The desired document, when this deployment has somewhere to keep one. A read failure is FATAL to
+		// the response rather than degraded to "no document": the difference between "nobody has written
+		// one" and "we could not read the one that exists" is the difference between a machine running on
+		// its compose defaults and a machine whose operator's decision is invisible, and a screen shown the
+		// first when the second is true would report no pending bring-up while one is pending.
+		var doc *DesiredDocument
+		if desired != nil {
+			var err error
+			if doc, err = desired.GetDesiredConfig(r.Context(), scope); err != nil {
+				middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error",
+					"the effective configuration was read but the desired configuration could not be, so this response cannot say whether a bring-up is pending")
+				return
+			}
+		}
+		writable := desiredWritable()
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(body)
+		body := deploymentBody{Object: "deployment", Settings: make([]deploymentSetting, 0, len(deploymentCatalogue))}
+		for _, entry := range deploymentCatalogue {
+			raw, set := os.LookupEnv(entry.Name)
+			_, isWritable := writable[entry.Name]
+			row := deploymentSetting{
+				Name: entry.Name, Group: entry.Group, Value: reportedValue(raw), Set: set && raw != "",
+				Default: entry.Default, Kind: entry.Kind, Effect: entry.Effect,
+				Mutability: entry.Mutability, ChangeWith: entry.ChangeWith,
+				ReaderFile: entry.ReaderFile, ReaderFunc: entry.ReaderFunc,
+				Writable: isWritable,
+			}
+			if !isWritable {
+				row.NotWritableBecause = nonDesiredReason[entry.Name]
+			}
+			if doc != nil {
+				// The desired value is compared against the RAW environment, not against `row.Value` — which
+				// is reportedValue()'s redacted rendering. Comparing the redaction would report drift on any
+				// value carrying userinfo forever, because the redacted form can never equal what was written.
+				row.Desired, row.DesiredSet = doc.Settings[entry.Name]
+				row.Drift = row.DesiredSet && row.Desired != raw
+			}
+			body.Settings = append(body.Settings, row)
+		}
+		body.Warnings = deploymentWarnings()
+		if doc != nil {
+			drifted := desiredDrift(doc, os.Getenv)
+			body.Desired = &desiredView{
+				Revision: doc.Revision, WrittenAt: doc.WrittenAt, WrittenBy: doc.WrittenBy,
+				Pending: len(drifted) > 0, Drifted: drifted,
+			}
+			if len(drifted) > 0 {
+				body.Warnings = append(body.Warnings, deploymentWarning{
+					Code: warnDesiredPending, Severity: severityAdvisory,
+					Headline: "This machine is not running the configuration that was saved for it.",
+					Detail: "Desired revision " + strconv.FormatInt(doc.Revision, 10) + " differs from what this process holds for " +
+						strconv.Itoa(len(drifted)) + " setting(s): " + strings.Join(drifted, ", ") + ". Every one of them is read from the " +
+						"process environment, which is fixed at exec, so the saved value takes effect when the process is replaced with it — not before.",
+					Remedy:   "Run `palai up` on the machine. The bring-up reads this document and exports it into the environment it starts the control plane with.",
+					Settings: drifted,
+				})
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(body)
+	}
 }
 
 // deploymentWarnings reports the configured values that change what the product DOES in a way a screen

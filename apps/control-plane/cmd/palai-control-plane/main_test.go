@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -558,5 +559,166 @@ func TestModelBrokerSpeaksEveryProviderFamilyOnABootstrapDeployment(t *testing.T
 			t.Fatalf("a bootstrap deployment cannot dispatch to %q: an operator-created model connection "+
 				"naming this family is a row nothing can route to (err=%v)", family, err)
 		}
+	}
+}
+
+// TestEveryDesiredValueThisBinaryAcceptsIsParsedByItsOwnReader is the round trip the desired-configuration
+// write path rests on, and it lives HERE — in the composition root — because this is where the real readers
+// are. api.DecodeDesiredSettings can assert what it accepts; only this package can assert what the binary
+// then does with it.
+//
+// THE DEFECT IT EXISTS TO PREVENT. Every reader of every catalogued setting COERCES SILENTLY, and each one
+// coerces to something different: envInt/envFloat/envDuration to zero, envDurationOr to a named default,
+// api.DispatchWorkers to 1. main.go:996 already writes the consequence down for one of them —
+// "PALAI_SANDBOX_WALL_TIME=10min (not a Go duration) silently gets the default". A write surface that
+// stored `10min` would put a wall time on an operator's screen that the process is not running, which is
+// exactly the "declared, and nothing happens" defect the deployment surface was built to expose, shipped
+// into the surface itself.
+//
+// SO IT IS TWO-SIDED, AND THE SECOND SIDE IS THE ONE THAT MATTERS. For each writable setting:
+//
+//   - ACCEPTED: the decoder takes the value AND this binary's own reader parses it to the stated result.
+//     A validator agreeing with a copy of the parsing rules would pass a one-sided test; this one calls the
+//     shipped reader.
+//   - REFUSED: the decoder rejects the trap AND the reader really would have coerced it, so the refusal is
+//     demonstrated to be necessary rather than merely strict. A refusal nobody can show a cost for is how
+//     a validator ends up rejecting values operators legitimately type.
+func TestEveryDesiredValueThisBinaryAcceptsIsParsedByItsOwnReader(t *testing.T) {
+	cases := []struct {
+		setting string
+		// read renders what THIS BINARY's reader makes of the variable, through the same function
+		// production calls. Not a re-implementation: the function itself.
+		read func() string
+		// accepted is value -> what read() must then return.
+		accepted map[string]string
+		// refused is a trap value -> what read() would have returned had it been stored, which is what
+		// makes refusing it necessary.
+		refused map[string]string
+	}{
+		{
+			setting:  "PALAI_DISPATCH_WORKERS",
+			read:     func() string { return strconv.Itoa(api.DispatchWorkers()) },
+			accepted: map[string]string{"0": "0", "1": "1", "4": "4", "16": "16"},
+			// DispatchWorkers coerces to 1, so a stored "four" would run ONE worker while the panel showed four.
+			refused: map[string]string{"four": "1", "+4": "4", " 4": "1", "4 ": "1", "0x4": "1"},
+		},
+		{
+			setting:  "PALAI_QUEUE_DEADLINE",
+			read:     func() string { return envDuration("PALAI_QUEUE_DEADLINE").String() },
+			accepted: map[string]string{"15m": "15m0s", "1h30m": "1h30m0s", "90s": "1m30s"},
+			// envDuration coerces to 0, and 0 for this variable means the deadline is DISABLED — so a stored
+			// "15 minutes" would turn the queue deadline off while the panel reported fifteen minutes.
+			refused: map[string]string{"15 minutes": "0s", "15": "0s", "10min": "0s"},
+		},
+		{
+			setting:  "PALAI_RETENTION_STORE_FALSE_TTL",
+			read:     func() string { return envDuration("PALAI_RETENTION_STORE_FALSE_TTL").String() },
+			accepted: map[string]string{"720h": "720h0m0s", "24h": "24h0m0s"},
+			refused:  map[string]string{"30d": "0s", "30 days": "0s"},
+		},
+		{
+			setting:  "PALAI_SANDBOX_WALL_TIME",
+			read:     func() string { return sandboxWallTime().String() },
+			accepted: map[string]string{"1h30m": "1h30m0s", "30s": "30s"},
+			// The one main.go had already written down. envDurationOr falls back to defaultSandboxWallTime.
+			refused: map[string]string{"10min": "10m0s", "600": "10m0s"},
+		},
+		{
+			setting:  "PALAI_REQUEST_RATE_PER_SEC",
+			read:     func() string { return strconv.FormatFloat(envFloat("PALAI_REQUEST_RATE_PER_SEC"), 'g', -1, 64) },
+			accepted: map[string]string{"12.5": "12.5", "100": "100", "0.5": "0.5"},
+			// envFloat coerces to 0, and 0 is what api.EdgeLimits reads as UNBOUNDED — so a typo here does not
+			// slow the edge down, it removes the limit entirely.
+			refused: map[string]string{"12,5": "0", "12.5/s": "0", "many": "0"},
+		},
+		{
+			setting:  "PALAI_REQUEST_BURST",
+			read:     func() string { return strconv.Itoa(envInt("PALAI_REQUEST_BURST")) },
+			accepted: map[string]string{"40": "40", "1": "1"},
+			refused:  map[string]string{"40 requests": "0", "4e1": "0"},
+		},
+		{
+			setting:  "PALAI_MAX_CONCURRENT_RUNS",
+			read:     func() string { return strconv.Itoa(envInt("PALAI_MAX_CONCURRENT_RUNS")) },
+			accepted: map[string]string{"8": "8", "1": "1"},
+			refused:  map[string]string{"eight": "0", "8.0": "0"},
+		},
+		{
+			setting:  "PALAI_MAX_QUEUED_RUNS",
+			read:     func() string { return strconv.Itoa(envInt("PALAI_MAX_QUEUED_RUNS")) },
+			accepted: map[string]string{"100": "100", "0": "0"},
+			refused:  map[string]string{"1_000": "0", "1,000": "0"},
+		},
+		{
+			setting:  "PALAI_RUNNER_CERT_TTL",
+			read:     func() string { return envDuration("PALAI_RUNNER_CERT_TTL").String() },
+			accepted: map[string]string{"5m": "5m0s", "1h": "1h0m0s"},
+			refused:  map[string]string{"5 minutes": "0s", "300": "0s"},
+		},
+		{
+			setting: "PALAI_MODEL_PROVIDER",
+			// The reader is an EQUALITY, not a parse (main.modelBrokerFromEnv:810), so what this renders is
+			// the branch the binary takes — which is the fact an operator setting this cares about.
+			read: func() string {
+				if os.Getenv("PALAI_MODEL_PROVIDER") == "provider-one" {
+					return "live"
+				}
+				return "fake"
+			},
+			accepted: map[string]string{"provider-one": "live", "fake": "fake"},
+			// `provider one` and `Provider-One` are the shape of the trap this whole tree names: any value
+			// other than the exact string falls through to the deterministic fake adapter, whose output renders
+			// exactly like a real answer. The grammar cannot refuse `Provider-One` (it is a legal token and a
+			// legal provider name for a future adapter), so only the space form is listed.
+			refused: map[string]string{"provider one": "fake", "provider-one\n": "fake"},
+		},
+		{
+			setting:  "PALAI_MODEL",
+			read:     func() string { return os.Getenv("PALAI_MODEL") },
+			accepted: map[string]string{"gpt-4o-mini": "gpt-4o-mini", "anthropic/claude-x": "anthropic/claude-x"},
+			refused:  map[string]string{"gpt-4o mini": "gpt-4o mini", "${PALAI_SECRET_PROVIDER_ONE}": "${PALAI_SECRET_PROVIDER_ONE}"},
+		},
+	}
+
+	// Every writable setting must appear, or the table has quietly stopped covering one.
+	covered := map[string]bool{}
+	for _, tc := range cases {
+		covered[tc.setting] = true
+	}
+	for _, name := range api.DesiredWritableSettings() {
+		if !covered[name] {
+			t.Errorf("%s is writable from the panel and this round trip does not cover it. An accepted value whose "+
+				"reader nobody checked is the whole defect: the panel shows one number and the process runs another", name)
+		}
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.setting, func(t *testing.T) {
+			for value, want := range tc.accepted {
+				body := `{"settings":{"` + tc.setting + `":` + strconv.Quote(value) + `}}`
+				if _, err := api.DecodeDesiredSettings([]byte(body)); err != nil {
+					t.Errorf("the write surface refuses %q, which this binary parses fine: %v", value, err)
+					continue
+				}
+				t.Setenv(tc.setting, value)
+				if got := tc.read(); got != want {
+					t.Errorf("%s=%q: the panel stores and shows %q, this binary reads it as %q, and the table says it "+
+						"should read as %q. The write surface and the reader disagree about the same string",
+						tc.setting, value, value, got, want)
+				}
+			}
+			for value, coerced := range tc.refused {
+				body := `{"settings":{"` + tc.setting + `":` + strconv.Quote(value) + `}}`
+				if _, err := api.DecodeDesiredSettings([]byte(body)); err == nil {
+					t.Errorf("the write surface ACCEPTS %s=%q, and this binary reads it as %q — a panel showing the "+
+						"stored value would be showing something the process is not running", tc.setting, value, coerced)
+				}
+				t.Setenv(tc.setting, value)
+				if got := tc.read(); got != coerced {
+					t.Errorf("%s=%q reads as %q, but the refusal above is justified on it reading as %q. If the reader "+
+						"stopped coercing, the refusal may no longer be buying anything", tc.setting, value, got, coerced)
+				}
+			}
+		})
 	}
 }
