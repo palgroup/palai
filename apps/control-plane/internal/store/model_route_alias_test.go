@@ -50,6 +50,15 @@ func TestCreatingAModelRouteRefusesAnAliasDispatchWillNeverRead(t *testing.T) {
 		t.Fatalf("the refusal is %q — it does not name %q, the only alias dispatch resolves",
 			out.MissingField, coordinator.DefaultModelRouteAlias)
 	}
+	// AND IT IS ASSERTED AS THE OPERATOR READS IT, not as the field holds it. api/model_routes.go renders
+	// `MissingField + " is required"`, so a message written as a sentence arrives as
+	// "…never consulted by a single run is required" — grammatical nonsense at exactly the moment an
+	// operator is trying to work out what they typed wrong. Measured live before this line existed; the
+	// first version of this refusal did precisely that.
+	rendered := out.MissingField + " is required"
+	if strings.Contains(rendered, "run is required") {
+		t.Fatalf("the operator reads %q — the message is a sentence, and its renderer appends a predicate to it", rendered)
+	}
 }
 
 // The alias that DOES work is unchanged. This is the whole existing surface — every create in this tree
@@ -104,5 +113,57 @@ func TestTheRouteProjectionSaysWhetherDispatchReadsThisAlias(t *testing.T) {
 	if _, present := live["dispatch_note"]; present {
 		t.Fatal("the live alias carries a dispatch note — a warning on the row that is working teaches an " +
 			"operator to ignore warnings")
+	}
+}
+
+// AND ONE LEVEL DOWN, THE SAME SHAPE. Found while RESTORING the live stack's route after the provider
+// smoke, 2026-08-01:
+//
+//	GET /v1/model-routes/{id}/revisions  ->  rev 1 published  claude-sonnet-5
+//	                                         rev 2 published  claude-sonnet-5
+//	                                         rev 3 published  gpt-4o-mini
+//	                                         rev 4 published  claude-sonnet-5
+//
+// Four rows, every one of them `"published": true`, and exactly ONE of them steers a run —
+// ResolveProjectModelRoute takes `ORDER BY rev.revision DESC, rev.id DESC LIMIT 1` over the published
+// set. Publishing does not un-publish, so "published" accumulates and stops distinguishing anything.
+//
+// An operator reading that list to answer "which model am I on" reads four answers, two of which are
+// different models. `published` is a fact about a revision's history; `resolved_by_dispatch` is the fact
+// they came for.
+func TestExactlyOneRevisionIsMarkedAsTheOneDispatchResolves(t *testing.T) {
+	// The order the spine returns (ORDER BY revision, ascending) — deliberately NOT the order dispatch
+	// selects in, so a projection that just marked the last row it saw would pass by accident.
+	revs := []coordinator.ModelRouteRevision{
+		{ID: "mrev_1", Revision: 1, Model: "claude-sonnet-5", Published: true},
+		{ID: "mrev_2", Revision: 2, Model: "claude-sonnet-5", Published: true},
+		{ID: "mrev_4", Revision: 4, Model: "claude-sonnet-5", Published: true},
+		{ID: "mrev_5", Revision: 5, Model: "gpt-4o-mini", Published: false}, // a draft steers nothing
+		{ID: "mrev_3", Revision: 3, Model: "gpt-4o-mini", Published: true},
+	}
+	marked := map[string]bool{}
+	for _, v := range modelRouteRevisionViews("mroute_1", revs) {
+		if v["resolved_by_dispatch"] == true {
+			marked[v["id"].(string)] = true
+		}
+	}
+	if len(marked) != 1 {
+		t.Fatalf("%d revisions marked as the one dispatch resolves (%v); a list where every published row "+
+			"looks live answers 'which model am I on' four times", len(marked), marked)
+	}
+	// THE SAME RULE THE SQL USES: highest revision among the PUBLISHED, ties broken by id descending.
+	// mrev_5 is higher but a draft; mrev_4 is the highest published.
+	if !marked["mrev_4"] {
+		t.Fatalf("marked %v, want mrev_4 — ResolveProjectModelRoute is ORDER BY revision DESC, id DESC over "+
+			"the PUBLISHED set, and a projection that disagrees with it tells the operator the wrong model", marked)
+	}
+
+	// A route with no published revision marks NOTHING — there is no resolved revision to name, and
+	// marking the newest draft would show a model no run will use.
+	drafts := []coordinator.ModelRouteRevision{{ID: "mrev_9", Revision: 9, Model: "m", Published: false}}
+	for _, v := range modelRouteRevisionViews("mroute_1", drafts) {
+		if v["resolved_by_dispatch"] == true {
+			t.Fatal("a DRAFT was marked as the revision dispatch resolves")
+		}
 	}
 }

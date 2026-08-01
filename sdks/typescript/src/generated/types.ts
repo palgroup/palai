@@ -175,6 +175,7 @@ export interface ModelRouteRevision {
   model?: string;
   object: string;
   published: boolean;
+  resolved_by_dispatch?: boolean;
   revision?: number;
   route_id: OpaqueId;
 }

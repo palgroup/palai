@@ -2,12 +2,13 @@
 package contracts
 
 type ModelRouteRevision struct {
-	ConnectionID OpaqueID `json:"connection_id,omitempty"`
-	CreatedAt    string   `json:"created_at,omitempty"`
-	ID           OpaqueID `json:"id"`
-	Model        string   `json:"model,omitempty"`
-	Object       string   `json:"object"`
-	Published    bool     `json:"published"`
-	Revision     int      `json:"revision,omitempty"`
-	RouteID      OpaqueID `json:"route_id"`
+	ConnectionID       OpaqueID `json:"connection_id,omitempty"`
+	CreatedAt          string   `json:"created_at,omitempty"`
+	ID                 OpaqueID `json:"id"`
+	Model              string   `json:"model,omitempty"`
+	Object             string   `json:"object"`
+	Published          bool     `json:"published"`
+	ResolvedByDispatch bool     `json:"resolved_by_dispatch,omitempty"`
+	Revision           int      `json:"revision,omitempty"`
+	RouteID            OpaqueID `json:"route_id"`
 }

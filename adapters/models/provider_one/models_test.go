@@ -200,3 +200,31 @@ func TestListModelsDropsAnEntryWithNoID(t *testing.T) {
 		t.Fatalf("models = %v, want the nameless entry dropped", ids)
 	}
 }
+
+// `complete` IS FALSE ON EVERY OUTCOME THAT IS NOT A LIST, and this test exists because the two families
+// disagreed about it in a LIVE transcript rather than in review:
+//
+//	GET /v1/model-connections/{id}/models   (wrong Anthropic key)  -> outcome=credential_rejected complete=false
+//	GET /v1/model-connections/{id}/models   (dead gateway)         -> outcome=unreachable         complete=TRUE
+//
+// Both are "no list", and the second rendered `complete: true` beside it — because this family makes one
+// request and had nothing further to fetch, while the paginating sibling had abandoned a loop. A screen
+// reading `complete` cannot know which family it is looking at, so "complete" next to "there is no list"
+// reads as a claim about a list that does not exist. It qualifies a list; with no list, it is false.
+func TestCompleteIsFalseWheneverThereIsNoList(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusNotFound, http.StatusTooManyRequests} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+		}))
+		got := Adapter{}.ListModels(context.Background(), srv.URL+"/v1/chat/completions", "sk-x")
+		srv.Close()
+		if got.Complete {
+			t.Errorf("status %d: outcome %q came back complete=true with no list — `complete` qualifies a list, "+
+				"and there is none", status, got.Outcome)
+		}
+	}
+	// And an endpoint that was never dialled at all.
+	if got := (Adapter{}).ListModels(context.Background(), "https://gw.example.test/completions", "sk-x"); got.Complete {
+		t.Error("a listing that asked nothing came back complete=true")
+	}
+}

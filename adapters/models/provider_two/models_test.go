@@ -217,3 +217,21 @@ func TestListModelsDeclinesAnEndpointItCannotDeriveAListFrom(t *testing.T) {
 		t.Fatal("the lister dialled an endpoint it could not derive a models list from")
 	}
 }
+
+// The paginating family holds the same rule: no list, no `complete`. See the sibling family's copy of this
+// test for the live transcript in which the two disagreed.
+func TestCompleteIsFalseWheneverThereIsNoList(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusNotFound, http.StatusBadGateway} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+		}))
+		got := Adapter{}.ListModels(context.Background(), srv.URL+"/v1/messages", "sk-x")
+		srv.Close()
+		if got.Complete {
+			t.Errorf("status %d: outcome %q came back complete=true with no list", status, got.Outcome)
+		}
+	}
+	if got := (Adapter{}).ListModels(context.Background(), "https://gw.example.test/v1/chat/completions", "sk-x"); got.Complete {
+		t.Error("a listing that asked nothing came back complete=true")
+	}
+}

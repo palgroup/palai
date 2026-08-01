@@ -106,12 +106,19 @@ func (p openAIModelPage) models() []modelbroker.ModelInfo {
 
 // listingFrom folds a classified request into a listing. Models ride ONLY on ProbeAccepted — see
 // modelbroker.ModelListing for why an empty list must never be able to mean "we could not ask".
+//
+// AND `complete` RIDES ONLY ON ProbeAccepted TOO, which is a rule this function enforces rather than
+// trusting its callers with. It was found in a live transcript: a rejected Anthropic key rendered
+// `complete: false` and a dead OpenAI-compatible gateway rendered `complete: true`, because the paginating
+// family had abandoned a loop and this one had made a single request with nothing further to fetch. Both
+// mean "there is no list". `complete` qualifies a LIST; with no list it is not a smaller truth, it is a
+// claim about something that does not exist — and a screen cannot know which family it is reading.
 func listingFrom(p modelbroker.Probe, models []modelbroker.ModelInfo, complete bool) modelbroker.ModelListing {
 	out := modelbroker.ModelListing{
-		Outcome: p.Outcome, Status: p.Status, Endpoint: p.Endpoint, Detail: p.Detail, Complete: complete,
+		Outcome: p.Outcome, Status: p.Status, Endpoint: p.Endpoint, Detail: p.Detail,
 	}
 	if p.Outcome == modelbroker.ProbeAccepted {
-		out.Models = models
+		out.Models, out.Complete = models, complete
 	}
 	return out
 }

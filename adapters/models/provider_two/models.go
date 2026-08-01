@@ -137,14 +137,16 @@ func (p anthropicModelPage) models() []modelbroker.ModelInfo {
 	return out
 }
 
-// listingFrom folds a classified request into a listing. Models ride ONLY on ProbeAccepted, so an empty
-// list can never be how a failure is expressed.
+// listingFrom folds a classified request into a listing. Models AND `complete` ride only on ProbeAccepted,
+// so neither an empty list nor a "complete" can be how a failure is expressed. Identical to the sibling
+// family's, deliberately: the two disagreed about `complete` in a live transcript, and one rule enforced in
+// two places that are read side by side is how that stops recurring. See provider_one/models.go.
 func listingFrom(p modelbroker.Probe, models []modelbroker.ModelInfo, complete bool) modelbroker.ModelListing {
 	out := modelbroker.ModelListing{
-		Outcome: p.Outcome, Status: p.Status, Endpoint: p.Endpoint, Detail: p.Detail, Complete: complete,
+		Outcome: p.Outcome, Status: p.Status, Endpoint: p.Endpoint, Detail: p.Detail,
 	}
 	if p.Outcome == modelbroker.ProbeAccepted {
-		out.Models = models
+		out.Models, out.Complete = models, complete
 	}
 	return out
 }

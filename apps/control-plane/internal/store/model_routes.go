@@ -159,9 +159,12 @@ func (s *Store) CreateModelRoute(ctx context.Context, scope middleware.Scope, bo
 		return api.ProvisionResult{MissingField: "name"}, nil
 	}
 	if in.Name != coordinator.DefaultModelRouteAlias {
+		// PHRASED TO SURVIVE ITS RENDERER. The handler writes `MissingField + " is required"`, so this
+		// string has to be a noun phrase — an ordinary sentence here would reach the operator as
+		// "…never consulted by a single run is required".
 		return api.ProvisionResult{MissingField: "name " + strconv.Quote(coordinator.DefaultModelRouteAlias) +
-			" — it is the only alias a run resolves through, so a route by any other name would be created, " +
-			"published, and never consulted by a single run (got " + strconv.Quote(in.Name) + ")"}, nil
+			" (the only alias a run resolves through — a route by any other name would be created, published, " +
+			"and never consulted by a single run; got " + strconv.Quote(in.Name) + ")"}, nil
 	}
 	id, err := s.spine.CreateModelRoute(ctx, tenantOf(scope), in.Name)
 	if err != nil {
@@ -577,11 +580,46 @@ func (s *Store) ListModelRouteRevisions(ctx context.Context, scope middleware.Sc
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
+	return api.ProvisionResult{Body: listView(modelRouteRevisionViews(routeID, revs))}, nil
+}
+
+// modelRouteRevisionViews renders a route's revisions and marks THE ONE dispatch resolves.
+//
+// PUBLISHING DOES NOT UN-PUBLISH, so `published` accumulates and stops distinguishing anything. Measured on
+// the live stack while restoring its route after the E29 provider smoke, 2026-08-01:
+//
+//	GET /v1/model-routes/{id}/revisions -> rev 1 published claude-sonnet-5
+//	                                       rev 2 published claude-sonnet-5
+//	                                       rev 3 published gpt-4o-mini
+//	                                       rev 4 published claude-sonnet-5
+//
+// Four rows all reading `"published": true`, exactly one steering a run, and TWO DIFFERENT MODELS among
+// them. An operator opening that list to answer "which model am I on" gets four answers. `published` is a
+// fact about a revision's history; this is the fact they came for.
+//
+// THE RULE IS THE SQL'S, NOT A NEW ONE. ResolveProjectModelRoute is `ORDER BY rev.revision DESC, rev.id
+// DESC LIMIT 1` over the published set, and this recomputes exactly that — including the id tiebreak,
+// which is not decorative: without it two revisions sharing a number would make the marker and the
+// dispatcher disagree, and the projection would name the wrong model with complete confidence. A route
+// with no published revision marks nothing; marking the newest draft would show a model no run will use.
+func modelRouteRevisionViews(routeID string, revs []coordinator.ModelRouteRevision) []map[string]any {
+	resolved := ""
+	best := coordinator.ModelRouteRevision{Revision: -1}
+	for _, rev := range revs {
+		if !rev.Published {
+			continue
+		}
+		if rev.Revision > best.Revision || (rev.Revision == best.Revision && rev.ID > best.ID) {
+			best, resolved = rev, rev.ID
+		}
+	}
 	data := make([]map[string]any, 0, len(revs))
 	for _, rev := range revs {
-		data = append(data, modelRouteRevisionView(routeID, rev, rev.Published))
+		view := modelRouteRevisionView(routeID, rev, rev.Published)
+		view["resolved_by_dispatch"] = rev.ID == resolved && resolved != ""
+		data = append(data, view)
 	}
-	return api.ProvisionResult{Body: listView(data)}, nil
+	return data
 }
 
 // GetModelRouteRevision reads one revision of a route the caller owns. A foreign/unknown route is a 404;
