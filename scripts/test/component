@@ -389,10 +389,16 @@ run_postgres() {
   # than a zero one. One holds the keyset order total across a microsecond clock tie by paging over
   # it. One holds the rename to being a LABEL: two sessions may carry the same name, and a foreign id
   # is a miss that writes nothing.
+  # THE TWO E29 T7 LIMIT-ORDERING NAMES ARE SPELLED OUT FOR THE SAME REASON, and this one is a
+  # SECURITY-adjacent guard: they seed an organization budget/quota and a project one on the SAME
+  # meter_prefix — a pair migration 000032's UNIQUE key makes legal — exhaust both, and require the
+  # exhausted-limit read to name the NARROWEST across all four legal arrangements of those two rows.
+  # Before this task it named whichever row drew the lower random id. Not one word already on this
+  # line is a substring of either name.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v \
-        -run 'TestVerifyPublishedRevision|TestMigrationBoundedLockTimesOut|TestSessionListRowCarriesLabelAgentTokensAndSpan|TestSessionListPagesTotallyOrderedAcrossAClockTie|TestSessionRenameIsALabelNotAnIdentity' \
+        -run 'TestVerifyPublishedRevision|TestMigrationBoundedLockTimesOut|TestSessionListRowCarriesLabelAgentTokensAndSpan|TestSessionListPagesTotallyOrderedAcrossAClockTie|TestSessionRenameIsALabelNotAnIdentity|TestExhaustedBudgetNamesTheNarrowestLimitWhicheverRowWasWrittenFirst|TestExhaustedQuotaNamesTheNarrowestLimitWhicheverRowWasWrittenFirst' \
         ./packages/coordinator
     status=$?
   fi

@@ -203,6 +203,16 @@ type LimitExceeded struct {
 // every configured limit still has headroom (including the common case of none configured at all: both
 // queries return no row against empty tables).
 //
+// WHEN SEVERAL ARE EXHAUSTED AT ONCE, THE NARROWEST ONE IS NAMED — the project limit ahead of the
+// organization-wide one. That is the queries' ORDER BY, not this function's, and the reasoning lives
+// beside it in storage/queries/usage.sql; the short of it is that a 429's remediation body must name a
+// limit its reader can act on, and a project operator cannot raise their organization's budget. Before
+// E29 T7 the ordering was not total and the reported row was whichever drew the smaller random id.
+//
+// It is a REPORTING guarantee, not an enforcement one. Every configured limit is enforced either way:
+// each query's HAVING catches every exhausted row and any one of them refuses the admission. What is
+// determined here is which one the caller is told about.
+//
 // ponytail: two small aggregate reads per fresh admission, under ReadCommitted with no row lock. Two
 // admissions racing the exact limit boundary can therefore BOTH pass — the ledger stays exact, but the
 // gate is accurate to ±the runs in flight. That is the documented variance BIL-003 allows, and it is the

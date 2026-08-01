@@ -30,8 +30,34 @@ ON CONFLICT (organization_id, project_id, dedupe_key) DO NOTHING;
 -- budget and the sum to that project. meter_prefix matches by prefix, so 'model.' caps every model
 -- meter and '' caps everything.
 --
--- The join is LEFT so a budget with zero usage still evaluates (and trivially fails the HAVING). Ordered
--- by meter_prefix so the reported limit is stable when several are exhausted at once.
+-- The join is LEFT so a budget with zero usage still evaluates (and trivially fails the HAVING).
+--
+-- WHICH LIMIT IS REPORTED WHEN SEVERAL ARE EXHAUSTED AT ONCE — a semantic decision, not a tidiness one,
+-- and the reason the first ORDER BY key is a boolean.
+--
+-- `ORDER BY meter_prefix` alone was NOT a total ordering, and the tie was not an accident: the schema's
+-- own scope model guarantees it. budgets is UNIQUE on (organization_id, project_id, meter_prefix)
+-- (000032), so an organization-wide row (project_id = '') and a project row on the SAME meter_prefix are
+-- both legal and both live; the WHERE above takes BOTH; the HAVING can exhaust BOTH; and meter_prefix is
+-- EQUAL for the two. `LIMIT 1` then picked one, and nothing here said which. Measured 2026-08-01 on the
+-- pinned postgres 16.14: the plan is Limit -> Sort(meter_prefix) -> GroupAggregate(Group Key: b.id), so
+-- the bounded top-1 sort kept the row with the smaller b.id — and budget ids are crypto/rand
+-- (middleware.NewID). Which limit an operator's 429 named was a coin flip fixed when they POSTed it.
+--
+-- THE NARROWEST LIMIT WINS. `(b.project_id = '') ASC` sorts false before true, so the PROJECT row comes
+-- first and the organization-wide row is reported only when it is the only one exhausted. The reason is
+-- the 429 itself: its remediation body must name a limit the CALLER CAN ACT ON. A project operator
+-- cannot raise their organization's budget, so naming it answers "you are blocked" with something the
+-- reader cannot turn into an action — and it is the wrong number twice over, since the org row's `used`
+-- sums every sibling project's spend as well.
+--
+-- b.id is the LAST key and it is the PRIMARY KEY (000032), so the ordering is now TOTAL: two budgets
+-- that tie on scope and prefix cannot exist (the UNIQUE key forbids it), but the tiebreaker is written
+-- anyway, because "this can never tie" is exactly the belief that put this query here.
+--
+-- ENFORCEMENT IS UNCHANGED, and the distinction matters: both rows were enforced before this ordering
+-- and both are enforced after. The HAVING catches both and either produces the 429. What changed is
+-- which one is NAMED.
 -- name: ExhaustedBudget
 SELECT b.meter_prefix, b.limit_quantity, coalesce(sum(l.quantity), 0), b.period_start
 FROM budgets b
@@ -43,12 +69,18 @@ LEFT JOIN usage_ledger l
 WHERE b.organization_id = $1 AND b.project_id IN ('', $2)
 GROUP BY b.id, b.meter_prefix, b.limit_quantity, b.period_start
 HAVING coalesce(sum(l.quantity), 0) >= b.limit_quantity
-ORDER BY b.meter_prefix
+ORDER BY (b.project_id = '') ASC, b.meter_prefix, b.id
 LIMIT 1;
 
 -- ExhaustedQuota is ExhaustedBudget over a ROLLING window instead of a period. It also returns the
 -- OLDEST in-window row's timestamp: that row is the first to age out, so oldest + window is the honest
 -- moment capacity next releases — the stable reset information the 429 remediation body carries.
+--
+-- The ordering is ExhaustedBudget's, for ExhaustedBudget's reasons, and it is restated here rather than
+-- cross-referenced because the two queries had the same defect and a fix applied to one of them leaves
+-- half of it shipped: quotas carries the SAME UNIQUE (organization_id, project_id, meter_prefix), the
+-- same WHERE takes both scopes, and `ORDER BY q.meter_prefix` was equally non-total. Narrowest first
+-- (`q.project_id = ''` sorts last), q.id last so the ordering is TOTAL.
 -- name: ExhaustedQuota
 SELECT q.meter_prefix, q.limit_quantity, coalesce(sum(l.quantity), 0), q.window_seconds, min(l.occurred_at)
 FROM quotas q
@@ -60,7 +92,7 @@ LEFT JOIN usage_ledger l
 WHERE q.organization_id = $1 AND q.project_id IN ('', $2)
 GROUP BY q.id, q.meter_prefix, q.limit_quantity, q.window_seconds
 HAVING coalesce(sum(l.quantity), 0) >= q.limit_quantity
-ORDER BY q.meter_prefix
+ORDER BY (q.project_id = '') ASC, q.meter_prefix, q.id
 LIMIT 1;
 
 -- UpsertBudget sets the caller's limit for one (scope, meter prefix). A budget is mutable config, so a
