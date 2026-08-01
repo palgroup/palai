@@ -301,13 +301,21 @@ export default function RegistryPage() {
         testId="connection-create"
         note={
           <>
-            <strong>Two things happen when you submit.</strong> The credential is sealed under the ref name
-            you give — <code>POST /v1/secret-refs</code>, write-only, versioned if the name already exists —
-            and the connection is then created NAMING that ref. The key is never stored on the connection and
-            is readable through no route. Bind the connection to a project with a model route to make runs
-            use it; until then it is configuration that nothing dispatches to.
+            <strong>Two things happen when you submit.</strong> The credential is sealed under the ref name you
+            give, and the connection is created naming that ref.
           </>
         }
+        caveat={{
+          summary: "Where the key goes, and what still has to happen before a run uses this",
+          body: (
+            <p className="muted">
+              The credential is sealed by <code>POST /v1/secret-refs</code> — write-only, versioned if the name
+              already exists — and the connection then NAMES that ref. The key is never stored on the connection
+              and is readable through no route. Bind the connection to a project with a model route to make runs
+              use it; until then it is configuration that nothing dispatches to.
+            </p>
+          ),
+        }}
         fields={[
           {
             name: "connection-provider",

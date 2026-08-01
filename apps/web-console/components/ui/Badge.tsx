@@ -12,7 +12,7 @@ import type { ReactNode } from "react";
 // to its glyph and its band. That mapping is domain knowledge ("restored" is an ok, "lost" is a danger), and
 // pulling it in here would make this component know about run lifecycles.
 
-export type BadgeTone = "ok" | "danger" | "info" | "warn" | "neutral";
+export type BadgeTone = "ok" | "danger" | "live" | "info" | "warn" | "neutral";
 
 export function Badge({
   tone,

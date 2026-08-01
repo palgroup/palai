@@ -109,6 +109,28 @@
   --_grass-6: 124.186 38.7387% 78.2353%; /* #b2ddb5 */
   --_grass-11: 132.1429 50% 32.9412%; /* #2a7e3b */
   --_grass-12: 130.7143 30.4348% 18.0392%; /* #203c25 */
+  /* --- TEAL IS THE SIXTH BAND'S HUE, AND THE MEASUREMENT THAT PICKED IT IS A NEGATIVE ONE (E31).
+     The instruction was "take the hue from the reference". design-reference/ answers it, and not the way the
+     question assumed: the reference's raw palette names exactly FOUR chromatic families —
+     `--_violet-450` (247.6°), `--_red-450` (0°), `--_green-450` (120°) and `--_brand-clay` (14.8°) — and the
+     only colour it records for a pill at all is its SURFACE, `rgba(255,255,255,0.05)`. That is a neutral.
+     **The reference does not give a running state a hue**, so there is no value to copy, and its four
+     families offer nothing unclaimed either: violet is the accent slot (ours is iris, and a status band
+     wearing the link colour would make a running session look like a control), red is `danger`, green is
+     `ok`, and clay is the brand colour the brief says to substitute ours for.
+
+     So the hue is ours, and it is chosen on ONE criterion: distance from the bands it shares a column with.
+     Taken: red 0° · amber 46° · grass 131° · blue 206° · iris 240°. Teal at 172° sits 41° from grass and 34°
+     from blue, which are the two it must never be confused with — `ok` ("this finished") and `info`
+     ("this is waiting") are the readings a running pill is next to in the Status column. Cyan was the
+     obvious pick and is REJECTED for exactly that reason: at 190° it is 16° from `info`'s blue, and
+     "waiting" against "running" is the one adjacency an operator cannot afford in this column.
+
+     Every pair is measured in both schemes by `node scripts/measure-contrast.mjs`. --- */
+  --_teal-3: 167.5 63.1579% 92.549%; /* #e0f8f3 */
+  --_teal-6: 168.1967 48.0315% 75.098%; /* #a1ded2 */
+  --_teal-11: 171.8797 100% 26.0784%; /* #008573 */
+  --_teal-12: 173.75 64.8649% 14.5098%; /* #0d3d38 */
   --_amber-3: 52.1311 100% 88.0392%; /* #fff7c2 */
   --_amber-6: 46.4063 84.2105% 70.1961%; /* #f3d673 */
   --_amber-12: 24 39.823% 22.1569%; /* #4f3422 */
@@ -182,6 +204,15 @@
   --info-bg: hsl(var(--_blue-3));
   --info-border: hsl(var(--_blue-6));
   --info-text: hsl(var(--_blue-12));
+  /* THE SIXTH BAND. `active`, `running`, `provisioning` and `queued` matched nothing in
+     components/Status.tsx's classifier and fell through to `neutral`, so on a list where nineteen of twenty
+     sessions are ACTIVE the one column that says what a session is DOING was twenty identical grey pills —
+     a signal shipped, rendered, and carrying no information, which is this console's own recurring defect
+     surviving because grey is not wrong, it is merely silent. See --_teal-3 for why the hue is teal and why
+     it could not be taken from the reference. */
+  --live-bg: hsl(var(--_teal-3));
+  --live-border: hsl(var(--_teal-6));
+  --live-text: hsl(var(--_teal-12));
   --neutral-bg: hsl(var(--_sand-3));
   --neutral-border: hsl(var(--_sand-6));
   --neutral-text: hsl(var(--_sand-12));
@@ -369,6 +400,10 @@
     --_grass-6: 132.8571 31.8182% 25.8824%; /* #2d5736 */
     --_grass-11: 131.3684 50.2646% 62.9412%; /* #71d083 */
     --_grass-12: 120 60.5263% 85.098%; /* #c2f0c2 */
+    --_teal-3: 174.375 55.1724% 11.3725%; /* #0d2d2a */
+    --_teal-6: 173.7313 62.6168% 20.9804%; /* #145750 */
+    --_teal-11: 170.0488 90.3084% 44.5098%; /* #0bd8b6 */
+    --_teal-12: 162.9851 69.0722% 80.9804%; /* #adf0dd */
     --_amber-3: 36 71.4286% 10.9804%; /* #302008 */
     --_amber-6: 38.6207 89.6907% 19.0196%; /* #5c3d05 */
     --_amber-12: 41.0526 100% 85.098%; /* #ffe7b3 */
@@ -1520,6 +1555,14 @@ form > p:last-of-type {
   border-color: var(--warn-border);
   color: var(--warn-text);
 }
+/* The sixth band — see --live-bg for why it exists and --_teal-3 for why it is teal. Colour is the THIRD
+   carrier here exactly as it is for the other five: `▸` and the word are what a colourblind reader and a
+   screen reader get, and removing either leaves the pill meaningless. */
+.status[data-glyph="live"] {
+  background: var(--live-bg);
+  border-color: var(--live-border);
+  color: var(--live-text);
+}
 
 /* A form refusal is TEXT with a glyph, never colour alone — the same rule .status follows. The two
    hard-coded hexes it used to carry (#b3261e / #ff7b72) are gone, and with them a SECOND dark media block
@@ -2555,4 +2598,13 @@ tbody tr[data-selected="true"] td {
 .inline-field .ui-select-trigger {
   width: auto;
   min-width: 9rem;
+}
+
+/* The standing caveat inside a sectioned form: full width under the rows, so a three-sentence operator fact
+   keeps its measure instead of being squeezed into the 224px column — or cut to fit it, which is the trade
+   components/ResourceForm.tsx's FormCaveat refuses. It rides `details.notes` (§5) for its shape and adds
+   only the spacing that puts it under the last row rather than against it. */
+.form-caveat {
+  width: min(var(--section-w), 100%);
+  margin: 0 0 var(--space-6);
 }

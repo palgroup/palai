@@ -60,12 +60,25 @@ function classify(value: string): { glyph: string; kind: BadgeTone } {
   if (v.includes("pause") || v.includes("hold")) {
     return { glyph: "‖", kind: "warn" };
   }
-  // TODO(live band): `active`, `running`, `provisioning` and `queued` still match nothing above and fall
-  // through to neutral, so on a list where nineteen of twenty sessions are active the column that says what
-  // a session is DOING is twenty identical grey pills. That is this console's own recurring defect — a
-  // signal shipped, rendered, and carrying no information — and it survives because grey is not wrong, it
-  // is merely silent. Fixing it needs a SIXTH band with a hue, a fill and a border measured in both colour
-  // schemes, which is a palette decision and not a classifier one; it is owned by the identity pass rather
-  // than guessed at here. The two arms above needed no new token, which is why they are already done.
+  // THE SIXTH BAND, WHICH IS WHAT THE TODO HERE ASKED FOR. `active`, `running`, `provisioning` and `queued`
+  // matched nothing above and fell through to neutral, so on a list where nineteen of twenty sessions are
+  // active the column that says what a session is DOING was twenty identical grey pills.
+  //
+  // THE HUE IS TEAL AND IT COULD NOT BE TAKEN FROM THE REFERENCE — app/globals.css's --_teal-3 carries the
+  // measurement in full, and the short form is that the reference records no hue for a running state at all
+  // (its pill's only measured colour is a NEUTRAL 5%-white surface) and none of its four chromatic families
+  // is unclaimed. Teal is 41° from `ok`'s grass and 34° from `info`'s blue, which are the two readings this
+  // pill sits beside in the same column.
+  //
+  // `▸` IS U+25B8 BLACK RIGHT-POINTING SMALL TRIANGLE, which carries no Unicode emoji property — so it needs
+  // no variation selector, the same requirement `○`, `⊘` and `•` already meet by construction.
+  //
+  // IT IS LAST, AND THAT ORDER IS A DECISION. `queued` lands here while `pending` lands in `info` one arm
+  // up, and the two words are not synonyms in this API: a RUNNER is `pending` admission, which is waiting on
+  // a human, and a RUN is `queued`, which is the machine already holding it. An ending outranks a beginning
+  // for the same reason — a word carrying both reads as finished.
+  if (v.includes("active") || v.includes("running") || v.includes("provision") || v.includes("queued") || v.includes("in_progress")) {
+    return { glyph: "▸", kind: "live" };
+  }
   return { glyph: "•", kind: "neutral" }; // bullet
 }
