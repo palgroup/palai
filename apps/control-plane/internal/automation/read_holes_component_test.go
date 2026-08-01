@@ -385,12 +385,14 @@ func TestTheOccurrenceKeysetHoldsAcrossAPlannedAtTie(t *testing.T) {
 	f := newReadHolesFixture(t)
 	id := f.a.createSchedule(`{"name":"` + randID("tied") + `","trigger_id":"` + f.trigger + `","cron_expr":"* * * * *","timezone":"UTC"}`)
 
-	// Six occurrences, all at ONE instant, across six revisions: every page boundary is a tie.
+	// Six occurrences, all at ONE instant, across six revisions: every page boundary is a tie. 'admitted'
+	// rather than 'pending' for the reason seedOccurrences spells out — a pending row here joins a
+	// system-wide sweep that belongs to another test.
 	instant := time.Now().UTC().Truncate(time.Second)
 	for rev := 1; rev <= 6; rev++ {
 		mustExec(t, f.pool,
-			`INSERT INTO schedule_occurrences (occurrence_id, schedule_id, schedule_revision, planned_at, state)
-			 VALUES ($1, $2, $3, $4, 'pending')`,
+			`INSERT INTO schedule_occurrences (occurrence_id, schedule_id, schedule_revision, planned_at, admitted_at, state)
+			 VALUES ($1, $2, $3, $4, $4, 'admitted')`,
 			fmt.Sprintf("occ_tie_%s_%d", id, rev), id, rev, instant)
 	}
 
@@ -564,14 +566,23 @@ func mintCursor(t *testing.T, c *client, path string) string {
 
 // seedOccurrences drops n distinct occurrences onto a schedule, one per minute going back from now. They
 // are seeded rather than ticked because what is under test is the READ envelope, not the ticker.
+//
+// THEY ARE SEEDED 'admitted', NOT 'pending', AND THAT IS A CORRECTNESS REQUIREMENT RATHER THAN A DETAIL.
+// sweepPendingOccurrences is a SYSTEM-WIDE loop: it takes the hundred oldest 'pending' rows in the whole
+// database, across every tenant, because the ticker is a system loop. A hundred and one pending rows seeded
+// here would therefore be the hundred oldest in any test binary that shares this database, and a sibling
+// test's own occurrence would never be reached by its sweep. That is not hypothetical — it happened, and
+// the failure surfaced three files away as "the one_time schedule was never handed off", with the ticker
+// entirely innocent and the -run filters this file was first written under hiding it completely.
 func seedOccurrences(t *testing.T, pool *pgxpool.Pool, scheduleID string, n int) {
 	t.Helper()
 	base := time.Now().UTC().Truncate(time.Minute)
 	for i := 0; i < n; i++ {
+		planned := base.Add(-time.Duration(i) * time.Minute)
 		mustExec(t, pool,
-			`INSERT INTO schedule_occurrences (occurrence_id, schedule_id, schedule_revision, planned_at, state)
-			 VALUES ($1, $2, 1, $3, 'pending')`,
-			fmt.Sprintf("occ_%s_%03d", scheduleID, i), scheduleID, base.Add(-time.Duration(i)*time.Minute))
+			`INSERT INTO schedule_occurrences (occurrence_id, schedule_id, schedule_revision, planned_at, admitted_at, state)
+			 VALUES ($1, $2, 1, $3, $3, 'admitted')`,
+			fmt.Sprintf("occ_%s_%03d", scheduleID, i), scheduleID, planned)
 	}
 }
 

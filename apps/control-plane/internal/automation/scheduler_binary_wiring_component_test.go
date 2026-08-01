@@ -136,14 +136,19 @@ func (c *client) createSchedule(body string) string {
 }
 
 // scheduleOccurrences reads a schedule's occurrence log over the real router.
+//
+// It reads `data` rather than `occurrences` because E29 T1 moved this route into the shared page envelope.
+// THE OLD KEY WOULD NOT HAVE FAILED HERE, IT WOULD HAVE HUNG: the caller polls until an occurrence reports
+// state=admitted, so decoding into a field the body no longer carries yields an empty slice forever and the
+// test dies on its ten-second deadline saying the ticker never fired. The ticker would have been innocent.
 func (c *client) scheduleOccurrences(scheduleID string) []map[string]any {
 	resp := c.get("/v1/schedules/" + scheduleID + "/occurrences")
 	defer resp.Body.Close()
 	var body struct {
-		Occurrences []map[string]any `json:"occurrences"`
+		Data []map[string]any `json:"data"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&body)
-	return body.Occurrences
+	return body.Data
 }
 
 // seedPublishedRevision creates + publishes an AgentRevision in scope via the automation management API.
