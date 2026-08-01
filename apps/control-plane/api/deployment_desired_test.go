@@ -353,9 +353,14 @@ func TestDesiredWriteAcceptsTheValuesAnOperatorActuallyTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("refused a document naming every writable setting with a value its own reader parses: %v", err)
 	}
-	if len(got) != len(DesiredWritableSettings()) {
+	if len(got.Settings) != len(DesiredWritableSettings()) {
 		t.Fatalf("accepted %d of %d writable settings; this document names all of them, so any shortfall is a "+
-			"setting the panel advertises and the decoder will not take", len(got), len(DesiredWritableSettings()))
+			"setting the panel advertises and the decoder will not take", len(got.Settings), len(DesiredWritableSettings()))
+	}
+	// AND IT LANDS ON THE CONTROL PLANE BY DEFAULT. A body with no `plane` is every existing caller's body,
+	// and it must go where the reader is rather than nowhere.
+	if got.Plane != planeControlPlane || got.Scope != "" {
+		t.Errorf("a body with no plane decoded to %q/%q, want the control-plane singleton", got.Plane, got.Scope)
 	}
 	// The empty document is the "go back to every deployment default" operation and must be spelled, not
 	// stumbled into: it is accepted here and refused above when `settings` is absent entirely.
@@ -396,5 +401,160 @@ func TestDesiredDriftComparesTheStringTheBringUpWillExport(t *testing.T) {
 		t.Errorf("no desired document at all reported drift %v. A machine nobody has written a desired configuration "+
 			"for is not drifted from anything, and saying it is would tell an operator the panel is in control when "+
 			"the compose file still is", drifted)
+	}
+}
+
+// TestEverySettingsPlaneIsTheOneItsReaderRunsIn is the SCOPING guard, and it is the answer to the question
+// that produced it: "can this be configured per machine?"
+//
+// MEASURED ON THE LIVE STACK, 2026-08-01:
+//
+//	curl .../v1/deployment | jq 'keys'            -> ["object","settings","warnings"]   (no machine axis)
+//	curl .../v1/runners      | jq '.data|length'  -> 3
+//	curl .../v1/runner-pools | jq '.data|length'  -> 17
+//
+// There are three scopes in this product — the control-plane PROCESS, the POOL, and the RUNNER — and this
+// catalogue describes exactly one of them. Every setting here is read by the control-plane process, which
+// every project and every machine on the deployment shares. Saying so is the whole point: a screen that
+// let an operator read "configuration" as "this machine's configuration" would be wrong about which
+// machines a change reaches, and about how many of them there are.
+//
+// THE PLANE IS DERIVED FROM THE CITATION RATHER THAN TRUSTED. TestEveryCatalogueCitationResolvesToARealReader
+// already parses the cited file and asserts the cited function's source mentions the variable; this asserts
+// the plane agrees with WHERE that file runs. So the plane claim inherits an existing proof instead of
+// becoming a third field to keep in step by hand — and a citation into a directory neither list knows
+// about is a REFUSAL, not a default, so a new reader location asks somebody to decide.
+func TestEverySettingsPlaneIsTheOneItsReaderRunsIn(t *testing.T) {
+	planes := map[string]int{}
+	for _, entry := range deploymentCatalogue {
+		derived, ok := planeMatchesReader(entry)
+		if derived == "" {
+			t.Errorf("%s cites %s, which is in neither controlPlaneReaderFiles nor runnerReaderFiles. The plane "+
+				"decides which PROCESS a desired value reaches, so a citation nobody has placed must be a decision "+
+				"rather than a default", entry.Name, entry.ReaderFile)
+			continue
+		}
+		if !ok {
+			t.Errorf("%s declares plane %q and its reader %s runs on the %s plane. A setting written into the "+
+				"wrong plane's document is a value the process that reads it never sees",
+				entry.Name, planeOf(entry), entry.ReaderFile, derived)
+		}
+		planes[derived]++
+	}
+
+	// THE COUNT IS ASSERTED, not just the agreement. A catalogue that silently acquired a runner-plane entry
+	// would pass every check above and change what this surface IS — it reports the control-plane process's
+	// own environment, and deployment.go's header says a control plane reporting a runner-scoped variable
+	// would be "a confident wrong answer, which is worse than the silence this surface replaces".
+	if planes[planeRunnerPool] != 0 {
+		t.Errorf("%d catalogue entries are on the runner plane. This surface reports THIS PROCESS's environment; "+
+			"a runner-scoped row here would be this process reporting its own (unset) copy and labelling it the "+
+			"machine's", planes[planeRunnerPool])
+	}
+	if planes[planeControlPlane] != len(deploymentCatalogue) {
+		t.Errorf("%d of %d entries are on the control plane; every catalogued setting is read by this process",
+			planes[planeControlPlane], len(deploymentCatalogue))
+	}
+}
+
+// TestThePlaneGuardCanTellTheTwoPlanesApart is the anti-vacuity leg, and it is not decoration.
+//
+// The guard above asserts that thirty-five entries all sit on one plane. With only one list of prefixes
+// that assertion is unfalsifiable — it would be checking that everything is what everything is, and it
+// would pass on a catalogue whose runner-plane entries had simply been mislabelled. So this drives the
+// SHIPPED function with a citation into the runner binary and requires it to come back with the other
+// answer, and to REFUSE a citation it has never been told about.
+func TestThePlaneGuardCanTellTheTwoPlanesApart(t *testing.T) {
+	// The real one: cmd/runner/main.go:117 reads PALAI_RUNNER_CONCURRENCY through envIntDefault. It is the
+	// one genuinely per-machine knob in this product and it is deliberately NOT catalogued — see
+	// unreportedSettings, which says this process holds no copy.
+	runner := catalogueEntry{Name: "PALAI_RUNNER_CONCURRENCY", ReaderFile: "cmd/runner/main.go", ReaderFunc: "main", Plane: planeRunnerPool}
+	if derived, ok := planeMatchesReader(runner); derived != planeRunnerPool || !ok {
+		t.Errorf("a citation into cmd/runner derived plane %q ok=%v, want %q/true. If the guard cannot recognise "+
+			"the runner plane, its assertion that nothing is on it is vacuous", derived, ok, planeRunnerPool)
+	}
+	// And the same entry MISLABELLED as control-plane must fail, which is the failure the guard exists for.
+	mislabelled := runner
+	mislabelled.Plane = planeControlPlane
+	if _, ok := planeMatchesReader(mislabelled); ok {
+		t.Error("a runner-read setting labelled control_plane was accepted. That is a value written into the " +
+			"control plane's document that the machine reading it never sees")
+	}
+	// A citation nobody has placed REFUSES rather than defaulting.
+	if derived, ok := planeMatchesReader(catalogueEntry{Name: "X", ReaderFile: "engines/reference/main.go"}); derived != "" || ok {
+		t.Errorf("an unplaced citation derived %q ok=%v, want \"\"/false — a default here would silently call a "+
+			"new reader location the control plane", derived, ok)
+	}
+}
+
+// TestARunnerPlaneWriteIsRefusedByNameRatherThanStored is the scoping decision made testable.
+//
+// THE MODEL HAS THE PLANE AND THIS DEPLOYMENT HAS NO READER FOR IT. Migration 000052 keys the journal by
+// (plane, scope_id) because a flat document cannot express the product's own shape — `GET /v1/runner-pools`
+// returned 17 on the live stack, and PALAI_WORKSPACE_ROOT has two readers with two different jobs under one
+// name (control plane: where workspaces are ALLOCATED; cmd/runner/main.go:120: the root a leased path must
+// sit under before that runner bind-mounts it, "unset disables the check"). But nothing hands cmd/runner a
+// document: it reads its environment at exec, and the second binary that would read one is not this task.
+//
+// SO THE WRITE IS REFUSED, NOT STORED. Storing it would be the defect this entire surface exists to expose
+// — a row nobody consults, with a screen reporting the save succeeded — and refusing it silently would be
+// the same defect with better manners. The refusal NAMES the missing reader and points at the surface that
+// does work today, so an operator who wants per-machine configuration is not left to conclude it is
+// impossible.
+func TestARunnerPlaneWriteIsRefusedByNameRatherThanStored(t *testing.T) {
+	_, err := DecodeDesiredSettings([]byte(`{"plane":"runner_pool","scope_id":"pool_default","settings":{}}`))
+	if err == nil {
+		t.Fatal("a runner_pool document was ACCEPTED. Nothing in this deployment reads one, so it would be a row " +
+			"that changes no machine while the screen reported a save")
+	}
+	for _, want := range []string{"cmd/runner", "reader", "/v1/runner-pools"} {
+		if !strings.Contains(strings.ToLower(err.Error()), want) {
+			t.Errorf("the refusal does not mention %q. An operator asking for per-machine configuration needs the "+
+				"reader that is missing AND the surface that does work, or they will read this as 'not possible'.\n  got: %v", want, err)
+		}
+	}
+
+	// THE CONTROL PLANE IS A SINGLETON and a scope_id on it is a caller who thinks otherwise — refused, so
+	// the error arrives at the request rather than as a CHECK violation surfacing from the database as a 500.
+	if _, err := DecodeDesiredSettings([]byte(`{"plane":"control_plane","scope_id":"pool_default","settings":{}}`)); err == nil {
+		t.Error("the control plane accepted a scope_id. There is one control-plane process per deployment, so a " +
+			"scoped one names something that does not exist")
+	}
+	// AND AN UNKNOWN PLANE NAMES THE TWO THAT EXIST rather than answering "invalid".
+	_, err = DecodeDesiredSettings([]byte(`{"plane":"machine","settings":{}}`))
+	if err == nil || !strings.Contains(err.Error(), planeRunnerPool) {
+		t.Errorf("an unknown plane must be refused with the vocabulary spelled out; got %v", err)
+	}
+}
+
+// TestASettingCannotBeWrittenIntoAPlaneItIsNotReadOn is the guard that cannot fire today and is written
+// anyway, because the day it CAN fire is the day somebody adds the first runner-plane catalogue entry —
+// which is exactly when nobody will be looking here.
+//
+// It perturbs a real catalogue entry onto the runner plane and asserts a control-plane document refuses it.
+// A value exported into a process that never reads it is the "declared, and nothing happens" defect with an
+// extra layer of indirection, and the indirection is what would make it hard to see.
+func TestASettingCannotBeWrittenIntoAPlaneItIsNotReadOn(t *testing.T) {
+	const victim = "PALAI_DISPATCH_WORKERS"
+	index := -1
+	for i := range deploymentCatalogue {
+		if deploymentCatalogue[i].Name == victim {
+			index = i
+		}
+	}
+	if index < 0 {
+		t.Fatalf("%s is no longer catalogued", victim)
+	}
+	restore := deploymentCatalogue[index].Plane
+	deploymentCatalogue[index].Plane = planeRunnerPool
+	defer func() { deploymentCatalogue[index].Plane = restore }()
+
+	_, err := DecodeDesiredSettings([]byte(`{"settings":{"` + victim + `":"4"}}`))
+	if err == nil {
+		t.Fatalf("a control-plane document accepted %s while it is read on the runner plane. The value would be "+
+			"exported into a process that never reads it, and the screen would report a change that reached nothing", victim)
+	}
+	if !strings.Contains(err.Error(), "wrong plane") {
+		t.Errorf("the refusal does not say the plane is the problem: %v", err)
 	}
 }

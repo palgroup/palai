@@ -32,15 +32,15 @@ import (
 // desired configuration for is running on its compose file's defaults, and a screen that showed an empty
 // document instead would imply the panel is in control when it is not. `{"settings":{}}` — the deliberate
 // clear-everything write — is a document with no settings, which is a different fact and reports as one.
-func (s *Store) GetDesiredConfig(ctx context.Context, scope middleware.Scope) (*api.DesiredDocument, error) {
+func (s *Store) GetDesiredConfig(ctx context.Context, scope middleware.Scope, plane, scopeID string) (*api.DesiredDocument, error) {
 	if !scope.HasScope("provision") {
 		// Defence in depth. The handler gates this too; a store method that would answer an unscoped caller
 		// is one refactor away from being called by something that forgot.
 		return nil, errors.New("the desired configuration requires the provision capability")
 	}
-	var doc api.DesiredDocument
+	doc := api.DesiredDocument{Plane: plane, Scope: scopeID}
 	var raw []byte
-	err := s.spine.Pool().QueryRow(storage.WithSystemScope(ctx), storage.Query("LatestDeploymentDesired")).
+	err := s.spine.Pool().QueryRow(storage.WithSystemScope(ctx), storage.Query("LatestDeploymentDesired"), plane, scopeID).
 		Scan(&doc.Revision, &raw, &doc.WrittenAt, &doc.WrittenBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -71,26 +71,26 @@ func (s *Store) PutDesiredConfig(ctx context.Context, scope middleware.Scope, bo
 	if !scope.HasScope("provision") {
 		return api.ProvisionResult{}, errors.New("the desired configuration requires the provision capability")
 	}
-	settings, err := api.DecodeDesiredSettings(body)
+	write, err := api.DecodeDesiredSettings(body)
 	if err != nil {
 		// The refusal SENTENCE is what reaches the caller, because every one of them names the setting and
 		// says why. A bare 400 on this surface would send an operator to read Go source to find out which of
 		// eleven fields they got wrong.
 		return api.ProvisionResult{MissingField: err.Error()}, nil
 	}
-	encoded, err := json.Marshal(settings)
+	encoded, err := json.Marshal(write.Settings)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
-	var doc api.DesiredDocument
-	doc.Settings = settings
-	doc.WrittenBy = scope.Principal
+	doc := api.DesiredDocument{Plane: write.Plane, Scope: write.Scope, Settings: write.Settings, WrittenBy: scope.Principal}
 	if err := s.spine.Pool().QueryRow(storage.WithSystemScope(ctx), storage.Query("InsertDeploymentDesired"),
-		encoded, scope.Principal).Scan(&doc.Revision, &doc.WrittenAt); err != nil {
+		write.Plane, write.Scope, encoded, scope.Principal).Scan(&doc.Revision, &doc.WrittenAt); err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("write the desired configuration: %w", err)
 	}
 	return api.ProvisionResult{Body: mustJSON(map[string]any{
 		"object":     "deployment_desired",
+		"plane":      doc.Plane,
+		"scope_id":   doc.Scope,
 		"revision":   doc.Revision,
 		"settings":   doc.Settings,
 		"written_at": doc.WrittenAt,

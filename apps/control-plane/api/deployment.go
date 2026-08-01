@@ -66,6 +66,42 @@ const (
 	kindPath  = "path"
 )
 
+// THE PLANE VOCABULARY — WHICH PROCESS reads the setting. It is a different question from mutability and
+// from kind, and it is the axis this surface did not have until E29's scoping pass.
+//
+// THE QUESTION IT ANSWERS is "can this be configured per MACHINE?", and the honest answer for this
+// catalogue is no: all thirty-five are read by the control-plane PROCESS, one process shared by every
+// project and every machine on the deployment. Measured per binary, 2026-08-01:
+//
+//	                          control plane          cmd/runner
+//	PALAI_RUNNER_CONCURRENCY  —                      main.go:117  envIntDefault(...)
+//	PALAI_SANDBOX_IMAGE       main.go:69, 926        —
+//	PALAI_SHELL_NATIVE        main.go:69, 927        —
+//	PALAI_WORKSPACE_ROOT      main.go:677            main.go:120
+//
+// The first row is why PALAI_RUNNER_CONCURRENCY is in unreportedSettings and not here: it is the ONE
+// genuinely per-machine knob and this process holds no copy of it. The last row is the sharpest and it is
+// why the plane belongs in the KEY rather than in a document — PALAI_WORKSPACE_ROOT has two readers with
+// two DIFFERENT jobs under one name (the control plane ALLOCATES workspaces under it; the runner refuses
+// to bind-mount a leased path that does not sit under it, and "unset disables the check"). A flat document
+// forces one string into both and, reaching only the control plane, would move the allocation root while
+// leaving the check that guards it switched off.
+const (
+	// planeControlPlane: read by the control-plane process. Every catalogued setting is one of these, and
+	// planeMatchesReader() is what makes that a test rather than a claim.
+	planeControlPlane = "control_plane"
+	// planeRunnerPool: read by a RUNNER's own process, configured per pool because a pool is the unit a
+	// machine belongs to (`GET /v1/runner-pools` → 17 on the live stack; a runner row carries pool_id).
+	// NOT os/arch: measured 2026-08-01, all three enrolled runners report os="" arch="" — cmd/runner never
+	// sends them (runner_gateway.go's enrolRequest calls them "inventory (T4 may compare them)"), so a
+	// design that selected machines by either would be selecting on a field nothing populates.
+	//
+	// NOTHING IN THIS CATALOGUE CARRIES IT YET, and that is the honest state: the plane exists in the key
+	// so the model is not wrong, and the write path refuses it BY NAME because the reader is a second
+	// binary this task does not ship.
+	planeRunnerPool = "runner_pool"
+)
+
 // The DESIRED-value grammar. Every writable setting declares one, and it names the STANDARD LIBRARY CALL
 // this binary's own reader makes — not a shape somebody thought looked right.
 //
@@ -191,10 +227,61 @@ type catalogueEntry struct {
 	ChangeWith string
 	ReaderFile string
 	ReaderFunc string
+	// Plane names WHICH PROCESS reads this setting, and it is not free prose: planeMatchesReader() derives
+	// the plane from ReaderFile and fails when the two disagree. So the plane inherits the proof
+	// TestEveryCatalogueCitationResolvesToARealReader already provides — that file, that function, and that
+	// function's source really does mention the variable — instead of being a third thing to keep in step
+	// by hand. The zero value is planeControlPlane, which is what every entry in this catalogue is.
+	Plane string
 	// DesiredValue names the grammar a written value must satisfy, and its EMPTINESS is what makes the
 	// setting read-only: desiredWritable() admits a name only if this is non-empty AND Kind != kindPath.
 	// There is no separate boolean, because two fields that must agree are a pair that can disagree.
 	DesiredValue string
+}
+
+// planeOf reads an entry's plane, defaulting to the control plane. A default rather than a required field
+// on all thirty-five, because every one of them IS a control-plane setting and a field repeated
+// thirty-five times identically is a field nobody reads — the guard below is what keeps it honest.
+func planeOf(entry catalogueEntry) string {
+	if entry.Plane == "" {
+		return planeControlPlane
+	}
+	return entry.Plane
+}
+
+// controlPlaneReaderFiles are the paths whose code runs INSIDE the control-plane process. A citation into
+// one of them means the setting is read there, whatever the entry claims.
+//
+// IT IS A PREFIX LIST AND THIS TREE SAYS PREFIX COMPARISONS ARE GUILTY — four shipped defeated in E18
+// alone. What makes this one safe is the direction it fails in: a path that matches NOTHING here yields no
+// derived plane and planeMatchesReader REFUSES rather than passing. A new reader location is a red test
+// asking somebody to decide, never a silent control_plane.
+var controlPlaneReaderFiles = []string{
+	"apps/control-plane/",
+	"packages/version/",
+}
+
+// runnerReaderFiles are the paths whose code runs inside a RUNNER process. Empty of catalogue entries
+// today and listed anyway, because the guard has to be able to tell the two apart to be worth running:
+// with only one list it would be asserting that everything is what everything is.
+var runnerReaderFiles = []string{
+	"cmd/runner/",
+}
+
+// planeMatchesReader derives the plane from the citation and reports whether the entry agrees. ok=false
+// with an empty derived plane means the citation points somewhere neither list knows about.
+func planeMatchesReader(entry catalogueEntry) (derived string, ok bool) {
+	for _, prefix := range controlPlaneReaderFiles {
+		if strings.HasPrefix(entry.ReaderFile, prefix) {
+			return planeControlPlane, planeOf(entry) == planeControlPlane
+		}
+	}
+	for _, prefix := range runnerReaderFiles {
+		if strings.HasPrefix(entry.ReaderFile, prefix) {
+			return planeRunnerPool, planeOf(entry) == planeRunnerPool
+		}
+	}
+	return "", false
 }
 
 const (
@@ -640,7 +727,11 @@ func deployment(desired DesiredConfigAPI) http.HandlerFunc {
 		var doc *DesiredDocument
 		if desired != nil {
 			var err error
-			if doc, err = desired.GetDesiredConfig(r.Context(), scope); err != nil {
+			// THE CONTROL PLANE'S OWN document, and this route reads no other. GET /v1/deployment reports
+			// THIS PROCESS's environment — a machine's document belongs to whatever surface reports that
+			// machine, and serving it here would put a pool's configuration under a heading that says
+			// "this deployment", which is the misreading the plane exists to prevent.
+			if doc, err = desired.GetDesiredConfig(r.Context(), scope, planeControlPlane, ""); err != nil {
 				middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error",
 					"the effective configuration was read but the desired configuration could not be, so this response cannot say whether a bring-up is pending")
 				return
@@ -677,6 +768,7 @@ func deployment(desired DesiredConfigAPI) http.HandlerFunc {
 		if doc != nil {
 			drifted := desiredDrift(doc, os.Getenv)
 			body.Desired = &desiredView{
+				Plane: planeControlPlane, Scope: "",
 				Revision: doc.Revision, WrittenAt: doc.WrittenAt, WrittenBy: doc.WrittenBy,
 				Pending: len(drifted) > 0, Drifted: drifted,
 			}

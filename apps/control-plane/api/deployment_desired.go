@@ -55,10 +55,22 @@ var ErrDesiredRefused = errors.New("desired configuration refused")
 // 000048's header writes down the rule ("” is ONE kind of nothing where NULL plus ” would be two"). So
 // going back to the compose default is expressed by REMOVING the key, and the write path refuses "".
 type DesiredDocument struct {
-	Revision  int64             `json:"revision"`
+	Revision int64 `json:"revision"`
+	// Plane and Scope name WHICH PROCESS this document configures. They are carried on the document rather
+	// than left implicit in the caller, so a screen and a bring-up both read the scope off the same object
+	// they read the settings off — the pair that has to agree travels together.
+	Plane     string            `json:"plane"`
+	Scope     string            `json:"scope_id"`
 	Settings  map[string]string `json:"settings"`
 	WrittenAt time.Time         `json:"written_at"`
 	WrittenBy string            `json:"written_by"`
+}
+
+// DesiredWrite is one decoded write: which scope, and what for it.
+type DesiredWrite struct {
+	Plane    string
+	Scope    string
+	Settings map[string]string
 }
 
 // maxDesiredSettings bounds a document at slightly more than the catalogue can hold, so a hostile body
@@ -86,26 +98,53 @@ const maxDesiredValueBytes = 256
 //  4. THE SHAPE OF THE STRING ITSELF. No control character, no newline, bounded length — enforced by every
 //     grammar, because the value's journey ends as a `${VAR}` interpolation into a YAML scalar and a
 //     newline there is a structure edit rather than a value.
-func DecodeDesiredSettings(body []byte) (map[string]string, error) {
+func DecodeDesiredSettings(body []byte) (DesiredWrite, error) {
 	var in struct {
+		// Plane/Scope are OPTIONAL and default to the control plane, so every existing caller's body is
+		// unchanged. They are ACCEPTED-AND-REFUSED rather than rejected as unknown fields when they name the
+		// runner plane, and that is the difference between a specific answer and a shrug: a client written
+		// for the plane this deployment does not yet serve gets a sentence naming the missing reader.
+		Plane    string            `json:"plane"`
+		Scope    string            `json:"scope_id"`
 		Settings map[string]string `json:"settings"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(body)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil {
-		return nil, fmt.Errorf("%w: the body must be {\"settings\": {\"PALAI_X\": \"value\"}} and carry no other field: %v", ErrDesiredRefused, err)
+		return DesiredWrite{}, fmt.Errorf("%w: the body must be {\"settings\": {\"PALAI_X\": \"value\"}} with an optional \"plane\", and carry no other field: %v", ErrDesiredRefused, err)
 	}
 	if dec.More() {
-		return nil, fmt.Errorf("%w: the body carries more than one JSON value", ErrDesiredRefused)
+		return DesiredWrite{}, fmt.Errorf("%w: the body carries more than one JSON value", ErrDesiredRefused)
+	}
+	if in.Plane == "" {
+		in.Plane = planeControlPlane
+	}
+	// THE SCOPE GATE, AND IT RUNS FIRST. A document is only worth validating once it is going somewhere a
+	// reader will look, and the refusal for the runner plane names the reader that does not exist rather
+	// than pretending the plane is unknown — the model has it, this deployment has no second binary reading
+	// it, and saying so is what stops a row landing that nothing consults.
+	switch in.Plane {
+	case planeControlPlane:
+		if in.Scope != "" {
+			return DesiredWrite{}, fmt.Errorf("%w: the control plane is a SINGLETON — one process per deployment — so it takes no scope_id (got %q)", ErrDesiredRefused, in.Scope)
+		}
+	case planeRunnerPool:
+		return DesiredWrite{}, fmt.Errorf("%w: this deployment cannot apply a %s document yet. The storage is scoped for it and the "+
+			"catalogue can carry it, but the READER is a second binary: cmd/runner reads its environment at exec (main.go:117 for "+
+			"PALAI_RUNNER_CONCURRENCY, main.go:120 for PALAI_WORKSPACE_ROOT) and nothing hands it a document. A row written here would "+
+			"be a setting no machine ever sees. Configure a pool's posture and enrolment through POST/PATCH /v1/runner-pools, which "+
+			"the registry does enforce", ErrDesiredRefused, planeRunnerPool)
+	default:
+		return DesiredWrite{}, fmt.Errorf("%w: %q is not a plane this deployment knows. The two are %q and %q", ErrDesiredRefused, in.Plane, planeControlPlane, planeRunnerPool)
 	}
 	if in.Settings == nil {
 		// An ABSENT `settings` is refused rather than read as "clear everything". Clearing every setting is a
 		// real operation and it is spelled `{"settings":{}}`; a body that forgot the field would otherwise
 		// silently perform the most destructive write this surface has.
-		return nil, fmt.Errorf("%w: `settings` is required — send {\"settings\":{}} to clear every desired value", ErrDesiredRefused)
+		return DesiredWrite{}, fmt.Errorf("%w: `settings` is required — send {\"settings\":{}} to clear every desired value", ErrDesiredRefused)
 	}
 	if len(in.Settings) > maxDesiredSettings {
-		return nil, fmt.Errorf("%w: %d settings; a document may carry at most %d", ErrDesiredRefused, len(in.Settings), maxDesiredSettings)
+		return DesiredWrite{}, fmt.Errorf("%w: %d settings; a document may carry at most %d", ErrDesiredRefused, len(in.Settings), maxDesiredSettings)
 	}
 
 	writable := desiredWritable()
@@ -114,17 +153,26 @@ func DecodeDesiredSettings(body []byte) (map[string]string, error) {
 		entry, ok := writable[name]
 		if !ok {
 			if reason := nonDesiredReason[name]; reason != "" {
-				return nil, fmt.Errorf("%w: %s is not writable from this surface — %s", ErrDesiredRefused, name, reason)
+				return DesiredWrite{}, fmt.Errorf("%w: %s is not writable from this surface — %s", ErrDesiredRefused, name, reason)
 			}
-			return nil, fmt.Errorf("%w: %s is not a setting this deployment declares. The catalogue is an allow-list: "+
+			return DesiredWrite{}, fmt.Errorf("%w: %s is not a setting this deployment declares. The catalogue is an allow-list: "+
 				"a variable nobody has decided about is not writable, whatever it is called", ErrDesiredRefused, name)
 		}
+		// THE PLANE MUST MATCH. A control-plane document may only carry settings the control plane reads —
+		// otherwise the value is exported into a process that never looks at it, and the screen reports a
+		// change that reached nothing. The catalogue is entirely control-plane today, so this cannot fire
+		// yet; it is written now because the day it can fire is the day somebody adds a runner-plane entry,
+		// and that is exactly when nobody will be looking here.
+		if planeOf(entry) != in.Plane {
+			return DesiredWrite{}, fmt.Errorf("%w: %s is read on the %s plane and this document configures %s. A value written "+
+				"into the wrong plane's document is exported into a process that never reads it", ErrDesiredRefused, name, planeOf(entry), in.Plane)
+		}
 		if err := validateDesiredValue(entry, value); err != nil {
-			return nil, fmt.Errorf("%w: %s: %v", ErrDesiredRefused, name, err)
+			return DesiredWrite{}, fmt.Errorf("%w: %s: %v", ErrDesiredRefused, name, err)
 		}
 		out[name] = value
 	}
-	return out, nil
+	return DesiredWrite{Plane: in.Plane, Scope: in.Scope, Settings: out}, nil
 }
 
 // validateDesiredValue enforces one setting's grammar. Every branch refuses rather than repairs: a trimmed
@@ -205,6 +253,11 @@ func validateDesiredValue(entry catalogueEntry, value string) error {
 // desiredView is the desired document as GET /v1/deployment reports it, plus the two facts a screen needs
 // that the document itself does not carry: whether a bring-up is pending, and which settings differ.
 type desiredView struct {
+	// Plane and Scope say WHICH PROCESS this document configures, on the wire, so a screen cannot render a
+	// control-plane document under a machine-shaped heading — the misreading this whole scoping pass exists
+	// to prevent.
+	Plane     string    `json:"plane"`
+	Scope     string    `json:"scope_id"`
 	Revision  int64     `json:"revision"`
 	WrittenAt time.Time `json:"written_at"`
 	WrittenBy string    `json:"written_by"`
@@ -248,9 +301,10 @@ func desiredDrift(doc *DesiredDocument, effective func(string) string) []string 
 // nothing in it", which is a different fact and the one that would make a screen claim the panel is in
 // control of a machine it cannot write to.
 type DesiredConfigAPI interface {
-	// GetDesiredConfig returns nil when no revision has ever been written. That is distinct from a document
-	// with no settings, which is the deliberate clear-everything write.
-	GetDesiredConfig(ctx context.Context, scope middleware.Scope) (*DesiredDocument, error)
+	// GetDesiredConfig returns the current document for ONE plane/scope, or nil when no revision has ever
+	// been written for it. Nil is distinct from a document with no settings, which is the deliberate
+	// clear-everything write.
+	GetDesiredConfig(ctx context.Context, scope middleware.Scope, plane, scopeID string) (*DesiredDocument, error)
 	PutDesiredConfig(ctx context.Context, scope middleware.Scope, body []byte) (ProvisionResult, error)
 }
 
