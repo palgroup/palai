@@ -31,6 +31,9 @@ type fakeWebhookAPI struct {
 	// pinned marks an id the store refuses to delete because a trigger revision points at it — the
 	// automation.ErrEndpointPinned arm, which the handler must render as a 409 rather than a 500.
 	pinned string
+	// redeliverErr scripts the automation.ErrDeliveryEndpointDeleted arm: a delivery whose endpoint has been
+	// unregistered, which is a refusal rather than a miss.
+	redeliverErr error
 }
 
 func (f *fakeWebhookAPI) CreateEndpoint(_ context.Context, _, _ string, c automation.EndpointCreate) (string, error) {
@@ -83,7 +86,7 @@ func (f *fakeWebhookAPI) ListAttempts(context.Context, string, string, string) (
 	return nil, nil
 }
 func (f *fakeWebhookAPI) Redeliver(context.Context, string, string, string) (bool, error) {
-	return f.redeliverOK, nil
+	return f.redeliverOK, f.redeliverErr
 }
 
 func webhookTestServer(t *testing.T, api *fakeWebhookAPI) *httptest.Server {

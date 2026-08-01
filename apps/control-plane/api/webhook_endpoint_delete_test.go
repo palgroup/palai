@@ -254,6 +254,54 @@ func TestCreateWritesALocationThatResolvesNowThatTheFamilyHasASingularRead(t *te
 	}
 }
 
+// TestTheTwoStoreRefusalsRenderAsConflictsRatherThanFiveHundreds drives the two typed refusals over the
+// ROUTES. Both are proven at the store in the component tier, and that is not the same thing: proving a
+// mechanism is not proving the surface a caller meets, and an error arm nothing drives is an arm that can
+// render a 500 while every store-level test stays green.
+//
+// Both are 409 rather than 404 or 500 for the same reason. The resource IS there and the caller's request is
+// well-formed; what refuses it is the state of something else — a trigger revision that pins the endpoint, an
+// endpoint that no longer exists to receive a redelivery. A 404 would say "you asked about nothing", which is
+// false and sends an operator looking for a resource that is sitting right there.
+func TestTheTwoStoreRefusalsRenderAsConflictsRatherThanFiveHundreds(t *testing.T) {
+	t.Run("deleting an endpoint a trigger revision pins", func(t *testing.T) {
+		fake := newFakeWebhookAPI("whe_1")
+		fake.pinned = "whe_1"
+		srv := webhookTestServer(t, fake)
+
+		resp := do(t, http.MethodDelete, srv.URL+"/v1/webhook-endpoints/whe_1", "", nil)
+		defer resp.Body.Close()
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("DELETE of a pinned endpoint = %d, want 409.\n%s", resp.StatusCode, body)
+		}
+		// The answer has to name what is in the way, or it is a 409 an operator cannot act on.
+		if !strings.Contains(body, "trigger") {
+			t.Fatalf("the 409 does not say a trigger revision is what pins the endpoint:\n%s", body)
+		}
+		if len(fake.endpoints) != 1 {
+			t.Fatal("the refused delete removed the endpoint anyway")
+		}
+	})
+
+	t.Run("redelivering to a deleted endpoint", func(t *testing.T) {
+		fake := newFakeWebhookAPI()
+		fake.redeliverErr = automation.ErrDeliveryEndpointDeleted
+		srv := webhookTestServer(t, fake)
+
+		resp := do(t, http.MethodPost, srv.URL+"/v1/webhook-deliveries/whd_1/redeliver", "", nil)
+		defer resp.Body.Close()
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("redelivering to a deleted endpoint = %d, want 409. A 202 would accept work the pump can "+
+				"never do — its due-scan joins webhook_endpoints.\n%s", resp.StatusCode, body)
+		}
+		if !strings.Contains(body, "deleted") {
+			t.Fatalf("the 409 does not say the endpoint was deleted:\n%s", body)
+		}
+	})
+}
+
 // ---- helpers ---------------------------------------------------------------------------------------
 
 func newFakeWebhookAPI(ids ...string) *fakeWebhookAPI {
