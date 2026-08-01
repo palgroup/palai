@@ -532,20 +532,19 @@ export const MCP_CATALOGUE: readonly CatalogueEntry[] = [
       "A DIFFERENT GRAFANA ENDPOINT IS CONNECTABLE: the Tempo traces server at https://<stack>.grafana.net/tempo/api/mcp takes `Authorization: Basic base64(userID:token)`. It is not listed as its own row because its URL is per-stack and cannot be written down here.",
   },
 
-  // ── Refused: an Authorization scheme this transport cannot render ────────────────────────────────────
+  // ── Connectable, and it moved here by a four-character change ────────────────────────────────────────
   {
     id: "sentry",
     name: "Sentry",
     blurb: "Issues, events, releases and Seer root-cause analysis.",
     url: "https://mcp.sentry.dev/mcp",
     auth: "customScheme",
-    refusal:
-      "Sentry's static-token path uses a `Sentry-Bearer` scheme, and reserves plain `Bearer` for its own OAuth tokens. This transport recognises only `Bearer ` and `Basic ` (http.go:70), so a Sentry token would go out as `Bearer Sentry-Bearer <token>` and be refused.",
+    credential: "A Sentry user auth token, stored WITH its scheme: `Sentry-Bearer <token>`.",
     evidence: "https://github.com/getsentry/sentry-mcp",
     quote:
       "Sentry-Bearer is intentionally separate from Bearer: Bearer is reserved for MCP OAuth access tokens.",
     caveat:
-      "THIS ONE LOOKS CONNECTABLE AND IS NOT. Sentry documents a headless token, which reads like every other row in the connectable group above — the incompatibility is one word in a scheme name. Adding \"Sentry-Bearer \" to authSchemes in adapters/integrations/mcp/http.go:70 is a one-line change that would move this row, and it is the cheapest catalogue expansion available.",
+      "THIS ROW WAS REFUSED UNTIL 2026-08-01 AND THE OBSTACLE WAS FOUR CHARACTERS. Sentry documents a headless token that reads like every other bearer row here, but rides its own scheme — so a token stored bare went out as `Bearer Sentry-Bearer <token>` and was refused. `Sentry-Bearer ` is now in authSchemes (adapters/integrations/mcp/http.go), asserted by TestHTTPAuthorizationSchemeComesFromTheSecret against the HEADER rather than against the list, because reading the list would pass on a list no code consults. Store the credential WITH the scheme, as the Atlassian rows do.",
   },
 ];
 
