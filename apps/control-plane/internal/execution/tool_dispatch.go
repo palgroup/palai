@@ -247,9 +247,16 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	// them. So a run waiting for a human holds no credential in memory while it waits — the park left this
 	// function before this line was reached.
 	//
-	// The map's whole life is the Execute call below. `env` is a per-dispatch local (execEnv mints a fresh
-	// value each call), it is not read again after :249, and it is never marshalled, journaled or logged:
-	// the four resolver lookups above take `env` BEFORE this line, so none of them can see a value either.
+	// The map's whole life is the Execute call below and the redaction immediately after it. `env` is a
+	// per-dispatch local (execEnv mints a fresh value each call) and it is never marshalled, journaled or
+	// logged: the four resolver lookups above take `env` BEFORE this line, so none of them can see a value
+	// either.
+	//
+	// ONE READ AFTER Execute, AND IT IS A SUBTRACTION. answerResult hands EnvValues to RedactValues so a
+	// tool's REFUSAL — which is committed to the ledger and delivered to the model — cannot carry a value
+	// this attempt was given ("connect to postgres://user:<password>@…" is the everyday form). That call
+	// can only REMOVE values from a string; it never puts one anywhere. This sentence used to say the map
+	// was not read again at all, and it stopped being true the moment a tool error became a result.
 	if env.EnvValues, err = o.resolveEnvValues(ctx, st); err != nil {
 		return err
 	}
