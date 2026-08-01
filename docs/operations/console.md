@@ -724,6 +724,50 @@ allocation root while leaving the check that guards it switched off.
 inherits the proof `TestEveryCatalogueCitationResolvesToARealReader` already gives. A citation into a
 directory neither prefix list knows is a **refusal**, not a default.
 
+### The two-reader variable was hiding a live boundary hole
+
+`PALAI_WORKSPACE_ROOT`'s second reader is the runner, where it refuses to bind-mount a leased workspace
+outside the managed root — the §24 boundary against a control plane naming an arbitrary host path. Measured
+2026-08-01, **no shipped file ever gave a runner that variable**:
+
+```
+runner `environment:` block carries PALAI_WORKSPACE_ROOT?
+  compose.yaml NO   production.yml NO   native-control-plane.yml NO   airgap.yml NO
+docker inspect <live runner> | grep -c PALAI_WORKSPACE_ROOT   → 0
+```
+
+…and an empty root **disabled the check**. So "pre-E09 behaviour" described every deployment rather than an
+old one. It was not exploitable — workspaces are off on compose, so no lease carries a path — but it armed
+itself the moment an operator turned the feature on, because the control plane starts provisioning when
+**its** copy is set and nothing required the runner's.
+
+Fixed in the same change, both halves: an unset root now **refuses** a workspace-bearing lease (a runner
+that cannot tell whether a path is one it minted has no basis to mount it), and
+`native-control-plane.yml` — the one shipped posture where workspaces run — now sets the variable in the
+runner's environment beside the bind it already had. A workspace-*less* lease is untouched.
+
+`/deployment` raises **`workspace_root_runner_plane`** (advisory) whenever workspaces are provisioned here.
+It names both readers and the remedy, and deliberately does **not** claim the runner's copy is missing:
+this process holds no copy of a runner-scoped variable, and a surface that reported one would be giving the
+confident wrong answer this catalogue refuses for `PALAI_RUNNER_CONCURRENCY`.
+
+### Two settings are catalogued that this process cannot observe
+
+`PALAI_RUNNER_POSTURE` and `PALAI_RUNNER_POOL` are read by `cmd/runner` and set by **no** shipped compose
+file — so the compose walk, which can only see what compose *sets*, reported a complete catalogue while two
+variables the runner binary reads were in it nowhere. A walk finds what exists; only a list finds what does
+not.
+
+Cataloguing them creates a trap: the handler does `os.LookupEnv` on every catalogued name, so a runner
+variable exported in the *control plane's* shell would be read and taken for the machine's. It therefore
+**skips the lookup for a foreign plane**, and the row carries `observable: false`. The screen renders
+**"— read on the machines"**, never "— unset" — those are opposite facts sharing one word, which is exactly
+the confusion this screen was built to end.
+
+`PALAI_RUNNER_CONCURRENCY` stays *out* of the catalogue for the opposite reason: its value is a **number** an
+operator would read as this deployment's concurrency. These two are catalogued because their *existence*,
+not their value, is what a reader needs.
+
 ### Where the document lives, and why it is not `config_policy`
 
 `deployment_desired` (migration `000052`) is **append-only** — one row per revision **per scope**, holding
