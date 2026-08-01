@@ -124,6 +124,27 @@ func vetConnectionEndpoint(provider, baseURL string) (api.ProvisionResult, bool)
 
 // CreateModelRoute opens the named route alias for the caller's project. Create is get-or-create: an alias
 // names one lineage, so re-creating it returns the same id rather than a second lineage.
+//
+// SINCE E29 IT REFUSES A NAME NOTHING WILL EVER READ, and the reason is a transcript rather than a
+// principle. Measured on the live stack, 2026-08-01:
+//
+//	POST /v1/model-routes            {"name":"anthropic-default"}   -> 201
+//	POST …/revisions                 {"model":"claude-sonnet-5",…}  -> 201
+//	POST …/revisions/{rev}/publish                                  -> 200
+//	POST /v1/responses                                              -> ran on the DEPLOYMENT DEFAULT
+//
+// Four calls, four successes, and not one run ever consulted that route. Dispatch resolves exactly one
+// alias — coordinator.DefaultModelRouteAlias, used in ProjectModelRoute — and nothing in between had a
+// reason to say so. The operator's evidence that they had chosen a model was four green responses.
+//
+// The alias constant's own comment is honest about why there is one ("no config layer can yet ASK for
+// one, so storing per-run alias selection would be dead config") — which is precisely what makes every
+// OTHER name dead config too. Accepting it stored a choice that looked made and was not.
+//
+// THIS REFUSAL IS LIFTED BY THE COMMIT THAT MAKES OTHER ALIASES LIVE, not before: when a config layer can
+// ask for a route by name, the check moves to "an alias some config can select" and both changes ship
+// together. Until then, pre-staging an alias is pre-staging silence. Every create in this tree already
+// passes DefaultModelRouteAlias, so nothing that worked stops working.
 func (s *Store) CreateModelRoute(ctx context.Context, scope middleware.Scope, body []byte) (api.ProvisionResult, error) {
 	if out, ok := requireProjectScope(scope); !ok {
 		return out, nil
@@ -136,6 +157,11 @@ func (s *Store) CreateModelRoute(ctx context.Context, scope middleware.Scope, bo
 	}
 	if in.Name == "" {
 		return api.ProvisionResult{MissingField: "name"}, nil
+	}
+	if in.Name != coordinator.DefaultModelRouteAlias {
+		return api.ProvisionResult{MissingField: "name " + strconv.Quote(coordinator.DefaultModelRouteAlias) +
+			" — it is the only alias a run resolves through, so a route by any other name would be created, " +
+			"published, and never consulted by a single run (got " + strconv.Quote(in.Name) + ")"}, nil
 	}
 	id, err := s.spine.CreateModelRoute(ctx, tenantOf(scope), in.Name)
 	if err != nil {
@@ -450,8 +476,25 @@ func modelListingView(rec coordinator.ModelConnectionRecord, listing modelbroker
 }
 
 // modelRouteView renders a route alias's read-back projection.
+//
+// IT SAYS WHETHER DISPATCH READS THIS ALIAS, because refusing new dead names at create does not find the
+// ones already stored — and a sweep that only looks forward is this tree's other recurring defect. The
+// stack this was measured on holds an `anthropic-default` row created before the guard existed: nothing
+// will ever resolve it, and this projection is the only place an operator can learn that.
+//
+// The note is present ONLY on the inert rows. A warning on the row that is working is a warning an
+// operator learns to scroll past.
 func modelRouteView(rec coordinator.ModelRouteRecord) map[string]any {
-	return map[string]any{"id": rec.ID, "object": "model_route", "name": rec.Name, "created_at": rec.CreatedAt}
+	out := map[string]any{
+		"id": rec.ID, "object": "model_route", "name": rec.Name, "created_at": rec.CreatedAt,
+		"consulted_by_dispatch": rec.Name == coordinator.DefaultModelRouteAlias,
+	}
+	if rec.Name != coordinator.DefaultModelRouteAlias {
+		out["dispatch_note"] = "no run resolves this alias: dispatch reads only " +
+			strconv.Quote(coordinator.DefaultModelRouteAlias) + ". Its revisions are stored and published, and " +
+			"they steer nothing — a project routing through this row is running on the deployment default."
+	}
+	return out
 }
 
 // listView wraps a set of projections in the un-paginated admin ListView envelope ({object:"list", data:[…]})

@@ -2,10 +2,12 @@
 package contracts
 
 type ModelRoute struct {
-	CreatedAt      string         `json:"created_at,omitempty"`
-	ID             OpaqueID       `json:"id"`
-	Name           string         `json:"name"`
-	Object         string         `json:"object"`
-	OrganizationID OrganizationID `json:"organization_id,omitempty"`
-	ProjectID      ProjectID      `json:"project_id,omitempty"`
+	ConsultedByDispatch bool           `json:"consulted_by_dispatch,omitempty"`
+	CreatedAt           string         `json:"created_at,omitempty"`
+	DispatchNote        string         `json:"dispatch_note,omitempty"`
+	ID                  OpaqueID       `json:"id"`
+	Name                string         `json:"name"`
+	Object              string         `json:"object"`
+	OrganizationID      OrganizationID `json:"organization_id,omitempty"`
+	ProjectID           ProjectID      `json:"project_id,omitempty"`
 }

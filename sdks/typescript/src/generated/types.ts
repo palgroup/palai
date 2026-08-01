@@ -158,7 +158,9 @@ export interface ModelListing {
 }
 
 export interface ModelRoute {
+  consulted_by_dispatch?: boolean;
   created_at?: string;
+  dispatch_note?: string;
   id: OpaqueId;
   name: string;
   object: string;

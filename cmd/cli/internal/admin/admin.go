@@ -226,7 +226,9 @@ var positionalArity = map[string]int{
 	// positional is a credential, which is the same reason `secret create` takes none. `verify` names ONE
 	// connection: probing several with one command is a bill and a burst of outbound requests nobody asked
 	// for, and an operator reading a single verdict knows which row it belongs to.
-	"model/create": 0, "model/list": 0, "model/get": 1, "model/verify": 1, "model/route": 0, "model/routes": 0,
+	// `models` names ONE connection for the same reason `verify` does: a list belongs to a credential, so
+	// listing several at once would interleave four catalogues with no column saying whose is whose.
+	"model/create": 0, "model/list": 0, "model/get": 1, "model/verify": 1, "model/models": 1, "model/route": 0, "model/routes": 0,
 }
 
 // execute maps (resource, subcommand) to the one E13 endpoint it fronts and dispatches it. It first enforces
@@ -340,6 +342,14 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 			// succeeded and the verdict is in the body — so read `outcome`, and read `not_probed` as
 			// "nothing was checked", never as a pass.
 			return c.do(http.MethodPost, "/v1/model-connections/"+esc(pos[0])+"/verify", nil)
+		case "models":
+			// THE PROVIDER'S OWN CATALOGUE for this connection's credential (E29 provider models) — the
+			// answer to "what do I put in --model", read from the provider instead of typed.
+			//
+			// A GET, unlike `verify` directly above, because it writes no stamp. Read `outcome` FIRST: the
+			// response carries `data` only when the provider actually answered, so an absent `data` is
+			// "we could not ask" and never "your key sees no models".
+			return c.do(http.MethodGet, "/v1/model-connections/"+esc(pos[0])+"/models", nil)
 		case "route":
 			return c.routeThroughConnection(f)
 		case "routes":
@@ -752,7 +762,7 @@ func usageErr(resource string) error {
 		"runner": "list | approve <runner_id> | cordon <runner_id> | resume <runner_id> | revoke <runner_id> (revoke is IRREVERSIBLE)",
 		// The provider wiring (E29). `create` never takes a key: write it with `palai secret create` and
 		// name the REF here.
-		"model": "create --provider <provider-one|provider-two|openai-compatible> --secret-ref <name> [--endpoint <url>] | list | get <mconn_id> | verify <mconn_id> | route --connection <mconn_id> --model <id> | routes",
+		"model": "create --provider <provider-one|provider-two|openai-compatible> --secret-ref <name> [--endpoint <url>] | list | get <mconn_id> | verify <mconn_id> | models <mconn_id> | route --connection <mconn_id> --model <id> | routes",
 	}
 	return fmt.Errorf("usage: palai %s <%s>", resource, subs[resource])
 }
