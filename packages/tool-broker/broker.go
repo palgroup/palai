@@ -322,6 +322,16 @@ func (b *Broker) RequiresApprovalResolved(ctx context.Context, env ExecEnv, name
 // kill-after-execute is detectable as uncertain (spec §26.7): every class whose re-execution is unsafe
 // or needs reconciliation — irreversible, reversible, interactive. Pure re-runs freely and idempotent
 // resends settle one object, so neither needs the marker.
+//
+// ANY GUARD ABOUT "WHICH TOOLS CAN WEDGE A RUN" KEYS ON THIS FUNCTION, NEVER ON A TOOL NAME, and that
+// is a correction paid for once already. The 2026-08-01 tool-error wedge was reproduced first through
+// the FILE tool and had been recorded three days earlier, in an operations doc, as a fact about the
+// SHELL tool. They are different classes — file is ClassReversible, shell is ClassIrreversible — and
+// they wedge for the identical reason: both answer true here, so both leave a durable `executing` row
+// that survives a failed attempt, and the next attempt's ledger consult drives it to `uncertain` and
+// then to `manual_resolution`, which nothing resolves. A guard written against "the shell tool" would
+// have missed the file tool, and a guard written against "the file tool" would miss the next one. The
+// property is the PRE-WRITE, and this is where it is decided.
 func NeedsPreWrite(class ReplayClass) bool {
 	switch class {
 	case ClassIrreversible, ClassReversible, ClassInteractive:

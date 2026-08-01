@@ -182,8 +182,11 @@ func TestARefusedTraversalIsAnsweredAndTheOutsideFileIsNeverRead(t *testing.T) {
 	root, canaryPath, canaryBody := answerWorkspace(t)
 	callID := redeliveryID("tc")
 
-	// Two shapes of the same attack: the classic relative climb, and the absolute path.
-	for _, target := range []string{"../../../../etc/passwd", "../outside.txt", canaryPath} {
+	// Three shapes of the same attack. The canary-bearing ones come FIRST so the leak assertion below is
+	// REACHABLE: `../../../../etc/passwd` climbs past a macOS temp root into a directory that does not
+	// exist, so it MISSES rather than escapes and proves the least about containment. It is kept because
+	// it is the exact string from the reproduction, not because it is the sharp case.
+	for _, target := range []string{"../outside.txt", canaryPath, "../../../../etc/passwd"} {
 		orch, st, ch := answerAttempt(cs, fileBroker(), tenant, sessionID, runID, root, 1)
 		id := callID + "-" + fmt.Sprint(len(target))
 		err := orch.dispatchTool(ctx, st, toolRequestFrame(id, "palai.workspace.file",
@@ -191,18 +194,34 @@ func TestARefusedTraversalIsAnsweredAndTheOutsideFileIsNeverRead(t *testing.T) {
 		if err != nil {
 			t.Fatalf("dispatchTool(%q) error = %v, want nil (a refusal must not end the run)", target, err)
 		}
-		code, _, raw := deliveredAnswer(t, ch)
-		if code != toolbroker.AnswerRefused {
-			t.Fatalf("traversal %q answer code = %q, want %q", target, code, toolbroker.AnswerRefused)
-		}
+		// THE LEAK ASSERTION RUNS FIRST, AND THE ORDER IS THE POINT RATHER THAN THE STYLE.
+		//
+		// MEASURED by deleting BOTH containment guards in WorkspaceFS.resolve: a path that no longer
+		// escapes merely MISSES, so the answer code changes from `refused` to `not_found` — and with the
+		// code assertion first this test failed saying "answer code = not_found, want refused", which
+		// reads as a naming problem and is in fact a read of somebody else's disk. An assertion that
+		// fails for a reason unrelated to what it claims is worse than one that does not fail at all,
+		// because it sends the next reader to the wrong file. With this order it says what happened:
+		//
+		//   traversal "../outside.txt" LEAKED the out-of-workspace file into the result:
+		//   {"content":"canary-secret_95d83823f1e72179","path":"../outside.txt","size":30}
+		//
 		// THE REFUSAL STILL REFUSES. The canary body is unique to this test; its presence in either the
 		// delivered bytes or the committed row would mean the read happened.
 		state, committed := toolRow(t, cs, id)
+		raw := ""
+		if got := toolResults(ch); len(got) == 1 {
+			raw = got[0].content
+		}
 		if strings.Contains(raw, canaryBody) || strings.Contains(committed, canaryBody) {
-			t.Fatalf("traversal %q LEAKED the out-of-workspace file into the result", target)
+			t.Fatalf("traversal %q LEAKED the out-of-workspace file into the result: %s", target, raw)
 		}
 		if strings.Contains(raw, "root:") || strings.Contains(committed, "root:") {
-			t.Fatalf("traversal %q returned /etc/passwd content", target)
+			t.Fatalf("traversal %q returned /etc/passwd content: %s", target, raw)
+		}
+		code, _, _ := deliveredAnswer(t, ch)
+		if code != toolbroker.AnswerRefused {
+			t.Fatalf("traversal %q answer code = %q, want %q", target, code, toolbroker.AnswerRefused)
 		}
 		if state != "completed" {
 			t.Fatalf("traversal %q left tool_calls state %q, want completed", target, state)
