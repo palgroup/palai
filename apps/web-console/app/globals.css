@@ -1286,10 +1286,18 @@ details.notes > :last-child {
 
 /* --- THE DISTRIBUTIONS (E31 shell parity). "ne grafik var ne başka bir şey." Two cards side by side under
    the figure strip, at the reference's own card metrics: radius 12, padding 16-20, a 20px gap. Its stat card
-   is measured at `rounded-card / p-4 / gap-5` with an inset 1px white-10% RING rather than a border; ours
-   takes --border-hairline instead, and this file's own token header records the refusal —
-   `rgba(255,255,255,0.10)` is 1.30:1 here and tests/contrast.spec.ts cannot judge a translucent value at
-   all, it throws by design. --- */
+   is measured at `rounded-card / p-4 / gap-5` with an inset 1px white-10% RING rather than a border.
+
+   OURS IS --border-hairline AND HERE IS THE NUMBER, so a reader comparing the two consoles pixel by pixel
+   finds the reason in one line rather than a pointer to another comment: `rgba(255,255,255,0.10)` over this
+   dark page resolves to **1.30:1**, against SC 1.4.11's 3:1 — and tests/contrast.spec.ts cannot judge a
+   translucent value at all, it throws by design ("a translucent colour cannot be measured on its own").
+   --border-hairline is sand step 6, opaque, and therefore measurable.
+
+   AND THE SAME PRINCIPLE ALREADY SETTLED A BIGGER ONE, WHICH IS WHY THIS DIFFERENCE IS NOT A MISS: their
+   SURFACES are `rgba(255,255,255,0.05)` composited over their body, which lands at `#232322` — sand step 3
+   in the dark block, within one 8-bit level. Our surface IS their surface, opaque and therefore
+   measurable; only the hairline, whose alpha is too low to survive the same treatment, differs. --- */
 .chart-grid,
 .registry-grid {
   display: grid;
@@ -1452,6 +1460,36 @@ details.notes > :last-child {
 /* The scope note goes back under the row rather than right-aligned against nothing. */
 .panel-head[data-page-title="true"] .panel-tools-note {
   text-align: left;
+}
+
+/* --- WHAT A RUN IS, ABOVE THE PROMPT (E31). The control and its sentence sit in a recessed block so they
+   read as a frame around the prompt rather than as the first of six fields — the decision it carries is
+   about what the prompt MEANS, not about the run's configuration. --- */
+.run-mode {
+  padding: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-5);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-3);
+}
+.run-mode > :last-child {
+  margin-bottom: 0;
+}
+/* The sentence is at reading size, not at note size: it is the answer to "what is this going to do", which
+   is the one thing on this panel an operator must not skim past. */
+.run-mode > .muted {
+  font-size: var(--font-size-3);
+  line-height: var(--line-height-4);
+  max-width: 78ch;
+}
+/* The session a finished run belongs to, with the control that sends the next prompt into it. */
+.run-continue {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-size: var(--font-size-3);
+  line-height: var(--line-height-4);
+  color: var(--text-muted);
 }
 
 /* --- THE PAGER: two 32x32 arrows at the bottom LEFT, measured off the reference's own list footer, with
@@ -2291,6 +2329,11 @@ pre.code {
 .field-label-row > label {
   margin-bottom: var(--space-2);
 }
+/* IT MINTS NO COLOUR OF ITS OWN, and that is the point rather than an omission. Measured on the reference,
+   `rgb(109,167,236)` is ONE colour doing two jobs — the "Updated" badge in its sidebar and this link in its
+   dialog — so the parity move is one token, not a second blue. This rule sets size and wrapping; the colour
+   comes from §2's bare `a { color: var(--accent-text) }`, which is the same token every other link on this
+   surface takes. A `color:` declaration here would be the second blue arriving quietly. */
 .field-manage {
   flex: none;
   font-size: var(--font-size-2);

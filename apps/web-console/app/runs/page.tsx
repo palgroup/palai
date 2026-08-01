@@ -36,6 +36,14 @@ interface AgentRow {
   id: string;
   name?: string;
 }
+/** A session this run can be appended to. Only ACTIVE ones can be — see the picker's own note. */
+interface SessionRow {
+  id: string;
+  title?: string;
+  status?: string;
+  state?: string;
+}
+
 interface RevisionRow {
   id: string;
   revision_number?: number;
@@ -56,6 +64,18 @@ export default function RunsPage() {
   const [usage, setUsage] = useState<Usage | null>(null);
   const [pending, setPending] = useState<PendingApproval | null>(null);
   const [sessionId, setSessionId] = useState<string>("");
+  // --- SINGLE SHOT, OR A TURN IN A CONVERSATION -----------------------------------------------------------
+  //
+  // `chainTo` is the session this run will APPEND to. "" is a single shot: the admission mints a fresh
+  // session and the model sees nothing before this prompt. app/api/palai/stream/route.ts carries the two
+  // code references and the reason the console could never do the second one — `session_id` has been on the
+  // wire contract the whole time and this page only ever read the id back off the `meta` frame.
+  //
+  // `sessionId` (above) is still the RESULT — the session the run that just ran belongs to. The two are
+  // deliberately separate: reusing one field for "what I asked for" and "what I got" is how a control ends
+  // up silently continuing whichever session happened to be on screen.
+  const [chainTo, setChainTo] = useState<string>("");
+  const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [terminal, setTerminal] = useState<{ status: string; model: string | null; output: unknown } | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactRow[]>([]);
   const [running, setRunning] = useState(false);
@@ -100,6 +120,34 @@ export default function RunsPage() {
       live = false;
     };
   }, []);
+
+  // THE SESSIONS THIS RUN COULD CONTINUE, and only the ones it actually could.
+  //
+  // `?status=active` is a SERVER filter (api/pagination.go's beginList parses it), not a client-side
+  // narrowing, and it is the honest list: admission refuses a non-active session with a 409
+  // (`SessionConflict`, packages/coordinator/store.go:754) and an unknown or foreign one with a 404. A
+  // picker that offered a closed session would be offering a choice the server answers with a refusal —
+  // the exact shape components/Picker.tsx exists to prevent.
+  //
+  // It is fetched ONCE, on mount, and refreshed after a run reaches its terminal (see `run()`): a run that
+  // opens a new session makes that session the newest row here, and an operator's next act is often to
+  // continue the thing they just started.
+  const [sessionsReloadKey, setSessionsReloadKey] = useState(0);
+  useEffect(() => {
+    let live = true;
+    apiGet<{ data?: SessionRow[] }>("/sessions?status=active")
+      .then((body) => {
+        if (live) setSessions(body.data ?? []);
+      })
+      .catch(() => {
+        // Same rule as the agents list: an unreadable collection leaves the picker absent and its note in
+        // place. A single shot still works, which is what makes this non-fatal.
+        if (live) setSessions([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [sessionsReloadKey]);
 
   useEffect(() => {
     setRevisionId("");
@@ -226,8 +274,11 @@ export default function RunsPage() {
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      await streamRun(prompt, onFrame, controller.signal, revisionId, outputSchema);
-      // The run reached its terminal — load the artifacts it produced (through the relay).
+      await streamRun(prompt, onFrame, controller.signal, revisionId, outputSchema, chainTo);
+      // The run reached its terminal — refresh the sessions this page can continue, because the run just
+      // either opened one or added a turn to one, and offering yesterday's list is offering a stale choice.
+      setSessionsReloadKey((n) => n + 1);
+      // Load the artifacts it produced (through the relay).
       const rid = responseIdRef.current;
       if (rid !== "") {
         try {
@@ -267,6 +318,63 @@ export default function RunsPage() {
 
       <section className="panel" aria-labelledby="run-h">
         <h2 id="run-h">Start a run</h2>
+        {/* WHAT THIS RUN IS, DECIDED BEFORE THE PROMPT IS TYPED — because it is what the prompt MEANS.
+            "single shot bir şey görmüyorum": this page offered a prompt, a model and an agent, and nothing
+            said whether the model would see anything before this message. It could not have: `session_id`
+            was never sent, so every run opened a fresh session and the answer was always "single shot".
+
+            THE PICKER IS ABSENT WHEN THERE IS NOTHING TO CONTINUE, which is components/Picker.tsx's rule and
+            the right one here: on a deployment with no active session the choice does not exist, and a
+            disabled radio pair explaining that would be two controls where one sentence does. */}
+        <div className="run-mode" data-testid="run-mode">
+          {/* THE PICKER IS ABSENT WHEN THERE IS NOTHING TO CONTINUE, which is components/Picker.tsx's rule
+              and the right one here: on a deployment with no active session the choice does not exist, and a
+              disabled control explaining that would be a control where a sentence does.
+
+              THE SENTENCE BELOW IS NOT INSIDE THAT BRANCH, and that separation is deliberate rather than
+              tidy: it is the thing that answers "single shot bir şey görmüyorum", so it must be on the
+              screen in EVERY state — including the two where no picker renders (no active session at all,
+              and a session armed by the Continue button on a stack whose list has not caught up). A note
+              that disappears exactly when the situation is unusual is a note that is missing when it is
+              most needed. */}
+          {sessions === null || sessions.length === 0 ? null : (
+            <Picker
+              id="run-chain-select"
+              label="Conversation"
+              value={chainTo}
+              onChange={setChainTo}
+              options={sessions.map((row) => ({
+                value: row.id,
+                label: `${row.title === undefined || row.title === "" ? "— unnamed" : row.title} (${row.id})`,
+              }))}
+              placeholder="Single shot — start a new conversation"
+              testId="run-chain-select"
+              manage={{ href: "/sessions", label: "Manage sessions" }}
+              emptyNote={<>No active session to continue.</>}
+            />
+          )}
+          {/* Both halves are what the CODE does rather than what it is for: packages/coordinator/store.go:742
+              mints a session when none is requested and appends when one is, and only an ACTIVE session may
+              be appended to (a non-active one is `SessionConflict`, a 409). */}
+          {sessions === null ? null : (
+            <p className="muted" data-testid="run-mode-note">
+              {chainTo === "" ? (
+                <>
+                  <strong>Single shot.</strong> One request, one response — this run opens a NEW session and
+                  the model sees nothing before this prompt.
+                  {sessions.length === 0 ? " No session is active yet, so there is nothing to continue." : ""}
+                </>
+              ) : (
+                <>
+                  <strong>A turn in a conversation.</strong> This run appends to <code>{chainTo}</code>, so
+                  the model sees that session&apos;s earlier turns. The session must still be active — a
+                  closed one is refused with a 409 and no run is created.
+                </>
+              )}
+            </p>
+          )}
+        </div>
+
         <label htmlFor="prompt-input">Prompt</label>
         <textarea id="prompt-input" data-testid="prompt-input" rows={2} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
 
@@ -450,6 +558,31 @@ export default function RunsPage() {
           <pre className="code" data-testid="final-output">
             {JSON.stringify(terminal.output, null, 2)}
           </pre>
+          {/* THE SESSION THIS RUN BELONGS TO, AND THE ONE CONTROL THAT MAKES THE DISTINCTION LEGIBLE.
+              Reading "sess_…" on the screen taught an operator nothing; being able to send the next prompt
+              INTO it is what shows that a run is a turn rather than a shot. It sets the picker above rather
+              than starting anything, so the operator still types the prompt and still presses the button —
+              a one-click "continue" would be a second way to start a run, and this page has one. */}
+          {sessionId === "" ? null : (
+            <p className="run-continue" data-testid="run-continue-row">
+              This run is a turn in session <code data-testid="terminal-session">{sessionId}</code>.{" "}
+              {chainTo === sessionId ? (
+                <span data-testid="run-continue-armed">
+                  The next run continues it — type a prompt above and start it.
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  data-testid="run-continue"
+                  onClick={() => {
+                    setChainTo(sessionId);
+                  }}
+                >
+                  Continue this conversation
+                </button>
+              )}
+            </p>
+          )}
         </section>
       ) : null}
 

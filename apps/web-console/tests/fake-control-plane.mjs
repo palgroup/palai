@@ -41,7 +41,7 @@ const FRAME_GAP_MS = 60;
 // and the counter could say only THAT, not WHICH — so the finding could not be triaged without editing the
 // fixture. A counter whose failure cannot be diagnosed sends the reader to a bisect. The list is bounded by
 // de-duplication, exactly like `paths`.
-const introspect = { v1Requests: 0, nonV1Requests: 0, beareredV1Requests: 0, unbeareredV1Requests: 0, cookieBearingV1Requests: 0, paths: [], nonV1Paths: [], lastCreateOutput: null };
+const introspect = { v1Requests: 0, nonV1Requests: 0, beareredV1Requests: 0, unbeareredV1Requests: 0, cookieBearingV1Requests: 0, paths: [], nonV1Paths: [], lastCreateOutput: null, lastCreateSessionId: null };
 
 // THE `output` FIELD OF THE LAST POST /v1/responses, VERBATIM (spec §22.7).
 //
@@ -57,6 +57,18 @@ const introspect = { v1Requests: 0, nonV1Requests: 0, beareredV1Requests: 0, unb
 // Per-session interactive approval state: the SSE pump pauses at approval.requested until an approve
 // command lands on POST /v1/sessions/{id}/commands (a real round-trip through the relay).
 const sessions = new Map(); // sid -> { approved: boolean, denied: boolean }
+// rid -> sid, because a CHAINED run's session is not derivable from its response id.
+//
+// `/v1/responses/{id}` used to recover the session with `rid.replace("resp_", "ses_")`, which is exact only
+// while every run opens a session of its own. The moment a create carries `session_id` that derivation is
+// wrong — it would report a session that never ran — so the mapping is recorded at create instead of
+// re-derived at read. See the create handler for why the fixture models chaining at all.
+const runSessions = new Map();
+// sid -> { rid, runId } for the MOST RECENT run in that session. The SSE route is keyed by session and
+// derived its ids the same way (`sid.replace("ses_", "resp_")`), which is equally wrong for a session that
+// was joined rather than opened — a seeded session `ses_010…` would stream events naming a response id no
+// create ever returned.
+const sessionRuns = new Map();
 let seq = 0;
 
 // `model` is carried on the session so GET /v1/responses/{id} can project the model this run actually ran
@@ -2312,7 +2324,47 @@ export const ROUTES = [
           // layerAgentRevision does. A revision that pins no model inherits, so an empty one is not a pin.
           if (found.revision.model !== "") model = found.revision.model;
         }
-        const { sid, rid, runId } = newRun(model);
+        // THE CHAIN (E31), AND THE FIXTURE MODELS IT BECAUSE PRODUCTION DOES.
+        //
+        // A create with no `session_id` mints a fresh session; one WITH it appends to that session and does
+        // not mint. That is packages/coordinator/store.go:742 — `sessionID, createSession = existingID,
+        // false` — with the same two refusals in the same order, decided BEFORE anything is created:
+        // an unknown or foreign id is a tenant-scoped 404, and a session that is not ACTIVE is a 409
+        // (`SessionConflict`). Both leave no run and no session behind, here as there.
+        //
+        // A FAKE THAT IGNORED `session_id` WOULD BE THE MORE-GENEROUS-THAN-PRODUCTION TRAP THIS TREE NAMES:
+        // it would answer every chained create with a NEW session id, so the console's continue flow would
+        // look broken on the profile the whole suite runs on while working against a real stack — or, worse,
+        // look fine while proving nothing. The console can only be tested against a fixture that has the
+        // same two outcomes.
+        const chained = typeof body.session_id === "string" && body.session_id !== "" ? body.session_id : "";
+        introspect.lastCreateSessionId = chained === "" ? null : chained;
+        let sid, rid, runId;
+        if (chained === "") {
+          ({ sid, rid, runId } = newRun(model));
+        } else {
+          // In scope? The two collections are both real sessions of this tenant: `sessions` holds the ones
+          // runs have opened in this process, SESSIONS is the seeded history the list route serves.
+          const seeded = SESSIONS.find((row) => row.id === chained);
+          const live = sessions.get(chained);
+          if (seeded === undefined && live === undefined) {
+            return sendProblem(response, 404, "not_found", "no such session in this project");
+          }
+          const status = seeded === undefined ? "active" : seeded.status;
+          if (status !== "active") {
+            return sendProblem(response, 409, "session_conflict", `the session is ${status}; only an active session can be continued`);
+          }
+          seq += 1;
+          const n = String(seq).padStart(4, "0");
+          sid = chained;
+          rid = `resp_console_${n}`;
+          runId = `run_console_${n}`;
+          // A chained run still needs the per-run approval state the stream reads, keyed by the session it
+          // joined, so a second turn can park on an approval exactly as the first did.
+          sessions.set(sid, { approved: false, denied: false, model });
+        }
+        runSessions.set(rid, sid);
+        sessionRuns.set(sid, { rid, runId });
         sendJSON(response, 202, { id: rid, object: "response", status: "queued", model, session_id: sid, run_id: runId, created_at: "2026-07-24T00:00:00Z", output: [], usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } });
       }),
   },
@@ -2320,7 +2372,9 @@ export const ROUTES = [
     method: "GET",
     pattern: "/v1/responses/{response_id}",
     handle: (_request, response, { response_id: rid }) => {
-      const sid = rid.replace("resp_", "ses_");
+      // The recorded mapping first: a CHAINED run's session is not `rid.replace("resp_", "ses_")`, and the
+      // derivation is kept only as the fallback for a response this process did not create.
+      const sid = runSessions.get(rid) ?? rid.replace("resp_", "ses_");
       // The terminal projection reflects the ACTUAL outcome: a denied run is canceled with no output (the
       // side effect was blocked), an approved run completed with its output. This is the canonical terminal
       // Response the SDK retrieves after the stream's terminal event.
@@ -2663,7 +2717,12 @@ export const ROUTES = [
   {
     method: "GET",
     pattern: "/v1/sessions/{session_id}/events",
-    handle: (request, response, { session_id: sid }) => streamEvents(sid, sid.replace("ses_", "resp_"), sid.replace("ses_", "run_"), request, response),
+    // The recorded ids first, the derivation as the fallback — same reason as the retrieve route above: a
+    // session that was JOINED rather than opened has no id relationship to its runs.
+    handle: (request, response, { session_id: sid }) => {
+      const known = sessionRuns.get(sid);
+      return streamEvents(sid, known?.rid ?? sid.replace("ses_", "resp_"), known?.runId ?? sid.replace("ses_", "run_"), request, response);
+    },
   },
   {
     method: "POST",
