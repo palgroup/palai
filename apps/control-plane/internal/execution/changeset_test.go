@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -241,5 +242,82 @@ func requireGit(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git not found: %v", err)
+	}
+}
+
+// TestARefusedWriteIsNotCompiledIntoTheChangeset closes a hole this epic's own fix opened. Since a tool
+// refusal became a delivered RESULT, a `completed` tool_calls row can carry `{"status":"error", …}`
+// instead of a write report — and changedFiles reads every missing field as a meaningful value: `path`
+// falls back to the ARGUMENT, both hashes come back empty, and an empty before_hash is the very test for
+// "added". So a write the workspace REFUSED would have been compiled into REP-005's load-bearing
+// provenance as a file this run added.
+//
+// The two rows below are the exact refusals a real run produces: a traversal write, and a write to a
+// read-only workspace. Neither touched a file; neither may appear.
+func TestARefusedWriteIsNotCompiledIntoTheChangeset(t *testing.T) {
+	requireGit(t)
+	root, base := newAllocRepo(t)
+	writeFile(t, filepath.Join(root, "repo", "real.txt"), "written\n")
+
+	refused := func(id, path, code, message string) coordinator.ToolCallRow {
+		return coordinator.ToolCallRow{
+			ID:        id,
+			Name:      "palai.workspace.file",
+			Arguments: fmt.Sprintf(`{"op":"write","path":%q,"content":"x"}`, path),
+			Result: fmt.Sprintf(`{"status":"error","error":{"code":%q,"tool":"palai.workspace.file","message":%q}}`,
+				code, message),
+		}
+	}
+	ledger := &fakeChangesetLedger{
+		base: base, baseOK: true,
+		rows: []coordinator.ToolCallRow{
+			refused("tc_esc", "../outside.txt", "refused", `path escapes the workspace: "../outside.txt"`),
+			refused("tc_ro", "repo/blocked.txt", "refused", "file tool: workspace is read-only for this run"),
+			fileWriteRow("tc_ok", "repo/real.txt", "written\n", "", "sha256:aa", true),
+		},
+	}
+	rec, compiled, err := CompileChangeset(context.Background(), ledger, &fakeArtifactWriter{},
+		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+	if err != nil || !compiled {
+		t.Fatalf("CompileChangeset() = compiled %v err %v, want compiled", compiled, err)
+	}
+	for _, f := range rec.Files {
+		if f.ToolCallID == "tc_esc" || f.ToolCallID == "tc_ro" {
+			t.Fatalf("a REFUSED write was compiled into the changeset as %+v", f)
+		}
+		if f.Path == "../outside.txt" || f.Path == "repo/blocked.txt" {
+			t.Fatalf("a refused write's path entered the changeset: %+v", f)
+		}
+	}
+	// Non-vacuity: the real write beside them IS compiled, so this is the refusal being skipped rather
+	// than the compiler having stopped working.
+	if len(rec.Files) != 1 || rec.Files[0].ToolCallID != "tc_ok" {
+		t.Fatalf("files = %+v, want exactly the one real write (tc_ok)", rec.Files)
+	}
+}
+
+// TestARefusedShellCallIsNamedInTheChecksTranscript is the same defect one field over and quieter. A
+// refused shell call has no exit_code and no output, so the test-log artifact would render it as a bare
+// `$ cmd` — indistinguishable, to whoever reads it, from a command that ran and printed nothing.
+func TestARefusedShellCallIsNamedInTheChecksTranscript(t *testing.T) {
+	rows := []coordinator.ToolCallRow{
+		{
+			ID: "tc_refused", Name: "palai.workspace.shell",
+			Arguments: `{"argv":["xcodebuild","-version"]}`,
+			Result:    `{"status":"error","error":{"code":"unavailable","tool":"palai.workspace.shell","message":"shell tool: no sandbox shell runner wired for this run"}}`,
+		},
+		shellRow("tc_ran", []string{"go", "test", "./..."}, 1, "FAIL\n"),
+	}
+	log := checksTranscript(rows)
+	if !strings.Contains(log, "refused: shell tool: no sandbox shell runner wired for this run") {
+		t.Fatalf("the checks transcript does not name the refusal:\n%s", log)
+	}
+	// Non-vacuity: a command that DID run still renders its exit code and output.
+	if !strings.Contains(log, "exit: 1") || !strings.Contains(log, "FAIL") {
+		t.Fatalf("the checks transcript lost a real command's result:\n%s", log)
+	}
+	// And a refusal must not be given an exit code it never had.
+	if strings.Contains(log, "$ xcodebuild -version\nexit:") {
+		t.Fatalf("a refused command was given an exit code:\n%s", log)
 	}
 }

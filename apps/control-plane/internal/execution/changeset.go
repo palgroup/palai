@@ -141,6 +141,18 @@ func changedFiles(rows []coordinator.ToolCallRow) []coordinator.ChangesetFile {
 		if s, _ := args["op"].(string); s != "write" {
 			continue
 		}
+		// A REFUSED WRITE CHANGED NO FILE, and this line is the reason it cannot be left implicit.
+		// Since a tool refusal became a delivered RESULT (tool_answer.go), a `completed` row can carry
+		// `{"status":"error", …}` instead of a write report — and everything below reads a MISSING field
+		// as a meaningful value: `path` falls back to the ARGUMENT, both hashes come back empty, and an
+		// empty before_hash is the very test for "added". MEASURED without this line: a refused
+		// `write "../outside.txt"` compiles to {Path:../outside.txt Change:added BeforeHash: AfterHash:} —
+		// REP-005's load-bearing provenance recording that the run ADDED a file the workspace REFUSED to
+		// let it touch. The changeset is derived from the ledger precisely so it does not depend on what a
+		// model says happened; a refusal is the ledger saying nothing happened.
+		if isAnswerResult(row.Result) {
+			continue
+		}
 		res := decodeJSON(row.Result)
 		path, _ := res["path"].(string)
 		if path == "" {
@@ -190,6 +202,14 @@ func checksTranscript(rows []coordinator.ToolCallRow) string {
 		args := decodeJSON(row.Arguments)
 		res := decodeJSON(row.Result)
 		fmt.Fprintf(&b, "$ %s\n", argvString(args["argv"]))
+		// The same defect one field over and quieter. A REFUSED shell call has no exit_code and no
+		// output, so without this it renders as a bare `$ cmd` — indistinguishable, to whoever reads the
+		// test-log artifact, from a command that ran and printed nothing.
+		if isAnswerResult(row.Result) {
+			detail, _ := res["error"].(map[string]any)
+			fmt.Fprintf(&b, "refused: %v\n", detail["message"])
+			continue
+		}
 		if code, ok := res["exit_code"]; ok {
 			fmt.Fprintf(&b, "exit: %v\n", code)
 		}
