@@ -722,12 +722,18 @@ header.sidebar {
      is sized against. */
   padding: var(--rail-pad);
   gap: var(--space-3);
-  /* Its own scroll, so a long nav never pushes the page and never scrolls away from a long table. */
   position: sticky;
   top: 0;
   min-height: 100vh;
   max-height: 100vh;
-  overflow-y: auto;
+  /* THE NAV SCROLLS, THE RAIL DOES NOT — and getting this wrong was a real defect found by driving it rather
+     than by looking at it. `overflow-y: auto` was on THIS box, so with every group open the nav grew past the
+     viewport and the foot was pushed under it: Playwright reported `<span class="rail-org-name">Local Org</span>
+     … intercepts pointer events` on a click at the "Manage" group header, i.e. the organisation card was
+     sitting ON TOP of a navigation control. A human would have found it by failing to click Manage.
+     Measured on the reference, this is also its own arrangement: its nav region is a 628px scroller and its
+     foot block is fixed under it at y=764. */
+  overflow: hidden;
 }
 
 /* THE WORDMARK — the console's one piece of pure identity, and the only thing on this surface that is drawn
@@ -891,9 +897,16 @@ header.sidebar {
    the Documentation link. They are the same 36px box with the same padding and the same radius, and the ONLY
    things that vary are the weight and whether an icon or an indent occupies the first 40px. That is what the
    reference does and it is why its rail reads as one object. --- */
+/* `min-height: 0` IS LOAD-BEARING and is the half that a flex child without it loses: a flex item's default
+   `min-height: auto` refuses to shrink below its content, so the scroller would never scroll and the foot
+   would be pushed off the bottom of the rail instead. */
 .rail-nav {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
+  overflow-y: auto;
+  /* The scrollbar's own gutter, so a row's hover fill does not sit under the bar when one appears. */
+  padding-right: var(--space-1);
+  margin-right: calc(var(--space-1) * -1);
 }
 .rail-list,
 .rail-group ul {
@@ -1000,7 +1013,11 @@ header.sidebar {
 
 /* --- THE FOOT: Documentation, then the organisation card. Measured, that is the reference's own order and
    its own placement; ours had a bordered "Scope" card here holding four lines of small text. --- */
+/* `flex: none` so the foot keeps its height while the nav above it takes the pressure. Without it a long nav
+   compresses the org card instead of scrolling, which is the same defect one line up wearing a different
+   symptom. */
 .rail-foot {
+  flex: none;
   margin-top: var(--space-4);
   padding-top: var(--space-3);
   border-top: var(--border-w) solid var(--border-hairline);
@@ -1265,6 +1282,110 @@ details.notes > :last-child {
    facts and a dashboard that renders them identically is worse than one that renders neither. */
 .stat-value[data-unread="true"] {
   color: var(--text-muted);
+}
+
+/* --- THE DISTRIBUTIONS (E31 shell parity). "ne grafik var ne başka bir şey." Two cards side by side under
+   the figure strip, at the reference's own card metrics: radius 12, padding 16-20, a 20px gap. Its stat card
+   is measured at `rounded-card / p-4 / gap-5` with an inset 1px white-10% RING rather than a border; ours
+   takes --border-hairline instead, and this file's own token header records the refusal —
+   `rgba(255,255,255,0.10)` is 1.30:1 here and tests/contrast.spec.ts cannot judge a translucent value at
+   all, it throws by design. --- */
+.chart-grid,
+.registry-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  gap: var(--space-5);
+}
+/* The four registry tables were a COLUMN of four full-width tables of two columns each — a page that
+   scrolled for no reason, which is most of "muz gibiii uzun sayfalar". None of them is wide. */
+.registry-grid {
+  gap: var(--space-6) var(--space-7);
+  align-items: start;
+}
+.chart-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  background: var(--bg-page);
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-4);
+  box-shadow: var(--shadow-sm);
+}
+.chart-card > h2 {
+  /* 14px/20px w500 in the secondary colour — measured on the reference's own card titles ("Total tokens in",
+     "Token usage"). A card title is a caption, not a section heading; ours was 18px semibold at full
+     strength, which made two cards shout louder than the page title above them. */
+  margin: 0;
+  font-size: var(--font-size-4);
+  line-height: var(--line-height-4);
+  letter-spacing: var(--letter-spacing-4);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-muted);
+}
+.chart-card > .stat-meta {
+  margin-top: auto;
+}
+
+/* THE BARS ARE A LABELLED LIST WITH A RECTANGLE IN THE MIDDLE. The label and the figure are text in the
+   markup, so a screen reader reads the data and the <svg> is aria-hidden; colour is a THIRD carrier exactly
+   as it is on .status, and removing the hue still leaves `failed 3` readable. */
+.bars {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.bars > li {
+  display: grid;
+  grid-template-columns: minmax(6rem, max-content) minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--font-size-3);
+  line-height: var(--line-height-3);
+}
+.bars-label {
+  color: var(--text-muted);
+}
+.bars-track {
+  display: block;
+  min-width: 0;
+  height: 8px;
+  border-radius: var(--radius-1);
+  background: var(--bg-inset);
+}
+.bars-track > svg {
+  display: block;
+  width: 100%;
+  height: 8px;
+}
+.bars-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-weight-medium);
+  color: var(--text);
+}
+/* The bands are .status's, by NAME, so a bar and the pill for the same state are the same colour and there
+   is one classifier rather than two that can drift. The readable step rather than the wash: a bar is a solid
+   mark on the page, where a pill is a filled region behind text. */
+.bars > li[data-tone="ok"] rect {
+  fill: var(--ok-text-inline);
+}
+.bars > li[data-tone="warn"] rect {
+  fill: var(--warn-border);
+}
+.bars > li[data-tone="danger"] rect {
+  fill: var(--danger-text-inline);
+}
+.bars > li[data-tone="info"] rect {
+  fill: var(--info-border);
+}
+.bars > li[data-tone="live"] rect {
+  fill: var(--live-border);
+}
+.bars > li[data-tone="neutral"] rect {
+  fill: var(--border-control);
 }
 
 /* ============================================================ 6. TABLE ===================================== */
@@ -2102,20 +2223,68 @@ pre.code {
   top: 50%;
   left: 50%;
   z-index: 11;
-  width: min(34rem, calc(100vw - var(--space-6)));
+  /* 720px, MEASURED (design-reference/measured-2026-08-01.md §3 and re-measured on the live Create-session
+     dialog: 720x542 at radius 12, 24px padding, a 672px field column inside). Ours was 34rem = 544px, which
+     is narrow enough that a two-column field row is impossible and every picker's value truncates. */
+  width: min(45rem, calc(100vw - var(--space-6)));
   max-height: calc(100vh - var(--space-6));
   overflow: auto;
   transform: translate(-50%, -50%);
   padding: var(--space-6);
-  background: var(--bg-page);
+  /* A LIGHTER SURFACE THAN THE PAGE, measured: `rgb(56,56,53)` over a `rgb(26,26,25)` page. A modal that is
+     the SAME colour as the page relies entirely on its shadow to say it is on top, which is what ours did.
+     --bg-inset is this system's step for "a surface raised off the page" and is the same relationship. */
+  background: var(--bg-inset);
   border: var(--border-w) solid var(--border-hairline);
-  border-radius: var(--radius-3);
+  /* 12px, measured. --radius-3 (8px) is the button's radius; a 720px modal at a button's radius reads as a
+     large button. The scale's own rule is that radius follows size. */
+  border-radius: var(--radius-4);
   /* THE THIRD STEP, AND THE REASON THERE IS ONE. A modal sat at the same elevation as a dropdown under the
      old two-step scale; --shadow-lg is what separates "over the page" from "over everything". */
   box-shadow: var(--shadow-lg);
 }
 .dialog > h2 {
   margin-top: 0;
+}
+/* THE DIALOG IS ONE COLUMN AND THE SETTINGS PAGES ARE TWO — measured, and stated because §11's 224+516 row
+   is the newer idea and the tempting one to apply everywhere. The reference's own dialog puts the label
+   full-width ABOVE the control; the two-column aside is a SETTINGS layout there too. So the sectioned form's
+   grid is switched off inside a dialog rather than inherited into it.
+   A control inside a dialog is also full-width: §7 caps inputs at 34rem for a page whose panel can be
+   1350px, and inside a 672px column that cap makes a field stop two thirds of the way across for no reason. */
+.dialog .section-row {
+  display: block;
+}
+.dialog .section-body {
+  width: 100%;
+  max-width: none;
+}
+.dialog input[type="text"],
+.dialog input[type="password"],
+.dialog input[type="search"],
+.dialog .ui-select-trigger,
+.dialog textarea {
+  max-width: none;
+}
+
+/* --- THE LABEL ROW: the field's name, and a link to the screen that manages what it chooses from.
+   MEASURED on the reference's Create-session dialog — `Manage agents ↗` at the right end of the label's own
+   line, 12px/17px, in the link colour. components/Picker.tsx's `manage` says why it is strictly more than
+   the `emptyNote` it sits beside rather than replaces. --- */
+.field-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.field-label-row > label {
+  margin-bottom: var(--space-2);
+}
+.field-manage {
+  flex: none;
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-2);
+  white-space: nowrap;
 }
 .dialog-review {
   margin: var(--space-4) 0;

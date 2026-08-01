@@ -30,17 +30,38 @@ import type { ComponentPropsWithoutRef, ReactNode } from "react";
 export function Field({
   label,
   hint,
+  action,
   children,
 }: {
   label: ReactNode;
   /** The "or instructions" half of WCAG §3.3.2, wired as the control's description rather than as prose. */
   hint?: ReactNode;
+  /**
+   * A link on the LABEL'S OWN LINE, to the screen that manages what this field chooses from.
+   *
+   * MEASURED ON THE REFERENCE'S Create-session DIALOG, 2026-08-01: every picker in it carries a link at the
+   * right end of its label row — `Manage agents ↗`, `Manage environments ↗`, `Manage credential vaults ↗`,
+   * at 12px/17px in the link colour. That is how it answers "the list is empty, now what" — and, just as
+   * importantly, "the list has the wrong thing in it, now what", which is a question our `emptyNote` cannot
+   * be asked because it is only rendered when the list is empty.
+   *
+   * It is a FIFTH part in a file whose own header says a part with no caller is the defect this layer exists
+   * to remove. It has callers: see components/Picker.tsx's `manage`.
+   */
+  action?: ReactNode;
   /** The control. It must be a Base UI field part (FieldControl, or a Select) for the wiring to reach it. */
   children: ReactNode;
 }) {
   return (
     <BaseField.Root>
-      <BaseField.Label>{label}</BaseField.Label>
+      {action === undefined ? (
+        <BaseField.Label>{label}</BaseField.Label>
+      ) : (
+        <div className="field-label-row">
+          <BaseField.Label>{label}</BaseField.Label>
+          {action}
+        </div>
+      )}
       {children}
       {hint === undefined ? null : <BaseField.Description className="muted">{hint}</BaseField.Description>}
     </BaseField.Root>

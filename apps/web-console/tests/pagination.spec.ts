@@ -8,10 +8,25 @@ import { announceProfile, signIn, skipOnReal } from "./profile";
 // keys, connections, routes, secret-refs, knowledge bases, agents, and after E25 the approval queue — showed
 // at most twenty rows and said nothing. The twenty-first row did not appear to exist.
 //
-// THERE IS NO "PREVIOUS" CONTROL, AND THE REASON IS A MEASUREMENT RATHER THAN A SIMPLIFICATION: beginList
-// REFUSES `?before=` with a 400 (apps/control-plane/api/pagination.go:179 — "backward pagination is not
-// supported"), and contracts.Page's `previous_cursor` is never populated by renderPage. A back button would be
-// a control that cannot work against the real API, so its ABSENCE is asserted here rather than left to chance.
+// THE BACKWARD ARROW EXISTS NOW AND THE API'S REFUSAL IS UNCHANGED, and the distinction between those two
+// facts is what this file is really about (E31 shell parity).
+//
+// beginList REFUSES `?before=` with a 400 (apps/control-plane/api/pagination.go:179 — "backward pagination
+// is not supported") and contracts.Page's `previous_cursor` is never populated by renderPage. This file used
+// to conclude "so no backward CONTROL may exist" and assert the absence of a button. That conclusion was
+// broader than its premise: the premise is about a REQUEST, and a control that never issues that request is
+// not the control the API refuses.
+//
+// components/Panel.tsx's backward arrow is a REPLAY. The console remembers the `after` value it used to
+// reach each page and re-issues that same FORWARD request to go back. So the properties that actually
+// protect the API's refusal are the ones asserted below and they are strictly stronger than a missing
+// button: no request ever carries `?before=`, every continuation carries a cursor the SERVER minted, page
+// one is still the unparameterised read, and the backward arrow is DISABLED at the one position where going
+// back would be meaningless.
+//
+// WHY THE CONTROL CHANGED AT ALL: "Load more" APPENDED, so page four was eighty rows in one scroll and
+// "which page am I on" had no answer. Measured on the reference console 2026-08-01, a list ends in a `‹ ›`
+// pair of 32x32 buttons at the bottom left and shows one page at a time.
 test.beforeAll(() => announceProfile("pagination.spec.ts"));
 test.beforeEach(async ({ page }) => signIn(page));
 
@@ -49,37 +64,47 @@ test("a collection larger than one page shows 20 rows, SAYS more exist, and cont
   const panel = page.getByTestId("panel-agents");
   await expect(panel.locator("tbody tr")).toHaveCount(20, { timeout: 15_000 });
 
-  // The truncation is stated IN TEXT — not a colour, not a disabled arrow, not silence.
-  await expect(page.getByTestId("panel-agents-more")).toContainText(/20 .*more/i);
+  // The truncation is stated IN TEXT — not a colour, not a disabled arrow, not silence. It names the PAGE
+  // too, because with a replacing pager "20 rows" alone no longer means "the first 20".
+  const pager = page.getByTestId("panel-agents-more");
+  await expect(pager).toContainText(/more are available/i);
+  await expect(pager).toContainText("Page 1");
 
   const rowIDs = async () => panel.locator("tbody tr td:first-child").allInnerTexts();
   const firstPage = await rowIDs();
   expect(new Set(firstPage).size, "page one served a duplicate row").toBe(20);
 
-  await page.getByTestId("panel-agents-load-more").click();
-  await expect(panel.locator("tbody tr")).not.toHaveCount(20, { timeout: 15_000 });
+  await page.getByTestId("panel-agents-page-next").click();
+  await expect(pager).toContainText("Page 2", { timeout: 15_000 });
 
-  // THE SECOND PAGE IS NEW ROWS. A continuation that re-fetched page one would append twenty rows the list
-  // already had, and a count-only assertion would call that a pass.
-  const afterFirstClick = await rowIDs();
-  expect(afterFirstClick.slice(0, 20), "the continuation reordered or replaced page one").toEqual(firstPage);
-  const appended = afterFirstClick.slice(20);
-  expect(appended.length, "the continuation appended nothing").toBeGreaterThan(0);
-  expect(appended.filter((id) => firstPage.includes(id)), "the continuation re-served rows page one already had").toEqual([]);
+  // THE SECOND PAGE IS NEW ROWS AND IT REPLACES THE FIRST. A pager that re-fetched page one would leave the
+  // row COUNT identical, and a count-only assertion would call that a pass.
+  const second = await rowIDs();
+  expect(second.length, "page two is empty").toBeGreaterThan(0);
+  expect(second.filter((id) => firstPage.includes(id)), "page two re-served rows page one already had").toEqual([]);
 
-  // EXHAUSTION, driven rather than assumed: keep continuing while the control exists. The bound is generous
-  // and finite — an unbounded loop here would hang instead of failing.
+  // THE BACKWARD ARROW RETURNS THE SAME ROWS, which is what makes the replay a replay rather than a second
+  // forward step wearing an arrow. It is the whole reason a backward control is allowed to exist here.
+  await page.getByTestId("panel-agents-page-back").click();
+  await expect(pager).toContainText("Page 1", { timeout: 15_000 });
+  expect(await rowIDs(), "going back did not return the page it came from").toEqual(firstPage);
+
+  // EXHAUSTION, driven rather than assumed: keep going forward while the arrow is enabled. The bound is
+  // generous and finite — an unbounded loop here would hang instead of failing.
   for (let i = 0; i < 10; i++) {
-    const control = page.getByTestId("panel-agents-load-more");
-    if ((await control.count()) === 0) break;
-    const before = await panel.locator("tbody tr").count();
-    await control.click();
-    // Each continuation must GROW the list; a click that changed nothing would otherwise spin the loop out.
-    await expect(panel.locator("tbody tr")).not.toHaveCount(before, { timeout: 15_000 });
+    const next = page.getByTestId("panel-agents-page-next");
+    if (await next.isDisabled()) break;
+    const before = await rowIDs();
+    await next.click();
+    // Each step must CHANGE the rows; a click that changed nothing would otherwise spin the loop out.
+    await expect
+      .poll(async () => (await rowIDs()).join(","), { timeout: 15_000 })
+      .not.toBe(before.join(","));
   }
-  // Exhausted: the control is gone and so is the truncation notice, because has_more is now false.
-  await expect(page.getByTestId("panel-agents-load-more")).toHaveCount(0, { timeout: 15_000 });
-  await expect(page.getByTestId("panel-agents-more")).toHaveCount(0);
+  // Exhausted: the forward arrow is disabled and the notice says this is the last page, because has_more is
+  // now false. The pager itself REMAINS, because the reader is on page 2+ and still needs the way back.
+  await expect(page.getByTestId("panel-agents-page-next")).toBeDisabled({ timeout: 15_000 });
+  await expect(pager).toContainText("the last page");
 
   // EVERY CONTINUATION CARRIED A CURSOR THE SERVER MINTED. The console must not compute an offset of its own:
   // a real cursor is an HMAC'd keyset position bound to the tenant (api/pagination.go encodeCursor), so a
@@ -98,17 +123,34 @@ test("a collection larger than one page shows 20 rows, SAYS more exist, and cont
   expect(requested.filter((q) => q === "<first page>").length).toBeGreaterThan(0);
 });
 
-test("no list renders a 'previous' control — backward pagination is refused by the API, so it is not offered", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.getByTestId("panel-organizations")).toBeVisible({ timeout: 15_000 });
-
-  // An absence assertion over the WHOLE admin surface, on BOTH profiles: no control anywhere offers a
-  // backward page, and no request ever carries ?before=. A `previous` button would 400 against the real API.
+test("no request ever carries ?before=, and on page one the backward arrow cannot be pressed", async ({ page }) => {
   const before: string[] = [];
   page.on("request", (r) => {
     if (new URL(r.url()).searchParams.has("before")) before.push(r.url());
   });
-  await expect(page.getByRole("button", { name: /previous|back|prev\b/i })).toHaveCount(0);
-  await expect(page.locator("[data-testid$='-load-previous']")).toHaveCount(0);
-  expect(before).toEqual([]);
+
+  await page.goto("/");
+  await expect(page.getByTestId("panel-organizations")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("panel-agents").locator("tbody tr")).toHaveCount(20, { timeout: 15_000 });
+
+  // THE POSITION WHERE A BACKWARD REQUEST WOULD BE MEANINGLESS IS THE POSITION WHERE THE CONTROL REFUSES.
+  // This is the assertion that replaces "no backward control exists": the API's refusal is about a REQUEST,
+  // and a disabled arrow on page one is a control that cannot issue it. It is also the honest reading of the
+  // ceiling for a reader — an arrow that vanished and reappeared would move the other arrow under the cursor.
+  await expect(page.getByTestId("panel-agents-page-back")).toBeDisabled();
+
+  // AND THE ARROW IS PRESSED ANYWAY, which is the half an absence assertion could never do: a disabled
+  // control that still fires would be a live `?before=` on the wire, and only driving it can say so.
+  await page.getByTestId("panel-agents-page-back").click({ force: true });
+  await page.waitForTimeout(250);
+
+  // Forward, then back — the replay path, which is the ONLY way this console ever reaches an earlier page.
+  await page.getByTestId("panel-agents-page-next").click();
+  await expect(page.getByTestId("panel-agents-more")).toContainText("Page 2", { timeout: 15_000 });
+  await page.getByTestId("panel-agents-page-back").click();
+  await expect(page.getByTestId("panel-agents-more")).toContainText("Page 1", { timeout: 15_000 });
+
+  // An absence assertion over the WHOLE surface, on BOTH profiles, and now over a run in which a backward
+  // control was actually operated three times. A `?before=` would 400 against the real API.
+  expect(before, "a request carried ?before=, which apps/control-plane/api/pagination.go answers with a 400").toEqual([]);
 });

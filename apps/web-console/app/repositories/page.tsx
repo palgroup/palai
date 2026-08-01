@@ -321,6 +321,7 @@ export default function RepositoriesPage() {
                 options: refOptions,
                 placeholder: "None — a public repository",
                 testId: "binding-connection-select",
+                manage: { href: "/", label: "Manage secret refs" },
                 hint: "The NAME of a stored secret, never its value. The credential itself is written by `palai secret create` or by writing an environment value; this screen only points at one.",
                 // NO FREE-TEXT FALLBACK, and the empty state has a way forward rather than a box.
                 emptyNote: (

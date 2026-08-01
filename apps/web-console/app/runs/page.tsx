@@ -288,6 +288,7 @@ export default function RunsPage() {
             options={agents.map((a) => ({ value: a.id, label: a.name === undefined || a.name === "" ? a.id : `${a.name} (${a.id})` }))}
             placeholder="None — use the project's configuration"
             testId="run-agent-select"
+            manage={{ href: "/agents", label: "Manage agents" }}
             emptyNote={
               <>
                 <strong>No agents yet</strong>, so this run uses the project&apos;s own configuration.{" "}
@@ -311,6 +312,7 @@ export default function RunsPage() {
             }))}
             placeholder="None — use the project's configuration"
             testId="run-revision-select"
+            manage={{ href: "/agents", label: "Manage agents" }}
             hint="Only a PUBLISHED revision can be run. A draft is refused by the server, which is why it is listed rather than hidden."
             emptyNote={
               <>

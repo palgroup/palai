@@ -91,6 +91,7 @@ export function AgentDiff({ agent }: { agent?: string } = {}) {
           onChange={setSelected}
           options={agents.map((a) => ({ value: a.id, label: a.name === undefined || a.name === "" ? a.id : `${a.name} (${a.id})` }))}
           testId="agent-diff-select"
+          manage={{ href: "/agents", label: "Manage agents" }}
           emptyNote={
             <span data-testid="agent-diff-no-agents">
               No agents yet. <a href="/agents">Create one</a>.
