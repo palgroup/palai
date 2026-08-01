@@ -647,6 +647,12 @@ type AdmissionInput struct {
 	// named no format. Persisted on the run because model dispatch and finalize both read it and
 	// neither holds the request body (migration 000052).
 	OutputContract []byte
+	// Instructions is the run-specific instruction layer (spec §25.12 layer 5): the request's
+	// `instructions` string, or "" when it named none. Persisted on the run for the same reason
+	// OutputContract is — model dispatch reads it once per step and does not hold the request body
+	// (migration 000055). Before that migration nothing persisted it and nothing applied it, though
+	// the published schema has declared the field for the life of that schema.
+	Instructions string
 	// RepositoryBindingID / RepositoryRef carry the contracted `repository` field (spec §30.1, E09
 	// Task 10): when the binding is set, admission attaches a session-scoped coding workspace so the
 	// root run auto-provisions it. Empty leaves the response non-coding — the pre-E09 behaviour.
@@ -911,7 +917,8 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertRun"),
 		in.RunID, tenant.Organization, tenant.Project, sessionID, in.ResponseID, nullableJSON(in.Delegations),
-		nullableText(agentRevisionID), nullableText(in.RunTemplateRevisionID), nullableJSON(in.OutputContract)); err != nil {
+		nullableText(agentRevisionID), nullableText(in.RunTemplateRevisionID), nullableJSON(in.OutputContract),
+		nullableText(in.Instructions)); err != nil {
 		// The session already holds a non-terminal root run: one-active-root (spec §22.3). The
 		// partial unique index (runs_one_active_root_per_session) rejects the second root run at
 		// the DB, so a concurrent chain loses here rather than in an app-code check-then-insert
@@ -1064,34 +1071,67 @@ func verifyPublishedRevision(ctx context.Context, tx pgx.Tx, query, revisionID s
 	return Admission{}, true, nil
 }
 
-// PinnedExecConfig resolves a run's pinned executable config (spec §14, AGT-001): the model, the tool
-// ceiling, and the E12 tool-set grant (the short names the pinned revision's tool_sets contribute) of
-// whichever revision — agent or template — the run pinned. revisionID is "" for a profile-free run, so
-// the resolver skips the pinned-revision layer; toolSetTools is empty then too. The pin is fixed on the
+// PinnedConfig is a run's pinned executable config (spec §14, AGT-001) as resolved from whichever
+// revision — agent or template — the run pinned.
+//
+// It is a STRUCT rather than the positional return this used to have because adding Instructions
+// would have made three adjacent `string` results (RevisionID, Model, Instructions) among six, and
+// every caller destructures them positionally. A transposed pair there compiles, passes vet, and
+// silently routes a run's instructions as its model id. Named fields make that a compile error.
+type PinnedConfig struct {
+	// RevisionID is "" for a profile-free run, which is how the resolver knows to skip the
+	// pinned-revision layer entirely.
+	RevisionID string
+	// Model is the revision's model id, "" when it named none.
+	Model string
+	// Instructions is the revision's own instruction layer (spec §25.12 layer 3), "" when it named
+	// none. THIS IS THE FIELD THAT WAS NEVER READ: agent CRUD has written
+	// agent_revisions.instructions since E11 and PinnedRunConfig did not select it, so every run that
+	// pinned a revision recorded the pin and told the model nothing the revision said. Measured
+	// against a real provider on 2026-08-01, a pinned 320-word instruction moved usage.input_tokens
+	// by zero.
+	Instructions string
+	// Tools is the revision's tool CEILING, nil when it declares none.
+	Tools []string
+	// ToolSetTools is the E12 grant: the model-visible short names the revision's tool_sets contribute.
+	ToolSetTools []string
+	// SkillPins is the run's frozen skill set, carried even for a profile-free run because it is
+	// pinned on the RUN row at run-start, independently of any revision.
+	SkillPins []byte
+}
+
+// PinnedExecConfig resolves a run's pinned executable config (spec §14, AGT-001) — the model, the
+// instruction layer, the tool ceiling, and the E12 tool-set grant of whichever revision the run
+// pinned. A profile-free run yields a zero PinnedConfig apart from SkillPins. The pin is fixed on the
 // run row, so a later revision of the same profile leaves this unchanged (old-run reproducibility).
-func (s *Store) PinnedExecConfig(ctx context.Context, tenant Tenant, runID string) (revisionID, model string, tools, toolSetTools []string, skillPins []byte, err error) {
+func (s *Store) PinnedExecConfig(ctx context.Context, tenant Tenant, runID string) (PinnedConfig, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var (
+		out       PinnedConfig
 		revID     *string
 		toolsJSON []byte
 	)
-	err = s.pool.QueryRow(ctx, storage.Query("PinnedRunConfig"), runID, tenant.Organization, tenant.Project).
-		Scan(&revID, &model, &toolsJSON, &toolSetTools, &skillPins)
+	err := s.pool.QueryRow(ctx, storage.Query("PinnedRunConfig"), runID, tenant.Organization, tenant.Project).
+		Scan(&revID, &out.Model, &out.Instructions, &toolsJSON, &out.ToolSetTools, &out.SkillPins)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", nil, nil, nil, nil // unknown run: treat as no pin (the caller's run existence is already established)
+		return PinnedConfig{}, nil // unknown run: treat as no pin (the caller's run existence is already established)
 	}
 	if err != nil {
-		return "", "", nil, nil, nil, fmt.Errorf("read pinned run config: %w", err)
+		return PinnedConfig{}, fmt.Errorf("read pinned run config: %w", err)
 	}
 	// skill_pins is frozen INDEPENDENTLY of the pinned revision (it rides the run row, written at
-	// run-start), so it is returned even for a profile-free run — though such a run has none by construction.
+	// run-start), so it is returned even for a profile-free run — though such a run has none by
+	// construction. Model/Instructions/Tools are dropped with the absent pin: the COALESCEs in
+	// PinnedRunConfig make them '' / NULL for a profile-free run anyway, and clearing them here says
+	// so in one place rather than relying on that.
 	if revID == nil {
-		return "", "", nil, nil, skillPins, nil // profile-free run: no pinned revision, but skill_pins still carries
+		return PinnedConfig{SkillPins: out.SkillPins}, nil
 	}
+	out.RevisionID = *revID
 	if len(toolsJSON) > 0 {
-		_ = json.Unmarshal(toolsJSON, &tools)
+		_ = json.Unmarshal(toolsJSON, &out.Tools)
 	}
-	return *revID, model, tools, toolSetTools, skillPins, nil
+	return out, nil
 }
 
 // RunEnvironmentKeys resolves a run's environment KEY NAMES and the derived secret_refs name each value is

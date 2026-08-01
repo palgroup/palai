@@ -282,6 +282,15 @@ type attemptState struct {
 	// against it before the run may be called completed. Both readers share these bytes deliberately;
 	// two independent re-derivations are how "what we asked for" and "what we checked" drift apart.
 	outputContract outputcontract.Contract
+	// runInstructions is the RUN-SPECIFIC instruction layer (spec §25.12 layer 5): the request's own
+	// `instructions` string, "" when it named none. Read ONCE per attempt (RunContextFor) beside the
+	// output contract, for the same reason: the value is immutable for the life of the run, and one
+	// read means two model steps of one run cannot be told different things.
+	//
+	// The PINNED REVISION's instructions (layer 3) are deliberately NOT cached here. They are read per
+	// step from PinnedExecConfig, alongside the model and tool ceiling that already resolve that way,
+	// so all of one revision's config comes from one read and cannot go half-stale.
+	runInstructions string
 	// remoteChildren counts the delegations this attempt sent to REMOTE agents (E19 T5). A remote child
 	// takes no local ChildRun, so childRunIDs cannot count it — and an uncounted child escapes the fan-out
 	// bound entirely, which is why the gate reads fanoutUsed() rather than len(childRunIDs).
@@ -532,6 +541,7 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 
 	st.depth = depth
 	st.outputContract = outputContract
+	st.runInstructions = runCtx.Instructions
 	if deleg.Spec != nil {
 		st.childModel = deleg.Spec.Model
 		st.childBudget = deleg.Spec.Budget

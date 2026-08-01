@@ -148,7 +148,15 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 	// step — the SAME layering effectiveModel/effectiveConfigHash use — so a config change at the
 	// previous boundary is reflected here for free. An empty effective set leaves Tools nil, so a run
 	// that configures no tools routes a provider request that is bit-for-bit the pre-advertising one.
-	advertised, skills, err := o.advertisedTools(ctx, st)
+	// The run's pinned revision, read ONCE for this step and used by both readers below: the tool
+	// resolution, and the instruction stack. It was read inside advertisedTools before; it is hoisted
+	// here because a second reader arrived and two independent reads of the same pin are how a step's
+	// advertised tools and its instructions come to describe different revisions.
+	pinned, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
+	if err != nil {
+		return false, err
+	}
+	advertised, skills, err := o.advertisedTools(ctx, st, pinned)
 	if err != nil {
 		return false, err
 	}
@@ -159,6 +167,15 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 	if len(skills) > 0 {
 		messages = append([]modelbroker.Message{skillContextMessage(skills)}, messages...)
 	}
+	// The run's §25.12 instruction stack: the pinned revision's instructions (layer 3), then the
+	// request's own (layer 5), placed after the engine's kernel turns and above the conversation.
+	// THIS IS THE LINE THAT WAS MISSING. Both sources were durable — agent_revisions.instructions
+	// since E11, and now runs.instructions — and neither reached the conversation the provider is
+	// called with, which the engine assembles and which is never told about either. Measured against
+	// a real provider on 2026-08-01: a run pinning a revision with 320 words of instructions and a run
+	// pinning nothing both produced usage.input_tokens 48, and the pinned "answer in one word" was not
+	// obeyed. A run with neither layer gets `messages` back unchanged.
+	messages = applyInstructionLayers(messages, resolveInstructionLayers(pinned.Instructions, st.runInstructions))
 
 	// before_model hooks fire AFTER the effective tool set is resolved, BEFORE the request is committed or
 	// the provider is called (spec §28.17, the pin). A policy DENY here blocks the model step VISIBLY: it
@@ -598,10 +615,10 @@ func (o *Orchestrator) effectiveModel(ctx context.Context, st *attemptState) (st
 	}
 	// A pinned agent/template revision routes its model when neither a child nor a session override set
 	// one (spec §14.3 profile+overrides). The pin is immutable on the run row (AGT-001).
-	if _, revModel, _, _, _, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID)); err != nil {
+	if pinned, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID)); err != nil {
 		return "", err
-	} else if revModel != "" {
-		return revModel, nil
+	} else if pinned.Model != "" {
+		return pinned.Model, nil
 	}
 	route, err := o.effectiveRoute(ctx, st)
 	if err != nil {
@@ -617,16 +634,12 @@ func (o *Orchestrator) effectiveModel(ctx context.Context, st *attemptState) (st
 // the run is checkpointed under. A name the effective set carries but the broker does not register
 // is silently dropped — the model is never offered a tool the broker cannot execute (broker.Execute
 // returns ErrUnknownTool for it). An empty effective set yields nil, leaving the request unchanged.
-func (o *Orchestrator) advertisedTools(ctx context.Context, st *attemptState) ([]modelbroker.ToolSchema, []SkillRef, error) {
+func (o *Orchestrator) advertisedTools(ctx context.Context, st *attemptState, pinned coordinator.PinnedConfig) ([]modelbroker.ToolSchema, []SkillRef, error) {
 	override, _, err := o.spine.LatestSessionConfig(ctx, st.tenant, st.sessionID)
 	if err != nil {
 		return nil, nil, err
 	}
 	policy, err := o.spine.ProjectConfig(ctx, st.tenant)
-	if err != nil {
-		return nil, nil, err
-	}
-	revID, revModel, revTools, revToolSetTools, skillPins, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -636,11 +649,11 @@ func (o *Orchestrator) advertisedTools(ctx context.Context, st *attemptState) ([
 	}
 	in := ResolveInput{
 		ProjectTools:              policy.DefaultTools,
-		AgentRevisionID:           revID,
-		AgentRevisionModel:        revModel,
-		AgentRevisionTools:        revTools,
-		AgentRevisionToolSetTools: revToolSetTools,
-		SkillPinsJSON:             skillPins,
+		AgentRevisionID:           pinned.RevisionID,
+		AgentRevisionModel:        pinned.Model,
+		AgentRevisionTools:        pinned.Tools,
+		AgentRevisionToolSetTools: pinned.ToolSetTools,
+		SkillPinsJSON:             pinned.SkillPins,
 		SessionModel:              override.Model,
 		SessionTools:              override.Tools,
 	}

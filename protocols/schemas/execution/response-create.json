@@ -6,7 +6,10 @@
   "required": ["input"],
   "properties": {
     "model": {"type": "string"},
-    "instructions": {"type": "string"},
+    "instructions": {
+      "type": "string",
+      "description": "Run-specific instructions, placed as a system turn above the conversation on every model request of the run (spec §25.12 layer 5). Before 2026-08-01 this field was ACCEPTED AND DROPPED: measured against a real provider, the same input with a 320-word `instructions` and with none both reported usage.input_tokens 47, and a one-word instruction was not obeyed — while the identical text placed in `input` was. Nothing stored it and nothing applied it. It COMPOSES with the instructions of a pinned agent revision rather than replacing them: the revision's text is layer 3 and this is layer 5, so a run that both pins an agent and sends this field carries the agent's instructions first and these second. That ordering is deliberate — replacement would let this field silently strip the guardrails of the agent the same request pinned. A caller who wants only their own instructions pins no agent."
+    },
     "input": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"$ref": "content.json"}}]},
     "tools": {"type": "array", "items": {"type": "object", "properties": {"ref": {"type": "string"}}, "required": ["ref"], "additionalProperties": true}},
     "tool_sets": {"type": "array", "items": {"type": "string"}},

@@ -235,7 +235,7 @@ func (o *Orchestrator) planConfigChange(ctx context.Context, st *attemptState, c
 	// and effectiveModel resolve through, so a config.revised snapshot and a checkpoint never record
 	// divergent config for the same state (the checkpoint.go:185-186 promise). Without this a pinned
 	// run's config.revised would drop the ceiling and the provenance and diverge from the checkpoint hash.
-	revID, revModel, revTools, revToolSetTools, skillPins, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
+	pinned, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
 	if err != nil {
 		return coordinator.ConfigChangePlan{}, err
 	}
@@ -248,11 +248,11 @@ func (o *Orchestrator) planConfigChange(ctx context.Context, st *attemptState, c
 	}
 	in := ResolveInput{
 		ProjectTools:              policy.DefaultTools,
-		AgentRevisionID:           revID,
-		AgentRevisionModel:        revModel,
-		AgentRevisionTools:        revTools,
-		AgentRevisionToolSetTools: revToolSetTools,
-		SkillPinsJSON:             skillPins,
+		AgentRevisionID:           pinned.RevisionID,
+		AgentRevisionModel:        pinned.Model,
+		AgentRevisionTools:        pinned.Tools,
+		AgentRevisionToolSetTools: pinned.ToolSetTools,
+		SkillPinsJSON:             pinned.SkillPins,
 		SessionModel:              sessionModel,
 		SessionTools:              sessionTools,
 	}

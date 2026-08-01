@@ -50,15 +50,15 @@ func (s *Store) PinRunSkills(ctx context.Context, tenant coordinator.Tenant, run
 // with no workspace (or no skills) materializes nothing — the model still sees the metadata rider, but
 // the body is unreadable (the visible boundary). Idempotent: it overwrites with digest-equal content.
 func (s *Store) MaterializeRunSkills(ctx context.Context, tenant coordinator.Tenant, runID, hostPath string) error {
-	_, _, _, _, pinsJSON, err := s.spine.PinnedExecConfig(ctx, tenant, runID)
+	pinned, err := s.spine.PinnedExecConfig(ctx, tenant, runID)
 	if err != nil {
 		return err
 	}
-	if len(pinsJSON) == 0 {
+	if len(pinned.SkillPins) == 0 {
 		return nil
 	}
 	var pins []extensions.SkillPin
-	if err := json.Unmarshal(pinsJSON, &pins); err != nil {
+	if err := json.Unmarshal(pinned.SkillPins, &pins); err != nil {
 		return err
 	}
 	skillsRoot := filepath.Join(hostPath, ".palai", "skills")
