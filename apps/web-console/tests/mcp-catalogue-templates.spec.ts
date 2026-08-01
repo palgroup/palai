@@ -40,10 +40,19 @@ test("every catalogue entry is classified, and only Bearer/Basic/no-credential e
     expect(AUTH_LABEL[entry.auth], `${entry.id} has an unlabelled auth bucket`).toBeTruthy();
 
     if (isConnectable(entry)) {
-      // A connectable entry must be one of the three buckets the transport can actually render. This is the
-      // assertion that would fail if someone added an `oauth` row to the ready group by hand.
-      expect(["none", "bearer", "basic"], `${entry.id} is offered but its auth is ${entry.auth}`).toContain(entry.auth);
+      // A connectable entry must be one of the buckets the transport can actually render. The list is
+      // restated here ON PURPOSE rather than derived from CONNECTABLE: deriving it would make this arm
+      // agree with the module by construction and assert nothing. Restating it means widening CONNECTABLE
+      // stops here and a human decides — which is what happened on 2026-08-01, when `Sentry-Bearer ` went
+      // into authSchemes and `schemeAllowed` became genuinely connectable. Widen this list only with the
+      // header test that proves the transport sends that scheme verbatim.
+      expect(["none", "bearer", "basic", "schemeAllowed"], `${entry.id} is offered but its auth is ${entry.auth}`).toContain(entry.auth);
       expect(entry.url, `${entry.id} has no https URL`).toMatch(/^https:\/\//);
+      // AND IT MUST SAY WHAT TO PASTE. "Connectable" with no credential shape is a row that sends the
+      // operator to a registration form to guess — the mirror of a refusal with no reason, below.
+      if (entry.auth !== "none") {
+        expect(entry.credential, `${entry.id} is offered but does not say what to paste`).toBeTruthy();
+      }
     } else {
       // AND A REFUSED ENTRY MUST SAY WHY, in a sentence. A greyed row with no reason sends an operator to
       // read our source to find out what happened to their integration.
@@ -66,13 +75,18 @@ test("the servers shipped evidence says we cannot reach are refused, each for it
   expect(by("slack").auth).toBe("oauth");
   expect(isConnectable(by("slack"))).toBe(false);
 
-  // SENTRY — AND THIS IS THE ONE A DOCS SKIM GETS WRONG. Sentry DOES document a headless static token, which
-  // reads exactly like GitHub's or Linear's. It rides a `Sentry-Bearer` scheme, and
-  // adapters/integrations/mcp/http.go:70 recognises `Bearer ` and `Basic ` only — so authorizationHeader()
-  // would send `Bearer Sentry-Bearer <token>`. It is refused for a DIFFERENT reason than Slack, and the two
-  // must not collapse into one "unsupported" bucket: building an OAuth flow would fix Slack and not this.
-  expect(by("sentry").auth).toBe("customScheme");
-  expect(by("sentry").refusal).toContain("Sentry-Bearer");
+  // SENTRY — REFUSED UNTIL 2026-08-01, AND THIS ASSERTION IS WHY IT STOPPED BEING SO. The row's own caveat
+  // said the obstacle was one word in a scheme name and named the fix; separating it from Slack is what made
+  // that visible, because "building an OAuth flow would fix Slack and not this" cuts both ways — the
+  // converse is that Sentry needed something far smaller, and a single "unsupported" bucket would have
+  // hidden it. `Sentry-Bearer ` is now in authSchemes, proven by a test on the HEADER the transport sends
+  // (TestHTTPAuthorizationSchemeComesFromTheSecret), not on the list.
+  //
+  // The kind stays DISTINCT from `bearer`: the secret is stored with its scheme in front of it, so an
+  // operator who pastes a bare token still gets `Bearer <token>` and still fails.
+  expect(by("sentry").auth).toBe("schemeAllowed");
+  expect(isConnectable(by("sentry"))).toBe(true);
+  expect(by("sentry").credential).toContain("Sentry-Bearer");
 
   // ATLASSIAN — the counter-example that keeps the refusals honest. The same shipped manifest records that
   // its "API-token path WORKS TODAY", and this tree drives a real Basic credential through the transport in
@@ -179,8 +193,16 @@ test("the catalogue offers a Use control for a connectable server and NONE for a
   await expect(page.getByTestId("catalogue-entry-github")).toBeVisible();
   await expect(page.getByTestId("catalogue-use-github")).toBeVisible();
 
-  // Slack and Sentry are listed — PRESENT, so the gap is visible — and offer no way to try.
-  for (const id of ["slack", "sentry"]) {
+  // Sentry gets a button now: it moved to the connectable group when `Sentry-Bearer ` went into authSchemes
+  // (2026-08-01), and it is asserted HERE as well as in the data because a row can be classified
+  // connectable and still render without its control — the classification and the screen are two claims.
+  await expect(page.getByTestId("catalogue-entry-sentry")).toBeVisible();
+  await expect(page.getByTestId("catalogue-use-sentry")).toBeVisible();
+
+  // Slack is listed — PRESENT, so the gap is visible — and offers no way to try. It is the one that still
+  // needs an authorization-code flow this tree does not have, which is exactly the distinction the Sentry
+  // row above used to be lumped in with.
+  for (const id of ["slack"]) {
     await expect(page.getByTestId(`catalogue-entry-${id}`), `${id} is not listed at all`).toBeVisible();
     await expect(page.getByTestId(`catalogue-refusal-${id}`)).toBeVisible();
     await expect(page.getByTestId(`catalogue-use-${id}`), `${id} offers a Use button it cannot honour`).toHaveCount(0);
@@ -188,8 +210,13 @@ test("the catalogue offers a Use control for a connectable server and NONE for a
 
   // THE REFUSAL IS ON THE SCREEN, not only in a data file. The reason an operator reads must be the reason
   // the classification rests on.
-  await expect(page.getByTestId("catalogue-refusal-sentry")).toContainText("Sentry-Bearer");
   await expect(page.getByTestId("catalogue-refusal-slack")).toContainText("OAuth");
+
+  // AND SENTRY'S CREDENTIAL SHAPE IS ON THE SCREEN FOR THE SAME REASON, now that it is connectable rather
+  // than refused. The scheme must be visible where the operator pastes: a bare token goes out as
+  // `Bearer <token>` and fails, so "what to paste" is `Sentry-Bearer <token>` and saying it in a data file
+  // nobody renders would be the same defect as a refusal with no reason.
+  await expect(page.getByTestId("catalogue-entry-sentry")).toContainText("Sentry-Bearer");
 });
 
 test("choosing a catalogue entry fills the registration form and registers nothing", async ({ page }) => {

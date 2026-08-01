@@ -95,13 +95,24 @@ export type CatalogueAuth =
   | "basic"
   /** Requires an interactive authorization-code redirect and/or Dynamic Client Registration. */
   | "oauth"
-  /** Wants an `Authorization` scheme that is neither Bearer nor Basic — see http.go:70. */
+  /** Wants an `Authorization` scheme that is neither Bearer nor Basic AND is not in authSchemes — see http.go. */
   | "customScheme"
+  /**
+   * Carries its own `Authorization` scheme, and the transport RECOGNISES it — so the secret is stored with
+   * the scheme in front of it and sent verbatim.
+   *
+   * This kind exists because `customScheme` used to mean two things at once: "not Bearer or Basic" and
+   * "therefore unreachable". Those came apart on 2026-08-01 when `Sentry-Bearer ` was added to authSchemes,
+   * and collapsing them again would make this catalogue lie in the direction that costs most — telling an
+   * operator a server cannot be connected when it can. Connectability is a property of authSchemes, not of
+   * the scheme being unusual.
+   */
+  | "schemeAllowed"
   /** Authenticates on a header the transport never sends — see http.go:213-224. */
   | "customHeader";
 
 /** The buckets a static secret_ref can satisfy. Everything else is shown, and shown as unconnectable. */
-const CONNECTABLE: readonly CatalogueAuth[] = ["none", "bearer", "basic"];
+const CONNECTABLE: readonly CatalogueAuth[] = ["none", "bearer", "basic", "schemeAllowed"];
 
 export interface CatalogueEntry {
   /** Stable id — the registration form's suggested connection name, and this row's test id suffix. */
@@ -538,7 +549,7 @@ export const MCP_CATALOGUE: readonly CatalogueEntry[] = [
     name: "Sentry",
     blurb: "Issues, events, releases and Seer root-cause analysis.",
     url: "https://mcp.sentry.dev/mcp",
-    auth: "customScheme",
+    auth: "schemeAllowed",
     credential: "A Sentry user auth token, stored WITH its scheme: `Sentry-Bearer <token>`.",
     evidence: "https://github.com/getsentry/sentry-mcp",
     quote:
@@ -571,6 +582,7 @@ export const AUTH_LABEL: Record<CatalogueAuth, string> = {
   none: "No credential",
   bearer: "Static token",
   basic: "Static token (Basic)",
+  schemeAllowed: "Static token (own scheme)",
   oauth: "Needs OAuth",
   customScheme: "Unsupported scheme",
   customHeader: "Unsupported header",
