@@ -39,14 +39,33 @@ function classify(value: string): { glyph: string; kind: BadgeTone } {
   if (v.includes("complete") || v.includes("approved") || v.includes("succeed") || v.includes("restored")) {
     return { glyph: "✔︎", kind: "ok" }; // heavy check, text presentation
   }
-  if (v.includes("fail") || v.includes("denied") || v.includes("error") || v.includes("lost")) {
+  // `revoked` JOINED THIS ARM AND IT USED TO BE GREY. On /policy a live key and a REVOKED one rendered in
+  // the same neutral band, so the one row that matters looked like the other nineteen. It belongs here
+  // rather than in a band of its own because a revoked credential and a failed run are the same kind of
+  // fact: this thing is over, and nothing further will come of it.
+  if (v.includes("fail") || v.includes("denied") || v.includes("error") || v.includes("lost") || v.includes("revoked")) {
     return { glyph: "✖︎", kind: "danger" }; // heavy multiply, text presentation
   }
   if (v.includes("wait") || v.includes("pending") || v.includes("recover") || v.includes("stream")) {
     return { glyph: "○", kind: "info" }; // open circle
   }
+  // PAUSED IS A HOLD, AND IT IS THE SAME BAND AS A CANCELLATION ON PURPOSE: both are a thing that will make
+  // no further progress until somebody does something. It was falling through to neutral, which said a
+  // paused session and a closed one are the same kind of thing. `‖` is U+2016 DOUBLE VERTICAL LINE, which
+  // carries no Unicode emoji property — the requirement the variation selectors above exist to meet, met
+  // here by picking a character that never needed one.
   if (v.includes("cancel") || v.includes("expired") || v.includes("timed")) {
     return { glyph: "⊘", kind: "warn" }; // circled slash
   }
+  if (v.includes("pause") || v.includes("hold")) {
+    return { glyph: "‖", kind: "warn" };
+  }
+  // TODO(live band): `active`, `running`, `provisioning` and `queued` still match nothing above and fall
+  // through to neutral, so on a list where nineteen of twenty sessions are active the column that says what
+  // a session is DOING is twenty identical grey pills. That is this console's own recurring defect — a
+  // signal shipped, rendered, and carrying no information — and it survives because grey is not wrong, it
+  // is merely silent. Fixing it needs a SIXTH band with a hue, a fill and a border measured in both colour
+  // schemes, which is a palette decision and not a classifier one; it is owned by the identity pass rather
+  // than guessed at here. The two arms above needed no new token, which is why they are already done.
   return { glyph: "•", kind: "neutral" }; // bullet
 }
