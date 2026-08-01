@@ -140,6 +140,50 @@ test("every shipped template parses, and neither name nor description reaches th
   }
 });
 
+// NO SHIPPED TEMPLATE TYPES A MODEL NAME (E29 provider models).
+//
+// Three of them did — `model: claude-opus-4-8`, at lines 401, 431 and 455 — and a typed model id is the
+// one field in these templates that ROTS WITHOUT FAILING. Every other placeholder is obviously unfinished:
+// `mcpc_replace_me_github` is not an id, and an operator sees that. A model name is a plausible string
+// forever, so an applied template produces an agent that looks configured and dies at its first model step.
+//
+// MEASURED 2026-08-01, and it was already wrong in a second way: `claude-opus-4-8` is in Anthropic's list
+// (GET /v1/models -> 11 models) and in NO OpenAI list (133 models, no `claude-*`). So on any deployment
+// whose published route is provider-one — which is what PALAI_MODEL_PROVIDER=provider-one configures — all
+// three templates pinned a model the project's own credential cannot dial, and nothing said so:
+// RevisionInput.Model is not validated at create (automation/agents.go:60, "Model \"\" inherits the
+// deployment default"), so the failure surfaces at the first run.
+//
+// OMITTING IT IS NOT A GAP. buildRevisionBody drops an empty model, and a revision with no model inherits
+// the project's PUBLISHED ROUTE — the model the operator already chose on /registry. A template that names
+// one silently overrides that choice; a template that names none honours it. The picker fed by
+// GET /v1/model-connections/{id}/models is where a model id is chosen, from the provider's own list.
+//
+// The GRAMMAR still accepts `model`, deliberately: an operator pinning one is a legitimate thing to do. It
+// is the shipped GALLERY that must not put a name in their mouth.
+test("no shipped template names a model, because a typed model id rots without failing", () => {
+  for (const t of AGENT_TEMPLATES) {
+    const { template } = parseTemplateYAML(t.yaml);
+    expect(template, `${t.id} does not parse`).not.toBeNull();
+    expect(
+      template!.model,
+      `${t.id} names the model \`${template!.model}\`. A model id typed here stays a plausible string long ` +
+        `after it stops being one this deployment's credential can dial, and it OVERRIDES the route the ` +
+        `operator published. Leave it out: buildRevisionBody omits an empty model and the revision inherits ` +
+        `the project's published route.`,
+    ).toBe("");
+    expect(
+      Object.keys(buildRevisionBody(template!)),
+      `${t.id} sends a model on the revision body`,
+    ).not.toContain("model");
+  }
+
+  // The grammar is unchanged — pinning a model is still something an operator may write.
+  const pinned = parseTemplateYAML("name: Probe\nmodel: some-model-id\n");
+  expect(pinned.errors, "the parser stopped accepting `model`").toEqual([]);
+  expect(buildRevisionBody(pinned.template!).model).toBe("some-model-id");
+});
+
 test("the fields Palai has no counterpart for are refused by NAME, with the line number", () => {
   // The three keys from the reference console's template that this tree cannot honour. Each must fail at the
   // editor rather than as a 400 two round trips later — and must name the field, so the operator learns
@@ -152,7 +196,8 @@ test("the fields Palai has no counterpart for are refused by NAME, with the line
 
   // A NAMELESS TEMPLATE IS REFUSED HERE, because POST /v1/agents refuses it there (store/agents.go
   // MissingName) — and a profile that fails to create takes the revision with it.
-  expect(parseTemplateYAML("model: claude-opus-4-8\n").template).toBeNull();
+  // The scalar here is deliberately NOT a model name: a real one typed into a test is a real one that rots.
+  expect(parseTemplateYAML("system: no name above me\n").template).toBeNull();
 
   // EVERY ERROR CARRIES A REAL LINE. A line number of 0, or past the end, is a gutter that highlights
   // nothing — the failure mode that makes numbered errors worse than unnumbered ones.

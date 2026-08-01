@@ -6,6 +6,11 @@
   "type": "object",
   "required": ["id", "object", "route_id", "published"],
   "properties": {
+    "resolved_by_dispatch": {
+      "type": "boolean",
+      "description": "Whether THIS is the revision a run resolves through — the highest-numbered PUBLISHED revision of the alias (ties broken by id, exactly as ResolveProjectModelRoute orders). It exists because publishing does not un-publish: `published` accumulates, so a route revised four times shows four published revisions, possibly naming different models, with nothing marking which one steers a run. Rendered on the LIST read, where the whole set is known; absent from a singular GET, which cannot see the siblings it would have to compare against. A route with no published revision marks none.",
+      "readOnly": true
+    },
     "id": {"$ref": "../common/id.json#/$defs/opaque_id"},
     "object": {"type": "string", "const": "model_route_revision"},
     "route_id": {"$ref": "../common/id.json#/$defs/opaque_id"},

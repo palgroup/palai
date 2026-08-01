@@ -239,3 +239,85 @@ type Probe struct {
 type CredentialProber interface {
 	ProbeCredential(ctx context.Context, baseURL, secret string) Probe
 }
+
+// ModelInfo is ONE model as the provider named it. Every field is the provider's own — nothing here is
+// derived, defaulted or prettified, because the whole reason this type exists is that model names were
+// being TYPED into this tree (three of them in apps/web-console/lib/agentTemplates.ts) and a typed name
+// rots silently: it stays a valid string long after it stops being a model anyone's key can dial.
+type ModelInfo struct {
+	// ID is the value that goes on a route revision and onto the provider wire.
+	ID string `json:"id"`
+	// DisplayName is the provider's own human label, EMPTY when the provider offers none. Measured
+	// 2026-08-01: Anthropic's list carries one ("Claude Opus 5"), OpenAI's carries none. An empty string
+	// is therefore a fact about the provider, and a console renders the id — inventing a label here would
+	// put a name in front of an operator that appears in no provider documentation.
+	DisplayName string `json:"display_name,omitempty"`
+	// CreatedAt is the provider's own timestamp, zero when it names none. It is what lets a picker sort
+	// newest-first without this tree holding an opinion about which model is newest.
+	CreatedAt time.Time `json:"created_at,omitzero"`
+}
+
+// ModelListing is one models-list fetch's finding. It REUSES ProbeOutcome rather than growing a second
+// vocabulary, and that is the load-bearing decision in this type.
+//
+// WHY THE PROBE'S VOCABULARY. The two calls are the same HTTP request: both families' credential probe IS
+// a GET of the models list (see adapters/models/provider_one/probe.go). So every way a probe can fail is a
+// way a listing can fail, and a second set of names would let the same 403 be described two ways on two
+// screens. The listing adds exactly one thing the probe does not have: the body.
+//
+// AND THE FAILURE IS NEVER AN EMPTY LIST. Models is populated only on ProbeAccepted. A caller that reads
+// `len(Models) == 0` and renders "no models available" would be saying, in the operator's language, that
+// their key sees nothing — when what happened may be that their gateway 404s its models list, or that
+// nothing was asked at all. Outcome is the field to branch on; Models is what you may read once you have.
+type ModelListing struct {
+	// Outcome, Status, Endpoint and Detail carry exactly what the sibling Probe carries, and mean the same.
+	Outcome  ProbeOutcome `json:"outcome"`
+	Status   int          `json:"status,omitempty"`
+	Endpoint string       `json:"endpoint"`
+	Detail   string       `json:"detail"`
+	// Models is the provider's own list, in the provider's own order, and is non-empty only when Outcome
+	// is ProbeAccepted. It is NOT filtered to models the family can post a chat completion to — see
+	// ListedScope for why that filtering would be a claim this tree cannot honestly make.
+	Models []ModelInfo `json:"models,omitempty"`
+	// Complete is false when the lister stopped before the provider ran out of pages. It exists because
+	// "the first N models" and "the models" are different answers that a truncated list renders
+	// identically, and the truncated one gets MORE wrong as a provider ships more models.
+	Complete bool `json:"complete"`
+}
+
+// ListedScope is the sentence every models-list response repeats to its caller, and it is a refusal to
+// filter rather than an omission.
+//
+// MEASURED 2026-08-01. `GET https://api.openai.com/v1/models` returns 133 entries and NOT ONE FIELD
+// distinguishes a chat model from an embedding, audio, image, moderation or video model: every entry has
+// exactly {id, object:"model", created, owned_by}, and `owned_by` is "system" for 126 of them. So the list
+// contains `whisper-1`, `text-embedding-3-large` and `sora-2` alongside `gpt-5.2`, with nothing marking
+// which is which. Anthropic's 11 entries are all chat models, but it says that nowhere either.
+//
+// FILTERING WOULD BE A SUBSTRING TABLE, which is the exact thing this work exists to delete. A rule that
+// hid `whisper-1` would be a rule that hid `gpt-5.6-luna` too on the day it shipped, and it would go stale
+// the same silent way the typed names did — except worse, because a missing model reads as "the provider
+// does not have it" rather than as a bug here. So the list is the provider's, whole, and the caller is
+// told in words that it is unfiltered.
+const ListedScope = "every model this credential can see at this endpoint, exactly as the provider listed it — " +
+	"NOT filtered to models this family can post a completion to (a provider's list may include embedding, " +
+	"audio, image and moderation models, and no field in it says which is which)"
+
+// ModelLister is the other optional half of an adapter: WHICH models can this credential reach? It is the
+// half that makes a model picker possible without any model name being typed into this tree.
+//
+// IT IS THE SAME CALL THE PROBE MAKES. An adapter that can probe can list, because probing IS listing with
+// the body thrown away — which is why these two interfaces are satisfied by the same types and registered
+// in one map (adapters/models/registry.Inspectors), rather than in two that could disagree about which
+// families exist.
+type ModelLister interface {
+	ListModels(ctx context.Context, baseURL, secret string) ModelListing
+}
+
+// ConnectionInspector is what a connection's endpoint can be ASKED, as one interface. Both halves are the
+// same GET at the same URL with the same credential, so a family that implements one and not the other
+// would be a family whose two management actions disagree about what its endpoint is.
+type ConnectionInspector interface {
+	CredentialProber
+	ModelLister
+}

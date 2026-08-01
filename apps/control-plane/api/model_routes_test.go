@@ -51,6 +51,10 @@ func (f *fakeModelRoutes) VerifyModelConnection(_ context.Context, s middleware.
 	f.lastScope, f.lastConn = s, connectionID
 	return f.out, nil
 }
+func (f *fakeModelRoutes) ListConnectionModels(_ context.Context, s middleware.Scope, connectionID string) (ProvisionResult, error) {
+	f.lastScope, f.lastConn = s, connectionID
+	return f.out, nil
+}
 func (f *fakeModelRoutes) ListModelConnections(_ context.Context, s middleware.Scope) (ProvisionResult, error) {
 	f.lastScope = s
 	return f.out, nil
@@ -293,5 +297,66 @@ func TestVerifyModelConnectionRequiresProvisionCapability(t *testing.T) {
 	resp.Body.Close()
 	if fake.lastConn != "" {
 		t.Fatalf("the store was reached with %q despite the refusal", fake.lastConn)
+	}
+}
+
+// THE MODELS LIST (E29 provider models). It is a GET, it is provision-gated like every other model-routing
+// route, its connection id reaches the store from the PATH, and a connection the caller cannot see is the
+// same non-disclosing 404 as everywhere else on this surface.
+//
+// A GET AND NOT A POST, unlike the sibling verify action on the very same row. Verify is a POST because it
+// WRITES the verification stamp; this reads and writes nothing, in this process or upstream. Leaving the
+// process is not by itself what makes a POST — if it were, every read behind this capability would be one.
+func TestConnectionModelsListIsAProvisionGatedGET(t *testing.T) {
+	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	fake := &fakeModelRoutes{out: ProvisionResult{Body: []byte(
+		`{"object":"model_listing","connection_id":"mconn_1","outcome":"credential_accepted","data":[]}`)}}
+	srv := modelRouteTestServer(t, admin, WithModelRoutes(fake))
+
+	resp := do(t, "GET", srv+"/v1/model-connections/mconn_1/models", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET models status = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if fake.lastConn != "mconn_1" {
+		t.Fatalf("the models list reached the store with connection %q, want mconn_1", fake.lastConn)
+	}
+	if fake.lastScope.Organization != "org_1" || fake.lastScope.Project != "prj_1" {
+		t.Fatalf("store scope = %+v, want the verified identity's org/project (never a path or query field)", fake.lastScope)
+	}
+
+	// EVERY OUTCOME THE PROVIDER ANSWERED IS A 200, including a rejected credential — the same argument the
+	// verify action makes. The request succeeded: the control plane asked and got an answer. A 4xx would
+	// send the operator to re-read the API when what they need to re-read is their key.
+	fake.out = ProvisionResult{Body: []byte(`{"object":"model_listing","outcome":"credential_rejected"}`)}
+	if resp := do(t, "GET", srv+"/v1/model-connections/mconn_1/models", "", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("a rejected credential rendered %d, want 200 with the verdict in the body", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+
+	// 404 keeps its one real meaning: no such connection in this tenant.
+	fake.out = ProvisionResult{NotFound: true}
+	if resp := do(t, "GET", srv+"/v1/model-connections/foreign/models", "", nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("a foreign connection's models rendered %d, want a non-disclosing 404", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+}
+
+// A key without the provision capability never reaches the store — the models list is fetched with the
+// connection's credential, so it is exactly as privileged as reading the connection itself.
+func TestConnectionModelsListRequiresProvisionCapability(t *testing.T) {
+	limited := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Scopes: []string{"responses"}}}
+	fake := &fakeModelRoutes{out: ProvisionResult{Body: []byte(`{}`)}}
+	srv := modelRouteTestServer(t, limited, WithModelRoutes(fake))
+
+	resp := do(t, "GET", srv+"/v1/model-connections/mconn_1/models", "", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("limited-key models list status = %d, want 403", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if fake.lastConn != "" {
+		t.Fatal("a key without the provision capability reached the store")
 	}
 }

@@ -30,6 +30,17 @@
 //                   storage/migrations/000019_agents.up.sql:21, automation/agents.go:122 CreateProfile.
 //
 //   model         → RevisionInput.Model.      apps/control-plane/internal/automation/agents.go:77
+//                   ACCEPTED BY THE GRAMMAR, NAMED BY NO SHIPPED TEMPLATE (E29 provider models). All three
+//                   used to read `model: claude-opus-4-8`, and a typed model id is the one field here that
+//                   rots WITHOUT FAILING: `mcpc_replace_me_github` is visibly unfinished, a model name is a
+//                   plausible string forever. It was already wrong in a second way — measured 2026-08-01,
+//                   `claude-opus-4-8` is in Anthropic's models list and in none of OpenAI's 133, so on a
+//                   provider-one deployment every template pinned a model the project's credential cannot
+//                   dial. RevisionInput.Model is not validated at create (agents.go:60), so that surfaces
+//                   at the first run. Omitting it is not a gap: buildRevisionBody drops an empty model and
+//                   the revision then inherits the project's PUBLISHED ROUTE — the model the operator
+//                   already chose. A model id is picked from the connection's own list
+//                   (GET /v1/model-connections/{id}/models), never typed.
 //   system        → RevisionInput.Instructions (a rename, nothing more).            agents.go:79
 //   tools         → RevisionInput.Tools — a FLAT LIST OF TOOL NAMES forming a capability ceiling, NOT a
 //                   list of typed toolset objects.                                  agents.go:78
@@ -396,9 +407,14 @@ export const AGENT_TEMPLATES: readonly AgentTemplate[] = [
 # NOT SENTRY, AND NOT SLACK, though an incident agent wants both. Neither can be connected from this
 # deployment: Slack's MCP server takes only an OAuth user token, and Sentry authenticates on a
 # \`Sentry-Bearer\` scheme this transport cannot send. Both are listed on /tools with the reason.
+#
+# NO \`model:\` LINE, AND THAT IS THE TEMPLATE HONOURING YOUR CHOICE RATHER THAN A GAP. A revision with no
+# model inherits the project's PUBLISHED ROUTE — the model already chosen on /registry. Pinning one here
+# would override that silently, with an id that goes stale without ever stopping to look valid. To pin one
+# anyway, add \`model: <id>\` using an id from the connection's OWN list
+# (GET /v1/model-connections/{id}/models, or \`palai model models <mconn_id>\`), never one typed from memory.
 name: Incident commander
 description: Triages an alert, opens a Linear incident ticket, and keeps the timeline.
-model: claude-opus-4-8
 system: |-
   You are an on-call incident commander.
 
@@ -426,9 +442,11 @@ mcp_connections:
 # THE ONE TEMPLATE THAT NEEDS NO CREDENTIAL. Both servers it expects are public: DeepWiki and Context7 each
 # answer an unauthenticated handshake (probed 2026-08-01 — see lib/mcpCatalogue.ts). Register them on
 # /tools with no secret_ref at all, then paste their ids here.
+#
+# NO \`model:\` LINE — the revision inherits the project's published route. See the incident template for
+# why, and for where a model id comes from when you do want to pin one.
 name: Repository archaeologist
 description: Explains why code is the way it is, from history and documentation.
-model: claude-opus-4-8
 system: |-
   You explain why a codebase is the way it is.
 
@@ -450,9 +468,10 @@ mcp_connections:
     yaml: `# RELEASE NOTES WRITER
 #
 # Needs one GitHub connection (a Personal Access Token — see /tools). Nothing else.
+#
+# NO \`model:\` LINE — the revision inherits the project's published route. See the incident template.
 name: Release notes writer
 description: Turns merged pull requests into notes a customer can read.
-model: claude-opus-4-8
 system: |-
   You write release notes for people who use the product, not for people who wrote it.
 

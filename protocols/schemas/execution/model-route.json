@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.palai.dev/execution/model-route.json",
   "title": "ModelRoute",
-  "description": "A per-project named route alias (spec §27.6, E13 T8) that carries immutable, publishable revisions. Admin-only (the `provision` capability); never model-creatable. One lineage per project per name.",
+  "description": "A per-project named route alias (spec §27.6, E13 T8) that carries immutable, publishable revisions. Admin-only (the `provision` capability); never model-creatable. One lineage per project per name. EXACTLY ONE ALIAS IS LIVE: dispatch resolves the alias literally named `default`, and since E29 the create refuses any other name rather than storing a route that would be published and never consulted.",
   "type": "object",
   "required": ["id", "object", "name"],
   "properties": {
@@ -10,8 +10,16 @@
     "object": {"type": "string", "const": "model_route"},
     "organization_id": {"$ref": "../common/id.json#/$defs/organization_id"},
     "project_id": {"$ref": "../common/id.json#/$defs/project_id"},
-    "name": {"type": "string", "description": "The alias a run resolves through (e.g. default)."},
-    "created_at": {"type": "string", "format": "date-time"}
+    "name": {"type": "string", "description": "The alias a run resolves through. `default` is the only value a create accepts, because it is the only one dispatch reads."},
+    "created_at": {"type": "string", "format": "date-time"},
+    "consulted_by_dispatch": {
+      "type": "boolean",
+      "description": "Whether a run ever resolves through this alias. False identifies a route created before the E29 name check — stored, publishable, and inert. It is rendered because refusing new dead names does not find the ones already stored, and a read-back is the only place an operator can learn a row steers nothing."
+    },
+    "dispatch_note": {
+      "type": "string",
+      "description": "Present ONLY on a route that dispatch does not consult, naming the alias that is live. Absent on the working route: a warning on every row is a warning an operator learns to ignore."
+    }
   },
   "additionalProperties": true
 }

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/model-listing.json",
+  "title": "ModelListing",
+  "description": "The models a model connection's CREDENTIAL can reach, as the provider itself listed them (E29). Served by GET /v1/model-connections/{connection_id}/models; admin-only (the `provision` capability); never model-creatable. It exists so a model name never has to be typed into a template, a form or a deployment file: the ids here are the provider's own. The list belongs to a CONNECTION rather than to the deployment because the credential is what the provider answers for — two connections in the same family can hold keys with different model access, and a deployment-wide list would be a confident wrong answer for one of them. Nothing is cached: the provider is asked on every request, so `fetched_at` is always the moment of the call.",
+  "type": "object",
+  "required": [
+    "object",
+    "connection_id",
+    "provider",
+    "outcome",
+    "detail",
+    "complete",
+    "fetched_at",
+    "listed"
+  ],
+  "properties": {
+    "object": {
+      "type": "string",
+      "const": "model_listing"
+    },
+    "connection_id": {
+      "$ref": "../common/id.json#/$defs/opaque_id"
+    },
+    "provider": {
+      "type": "string",
+      "description": "The connection's adapter family — the same value model-connection.json carries."
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "credential_accepted",
+        "credential_rejected",
+        "unreachable",
+        "transient",
+        "not_probed"
+      ],
+      "description": "What the fetch OBSERVED, in the same vocabulary the credential probe uses, because it is the same request: both are a GET of the provider's models list with this connection's credential. THIS IS THE FIELD TO BRANCH ON. `data` is present only for `credential_accepted`; every other value means no list was obtained and says why in `detail`. `not_probed` means nothing was asked at all — a gateway whose endpoint yields no derivable models URL, a family this deployment wires no inspector for, or a secret ref that did not resolve — and must never be read as a pass or as an empty catalogue."
+    },
+    "status": {
+      "type": "integer",
+      "description": "The upstream HTTP status, absent when no HTTP answer was received. It is carried even on `not_probed`, where a 200 means the credential was accepted and the body still was not a models list."
+    },
+    "endpoint": {
+      "type": "string",
+      "description": "The models-list URL that was dialled, REDACTED of userinfo and query — a gateway URL can carry a token in either, and this string reaches a console and a log."
+    },
+    "detail": {
+      "type": "string",
+      "description": "One sentence for a human, naming what was observed or what was not done. Never carries the credential, and never quotes an upstream error body."
+    },
+    "complete": {
+      "type": "boolean",
+      "description": "False when the fetch stopped before the provider ran out of pages (Anthropic's list paginates; OpenAI's does not). `the first N models` and `the models` are different answers that a truncated list renders identically, so the difference is a field rather than an inference."
+    },
+    "fetched_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the provider was asked. Nothing is cached, so this is always the moment of the request; it is rendered anyway so a screen showing a list never has to assume that."
+    },
+    "listed": {
+      "type": "string",
+      "description": "What the list IS, in words: the provider's whole catalogue for this credential, UNFILTERED. A provider's models list may include embedding, audio, image and moderation models, and no field in it says which is which (measured 2026-08-01: OpenAI serves 133 entries of shape {id, object, created, owned_by} with `owned_by` = \"system\" for 126 of them). Filtering here would be a substring table that goes stale the same silent way a typed model name does, so the caller is told the scope instead."
+    },
+    "data": {
+      "type": "array",
+      "description": "The models, in the provider's own order. PRESENT ONLY WHEN `outcome` IS `credential_accepted`, and its absence is the design rather than an omission: an empty array would say \"this credential can see no models\", which is a measurement, and rendering a failure that way is the exact defect this surface exists to prevent. When it IS present and empty, that empty array is the measurement — the provider was asked and named nothing.",
+      "items": {
+        "type": "object",
+        "required": ["object", "id"],
+        "properties": {
+          "object": {"type": "string", "const": "model"},
+          "id": {
+            "type": "string",
+            "description": "The model id as the provider names it. This is the value that goes on a model route revision and onto the provider wire."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "The provider's OWN human label, ABSENT when the provider offers none (Anthropic's list carries one, OpenAI's does not). It is absent rather than empty so a console reading `display_name || id` falls back to the id. No label is ever invented here: a prettified name is one that appears in no provider documentation the operator can check."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The provider's own timestamp, absent when it names none. It is what lets a picker sort newest-first without this tree holding an opinion about which model is newest."
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

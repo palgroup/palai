@@ -62,11 +62,22 @@ func Adapters(opts Options) map[string]modelbroker.ModelAdapter {
 	}
 }
 
-// Probers returns the credential probers keyed by family — the `verify` action's real work. A family
-// absent from this map has no probe, and the verify surface says so in those words rather than inventing
-// a green.
-func Probers() map[string]modelbroker.CredentialProber {
-	return map[string]modelbroker.CredentialProber{
+// Inspectors returns what each family's endpoint can be ASKED, keyed by family: the `verify` action's
+// credential probe and the model picker's models list. A family absent from this map can be asked neither,
+// and both surfaces say so in those words rather than inventing a green or an empty list.
+//
+// IT IS ONE MAP FOR TWO CAPABILITIES ON PURPOSE (E29 provider models). The probe and the list are the SAME
+// GET at the SAME URL with the SAME credential — probing is listing with the body discarded — so a family
+// that could do one and not the other would be a family whose two management actions disagree about what
+// its endpoint is. One map is also one place to register a third provider: adding it here lights up the
+// verify button and the model picker together, and forgetting it fails
+// TestEverySelectableFamilyCanBeInspected rather than shipping a dead control.
+//
+// THE FAKE IS ABSENT, and that is safe because no connection can name it — see FakeFamily and
+// TestTheFakeFamilyIsUnreachableFromAConnectionAndThereforeNeedsNoInspector. Giving it a fabricated list
+// would be code no request can reach.
+func Inspectors() map[string]modelbroker.ConnectionInspector {
+	return map[string]modelbroker.ConnectionInspector{
 		"provider-one":      providerone.Adapter{},
 		"provider-two":      providertwo.Adapter{},
 		"openai-compatible": providerone.Adapter{}, // the same ChatCompletions wire, at the operator's URL

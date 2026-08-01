@@ -324,6 +324,9 @@ func TestModelConnectionSubcommandsHitCorrectEndpoint(t *testing.T) {
 		{"model list", []string{"model", "list"}, "GET", "/v1/model-connections", ""},
 		{"model get", []string{"model", "get", "mconn_1"}, "GET", "/v1/model-connections/mconn_1", ""},
 		{"model verify", []string{"model", "verify", "mconn_1"}, "POST", "/v1/model-connections/mconn_1/verify", ""},
+		// The models list (E29 provider models): the provider's OWN catalogue for this connection's
+		// credential. A GET, unlike the verify above, because it writes no stamp.
+		{"model models", []string{"model", "models", "mconn_1"}, "GET", "/v1/model-connections/mconn_1/models", ""},
 		{"model routes", []string{"model", "routes"}, "GET", "/v1/model-routes", ""},
 	}
 	for _, tc := range cases {

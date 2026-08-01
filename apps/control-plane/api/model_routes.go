@@ -30,6 +30,11 @@ type ModelRouteAPI interface {
 	// readable within the caller's scope. LISTs render the admin ListView envelope (a full, small,
 	// tenant-scoped set — no cursor); a singular GET renders one projection, or NotFound (404) for an
 	// absent/foreign id. A connection projection carries the secret REF name only, never a value.
+	// ListConnectionModels asks the connection's endpoint WHICH MODELS its credential can see (E29). It is
+	// a GET where the sibling verify is a POST, because it writes nothing — see the handler for the
+	// distinction, which is the stamp and not the egress.
+	ListConnectionModels(ctx context.Context, scope middleware.Scope, connectionID string) (ProvisionResult, error)
+
 	ListModelConnections(ctx context.Context, scope middleware.Scope) (ProvisionResult, error)
 	GetModelConnection(ctx context.Context, scope middleware.Scope, connectionID string) (ProvisionResult, error)
 	ListModelRoutes(ctx context.Context, scope middleware.Scope) (ProvisionResult, error)
@@ -104,6 +109,27 @@ func (h *modelRouteHandler) verifyConnection(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	out, err := h.routes.VerifyModelConnection(r.Context(), scope, r.PathValue("connection_id"))
+	h.write(w, r, out, err, http.StatusOK)
+}
+
+// connectionModels lists the models this connection's credential can reach
+// (GET /v1/model-connections/{connection_id}/models, E29 provider models).
+//
+// IT IS A GET AND THE VERIFY BESIDE IT IS A POST, and the difference is the STAMP, not the egress. Verify
+// writes verified_at/verification_outcome onto the row; this writes nothing here and mutates nothing
+// upstream. Egress alone cannot be the test — a cache or a link preview would need the `provision`
+// capability to fire this, and a key holding that could have called it directly. Making a read a POST
+// costs every client a special case forever.
+//
+// LIKE VERIFY, IT IS 200 FOR EVERY OUTCOME THE PROVIDER ANSWERED, a rejected credential included: the
+// request succeeded, and the verdict belongs in the body where a console can render it as a sentence.
+// 404 keeps its one meaning — no such connection in this tenant.
+func (h *modelRouteHandler) connectionModels(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorize(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.routes.ListConnectionModels(r.Context(), scope, r.PathValue("connection_id"))
 	h.write(w, r, out, err, http.StatusOK)
 }
 

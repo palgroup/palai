@@ -143,8 +143,24 @@ export interface ModelConnection {
   verified_at?: string;
 }
 
+export interface ModelListing {
+  complete: boolean;
+  connection_id: OpaqueId;
+  data?: Record<string, unknown>[];
+  detail: string;
+  endpoint?: string;
+  fetched_at: string;
+  listed: string;
+  object: string;
+  outcome: string;
+  provider: string;
+  status?: number;
+}
+
 export interface ModelRoute {
+  consulted_by_dispatch?: boolean;
   created_at?: string;
+  dispatch_note?: string;
   id: OpaqueId;
   name: string;
   object: string;
@@ -159,6 +175,7 @@ export interface ModelRouteRevision {
   model?: string;
   object: string;
   published: boolean;
+  resolved_by_dispatch?: boolean;
   revision?: number;
   route_id: OpaqueId;
 }

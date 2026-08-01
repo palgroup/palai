@@ -220,7 +220,7 @@ func main() {
 		// actually send rather than a second read path that could disagree with it. A stack with no master
 		// key mounts the route and answers "nothing was checked", which is the honest answer and never a
 		// green.
-		repo.WithModelConnectionProbes(connectionProbers(), dbSecret)
+		repo.WithModelConnectionInspectors(connectionInspectors(), dbSecret)
 		// The environment surface (E25 T3) rides the SAME condition and the SAME store, and the coupling is
 		// the design: an environment value IS a secret_refs version, so an environment surface without a
 		// master key could list names it can never fill. One `if`, two families, no way to mount half of it.
@@ -833,9 +833,9 @@ func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute) {
 // than a direct pass because the store must not import the adapters — the store is what api.ModelRouteAPI
 // is satisfied by, and a wire-format dependency there would put every provider adapter behind the
 // management surface.
-func connectionProbers() map[string]store.ConnectionProber {
-	out := map[string]store.ConnectionProber{}
-	for family, prober := range registry.Probers() {
+func connectionInspectors() map[string]store.ConnectionInspector {
+	out := map[string]store.ConnectionInspector{}
+	for family, prober := range registry.Inspectors() {
 		out[family] = prober
 	}
 	return out

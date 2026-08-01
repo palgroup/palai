@@ -90,32 +90,43 @@ func ClassifyProbe(ctx context.Context, client *http.Client, method, endpoint st
 
 	resp, err := client.Do(req)
 	if err != nil {
-		// DNS, refused, TLS or timeout. The error text is NOT quoted: a transport error can carry the URL
-		// verbatim, userinfo included, and this detail is rendered to a console and written to a log.
-		return modelbroker.Probe{
-			Outcome: modelbroker.ProbeUnreachable, Endpoint: redacted,
-			Detail: "the control plane could not reach this endpoint (name resolution, connection, TLS or timeout)",
-		}
+		return unreachable(redacted)
 	}
 	defer resp.Body.Close()
 	// Drain a little so the connection can be reused; the body itself is never inspected.
 	_, _ = resp.Body.Read(make([]byte, 512))
 
+	return classify(resp.StatusCode, redacted)
+}
+
+// unreachable is the no-HTTP-answer verdict. The transport error text is NOT quoted: it can carry the URL
+// verbatim, userinfo included, and this detail is rendered to a console and written to a log.
+func unreachable(redacted string) modelbroker.Probe {
+	return modelbroker.Probe{
+		Outcome: modelbroker.ProbeUnreachable, Endpoint: redacted,
+		Detail: "the control plane could not reach this endpoint (name resolution, connection, TLS or timeout)",
+	}
+}
+
+// classify maps ONE status onto the outcome vocabulary. It is the single switch both families' probe AND
+// both families' models list read their verdict from, so no two of those four surfaces can come to
+// different conclusions about the same 403.
+func classify(status int, redacted string) modelbroker.Probe {
 	switch {
-	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+	case status >= 200 && status < 300:
 		return modelbroker.Probe{
-			Outcome: modelbroker.ProbeAccepted, Status: resp.StatusCode, Endpoint: redacted,
+			Outcome: modelbroker.ProbeAccepted, Status: status, Endpoint: redacted,
 			Detail: "the endpoint answered and accepted this credential. It was NOT asked whether the route's " +
 				"model id exists or whether a quota remains.",
 		}
-	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return modelbroker.Probe{
-			Outcome: modelbroker.ProbeRejected, Status: resp.StatusCode, Endpoint: redacted,
+			Outcome: modelbroker.ProbeRejected, Status: status, Endpoint: redacted,
 			Detail: "the endpoint REJECTED this credential — it is wrong, expired or revoked. Write a new one.",
 		}
-	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
+	case status == http.StatusTooManyRequests || status >= 500:
 		return modelbroker.Probe{
-			Outcome: modelbroker.ProbeTransient, Status: resp.StatusCode, Endpoint: redacted,
+			Outcome: modelbroker.ProbeTransient, Status: status, Endpoint: redacted,
 			Detail: "the endpoint answered with a rate limit or a server error, which says nothing about the " +
 				"credential either way. Try again.",
 		}
@@ -124,7 +135,7 @@ func ClassifyProbe(ctx context.Context, client *http.Client, method, endpoint st
 		// contract. The credential was NOT rejected, but neither was it accepted, and saying "ok" here is
 		// exactly the false green this probe exists to avoid.
 		return modelbroker.Probe{
-			Outcome: modelbroker.ProbeUnsupported, Status: resp.StatusCode, Endpoint: redacted,
+			Outcome: modelbroker.ProbeUnsupported, Status: status, Endpoint: redacted,
 			Detail: "the endpoint answered but did not serve a models list, so the credential was NOT checked. " +
 				"It was not rejected either — this is an inconclusive result, not a failure.",
 		}
