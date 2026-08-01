@@ -466,6 +466,8 @@ function approvalRow(a) {
       branch: a.branch,
       base: a.base,
       head_sha: a.head_sha,
+      credential_ref: a.credential_ref,
+      credential: a.credential,
     }),
   };
 }
@@ -518,6 +520,9 @@ const approvals = new Map(
       branch: "agent/ws_console/run_console_apvl",
       base: "main",
       head_sha: "adad39c1a6cae35efd7e8c6a8dfd088ce34c833f",
+      // A binding carrying its OWN panel-provisioned credential — the case the owner asked for.
+      credential_ref: "rcon_acme_pat",
+      credential: "this repository binding's own credential",
     },
     {
       id: "apvl_console_0002",
@@ -686,6 +691,10 @@ function ensureDecisionRows() {
       branch: "agent/ws_console/run_console_apvl",
       base: "main",
       head_sha: "adad39c1a6cae35efd7e8c6a8dfd088ce34c833f",
+      // THIS ONE HAS NO REF ON PURPOSE: the deployment App is the other half of the decision, and a screen
+      // that only ever rendered the tenant-credential sentence would never show the word an operator most
+      // needs to notice.
+      credential: "the deployment's GitHub App",
     });
   }
 }

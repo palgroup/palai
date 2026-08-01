@@ -90,6 +90,7 @@ func (s *Store) ListPendingApprovals(ctx context.Context, scope middleware.Scope
 			Identity: p.Operation, OperatorLabel: p.Display, Arguments: string(p.Arguments),
 			PublicationID: p.PublicationID, Operation: p.Operation,
 			Remote: p.Remote, Branch: p.Branch, Base: p.Base, HeadSHA: p.HeadSHA,
+			CredentialRef: p.ConnectionRef, Credential: credentialWord(p.ConnectionRef),
 		})
 	}
 
@@ -256,4 +257,18 @@ func decidedPublicationState(kind string) string {
 		return "approved"
 	}
 	return "denied"
+}
+
+// credentialWord names the identity a publication will be written under. It is derived from whether the
+// binding carries its OWN credential handle, which is the same condition RepositoryPublisher branches on —
+// so the sentence on the screen and the credential the pump reaches for cannot disagree.
+//
+// An empty ref is not "unknown": it is the deployment App, and saying so is the whole point. A blank field
+// on an approval screen reads as missing data, and an operator who cannot tell "no tenant credential" from
+// "we did not look" has no basis to approve.
+func credentialWord(connectionRef string) string {
+	if connectionRef == "" {
+		return api.CredentialDeploymentApp
+	}
+	return api.CredentialBindingOwn
 }
