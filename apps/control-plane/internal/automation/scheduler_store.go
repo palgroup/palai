@@ -79,7 +79,10 @@ type ScheduleView struct {
 }
 
 // OccurrenceView is one occurrence's projection (GET /v1/schedules/{id}/occurrences). planned_at vs
-// admitted_at makes lateness + jitter visible (§33.5).
+// admitted_at makes lateness + jitter visible (§33.5); created_at is the third instant of that story and
+// the one the shared created_after/created_before bounds filter on, so it is returned rather than left as
+// a column a caller can aim a filter at but never see (E29 T1). Under the catch_up misfire policy the
+// three are genuinely far apart: planned days ago, created now, admitted after jitter.
 type OccurrenceView struct {
 	OccurrenceID string     `json:"occurrence_id"`
 	Revision     int        `json:"schedule_revision"`
@@ -88,6 +91,24 @@ type OccurrenceView struct {
 	State        string     `json:"state"`
 	DeliveryID   string     `json:"delivery_id,omitempty"`
 	Reason       string     `json:"reason,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+}
+
+// ScheduleStatuses are the three lifecycle states the schedules.status column admits (000022:48,
+// CHECK (status IN ('active','paused','failed'))). It is exported because the ROUTE validates ?status=
+// against it: an unknown value is a 400 written by the API, never an empty 200 that a client reads as
+// "none are in that state" when the truth is "that state does not exist". The DB CHECK stays the last
+// line of defence, not the first.
+var ScheduleStatuses = []string{"active", "paused", "failed"}
+
+// KnownScheduleStatus reports whether s is one of the three lifecycle states.
+func KnownScheduleStatus(s string) bool {
+	for _, known := range ScheduleStatuses {
+		if s == known {
+			return true
+		}
+	}
+	return false
 }
 
 // CreateSchedule validates the cron/timezone at create (an unknown IANA name is a 400, never a stored
@@ -226,13 +247,51 @@ func (s *ScheduleStore) GetSchedule(ctx context.Context, org, project, id string
 	return v, true, nil
 }
 
-// ListOccurrences reads a schedule's occurrences newest-first (tenant-scoped through the parent schedule).
-func (s *ScheduleStore) ListOccurrences(ctx context.Context, org, project, id string, limit int) ([]OccurrenceView, error) {
+// ListSchedules pages a project's schedules newest-first, tenant-scoped and RLS-confined (GET
+// /v1/schedules, E29 T1). status filters on the lifecycle column; empty means unfiltered. The projection
+// is ScheduleView — the SAME nineteen fields GetSchedule returns — so a list row and a singular read are
+// one shape and a screen never codes against two.
+//
+// The caller over-fetches by asking for Limit+1 (the shared renderPage contract); this method neither
+// clamps nor pads, so "how many rows fit on a page" stays one decision, made in the API's parse.
+func (s *ScheduleStore) ListSchedules(ctx context.Context, org, project string, w ListWindow, status string) ([]ScheduleView, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
+	rows, err := s.pool.Query(ctx, storage.Query("ListSchedules"),
+		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, nullableText(status), w.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list schedules: %w", err)
+	}
+	defer rows.Close()
+	var out []ScheduleView
+	for rows.Next() {
+		var v ScheduleView
+		if err := rows.Scan(
+			&v.ID, &v.Name, &v.TriggerID, &v.Kind, &v.CronExpr, &v.Timezone, &v.MisfirePolicy, &v.MisfireGraceSeconds,
+			&v.MaxCatchUp, &v.JitterSeconds, &v.Status, &v.StatusReason, &v.Revision, &v.NextFireAt, &v.OneTimeAt,
+			&v.StartsAt, &v.EndsAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan schedule: %w", err)
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// ListOccurrences pages a schedule's occurrences newest-first (tenant-scoped through the parent schedule).
+// The keyset is (planned_at, occurrence_id): AfterCreatedAt carries the PLANNED instant, because that is
+// the column the list orders by, while CreatedGTE/CreatedLTE bind to the occurrence's own created_at (see
+// the query's comment — under catch_up the two are days apart).
+//
+// The limit<=0 clamp below is now UNREACHABLE from the route, which validates the page size before it gets
+// here (1..100). It stays for the store's own callers and its own tests: a store read that silently
+// returned every row of an unbounded table would be a worse default than 100.
+func (s *ScheduleStore) ListOccurrences(ctx context.Context, org, project, id string, w ListWindow) ([]OccurrenceView, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	limit := w.Limit
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.pool.Query(ctx, storage.Query("ListScheduleOccurrences"), id, org, project, limit)
+	rows, err := s.pool.Query(ctx, storage.Query("ListScheduleOccurrences"),
+		id, org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list occurrences: %w", err)
 	}
@@ -240,7 +299,7 @@ func (s *ScheduleStore) ListOccurrences(ctx context.Context, org, project, id st
 	var out []OccurrenceView
 	for rows.Next() {
 		var o OccurrenceView
-		if err := rows.Scan(&o.OccurrenceID, &o.Revision, &o.PlannedAt, &o.AdmittedAt, &o.State, &o.DeliveryID, &o.Reason); err != nil {
+		if err := rows.Scan(&o.OccurrenceID, &o.Revision, &o.PlannedAt, &o.AdmittedAt, &o.State, &o.DeliveryID, &o.Reason, &o.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, o)

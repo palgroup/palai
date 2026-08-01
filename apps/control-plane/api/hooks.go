@@ -16,6 +16,15 @@ import (
 type HookAPI interface {
 	CreateHook(ctx context.Context, scope middleware.Scope, body []byte) (HookResult, error)
 	DisableHook(ctx context.Context, scope middleware.Scope, id string) (HookResult, error)
+	// GetHook and ListHooks are the E29 T1 read half. Until they landed this family mounted a create and a
+	// kill-switch and NOT ONE GET: a hook that fires inside every run of a project could be neither
+	// enumerated nor read back, and `disable` was a write whose only confirmation was its own 200.
+	//
+	// The list returns DISABLED hooks too. The dispatch loop's read (HooksForPoint) does not, and cannot be
+	// borrowed for this: it takes a point and filters disabled_at, so a management list built on it would
+	// make the kill-switch unobservable.
+	GetHook(ctx context.Context, scope middleware.Scope, id string) (HookResult, error)
+	ListHooks(ctx context.Context, scope middleware.Scope, q ListQuery) ([]ListRow, error)
 }
 
 // HookResult is a management projection. Exactly one outcome is set: Body carries the created hook or the
@@ -46,11 +55,69 @@ func (h *hookHandler) createHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := h.hooks.CreateHook(r.Context(), scope, raw)
-	// No Location: `/v1/hooks/<id>` is not mounted — the family has POST and POST-disable and not one GET
-	// (E29 T2). The store side of the read already exists and is tested against a real Postgres; what is
-	// missing is a method on HookAPI and a handler, and that is the task that opens the hooks read half.
-	// When GET /v1/hooks/{id} lands, this header comes back with it and the guard accepts it.
-	h.write(w, r, out, err, http.StatusCreated, "")
+	// The Location is back, and it is back because the address now RESOLVES: E29 T2 removed it while
+	// `/v1/hooks/<id>` was a prefix nothing mounted, and wrote that it would return with the GET. T1 mounted
+	// the GET, so the dangling-Location guard follows this header into a 200 rather than into net/http's own
+	// not-found. The header is not restored because a create "should" carry one — it is restored because
+	// there is finally a resource at the address it names.
+	h.write(w, r, out, err, http.StatusCreated, "/v1/hooks/")
+}
+
+// getHook returns one hook's management projection (GET /v1/hooks/{id}). An absent or foreign hook is a
+// 404 — the same answer, so an outsider cannot distinguish "not yours" from "not there".
+func (h *hookHandler) getHook(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorize(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.hooks.GetHook(r.Context(), scope, r.PathValue("id"))
+	h.write(w, r, out, err, http.StatusOK, "")
+}
+
+// listHooks returns a tenant-scoped page of hooks (GET /v1/hooks), DISABLED ONES INCLUDED, in the shared
+// page envelope. It carries no ?status=: `disabled_at` is a timestamp, not a lifecycle-state column, and
+// statusFilterKinds means exactly what it says.
+func (h *hookHandler) listHooks(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorize(w, r)
+	if !ok {
+		return
+	}
+	q, ok := beginList(w, r, "hooks", scope)
+	if !ok {
+		return
+	}
+	// The +1 over-fetch renderPage trims: the store returns Limit+1 rows so has_more needs no second query.
+	rows, err := h.hooks.ListHooks(r.Context(), scope, ListQuery{
+		After: q.After, Limit: q.Limit + 1, CreatedGTE: q.CreatedGTE, CreatedLTE: q.CreatedLTE,
+	})
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	renderPage(w, r, "hooks", scope, rows, q.Limit)
+}
+
+// authorize resolves the verified scope and enforces the `provision` capability for the two E29 T1 reads.
+//
+// THE ASYMMETRY WITH THE WRITES ABOVE IS DELIBERATE AND RECORDED RATHER THAN INFERRED, and it is the E25 T7
+// tool-revision precedent verbatim: the shipped E12 create/disable routes carry no capability gate, and
+// retro-gating a shipped surface is a contract change rather than a read route. What these two answer is
+// the policy an operator provisioned — which extension points this project runs, and against which remote
+// worker — so they sit with the other provisioned surfaces (environments, secret-refs, model-routes).
+// HONEST CEILING: a key with an EMPTY scope set holds `provision` implicitly (middleware.Scope.HasScope),
+// and every bootstrap and admin key has one, so this gate separates a NARROWED key from a broad one and
+// never an operator from an operator.
+func (h *hookHandler) authorize(w http.ResponseWriter, r *http.Request) (middleware.Scope, bool) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return middleware.Scope{}, false
+	}
+	if !scope.HasScope(provisionScope) {
+		middleware.WriteProblem(w, r, http.StatusForbidden, "insufficient_scope", "this API key lacks the provision capability")
+		return middleware.Scope{}, false
+	}
+	return scope, true
 }
 
 // disableHook flips a hook's admin kill-switch (POST /v1/hooks/{id}/disable). A disabled hook never fires.

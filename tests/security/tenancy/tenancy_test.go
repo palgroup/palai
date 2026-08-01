@@ -112,6 +112,7 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 	tool, toolRevision, setRevision := newID("tool"), newID("trev"), newID("tsrev")
 	toolCall, backgroundTask := newID("call"), newID("bgt")
 	runnerPool := newID("pool")
+	trigger, schedule, deletedSchedule, occurrence, hook := newID("trg"), newID("sch"), newID("sch"), newID("occ"), newID("hook")
 	stmts := []struct {
 		sql  string
 		args []any
@@ -185,6 +186,41 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 		{`INSERT INTO runner_pools (id, organization_id, project_id, name, posture, os, arch, strict_enrollment)
 		  VALUES ($1,$2,$3,'mac-pool','unsandboxed-host','darwin','arm64',true)`,
 			[]any{runnerPool, org, project}},
+		// The E29 T1 automation trio (000022 schedules + schedule_occurrences, 000028 hooks), all
+		// PROJECT-scoped. Neither table needed registering: 000029 drives its sweep off the CATALOGUE, so
+		// every table carrying organization_id was policied the moment the chain re-ran — which
+		// TestEveryTenantTableIsRowLevelSecured has been asserting all along.
+		//
+		// WHAT MAKES THEM WORTH A ROW NOW, which is the only thing the catalogue sweeps cannot supply. Until
+		// T1 there was no route that ENUMERATED either table: a schedule and a hook were reachable only by an
+		// id the caller already held, so the cross-tenant question was "can B guess A's id", and a guess is
+		// bounded by 128 bits. A LIST is a different question — it asks the database for every row it can
+		// see, and what it can see is decided here rather than by any WHERE clause T1 wrote. The canary below
+		// issues the WHERE-LESS form of exactly those two new reads.
+		//
+		// The consequence if it leaked is not symmetric with the other rows. A schedule row names a
+		// trigger and a principal, and it FIRES on a wall clock — cross-tenant visibility of one is the map
+		// of when another tenant's automation runs and as whom. A hook row names an extension point that
+		// executes inside every run of its project plus the secret_ref handle its remote worker signs with.
+		//
+		// The SOFT-DELETED schedule beside it is the second row for a different reason: `deleted_at` is an
+		// APPLICATION predicate, not an RLS one, so this pair is what lets a test ask whether a tombstone is
+		// filtered by the shipped query rather than by the database — see TestTheAutomationListQueries.
+		{`INSERT INTO triggers (id, organization_id, project_id, name, type) VALUES ($1,$2,$3,$4,'cron')`,
+			[]any{trigger, org, project, "nightly-trigger"}},
+		{`INSERT INTO schedules (id, organization_id, project_id, name, trigger_id, created_by, cron_expr, timezone, status)
+		  VALUES ($1,$2,$3,'nightly-close-the-books',$4,$5,'0 2 * * *','Europe/Istanbul','paused')`,
+			[]any{schedule, org, project, trigger, org + "-principal"}},
+		{`INSERT INTO schedules (id, organization_id, project_id, name, trigger_id, created_by, cron_expr, timezone, deleted_at)
+		  VALUES ($1,$2,$3,'retired-schedule',$4,$5,'0 3 * * *','UTC',clock_timestamp())`,
+			[]any{deletedSchedule, org, project, trigger, org + "-principal"}},
+		{`INSERT INTO schedule_occurrences (occurrence_id, schedule_id, schedule_revision, planned_at, state)
+		  VALUES ($1,$2,1,clock_timestamp(),'admitted')`,
+			[]any{occurrence, schedule}},
+		{`INSERT INTO hooks (id, organization_id, project_id, name, hook_point, category, executor, config, secret_ref)
+		  VALUES ($1,$2,$3,'deny-external-writes','before_tool','policy','remote_http',
+		          '{"url":"https://hooks.example.test/deny"}'::jsonb,$4)`,
+			[]any{hook, org, project, "HOOK_SIGNING_KEY"}},
 	}
 	for _, stmt := range stmts {
 		if _, err := s.owner.Exec(ctx, stmt.sql, stmt.args...); err != nil {
@@ -219,8 +255,19 @@ func (s *suite) asOrg(t *testing.T, org string, fn func(tx pgx.Tx)) {
 // produce — and the database still returns only the caller's tenant.
 func TestWhereLessQueryIsRejectedByTheDatabase(t *testing.T) {
 	s := newSuite(t)
-	for _, table := range []string{"runs", "responses", "sessions", "projects", "artifacts", "environments", "environment_values",
-		"tools", "tool_revisions", "tool_set_revisions", "background_tasks", "runner_pools"} {
+	// The seeded row count per table. It is spelled out rather than assumed to be 1 because `schedules`
+	// carries TWO — a live one and a soft-deleted one — and a hard-coded 1 would have failed on the second
+	// for a reason that has nothing to do with tenancy.
+	seeded := map[string]int{
+		"runs": 1, "responses": 1, "sessions": 1, "projects": 1, "artifacts": 1,
+		"environments": 1, "environment_values": 1, "tools": 1, "tool_revisions": 1,
+		"tool_set_revisions": 1, "background_tasks": 1, "runner_pools": 1,
+		// The E29 T1 automation trio. `schedules` is 2: the second is a tombstone, and it belongs in this
+		// count because RLS is the layer that decides VISIBILITY while `deleted_at` is the layer that
+		// decides RELEVANCE — a leak here would expose a deleted schedule as readily as a live one.
+		"triggers": 1, "schedules": 2, "hooks": 1,
+	}
+	for table, want := range seeded {
 		s.asOrg(t, s.orgA, func(tx pgx.Tx) {
 			var foreign int
 			// The only predicate names the OTHER tenant: the query asks for exactly the rows the
@@ -236,11 +283,144 @@ func TestWhereLessQueryIsRejectedByTheDatabase(t *testing.T) {
 			if err := tx.QueryRow(context.Background(), fmt.Sprintf(`SELECT count(*) FROM %s`, table)).Scan(&visible); err != nil {
 				t.Fatalf("%s: count visible rows: %v", table, err)
 			}
-			if visible != 1 {
-				t.Fatalf("%s: own tenant sees %d row(s), want exactly the 1 seeded", table, visible)
+			if visible != want {
+				t.Fatalf("%s: own tenant sees %d row(s), want exactly the %d seeded", table, visible, want)
 			}
 		})
 	}
+}
+
+// TestTheAutomationListQueriesAreConfinedAndFilterTheirTombstones runs the SHIPPED named queries E29 T1
+// added — ListSchedules, ListHooks, ListScheduleOccurrences — on the runtime role, and asks the two
+// questions that only the real statements can answer.
+//
+// WHY THE SHIPPED SQL RATHER THAN A FIXTURE QUERY, which is what the rest of this corpus uses. The canary
+// above proves the DATABASE denies a WHERE-less read; that is a claim about RLS and a hand-written query is
+// the right instrument for it. These three are a claim about a STATEMENT — that the text T1 shipped, with
+// the parameters the handler binds, returns what it should — and there is no way to make that claim with a
+// query written here: a fixture that resembled the shipped one would prove the resemblance. storage.Query
+// resolves the same embedded text the control plane runs.
+//
+// TWO FAILURES ARE SEPARATED BECAUSE THEY LIVE IN DIFFERENT LAYERS AND ONLY ONE OF THEM IS RLS.
+//
+//   - A foreign row coming back is a TENANCY failure: the statements carry their own organization/project
+//     predicate AND run under the policy, and this asks whether either is load-bearing by binding the
+//     FOREIGN tenant's ids into the shipped statement while the connection declares org A. The database
+//     must return nothing even though the parameters ask for everything.
+//   - A tombstone coming back is an APPLICATION failure: `deleted_at IS NULL` is a clause in the query and
+//     nothing beneath it enforces that. No policy, no constraint, no role. If the clause is deleted, every
+//     layer below this one is still perfectly correct and the list still resurrects the dead.
+func TestTheAutomationListQueriesAreConfinedAndFilterTheirTombstones(t *testing.T) {
+	s := newSuite(t)
+	ctx := context.Background()
+	projectA := s.projectOf(t, s.orgA)
+	projectB := s.projectOf(t, s.orgB)
+
+	s.asOrg(t, s.orgA, func(tx pgx.Tx) {
+		// ListSchedules bound to org A: exactly the ONE live schedule. The tombstone is seeded and must not
+		// appear, and it is the only thing distinguishing this assertion from the canary above.
+		names := scanNames(t, ctx, tx, storage.Query("ListSchedules"),
+			s.orgA, projectA, nil, nil, nil, "", nil, 100)
+		if len(names) != 1 || names[0] != "nightly-close-the-books" {
+			t.Fatalf("ListSchedules(org A) = %v, want exactly [nightly-close-the-books].\n"+
+				"A second name here is the soft-deleted row: `deleted_at IS NULL` is an APPLICATION predicate "+
+				"and no policy, constraint or role re-states it — if the clause goes, this is the only thing "+
+				"that notices.", names)
+		}
+
+		// The same statement, parameters naming the FOREIGN tenant, connection still declaring org A. The
+		// query's own predicate says orgB; the policy says orgA; the intersection must be empty.
+		foreign := scanNames(t, ctx, tx, storage.Query("ListSchedules"),
+			s.orgB, projectB, nil, nil, nil, "", nil, 100)
+		if len(foreign) != 0 {
+			t.Fatalf("ListSchedules asked for the FOREIGN tenant returned %v; RLS did not confine the shipped statement", foreign)
+		}
+
+		hooks := scanNames(t, ctx, tx, storage.Query("ListHooks"), s.orgA, projectA, nil, nil, nil, "", 100)
+		if len(hooks) != 1 || hooks[0] != "deny-external-writes" {
+			t.Fatalf("ListHooks(org A) = %v, want exactly [deny-external-writes]", hooks)
+		}
+		foreignHooks := scanNames(t, ctx, tx, storage.Query("ListHooks"), s.orgB, projectB, nil, nil, nil, "", 100)
+		if len(foreignHooks) != 0 {
+			t.Fatalf("ListHooks asked for the FOREIGN tenant returned %v; RLS did not confine the shipped statement", foreignHooks)
+		}
+
+		// The occurrence log is scoped THROUGH its parent schedule — schedule_occurrences carries no
+		// organization_id of its own — so the confinement being asked about here is a JOIN's, and its policy
+		// is the EXISTS sub-select 000029 wrote for exactly this shape. Own tenant: the one seeded row.
+		// Foreign tenant, with the foreign schedule's real id bound in: nothing.
+		if n := countRows(t, ctx, tx, storage.Query("ListScheduleOccurrences"),
+			s.scheduleOf(t, s.orgA), s.orgA, projectA, nil, nil, nil, "", 100); n != 1 {
+			t.Fatalf("ListScheduleOccurrences(org A) returned %d row(s), want the 1 seeded", n)
+		}
+		if n := countRows(t, ctx, tx, storage.Query("ListScheduleOccurrences"),
+			s.scheduleOf(t, s.orgB), s.orgB, projectB, nil, nil, nil, "", 100); n != 0 {
+			t.Fatalf("ListScheduleOccurrences on the FOREIGN tenant's schedule returned %d row(s); the parent join did not confine it", n)
+		}
+	})
+}
+
+// countRows runs a shipped statement and counts what comes back.
+func countRows(t *testing.T, ctx context.Context, tx pgx.Tx, query string, args ...any) int {
+	t.Helper()
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		t.Fatalf("run shipped statement: %v", err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate rows: %v", err)
+	}
+	return n
+}
+
+// projectOf reads a tenant's seeded project id as the owner.
+func (s *suite) projectOf(t *testing.T, org string) string {
+	t.Helper()
+	var id string
+	if err := s.owner.QueryRow(context.Background(), `SELECT id FROM projects WHERE organization_id = $1`, org).Scan(&id); err != nil {
+		t.Fatalf("read project of %s: %v", org, err)
+	}
+	return id
+}
+
+// scheduleOf reads a tenant's seeded LIVE schedule id as the owner.
+func (s *suite) scheduleOf(t *testing.T, org string) string {
+	t.Helper()
+	var id string
+	if err := s.owner.QueryRow(context.Background(),
+		`SELECT id FROM schedules WHERE organization_id = $1 AND deleted_at IS NULL`, org).Scan(&id); err != nil {
+		t.Fatalf("read schedule of %s: %v", org, err)
+	}
+	return id
+}
+
+// scanNames runs a shipped list statement and returns the `name` column of each row (the second column of
+// both ListSchedules' and ListHooks' projection).
+func scanNames(t *testing.T, ctx context.Context, tx pgx.Tx, query string, args ...any) []string {
+	t.Helper()
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		t.Fatalf("run shipped list statement: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			t.Fatalf("scan row: %v", err)
+		}
+		name, _ := values[1].(string)
+		out = append(out, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate rows: %v", err)
+	}
+	return out
 }
 
 // TestConnectionWithoutTenantContextSeesNoTenantRows proves the deny-by-default half: a runtime

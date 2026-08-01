@@ -40,7 +40,17 @@ var errBadCursor = errors.New("api: invalid pagination cursor")
 // statusFilterKinds are the list kinds that carry a lifecycle-state column ?status= can filter on. Every
 // other list rejects ?status= (a silently-dropped filter would let a client act on unfiltered rows). The
 // agent-revisions kind is profile-suffixed at the call site, so it is correctly absent here too.
-var statusFilterKinds = map[string]bool{"responses": true, "sessions": true}
+//
+// `schedules` joined in E29 T1 because THIS MAP'S OWN DEFINING SENTENCE — the one above — already described
+// it: schedules.status is a lifecycle column with a CHECK of exactly three values (000022:48,
+// 'active' | 'paused' | 'failed'), so the rule contained schedules while the membership did not. A paused
+// schedule is the single thing an operator filters a schedule list for; a schedule that stopped firing and
+// a schedule that never should have are the same row until this parameter separates them.
+//
+// Membership only says the parameter is ADMITTED for a kind. Whether the VALUE names a real state is the
+// route's question and each route answers it (scheduleHandler.listSchedules) — because a value the column
+// cannot hold must be a 400, not an empty 200 that reads as "none are in that state".
+var statusFilterKinds = map[string]bool{"responses": true, "sessions": true, "schedules": true}
 
 // ListCursor is a keyset position: the (created_at, id) of the last row a page returned. A list
 // orders by (created_at DESC, id DESC), so the next page is every row strictly before this point. It is

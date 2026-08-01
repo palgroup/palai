@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -22,7 +23,15 @@ type ScheduleAPI interface {
 	ReviseSchedule(ctx context.Context, org, project, id string, in automation.ScheduleInput) (int, bool, error)
 	SetPaused(ctx context.Context, org, project, id string, paused bool) (bool, error)
 	DeleteSchedule(ctx context.Context, org, project, id string) (bool, error)
-	ListOccurrences(ctx context.Context, org, project, id string, limit int) ([]automation.OccurrenceView, error)
+	// ListSchedules is the E29 T1 read side. Until it landed, a schedule could be found again only by an id
+	// its creator kept — and a schedule is the one object in this tree that fires on a wall clock with
+	// nobody watching, so the id outliving the terminal that printed it is the normal case, not the edge.
+	// status filters the lifecycle column; empty is unfiltered.
+	ListSchedules(ctx context.Context, org, project string, w automation.ListWindow, status string) ([]automation.ScheduleView, error)
+	// ListOccurrences takes a WINDOW rather than a bare limit (E29 T1). The bare limit was always passed as
+	// 0, the store clamped 0 to 100, and the response envelope had no has_more — so the hundred-and-first
+	// occurrence of a per-minute schedule was indistinguishable from no hundred-and-first occurrence.
+	ListOccurrences(ctx context.Context, org, project, id string, w automation.ListWindow) ([]automation.OccurrenceView, error)
 }
 
 type scheduleHandler struct {
@@ -172,22 +181,120 @@ func (h *scheduleHandler) deleteSchedule(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// listOccurrences returns a schedule's occurrences newest-first (GET /v1/schedules/{schedule_id}/occurrences).
+// listSchedules returns a tenant-scoped page of schedules (GET /v1/schedules), confined by RLS, in the
+// shared page envelope. ?status= filters the lifecycle column; cursor + created_at bounds otherwise.
+//
+// IT IS NOT A ListView. The sibling automation family (triggers) is already on beginList/renderPage in this
+// same package, and a schedule collection grows without bound — one per cadence an operator ever wanted —
+// whereas ListView's un-paginated envelope is for the small fixed collections (model routes) it was written
+// for. An unbounded collection in an envelope that cannot say "there is more" is exactly the defect the
+// occurrence log below carried.
+func (h *scheduleHandler) listSchedules(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorize(w, r)
+	if !ok {
+		return
+	}
+	q, ok := beginList(w, r, "schedules", scope)
+	if !ok {
+		return
+	}
+	// The VALUE of ?status= is validated here, at the edge. beginList only decides whether this KIND may
+	// carry the parameter at all; whether `banana` is a state is this route's question, and answering it
+	// with an empty 200 would tell a client "none are banana" when the truth is "banana is not a state".
+	// The column's CHECK constraint stays the last line of defence rather than the first.
+	if q.Status != "" && !automation.KnownScheduleStatus(q.Status) {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request",
+			"status must be one of "+strings.Join(automation.ScheduleStatuses, ", "))
+		return
+	}
+	views, err := h.schedules.ListSchedules(r.Context(), scope.Organization, scope.Project, listWindow(q), q.Status)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	rows := make([]ListRow, 0, len(views))
+	for _, view := range views {
+		// The row body is ScheduleView itself — the SAME projection GET /v1/schedules/{id} returns. Building
+		// a leaner map here is how a list row and a singular read start disagreeing, and a screen that has
+		// to code against two shapes reads one of them wrong.
+		body, _ := json.Marshal(view)
+		rows = append(rows, ListRow{ID: view.ID, CreatedAt: view.CreatedAt, Body: body})
+	}
+	renderPage(w, r, "schedules", scope, rows, q.Limit)
+}
+
+// listOccurrences returns a page of a schedule's occurrences newest-first
+// (GET /v1/schedules/{schedule_id}/occurrences), in the shared page envelope.
+//
+// IT USED TO ANSWER OUTSIDE THAT ENVELOPE: `{"occurrences": [...]}`, with the store's limit hard-coded to 0
+// and clamped to 100. No data, no has_more, no next_cursor — so a schedule firing every minute became
+// unreadable after 100 minutes and said nothing about it. A truncation a client cannot detect is a lie the
+// client repeats.
+//
+// The keyset column is planned_at rather than created_at (the occurrence's own order is the order it was
+// PLANNED in), so the shared cursor's position carries the planned instant. The created_at bounds still
+// mean created_at — see the query.
+// IT IS NOT `provision`-GATED, AND THE TWO NEW LISTS BESIDE IT ARE. That asymmetry is not an oversight and
+// it cost a revert to get right: this route SHIPPED in E11 with no capability gate, and adding one now is a
+// contract change — a key with a narrowed scope set that reads this log today would start receiving 403.
+// The gate belongs on routes that did not exist yesterday, which is exactly the line the E25 T7 precedent
+// draws and which listSchedules' own comment cites. "In practice almost every key has an empty scope set
+// and would not notice" is the reasoning that makes a silent contract change, so it is not the reasoning
+// used. Pinned by TestTheShippedOccurrenceLogIsNotRetroGated.
 func (h *scheduleHandler) listOccurrences(w http.ResponseWriter, r *http.Request) {
 	scope, ok := middleware.ScopeFrom(r.Context())
 	if !ok {
 		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	occs, err := h.schedules.ListOccurrences(r.Context(), scope.Organization, scope.Project, r.PathValue("schedule_id"), 0)
+	q, ok := beginList(w, r, "schedule_occurrences", scope)
+	if !ok {
+		return
+	}
+	occs, err := h.schedules.ListOccurrences(r.Context(), scope.Organization, scope.Project, r.PathValue("schedule_id"), listWindow(q))
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
 	}
-	if occs == nil {
-		occs = []automation.OccurrenceView{}
+	rows := make([]ListRow, 0, len(occs))
+	for _, occ := range occs {
+		body, _ := json.Marshal(occ)
+		rows = append(rows, ListRow{ID: occ.OccurrenceID, CreatedAt: occ.PlannedAt, Body: body})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"occurrences": occs})
+	renderPage(w, r, "schedule_occurrences", scope, rows, q.Limit)
+}
+
+// listWindow maps the shared parse onto the automation store's window, over-fetching by one so renderPage
+// can detect a further page without a second round trip (api/pagination.go's contract).
+func listWindow(q ListQuery) automation.ListWindow {
+	window := automation.ListWindow{CreatedGTE: q.CreatedGTE, CreatedLTE: q.CreatedLTE, Limit: q.Limit + 1}
+	if q.After != nil {
+		window.AfterCreatedAt = &q.After.CreatedAt
+		window.AfterID = q.After.ID
+	}
+	return window
+}
+
+// authorize resolves the verified scope and enforces the `provision` capability for the ONE route E29 T1
+// added to this family: GET /v1/schedules.
+//
+// THE ASYMMETRY WITH EVERY SHIPPED ROUTE IS DELIBERATE, for the reason hookHandler.authorize spells out and
+// the E25 T7 tool-revision reads set the precedent for: a new read answering what an operator provisioned
+// sits with the provisioned surfaces, and retro-gating create/pause/resume/delete/get-by-id — or the
+// occurrence log — would be a contract change rather than a read route.
+// HONEST CEILING: a key with an EMPTY scope set holds `provision` implicitly, so this separates a narrowed
+// key from a broad one and never an operator from an operator.
+func (h *scheduleHandler) authorize(w http.ResponseWriter, r *http.Request) (middleware.Scope, bool) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return middleware.Scope{}, false
+	}
+	if !scope.HasScope(provisionScope) {
+		middleware.WriteProblem(w, r, http.StatusForbidden, "insufficient_scope", "this API key lacks the provision capability")
+		return middleware.Scope{}, false
+	}
+	return scope, true
 }
 
 // decodeScheduleInput parses the request body into an automation.ScheduleInput, turning malformed JSON or
