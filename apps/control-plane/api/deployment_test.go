@@ -237,7 +237,7 @@ var credentialBearingEnv = []string{
 	"PALAI_SECRET_OPENAI_COMPATIBLE", // ditto
 	"PALAI_CONSOLE_PASSWORD_HASH",    // the console door's scrypt hash
 	"PALAI_API_KEY",                  // a bearer token
-	"PALAI_WORKER_ENROLL_TOKEN",      // a one-use enrolment credential
+	"PALAI_WORKER_ENROLL_TOKEN",      // fresh per boot, re-presentable within that boot
 }
 
 func TestNoCredentialBearingVariableIsCatalogued(t *testing.T) {
