@@ -117,7 +117,8 @@ the same numbers as before the port, down to the rgb triples the skip-link test 
 captured four values; adopting it would mean inventing twenty-five and re-measuring every pair against a ramp
 with no published contrast guarantees, where Radix's come with theirs. Its `rgba(255,255,255,0.10)` border is
 separately refused — 1.30:1 against SC 1.4.11's 3:1, and `contrast.spec.ts` throws on a translucent value by
-design. The **brand slot stays Palai's own** iris accent, built the same way.
+design. The brand slot was Palai's own iris accent, built the same way — **E30 removed the accent entirely**;
+see the next section.
 
 **What it did take:** the two-layer architecture, weights `400/500/580/600` (580 is a variable-font
 intermediate), a three-step **two-layer** shadow scale (near defines the edge, far defines height) with the
@@ -130,6 +131,77 @@ nothing collapsed there. What did become derived rather than declared: **eight h
 literals across the two schemes became two alphas** (the dark block now changes two numbers instead of
 re-stating two multi-layer values), three easing curves became one, and the dialog scrim — the last
 hard-coded colour in any rule body — is composed off layer 1.
+
+## The identity: colour is reserved for state (E30)
+
+This console had a competent structure and no point of view: a near-black background, one accent, a system
+font stack and a table — a look that would fit any product. Three decisions changed that, and the token file
+carries the argument for each in full.
+
+**1. There is no accent.** `grep -c 'var(--accent' app/globals.css` → **0**. Everything that used to wear iris
+— the primary button, the current nav item, the checkbox, the selected tab, the focus ring, the selected row —
+wears `--ink`, which is slate step 12 used as a fill. Chrome is monochrome. The only saturated colour in the
+product is **state**: the eight journal lanes `lib/timeline.ts` emits, plus red for a failure. Most consoles
+spend their accent on brand; this one spends it on work, so the only thing that catches the eye is something
+happening. The retired iris did not leave — it is now the `model_step` lane, which is to say the colour that
+meant "brand" now means "a model ran".
+
+| lane | hue | mark on page (light \| dark) | badge word on its fill |
+|---|---|---|---|
+| lifecycle | cyan | 4.65 \| 9.96 | 10.69 \| 11.47 |
+| message | blue | 4.65 \| 8.97 | 11.26 \| 11.37 |
+| model step | iris | 5.92 \| 8.97 | 11.85 \| 11.67 |
+| tool | jade | 4.54 \| 10.25 | 10.97 \| 11.29 |
+| approval | amber | 4.50 \| 12.32 | 10.47 \| 12.98 |
+| recovery | plum | 5.86 \| 9.03 | 11.04 \| 11.53 |
+| usage | bronze | 5.69 \| 9.69 | 10.74 \| 12.21 |
+| outcome | grass | 4.94 \| 9.93 | 10.85 \| 11.84 |
+| failure (override) | red | 5.08 \| 8.95 | — |
+
+`node scripts/measure-contrast.mjs` re-derives every number in that table **from `app/globals.css` itself** —
+73 pairs over both schemes, 0 under floor — so a step edited in the token file moves a printed number instead
+of leaving a stale comment behind. `tests/contrast.spec.ts` then measures the same hues **on the rendered
+page**, which is the leg that can fail for the reason that actually happens (an element that does not use the
+palette): `LANE PALETTE SWEEP — 87 mark(s)/badge(s) over 3 route(s), 8 lane(s), 0 under floor`.
+
+**Colour is never the carrier.** A lane's mark sits in its own horizontal channel, named in words with its
+count; a lane badge is a word with a 2px rule on its leading edge; a failure tick is full track height where a
+lane tick is two thirds of it. Take the hue away and every reading survives (SC 1.4.1).
+
+**2. The signature is the lane strip** (`components/LaneStrip.tsx`, `lib/strip.ts`, `app/globals.css` §11) —
+a horizontal time axis carrying typed ticks, at three scales, in one visual language:
+
+| scale | where | channels | ticks |
+|---|---|---|---|
+| `stave` | the session transcript | the lanes this journal used, in `LANE_ORDER` | one per frame, at its own timestamp |
+| `span` | a row of the sessions list | one | `first_activity_at → last_activity_at`, inside the window the whole list covers |
+| `now` | the overview | in flight / waiting on you / completed / ended badly | one per row, at its `created_at` |
+
+The row scale is a **span rather than lanes** because `GET /v1/sessions` carries no events — drawing lanes
+there would mean twenty journal streams. The visual language is identical and the encoding is what the data
+supports. Every tick is a row the API served: nothing is bucketed, interpolated or synthesised.
+
+**3. Typography is IBM Plex, self-hosted** (`public/fonts/`, SIL OFL 1.1, `public/fonts/OFL.txt`). Plex was
+drawn for a company whose products are machines, and its sans and mono are one design — which is this
+console's own split: sentences a person wrote, and readings a machine produced. The sans is the **variable**
+file, which makes `--font-weight-semibold: 580` a weight that renders rather than one that rounds.
+`--font-figure` is the mono, and it is used for **every** number including the 36px readouts on the overview:
+not one figure on this surface was authored by a person, and a monospaced digit is tabular by construction.
+Latin + latin-ext only, no italic; two files preloaded in `app/layout.tsx` (`crossOrigin=""` is required even
+same-origin, or the file is fetched twice and the preload warms nothing). Nothing is fetched from a third
+party — this product is installed on machines an operator owns, frequently without egress.
+
+**What was removed:** the wordmark's three-bar `<svg>`. Its own comment called it "a signal meter, which is
+what a control plane is looking at" — the right idea drawn in the wrong place, now that a real one carrying
+real frames sits twenty pixels below it. A console cannot have two signal meters where one is decoration.
+
+**Two things a designer should have fixed on sight, and did.** `— no revision pinned` was correct in every one
+of fifteen cells and, repeated down a column, was a wall saying nothing: the fact is about the *collection*,
+so the cell is an em dash with the explanation on `title` and `Panel`'s new `footnote` states it once with its
+count. And the `SCOPE` box — a bordered card of four unlabelled lines, first thing on every page — is now an
+unframed readout at the foot of the rail with each row's role in its gutter. Its "empty dropdown" was not a
+styling problem: `String(row.display_name ?? row.id)` keeps a `display_name` of `""`, because `""` is neither
+null nor undefined, so the fallback never fired.
 
 ## The primitive layer (`components/ui/`, E29)
 

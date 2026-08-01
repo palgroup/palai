@@ -39,7 +39,31 @@ function classify(value: string): { glyph: string; kind: BadgeTone } {
   if (v.includes("complete") || v.includes("approved") || v.includes("succeed") || v.includes("restored")) {
     return { glyph: "✔︎", kind: "ok" }; // heavy check, text presentation
   }
-  if (v.includes("fail") || v.includes("denied") || v.includes("error") || v.includes("lost")) {
+  // A SIXTH BAND, AND IT IS THE ONE THIS CLASSIFIER WAS MISSING (E30 visual identity).
+  //
+  // `active`, `running`, `provisioning` and `queued` matched NOTHING above and fell through to `neutral`, so
+  // on a list where nineteen of twenty sessions are active, the column that says what a session is DOING was
+  // twenty identical grey pills. That is the exact defect this console keeps finding in its own code — a
+  // signal that is shipped, rendered, and carries no information — and it survived because grey is not wrong,
+  // it is merely silent.
+  //
+  // The band is the LIFECYCLE lane's cyan (app/globals.css --live-bg), which is not a coincidence and not a
+  // free choice: a session that is open and a journal frame that moves a run's state machine are the same
+  // fact at two scales, so they wear one hue. `▸` is U+25B8, which carries no Unicode emoji property — the
+  // same requirement the variation selectors above exist to enforce, met here by picking a character that
+  // never needed one.
+  //
+  // ORDER MATTERS AND THIS BRANCH IS SECOND ON PURPOSE. It sits after the `complete` arm so that a status
+  // word carrying both (there is none today, and "queued_complete" would be one tomorrow) reads as finished
+  // rather than as running — an ending outranks a beginning.
+  if (v.includes("active") || v.includes("running") || v.includes("provision") || v.includes("queued") || v.includes("in_progress")) {
+    return { glyph: "▸", kind: "live" }; // black right-pointing small triangle, no emoji property
+  }
+  // `revoked` IS A DANGER AND IT WAS GREY. A key list where "live" and "revoked" are the same colour is a
+  // list where the one row that matters looks like the other nineteen — the same defect as `active` above,
+  // on the screen where the consequence is largest. It joins the danger arm rather than getting one of its
+  // own because a revoked credential and a failed run are the same kind of fact: this thing is over.
+  if (v.includes("fail") || v.includes("denied") || v.includes("error") || v.includes("lost") || v.includes("revoked")) {
     return { glyph: "✖︎", kind: "danger" }; // heavy multiply, text presentation
   }
   if (v.includes("wait") || v.includes("pending") || v.includes("recover") || v.includes("stream")) {
@@ -48,5 +72,26 @@ function classify(value: string): { glyph: string; kind: BadgeTone } {
   if (v.includes("cancel") || v.includes("expired") || v.includes("timed")) {
     return { glyph: "⊘", kind: "warn" }; // circled slash
   }
+  // PAUSED IS A HOLD AND IT IS THE SAME BAND AS A CANCELLATION, which is a claim worth being explicit about:
+  // both are a run that is NOT going to make progress until somebody does something, and amber is this
+  // console's word for that everywhere else (the approval lane, the "waiting on you" card). It was falling
+  // through to neutral, which said a paused session and a closed one are the same kind of thing.
+  // `‖` is U+2016 DOUBLE VERTICAL LINE, which carries no Unicode emoji property.
+  if (v.includes("pause") || v.includes("hold")) {
+    return { glyph: "‖", kind: "warn" };
+  }
   return { glyph: "•", kind: "neutral" }; // bullet
+}
+
+/**
+ * statusTone is classify's colour band alone, for the surfaces that need the BAND without the pill.
+ *
+ * It exists so a session's activity bar and its status pill cannot disagree. They did: the bar took its hue
+ * from a second table keyed on the same status word, so `paused` was amber on the strip and grey in the pill
+ * in the same table row — two answers to one question, from two places that each looked correct on its own.
+ * There is one classifier again, and app/sessions/page.tsx maps its six bands onto lanes rather than
+ * re-deciding what a word means.
+ */
+export function statusTone(value: string): BadgeTone {
+  return classify(value).kind;
 }
