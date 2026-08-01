@@ -241,6 +241,7 @@ export default function AgentsPage() {
       <Panel<AgentRow>
         title="Agents"
         testId="panel-agent-profiles"
+        pageTitle
         fetchPath="/agents"
         reloadKey={reloadKey}
         onRows={setRows}

@@ -144,6 +144,27 @@
   --bg-hover: hsl(var(--_sand-4));
   --bg-active: hsl(var(--_sand-5));
 
+  /* --- LAYER 2: THE RAIL, WHICH IS A SURFACE OF ITS OWN AND USED TO BE THE WRONG ONE (E31 shell parity).
+     The sidebar took --bg-subtle, i.e. one step LIGHTER than the page. Measured off the reference on
+     2026-08-01: its rail is `rgb(13,13,13)` and its page is `rgb(26,26,25)` — the rail is DARKER, and that
+     inversion is the single most visible thing about the two consoles side by side. A lighter rail reads as a
+     band laid ON the page; a darker one reads as the page sitting IN a frame, which is what the 12px radius
+     on <main> (see .content) then completes.
+
+     THE DARK VALUES ARE THE MEASUREMENT. Reference rail `rgb(13,13,13)`, ours `#111110` = `rgb(17,17,16)`;
+     reference active item `rgba(255,255,255,.05)` over that rail composites to `rgb(25,25,25)`, and sand-2 is
+     `rgb(25,25,24)` — one 8-bit level. THE HOVER AND ACTIVE STEPS ARE NOT BOTH ATTAINABLE: our ladder has no
+     step between sand-2 and sand-3, so hover takes the exact-match sand-2 and active takes sand-3
+     (`rgb(34,34,33)`), which is one step lighter than the reference's active. Recorded rather than rounded
+     away — the alternative was hover and active being the same fill.
+
+     THEY ARE OPAQUE TOKENS AND NOT `hsl(… / 5%)`, deliberately: tests/contrast.spec.ts's parseRGB REFUSES a
+     translucent colour ("alpha compositing depends on what is behind it"), so a rail painted in alpha is a
+     rail no measurement in this repository can judge. --- */
+  --bg-rail: hsl(var(--_sand-3));
+  --bg-rail-hover: hsl(var(--_sand-4));
+  --bg-rail-active: hsl(var(--_sand-5));
+
   /* --- LAYER 2: text --- */
   --text: hsl(var(--_sand-12));
   --text-muted: hsl(var(--_sand-11));
@@ -314,6 +335,21 @@
   --pill-h: 20px;
   --chip-h: 25px;
 
+  /* --- THE RAIL'S GEOMETRY, MEASURED OFF THE REFERENCE 2026-08-01 with getBoundingClientRect on all 32 of
+     its nav rows. design-reference/measured-2026-08-01.md reports a "40px item pitch" and that is the pitch
+     rather than the box: the item is 36px and the list's gap is 4px. Naming both is what stops the next
+     reader from setting a 40px height and getting a 44px pitch.
+
+     --rail-indent is 40px and it is NOT a decoration: 8px padding + a 20px icon + a 12px gap = 40, so a
+     child row with no icon and 40px of left padding lands its label at exactly the x of its parent's label.
+     That alignment is the whole reason a two-level rail reads as a tree rather than as two lists. --- */
+  --rail-w: 256px;
+  --rail-pad: 12px;
+  --rail-item-h: 36px;
+  --rail-item-gap: 4px;
+  --rail-icon: 20px;
+  --rail-indent: 40px;
+
   --border-w: 1px;
   --border-w-strong: 2px;
   --ring-w: 2px;
@@ -383,6 +419,12 @@
     --bg-inset: hsl(var(--_sand-3));
     --bg-hover: hsl(var(--_sand-4));
     --bg-active: hsl(var(--_sand-5));
+    /* THE RAIL GOES DOWN, NOT UP — see the :root block for the measurement. In light the rail is a step
+       darker than a near-white page; in dark it is the darkest step in the ladder, which is the one that
+       lands nearest the reference's `rgb(13,13,13)`. */
+    --bg-rail: hsl(var(--_sand-1));
+    --bg-rail-hover: hsl(var(--_sand-2));
+    --bg-rail-active: hsl(var(--_sand-3));
     --_iris-3: 237 38.4615% 20.3922%; /* #202248 */
     --_iris-6: 239.1304 36.1257% 37.451%; /* #3d3e82 */
     --_iris-9: 240 60% 59.8039%; /* #5b5bd6 */
@@ -545,12 +587,25 @@ h1.page-title {
   margin: 0;
 }
 
-/* The eyebrow names the sidebar SECTION this screen belongs to, above the title. It is the cheapest form of
-   "you are here" that does not cost a glance across the window. */
-.page-eyebrow {
-  margin-bottom: var(--space-2);
-  color: var(--accent-text);
+/* --- THE TITLE LINE: name, count badge, primary action — measured on the reference, where a list page reads
+   `API keys ⁴` with `+ Create key` at the far right of the same line. The count and the action are published
+   up from the page's own list; see components/Chrome.tsx's usePageList and components/Panel.tsx's
+   `pageTitle`. A page with neither renders exactly what it rendered before: a title. --- */
+.page-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
 }
+.page-action {
+  margin-left: auto;
+}
+
+/* THE EYEBROW IS GONE AND THIS RULE WITH IT (E31 shell parity). It printed the route's GROUP above the title
+   on every screen. Measured, the reference's page header is a title and one sentence and nothing else — and
+   with the rail now carrying a collapsible tree whose OPEN section is the same answer, the eyebrow was the
+   word "OPERATE" twice on one screen. It also broke outright the moment a group became a single top-level
+   link: the /usage header read "USAGE / Usage". components/Chrome.tsx's PageHeader carries the same note. */
 
 /* A PANEL HEADING IS h2 AND IT IS SIZED AS ONE LEVEL BELOW THE PAGE TITLE, not two. The design spec maps h2
    to 22px and h3 to 18px and gives the panel head an h3 — but every panel in this console is a <section>
@@ -646,22 +701,27 @@ th.num {
    permanent home, and takes the navigation out of the page's own vertical space. */
 .app-shell {
   display: grid;
-  grid-template-columns: 16rem minmax(0, 1fr);
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
   min-height: 100vh;
 }
 .app-shell-bare {
   grid-template-columns: minmax(0, 1fr);
 }
 
+/* THE RAIL IS DARKER THAN THE PAGE, and until now it was lighter. See --bg-rail for the measurement; the
+   short form is that the reference's rail is rgb(13,13,13) under a rgb(26,26,25) page, and ours was the
+   inversion of that on every screen. There is no border between them any more either: two surfaces two steps
+   apart do not need a line to say where one ends, and the line was doing the job the fill should do. */
 header.sidebar {
-  background: var(--bg-subtle);
-  border-right: var(--border-w) solid var(--border-hairline);
+  background: var(--bg-rail);
 }
 .sidebar-inner {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
-  padding: var(--space-5) var(--space-4) var(--space-7);
+  /* 12px all round — measured. 232px of usable width inside the 256px rail, which is what every row below
+     is sized against. */
+  padding: var(--rail-pad);
+  gap: var(--space-3);
   /* Its own scroll, so a long nav never pushes the page and never scrolls away from a long table. */
   position: sticky;
   top: 0;
@@ -680,7 +740,11 @@ header.sidebar {
   align-items: center;
   gap: var(--space-3);
   text-decoration: none;
-  padding: var(--space-1) var(--space-2);
+  /* 28px tall and flush with the rail's own padding: measured, the reference's wordmark row is 28px with the
+     panel-collapse control at its right edge. We have no collapse control, so the row is the mark alone. */
+  min-height: 28px;
+  padding: 0 var(--space-2);
+  margin-bottom: var(--space-2);
   border-radius: var(--radius-2);
 }
 .brand-mark {
@@ -688,9 +752,11 @@ header.sidebar {
   display: block;
 }
 .brand-word {
-  font-size: var(--font-size-6);
-  line-height: var(--line-height-6);
-  font-weight: var(--font-weight-bold);
+  /* 16px/16px w500 — measured on the reference's "Claude Console". Ours was 18px at weight 600, which is a
+     wordmark shouting over the navigation it sits on top of. */
+  font-size: var(--font-size-5);
+  line-height: var(--line-height-5);
+  font-weight: var(--font-weight-medium);
   /* Tighter than any step in the scale: a five-letter wordmark is set, not typeset. */
   letter-spacing: -0.03em;
   color: var(--text);
@@ -714,7 +780,11 @@ header.sidebar {
 
 /* THE MICRO LABEL, in one place. 11px, uppercase, tracked out and muted — it is the single cheapest move
    that stops a dense screen reading as a form, and it was already doing that job in three different rule
-   bodies (thead th, legend, dt) before anything named it. */
+   bodies (thead th, legend, dt) before anything named it.
+
+   IT IS NO LONGER USED IN THE RAIL. The nav's four group labels were micro-labels — 11px uppercase tracked —
+   and the reference's are 14px sentence case at the same size as the rows under them. Three shouting devices
+   on a word whose only job is to name a section is what made the menu read as a form's fieldset legend. */
 .micro-label {
   margin: 0;
   font-size: var(--font-size-1);
@@ -725,124 +795,349 @@ header.sidebar {
   color: var(--text-muted);
 }
 
-/* THE SCOPE READOUT, AT THE FOOT OF THE RAIL AND WITHOUT A BOX (E30).
-   It was a bordered, rounded, filled card at the TOP of the sidebar holding four lines of small text with
-   nothing saying which line was an organisation and which was a project — so the first thing on every page
-   in this console was a box that read as broken. Three changes, one idea: it sits at the foot, because a
-   standing readout is not a starting point; it has no frame, because a card around a permanent fact is a
-   card that can never be dismissed; and each row names its own ROLE in a gutter, which is the difference
-   between a readout and a stack.
+/* --- THE WORKSPACE PICKER, AT THE TOP OF THE RAIL (E31 shell parity). It was a four-line "Scope" readout in
+   a box at the FOOT; measured, the reference puts a workspace control directly under its wordmark and its
+   account card at the foot, and this console's two facts (project, organisation) map onto those two ends
+   exactly. h32, radius 8, full rail width. --- */
+.rail-workspace {
+  margin-bottom: var(--space-1);
+}
+.rail-workspace .ui-select-trigger,
+.workspace-static {
+  width: 100%;
+  max-width: none;
+  height: var(--control-h);
+  border-radius: var(--radius-button);
+}
+.workspace-static {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-3);
+  background: var(--bg-rail-hover);
+  color: var(--text);
+  font-size: var(--font-size-4);
+  min-width: 0;
+}
+/* The mark is a 12px square in the accent, not a glyph: it says "this is a scope" without adding a fifth
+   icon vocabulary to the rail, and it is aria-hidden so nothing reads it out. */
+.workspace-mark {
+  flex: none;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: var(--radius-1);
+  background: var(--accent-solid);
+}
+.workspace-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
-   `margin-top: auto` needs the rail to be at least a screen tall to have spare space to push into, hence the
-   min-height on .sidebar-inner — undone at the mobile breakpoint, where the rail is a wrapping header and
-   there is no foot to sit at. */
-.scope {
-  margin-top: auto;
-  padding-top: var(--space-5);
+/* --- THE ⌘K ROW. It opens a real navigator over lib/routes.ts; components/Chrome.tsx's CommandSearch says
+   why a row that looked like this and did nothing would have been the worst thing on the screen.
+
+   IT CARRIES --border-control AND THE REFERENCE'S DOES NOT, and that is a measured refusal rather than an
+   oversight: theirs is a `rgba(255,255,255,0.05)` fill with no border, which is 1.06:1 against its rail —
+   under SC 1.4.11's 3:1 — and tests/contrast.spec.ts scores every <button> in this console at 3:1 or fails.
+   components/ui/Button.tsx records the same finding for the reference's ghost buttons. So it takes the fill
+   AND a boundary; it reads as a field, which is what it is. --- */
+.rail-search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  height: var(--control-h);
+  padding: 0 var(--space-3);
+  margin-bottom: var(--space-2);
+  border-radius: var(--radius-button);
+  background: var(--bg-rail-hover);
+  border: var(--border-w) solid var(--border-control);
+  color: var(--text-muted);
+  font-weight: var(--font-weight-regular);
+  text-align: left;
+}
+.rail-search:hover:not(:disabled) {
+  background: var(--bg-rail-active);
+  border-color: var(--border-control-hover);
+}
+.rail-search-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-search-keys {
+  display: flex;
+  flex: none;
+  gap: var(--space-1);
+}
+/* 22x22, 12px, radius 4 — measured on the reference's two chips. `kbd` inherits the code font and the inset
+   fill from §4; what is set here is the shape. */
+.rail-search-keys kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-1);
+  font-size: var(--font-size-2);
+  background: var(--bg-rail-active);
+  color: var(--text-muted);
+}
+
+/* --- THE NAV ------------------------------------------------------------------------------------------
+   One vocabulary, `.rail-item`, for every row in the rail: a top-level link, a group header, a child link,
+   the Documentation link. They are the same 36px box with the same padding and the same radius, and the ONLY
+   things that vary are the weight and whether an icon or an indent occupies the first 40px. That is what the
+   reference does and it is why its rail reads as one object. --- */
+.rail-nav {
+  flex: 1;
+  min-height: 0;
+}
+.rail-list,
+.rail-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  /* 4px between rows over a 36px row = the 40px pitch the reference measures at. */
+  gap: var(--rail-item-gap);
+}
+.rail-group ul {
+  margin-top: var(--rail-item-gap);
+}
+.rail-group + .rail-group,
+.rail-list > li + li {
+  margin-top: 0;
+}
+
+.rail-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-height: var(--rail-item-h);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-button);
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: var(--font-size-4);
+  line-height: var(--line-height-3);
+  /* MEASURED, AND THE DOC HAS IT WRONG. design-reference/measured-2026-08-01.md §1 prints every item at
+     w400; on the live page a top-level link and a group header are w500 and only a CHILD is w400. Rendering
+     all three the same flattens exactly the hierarchy the grouping was added to create. */
+  font-weight: var(--font-weight-medium);
+  transition: background var(--duration-1) var(--ease), color var(--duration-1) var(--ease);
+}
+/* A CHILD IS w400 AND INDENTED BY EXACTLY THE ICON COLUMN. See --rail-indent: 8 + 20 + 12 = 40, so the
+   child's label starts at the same x as its parent's label. No icon, no guide line, no second colour — the
+   alignment is the structure. */
+.rail-item[data-depth="2"] {
+  padding-left: var(--rail-indent);
+  font-weight: var(--font-weight-regular);
+}
+.rail-item:hover {
+  background: var(--bg-rail-hover);
+  color: var(--text);
+}
+/* THE CURRENT PAGE: a fill and full-strength text, which is what the reference does and all it does.
+   `aria-current` is the machine-readable half — it is what a screen reader announces — and the fill is a
+   LUMINANCE difference rather than a hue one, so it survives greyscale and every form of colour blindness.
+   That is why the accent block and the 2px accent rail this console used to draw are both gone: three marks
+   where one carries, in a colour that made a selected menu row look like a control. */
+.rail-item[aria-current="page"] {
+  background: var(--bg-rail-active);
+  color: var(--text);
+}
+.rail-icon {
+  flex: none;
+  width: var(--rail-icon);
+  height: var(--rail-icon);
+  color: var(--text-muted);
+}
+.rail-item:hover .rail-icon,
+.rail-item[aria-current="page"] .rail-icon {
+  color: inherit;
+}
+.rail-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-external {
+  flex: none;
+  color: var(--text-muted);
+}
+
+/* A GROUP IS A NATIVE <details>. components/Chrome.tsx carries the two reasons (it is the element for a
+   disclosure, and it is not a <button>, which matters for SC 1.4.11 — see there). What is needed here is
+   only to take the UA's marker off and put our own chevron on, because a disclosure with no visible
+   affordance is a disclosure nobody opens. */
+.rail-group > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.rail-group > summary::-webkit-details-marker {
+  display: none;
+}
+/* OPEN → w580. Measured: the reference thickens an OPEN group's label and leaves a closed one at w500, which
+   is the cheapest possible "this section is the one you are in" and costs no colour at all. 580 is a real
+   intermediate on a variable system font and rounds gracefully where there is none —
+   tests/contrast.spec.ts measures which of those happened and prints it. */
+.rail-group[open] > summary {
+  font-weight: var(--font-weight-semibold);
+}
+.rail-chevron {
+  flex: none;
+  color: var(--text-muted);
+  transition: transform var(--duration-1) var(--ease);
+}
+.rail-group[open] > summary .rail-chevron {
+  transform: rotate(180deg);
+}
+
+/* --- THE FOOT: Documentation, then the organisation card. Measured, that is the reference's own order and
+   its own placement; ours had a bordered "Scope" card here holding four lines of small text. --- */
+.rail-foot {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
   border-top: var(--border-w) solid var(--border-hairline);
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--rail-item-gap);
 }
-.scope-line {
-  display: grid;
-  grid-template-columns: 3.25rem minmax(0, 1fr);
-  align-items: baseline;
-  gap: 0 var(--space-2);
-  margin: 0;
+/* The card is 6px/8px padding around a 32px mark and two lines — measured. It is a <div> and not a button:
+   components/Chrome.tsx says why (there is no account menu to open). */
+.rail-org {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-button);
+  min-width: 0;
 }
-.scope-role {
-  font-size: var(--font-size-1);
-  line-height: var(--line-height-2);
-  letter-spacing: var(--letter-spacing-1);
-  text-transform: uppercase;
-  font-weight: var(--font-weight-semibold);
+.rail-org-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-2);
+  background: var(--bg-rail-hover);
   color: var(--text-muted);
 }
-.scope-name {
-  font-size: var(--font-size-3);
+.rail-org-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.rail-org-name {
+  font-size: var(--font-size-4);
   line-height: var(--line-height-3);
   font-weight: var(--font-weight-medium);
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-/* The id sits UNDER the name in the value column, never beside the role — an id is the same fact spelled for
-   a machine, so it is subordinate to the name rather than a third field. */
-.scope-id {
-  grid-column: 2;
+/* 12px/17px, measured. An id is the same fact spelled for a machine, so it is subordinate to the name. */
+.rail-org-sub {
   font-family: var(--font-mono);
   font-size: var(--font-size-2);
   line-height: var(--line-height-2);
   color: var(--text-muted);
-  overflow-wrap: anywhere;
-}
-.scope-select {
-  grid-column: 2;
-  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-nav[aria-label="Primary"] {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
+/* --- THE ⌘K NAVIGATOR'S BODY. It lives inside the shared .dialog surface (§8), so only its list is here. */
+.command-search input[type="search"] {
+  max-width: none;
 }
-.nav-group ul {
+.command-hits {
   list-style: none;
-  margin: var(--space-2) 0 0;
+  margin: var(--space-4) 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: var(--rail-item-gap);
+  max-height: 22rem;
+  overflow-y: auto;
 }
-.nav-group a {
-  display: flex;
-  align-items: center;
-  /* Comfortably over SC 2.5.8's 24px floor, and the row rhythm the tables use. */
-  min-height: var(--control-h);
-  padding: 0 var(--space-3);
+.command-hits a {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, max-content);
+  gap: 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-2);
-  color: var(--text-muted);
   text-decoration: none;
-  transition: background var(--duration-1) var(--ease), color var(--duration-1) var(--ease);
+  color: var(--text);
 }
-.nav-group a:hover {
+.command-hits a:hover {
   background: var(--bg-hover);
-  color: var(--text);
 }
-/* THE CURRENT PAGE CARRIES THREE MARKS AND ONLY ONE OF THEM IS COLOUR: aria-current is what a screen reader
-   announces, the weight is legible without colour vision, and the inset rail is a shape. Remove the hue and
-   the current item is still the current item. */
-.nav-group a[aria-current="page"] {
-  color: var(--text);
+.command-hit-label {
   font-weight: var(--font-weight-medium);
-  background: var(--accent-bg);
-  box-shadow: inset var(--border-w-strong) 0 0 var(--accent-solid);
+}
+.command-hit-group {
+  font-size: var(--font-size-2);
+  color: var(--text-muted);
+}
+/* The lead is what makes this searchable by intent rather than by our nouns, so it is shown rather than only
+   matched — a result list that hides the text it matched on looks like it matched at random. */
+.command-hit-lead {
+  grid-column: 1 / -1;
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-2);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .content {
-  /* 78rem inside a 16rem rail: the widest table here (the usage ledger) fits, and prose stops before the
-     line length at which an operator loses the start of the sentence. */
-  max-width: 78rem;
+  /* THE 78rem CAP IS GONE, and removing it is what makes the fill above visible at all. A centred 78rem
+     column inside a 92rem cell leaves a gutter of RAIL colour down both sides of the page — so the "page on
+     a rail" the radius draws had a 7rem moat around it, and the table was cut short of the window on a wide
+     screen for no reason. Measured: the reference's main region is the whole cell, padded 24px, with no cap;
+     its Sessions table is 1448px wide in a 1472px region.
+     PROSE IS STILL CAPPED, one level down and where it belongs — `.page-lead` carries `max-width: 62ch` and
+     `.muted` carries 78ch. A cap on the CONTAINER capped the tables too, which was the wrong unit for both. */
   min-width: 0;
   width: 100%;
-  margin: 0 auto;
-  padding: var(--space-7) var(--space-7) var(--space-9);
+  /* 24px, measured: the reference's h1 sits at x=280 in a main region starting at 256. Ours was 32px. */
+  padding: var(--space-6) var(--space-6) var(--space-9);
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
+  /* THE PAGE IS A PANEL ON THE RAIL — measured, `border-radius: 12px 0 0 12px` on the reference's main
+     region over a darker rail. It is what makes the rail read as behind the page. `background` has to be
+     stated for the radius to be visible at all, since the rail is now a different colour underneath. */
+  background: var(--bg-page);
+  border-radius: var(--radius-4) 0 0 var(--radius-4);
 }
+/* The front door is the one page that IS a centred column: one field, one button, no table to widen for.
+   `margin: 0 auto` is stated here because `.content` no longer centres anything — see its own note. */
 .content-bare {
   max-width: 32rem;
+  margin: 0 auto;
   padding-top: var(--space-9);
+  border-radius: 0;
 }
 
 /* UNDER 64rem THE RAIL BECOMES A HEADER, because a 16rem column on a 40rem window is half the screen. The
-   groups stay named and stay in order; they lay out in a wrapping row instead of a column. */
+   groups stay named, stay collapsible and stay in order; they lay out in a wrapping row instead of a column,
+   and the two ends of the rail (workspace, org card) follow the nav rather than pinning to a foot that no
+   longer exists. */
 @media (max-width: 64rem) {
   .app-shell {
     grid-template-columns: minmax(0, 1fr);
   }
   header.sidebar {
-    border-right: none;
     border-bottom: var(--border-w) solid var(--border-hairline);
   }
   .sidebar-inner {
@@ -850,25 +1145,26 @@ nav[aria-label="Primary"] {
     min-height: 0;
     max-height: none;
     overflow-y: visible;
-    gap: var(--space-4);
     padding: var(--space-4) var(--space-5);
   }
-  nav[aria-label="Primary"] {
+  .rail-list {
     flex-direction: row;
     flex-wrap: wrap;
-    gap: var(--space-3) var(--space-6);
+    gap: var(--space-3);
   }
-  .nav-group ul {
+  .rail-group ul {
     flex-direction: row;
     flex-wrap: wrap;
-    gap: var(--space-1);
   }
-  /* No foot to sit at when the rail is a wrapping header, so the readout simply follows the nav. */
-  .scope {
-    margin-top: 0;
+  .rail-foot {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-top: var(--space-2);
   }
   .content {
     padding: var(--space-6) var(--space-5) var(--space-8);
+    border-radius: 0;
   }
 }
 
@@ -1015,6 +1311,54 @@ details.notes > :last-child {
   flex-basis: 100%;
   margin: 0;
   text-align: right;
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-2);
+  color: var(--text-muted);
+}
+
+/* --- THE PAGE'S OWN LIST (E31 shell parity). `pageTitle` panels draw no <h2> — the page's <h1> already
+   says the word — so their head is the toolbar alone and it sits directly under the lead, exactly where the
+   reference's search-and-filters row sits (measured: its h1 at y=24, its toolbar row at y=96, its table at
+   y=144). `margin-left: auto` on `.panel-tools` would push a lone toolbar to the right edge, which is why it
+   is unset here: the filters start at the left margin, under the sentence they narrow. --- */
+.panel-head[data-page-title="true"] {
+  margin-bottom: 0;
+}
+.panel-head[data-page-title="true"] > .panel-tools {
+  margin-left: 0;
+  width: 100%;
+}
+/* The scope note goes back under the row rather than right-aligned against nothing. */
+.panel-head[data-page-title="true"] .panel-tools-note {
+  text-align: left;
+}
+
+/* --- THE PAGER: two 32x32 arrows at the bottom LEFT, measured off the reference's own list footer, with
+   the truncation sentence beside them. It replaces a "Load more" button that appended — see
+   components/Panel.tsx for why the backward arrow is a REPLAY of a forward request and not a `?before=`.
+
+   THE ARROWS CARRY --border-control like every other button in this console; the reference's are borderless,
+   and components/ui/Button.tsx records the measurement that forbids that here (a borderless, unfilled button
+   scores 0 against SC 1.4.11's 3:1 and reddens tests/contrast.spec.ts). --- */
+.pager {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+}
+.pager-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-h);
+  height: var(--control-h);
+  padding: 0;
+  border-radius: var(--radius-button);
+  font-size: var(--font-size-5);
+  line-height: 1;
+}
+.pager-note {
+  margin: 0;
   font-size: var(--font-size-2);
   line-height: var(--line-height-2);
   color: var(--text-muted);

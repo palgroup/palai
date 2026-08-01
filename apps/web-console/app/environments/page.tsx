@@ -207,6 +207,7 @@ export default function EnvironmentsPage() {
       <Panel<EnvironmentRow>
         title="Environments"
         testId="panel-environments"
+        pageTitle
         fetchPath="/environments"
         reloadKey={reloadKey}
         onRows={setEnvironments}

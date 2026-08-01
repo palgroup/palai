@@ -147,6 +147,11 @@ export const FORM_DIALOGS: { route: string; open: string; dialog: string; label:
  * component the tree is being told to use.
  */
 export const PRIMITIVE_DIALOGS: { route: string; open: string; dialog: string; label: string }[] = [
+  // THE ⌘K NAVIGATOR (E31 shell parity), and it is the first row here that belongs to the SHELL rather than
+  // to a route. Its `route` is "/" only because the sweeps need somewhere to open it from; the control is in
+  // the rail and is therefore on all fifteen. That asymmetry is worth stating: a shell dialog scanned on one
+  // route is scanned everywhere, while a route dialog scanned on the wrong route is scanned nowhere.
+  { route: "/", open: "command-search-open", dialog: "command-search-dialog", label: "Search console" },
   { route: "/tools", open: "catalogue-open", dialog: "catalogue-dialog", label: "Known MCP servers" },
   // Opening a template dialog needs a CARD, so the trigger is one template's own button rather than a
   // generic "open" — the gallery has no single opener and inventing one for the sweep would be a control

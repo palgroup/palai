@@ -23,15 +23,37 @@
  * scans rather than reads.
  *
  * The grouping answers "what am I doing", and it is deliberately a VERB per group rather than a noun: you
- * BUILD the things a run needs, you OPERATE the runs, you GOVERN what they may spend and reach. "Overview"
- * is its own group of one because a dashboard is not a peer of the screens it summarises.
+ * BUILD the things a run needs, you OPERATE the runs, you MANAGE what they may spend and reach.
+ *
+ * TWO GROUPS ARE NOT GROUPS, AND THAT IS MEASURED RATHER THAN A TASTE (E31 shell parity). Read off the
+ * reference console's own rail on 2026-08-01: it opens with TWO top-level links — Dashboard and API keys —
+ * and only then five collapsible sections, and NONE of its five holds fewer than two rows. A section header
+ * over one row is a word that adds a line and says nothing, which is precisely the complaint the owner made
+ * about this nav ("hiç bir şey anlaşılmıyor menülerden"). So Overview and Usage are `collapsible: false`:
+ * they render as one link each, at the top, with no header above them.
+ *
+ * "Govern" WAS THE FOURTH GROUP AND IT HELD FIVE THINGS THAT ARE TWO KINDS. Usage is what has been SPENT;
+ * Policy & keys, Model wiring, Deployment and Capabilities are how this deployment is CONFIGURED. A reader
+ * looking for a spend figure had to know that "Govern" contained it. Usage is now the second top-level link
+ * — the reference gives that slot to API keys for the same reason, it is the second-most-visited screen and
+ * not a peer of the config screens — and the remaining four are "Manage".
+ *
+ * CAPABILITIES MOVED OUT OF ANALYTICS AND INTO MANAGE. It is not a measurement of anything: it is what this
+ * deployment advertises and at which tier, which is the same KIND of fact as Deployment's "what it is
+ * running with". They are siblings and now sit beside each other.
  *
  * IT IS ORDERED, AND THE ORDER IS THE NAV'S. A route naming a group that is not in this list would be
  * unreachable in the sidebar while still being scanned by axe — an unlinked page, which is half of the hole
  * this file exists to close — so components/Chrome.tsx asserts the partition covers every route.
  */
-export const NAV_GROUPS = ["Overview", "Build", "Operate", "Govern"] as const;
-export type NavGroup = (typeof NAV_GROUPS)[number];
+export const NAV_GROUPS = [
+  { name: "Overview", collapsible: false },
+  { name: "Usage", collapsible: false },
+  { name: "Build", collapsible: true },
+  { name: "Operate", collapsible: true },
+  { name: "Manage", collapsible: true },
+] as const;
+export type NavGroup = (typeof NAV_GROUPS)[number]["name"];
 
 export interface ConsoleRoute {
   /** The browser path, exactly as the nav links it and the scan visits it. */
@@ -66,32 +88,11 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // as the overview's own registry strip; model connections, model routes and knowledge bases, which no spec
   // pins to this path, are on /registry where they belong.
   { path: "/", label: "Overview", group: "Overview", readyTestId: "panel-organizations", lead: "What this deployment is running right now — the scope you are in, what it holds, and what is waiting on you." },
-  // E29. FIRST IN "Operate", because a session is the thing every other row on this surface belongs to: a run
-  // has a session, a response has a session, an approval is raised inside one. Until now the console could
-  // list RESPONSES (/history) and had no screen for the container they live in, so "what has this deployment
-  // been asked to do" had no answer and "who asked it twice" had none either.
-  { path: "/sessions", label: "Sessions", group: "Operate", readyTestId: "panel-sessions", lead: "Every conversation this project has held, newest first — what it was called, what it ran, and what it cost." },
-  { path: "/runs", label: "Live runs", group: "Operate", readyTestId: "run-button", lead: "Start a run and watch it happen — the canonical event stream as it arrives, the approval it parks on, and whatever it leaves behind." },
-  // E25 T4. Its readiness signal is the LIST panel rather than a form, for the same reason "/" uses
-  // panel-organizations: the forms on this page render their final markup synchronously (no data feeds them
-  // except the environment picker, and BOTH of its states — a select, or the "create one first" note — are
-  // real states worth scanning), while the panel is the one part that can still be a spinner.
-  { path: "/environments", label: "Environments", group: "Build", readyTestId: "panel-environments", lead: "The named KEY=value sets an agent's shell commands run against. A value is written here and never read back." },
-  // E25 T5. The readiness signal is the list PANEL, and it is the honest one on both profiles: the fixture
-  // parks five gated calls while a compose stack can park none (DIV-UI-006), so on the real profile this panel
-  // renders its EMPTY state — which is a state worth scanning, because an empty queue plus the page's scope
-  // sentence is the difference between "nothing is waiting" and "nothing of this KIND is waiting".
-  { path: "/approvals", label: "Approvals", group: "Operate", readyTestId: "panel-approvals", lead: "Gated tool calls waiting for an answer. Read the arguments, then decide: the decision binds to the request hash the row carries and to nothing else." },
-  // E25 T6. The readiness signal is the LIST panel on both, for the same reason the two rows above use one:
-  // the forms render synchronously and the panel is the only part that can still be a spinner. Both
-  // collections are EMPTY on a bootstrap stack — nothing creates a repository binding or an agent without
-  // Slack — so on the real profile these scans cover the empty state, which is the state a first-day
-  // operator meets and the one the create forms sit above.
-  // THE LEAD IS UNCHANGED and that is deliberate: it already carries the ceiling in one sentence, which is
-  // what the page-parity pass wants a lead to do. The two paragraphs that stood under it moved to the
-  // controls they govern — the reachability note into the create dialog, the "cannot be changed" note onto
-  // the binding's own page, where an operator goes looking for the edit control that does not exist.
-  { path: "/repositories", label: "Repositories", group: "Build", readyTestId: "panel-repository-bindings", lead: "The repositories a coding run can attach a workspace to. Registering a binding checks nothing — the first thing that exercises one is a run." },
+  // O4/O5, THE READ HALF ONLY (the write half is E26). `panel-usage-meters` is the first of four panels and
+  // the one that can still be a spinner. All four are EMPTY on a fresh stack and that is the point of the
+  // scan: an empty metering screen is a rendered SENTENCE here, never a blank region (DIV-UI-002 measured
+  // how thin the real surface is; a console that answers thinness with whitespace is unreadable).
+  { path: "/usage", label: "Usage", group: "Usage", readyTestId: "panel-usage-meters", lead: "What has been spent in this scope and what caps it. This is a read surface: nothing on it sets, raises or removes a limit." },
   // `panel-agent-profiles`, NOT `panel-agents`: "/" already carries a panel by that name (it is where list
   // truncation is visible — pagination.spec.ts drives it), and two pages answering one testid is how a spec
   // ends up asserting against whichever page it happened to be on.
@@ -105,6 +106,32 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // connection without an operator), so on both profiles this scan covers the empty state — which is the
   // state a first-day operator meets, and the one the registration form sits above.
   { path: "/tools", label: "Tools", group: "Build", readyTestId: "panel-mcp-connections", lead: "What an upstream MCP server offers, and what this deployment lets a model actually call. Discovery leaves drafts; approving one is a publish, and pinning it into a set is what puts it in front of a model." },
+  // E25 T6. The readiness signal is the LIST panel on both, for the same reason the two rows above use one:
+  // the forms render synchronously and the panel is the only part that can still be a spinner. Both
+  // collections are EMPTY on a bootstrap stack — nothing creates a repository binding or an agent without
+  // Slack — so on the real profile these scans cover the empty state, which is the state a first-day
+  // operator meets and the one the create forms sit above.
+  // THE LEAD IS UNCHANGED and that is deliberate: it already carries the ceiling in one sentence, which is
+  // what the page-parity pass wants a lead to do. The two paragraphs that stood under it moved to the
+  // controls they govern — the reachability note into the create dialog, the "cannot be changed" note onto
+  // the binding's own page, where an operator goes looking for the edit control that does not exist.
+  { path: "/repositories", label: "Repositories", group: "Build", readyTestId: "panel-repository-bindings", lead: "The repositories a coding run can attach a workspace to. Registering a binding checks nothing — the first thing that exercises one is a run." },
+  // E25 T4. Its readiness signal is the LIST panel rather than a form, for the same reason "/" uses
+  // panel-organizations: the forms on this page render their final markup synchronously (no data feeds them
+  // except the environment picker, and BOTH of its states — a select, or the "create one first" note — are
+  // real states worth scanning), while the panel is the one part that can still be a spinner.
+  { path: "/environments", label: "Environments", group: "Build", readyTestId: "panel-environments", lead: "The named KEY=value sets an agent's shell commands run against. A value is written here and never read back." },
+  // E29. FIRST IN "Operate", because a session is the thing every other row on this surface belongs to: a run
+  // has a session, a response has a session, an approval is raised inside one. Until now the console could
+  // list RESPONSES (/history) and had no screen for the container they live in, so "what has this deployment
+  // been asked to do" had no answer and "who asked it twice" had none either.
+  { path: "/sessions", label: "Sessions", group: "Operate", readyTestId: "panel-sessions", lead: "Every conversation this project has held, newest first — what it was called, what it ran, and what it cost." },
+  { path: "/runs", label: "Live runs", group: "Operate", readyTestId: "run-button", lead: "Start a run and watch it happen — the canonical event stream as it arrives, the approval it parks on, and whatever it leaves behind." },
+  // E25 T5. The readiness signal is the list PANEL, and it is the honest one on both profiles: the fixture
+  // parks five gated calls while a compose stack can park none (DIV-UI-006), so on the real profile this panel
+  // renders its EMPTY state — which is a state worth scanning, because an empty queue plus the page's scope
+  // sentence is the difference between "nothing is waiting" and "nothing of this KIND is waiting".
+  { path: "/approvals", label: "Approvals", group: "Operate", readyTestId: "panel-approvals", lead: "Gated tool calls waiting for an answer. Read the arguments, then decide: the decision binds to the request hash the row carries and to nothing else." },
   // E25 T8 — THE OBSERVABILITY HALF, AND IT IS THREE ROUTES FOR SIX SCREENS (feature list §7 O1/O2/O4/O5/
   // O6/O9). §T8 says each screen adds a row here; three of the six cannot have a row of their own and that
   // is structural rather than a saving: O2 (a past run's event stream) and O6 (that run's artifacts) are
@@ -117,36 +144,17 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // whose console has never started a run answers GET /v1/responses with an empty page, so on the real
   // profile this scan covers the empty state — which is the state a first-day operator meets.
   { path: "/history", label: "Run history", group: "Operate", readyTestId: "panel-runs", lead: "Every run this project has started and what each one wrote — the event journal replayed from the record rather than remembered, and the files it produced." },
-  // O4/O5, THE READ HALF ONLY (the write half is E26). `panel-usage-meters` is the first of four panels and
-  // the one that can still be a spinner. All four are EMPTY on a fresh stack and that is the point of the
-  // scan: an empty metering screen is a rendered SENTENCE here, never a blank region (DIV-UI-002 measured
-  // how thin the real surface is; a console that answers thinness with whitespace is unreadable).
-  { path: "/usage", label: "Usage", group: "Govern", readyTestId: "panel-usage-meters", lead: "What has been spent in this scope and what caps it. This is a read surface: nothing on it sets, raises or removes a limit." },
-  // O9. The tiers are shown as GET /v1/capabilities returns them — no re-derivation, no prettifying, no
-  // console-side opinion about what "preview" ought to mean. `palai up` prints this to a terminal
-  // (up.go capabilityRows) and until now the console did not show it at all.
-  { path: "/capabilities", label: "Capabilities", group: "Govern", readyTestId: "panel-capabilities", lead: "What this deployment advertises to every client and at which tier — exactly as GET /v1/capabilities answers it, with no console-side opinion about what a tier ought to mean." },
-  // THE MACHINE'S OWN CONFIGURATION (machine-config). Beside /capabilities, which is its sibling: one says
-  // what this deployment advertises, the other says what it is running with. Measured on main at cf0efd63:
-  // compose.yaml sets 24 PALAI_* settings and ZERO of them were readable from any /v1 route, so this screen
-  // did not exist and could not have.
-  //
-  // "Deployment", NOT "Machine", although the owner's word was makine: /fleet is already the screen about
-  // machines (the runners a run is placed on), and two screens both called that is how an operator ends up
-  // on the wrong one. `panel-deployment-settings` is the one panel and the only thing here that can still
-  // be a spinner; the warnings above it render from the same fetch.
-  { path: "/deployment", label: "Deployment", group: "Govern", readyTestId: "panel-deployment-settings", lead: "What this deployment is actually running with — every setting of the control-plane process, what it uses when a setting is unset, and which of them a running stack cannot be told to change." },
-  // E28 T2. The readiness signal is the KEY panel rather than the policy form, for the reason /environments
-  // and /repositories use a list: the forms render their markup synchronously, and the panel is the one part
-  // that can still be a spinner. It is `panel-api-keys` specifically because that collection is non-empty on
-  // every stack — a bootstrap seeds the admin key — so the scan meets rendered rows on both profiles.
-  { path: "/policy", label: "Policy & keys", group: "Govern", readyTestId: "panel-api-keys", lead: "A project's whole configuration policy, and the keys that reach it. Saving here writes the policy document ENTIRELY — the five fields on this screen are what the project will have afterwards, and a value you cannot see is one you did not send." },
   // E28 T3. The readiness signal is the POOL panel — the first thing on the page, the only collection that is
   // non-empty on every stack (a tenant is seeded one pool at birth), and the one every section below it
   // depends on: the key panel picks from it and the machines carry its id. Every other panel here renders its
   // EMPTY state on a real stack, because nothing in the public API can enrol a machine (DIV-UI-009), and
   // those empty states are the fleet screen a first-day operator actually meets.
   { path: "/fleet", label: "Fleet", group: "Operate", readyTestId: "panel-runner-pools", lead: "The machines this deployment can place a run on: the pools they join, the keys that let them in, and the ones waiting to be admitted. A machine here runs a run's ENGINE — every tool still runs in the control plane's own process." },
+  // E28 T2. The readiness signal is the KEY panel rather than the policy form, for the reason /environments
+  // and /repositories use a list: the forms render their markup synchronously, and the panel is the one part
+  // that can still be a spinner. It is `panel-api-keys` specifically because that collection is non-empty on
+  // every stack — a bootstrap seeds the admin key — so the scan meets rendered rows on both profiles.
+  { path: "/policy", label: "Policy & keys", group: "Manage", readyTestId: "panel-api-keys", lead: "A project's whole configuration policy, and the keys that reach it. Saving here writes the policy document ENTIRELY — the five fields on this screen are what the project will have afterwards, and a value you cannot see is one you did not send." },
   // THE THREE REGISTRIES THAT CAME OFF "/" (console design pass). They are read-only projections of how a
   // model is reached, and they were the middle of a twelve-screen scroll on the landing page — which is
   // where a deployment's least-consulted configuration should not be. `panel-model-connections` is the
@@ -156,7 +164,21 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // and BOTH halves were wrong. The CLI half was false when it was written — there was no `palai model` verb
   // until E29 added one — and the read-surface half stopped being true the moment this screen grew a create
   // form. A lead that tells an operator a screen cannot do the thing they came to do is worse than no lead.
-  { path: "/registry", label: "Model wiring", group: "Govern", readyTestId: "panel-model-connections", lead: "How a model is reached from this deployment: the provider connections, the routes that name them, and the knowledge bases a run can retrieve from. Add an OpenAI, Anthropic or custom OpenAI-compatible connection here, and verify its credential against the endpoint before a run needs it." },
+  { path: "/registry", label: "Model wiring", group: "Manage", readyTestId: "panel-model-connections", lead: "How a model is reached from this deployment: the provider connections, the routes that name them, and the knowledge bases a run can retrieve from. Add an OpenAI, Anthropic or custom OpenAI-compatible connection here, and verify its credential against the endpoint before a run needs it." },
+  // THE MACHINE'S OWN CONFIGURATION (machine-config). Beside /capabilities, which is its sibling: one says
+  // what this deployment advertises, the other says what it is running with. Measured on main at cf0efd63:
+  // compose.yaml sets 24 PALAI_* settings and ZERO of them were readable from any /v1 route, so this screen
+  // did not exist and could not have.
+  //
+  // "Deployment", NOT "Machine", although the owner's word was makine: /fleet is already the screen about
+  // machines (the runners a run is placed on), and two screens both called that is how an operator ends up
+  // on the wrong one. `panel-deployment-settings` is the one panel and the only thing here that can still
+  // be a spinner; the warnings above it render from the same fetch.
+  { path: "/deployment", label: "Deployment", group: "Manage", readyTestId: "panel-deployment-settings", lead: "What this deployment is actually running with — every setting of the control-plane process, what it uses when a setting is unset, and which of them a running stack cannot be told to change." },
+  // O9. The tiers are shown as GET /v1/capabilities returns them — no re-derivation, no prettifying, no
+  // console-side opinion about what "preview" ought to mean. `palai up` prints this to a terminal
+  // (up.go capabilityRows) and until now the console did not show it at all.
+  { path: "/capabilities", label: "Capabilities", group: "Manage", readyTestId: "panel-capabilities", lead: "What this deployment advertises to every client and at which tier — exactly as GET /v1/capabilities answers it, with no console-side opinion about what a tier ought to mean." },
 ];
 
 /**

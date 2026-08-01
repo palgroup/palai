@@ -220,6 +220,7 @@ export default function RepositoriesPage() {
       <Panel<BindingRow>
         title="Repository bindings"
         testId="panel-repository-bindings"
+        pageTitle
         fetchPath="/repository-bindings"
         reloadKey={reloadKey}
         columns={columns}
