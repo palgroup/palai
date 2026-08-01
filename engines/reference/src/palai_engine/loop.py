@@ -88,6 +88,9 @@ class Loop:
         # Their child result answers the originating tool_call as a tool-role result, so the turn awaits
         # them alongside ordinary tools and no tool_call is left unanswered on a real provider.
         self._agent_children: dict[str, tuple[str, dict]] = {}
+        # The run's §22.7 output contract, seeded from run.start and None for a run that demands
+        # nothing (every run that does not opt in). _finish validates the final answer against it.
+        self._output_contract: dict | None = None
 
     def handle(self, frame: dict) -> list[dict]:
         type_ = frame.get("type")
@@ -132,6 +135,11 @@ class Loop:
     def _begin(self, frame: dict) -> list[dict]:
         data = frame.get("data") or {}
         self._delegations = list(data.get("delegations") or [])
+        # The run's §22.7 output contract, absent for every run that demands nothing. Captured on
+        # the loop rather than read from the frame at _finish because a restored run must keep it:
+        # a checkpoint that dropped the contract would resume a run whose answer is no longer
+        # checked against anything, which is precisely the defect this feature removes.
+        self._output_contract = data.get("output_contract") or None
         self.context.start(data)
         return self._request_model()
 
@@ -333,10 +341,15 @@ class Loop:
         return [offer, *self._request_model()]  # resume: next model request for the next step
 
     def _finish(self, data: dict, *, reply_to: str | None) -> list[dict]:
+        # VALIDATING_OUTPUT has named this boundary since the loop was written and, until
+        # 2026-08-01, nothing validated here beyond non-emptiness — the state was the name of a
+        # check that did not exist. The schema check below is what the name always claimed.
         self.state = State.VALIDATING_OUTPUT
         try:
             items = output.output_items(data)
+            output.validate_against_contract(self._output_contract, data.get("output"))
         except protocol.ProtocolError as exc:
+            self.log("output_rejected", code=exc.code, detail=exc.message)
             return [self._terminal("failed", reason=exc.code, reply_to=reply_to)]
         frames = [self.emitter.build("output.item", item, reply_to=reply_to) for item in items]
         frames.append(self._terminal("completed", output_value=data.get("output"), reply_to=reply_to))
@@ -361,6 +374,11 @@ class Loop:
             "pending_children": self._pending_children,
             # tuple -> list so it survives JSON; restore_state rebuilds the (call_id, spec) pair.
             "agent_children": {cid: [call_id, spec] for cid, (call_id, spec) in self._agent_children.items()},
+            # The output contract rides the checkpoint. A restore that dropped it would resume a run
+            # whose answer is no longer checked against the schema its caller demanded, and would
+            # terminate `completed` on prose — the exact defect §22.7 support exists to remove,
+            # reintroduced by a crash rather than by a missing writer.
+            "output_contract": self._output_contract,
             "context": self.context.capture(),
         }
 
@@ -376,6 +394,9 @@ class Loop:
         self._delegations_dispatched = state["delegations_dispatched"]
         self._pending_children = dict(state["pending_children"])
         self._agent_children = {cid: (pair[0], pair[1]) for cid, pair in state["agent_children"].items()}
+        # .get, not [], so a checkpoint written before 000052 restores as "demands nothing" rather
+        # than raising — which is exactly what those runs meant.
+        self._output_contract = state.get("output_contract")
         self.context.restore(state["context"])
 
     def _restore(self, frame: dict) -> list[dict]:

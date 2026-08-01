@@ -643,6 +643,10 @@ type AdmissionInput struct {
 	// Delegations is the root run's required-delegation JSON ({"emit":[...],"budget":N}) or nil,
 	// persisted on the run so the orchestrator seeds run.start (spec §25.18).
 	Delegations []byte
+	// OutputContract is the run's §22.7 output contract as canonical JSON, or nil when the request
+	// named no format. Persisted on the run because model dispatch and finalize both read it and
+	// neither holds the request body (migration 000052).
+	OutputContract []byte
 	// RepositoryBindingID / RepositoryRef carry the contracted `repository` field (spec §30.1, E09
 	// Task 10): when the binding is set, admission attaches a session-scoped coding workspace so the
 	// root run auto-provisions it. Empty leaves the response non-coding — the pre-E09 behaviour.
@@ -883,7 +887,7 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertRun"),
 		in.RunID, tenant.Organization, tenant.Project, sessionID, in.ResponseID, nullableJSON(in.Delegations),
-		nullableText(in.AgentRevisionID), nullableText(in.RunTemplateRevisionID)); err != nil {
+		nullableText(in.AgentRevisionID), nullableText(in.RunTemplateRevisionID), nullableJSON(in.OutputContract)); err != nil {
 		// The session already holds a non-terminal root run: one-active-root (spec §22.3). The
 		// partial unique index (runs_one_active_root_per_session) rejects the second root run at
 		// the DB, so a concurrent chain loses here rather than in an app-code check-then-insert

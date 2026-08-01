@@ -59,13 +59,17 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	// It is a pin on the CHAIN, not a claim that one epic owns one migration — E29 holds both 48 and 51,
 	// and the "one migration per epic" reasoning an earlier revision of this comment carried was never
 	// structural, only a property of the four epics that happened to need one each.
+	// AND IT IS ABOUT TO DO IT A THIRD TIME, ON 000052. The structured-output branch below and the
+	// `desired-config` branch both took 52 as the next contiguous number in their own trees, because
+	// each was cut when 51 was the tip. Whichever lands second renames — filename pair, `VALUES (52)`
+	// marker, embed var, and this assertion — and this test is what makes the rename finish.
 	head := migrations[len(migrations)-1]
-	if head.Version != 51 || head.Name != "model_connection_endpoint" {
-		t.Fatalf("chain head = %06d_%s, want 000051_model_connection_endpoint", head.Version, head.Name)
+	if head.Version != 52 || head.Name != "run_output_contract" {
+		t.Fatalf("chain head = %06d_%s, want 000052_run_output_contract", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 50 || penultimate.Name != "usage_step_attribution" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000050_usage_step_attribution", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 51 || penultimate.Name != "model_connection_endpoint" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000051_model_connection_endpoint", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

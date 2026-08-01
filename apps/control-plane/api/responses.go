@@ -14,6 +14,7 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/packages/contracts"
+	"github.com/palgroup/palai/packages/outputcontract"
 )
 
 const (
@@ -73,6 +74,14 @@ type AdmitRequest struct {
 	// Delegations is the root run's required-delegation JSON ({"emit":[...],"budget":N}) or nil
 	// (spec §25.18). Resolved from the raw body, it seeds the run.start delegations the engine emits.
 	Delegations []byte
+	// OutputContract is the run's resolved §22.7 output contract as canonical JSON
+	// ({"format":"json_schema","name":...,"schema":{...},"strict":bool}), or nil when the request
+	// named no format — which is every request that has ever been sent to this server.
+	//
+	// It is stored on the RUN rather than only carried in the request body because two later readers
+	// need it and neither has the body: model dispatch (which turns it into the provider's own
+	// constraint) and finalize (which checks the answer before the run may be called completed).
+	OutputContract []byte
 	// RepositoryBindingID / RepositoryRef carry the contracted `repository` field (spec §30.1, E09
 	// Task 10): resolved from the raw body like Delegations, they attach a session-scoped coding
 	// workspace the root run auto-provisions. Empty leaves the response non-coding.
@@ -219,6 +228,15 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 		templateRevisionID = *req.RunTemplateRevisionID
 	}
 
+	// The §22.7 output contract. validateCreate already refused anything unenforceable, so this
+	// parse cannot fail; the value is re-derived rather than threaded through so there is exactly
+	// one Parse in the request path and no chance of the check and the stored value disagreeing.
+	outputContract, err := resolveOutputContract(req.Output)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
 	hash, err := canonicalRequestHash(req)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
@@ -267,6 +285,7 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 		Body:                  body,
 		Store:                 store,
 		Delegations:           delegations,
+		OutputContract:        outputContract,
 		RepositoryBindingID:   bindingID,
 		RepositoryRef:         repositoryRef,
 		AgentRevisionID:       agentRevisionID,
@@ -488,6 +507,25 @@ func resolveRepository(raw []byte) (bindingID, ref string) {
 	return probe.Repository.BindingID, probe.Repository.Ref
 }
 
+// resolveOutputContract turns the request's `output` object into the canonical JSON stored on the
+// run, or nil when the request demands nothing. nil is the pre-existing shape of every run ever
+// created here, so a text run's stored row is byte-identical to what it was before §22.7 landed.
+func resolveOutputContract(raw map[string]any) ([]byte, error) {
+	contract, err := outputcontract.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	if !contract.Demanded() {
+		return nil, nil
+	}
+	return json.Marshal(map[string]any{
+		"format": contract.Format,
+		"name":   contract.Name,
+		"schema": contract.Schema,
+		"strict": contract.Strict,
+	})
+}
+
 // validateCreate enforces the two request invariants a malformed body can violate
 // before any operation runs, so they are 400 invalid_request and never cached
 // (spec §20.9 step 7). Full schema validation is a later task.
@@ -502,6 +540,14 @@ func validateCreate(req contracts.ResponseCreateRequest) error {
 	// revision carries identity, a template is profile-free, so one request cannot mean both.
 	if req.AgentRevisionID != nil && req.RunTemplateRevisionID != nil {
 		return errors.New("agent_revision_id and run_template_revision_id are mutually exclusive")
+	}
+	// The output contract (spec §22.7). Refused HERE, at admission, because a schema this server
+	// cannot enforce must never become a run: the alternative is the defect this whole change
+	// removes — a caller who believes a contract is in force receiving prose and a `completed`
+	// status. outputcontract.Parse is fail-closed, so every schema that survives this line is one
+	// the finalizer checks exactly.
+	if _, err := outputcontract.Parse(req.Output); err != nil {
+		return err
 	}
 	return nil
 }

@@ -79,16 +79,31 @@ func (s *Store) RunContext(ctx context.Context, runID string) (Tenant, string, s
 	return tenant, sessionID, responseID, state, input, nil
 }
 
-// RunDelegation reads a run's delegation context by primary key (spec §25.18): its depth and the
-// delegation JSON the orchestrator seeds into run.start (a root run's {"emit":[...]}) or routes a
-// child's own model/budget from ({"spec":{...}}). A plain run carries NULL delegation.
-func (s *Store) RunDelegation(ctx context.Context, runID string) (int, []byte, error) {
-	var depth int
-	var delegation []byte
-	if err := s.pool.QueryRow(ctx, storage.Query("RunDelegation"), runID).Scan(&depth, &delegation); err != nil {
-		return 0, nil, fmt.Errorf("read run delegation for %s: %w", runID, err)
+// RunContext is a run's own per-run execution context: the properties fixed at admission that the
+// orchestrator needs before it can dial an engine, and that live on the RUN rather than in resolved
+// config because they came from the request that created it.
+type RunContext struct {
+	// Depth is 0 for a root run, parent.depth+1 for a ChildRun (spec §25.18).
+	Depth int
+	// Delegation is the run's delegation JSON: a root run's {"emit":[...]} or a child's
+	// {"spec":{...}}. NULL on a plain run.
+	Delegation []byte
+	// OutputContract is the §22.7 contract the run's answer must satisfy, as canonical JSON, or nil
+	// when the request named no format (migration 000052). It is read HERE, once per attempt, and
+	// carried on the attempt state to its two readers — the model dispatcher, which turns it into
+	// the provider's own decoding constraint, and finalize, which checks the answer. One read means
+	// the document asked of the model and the document checked afterwards cannot differ.
+	OutputContract []byte
+}
+
+// RunContextFor reads a run's per-run execution context by primary key.
+func (s *Store) RunContextFor(ctx context.Context, runID string) (RunContext, error) {
+	var out RunContext
+	if err := s.pool.QueryRow(ctx, storage.Query("RunDelegation"), runID).
+		Scan(&out.Depth, &out.Delegation, &out.OutputContract); err != nil {
+		return RunContext{}, fmt.Errorf("read run context for %s: %w", runID, err)
 	}
-	return depth, delegation, nil
+	return out, nil
 }
 
 // ChildRunInput is the durable creation of one ChildRun (spec §25.18-19): a runs row carrying

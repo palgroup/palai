@@ -23,6 +23,7 @@ import (
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
+	"github.com/palgroup/palai/packages/outputcontract"
 	"github.com/palgroup/palai/packages/runner"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
@@ -274,6 +275,13 @@ type attemptState struct {
 	budgetBounded bool
 	childReserved int
 	childRunIDs   []string
+	// outputContract is the §22.7 contract this run's answer must satisfy, or the zero value when the
+	// request named no format — which is every run that does not opt in, and every run that existed
+	// before migration 000052. Read ONCE per attempt (RunContextFor) and used twice: model_dispatch
+	// turns it into the provider's own decoding constraint, and finalize checks the produced answer
+	// against it before the run may be called completed. Both readers share these bytes deliberately;
+	// two independent re-derivations are how "what we asked for" and "what we checked" drift apart.
+	outputContract outputcontract.Contract
 	// remoteChildren counts the delegations this attempt sent to REMOTE agents (E19 T5). A remote child
 	// takes no local ChildRun, so childRunIDs cannot count it — and an uncounted child escapes the fan-out
 	// bound entirely, which is why the gate reads fanoutUsed() rather than len(childRunIDs).
@@ -437,11 +445,22 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	// run seeds into run.start, its parent budget children intersect against, and — for a ChildRun
 	// — its own model and budget. A plain run carries none and behaves exactly as before. Read here
 	// (before the dial) because the ROOT-run workspace provisioning below is depth-gated.
-	depth, delegationRaw, err := o.spine.RunDelegation(ctx, string(attempt.RunID))
+	// It also carries the §22.7 output contract, read HERE rather than at each use so the document
+	// asked of the model and the document checked at finalize are provably the same bytes.
+	runCtx, err := o.spine.RunContextFor(ctx, string(attempt.RunID))
 	if err != nil {
-		return fmt.Errorf("read run delegation: %w", err)
+		return fmt.Errorf("read run context: %w", err)
 	}
+	depth, delegationRaw := runCtx.Depth, runCtx.Delegation
 	deleg := parseRunDelegation(delegationRaw)
+	outputContract, err := parseOutputContract(runCtx.OutputContract)
+	if err != nil {
+		// The row was written by resolveOutputContract from a contract that had already passed
+		// outputcontract.Parse, so a decode failure here means the stored bytes are not what this
+		// server wrote. Failing the attempt is the only honest response: proceeding would run the
+		// model with NO constraint while the caller's request said otherwise.
+		return fmt.Errorf("read run output contract: %w", err)
+	}
 
 	// Auto-provision the coding workspace for the ROOT run when the session has an attached binding
 	// (spec §29.7-30.3, E09 Task 10): resolve the binding, allocate the host dir, clone @ the ref under
@@ -512,6 +531,7 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	}
 
 	st.depth = depth
+	st.outputContract = outputContract
 	if deleg.Spec != nil {
 		st.childModel = deleg.Spec.Model
 		st.childBudget = deleg.Spec.Budget
@@ -566,6 +586,14 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	// safe boundary after its first model step. Config-driven, so a real single-step run delegates.
 	if delegations := deleg.emitFrames(); len(delegations) > 0 {
 		runStart["delegations"] = delegations
+	}
+	// Seed the §22.7 output contract. THIS IS THE WRITER for engine.schema.json's run.start
+	// data.output_contract, and engines/reference/src/palai_engine/loop.py:_finish is the reader:
+	// it validates the final answer against this schema and ends the run failed with
+	// schema_validation_failed rather than completed. Omitted entirely for a run that demands
+	// nothing, so a text run's run.start frame is BIT-IDENTICAL to the pre-§22.7 one.
+	if frame := outputContractFrame(st.outputContract); frame != nil {
+		runStart["output_contract"] = frame
 	}
 
 	// Recovery ladder rungs 2-4 (spec §26.3-26.4, E10 T4): with a durable checkpoint present, weigh
