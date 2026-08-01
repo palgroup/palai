@@ -313,8 +313,19 @@ func OpenPullRequest(ctx context.Context, client PullRequestClient, in OpenPRInp
 // carries it only in a one-shot Authorization header — never a log or the model context.
 //
 // ponytail: exercised deterministically against an httptest GitHub double (publish_github_test.go);
-// the real github.com round-trip is the gated live wave. Owner/repo come from the binding, not the
-// model.
+// the real github.com round-trip is the gated live wave.
+//
+// WHERE OWNER/REPO COME FROM, stated exactly, because this comment used to say "Owner/repo come from the
+// binding, not the model" and that was FALSE for every deployment — main.go built this client from
+// PALAI_GITHUB_REPO / PALAI_GIT_REPO, so one stack could open pull requests against exactly ONE repository
+// however many bindings it served. A comment asserting the property the code lacked, on the line a reader
+// would check it.
+//
+// Since 2026-08-01 it is true for a binding that carries its own connection_ref: that path builds this
+// client per publication from the binding's repository_identity (RepositoryPublisher.PRClientFor). It is
+// still the ENV VAR for a binding without one, which is the deployment-global path and unchanged. So the
+// honest sentence is: owner/repo come from the binding when the binding brought its own credential, and
+// from the deployment otherwise — never from the model, which is the half that was always true.
 type githubPRClient struct {
 	cfg   GitHubAppConfig
 	key   *rsa.PrivateKey
