@@ -199,7 +199,19 @@ func TestAnAllocationRootThatDoesNotExistIsRefusedBeforeAnyRead(t *testing.T) {
 // symlinks, so on macOS a /var workspace reports as /private/var. t.TempDir() gives exactly that shape,
 // which is why this test can tell the two-substitution version from the one-substitution one.
 func TestARefusalDoesNotCarryTheHostPathOffThisMachine(t *testing.T) {
-	root := realTempDir(t)
+	// THE ROOT IS t.TempDir() RATHER THAN realTempDir(), and that is the second half of the test.
+	// realTempDir pre-resolves the path, which makes the declared and the real root the same string and
+	// the alias case unreachable — MEASURED: with realTempDir, deleting the resolved-root substitution
+	// left this test GREEN. Production hands ExecEnv the DECLARED allocation path and NewWorkspaceFS
+	// EvalSymlinks's it, so on macOS a /var workspace reports every error path as /private/var.
+	root := t.TempDir()
+	real, rerr := filepath.EvalSymlinks(root)
+	if rerr != nil {
+		t.Fatalf("resolve temp dir: %v", rerr)
+	}
+	if real == root {
+		t.Skip("this platform's temp dir is not behind a symlink; the alias half is not measurable here")
+	}
 	_, err := FileTool().Exec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: root},
 		map[string]any{"op": "read", "path": "README"})
 	answer, ok := toolbroker.AsAnswer(err)
@@ -207,14 +219,22 @@ func TestARefusalDoesNotCarryTheHostPathOffThisMachine(t *testing.T) {
 		t.Fatalf("missing file = %v, want an answer", err)
 	}
 	msg := answer.Error()
-	if strings.Contains(msg, root) {
-		t.Fatalf("the refusal carries the declared host root:\n  %s", msg)
+	// THE ASSERTION IS "NO ABSOLUTE PATH SURVIVES", NOT "THESE TWO STRINGS ARE ABSENT", and the
+	// difference was measured rather than reasoned about. `/private/var/x` CONTAINS `/var/x`, so folding
+	// only the DECLARED root rewrites the message to `/private<workspace>/README` — which contains
+	// neither root as a substring, and a two-Contains version of this test therefore passed under the
+	// very perturbation it existed to catch. What actually holds after folding is that no token in the
+	// message begins with `/`: every path the model is shown is workspace-relative or starts at <workspace>.
+	for _, tok := range strings.FieldsFunc(msg, func(r rune) bool { return r == ' ' || r == '"' }) {
+		if strings.HasPrefix(tok, "/") {
+			t.Fatalf("the refusal still carries an absolute host path (%q):\n  %s", tok, msg)
+		}
 	}
-	if real, rerr := filepath.EvalSymlinks(root); rerr == nil && strings.Contains(msg, real) {
-		t.Fatalf("the refusal carries the RESOLVED host root (the /var -> /private/var alias):\n  %s", msg)
+	if strings.Contains(msg, root) || strings.Contains(msg, real) {
+		t.Fatalf("the refusal carries a host root verbatim:\n  %s", msg)
 	}
 	// Non-vacuity: the message still says what happened and still names the path the MODEL asked for,
-	// which is the whole reason to deliver it.
+	// which is the whole reason to deliver it rather than to swallow it.
 	if !strings.Contains(msg, "README") || !strings.Contains(msg, "no such file") {
 		t.Fatalf("the refusal was gutted rather than folded: %q", msg)
 	}
