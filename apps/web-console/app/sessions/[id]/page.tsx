@@ -4,7 +4,6 @@ import { usePathname, useParams, useRouter, useSearchParams } from "next/navigat
 import { Fragment, useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
-import { LaneStrip } from "@/components/LaneStrip";
 import { AgentChips, CopyButton, RenameSession, SessionName, shortId, Stamp } from "@/components/Session";
 import { Select } from "@/components/ui/Select";
 import { TabPanel, Tabs } from "@/components/ui/Tabs";
@@ -19,11 +18,11 @@ import {
   formatDuration,
   isFailureEvent,
   LANE_LABEL,
+  positionOf,
   spanOf,
   type JournalEvent,
   type SessionRow,
 } from "@/lib/sessions";
-import { staveOf } from "@/lib/strip";
 import { isTerminal, laneFor } from "@/lib/timeline";
 
 // THE SESSION TRANSCRIPT — one session, its own journal, replayed from the record.
@@ -314,40 +313,32 @@ export default function SessionTranscriptPage() {
                 </div>
               </div>
 
-              {/* THE SCRUBBER IS NOW THE STAVE, AND IT IS THE SAME OBJECT IT ALWAYS WAS — extended, not
-                  replaced. It has always placed one mark per frame by that frame's own timestamp, so a burst
-                  of five in one second and a four-minute wait for a model read like the two different things
-                  they are. What changes is that a mark no longer sits in one undifferentiated track: every
-                  §47.2 LANE gets a channel of its own, named in the gutter with its count, and a mark's
-                  vertical position is what says which lane it belongs to. The colour is the third carrier
-                  after position and word, which is the rule every other state signal in this console follows.
+              {/* THE SCRUBBER. Marks placed by each frame's own timestamp within the journal's span, so a burst
+                  of five frames in one second and a four-minute wait for a model read like the two different
+                  things they are — which a numbered list cannot show.
 
-                  IT IS STILL aria-hidden AND ITS CAPTION IS STILL NOT. A track of absolutely-positioned marks
-                  carries no text; announcing it would read out fourteen empty elements. Everything it shows
-                  is in the caption, in the Lane column and in the Elapsed column of every row below — the
-                  strip is a way of seeing the table faster, never a place information only lives. */}
+                  IT IS aria-hidden AND ITS CAPTION IS NOT, deliberately. A track of six absolutely-positioned
+                  marks is not a control and carries no text; announcing it would read out six empty elements.
+                  The information it carries visually is in the caption in words AND in the Elapsed column of
+                  every row below, so nothing is available only to the eye. */}
               {span === null ? null : (
-                <LaneStrip
-                  scale="stave"
-                  testId="transcript-scrubber"
-                  captionTestId="scrubber-caption"
-                  channels={staveOf(
-                    ordered.map((e) => ({
-                      key: String(e.sequence),
-                      lane: laneFor(e.type),
-                      time: String(e.time ?? ""),
-                      failure: isFailureEvent(e.type),
-                    })),
-                    span,
-                  )}
-                  axis={["0:00:00", elapsedStamp(span.end - span.start)]}
-                  caption={
-                    <>
-                      {ordered.length} {ordered.length === 1 ? "event" : "events"} over {formatDuration(span.end - span.start)}, ending at{" "}
-                      {elapsedStamp(span.end - span.start)}
-                    </>
-                  }
-                />
+                <figure className="scrubber" data-testid="transcript-scrubber">
+                  <div className="scrubber-track" aria-hidden="true">
+                    {ordered.map((e) => (
+                      <span
+                        key={e.sequence}
+                        className="scrubber-mark"
+                        data-lane={laneFor(e.type)}
+                        data-failure={isFailureEvent(e.type) ? "true" : undefined}
+                        style={{ left: `${String(positionOf(String(e.time ?? ""), span))}%` }}
+                      />
+                    ))}
+                  </div>
+                  <figcaption data-testid="scrubber-caption">
+                    {ordered.length} {ordered.length === 1 ? "event" : "events"} over {formatDuration(span.end - span.start)}, ending at{" "}
+                    {elapsedStamp(span.end - span.start)}
+                  </figcaption>
+                </figure>
               )}
 
               {ordered.length === 0 ? (

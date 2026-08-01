@@ -15,7 +15,6 @@ import {
 } from "../lib/sessions";
 import { WARNING_SCREENS, warningsFor } from "../lib/deployment";
 import { CONSOLE_ROUTES } from "../lib/routes";
-import { LANE_ORDER, positionAt, spanMark, staveOf, windowOf } from "../lib/strip";
 import { laneFor } from "../lib/timeline";
 
 // The runnable check for the §47.2 lane table: if the mapping drifts (a tool event landing in the model
@@ -264,79 +263,4 @@ test("warningsFor gives a screen only the warnings that screen is responsible fo
   // /history shows a dispatch-off run as `queued`, which is the truth — the screen reports a state rather
   // than promising a result, so it carries no banner.
   expect(warningsFor("/history", [dispatch, unknown])).toEqual([]);
-});
-
-// --- THE LANE STRIP'S ARITHMETIC (E30 visual identity). ---------------------------------------------------
-// The strip is the console's signature and every mark on it is a percentage, so every percentage is driven
-// here with no browser. Two of the three cases below are the ones that put a mark NOWHERE rather than in the
-// wrong place, which is the failure mode a screenshot does not catch.
-
-test("positionAt clamps to its own track, and a zero-width window is 0 rather than NaN", () => {
-  const w = { start: 1000, end: 2000 };
-  expect(positionAt(1000, w)).toBe(0);
-  expect(positionAt(1500, w)).toBe(50);
-  expect(positionAt(2000, w)).toBe(100);
-  // OUTSIDE THE WINDOW IS CLAMPED, NOT DROPPED. A frame whose stamp is outside the span its own journal
-  // reported is a real thing (a clock skew between a runner and the control plane), and `left: -40%` puts it
-  // off the screen where nobody can see that it happened.
-  expect(positionAt(0, w)).toBe(0);
-  expect(positionAt(9999, w)).toBe(100);
-  // The two ways a window has no width. Every frame of a replayed fixture shares one timestamp, and a
-  // division there yields NaN — `left: NaN%` is a mark that renders nowhere at all.
-  expect(positionAt(1500, { start: 1500, end: 1500 })).toBe(0);
-  expect(positionAt(Number.NaN, w)).toBe(0);
-});
-
-test("windowOf ignores what it cannot parse, and answers null rather than a window of NaNs", () => {
-  expect(windowOf(["2026-08-01T00:00:00Z", "2026-08-01T00:00:10Z"])).toEqual({ start: Date.parse("2026-08-01T00:00:00Z"), end: Date.parse("2026-08-01T00:00:10Z") });
-  // A session that never ran carries `first_activity_at: null` — absent, not zero — and a window that let a
-  // NaN in would place every OTHER row's bar against it.
-  expect(windowOf(["2026-08-01T00:00:00Z", null, undefined, ""])).toEqual({ start: Date.parse("2026-08-01T00:00:00Z"), end: Date.parse("2026-08-01T00:00:00Z") });
-  expect(windowOf([null, undefined, ""])).toBeNull();
-  expect(windowOf([])).toBeNull();
-});
-
-test("staveOf keeps LANE_ORDER, drops the lanes a journal never used, and counts what it kept", () => {
-  const w = { start: 0, end: 100 };
-  const frames = [
-    { key: "3", lane: "terminal" as const, time: new Date(100).toISOString(), failure: false },
-    { key: "1", lane: "progress" as const, time: new Date(0).toISOString(), failure: false },
-    { key: "2", lane: "tool" as const, time: new Date(50).toISOString(), failure: true },
-    { key: "4", lane: "progress" as const, time: new Date(25).toISOString(), failure: false },
-  ];
-  const stave = staveOf(frames, w);
-  // THE ORDER IS THE STAVE'S, NOT THE JOURNAL'S. The frames above arrive out of order on purpose: a reader
-  // learns the channel positions once, so they must not move when a run happens to emit its lanes in a
-  // different order.
-  expect(stave.map((c) => c.lane)).toEqual(["progress", "tool", "terminal"]);
-  expect(stave.map((c) => c.marks.length)).toEqual([2, 1, 1]);
-  // A lane with no frames gets no channel — six empty tracks on every run is six rows saying nothing.
-  expect(stave.some((c) => c.lane === "approval")).toBe(false);
-  // The failure survives onto the mark, because it is what makes the tick full height.
-  expect(stave.find((c) => c.lane === "tool")?.marks[0].failure).toBe(true);
-  expect(stave.find((c) => c.lane === "progress")?.marks[0].failure).toBeUndefined();
-  // No window is no stave, rather than a stave whose marks are all at zero.
-  expect(staveOf(frames, null)).toEqual([]);
-});
-
-test("LANE_ORDER gives every lane a channel — a lane with no place on the stave would draw nowhere", () => {
-  // The same set assertion the LANE_LABEL test makes, for the same reason and against the other table: a lane
-  // laneFor can return but LANE_ORDER does not name is a lane whose frames staveOf silently discards.
-  expect([...LANE_ORDER].sort()).toEqual(Object.keys(LANE_LABEL).sort());
-});
-
-test("spanMark is absent for a session that never ran, and never runs off its own track", () => {
-  const w = { start: Date.parse("2026-08-01T00:00:00Z"), end: Date.parse("2026-08-01T01:00:00Z") };
-  const mark = spanMark("2026-08-01T00:15:00Z", "2026-08-01T00:45:00Z", w);
-  expect(mark).toEqual({ key: "span", at: 25, width: 50 });
-  // A session with no first_activity_at gets NO BAR. A zero-width bar at the window's start would claim it
-  // ran for an instant when it opened, which is a different fact from "it has never run".
-  expect(spanMark(null, null, w)).toBeNull();
-  expect(spanMark(undefined, "2026-08-01T00:45:00Z", w)).toBeNull();
-  // A session that started and has not stopped: last is absent, so the bar is the start with no width — a
-  // position rather than a duration, which is what is actually known.
-  expect(spanMark("2026-08-01T00:30:00Z", null, w)).toEqual({ key: "span", at: 50, width: 0 });
-  // The width can never push the bar past the end of the track, whatever the stamps say.
-  expect(spanMark("2026-08-01T00:30:00Z", "2027-01-01T00:00:00Z", w)).toEqual({ key: "span", at: 50, width: 50 });
-  expect(spanMark("2026-08-01T00:30:00Z", null, null)).toBeNull();
 });

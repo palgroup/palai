@@ -142,26 +142,12 @@ export function Panel<Row extends Record<string, unknown>>({
   filterPlaceholder,
   matchOn,
   narrow,
-  footnote,
 }: {
   title: string;
   testId: string;
   fetchPath: string;
   columns: Column<Row>[];
   note?: ReactNode;
-  /**
-   * A sentence UNDER the table, about the rows it just drew.
-   *
-   * It exists because of a shape this console had fifteen copies of on one screen: a cell whose honest value
-   * is a whole explanation. `— no revision pinned` was correct in every one of those cells and, repeated down
-   * a column, it was a wall of text saying nothing — the fact is about the COLLECTION ("almost no run here
-   * pinned a revision"), not about each row, and a fact about the collection belongs under it once.
-   *
-   * `note` is the other half of the pair and is not the same thing: a note is a standing caveat about what
-   * the collection IS, printed whether or not any row was returned. A footnote is derived from the rows and
-   * disappears when they stop making it true.
-   */
-  footnote?: ReactNode;
   reloadKey?: number;
   onRows?: (rows: Row[]) => void;
   selectRows?: (body: Record<string, unknown>) => Row[];
@@ -430,14 +416,6 @@ export function Panel<Row extends Record<string, unknown>>({
                 ))}
               </tbody>
             </table>
-          )}
-          {/* The collection's own footnote, printed once under the rows that make it true and only when a
-              row was actually drawn — a sentence about twenty rows under an empty table is a sentence about
-              nothing. */}
-          {footnote === undefined || shown === 0 ? null : (
-            <p className="table-more" data-testid={`${testId}-footnote`}>
-              {footnote}
-            </p>
           )}
           {/* The cut, in WORDS. Not a colour, not a greyed arrow, not silence. */}
           {truncated ? (

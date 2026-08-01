@@ -32,23 +32,6 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <head>
-        {/* THE TWO FACES EVERY SCREEN NEEDS ON THE FIRST PAINT, PRELOADED (E30 visual identity).
-            app/globals.css §0 declares eight @font-face rules; a browser only fetches the ones a rendered
-            glyph needs, and it does not start looking until it has parsed the stylesheet AND laid out the
-            text that needs them. These two — the sans variable file and the mono at 400, latin — are on every
-            page in this console, so waiting for that discovery is a guaranteed flash of the fallback stack
-            with no upside. The other six (latin-ext, and the two heavier monos) are left to discovery: they
-            are conditional, and preloading a file the page may never draw a glyph from is a request an
-            offline deployment pays for nothing.
-
-            `crossOrigin=""` IS REQUIRED EVEN THOUGH THESE ARE SAME-ORIGIN. A font is always fetched in CORS
-            mode, so a preload without the attribute is a DIFFERENT request from the one the font engine
-            makes: the file is downloaded twice and the preload warms nothing. That is the whole failure mode
-            of a font preload and it is silent — the page looks fine and pays double. */}
-        <link rel="preload" href="/fonts/ibm-plex-sans-latin.woff2" as="font" type="font/woff2" crossOrigin="" />
-        <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossOrigin="" />
-      </head>
       <body>
         <a className="skip-link" href="#main">
           Skip to main content

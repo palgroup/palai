@@ -49,16 +49,11 @@ export function Shell({ children }: { children: ReactNode }) {
           twelve-screen page instead of stopping at the fold. The sticky viewport-height box has to be the
           INNER one: `position: sticky` on the cell itself would make the cell 100vh tall and leave the fill
           hanging in mid-page. */}
-      {/* SCOPE MOVED TO THE FOOT OF THE RAIL (E30 visual identity), and the reason is what it IS rather than
-          how it looked. It is a READOUT — the org and project every screen is reading — and it was the first
-          thing on every page, above the navigation, which is to say the console opened with a standing
-          caveat instead of with the twelve places an operator can go. A readout belongs where a readout
-          belongs: at the foot, permanently visible, and out of the way of the thing being used. */}
       <header className="sidebar">
         <div className="sidebar-inner">
           <Brand />
-          <Nav />
           <Scope />
+          <Nav />
         </div>
       </header>
       <main id="main" className="content">
@@ -70,42 +65,25 @@ export function Shell({ children }: { children: ReactNode }) {
 }
 
 /**
- * Brand is the wordmark, and it is now ONLY the wordmark.
+ * Brand is the wordmark, and it is the console's ONLY piece of pure identity.
  *
- * THE MARK IS GONE, AND IT IS THE ONE THING THIS PASS TOOK OFF ON THE WAY OUT. It was three bars at rising
- * heights with the tallest in the accent, and the comment that shipped with it described exactly what it was:
- * "a signal meter, which is what a control plane is looking at". That was the right idea drawn in the wrong
- * place. components/LaneStrip.tsx is now a signal meter that carries real frames at three scales, in the same
- * palette, twenty pixels below this — and a console cannot have two signal meters where one of them is
- * decoration. Keeping both would have been the accent problem again in miniature: a coloured thing in the
- * chrome, competing with the coloured thing that means something.
- *
- * What is left is five letters and a divider, set in IBM Plex Sans at the weight and tracking a wordmark is
- * set at rather than typeset at. That is enough; it was always the part that named the product.
+ * The mark is drawn here rather than fetched: three bars at rising heights, the tallest in the accent. It
+ * costs one inline <svg>, no network request, no font file and no entry in any CSP — the same reasoning that
+ * keeps system-ui as the typeface. It is aria-hidden because the word beside it already names the product;
+ * an alt text of "logo" is noise in a screen reader.
  */
 function Brand({ standalone = false }: { standalone?: boolean }) {
   return (
     <a className={standalone ? "brand brand-standalone" : "brand"} href="/">
+      <svg className="brand-mark" viewBox="0 0 18 18" width="18" height="18" aria-hidden="true" focusable="false">
+        <rect x="0" y="10" width="4" height="8" rx="1.5" fill="var(--brand-mark-quiet)" />
+        <rect x="7" y="5" width="4" height="13" rx="1.5" fill="var(--brand-mark-quiet)" />
+        <rect x="14" y="0" width="4" height="18" rx="1.5" fill="var(--brand-mark-live)" />
+      </svg>
       <span className="brand-word">palai</span>
       <span className="brand-kind">Console</span>
     </a>
   );
-}
-
-/**
- * scopeLabel is the row's own name, and it treats an EMPTY STRING as absent.
- *
- * `??` does not, which is the whole bug: `String(row.display_name ?? row.id)` keeps a `display_name` of ""
- * because "" is neither null nor undefined — so a deployment whose projects carry no display name rendered a
- * blank line under "SCOPE", and, when there was more than one of them, a dropdown of blank options. That is
- * what "it reads broken" was: not a styling problem, a fallback that never fired.
- */
-function scopeLabel(row: ScopeRow | undefined): string {
-  if (row === undefined) return "—";
-  const name = String(row.display_name ?? "").trim();
-  if (name !== "") return name;
-  const id = String(row.id ?? "").trim();
-  return id === "" ? "—" : id;
 }
 
 interface ScopeRow {
@@ -177,34 +155,25 @@ function Scope() {
   const chosen = projects?.find((p) => p.id === project) ?? projects?.[0];
   const many = (projects?.length ?? 0) > 1;
 
-  // THE BOX IS GONE AND THE READING IS NAMED. What was here was a bordered, rounded card holding four lines
-  // of small text with no hierarchy — an org name, an org id, a project name, a project id — none of which
-  // said which was which. It is now a two-row readout with each row's ROLE in the gutter, which costs the
-  // same four lines and is the difference between a readout and a stack.
   return (
     <div className="scope" data-testid="scope">
       <p className="micro-label">Scope</p>
       <p className="scope-line">
-        <span className="scope-role">Org</span>
-        <span className="scope-name">{scopeLabel(org)}</span>
+        <span className="scope-name">{org === undefined ? "—" : String(org.display_name ?? org.id ?? "—")}</span>
         <span className="scope-id">{org === undefined ? "" : String(org.id ?? "")}</span>
       </p>
       {many ? (
-        <p className="scope-line">
-          <span className="scope-role">Project</span>
-          <Select
-            className="scope-select"
-            label="Project"
-            testId="scope-project-select"
-            value={project}
-            onValueChange={choose}
-            options={(projects ?? []).map((p) => ({ value: String(p.id), label: scopeLabel(p) }))}
-          />
-        </p>
+        <Select
+          className="scope-select"
+          label="Project"
+          testId="scope-project-select"
+          value={project}
+          onValueChange={choose}
+          options={(projects ?? []).map((p) => ({ value: String(p.id), label: String(p.display_name ?? p.id ?? "") }))}
+        />
       ) : (
         <p className="scope-line">
-          <span className="scope-role">Project</span>
-          <span className="scope-name">{scopeLabel(chosen)}</span>
+          <span className="scope-name">{chosen === undefined ? "—" : String(chosen.display_name ?? chosen.id ?? "—")}</span>
           <span className="scope-id">{chosen === undefined ? "" : String(chosen.id ?? "")}</span>
         </p>
       )}
