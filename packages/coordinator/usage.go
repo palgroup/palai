@@ -50,6 +50,40 @@ const (
 	// both, which is exactly what budgets/quotas do.
 	meterInputTokens  = "model.input_tokens"
 	meterOutputTokens = "model.output_tokens"
+	// The prompt-cache meters. TWO of them, for the same reason input and output are two: a cache READ
+	// and a cache WRITE are priced differently by the providers that report both (a write costs MORE
+	// than an uncached input token, a read costs a fraction of one), and a single collapsed
+	// `model.cache_tokens` would fuse a premium into a discount irrecoverably — no reader could
+	// un-sum it.
+	//
+	// READ THIS BEFORE DERIVING ANYTHING FROM THESE NUMBERS. The quantity settled is the provider's
+	// OWN count, and the two provider families do not agree on what it is counted BESIDE:
+	//
+	//   provider-one (OpenAI), adapters/models/provider_one/adapter.go:141-147
+	//       prompt_tokens INCLUDES prompt_tokens_details.cached_tokens, so model.cache_read_tokens is
+	//       a SUBSET of model.input_tokens — the same tokens, counted on both meters. There is no
+	//       cache-write counter on the wire at all (the provider caches on its own), so
+	//       model.cache_write_tokens never has a row for this family.
+	//   provider-two (Anthropic), adapters/models/provider_two/adapter.go:243-251
+	//       input_tokens EXCLUDES both cache counters, so model.cache_read_tokens and
+	//       model.cache_write_tokens are DISJOINT from model.input_tokens — additive to it.
+	//
+	// CONSEQUENCE, stated as the arithmetic because that is how a dashboard gets it wrong:
+	// `model.input_tokens + model.cache_read_tokens` is the total prompt size for provider-two and
+	// DOUBLE-COUNTS the cached prefix for provider-one. A cross-provider sum of that expression means
+	// nothing. What IS well-defined for every family, and what a cache-savings figure actually needs,
+	// is model.cache_read_tokens ALONE: tokens the provider served from cache and billed at its cache
+	// rate. Price it, do not add it.
+	//
+	// Settlement deliberately does NOT normalize the two families onto one invariant, which it could
+	// only do by re-basing model.input_tokens — the meter the durable budget gate reads. Subtracting
+	// the cached prefix for provider-one would silently loosen every budget already configured, and
+	// folding it in for provider-two would silently tighten them. The asymmetry is the providers', and
+	// it is reported rather than laundered. A reader that needs to resolve it recovers the family the
+	// same way it must already recover it to apply a PRICE at all — via model_request_id (000050) to
+	// the step's own model.
+	meterCacheReadTokens  = "model.cache_read_tokens"
+	meterCacheWriteTokens = "model.cache_write_tokens"
 	// meterInterruptedStep counts model steps aborted mid-flight by an interrupt. The provider bills the
 	// prompt and the partial completion of an aborted streaming call, but its token counts arrive only in
 	// the final stream chunk, which a canceled stream never reaches — so the tokens are genuinely unknown
@@ -135,7 +169,16 @@ func modelUsageEntries(sessionID, runID, requestID string, usage contracts.Usage
 			modelRequestID: requestID,
 		}
 	}
-	return []usageEntry{entry(meterInputTokens, usage.InputTokens), entry(meterOutputTokens, usage.OutputTokens)}
+	// The cache entries ride the same per-(step, meter) identity as the token entries, so they settle
+	// exactly once on a redelivery like everything else. A provider that reports neither counter — or a
+	// step that simply cached nothing — settles NO cache row: settleUsage skips a zero quantity, and an
+	// absent meter is the honest record here. See the meter constants for what absent does NOT mean.
+	return []usageEntry{
+		entry(meterInputTokens, usage.InputTokens),
+		entry(meterOutputTokens, usage.OutputTokens),
+		entry(meterCacheReadTokens, usage.CacheReadTokens),
+		entry(meterCacheWriteTokens, usage.CacheWriteTokens),
+	}
 }
 
 // LimitExceeded describes the durable limit that refused an admission, in the terms the caller needs to

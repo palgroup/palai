@@ -428,9 +428,17 @@ be a control that either does nothing or names somebody else's tenant.
 
 ### What puts a row in each table
 
-- **A meter** appears once a run *settles* usage. `coordinator/usage.go` names three: `run.admitted`
+- **A meter** appears once a run *settles* usage. `coordinator/usage.go` names five: `run.admitted`
   (unit `run`, settled inside the admission transaction, so a real stack has this row the moment a run is
-  created) and `model.input_tokens` / `model.output_tokens` (unit `token`).
+  created), `model.input_tokens` / `model.output_tokens`, and the two prompt-cache meters
+  `model.cache_read_tokens` / `model.cache_write_tokens` (all four unit `token`).
+- **The cache meters are not comparable across providers, and the arithmetic is the trap.** OpenAI folds
+  cached tokens *into* `prompt_tokens`, so its `model.cache_read_tokens` is a **subset** of its
+  `model.input_tokens`; Anthropic reports them **separately**, so its cache rows are additive. Adding the
+  two meters therefore double-counts on one family and is correct on the other. `model.cache_read_tokens`
+  **alone** is well defined everywhere — that is the number a savings figure prices. OpenAI reports no
+  cache-write counter at all, so `model.cache_write_tokens` never appears for it; an **absent** meter
+  cannot be read as "nothing was cached". `coordinator/usage.go` carries the full statement.
 - **A ledger row** is settled *exactly once* against the model request or run that produced it, so a
   redelivery adds nothing. **A zero-quantity fact is never written** — `settleUsage` skips it — which is the
   usual reason a completed run appears in `/history` and nowhere in the ledger.

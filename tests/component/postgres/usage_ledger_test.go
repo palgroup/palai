@@ -533,3 +533,109 @@ func TestNullModelRequestIdMeansNotAModelStep(t *testing.T) {
 	assertCount(t, cs.Pool(), 0,
 		`SELECT count(*) FROM usage_ledger WHERE run_id=$1 AND meter LIKE 'run.%' AND model_request_id IS NOT NULL`, runID)
 }
+
+// TestCacheTokensSettleAsTheirOwnMeters closes the last step of a number that has been arriving from
+// both provider families all along: the adapters decode it, model_dispatch.addUsage sums it across
+// steps, and until now NOTHING settled it — a cache read was a value the platform carried and never
+// recorded.
+//
+// The test is written as THREE steps in one run because the two provider families report cache tokens
+// in shapes that are not merely different numbers, they are different RELATIONS to input_tokens, and a
+// single-shape test cannot tell a raw settlement from a renormalized one:
+//
+//	provider-one (OpenAI)      prompt_tokens INCLUDES cached_tokens
+//	                           -> CacheReadTokens is a SUBSET of InputTokens, and there is no write
+//	                              counter at all (adapters/models/provider_one/adapter.go:141-147)
+//	provider-two (Anthropic)   input_tokens EXCLUDES both cache counters
+//	                           -> CacheReadTokens/CacheWriteTokens are ADDITIVE to InputTokens
+//	                              (adapters/models/provider_two/adapter.go:243-251)
+//
+// The settled quantity is the provider's OWN number in both cases, and the assertions on
+// model.input_tokens below are the load-bearing half of that: they fail if settlement ever tries to
+// "helpfully" normalize the two families onto one invariant, which it must not do, because
+// model.input_tokens is what the durable budget gate reads and re-basing it would silently move every
+// limit already configured against it.
+//
+// The third step is the one that decides the shape of the whole feature: a step that cached nothing
+// writes NO cache row rather than a zero row. settleUsage already skips quantity <= 0, so this is the
+// existing rule rather than a new one — asserted here because a dashboard DIVIDES by these, and a zero
+// row would make a cache-hit rate look measured on a provider that never reported one.
+func TestCacheTokensSettleAsTheirOwnMeters(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	tenant, sessionID, runID := seedRun(t, cs.Pool())
+
+	// Deliberately different quantities per meter, and a cache read EQUAL across the two families:
+	// equal-per-family numbers would let a bug that settles one family's shape for both still look
+	// right, and it is precisely the surrounding input_tokens that tells them apart.
+	disjoint := contracts.Usage{InputTokens: 200, OutputTokens: 12, TotalTokens: 212, CacheReadTokens: 800, CacheWriteTokens: 500}
+	subset := contracts.Usage{InputTokens: 1000, OutputTokens: 30, TotalTokens: 1030, CacheReadTokens: 800}
+	uncached := contracts.Usage{InputTokens: 40, OutputTokens: 9, TotalTokens: 49}
+	for _, c := range []struct {
+		requestID string
+		usage     contracts.Usage
+	}{{"mr_disjoint", disjoint}, {"mr_subset", subset}, {"mr_uncached", uncached}} {
+		if _, err := cs.CommitModelResult(ctx, tenant, sessionID, "", runID, c.requestID,
+			[]byte(`{"output":"ok"}`), "model_step.completed.v1", []byte(`{}`), c.usage); err != nil {
+			t.Fatalf("CommitModelResult(%s) error = %v", c.requestID, err)
+		}
+	}
+
+	for _, c := range []struct {
+		requestID string
+		meter     string
+		want      float64
+	}{
+		// The additive family: all four meters, and input_tokens is the provider's 200 — NOT 1500.
+		{"mr_disjoint", "model.cache_read_tokens", 800},
+		{"mr_disjoint", "model.cache_write_tokens", 500},
+		{"mr_disjoint", "model.input_tokens", 200},
+		// The subset family: the cache read is settled at its full 800 even though those same 800
+		// tokens are already inside the 1000 on the line above it. Both numbers are the provider's.
+		{"mr_subset", "model.cache_read_tokens", 800},
+		{"mr_subset", "model.input_tokens", 1000},
+	} {
+		var got float64
+		var unit string
+		if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx),
+			`SELECT quantity, unit FROM usage_ledger WHERE run_id=$1 AND model_request_id=$2 AND meter=$3`,
+			runID, c.requestID, c.meter).Scan(&got, &unit); err != nil {
+			t.Fatalf("read %s/%s: %v", c.requestID, c.meter, err)
+		}
+		if got != c.want {
+			t.Fatalf("%s %s = %v, want %v", c.requestID, c.meter, got, c.want)
+		}
+		if unit != "token" {
+			t.Fatalf("%s %s unit = %q, want %q", c.requestID, c.meter, unit, "token")
+		}
+	}
+
+	// A provider that reports no write counter leaves NO write row — not a zero one. This is the
+	// OpenAI family's permanent state, and it is why an ABSENT meter cannot be read as "nothing was
+	// cached": here it means "this provider does not report the counter at all".
+	assertCount(t, cs.Pool(), 0,
+		`SELECT count(*) FROM usage_ledger WHERE run_id=$1 AND model_request_id='mr_subset' AND meter='model.cache_write_tokens'`, runID)
+	// A step that cached nothing leaves NEITHER row.
+	assertCount(t, cs.Pool(), 0,
+		`SELECT count(*) FROM usage_ledger WHERE run_id=$1 AND model_request_id='mr_uncached' AND meter LIKE 'model.cache_%'`, runID)
+
+	// Three cache rows across the run, and no more: 2 (disjoint) + 1 (subset) + 0 (uncached). A fourth
+	// would mean a zero row was written somewhere the count above did not look.
+	assertCount(t, cs.Pool(), 3,
+		`SELECT count(*) FROM usage_ledger WHERE run_id=$1 AND meter LIKE 'model.cache_%'`, runID)
+
+	// The cache meters settle under the same per-(step, meter) identity as the token meters, so a
+	// redelivered step settles nothing new (BIL-001).
+	if _, err := cs.CommitModelResult(ctx, tenant, sessionID, "", runID, "mr_disjoint",
+		[]byte(`{"output":"ok"}`), "model_step.completed.v1", []byte(`{}`), disjoint); err != nil {
+		t.Fatalf("CommitModelResult(redeliver disjoint) error = %v", err)
+	}
+	assertCount(t, cs.Pool(), 3,
+		`SELECT count(*) FROM usage_ledger WHERE run_id=$1 AND meter LIKE 'model.cache_%'`, runID)
+
+	// 000050's invariant covers the new meters too: they are `model.` rows, so every one names the step
+	// it came from. This is the same sentence TestNullModelRequestIdMeansNotAModelStep pins, re-asserted
+	// over rows that test's usage never produces.
+	assertCount(t, cs.Pool(), 0,
+		`SELECT count(*) FROM usage_ledger WHERE run_id=$1 AND meter LIKE 'model.cache_%' AND model_request_id IS NULL`, runID)
+}
