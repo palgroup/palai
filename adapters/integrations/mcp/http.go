@@ -67,7 +67,14 @@ type httpTransport struct {
 // 2026-07-27). Letting the secret carry it keeps the credential in the ONE place that is already resolved at
 // request time and never journaled; a scheme column on the connection row would be a migration, an API field,
 // and a second thing to keep in sync with the secret it describes.
-var authSchemes = []string{"Bearer ", "Basic "}
+// "Sentry-Bearer " is the third, and it is one word rather than an epic — which is exactly why it is worth
+// adding. sentry.io's MCP server rides its own scheme and says so at the source: "Sentry-Bearer is
+// intentionally separate from Bearer: Bearer is reserved for MCP OAuth access tokens." Without this entry a
+// Sentry token is treated as a bare credential and goes out as `Bearer Sentry-Bearer <token>`, which that
+// server refuses — so the console's catalogue had to list Sentry as unreachable while the real obstacle was
+// four characters of allow-list. It is bucketed apart from Slack for that reason: Slack needs an
+// authorization-code flow this tree does not have, Sentry needed a string.
+var authSchemes = []string{"Bearer ", "Basic ", "Sentry-Bearer "}
 
 // authorizationHeader renders a resolved credential into its Authorization header value. The control-character
 // reject is not cosmetic: this is the one boundary that ships the credential off-box, and a secret carrying

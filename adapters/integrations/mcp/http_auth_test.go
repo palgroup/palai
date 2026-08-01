@@ -71,6 +71,30 @@ func dialCapture(t *testing.T, srv *httptest.Server, secret string) (Transport, 
 func TestHTTPAuthorizationSchemeComesFromTheSecret(t *testing.T) {
 	// A secret that names Basic is sent VERBATIM — not re-wrapped in Bearer.
 	basic := "Basic ZXhhbXBsZUBleGFtcGxlLmNvbTpub3QtYS1yZWFsLXRva2Vu"
+
+	// SENTRY'S SCHEME IS ITS OWN, AND THE ALLOW-LIST IS THE WHOLE MECHANISM. sentry.io states it at the
+	// source — "Sentry-Bearer is intentionally separate from Bearer: Bearer is reserved for MCP OAuth access
+	// tokens" — so a Sentry credential that is NOT in authSchemes is treated as a bare one and goes out as
+	// `Bearer Sentry-Bearer <token>`, which that server refuses. The console's catalogue listed Sentry as
+	// unreachable for exactly that reason while the obstacle was four characters of allow-list.
+	//
+	// This asserts the header, not the list: reading authSchemes would pass on a list that no code consults.
+	sentry := "Sentry-Bearer not-a-real-token"
+	t.Run("sentry-bearer is sent verbatim rather than wrapped in Bearer", func(t *testing.T) {
+		cap := &authCapture{}
+		srv := cap.serve()
+		defer srv.Close()
+		tr, err := dialCapture(t, srv, sentry)
+		if err != nil {
+			t.Fatalf("construct transport: %v", err)
+		}
+		if err := NewClient(tr).Initialize(context.Background()); err != nil {
+			t.Fatalf("initialize: %v", err)
+		}
+		if got := cap.header(0); got != sentry {
+			t.Fatalf("Authorization header = %q, want the Sentry-Bearer credential verbatim %q — a wrapped `Bearer Sentry-Bearer …` is what sentry.io refuses", got, sentry)
+		}
+	})
 	t.Run("basic is sent verbatim", func(t *testing.T) {
 		cap := &authCapture{}
 		srv := cap.serve()
