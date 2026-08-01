@@ -26,8 +26,36 @@
     "capabilities": {"type": "array", "items": {"type": "string"}},
     "output": {
       "type": "object",
-      "properties": {"format": {"type": "string"}},
-      "additionalProperties": true
+      "description": "The output contract the run must satisfy (spec §22.7). EXTENDS the previously published shape rather than replacing it: `format` stays a STRING, because that is the type this schema has always declared and a client that sent {\"format\":\"text\"} keeps its exact meaning and its exact behaviour. What changes is that the value is now READ. Before 2026-08-01 every value of `format` was accepted and dropped, so `json_schema` here is a demand nothing could previously have relied on being ignored; an unrecognised value is now a 400 rather than a silent no-op, which is the one behaviour change and it converts a lie into a refusal. `additionalProperties` is false on THIS object only — a misspelled `schemas` must not be silently dropped, which is the whole defect being fixed — and the top-level body stays open (`delegations` and `delegation_budget` are load-bearing there and appear in no published schema).",
+      "properties": {
+        "format": {
+          "type": "string",
+          "enum": ["text", "json_schema"],
+          "default": "text",
+          "description": "`text` is the default and the pre-existing behaviour: free-form output, no validation. `json_schema` demands that the final output parse as JSON and validate against `schema`."
+        },
+        "name": {
+          "type": "string",
+          "description": "A name for the schema, forwarded to providers that require one (OpenAI's response_format.json_schema.name). Defaults to `output` when omitted.",
+          "maxLength": 64
+        },
+        "schema": {
+          "type": "object",
+          "description": "The JSON Schema 2020-12 document the output must satisfy. REQUIRED when format is json_schema. Per spec §22.7 it may not request executable code, remote references ($ref to another document), or unbounded recursive expansion."
+        },
+        "strict": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether the provider is asked to CONSTRAIN decoding to the schema rather than merely be instructed by it. Server-side validation runs either way: strict:false relaxes what the provider is asked to guarantee, never whether the answer is checked."
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"format": {"const": "json_schema"}}, "required": ["format"]},
+          "then": {"required": ["schema"]}
+        }
+      ]
     },
     "max_output_tokens": {"type": "integer", "minimum": 1},
     "max_tool_calls": {"type": "integer", "minimum": 0},
