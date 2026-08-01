@@ -83,19 +83,25 @@ function deploymentBody(options: { desired?: Record<string, string>; drifted?: s
  *
  * The PUT is captured and REFUSED-OR-FULFILLED per the caller, never forwarded: a real profile's stack
  * would otherwise take a desired document from a test run and hand it to the next `palai up`.
+ *
+ * THE `before`/`after` PAIR SWITCHES ON THE WRITE, NOT ON A CALL COUNT, and that is a correction rather
+ * than a preference. /deployment issues THREE GET /v1/deployment reads on one visit — this panel, the
+ * warning banner (components/DeploymentNotice) and the settings table (components/Panel) each fetch it —
+ * so a fixture that handed out bodies in call order gave different components different worlds, and which
+ * one saw the "no document" body depended on which fetch landed first. Switching on the PUT models what
+ * actually happens: the document does not exist until the operator saves it, and after that every reader
+ * sees it.
  */
 async function serveDeployment(
   page: Page,
-  bodies: ReturnType<typeof deploymentBody>[],
+  bodies: { before: ReturnType<typeof deploymentBody>; after?: ReturnType<typeof deploymentBody> },
   onPut: { status: number; json: unknown },
 ): Promise<{ puts: { method: string; body: unknown }[] }> {
   const puts: { method: string; body: unknown }[] = [];
-  let reads = 0;
   await page.route("**/api/palai/v1/deployment", (route) => {
     if (route.request().method() !== "GET") return route.fallback();
-    const body = bodies[Math.min(reads, bodies.length - 1)];
-    reads += 1;
-    return route.fulfill({ status: 200, json: body });
+    const saved = puts.length > 0 && onPut.status < 400;
+    return route.fulfill({ status: 200, json: saved ? (bodies.after ?? bodies.before) : bodies.before });
   });
   await page.route("**/api/palai/v1/deployment/desired", (route) => {
     puts.push({ method: route.request().method(), body: JSON.parse(route.request().postData() ?? "null") });
@@ -109,10 +115,10 @@ async function serveDeployment(
 test("saving a desired value sends the whole document as a PUT and says a bring-up is still needed", async ({ page }) => {
   const recorded = await serveDeployment(
     page,
-    [
-      deploymentBody({}), // no document yet
-      deploymentBody({ desired: { PALAI_DISPATCH_WORKERS: "4" }, drifted: ["PALAI_DISPATCH_WORKERS"], revision: 1 }),
-    ],
+    {
+      before: deploymentBody({}), // no document yet
+      after: deploymentBody({ desired: { PALAI_DISPATCH_WORKERS: "4" }, drifted: ["PALAI_DISPATCH_WORKERS"], revision: 1 }),
+    },
     { status: 200, json: { object: "deployment_desired", revision: 1, settings: { PALAI_DISPATCH_WORKERS: "4" } } },
   );
 
@@ -131,10 +137,15 @@ test("saving a desired value sends the whole document as a PUT and says a bring-
   // ONLY THE WRITABLE SETTINGS HAVE A FIELD, and the path has none. The field set is built from the rows
   // the API marks writable, so this is a check that the console reads that flag rather than carrying its
   // own list of names — the list that would keep offering a control after the server withdrew it.
-  await expect(page.getByTestId("field-PALAI_DISPATCH_WORKERS")).toBeVisible();
-  await expect(page.getByTestId("field-PALAI_SECRET_MASTER_KEY_FILE")).toHaveCount(0);
+  await expect(page.getByTestId("desired-PALAI_DISPATCH_WORKERS")).toBeVisible();
+  await expect(page.getByTestId("desired-PALAI_SECRET_MASTER_KEY_FILE")).toHaveCount(0);
+  // AND THE LABEL IS PROGRAMMATICALLY BOUND. `field-<name>` is the control's id and ResourceForm's header
+  // records it as a contract this suite reads; the pairing is what WCAG 2.2 §3.3.2 asks for, and a form
+  // whose fields are addressable only by testid is one whose labels nothing checks.
+  await expect(page.locator('label[for="field-PALAI_DISPATCH_WORKERS"]')).toHaveCount(1);
+  await expect(page.locator('label[for="field-PALAI_SECRET_MASTER_KEY_FILE"]')).toHaveCount(0);
 
-  await page.getByTestId("field-PALAI_DISPATCH_WORKERS").fill("4");
+  await page.getByTestId("desired-PALAI_DISPATCH_WORKERS").fill("4");
   await page.getByTestId("desired-config-save").click();
 
   await expect.poll(() => recorded.puts.length, { timeout: 10_000 }).toBe(1);
@@ -160,7 +171,7 @@ test("saving a desired value sends the whole document as a PUT and says a bring-
 // send an operator to read Go source. It is announced in the role="alert" region without moving focus
 // (WCAG 2.2 §3.3.1: the error is described IN TEXT).
 test("a refused value shows the control plane's own reason, in the alert region", async ({ page }) => {
-  await serveDeployment(page, [deploymentBody({})], {
+  await serveDeployment(page, { before: deploymentBody({}) }, {
     status: 400,
     json: {
       code: "invalid_request",
@@ -172,7 +183,7 @@ test("a refused value shows the control plane's own reason, in the alert region"
   await page.goto("/deployment");
   await expect(page.getByTestId("panel-desired-config")).toBeVisible({ timeout: 15_000 });
   await page.getByTestId("desired-config-edit").click();
-  await page.getByTestId("field-PALAI_QUEUE_DEADLINE").fill("10min");
+  await page.getByTestId("desired-PALAI_QUEUE_DEADLINE").fill("10min");
   await page.getByTestId("desired-config-save").click();
 
   const alert = page.getByTestId("desired-config-form").locator('[role="alert"]');
@@ -192,7 +203,7 @@ test("a refused value shows the control plane's own reason, in the alert region"
 test("each setting's row shows what was saved for this machine against what the process holds", async ({ page }) => {
   await serveDeployment(
     page,
-    [deploymentBody({ desired: { PALAI_DISPATCH_WORKERS: "4" }, drifted: ["PALAI_DISPATCH_WORKERS"], revision: 3 })],
+    { before: deploymentBody({ desired: { PALAI_DISPATCH_WORKERS: "4" }, drifted: ["PALAI_DISPATCH_WORKERS"], revision: 3 }) },
     { status: 200, json: {} },
   );
   await page.goto("/deployment");
