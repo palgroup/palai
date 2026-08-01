@@ -383,13 +383,22 @@ removed both volumes.
   doctor's check requires that image to exist. It passed only because a container stack on this
   machine had built it. On a Mac that has only ever run natively, expect that check red; it is a
   doctor check written for the container topology, not a broken stack.
-- **A run offered the shell tool with no workspace HANGS rather than failing.** With
-  `config_policy.default_tools` set to `palai.workspace.shell`, `palai up`'s own trivial proof run
-  (which binds no repository) had the model call `{"argv": ["echo","ok"]}`; the tool refused with "no
-  workspace bound for this run", and because the shell tool is `ClassIrreversible` the call went
-  `uncertain` → `manual_resolution` and the run never reached a terminal state. `palai up` then blamed
-  dispatch ("PALAI_DISPATCH_WORKERS must be >= 1"), which was not the cause. This is why the Slack
-  path binds the workspace tools only when a repository exists — measured now, not reasoned about.
+- **A run offered the shell tool with no workspace HANGS rather than failing — FIXED 2026-08-01, and it
+  was never about the shell tool.** With `config_policy.default_tools` set to `palai.workspace.shell`,
+  `palai up`'s own trivial proof run (which binds no repository) had the model call
+  `{"argv": ["echo","ok"]}`; the tool refused with "no workspace bound for this run", and because the
+  shell tool is `ClassIrreversible` the call went `uncertain` → `manual_resolution` and the run never
+  reached a terminal state. `palai up` then blamed dispatch ("PALAI_DISPATCH_WORKERS must be >= 1"),
+  which was not the cause.
+
+  **What this measurement had actually found was every tool error, not this one.** Three days later the
+  same shape was reproduced with the FILE tool on a missing filename and on a correctly-refused
+  traversal, and the cause was one line in the dispatcher: an `Exec` error was returned up rather than
+  turned into a tool result. A tool's refusal is now delivered to the model as a result and the run
+  carries on; a genuine fault still fails the attempt. **`docs/operations/tool-errors.md` is the page**,
+  and it carries the bound that came with it (`PALAI_TOOL_ERROR_BUDGET`, default 16). The Slack path
+  still binds the workspace tools only when a repository exists, which remains the right default for a
+  different reason: a tool that cannot work should not be advertised.
 
 ---
 
