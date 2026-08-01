@@ -203,15 +203,19 @@ export default function AgentPage() {
 
   return (
     <>
+      {/* THE BREADCRUMB CARRIES THE NAME, NOT THE ID, AND THAT IS THE REFERENCE'S OWN SPLIT (E30).
+          Measured: the AGENT detail reads `Agents / palcore Mac Spike` and the SESSION detail reads
+          `Sessions / ⧉sesn_…3c2jein`. It is not an inconsistency in the reference — an agent HAS a name a
+          person chose and a session usually does not, so each trail shows the thing that identifies the
+          record to a reader. The id has not left the page; it moved to the metadata line under the title,
+          with the same copy button, which is where the reference puts it too. */}
       <nav aria-label="Breadcrumb" className="breadcrumb">
         <ol>
           <li>
             <a href="/agents">Agents</a>
           </li>
-          <li aria-current="page">
-            <CopyButton value={agentID} label="agent ID" testId="breadcrumb-agent">
-              <code>{shortId(agentID)}</code>
-            </CopyButton>
+          <li aria-current="page" data-testid="breadcrumb-agent">
+            {name === "" ? <code>{shortId(agentID)}</code> : name}
           </li>
         </ol>
       </nav>
@@ -225,47 +229,49 @@ export default function AgentPage() {
         </p>
       )}
 
-      <h1 className="page-title" data-testid="agent-title">
-        {agent === null ? <code>{shortId(agentID)}</code> : name === "" ? <span className="cell-none">— unnamed</span> : name}
-      </h1>
+      {/* THE TITLE WITH ITS STATUS PILL INLINE — measured on the reference's agent page, 2026-08-01. The pill
+          is the ONE fact about this record that changes what an operator can do with it, so it sits beside
+          the name; everything else is a reading and goes in the line below. */}
+      <div className="detail-head-row">
+        <h1 className="page-title" data-testid="agent-title">
+          {agent === null ? <code>{shortId(agentID)}</code> : name === "" ? <span className="cell-none">— unnamed</span> : name}
+        </h1>
+        {revisionsError === "" && lineage !== null ? <Status value={lineage.state} testId="chip-state" /> : null}
+      </div>
 
-      {/* THE CHIP ROW — the lineage's facts, each wearing the name of the field it is. There is no Created
-          chip and no Last-updated chip; see the header for the measurement that rules them out.
-          It carries the page's readiness signal (lib/routes.ts), so it must render in BOTH settled states
-          and in neither pending one — a handle that appears over a spinner is a handle that reads as a state
-          the page is not in. */}
+      {/* THE METADATA LINE REPLACES FOUR CHIPS, AND THE REFERENCE IS EXPLICIT ABOUT THE SHAPE: under the
+          title it puts `agent_0144c…` and `Last updated 6 days ago` in the secondary colour, with no box
+          around either. Ours had the id in the breadcrumb and four bordered chips here — four boxes for
+          facts nobody clicks. A chip is for a value you can act on; a reading is a reading, and a reading in
+          a box is a box.
+
+          THE TESTID STAYS `agent-chips` AND SO DO THE FOUR PER-FACT ONES. lib/routes.ts names this element
+          as the route's readiness signal and tests/config-journey.spec.ts reads `chip-state` and
+          `chip-model` through a whole publish journey; renaming them would have been a rewrite of the
+          evidence to match a layout, which is the one direction a change like this must never go. What
+          changed is what a reader sees, not what a test can find. */}
       {revisionsError !== "" ? (
-        <ul className="chip-row" data-testid="agent-chips">
-          <li>
-            <span className="chip" data-testid="chip-state">
-              <span className="chip-key">Lineage</span> <span className="cell-none">— unreadable</span>
-            </span>
-          </li>
-        </ul>
+        <p className="detail-meta" data-testid="agent-chips">
+          <span data-testid="chip-state" className="cell-none">
+            — the lineage could not be read
+          </span>
+        </p>
       ) : lineage === null ? (
         <p className="loading">Loading…</p>
       ) : (
-        <ul className="chip-row" data-testid="agent-chips">
-          <li>
-            <Status value={lineage.state} testId="chip-state" />
-          </li>
-          <li>
-            <span className="chip" data-testid="chip-revisions">
-              <span className="chip-key">Revisions</span> <span className="num">{lineage.count}</span>
-            </span>
-          </li>
-          <li>
-            <span className="chip" data-testid="chip-published">
-              <span className="chip-key">Latest published</span>{" "}
-              {lineage.published === null ? <span className="cell-none">— none</span> : revisionLabel(lineage.published)}
-            </span>
-          </li>
-          <li>
-            <span className="chip" data-testid="chip-model">
-              <span className="chip-key">Model</span> {modelOf(lineage.newest)}
-            </span>
-          </li>
-        </ul>
+        <p className="detail-meta" data-testid="agent-chips">
+          <span className="cell-id-group">
+            <code title={agentID}>{shortId(agentID)}</code>
+            <CopyButton value={agentID} label="agent ID" testId="breadcrumb-agent" />
+          </span>
+          <span data-testid="chip-revisions">
+            {lineage.count} {lineage.count === 1 ? "revision" : "revisions"}
+          </span>
+          <span data-testid="chip-published">
+            {lineage.published === null ? "No published revision" : <>Latest published {revisionLabel(lineage.published)}</>}
+          </span>
+          <span data-testid="chip-model">{modelOf(lineage.newest)}</span>
+        </p>
       )}
 
       <div className="tabs" role="tablist" aria-label="Agent views">

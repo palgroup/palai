@@ -117,7 +117,8 @@ the same numbers as before the port, down to the rgb triples the skip-link test 
 captured four values; adopting it would mean inventing twenty-five and re-measuring every pair against a ramp
 with no published contrast guarantees, where Radix's come with theirs. Its `rgba(255,255,255,0.10)` border is
 separately refused — 1.30:1 against SC 1.4.11's 3:1, and `contrast.spec.ts` throws on a translucent value by
-design. The **brand slot stays Palai's own** iris accent, built the same way.
+design. The **brand slot stays Palai's own** iris accent, built the same way. E30 took the rest of the
+reference's system; see the next section.
 
 **What it did take:** the two-layer architecture, weights `400/500/580/600` (580 is a variable-font
 intermediate), a three-step **two-layer** shadow scale (near defines the edge, far defines height) with the
@@ -130,6 +131,73 @@ nothing collapsed there. What did become derived rather than declared: **eight h
 literals across the two schemes became two alphas** (the dark block now changes two numbers instead of
 re-stating two multi-layer values), three easing curves became one, and the dialog scrim — the last
 hard-coded colour in any rule body — is composed off layer 1.
+
+## Matching the reference: the grey, the row, the sectioned form (E30)
+
+E29 took the reference's type scale, radii, shadows and easing. E30 takes the three things it left: the
+**colour of the grey**, the **row metrics tree-wide**, and the **layout of a configuration screen**.
+
+**The grey is warm now, and that is the single most visible change.** `design-system-measured.md` §1 measured
+the reference's grey as warm — yellowish at the light end, `rgb(26,26,25)` for the body — and ours was Radix
+**Slate**, hue 210–240, a *blue* grey. On a full screen no amount of type or spacing work compensates for
+that. The ramp is now Radix **Sand** (hue 45–60): same twelve-step architecture, same role mapping, same
+published contrast guarantees, one scale swapped. The dark ladder starts at **step 2** rather than step 1
+because that is where the measurement lands — sand-2 is `#191918` against the reference's `#1a1a19`, one
+8-bit level per channel — and `--bg-subtle` and `--bg-inset` resolve to the same value there, which is the
+reference's own architecture (it has one surface token, `rgba(255,255,255,0.05)`, doing both jobs).
+
+`node scripts/measure-contrast.mjs` re-derives **43 pairs over both schemes, 0 under floor**, from
+`app/globals.css` itself — the swap moved the surface behind every published ratio in the file at once, and
+a dozen typed numbers would otherwise have gone stale together.
+
+**Row 46px, header 32px, tree-wide.** E29 scoped those to the two session screens with a note saying the
+tree-wide pass owned them; this is that pass, so they are on `tbody td` / `thead th` and every table has them.
+`height` on a cell is a minimum, so a cell holding a rename control still grows — and a cell holding a block
+goes back to top alignment, because a multi-line cell centred against a single-line neighbour reads as
+misaligned rather than centred.
+
+**The two-column section, and it is a primitive rather than markup on one page.** Measured off the reference's
+agent-detail page, 2026-08-01:
+
+```
+row          display:flex  gap:28px  width:768px
+left  224px  the section title (15/20 w580) + its ONE-SENTENCE description
+right 516px  the fields (control height 32px, filling the column)
+```
+
+`components/ResourceForm.tsx` renders **every one of its twelve callers** into that shape without any of them
+being edited: `title` and `note` — props it has always taken — become the left column and `fields` become the
+right. A `sections` prop handles a record whose configuration genuinely has several, which is the reference's
+agent page exactly. **The 768px is the point, not the two columns**: our forms stretched a password field
+across a 78rem page, and a measure this narrow is why the reference's detail pages read as documents somebody
+fills in.
+
+**The detail-page anatomy** (`app/agents/[id]`): breadcrumb carrying the **name** (the reference's agent trail
+reads `Agents / palcore Mac Spike`; its *session* trail carries the id, because a session usually has no name
+a person chose), the title with its status pill **inline**, then a quiet metadata line — the id with its copy
+button and the lineage's facts, in the secondary colour with **no boxes**. That line replaced four bordered
+chips: a chip is for a value you can act on, and a reading in a box is a box.
+
+**Weight 580 is measured, not asserted.** The reference's scale ships `400/500/580/600` and 580 is the tell
+that it uses a variable font. `getComputedStyle` reports the *specified* weight, so it says "580" on a machine
+that drew 600 — `tests/contrast.spec.ts` lays the same string out at all four weights and compares rendered
+widths instead. On this stack: `TYPE WEIGHT 580 — 580 renders as its own weight. 400=244.75px 500=250.91px
+580=255.80px 600=257.02px`. It is a report and not a floor; a platform without a variable system font is not
+a defect this console can fix, and the honest form of "we picked the nearest" is a line in the log.
+
+**What was NOT taken, and why.** `rgba(255,255,255,0.10)` borders and `0.05` surfaces — 1.30:1 against SC
+1.4.11's 3:1, and `contrast.spec.ts` throws on a translucent colour by design. What is matched instead is the
+**result**: composite the reference's 0.05 white over its own body and you get `#232322`, which is sand step 3
+— so our opaque surface *is* their surface, measurable where theirs is not. The difference that remains is
+that theirs also draws CONTROL boundaries at 0.10 white, and ours draws them at step 10, which is the pair
+`contrast.spec.ts` measures at 3.80:1 light / 4.14:1 dark.
+
+**Two things the owner named.** `— no revision pinned` repeated down fifteen rows is now the em dash this
+console uses for every absent value, with the explanation on `title` and stated **once with its count** in
+`Panel`'s new `footnote` — the reference leaves an empty cell quiet. And the `SCOPE` box, four unlabelled
+lines in a card at the top of the rail, is an unframed readout at its **foot** with each row's role in a
+gutter; its "empty dropdown" was never styling — `String(row.display_name ?? row.id)` keeps a `display_name`
+of `""`, because `""` is neither null nor undefined, so the fallback could not fire.
 
 ## The primitive layer (`components/ui/`, E29)
 

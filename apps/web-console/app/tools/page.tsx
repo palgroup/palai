@@ -256,6 +256,16 @@ export default function ToolsPage() {
           { header: "Trust level", render: (r) => String(r.trust_level ?? "") },
           { header: "Disabled", render: (r) => (r.disabled === true ? "yes" : "no") },
         ]}
+        emptyNote={
+          <>
+            <p className="empty-title">No MCP connections yet</p>
+            <p className="empty-body">
+              A connection is an upstream MCP server this deployment is allowed to reach, plus the name of the
+              credential it authenticates with. Registering one dials nothing — <strong>Discover</strong> is
+              the first call that reaches the server.
+            </p>
+          </>
+        }
       />
 
       <ResourceForm
@@ -399,6 +409,16 @@ export default function ToolsPage() {
           { header: "Canonical name", render: (r) => <code>{String(r.canonical_name ?? "")}</code> },
           { header: "Model-visible name", render: (r) => <code>{String(r.model_visible_name ?? "")}</code> },
         ]}
+        emptyNote={
+          <>
+            <p className="empty-title">No tools yet</p>
+            <p className="empty-body">
+              A tool is one thing a run can call. Every row here arrives by <strong>Discover</strong> against a
+              registered MCP connection — there is no way to type one in, because a tool this console invented
+              would be a name no server answers to.
+            </p>
+          </>
+        }
       />
 
       <section className="panel" data-testid="tool-choose" aria-labelledby="tool-choose-h">

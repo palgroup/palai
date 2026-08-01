@@ -217,6 +217,16 @@ export default function EnvironmentsPage() {
           { header: "Description", render: (r) => String(r.description ?? "") },
           { header: "Keys", render: (r) => <span className="num">{String(r.key_count ?? 0)}</span> },
         ]}
+        emptyNote={
+          <>
+            <p className="empty-title">No environments yet</p>
+            <p className="empty-body">
+              An environment is a named set of <code>KEY=value</code> pairs an agent&apos;s shell commands run
+              against — <code>production</code>, <code>staging</code>, <code>jira-readonly</code>. Create one
+              with the form below, then write values into it.
+            </p>
+          </>
+        }
       />
 
       <div id="environment-create">

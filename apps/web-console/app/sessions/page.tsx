@@ -80,6 +80,9 @@ export default function SessionsPage() {
   // The agent options are the agents the LOADED rows actually name — never a list this page invented, so the
   // dropdown can never offer a value that matches nothing.
   const agentNames = useMemo(() => [...new Set(rows.flatMap((r) => r.agents ?? []))].sort(), [rows]);
+  // Sessions in the loaded page whose runs pinned no agent revision. The fact the Agents column used to print
+  // fifteen times, counted once — see components/Session.tsx's AgentChips for why it moved.
+  const unpinned = rows.filter((r) => (r.agents ?? []).length === 0).length;
 
   function chooseWindow(key: string) {
     setWindowKey(key);
@@ -206,6 +209,15 @@ export default function SessionsPage() {
         matchOn={(r) => r.id}
         filterLabel="Search sessions by ID"
         filterPlaceholder="Session ID…"
+        footnote={
+          unpinned === 0 ? undefined : (
+            <>
+              {unpinned} of the {rows.length} sessions loaded pinned no agent revision, so their Agents cell is
+              empty. A run pins a REVISION — choosing an agent without one pins nothing, and there is then
+              nothing for this column to aggregate.
+            </>
+          )
+        }
         action={
           <Button variant="primary" onClick={() => void createSession()} disabled={creating} testId="session-create">
             {creating ? "…" : "+ New session"}

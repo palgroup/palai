@@ -52,8 +52,8 @@ export function Shell({ children }: { children: ReactNode }) {
       <header className="sidebar">
         <div className="sidebar-inner">
           <Brand />
-          <Scope />
           <Nav />
+          <Scope />
         </div>
       </header>
       <main id="main" className="content">
@@ -89,6 +89,22 @@ function Brand({ standalone = false }: { standalone?: boolean }) {
 interface ScopeRow {
   id?: string;
   display_name?: string;
+}
+
+/**
+ * scopeLabel is the row's own name, and it treats an EMPTY STRING as absent.
+ *
+ * `??` does not, which is the whole of "the SCOPE box reads broken": `String(row.display_name ?? row.id)`
+ * keeps a `display_name` of `""` because `""` is neither null nor undefined — so a deployment whose projects
+ * carry no display name rendered a blank line under the label, and, with more than one of them, a dropdown of
+ * blank options. It was never a styling problem; it was a fallback that could not fire.
+ */
+function scopeLabel(row: ScopeRow | undefined): string {
+  if (row === undefined) return "—";
+  const name = String(row.display_name ?? "").trim();
+  if (name !== "") return name;
+  const id = String(row.id ?? "").trim();
+  return id === "" ? "—" : id;
 }
 
 /**
@@ -155,25 +171,36 @@ function Scope() {
   const chosen = projects?.find((p) => p.id === project) ?? projects?.[0];
   const many = (projects?.length ?? 0) > 1;
 
+  // THE BOX IS GONE AND EACH ROW NAMES ITS OWN ROLE. What was here was a bordered, rounded, filled card at
+  // the TOP of the rail holding four lines of small text with nothing saying which line was an organisation
+  // and which was a project — the first thing on every page in this console was a box that read as broken.
+  // It is now an unframed readout at the FOOT of the rail, because a standing readout is not a starting
+  // point, and the reference puts its own workspace/account readouts at the two ends of the rail rather than
+  // above the navigation.
   return (
     <div className="scope" data-testid="scope">
       <p className="micro-label">Scope</p>
       <p className="scope-line">
-        <span className="scope-name">{org === undefined ? "—" : String(org.display_name ?? org.id ?? "—")}</span>
+        <span className="scope-role">Org</span>
+        <span className="scope-name">{scopeLabel(org)}</span>
         <span className="scope-id">{org === undefined ? "" : String(org.id ?? "")}</span>
       </p>
       {many ? (
-        <Select
-          className="scope-select"
-          label="Project"
-          testId="scope-project-select"
-          value={project}
-          onValueChange={choose}
-          options={(projects ?? []).map((p) => ({ value: String(p.id), label: String(p.display_name ?? p.id ?? "") }))}
-        />
+        <p className="scope-line">
+          <span className="scope-role">Project</span>
+          <Select
+            className="scope-select"
+            label="Project"
+            testId="scope-project-select"
+            value={project}
+            onValueChange={choose}
+            options={(projects ?? []).map((p) => ({ value: String(p.id), label: scopeLabel(p) }))}
+          />
+        </p>
       ) : (
         <p className="scope-line">
-          <span className="scope-name">{chosen === undefined ? "—" : String(chosen.display_name ?? chosen.id ?? "—")}</span>
+          <span className="scope-role">Project</span>
+          <span className="scope-name">{scopeLabel(chosen)}</span>
           <span className="scope-id">{chosen === undefined ? "" : String(chosen.id ?? "")}</span>
         </p>
       )}

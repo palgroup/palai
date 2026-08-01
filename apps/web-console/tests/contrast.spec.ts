@@ -271,6 +271,71 @@ test("every interactive control carries a 3:1 boundary against the surface behin
   ).toEqual([]);
 });
 
+// WEIGHT 580 IS EITHER A WEIGHT OR IT IS 600 WEARING ITS NAME, AND ONLY THE BROWSER KNOWS WHICH (E30).
+//
+// The reference's type scale ships `400 / 500 / 580 / 600`, and 580 is the tell that it uses a VARIABLE font:
+// a semibold genuinely between medium and bold rather than a jump past it. app/globals.css took that scale
+// and this console's typeface is `system-ui`, which is a different font on every operating system — SF on
+// macOS, Segoe UI Variable on Windows, whatever fontconfig resolves on Linux. Some of those carry a weight
+// axis and some ship discrete faces, and a discrete stack ROUNDS 580 to the nearest cut it has.
+//
+// `getComputedStyle().fontWeight` cannot answer this: it reports the SPECIFIED value, so it says "580" on a
+// machine that rendered 600 and on a machine that rendered a real 580. What can answer it is the rendered
+// GEOMETRY — the same string, in the same family and size, at three weights, measured. If 580 is a weight,
+// its advance width sits strictly between 500's and 600's. If it rounded, it is identical to one of them.
+//
+// IT IS A REPORT AND NOT A FLOOR, deliberately. A platform without a variable system font is not a defect
+// this console can fix, and failing the suite on it would fail on the operator's laptop rather than on ours.
+// What must not happen is the scale claiming an intermediate weight that nobody's screen has ever drawn —
+// so the measurement is printed on every run, and a `580 rounded to 600` line in the log is the honest form
+// of "we picked the nearest".
+test("the type scale's 580 is measured on the rendered page rather than asserted from the token file", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("main")).toBeVisible();
+
+  const measured = await page.evaluate(() => {
+    const family = getComputedStyle(document.body).fontFamily;
+    const probe = document.createElement("div");
+    // Off-screen but LAID OUT: `display:none` has no geometry to read, and `visibility:hidden` still boxes.
+    probe.style.cssText = "position:absolute;left:-9999px;top:0;white-space:nowrap;font-size:15px;";
+    probe.style.fontFamily = family;
+    document.body.appendChild(probe);
+    const width = (weight: number) => {
+      const span = document.createElement("span");
+      span.style.fontWeight = String(weight);
+      // A string with the widest spread of stems and round forms in it — a weight axis moves these most.
+      span.textContent = "Multiagent Skills Tools 0123456789";
+      probe.appendChild(span);
+      const w = span.getBoundingClientRect().width;
+      span.remove();
+      return Math.round(w * 100) / 100;
+    };
+    const out = { family, w400: width(400), w500: width(500), w580: width(580), w600: width(600) };
+    probe.remove();
+    return out;
+  });
+
+  const distinct = measured.w580 !== measured.w500 && measured.w580 !== measured.w600;
+  const verdict = distinct
+    ? "580 renders as its own weight — the scale's intermediate semibold is real here"
+    : measured.w580 === measured.w600
+      ? "580 ROUNDED TO 600 on this platform — the scale's intermediate step is not drawn"
+      : "580 ROUNDED TO 500 on this platform — the scale's intermediate step is not drawn";
+  // eslint-disable-next-line no-console -- the measurement IS the deliverable; a pass/fail would prove nothing.
+  console.log(
+    `TYPE WEIGHT 580 — ${verdict}. Rendered widths at 15px in ${measured.family.split(",")[0]}: ` +
+      `400=${String(measured.w400)}px 500=${String(measured.w500)}px 580=${String(measured.w580)}px 600=${String(measured.w600)}px`,
+  );
+
+  // THE ONLY THING ASSERTED IS THAT THE SCALE IS A SCALE. 400 and 600 must differ, or the stack resolved to a
+  // single-weight face and every weight token in this file is decoration — which IS a defect, and a different
+  // one from 580 rounding.
+  expect(
+    measured.w400,
+    "400 and 600 render at the same width, so this font stack has one weight and the whole scale is inert",
+  ).not.toBe(measured.w600);
+});
+
 test("the focus ring clears 3:1 against the surface, and the offset that puts it there still exists", async ({ page }) => {
   await page.goto("/login");
   const input = page.getByTestId("password-input");
