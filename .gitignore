@@ -34,3 +34,6 @@ __pycache__/
 
 # Accidental bare-name build output of ./tests/sandboxes/mcp
 /mcp
+
+# Karsilastirma ekran goruntuleri (referans vs bizimki). Uretilir, versiyonlanmaz.
+.shots/
