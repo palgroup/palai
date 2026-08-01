@@ -164,6 +164,12 @@ func (s *Store) DecideApproval(ctx context.Context, scope middleware.Scope, appr
 // human reads. Three approve commands sat `queued` while the publication stayed `pending_approval` and the
 // run stayed `waiting`; the console rendered its button, emitted command.accepted.v1, and changed nothing.
 //
+// AND THEN THE APPROVAL EXPIRED AND THE REAPER RELEASED THE RUN, which is why this survived so long. The
+// symptom was never "approve does nothing" — it was "approve does nothing, and then thirty minutes later
+// the run moves anyway". That reads as SLOW rather than BROKEN, and it is why nobody filed it. A failure
+// that erases itself on a timer is the hardest kind to see: it is the same family as everything else this
+// tree keeps finding — the silence, not the error.
+//
 // SO THIS IS NOT A NEW MECHANISM. orchestrator.go:724 already states the contract in its own words — "the
 // decision (or the expiry reaper) opens a fresh attempt through the one wake" — and Slack's path honours it
 // by calling ApplyApprovalDecision DIRECTLY, in one transaction that also wakes the parked run. This makes
