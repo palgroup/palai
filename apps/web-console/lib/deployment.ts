@@ -26,6 +26,12 @@ export interface DeploymentSetting extends Record<string, unknown> {
   change_with: string;
   reader_file: string;
   reader_func: string;
+  /**
+   * DERIVED IN THE BROWSER, never sent by the API: true when this row's `change_with` is the sentence MOST
+   * rows carry, so /deployment can print that one above the table instead of twenty-nine times inside it.
+   * Set by markSharedRemedy in app/deployment/page.tsx, which is the only reader.
+   */
+  change_with_is_shared?: boolean;
 }
 
 export interface DeploymentWarning {

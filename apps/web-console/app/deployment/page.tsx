@@ -26,6 +26,33 @@ import { mutabilityLabel, type DeploymentSetting } from "@/lib/deployment";
 // silently change what the product does first, because alphabetical order is where PALAI_DISPATCH_WORKERS
 // was already hiding — between the CA paths and the engine image. The column offers a sort, so a reader who
 // wants the dump can have it; what they get on arrival is the order somebody decided.
+// markSharedRemedy flags the rows whose `change_with` is the one MOST of them carry, so the column can
+// print it once instead of once per row. It reads the majority off the data and never names it, so the
+// screen cannot disagree with the catalogue about which sentence is the common one.
+//
+// A TIE PRINTS EVERYTHING, which is the safe direction: `sharedRemedy` is only set when one sentence is
+// carried by strictly more rows than any other AND by more than half of them. Two sentences at 17 and 18
+// of 35 are not a background and a exception — they are two answers, and suppressing either would tell a
+// reader the row agrees with a sentence printed above the table when it does not.
+function markSharedRemedy(rows: DeploymentSetting[]): DeploymentSetting[] {
+  const counts = new Map<string, number>();
+  for (const row of rows) counts.set(row.change_with, (counts.get(row.change_with) ?? 0) + 1);
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const [top, second] = ranked;
+  const shared = top !== undefined && top[1] > rows.length / 2 && top[1] !== second?.[1] ? top[0] : null;
+  return rows.map((row) => ({ ...row, change_with_is_shared: shared !== null && row.change_with === shared }));
+}
+
+// SHARED_REMEDY_COMMAND is the one thing the suppressed rows would otherwise have told the operator, and it
+// is stated here rather than quoted from a row because Panel's `note` is a static prop — it renders before
+// any row is fetched and cannot see them (components/Panel.tsx:150,276).
+//
+// A CONSTANT COPIED FROM A SERVER STRING IS A DRIFT WAITING TO HAPPEN, so it is not a promise: the Go test
+// TestSharedRemedyNoticeNamesTheCommandTheCatalogueGives reads this literal out of this file and asserts
+// the catalogue's majority `change_with` CONTAINS it. Reword the catalogue and the test goes red here,
+// which is the only place a reader would otherwise never learn it had.
+export const SHARED_REMEDY_COMMAND = "docker compose up -d --force-recreate control-plane";
+
 export default function DeploymentPage() {
   return (
     <>
@@ -37,13 +64,22 @@ export default function DeploymentPage() {
         title="Effective configuration"
         testId="panel-deployment-settings"
         fetchPath="/deployment"
-        selectRows={(body) => (Array.isArray(body.settings) ? (body.settings as DeploymentSetting[]) : [])}
+        selectRows={(body) => markSharedRemedy(Array.isArray(body.settings) ? (body.settings as DeploymentSetting[]) : [])}
         // ONE SENTENCE, AND IT IS THE ONE THE TABLE CANNOT CARRY: the scope of the answer. Every row is the
         // CONTROL-PLANE process's own environment. PALAI_RUNNER_CONCURRENCY is absent for that reason and
         // not by oversight — it is set on the runner container, and cmd/cli/internal/stack/upgrade.go
         // records what happens to a reader that forgets: "reading a runner-scoped var off the
         // control-plane container always misses it".
-        note="These are the control-plane process's own settings. A runner-scoped setting (PALAI_RUNNER_CONCURRENCY) is not shown here because this process holds no copy of it — a confident wrong answer would be worse than the absence. What this deployment can observe about a machine's capacity is on Fleet."
+        note={
+          <>
+            These are the control-plane process&apos;s own settings. A runner-scoped setting (PALAI_RUNNER_CONCURRENCY) is
+            not shown here because this process holds no copy of it — a confident wrong answer would be worse than the
+            absence. What this deployment can observe about a machine&apos;s capacity is on Fleet. Changing anything
+            marked <span className="name">Needs a bring-up</span> means replacing the process with the new value —{" "}
+            <code>palai up</code>, or <code>{SHARED_REMEDY_COMMAND}</code> — and the rows that are changed some OTHER way
+            say so in that column.
+          </>
+        }
         // ONLY THE GROUP RIDES `.id`, AND THAT IS A MEASUREMENT RATHER THAN A LAYOUT PREFERENCE.
         //
         // The first draft put `change_with` and the reader citation in `.id`, which is the console's
@@ -73,10 +109,33 @@ export default function DeploymentPage() {
           {
             header: "Changing it",
             sort: (row) => row.mutability,
+            // THE REMEDY IS PRINTED WHERE IT DIFFERS, AND ONCE WHERE IT DOES NOT. MEASURED against the
+            // running stack rather than assumed:
+            //
+            //   curl -s .../v1/deployment | jq -r '.settings[].change_with' | sort | uniq -c | sort -rn
+            //     29  recreate the control-plane with the new value (`palai up`, or `docker compose …`)
+            //      2  recreate the whole stack with the new value (`palai up`)
+            //      1  …model-routes…   1  …model-connections…   1  …secret-refs…   1  …model route names…
+            //
+            // Twenty-nine identical sentences down one column is not information, it is the shape of the
+            // column drowning the four rows that say something ELSE — and those four are the valuable ones:
+            // PALAI_SECRET_MASTER_KEY_FILE's says a stored secret rotates live and only the master key's
+            // LOCATION needs a bring-up, which is the opposite of what a reader skimming a wall of identical
+            // text will take away.
+            //
+            // The majority sentence is COMPUTED FROM THE ROWS, never written down here, and computed over
+            // `all` rather than the filtered set so a filter cannot promote a different sentence to
+            // "shared" and hide the row that was worth reading. If a future catalogue makes some other
+            // remedy the common one, this follows it; if it makes them all distinct, every row prints and
+            // nothing is suppressed. What cannot happen is a row being hidden behind a sentence it does
+            // not have.
+            // It is computed in `selectRows` above, which is the only place with the WHOLE set in hand, and
+            // deliberately not by giving Panel's `render` a second argument: a column that needs its
+            // siblings is a property of THIS screen and does not belong in the shared table.
             render: (row) => (
               <span className="cell-name">
                 <span className="name">{mutabilityLabel(row.mutability)}</span>
-                <span className="muted">{row.change_with}</span>
+                {row.change_with_is_shared ? null : <span className="muted">{row.change_with}</span>}
               </span>
             ),
           },

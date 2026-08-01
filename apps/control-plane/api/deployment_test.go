@@ -404,3 +404,51 @@ func composeSettingNames(t *testing.T) []string {
 	}
 	return names
 }
+
+// The console prints the majority remedy ONCE, above the table, instead of once per row — twenty-nine
+// identical sentences down a column is the shape of the column drowning the four rows that say something
+// else, and one of those four says a stored secret rotates live.
+//
+// To do that it carries the command as a LITERAL (apps/web-console/app/deployment/page.tsx's
+// SHARED_REMEDY_COMMAND), which is a copy of a string this file owns. A copy is a drift waiting to happen
+// and the drift is INVISIBLE: reword the catalogue and the console keeps printing the old command above a
+// table that no longer says it, with nothing red anywhere. So the copy is not trusted — it is read out of
+// the .tsx and checked against what the catalogue actually serves.
+//
+// It asserts against the MAJORITY sentence rather than any sentence, because that is what the console
+// suppresses. A remedy that appears on one row is printed on that row and needs no notice.
+func TestSharedRemedyNoticeNamesTheCommandTheCatalogueGives(t *testing.T) {
+	const page = "../../web-console/app/deployment/page.tsx"
+	source, err := os.ReadFile(page)
+	if err != nil {
+		t.Fatalf("read %s: %v", page, err)
+	}
+	const marker = `export const SHARED_REMEDY_COMMAND = "`
+	start := strings.Index(string(source), marker)
+	if start < 0 {
+		t.Fatalf("%s no longer exports SHARED_REMEDY_COMMAND — if the notice was removed, delete this test with it; if it was renamed, this is the drift it exists to catch", page)
+	}
+	rest := string(source)[start+len(marker):]
+	end := strings.Index(rest, `"`)
+	if end < 0 {
+		t.Fatalf("SHARED_REMEDY_COMMAND in %s is not a closed string literal", page)
+	}
+	printed := rest[:end]
+
+	counts := map[string]int{}
+	for _, setting := range deploymentCatalogue {
+		counts[setting.ChangeWith]++
+	}
+	majority, best := "", 0
+	for sentence, n := range counts {
+		if n > best {
+			majority, best = sentence, n
+		}
+	}
+	if best*2 <= len(deploymentCatalogue) {
+		t.Fatalf("no sentence is carried by more than half the %d settings (best: %d), so the console suppresses nothing and the notice above its table is claiming a shared remedy that does not exist", len(deploymentCatalogue), best)
+	}
+	if !strings.Contains(majority, printed) {
+		t.Fatalf("the console prints %q above the settings table as THE way to change a bring-up setting, and the catalogue's majority remedy (%d of %d settings) does not contain it:\n  catalogue: %s\nOne of the two was reworded. An operator reading the console is being given a command this deployment no longer names.", printed, best, len(deploymentCatalogue), majority)
+	}
+}
