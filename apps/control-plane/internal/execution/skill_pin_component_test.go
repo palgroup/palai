@@ -97,13 +97,13 @@ func TestSkillDigestPinnedRunRecordsExactDigest(t *testing.T) {
 
 func readPins(t *testing.T, ctx context.Context, st *store.Store, tenant coordinator.Tenant, runID string) []skillPin {
 	t.Helper()
-	_, _, _, _, pinsJSON, err := st.Spine().PinnedExecConfig(ctx, tenant, runID)
+	pinned, err := st.Spine().PinnedExecConfig(ctx, tenant, runID)
 	if err != nil {
 		t.Fatalf("PinnedExecConfig: %v", err)
 	}
 	var pins []skillPin
-	if len(pinsJSON) > 0 {
-		if err := json.Unmarshal(pinsJSON, &pins); err != nil {
+	if len(pinned.SkillPins) > 0 {
+		if err := json.Unmarshal(pinned.SkillPins, &pins); err != nil {
 			t.Fatalf("decode skill pins: %v", err)
 		}
 	}
