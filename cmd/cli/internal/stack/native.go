@@ -252,6 +252,17 @@ func nativeEnv(cfg Config, p paths, get func(string) string, engine, listen, roo
 	if posture := strings.TrimSpace(get("PALAI_SHELL_NATIVE")); posture != "" {
 		env["PALAI_SHELL_NATIVE"] = posture
 	}
+	// AND SO DOES THE TOOL-ERROR BUDGET, and it is here because a LIVE RUN proved it otherwise does not
+	// arrive. This function MERGES over os.Environ(), and .env.local is read through `get` rather than
+	// exported into this process — so a variable that lives only in that file and is not named here never
+	// reaches the child. MEASURED 2026-08-01, twice, on the same stack: with PALAI_TOOL_ERROR_BUDGET=2 in
+	// .env.local a native run was handed FOUR refusals and completed; with the same value EXPORTED into
+	// the process environment the third refusal ended the run at `run.failed.v1`. A ceiling an operator
+	// can write in the file the documentation points them at, and that the process never sees, is a
+	// ceiling that does not exist.
+	if budget := strings.TrimSpace(get("PALAI_TOOL_ERROR_BUDGET")); budget != "" {
+		env["PALAI_TOOL_ERROR_BUDGET"] = budget
+	}
 	out := make([]string, 0, len(env))
 	for k, v := range env {
 		out = append(out, k+"="+v)

@@ -90,6 +90,11 @@ services:
       # posture REFUSES a non-positive bound, so this must never be blank once the image is set.
       # Raise it for a toolchain whose builds legitimately run longer.
       PALAI_SANDBOX_WALL_TIME: ${PALAI_SANDBOX_WALL_TIME:-}
+      # How many tool REFUSALS one attempt may hand a model before the run fails with a named terminal
+      # (docs/operations/tool-errors.md). A tool error is delivered to the model as a result so it can
+      # correct itself, which removed the accidental stop a wedged run used to be; this is the bound
+      # that replaced it. Unset = 16; `0` is unbounded and has to be written.
+      PALAI_TOOL_ERROR_BUDGET: ${PALAI_TOOL_ERROR_BUDGET:-}
       # Model provider the exec-path routes to: "fake" (deterministic, no network/credential)
       # or "provider-one" (live OpenAI; model id from PALAI_MODEL, credential redeemed at call
       # time from the provider_one_key file secret bridged by the entrypoint). The credential
