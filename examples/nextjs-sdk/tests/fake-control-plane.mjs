@@ -208,6 +208,13 @@ const TRANSCRIPT_BODY = [
 // ---------------------------------------------------------------------------------------------
 // THE TOOL-CALLS READ (E30 T2), answered with BYTES THE REAL TOOLS PRODUCED.
 //
+// THE ARGUMENTS ARE `argv`, NOT `command`, AND THAT CORRECTION COST A SILENT BUG. This fake first
+// sent `{"command": "xcodebuild …"}` — a shape I had invented. The real `palai.workspace.shell`
+// sends `{"argv": ["bash", "-c", "cd repo && xcodebuild …"]}`, measured on a live run 2026-08-02.
+// Against the live control plane the renderer found no command, drew NOTHING, and every iOS card
+// silently vanished — no error, no blank card, no card. A fake shaped differently from production is
+// worse than no fake, because the suite stays green while the product is broken.
+//
 // The event frames carry the tool NAME and deliberately not the arguments or the result, so this is
 // where the iOS renderer gets what it draws. The three results below are read from
 // tests/fixtures/*.txt, captured by running the real `xcodebuild` and `xcrun simctl` on a Mac
@@ -229,7 +236,7 @@ const CODING_TOOL_CALLS = [
     name: "palai.workspace.shell",
     state: "completed",
     replay_class: "irreversible",
-    arguments: { command: "git -C repo add CONTRIBUTING.md" },
+    arguments: { argv: ["bash", "-c", "git -C repo add CONTRIBUTING.md"] },
     result: { exit_code: 0, stdout: "" },
     created_at: "2026-08-02T00:00:03Z",
     updated_at: "2026-08-02T00:00:04Z",
@@ -240,7 +247,7 @@ const CODING_TOOL_CALLS = [
     name: "palai.workspace.shell",
     state: "completed",
     replay_class: "irreversible",
-    arguments: { command: "xcodebuild -scheme PalaiDemo -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build" },
+    arguments: { argv: ["bash", "-c", "cd repo && xcodebuild -scheme PalaiDemo -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build"] },
     // exit 65 is what xcodebuild returns for a build failure — a RESULT FIELD, not a transport error.
     result: { exit_code: 65, stdout: IOS_FIXTURES.build },
     created_at: "2026-08-02T00:00:05Z",
@@ -252,7 +259,7 @@ const CODING_TOOL_CALLS = [
     name: "palai.workspace.shell",
     state: "completed",
     replay_class: "irreversible",
-    arguments: { command: "xcodebuild -scheme PalaiDemo -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test" },
+    arguments: { argv: ["bash", "-c", "cd repo && xcodebuild -scheme PalaiDemo -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test"] },
     result: { exit_code: 0, stdout: IOS_FIXTURES.test },
     created_at: "2026-08-02T00:00:07Z",
     updated_at: "2026-08-02T00:00:08Z",
@@ -263,7 +270,7 @@ const CODING_TOOL_CALLS = [
     name: "palai.workspace.shell",
     state: "completed",
     replay_class: "irreversible",
-    arguments: { command: "xcrun simctl list devices" },
+    arguments: { argv: ["bash", "-c", "xcrun simctl list devices"] },
     result: { exit_code: 0, stdout: IOS_FIXTURES.sim },
     created_at: "2026-08-02T00:00:09Z",
     updated_at: "2026-08-02T00:00:10Z",

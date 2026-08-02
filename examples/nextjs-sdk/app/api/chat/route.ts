@@ -154,6 +154,12 @@ async function pumpPalaiFrames(
   // Publications whose approval APPLIED but whose push has not been confirmed. See the
   // approval.approved.v1 arm for why the two are not the same event.
   const approvedPublications = new Set<string>();
+  // THE REPLAY CLASS IS ON THE EXECUTING FRAME AND NOT ON THE COMPLETED ONE, so it has to be
+  // remembered across the pair. Both parts share a `data-tool` id, so the AI SDK REPLACES the first
+  // with the second — and a completed part that omitted the class would blank a field the operator
+  // had already been shown. Measured as a red spec: the card lost "irreversible" the moment the call
+  // finished.
+  const replayClasses = new Map<string, string>();
 
   try {
     for (;;) {
@@ -170,7 +176,7 @@ async function pumpPalaiFrames(
         const evt = parseFrame(frame);
         if (evt === null) continue;
 
-        const terminal = writeFrame(writer, evt, openText, textId, responseId, pending, approvedPublications);
+        const terminal = writeFrame(writer, evt, openText, textId, responseId, pending, approvedPublications, replayClasses);
         if (terminal) {
           if (textOpen) {
             writer.write({ type: "text-end", id: textId });
@@ -219,6 +225,7 @@ function writeFrame(
   responseId: string,
   pending: Promise<void>[],
   approvedPublications: Set<string>,
+  replayClasses: Map<string, string>,
 ): boolean {
   const d = evt.data;
   switch (evt.type) {
@@ -248,6 +255,9 @@ function writeFrame(
     // CLOSING IT is a control-plane change (put the name on the frame, or give the events API a join), not
     // an adapter change, and inventing a second lookup here would hide the gap rather than report it.
     case "tool_call.executing.v1":
+      if (str(d.tool_call_id) !== "" && str(d.replay_class) !== "") {
+        replayClasses.set(str(d.tool_call_id), str(d.replay_class));
+      }
       writer.write({
         type: "data-tool",
         id: String(d.tool_call_id ?? "tool"),
@@ -286,6 +296,9 @@ function writeFrame(
           id: d.tool_call_id ?? null,
           name: str(d.tool_name) || null,
           state: "done",
+          // Carried from the executing frame: the completed frame does not repeat it, and this part
+          // REPLACES that one on the same id.
+          replayClass: replayClasses.get(str(d.tool_call_id)) ?? null,
           nameUnavailable: str(d.tool_name) === "",
         },
       });

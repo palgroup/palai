@@ -224,3 +224,50 @@ test.describe("reading a tool call", () => {
     expect(text).toContain("no scheme");
   });
 });
+
+test.describe("the shell tool's REAL argument shape", () => {
+  // MEASURED on a live run 2026-08-02. `palai.workspace.shell` sends an ARGV ARRAY, and the first
+  // version of shellCommandOf looked only for a `command` string — the shape the fake invented. So
+  // against the live control plane it returned "", the detail part rendered nothing, and every iOS
+  // card silently vanished. No error, no blank card: no card.
+  test("an argv array from the live shell tool yields the command", () => {
+    const live = {
+      argv: [
+        "bash",
+        "-c",
+        'cd repo && xcodebuild -scheme PalaiDemo -destination "platform=iOS Simulator,name=iPhone 17 Pro" build',
+      ],
+    };
+    const command = shellCommandOf(live);
+    expect(command).toContain("xcodebuild");
+    // And it must CLASSIFY, which is the property that actually mattered — a command the classifier
+    // never sees renders as nothing at all.
+    expect(classifyCommand(command)).toBe("build");
+  });
+
+  // `bash -c` puts the script in the element after the flag. Joining the whole array would classify
+  // on a string starting with "bash" and put that on the terminal header, which is not what the
+  // model asked to run.
+  test("the -c script is unwrapped rather than joined", () => {
+    expect(shellCommandOf({ argv: ["bash", "-c", "xcrun simctl list devices"] })).toBe(
+      "xcrun simctl list devices",
+    );
+    // A plain argv with no -c is joined, because there is no inner script to unwrap.
+    expect(shellCommandOf({ argv: ["git", "status", "--short"] })).toBe("git status --short");
+  });
+
+  test("an empty or malformed argv falls through rather than inventing a command", () => {
+    expect(shellCommandOf({ argv: [] })).toBe("");
+    expect(shellCommandOf({ argv: [1, 2] })).toBe("");
+    // The string form still works — a registry tool wrapping the shell may pass one.
+    expect(shellCommandOf({ command: "xcodebuild build" })).toBe("xcodebuild build");
+  });
+
+  // The live result carries these seven keys; the renderer must read the two it needs off the real
+  // shape rather than off the one the fixture happened to have.
+  test("the live result shape yields its exit code and output", () => {
+    const live = { stderr: "", stdout: "** BUILD SUCCEEDED **", exit_code: 0, timed_out: false, truncated: false, oom_killed: false, duration_ms: 38016 };
+    expect(exitCodeOf(live)).toBe(0);
+    expect(outputTextOf(live)).toContain("** BUILD SUCCEEDED **");
+  });
+});

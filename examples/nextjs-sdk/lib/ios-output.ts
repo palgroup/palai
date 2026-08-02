@@ -258,14 +258,39 @@ export function readIOSOutput(command: string, output: string, exitCode: number 
 /**
  * shellCommandOf pulls the command line out of a tool call's arguments.
  *
- * MEASURED against the shipped schema rather than assumed: `palai.workspace.shell` takes its command
- * under `command`. The two fallbacks are not speculative generality — a registry tool wrapping the
- * shell may name it `cmd` or `script`, and a call whose command we cannot find must render as a
- * plain tool rather than as an iOS build with an empty command line.
+ * MEASURED ON A LIVE RUN, AND THE FIRST VERSION OF THIS WAS WRONG IN THE WORST WAY. It looked only
+ * for a `command` STRING, because that is what the deterministic fake sent — a shape I had invented.
+ * The real `palai.workspace.shell` takes an ARGV ARRAY:
+ *
+ *     {"argv": ["bash", "-c", "cd repo && xcodebuild -scheme PalaiDemo -destination … build"]}
+ *
+ * So against the live control plane this returned "", `ToolDetailPart` rendered nothing at all, and
+ * every iOS card silently vanished. Not an error, not a blank card — no card. It is exactly the
+ * failure a fake shaped differently from production produces, and it is invisible until something
+ * drives the real thing.
+ *
+ * THE `bash -c` FORM IS UNWRAPPED. `["bash","-c","<script>"]` puts the interesting text in the LAST
+ * element; joining the whole array would classify on a string starting with "bash", which is not
+ * what the model asked to run and is not what an operator wants to read on a terminal header.
+ *
+ * The string keys are kept as a fallback rather than deleted: a registry tool wrapping the shell may
+ * pass a plain `command`, and the deterministic fixtures exercise that path. A call whose command
+ * cannot be found returns "" and renders as a plain tool — never as an iOS build with no command.
  */
 export function shellCommandOf(args: unknown): string {
   if (args === null || typeof args !== "object") return "";
   const record = args as Record<string, unknown>;
+
+  const argv = record.argv;
+  if (Array.isArray(argv) && argv.length > 0) {
+    const parts = argv.filter((v): v is string => typeof v === "string");
+    if (parts.length === 0) return "";
+    // `sh -c` / `bash -c` / `zsh -c`: the script is the element after the -c flag.
+    const dashC = parts.indexOf("-c");
+    if (dashC > 0 && dashC + 1 < parts.length) return parts[dashC + 1];
+    return parts.join(" ");
+  }
+
   for (const key of ["command", "cmd", "script"]) {
     const value = record[key];
     if (typeof value === "string" && value.trim() !== "") return value;
