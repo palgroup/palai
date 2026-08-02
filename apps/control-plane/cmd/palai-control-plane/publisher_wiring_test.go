@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -122,6 +126,134 @@ func TestABindingsOwnCredentialPublishesWithNoGitHubApp(t *testing.T) {
 		t.Fatalf("the remote's ref is %q, want the approved head %q — the receipt claimed a push that did "+
 			"not land", got, head)
 	}
+}
+
+// TestAnAppLessDeploymentRefusesABindingWithNoCredential is the other half, and it is the SECURITY half.
+//
+// A binding with no connection_ref has always meant "publish under the deployment's App". On a deployment
+// with no App there is nothing for that to mean, and both wrong answers are worse than a refusal:
+// publishing anonymously, or publishing under whatever credential happens to be reachable. The refusal is
+// the publisher's own, so it reaches the operator — the publication tool refuses the request before a
+// human is asked, and the publish boundary would warn on the row.
+func TestAnAppLessDeploymentRefusesABindingWithNoCredential(t *testing.T) {
+	appLessEnv(t)
+	repo, ok := repositoryPublisher().(*execution.RepositoryPublisher)
+	if !ok {
+		t.Fatal("repositoryPublisher() built no *execution.RepositoryPublisher")
+	}
+	err := repo.CanPublish("")
+	if err == nil {
+		t.Fatal("a binding with NO connection_ref was accepted on a deployment with no GitHub App: there is " +
+			"no credential this publication could be made under, so approving it authorizes nothing")
+	}
+	// The refusal has to be actionable. It names both routes out, because an operator on a single-tenant
+	// stack wants the connection_ref one and an operator running a fleet wants the App one.
+	for _, want := range []string{"PALAI_GITHUB_APP_ID", "connection_ref"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal does not name %q, so it does not say what to do about it: %v", want, err)
+		}
+	}
+	// ...and the binding that DOES name its own credential is accepted on the SAME deployment. Without this
+	// leg the assertion above is satisfied by a publisher that refuses everything, which would be the
+	// original defect wearing an error message.
+	if err := repo.CanPublish("demo-local-token"); err != nil {
+		t.Fatalf("a binding naming its own credential was refused on an App-less deployment: %v — this is the "+
+			"configuration the connection_ref path exists for", err)
+	}
+}
+
+// TestTheAppPathIsUnchangedWhenAnAppIsConfigured pins the direction this change must NOT alter. The App
+// path is the right answer for a fleet, where handing a run a tenant PAT would hand it that account's
+// whole reach, and it stays exactly as it was for the bindings that name no credential of their own.
+func TestTheAppPathIsUnchangedWhenAnAppIsConfigured(t *testing.T) {
+	appLessEnv(t)
+	key := filepath.Join(t.TempDir(), "app.pem")
+	if err := os.WriteFile(key, testAppPEM(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PALAI_GITHUB_APP_ID", "123456")
+	t.Setenv("PALAI_GITHUB_APP_INSTALLATION_ID", "7891011")
+	t.Setenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE", key)
+	t.Setenv("PALAI_GIT_REPO", "acme/widgets")
+
+	repo, ok := repositoryPublisher().(*execution.RepositoryPublisher)
+	if !ok {
+		t.Fatal("repositoryPublisher() built no *execution.RepositoryPublisher")
+	}
+	if repo.Broker == nil {
+		t.Fatal("a configured GitHub App built no deployment-global broker: every binding without its own " +
+			"credential now has none")
+	}
+	if repo.PRClient == nil {
+		t.Fatal("a configured App with PALAI_GIT_REPO=owner/repo built no pull-request client: an approved " +
+			"pull request would answer 'no pull-request client wired'")
+	}
+	if err := repo.CanPublish(""); err != nil {
+		t.Fatalf("a ref-less binding was refused on a deployment WITH an App: %v", err)
+	}
+	if err := repo.CanPublish("rcon_tenant_pat"); err != nil {
+		t.Fatalf("a ref-carrying binding was refused on a deployment with an App: %v", err)
+	}
+	// AND THE CONNECTION HALF SURVIVES THE APP BEING PRESENT. The two paths are independent in BOTH
+	// directions: this is the assertion that would have caught the fix being written as a second gate.
+	if repo.ConnectionSecrets == nil || repo.PRClientFor == nil {
+		t.Fatal("configuring a GitHub App removed the per-binding credential path: a tenant that provisioned " +
+			"its own credential would silently publish as the deployment App")
+	}
+}
+
+// TestAHalfConfiguredAppBuildsNoDeploymentCredential pins the state an operator reaches by editing
+// .env.local and being interrupted. Two of three must not read as configured — a broker built from a
+// partial triple would be an App identity nobody chose.
+func TestAHalfConfiguredAppBuildsNoDeploymentCredential(t *testing.T) {
+	key := filepath.Join(t.TempDir(), "app.pem")
+	if err := os.WriteFile(key, testAppPEM(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	full := map[string]string{
+		"PALAI_GITHUB_APP_ID":               "123456",
+		"PALAI_GITHUB_APP_INSTALLATION_ID":  "7891011",
+		"PALAI_GITHUB_APP_PRIVATE_KEY_FILE": key,
+	}
+	for missing := range full {
+		t.Run(missing, func(t *testing.T) {
+			appLessEnv(t)
+			for name, value := range full {
+				if name != missing {
+					t.Setenv(name, value)
+				}
+			}
+			repo, ok := repositoryPublisher().(*execution.RepositoryPublisher)
+			if !ok {
+				t.Fatal("repositoryPublisher() built no *execution.RepositoryPublisher")
+			}
+			if repo.Broker != nil {
+				t.Fatalf("a half-configured App (%s unset) built a deployment-global broker anyway", missing)
+			}
+			// It is still a publisher, and a binding with its own credential still publishes through it. That
+			// is the difference between this and the old behaviour, where a half-configured App returned nil
+			// and took the tenant path down with it.
+			if err := repo.CanPublish("demo-local-token"); err != nil {
+				t.Fatalf("a half-configured App refused a binding carrying its OWN credential: %v", err)
+			}
+			if err := repo.CanPublish(""); err == nil {
+				t.Fatal("a half-configured App accepted a ref-less binding: there is no credential for it")
+			}
+		})
+	}
+}
+
+// testAppPEM is a real RSA private key, generated for this test. NewGitHubAppBroker parses it, so a
+// placeholder string would fail the parse and make every "an App was configured" assertion below pass for
+// the wrong reason — a nil broker, which is exactly the state these tests exist to tell apart. It signs
+// nothing that leaves the process.
+func testAppPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate an App key: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 }
 
 // --- git fixtures. Local to this package: the execution package's copies are unexported test helpers, and

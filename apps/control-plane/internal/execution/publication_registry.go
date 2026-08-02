@@ -21,10 +21,15 @@ type publicationRegistry struct {
 	// hooks fires before_repository_publish (spec §28.17, E12 T8) once the destination is resolved. Nil ⇒ no
 	// hook fires (bit-unchanged). The orchestrator propagates its firer here via SetHookFirer.
 	hooks HookFirer
+	// canPublish answers whether this deployment has a credential path for a publication carrying the
+	// binding's connection_ref, BEFORE a pending approval is recorded. Nil ⇒ no precheck (the fakes in this
+	// package, which record approvals nothing will ever pump). Orchestrator.canPublish is what production
+	// passes; it delegates to the wired publisher's own CanPublish, so this is not a second copy of the rule.
+	canPublish func(connectionRef string) error
 }
 
-func newPublicationRegistry(store *coordinator.Store) *publicationRegistry {
-	return &publicationRegistry{store: store}
+func newPublicationRegistry(store *coordinator.Store, canPublish func(connectionRef string) error) *publicationRegistry {
+	return &publicationRegistry{store: store, canPublish: canPublish}
 }
 
 // RequestPublication records a pending publication + approval and returns the pending-approval result
@@ -46,6 +51,23 @@ func (r *publicationRegistry) RequestPublication(ctx context.Context, scope tool
 	}
 	if !found {
 		return nil, fmt.Errorf("publication tool: the run prepared no repository, nothing to publish")
+	}
+
+	// REFUSED BEFORE A HUMAN IS ASKED, and this is the earliest point at which the question can be
+	// answered: target.ConnectionRef is the binding's own credential handle and it has just been resolved.
+	//
+	// WHY IT IS HERE RATHER THAN AT THE PUMP. The pump's refusal already exists and lands as a warning on
+	// the row — but by then a human has read a push, pressed Approve, and been told the run woke. An
+	// approval that authorizes nothing is worse than a refusal, because it is indistinguishable from one
+	// that worked. So a publication with no credential path never becomes a pending approval at all.
+	//
+	// IT IS AN ERROR, WHICH IS AN ANSWER. A tool error is delivered to the model as a RESULT, so the agent
+	// reports "this deployment cannot publish this binding" in the conversation instead of the run wedging
+	// or the operator being handed a button that does nothing.
+	if r.canPublish != nil {
+		if err := r.canPublish(target.ConnectionRef); err != nil {
+			return nil, fmt.Errorf("publication tool: %w", err)
+		}
 	}
 
 	// THE MERGE DESTINATION IS RESOLVED HERE, and it is resolved from a row the model never touched (E23
