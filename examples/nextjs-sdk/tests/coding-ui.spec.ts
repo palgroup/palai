@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { API_KEY, UPSTREAM_PORT } from "./constants";
+import { API_KEY, NEXT_PORT, UPSTREAM_PORT } from "./constants";
 
 // =============================================================================================
 // THE /chat SURFACES, DRIVEN THROUGH THE THINGS A HUMAN TOUCHES.
@@ -539,6 +539,56 @@ test("the turn runs as a published agent, and the steering lives on its revision
   // 5. And the steering is NOT also sent on the request. resolveInstructionLayers COMPOSES layer 3
   //    with layer 5, so sending both would put the same paragraph in the conversation twice.
   expect(body.codingInstructions[0]).toBe("");
+});
+
+// ONE CREATOR, AND THE SECOND ONE IS IMPOSSIBLE RATHER THAN MERELY UNUSED.
+//
+// Two routes used to publish an iOS agent and they disagreed on every field that decides what a run can
+// do — one shipped `tools: [file, shell, commit]` + gpt-4o-mini, the other omits `tools` and pins
+// claude-sonnet-5. A second creator that still exists gets used by somebody, so /api/palai/agents now
+// delegates to the same resolver instead of creating a lineage of its own.
+//
+// BOTH HALVES ARE ASSERTED. That the relay returns the SAME agent the chat resolved is what makes it
+// one definition; that a differently-named create is REFUSED is what makes the other option impossible.
+// Without the second, this passes against a route that still creates whatever it is asked for.
+test("there is exactly one creator of the coding agent, and a second name is refused", async ({ page, request }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "add a contributing guide");
+  await expect(page.getByTestId("chat-agent")).toBeVisible({ timeout: 30_000 });
+
+  const seen = await request.get(`http://127.0.0.1:${UPSTREAM_PORT}/__introspect-coding`, {
+    headers: { Authorization: `Bearer ${API_KEY}` },
+  });
+  const before = (await seen.json()) as { agentProfiles: { id: string; name: string }[] };
+  const resolved = before.agentProfiles.find((p) => p.name === "ios-coder");
+  expect(resolved, "the chat must have resolved ios-coder").toBeDefined();
+
+  // The relay hands back the SAME agent rather than minting one.
+  const relayed = await request.post(`http://127.0.0.1:${NEXT_PORT}/api/palai/agents`, { data: {} });
+  expect(relayed.status()).toBe(200);
+  const body = (await relayed.json()) as { agentId: string; name: string; tools: unknown };
+  expect(body.agentId).toBe(resolved!.id);
+  expect(body.name).toBe("ios-coder");
+  // `tools: null` is the STORED value and it means "no ceiling" — a different statement from a field
+  // the response forgot to send.
+  expect(body.tools).toBeNull();
+
+  // A second lineage cannot be created through this surface at all.
+  const other = await request.post(`http://127.0.0.1:${NEXT_PORT}/api/palai/agents`, {
+    data: { name: "ios-agent" },
+  });
+  expect(other.status()).toBe(409);
+  expect((await other.json()) as { detail?: string }).toHaveProperty("detail");
+
+  // AND NOTHING WAS CREATED BY EITHER CALL. A refusal that still left a profile behind would be the
+  // same defect wearing an error code.
+  const after = (await (
+    await request.get(`http://127.0.0.1:${UPSTREAM_PORT}/__introspect-coding`, {
+      headers: { Authorization: `Bearer ${API_KEY}` },
+    })
+  ).json()) as { agentProfiles: unknown[] };
+  expect(after.agentProfiles).toHaveLength(before.agentProfiles.length);
 });
 
 // AND THE SCREEN SAYS SO. The owner had to ASK which agent was running, which is the report that the
