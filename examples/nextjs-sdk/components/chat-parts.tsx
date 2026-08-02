@@ -45,9 +45,15 @@ export function ToolPart({ data }: { data: Data }) {
   const id = s(data.id) || "unknown";
   const running = s(data.state) === "running";
   const replayClass = s(data.replayClass);
+  // THE OPEN STATE IS CONTROLLED HERE RATHER THAN LEFT TO THE COLLAPSIBLE, and that is a bug fix
+  // rather than a preference. `Tool` is an uncontrolled Radix Collapsible; while a run is still
+  // streaming, every new part re-renders this subtree and the card an operator had just opened
+  // SNAPS SHUT under them. It reproduced as an ordering-dependent test failure — green in isolation,
+  // red once the suite left the stream mid-flight — which is exactly how a race announces itself.
+  const [open, setOpen] = useState(false);
 
   return (
-    <Tool defaultOpen={false} data-testid="chat-tool" className="mb-2">
+    <Tool open={open} onOpenChange={setOpen} data-testid="chat-tool" className="mb-2">
       <ToolHeader
         type="dynamic-tool"
         toolName={id}

@@ -45,6 +45,8 @@ export function RepositoryPicker({
   const [error, setError] = useState("");
   const [showBind, setShowBind] = useState(false);
   const [showSecret, setShowSecret] = useState(false);
+  // Survives the form: see SecretForm for why the receipt must not live inside the thing that closes.
+  const [lastSecret, setLastSecret] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -182,7 +184,13 @@ export function RepositoryPicker({
         >
           <KeyRoundIcon className="size-3.5" aria-hidden /> Add a credential
         </Button>
-        {showSecret ? <SecretForm onCreated={() => setShowSecret(false)} /> : null}
+        {showSecret ? <SecretForm onCreated={setLastSecret} /> : null}
+        {lastSecret !== "" ? (
+          <p data-testid="secret-stored" className="px-2 text-[12px] text-muted-foreground">
+            credential <span className="font-mono text-ink-dim">{lastSecret}</span> is stored — use that
+            name as a binding&rsquo;s credential
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -269,7 +277,7 @@ function BindForm({ onBound }: { onBound: (b: Binding) => void }) {
 // a GET that writes the token into the address bar. The field is type="password" and is never echoed
 // back — the control plane's 201 body is metadata only ({name, object, version, updated_at}), so
 // there is nothing to render even if this component wanted to.
-function SecretForm({ onCreated }: { onCreated: () => void }) {
+function SecretForm({ onCreated }: { onCreated: (name: string) => void }) {
   const nameId = useId();
   const valueId = useId();
   const [state, setState] = useState<"idle" | "sending">("idle");
@@ -301,7 +309,12 @@ function SecretForm({ onCreated }: { onCreated: () => void }) {
           }
           form.reset();
           setCreated(`${body.name} (version ${body.version})`);
-          onCreated();
+          // THE FORM STAYS OPEN, and the earlier version of this collapsed it here. That destroyed
+          // the only confirmation the operator ever gets: the control plane's 201 body is metadata
+          // only, so if this component unmounts its own "stored …" line there is NOTHING anywhere
+          // saying the credential exists. Storing a secret and showing no receipt is how somebody
+          // types it twice, or types it wrong and never learns.
+          onCreated(String(body.name ?? ""));
         } catch (err) {
           setError(err instanceof Error ? err.message : "the credential could not be stored");
         } finally {
