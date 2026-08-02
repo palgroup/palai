@@ -187,9 +187,23 @@ const REPO_HINT =
   "`swift test --package-path repo`. " +
   "The clone has no git identity configured, so commit with " +
   "`git -C repo -c user.email=agent@palai.local -c user.name=Palai commit -m \"…\"` — do not run " +
-  "`git config --global`. Do not run `git init`. " +
-  "Long-running commands accept `\"background\": true` and return a task_id you can poll, rather than " +
-  "holding the turn open.";
+  "`git config --global`. Do not run `git init`.";
+
+// BACKGROUND TASKS ARE DELIBERATELY NOT MENTIONED HERE, and the reason is worth writing down because
+// the obvious move is to add a clause and I nearly did.
+//
+// They exist: `palai.workspace.shell` takes `"background": true` and answers {task_id, output_path,
+// status} (execution/tools/shell.go:103-118), with palai.workspace.background_kill to stop one. And the
+// model is ALREADY TOLD — that sentence is the parameter's own `description` in the tool's JSON schema
+// (shell.go:36), which is part of the definition the model is given. Repeating it here would spend
+// context re-teaching something the tool already says.
+//
+// The stronger reason is that it may not work on this stack and I have not measured whether it does.
+// shell.go:104 refuses with ErrBackgroundUnsupported when `env.Background` is nil — "the deployment does
+// not do background tasks" — and nothing here has established that this deployment wires it. Telling the
+// model to use a capability that answers `unavailable` would spend a tool call to earn a refusal.
+// Naming an exposure is not proving the mechanism works on the target, which is CLAUDE.md's second rule
+// and the one this file's own history is full of.
 
 // pumpPalaiFrames reads Palai's SSE journal for this session and emits the chat's frames.
 //
