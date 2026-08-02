@@ -73,9 +73,19 @@ export function AutoApproveControls({
         // would let a click on one control overwrite a change made to the other.
         body: JSON.stringify({ sessionId, [half]: value }),
       });
-      const payload = (await res.json()) as Record<string, unknown>;
+      // THE PARSE IS DEFENSIVE AND IT COMES AFTER THE STATUS, WHICH IS THE OTHER HALF OF THE DEFECT.
+      // This called res.json() FIRST and unconditionally, so a 500 with an empty body threw inside the
+      // try and the catch below rendered the SyntaxError as the answer to "arm this session". The relay
+      // is fixed to always send problem+json, and this no longer depends on it doing so — a component
+      // that trusts its own server to be well-behaved is a component that shows an exception the one
+      // time it is not.
+      const payload = (await res.json().catch(() => ({}))) as Record<string, unknown>;
       if (!res.ok) {
-        setRefusal(typeof payload.detail === "string" ? payload.detail : `HTTP ${res.status}`);
+        setRefusal(
+          typeof payload.detail === "string" && payload.detail !== ""
+            ? payload.detail
+            : `the control plane did not respond (HTTP ${res.status})`,
+        );
         return;
       }
       onChange({

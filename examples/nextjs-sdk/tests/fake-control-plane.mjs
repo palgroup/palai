@@ -353,6 +353,15 @@ let codingOmitsToolName = false;
 // never helps, and the screen must say the join failed rather than draw an empty successful build.
 let codingUnjoinable = false;
 
+// AN UPSTREAM THAT ANSWERS WITH SOMETHING THAT IS NOT JSON. Measured on the live stack while its
+// control plane was down: the arming control showed the operator
+//     Failed to execute 'json' on 'Response': Unexpected end of JSON input
+// a raw JS exception, as the answer to "arm this session". The relay's fetch was unguarded, so an
+// unreachable upstream became a 500 with an empty body, and the component's res.json() threw. An
+// upstream that is down is an ANSWER — "the control plane did not respond" is a sentence a person can
+// act on; a SyntaxError is not. This flag makes that state reachable from a test.
+let brokenUpstream = false;
+
 let approvalDecision = null; // null | "approved" | "denied"
 const createdBindings = [];
 const createdSecrets = [];
@@ -549,6 +558,13 @@ function handleCoding(method, pathname, request, response) {
   // exactly as the control plane does, because that is the property the screen depends on: a click
   // on one switch must not move the other.
   if (method === "PATCH" && pathname === `/v1/sessions/${CODING_SESSION_ID}`) {
+    if (brokenUpstream) {
+      // Not problem+json, not JSON at all — exactly what a proxy, a crashed process or an empty 500
+      // body looks like from the relay's side.
+      response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+      response.end("");
+      return true;
+    }
     let raw = "";
     request.on("data", (chunk) => { raw += chunk; });
     request.once("end", () => {
@@ -687,7 +703,15 @@ function handleCoding(method, pathname, request, response) {
   // that armed the session left it armed for the next one — and two specs passed or failed purely on
   // the order they happened to run in. A test whose result depends on its neighbours is measuring
   // the suite, not the product.
+  if (method === "POST" && pathname === "/__break-upstream") {
+    brokenUpstream = true;
+    request.resume();
+    request.once("end", () => sendJSON(response, 200, { broken: true }));
+    return true;
+  }
+
   if (method === "POST" && pathname === "/__reset-coding") {
+    brokenUpstream = false;
     codingAutoApprove.auto_approve_tools = false;
     codingAutoApprove.auto_approve_publications = false;
     codingAutoApprove.auto_approve_set_by = "";

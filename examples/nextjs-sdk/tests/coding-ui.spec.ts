@@ -401,6 +401,54 @@ test("the collapsed line names WHICH half is armed", async ({ page }) => {
   await expect(summary).not.toContainText("pushes armed");
 });
 
+// AN UPSTREAM THAT IS DOWN IS AN ANSWER, NOT AN EXCEPTION.
+//
+// MEASURED on the live stack while its control plane was unreachable: pressing the arming control
+// showed the operator
+//     Failed to execute 'json' on 'Response': Unexpected end of JSON input
+// A raw JS exception, as the answer to "arm this session". Two things caused it and both are fixed:
+// the relay's upstream fetch was unguarded, so an unreachable control plane became a 500 with an empty
+// body; and the component called res.json() BEFORE checking res.ok, so the parse threw and its catch
+// rendered the SyntaxError verbatim.
+//
+// This is the same shape as the tool-error wedge: an ordinary failure with no representation, so it
+// escapes as something structural. "The control plane did not respond" is a sentence a person can act
+// on; a SyntaxError is a bug report about us.
+//
+// THE ASSERTION IS ON THE PROPERTY, NOT THE WORDING: whatever the sentence says, it must not be the
+// exception. Pinning the exact copy would make this a spelling test.
+test("an upstream that answers with something that is not JSON is reported as a sentence", async ({ page, request }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "add a contributing guide");
+  await expect(page.getByTestId("chat-run").first()).toContainText("completed", { timeout: 30_000 });
+
+  // Break the upstream only now — the session had to be opened first, or the control is not armable
+  // and the click would do nothing for an unrelated reason.
+  await request.post(`http://127.0.0.1:${UPSTREAM_PORT}/__break-upstream`, {
+    headers: { Authorization: `Bearer ${API_KEY}` },
+  });
+
+  await page.getByTestId("auto-approve-summary").click();
+  await page.getByTestId("auto-approve-tools").click();
+
+  const refusal = page.getByTestId("auto-approve-refusal");
+  await expect(refusal).toBeVisible();
+  // BANNING THE WORD "JSON" WAS THE WRONG ASSERTION AND IT FAILED AGAINST THE CORRECT FIX. The screen
+  // now says "the control plane answered HTTP 500 with a body that is not JSON (it was empty)", which
+  // is a good sentence that happens to contain the word — the thing being excluded is the raw
+  // EXCEPTION, not a noun. What separates them is that an exception names a JavaScript operation that
+  // failed, so that is what this excludes.
+  await expect(refusal).not.toContainText("Failed to execute");
+  await expect(refusal).not.toContainText("Unexpected end of");
+  await expect(refusal).toContainText("control plane");
+
+  // AND THE SWITCH DID NOT MOVE. The rendered state comes from the server's re-read projection, so a
+  // refused arm must leave the control OFF — a toggle that flips on a failed request is a toggle that
+  // lies at exactly the moment it matters.
+  await expect(page.getByTestId("auto-approve-tools")).toHaveAttribute("aria-checked", "false");
+});
+
 // THE STATE LINE NAMES WHICH HALF IS ARMED. Arming builds while pushes stay off is the safety property
 // the whole two-switch design exists for, and it is worth nothing if the screen renders the same
 // sentence for "tools armed", "pushes armed" and "both armed" — three different exposures. The old line
