@@ -66,8 +66,9 @@ export interface SimulatorDevice {
 export interface SimulatorReport {
   kind: "simulator";
   devices: SimulatorDevice[];
-  /** The verb the command performed, when it was more than a list. */
-  action?: "boot" | "shutdown" | "install" | "launch" | "bootstatus";
+  /** The verb the command performed. `list` is included: "which devices exist" is a real answer and
+   * a card with no verb reads as though the screen could not tell what ran. */
+  action?: "boot" | "shutdown" | "install" | "launch" | "bootstatus" | "list";
   booted: boolean;
 }
 
@@ -213,7 +214,7 @@ export function parseSimulator(command: string, output: string): Omit<SimulatorR
 
   const c = command.toLowerCase();
   let action: SimulatorReport["action"];
-  for (const verb of ["bootstatus", "boot", "shutdown", "install", "launch"] as const) {
+  for (const verb of ["bootstatus", "boot", "shutdown", "install", "launch", "list"] as const) {
     // `bootstatus` is checked before `boot` because it CONTAINS it — reversed, every bootstatus
     // call would report itself as a boot.
     if (c.includes(`simctl ${verb}`)) {
