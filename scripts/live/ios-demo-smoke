@@ -27,6 +27,8 @@ KEY="${PALAI_API_KEY:-$(cat "${PALAI_HOME:-.palai}/api-key" 2>/dev/null || true)
 # control plane does not have and must never have. 224 KiB, a SwiftUI todo list, one .xcodeproj.
 REPO_URL="${SMOKE_REPO_URL:-https://github.com/fredrik9000/TodoList_SwiftUI.git}"
 WITH_ACCOUNTS=0
+# One nonce per invocation, so two runs of this file never present each other's idempotency keys.
+SMOKE_RUN="$(date +%s)$$"
 [ "${1:-}" = "--with-accounts" ] && WITH_ACCOUNTS=1
 
 pass=0
@@ -50,11 +52,19 @@ skip() {
 	printf '  [UNPROVEN ] %-46s %s\n' "$1" "${2:-}"
 }
 
+# A MONOTONIC COUNTER, NOT $RANDOM, and the difference is not style. Every call here runs inside a
+# command substitution, and a subshell INHERITS the shell's RNG state — so `$RANDOM` replays the same
+# sequence in each one. Measured 2026-08-02: six POSTs in a loop, five rejected with
+# `idempotency_mismatch` because they presented a key an earlier request had already used with a
+# different body. A smoke that reports the product failing when its own keys collided is worse than no
+# smoke: it points the reader at the wrong file, which is the failure this tree keeps paying for.
+_seq=0
 api() {
 	local method="$1" path="$2" body="${3:-}"
+	_seq=$((_seq + 1))
 	if [ -n "$body" ]; then
 		curl -sS -X "$method" "$API$path" -H "Authorization: Bearer $KEY" \
-			-H 'content-type: application/json' -H "Idempotency-Key: smoke-$RANDOM$RANDOM" -d "$body"
+			-H 'content-type: application/json' -H "Idempotency-Key: smoke-$SMOKE_RUN-$_seq" -d "$body"
 	else
 		curl -sS -X "$method" "$API$path" -H "Authorization: Bearer $KEY"
 	fi
@@ -93,8 +103,17 @@ agent="$(api POST /v1/agents "{\"name\":\"ios-smoke-$(date +%s)\"}")"
 agent_id="$(printf '%s' "$agent" | jq_get "['id']")"
 rev=""
 if [ -n "$agent_id" ]; then
+	# NO `model` FIELD, AND THAT IS THE POINT. A revision that names one OVERRIDES the deployment's route,
+	# and a name the configured provider does not recognise comes back as a bare HTTP 404. Measured
+	# 2026-08-02: this file pinned "gpt-4o-mini" against an Anthropic-routed deployment; the engine parked
+	# at `safe_boundary before_model, step 1` and exited 0 without ever calling the model, the runner
+	# re-leased the run five times, and the whole record was `run.failed.v1 {state, run_id}` with an empty
+	# control-plane log. Four minutes of `in_progress`, and a smoke that read it as the CHAIN being broken.
+	#
+	# Leaving it out is also what `palai up` does for the Slack profile, and for the same reason: the
+	# deployment's operator chose the model, and an agent definition that silently re-chooses it is a
+	# second opinion nobody asked for.
 	rev="$(api POST "/v1/agents/$agent_id/revisions" '{
-    "model":"gpt-4o-mini",
     "instructions":"You are an iOS engineer in a cloned repository. Read before you edit. After a visible change take a screenshot and SHOW it with palai.workspace.show_media, then ask whether it looks right.",
     "tools":["palai.workspace.file","palai.workspace.shell","palai.workspace.show_media"]
   }' | jq_get "['id']")"

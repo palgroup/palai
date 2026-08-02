@@ -338,7 +338,16 @@ func serveLease(ctx context.Context, supervisor *StreamSupervisor, leaseSession 
 		return
 	}
 	if streamErr != nil {
-		logf("supervise engine for run %s (exit %d, %d stderr bytes): %v", lease.RunID, result.ExitCode, result.StderrBytes, streamErr)
+		// THE STDERR ITSELF, NOT ITS LENGTH. The line above this one hashes result.Stderr into the lease
+		// completion, so the bytes are in hand — and what reached the operator was the COUNT of them.
+		// Measured 2026-08-02 driving the iOS live chain: a run oscillated waiting→running for four
+		// minutes over five leases, and every attempt printed "(exit 0, 134 stderr bytes): engine wait did
+		// not complete after stdout closed". The cause was 134 bytes away and the log reported its size.
+		//
+		// It is BOUNDED and one line: a runaway engine can produce megabytes, and the last few hundred
+		// bytes are where a process says why it is stopping.
+		logf("supervise engine for run %s (exit %d): %v — engine stderr: %s",
+			lease.RunID, result.ExitCode, streamErr, tailStderr(result.Stderr))
 		return
 	}
 	logf("engine completed for run %s: %d stdout bytes", lease.RunID, result.StdoutBytes)
@@ -442,4 +451,27 @@ func OutcomeClass(err error) string {
 func stderrDigest(redacted []byte) string {
 	sum := sha256.Sum256(redacted)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// maxLoggedStderr bounds the engine stderr echoed into the runner log to the last 2 KiB.
+//
+// THE TAIL AND NOT THE HEAD, because a process that dies says why at the END. A head-bounded excerpt of
+// a chatty engine is its banner, which is the one part of the output that is the same on every run and
+// therefore says nothing about this one.
+const maxLoggedStderr = 2 << 10
+
+// tailStderr renders engine stderr for one log line: the last maxLoggedStderr bytes, newlines flattened
+// so a multi-line panic does not break the line-per-event shape the rest of this log has.
+func tailStderr(b []byte) string {
+	if len(b) == 0 {
+		// AN EMPTY STDERR IS A FINDING, not a blank. It says the engine died without explaining itself,
+		// which sends a reader to the image and the limits rather than to a message that is not there.
+		return "(empty — the engine wrote nothing to stderr)"
+	}
+	trimmed := ""
+	if len(b) > maxLoggedStderr {
+		b = b[len(b)-maxLoggedStderr:]
+		trimmed = "…(tail) "
+	}
+	return trimmed + strings.Join(strings.Fields(string(b)), " ")
 }
