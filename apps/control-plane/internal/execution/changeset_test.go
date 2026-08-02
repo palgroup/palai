@@ -184,9 +184,17 @@ func TestChangesetFlagsShellWrittenSecret(t *testing.T) {
 	if err != nil || !compiled {
 		t.Fatalf("CompileChangeset() = compiled %v err %v", compiled, err)
 	}
-	// The file-tool ledger recorded nothing, but the shell-written secret is still flagged from the patch.
-	if len(rec.Files) != 0 {
-		t.Fatalf("files = %+v, want none (no file-tool write recorded)", rec.Files)
+	// The file-tool ledger recorded nothing, and the shell-written secret is flagged from the patch.
+	//
+	// This assertion used to read `len(rec.Files) != 0` — "want none (no file-tool write recorded)".
+	// It was PINNING the defect: the suite asserted, as intended behaviour, that a file the shell wrote
+	// is absent from the changed set. The scan is what fixes that, so the file is now named, and the
+	// finding beside it proves the two paths agree about the same write.
+	if len(rec.Files) != 1 || rec.Files[0].Path != "repo/secret.env" {
+		t.Fatalf("files = %+v, want the shell-written repo/secret.env observed in the clone", rec.Files)
+	}
+	if rec.Files[0].Provenance != coordinator.FileProvenanceWorkspaceScan {
+		t.Fatalf("files[0] = %+v, want provenance=%s", rec.Files[0], coordinator.FileProvenanceWorkspaceScan)
 	}
 	found := false
 	for _, f := range rec.Findings {
@@ -196,6 +204,197 @@ func TestChangesetFlagsShellWrittenSecret(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("shell-written committed secret not flagged; findings = %+v", rec.Findings)
+	}
+}
+
+// TestChangesetNamesAFileOnlyTheShellToolWrote is the defect: the changed-file set was projected from
+// the file-tool ledger ALONE, so every mutation the shell tool made to the same clone — a heredoc,
+// `cat > f`, `git apply`, a code generator, a compiler — was invisible to it, and a run whose only
+// writer was the shell compiled to a changeset naming ZERO files.
+//
+// MEASURED on the live spine before the fix (2026-08-02): run_4ab998ccd917dbeb0b7c24d3e6a71ff8 issued
+// exactly ONE tool call — `swift build --package-path repo` — wrote 1284 files under repo/.build/, and
+// produced a 628,982-byte patch artifact beside a changed-file set of length 0.
+//
+// The three writers below are the three shapes: a new file, a rewrite of a tracked one, and a deletion.
+// None has a file-tool row; all three are real changes to the clone.
+func TestChangesetNamesAFileOnlyTheShellToolWrote(t *testing.T) {
+	requireGit(t)
+	root, base := newAllocRepo(t) // root/repo is a git repo with f.txt="base" and keep.txt="keep"
+	repoDir := filepath.Join(root, "repo")
+
+	writeFile(t, filepath.Join(repoDir, "generated.swift"), "// written by a generator\n")
+	writeFile(t, filepath.Join(repoDir, "f.txt"), "rewritten by the shell\n")
+	if err := os.Remove(filepath.Join(repoDir, "keep.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	ledger := &fakeChangesetLedger{
+		base: base, baseOK: true,
+		rows: []coordinator.ToolCallRow{
+			shellRow("tc_1", []string{"bash", "-c", "swift build && rm keep.txt"}, 0, ""),
+		},
+	}
+	rec, compiled, err := CompileChangeset(context.Background(), ledger, &fakeArtifactWriter{},
+		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+	if err != nil || !compiled {
+		t.Fatalf("CompileChangeset() = compiled %v err %v, want compiled", compiled, err)
+	}
+
+	byPath := map[string]coordinator.ChangesetFile{}
+	for _, f := range rec.Files {
+		byPath[f.Path] = f
+	}
+	for path, wantChange := range map[string]string{
+		"repo/generated.swift": "added",
+		"repo/f.txt":           "modified",
+		"repo/keep.txt":        "deleted",
+	} {
+		got, ok := byPath[path]
+		if !ok {
+			t.Fatalf("%s is absent from the changeset; a shell write changed no file according to %+v", path, rec.Files)
+		}
+		if got.Change != wantChange {
+			t.Fatalf("%s = %+v, want change=%s", path, got, wantChange)
+		}
+		// The entry must say plainly that it is an OBSERVATION. A workspace scan cannot produce a
+		// tool_call_id or the before/after hashes the file tool records, and claiming either would
+		// attribute the write to a call that never made it.
+		if got.Provenance != coordinator.FileProvenanceWorkspaceScan {
+			t.Fatalf("%s = %+v, want provenance=%s", path, got, coordinator.FileProvenanceWorkspaceScan)
+		}
+		if got.ToolCallID != "" {
+			t.Fatalf("%s claims tool call %q, but no file-tool row wrote it", path, got.ToolCallID)
+		}
+	}
+	if len(rec.Files) != 3 {
+		t.Fatalf("files = %+v, want exactly the 3 shell-made changes", rec.Files)
+	}
+}
+
+// TestChangesetKeepsToolCallProvenanceWhereTheFileToolWroteIt is the other half of the merge, and the
+// reason the fix is not "scan the workspace instead". A path the file tool wrote is ALSO seen by the
+// scan; the ledger row is the better record of it (it carries the tool call and the before/after
+// hashes a directory scan cannot produce), so the merge must keep the ledger entry and not overwrite it
+// with the weaker observation.
+func TestChangesetKeepsToolCallProvenanceWhereTheFileToolWroteIt(t *testing.T) {
+	requireGit(t)
+	root, base := newAllocRepo(t)
+	repoDir := filepath.Join(root, "repo")
+
+	writeFile(t, filepath.Join(repoDir, "f.txt"), "changed\n")     // the file tool wrote this one
+	writeFile(t, filepath.Join(repoDir, "shell.txt"), "by shell\n") // and this one has no ledger row
+
+	ledger := &fakeChangesetLedger{
+		base: base, baseOK: true,
+		rows: []coordinator.ToolCallRow{
+			fileWriteRow("tc_file", "repo/f.txt", "changed\n", "sha256:old", "sha256:new", false),
+			shellRow("tc_shell", []string{"bash", "-c", "printf 'by shell\\n' > repo/shell.txt"}, 0, ""),
+		},
+	}
+	rec, compiled, err := CompileChangeset(context.Background(), ledger, &fakeArtifactWriter{},
+		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+	if err != nil || !compiled {
+		t.Fatalf("CompileChangeset() = compiled %v err %v, want compiled", compiled, err)
+	}
+	byPath := map[string]coordinator.ChangesetFile{}
+	for _, f := range rec.Files {
+		byPath[f.Path] = f
+	}
+	tooled := byPath["repo/f.txt"]
+	if tooled.ToolCallID != "tc_file" || tooled.BeforeHash != "sha256:old" || tooled.AfterHash != "sha256:new" {
+		t.Fatalf("repo/f.txt = %+v, want the file-tool row's attribution and hashes preserved", tooled)
+	}
+	if tooled.Provenance != coordinator.FileProvenanceToolCall {
+		t.Fatalf("repo/f.txt = %+v, want provenance=%s", tooled, coordinator.FileProvenanceToolCall)
+	}
+	if observed := byPath["repo/shell.txt"]; observed.Provenance != coordinator.FileProvenanceWorkspaceScan {
+		t.Fatalf("repo/shell.txt = %+v, want provenance=%s", observed, coordinator.FileProvenanceWorkspaceScan)
+	}
+	if len(rec.Files) != 2 {
+		t.Fatalf("files = %+v, want the ledger write and the shell write exactly once each", rec.Files)
+	}
+}
+
+// TestChangesetCountsIgnoredOutputRatherThanListingIt pins the decision about build output. A run that
+// compiles writes thousands of .gitignore'd files; listing them would bury the changed set and would
+// contradict the patch, which is computed through `git add -A` and skips them for the same reason.
+// So they are EXCLUDED — and counted, because "this run changed nothing" and "this run changed one
+// file and 2 ignored build outputs" are different sentences and only the second is true.
+func TestChangesetCountsIgnoredOutputRatherThanListingIt(t *testing.T) {
+	requireGit(t)
+	root, base := newAllocRepo(t)
+	repoDir := filepath.Join(root, "repo")
+
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), ".build/\n")
+	if err := os.MkdirAll(filepath.Join(repoDir, ".build", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(repoDir, ".build", "a.o"), "obj\n")
+	writeFile(t, filepath.Join(repoDir, ".build", "sub", "b.o"), "obj\n")
+
+	ledger := &fakeChangesetLedger{
+		base: base, baseOK: true,
+		rows: []coordinator.ToolCallRow{shellRow("tc_1", []string{"swift", "build"}, 0, "")},
+	}
+	rec, compiled, err := CompileChangeset(context.Background(), ledger, &fakeArtifactWriter{},
+		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+	if err != nil || !compiled {
+		t.Fatalf("CompileChangeset() = compiled %v err %v, want compiled", compiled, err)
+	}
+	for _, f := range rec.Files {
+		if strings.Contains(f.Path, "/.build/") {
+			t.Fatalf("an ignored build output entered the changed set: %+v", f)
+		}
+	}
+	// The two .o files are ignored and excluded; .gitignore itself is a real, tracked-scope change.
+	if rec.IgnoredFileCount != 2 {
+		t.Fatalf("ignored count = %d, want 2 — the excluded files must still be counted", rec.IgnoredFileCount)
+	}
+	if len(rec.Files) != 1 || rec.Files[0].Path != "repo/.gitignore" {
+		t.Fatalf("files = %+v, want exactly repo/.gitignore", rec.Files)
+	}
+}
+
+// TestTwoRunsOnTheSameBaseCompileToDistinctChangesetIDs is a SECOND defect, found while measuring the
+// first and made near-certain by it. The changeset id is content-addressed so an E10 replay
+// re-compiles to the same id and the primary key dedupes it — but the hash covered only
+// base/final/files/findings and NOT the run, so any two runs agreeing on all of those collided. An
+// empty changed set is exactly such an agreement, and the shell blindness above made it the common case.
+//
+// MEASURED on the live spine (2026-08-02): four runs on base 5c6105f39 — run_9542ef28, run_4ab998cc,
+// run_259dc6e1, run_813fa521 — all compiled to sha256:26ef5060…, so `ON CONFLICT (id) DO NOTHING`
+// recorded the FIRST and silently discarded three. run_4ab998cc, the run that wrote 1284 files, has no
+// changeset row at all, and the surviving row names a different run.
+//
+// The two ledgers below differ ONLY in their run id, which is the whole point: the compile must still
+// be idempotent per run (asserted at the end) without two runs sharing an identity.
+func TestTwoRunsOnTheSameBaseCompileToDistinctChangesetIDs(t *testing.T) {
+	requireGit(t)
+	root, base := newAllocRepo(t)
+
+	compile := func(runID string) coordinator.ChangesetRecord {
+		t.Helper()
+		ledger := &fakeChangesetLedger{base: base, baseOK: true}
+		rec, compiled, err := CompileChangeset(context.Background(), ledger, &fakeArtifactWriter{},
+			ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: runID, AllocationRoot: root})
+		if err != nil || !compiled {
+			t.Fatalf("CompileChangeset(%s) = compiled %v err %v", runID, compiled, err)
+		}
+		return rec
+	}
+
+	first, second := compile("run_first"), compile("run_second")
+	if first.ID == second.ID {
+		t.Fatalf("two runs share changeset id %s — the second run's changeset is dropped by ON CONFLICT DO NOTHING", first.ID)
+	}
+	if first.ContentHash == second.ContentHash {
+		t.Fatalf("two runs share content hash %s", first.ContentHash)
+	}
+	// Non-vacuity, and the property the content address exists for: the SAME run re-compiles to the
+	// SAME id, so a replay still inserts 0 rows rather than a duplicate.
+	if again := compile("run_first"); again.ID != first.ID || again.ContentHash != first.ContentHash {
+		t.Fatalf("re-compiling run_first moved: %s/%s then %s/%s", first.ID, first.ContentHash, again.ID, again.ContentHash)
 	}
 }
 
@@ -212,7 +411,8 @@ func shellRow(id string, argv []string, exit int, stdout string) coordinator.Too
 }
 
 // newAllocRepo lays out an allocation root whose repo/ subdir is a git repo with one base commit
-// (f.txt="base"), returning the root and the base sha.
+// (f.txt="base", keep.txt="keep"), returning the root and the base sha. keep.txt is a second TRACKED
+// file so a test can prove a deletion — the change kind the file-tool ledger can never produce.
 func newAllocRepo(t *testing.T) (root, base string) {
 	t.Helper()
 	root = t.TempDir()
@@ -226,7 +426,8 @@ func newAllocRepo(t *testing.T) (root, base string) {
 	run := repoGit(t, repoDir)
 	run("init", "-q", "-b", "main")
 	writeFile(t, filepath.Join(repoDir, "f.txt"), "base\n")
-	run("add", "f.txt")
+	writeFile(t, filepath.Join(repoDir, "keep.txt"), "keep\n")
+	run("add", "f.txt", "keep.txt")
 	run("commit", "-q", "-m", "base")
 	return root, run("rev-parse", "HEAD")
 }

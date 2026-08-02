@@ -89,15 +89,20 @@ func CompileChangeset(ctx context.Context, ledger ChangesetLedger, aw ArtifactWr
 	if err != nil {
 		return coordinator.ChangesetRecord{}, false, fmt.Errorf("compile changeset head: %w", err)
 	}
+	observed, ignored, err := repositories.WorkingStatus(ctx, repoDir)
+	if err != nil {
+		return coordinator.ChangesetRecord{}, false, fmt.Errorf("compile changeset status: %w", err)
+	}
 
 	rec := coordinator.ChangesetRecord{
-		RunID:          in.RunID,
-		BaseCommit:     base,
-		FinalCommit:    finalCommit,
-		FinalTree:      finalTree,
-		Files:          changedFiles(rows),
-		PatchTruncated: truncated,
-		Findings:       scanPatchFindings(patch),
+		RunID:            in.RunID,
+		BaseCommit:       base,
+		FinalCommit:      finalCommit,
+		FinalTree:        finalTree,
+		Files:            mergeChangedFiles(changedFiles(rows), observed),
+		PatchTruncated:   truncated,
+		Findings:         scanPatchFindings(patch),
+		IgnoredFileCount: ignored,
 	}
 	// Content-address the id so re-compiling the SAME ledger yields the SAME id — the insert then
 	// dedupes on the primary key and the changeset is genuinely immutable (E10 replay re-compiles).
@@ -126,10 +131,46 @@ func changesetID(contentHash string) string {
 	return "chg_" + strings.TrimPrefix(contentHash, "sha256:")[:32]
 }
 
+// mergeChangedFiles combines the two records of what a run changed, and the merge is asymmetric on
+// purpose. Where a path has a file-tool row, that row WINS: it carries the tool call and the
+// before/after hashes a directory scan cannot reconstruct, and losing that attribution to a weaker
+// observation of the same write would be a regression. Where it does not, the observation is appended
+// as what it is — the clone changed here and no ledger row says who did it.
+//
+// Neither side is a superset of the other, which is why this is a merge and not a replacement. The
+// scan sees only inside the clone and only what git tracks, so a file-tool write to the allocation
+// root (a path with no repo/ prefix) or one the run later reverted appears in the ledger alone. The
+// ledger sees only the file tool, so everything the shell wrote appears in the scan alone.
+func mergeChangedFiles(ledger []coordinator.ChangesetFile, observed []repositories.WorkingChange) []coordinator.ChangesetFile {
+	byPath := make(map[string]bool, len(ledger))
+	for _, f := range ledger {
+		byPath[f.Path] = true
+	}
+	out := ledger
+	for _, c := range observed {
+		// The scan speaks in repo-relative paths; the ledger and the patch findings both prefix the
+		// clone's subdir, so the two vocabularies meet here.
+		path := filepath.ToSlash(filepath.Join(workspace.RepoDir, c.Path))
+		if byPath[path] {
+			continue
+		}
+		byPath[path] = true
+		out = append(out, coordinator.ChangesetFile{
+			Path:       path,
+			Change:     c.Change,
+			Provenance: coordinator.FileProvenanceWorkspaceScan,
+		})
+	}
+	return out
+}
+
 // changedFiles projects the file-tool write ledger into the changeset's changed-file set. Rows are
 // chronological, so a path written twice resolves to its last write. A created file is "added"; a
-// rewrite of an existing one is "modified". This is the load-bearing REP-005 projection — the changed
-// set + provenance derived from the ledger, not model prose.
+// rewrite of an existing one is "modified".
+//
+// This is HALF of the REP-005 changed set — the half that carries authorship. It reports what the FILE
+// TOOL did, which is why every entry can name a tool call; what the shell tool did to the same clone is
+// observed by mergeChangedFiles instead, because the shell keeps no write ledger to project.
 func changedFiles(rows []coordinator.ToolCallRow) []coordinator.ChangesetFile {
 	byPath := map[string]*coordinator.ChangesetFile{}
 	var order []string
@@ -169,7 +210,7 @@ func changedFiles(rows []coordinator.ToolCallRow) []coordinator.ChangesetFile {
 		}
 		if _, seen := byPath[path]; !seen {
 			order = append(order, path)
-			byPath[path] = &coordinator.ChangesetFile{Path: path}
+			byPath[path] = &coordinator.ChangesetFile{Path: path, Provenance: coordinator.FileProvenanceToolCall}
 		}
 		f := byPath[path]
 		// Keep the FIRST change kind (added stays added even after a later rewrite) but the LATEST
@@ -267,9 +308,17 @@ func writeArtifact(ctx context.Context, aw ArtifactWriter, in ChangesetInput, co
 }
 
 // changesetContentHash is the content address of a changeset (spec §30.6 immutable summary): a digest
-// over base/final + the sorted file set + sorted findings. It deliberately excludes the changeset id
-// and the (random per compile) artifact ids, so equal ledgers hash equal — the REP-005 immutability
-// anchor, and what makes the derived id stable across a re-compile.
+// over the run, base/final, the sorted file set and the sorted findings. It deliberately excludes the
+// changeset id and the (random per compile) artifact ids, so a re-compile of the same run hashes equal
+// — the REP-005 immutability anchor, and what makes the derived id stable across an E10 replay.
+//
+// THE RUN IS IN THE HASH, and its absence was a defect rather than a nuance. The id is a primary key
+// written with ON CONFLICT DO NOTHING, so two runs hashing equal do not produce two changesets — they
+// produce ONE, belonging to whichever ran first, and the second run silently has none. Every field
+// below is one two different runs can easily agree on: same base, same final (neither committed), same
+// empty file set, no findings. MEASURED on the live spine 2026-08-02: four runs on base 5c6105f39 all
+// compiled to sha256:26ef5060…, one of them the run that wrote 1284 files, and three of the four
+// recorded nothing.
 func changesetContentHash(rec coordinator.ChangesetRecord) string {
 	files := append([]coordinator.ChangesetFile(nil), rec.Files...)
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
@@ -286,8 +335,9 @@ func changesetContentHash(rec coordinator.ChangesetRecord) string {
 		stableFindings[i] = [2]string{f.Path, f.Rule}
 	}
 	canonical, _ := json.Marshal(map[string]any{
-		"base": rec.BaseCommit, "final": rec.FinalCommit, "tree": rec.FinalTree,
+		"run": rec.RunID, "base": rec.BaseCommit, "final": rec.FinalCommit, "tree": rec.FinalTree,
 		"files": files, "patch_truncated": rec.PatchTruncated, "findings": stableFindings,
+		"ignored_file_count": rec.IgnoredFileCount,
 	})
 	sum := sha256.Sum256(canonical)
 	return "sha256:" + hex.EncodeToString(sum[:])

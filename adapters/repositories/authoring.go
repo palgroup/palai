@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Commit stages the whole worktree and records a commit under a FIXED, configured author identity
@@ -51,6 +52,110 @@ func Head(ctx context.Context, repoDir string) (commit, tree string, err error) 
 		return "", "", err
 	}
 	return commit, tree, nil
+}
+
+// WorkingChange is one path the clone's working tree differs from HEAD at, as git itself sees it.
+// Path is repo-relative and slash-separated (git's own form); Change is "added", "modified" or
+// "deleted".
+type WorkingChange struct {
+	Path   string
+	Change string
+}
+
+// WorkingStatus observes what changed inside the clone, whoever changed it (spec §30.6). It exists
+// because the changeset has TWO writers and only one of them keeps a ledger: the file tool records a
+// row per write, while the shell tool writes with a heredoc, a `git apply`, a code generator or a
+// compiler and appears in no write ledger at all. The ledger is therefore not the authority on what
+// changed — the workspace is — and inside a clone git answers that exactly, cheaply and
+// rename-aware.
+//
+// ignored counts the .gitignore'd files it found changed and did NOT return. Build output is noise in
+// a changed set and is left out for the same reason `Commit`'s `git add -A` leaves it out, but the
+// count comes back so a caller can say "1284 ignored outputs" instead of "nothing".
+//
+// It runs under the same untrusted-repo hardening as preparation, and GIT_OPTIONAL_LOCKS=0 keeps the
+// read from writing the repo's index — the same promise WorkingDiff keeps with its scratch index.
+//
+// The `--porcelain=v2` choice is load-bearing rather than stylistic: in v1 a worktree-only change
+// spends its FIRST column on the index status, so the record begins with a space, and this package's
+// git helper returns strings.TrimSpace(stdout) — the leading space of the first record would be eaten
+// and every field after it would be read one column short. Every v2 record starts with a non-space
+// type char ('1', '2', 'u', '?', '!'), so the trim cannot reach into the data.
+func WorkingStatus(ctx context.Context, repoDir string) (changes []WorkingChange, ignored int, err error) {
+	out, err := gitInEnv(ctx, repoDir, []string{"GIT_OPTIONAL_LOCKS=0"},
+		"status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=traditional")
+	if err != nil {
+		return nil, 0, err
+	}
+	// -z makes every record NUL-terminated and disables git's path quoting, so a path containing a
+	// space, a quote or a newline arrives verbatim instead of C-escaped.
+	fields := strings.Split(out, "\x00")
+	for i := 0; i < len(fields); i++ {
+		record := fields[i]
+		if record == "" {
+			continue
+		}
+		switch record[0] {
+		case '?': // "? <path>" — untracked, so new to the repository
+			path, perr := statusPathAfter(record, "? ")
+			if perr != nil {
+				return nil, 0, perr
+			}
+			changes = append(changes, WorkingChange{Path: path, Change: changeAdded})
+		case '!': // "! <path>" — ignored: counted, never listed
+			ignored++
+		case '1', 'u': // "<type> <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>" (unmerged carries more hashes)
+			parts := strings.SplitN(record, " ", 9)
+			if len(parts) < 9 {
+				return nil, 0, fmt.Errorf("git status: malformed record %q", record)
+			}
+			changes = append(changes, WorkingChange{Path: parts[8], Change: changeFromXY(parts[1])})
+		case '2': // "2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>" NUL "<origPath>"
+			parts := strings.SplitN(record, " ", 10)
+			if len(parts) < 10 || i+1 >= len(fields) {
+				return nil, 0, fmt.Errorf("git status: malformed rename record %q", record)
+			}
+			i++ // the original path is its own NUL-terminated field
+			changes = append(changes, WorkingChange{Path: parts[9], Change: changeAdded})
+			// A rename empties the old path; a COPY leaves it in place, and calling that a deletion
+			// would be a claim about a file this run never touched.
+			if strings.HasPrefix(parts[1], "R") {
+				changes = append(changes, WorkingChange{Path: fields[i], Change: changeDeleted})
+			}
+		}
+	}
+	return changes, ignored, nil
+}
+
+// The change kinds a changeset entry carries. They are the vocabulary the workspace panel already
+// renders (workspace-panel.tsx:40); "deleted" is the one the file-tool ledger can never produce.
+const (
+	changeAdded    = "added"
+	changeModified = "modified"
+	changeDeleted  = "deleted"
+)
+
+// changeFromXY reduces a porcelain-v2 status pair (index, worktree; '.' means unmodified) to one
+// change kind. A path staged AND re-edited carries two letters, so the test is membership rather than
+// equality, and disappearance wins over the rest: a file staged as added and then removed from the
+// tree is gone, whichever letter is read first.
+func changeFromXY(xy string) string {
+	switch {
+	case strings.Contains(xy, "D"):
+		return changeDeleted
+	case strings.Contains(xy, "A"):
+		return changeAdded
+	default:
+		return changeModified
+	}
+}
+
+func statusPathAfter(record, prefix string) (string, error) {
+	path, ok := strings.CutPrefix(record, prefix)
+	if !ok || path == "" {
+		return "", fmt.Errorf("git status: malformed record %q", record)
+	}
+	return path, nil
 }
 
 // WorkingDiff returns the unified patch of repoDir's working tree — added, modified, and deleted
