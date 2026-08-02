@@ -34,8 +34,12 @@ the console. Each step names the screen and the page that goes deeper.
 4. **Create an environment and write its keys** at `/environments`. An environment is a named `KEY=value` set
    an agent's **shell commands** run against. A value is written once and **never read back** — not by you,
    not by the API, not by any screen. Full page: [`environments.md`](environments.md).
-5. **Register a repository** at `/repositories`. `connection_ref` is a HANDLE chosen from your secret refs,
-   never a typed credential. Registering checks nothing: the first thing that exercises a binding is a run.
+5. **Register a repository** at `/repositories`. For a PRIVATE one, choose *Repository access* → **Seal a new
+   credential now**, give the credential a name and paste the token: the console seals it into the platform's
+   secret store and the binding stores only that NAME. The token is not placed on any machine, it travels
+   with the deployment, and **it cannot be read back** — from this console or any route. A PUBLIC repository
+   needs none; leave the access control on *None*. Registering checks nothing either way: the first thing
+   that exercises a binding is a run, and that is where a wrong token surfaces.
 6. **Register and approve tools**, if the agent needs any, at `/tools`. Register the MCP connection, discover
    its tools, read each draft revision's **description and input schema** — those are what you are approving,
    because that prose enters a model's context — publish the ones you want, pin them into a set, publish the
@@ -1062,13 +1066,38 @@ standing paragraphs.
 **Provider + repository identity are the authoritative name.** A display name or a URL is not trusted as
 one anywhere in this system, which is why the list shows the identity rather than the clone URL.
 
-**No credential is on this surface, and it is structural rather than a courtesy.**
+**The credential is never a field of the BINDING, and that boundary is structural rather than a courtesy.**
 `RepositoryBindingCreate` carries a `connection_ref` and no credential field at all
-(`api/repository_bindings.go:28-39`), and the read side of `secret_refs` projects `{name, version,
-updated_at}` with no value (`identity/secrets.go`). The strongest thing this screen can leak is the NAME of
-a credential — the name an operator chose. The ref is **chosen** from the secret-ref list and never typed:
-a typo'd ref is accepted by a form and then fails at CLONE TIME, inside a run, with a refusal about git
-authentication — as far from the field that caused it as a refusal can get.
+(`api/repository_bindings.go:31-41`), and the read side of `secret_refs` projects `{name, version,
+updated_at}` with no value (`identity/secrets.go:173-211`). So a binding can only ever hold the NAME of a
+credential — the name an operator chose — and nothing this screen does can change that.
+
+**A private repository is bound here, in one flow, and the token is typed here.** *Repository access* offers
+three states: **None — a public repository**, **Use a credential already sealed**, and **Seal a new
+credential now**. The third opens a name and a credential box, and submitting makes two calls: `POST
+/v1/secret-refs` seals the token, then `POST /v1/repository-bindings` names it. They stay two calls because
+they fail separately — a refused seal is a name problem, a refused binding is a clone-URL or identity
+problem, and one merged *"could not create"* would send you to re-read the wrong field. If the seal succeeds
+and the binding is then refused, **the screen tells you the credential exists** and which ref to reuse;
+re-sealing the same name is a rotation, not a duplicate.
+
+This paragraph used to read *"no credential is on this surface"*. Half of that was always about the binding
+create and is still exactly true (above); the other half described the screen, and stopped being true when
+sealing moved here. What is true of the screen now: the value is an **uncontrolled DOM node** and never React
+state, it is read-and-cleared in a single call at the very start of the submit — so a refusal on any other
+field cannot leave it sitting on screen — and the controls do not exist in the DOM at all until you choose to
+seal one. It is in no URL, no response body, no log and no status message. **You cannot read it back
+afterwards, from this console or any route**; a wrong token shows up at CLONE TIME, inside the first run that
+names the binding, as a git authentication refusal.
+
+**Where the existing credential list comes from, and where it does not.** *Use a credential already sealed*
+lists **every** secret ref in the organization — model-provider keys and environment values included — so
+pick the one that is a Git credential. There is no screen that lists them by purpose: `ls app/` names no
+secret-ref management page, and the four things that write one are this control, `/registry` (a
+model-provider connection), `/environments` (a value under the derived name `env:<id>:<key>`) and the CLI
+(`palai secret create|list|get|rotate`). The picker is **not** a free-text box even when the list is empty —
+a typo'd ref is accepted by a form and then fails at CLONE TIME, as far from the field that caused it as a
+refusal can get.
 
 **Registering a binding proves nothing.** Nothing is cloned on that screen, no credential is exercised and
 no permission is checked — a wrong provider, a wrong identity or a revoked credential shows up at CLONE
@@ -1076,10 +1105,27 @@ TIME, inside a run. That sentence is now in the create dialog, where somebody is
 and in the status the create leaves behind (*"Nothing has been cloned: the first time this binding is
 exercised is a run that names it"*).
 
-**A binding cannot be changed or removed.** `api/router.go:44-46` mounts a create and two reads — no PATCH,
+**A binding cannot be changed or removed.** `api/router.go:60-62` mounts a create and two reads — no PATCH,
 no DELETE. That sentence is now on `/repositories/{id}`, which is the page an operator opens looking for the
 edit control. A binding registered wrongly is superseded by registering another and pointing runs at that
 one.
+
+**So `connection_ref` cannot be ADDED to a binding that has none — a binding registered against a public
+repository, or before this flow existed, is re-registered rather than edited.** That is worth stating on its
+own because it is the question every existing deployment asks first, and the answer is the same at all three
+layers rather than only at the route: the store seam is `Create/Get/List` and nothing else
+(`api/repository_bindings.go:20-26`), and `storage/queries/repository_bindings.sql` holds one `INSERT` and
+no `UPDATE`. The column itself is ordinary and writable (`GRANT … UPDATE … ON repository_bindings`,
+migration `000009`), so this is the absence of a code path rather than a database constraint — nothing
+anywhere writes that column after the insert.
+
+Practically: register a SECOND binding for the same repository, naming the credential, and point runs at the
+new id. Nothing blocks the duplicate — `repository_identity` carries no unique constraint (measured on a
+live stack: 8 bindings share one identity). The cost is that the ref-less original stays forever, because
+there is no delete, and `preparation_receipts.repository_binding_id` is a foreign key onto it, so past runs
+keep referring to it. Nothing durable pins a binding into configuration — only `workspaces` and
+`preparation_receipts` reference the id, both per-run records — so no agent revision or project setting has
+to be repointed.
 
 **Four fields were written and never shown back.** The clone URL, the data classification, the region
 constraint and the pass-through `policy` object are on the record page; they do not fit a list, and a

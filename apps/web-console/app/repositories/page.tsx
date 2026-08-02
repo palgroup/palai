@@ -283,7 +283,7 @@ export default function RepositoriesPage() {
     },
     {
       header: "",
-      // ONE ITEM, AND IT IS THE API RATHER THAN THE DESIGN. api/router.go:44-46 mounts a create and two
+      // ONE ITEM, AND IT IS THE API RATHER THAN THE DESIGN. api/router.go:60-62 mounts a create and two
       // reads: no PATCH, no DELETE. A second entry here would have to be a control that refuses.
       render: (r) => {
         const id = String(r.id ?? "");

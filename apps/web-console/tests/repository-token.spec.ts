@@ -64,7 +64,12 @@ test("an operator seals a credential and binds a private repository without leav
   const identity = `palai/private-${Date.now()}`;
 
   await page.getByTestId("binding-identity-input").fill(identity);
-  await page.getByTestId("binding-clone-url-input").fill("https://127.0.0.1:8188/private-fixture.git");
+  // A REAL, REACHABLE, AUTHENTICATED REMOTE rather than a plausible-looking string, and `http` rather than
+  // `https` deliberately. On the fake profile nothing clones and any http(s) URL would do; on the real
+  // profile this spec's output is a binding an operator could actually run, and the live proof does exactly
+  // that — it takes the binding THIS FORM created and starts a run against it. A fixture URL that cannot be
+  // cloned would make the real-profile pass a weaker claim than it looks.
+  await page.getByTestId("binding-clone-url-input").fill("http://127.0.0.1:8188/private-fixture.git");
   await page.getByTestId("binding-connection-name-input").fill(name);
   await page.getByTestId("binding-connection-token-input").fill(TOKEN);
   await page.getByTestId("binding-create-button").click();

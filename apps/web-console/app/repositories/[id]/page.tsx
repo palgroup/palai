@@ -17,7 +17,7 @@ import { operationsOf, type BindingRow } from "@/lib/repositories";
 //
 // AND IT IS WHERE "YOU CANNOT CHANGE THIS" BELONGS. That sentence was the second paragraph of the list
 // screen, read by every operator who came to look at the list; the moment it is needed is when somebody
-// opens one binding looking for an edit control. api/router.go:44-46 mounts a create and two reads — no
+// opens one binding looking for an edit control. api/router.go:60-62 mounts a create and two reads — no
 // PATCH, no DELETE — so the honest thing this page can do is say so where the control would have been.
 //
 // THERE ARE NO TABS HERE, and lib/routes.ts therefore declares no second tab for it: one record, one view.
