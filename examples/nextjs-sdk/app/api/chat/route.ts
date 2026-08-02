@@ -1,4 +1,5 @@
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai";
+import type { UIMessageStreamWriter } from "ai";
 
 import { getPalaiClient } from "@/lib/palai";
 import { rawBaseURL, rawHeaders } from "@/lib/raw";
@@ -104,7 +105,7 @@ export async function POST(request: Request): Promise<Response> {
           writer.write({ type: "text-end", id });
         }
         if (final.usage) {
-          writer.write({ type: "data-usage", data: final.usage as Record<string, unknown>, transient: true });
+          writer.write({ type: "data-usage", data: final.usage as unknown as Record<string, unknown>, transient: true });
         }
       }
     },
@@ -146,6 +147,13 @@ async function pumpPalaiFrames(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  // Frames that need a server-side join (the approval) start a fetch rather than blocking the pump:
+  // a stalled join must not stop the run's own frames from reaching the chat. They are awaited
+  // before the pump returns so the stream is never closed with a part still in flight.
+  const pending: Promise<void>[] = [];
+  // Publications whose approval APPLIED but whose push has not been confirmed. See the
+  // approval.approved.v1 arm for why the two are not the same event.
+  const approvedPublications = new Set<string>();
 
   try {
     for (;;) {
@@ -162,12 +170,13 @@ async function pumpPalaiFrames(
         const evt = parseFrame(frame);
         if (evt === null) continue;
 
-        const terminal = writeFrame(writer, evt, openText, textId, responseId);
+        const terminal = writeFrame(writer, evt, openText, textId, responseId, pending, approvedPublications);
         if (terminal) {
           if (textOpen) {
             writer.write({ type: "text-end", id: textId });
             textOpen = false;
           }
+          await Promise.allSettled(pending);
           return streamed;
         }
       }
@@ -208,6 +217,8 @@ function writeFrame(
   openText: () => void,
   textId: string,
   responseId: string,
+  pending: Promise<void>[],
+  approvedPublications: Set<string>,
 ): boolean {
   const d = evt.data;
   switch (evt.type) {
@@ -260,20 +271,62 @@ function writeFrame(
     // AI SDK has no "a human must authorize this before the run continues" concept — the closest thing
     // (tool approval) is about a tool the CLIENT executes, and this is a decision the CONTROL PLANE is
     // parked on. The browser renders it as a button and answers it over /api/chat/approve.
+    //
+    // THE FRAME IS A NOTIFICATION, NOT A PAYLOAD, AND THE OLD CODE HERE COULD NOT HAVE WORKED.
+    //
+    // MEASURED 2026-08-02 (coordinator/publication.go:269-272 — the emitter): a PUBLICATION approval
+    // frame carries exactly
+    //     {publication_id, operation, branch, request_hash, display}
+    // It carries NO approval_id. The version of this arm on main wrote `approvalId: d.approval_id ?? null`,
+    // so the button sent approvalId=null and /api/chat/approve answered its own 400 —
+    // "approvalId and requestHash are both required" — before the control plane was ever asked.
+    // The approval path WAS fixed control-plane side on 2026-08-01 and is provable with curl; the
+    // CHAT SURFACE was never driven, which is exactly the gap CLAUDE.md names: proving a mechanism
+    // is not proving the surface a human uses.
+    //
+    // It also carries no remote, no base, no head_sha and no credential identity — so a screen that
+    // wants to say WHERE the write goes and AS WHOM cannot get it from the stream at all. The
+    // coordinator says so on purpose (approvals.go:162): "the genesis event carries the BINDING,
+    // never a rendered screen."
+    //
+    // So the join happens HERE, server-side, where the credential already is: GET /v1/approvals and
+    // match on publication_id. The browser gets one part with everything the confirmation needs.
     case "approval.requested.v1":
-      writer.write({
-        type: "data-approval",
-        id: String(d.approval_id ?? d.publication_id ?? "approval"),
-        data: {
-          approvalId: d.approval_id ?? null,
-          requestHash: d.request_hash ?? null,
-          operation: d.operation ?? null,
-          display: d.display ?? null,
-        },
-      });
+      pending.push(
+        joinApproval(writer, {
+          publicationId: str(d.publication_id),
+          approvalId: str(d.approval_id),
+          requestHash: str(d.request_hash),
+          operation: str(d.operation),
+          branch: str(d.branch),
+          display: str(d.display),
+        }),
+      );
+      return false;
+
+    // AN APPROVAL THAT APPLIED IS NOT A PUSH THAT HAPPENED, and on this tree those two are
+    // routinely confused because every surface a human sees says the first one.
+    //
+    // MEASURED 2026-08-02, end to end through this very screen: pressed Approve, the relay returned
+    // 200, `approval.approved.v1` arrived carrying a command_id, the publications row moved
+    // pending_approval -> approved, and the parked run woke and completed. NOTHING PUSHED. The row's
+    // `receipt` stayed NULL and the git server received no git-receive-pack at all.
+    //
+    // Cause, cited: repositoryPublisherFromEnv (main.go:1231) returns nil unless PALAI_GITHUB_APP_ID,
+    // PALAI_GITHUB_APP_INSTALLATION_ID and PALAI_GITHUB_APP_PRIVATE_KEY_FILE are ALL set, and a nil
+    // publisher makes pumpApprovedPublications a no-op. The function's own comment says the failure is
+    // "INDISTINGUISHABLE from success on every surface a human looks at".
+    //
+    // So this adapter watches the pair. `approval.approved.v1` is remembered; `publication.published.v1`
+    // clears it; anything still outstanding when the run reaches a terminal state becomes a NOTICE that
+    // says the push was not confirmed. That is the difference between a demo that shows a green tick
+    // and one an operator can trust.
+    case "approval.approved.v1":
+      if (typeof d.publication_id === "string") approvedPublications.add(d.publication_id);
       return false;
 
     case "publication.published.v1":
+      if (typeof d.publication_id === "string") approvedPublications.delete(d.publication_id);
       writer.write({
         type: "data-publication",
         id: String(d.publication_id ?? "publication"),
@@ -309,12 +362,115 @@ function writeFrame(
     case "run.failed.v1":
     case "run.cancelled.v1":
     case "run.completed.v1":
+      // The unconfirmed pushes are reported BEFORE the terminal part, so the notice sits with the
+      // approval it belongs to rather than after the run's closing line.
+      for (const publicationId of approvedPublications) {
+        writer.write({
+          type: "data-notice",
+          data: {
+            level: "error",
+            text:
+              `The approval for ${publicationId} applied — the publication row moved to "approved" — but no ` +
+              "publication.published.v1 arrived before this run ended, so THE PUSH IS NOT CONFIRMED. On this " +
+              "stack that is a missing publisher: repositoryPublisherFromEnv returns nil unless " +
+              "PALAI_GITHUB_APP_ID, PALAI_GITHUB_APP_INSTALLATION_ID and PALAI_GITHUB_APP_PRIVATE_KEY_FILE " +
+              "are all set, and a nil publisher makes the approval pump a no-op. Note this is true even when " +
+              "the binding carries its own connection_ref: the credential-resolving publisher is built " +
+              "INSIDE the GitHub-App gate, so a binding credential cannot publish on a stack with no App.",
+          },
+        });
+      }
+      approvedPublications.clear();
       writer.write({ type: "data-run", data: { responseId, status: evt.type.split(".")[1] } });
       return true;
 
     default:
       return false;
   }
+}
+
+// joinApproval turns a publication approval NOTIFICATION into the row a human can decide on.
+//
+// The join key is `publication_id`, not `id`: GET /v1/approvals returns a row whose own `id` is the
+// approval id (apr_…) and whose `publication_id` field is what the frame carried
+// (api/approvals.go:79). Matching on `id` would never hit.
+//
+// WHAT THE ROW ADDS OVER THE FRAME, all measured on api/approvals.go:52-95 —
+//   remote, branch, base, head_sha       WHERE the write lands
+//   credential_ref, credential           AS WHOM it is made
+// `credential` is one of two fixed sentences the control plane chooses with the SAME condition the
+// publisher branches on (store/approvals.go:269): an empty credential_ref means the deployment's
+// GitHub App, NOT an unknown identity. The screen must not render an empty ref as a blank, because
+// blank reads as "nobody checked" when it actually means "a different, named identity".
+//
+// IF THE JOIN FAILS the part is still written, with joined:false — the operator gets a decidable
+// button carrying the hash the frame did give, and the screen says the destination could not be
+// read. Dropping the part on a failed join would hide an approval that is genuinely pending and
+// leave the run parked with nothing on screen.
+async function joinApproval(
+  writer: StreamWriter,
+  frame: { publicationId: string; approvalId: string; requestHash: string; operation: string; branch: string; display: string },
+): Promise<void> {
+  const base = {
+    approvalId: frame.approvalId !== "" ? frame.approvalId : null,
+    requestHash: frame.requestHash !== "" ? frame.requestHash : null,
+    operation: frame.operation !== "" ? frame.operation : null,
+    branch: frame.branch !== "" ? frame.branch : null,
+    display: frame.display !== "" ? frame.display : null,
+    publicationId: frame.publicationId !== "" ? frame.publicationId : null,
+  };
+  const partId = frame.publicationId !== "" ? frame.publicationId : frame.approvalId !== "" ? frame.approvalId : "approval";
+
+  try {
+    const res = await fetch(`${rawBaseURL()}/v1/approvals`, { headers: rawHeaders(), cache: "no-store" });
+    if (!res.ok) throw new Error(`GET /v1/approvals answered HTTP ${res.status}`);
+    const page = (await res.json()) as { data?: Record<string, unknown>[] };
+    const rows = Array.isArray(page.data) ? page.data : [];
+    const row =
+      rows.find((r) => frame.publicationId !== "" && str(r.publication_id) === frame.publicationId) ??
+      rows.find((r) => frame.approvalId !== "" && str(r.id) === frame.approvalId) ??
+      null;
+
+    if (row === null) {
+      writer.write({
+        type: "data-approval",
+        id: partId,
+        data: { ...base, joined: false, joinNote: "this publication is not on GET /v1/approvals — it may already have been decided" },
+      });
+      return;
+    }
+
+    writer.write({
+      type: "data-approval",
+      id: partId,
+      data: {
+        ...base,
+        joined: true,
+        // The row's own id is the one POST /v1/approvals/{id}/approve wants. The frame never had it.
+        approvalId: str(row.id) !== "" ? str(row.id) : base.approvalId,
+        requestHash: str(row.request_hash) !== "" ? str(row.request_hash) : base.requestHash,
+        operation: str(row.operation) !== "" ? str(row.operation) : base.operation,
+        remote: str(row.remote) || null,
+        branch: str(row.branch) || base.branch,
+        baseBranch: str(row.base) || null,
+        headSha: str(row.head_sha) || null,
+        credentialRef: str(row.credential_ref) || null,
+        credential: str(row.credential) || null,
+        expiresAt: str(row.expires_at) || null,
+        operatorLabel: str(row.operator_label) || null,
+      },
+    });
+  } catch (error) {
+    writer.write({
+      type: "data-approval",
+      id: partId,
+      data: { ...base, joined: false, joinNote: error instanceof Error ? error.message : "the approval row could not be read" },
+    });
+  }
+}
+
+function str(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function parseFrame(frame: string): { type: string; data: Record<string, unknown> } | null {
@@ -365,7 +521,11 @@ interface ChatRequest {
   bindingId?: string;
 }
 
-type StreamWriter = { write: (part: Record<string, unknown>) => void };
+// StreamWriter is the AI SDK's OWN writer, narrowed to the one method used. It was a hand-rolled
+// `{ write: (part: Record<string, unknown>) => void }`, which is wider than the real chunk union and
+// therefore accepted a part the protocol has no place for. Nothing caught that, because this
+// example had no working type check at all until tsconfig.json was fixed in this commit.
+type StreamWriter = Pick<UIMessageStreamWriter, "write">;
 
 function problem(status: number, code: string, detail: string): Response {
   return new Response(JSON.stringify({ type: `https://docs.palai.dev/problems/${code}`, title: code, status, code, detail }), {

@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------------------------
+   THE DEMO'S SURFACE.
+
+   The previous commit (e1687d8e) vendored eight AI Elements components and wrote a @theme block
+   with six brand colours. MEASURED 2026-08-02, and it is the defect this tree names most often —
+   a foundation that compiles and is not connected to anything:
+
+     grep -rhoE '\b(bg|text|border|ring)-(background|foreground|card|popover|primary|secondary|
+       muted|muted-foreground|accent|accent-foreground|destructive|border|input|ring)\b' \
+       components/ai-elements components/ui | sed -E 's/^[a-z]+-//' | sort -u | wc -l   -> 18
+     grep -oE '\-\-color-(background|foreground|card|popover|primary|secondary|muted|accent|
+       destructive|border|input|ring)[a-z-]*:' app/globals.css | wc -l                  -> 0
+
+   Eighteen shadcn tokens referenced, zero defined. `bg-background`, `border-border` and
+   `text-muted-foreground` resolved to nothing in every one of the eight components. The old file
+   set `--background` / `--foreground` as PLAIN custom properties, which Tailwind v4 does not turn
+   into utilities — only `@theme` does. So the components rendered borderless and unstyled, and
+   nothing said so, because an unresolved Tailwind class is not an error.
+
+   Below, every token is either MEASURED (from design-reference/measured-2026-08-01.md, read off a
+   live console with getComputedStyle) or marked CHOSEN. The reference did not measure a primary
+   button's fill or a destructive colour, and inventing a number and letting it read as measured is
+   the thing rule 1 of CLAUDE.md exists to prevent.
+   --------------------------------------------------------------------------------------------- */
+@theme {
+  /* --- MEASURED --- */
+  --color-background: rgb(26 26 25);        /* page zemin */
+  --color-foreground: rgb(255 255 255);     /* aktif öğe / td metni */
+  --color-card: rgb(56 56 53);              /* dialog zemini — sayfadan DAHA AÇIK */
+  --color-card-foreground: rgb(255 255 255);
+  --color-popover: rgb(56 56 53);
+  --color-popover-foreground: rgb(255 255 255);
+  --color-secondary: rgb(56 56 53);         /* raised surface (user bubble) */
+  --color-secondary-foreground: rgb(255 255 255);
+  --color-muted-foreground: rgb(137 135 129); /* yardım metni / muted */
+  --color-primary-foreground: rgb(11 11 11);  /* birincil düğme metni */
+  --color-ring: rgb(155 135 245);             /* workspace ikonu moru */
+  --color-rail: rgb(13 13 13);                /* kenar çubuğu — sayfadan DAHA KOYU */
+  --color-ink-dim: rgb(195 194 183);          /* menü öğesi / lead cümle */
+
+  /* --- CHOSEN, because the reference measured a text colour and not a fill --- */
+  --color-primary: rgb(195 194 183);        /* the measured doc gives only "açık zemin"; this is
+                                               its own measured ink-dim used as the light fill */
+  --color-muted: rgb(38 38 36);             /* a surface between page and card */
+  --color-accent: rgb(56 56 53);            /* shadcn `accent` is a HOVER FILL, not a brand colour.
+                                               The purple lives on --color-brand; putting it here
+                                               would paint every hover state violet. */
+  --color-accent-foreground: rgb(255 255 255);
+  --color-border: rgb(52 52 50);
+  --color-input: rgb(52 52 50);
+  --color-destructive: rgb(220 90 80);      /* not measured — a refusal has to be legible */
+  --color-brand: rgb(155 135 245);          /* the measured purple, under a name shadcn will not
+                                               spend on hover backgrounds */
+  --color-added: rgb(126 199 130);
+  --color-removed: rgb(220 120 110);
+
+  --radius: 0.75rem;                        /* 12px — the measured dialog/panel radius */
+}
+
+html,
+body {
+  background: var(--color-background);
+  color: var(--color-foreground);
+}
+
+/* KEYBOARD FOCUS STAYS VISIBLE. A demo that removes the ring to look tidy is a demo that cannot be
+   operated without a mouse, and the quality floor for this screen includes being driven from a
+   keyboard. */
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+/* REDUCED MOTION IS HONOURED, not approximated: the streaming surfaces animate, and someone who
+   asked their OS to stop that asked for a reason. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* The one motion this screen owns: a run in flight. Used by the workspace panel's status dot, and
+   silenced by the block above for anyone who asked. */
+@keyframes palai-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.palai-live {
+  animation: palai-pulse 1.6s ease-in-out infinite;
+}

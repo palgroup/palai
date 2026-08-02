@@ -101,7 +101,7 @@ function projectFinal(final: PalaiResponse): Record<string, unknown> {
     status: final.status,
     model: final.model,
     output: final.output,
-    usage: pickUsage((final.usage ?? {}) as Record<string, unknown>),
+    usage: pickUsage((final.usage ?? {}) as unknown as Record<string, unknown>),
   };
   if (final.error) {
     projection.error = { code: final.error.code, requestId: final.error.request_id, detail: final.error.detail ?? final.error.title };
