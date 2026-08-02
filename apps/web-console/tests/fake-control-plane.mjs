@@ -2220,6 +2220,56 @@ export const ROUTES = [
         sendJSON(response, 201, binding);
       }),
   },
+  // THE E30 LIFECYCLE HALF. A binding's CREDENTIAL is the one mutable field (identity is what
+  // preparation receipts have already asserted about past runs), and archiving retires a row without
+  // deleting it. Mirrored here field for field so the console suite drives the same shapes the real
+  // control plane serves — including the 404 an archived binding gets when something tries to re-credit it.
+  {
+    method: "PUT",
+    pattern: "/v1/repository-bindings/{binding_id}/connection",
+    handle: (request, response, { binding_id: id }) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const found = bindings.find((b) => b.id === id);
+        if (found === undefined || found.archived_at !== undefined) {
+          return sendProblem(response, 404, "not_found",
+            "no such repository binding in this project, or it is archived — an archived binding is restored before it is re-credited");
+        }
+        if (typeof body.connection_ref !== "string") {
+          return sendProblem(response, 400, "invalid_request",
+            "the body takes connection_ref (a secret ref NAME) and no other field; a credential is written with POST /v1/secret-refs");
+        }
+        // '' DETACHES, matching the store: omitempty means an absent key rather than an empty string.
+        if (body.connection_ref === "") delete found.connection_ref;
+        else found.connection_ref = body.connection_ref;
+        sendJSON(response, 200, found);
+      }),
+  },
+  {
+    method: "POST",
+    pattern: "/v1/repository-bindings/{binding_id}/archive",
+    handle: (_req, response, { binding_id: id }) => {
+      const found = bindings.find((b) => b.id === id);
+      // A NO-OP IS A 404, not a 200: archiving a typo'd id must not read as success.
+      if (found === undefined || found.archived_at !== undefined) {
+        return sendProblem(response, 404, "not_found", "no such repository binding in this project, or it is already archived");
+      }
+      found.archived_at = new Date().toISOString();
+      sendJSON(response, 200, found);
+    },
+  },
+  {
+    method: "POST",
+    pattern: "/v1/repository-bindings/{binding_id}/unarchive",
+    handle: (_req, response, { binding_id: id }) => {
+      const found = bindings.find((b) => b.id === id);
+      if (found === undefined || found.archived_at === undefined) {
+        return sendProblem(response, 404, "not_found", "no such repository binding in this project, or it is not archived");
+      }
+      delete found.archived_at;
+      sendJSON(response, 200, found);
+    },
+  },
   {
     method: "GET",
     pattern: "/v1/repository-bindings",
@@ -2228,7 +2278,13 @@ export const ROUTES = [
     // the same reason GET /v1/approvals does not go through pageSlice: that helper serves both cursor keys as
     // explicit nulls, which is the recorded DIV-SHP-004/005 divergence, and a third route reproducing it
     // would need a third ledger row for a difference that need not exist.
-    handle: (_req, res) => sendJSON(res, 200, { data: bindings, has_more: false }),
+    // ARCHIVED ROWS ARE HIDDEN UNLESS `?include_archived=true`, and the parser is exact rather than
+    // truthy — `include_archived=false` meaning "yes" is the direction that silently widens what an
+    // operator is shown. Same rule as the real handler.
+    handle: (req, res) => {
+      const all = requestURL(req).searchParams.get("include_archived") === "true";
+      sendJSON(res, 200, { data: all ? bindings : bindings.filter((b) => b.archived_at === undefined), has_more: false });
+    },
   },
   {
     method: "GET",

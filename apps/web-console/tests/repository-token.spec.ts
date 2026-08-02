@@ -186,3 +186,80 @@ test("the register dialog is axe-clean with the credential controls RENDERED", a
   const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
   expect(results.violations.map((v) => `${v.id}: ${v.nodes.length} node(s)`)).toEqual([]);
 });
+
+// --- THE EXISTING BINDING (E30 lifecycle) ---------------------------------------------------------
+//
+// The flow above only helps a binding that has not been registered yet. The twenty on the live stack were
+// already there, all ref-less, and until the lifecycle routes landed nothing could give any of them a
+// credential — which made "seal it where you register it" a fix for new work only, and left the operator
+// who hit the gap tonight with a private repository they could not attach a token to.
+//
+// These drive the REPAIR path on the binding's own page, which is where somebody goes looking for it.
+
+test("a ref-less binding is given a credential from its own page, without re-registering it", async ({ page }) => {
+  const requests: NetRequest[] = [];
+  page.on("request", (r) => requests.push(r));
+
+  // Register one with NO connection, exactly as the twenty on the live stack are.
+  await page.goto("/repositories");
+  await expect(page.getByTestId("panel-repository-bindings")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("binding-create-open").click();
+  const identity = `palai/repair-${Date.now()}`;
+  await page.getByTestId("binding-identity-input").fill(identity);
+  await page.getByTestId("binding-clone-url-input").fill("http://127.0.0.1:8188/private-fixture.git");
+  await page.getByTestId("binding-create-button").click();
+  const row = page.locator("tr", { hasText: identity });
+  await expect(row).toContainText("none (public)", { timeout: 15_000 });
+
+  await row.getByTestId("binding-identity-link").click();
+  await expect(page.getByTestId("panel-binding-record")).toBeVisible({ timeout: 15_000 });
+
+  // THE REPAIR. Same two operations as the create flow and the same boundary: seal, then NAME.
+  const name = refName();
+  await page.getByTestId("binding-connection-open").click();
+  await expect(page.getByTestId("binding-connection-dialog")).toBeVisible();
+  await chooseOption(page, "binding-connection-mode", "new");
+  await page.getByTestId("binding-connection-name-input").fill(name);
+  await page.getByTestId("binding-connection-token-input").fill(TOKEN);
+  await page.getByTestId("binding-connection-save").click();
+
+  await expect(page.getByTestId("binding-connection-status")).toContainText(name, { timeout: 15_000 });
+  await expect(page.getByTestId("binding-connection-value")).toContainText(name);
+
+  // TWO CALLS AND THE SECOND IS THE NARROW SUB-RESOURCE — a PUT on .../connection rather than a PATCH on
+  // the binding. Identity is what preparation receipts have already asserted about past runs; a general
+  // PATCH would put a credential rotation and a rewrite of that history behind one verb.
+  const writes = requests.filter((r) => ["POST", "PUT"].includes(r.method()) && r.url().includes("/api/palai/v1/"));
+  const tail = writes.slice(-2).map((r) => `${r.method()} ${new URL(r.url()).pathname.replace("/api/palai/v1", "").replace(/rbind_\w+/, "{id}")}`);
+  expect(tail).toEqual(["POST /secret-refs", "PUT /repository-bindings/{id}/connection"]);
+  expect(writes[writes.length - 1].postData() ?? "").not.toContain(TOKEN);
+  for (const r of requests) expect(r.url()).not.toContain(TOKEN);
+  expect(await page.content()).not.toContain(TOKEN);
+});
+
+test("a retired binding leaves the list and says so on its own page", async ({ page }) => {
+  await page.goto("/repositories");
+  await expect(page.getByTestId("panel-repository-bindings")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("binding-create-open").click();
+  const identity = `palai/retire-${Date.now()}`;
+  await page.getByTestId("binding-identity-input").fill(identity);
+  await page.getByTestId("binding-clone-url-input").fill("https://example.invalid/retire.git");
+  await page.getByTestId("binding-create-button").click();
+  const row = page.locator("tr", { hasText: identity });
+  await expect(row).toBeVisible({ timeout: 15_000 });
+
+  await row.getByTestId("binding-identity-link").click();
+  await expect(page.getByTestId("panel-binding-record")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("binding-archive").click();
+  // A DESTRUCTIVE-LOOKING VERB CONFIRMS. It is reversible and it is not a delete, and the dialog has to say
+  // BOTH — an operator who reads "archive" as "delete" would never click it, and one who reads it as
+  // cosmetic would not expect their runs to start being refused.
+  await expect(page.getByTestId("binding-archive-dialog")).toBeVisible();
+  await page.getByTestId("binding-archive-confirm").click();
+  await expect(page.getByTestId("binding-archived-note")).toBeVisible({ timeout: 15_000 });
+
+  // IT IS GONE FROM THE DEFAULT LIST, which is the whole point of retiring the duplicates.
+  await page.goto("/repositories");
+  await expect(page.getByTestId("panel-repository-bindings")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("tr", { hasText: identity })).toHaveCount(0);
+});
