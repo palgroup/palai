@@ -210,6 +210,12 @@ func main() {
 		api.WithUsage(metering.New(repo.Spine().Pool())),
 		api.WithModelRoutes(repo),
 		api.WithKnowledge(knowledge.New(repo.Spine().Pool())),
+		// WithToolCalls mounts the tool-call read (E30 T2), over the SAME non-nil repo the positional
+		// seams use, so it is unconditional like the two above. It is the only route from which a client
+		// can learn what a tool call actually was: the journal frames carry the tool's NAME and
+		// deliberately not its arguments or result, so a chat that renders an `xcodebuild` failure with
+		// its file and line reads them here.
+		api.WithToolCalls(repo),
 	}
 	if secretStore != nil {
 		routerOpts = append(routerOpts, api.WithSecretRefs(secretStore))

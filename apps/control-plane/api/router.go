@@ -224,6 +224,17 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("GET /v1/responses/{response_id}/artifacts", ah.listForResponse)
 	}
 
+	// The tool-call read surface (E30 T2, spec §26.7): a response's tool calls with their names,
+	// arguments and results, projected straight from the `tool_calls` ledger. It is the READ half of the
+	// gap the journal frames leave open on purpose — the frames carry the NAME so a stream can label a
+	// call as it happens, and the unbounded model-authored bytes are asked for here instead of being
+	// fanned out to every webhook endpoint and stored immutably per delivery. See tool_calls.go for the
+	// measurement that decided it.
+	if cfg.toolCalls != nil {
+		tch := &toolCallHandler{toolCalls: cfg.toolCalls}
+		mux.HandleFunc("GET /v1/responses/{response_id}/tool-calls", tch.listForResponse)
+	}
+
 	// The restart-less secret-ref write-path (spec §39.x, E13 Task 3, SEC-002/MCI-002): a tenant POSTs a
 	// secret VALUE (write-only — it never comes back) that the resolver chain reads fresh, so a rotation
 	// takes effect with no restart; reads return metadata only. Wired via WithSecretRefs (a trailing option)

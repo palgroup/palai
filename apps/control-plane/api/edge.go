@@ -67,6 +67,10 @@ type routerConfig struct {
 	queueResolver webhook.Resolver
 	// approvals is the Slack-less approval surface (E23 T9); nil ⇒ routes unmounted.
 	approvals ApprovalAPI
+	// toolCalls is the tool-call read surface (E30 T2); nil ⇒ route unmounted. It is what makes a tool
+	// call's NAME, ARGUMENTS and RESULT reachable at all — before it, the journal frames carried a call
+	// id and nothing else, and the ledger had no route.
+	toolCalls ToolCallAPI
 	// runners is the runner registry READ surface (E24 T1); nil => routes unmounted.
 	runners RunnerRegistryAPI
 	// environments is the environment surface (E25 T3); nil ⇒ routes unmounted. It is wired from the SAME
@@ -127,6 +131,12 @@ func WithUsage(usage UsageAPI) RouterOption {
 // WithModelRoutes mounts the DB-backed model-routing write surface (E13 Task 8): per-project model
 // connections and publishable route revisions. A trailing option for the same reason as WithSecretRefs —
 // every existing caller compiles unchanged, and a stack that never routes leaves it unset.
+// WithToolCalls mounts the tool-call read surface (E30 T2). Left unset the route stays unmounted, so a
+// tier that runs no tools serves no path that would always answer empty.
+func WithToolCalls(toolCalls ToolCallAPI) RouterOption {
+	return func(c *routerConfig) { c.toolCalls = toolCalls }
+}
+
 func WithModelRoutes(routes ModelRouteAPI) RouterOption {
 	return func(c *routerConfig) { c.modelRoutes = routes }
 }

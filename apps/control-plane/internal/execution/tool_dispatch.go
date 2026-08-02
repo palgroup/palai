@@ -356,7 +356,11 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 				"use); the model received them, nothing wrote them down",
 		})
 	}
-	payload, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "tool_call_id": callID})
+	// The completed frame carries the NAME for the same reason the executing frame does (E30 T2): a
+	// consumer that saw a call start and finish could not say what finished. Not the result — see the
+	// emitter comment in coordinator/orchestration.go for the measurement that settles it; the bytes go
+	// to the ledger and are read back through GET /v1/responses/{id}/tool-calls.
+	payload, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "tool_call_id": callID, "tool_name": name})
 	// The ledger row carries the tool's DECLARED replay class and the model's ORIGINAL request hash (NOT
 	// outcome.Hash, which a before_tool transform would recompute over the patched args): the identity a
 	// redelivery re-derives from the untouched original args must match, so a transform never false-diverges a

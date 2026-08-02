@@ -206,3 +206,28 @@ JOIN tools t ON t.id = trv.tool_id AND t.model_visible_name = $4
 WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3
 ORDER BY trv.revision_number DESC, trv.id
 LIMIT 2;
+
+-- ---------------------------------------------------------------------------------------------------
+-- THE TOOL-CALL READ (E30 T2). A run's tool calls, as a renderer needs them.
+-- ---------------------------------------------------------------------------------------------------
+--
+-- WHY A READ AND NOT A WIDER EVENT. The journal frames carry the tool NAME (E30 T2) and deliberately
+-- not the arguments or the result: automation/webhook_pump.go:328 puts an event's whole payload in the
+-- body it POSTs to every registered endpoint and stores that envelope immutably for byte-for-byte
+-- redelivery, and the audit chain hashes it. A trivial `xcodebuild` build measures 51,422 bytes on this
+-- box and nothing bounds an event payload, so a tool's output on the journal is model-authored
+-- megabytes shipped off-box, once per endpoint, forever.
+--
+-- AND WHY THIS IS NOT A SECOND COPY OF THE TRUTH. It reads `tool_calls` — the ledger the dispatcher
+-- already writes — with no new table, no projection row and no denormalised column. There is exactly
+-- one copy and this is a read of it. The cost that IS real: one round trip per detail render.
+--
+-- ORDER BY created_at, id — the id breaks a clock tie, because two calls committed inside the same
+-- clock_timestamp() tick would otherwise come back in whatever order the heap felt like, and a chat
+-- transcript that reorders itself between two reads is worse than one that is merely slow.
+-- name: ToolCallsForResponse
+SELECT tc.id, tc.name, tc.state, tc.arguments, tc.result, tc.replay_class, tc.created_at, tc.updated_at
+FROM tool_calls tc
+JOIN runs r ON r.id = tc.run_id
+WHERE r.response_id = $1 AND tc.organization_id = $2 AND tc.project_id = $3
+ORDER BY tc.created_at, tc.id;
