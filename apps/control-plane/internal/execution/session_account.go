@@ -25,11 +25,16 @@ import (
 
 // SessionAccounts creates and destroys the account an allocation's tools run under.
 //
-// Acquire is idempotent per allocation: a retry after a failed provision must not consume a second slot,
-// because a provision that re-enters is the normal recovery path rather than an error.
+// THE KEY IS THE SESSION, not the allocation, because that is what the lifecycle is: a session gets an
+// account when it starts doing work and loses it when it closes. A session that provisions a second
+// allocation — a later run in the same conversation — keeps the same uid, which is what makes its earlier
+// files readable to it and unreadable to everybody else.
+//
+// Acquire is idempotent per session for the same reason: every run of a session asks, and only the first
+// one creates.
 type SessionAccounts interface {
-	Acquire(ctx context.Context, allocationID string) (account string, err error)
-	Release(ctx context.Context, allocationID string) error
+	Acquire(ctx context.Context, sessionID string) (account string, err error)
+	Release(ctx context.Context, sessionID string) error
 }
 
 // maxSessionSlots is the index range scripts/ops/mac-sessions.sh allocates and the privileged wrapper
@@ -53,7 +58,7 @@ const maxSessionSlots = 99
 // the difference between a limit and a bug.
 type SlotAccounts struct {
 	mu    sync.Mutex
-	slots map[string]int // allocation id -> slot index
+	slots map[string]int // session id -> slot index
 	held  map[int]bool
 
 	// run performs one privileged verb. It is a field so a test can drive every path of this type
@@ -86,12 +91,12 @@ func NewSudoSessionAccounts(wrapper string) *SlotAccounts {
 }
 
 // Acquire returns the account for this allocation, creating it on first call.
-func (a *SlotAccounts) Acquire(ctx context.Context, allocationID string) (string, error) {
-	if allocationID == "" {
-		return "", fmt.Errorf("session account: an allocation id is required")
+func (a *SlotAccounts) Acquire(ctx context.Context, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", fmt.Errorf("session account: a session id is required")
 	}
 	a.mu.Lock()
-	if slot, ok := a.slots[allocationID]; ok {
+	if slot, ok := a.slots[sessionID]; ok {
 		a.mu.Unlock()
 		return a.name(slot), nil // idempotent: a re-entered provision reuses its own slot
 	}
@@ -110,13 +115,13 @@ func (a *SlotAccounts) Acquire(ctx context.Context, allocationID string) (string
 	// the first one is still creating its account. Released again on failure below — a slot held by an
 	// account that was never created is a slot leaked for the life of the process.
 	a.held[slot] = true
-	a.slots[allocationID] = slot
+	a.slots[sessionID] = slot
 	a.mu.Unlock()
 
 	if err := a.run(ctx, "create", slot); err != nil {
 		a.mu.Lock()
 		delete(a.held, slot)
-		delete(a.slots, allocationID)
+		delete(a.slots, sessionID)
 		a.mu.Unlock()
 		return "", err
 	}
@@ -126,9 +131,9 @@ func (a *SlotAccounts) Acquire(ctx context.Context, allocationID string) (string
 // Release destroys the allocation's account. An allocation this instance never acquired is not an error:
 // a destroy runs on paths where provisioning failed before it reached Acquire, and on a control plane
 // that restarted since (see the type comment).
-func (a *SlotAccounts) Release(ctx context.Context, allocationID string) error {
+func (a *SlotAccounts) Release(ctx context.Context, sessionID string) error {
 	a.mu.Lock()
-	slot, ok := a.slots[allocationID]
+	slot, ok := a.slots[sessionID]
 	a.mu.Unlock()
 	if !ok {
 		return nil
@@ -142,7 +147,7 @@ func (a *SlotAccounts) Release(ctx context.Context, allocationID string) error {
 	}
 	a.mu.Lock()
 	delete(a.held, slot)
-	delete(a.slots, allocationID)
+	delete(a.slots, sessionID)
 	a.mu.Unlock()
 	return nil
 }

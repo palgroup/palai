@@ -47,6 +47,8 @@ type AdmissionLimits struct {
 type RouterOption func(*routerConfig)
 
 type routerConfig struct {
+	// sessionAccounts releases a session's uid when it closes. Nil mints and releases nothing.
+	sessionAccounts SessionAccountReleaser
 	edge        EdgeLimits
 	secrets     SecretRefAPI
 	usage       UsageAPI
@@ -92,6 +94,13 @@ type routerConfig struct {
 // half. A trailing option for the same reason as WithSecretRefs: only production and its dedicated tests
 // wire it, so every other caller compiles unchanged and a tier that passes none serves the effective
 // configuration exactly as it did before.
+// WithSessionAccounts wires the per-session uid release into the command surface (macOS). Unset — which
+// is every deployment that has not installed the privileged helper — a close_session releases nothing,
+// which is exactly today's behaviour.
+func WithSessionAccounts(a SessionAccountReleaser) RouterOption {
+	return func(c *routerConfig) { c.sessionAccounts = a }
+}
+
 func WithDesiredConfig(desired DesiredConfigAPI) RouterOption {
 	return func(c *routerConfig) { c.desired = desired }
 }

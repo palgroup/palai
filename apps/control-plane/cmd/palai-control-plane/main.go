@@ -217,6 +217,24 @@ func main() {
 		// its file and line reads them here.
 		api.WithToolCalls(repo),
 	}
+
+	// PER-SESSION ACCOUNTS (macOS), RELEASE HALF. It is HERE rather than in applyCloseSessionTx because
+	// that runs inside a database transaction: a `sudo` there holds a session row lock for the length of an
+	// exec, and a rollback after it cannot un-delete an account. So the release happens after the close has
+	// committed, on the command surface.
+	//
+	// ONE ENV VALUE DRIVES BOTH HALVES — the acquire is wired in startDispatch — because a deployment that
+	// wired one without the other leaks an account per session.
+	//
+	// ‼️ ONE INSTANCE, NOT TWO. The acquire and the release share a slot map — which session holds which
+	// index — so constructing one here and another in startDispatch would give the releaser an empty map,
+	// and every release would find nothing to destroy while reporting success. That is a leak that looks
+	// exactly like working code, which is why the value is built once and threaded.
+	var sessionAccounts *execution.SlotAccounts
+	if wrapper := os.Getenv("PALAI_SESSION_ACCOUNT_HELPER"); wrapper != "" {
+		sessionAccounts = execution.NewSudoSessionAccounts(wrapper)
+		routerOpts = append(routerOpts, api.WithSessionAccounts(sessionAccounts))
+	}
 	if secretStore != nil {
 		routerOpts = append(routerOpts, api.WithSecretRefs(secretStore))
 		// THE VERIFY ACTION'S REAL WORK (E29), on the SAME condition and the SAME store as the secret-ref
@@ -384,7 +402,7 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	startDispatch(ctx, repo, gateway, supervisor, artStore, slackSearchAuthorities)
+	startDispatch(ctx, repo, gateway, supervisor, artStore, slackSearchAuthorities, sessionAccounts)
 	startWebhookPump(ctx, webhookStore, supervisor)
 	startQueueBridges(ctx, queueStore, repo.Spine(), edge, supervisor)
 	startDeliveryReconciler(ctx, triggerStore, supervisor)
@@ -542,7 +560,7 @@ func dispatchWorkerCount() int { return api.DispatchWorkers() }
 // the read-path SSE e2e drives (no broker/engine racing it). A killed worker's lease lapses
 // and its job is reclaimed at a higher fence, so no graceful shutdown is needed.
 // PALAI_DISPATCH_WORKERS sets the worker count (default 1); 0 disables dispatch.
-func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.RunnerGateway, supervisor *coordinator.Supervisor, artStore *artifacts.Store, slackSearchAuthorities *tools.SearchAuthorities) {
+func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.RunnerGateway, supervisor *coordinator.Supervisor, artStore *artifacts.Store, slackSearchAuthorities *tools.SearchAuthorities, sessionAccounts *execution.SlotAccounts) {
 	workers := dispatchWorkerCount()
 	if workers <= 0 {
 		return
@@ -682,20 +700,12 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		orch.SetEnvironmentSecrets(environmentValueSecret)
 		if root := os.Getenv("PALAI_WORKSPACE_ROOT"); root != "" {
 			orch.SetWorkspaceProvisioner(root, repositoryBrokerFromEnv())
-	// PER-SESSION ACCOUNTS (macOS) ARE NOT WIRED HERE, AND THE REASON IS A MEASUREMENT RATHER THAN A
-	// DEFERRAL. The two halves are built and guarded — Orchestrator.SetSessionAccounts acquires an
-	// account with an allocation, WorkspaceRecovery.SetSessionAccounts releases it with the teardown —
-	// but the teardown has no production caller:
-	//
-	//	grep -rn 'NewWorkspaceRecovery(\|DestroyAllocation(' --include='*.go' apps cmd packages
-	//	  | grep -v _test | grep -v 'func '   -> 0        (2026-08-02)
-	//
-	// WorkspaceRecovery is constructed by its component tests and by nothing else, so wiring the ACQUIRE
-	// half alone would mint an account per allocation that nothing ever removes — a leak, on a resource
-	// bounded at 99 per machine, created by the code meant to isolate sessions. Wiring one half of a
-	// paired lifecycle is worse than wiring neither, so this waits for the teardown to have a caller.
-	//
-	// The env gate it will use is PALAI_SESSION_ACCOUNT_HELPER, naming scripts/ops/palai-session-account.
+	// PER-SESSION ACCOUNTS (macOS), ACQUIRE HALF: the uid a session's tools run under, created when the
+	// session first provisions a workspace. It is the SAME INSTANCE the release half holds — they share the
+	// map of which session owns which slot, and two instances would give the releaser an empty one.
+	if sessionAccounts != nil {
+		orch.SetSessionAccounts(sessionAccounts)
+	}
 			// A binding that names a connection_ref clones under its own tenant's credential (E13 T9);
 			// the resolver is inert for the ref-less bindings that take the global broker above.
 			orch.SetConnectionSecrets(repositoryConnectionSecret)

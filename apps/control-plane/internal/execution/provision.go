@@ -76,7 +76,7 @@ func (o *Orchestrator) provisionRootWorkspace(ctx context.Context, tenant coordi
 	default:
 		// requested, or provisioning/preparing left by a crashed/failed clone (blocker 2): (re)provision
 		// fresh and idempotently — a partial allocation from a failed attempt is abandoned, a new one cloned.
-		alloc, err = o.provisionFreshAllocation(ctx, tenant, ws, runID, fence)
+		alloc, err = o.provisionFreshAllocation(ctx, tenant, sessionID, ws, runID, fence)
 	}
 	if err != nil {
 		return "", "", "", err
@@ -155,7 +155,7 @@ func (o *Orchestrator) acquireWriterLease(ctx context.Context, tenant coordinato
 // provisioner root, the §29.9 workspace layout, then the deterministic clone @ the requested ref (the
 // preparation receipt is the model-independent provenance). It drives requested→provisioning→preparing→
 // ready around the clone.
-func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, tenant coordinator.Tenant, ws coordinator.SessionWorkspace, runID string, fence uint64) (coordinator.Allocation, error) {
+func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, tenant coordinator.Tenant, sessionID string, ws coordinator.SessionWorkspace, runID string, fence uint64) (coordinator.Allocation, error) {
 	allocID := "alloc_" + randHex16()
 	dir := filepath.Join(o.provisionRoot, allocID)
 	if err := workspace.Prepare(dir); err != nil {
@@ -165,11 +165,11 @@ func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, tenant coor
 	// clone rather than after, because the clone writes into the directory the account must own — an
 	// account minted afterwards would inherit a tree written by somebody else.
 	if o.sessionAccounts != nil {
-		account, err := o.sessionAccounts.Acquire(ctx, allocID)
+		account, err := o.sessionAccounts.Acquire(ctx, sessionID)
 		if err != nil {
 			return coordinator.Allocation{}, fmt.Errorf("provision %s: %w", allocID, err)
 		}
-		log.Printf("workspace %s: allocation %s runs as %s", ws.WorkspaceID, allocID, account)
+		log.Printf("workspace %s: session %s runs as %s", ws.WorkspaceID, sessionID, account)
 	}
 	// Drive requested→provisioning→preparing idempotently: a retry after a failed clone re-enters from
 	// `provisioning` or `preparing`, so an already-applied transition (ErrInvalidState) is skipped —
