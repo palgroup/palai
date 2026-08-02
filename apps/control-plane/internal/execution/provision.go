@@ -25,6 +25,13 @@ func (o *Orchestrator) SetWorkspaceProvisioner(root string, broker repositories.
 	o.provisionRoot, o.provisionBroker = root, broker
 }
 
+// SetSessionAccounts wires the per-allocation uid (macOS). Unset, an allocation gets no account and its
+// tools run as the control plane's own uid — which is what every deployment does today and is the
+// posture docs/operations/palai-on-a-mac.md §1 describes as "the boundary is the uid. Nothing else." A
+// setter rather than a constructor argument for the same reason SetShellRunner is one: the composition
+// root decides, and every existing caller compiles and behaves unchanged.
+func (o *Orchestrator) SetSessionAccounts(a SessionAccounts) { o.sessionAccounts = a }
+
 // SetConnectionSecrets wires the resolver a binding's connection_ref is redeemed through (E13 Task 9),
 // so a tenant's own Git credential — provisioned and rotated over the secret-ref API — backs the clone
 // for the bindings that name one. main.go calls it unconditionally next to SetWorkspaceProvisioner: any
@@ -153,6 +160,16 @@ func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, tenant coor
 	dir := filepath.Join(o.provisionRoot, allocID)
 	if err := workspace.Prepare(dir); err != nil {
 		return coordinator.Allocation{}, err
+	}
+	// The uid this allocation's tools run under, created WITH the allocation. It is acquired before the
+	// clone rather than after, because the clone writes into the directory the account must own — an
+	// account minted afterwards would inherit a tree written by somebody else.
+	if o.sessionAccounts != nil {
+		account, err := o.sessionAccounts.Acquire(ctx, allocID)
+		if err != nil {
+			return coordinator.Allocation{}, fmt.Errorf("provision %s: %w", allocID, err)
+		}
+		log.Printf("workspace %s: allocation %s runs as %s", ws.WorkspaceID, allocID, account)
 	}
 	// Drive requested→provisioning→preparing idempotently: a retry after a failed clone re-enters from
 	// `provisioning` or `preparing`, so an already-applied transition (ErrInvalidState) is skipped —

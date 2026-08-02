@@ -682,6 +682,20 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		orch.SetEnvironmentSecrets(environmentValueSecret)
 		if root := os.Getenv("PALAI_WORKSPACE_ROOT"); root != "" {
 			orch.SetWorkspaceProvisioner(root, repositoryBrokerFromEnv())
+	// PER-SESSION ACCOUNTS (macOS) ARE NOT WIRED HERE, AND THE REASON IS A MEASUREMENT RATHER THAN A
+	// DEFERRAL. The two halves are built and guarded — Orchestrator.SetSessionAccounts acquires an
+	// account with an allocation, WorkspaceRecovery.SetSessionAccounts releases it with the teardown —
+	// but the teardown has no production caller:
+	//
+	//	grep -rn 'NewWorkspaceRecovery(\|DestroyAllocation(' --include='*.go' apps cmd packages
+	//	  | grep -v _test | grep -v 'func '   -> 0        (2026-08-02)
+	//
+	// WorkspaceRecovery is constructed by its component tests and by nothing else, so wiring the ACQUIRE
+	// half alone would mint an account per allocation that nothing ever removes — a leak, on a resource
+	// bounded at 99 per machine, created by the code meant to isolate sessions. Wiring one half of a
+	// paired lifecycle is worse than wiring neither, so this waits for the teardown to have a caller.
+	//
+	// The env gate it will use is PALAI_SESSION_ACCOUNT_HELPER, naming scripts/ops/palai-session-account.
 			// A binding that names a connection_ref clones under its own tenant's credential (E13 T9);
 			// the resolver is inert for the ref-less bindings that take the global broker above.
 			orch.SetConnectionSecrets(repositoryConnectionSecret)
