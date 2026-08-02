@@ -298,10 +298,57 @@ A claim here is only worth what re-running it proves.
 
 ---
 
+## 5.5 THE ORDERING ABOVE WAS WRONG, AND THIS SECTION IS WHY (added 2026-08-02, same day)
+
+Everything above was written for the deployment this tree ships today: one control plane, on one Mac.
+The operator then stated the actual product requirement — *rent a Mac from a cloud provider when the
+owned ones run out, bring it up, and configure it centrally; self-hosters must be able to do this; and
+the same scale story must hold for Linux and Mac alike.*
+
+**That requirement is blocked by `FLT-P15`, which this tree already calls the fleet's largest ceiling.**
+`docs/operations/known-gaps-1.0.md:47`:
+
+> *THERE IS NO REMOTE EXECUTION AT ALL — T7 was deferred, so a Mac pool routes a run's ENGINE and every
+> tool still runs in the control plane's process: a Mac is only a Mac when the control plane is ON it.*
+
+The code sites are named in that row: the shell through `orch.SetShellRunner(shellRunnerFromEnv())`
+(`main.go:603`, `:768-795`) and the file tool through `workspace.NewWorkspaceFS(env.WorkspaceRoot)`
+(`execution/tools/file.go:48`), both against the allocation the control plane holds. And the tree wrote
+the consequence down before the fleet epic began — `main.go:591-595`, verbatim: *"the tools run CP-side
+against the same host allocation the runner bind-mounts. A split CP≠runner deploy … needs a runner-relay
+seam."*
+
+**The deferral was correct under its stated condition, and the condition has changed.** The gaps row
+quotes the owner: *"T7'yi sonra bakarız, buna çok iş var orada. Native Mac'te multi session run
+edebildiğimiz sürece sorun yok."* A rented, on-demand fleet is not that condition. Per CLAUDE.md rule 4
+an inherited ceiling is dated: here the ceiling did not move, the requirement did.
+
+**So §3.5 (per-device config) and §3.1 (per-session accounts) are downstream of the relay, not parallel
+to it.** With one control plane per Mac, a runner-plane `scope_id` document configures machines that are
+not the ones running the tools, and the account lifecycle is a per-host operator script a hundred times
+over — which is the opposite of what was asked for.
+
+**A second gap hits the same requirement and was not part of the original ask.** `FLT-P13`: an approval
+admits an ENROLMENT, not a machine, so a rebooted or re-imaged rented Mac mints a new identity and waits
+for a human again. The gaps row names the cost in the operator's own scenario — *"for a rented fleet
+that boots on demand … a real operational cost"* — and today's mitigation is that strict mode is off by
+default (`FLT-P12`). What would close it is named there too: approve a public-key fingerprint rather
+than a row; `runners.public_key_sha256` is already recorded.
+
 ## 6. Work items, in order
 
+0. **The execution relay — `FLT-P15`, E27 `T7a` (shell) + `T7b` (workspace).** Added after §5.5. It is
+   first because every other item on this list is worth less without it, and two of them are worth
+   nothing: per-device config configures the wrong machine, and the account lifecycle becomes a
+   per-host script run a hundred times. The split point is already written down in
+   `docs/superpowers/plans/phase-24-runner-fleet.md` §7. Its companion for a rented fleet is `FLT-P13`
+   (approve a key fingerprint, not an enrolment row) — without it an on-demand Mac waits for a human
+   every time it boots, or strict mode stays off.
+
 1. **Measure §3.3.** `sudo bash scripts/ops/mac-sessions.sh verify --simulator`. Nothing below is
-   safe to build before this row is closed — it can invalidate §3.1.
+   safe to build before this row is closed — it can invalidate §3.1. Note it is a per-HARDWARE-MODEL
+   measurement rather than a per-machine one: one result covers identical model + OS + Xcode, and must
+   be re-taken when any of the three changes.
 2. ~~**Live view (§3.6, option B).**~~ **DONE 2026-08-02.** Coalescing delta sink in
    `model_dispatch.go`, journalled as `model_step.delta.v1` through an advisory
    `coordinator.AppendModelStepDelta`, guarded by a component test that drives `dispatchModel`
