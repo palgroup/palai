@@ -42,8 +42,27 @@ set -euo pipefail
 
 SUBCOMMANDS="plan up verify down selftest"
 
-PREFIX="palai-s"
-UID_BASE=700
+# PREFIX is the account-name prefix this script owns. It is overridable for ONE reason and it is the same
+# reason PALAI_MAC_SESSIONS_HOST_UUID is: a test that drives this script has to be able to scan a namespace
+# no real machine uses.
+#
+# WITHOUT IT, THE DOC'S OWN INSTRUCTIONS BREAK THE DOC'S OWN TESTS. tests/docs runs the real script against
+# real directory services with a pinned fake host UUID, so a genuine session account — the thing
+# mac-sessions.md tells every operator to create — carries a marker minted on the REAL host UUID, collides
+# by name, and turns a dry run into exit 2. Measured 2026-08-02: one `palai-s01` on the box made
+# TestMacSessionsDestructiveSubcommandsNeedAnExplicitFlag red at HEAD. An operator who followed the page
+# could not run `make verify` again.
+#
+# IT IS NOT AUTHORITY. Nothing may be deleted on the strength of a name: deletion_is_permitted also requires
+# the uid this script would have allocated, the marker written into the record (root-only), and that
+# marker's host UUID matching this Mac. Renaming the namespace changes what is SCANNED, never what is
+# permitted — which is why this is a variable and the marker is not.
+PREFIX="${PALAI_MAC_SESSIONS_PREFIX:-palai-s}"
+# UID_BASE is overridable for the same reason PREFIX is, and it is the SECOND half of the same isolation:
+# renaming the namespace alone was not enough. A test that scans `palaitest-sNN` still allocates uid 701 for
+# index 01, which the operator's real `palai-s01` already holds — measured 2026-08-02, the dry run refused
+# with "uid 701 already belongs to palai-s01". A namespace is a name AND a uid range or it is neither.
+UID_BASE="${PALAI_MAC_SESSIONS_UID_BASE:-700}"
 MAX_SESSIONS=99
 MARKER_ATTR="dsAttrTypeNative:palai_mac_session"
 MARKER_MAGIC="palai-mac-sessions"
@@ -976,7 +995,7 @@ cmd_selftest() {
 	local rc=0 huuid good
 	huuid="$(host_uuid)"
 	[ -n "$huuid" ] || die "selftest needs a host identity; set PALAI_MAC_SESSIONS_HOST_UUID"
-	good="$MARKER_MAGIC:$MARKER_VERSION:$huuid:palai-s01:2026-07-28T00:00:00Z"
+	good="$MARKER_MAGIC:$MARKER_VERSION:$huuid:${PREFIX}01:2026-07-28T00:00:00Z"
 
 	say "selftest — the deletion guard, on host identity $huuid"
 
@@ -1001,27 +1020,27 @@ cmd_selftest() {
 	}
 
 	case_is PERMIT "an account this script created on this Mac" \
-		"palai-s01" 701 "$good" no "0,501"
+		"${PREFIX}01" $((UID_BASE + 1)) "$good" no "0,501"
 	case_is REFUSE "the same name with no marker at all" \
-		"palai-s01" 701 "" no "0,501"
+		"${PREFIX}01" $((UID_BASE + 1)) "" no "0,501"
 	case_is REFUSE "a marker minted on another Mac" \
-		"palai-s01" 701 "$MARKER_MAGIC:$MARKER_VERSION:SOME-OTHER-MAC:palai-s01:2026-07-28T00:00:00Z" no "0,501"
+		"${PREFIX}01" $((UID_BASE + 1)) "$MARKER_MAGIC:$MARKER_VERSION:SOME-OTHER-MAC:${PREFIX}01:2026-07-28T00:00:00Z" no "0,501"
 	case_is REFUSE "a marker for a different session" \
-		"palai-s01" 701 "$MARKER_MAGIC:$MARKER_VERSION:$huuid:palai-s07:2026-07-28T00:00:00Z" no "0,501"
+		"${PREFIX}01" $((UID_BASE + 1)) "$MARKER_MAGIC:$MARKER_VERSION:$huuid:${PREFIX}07:2026-07-28T00:00:00Z" no "0,501"
 	case_is REFUSE "a uid that does not match the name" \
-		"palai-s01" 705 "$good" no "0,501"
+		"${PREFIX}01" $((UID_BASE + 5)) "$good" no "0,501"
 	case_is REFUSE "an account outside our uid range" \
-		"palai-s01" 501 "$good" no "0,501"
+		"${PREFIX}01" 501 "$good" no "0,501"
 	case_is REFUSE "an admin account wearing our name" \
-		"palai-s01" 701 "$good" yes "0,501"
+		"${PREFIX}01" $((UID_BASE + 1)) "$good" yes "0,501"
 	case_is REFUSE "the operator's own account" \
-		"palai-s01" 701 "$good" no "0,501,701"
+		"${PREFIX}01" $((UID_BASE + 1)) "$good" no "0,501,$((UID_BASE + 1))"
 	case_is REFUSE "someone else's account entirely" \
 		"konuk" 503 "$good" no "0,501"
 	case_is REFUSE "a name with a path in it" \
-		"palai-s01/../../etc" 701 "$good" no "0,501"
+		"${PREFIX}01/../../etc" $((UID_BASE + 1)) "$good" no "0,501"
 	case_is REFUSE "session index zero" \
-		"palai-s00" 700 "$MARKER_MAGIC:$MARKER_VERSION:$huuid:palai-s00:2026-07-28T00:00:00Z" no "0,501"
+		"${PREFIX}00" $((UID_BASE + 0)) "$MARKER_MAGIC:$MARKER_VERSION:$huuid:${PREFIX}00:2026-07-28T00:00:00Z" no "0,501"
 
 	say ""
 	if [ "$rc" -eq 0 ]; then
