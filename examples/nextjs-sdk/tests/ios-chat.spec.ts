@@ -127,6 +127,11 @@ test.describe("arming the session", () => {
       headers: { Authorization: "Bearer reset" },
     });
     await page.goto("/chat");
+    // THE PANEL IS COLLAPSED NOW, and every assertion below lives inside a Radix CollapsibleContent
+    // which UNMOUNTS while closed. Without this open, `toBeDisabled` and `toHaveAttribute` would be
+    // asserting against elements that are not in the DOM at all — the exact vacuity this tree keeps
+    // finding in sweeps that scan routes with every dialog shut and report a cleaner number.
+    await page.getByTestId("auto-approve-summary").click();
   });
 
   // A session does not exist until the first turn opens one. A dead control that silently does
@@ -194,6 +199,9 @@ test.describe("arming the session", () => {
     await tools.click();
     await expect(tools).toHaveAttribute("aria-checked", "false");
     await expect(page.getByTestId("auto-approve-state")).toContainText("Nothing is armed");
+    // AND THE COLLAPSED LINE AGREES. It is the only part an operator sees by default, so a
+    // summary that drifted from the panel would be the whole control lying at a glance.
+    await expect(page.getByTestId("auto-approve-summary")).toContainText("nothing armed");
   });
 
   // NO KEY IN THE BROWSER, on the route this feature added. The credential is server-side; every

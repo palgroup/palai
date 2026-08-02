@@ -256,6 +256,12 @@ test("pressing Approve applies through the HTTP path, forwarding the one-shot re
   await expect(page.getByTestId("chat-approval")).toBeVisible({ timeout: 30_000 });
   await page.getByTestId("chat-approve").click();
   await expect(page.getByTestId("approval-outcome")).toContainText("Approved");
+  // AND IT DOES NOT PROMISE THE PUSH. The line used to say the durable command applies and the parked
+  // run wakes — three promises, one of which this screen cannot observe — and the operator then read
+  // further down that the push was NOT confirmed. Reassurance followed by a retraction is worse than
+  // either alone, because the reassurance is what they act on.
+  await expect(page.getByTestId("approval-outcome")).toContainText("separate");
+  await expect(page.getByTestId("approval-outcome")).not.toContainText("the durable command applies");
 
   // THE DECISION REACHED THE CONTROL PLANE. The fake refuses any body whose request_hash does not
   // match the one the run emitted — "an approval id alone authorizes nothing" — so a decision that
@@ -341,10 +347,58 @@ test("build artefacts are collapsed behind a stated rule, and the run's own edit
 // broken control; the screen has to name the rule rather than leave the operator to infer it.
 test("the auto-approve panel says which calls the switch actually gates", async ({ page }) => {
   await page.goto(CHAT);
+  await page.getByTestId("auto-approve-summary").click();
   const scope = page.getByTestId("auto-approve-scope");
   await expect(scope).toBeVisible();
   await expect(scope).toContainText("approval_required");
   await expect(scope).toContainText("a build runs either way");
+});
+
+// THE PANEL IS COLLAPSED BY DEFAULT, AND THE ONE LINE THAT REMAINS STATES THE STATE.
+//
+// The owner's verdict on the old block: "şurayı kaldır aq sikeceğim bir sike de yaramıyor". Three cards
+// reading OFF / OFF / "Nothing is armed" sat above the conversation on every turn — the top of the
+// column spent saying nothing is happening. The feature is not deleted; the SPLIT is the safety
+// property this demo exists to show. It is one line until somebody asks.
+//
+// BOTH HALVES ARE ASSERTED: that the switches are NOT rendered while collapsed (a "collapse" that only
+// hides visually still costs the column), and that the summary names the state rather than being a
+// decorative chevron.
+test("the auto-approve panel is one line until it is asked for, and that line names the state", async ({ page }) => {
+  await page.goto(CHAT);
+
+  const summary = page.getByTestId("auto-approve-summary");
+  await expect(summary).toBeVisible();
+  await expect(summary).toContainText("Auto-approve");
+  await expect(summary).toContainText("a session opens on the first turn");
+
+  // Collapsed means UNMOUNTED, not merely invisible.
+  await expect(page.getByTestId("auto-approve-tools")).toHaveCount(0);
+  await expect(page.getByTestId("auto-approve-publications")).toHaveCount(0);
+
+  await summary.click();
+  await expect(page.getByTestId("auto-approve-tools")).toBeVisible();
+  await expect(page.getByTestId("auto-approve-publications")).toBeVisible();
+});
+
+// THE SUMMARY NAMES THE HALVES — C16 on the surface an operator actually sees, since the panel is shut
+// by default and this line is the whole control most of the time.
+test("the collapsed line names WHICH half is armed", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "add a contributing guide");
+  await expect(page.getByTestId("chat-run").first()).toContainText("completed", { timeout: 30_000 });
+
+  const summary = page.getByTestId("auto-approve-summary");
+  await expect(summary).toContainText("nothing armed");
+
+  await summary.click();
+  await page.getByTestId("auto-approve-tools").click();
+  await expect(page.getByTestId("auto-approve-tools")).toHaveAttribute("aria-checked", "true");
+
+  // The one line an operator reads at a glance distinguishes "builds armed, pushes ask" from "both".
+  await expect(summary).toContainText("build commands armed · pushes ask");
+  await expect(summary).not.toContainText("pushes armed");
 });
 
 // THE STATE LINE NAMES WHICH HALF IS ARMED. Arming builds while pushes stay off is the safety property
@@ -359,6 +413,7 @@ test("the armed state names WHICH half is armed, and says the other still waits"
   await send(page, "add a contributing guide");
   await expect(page.getByTestId("chat-run").first()).toContainText("completed", { timeout: 30_000 });
 
+  await page.getByTestId("auto-approve-summary").click();
   const state = page.getByTestId("auto-approve-state");
 
   await page.getByTestId("auto-approve-tools").click();

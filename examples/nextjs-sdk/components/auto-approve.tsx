@@ -1,7 +1,9 @@
 "use client";
 
-import { GitPullRequestIcon, ShieldCheckIcon, TerminalSquareIcon } from "lucide-react";
+import { ChevronDownIcon, GitPullRequestIcon, ShieldCheckIcon, TerminalSquareIcon } from "lucide-react";
 import { useState } from "react";
+
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 import { cn } from "@/lib/utils";
 
@@ -49,6 +51,9 @@ export function AutoApproveControls({
   disabled?: boolean;
 }) {
   const [busy, setBusy] = useState<null | "tools" | "publications">(null);
+  // Collapsed by default. An operator who has not asked about authorization should not have the
+  // top of their conversation spent explaining it to them.
+  const [open, setOpen] = useState(false);
   const [refusal, setRefusal] = useState("");
 
   // A session does not exist until the first turn opens one, so there is nothing to arm yet. Saying
@@ -86,11 +91,35 @@ export function AutoApproveControls({
   }
 
   return (
-    <div className="space-y-2 border-border border-b px-4 py-3" data-testid="auto-approve">
-      <div className="flex items-center gap-1.5">
-        <ShieldCheckIcon className="size-3.5 text-muted-foreground" aria-hidden />
-        <h3 className="font-medium text-[13px]">Auto-approve this session</h3>
-      </div>
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className="border-border border-b"
+      data-testid="auto-approve"
+    >
+      {/* ONE LINE, AND IT STATES THE CURRENT STATE IN WORDS.
+          The owner's verdict on the old block was "şurayı kaldır aq sikeceğim bir sike de yaramıyor",
+          and the experience earns it even though the feature is correct: three cards sat permanently
+          above the conversation reading OFF / OFF / "Nothing is armed" — the top of the column spent on
+          three lines saying nothing is happening, on every turn, forever.
+          The SPLIT is not deleted, because arming builds while pushes stay off is the safety property
+          this whole demo exists to show. It is collapsed. A setting that is not doing anything does not
+          get a card; it gets a sentence you can read in one glance and ignore. */}
+      <CollapsibleTrigger
+        className="flex w-full items-center gap-1.5 px-4 py-2 text-left hover:bg-white/[0.03]"
+        data-testid="auto-approve-summary"
+      >
+        <ShieldCheckIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+        <span className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground">
+          Auto-approve: <span className="text-foreground">{summaryPhrase(armable, state)}</span>
+        </span>
+        <ChevronDownIcon
+          className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180"
+          aria-hidden
+        />
+      </CollapsibleTrigger>
+
+      <CollapsibleContent className="space-y-2 px-4 pt-1 pb-3">
 
       <Switch
         testId="auto-approve-tools"
@@ -159,8 +188,22 @@ export function AutoApproveControls({
           {refusal}
         </p>
       ) : null}
-    </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
+}
+
+// summaryPhrase is the collapsed line, and it NAMES THE HALVES. "Approvals are answered automatically
+// under key:key_local" was true of tools-armed, pushes-armed and both-armed alike — three different
+// exposures behind one sentence, which is the C16 defect. "build commands armed · pushes ask" is legible
+// at a glance; "nothing is armed" beside a build that just ran is not, which is why the expanded panel
+// carries the sentence explaining that a build is ungated here either way.
+function summaryPhrase(armable: boolean, state: AutoApproveState): string {
+  if (!armable) return "not yet — a session opens on the first turn";
+  if (state.tools && state.publications) return "build commands armed · pushes armed";
+  if (state.tools) return "build commands armed · pushes ask";
+  if (state.publications) return "pushes armed · build commands ask";
+  return "nothing armed — every gated call and every push asks";
 }
 
 // Switch is a plain button with `role="switch"`, not a checkbox: the control turns a standing

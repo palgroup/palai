@@ -94,7 +94,21 @@ export function ToolPart({ data }: { data: Data }) {
             letting an operator read a call id as the command. */}
         {args !== null ? (
           <>
-            <ToolInput data-testid="chat-tool-args" input={args as Record<string, unknown>} />
+            {/* THE `key` IS LOAD-BEARING AND IT IS COVERING A REAL BUG ONE LAYER DOWN.
+                MEASURED: open a tool card BEFORE its ledger join lands and it shows the identifier
+                fallback forever — the arguments arrive, this branch switches (the footer below it
+                changes), and the code block keeps rendering the OLD text. Opening the same card AFTER
+                the join lands shows the arguments correctly. So `CodeBlock` does not re-tokenize when
+                its `code` prop changes; it renders whatever it first highlighted.
+                That is a defect in the vendored ai-elements component and it is not confined to this
+                card — any code block whose content streams has it. Keying on the content forces a
+                remount, which is the smallest fix that does not rewrite a shared primitive late in a
+                branch that is not about code blocks. The underlying bug is worth a task of its own. */}
+            <ToolInput
+              key={JSON.stringify(args)}
+              data-testid="chat-tool-args"
+              input={args as Record<string, unknown>}
+            />
             {/* THE REPLAY CLASS STAYS. It is the one field on the frame that tells an operator whether
                 the thing that just ran can be undone, and it would have been lost by simply swapping
                 this block for the arguments. It is a footnote rather than a heading because "what did
@@ -291,10 +305,25 @@ export function ApprovalPart({ data }: { data: Data }) {
         </p>
       </ConfirmationRequest>
 
+      {/* WHAT ACTUALLY HAPPENED, NOT WHAT IS SUPPOSED TO.
+          This line used to read "Approved. The publication moves to `approved`, the durable command
+          applies, and the parked run wakes" — three promises, one of which this screen cannot observe.
+          The owner approved a push, read that, and was then told further down that the push was NOT
+          confirmed. A paragraph of reassurance followed by a retraction is worse than either alone:
+          the reassurance is what they act on.
+          So it now says only the part this screen KNOWS — the decision was recorded and applied — and
+          names the push as a separate event that is reported separately. On this stack it routinely
+          does not happen: repositoryPublisherFromEnv returns nil without a GitHub App, and a nil
+          publisher makes the approval pump a no-op. That is reported by the notice below when the run
+          ends, and this sentence no longer contradicts it in advance. */}
       <ConfirmationAccepted>
         <p data-testid="approval-outcome" className="text-[13px] text-added">
-          Approved. The publication moves to <code>approved</code>, the durable command applies, and
-          the parked run wakes.
+          Approved — the decision was recorded and the parked run wakes.
+          <span className="mt-1 block text-muted-foreground">
+            Whether the push itself reached the repository is a <em>separate</em> event this screen
+            does not see from the decision. If no <code>publication.published.v1</code> arrives before
+            the run ends, it will say so below rather than let this line stand as the outcome.
+          </span>
         </p>
       </ConfirmationAccepted>
       <ConfirmationRejected>
