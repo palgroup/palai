@@ -44,10 +44,10 @@ const derivedNameRunes = 80
 //     LastActivityAt on a LIVE run is its last TRANSITION, not now: a running session's elapsed time is
 //     the caller's clock minus FirstActivityAt, not this span.
 type SessionView struct {
-	ID         string
-	State      string
-	CreatedAt  time.Time
-	Found      bool
+	ID        string
+	State     string
+	CreatedAt time.Time
+	Found     bool
 	// AutoApprove is the session's STANDING AUTHORIZATION for its own approvals (E30 T1, migration
 	// 000056), and it is on the projection because an operator must be able to SEE from the screen that
 	// a session is deciding its own gated calls. A switch whose state is only visible to the code that
@@ -57,9 +57,9 @@ type SessionView struct {
 	// populating it on one and leaving the other at the zero value would make a list screen quietly
 	// report every armed session as unarmed, which is the more dangerous of the two directions.
 	AutoApprove AutoApproveView
-	Name       string
-	NameSource string
-	Agents     []string
+	Name        string
+	NameSource  string
+	Agents      []string
 
 	InputTokens  int64
 	OutputTokens int64

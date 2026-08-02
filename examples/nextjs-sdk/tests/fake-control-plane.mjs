@@ -97,8 +97,31 @@ function sendProblem(response, status, code) {
   );
 }
 
+// The run terminal states, copied from apps/control-plane/api/events.go:52. The production endpoint
+// CLOSES THE CONNECTION after emitting one of these, and that is not a detail — it is the mechanism
+// behind the defect this suite now guards. A session with two runs replays the first run's terminal to
+// anyone who opens the journal at cursor 0, and the server hangs up there.
+const TERMINAL_EVENT_TYPES = new Set([
+  "run.completed.v1",
+  "run.failed.v1",
+  "run.canceled.v1",
+  "run.cancelled.v1",
+  "run.timed_out.v1",
+  "run.budget_exceeded.v1",
+]);
+
+// streamEvents replays the journal from `after_sequence` and tails it, exactly as
+// apps/control-plane/api/events.go does.
+//
+// THE CURSOR IS NOT DECORATION HERE. This fake ignored `after_sequence` until 2026-08-02 and always
+// replayed from the start, which made it MORE FORGIVING than production in precisely the dimension the
+// chat depends on: a second turn that resumed past the first run's terminal looked identical to one
+// that did not, so the suite could not tell a fixed adapter from a broken one. That is the "a fake more
+// generous than production" trap CLAUDE.md names, pointed at a cursor.
 function streamEvents(request, response, events = scriptedEvents()) {
   streamOpens += 1;
+  const after = Number(new URL(request.url, "http://127.0.0.1").searchParams.get("after_sequence") ?? 0);
+  events = events.filter((e) => e.sequence > (Number.isFinite(after) ? after : 0));
   response.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-transform",
@@ -138,6 +161,14 @@ function streamEvents(request, response, events = scriptedEvents()) {
     }
     const frame = `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
     response.write(frame);
+    // CLOSE AFTER A TERMINAL FRAME — events.go:149, "clean close after the terminal event". Whether
+    // this is the LAST event in the journal is irrelevant to the server, and that is the whole point:
+    // a journal holding a second run still hangs up here.
+    if (TERMINAL_EVENT_TYPES.has(event.type)) {
+      stop();
+      response.end();
+      return;
+    }
     timer = setTimeout(pump, FRAME_GAP_MS);
   };
 
@@ -178,7 +209,31 @@ const REQUEST_HASH = "req_hash_coding_0001";
 const PATCH_ARTIFACT_ID = "art_patch_0001";
 const TRANSCRIPT_ARTIFACT_ID = "art_transcript_0001";
 
+// THE AUTHORED FILE COMES SECOND ON PURPOSE, and that ordering is the fixture's whole job.
+//
+// MEASURED on the live stack 2026-08-02: a `swift build` inside the clone wrote 40-odd files under
+// `.build/`, and because the changeset lists them in path order the panel selected a compiler MODULE
+// CACHE as the file to show. The clone has no `.gitignore` (verified by cloning it), so the changeset
+// is right to include them — the screen was wrong to present them as the run's work.
+//
+// A fixture whose only file was CONTRIBUTING.md could not tell a panel that picks the first AUTHORED
+// file from one that picks the first file, because they would be the same file. So `.build/` entries
+// are here, and one of them sorts FIRST.
 const PATCH_BODY = [
+  "diff --git a/.build/artefact-one.txt b/.build/artefact-one.txt",
+  "new file mode 100644",
+  "index 0000000..1111111",
+  "--- /dev/null",
+  "+++ b/.build/artefact-one.txt",
+  "@@ -0,0 +1 @@",
+  "+compiler output, not the agent's work",
+  "diff --git a/.build/ModuleCache/Combine.swiftmodule b/.build/ModuleCache/Combine.swiftmodule",
+  "new file mode 100644",
+  "index 0000000..2222222",
+  "--- /dev/null",
+  "+++ b/.build/ModuleCache/Combine.swiftmodule",
+  "@@ -0,0 +1 @@",
+  "+module cache",
   "diff --git a/CONTRIBUTING.md b/CONTRIBUTING.md",
   "new file mode 100644",
   "index 0000000..261ff3b",
@@ -291,9 +346,57 @@ const codingAutoApprove = { auto_approve_tools: false, auto_approve_publications
 // It is cleared by /__reset-coding along with everything else.
 let codingOmitsToolName = false;
 
+// A RUN WHOSE LEDGER ROWS NEVER LAND. `tool_call.completed.v1` is journalled before the tool_calls row
+// is committed, so a read fired the instant the frame arrives can miss — measured as five "This call
+// ran, but its output could not be read" rows on a screen whose ledger, read a minute later, had all
+// eight rows with full stdout and exit codes. The adapter retries; this is the case where retrying
+// never helps, and the screen must say the join failed rather than draw an empty successful build.
+let codingUnjoinable = false;
+
+// A RUN THAT FAILED TO PROVISION ITS WORKSPACE — the path an operator meets FIRST and the one this
+// suite had never driven. MEASURED on the live stack 2026-08-02: the owner typed "selam", the run came
+// back `status: "failed"` carrying a complete, actionable error, and the chat said the answer "never
+// became readable ... The run itself is on the control plane and did not fail." Both halves false, and
+// the truth was in the response the whole time.
+let codingFailsProvisioning = false;
+const CODING_FAIL_ERROR = {
+  code: "workspace_provisioning_failed",
+  title: "Workspace could not be prepared",
+  detail:
+    "the run's repository workspace could not be prepared: git fetch: exit status 128: could not read " +
+    "Username for 'https://github.com': terminal prompts disabled. Check the binding's clone_url and " +
+    "default branch, and whether a private repository needs a connection_ref naming a token in this " +
+    "deployment's secret store.",
+  request_id: "req_c460acf1fake0000",
+};
+
+// AN UPSTREAM THAT ANSWERS WITH SOMETHING THAT IS NOT JSON. Measured on the live stack while its
+// control plane was down: the arming control showed the operator
+//     Failed to execute 'json' on 'Response': Unexpected end of JSON input
+// a raw JS exception, as the answer to "arm this session". The relay's fetch was unguarded, so an
+// unreachable upstream became a 500 with an empty body, and the component's res.json() threw. An
+// upstream that is down is an ANSWER — "the control plane did not respond" is a sentence a person can
+// act on; a SyntaxError is not. This flag makes that state reachable from a test.
+let brokenUpstream = false;
+
 let approvalDecision = null; // null | "approved" | "denied"
 const createdBindings = [];
 const createdSecrets = [];
+// What each create carried, in order. The `instructions` layer is recorded because the repository hint
+// moved OFF the user's text and onto it, and "the bubble is clean" is satisfied just as well by a hint
+// that was deleted — so the suite has to be able to see both halves.
+const codingInstructions = [];
+const codingInputs = [];
+// What each create carried as `agent_id`. The steering moved onto a published agent revision, so
+// "the bubble is clean" and "instructions is empty" are BOTH satisfied by a build that sends no
+// steering at all — this is the field that says the agent was actually pinned.
+const codingAgentIds = [];
+// The agents surface, as module state. Not reset by /__reset-coding: the demo resolves its agent
+// ONCE PER SERVER PROCESS (lib/agent.ts caches the promise), so clearing the fake's copy between
+// tests would desynchronise the two and make later tests measure a provisioning that the app has
+// already cached away. The agent is deployment config, not per-test state.
+const agentProfiles = [];
+const agentRevisions = {};
 
 function codingEvents() {
   const named = (payload) => (codingOmitsToolName ? { ...payload, tool_name: undefined } : payload);
@@ -337,6 +440,105 @@ function codingEvents() {
   }));
 }
 
+// ---------------------------------------------------------------------------------------------
+// THE SECOND TURN, AND IT IS HERE BECAUSE THE FIRST TURN WAS THE ONLY ONE ANYONE HAD EVER DRIVEN.
+//
+// MEASURED on the live stack 2026-08-02, session ses_0438bd21b5b6562890fabbec865c10ea: turn one
+// ("selam") rendered; turn two ("build al projeyi") rendered "run queued", "run completed" and NOTHING
+// ELSE. The run was fine — six tool calls and a full answer, both readable afterwards on
+// GET /v1/responses/resp_47c7eb59…{,/tool-calls}. The screen dropped the entire turn.
+//
+// Cause: ONE SESSION, MANY RUNS. The adapter opened the journal at cursor 0, the server replayed run
+// one, hit its `run.completed.v1`, and hung up (events.go:149). api/events.go:50 states the assumption
+// in its own words — "an LP session carries a single run, so its terminal is the journal's end" — and a
+// chat is the counterexample.
+//
+// So the fake's coding session now holds TWO runs in ONE journal, with run two's sequences continuing
+// after run one's. A build that opens at cursor 0 sees run one and stops; only a build that starts past
+// it renders this turn. The deterministic suite can now tell those two apart, which it could not before.
+const CODING_RESPONSE_2_ID = "resp_coding_proof_0002";
+const CODING_RUN_2_ID = "run_coding_proof_0002";
+
+// How many turns this session has been asked for. The Nth create (N >= 2) is answered with run two.
+let codingTurns = 0;
+
+function codingEventsTurn2() {
+  const base = {
+    source: "palai://fake-control-plane",
+    specversion: "1.0",
+    session_id: CODING_SESSION_ID,
+    run_id: CODING_RUN_2_ID,
+    datacontenttype: "application/json",
+  };
+  const rows = [
+    ["run.queued.v1", { run_id: CODING_RUN_2_ID, state: "queued" }],
+    ["run.running.v1", { run_id: CODING_RUN_2_ID, state: "running" }],
+    ["tool_call.executing.v1", { run_id: CODING_RUN_2_ID, replay_class: "reversible", tool_call_id: "tcall_turn2_build", tool_name: "palai.workspace.shell" }],
+    ["tool_call.completed.v1", { run_id: CODING_RUN_2_ID, tool_call_id: "tcall_turn2_build", tool_name: "palai.workspace.shell" }],
+    ["run.completed.v1", { run_id: CODING_RUN_2_ID, state: "completed" }],
+  ];
+  // Run one occupies sequences 1..N; run two continues from there, because they share one journal.
+  const offset = codingEvents().length;
+  return rows.map(([type, data], i) => ({
+    ...base,
+    id: `evt_coding_${String(offset + i + 1).padStart(4, "0")}`,
+    type,
+    sequence: offset + i + 1,
+    time: new Date(Date.UTC(2026, 7, 2, 0, 1, i + 1)).toISOString(),
+    data,
+  }));
+}
+
+// The session's whole journal. A run's frames exist only once its create has been made — including run
+// ONE. That is what the control plane does, and a fake that pre-populates a journal is a fake in which
+// an adapter reading the cursor before it created anything would see events that cannot exist yet.
+function codingJournal() {
+  // A provisioning failure never reaches a model step: the workspace could not be prepared, so there is
+  // no text, no tool call and nothing to stream. The journal is three frames and a terminal — which is
+  // exactly why the UI's fallback path is the ONLY thing an operator sees on this turn, and why it
+  // getting the sentence wrong mattered so much.
+  if (codingFailsProvisioning) {
+    const base = {
+      source: "palai://fake-control-plane",
+      specversion: "1.0",
+      session_id: CODING_SESSION_ID,
+      run_id: CODING_RUN_ID,
+      datacontenttype: "application/json",
+    };
+    return [
+      ["run.queued.v1", { run_id: CODING_RUN_ID, state: "queued" }],
+      ["run.provisioning.v1", { run_id: CODING_RUN_ID, state: "provisioning" }],
+      ["run.failed.v1", { run_id: CODING_RUN_ID, state: "failed" }],
+    ].map(([type, data], i) => ({
+      ...base,
+      id: `evt_fail_${String(i + 1).padStart(4, "0")}`,
+      type,
+      sequence: i + 1,
+      time: new Date(Date.UTC(2026, 7, 2, 0, 0, i + 1)).toISOString(),
+      data,
+    }));
+  }
+  if (codingTurns >= 2) return [...codingEvents(), ...codingEventsTurn2()];
+  if (codingTurns >= 1) return codingEvents();
+  return [];
+}
+
+const CODING_TURN2_TOOL_CALLS = [
+  {
+    id: "tcall_turn2_build",
+    object: "tool_call",
+    name: "palai.workspace.shell",
+    state: "completed",
+    replay_class: "reversible",
+    // The command the live model eventually found, after six calls, once the hint stopped riding only
+    // the first turn. It is the argument for putting the hint in `instructions`.
+    arguments: { argv: ["swift", "build", "--package-path", "repo"] },
+    result: { exit_code: 0, stdout: "Building for debugging...\n[4/4] Compiling PalaiDemo Greeter.swift\nBuild complete! (4.59s)\n" },
+    created_at: "2026-08-02T00:01:03Z",
+    updated_at: "2026-08-02T00:01:04Z",
+  },
+];
+
 function handleCoding(method, pathname, request, response) {
   if (method === "POST" && pathname === "/v1/sessions") {
     request.resume();
@@ -347,7 +549,44 @@ function handleCoding(method, pathname, request, response) {
   }
 
   if (method === "GET" && pathname === `/v1/sessions/${CODING_SESSION_ID}/events`) {
-    streamEvents(request, response, codingEvents());
+    streamEvents(request, response, codingJournal());
+    return true;
+  }
+
+  if (method === "GET" && pathname === `/v1/responses/${CODING_RESPONSE_2_ID}`) {
+    sendJSON(response, 200, {
+      id: CODING_RESPONSE_2_ID,
+      object: "response",
+      status: "completed",
+      model: "fake",
+      session_id: CODING_SESSION_ID,
+      run_id: CODING_RUN_2_ID,
+      created_at: "2026-08-02T00:01:00Z",
+      output: [{ type: "message", content: "Build complete — `swift build --package-path repo` succeeded." }],
+      usage: { input_tokens: 9, output_tokens: 12, total_tokens: 21, tool_calls: 1 },
+    });
+    return true;
+  }
+
+  if (method === "GET" && pathname === `/v1/responses/${CODING_RESPONSE_2_ID}/tool-calls`) {
+    sendJSON(response, 200, { object: "list", data: CODING_TURN2_TOOL_CALLS });
+    return true;
+  }
+
+  if (method === "GET" && pathname === `/v1/responses/${CODING_RESPONSE_ID}` && codingFailsProvisioning) {
+    // `output` is EMPTY and stays empty — there is no answer, and waiting for one proves a negative.
+    // `error` is where the truth is, and `status` says so on the first read.
+    sendJSON(response, 200, {
+      id: CODING_RESPONSE_ID,
+      object: "response",
+      status: "failed",
+      model: "fake",
+      session_id: CODING_SESSION_ID,
+      run_id: CODING_RUN_ID,
+      created_at: "2026-08-02T00:00:00Z",
+      output: [],
+      error: CODING_FAIL_ERROR,
+    });
     return true;
   }
 
@@ -367,7 +606,10 @@ function handleCoding(method, pathname, request, response) {
   }
 
   if (method === "GET" && pathname === `/v1/responses/${CODING_RESPONSE_ID}/tool-calls`) {
-    sendJSON(response, 200, { object: "list", data: CODING_TOOL_CALLS });
+    // An empty list is what an uncommitted ledger looks like from here: the endpoint answers 200 with
+    // no row for the call id the frames carried. It is NOT a 404 and NOT an error, which is precisely
+    // why a single read could be mistaken for "this tool produced nothing".
+    sendJSON(response, 200, { object: "list", data: codingUnjoinable ? [] : CODING_TOOL_CALLS });
     return true;
   }
 
@@ -375,6 +617,13 @@ function handleCoding(method, pathname, request, response) {
   // exactly as the control plane does, because that is the property the screen depends on: a click
   // on one switch must not move the other.
   if (method === "PATCH" && pathname === `/v1/sessions/${CODING_SESSION_ID}`) {
+    if (brokenUpstream) {
+      // Not problem+json, not JSON at all — exactly what a proxy, a crashed process or an empty 500
+      // body looks like from the relay's side.
+      response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+      response.end("");
+      return true;
+    }
     let raw = "";
     request.on("data", (chunk) => { raw += chunk; });
     request.once("end", () => {
@@ -513,19 +762,117 @@ function handleCoding(method, pathname, request, response) {
   // that armed the session left it armed for the next one — and two specs passed or failed purely on
   // the order they happened to run in. A test whose result depends on its neighbours is measuring
   // the suite, not the product.
+  if (method === "POST" && pathname === "/__break-upstream") {
+    brokenUpstream = true;
+    request.resume();
+    request.once("end", () => sendJSON(response, 200, { broken: true }));
+    return true;
+  }
+
   if (method === "POST" && pathname === "/__reset-coding") {
+    brokenUpstream = false;
     codingAutoApprove.auto_approve_tools = false;
     codingAutoApprove.auto_approve_publications = false;
     codingAutoApprove.auto_approve_set_by = "";
     codingOmitsToolName = false;
+    codingUnjoinable = false;
+    codingFailsProvisioning = false;
     approvalDecision = null;
+    codingTurns = 0;
+    codingInstructions.length = 0;
+    codingInputs.length = 0;
+    codingAgentIds.length = 0;
     request.resume();
     request.once("end", () => sendJSON(response, 200, { reset: true }));
     return true;
   }
 
+  // ------------------------------------------------------------------------------------------
+  // THE AGENTS SURFACE. The demo resolves its agent BY NAME and provisions it if absent, so the
+  // fake has to model the same four calls or the suite would be proving nothing about the path a
+  // real deployment takes.
+  //
+  // IT REPRODUCES THE TWO PROPERTIES THAT MATTER, both measured on the live control plane:
+  //   * `tools` ABSENT from a revision body stays ABSENT on the stored revision. automation/
+  //     agents.go:60 — "Tools nil imposes no capability ceiling (a non-nil set — even empty — is
+  //     the ceiling the resolver intersects)". A fake that helpfully defaulted `tools: []` would
+  //     be modelling the EMPTY CEILING, which is the exact bug this omission avoids, and the
+  //     suite would go green on a shape that grants the agent nothing.
+  //   * a revision is created as a DRAFT and only `status: "published"` after the publish call.
+  //     The demo looks for a published revision carrying its instructions; a fake that published
+  //     on create would hide a missing publish step.
+  if (method === "GET" && pathname === "/v1/agents") {
+    sendJSON(response, 200, { object: "list", data: agentProfiles, has_more: false });
+    return true;
+  }
+  if (method === "POST" && pathname === "/v1/agents") {
+    readBody(request, (raw) => {
+      const parsed = safeJSON(raw);
+      if (!parsed.name) { sendProblem(response, 400, "invalid_request"); return; }
+      const created = { id: `aprof_fake_${agentProfiles.length + 1}`, object: "agent", name: String(parsed.name) };
+      agentProfiles.push(created);
+      agentRevisions[created.id] = [];
+      sendJSON(response, 201, created);
+    });
+    return true;
+  }
+  {
+    const revList = /^\/v1\/agents\/([^/]+)\/revisions$/.exec(pathname);
+    if (revList && method === "GET") {
+      sendJSON(response, 200, { object: "list", data: agentRevisions[revList[1]] ?? [], has_more: false });
+      return true;
+    }
+    if (revList && method === "POST") {
+      readBody(request, (raw) => {
+        const parsed = safeJSON(raw);
+        // The real endpoint strictly decodes (DisallowUnknownFields, automation/agents.go:113), so a
+        // field outside the executable-config subset is a 400 rather than something quietly dropped.
+        const allowed = new Set(["model", "tools", "instructions", "tool_sets", "mcp_connections", "skills", "hooks", "environment"]);
+        if (Object.keys(parsed).some((k) => !allowed.has(k))) { sendProblem(response, 400, "invalid_request"); return; }
+        const list = agentRevisions[revList[1]];
+        if (list === undefined) { sendProblem(response, 404, "not_found"); return; }
+        const rev = {
+          id: `arev_fake_${revList[1]}_${list.length + 1}`,
+          object: "agent_revision",
+          agent_id: revList[1],
+          revision_number: list.length + 1,
+          model: parsed.model ?? "",
+          instructions: parsed.instructions ?? "",
+          // ABSENT stays ABSENT — see the header. `null` is what the live API returns for a nil set.
+          tools: Object.hasOwn(parsed, "tools") ? parsed.tools : null,
+          status: "draft",
+        };
+        list.push(rev);
+        sendJSON(response, 201, rev);
+      });
+      return true;
+    }
+    const pub = /^\/v1\/agents\/([^/]+)\/revisions\/([^/]+)\/publish$/.exec(pathname);
+    if (pub && method === "POST") {
+      const rev = (agentRevisions[pub[1]] ?? []).find((r) => r.id === pub[2]);
+      if (rev === undefined) { sendProblem(response, 404, "not_found"); return true; }
+      rev.status = "published";
+      request.resume();
+      request.once("end", () => sendJSON(response, 200, rev));
+      return true;
+    }
+  }
+
   if (method === "GET" && pathname === "/__introspect-coding") {
-    sendJSON(response, 200, { approvalDecision, createdBindings, createdSecrets });
+    // `codingInstructions` and `codingInputs` are index-aligned: one entry per create, in order. A test
+    // asserting the operator's bubble is clean has to also assert the hint STILL REACHED the model, or
+    // deleting the hint entirely would satisfy it.
+    sendJSON(response, 200, {
+      approvalDecision,
+      createdBindings,
+      createdSecrets,
+      codingInstructions,
+      codingInputs,
+      codingAgentIds,
+      agentProfiles,
+      agentRevisions,
+      codingTurns,
+    });
     return true;
   }
 
@@ -577,14 +924,24 @@ const server = createServer((request, response) => {
         // The suite asks for the pre-E30 shape by saying so in the turn itself, which keeps the
         // scenario visible in the test that uses it rather than hidden in a setup call.
         codingOmitsToolName = String(safeJSON(createBody).input ?? "").includes("unnamed tool");
+        codingUnjoinable = String(safeJSON(createBody).input ?? "").includes("unjoinable");
+        codingFailsProvisioning = String(safeJSON(createBody).input ?? "").includes("unprovisionable");
+        // THE INSTRUCTIONS LAYER IS RECORDED, because the whole point of moving the repository hint
+        // off the user's text is that it still REACHES the model — on every turn. A test that only
+        // asserted the bubble is clean would pass just as well if the hint had been deleted.
+        codingInstructions.push(String(safeJSON(createBody).instructions ?? ""));
+        codingAgentIds.push(String(safeJSON(createBody).agent_id ?? ""));
+        codingInputs.push(String(safeJSON(createBody).input ?? ""));
+        codingTurns += 1;
+        const second = codingTurns >= 2;
         sendJSON(response, 202, {
-          id: CODING_RESPONSE_ID,
+          id: second ? CODING_RESPONSE_2_ID : CODING_RESPONSE_ID,
           object: "response",
           status: "queued",
           model: "fake",
           session_id: CODING_SESSION_ID,
-          run_id: CODING_RUN_ID,
-          created_at: "2026-08-02T00:00:00Z",
+          run_id: second ? CODING_RUN_2_ID : CODING_RUN_ID,
+          created_at: second ? "2026-08-02T00:01:00Z" : "2026-08-02T00:00:00Z",
           output: [],
           usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
         });

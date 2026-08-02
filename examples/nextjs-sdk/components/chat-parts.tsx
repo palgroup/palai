@@ -3,6 +3,7 @@
 import { AlertTriangleIcon, GitPullRequestIcon } from "lucide-react";
 import { useState } from "react";
 
+import { CodeBlock } from "@/components/ai-elements/code-block";
 import {
   Confirmation,
   ConfirmationAccepted,
@@ -51,6 +52,9 @@ export function ToolPart({ data }: { data: Data }) {
   const running = s(data.state) === "running";
   const replayClass = s(data.replayClass);
   const named = name !== "";
+  // The joined arguments, when the ledger read has landed. `null` is "not known yet", which is a
+  // different sentence from "this call had no arguments" and is rendered as such below.
+  const args = data.arguments !== undefined && data.arguments !== null ? data.arguments : null;
   // THE OPEN STATE IS CONTROLLED HERE RATHER THAN LEFT TO THE COLLAPSIBLE, and that is a bug fix
   // rather than a preference. `Tool` is an uncontrolled Radix Collapsible; while a run is still
   // streaming, every new part re-renders this subtree and the card an operator had just opened
@@ -78,7 +82,51 @@ export function ToolPart({ data }: { data: Data }) {
             </p>
           </div>
         )}
-        <ToolInput input={{ tool_call_id: id, tool_name: name || null, replay_class: replayClass || null }} />
+        {/* "PARAMETERS" MUST MEAN THE CALL'S PARAMETERS.
+            UAT opened a tool card and found `{tool_call_id, tool_name, replay_class}` — three
+            identifiers, one of which is already printed in the header it just clicked. It was reported
+            as a fixture defect, and measuring it says otherwise: the deterministic and the live paths
+            render this block from the SAME component with the SAME three fields, so the fake was
+            faithful and the card was thin. A card that opens onto its own id teaches an operator that
+            opening cards is not worth doing.
+            The arguments come from the ledger join, so they arrive a moment after the card does; until
+            then the identifiers are all there is, and the card says which it is showing rather than
+            letting an operator read a call id as the command. */}
+        {args !== null ? (
+          <>
+            {/* THE `key` IS LOAD-BEARING AND IT IS COVERING A REAL BUG ONE LAYER DOWN.
+                MEASURED: open a tool card BEFORE its ledger join lands and it shows the identifier
+                fallback forever — the arguments arrive, this branch switches (the footer below it
+                changes), and the code block keeps rendering the OLD text. Opening the same card AFTER
+                the join lands shows the arguments correctly. So `CodeBlock` does not re-tokenize when
+                its `code` prop changes; it renders whatever it first highlighted.
+                That is a defect in the vendored ai-elements component and it is not confined to this
+                card — any code block whose content streams has it. Keying on the content forces a
+                remount, which is the smallest fix that does not rewrite a shared primitive late in a
+                branch that is not about code blocks. The underlying bug is worth a task of its own. */}
+            <ToolInput
+              key={JSON.stringify(args)}
+              data-testid="chat-tool-args"
+              input={args as Record<string, unknown>}
+            />
+            {/* THE REPLAY CLASS STAYS. It is the one field on the frame that tells an operator whether
+                the thing that just ran can be undone, and it would have been lost by simply swapping
+                this block for the arguments. It is a footnote rather than a heading because "what did
+                it run" is the question somebody opened the card to answer. */}
+            <p data-testid="chat-tool-ids" className="px-4 pb-4 font-mono text-[11px] text-muted-foreground">
+              {id}
+              {replayClass !== "" ? ` · ${replayClass}` : ""}
+            </p>
+          </>
+        ) : (
+          <>
+            <ToolInput input={{ tool_call_id: id, tool_name: name || null, replay_class: replayClass || null }} />
+            <p data-testid="chat-tool-args-pending" className="px-4 pb-4 text-[12px] text-muted-foreground">
+              These are the frame&rsquo;s identifiers, not the call&rsquo;s arguments — the arguments live
+              on the <code>tool_calls</code> ledger and are read once the call completes.
+            </p>
+          </>
+        )}
       </ToolContent>
     </Tool>
   );
@@ -108,10 +156,39 @@ export function ToolDetailPart({ data }: { data: Data }) {
   }
 
   const command = shellCommandOf(data.arguments);
-  // A tool call with no command line is not shell work — a knowledge query, a child run, an MCP
-  // write. Drawing it through the iOS renderer would put an Xcode hammer over a Jira ticket.
+  // A tool call with no command line is not shell work — a file read, a knowledge query, a child run,
+  // an MCP write. Drawing it through the iOS renderer would put an Xcode hammer over a Jira ticket.
+  //
+  // BUT IT USED TO RETURN null, AND THAT WAS THE OWNER'S COMPLAINT IN MINIATURE. Measured on a live
+  // build turn 2026-08-02, one of the six calls was
+  //     palai.workspace.file  {"op":"read","path":"repo/Package.swift"}
+  // which has no argv, so the screen drew the card's header and NOTHING under it — no arguments, no
+  // result. "I can't see the tool calls" is the correct reading of a card with nothing in it.
+  //
+  // So a non-shell call renders what it was given and what came back, plainly. It is not dressed as a
+  // build, which is the distinction the branch above exists to make.
   if (command === "") {
-    return null;
+    return (
+      <div className="mb-2 space-y-2" data-testid="chat-tool-detail" data-kind="other">
+        {data.arguments != null ? (
+          <div className="rounded-md border border-border/60">
+            <CodeBlock code={JSON.stringify(data.arguments, null, 2)} language="json" />
+          </div>
+        ) : null}
+        {data.hasResult === true ? (
+          <div className="rounded-md border border-border/60" data-testid="chat-tool-result">
+            <CodeBlock code={renderResult(data.result)} language="json" />
+          </div>
+        ) : (
+          // "Nothing is known yet" and "the tool returned nothing" are different sentences, and the
+          // ledger distinguishes them by whether `result` is present at all.
+          <p className="text-[12px] text-muted-foreground">
+            This call has no stored result — it is parked, still running, or its output is deliberately
+            not retained.
+          </p>
+        )}
+      </div>
+    );
   }
 
   const report = readIOSOutput(command, outputTextOf(data.result), exitCodeOf(data.result));
@@ -228,10 +305,25 @@ export function ApprovalPart({ data }: { data: Data }) {
         </p>
       </ConfirmationRequest>
 
+      {/* WHAT ACTUALLY HAPPENED, NOT WHAT IS SUPPOSED TO.
+          This line used to read "Approved. The publication moves to `approved`, the durable command
+          applies, and the parked run wakes" — three promises, one of which this screen cannot observe.
+          The owner approved a push, read that, and was then told further down that the push was NOT
+          confirmed. A paragraph of reassurance followed by a retraction is worse than either alone:
+          the reassurance is what they act on.
+          So it now says only the part this screen KNOWS — the decision was recorded and applied — and
+          names the push as a separate event that is reported separately. On this stack it routinely
+          does not happen: repositoryPublisherFromEnv returns nil without a GitHub App, and a nil
+          publisher makes the approval pump a no-op. That is reported by the notice below when the run
+          ends, and this sentence no longer contradicts it in advance. */}
       <ConfirmationAccepted>
         <p data-testid="approval-outcome" className="text-[13px] text-added">
-          Approved. The publication moves to <code>approved</code>, the durable command applies, and
-          the parked run wakes.
+          Approved — the decision was recorded and the parked run wakes.
+          <span className="mt-1 block text-muted-foreground">
+            Whether the push itself reached the repository is a <em>separate</em> event this screen
+            does not see from the decision. If no <code>publication.published.v1</code> arrives before
+            the run ends, it will say so below rather than let this line stand as the outcome.
+          </span>
         </p>
       </ConfirmationAccepted>
       <ConfirmationRejected>
@@ -256,6 +348,15 @@ export function ApprovalPart({ data }: { data: Data }) {
       </ConfirmationActions>
     </Confirmation>
   );
+}
+
+// A tool result is model-authored and may be a string, an object, or absent. A string is shown as
+// itself — JSON.stringify would wrap a shell transcript in quotes and escape every newline, which is
+// how readable output becomes an unreadable single line.
+function renderResult(result: unknown): string {
+  if (typeof result === "string") return result;
+  if (result === null || result === undefined) return "null";
+  return JSON.stringify(result, null, 2);
 }
 
 function Row({ label, value, testid, mono }: { label: string; value: string; testid: string; mono?: boolean }) {

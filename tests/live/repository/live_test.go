@@ -136,7 +136,7 @@ func liveBroker(t *testing.T, repoURL string) (repositories.Broker, string) {
 		}
 		return broker, "github-app-installation-token (real)"
 	}
-	return repositories.NewLocalBroker(), "local-broker (PALAI_GIT_REPO, no App env)"
+	return repositories.NewAnonymousBroker(), "local-broker (PALAI_GIT_REPO, no App env)"
 }
 
 func scanForCredentialShape(t *testing.T, surface string, data []byte) {

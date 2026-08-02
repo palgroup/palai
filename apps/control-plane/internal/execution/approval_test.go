@@ -1,8 +1,8 @@
 package execution
 
 import (
-	"errors"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,7 +71,7 @@ func TestApprovalPumpSkipsExpiredApproval(t *testing.T) {
 	}
 	pump := newFakePump(live, stale)
 	pump.expired["pub_stale"] = true // its approval elapsed between approval and this boundary
-	publisher := &RepositoryPublisher{Broker: repositories.NewLocalBroker()}
+	publisher := &RepositoryPublisher{Broker: repositories.NewAnonymousBroker()}
 
 	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Organization: "org", Project: "prj"}, "run_1", "ses_1", "resp_1", root, 7, publicationCredential{}); err != nil {
 		t.Fatalf("publishApproved() error = %v", err)
@@ -116,7 +116,7 @@ func TestApprovalPumpPublishesApprovedPushToRemote(t *testing.T) {
 		Remote: bare, Branch: "agent/ses/run", HeadSHA: head, State: "approved",
 	}
 	pump := newFakePump(pub)
-	publisher := &RepositoryPublisher{Broker: repositories.NewLocalBroker()}
+	publisher := &RepositoryPublisher{Broker: repositories.NewAnonymousBroker()}
 
 	tenant := coordinator.Tenant{Organization: "org", Project: "prj"}
 	if err := publishApproved(ctx, pump, publisher, tenant, "run_1", "ses_1", "resp_1", root, 7, publicationCredential{}); err != nil {
@@ -145,7 +145,7 @@ func TestApprovalPumpOpensApprovedPullRequest(t *testing.T) {
 		Remote: "git@h:o/r", Branch: "agent/ses/run", Base: "main", State: "approved",
 	}
 	pump := newFakePump(pub)
-	publisher := &RepositoryPublisher{Broker: repositories.NewLocalBroker(), PRClient: &stubPRClient{}}
+	publisher := &RepositoryPublisher{Broker: repositories.NewAnonymousBroker(), PRClient: &stubPRClient{}}
 
 	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Organization: "org", Project: "prj"}, "run_1", "ses_1", "resp_1", "", 1, publicationCredential{}); err != nil {
 		t.Fatalf("publishApproved(PR) error = %v", err)
@@ -172,7 +172,7 @@ func TestApprovalPumpWarnsOnPublishFailure(t *testing.T) {
 		Remote: seedBareRemote(t), Branch: "main", HeadSHA: head, State: "approved", // main is protected -> denied
 	}
 	pump := newFakePump(pub)
-	publisher := &RepositoryPublisher{Broker: repositories.NewLocalBroker()}
+	publisher := &RepositoryPublisher{Broker: repositories.NewAnonymousBroker()}
 
 	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Organization: "org", Project: "prj"}, "run_1", "ses_1", "resp_1", root, 1, publicationCredential{}); err != nil {
 		t.Fatalf("publishApproved() error = %v, want a warning not a fatal error", err)
@@ -290,7 +290,7 @@ func TestPublishUnderABindingCredentialNeverFallsBackToTheDeploymentApp(t *testi
 	// The binding names its own credential and the store cannot produce it.
 	var askedOrg, askedRef string
 	publisher := &RepositoryPublisher{
-		Broker: repositories.NewLocalBroker(), // the deployment-global broker, which MUST NOT be used
+		Broker: repositories.NewAnonymousBroker(), // the deployment-global broker, which MUST NOT be used
 		ConnectionSecrets: func(org, ref string) ([]byte, error) {
 			askedOrg, askedRef = org, ref
 			return nil, errors.New("no such secret ref")

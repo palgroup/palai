@@ -46,7 +46,7 @@ func TestCodingChildIsolatedWorktreeDeterministic(t *testing.T) {
 	provisionRoot := newAllocationRoot(t)
 	orch := h.newOrchestratorWithTools(subprocessDialer{engineDir: h.engineDir},
 		codingChildProvider{childModel: "fake-child", childMarker: childMarker}, tools.FileTool())
-	orch.SetWorkspaceProvisioner(provisionRoot, repositories.NewLocalBroker())
+	orch.SetWorkspaceProvisioner(provisionRoot, repositories.NewAnonymousBroker())
 
 	stop := h.runWorker(orch)
 	defer stop()

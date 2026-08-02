@@ -172,13 +172,13 @@ func TestRequestInstructionsReachTheProviderRequest(t *testing.T) {
 //
 // Spec §25.12 states the context layers as an ordered stack, not a contest:
 //
-//	1. kernel safety and protocol instructions
-//	2. deployment/organization/project policy-visible instructions   (no writer yet)
-//	3. pinned agent revision instructions
-//	4. session config instructions                                    (no writer yet)
-//	5. run-specific instructions
-//	6. selected durable conversation items
-//	10. current user/trigger input
+//  1. kernel safety and protocol instructions
+//  2. deployment/organization/project policy-visible instructions   (no writer yet)
+//  3. pinned agent revision instructions
+//  4. session config instructions                                    (no writer yet)
+//  5. run-specific instructions
+//  6. selected durable conversation items
+//  10. current user/trigger input
 //
 // So they COMPOSE, and the revision (3) precedes the request (5). Replacement was the other
 // candidate and it is the wrong one here: it would let any request that happens to carry

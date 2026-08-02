@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -34,6 +35,8 @@ type AgentResult struct {
 	BadField    bool
 	NotFound    bool
 	MissingName bool
+	// NameTaken is a profile name already registered in this project: a 409, not a 500.
+	NameTaken bool
 }
 
 type agentHandler struct {
@@ -184,10 +187,18 @@ func (h *agentHandler) begin(w http.ResponseWriter, r *http.Request) (middleware
 // Location header for a create).
 func (h *agentHandler) write(w http.ResponseWriter, r *http.Request, out AgentResult, err error, okStatus int, locationPrefix string) {
 	if err != nil {
+		// A 500 WITH NO LOG LINE IS AN UNDIAGNOSABLE ONE. The problem body carries a request_id so an
+		// operator can find the cause; before this line the cause was never written anywhere, so the id
+		// led nowhere and every agent-surface failure looked identical from both ends.
+		log.Printf("agents: %s %s: %v", r.Method, r.URL.Path, err)
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
 	}
 	switch {
+	case out.NameTaken:
+		middleware.WriteProblem(w, r, http.StatusConflict, "conflict",
+			"an agent with this name already exists in this project; use its id or choose another name")
+		return
 	case out.MissingName:
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "name is required")
 		return

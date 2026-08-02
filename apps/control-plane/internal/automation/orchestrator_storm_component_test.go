@@ -4,9 +4,9 @@
 // external orchestrator replays the SAME logical request — the same workflow id + idempotency key —
 // under a RETRY STORM. This is the §35.2 invariant made executable, against real PostgreSQL:
 //
-//   • WITHOUT an idempotency key, the storm MULTIPLIES: N replays of the same body create N distinct
+//   - WITHOUT an idempotency key, the storm MULTIPLIES: N replays of the same body create N distinct
 //     runs (a per_event/allow trigger dedupes nothing) — proving the storm is real and would fan out.
-//   • WITH the workflow-derived idempotency key, the SAME storm collapses to exactly ONE run — the DB
+//   - WITH the workflow-derived idempotency key, the SAME storm collapses to exactly ONE run — the DB
 //     unique index (not app-code) arbitrates the concurrent race, so there is no retry multiplication.
 //
 // The idempotency key here is derived from the orchestrator's workflow id exactly as the TS kit derives

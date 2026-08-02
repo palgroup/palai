@@ -31,7 +31,7 @@ func TestPrepareYieldsExactCommitWithReceipt(t *testing.T) {
 	wantTree := gitRunner(t, remote.url)("rev-parse", remote.head+"^{tree}")
 
 	target := t.TempDir()
-	res, err := repositories.Prepare(ctx, repositories.NewLocalBroker(), repositories.Request{
+	res, err := repositories.Prepare(ctx, repositories.NewAnonymousBroker(), repositories.Request{
 		CloneURL:      remote.url,
 		RequestedRef:  remote.head, // an exact commit SHA
 		DefaultBranch: "main",
@@ -103,7 +103,7 @@ func TestHostileRepoConfigHooksSubmoduleContained(t *testing.T) {
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", globalCfg)
 
-	res, err := repositories.Prepare(ctx, repositories.NewLocalBroker(), repositories.Request{
+	res, err := repositories.Prepare(ctx, repositories.NewAnonymousBroker(), repositories.Request{
 		CloneURL:      remote.url,
 		RequestedRef:  head,
 		DefaultBranch: "main",

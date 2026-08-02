@@ -333,7 +333,7 @@ func (h *harness) assertSeparateCodingFork(t *testing.T, ctx context.Context) st
 	responseID, sessionID, runID := string(r.ID), string(r.SessionID), string(r.RunID)
 
 	alloc := newAllocationRoot(t)
-	if _, err := execution.PrepareRepository(ctx, h.spine, repositories.NewLocalBrokerWithToken(forkPushSecret), tenant2, execution.PrepareRepositoryInput{
+	if _, err := execution.PrepareRepository(ctx, h.spine, repositories.NewFixtureBrokerWithToken(forkPushSecret), tenant2, execution.PrepareRepositoryInput{
 		BindingID: bindingID, RunID: runID, RequestedRef: remote.head,
 		WorkBranch: "agent/" + sessionID + "/" + runID,
 		TargetDir:  filepath.Join(alloc, "repo"), SecretsDir: filepath.Join(alloc, "secrets"),

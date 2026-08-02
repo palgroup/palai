@@ -132,8 +132,8 @@ func TestNoDesiredDocumentLeavesTheBringUpExactlyAsItWas(t *testing.T) {
 			t.Fatalf("read: %v", err)
 		}
 		if env.present {
-			t.Errorf("a null desired block reported present=true. A machine nobody has written a document for is "+
-				"running on its compose file's defaults, and saying otherwise would tell an operator the panel is in "+
+			t.Errorf("a null desired block reported present=true. A machine nobody has written a document for is " +
+				"running on its compose file's defaults, and saying otherwise would tell an operator the panel is in " +
 				"control when the compose file still is")
 		}
 		applied, err := applyDesiredEnv(env)
@@ -159,7 +159,7 @@ func TestABringUpThatCannotApplyTheDocumentRefuses(t *testing.T) {
 	t.Run("a first-install drift is repaired by one recreate", func(t *testing.T) {
 		api := deploymentServer(t,
 			desiredBody(3, settings, []string{"PALAI_DISPATCH_WORKERS"}), // before the recreate
-			desiredBody(3, settings, nil),                               // after it
+			desiredBody(3, settings, nil),                                // after it
 		)
 		recreates := 0
 		line, err := verifyDesiredApplied(api, func() error { recreates++; return nil })

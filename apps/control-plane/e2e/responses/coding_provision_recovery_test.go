@@ -34,7 +34,7 @@ func codingProvisionOrch(h *harness, marker, provisionRoot string) *execution.Or
 		&codingProvider{marker: marker}, tools.FileTool(), tools.ShellTool(), tools.CommitTool(),
 		tools.TaskTool(), tools.PushTool(), tools.PullRequestTool())
 	orch.SetShellRunner(hostShellRunner{})
-	orch.SetWorkspaceProvisioner(provisionRoot, repositories.NewLocalBroker())
+	orch.SetWorkspaceProvisioner(provisionRoot, repositories.NewAnonymousBroker())
 	orch.SetChangesetWriter(&recordingArtifactWriter{h: h})
 	return orch
 }

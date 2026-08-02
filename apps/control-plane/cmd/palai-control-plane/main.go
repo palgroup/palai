@@ -585,6 +585,11 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			tools.FileTool(),
 			tools.ShellTool(),
 			tools.BackgroundKillTool(), // E26 T2: stop a task the shell tool's `background` parameter started
+			// The agent's own way to SHOW a human what it did — a simulator screenshot or a screen
+			// recording. Registered beside the file tool because it is the same confinement and the same
+			// workspace; what differs is where the bytes go, which is the artifact store rather than the
+			// model's context.
+			tools.MediaTool(),
 			tools.CommitTool(),
 			tools.PushTool(),
 			tools.PullRequestTool(),
@@ -700,12 +705,12 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		orch.SetEnvironmentSecrets(environmentValueSecret)
 		if root := os.Getenv("PALAI_WORKSPACE_ROOT"); root != "" {
 			orch.SetWorkspaceProvisioner(root, repositoryBrokerFromEnv())
-	// PER-SESSION ACCOUNTS (macOS), ACQUIRE HALF: the uid a session's tools run under, created when the
-	// session first provisions a workspace. It is the SAME INSTANCE the release half holds — they share the
-	// map of which session owns which slot, and two instances would give the releaser an empty one.
-	if sessionAccounts != nil {
-		orch.SetSessionAccounts(sessionAccounts)
-	}
+			// PER-SESSION ACCOUNTS (macOS), ACQUIRE HALF: the uid a session's tools run under, created when the
+			// session first provisions a workspace. It is the SAME INSTANCE the release half holds — they share the
+			// map of which session owns which slot, and two instances would give the releaser an empty one.
+			if sessionAccounts != nil {
+				orch.SetSessionAccounts(sessionAccounts)
+			}
 			// A binding that names a connection_ref clones under its own tenant's credential (E13 T9);
 			// the resolver is inert for the ref-less bindings that take the global broker above.
 			orch.SetConnectionSecrets(repositoryConnectionSecret)
@@ -882,12 +887,12 @@ func repositoryBrokerFromEnv() repositories.Broker {
 	installID := os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID")
 	keyFile := os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE")
 	if appID == "" || installID == "" || keyFile == "" {
-		return repositories.NewLocalBroker()
+		return repositories.NewAnonymousBroker()
 	}
 	keyPEM, err := os.ReadFile(keyFile)
 	if err != nil {
 		log.Printf("repository broker: read app key file: %v (using local broker)", err)
-		return repositories.NewLocalBroker()
+		return repositories.NewAnonymousBroker()
 	}
 	cfg := repositories.GitHubAppConfig{AppID: appID, InstallationID: installID, PrivateKeyPEM: keyPEM}
 	if slug := os.Getenv("PALAI_GITHUB_REPO"); strings.IndexByte(slug, '/') > 0 {
@@ -896,7 +901,7 @@ func repositoryBrokerFromEnv() repositories.Broker {
 	broker, err := repositories.NewGitHubAppBroker(cfg)
 	if err != nil {
 		log.Printf("repository broker: app broker: %v (using local broker)", err)
-		return repositories.NewLocalBroker()
+		return repositories.NewAnonymousBroker()
 	}
 	return broker
 }

@@ -151,7 +151,7 @@ func TestBindingConnectionRefClonesUnderTenantCredential(t *testing.T) {
 
 	calls := 0
 	target, secretsDir := filepath.Join(t.TempDir(), "repo"), t.TempDir()
-	prep, err := PrepareRepository(ctx, h.spine, repositories.NewLocalBroker(), tenant, PrepareRepositoryInput{
+	prep, err := PrepareRepository(ctx, h.spine, repositories.NewAnonymousBroker(), tenant, PrepareRepositoryInput{
 		BindingID:         bindingID,
 		RunID:             runID,
 		RequestedRef:      "main",
@@ -190,7 +190,7 @@ func TestBindingConnectionRefClonesUnderTenantCredential(t *testing.T) {
 	plain := newGitRemote(t)
 	plainBinding := h.bind(t, tenant, plain.url, "")
 	callsBefore := calls
-	if _, err := PrepareRepository(ctx, h.spine, repositories.NewLocalBroker(), tenant, PrepareRepositoryInput{
+	if _, err := PrepareRepository(ctx, h.spine, repositories.NewAnonymousBroker(), tenant, PrepareRepositoryInput{
 		BindingID:         plainBinding,
 		RunID:             "",
 		RequestedRef:      plain.head,
@@ -209,7 +209,7 @@ func TestBindingConnectionRefClonesUnderTenantCredential(t *testing.T) {
 	other, _ := h.seedTenant(t)
 	h.putSecret(t, other.Organization, "github-conn", "palai-REPMARK-other-tenant-token")
 	otherBinding := h.bind(t, other, remote.url, "github-conn")
-	if _, err := PrepareRepository(ctx, h.spine, repositories.NewLocalBroker(), other, PrepareRepositoryInput{
+	if _, err := PrepareRepository(ctx, h.spine, repositories.NewAnonymousBroker(), other, PrepareRepositoryInput{
 		BindingID:         otherBinding,
 		RunID:             "",
 		RequestedRef:      "main",
@@ -236,7 +236,7 @@ func TestBindingConnectionRefFailsClosedWhenUnresolvable(t *testing.T) {
 
 	calls := 0
 	target := filepath.Join(t.TempDir(), "repo")
-	_, err := PrepareRepository(ctx, h.spine, repositories.NewLocalBroker(), tenant, PrepareRepositoryInput{
+	_, err := PrepareRepository(ctx, h.spine, repositories.NewAnonymousBroker(), tenant, PrepareRepositoryInput{
 		BindingID:         bindingID,
 		RunID:             runID,
 		RequestedRef:      remote.head,
