@@ -58,13 +58,40 @@ export const AGENT_NAME = "ios-coder";
 // from a coding agent anyway, and it is also the only way to tell FROM THE OUTSIDE that these
 // instructions reached the model on a given turn. A system prompt whose arrival cannot be observed
 // is one nobody can prove regressed.
+//
+// AND THE BUILD CLAUSE NAMES xcodebuild, WHICH IT DID NOT AT FIRST. The first version of this agent
+// said `swift build --package-path repo`, the model obeyed, and the demo looked right — but
+// `swift build` builds for the HOST. Package.swift declares `platforms: [.iOS(.v17)]` and the model
+// even said so on screen ("Package.swift içinde platforms: [.iOS(.v17)] tanımlı olmasına rağmen,
+// burada macOS SDK'sı ile derleme yapıldı"), which is the demo reporting its own defect while
+// everyone read it as success. The owner asked to watch an iOS project build; the iOS half was being
+// satisfied by a macOS build.
+//
+// MEASURED before changing the text, on the real clone rather than assumed:
+//   git clone http://127.0.0.1:8177/ios-demo.git
+//   xcodebuild -scheme PalaiDemo -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
+//     -> ** BUILD SUCCEEDED **, compiling for `arm64-apple-ios17.0-simulator`
+//        against iPhoneSimulator26.5.sdk
+// So the correct command exists and works on this package; the instruction was simply naming the
+// wrong one. xcodebuild has no `-C`, so it has to run from inside the clone — `cd` works in this
+// shell, which was measured separately.
+//
+// A SIDE EFFECT WORTH KNOWING: xcodebuild writes to DerivedData under ~/Library, NOT into the clone,
+// so it does not bury the changed-files panel the way `swift build` did by writing `.build/` inside
+// the package. The panel collapses those either way (workspace-panel.tsx) — one fix should not be
+// load-bearing for the other.
 export const AGENT_INSTRUCTIONS =
   "You are the iOS coding agent for this Palai deployment.\n" +
   "The repository is cloned at ./repo and shell commands start in the workspace root ABOVE it. " +
   "For the file tool, use paths beginning with `repo/`. For git, use `git -C repo …` and then give " +
   "paths RELATIVE TO the clone (`git -C repo add CONTRIBUTING.md`, not `repo/CONTRIBUTING.md`). " +
-  "For a SwiftPM build or test, pass the package path explicitly: `swift build --package-path repo`, " +
-  "`swift test --package-path repo`. " +
+  "This is an iOS package. To build or test it FOR iOS, run xcodebuild from inside the clone against " +
+  "a Simulator destination — `cd` works in this shell:\n" +
+  "  bash -c \"cd repo && xcodebuild -scheme PalaiDemo -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build\"\n" +
+  "  bash -c \"cd repo && xcodebuild -scheme PalaiDemo -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test\"\n" +
+  "Use `xcrun simctl list devices available` to see the destinations that exist before naming one. " +
+  "`swift build --package-path repo` also works but it builds for macOS, NOT for iOS, so do not use it " +
+  "when the request is about the iOS app — and say which of the two you ran. " +
   "The clone has no git identity configured, so commit with " +
   "`git -C repo -c user.email=agent@palai.local -c user.name=Palai commit -m \"…\"` — do not run " +
   "`git config --global`. Do not run `git init`.\n" +

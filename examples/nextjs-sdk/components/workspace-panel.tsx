@@ -29,6 +29,24 @@ import { Badge } from "@/components/ui/badge";
 import type { Binding } from "@/components/repository-picker";
 import { cn } from "@/lib/utils";
 
+// isBuildArtefact says whether a changed path was written by the toolchain rather than authored.
+//
+// MEASURED, AND IT DECIDES WHERE THE FIX BELONGS. The team lead's branching was right: if the clone
+// carried a `.gitignore` naming `.build/`, the changeset compiler would be including ignored paths and
+// the fix would be server-side. It does not — `git clone http://127.0.0.1:8177/ios-demo.git` yields
+// Package.swift, Sources/, Tests/ and NO .gitignore — so the changeset is behaving correctly and this
+// is the screen's problem to present.
+//
+// THE COMPARISON IS SEGMENT-ANCHORED, not a substring. This tree records every path/prefix check in a
+// verifier having shipped defeated at least once, and `includes(".build")` would swallow a real file
+// called `my.build-notes.md`. The bias is deliberate and one-directional: anything this is unsure
+// about is shown as an EDIT, because hiding the agent's own work is the harmful error and showing one
+// extra artefact is not.
+function isBuildArtefact(path: string): boolean {
+  const generated = new Set([".build", ".swiftpm", "DerivedData"]);
+  return generated.has(path.split("/")[0]);
+}
+
 interface ShellCommand {
   command: string;
   exitCode: number | null;
@@ -81,6 +99,7 @@ export function WorkspacePanel({
 }) {
   const [view, setView] = useState<WorkspaceView | null>(null);
   const [selected, setSelected] = useState<string>("");
+  const [showArtefacts, setShowArtefacts] = useState(false);
   const [loadError, setLoadError] = useState("");
 
   // The fetch is keyed on (responseId, running): it fires when a run settles, which is the first
@@ -99,7 +118,15 @@ export function WorkspacePanel({
         }
         setLoadError("");
         setView(body);
-        setSelected((prev) => (prev !== "" && body.files.some((f) => f.path === prev) ? prev : (body.files[0]?.path ?? "")));
+        // THE FIRST SELECTION IS THE RUN'S OWN WORK, NOT THE FIRST PATH IN THE LIST. Measured
+        // 2026-08-02: a `swift build` wrote 40-odd files into the clone and the diff pane opened on
+        // `.build/arm64-apple-macosx/debug/ModuleCache/Combine-….swiftmodule` — a compiler module
+        // cache. The panel that exists to say what the AGENT did was showing what the COMPILER did.
+        setSelected((prev) => {
+          if (prev !== "" && body.files.some((f) => f.path === prev)) return prev;
+          const authored = body.files.find((f) => !isBuildArtefact(f.path));
+          return authored?.path ?? body.files[0]?.path ?? "";
+        });
       } catch (err) {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : "the run's artifacts could not be read");
       }
@@ -112,6 +139,8 @@ export function WorkspacePanel({
   const files = view?.files ?? [];
   const commands = view?.commands ?? [];
   const selectedFile = files.find((f) => f.path === selected) ?? null;
+  const edits = files.filter((f) => !isBuildArtefact(f.path));
+  const artefacts = files.filter((f) => isBuildArtefact(f.path));
 
   return (
     <section className="flex h-full min-w-0 flex-col" data-testid="workspace-panel" aria-label="Repository">
@@ -181,7 +210,7 @@ export function WorkspacePanel({
                   "GREETING.md" alone would suggest the workspace root, which is a different
                   directory and the one a shell command actually starts in. */}
               <FileTreeFolder name="repo" path="repo">
-                {files.map((f) => (
+                {(showArtefacts ? [...edits, ...artefacts] : edits).map((f) => (
                   <FileTreeFile key={f.path} name={f.path} path={f.path}>
                     <span className="size-4 shrink-0" />
                     <FileTreeIcon>
@@ -211,6 +240,32 @@ export function WorkspacePanel({
               </FileTreeFolder>
             </FileTree>
           )}
+
+          {/* BUILD ARTEFACTS ARE COLLAPSED, NOT DROPPED, AND THE RULE IS ON SCREEN.
+              A `swift build` inside the clone wrote 40-odd files under `.build/` and the tree
+              presented every one of them as the run's work, burying the one file that mattered.
+              They ARE changes — the build really did write them — so hiding them silently would be
+              this tree's own most-named defect: a sweep that reports a cleaner number while covering
+              less. The count, the rule and a way to see them are all here instead. */}
+          {artefacts.length > 0 ? (
+            <div className="mt-2 border-border/60 border-t px-1 pt-2" data-testid="tree-artefacts">
+              <button
+                type="button"
+                onClick={() => setShowArtefacts((v) => !v)}
+                data-testid="tree-artefacts-toggle"
+                aria-expanded={showArtefacts}
+                className="text-[12px] text-muted-foreground underline-offset-2 hover:underline"
+              >
+                {showArtefacts ? "hide" : "show"} {artefacts.length} build artefact
+                {artefacts.length === 1 ? "" : "s"}
+              </button>
+              <p className="mt-1 text-[11px] text-muted-foreground/80 leading-4">
+                Paths under <code>.build/</code>, <code>.swiftpm/</code> or <code>DerivedData/</code>,
+                written by the compiler rather than authored by the agent. This clone has no{" "}
+                <code>.gitignore</code>, so the changeset counts them like any other file.
+              </p>
+            </div>
+          ) : null}
         </div>
 
         {/* -------------------------------------------------- the diff and the shell transcript */}

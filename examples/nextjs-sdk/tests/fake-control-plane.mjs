@@ -209,7 +209,31 @@ const REQUEST_HASH = "req_hash_coding_0001";
 const PATCH_ARTIFACT_ID = "art_patch_0001";
 const TRANSCRIPT_ARTIFACT_ID = "art_transcript_0001";
 
+// THE AUTHORED FILE COMES SECOND ON PURPOSE, and that ordering is the fixture's whole job.
+//
+// MEASURED on the live stack 2026-08-02: a `swift build` inside the clone wrote 40-odd files under
+// `.build/`, and because the changeset lists them in path order the panel selected a compiler MODULE
+// CACHE as the file to show. The clone has no `.gitignore` (verified by cloning it), so the changeset
+// is right to include them — the screen was wrong to present them as the run's work.
+//
+// A fixture whose only file was CONTRIBUTING.md could not tell a panel that picks the first AUTHORED
+// file from one that picks the first file, because they would be the same file. So `.build/` entries
+// are here, and one of them sorts FIRST.
 const PATCH_BODY = [
+  "diff --git a/.build/artefact-one.txt b/.build/artefact-one.txt",
+  "new file mode 100644",
+  "index 0000000..1111111",
+  "--- /dev/null",
+  "+++ b/.build/artefact-one.txt",
+  "@@ -0,0 +1 @@",
+  "+compiler output, not the agent's work",
+  "diff --git a/.build/ModuleCache/Combine.swiftmodule b/.build/ModuleCache/Combine.swiftmodule",
+  "new file mode 100644",
+  "index 0000000..2222222",
+  "--- /dev/null",
+  "+++ b/.build/ModuleCache/Combine.swiftmodule",
+  "@@ -0,0 +1 @@",
+  "+module cache",
   "diff --git a/CONTRIBUTING.md b/CONTRIBUTING.md",
   "new file mode 100644",
   "index 0000000..261ff3b",

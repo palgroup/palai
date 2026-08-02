@@ -278,6 +278,49 @@ test("the workspace panel fills the file tree, the diff and the shell transcript
   await expect(page.getByTestId("workspace-mislabel")).toContainText("test-result");
 });
 
+// BUILD ARTEFACTS DO NOT BURY THE RUN'S OWN WORK — AND THEY ARE NOT SILENTLY DROPPED EITHER.
+//
+// MEASURED 2026-08-02: `swift build` inside the clone wrote 40-odd files under `.build/`, the tree
+// presented every one as the run's work, and the diff pane opened on a compiler MODULE CACHE. The
+// panel that exists to say what the AGENT did was showing what the COMPILER did.
+//
+// The clone carries no `.gitignore` (verified by cloning it), so the changeset is right to count them
+// and this is the screen's problem. Both halves are asserted, because each alone is satisfiable by a
+// wrong build: showing the edit first is satisfied by a filter that DROPS the artefacts, and counting
+// them is satisfied by a tree that still buries the edit under forty rows.
+test("build artefacts are collapsed behind a stated rule, and the run's own edit is what opens", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "add a contributing guide");
+  await expect(page.getByTestId("file-tree")).toBeVisible({ timeout: 30_000 });
+
+  // The authored file is in the tree and is the one selected — not the first path in the changeset.
+  await expect(page.getByTestId("file-diff-name")).toHaveText("repo/CONTRIBUTING.md");
+
+  // The artefacts are COUNTED and the rule is on screen. A silent filter would fail this.
+  const artefacts = page.getByTestId("tree-artefacts");
+  await expect(artefacts).toBeVisible();
+  await expect(artefacts).toContainText("build artefact");
+  await expect(artefacts).toContainText(".build/");
+  await expect(artefacts).toContainText(".gitignore");
+
+  // And they are REACHABLE. "Collapsed" has to mean collapsed; a count with no way to see the rows
+  // would be the same silent drop wearing a number.
+  await expect(page.getByTestId("file-tree")).not.toContainText(".build/artefact-one.txt");
+  await page.getByTestId("tree-artefacts-toggle").click();
+  await expect(page.getByTestId("file-tree")).toContainText(".build/artefact-one.txt");
+});
+
+// THE SWITCH SAYS WHAT IT GATES. A build completing with both switches OFF is correct and reads as a
+// broken control; the screen has to name the rule rather than leave the operator to infer it.
+test("the auto-approve panel says which calls the switch actually gates", async ({ page }) => {
+  await page.goto(CHAT);
+  const scope = page.getByTestId("auto-approve-scope");
+  await expect(scope).toBeVisible();
+  await expect(scope).toContainText("approval_required");
+  await expect(scope).toContainText("a build runs either way");
+});
+
 test("the file tree states that it can only ever show what the run changed", async ({ page }) => {
   await page.goto(CHAT);
   // Before any run there is nothing, and the reason is on screen rather than implied by emptiness.

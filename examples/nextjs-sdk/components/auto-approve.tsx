@@ -126,6 +126,24 @@ export function AutoApproveControls({
             : "Nothing is armed. Every gated call and every push parks the run and waits for you."}
       </p>
 
+      {/* WHICH CALLS THIS SWITCH ACTUALLY GATES, because the screen was inviting a wrong conclusion.
+          MEASURED 2026-08-02: a full iOS build ran to completion with BOTH switches reading OFF. That
+          is correct behaviour and it looks exactly like a broken switch — an operator reads "nothing
+          is armed" beside a build that just happened and concludes the control does nothing.
+
+          The gate is per-tool and declared at REGISTRATION: `tool_revisions.approval_required`, set by
+          an operator beside the per-tool publish. It cannot be inferred from the tool itself — the MCP
+          specification says clients "MUST consider tool annotations to be untrusted unless they come
+          from trusted servers", so `destructiveHint` is not a gate and nothing auto-classifies.
+          The built-in workspace shell carries no such flag, so a build is UNGATED on this deployment
+          and the switch would not have stopped it. Saying so is the difference between a control an
+          operator can trust and one they quietly learn to ignore. */}
+      <p className="text-[11px] text-muted-foreground/80 leading-4" data-testid="auto-approve-scope">
+        A tool is gated only if it was registered with <code>approval_required</code>. The built-in
+        workspace shell is not, so <strong className="font-medium">a build runs either way</strong> —
+        this switch decides gated tool calls, and the one beside it decides pushes.
+      </p>
+
       {refusal !== "" ? (
         <p
           data-testid="auto-approve-refusal"
