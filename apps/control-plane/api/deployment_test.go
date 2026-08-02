@@ -452,3 +452,125 @@ func TestSharedRemedyNoticeNamesTheCommandTheCatalogueGives(t *testing.T) {
 		t.Fatalf("the console prints %q above the settings table as THE way to change a bring-up setting, and the catalogue's majority remedy (%d of %d settings) does not contain it:\n  catalogue: %s\nOne of the two was reworded. An operator reading the console is being given a command this deployment no longer names.", printed, best, len(deploymentCatalogue), majority)
 	}
 }
+
+// TestDeploymentSaysWhatCanAndCannotBePublished is the third setting-shaped silence, and it is the one
+// with a person inside it.
+//
+// WHAT WAS MEASURED, on the live native stack 2026-08-02 through this very route: PALAI_GITHUB_APP_ID and
+// PALAI_GITHUB_APP_INSTALLATION_ID unset, warnings = [workspace_root_runner_plane, model_provider_fake].
+// Nothing said that a repository binding without its own connection_ref could not publish — and the boot
+// log said nothing either, because the line only fired for a HALF-configured App. An operator who presses
+// Approve and is told the run woke has been told the write happened.
+//
+// The two states are separated because the remedies differ. NONE of the three set is a legitimate
+// single-tenant posture (advisory): bindings carry their own credentials and no App is wanted. ONE OR TWO
+// set is not a posture at all (blocking): the operator intended an App and this deployment has none.
+func TestDeploymentSaysWhatCanAndCannotBePublished(t *testing.T) {
+	// Owned, not inherited: each name is explicitly emptied, so this measures an App-less deployment on a
+	// machine whose shell has an App configured exactly as on one that does not.
+	for _, name := range gitHubAppSettings {
+		t.Setenv(name, "")
+	}
+	body, _ := deploymentBodyOf(t, bareRouter())
+	warn, ok := warningCoded(body, warnPublishAppAbsent)
+	if !ok {
+		t.Fatalf("no GitHub App raised no %q warning; warnings = %+v. This is the configuration a "+
+			"single-tenant stack has, and the operator's only other symptom is an approval that lands and "+
+			"does nothing", warnPublishAppAbsent, body.Warnings)
+	}
+	if warn.Severity != severityAdvisory {
+		t.Errorf("%s severity = %q, want %q: a stack whose bindings each carry their own credential "+
+			"publishes perfectly well with no App", warnPublishAppAbsent, warn.Severity, severityAdvisory)
+	}
+	if !strings.Contains(warn.Detail, "connection_ref") {
+		t.Errorf("%s does not name connection_ref, so it does not say which bindings CAN publish: %q",
+			warnPublishAppAbsent, warn.Detail)
+	}
+	if warn.Remedy == "" {
+		t.Errorf("%s carries no remedy", warnPublishAppAbsent)
+	}
+	if _, ok := warningCoded(body, warnPublishAppPartial); ok {
+		t.Errorf("an entirely unconfigured App also raised %q — the two states must be distinguishable",
+			warnPublishAppPartial)
+	}
+
+	// HALF-CONFIGURED is the blocking one, and it is raised for each of the three in turn: a warning that
+	// only noticed a missing app id would leave the other two silent.
+	full := map[string]string{
+		"PALAI_GITHUB_APP_ID":               "123456",
+		"PALAI_GITHUB_APP_INSTALLATION_ID":  "7891011",
+		"PALAI_GITHUB_APP_PRIVATE_KEY_FILE": "/run/secrets/github_app_key",
+	}
+	for missing := range full {
+		t.Run("missing "+missing, func(t *testing.T) {
+			for name, value := range full {
+				if name == missing {
+					t.Setenv(name, "")
+				} else {
+					t.Setenv(name, value)
+				}
+			}
+			body, _ := deploymentBodyOf(t, bareRouter())
+			warn, ok := warningCoded(body, warnPublishAppPartial)
+			if !ok {
+				t.Fatalf("a half-configured App (%s unset) raised no %q warning; warnings = %+v",
+					missing, warnPublishAppPartial, body.Warnings)
+			}
+			if warn.Severity != severityBlocking {
+				t.Errorf("%s severity = %q, want %q", warnPublishAppPartial, warn.Severity, severityBlocking)
+			}
+			if !strings.Contains(warn.Detail, missing) {
+				t.Errorf("%s does not name the missing variable %s: %q", warnPublishAppPartial, missing, warn.Detail)
+			}
+			if _, ok := warningCoded(body, warnPublishAppAbsent); ok {
+				t.Errorf("a half-configured App also raised %q", warnPublishAppAbsent)
+			}
+		})
+	}
+
+	// ...and BOTH clear when all three are set. A warning that never clears is decoration.
+	for name, value := range full {
+		t.Setenv(name, value)
+	}
+	body, _ = deploymentBodyOf(t, bareRouter())
+	for _, code := range []string{warnPublishAppAbsent, warnPublishAppPartial} {
+		if _, ok := warningCoded(body, code); ok {
+			t.Errorf("a fully configured GitHub App still raises %q", code)
+		}
+	}
+}
+
+// TestGitHubAppConfiguredIsTheOneReaderThePublisherUses pins what makes the warning above trustworthy: the
+// surface and the publisher's App half ask the SAME function, so this route cannot report an App the
+// publisher does not hold. main.gitHubAppPublisherFromEnv calls api.GitHubAppConfigured; a mirrored copy of
+// the condition — the shape liveModelProviderConfigured is stuck with — is two rules that agree today.
+func TestGitHubAppConfiguredIsTheOneReaderThePublisherUses(t *testing.T) {
+	for _, name := range gitHubAppSettings {
+		t.Setenv(name, "")
+	}
+	if GitHubAppConfigured() {
+		t.Fatal("GitHubAppConfigured() is true with all three variables unset")
+	}
+	// Nothing set is not "partially" set, which is what keeps the two warnings from both firing.
+	if gitHubAppPartiallyConfigured() {
+		t.Fatal("gitHubAppPartiallyConfigured() is true with nothing set")
+	}
+	t.Setenv("PALAI_GITHUB_APP_ID", "123456")
+	if GitHubAppConfigured() {
+		t.Fatal("one of three counted as configured: the three are required TOGETHER")
+	}
+	if !gitHubAppPartiallyConfigured() {
+		t.Fatal("one of three is not reported as partial, so the blocking warning never fires")
+	}
+	t.Setenv("PALAI_GITHUB_APP_INSTALLATION_ID", "7891011")
+	t.Setenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE", "/run/secrets/github_app_key")
+	if !GitHubAppConfigured() {
+		t.Fatal("all three set is not reported as configured")
+	}
+	if gitHubAppPartiallyConfigured() {
+		t.Fatal("all three set is still reported as partial")
+	}
+	if got := unsetGitHubAppSettings(); len(got) != 0 {
+		t.Fatalf("unsetGitHubAppSettings() = %v with all three set", got)
+	}
+}
