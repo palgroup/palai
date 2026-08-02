@@ -57,6 +57,82 @@
   --color-removed: rgb(220 120 110);
 
   --radius: 0.75rem;                        /* 12px — the measured dialog/panel radius */
+
+  /* --- palcore's CHAT tokens, copied from apps/web/tailwind.config.js -----------------------
+     The owner asked for palcore's chat "birebir aynı", so the chat panel carries palcore's own
+     values rather than an approximation of them. Read off that file, not invented:
+       ai.DEFAULT      #a855f7          (tailwind.config.js:32)
+       text.primary    rgba(255,255,255,0.92)   .secondary .56  .tertiary .36  .disabled .20
+     The REST of this demo keeps its own measured palette above — the rail, the workspace panel and
+     the dialogs were measured off a live console and are not palcore's screen. */
+  --color-ai: #a855f7;
+  --color-text-primary: rgba(255, 255, 255, 0.92);
+  --color-text-secondary: rgba(255, 255, 255, 0.56);
+  --color-text-tertiary: rgba(255, 255, 255, 0.36);
+  --color-text-disabled: rgba(255, 255, 255, 0.2);
+}
+
+/* ------------------------------------------------------------------------------------------------
+   palcore's CHAT SURFACE, copied from apps/web/src/styles/globals.css.
+
+   `.glass-elevated` is the exact declaration block at that file's line 71. The comment there is worth
+   carrying because it names a trap: browsers disable `backdrop-filter` on any element whose ancestor
+   has a non-identity `transform`, so an entry animation with `fill: both` kills the glass permanently
+   once it finishes. Nothing here animates a transform on an ancestor of the panel; keep it that way.
+   ------------------------------------------------------------------------------------------------ */
+.glass-elevated {
+  background: rgba(28, 28, 30, 0.58);
+  backdrop-filter: blur(48px) saturate(1.8);
+  -webkit-backdrop-filter: blur(48px) saturate(1.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 0 0 0.5px rgba(255, 255, 255, 0.08) inset,
+    0 2px 8px rgba(0, 0, 0, 0.3),
+    0 8px 24px rgba(0, 0, 0, 0.15);
+}
+
+/* The spinning conic-gradient border on the input pill while a run is in flight. `--gradient-angle`
+   has to be a registered property or it cannot be animated — an unregistered custom property is a
+   string to the animation engine and the border simply sits still. */
+@property --gradient-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes palai-gradient-spin {
+  0% {
+    --gradient-angle: 0deg;
+  }
+  100% {
+    --gradient-angle: 360deg;
+  }
+}
+
+.palai-gradient-spin {
+  animation: palai-gradient-spin 2s linear infinite;
+}
+
+/* Three dots pulsing one after the other while the model thinks. palcore's timing, unchanged. */
+@keyframes palai-thinking-pulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+.thinking-dot {
+  animation: palai-thinking-pulse 1.2s ease-in-out infinite both;
+}
+.thinking-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.thinking-dot:nth-child(3) {
+  animation-delay: 0.4s;
 }
 
 html,
