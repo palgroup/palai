@@ -95,6 +95,10 @@ export function AIChat({
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [status, setStatus] = useState<"thinking" | "working">("thinking");
+  // Which agent the session runs as. Null until the first turn resolves it — a session does not exist
+  // before then either, and claiming an agent before anything has been pinned would be the same class
+  // of lie this screen keeps finding.
+  const [agent, setAgent] = useState<{ id: string | null; name: string | null; note: string } | null>(null);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -125,6 +129,10 @@ export function AIChat({
           sessionRef.current = event.sessionId;
           setSessionId(event.sessionId);
           onSession(event.sessionId);
+          break;
+
+        case "agent":
+          setAgent({ id: event.agentId, name: event.agentName, note: event.note });
           break;
 
         case "thinking_delta":
@@ -467,7 +475,25 @@ export function AIChat({
           </div>
         </form>
 
-        <p className="mt-2 px-1 text-[11px] text-text-tertiary" data-testid="chat-session">
+        {/* WHICH AGENT IS RUNNING. The owner had to ask this, which means the screen was not saying
+            it. An unresolved agent says so rather than showing nothing — "no agent" and "I did not
+            look" are different sentences, and only one of them is a bug report. */}
+        {agent !== null ? (
+          <p className="mt-2 px-1 text-[11px] text-text-tertiary" data-testid="chat-agent">
+            {agent.id !== null ? (
+              <>
+                running as agent <span className="text-text-secondary">{agent.name}</span>{" "}
+                <span className="font-mono">{agent.id.slice(0, 14)}…</span>
+              </>
+            ) : (
+              <span className="text-red-300">
+                no agent pinned — this turn ran unsteered{agent.note !== "" ? `: ${agent.note}` : "."}
+              </span>
+            )}
+          </p>
+        ) : null}
+
+        <p className="mt-1 px-1 text-[11px] text-text-tertiary" data-testid="chat-session">
           {sessionId ? `session ${sessionId.slice(0, 16)}…` : "no session yet"}
           {streaming ? (
             <span className="ml-2 inline-flex items-center gap-1">

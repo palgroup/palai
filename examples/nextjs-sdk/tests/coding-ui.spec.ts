@@ -289,6 +289,74 @@ test("the file tree states that it can only ever show what the run changed", asy
 // CAUGHT IT. All three were reported by the owner as one sentence: "çok fazla bug var".
 // =============================================================================================
 
+// =============================================================================================
+// THE AGENT. The owner asked: "bir agent mı tanımladık biz? ios agent'ı gibi bir şey? adminde agent
+// üzerinden o agent'ı mı run ediyoruz? bu sistem promptu nereden alıyor şu an?"
+//
+// The answer was no on every clause, and nothing on the screen said so. `agent_id` was a branch in
+// the chat route that the client never took, so every turn ran with no pinned config; the only
+// steering was a string constant in a React file.
+// =============================================================================================
+
+// THE STEERING IS ON A PUBLISHED REVISION, AND THE RUN IS PINNED TO IT.
+//
+// This asserts the whole chain in one turn, because each link alone is satisfiable by a build that
+// does the wrong thing: a profile can exist and be unused, a revision can exist and be a DRAFT, and a
+// create can carry an agent_id that names an agent with no instructions at all — which is exactly
+// what the live stack's pre-existing `demo-coder` was (published, tool ceiling, instructions "").
+test("the turn runs as a published agent, and the steering lives on its revision", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "add a contributing guide");
+  await expect(page.getByTestId("chat-run").first()).toContainText("completed", { timeout: 30_000 });
+
+  const seen = await page.request.get(`http://127.0.0.1:${UPSTREAM_PORT}/__introspect-coding`, {
+    headers: { Authorization: `Bearer ${API_KEY}` },
+  });
+  const body = (await seen.json()) as {
+    codingAgentIds: string[];
+    codingInstructions: string[];
+    agentProfiles: { id: string; name: string }[];
+    agentRevisions: Record<string, { id: string; status: string; instructions: string; tools: unknown; model: string }[]>;
+  };
+
+  // 1. A profile exists, under the name the demo resolves on — not an id anybody typed.
+  const profile = body.agentProfiles.find((p) => p.name === "ios-coder");
+  expect(profile, "the demo must resolve or create the ios-coder profile").toBeDefined();
+
+  // 2. Its revision is PUBLISHED and carries the instructions. A draft would steer nothing.
+  const revisions = body.agentRevisions[profile!.id] ?? [];
+  const published = revisions.filter((r) => r.status === "published");
+  expect(published).toHaveLength(1);
+  expect(published[0].instructions).toContain("swift build --package-path repo");
+  expect(published[0].model).toBe("claude-sonnet-5");
+
+  // 3. AND `tools` IS NULL, which is the difference between an agent that can work and one that
+  //    cannot. automation/agents.go:60 — a non-nil set, EVEN EMPTY, is a ceiling the resolver
+  //    intersects with the project grant. The live stack's other agent carries such a ceiling.
+  expect(published[0].tools, "a revision tools list is a CEILING, not a grant — it must stay nil").toBeNull();
+
+  // 4. The run was actually pinned to it. Without this the three above describe an agent nobody uses.
+  expect(body.codingAgentIds[0]).toBe(profile!.id);
+
+  // 5. And the steering is NOT also sent on the request. resolveInstructionLayers COMPOSES layer 3
+  //    with layer 5, so sending both would put the same paragraph in the conversation twice.
+  expect(body.codingInstructions[0]).toBe("");
+});
+
+// AND THE SCREEN SAYS SO. The owner had to ASK which agent was running, which is the report that the
+// screen was not answering it.
+test("the screen names the agent the session runs as", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "add a contributing guide");
+
+  const agentLine = page.getByTestId("chat-agent");
+  await expect(agentLine).toBeVisible({ timeout: 30_000 });
+  await expect(agentLine).toContainText("ios-coder");
+  await expect(agentLine).toContainText("aprof_");
+});
+
 // DEFECT ONE: THE INTERNAL PROMPT WAS PUT IN THE OPERATOR'S MOUTH.
 //
 // Measured on screen: the operator typed "selam" — five characters — and their own message bubble
@@ -311,15 +379,25 @@ test("the operator's bubble holds ONLY what the operator typed — and the hint 
   await expect(bubble).not.toContainText("git -C repo");
   await expect(bubble).not.toContainText("agent@palai.local");
 
-  // AND IT WAS SENT. The create carried it on the `instructions` field — §25.12 layer 5, which the
-  // control plane inserts as a system message (execution/instructions.go:94) — not on `input`.
+  // AND THE STEERING STILL REACHED THE MODEL — by a different road than it used to. The create
+  // carries `agent_id`, and the agent's published revision carries the text. Reading BOTH is what
+  // makes this test survive the move: `input` is exactly what was typed, and the steering exists.
   const seen = await page.request.get(`http://127.0.0.1:${UPSTREAM_PORT}/__introspect-coding`, {
     headers: { Authorization: `Bearer ${API_KEY}` },
   });
-  const body = (await seen.json()) as { codingInstructions: string[]; codingInputs: string[] };
+  const body = (await seen.json()) as {
+    codingInputs: string[];
+    codingAgentIds: string[];
+    agentProfiles: { id: string; name: string }[];
+    agentRevisions: Record<string, { status: string; instructions: string }[]>;
+  };
   expect(body.codingInputs[0]).toBe("selam");
-  expect(body.codingInstructions[0]).toContain("git -C repo");
-  expect(body.codingInstructions[0]).toContain("--package-path repo");
+
+  const profile = body.agentProfiles.find((p) => p.name === "ios-coder")!;
+  expect(body.codingAgentIds[0]).toBe(profile.id);
+  const published = (body.agentRevisions[profile.id] ?? []).find((r) => r.status === "published")!;
+  expect(published.instructions).toContain("git -C repo");
+  expect(published.instructions).toContain("--package-path repo");
 });
 
 // DEFECT TWO: THE HINT ONLY EVER RODE TURN ONE.
@@ -328,10 +406,12 @@ test("the operator's bubble holds ONLY what the operator typed — and the hint 
 // clone was. Measured cost on one live run: eight tool calls to do one build, six of them `swift build`
 // against a directory with no Package.swift.
 //
-// `instructions` is a RUN-SPECIFIC layer — it is per response, not per session (packages/coordinator/
-// store.go:650) — so "sent once" and "sent every turn" are genuinely different wire traffic, and this
-// reads the wire.
-test("the repository instruction rides EVERY turn, not just the first", async ({ page }) => {
+// THE CARRIER CHANGED AND THE PROPERTY DID NOT. The pin is a RUN-SPECIFIC field — `agent_id` is per
+// response, not per session — so "pinned once" and "pinned every turn" are genuinely different wire
+// traffic, and this reads the wire. This is UAT C4 ("what the model was told does not decay") in its
+// checkable form: the config the run resolves is attached to EVERY run, so a later turn cannot lose
+// it the way a first-message hint did.
+test("the agent is pinned on EVERY turn, not just the first", async ({ page }) => {
   await page.goto(CHAT);
   await pickFirstRepo(page);
 
@@ -344,11 +424,18 @@ test("the repository instruction rides EVERY turn, not just the first", async ({
   const seen = await page.request.get(`http://127.0.0.1:${UPSTREAM_PORT}/__introspect-coding`, {
     headers: { Authorization: `Bearer ${API_KEY}` },
   });
-  const body = (await seen.json()) as { codingInstructions: string[]; codingInputs: string[] };
+  const body = (await seen.json()) as {
+    codingInputs: string[];
+    codingAgentIds: string[];
+    agentProfiles: { id: string; name: string }[];
+  };
   expect(body.codingInputs).toEqual(["selam", "build al projeyi"]);
-  expect(body.codingInstructions).toHaveLength(2);
-  // The SECOND one is the assertion. The old build would have had "" here.
-  expect(body.codingInstructions[1]).toContain("git -C repo");
+
+  const profile = body.agentProfiles.find((p) => p.name === "ios-coder")!;
+  expect(body.codingAgentIds).toHaveLength(2);
+  // The SECOND one is the assertion. A build that pinned the agent only when opening a session — the
+  // shape the old `messages.length === 0` gate had — would have "" here.
+  expect(body.codingAgentIds).toEqual([profile.id, profile.id]);
 });
 
 // DEFECT THREE, AND IT IS THE ONE THAT MADE THE DEMO LOOK BROKEN: EVERY TURN AFTER THE FIRST RENDERED

@@ -44,6 +44,18 @@ export type AIStreamEvent =
   | ({ type: "tool_detail"; id: string } & Record<string, unknown>)
   | ({ type: "approval"; id: string } & Record<string, unknown>)
   | ({ type: "publication"; id: string } & Record<string, unknown>)
+  // WHICH AGENT THIS SESSION RUNS AS. The owner asked "bir agent mı tanımladık biz? adminde agent
+  // üzerinden o agent'ı mı run ediyoruz?" — a question the screen could not answer, because the
+  // answer was no and nothing said so. `agentId` null with a `note` is the honest shape for a
+  // deployment whose agents API could not be read; the turn still runs, unpinned.
+  | {
+      type: "agent";
+      agentId: string | null;
+      agentName: string | null;
+      revisionId: string | null;
+      provisioned: boolean;
+      note: string;
+    }
   | { type: "notice"; level: "warn" | "error"; text: string }
   | { type: "run"; responseId: string; runId?: string | null; status: string }
   | { type: "usage"; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null }

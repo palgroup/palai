@@ -1,3 +1,4 @@
+import { type ResolvedAgent, resolveCodingAgent } from "@/lib/agent";
 import { getPalaiClient } from "@/lib/palai";
 import { rawBaseURL, rawHeaders } from "@/lib/raw";
 
@@ -62,28 +63,59 @@ export async function POST(request: Request): Promise<Response> {
         }
         emit({ type: "session", sessionId });
 
+        // THE AGENT THIS SESSION RUNS AS, resolved (or provisioned) by name — never a hardcoded id.
+        // The owner asked "bir agent mı tanımladık biz?" and the honest answer was no, so the answer
+        // now has to be visible: the id and name go to the browser and the screen says them.
+        //
+        // A FAILURE HERE DOES NOT KILL THE TURN. If the agents API is unreachable the chat still runs
+        // — unpinned, exactly as it did before this existed — and says so, because a demo that refuses
+        // to talk because it could not read its own configuration is worse than one that tells you
+        // what it is missing.
+        let agent: ResolvedAgent | null = null;
+        let agentNote = "";
+        try {
+          agent = await resolveCodingAgent();
+        } catch (error) {
+          agentNote = error instanceof Error ? error.message : "the agent could not be resolved";
+        }
+        emit({
+          type: "agent",
+          agentId: agent?.id ?? null,
+          agentName: agent?.name ?? null,
+          revisionId: agent?.revisionId ?? null,
+          provisioned: agent?.provisioned ?? false,
+          note: agentNote,
+        });
+
         const created = await client.responses.create({
           input: prompt,
           session_id: sessionId,
-          // THE REPOSITORY HINT IS AN INSTRUCTION, NOT SOMETHING THE OPERATOR SAID.
+          // THE STEERING RIDES THE AGENT, NOT THE REQUEST, AND NOT THE OPERATOR'S TEXT.
           //
-          // It used to be concatenated onto the user's own text in the browser, so somebody who typed
-          // "selam" got a 470-character message in their own bubble about `git -C repo` and
-          // `user.email=agent@palai.local` — measured on screen 2026-08-02, five characters typed and
-          // 470 rendered. It also made the model go exploring a repository nobody had asked about.
+          // Three placements were tried and the first two are worth naming because each looked right.
           //
-          // `instructions` is §25.12's layer 5 and the control plane inserts it as a SYSTEM message
-          // after the engine's own kernel run (execution/instructions.go:94). Measured live on
-          // 2026-08-02: resp_27f7e99aae66d2a9390549598b0a2f8b, instructions "end every answer with the
-          // word KIRMIZI", output "Selam! Nasıl yardımcı olabilirim?\n\nKIRMIZI".
+          //   1. GLUED ONTO THE USER'S FIRST MESSAGE — what shipped. Somebody typed "selam", five
+          //      characters, and their own bubble rendered 470 about `git -C repo` and
+          //      `user.email=agent@palai.local`. Measured on screen 2026-08-02. It also expired: the
+          //      gate was `messages.length === 0`, so by turn three the model no longer knew where the
+          //      clone was, and one build took EIGHT tool calls, six of them `swift build` against a
+          //      directory with no Package.swift.
           //
-          // AND IT RIDES EVERY TURN, which the old placement could not do — it was gated on
-          // `messages.length === 0`, so by turn three the model no longer knew where the clone was.
-          // That is not a theory about what would happen; it is what DID happen, measured on one run:
-          // eight tool calls to do one build, six of them variations of `swift build` against a
-          // directory that has no Package.swift, until it stumbled onto `--package-path repo`.
-          ...(body.bindingId ? { instructions: REPO_HINT } : {}),
-          ...(body.agentId ? { agent_id: body.agentId } : {}),
+          //   2. `instructions` ON EVERY CREATE — correct, and it worked (§25.12 layer 5, inserted as
+          //      a system message by execution/instructions.go:94; proven live with
+          //      resp_27f7e99aae66d2a9390549598b0a2f8b). But it put the system prompt in a `const` in
+          //      this file, where nobody operating the deployment can see or change it, and left the
+          //      owner's question — "bir agent mı tanımladık biz?" — answered NO.
+          //
+          //   3. A PUBLISHED AGENT REVISION — here. Same layer stack, but the text is versioned,
+          //      auditable, editable on the console's agents screen, and carried by the run's pinned
+          //      config. See lib/agent.ts.
+          //
+          // BOTH ARE NOT SENT, and that is deliberate rather than an omission. resolveInstructionLayers
+          // (execution/instructions.go:57) COMPOSES layer 3 (the revision) with layer 5 (the request) —
+          // "they compose, they do not replace" — so passing the same text on both would put the same
+          // paragraph into the conversation twice, as two separate system messages. The agent owns it.
+          ...(agent !== null ? { agent_id: agent.id } : {}),
           ...(body.bindingId ? { repository: { binding_id: body.bindingId } } : {}),
         } as Parameters<typeof client.responses.create>[0]);
 
@@ -152,58 +184,17 @@ export async function POST(request: Request): Promise<Response> {
   });
 }
 
-// MEASURED, AND THE REASON THIS STRING EXISTS. `palai.workspace.shell` runs with cwd = the ALLOCATION
-// ROOT, not the clone: adapters/sandboxes/host/exec.go:152 sets c.Dir = cmd.WorkspaceRoot, and the clone
-// is one level down at <root>/repo. The tool's JSON schema has no cwd/workdir field, AND it does not set
-// additionalProperties:false — so a `cwd` argument invented by a hopeful caller is accepted and silently
-// ignored (packages/tool-broker/conformance_math.go:50).
+// WHERE THE REPOSITORY HINT WENT, because deleting a 40-line comment block that cost real money to
+// learn would be the wrong kind of tidy. Every measurement it carried — the clone living at ./repo
+// while the shell starts one level above it, the `-C repo` path frame that made
+// `git -C repo add repo/FILE` fail with exit 128, the missing git identity that sent the model to
+// `git config --global` on an unsandboxed host, and the `--package-path repo` that a build needs —
+// now lives on the agent's published revision, with the findings, in lib/agent.ts.
 //
-// Driven live 2026-08-02 without this hint, gpt-4o-mini ran `git status`, got "not a git repository", ran
-// `git init` AT THE ROOT, and committed into a brand-new empty repository beside the clone. The clone
-// stayed untouched at its real HEAD. Nothing errored. A push from that state would have proposed a write
-// nobody meant.
-//
-// THE SECOND CLAUSE IS THERE BECAUSE THE FIRST VERSION OF THIS HINT CAUSED A BUG. It said only "use
-// `git -C repo …` or paths beginning with `repo/`", and the model dutifully ran
-//     git -C repo add repo/CONTRIBUTING.md   -> exit 128, "pathspec did not match any files"
-// because `-C repo` has ALREADY entered the clone, so the path must be relative to it.
-//
-// THE THIRD CLAUSE IS A PRODUCT GAP, NOT A MODEL ONE. The clone is prepared with `git init` + `git fetch`
-// + `git checkout` (adapters/repositories/prepare.go:93-133) and NOTHING EVER SETS user.email OR
-// user.name, so the first `git commit` of every coding session fails with "Author identity unknown".
-// Measured twice on 2026-08-02, and both times the model recovered by running `git config --global …` —
-// which writes the OPERATOR'S global git config, on an unsandboxed host, as a side effect of asking an
-// agent to commit.
-//
-// THE FOURTH CLAUSE IS THE BUILD. Measured 2026-08-02: asked to build, the model ran `swift build` from
-// the allocation root, got "Could not find Package.swift", and spent six more calls finding
-// `--package-path repo`. The tool that runs it is the same one the first clause is about, so the frame
-// has to be named for it too.
-const REPO_HINT =
-  "The repository is cloned at ./repo and shell commands start in the workspace root ABOVE it. " +
-  "For the file tool, use paths beginning with `repo/`. For git, use `git -C repo …` and then give " +
-  "paths RELATIVE TO the clone (`git -C repo add CONTRIBUTING.md`, not `repo/CONTRIBUTING.md`). " +
-  "For a SwiftPM build or test, pass the package path explicitly: `swift build --package-path repo`, " +
-  "`swift test --package-path repo`. " +
-  "The clone has no git identity configured, so commit with " +
-  "`git -C repo -c user.email=agent@palai.local -c user.name=Palai commit -m \"…\"` — do not run " +
-  "`git config --global`. Do not run `git init`.";
-
-// BACKGROUND TASKS ARE DELIBERATELY NOT MENTIONED HERE, and the reason is worth writing down because
-// the obvious move is to add a clause and I nearly did.
-//
-// They exist: `palai.workspace.shell` takes `"background": true` and answers {task_id, output_path,
-// status} (execution/tools/shell.go:103-118), with palai.workspace.background_kill to stop one. And the
-// model is ALREADY TOLD — that sentence is the parameter's own `description` in the tool's JSON schema
-// (shell.go:36), which is part of the definition the model is given. Repeating it here would spend
-// context re-teaching something the tool already says.
-//
-// The stronger reason is that it may not work on this stack and I have not measured whether it does.
-// shell.go:104 refuses with ErrBackgroundUnsupported when `env.Background` is nil — "the deployment does
-// not do background tasks" — and nothing here has established that this deployment wires it. Telling the
-// model to use a capability that answers `unavailable` would spend a tool call to earn a refusal.
-// Naming an exposure is not proving the mechanism works on the target, which is CLAUDE.md's second rule
-// and the one this file's own history is full of.
+// The background-task clause that used to be here stays deleted, and that is also recorded there:
+// the model is already told by the shell tool's own JSON schema (execution/tools/shell.go:36), and
+// shell.go:104 refuses with ErrBackgroundUnsupported when the deployment does not wire it — which
+// this one has not been measured to do.
 
 // pumpPalaiFrames reads Palai's SSE journal for this session and emits the chat's frames.
 //

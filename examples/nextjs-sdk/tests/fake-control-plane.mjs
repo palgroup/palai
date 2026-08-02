@@ -337,6 +337,16 @@ const createdSecrets = [];
 // that was deleted — so the suite has to be able to see both halves.
 const codingInstructions = [];
 const codingInputs = [];
+// What each create carried as `agent_id`. The steering moved onto a published agent revision, so
+// "the bubble is clean" and "instructions is empty" are BOTH satisfied by a build that sends no
+// steering at all — this is the field that says the agent was actually pinned.
+const codingAgentIds = [];
+// The agents surface, as module state. Not reset by /__reset-coding: the demo resolves its agent
+// ONCE PER SERVER PROCESS (lib/agent.ts caches the promise), so clearing the fake's copy between
+// tests would desynchronise the two and make later tests measure a provisioning that the app has
+// already cached away. The agent is deployment config, not per-test state.
+const agentProfiles = [];
+const agentRevisions = {};
 
 function codingEvents() {
   const named = (payload) => (codingOmitsToolName ? { ...payload, tool_name: undefined } : payload);
@@ -663,9 +673,81 @@ function handleCoding(method, pathname, request, response) {
     codingTurns = 0;
     codingInstructions.length = 0;
     codingInputs.length = 0;
+    codingAgentIds.length = 0;
     request.resume();
     request.once("end", () => sendJSON(response, 200, { reset: true }));
     return true;
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // THE AGENTS SURFACE. The demo resolves its agent BY NAME and provisions it if absent, so the
+  // fake has to model the same four calls or the suite would be proving nothing about the path a
+  // real deployment takes.
+  //
+  // IT REPRODUCES THE TWO PROPERTIES THAT MATTER, both measured on the live control plane:
+  //   * `tools` ABSENT from a revision body stays ABSENT on the stored revision. automation/
+  //     agents.go:60 — "Tools nil imposes no capability ceiling (a non-nil set — even empty — is
+  //     the ceiling the resolver intersects)". A fake that helpfully defaulted `tools: []` would
+  //     be modelling the EMPTY CEILING, which is the exact bug this omission avoids, and the
+  //     suite would go green on a shape that grants the agent nothing.
+  //   * a revision is created as a DRAFT and only `status: "published"` after the publish call.
+  //     The demo looks for a published revision carrying its instructions; a fake that published
+  //     on create would hide a missing publish step.
+  if (method === "GET" && pathname === "/v1/agents") {
+    sendJSON(response, 200, { object: "list", data: agentProfiles, has_more: false });
+    return true;
+  }
+  if (method === "POST" && pathname === "/v1/agents") {
+    readBody(request, (raw) => {
+      const parsed = safeJSON(raw);
+      if (!parsed.name) { sendProblem(response, 400, "invalid_request"); return; }
+      const created = { id: `aprof_fake_${agentProfiles.length + 1}`, object: "agent", name: String(parsed.name) };
+      agentProfiles.push(created);
+      agentRevisions[created.id] = [];
+      sendJSON(response, 201, created);
+    });
+    return true;
+  }
+  {
+    const revList = /^\/v1\/agents\/([^/]+)\/revisions$/.exec(pathname);
+    if (revList && method === "GET") {
+      sendJSON(response, 200, { object: "list", data: agentRevisions[revList[1]] ?? [], has_more: false });
+      return true;
+    }
+    if (revList && method === "POST") {
+      readBody(request, (raw) => {
+        const parsed = safeJSON(raw);
+        // The real endpoint strictly decodes (DisallowUnknownFields, automation/agents.go:113), so a
+        // field outside the executable-config subset is a 400 rather than something quietly dropped.
+        const allowed = new Set(["model", "tools", "instructions", "tool_sets", "mcp_connections", "skills", "hooks", "environment"]);
+        if (Object.keys(parsed).some((k) => !allowed.has(k))) { sendProblem(response, 400, "invalid_request"); return; }
+        const list = agentRevisions[revList[1]];
+        if (list === undefined) { sendProblem(response, 404, "not_found"); return; }
+        const rev = {
+          id: `arev_fake_${revList[1]}_${list.length + 1}`,
+          object: "agent_revision",
+          agent_id: revList[1],
+          revision_number: list.length + 1,
+          model: parsed.model ?? "",
+          instructions: parsed.instructions ?? "",
+          // ABSENT stays ABSENT — see the header. `null` is what the live API returns for a nil set.
+          tools: Object.hasOwn(parsed, "tools") ? parsed.tools : null,
+          status: "draft",
+        };
+        list.push(rev);
+        sendJSON(response, 201, rev);
+      });
+      return true;
+    }
+    const pub = /^\/v1\/agents\/([^/]+)\/revisions\/([^/]+)\/publish$/.exec(pathname);
+    if (pub && method === "POST") {
+      const rev = (agentRevisions[pub[1]] ?? []).find((r) => r.id === pub[2]);
+      if (rev === undefined) { sendProblem(response, 404, "not_found"); return true; }
+      rev.status = "published";
+      request.resume();
+      request.once("end", () => sendJSON(response, 200, rev));
+      return true;
+    }
   }
 
   if (method === "GET" && pathname === "/__introspect-coding") {
@@ -678,6 +760,9 @@ function handleCoding(method, pathname, request, response) {
       createdSecrets,
       codingInstructions,
       codingInputs,
+      codingAgentIds,
+      agentProfiles,
+      agentRevisions,
       codingTurns,
     });
     return true;
@@ -736,6 +821,7 @@ const server = createServer((request, response) => {
         // off the user's text is that it still REACHES the model — on every turn. A test that only
         // asserted the bubble is clean would pass just as well if the hint had been deleted.
         codingInstructions.push(String(safeJSON(createBody).instructions ?? ""));
+        codingAgentIds.push(String(safeJSON(createBody).agent_id ?? ""));
         codingInputs.push(String(safeJSON(createBody).input ?? ""));
         codingTurns += 1;
         const second = codingTurns >= 2;
