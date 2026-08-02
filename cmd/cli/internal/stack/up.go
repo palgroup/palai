@@ -1642,7 +1642,19 @@ func (c *apiClient) ensureSlackAgentRevision(tools, mcp []string) (id string, mi
 		if err != nil {
 			return "", false, fmt.Errorf("create the %q agent profile: %w", slackAgentProfileName, err)
 		}
-		if status != http.StatusCreated || created.ID == "" {
+		if status == http.StatusConflict {
+			// SOMEONE ELSE HAS THE NAME, which after the pagination fix above means a concurrent bring-up
+			// rather than a lookup that missed. Re-reading is the whole recovery: the profile exists, and
+			// this run wants its id, not the right to have created it.
+			again, ferr := c.findAgentProfile(slackAgentProfileName)
+			if ferr != nil {
+				return "", false, ferr
+			}
+			if again == "" {
+				return "", false, fmt.Errorf("POST /v1/agents = 409 for %q, but no profile of that name is listed", slackAgentProfileName)
+			}
+			created.ID = again
+		} else if status != http.StatusCreated || created.ID == "" {
 			return "", false, fmt.Errorf("POST /v1/agents = %d, want 201 with an id", status)
 		}
 		profileID = created.ID
@@ -1697,25 +1709,53 @@ func (c *apiClient) ensureSlackAgentRevision(tools, mcp []string) (id string, mi
 
 // findAgentProfile returns the id of the profile lineage with this name, or "" when there is none.
 func (c *apiClient) findAgentProfile(name string) (string, error) {
-	var page struct {
-		Data []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"data"`
-	}
-	status, err := c.do(http.MethodGet, "/v1/agents", nil, &page)
-	if err != nil {
-		return "", fmt.Errorf("list agent profiles: %w", err)
-	}
-	if status != http.StatusOK {
-		return "", fmt.Errorf("GET /v1/agents = %d, want 200", status)
-	}
-	for _, p := range page.Data {
-		if p.Name == name {
-			return p.ID, nil
+	// IT WALKS EVERY PAGE, and the version that read only the first one was wrong in a way that stayed
+	// invisible for as long as the deployment was small. Measured 2026-08-02 against the live control
+	// plane: 42 profiles, a 20-row default page, and "slack" on the second one — so this returned "" for
+	// a profile that plainly existed, and `palai up` tried to CREATE it on every bring-up. What that cost
+	// depended entirely on a detail nobody was thinking about: the name is UNIQUE, so the create failed
+	// (a 500 until this commit, now a 409) and the Slack step reported "NOT registered" against a
+	// deployment that was registered. Had the name NOT been unique this would have minted a second
+	// "slack" profile per bring-up, and which one a Slack message routed to would be a lottery.
+	//
+	// `after` takes the previous page's next_cursor — the names differ and the spec says so
+	// (protocols/openapi/openapi-3.2.yaml: "Opaque cursor from a previous page's next_cursor"). Passing
+	// `?cursor=` instead re-serves page one with has_more still true, which is an infinite loop that
+	// looks like paging.
+	cursor := ""
+	for pages := 0; pages < 200; pages++ {
+		var page struct {
+			Data []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"data"`
+			HasMore    bool   `json:"has_more"`
+			NextCursor string `json:"next_cursor"`
 		}
+		path := "/v1/agents?limit=100"
+		if cursor != "" {
+			path += "&after=" + url.QueryEscape(cursor)
+		}
+		status, err := c.do(http.MethodGet, path, nil, &page)
+		if err != nil {
+			return "", fmt.Errorf("list agent profiles: %w", err)
+		}
+		if status != http.StatusOK {
+			return "", fmt.Errorf("GET /v1/agents = %d, want 200", status)
+		}
+		for _, p := range page.Data {
+			if p.Name == name {
+				return p.ID, nil
+			}
+		}
+		// A next_cursor that repeats is a server that is not advancing; stopping beats looping forever
+		// while printing nothing.
+		if !page.HasMore || page.NextCursor == "" || page.NextCursor == cursor {
+			return "", nil
+		}
+		cursor = page.NextCursor
 	}
-	return "", nil
+	return "", fmt.Errorf("listing agent profiles did not terminate after 200 pages")
 }
 
 // publishedAgentRevision returns a published revision of this profile, or "" when it has none.

@@ -21,7 +21,11 @@ set -uo pipefail
 
 API="${PALAI_BASE_URL:-http://127.0.0.1:60351}"
 KEY="${PALAI_API_KEY:-$(cat "${PALAI_HOME:-.palai}/api-key" 2>/dev/null || true)}"
-REPO_URL="${SMOKE_REPO_URL:-https://github.com/palgroup/demo-palbase-ios.git}"
+# A REAL, PUBLIC iOS APP — chosen so the clone leg proves a clone rather than a fixture. Measured
+# 2026-08-02 with `HOME=/nonexistent GIT_TERMINAL_PROMPT=0`, which is the only honest way to check it:
+# an earlier measurement of a different repo "succeeded" using THIS machine's gh credential, which the
+# control plane does not have and must never have. 224 KiB, a SwiftUI todo list, one .xcodeproj.
+REPO_URL="${SMOKE_REPO_URL:-https://github.com/fredrik9000/TodoList_SwiftUI.git}"
 WITH_ACCOUNTS=0
 [ "${1:-}" = "--with-accounts" ] && WITH_ACCOUNTS=1
 
@@ -76,7 +80,7 @@ hdr "1. A REAL REPOSITORY, CLONED BY THE CONTROL PLANE"
 # The binding is what a run is pointed at; the clone happens inside provisionFreshAllocation when the
 # run mints its workspace. So a binding that CREATES is not yet evidence of a clone — the evidence is
 # the repository's own files being readable by a tool, which leg 4 asserts.
-binding="$(api POST /v1/repository-bindings "{\"provider\":\"github\",\"repository_identity\":\"palgroup/demo-palbase-ios\",\"clone_url\":\"$REPO_URL\"}")"
+binding="$(api POST /v1/repository-bindings "{\"provider\":\"github\",\"repository_identity\":\"fredrik9000/TodoList_SwiftUI\",\"clone_url\":\"$REPO_URL\"}")"
 binding_id="$(printf '%s' "$binding" | jq_get "['id']")"
 if [ -n "$binding_id" ]; then
 	ok "repository binding created" "$binding_id -> $REPO_URL"
@@ -85,7 +89,7 @@ else
 fi
 
 hdr "2. THE iOS AGENT, PUBLISHED"
-agent="$(api POST /v1/agents '{"name":"ios-smoke-agent"}')"
+agent="$(api POST /v1/agents "{\"name\":\"ios-smoke-$(date +%s)\"}")"
 agent_id="$(printf '%s' "$agent" | jq_get "['id']")"
 rev=""
 if [ -n "$agent_id" ]; then
