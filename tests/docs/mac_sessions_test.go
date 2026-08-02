@@ -86,8 +86,8 @@ func TestMacSessionsPlanIsReadOnlyAndNamesBothModes(t *testing.T) {
 		t.Fatalf("`plan` exited %d — it must run on any host, including one that is not a Mac:\n%s", code, out)
 	}
 	for _, want := range []string{
-		"--mode dirs",     // the cheap option, offered first
-		"--mode accounts", // the expensive one
+		"--mode dirs",        // the cheap option, offered first
+		"--mode accounts",    // the expensive one
 		macTestPrefix + "01", // the names it would allocate
 		macTestPrefix + "04",
 		"901", // and their uids — the pinned base, not the shipped one

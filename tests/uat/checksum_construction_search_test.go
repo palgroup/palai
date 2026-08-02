@@ -243,8 +243,8 @@ func searchChecksumConstructions(terms []string, targets map[string]string) (map
 					break
 				}
 				a := terms[i]
-				probe(append(buf[:0], a...))                 // length 1, raw
-				probe(append(append(buf[:0], a...), 0))      // length 1, NUL-terminated (hashParts)
+				probe(append(buf[:0], a...))            // length 1, raw
+				probe(append(append(buf[:0], a...), 0)) // length 1, NUL-terminated (hashParts)
 				for _, b := range terms {
 					for _, sep := range checksumSearchSeparators {
 						pre = append(pre[:0], a...)

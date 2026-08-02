@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/palgroup/palai/cmd/cli/internal/admin"
 	"github.com/palgroup/palai/cmd/cli/internal/stack"
@@ -96,11 +97,26 @@ func up(args []string) error {
 	// shell reaches this machine's toolchain, and only Postgres, the object store and the runner stay
 	// in Docker. A flag rather than an env var because it changes where a process runs, which is the
 	// kind of thing an operator should be able to read off the command they typed.
-	native := fs.Bool("native", false, "run the control plane as a NATIVE process on this machine (postgres/object-store/runner stay in Docker) — docs/operations/palai-on-a-mac.md")
+	native := fs.Bool("native", false, "run the control plane as a NATIVE process on this machine (default on macOS; postgres/object-store/runner stay in Docker) — docs/operations/palai-on-a-mac.md")
+	container := fs.Bool("container", false, "run the control plane in Docker even on macOS — where its shell CANNOT reach this machine's xcodebuild/simctl")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return stack.Bootstrap(*envFile, *native)
+	if *native && *container {
+		return errors.New("--native and --container name where ONE process runs; pass one")
+	}
+	// ON macOS, NATIVE IS THE DEFAULT, because the flag was asking the operator to know something the
+	// machine already knows. A control plane in a container cannot reach this machine's xcodebuild,
+	// xcrun or simctl — that is not a limitation of the container, it is what a container IS — so a Mac
+	// running the container posture is a Mac that cannot do the one thing a Mac is deployed for.
+	//
+	// It stays an explicit flag on every other platform: there, a container is the ordinary answer and
+	// running the control plane loose on the host is the unusual choice.
+	//
+	// --container is how a Mac operator says they meant it, and it exists rather than being unreachable
+	// because that A/B is exactly what somebody wants when the native path is what broke.
+	runNative := *native || (runtime.GOOS == "darwin" && !*container)
+	return stack.Bootstrap(*envFile, runNative)
 }
 
 func local(args []string) error {

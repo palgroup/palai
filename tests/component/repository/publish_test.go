@@ -25,7 +25,7 @@ func TestApprovedPushExactCommitsOnceTokenDestroyed(t *testing.T) {
 	remote := newBareRemote(t)
 	secrets := t.TempDir()
 
-	receipt, err := repositories.PushBranch(ctx, repositories.NewLocalBrokerWithToken("palai-REPMARK-push-secret"), repositories.PushRequest{
+	receipt, err := repositories.PushBranch(ctx, repositories.NewFixtureBrokerWithToken("palai-REPMARK-push-secret"), repositories.PushRequest{
 		Remote: remote, RepoDir: work, Branch: "agent/ses/run", HeadSHA: head, SecretsDir: secrets,
 	})
 	if err != nil {
@@ -56,7 +56,7 @@ func TestLostPushAckReconcilesNoDuplicateForce(t *testing.T) {
 
 	work, head := newWorkRepoWithCommit(t)
 	remote := newBareRemote(t)
-	broker := repositories.NewLocalBrokerWithToken("palai-REPMARK-push-secret")
+	broker := repositories.NewFixtureBrokerWithToken("palai-REPMARK-push-secret")
 
 	req := repositories.PushRequest{Remote: remote, RepoDir: work, Branch: "agent/ses/run", HeadSHA: head, SecretsDir: t.TempDir()}
 	if _, err := repositories.PushBranch(ctx, broker, req); err != nil {
@@ -86,7 +86,7 @@ func TestBaseMovementNoDroppedRemoteChanges(t *testing.T) {
 
 	work, head := newWorkRepoWithCommit(t)
 	remote := newBareRemote(t)
-	broker := repositories.NewLocalBrokerWithToken("palai-REPMARK-push-secret")
+	broker := repositories.NewFixtureBrokerWithToken("palai-REPMARK-push-secret")
 
 	// First push lands the agent branch at head.
 	if _, err := repositories.PushBranch(ctx, broker, repositories.PushRequest{

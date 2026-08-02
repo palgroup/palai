@@ -160,3 +160,30 @@ hiçbiri `main`'e yanlış inmedi. Maliyet tespit maliyetiydi. Bu dört kural on
   için koşan süit **bayat bir ağacı** ölçer. Aynı aile: her katmanı tasarlandığı gibi davranırken `running`de
   kalan bir run, ve bir zamanlayıcıyla kendini silen bir onay. **Bir durumu "bitti" okumadan önce onu KALICI
   kaydeden şeye sor** — dala, satıra, ref'e; çalışma ağacına değil.
+
+- **Bir ölçümün kendisi kirlenmiş olabilir, ve kirlenmiş ölçüm yanlış ölçümden beterdir: kendine güven verir.**
+  2026-08-02 gecesi bu ağaçta bir depo hakkında "herkese açık" diye ölçüldü ve iki ajana böyle söylendi;
+  depo **private**'dı. Ölçüm `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null` ve
+  `-c credential.helper=` ile yapılmıştı — yani "her şeyi kapattım" denecek kadar dikkatliydi. Kaçan şey
+  şuydu: `~/.gitconfig` **URL'e özel** bir helper taşıyor
+  (`credential.https://github.com.helper = !gh auth git-credential`), ve `-c credential.helper=` yalnız
+  **generic** anahtarı temizler; URL'e özel olan **farklı bir anahtardır ve hayatta kalır.** Dürüst biçim
+  ortamı **boşaltmaktır**, tek tek kapatmak değil: `env -i PATH=… HOME=/nonexistent GIT_TERMINAL_PROMPT=0`.
+  *Bedeli:* platformun **doğru** davranışı (private repoyu credential'sız klonlayamamak ve sebebini
+  söylemek) bir kusur diye raporlandı, bir ajan olmayan bir hatayı kovaladı, ve gerçek eksik —
+  panelden token bağlayacak ekranın hiç olmaması — bir saat gecikti. **Kural: makinenin sağladığı bir
+  yetkiyi ölçümünden çıkardığını iddia ediyorsan, çıkardığını değil, ortamı BOŞ bıraktığını göster.**
+
+- **`git stash` yığını bir deponun BÜTÜN worktree'leri arasında PAYLAŞIMLIDIR** — common `.git` dizininde
+  yaşar, worktree başına değil. Yani argümansız `git stash pop`, **başka bir worktree'de, başka bir dalda,
+  başka birinin** işini alır ve yığından düşürür. 2026-08-02'de tam bu oldu: bir ajanın kendi RED kanıtı için
+  attığı stash'i, dört dakika sonra atılan başka bir stash'in üstüne binmesiyle, o ajanın `pop`'u **integrator'ın**
+  girdisini aldı. `git stash store` ile kurtarıldı, ama kurtarılacağının hiçbir garantisi yoktu.
+  Bu, **paylaşımlı index** kaydının daha keskin hâlidir: index'te bırakılan bir düzenleme bir sonraki
+  `git add`'e biner, stash'ten alınan bir giriş ise **sahibinin ağacından silinir.**
+  **Kural: bu depoda argümansız `stash pop`/`stash apply` yok.** Önce `git stash list` ile KENDİ mesajını
+  bul, SHA'ya çöz, onun üzerinde işlem yap (`git stash drop` yalnız `stash@{n}` biçimini kabul eder, SHA'yı
+  reddeder — apply ile drop arasında listeyi yeniden oku, indeks altından kayabilir).
+  **Daha iyisi: hiç stash'leme.** Bir RED kanıtı commit olarak daha ucuzdur — spec'i commit'le, koştur,
+  düzeltmeyi commit'le. Aynı şey ana çalışma ağacı için de geçerli: orada bırakılan iş bir dala park edilir,
+  stash'e değil.

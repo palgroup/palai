@@ -63,7 +63,7 @@ type Credential struct {
 // §28.11). The secret enters only a credential helper / brokered Git operation and is revoked or
 // expires after the operation. The interface is SEALED (writeHelper is unexported): only this
 // package's preparation path can materialize a secret, so the raw token cannot cross the package
-// boundary into the engine, a log, or a test. Implementations: LocalBroker (deterministic, for
+// boundary into the engine, a log, or a test. Implementations: AnonymousBroker (deterministic, for
 // tests/CI and unauthenticated/local remotes) and githubAppBroker (installation token > user PAT,
 // §30.2, for the live tier).
 type Broker interface {
@@ -130,6 +130,14 @@ func (v *credentialVault) writeHelper(handle, cloneURL, dir string) (string, err
 	if !sec.expiresAt.After(v.now()) {
 		return "", fmt.Errorf("credential helper: credential expired")
 	}
+	// NO SECRET, NO HELPER. An empty token means the broker has no credential to offer, and writing a
+	// helper anyway would materialise `x-access-token:` against the remote — which a real provider reads
+	// as a bad credential and refuses, turning an anonymous clone that WOULD have worked into a failure.
+	// The caller's hardened `credential.helper=` reset then stands alone, which is exactly "use no
+	// helper" and is how an unauthenticated fetch is supposed to look.
+	if sec.token == "" {
+		return "", nil
+	}
 	path, err := writeGitCredentialStore(dir, handle, sec.username, sec.token, cloneURL)
 	if err != nil {
 		return "", err
@@ -157,44 +165,76 @@ func (v *credentialVault) revoke(handle string) (mintedSecret, bool, error) {
 	return sec, true, nil
 }
 
-// LocalBroker is the deterministic broker for tests/CI and unauthenticated/local remotes. It mints
-// a random opaque token bound to (scope, audience) and retains it keyed by an opaque handle. It
-// authenticates a local/unauthenticated remote (which never challenges) and PROVES the
-// credential-absence invariant with a token that need not be real: an absence proof needs no
-// provider-realness (REP-003 honest ceiling — the live tier confirms the same invariant with a real
-// installation token).
-type LocalBroker struct {
+// AnonymousBroker offers NO CREDENTIAL. It is what a deployment falls back to when no provider
+// credential is configured, and the name now says that.
+//
+// IT WAS CALLED LocalBroker AND THAT NAME COST A WORKING CLONE. "Local" read as "for local remotes",
+// and the type acted on that reading: it minted a fabricated token — `palai-local-<hex>` — on the
+// stated assumption that "the local remote never challenges". A real provider challenges. Measured
+// 2026-08-02 against github.com with a PUBLIC repository:
+//
+//	git clone https://x-access-token:palai-local-deadbeef@github.com/…  -> Invalid username or token
+//	git clone https://github.com/…                                      -> succeeds
+//
+// So the fabricated credential did not fail to help; it BROKE the case that works without one. And it
+// did so in the default configuration — no GitHub App configured lands here — which is exactly the
+// path a self-hoster binding a public repository takes.
+//
+// WHAT REPLACES IT IS NOT AN APP. A binding that names a `connection_ref` resolves the tenant's own
+// token from the platform secret store and clones with NewTokenBroker — a personal or fine-grained
+// access token is enough, it lives in the database rather than on any machine, and it travels with the
+// deployment. The GitHub App broker is one option for org-scale installs, not a requirement.
+//
+// So there are three honest states and no fourth: a public repository clones with nothing, a private
+// one clones with the tenant's token, and a private one with no token fails saying so.
+//
+// NewFixtureBrokerWithToken keeps the fixed-token behaviour for the absence proofs that must scan for a
+// known secret.
+type AnonymousBroker struct {
 	*credentialVault
-	fixedToken string // empty = random per mint; set only by NewLocalBrokerWithToken (deterministic fixtures)
+	fixedToken string // empty = random per mint; set only by NewFixtureBrokerWithToken (deterministic fixtures)
 }
 
-// NewLocalBroker returns a ready deterministic broker that mints random opaque tokens.
-func NewLocalBroker() *LocalBroker {
-	return &LocalBroker{credentialVault: newVault()}
+// NewAnonymousBroker returns a ready deterministic broker that mints random opaque tokens.
+func NewAnonymousBroker() *AnonymousBroker {
+	return &AnonymousBroker{credentialVault: newVault()}
 }
 
-// NewLocalBrokerWithToken returns a deterministic broker that mints a FIXED token. It exists for
+// NewFixtureBrokerWithToken returns a deterministic broker that mints a FIXED token. It exists for
 // deterministic fixtures where the exact minted secret must be known — the REP-003 absence scan
 // proves a specific brokered credential is absent from every surface, and the T9 faithful Git
 // double needs a stable token. It is not a production path; the live tier uses the GitHub App broker.
-func NewLocalBrokerWithToken(token string) *LocalBroker {
-	return &LocalBroker{credentialVault: newVault(), fixedToken: token}
+func NewFixtureBrokerWithToken(token string) *AnonymousBroker {
+	return &AnonymousBroker{credentialVault: newVault(), fixedToken: token}
 }
 
 // Mint issues a fresh opaque handle and a token bound to the scope + audience.
-func (b *LocalBroker) Mint(_ context.Context, scope Scope, aud Audience) (Credential, error) {
+func (b *AnonymousBroker) Mint(_ context.Context, scope Scope, aud Audience) (Credential, error) {
 	handle := "rcred_" + randHex(8)
+	// AN EMPTY TOKEN MEANS "OFFER NO CREDENTIAL", AND IT IS THE FIX FOR A MEASURED FAILURE.
+	//
+	// This used to mint `palai-local-<hex>` on the reasoning quoted below — "the local remote never
+	// challenges". A real remote does. Measured 2026-08-02 against github.com with a public repository:
+	//
+	//   git clone https://x-access-token:palai-local-deadbeef@github.com/…   -> remote: Invalid username
+	//                                                                          or token. FATAL.
+	//   git clone https://github.com/…                                       -> succeeds
+	//
+	// So the fabricated credential did not merely fail to help — it BROKE a clone that works anonymously,
+	// and it broke it in the deployment's default configuration: no GitHub App configured falls back to
+	// this broker (main.repositoryBrokerFromEnv), so binding a public repository produced a run that
+	// failed with "the run failed during execution" and no clue.
+	//
+	// NewFixtureBrokerWithToken keeps its fixed token: a fixture that needs a known secret still gets one,
+	// and the absence proofs that scan for it are unchanged.
 	token := b.fixedToken
-	if token == "" {
-		token = "palai-local-" + randHex(16) // opaque; the local remote never validates it
-	}
 	expires := b.now().Add(tokenTTL)
 	b.retain(handle, mintedSecret{username: "x-access-token", token: token, scope: scope, aud: aud, expiresAt: expires})
 	return Credential{Handle: handle, Username: "x-access-token", Scope: scope, Audience: aud, ExpiresAt: expires}, nil
 }
 
 // Revoke drops the secret and removes its helper file so nothing can redeem the handle again.
-func (b *LocalBroker) Revoke(_ context.Context, handle string) error {
+func (b *AnonymousBroker) Revoke(_ context.Context, handle string) error {
 	_, _, err := b.revoke(handle)
 	return err
 }

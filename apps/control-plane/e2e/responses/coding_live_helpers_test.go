@@ -142,7 +142,7 @@ func liveCodingBroker(t *testing.T) (repositories.Broker, string) {
 		}
 		return broker, "github-app-installation-token (real)"
 	}
-	return repositories.NewLocalBroker(), "local-broker (PALAI_GIT_REPO, no App env)"
+	return repositories.NewAnonymousBroker(), "local-broker (PALAI_GIT_REPO, no App env)"
 }
 
 // liveCodingPRClient returns a real GitHub pull-request client when the App env + PALAI_GITHUB_REPO

@@ -177,6 +177,34 @@ func (o *Orchestrator) finalize(ctx context.Context, st *attemptState, frame con
 		return o.parkRun(ctx, st, statemachines.ResponseCmdRequestTool)
 	}
 
+	// THE LAST BOUNDARY, and it is the only one an approved publication can be sure of.
+	//
+	// MEASURED END TO END on the live native stack, 2026-08-02, against a real local git remote. An
+	// operator approved a push through POST /v1/approvals/{id}/approve. The session journal, in order:
+	// command.accepted.v1 -> approval.approved.v1 -> command.applied.v1 -> run.running.v1 (the parked run
+	// WOKE) -> attempt.recovering.v1 -> one model step -> run.completed.v1. The publication row stayed
+	// `approved` with no receipt and NO WARNING, and `git ls-remote` was byte-identical before and after.
+	//
+	// WHY: pumpApprovedPublications runs inside pumpCommands, and orchestrator.go only reaches
+	// pumpCommands `if continues` — the INPUT boundary before the NEXT model request. A woken attempt
+	// whose next step is a FINAL answer has no next request, so there is no boundary, so the pump never
+	// runs. The run then ends and nothing will ever run it again: the approval is spent and the write
+	// never happens. That is the same shape CLAUDE.md already records one layer earlier — "the command
+	// HTTP queued is applied here by the boundary pump", while on a parked run nothing ran that pump.
+	//
+	// This was the SECOND gate between a human's Approve and a branch on a remote; the first was the
+	// publisher being constructed inside the GitHub App gate. So the terminal is a boundary too, and it
+	// publishes BEFORE the run transition: after that line the run is closed and there is no later chance.
+	// A publish FAILURE still only warns on the row (publishApproved's contract, REP-010), so a diverged
+	// remote cannot turn a completed run into a failed one; a STORE error is returned, exactly as it is at
+	// the input boundary.
+	//
+	// It sits after the background park deliberately: a parked run gets another attempt and another
+	// boundary, and publishing on the way to a park would publish before the model is actually finished.
+	if err := o.pumpApprovedPublications(ctx, st); err != nil {
+		return err
+	}
+
 	// Exactly one terminal transition, and exactly one terminal projection. A run that is
 	// already terminal was finalized by whoever won the transition (a completed engine, or a
 	// user cancel that raced this in-flight attempt), so a late or duplicate run.terminal must

@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -87,7 +89,7 @@ type Orchestrator struct {
 	// E09 Task 10): the host dir allocations are minted under, and the broker the clone's read credential
 	// comes from. Both unset ⇒ no provisioning (a run with a binding gets no workspace, tools fail clean).
 	// main.go injects them env-gated via SetWorkspaceProvisioner.
-	provisionRoot   string
+	provisionRoot string
 	// sessionAccounts mints the uid an allocation's tools run under (macOS). Nil means none, which is
 	// every deployment that has not opted in.
 	sessionAccounts SessionAccounts
@@ -155,7 +157,33 @@ type HookFirer interface {
 // brokers into one kernel. The model route defaults to the deterministic fake provider;
 // main.go overrides it for a live provider via SetModelRoute.
 func NewOrchestrator(st *store.Store, dialer EngineDialer, models *modelbroker.Broker, tools *toolbroker.Broker) *Orchestrator {
-	return &Orchestrator{store: st, spine: st.Spine(), dialer: dialer, models: models, tools: tools, tasks: newTaskRegistry(st.Spine()), publications: newPublicationRegistry(st.Spine()), route: defaultModelRoute, DialHandshakeDeadline: dialHandshakeDeadline}
+	o := &Orchestrator{store: st, spine: st.Spine(), dialer: dialer, models: models, tools: tools, tasks: newTaskRegistry(st.Spine()), route: defaultModelRoute, DialHandshakeDeadline: dialHandshakeDeadline}
+	// The publication registry is handed o.canPublish rather than the publisher itself, and the two-step
+	// construction is what that costs. The registry runs when a push TOOL is called; the publisher is
+	// injected later by SetPublisher, so a captured copy would be the nil one every time. A method value
+	// reads o.publisher when the question is asked.
+	o.publications = newPublicationRegistry(st.Spine(), o.canPublish)
+	return o
+}
+
+// canPublish asks the WIRED publisher whether a publication naming this connection ref has a credential
+// path on this deployment — BEFORE a pending approval is recorded and a human is asked about it.
+//
+// A publication that cannot be published must not become a question. The alternative is the shape this
+// tree calls silent-skip in its most expensive form: a human reads a push, presses Approve, is told the
+// run woke, and no write ever happens.
+//
+// IT IS INERT WITH NO PUBLISHER WIRED, and that ceiling is stated rather than hidden. A deployment with no
+// publisher publishes nothing either — but PRODUCTION ALWAYS WIRES ONE (main.go calls SetPublisher
+// unconditionally; TestABindingsOwnCredentialPublishesWithNoGitHubApp pins that the constructor never
+// returns nil), so the inert case is the deterministic tiers, where an orchestrator with no publisher is
+// how every non-publication test is built and parking an approval nobody will pump is the point.
+func (o *Orchestrator) canPublish(connectionRef string) error {
+	prechecker, ok := o.publisher.(PublicationPrechecker)
+	if !ok {
+		return nil
+	}
+	return prechecker.CanPublish(connectionRef)
 }
 
 // SetModelRoute sets the DEPLOYMENT-DEFAULT provider/model/secret the composition root (main.go) selects
@@ -496,7 +524,22 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	if depth == 0 && attempt.WorkspaceHostPath == "" && o.provisionRoot != "" && o.provisionBroker != nil {
 		hostPath, leaseID, wsID, perr := o.provisionRootWorkspace(ctx, tenant, sessionID, string(attempt.RunID), attempt.JobID, attempt.Fence)
 		if perr != nil {
-			return fmt.Errorf("provision workspace: %w", perr)
+			// A PROVISIONING FAILURE IS THE PLATFORM'S OWN, AND IT MUST SAY SO. Before this it returned an
+			// error into the retry ladder and the run dead-lettered into the generic terminal — "the run
+			// failed during execution" — with the reason recorded NOWHERE an operator can reach. Measured
+			// 2026-08-02 on a live stack: the runs row has no error column, the attempts row carries only
+			// state, run.failed.v1's payload is {state, run_id}, and the control-plane log says nothing. So
+			// a bad clone URL, a missing credential and a model refusing to answer were one sentence.
+			//
+			// The sanitized-problem stance still holds. terminalProblems is a fixed line because a failure
+			// must never carry raw PROVIDER or ENGINE text; a clone failure is neither — it is this
+			// deployment's own git invocation against a repository the operator configured.
+			//
+			// It fails the run rather than retrying, for the reason failContextOverflow does: a missing
+			// credential and a wrong ref are DETERMINISTIC, so the ladder would spend eight attempts
+			// reproducing the same error and hide it behind the generic terminal anyway.
+			log.Printf("run %s: workspace provisioning failed: %v", attempt.RunID, perr)
+			return o.failProvisioning(ctx, tenant, attempt, responseID, perr)
 		}
 		attempt.WorkspaceHostPath, workspaceLeaseID, workspaceID = hostPath, leaseID, wsID
 	}
@@ -967,6 +1010,44 @@ func contextOverflowProblem() contracts.Problem {
 // so the attempt ends cleanly instead of failing the job: an oversized request is DETERMINISTIC, so
 // the retry ladder would spend eight attempts and every one of them would send the same too-large
 // history to the same provider before dead-lettering into the generic failure this exists to avoid.
+// failProvisioning ends a run whose workspace could not be prepared, CARRYING THE REASON. It is
+// failContextOverflow's shape — one terminal transition, one projection, nil returned so the attempt
+// ends cleanly rather than entering the retry ladder.
+func (o *Orchestrator) failProvisioning(ctx context.Context, tenant coordinator.Tenant, attempt AttemptDescriptor, responseID string, cause error) error {
+	switch _, err := o.spine.ApplyRunTransition(ctx, tenant, string(attempt.RunID), statemachines.RunCmdFail); {
+	case errors.Is(err, coordinator.ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):
+		return nil // another path already settled this run; its projection stands
+	case err != nil:
+		return err
+	}
+	problem := contracts.Problem{
+		Code:   "workspace_provisioning_failed",
+		Title:  "Workspace could not be prepared",
+		Status: 500,
+		Detail: "the run's repository workspace could not be prepared: " + sanitizeProvisioningCause(cause) +
+			". Check the binding's clone_url and default branch, and whether a private repository needs a " +
+			"connection_ref naming a token in this deployment's secret store.",
+	}
+	problem.Type = problemTypePrefix + problem.Code
+	projection, _ := json.Marshal(map[string]any{"error": problem})
+	return o.spine.FinalizeResponse(ctx, tenant, responseID, "failed", projection)
+}
+
+// maxProvisioningCause bounds the reason. git's stderr on a bad fetch is a handful of lines; anything
+// longer is a surprise and is truncated rather than pasted whole into a projection an API returns.
+const maxProvisioningCause = 400
+
+// sanitizeProvisioningCause flattens the cause to one bounded line, because the detail lands in a JSON
+// problem document read in a terminal and a browser, and a multi-line detail renders as a run-on line in
+// both — collapsing it deliberately beats letting the renderer do it accidentally.
+func sanitizeProvisioningCause(cause error) string {
+	msg := strings.Join(strings.Fields(cause.Error()), " ")
+	if len(msg) > maxProvisioningCause {
+		msg = msg[:maxProvisioningCause] + "…"
+	}
+	return msg
+}
+
 func (o *Orchestrator) failContextOverflow(ctx context.Context, st *attemptState) error {
 	switch _, err := o.spine.ApplyRunTransition(ctx, st.tenant, string(st.attempt.RunID), statemachines.RunCmdFail); {
 	case errors.Is(err, coordinator.ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):

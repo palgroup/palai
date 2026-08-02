@@ -80,7 +80,7 @@ func TestCodingAutoProvisionDeterministic(t *testing.T) {
 		&codingProvider{marker: marker}, tools.FileTool(), tools.ShellTool(), tools.CommitTool(),
 		tools.TaskTool(), tools.PushTool(), tools.PullRequestTool())
 	orch.SetShellRunner(hostShellRunner{})
-	orch.SetWorkspaceProvisioner(provisionRoot, repositories.NewLocalBroker())
+	orch.SetWorkspaceProvisioner(provisionRoot, repositories.NewAnonymousBroker())
 	orch.SetChangesetWriter(&recordingArtifactWriter{h: h})
 
 	stop := h.runWorker(orch)

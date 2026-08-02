@@ -21,6 +21,9 @@ func (s *Store) CreateAgentProfile(ctx context.Context, scope middleware.Scope, 
 		return api.AgentResult{MissingName: true}, nil
 	}
 	id, err := s.agents.CreateProfile(ctx, scope.Organization, scope.Project, name)
+	if errors.Is(err, automation.ErrProfileNameTaken) {
+		return api.AgentResult{NameTaken: true}, nil
+	}
 	if err != nil {
 		return api.AgentResult{}, err
 	}

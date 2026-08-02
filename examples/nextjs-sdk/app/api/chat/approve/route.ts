@@ -32,17 +32,32 @@ export async function POST(request: Request): Promise<Response> {
   }
   const approve = body.approve !== false;
 
-  const upstream = await fetch(
-    `${rawBaseURL()}/v1/approvals/${encodeURIComponent(approvalId)}/${approve ? "approve" : "deny"}`,
-    {
-      method: "POST",
-      headers: rawHeaders(),
-      body: JSON.stringify({
-        request_hash: requestHash,
-        ...(approve ? {} : { reason: typeof body.reason === "string" ? body.reason : "denied from the demo chat" }),
-      }),
-    },
-  );
+  // GUARDED FOR THE SAME REASON /api/palai/auto-approve IS, AND FOUND BY LOOKING RATHER THAN BY BEING
+  // TOLD. The arming relay showed an operator a raw `SyntaxError` when the control plane was down;
+  // sweeping every /api/palai/* and /api/chat/* handler for the same shape found exactly two unguarded
+  // upstream fetches, and they are the two OPERATOR-DECISION surfaces — arming a session and answering
+  // an approval. The others already wrap theirs. Of the two, this one is the worse place for an
+  // exception to surface: it is the button standing between an agent and somebody's branch.
+  let upstream: Response;
+  try {
+    upstream = await fetch(
+      `${rawBaseURL()}/v1/approvals/${encodeURIComponent(approvalId)}/${approve ? "approve" : "deny"}`,
+      {
+        method: "POST",
+        headers: rawHeaders(),
+        body: JSON.stringify({
+          request_hash: requestHash,
+          ...(approve ? {} : { reason: typeof body.reason === "string" ? body.reason : "denied from the demo chat" }),
+        }),
+      },
+    );
+  } catch (error) {
+    return problem(
+      502,
+      "connection_error",
+      `the control plane did not respond: ${error instanceof Error ? error.message : "unreachable"}`,
+    );
+  }
 
   // THE UPSTREAM STATUS IS PASSED THROUGH RATHER THAN FLATTENED. 403 (not an approver), 409 (no longer
   // decidable) and 404 (unknown or foreign) have three different fixes, and a relay that turned all three

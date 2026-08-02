@@ -185,7 +185,28 @@ func Bootstrap(envFile string, native bool) error {
 	// the same discipline the live round trip below applies to the model provider. A bring-up that reported
 	// success on a stack running something other than the operator's document would be the "declared, and
 	// nothing happens" defect wearing this command's own report.
-	desiredLine, err := verifyDesiredApplied(api, func() error { return recreateControlPlane(cfg, p) })
+	// THE REPAIR MUST RESTART THE CONTROL PLANE THIS DEPLOYMENT ACTUALLY RUNS. recreateControlPlane
+	// recreates the COMPOSE SERVICE, and on a native bring-up that service is not the control plane —
+	// it is in a profile and deliberately not started, while the real one is a process on this machine.
+	//
+	// Measured 2026-08-02: with a drifted desired document, `palai up --native` brought the native
+	// control plane up cleanly (pid printed, doctor 14/15) and then failed at [4/6] with
+	//
+	//   Error response from daemon: Ports are not available: exposing port TCP 127.0.0.1:60351
+	//
+	// because the repair asked compose to start a container that wanted the port the native process had
+	// just taken. The bring-up it had already completed was reported as a failure, and on the run before
+	// it — where the container was still up from an earlier `local up` — the collision went the other
+	// way: the NATIVE process died on bind, the container kept serving, and the command printed PROVEN
+	// LIVE for a round trip against the very container it was replacing.
+	//
+	// A native deployment therefore repairs by restarting its own process. Refusing instead would be
+	// worse: a drifted document is exactly when an operator needs the bring-up to converge.
+	repair := func() error { return recreateControlPlane(cfg, p) }
+	if native {
+		repair = func() error { return restartNative(cfg, p, get) }
+	}
+	desiredLine, err := verifyDesiredApplied(api, repair)
 	if err != nil {
 		return err
 	}
@@ -454,13 +475,19 @@ const gitHubAppKeySlot = "github-app-key"
 // applyGitHubAppEnv wires the GitHub App the approval pump publishes THROUGH (§0.2), and removes the
 // silence around it.
 //
-// THE SILENCE IT REMOVES, because it is the whole reason this function exists rather than three more lines
-// in compose: repositoryPublisherFromEnv (main.go) returns nil when any of the three variables is missing,
-// and a nil publisher makes pumpApprovedPublications a no-op. So an operator could grant the publish tools,
-// watch the agent propose a push, press Approve, see the message repaired to "Approved: push agent/… -> …"
-// — and nothing would ever happen. Not an error, not a log line the operator sees, not a retry: an approved
-// row sitting in the database forever. That is E21 T2's silent-skip in its most expensive form, because
-// this one has a human believing they authorized something.
+// THE SILENCE IT REMOVED, and what is left of it after the publisher was un-gated. This function was
+// written when main.repositoryPublisherFromEnv returned nil for a missing App variable and a nil publisher
+// made pumpApprovedPublications a no-op — so an operator could grant the publish tools, watch the agent
+// propose a push, press Approve, see the message repaired to "Approved: push agent/… -> …", and nothing
+// would ever happen: an approved row sitting in the database forever, with a human believing they
+// authorized something.
+//
+// The publisher is no longer gated on the App (main.repositoryPublisher), so that silence is gone: a
+// binding carrying its own connection_ref publishes with no App at all, and a binding carrying none is
+// REFUSED by the publication tool before a human is asked. THIS WARNING STILL FIRES AND STILL EARNS ITS
+// LINE, for the branch it was always really about: the repository `palai up` binds from PALAI_GIT_CLONE_URL
+// has NO connection_ref, so on a stack with no App it is exactly the binding that cannot publish. The
+// operator now learns it at bring-up instead of at the refusal.
 //
 // WHAT RIDES WHERE. The App id and the installation id are identifiers, so they ride the compose
 // environment like every other knob. The PRIVATE KEY does not: its bytes are copied into the 0600

@@ -25,7 +25,17 @@ async function send(page: import("@playwright/test").Page, text: string) {
 }
 
 test.describe("the chat renders iOS work", () => {
-  test.beforeEach(async ({ page }) => {
+  // THE SAME RESET THE SIBLING DESCRIBE ALREADY OWNS, AND IT BECAME LOAD-BEARING ON 2026-08-02.
+  //
+  // The fake's coding session now holds TWO runs, because that is what a chat session is and because a
+  // single-run journal could not reproduce the defect that dropped every turn after the first. Which
+  // run a create is answered with depends on how many creates that session has seen — so a test that
+  // does not own its starting turn count is measuring how many tests ran before it. This is the same
+  // class of coupling the auto-approve block found in its own state, one field over.
+  test.beforeEach(async ({ page, request }) => {
+    await request.post(`http://127.0.0.1:${UPSTREAM_PORT}/__reset-coding`, {
+      headers: { Authorization: "Bearer reset" },
+    });
     await page.goto("/chat");
     await send(page, "build the iOS app and run its tests");
     // The run's terminal part is the signal that the whole scripted stream has been consumed;
@@ -117,6 +127,11 @@ test.describe("arming the session", () => {
       headers: { Authorization: "Bearer reset" },
     });
     await page.goto("/chat");
+    // THE PANEL IS COLLAPSED NOW, and every assertion below lives inside a Radix CollapsibleContent
+    // which UNMOUNTS while closed. Without this open, `toBeDisabled` and `toHaveAttribute` would be
+    // asserting against elements that are not in the DOM at all — the exact vacuity this tree keeps
+    // finding in sweeps that scan routes with every dialog shut and report a cleaner number.
+    await page.getByTestId("auto-approve-summary").click();
   });
 
   // A session does not exist until the first turn opens one. A dead control that silently does
@@ -184,6 +199,9 @@ test.describe("arming the session", () => {
     await tools.click();
     await expect(tools).toHaveAttribute("aria-checked", "false");
     await expect(page.getByTestId("auto-approve-state")).toContainText("Nothing is armed");
+    // AND THE COLLAPSED LINE AGREES. It is the only part an operator sees by default, so a
+    // summary that drifted from the panel would be the whole control lying at a glance.
+    await expect(page.getByTestId("auto-approve-summary")).toContainText("nothing armed");
   });
 
   // NO KEY IN THE BROWSER, on the route this feature added. The credential is server-side; every
