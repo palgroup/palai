@@ -4,6 +4,7 @@ package execution
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -87,6 +88,16 @@ func TestPublicationRefusedBeforeAHumanIsAsked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("the push tool answered %v on a deployment with no credential for this binding: a human is "+
 			"now going to be asked to approve a write that cannot happen", out)
+	}
+	// IT MUST BE AN ANSWER, NOT A FAULT, and this leg is here because the first version of the check was
+	// a fault and the live stack said so: three attempt.recovering.v1 from one checkpoint and
+	// run.failed.v1, because an unclassified Exec error kills the attempt and the retry ladder spends
+	// itself reproducing a refusal that will never change. A guard that wedges the run is worse than the
+	// silent skip it replaced.
+	if !errors.Is(err, toolbroker.ErrToolAnswer) {
+		t.Fatalf("the refusal is a FAULT rather than an answer (%v): the attempt dies with the tool_call row "+
+			"still executing, the ledger classifies it uncertain, and the run is retried into the same "+
+			"refusal three times before it dead-letters", err)
 	}
 	for _, want := range []string{"PALAI_GITHUB_APP_ID", "connection_ref"} {
 		if !strings.Contains(err.Error(), want) {

@@ -61,12 +61,20 @@ func (r *publicationRegistry) RequestPublication(ctx context.Context, scope tool
 	// approval that authorizes nothing is worse than a refusal, because it is indistinguishable from one
 	// that worked. So a publication with no credential path never becomes a pending approval at all.
 	//
-	// IT IS AN ERROR, WHICH IS AN ANSWER. A tool error is delivered to the model as a RESULT, so the agent
-	// reports "this deployment cannot publish this binding" in the conversation instead of the run wedging
-	// or the operator being handed a button that does nothing.
+	// IT IS AN ANSWER AND NOT A FAULT, and that distinction is not decoration — it was MEASURED on the
+	// live native stack, 2026-08-02, with a first version of this check that returned a plain error. A
+	// ref-less binding's push then produced: three `attempt.recovering.v1` from one checkpoint and
+	// `run.failed.v1`. answer.go's own header describes exactly that shape and exists to prevent it — an
+	// unclassified error is a FAULT, the attempt dies with the tool_call row `executing`, and the retry
+	// ladder spends itself reproducing a refusal that will never change. A guard that wedges the run is
+	// worse than the silent skip it replaced.
+	//
+	// AnswerUnavailable is the right code: answer.go defines it as "the tool is not wired on this
+	// deployment — the model cannot fix it, but being told beats a run that never ends, and the
+	// tool_calls row records the refusal for the operator who can fix it." That is this case exactly.
 	if r.canPublish != nil {
 		if err := r.canPublish(target.ConnectionRef); err != nil {
-			return nil, fmt.Errorf("publication tool: %w", err)
+			return nil, toolbroker.Answer(toolbroker.AnswerUnavailable, fmt.Errorf("publication tool: %w", err))
 		}
 	}
 
