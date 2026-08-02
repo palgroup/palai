@@ -185,7 +185,28 @@ func Bootstrap(envFile string, native bool) error {
 	// the same discipline the live round trip below applies to the model provider. A bring-up that reported
 	// success on a stack running something other than the operator's document would be the "declared, and
 	// nothing happens" defect wearing this command's own report.
-	desiredLine, err := verifyDesiredApplied(api, func() error { return recreateControlPlane(cfg, p) })
+	// THE REPAIR MUST RESTART THE CONTROL PLANE THIS DEPLOYMENT ACTUALLY RUNS. recreateControlPlane
+	// recreates the COMPOSE SERVICE, and on a native bring-up that service is not the control plane —
+	// it is in a profile and deliberately not started, while the real one is a process on this machine.
+	//
+	// Measured 2026-08-02: with a drifted desired document, `palai up --native` brought the native
+	// control plane up cleanly (pid printed, doctor 14/15) and then failed at [4/6] with
+	//
+	//   Error response from daemon: Ports are not available: exposing port TCP 127.0.0.1:60351
+	//
+	// because the repair asked compose to start a container that wanted the port the native process had
+	// just taken. The bring-up it had already completed was reported as a failure, and on the run before
+	// it — where the container was still up from an earlier `local up` — the collision went the other
+	// way: the NATIVE process died on bind, the container kept serving, and the command printed PROVEN
+	// LIVE for a round trip against the very container it was replacing.
+	//
+	// A native deployment therefore repairs by restarting its own process. Refusing instead would be
+	// worse: a drifted document is exactly when an operator needs the bring-up to converge.
+	repair := func() error { return recreateControlPlane(cfg, p) }
+	if native {
+		repair = func() error { return restartNative(cfg, p, get) }
+	}
+	desiredLine, err := verifyDesiredApplied(api, repair)
 	if err != nil {
 		return err
 	}
