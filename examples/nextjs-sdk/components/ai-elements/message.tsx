@@ -321,7 +321,20 @@ export const MessageBranchPage = ({
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
-const streamdownPlugins = { cjk, code, math, mermaid };
+// TWO SHIKI COPIES ARE INSTALLED AND THESE PLUGINS SPAN BOTH. Measured 2026-08-02:
+//
+//     ls node_modules/.pnpm | grep -E '^shiki@'   ->  shiki@3.23.0   shiki@4.4.1
+//
+// `streamdown@2.5.0` resolves shiki 3.23.0 for its own `PluginConfig`, while `@streamdown/code@1.1.1`
+// and this app's direct dependency resolve 4.4.1. The two `BundledLanguage` unions are structurally
+// different (4.4.1 has "actionscript", 3.23.0 has only "actionscript-3"), so `code`'s `highlight`
+// signature is not assignable to the one `Streamdown` declares — a real, upstream version skew, not a
+// mistake in this file.
+//
+// It is cast at this ONE prop rather than papered over with `any` on the component, and it went
+// unnoticed until this branch fixed the tsconfig: `tsc --noEmit` could not run at all (TS5102), and
+// `next build` prints "Skipping validation of types". Both gates were green and neither was looking.
+const streamdownPlugins = { cjk, code, math, mermaid } as ComponentProps<typeof Streamdown>["plugins"];
 
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (

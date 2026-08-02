@@ -1,4 +1,5 @@
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai";
+import type { UIMessageStreamWriter } from "ai";
 
 import { getPalaiClient } from "@/lib/palai";
 import { rawBaseURL, rawHeaders } from "@/lib/raw";
@@ -104,7 +105,7 @@ export async function POST(request: Request): Promise<Response> {
           writer.write({ type: "text-end", id });
         }
         if (final.usage) {
-          writer.write({ type: "data-usage", data: final.usage as Record<string, unknown>, transient: true });
+          writer.write({ type: "data-usage", data: final.usage as unknown as Record<string, unknown>, transient: true });
         }
       }
     },
@@ -475,7 +476,11 @@ interface ChatRequest {
   bindingId?: string;
 }
 
-type StreamWriter = { write: (part: Record<string, unknown>) => void };
+// StreamWriter is the AI SDK's OWN writer, narrowed to the one method used. It was a hand-rolled
+// `{ write: (part: Record<string, unknown>) => void }`, which is wider than the real chunk union and
+// therefore accepted a part the protocol has no place for. Nothing caught that, because this
+// example had no working type check at all until tsconfig.json was fixed in this commit.
+type StreamWriter = Pick<UIMessageStreamWriter, "write">;
 
 function problem(status: number, code: string, detail: string): Response {
   return new Response(JSON.stringify({ type: `https://docs.palai.dev/problems/${code}`, title: code, status, code, detail }), {
