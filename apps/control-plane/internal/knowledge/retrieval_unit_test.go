@@ -36,11 +36,11 @@ func TestACLAdmits(t *testing.T) {
 		grants []string
 		want   bool
 	}{
-		{"", nil, true},                          // KB-wide always admitted
-		{"", []string{"x"}, true},                // KB-wide admitted regardless of grants
+		{"", nil, true},                              // KB-wide always admitted
+		{"", []string{"x"}, true},                    // KB-wide admitted regardless of grants
 		{"restricted", []string{"restricted"}, true}, // held grant admits
-		{"restricted", nil, false},               // no grant -> denied
-		{"restricted", []string{"other"}, false}, // wrong grant -> denied
+		{"restricted", nil, false},                   // no grant -> denied
+		{"restricted", []string{"other"}, false},     // wrong grant -> denied
 	}
 	for _, c := range cases {
 		if got := aclAdmits(c.acl, c.grants); got != c.want {
@@ -58,7 +58,7 @@ func TestResolveVectorHitsDropsLeakyRecords(t *testing.T) {
 		"kchk_ok": {ChunkID: "kchk_ok", Content: "authorized", DocumentRevisionID: "kdoc_1"},
 	}
 	recs := []VectorRecord{
-		{Organization: org, Project: project, KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_ok"},       // authorized, in-scope
+		{Organization: org, Project: project, KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_ok"},         // authorized, in-scope
 		{Organization: "org_other", Project: project, KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_ok"}, // foreign org -> dropped
 		{Organization: org, Project: "proj_other", KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_ok"},    // foreign project -> dropped
 		{Organization: org, Project: project, KnowledgeBaseID: "kb_other", IndexRevisionID: idxID, ChunkID: "kchk_ok"},   // foreign KB -> dropped

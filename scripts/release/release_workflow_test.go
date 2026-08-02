@@ -4,15 +4,15 @@
 // environment, no second maintainer, no OIDC workflow identity, and no `act`-class emulation is
 // claimed either. What IS proven here, mechanically:
 //
-//   * the workflow parses, and every property the release depends on is asserted from the parsed
+//   - the workflow parses, and every property the release depends on is asserted from the parsed
 //     document — SHA-pinned actions, a manual-only trigger, least privilege, a protected environment
 //     on the publishing job, and no `${{ }}` interpolated into any shell;
-//   * the workflow is THIN — every `run:` is a call into scripts/release/*.sh and nothing else, which
+//   - the workflow is THIN — every `run:` is a call into scripts/release/*.sh and nothing else, which
 //     is what makes the logic testable HERE instead of only on a runner;
-//   * DRIFT — the T1→T2→T3→T4 chain order the workflow invokes is BIT-EQUAL to the order the scripts
+//   - DRIFT — the T1→T2→T3→T4 chain order the workflow invokes is BIT-EQUAL to the order the scripts
 //     themselves declare, recomputed from their own headers (the scripts are the canonical source;
 //     the workflow is a consumer of it);
-//   * the chain in THAT order really runs green end to end, locally: the order is read OUT of the
+//   - the chain in THAT order really runs green end to end, locally: the order is read OUT of the
 //     workflow and then EXECUTED, so a reordered workflow does not merely fail a string comparison,
 //     it fails a run. (The order is also enforced by the scripts at runtime —
 //     TestSBOMRefusesToRunOverAnAlreadyAttestedDir and TestProvenanceRejectsUnlistedFile are the two

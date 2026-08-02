@@ -64,7 +64,7 @@ func TestChunkDocumentHardSplitsAnOversizedParagraph(t *testing.T) {
 // text params (SQLSTATE 22021), so a mid-rune split fails the ingest and makes Turkish/CJK/emoji prose
 // unindexable. Offsets stay byte-true (the citation invariant) and the pieces still tile the document.
 func TestChunkDocumentNeverSplitsAUTF8Rune(t *testing.T) {
-	doc := strings.Repeat("ğ", 40) // 80 bytes of 2-byte runes, no blank lines
+	doc := strings.Repeat("ğ", 40)   // 80 bytes of 2-byte runes, no blank lines
 	chunks := chunkDocument(doc, 15) // 15 lands mid-rune on every boundary (each rune is 2 bytes)
 	if len(chunks) < 2 {
 		t.Fatalf("oversized 2-byte-rune paragraph split into %d chunks, want >=2", len(chunks))

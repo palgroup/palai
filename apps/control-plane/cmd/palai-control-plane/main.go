@@ -705,12 +705,12 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		orch.SetEnvironmentSecrets(environmentValueSecret)
 		if root := os.Getenv("PALAI_WORKSPACE_ROOT"); root != "" {
 			orch.SetWorkspaceProvisioner(root, repositoryBrokerFromEnv())
-	// PER-SESSION ACCOUNTS (macOS), ACQUIRE HALF: the uid a session's tools run under, created when the
-	// session first provisions a workspace. It is the SAME INSTANCE the release half holds — they share the
-	// map of which session owns which slot, and two instances would give the releaser an empty one.
-	if sessionAccounts != nil {
-		orch.SetSessionAccounts(sessionAccounts)
-	}
+			// PER-SESSION ACCOUNTS (macOS), ACQUIRE HALF: the uid a session's tools run under, created when the
+			// session first provisions a workspace. It is the SAME INSTANCE the release half holds — they share the
+			// map of which session owns which slot, and two instances would give the releaser an empty one.
+			if sessionAccounts != nil {
+				orch.SetSessionAccounts(sessionAccounts)
+			}
 			// A binding that names a connection_ref clones under its own tenant's credential (E13 T9);
 			// the resolver is inert for the ref-less bindings that take the global broker above.
 			orch.SetConnectionSecrets(repositoryConnectionSecret)

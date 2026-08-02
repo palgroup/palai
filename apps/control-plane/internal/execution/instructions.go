@@ -7,13 +7,13 @@ import (
 // The instruction layers of spec §25.12, low → high. Context is assembled in this precedence, and
 // these constants are the subset of that list that has a WRITER in this tree today:
 //
-//	1. kernel safety and protocol instructions          — the ENGINE's own (context.py KERNEL_INSTRUCTION)
-//	2. deployment/organization/project policy-visible   — NO WRITER (see below)
-//	3. pinned agent revision instructions               — layerInstructionsRevision
-//	4. session config instructions                      — NO WRITER (see below)
-//	5. run-specific instructions                        — layerInstructionsRun
-//	6. selected durable conversation items              — run.start `messages`
-//	10. current user/trigger input                      — run.start `input`
+//  1. kernel safety and protocol instructions          — the ENGINE's own (context.py KERNEL_INSTRUCTION)
+//  2. deployment/organization/project policy-visible   — NO WRITER (see below)
+//  3. pinned agent revision instructions               — layerInstructionsRevision
+//  4. session config instructions                      — NO WRITER (see below)
+//  5. run-specific instructions                        — layerInstructionsRun
+//  6. selected durable conversation items              — run.start `messages`
+//  10. current user/trigger input                      — run.start `input`
 //
 // LAYERS 2 AND 4 HAVE NO WRITER, and naming them here is the honest form of that. Nothing in this
 // tree stores a project-level or session-level instruction string: `project_config` carries

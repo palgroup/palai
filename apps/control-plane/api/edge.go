@@ -49,15 +49,15 @@ type RouterOption func(*routerConfig)
 type routerConfig struct {
 	// sessionAccounts releases a session's uid when it closes. Nil mints and releases nothing.
 	sessionAccounts SessionAccountReleaser
-	edge        EdgeLimits
-	secrets     SecretRefAPI
-	usage       UsageAPI
-	modelRoutes ModelRouteAPI
-	knowledge   KnowledgeAPI
-	metrics     http.Handler
-	a2a         http.Handler   // the authed A2A 1.0 surface (E17 T2)
-	a2aCard     http.Handler   // the unauthenticated public Agent Card handler
-	slack       SlackEventsAPI // the Slack Events API admission bridge (E19 T1); nil ⇒ route unmounted
+	edge            EdgeLimits
+	secrets         SecretRefAPI
+	usage           UsageAPI
+	modelRoutes     ModelRouteAPI
+	knowledge       KnowledgeAPI
+	metrics         http.Handler
+	a2a             http.Handler   // the authed A2A 1.0 surface (E17 T2)
+	a2aCard         http.Handler   // the unauthenticated public Agent Card handler
+	slack           SlackEventsAPI // the Slack Events API admission bridge (E19 T1); nil ⇒ route unmounted
 	// slackInteractions is the Slack interactivity decision bridge (E19 T2); nil ⇒ route unmounted.
 	slackInteractions SlackInteractionsAPI
 	// slackConnections is the workspace registration admin surface (E19 T9); nil ⇒ routes unmounted.

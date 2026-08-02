@@ -30,9 +30,9 @@ type Gateway struct {
 	ttl   time.Duration
 
 	mu          sync.Mutex
-	enrollment  map[string]enrollGrant   // one-time enrollment token -> its tenant/capability grant
-	sessions    map[string]*workerSess   // workload token -> live worker session
-	artifacts   map[string][]byte        // artifact ref -> bytes (fixture object store)
+	enrollment  map[string]enrollGrant // one-time enrollment token -> its tenant/capability grant
+	sessions    map[string]*workerSess // workload token -> live worker session
+	artifacts   map[string][]byte      // artifact ref -> bytes (fixture object store)
 	artifactSeq int64
 }
 
