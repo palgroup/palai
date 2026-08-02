@@ -98,9 +98,10 @@ func ensureSecretSlots(p paths) error {
 	}
 	// github-app-key joins provider-one as a slot that exists EMPTY on every stack: compose names it as a
 	// file secret unconditionally, and a missing mount source fails `compose up` outright. Empty is the
-	// correct unconfigured state here (unlike the master key) because main.repositoryPublisherFromEnv never
-	// reads the path until PALAI_GITHUB_APP_ID is set — so an empty slot means "no publisher", not "this
-	// stack cannot boot". applyGitHubAppEnv fills it when the operator configured an App.
+	// correct unconfigured state here (unlike the master key) because main.gitHubAppPublisherFromEnv never
+	// reads the path until PALAI_GITHUB_APP_ID and the installation id are BOTH set — so an empty slot means
+	// "no deployment-global App", not "no publisher" and not "this stack cannot boot": a binding carrying its
+	// own connection_ref publishes without one. applyGitHubAppEnv fills it when the operator configured an App.
 	for _, path := range []string{p.secretPath("provider-one"), p.secretPath(gitHubAppKeySlot)} {
 		switch _, err := os.Stat(path); {
 		case err == nil:

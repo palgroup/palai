@@ -80,12 +80,17 @@ func (o *Orchestrator) autoDecideToolApproval(ctx context.Context, st *attemptSt
 // the sitting and the chat window. So the two never share a flag: `auto.Publications` is a separate
 // column, defaulted off, and arming the tool half leaves it off.
 //
-// AND ONE MEASURED HAZARD BELONGS AT THIS SEAM RATHER THAN IN A DOCUMENT. On a deployment whose GitHub
-// App is not configured, repositoryPublisherFromEnv returns nil and the approval pump is a silent no-op:
-// the row reaches `approved`, approval.approved.v1 is journalled, the run wakes, and nothing is pushed.
-// With a human in the loop somebody is at least waiting for the receipt. Armed, there is nobody left to
-// notice — which is why the surface that arms this half has to say so, and why this returns the applied
-// flag rather than swallowing it.
+// AND ONE MEASURED HAZARD BELONGS AT THIS SEAM RATHER THAN IN A DOCUMENT. It USED to be that on a
+// deployment whose GitHub App was not configured, repositoryPublisherFromEnv returned nil and the approval
+// pump was a silent no-op: the row reached `approved`, approval.approved.v1 was journalled, the run woke,
+// and nothing was pushed. That specific silence is closed — the publisher is built independently of the
+// App, and a publication with no credential path is refused at the tool rather than approved and dropped.
+//
+// WHAT DOES NOT CLOSE WITH IT is the reason this half defaults off. Every OTHER way a publish can fail
+// (a diverged remote, a revoked tenant token, a 405 from branch protection) still lands as a warning on
+// the publication row, and with a human in the loop somebody is at least waiting for the receipt. Armed,
+// there is nobody left to notice — which is why the surface that arms this half has to say so, and why
+// this returns the applied flag rather than swallowing it.
 func (o *Orchestrator) autoDecidePublication(ctx context.Context, st *attemptState, pub coordinator.Publication) (bool, error) {
 	auto, err := o.spine.SessionAutoApprove(ctx, st.tenant, st.sessionID)
 	if err != nil {

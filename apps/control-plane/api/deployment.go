@@ -145,6 +145,16 @@ const (
 	// warnWorkspaceRootPlane: this deployment provisions workspaces, and the SAME variable name has a second
 	// reader on a plane this process cannot see. Advisory, and it clears the moment workspaces are off.
 	warnWorkspaceRootPlane = "workspace_root_runner_plane"
+	// warnPublishAppAbsent: no GitHub App, so the only bindings that can publish are the ones carrying their
+	// own connection_ref. ADVISORY, and the severity is the honest one rather than the loud one: a
+	// single-tenant stack whose bindings each name a panel-provisioned credential publishes perfectly well
+	// with no App, and that configuration is the reason the connection_ref path exists. What an operator
+	// cannot be left to discover is that a binding WITHOUT one has no credential at all here.
+	warnPublishAppAbsent = "publication_no_github_app"
+	// warnPublishAppPartial: one or two of the three App variables. BLOCKING, and it is the sharper of the
+	// pair, because the operator INTENDED to configure an App and this deployment has none — they will
+	// bind repositories expecting the App to carry them.
+	warnPublishAppPartial = "publication_github_app_partial"
 
 	severityBlocking = "blocking"
 	severityAdvisory = "advisory"
@@ -976,6 +986,45 @@ func deploymentWarnings() []deploymentWarning {
 			Settings: []string{"PALAI_WORKSPACE_ROOT"},
 		})
 	}
+	// WHAT AN APPROVED PUBLICATION CAN AND CANNOT DO HERE, said on the screen rather than in a boot log
+	// nobody tails.
+	//
+	// THE COST OF THE SILENCE THIS REPLACES is the highest in this file, because a human is inside it: an
+	// operator who presses Approve and is told the run woke has been told the write happened. Before this,
+	// a deployment with none of the three variables set built no publisher at all and said so NOWHERE —
+	// not at boot (the log line fired only for a HALF-configured App), not on any screen — and that is the
+	// configuration a single-tenant stack with a connection_ref binding actually has. Measured on the live
+	// native stack 2026-08-02: App id and installation id unset, publisher nil, no warning anywhere.
+	//
+	// Both warnings derive from GitHubAppConfigured(), which is the SAME function the publisher's App half
+	// calls — so this cannot report an App the publisher does not hold, or miss one it does.
+	switch {
+	case gitHubAppPartiallyConfigured():
+		out = append(out, deploymentWarning{
+			Code: warnPublishAppPartial, Severity: severityBlocking,
+			Headline: "This deployment's GitHub App is half-configured, so it has none.",
+			Detail: "The three App variables are required TOGETHER and " + strings.Join(unsetGitHubAppSettings(), ", ") +
+				" is unset, so no deployment-global publish credential is built. A repository binding that names its own " +
+				"connection_ref still publishes under that; a binding without one has no credential here at all, and the " +
+				"publication tool refuses it rather than parking a human on a push that cannot happen.",
+			Remedy: "Set all three (`palai up` stages the private key into a file secret and passes a PATH), or clear the " +
+				"ones that are set and give each repository binding its own connection_ref instead.",
+			Settings: gitHubAppSettings,
+		})
+	case !GitHubAppConfigured():
+		out = append(out, deploymentWarning{
+			Code: warnPublishAppAbsent, Severity: severityAdvisory,
+			Headline: "Only a repository binding carrying its own credential can publish from this deployment.",
+			Detail: "No GitHub App is configured, so there is no deployment-global publish credential. A binding whose " +
+				"connection_ref names a server-side secret pushes and opens pull requests under THAT — which is the " +
+				"single-tenant configuration this path exists for, and it needs no App. A binding with no connection_ref " +
+				"has no credential to publish under: its push is refused at the tool, before a human is asked to approve " +
+				"it, rather than being approved and never attempted.",
+			Remedy: "Either give each repository binding a connection_ref (provision the credential with POST /v1/secret-refs, " +
+				"then set the binding's connection_ref), or configure a GitHub App with all three variables.",
+			Settings: gitHubAppSettings,
+		})
+	}
 	if !liveModelProviderConfigured() {
 		out = append(out, deploymentWarning{
 			Code: warnModelFake, Severity: severityAdvisory,
@@ -995,6 +1044,54 @@ func deploymentWarnings() []deploymentWarning {
 // equality rather than a non-emptiness test: any value other than `provider-one` returns the fake route.
 func liveModelProviderConfigured() bool {
 	return os.Getenv("PALAI_MODEL_PROVIDER") == "provider-one"
+}
+
+// GitHubAppConfigured reports whether the three App variables are set TOGETHER, which is what decides
+// whether this deployment has a deployment-global publish credential at all.
+//
+// IT IS EXPORTED AND main.gitHubAppPublisherFromEnv CALLS IT, which is the difference between this and
+// liveModelProviderConfigured above. That one MIRRORS a branch in main.go and says so; a mirror is two
+// copies of a rule that agree today. Here the surface and the publisher are the SAME call, so the warning
+// below cannot say "no App" while the publisher holds one — the state this warning exists to report is
+// exactly the state that decides the behaviour it reports.
+//
+// It does NOT read the key file. A path that names nothing still counts as configured here, and the
+// publisher logs its own line when the read fails — this answers "did the operator configure an App",
+// which is the question the warning is about.
+func GitHubAppConfigured() bool {
+	return os.Getenv("PALAI_GITHUB_APP_ID") != "" &&
+		os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID") != "" &&
+		os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE") != ""
+}
+
+// gitHubAppPartiallyConfigured is the state an operator reaches by editing .env.local and being
+// interrupted: one or two of three. It must not read as configured and must not read as unconfigured —
+// it is the one case where the operator believes they finished.
+func gitHubAppPartiallyConfigured() bool {
+	set := 0
+	for _, name := range gitHubAppSettings {
+		if os.Getenv(name) != "" {
+			set++
+		}
+	}
+	return set > 0 && set < len(gitHubAppSettings)
+}
+
+// gitHubAppSettings are the three names, in one place, because both warnings below quote them and a
+// warning that named two of three would be the defect it reports.
+var gitHubAppSettings = []string{
+	"PALAI_GITHUB_APP_ID", "PALAI_GITHUB_APP_INSTALLATION_ID", "PALAI_GITHUB_APP_PRIVATE_KEY_FILE",
+}
+
+// unsetGitHubAppSettings names which of the three are missing, so the operator is not left diffing.
+func unsetGitHubAppSettings() []string {
+	out := []string{}
+	for _, name := range gitHubAppSettings {
+		if os.Getenv(name) == "" {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func quotedOrUnset(v string) string {
