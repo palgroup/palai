@@ -202,10 +202,7 @@ func Bootstrap(envFile string, native bool) error {
 	//
 	// A native deployment therefore repairs by restarting its own process. Refusing instead would be
 	// worse: a drifted document is exactly when an operator needs the bring-up to converge.
-	repair := func() error { return recreateControlPlane(cfg, p) }
-	if native {
-		repair = func() error { return restartNative(cfg, p, get) }
-	}
+	repair := func() error { return restartControlPlane(cfg, p, get, native) }
 	desiredLine, err := verifyDesiredApplied(api, repair)
 	if err != nil {
 		return err
@@ -223,7 +220,7 @@ func Bootstrap(envFile string, native bool) error {
 	}
 
 	// [6/6] Slack, if and only if the workspace values are present. Never fatal.
-	slackFact, slackLine, slackWarns := wireSlack(api, cfg, p, get)
+	slackFact, slackLine, slackWarns := wireSlack(api, cfg, p, get, native)
 	fmt.Fprintf(os.Stderr, "[6/6] slack     %s\n", slackLine)
 
 	caps, err := api.capabilities()
@@ -685,14 +682,14 @@ func slackReport(o slackOutcome) (fact string, line string) {
 // agent can touch CODE at all (the repository binding, E22 T3). Folding one into the other would let
 // a connected socket read as a working integration while every Approve click is silently refused,
 // which is the same over-claiming in a new place.
-func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fact string, line string, warns []string) {
+func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string, native bool) (fact string, line string, warns []string) {
 	body, skip := slackRegistration(get)
 	if skip != "" {
 		o := slackOutcome{skip: skip}
 		if n, err := api.slackConnectionCount(); err == nil && n > 0 {
 			// A workspace registered by an earlier run may well be live; look before saying so.
 			o.existing = n
-			o.connected, o.detail = observeSlackSocket(cfg, p, 0)
+			o.connected, o.detail = observeSlackSocket(cfg, p, native, 0)
 		}
 		// No body was sent, so nothing here knows the STORED connection's approver list — and
 		// guessing at it is exactly what slackApproverWarning exists to replace. The skip itself IS
@@ -770,14 +767,21 @@ func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fa
 	// therefore cannot be seen by the control-plane that was already running, so look first and
 	// recreate only if the socket is not already up. --force-recreate rather than restart, so the
 	// log read afterwards carries this boot alone.
-	if o.connected, o.detail = observeSlackSocket(cfg, p, 0); !o.connected {
+	// BOTH HALVES BELOW ASK THE DEPLOYMENT THIS BRING-UP ACTUALLY RUNS, and neither did before. Measured
+	// 2026-08-02 on `palai up --native`: the observe read the COMPOSE container's logs, which on a native
+	// bring-up hold the previous posture's boot or nothing at all — so a socket that was connected (and
+	// said so in .palai/control-plane.log two lines above) read as disconnected. That sent the step into
+	// the repair, and the repair recreated the compose service, which is exactly the container this
+	// deployment deliberately does not run: `exit status 1`, and a Slack step that reported the workspace
+	// dormant on a stack where Slack was connected the whole time.
+	if o.connected, o.detail = observeSlackSocket(cfg, p, native, 0); !o.connected {
 		fmt.Fprintln(os.Stderr, "        the control-plane is restarting to pick up the workspace (Socket Mode resolves it at boot)")
-		if err := recreateControlPlane(cfg, p); err != nil {
+		if err := restartControlPlane(cfg, p, get, native); err != nil {
 			o.detail = fmt.Sprintf("the control-plane could not be recreated to pick up the registration: %v", err)
 			fact, line = slackReport(o)
 			return fact, line, warns
 		}
-		o.connected, o.detail = observeSlackSocket(cfg, p, 45*time.Second)
+		o.connected, o.detail = observeSlackSocket(cfg, p, native, 45*time.Second)
 	}
 	// warns ride alongside whatever the socket turned out to be. A connected socket does not retire
 	// them — that is the case they matter MOST in, because the events now arriving are the ones whose
@@ -820,11 +824,36 @@ func recreateControlPlane(cfg Config, p paths) error {
 // connection row. No endpoint exposes that, and inventing one to report it would be a bigger change
 // than the wiring it reports on. The lines it reads carry no credential by construction
 // (TestSlackSocketNeverLogsTheTokenOrTheTicket is the guard on that).
-func observeSlackSocket(cfg Config, p paths, within time.Duration) (bool, string) {
+// controlPlaneLog reads the log of whichever control plane this deployment runs — the compose service's,
+// or the native process's own file. One reader, because a caller that picks the wrong one does not fail:
+// it reads an EMPTY log and concludes the thing it was looking for is absent.
+func controlPlaneLog(cfg Config, p paths, native bool) string {
+	if native {
+		b, err := os.ReadFile(p.nativeLog)
+		if err != nil {
+			return ""
+		}
+		return string(b)
+	}
+	out, _ := runCaptured(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project,
+		"-f", p.compose, "logs", "--no-color", "control-plane")
+	return out
+}
+
+// restartControlPlane restarts whichever control plane this deployment runs. Its compose and native halves
+// are NOT interchangeable and this is the second call site that learned it the expensive way; see the
+// comment above the desired-config repair in Bootstrap.
+func restartControlPlane(cfg Config, p paths, get func(string) string, native bool) error {
+	if native {
+		return restartNative(cfg, p, get)
+	}
+	return recreateControlPlane(cfg, p)
+}
+
+func observeSlackSocket(cfg Config, p paths, native bool, within time.Duration) (bool, string) {
 	deadline := time.Now().Add(within)
 	for {
-		out, _ := runCaptured(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project,
-			"-f", p.compose, "logs", "--no-color", "control-plane")
+		out := controlPlaneLog(cfg, p, native)
 		connected, detail := readSlackSocketLog(out)
 		if connected || !time.Now().Before(deadline) {
 			return connected, detail
