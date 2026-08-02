@@ -3,6 +3,7 @@
 import { AlertTriangleIcon, GitPullRequestIcon } from "lucide-react";
 import { useState } from "react";
 
+import { CodeBlock } from "@/components/ai-elements/code-block";
 import {
   Confirmation,
   ConfirmationAccepted,
@@ -108,10 +109,39 @@ export function ToolDetailPart({ data }: { data: Data }) {
   }
 
   const command = shellCommandOf(data.arguments);
-  // A tool call with no command line is not shell work — a knowledge query, a child run, an MCP
-  // write. Drawing it through the iOS renderer would put an Xcode hammer over a Jira ticket.
+  // A tool call with no command line is not shell work — a file read, a knowledge query, a child run,
+  // an MCP write. Drawing it through the iOS renderer would put an Xcode hammer over a Jira ticket.
+  //
+  // BUT IT USED TO RETURN null, AND THAT WAS THE OWNER'S COMPLAINT IN MINIATURE. Measured on a live
+  // build turn 2026-08-02, one of the six calls was
+  //     palai.workspace.file  {"op":"read","path":"repo/Package.swift"}
+  // which has no argv, so the screen drew the card's header and NOTHING under it — no arguments, no
+  // result. "I can't see the tool calls" is the correct reading of a card with nothing in it.
+  //
+  // So a non-shell call renders what it was given and what came back, plainly. It is not dressed as a
+  // build, which is the distinction the branch above exists to make.
   if (command === "") {
-    return null;
+    return (
+      <div className="mb-2 space-y-2" data-testid="chat-tool-detail" data-kind="other">
+        {data.arguments != null ? (
+          <div className="rounded-md border border-border/60">
+            <CodeBlock code={JSON.stringify(data.arguments, null, 2)} language="json" />
+          </div>
+        ) : null}
+        {data.hasResult === true ? (
+          <div className="rounded-md border border-border/60" data-testid="chat-tool-result">
+            <CodeBlock code={renderResult(data.result)} language="json" />
+          </div>
+        ) : (
+          // "Nothing is known yet" and "the tool returned nothing" are different sentences, and the
+          // ledger distinguishes them by whether `result` is present at all.
+          <p className="text-[12px] text-muted-foreground">
+            This call has no stored result — it is parked, still running, or its output is deliberately
+            not retained.
+          </p>
+        )}
+      </div>
+    );
   }
 
   const report = readIOSOutput(command, outputTextOf(data.result), exitCodeOf(data.result));
@@ -256,6 +286,15 @@ export function ApprovalPart({ data }: { data: Data }) {
       </ConfirmationActions>
     </Confirmation>
   );
+}
+
+// A tool result is model-authored and may be a string, an object, or absent. A string is shown as
+// itself — JSON.stringify would wrap a shell transcript in quotes and escape every newline, which is
+// how readable output becomes an unreadable single line.
+function renderResult(result: unknown): string {
+  if (typeof result === "string") return result;
+  if (result === null || result === undefined) return "null";
+  return JSON.stringify(result, null, 2);
 }
 
 function Row({ label, value, testid, mono }: { label: string; value: string; testid: string; mono?: boolean }) {

@@ -18,6 +18,16 @@ import { API_KEY, UPSTREAM_PORT } from "./constants";
 
 const CHAT = "/chat";
 
+// EVERY TEST OWNS ITS STARTING TURN COUNT. The fake's coding session holds two runs — a chat session
+// is many runs, and a one-run journal cannot reproduce the defect that dropped every turn after the
+// first — so which run a create is answered with depends on how many creates that session has seen.
+// Without this, test N would be measuring how many of its neighbours sent a message.
+test.beforeEach(async ({ request }) => {
+  await request.post(`http://127.0.0.1:${UPSTREAM_PORT}/__reset-coding`, {
+    headers: { Authorization: "Bearer reset" },
+  });
+});
+
 async function pickFirstRepo(page: import("@playwright/test").Page) {
   await page.getByTestId("repo-option").first().waitFor();
   await page.getByTestId("repo-option").first().click();
@@ -272,6 +282,147 @@ test("the file tree states that it can only ever show what the run changed", asy
   await page.goto(CHAT);
   // Before any run there is nothing, and the reason is on screen rather than implied by emptiness.
   await expect(page.getByTestId("tree-empty")).toContainText("no route that enumerates a workspace");
+});
+
+// =============================================================================================
+// THE THREE DEFECTS MEASURED ON THE LIVE STACK ON 2026-08-02, EACH WITH THE TEST THAT WOULD HAVE
+// CAUGHT IT. All three were reported by the owner as one sentence: "çok fazla bug var".
+// =============================================================================================
+
+// DEFECT ONE: THE INTERNAL PROMPT WAS PUT IN THE OPERATOR'S MOUTH.
+//
+// Measured on screen: the operator typed "selam" — five characters — and their own message bubble
+// rendered 470, a paragraph about `./repo`, `git -C repo` and `user.email=agent@palai.local`. It was an
+// instruction to the model, shown as though they had written it.
+//
+// BOTH HALVES ARE ASSERTED AND THE SECOND IS THE ONE THAT MATTERS. "The bubble is clean" is satisfied
+// just as well by deleting the hint entirely, which would break every coding turn — so this also reads
+// what the create actually carried.
+test("the operator's bubble holds ONLY what the operator typed — and the hint still reaches the model", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "selam");
+
+  const bubble = page.getByTestId("chat-message-user").first();
+  await expect(bubble).toBeVisible();
+  await expect(bubble).toHaveText("selam");
+
+  // Not one word of the internal instruction is on the page as something the operator said.
+  await expect(bubble).not.toContainText("git -C repo");
+  await expect(bubble).not.toContainText("agent@palai.local");
+
+  // AND IT WAS SENT. The create carried it on the `instructions` field — §25.12 layer 5, which the
+  // control plane inserts as a system message (execution/instructions.go:94) — not on `input`.
+  const seen = await page.request.get(`http://127.0.0.1:${UPSTREAM_PORT}/__introspect-coding`, {
+    headers: { Authorization: `Bearer ${API_KEY}` },
+  });
+  const body = (await seen.json()) as { codingInstructions: string[]; codingInputs: string[] };
+  expect(body.codingInputs[0]).toBe("selam");
+  expect(body.codingInstructions[0]).toContain("git -C repo");
+  expect(body.codingInstructions[0]).toContain("--package-path repo");
+});
+
+// DEFECT TWO: THE HINT ONLY EVER RODE TURN ONE.
+//
+// The old code gated it on `messages.length === 0`, so by turn three the model no longer knew where the
+// clone was. Measured cost on one live run: eight tool calls to do one build, six of them `swift build`
+// against a directory with no Package.swift.
+//
+// `instructions` is a RUN-SPECIFIC layer — it is per response, not per session (packages/coordinator/
+// store.go:650) — so "sent once" and "sent every turn" are genuinely different wire traffic, and this
+// reads the wire.
+test("the repository instruction rides EVERY turn, not just the first", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+
+  await send(page, "selam");
+  await expect(page.getByTestId("chat-run").first()).toContainText("completed", { timeout: 30_000 });
+
+  await send(page, "build al projeyi");
+  await expect(page.getByTestId("chat-run").nth(1)).toContainText("completed", { timeout: 30_000 });
+
+  const seen = await page.request.get(`http://127.0.0.1:${UPSTREAM_PORT}/__introspect-coding`, {
+    headers: { Authorization: `Bearer ${API_KEY}` },
+  });
+  const body = (await seen.json()) as { codingInstructions: string[]; codingInputs: string[] };
+  expect(body.codingInputs).toEqual(["selam", "build al projeyi"]);
+  expect(body.codingInstructions).toHaveLength(2);
+  // The SECOND one is the assertion. The old build would have had "" here.
+  expect(body.codingInstructions[1]).toContain("git -C repo");
+});
+
+// DEFECT THREE, AND IT IS THE ONE THAT MADE THE DEMO LOOK BROKEN: EVERY TURN AFTER THE FIRST RENDERED
+// NOTHING AT ALL.
+//
+// Measured on the live stack, session ses_0438bd21b5b6562890fabbec865c10ea. Turn two ("build al
+// projeyi") showed "run queued", "run completed" and nothing else. The run had made SIX tool calls and
+// written a full answer — both readable afterwards on GET /v1/responses/resp_47c7eb59…{,/tool-calls}.
+//
+// Cause: one session, many runs. The adapter opened the journal at cursor 0; the server replayed run
+// ONE, hit its `run.completed.v1`, and closed the connection by design (api/events.go:149, whose own
+// comment says "an LP session carries a single run"). The pump read someone else's terminal as its own.
+//
+// THIS TEST IS THE REASON THE FAKE GREW A SECOND RUN AND AN `after_sequence` CURSOR. Against the old
+// fake — which replayed from the start whatever cursor it was given, and never held a second run —
+// this assertion could not have failed, and so could not have passed for the right reason either.
+test("a SECOND turn renders its own tool calls and its own answer", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+
+  await send(page, "add a contributing guide");
+  await expect(page.getByTestId("chat-run").first()).toContainText("completed", { timeout: 30_000 });
+  const firstTurnTools = await page.getByTestId("chat-tool").count();
+  expect(firstTurnTools).toBeGreaterThan(0);
+
+  await send(page, "build al projeyi");
+  await expect(page.getByTestId("chat-run").nth(1)).toContainText("completed", { timeout: 30_000 });
+
+  // THE SECOND TURN'S OWN CALL IS ON SCREEN. Run two makes exactly one, and it is a different command
+  // from anything run one ran, so this cannot be satisfied by run one's cards still being visible.
+  const secondMessage = page.getByTestId("chat-message-ai").nth(1);
+  await expect(secondMessage.getByTestId("chat-tool")).toHaveCount(1);
+  await expect(secondMessage.getByTestId("chat-tool-header")).toContainText("palai.workspace.shell");
+
+  // AND ITS OUTPUT WAS READ. The ledger join is what carries the command line and the exit code; a
+  // second turn whose join never fired would show the card and none of this.
+  await expect(secondMessage.getByTestId("chat-tool-detail")).toBeVisible();
+  await expect(secondMessage).toContainText("swift build --package-path repo");
+
+  // AND ITS ANSWER. This is what the operator actually asked for and what the old build dropped.
+  await expect(secondMessage.getByTestId("chat-ai-text")).toContainText("Build complete");
+});
+
+// THE NON-VACUITY HALF OF THE JOIN. A card whose ledger read fails must SAY the output could not be
+// read rather than draw an empty successful build — and the sentence has to name how hard it tried, so
+// a wrong retry bound is visible on the surface instead of hidden behind a longer wait.
+test("a tool call whose ledger row never lands says so, and says how many attempts it made", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  // The fake answers this response's tool-calls read with a row list that does not contain the call id
+  // the frames carried, which is exactly what an uncommitted ledger row looks like from here.
+  await send(page, "unjoinable tool please");
+
+  const unjoined = page.getByTestId("chat-tool-detail-unjoined").first();
+  await expect(unjoined).toBeVisible({ timeout: 30_000 });
+  await expect(unjoined).toContainText("could not be read");
+  await expect(unjoined).toContainText("10 attempts");
+});
+
+// THE STOP CONTROL. palcore has one and so does this; a turn an operator cannot interrupt is a turn
+// they have to wait out. Aborting the browser's request must NOT cancel the run — disconnect is not
+// cancellation, which is the property the /page proof already makes about its own transport.
+test("a turn in flight can be stopped from the chat", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "add a contributing guide");
+
+  const stop = page.getByTestId("chat-stop");
+  await expect(stop).toBeVisible({ timeout: 30_000 });
+  await stop.click();
+
+  // The send button comes back, which is the operator-visible statement that the turn is over.
+  await expect(page.getByTestId("chat-send")).toBeVisible();
+  await expect(page.getByTestId("chat-message-ai").first()).toContainText("[Cancelled]");
 });
 
 test("no Palai credential reaches the browser on any /chat surface", async ({ page }) => {
