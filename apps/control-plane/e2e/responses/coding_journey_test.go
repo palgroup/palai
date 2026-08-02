@@ -88,7 +88,7 @@ func TestCodingJourneyDeterministic(t *testing.T) {
 	// --- Step 2: prepare an isolated workspace at the exact commit; the receipt is model-independent. ---
 	alloc := newAllocationRoot(t)
 	workBranch := "agent/" + sessionID + "/" + runID
-	prepared, err := execution.PrepareRepository(ctx, h.spine, repositories.NewLocalBroker(), h.tenant, execution.PrepareRepositoryInput{
+	prepared, err := execution.PrepareRepository(ctx, h.spine, repositories.NewAnonymousBroker(), h.tenant, execution.PrepareRepositoryInput{
 		BindingID:    bindingID,
 		RunID:        runID,
 		RequestedRef: remote.head, // an exact commit sha, not a branch
@@ -201,7 +201,7 @@ func TestCodingJourneyDeterministic(t *testing.T) {
 		t.Fatalf("approve publications: %v", err)
 	}
 
-	publisher := &execution.RepositoryPublisher{Broker: repositories.NewLocalBrokerWithToken(detPushSecret), PRClient: &countingPRClient{}}
+	publisher := &execution.RepositoryPublisher{Broker: repositories.NewFixtureBrokerWithToken(detPushSecret), PRClient: &countingPRClient{}}
 	// pump drains the run's approved-but-unpublished publications through the REAL publisher + store, the
 	// same loop the orchestrator's boundary pump runs. A re-drive after everything is published drains an
 	// empty set — that is the idempotency proof.

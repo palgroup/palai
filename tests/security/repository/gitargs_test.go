@@ -38,7 +38,7 @@ func TestPrepareRefusesFlagShapedGitPositionals(t *testing.T) {
 		req := mut(base)
 		req.TargetDir = filepath.Join(t.TempDir(), "repo")
 		req.SecretsDir = t.TempDir()
-		if _, err := repositories.Prepare(ctx, repositories.NewLocalBroker(), req); err == nil {
+		if _, err := repositories.Prepare(ctx, repositories.NewAnonymousBroker(), req); err == nil {
 			t.Fatalf("%s: Prepare returned nil error, want refused before git", name)
 		}
 	}
@@ -56,7 +56,7 @@ func TestPrepareFetchCarriesEndOfOptionsSeparator(t *testing.T) {
 	remote := newLocalRemote(t)
 	trace := installGitTrace(t)
 
-	if _, err := repositories.Prepare(ctx, repositories.NewLocalBroker(), repositories.Request{
+	if _, err := repositories.Prepare(ctx, repositories.NewAnonymousBroker(), repositories.Request{
 		CloneURL: remote.url, RequestedRef: remote.head, DefaultBranch: "main",
 		TargetDir: filepath.Join(t.TempDir(), "repo"), SecretsDir: t.TempDir(), WorkBranch: "agent/s/r",
 	}); err != nil {

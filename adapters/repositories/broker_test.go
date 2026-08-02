@@ -16,7 +16,7 @@ import (
 // TestReadCredentialRevokedAfterPreparation).
 func TestBrokerMintMaterializeRevoke(t *testing.T) {
 	const token = "palai-REPMARK-broker-unit-secret-zz99"
-	b := NewLocalBrokerWithToken(token)
+	b := NewFixtureBrokerWithToken(token)
 	dir := t.TempDir()
 
 	cred, err := b.Mint(context.Background(), ScopeRead, Audience{Organization: "org_x", Run: "run_y", ToolCall: "tcall_z"})
@@ -61,7 +61,7 @@ func TestBrokerMintMaterializeRevoke(t *testing.T) {
 // TestBrokerExpiredCredentialFailsClosed proves the minutes-scale expiry backstop (spec §28.11): a
 // credential past its TTL cannot be materialized even if its handle is known.
 func TestBrokerExpiredCredentialFailsClosed(t *testing.T) {
-	b := NewLocalBrokerWithToken("palai-REPMARK-expired-yy88")
+	b := NewFixtureBrokerWithToken("palai-REPMARK-expired-yy88")
 	past := time.Now().Add(-2 * tokenTTL)
 	b.now = func() time.Time { return past }
 	cred, err := b.Mint(context.Background(), ScopeRead, Audience{Run: "run_y"})

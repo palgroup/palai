@@ -316,7 +316,7 @@ func TestLiveSlackBoundRepositoryLandsWhereTheWorkspaceToolsLook(t *testing.T) {
 	// The SAME target directory provisionRootWorkspace computes: filepath.Join(dir, workspace.RepoDir).
 	// Written as that expression rather than "repo" so a change to the constant moves this leg with it.
 	repoDir := filepath.Join(allocDir, workspace.RepoDir)
-	res, err := repositories.Prepare(context.Background(), repositories.NewLocalBroker(), repositories.Request{
+	res, err := repositories.Prepare(context.Background(), repositories.NewAnonymousBroker(), repositories.Request{
 		CloneURL:      cloneURL,
 		DefaultBranch: base,
 		TargetDir:     repoDir,

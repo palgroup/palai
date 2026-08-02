@@ -887,12 +887,12 @@ func repositoryBrokerFromEnv() repositories.Broker {
 	installID := os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID")
 	keyFile := os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE")
 	if appID == "" || installID == "" || keyFile == "" {
-		return repositories.NewLocalBroker()
+		return repositories.NewAnonymousBroker()
 	}
 	keyPEM, err := os.ReadFile(keyFile)
 	if err != nil {
 		log.Printf("repository broker: read app key file: %v (using local broker)", err)
-		return repositories.NewLocalBroker()
+		return repositories.NewAnonymousBroker()
 	}
 	cfg := repositories.GitHubAppConfig{AppID: appID, InstallationID: installID, PrivateKeyPEM: keyPEM}
 	if slug := os.Getenv("PALAI_GITHUB_REPO"); strings.IndexByte(slug, '/') > 0 {
@@ -901,7 +901,7 @@ func repositoryBrokerFromEnv() repositories.Broker {
 	broker, err := repositories.NewGitHubAppBroker(cfg)
 	if err != nil {
 		log.Printf("repository broker: app broker: %v (using local broker)", err)
-		return repositories.NewLocalBroker()
+		return repositories.NewAnonymousBroker()
 	}
 	return broker
 }

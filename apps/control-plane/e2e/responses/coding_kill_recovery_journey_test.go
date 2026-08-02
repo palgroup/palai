@@ -87,7 +87,7 @@ func TestCodingJourneyWithKillRecoveryDeterministic(t *testing.T) {
 
 	alloc := newAllocationRoot(t)
 	workBranch := "agent/" + sessionID + "/" + runID
-	prepared, err := execution.PrepareRepository(ctx, h.spine, repositories.NewLocalBroker(), h.tenant, execution.PrepareRepositoryInput{
+	prepared, err := execution.PrepareRepository(ctx, h.spine, repositories.NewAnonymousBroker(), h.tenant, execution.PrepareRepositoryInput{
 		BindingID: bindingID, RunID: runID, RequestedRef: remote.head, WorkBranch: workBranch,
 		TargetDir: filepath.Join(alloc, "repo"), SecretsDir: filepath.Join(alloc, "secrets"),
 		AttemptFence: 1, ToolCall: "prepare",
@@ -176,7 +176,7 @@ func TestCodingJourneyWithKillRecoveryDeterministic(t *testing.T) {
 		`UPDATE publications SET state='approved' WHERE run_id=$1 AND state='pending_approval'`, runID); err != nil {
 		t.Fatalf("approve publications: %v", err)
 	}
-	publisher := &execution.RepositoryPublisher{Broker: repositories.NewLocalBrokerWithToken(detPushSecret), PRClient: &countingPRClient{}}
+	publisher := &execution.RepositoryPublisher{Broker: repositories.NewFixtureBrokerWithToken(detPushSecret), PRClient: &countingPRClient{}}
 	pump := func() {
 		approved, err := h.spine.ApprovedPublicationsForRun(ctx, h.tenant, runID)
 		if err != nil {
