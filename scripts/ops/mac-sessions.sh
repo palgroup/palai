@@ -387,6 +387,21 @@ create_account() { # create_account <index>
 		-fullName "Palai session $(session_id "$n")" \
 		-UID "$uid" -GID 20 -shell /bin/zsh -home "/Users/$name" 2>&1 | sed 's/^/    /'
 	dscl . -create "/Users/$name" "$MARKER_ATTR" "$(marker_for "$name" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+	# -home ASSIGNS a home directory; it does not CREATE one. sysadminctl says so in its own output —
+	# "Home directory is assigned (not created!)" — and this script used to read straight past it into a
+	# chmod that failed with "No such file or directory", leaving a real account with no home and the run
+	# dead on set -e. Found on 2026-08-02 by running it; nothing else could have found it, because every
+	# check in this file ran AFTER the step that aborted.
+	#
+	# createhomedir is the only supported way to populate one from the user template. -c is "this machine",
+	# -u names the account.
+	createhomedir -c -u "$name" 2>&1 | sed 's/^/    /'
+	# AND THEN VERIFY IT, because createhomedir exits 0 on paths it did not create — a mobile-account
+	# variant, a full disk, a /Users that is not writable. A directory this script is about to chmod 700
+	# and hand a session is one it must have SEEN, not one it asked for.
+	if [ ! -d "/Users/$name" ]; then
+		die "created account $name but its home /Users/$name does not exist. createhomedir did not populate it, so this session has nowhere to run; remove the account with 'down --mode accounts --apply' before retrying"
+	fi
 	# The default is drwxr-x--- with group staff, which lets every other session traverse the top
 	# level of this one. 700 is the first thing to fix on any shared Mac.
 	chmod 700 "/Users/$name"
