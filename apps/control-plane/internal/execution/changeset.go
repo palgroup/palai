@@ -81,7 +81,7 @@ func CompileChangeset(ctx context.Context, ledger ChangesetLedger, aw ArtifactWr
 	}
 
 	repoDir := filepath.Join(in.AllocationRoot, workspace.RepoDir)
-	patch, truncated, err := repositories.WorkingDiff(ctx, repoDir, base, maxPatchBytes)
+	observed, err := repositories.DiffWorkingTree(ctx, repoDir, base, maxPatchBytes)
 	if err != nil {
 		return coordinator.ChangesetRecord{}, false, fmt.Errorf("compile changeset diff: %w", err)
 	}
@@ -89,20 +89,16 @@ func CompileChangeset(ctx context.Context, ledger ChangesetLedger, aw ArtifactWr
 	if err != nil {
 		return coordinator.ChangesetRecord{}, false, fmt.Errorf("compile changeset head: %w", err)
 	}
-	observed, ignored, err := repositories.WorkingStatus(ctx, repoDir)
-	if err != nil {
-		return coordinator.ChangesetRecord{}, false, fmt.Errorf("compile changeset status: %w", err)
-	}
 
 	rec := coordinator.ChangesetRecord{
 		RunID:            in.RunID,
 		BaseCommit:       base,
 		FinalCommit:      finalCommit,
 		FinalTree:        finalTree,
-		Files:            mergeChangedFiles(changedFiles(rows), observed),
-		PatchTruncated:   truncated,
-		Findings:         scanPatchFindings(patch),
-		IgnoredFileCount: ignored,
+		Files:            mergeChangedFiles(changedFiles(rows), observed.Changes),
+		PatchTruncated:   observed.Truncated,
+		Findings:         scanPatchFindings(observed.Patch),
+		IgnoredFileCount: observed.Ignored,
 	}
 	// Content-address the id so re-compiling the SAME ledger yields the SAME id — the insert then
 	// dedupes on the primary key and the changeset is genuinely immutable (E10 replay re-compiles).
@@ -111,7 +107,7 @@ func CompileChangeset(ctx context.Context, ledger ChangesetLedger, aw ArtifactWr
 	rec.ID = changesetID(rec.ContentHash)
 
 	provenance := map[string]any{"run_id": in.RunID, "changeset_id": rec.ID}
-	if rec.PatchArtifactID, err = writeArtifact(ctx, aw, in, patch, "text/x-diff", "patch", provenance); err != nil {
+	if rec.PatchArtifactID, err = writeArtifact(ctx, aw, in, observed.Patch, "text/x-diff", "patch", provenance); err != nil {
 		return coordinator.ChangesetRecord{}, false, err
 	}
 	if rec.TestLogArtifactID, err = writeArtifact(ctx, aw, in, checksTranscript(rows), "text/plain", "test-result", provenance); err != nil {

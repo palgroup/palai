@@ -356,6 +356,62 @@ func TestChangesetCountsIgnoredOutputRatherThanListingIt(t *testing.T) {
 	}
 }
 
+// TestChangesetSurvivesTheCommitTool is the defect the LIVE run found in the first version of this
+// fix, and it is the case that matters most: the run that COMMITS is the run that publishes.
+//
+// The first scan compared the working tree to HEAD (`git status`). That is the wrong reference point
+// for a changeset, because the commit tool moves HEAD: after `palai.workspace.commit` the worktree is
+// clean and `git status` reports NOTHING, so a run that wrote its code with the shell, committed it,
+// and requested a push compiled to an EMPTY changed set — while the very commit awaiting approval
+// contained the file.
+//
+// MEASURED live before this fix, run_41e3c422acf6193c17b0be57ba2ee2c9 (shell + commit + push, the file
+// tool not even granted): the approved publication's head c2cdbf88 contained Sources/FromShell.swift,
+// and the changeset's `files` was [].
+//
+// The reference point is the run's preparation BASE — the same base the patch is computed against, so
+// the changed set and the patch can no longer disagree with each other.
+func TestChangesetSurvivesTheCommitTool(t *testing.T) {
+	requireGit(t)
+	root, base := newAllocRepo(t)
+	repoDir := filepath.Join(root, "repo")
+	run := repoGit(t, repoDir)
+
+	// The shell wrote it, and then the run committed — exactly what a publishing run does.
+	writeFile(t, filepath.Join(repoDir, "FromShell.swift"), "public struct FromShell {}\n")
+	writeFile(t, filepath.Join(repoDir, "f.txt"), "rewritten\n")
+	run("add", "-A")
+	run("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "the commit tool ran")
+
+	ledger := &fakeChangesetLedger{
+		base: base, baseOK: true,
+		rows: []coordinator.ToolCallRow{shellRow("tc_1", []string{"bash", "-lc", "cat > FromShell.swift"}, 0, "")},
+	}
+	rec, compiled, err := CompileChangeset(context.Background(), ledger, &fakeArtifactWriter{},
+		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+	if err != nil || !compiled {
+		t.Fatalf("CompileChangeset() = compiled %v err %v, want compiled", compiled, err)
+	}
+	// The commit moved HEAD, so base and final differ — and the changed set is still what the run did
+	// to the repository since its base, not what is left uncommitted.
+	if rec.FinalCommit == rec.BaseCommit {
+		t.Fatalf("final commit = base %s; the fixture did not actually commit", rec.BaseCommit)
+	}
+	byPath := map[string]coordinator.ChangesetFile{}
+	for _, f := range rec.Files {
+		byPath[f.Path] = f
+	}
+	if got, ok := byPath["repo/FromShell.swift"]; !ok || got.Change != "added" {
+		t.Fatalf("committed shell write absent or misclassified: %+v (all: %+v)", got, rec.Files)
+	}
+	if got, ok := byPath["repo/f.txt"]; !ok || got.Change != "modified" {
+		t.Fatalf("committed modification absent or misclassified: %+v (all: %+v)", got, rec.Files)
+	}
+	if len(rec.Files) != 2 {
+		t.Fatalf("files = %+v, want the 2 committed changes", rec.Files)
+	}
+}
+
 // TestTwoRunsOnTheSameBaseCompileToDistinctChangesetIDs is a SECOND defect, found while measuring the
 // first and made near-certain by it. The changeset id is content-addressed so an E10 replay
 // re-compiles to the same id and the primary key dedupes it — but the hash covered only
