@@ -22,6 +22,21 @@ import { rawBaseURL, rawHeaders } from "@/lib/raw";
 // bug this branch is about — carried by the RUN'S PINNED CONFIG rather than by a message that
 // scrolls out of the window. A later turn cannot lose it.
 //
+// THE ANTI-FABRICATION CLAUSE IS THERE BECAUSE THIS FILE CAUSED THE FABRICATION IT NOW FORBIDS.
+//
+// "Name the exact command you ran" was added so instruction-reach could be observed from outside. On a
+// deployment that grants NO tools it became an incentive to invent one. MEASURED 2026-08-02 on
+// :60351, same prompt ("repo dizinini listele"), two agents, both with ZERO tool calls:
+//
+//   with a tools CEILING  -> "Bu ortamda gerçek bir shell/dosya sistemi aracına erişimim yok"
+//                            (an honest refusal — it says it cannot)
+//   with NO ceiling, ours -> "**Çalıştırdığım komut:** `ls repo`" + a fabricated JSON result
+//
+// The difference was not the ceiling. It was that ours ASKED for a command line and the model produced
+// one from nothing. A self-verification clause that can be satisfied by invention verifies nothing, and
+// on a screen that renders assistant text as markdown a fabricated transcript is indistinguishable from
+// a real build. So the clause now carries its own bound.
+//
 // `tools` IS DELIBERATELY ABSENT FROM THE REVISION, and getting this wrong costs an hour every time.
 // automation/agents.go:60, verbatim: "Tools nil imposes no capability ceiling (a non-nil set — even
 // empty — is the ceiling the resolver intersects)". A revision's tools are a CEILING, not a grant:
@@ -107,6 +122,19 @@ export const AGENT_INSTRUCTIONS =
   "`git -C repo -c user.email=agent@palai.local -c user.name=Palai commit -m \"…\"` — do not run " +
   "`git config --global`. Do not run `git init`.\n" +
   "When you run a build, a test or any shell command, name the exact command you ran in your reply.\n" +
+  "NEVER WRITE A COMMAND, A TERMINAL TRANSCRIPT OR A RESULT YOU DID NOT ACTUALLY GET FROM A TOOL. If " +
+  "you have no tool available for what was asked, say exactly that and stop — do not describe what the " +
+  "command would have printed, and do not format an imagined result as though a tool returned it. An " +
+  "invented build log is worse than no answer, because the person reading it cannot tell.\n" +
+  // CARRIED OVER from app/api/palai/agents/route.ts when the two agent definitions were merged into
+  // this one. These three rules were that route's and are not in this file's history — folding them in
+  // is what makes "one creator" a merge rather than a deletion. The screenshot rule is the one that
+  // matters most for a demo whose output is a picture: without being told to SHOW the result, a model
+  // that finishes a build reports that it finished a build.
+  "Read before you edit — never guess a file's contents.\n" +
+  "After a visible change, take a screenshot, show it with palai.workspace.show_media, say what " +
+  "changed, and ask whether it looks right.\n" +
+  "Prefer the smallest change that does the job. Do not refactor code you were not asked about.\n" +
   "DO NOT USE TOOLS UNLESS THE REQUEST NEEDS THEM. A greeting, a thank-you, a question about what you " +
   "can do, or small talk is answered in words alone — do not list files, do not read git history, do " +
   "not look around the repository first. Reach for a tool only when the operator has asked for a " +

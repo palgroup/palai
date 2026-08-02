@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { API_KEY, UPSTREAM_PORT } from "./constants";
+import { API_KEY, NEXT_PORT, UPSTREAM_PORT } from "./constants";
 
 // =============================================================================================
 // THE /chat SURFACES, DRIVEN THROUGH THE THINGS A HUMAN TOUCHES.
@@ -401,6 +401,47 @@ test("the collapsed line names WHICH half is armed", async ({ page }) => {
   await expect(summary).not.toContainText("pushes armed");
 });
 
+// A FAILED RUN'S OWN ERROR IS THE ANSWER, AND THE SCREEN THREW IT AWAY.
+//
+// MEASURED on the live stack 2026-08-02. The owner typed "selam". The chat said:
+//   "This run reached a terminal state but its answer never became readable — GET /v1/responses/…
+//    still had an empty `output` after 10908ms. The run itself is on the control plane and did not fail."
+// The response said `"status": "failed"` and carried a complete, operator-addressed error naming the
+// cause AND the next step. Both halves of the sentence were false, and the truth had been sitting in the
+// response the whole time. The fallback polled `output`, never read `status`, timed out, and then
+// narrated its own timeout as a fact about the run.
+//
+// This is the same shape as the SyntaxError one layer over — an ordinary failure with no representation
+// escaping as something structural — but worse, because "did not fail" reads as authoritative.
+//
+// THE FAILURE PATH OF THIS DEMO HAD NEVER BEEN DRIVEN, and it is the path an operator meets first.
+test("a run that failed shows the platform's own error, not a story about polling", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "unprovisionable please");
+
+  // THE DETAIL, verbatim from the control plane — the cause and the next step.
+  const notice = page.getByTestId("chat-notice").filter({ hasText: "could not be prepared" });
+  await expect(notice).toBeVisible({ timeout: 30_000 });
+  await expect(notice).toContainText("terminal prompts disabled");
+  await expect(notice).toContainText("connection_ref");
+
+  // WHAT MAKES IT DIAGNOSABLE. A detail with no code and no request id is a sentence; with them it is
+  // something an operator can hand to somebody.
+  await expect(notice).toContainText("workspace_provisioning_failed");
+  await expect(notice).toContainText("req_c460acf1fake0000");
+
+  // AND THE FALSE SENTENCES ARE GONE. Each is asserted separately because they failed for different
+  // reasons: "did not fail" was an inference from an absence, and "never became readable" was true of
+  // `output` and false of the response.
+  const body = page.locator("body");
+  await expect(body).not.toContainText("did not fail");
+  await expect(body).not.toContainText("never became readable");
+
+  // The run's terminal state is named as what it is.
+  await expect(page.getByTestId("chat-run").first()).toContainText("failed");
+});
+
 // AN UPSTREAM THAT IS DOWN IS AN ANSWER, NOT AN EXCEPTION.
 //
 // MEASURED on the live stack while its control plane was unreachable: pressing the arming control
@@ -539,6 +580,56 @@ test("the turn runs as a published agent, and the steering lives on its revision
   // 5. And the steering is NOT also sent on the request. resolveInstructionLayers COMPOSES layer 3
   //    with layer 5, so sending both would put the same paragraph in the conversation twice.
   expect(body.codingInstructions[0]).toBe("");
+});
+
+// ONE CREATOR, AND THE SECOND ONE IS IMPOSSIBLE RATHER THAN MERELY UNUSED.
+//
+// Two routes used to publish an iOS agent and they disagreed on every field that decides what a run can
+// do — one shipped `tools: [file, shell, commit]` + gpt-4o-mini, the other omits `tools` and pins
+// claude-sonnet-5. A second creator that still exists gets used by somebody, so /api/palai/agents now
+// delegates to the same resolver instead of creating a lineage of its own.
+//
+// BOTH HALVES ARE ASSERTED. That the relay returns the SAME agent the chat resolved is what makes it
+// one definition; that a differently-named create is REFUSED is what makes the other option impossible.
+// Without the second, this passes against a route that still creates whatever it is asked for.
+test("there is exactly one creator of the coding agent, and a second name is refused", async ({ page, request }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "add a contributing guide");
+  await expect(page.getByTestId("chat-agent")).toBeVisible({ timeout: 30_000 });
+
+  const seen = await request.get(`http://127.0.0.1:${UPSTREAM_PORT}/__introspect-coding`, {
+    headers: { Authorization: `Bearer ${API_KEY}` },
+  });
+  const before = (await seen.json()) as { agentProfiles: { id: string; name: string }[] };
+  const resolved = before.agentProfiles.find((p) => p.name === "ios-coder");
+  expect(resolved, "the chat must have resolved ios-coder").toBeDefined();
+
+  // The relay hands back the SAME agent rather than minting one.
+  const relayed = await request.post(`http://127.0.0.1:${NEXT_PORT}/api/palai/agents`, { data: {} });
+  expect(relayed.status()).toBe(200);
+  const body = (await relayed.json()) as { agentId: string; name: string; tools: unknown };
+  expect(body.agentId).toBe(resolved!.id);
+  expect(body.name).toBe("ios-coder");
+  // `tools: null` is the STORED value and it means "no ceiling" — a different statement from a field
+  // the response forgot to send.
+  expect(body.tools).toBeNull();
+
+  // A second lineage cannot be created through this surface at all.
+  const other = await request.post(`http://127.0.0.1:${NEXT_PORT}/api/palai/agents`, {
+    data: { name: "ios-agent" },
+  });
+  expect(other.status()).toBe(409);
+  expect((await other.json()) as { detail?: string }).toHaveProperty("detail");
+
+  // AND NOTHING WAS CREATED BY EITHER CALL. A refusal that still left a profile behind would be the
+  // same defect wearing an error code.
+  const after = (await (
+    await request.get(`http://127.0.0.1:${UPSTREAM_PORT}/__introspect-coding`, {
+      headers: { Authorization: `Bearer ${API_KEY}` },
+    })
+  ).json()) as { agentProfiles: unknown[] };
+  expect(after.agentProfiles).toHaveLength(before.agentProfiles.length);
 });
 
 // AND THE SCREEN SAYS SO. The owner had to ASK which agent was running, which is the report that the
