@@ -456,6 +456,59 @@ than a row; `runners.public_key_sha256` is already recorded.
 
 ---
 
+## 6.5 ITEM 1 — the runner-plane reader, designed against the measured seam (2026-08-02)
+
+The operator settled the shape: **no local config file and no install flags.** A machine is given a
+place to call and a credential; everything else — how many sessions it takes, its shell posture, its
+workspace root — is sent by the admin plane after it joins. The reference is Claude Managed Agents'
+self-hosted sandbox, which gives a worker exactly two values (`ANTHROPIC_ENVIRONMENT_ID`,
+`ANTHROPIC_ENVIRONMENT_KEY`) and one command, with the rest arriving from the control plane over an
+outbound-only poll.
+
+**The gap, measured.** A CMA worker reads 2 environment variables. `cmd/runner/main.go` reads 14:
+
+```
+PALAI_CONTROLLER_CA  PALAI_CONTROLLER_DNS  PALAI_ENROLLMENT_TOKEN  PALAI_ENROLLMENT_TOKEN_FILE
+PALAI_ENROLLMENT_URL  PALAI_RENEW_URL  PALAI_RUNNER_CONCURRENCY  PALAI_RUNNER_DNS
+PALAI_RUNNER_ID  PALAI_RUNNER_POOL  PALAI_RUNNER_POSTURE  PALAI_SESSION_URL
+PALAI_WORKSPACE_ROOT  PALAI_WORKSPACE_UNSAFE_BIND
+```
+
+They fall into three groups: eight derivable from one base URL plus one credential; four that are
+**configuration and belong to the plane** (`RUNNER_CONCURRENCY`, `WORKSPACE_ROOT`, `RUNNER_POSTURE`,
+`WORKSPACE_UNSAFE_BIND`); one the server already mints (`RUNNER_ID`).
+
+**The storage is ready and this is the part that makes the item small.** `000053_deployment_desired`
+already carries the vocabulary — `CHECK (plane IN ('control_plane','runner_pool'))` with
+`scope_id <> ''` required for a pool — and `store.GetDesiredConfig(ctx, scope, plane, scopeID)` is
+already parameterised by both. Nothing about the table or the getter needs to change.
+
+**The config rides the runner's own enrolment response, not a new endpoint.** `GetDesiredConfig`
+requires the `provision` capability, which a runner does not have and must not be given; a runner
+authenticates with the certificate it gets from `/v1/runner/enroll`. So the settings travel on the
+answer the runner already receives:
+
+| Site | Change |
+|---|---|
+| `packages/runner/enrollment.go:73` `enrollmentResponse` | add `Settings map[string]string \`json:"settings,omitempty"\`` |
+| `packages/runner/enrollment.go:27` `Identity` | carry `Settings` through to the caller |
+| enrol handler (control plane) | look up the enrolling machine's pool document and answer with it |
+| `cmd/runner/main.go:117,120,123` `ServeConfig` | take `Concurrency`, `WorkspaceRoot`, `AllowUnsafeBind` from `Identity.Settings` |
+| `apps/control-plane/api/deployment_desired.go:131` | the `planeRunnerPool` refusal becomes an accept — **only now**, because it exists to stop a row landing that nothing reads, and after this something reads it |
+
+**Backwards compatibility is the pattern already in this file.** `enrollmentResponse.RunnerID` documents
+it: a control plane too old to send the field leaves it empty and the runner keeps its own name. An
+absent `settings` object means today's behaviour, byte for byte.
+
+**Defaults (operator: "default configleri de ayarla").** Two settings a fresh Mac cannot start without
+have no default in the catalogue — `PALAI_WORKSPACE_ROOT` is *"none — no workspace is provisioned"* and
+`PALAI_SHELL_NATIVE` is *"unset — the sandboxed posture"*. A machine that must be configured before it
+can run is a machine that needs an operator at a terminal, which is the thing being removed.
+
+**What this item does NOT include:** the account lifecycle (item 4). The operator's requirement there is
+one sentence — *"hesabı açıp kapatabiliyor olması lazım benden input istemeden"* — and it means root is
+taken once, at install, and never prompted for again.
+
 ## 7. Decisions required before item 4
 
 1. **Privileged actor (§3.2).** A two-verb helper (recommended) or a root control plane on the Mac.
