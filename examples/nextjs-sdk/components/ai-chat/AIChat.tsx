@@ -5,8 +5,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { type AIStreamEvent, streamGenerate } from "@/components/ai-chat/api";
 import { MessageResponse } from "@/components/ai-elements/message";
+import { MediaPart, type MediaPartData } from "@/components/media-parts";
+import { SubagentPart, type ChildPart } from "@/components/subagent-parts";
 import { ApprovalPart, NoticePart, PublicationPart, ToolDetailPart, ToolPart } from "@/components/chat-parts";
 import type { Binding } from "@/components/repository-picker";
+import { fetchHistory, type HistoryEvent } from "@/lib/history";
 
 // =============================================================================================
 // COPIED FROM palcore — apps/web/src/ai-chat/AIChat.tsx — AND POINTED AT PALAI.
@@ -60,6 +63,10 @@ interface Message {
   approvals?: Record<string, unknown>[];
   publications?: Record<string, unknown>[];
   notices?: { level: string; text: string }[];
+  /** Delegated runs, from main's child.* arms — "waiting on four children" must not look like "stuck". */
+  subagents?: ChildPart[];
+  /** What the agent chose to SHOW you: a screenshot or a recording, fetched through the relay. */
+  media?: MediaPartData[];
   /**
    * The run's terminal state, rendered ONCE and only after the turn settles.
    *
@@ -77,6 +84,54 @@ interface Message {
    */
   isError?: boolean;
   errorText?: string;
+}
+
+// replayMessages turns a journal replay into THIS component's message model.
+//
+// main's lib/history.ts has `toUIMessages`, which builds the AI SDK's `UIMessage` — the shape this
+// branch stopped using. The EVENTS are the shared contract, not the message type, so this reads the
+// same HistoryEvent list rather than converting one message model into another. Tool calls replay as
+// completed with their arguments already joined, because a replayed call is by definition finished.
+function replayMessages(events: HistoryEvent[]): Message[] {
+  const out: Message[] = [];
+  let ai: Message | null = null;
+  const startAI = (): Message => {
+    if (ai === null) {
+      ai = { id: `replay-ai-${out.length}`, role: "ai", content: "", timestamp: Date.now(), toolCalls: [] };
+      out.push(ai);
+    }
+    return ai;
+  };
+  for (const e of events) {
+    if (e.type === "user" && typeof e.text === "string") {
+      ai = null;
+      out.push({ id: `replay-user-${out.length}`, role: "user", content: e.text, timestamp: Date.now() });
+      continue;
+    }
+    if (e.type === "text" && typeof e.text === "string") {
+      const m = startAI();
+      m.content += e.text;
+      continue;
+    }
+    if (e.type === "tool" && e.tool) {
+      const m = startAI();
+      m.toolCalls = [
+        ...(m.toolCalls ?? []),
+        {
+          id: e.tool.id ?? `replay-tool-${(m.toolCalls ?? []).length}`,
+          name: e.tool.name ?? "",
+          status: "done",
+          nameUnavailable: (e.tool.name ?? "") === "",
+          replayClass: null,
+          detail:
+            e.tool.arguments === undefined && e.tool.result === undefined
+              ? undefined
+              : { joined: true, arguments: e.tool.arguments ?? null, result: e.tool.result ?? null, hasResult: e.tool.result !== undefined },
+        },
+      ];
+    }
+  }
+  return out;
 }
 
 export function AIChat({
@@ -99,6 +154,8 @@ export function AIChat({
   // before then either, and claiming an agent before anything has been pinned would be the same class
   // of lie this screen keeps finding.
   const [agent, setAgent] = useState<{ id: string | null; name: string | null; note: string } | null>(null);
+  // A replayed transcript that is INCOMPLETE must not read as a complete one; see the chips below.
+  const [resumed, setResumed] = useState<{ truncated: boolean; drained: boolean } | null>(null);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -112,6 +169,38 @@ export function AIChat({
   useEffect(() => {
     onBusyChange(streaming);
   }, [streaming, onBusyChange]);
+
+  // RESUMING A SESSION: ?session=<id> opens the chat on a conversation that already exists, with its
+  // transcript replayed from the journal. PORTED FROM main's coding-chat at the merge — it lived beside
+  // `useChat`'s setMessages, and this component owns the message list now, so it moved rather than
+  // being reimplemented. main's route, lib/history.ts and its two partial-transcript warnings are
+  // untouched.
+  //
+  // WHY THE URL AND NOT LOCAL STORAGE (main's reasoning, kept): a session id in the address bar is a
+  // link — it survives a reload and can be pasted to a colleague. Local storage would make "the session
+  // I was in" a property of one browser profile.
+  //
+  // It runs ONCE and only when there is no session yet: a resume firing after the chat had started its
+  // own session would replace live messages with an older transcript.
+  useEffect(() => {
+    if (typeof window === "undefined" || sessionRef.current !== null) return;
+    const resume = new URLSearchParams(window.location.search).get("session")?.trim();
+    if (!resume) return;
+    let cancelled = false;
+    void (async () => {
+      const history = await fetchHistory(resume);
+      if (cancelled || history === null) return;
+      sessionRef.current = history.sessionId;
+      setSessionId(history.sessionId);
+      onSession(history.sessionId);
+      setMessages(replayMessages(history.events));
+      setResumed({ truncated: history.truncated, drained: history.drained });
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Auto-scroll — palcore's, unchanged.
   useEffect(() => {
@@ -211,6 +300,31 @@ export function AIChat({
             ...m,
             publications: [...(m.publications ?? []), event as unknown as Record<string, unknown>],
           }));
+          break;
+
+        case "subagent":
+          patchAI(aiMsgId, (m) => {
+            const rows = m.subagents ?? [];
+            const next = {
+              id: event.id,
+              requestId: event.requestId,
+              state: event.state,
+              status: event.status,
+              reason: event.reason,
+            } as ChildPart;
+            // Keyed by id so the `requested` row BECOMES the `completed` one rather than stacking two
+            // rows for one child — the terminal arrives on the same id.
+            const idx = rows.findIndex((r) => r.id === event.id);
+            return { ...m, subagents: idx === -1 ? [...rows, next] : rows.map((r, i) => (i === idx ? next : r)) };
+          });
+          break;
+
+        case "media":
+          patchAI(aiMsgId, (m) => {
+            const rows = m.media ?? [];
+            if (rows.some((r) => r.artifactId === event.artifactId)) return m;
+            return { ...m, media: [...rows, event as unknown as MediaPartData] };
+          });
           break;
 
         case "notice":
@@ -358,6 +472,12 @@ export function AIChat({
                 {(m.publications ?? []).map((p, i) => (
                   <PublicationPart key={`${String(p.id)}-${i}`} data={p} />
                 ))}
+                {(m.subagents ?? []).map((c) => (
+                  <SubagentPart key={c.id} child={c} />
+                ))}
+                {(m.media ?? []).map((md) => (
+                  <MediaPart key={md.artifactId} data={md} />
+                ))}
                 {(m.notices ?? []).map((n, i) => (
                   <NoticePart key={i} data={n} />
                 ))}
@@ -498,6 +618,20 @@ export function AIChat({
 
         <p className="mt-1 px-1 text-[11px] text-text-tertiary" data-testid="chat-session">
           {sessionId ? `session ${sessionId.slice(0, 16)}…` : "no session yet"}
+          {/* A PARTIAL TRANSCRIPT MUST NOT READ AS A COMPLETE ONE — main's sentences, kept verbatim in
+              meaning. `drained: false` means the replay hit its deadline with the journal still going,
+              and `truncated` means the oldest events were dropped to bound the page. Either way the
+              reader is looking at less than happened, and saying so is why the route reports it. */}
+          {resumed !== null && !resumed.drained ? (
+            <span className="ml-2 text-amber-600" data-testid="history-partial">
+              · history partial (still catching up)
+            </span>
+          ) : null}
+          {resumed?.truncated === true ? (
+            <span className="ml-2 text-amber-600" data-testid="history-truncated">
+              · oldest messages trimmed
+            </span>
+          ) : null}
           {streaming ? (
             <span className="ml-2 inline-flex items-center gap-1">
               <Loader2 size={10} className="animate-spin" aria-hidden />

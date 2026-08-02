@@ -34,6 +34,14 @@ import { WorkspacePanel } from "@/components/workspace-panel";
 // NO KEY IN THE BROWSER. Every network call this component makes is to this app's own /api/* routes.
 // The Palai credential is read server-side in lib/palai.ts and lib/raw.ts, both guarded by
 // `server-only`, which makes importing them from a Client Component a build error.
+//
+// MERGED WITH main 2026-08-02, AND THIS FILE IS WHERE THE TWO DESIGNS MET. main's version is the
+// `useChat` host this branch replaced, so a conflict "resolved" by taking either side whole would have
+// deleted a working chat or three shipped features. What was carried across instead:
+//   * SESSION RESUME (?session=<id>) — now owned by AIChat, which owns the message list here. Passing
+//     it down rather than reimplementing it keeps main's route, its lib/history.ts and its two
+//     partial-transcript warnings exactly as they were.
+//   * SUBAGENTS and SHOW_MEDIA — rendered inside AIChat's turn, from main's own components.
 // =============================================================================================
 
 export function CodingChat() {

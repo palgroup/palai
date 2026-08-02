@@ -56,6 +56,29 @@ export type AIStreamEvent =
       provisioned: boolean;
       note: string;
     }
+  // A DELEGATED RUN, from main's child.* arms. The child's own model steps never appear on this
+  // stream — it runs in its own session — so the delegation itself is the only thing that can be
+  // shown, and showing it is what stops "waiting on four children" from looking like "stuck".
+  | {
+      type: "subagent";
+      id: string;
+      requestId: string | null;
+      state: "requested" | "completed" | "denied";
+      status: string | null;
+      reason: string | null;
+    }
+  // WHAT THE AGENT CHOSE TO SHOW YOU. `palai.workspace.show_media` answers with an artifact id; the
+  // bytes stay in the store and the browser fetches them through the relay, so a 20 MB recording never
+  // has to fit in a chat frame.
+  | {
+      type: "media";
+      id: string;
+      artifactId: string;
+      mediaType: string | null;
+      caption: string | null;
+      path: string | null;
+      bytes: number | null;
+    }
   | { type: "notice"; level: "warn" | "error"; text: string }
   | { type: "run"; responseId: string; runId?: string | null; status: string }
   | { type: "usage"; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null }

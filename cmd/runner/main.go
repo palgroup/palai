@@ -14,6 +14,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -154,12 +155,22 @@ func loadConfig() (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, rene
 		log.Fatal("controller CA file contained no certificates")
 	}
 
-	controllerDNS = mustEnv("PALAI_CONTROLLER_DNS")
+	// ONE ADDRESS INSTEAD OF FOUR. A machine joining a fleet knows where its control plane is; it does not
+	// separately know three URL paths and a DNS name on that same host, and asking an operator for them is
+	// how a one-command install becomes a file to edit on every box. Each stays overridable and an explicit
+	// value always wins, so every deployment built before this — compose, Helm, the systemd unit — is
+	// byte-unchanged.
+	controllerURL := os.Getenv("PALAI_CONTROLLER_URL")
+	controllerDNS = derivedEnv("PALAI_CONTROLLER_DNS", controllerURL, hostOf)
 	bootstrap = runner.BootstrapConfig{
-		RunnerID:        mustEnv("PALAI_RUNNER_ID"),
-		RunnerDNS:       mustEnv("PALAI_RUNNER_DNS"),
+		// The id this machine SENDS is a label — the control plane mints the real one and the runner adopts
+		// it (see enrollmentResponse.RunnerID). So the hostname is a better default than a required
+		// variable: it is what an operator would have typed, and being wrong costs a label rather than an
+		// identity.
+		RunnerID:        defaultEnv("PALAI_RUNNER_ID", machineName),
+		RunnerDNS:       defaultEnv("PALAI_RUNNER_DNS", machineName+".runner.palai.internal"),
 		EnrollmentToken: token,
-		EnrollmentURL:   mustEnv("PALAI_ENROLLMENT_URL"),
+		EnrollmentURL:   derivedEnv("PALAI_ENROLLMENT_URL", controllerURL, joinPath("/v1/runner/enroll")),
 		ControllerCAs:   pool,
 		ControllerDNS:   controllerDNS,
 		Now:             time.Now,
@@ -181,7 +192,66 @@ func loadConfig() (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, rene
 		// bit-unchanged for the same reason PALAI_RUNNER_POSTURE does: the body is byte-identical without it.
 		PoolID: os.Getenv("PALAI_RUNNER_POOL"),
 	}
-	return bootstrap, tokenFile, mustEnv("PALAI_SESSION_URL"), os.Getenv("PALAI_RENEW_URL"), controllerDNS, pool
+	return bootstrap, tokenFile,
+		derivedEnv("PALAI_SESSION_URL", controllerURL, joinPath("/v1/runner/connect")),
+		derivedEnv("PALAI_RENEW_URL", controllerURL, joinPath("/v1/runner/renew")),
+		controllerDNS, pool
+}
+
+// machineName is the default identity a machine gives itself: its hostname, or a fixed fallback when the
+// host cannot answer. It is only ever a LABEL — the control plane mints the id that names this machine
+// everywhere else — so a collision costs a confusing row and never a wrong identity.
+var machineName = func() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return strings.TrimSuffix(h, ".local")
+	}
+	return "palai-runner"
+}()
+
+// defaultEnv is os.Getenv with a fallback, for a variable a machine can answer about itself.
+func defaultEnv(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return def
+}
+
+// derivedEnv is the collapse: an explicit variable wins, otherwise the value is DERIVED from the one
+// address the machine was given, and only if neither exists does it fail by name.
+//
+// IT FAILS RATHER THAN GUESSES. A runner with no controller URL and no explicit variable has nowhere to
+// go, and a default here would be a machine that starts and silently reaches nothing — the failure this
+// tree keeps finding. The message names both ways out, because an operator hitting it has either forgotten
+// the one address or is running a deployment that still sets the four.
+func derivedEnv(name, controllerURL string, derive func(string) string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	if controllerURL == "" {
+		log.Fatalf("%s is required, or set PALAI_CONTROLLER_URL once and this is derived from it", name)
+	}
+	derived := derive(controllerURL)
+	if derived == "" {
+		log.Fatalf("%s could not be derived from PALAI_CONTROLLER_URL=%q — set %s explicitly", name, controllerURL, name)
+	}
+	return derived
+}
+
+// joinPath derives a runner endpoint from the controller address. The gateway's routes are fixed
+// (runner_gateway.go Routes), so these are not a guess about a deployment — they are the same three
+// constants the server registers, read from the one place a machine already had to know.
+func joinPath(path string) func(string) string {
+	return func(base string) string { return strings.TrimRight(base, "/") + path }
+}
+
+// hostOf is the DNS name the runner pins its TLS to: the controller address's host, without the port. It
+// is the SAN the certificate carries, and a port in a ServerName is a handshake that never matches.
+func hostOf(base string) string {
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Hostname()
 }
 
 func mustEnv(name string) string {

@@ -87,7 +87,7 @@ per Mac" as the number you can defend.
 | TCC protects one session's files from another | **no** | same doc, T17 — a binary denied `opendir("~/Desktop")` listed real filenames through `simctl spawn` |
 | A macOS VM per session | yes, but capped | `docs/research/macos-session-isolation.md` — two concurrent guests per host, by kernel quota **and** licence, and the licence excludes service-bureau use |
 | Different customers can share a Mac | **no** | `macos-session-isolation.md` §4 — `sudo` and any local-root escalation defeat a uid boundary; three such escalations were patched in 2026 alone |
-| A simulator can be driven in a non-console login session | **UNVERIFIED** | needs `verify --simulator` on your hardware; recording is known not to need an Aqua window, driving is known to need one |
+| A simulator can be driven in a non-console login session | **MEASURED 2026-08-02 — yes, and with NO login session at all** | `verify --mode accounts --simulator` on this host (M2 Pro, macOS 26.3, Xcode 26.6). `palai-s01` had **no Aqua session** — the `gui/701` row reported UNVERIFIED "none" in the same run — and its simulator booted, launched a UIKit app (`com.apple.Preferences` pid 20277) and was **driven**: an appearance flip changed the rendered frame (29,635 bytes, sha `d2696dd6` vs `c0835d0f`). This row previously read "driving is known to need one"; that belief did not survive being run. **Re-measure on different hardware before carrying it** — this is one box, and a ceiling is dated |
 | Two accounts can drive simulators concurrently | **UNVERIFIED** | same. `simdiskimaged` is the one shared root process and is an untested single point of failure |
 
 ## 6. When it doesn't work

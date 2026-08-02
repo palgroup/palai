@@ -88,6 +88,9 @@ type Orchestrator struct {
 	// comes from. Both unset ⇒ no provisioning (a run with a binding gets no workspace, tools fail clean).
 	// main.go injects them env-gated via SetWorkspaceProvisioner.
 	provisionRoot   string
+	// sessionAccounts mints the uid an allocation's tools run under (macOS). Nil means none, which is
+	// every deployment that has not opted in.
+	sessionAccounts SessionAccounts
 	provisionBroker repositories.Broker
 	// provisionSecrets resolves a binding's connection_ref to that tenant's OWN Git credential (E13 Task
 	// 9). Nil ⇒ no secret-ref store wired: every binding clones under provisionBroker, as before. main.go

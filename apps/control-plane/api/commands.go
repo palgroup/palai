@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -58,7 +59,22 @@ type CommandResult struct {
 
 type sessionHandler struct {
 	sessions SessionManager
+	// accounts releases the per-session uid when a session closes (macOS). Nil in every deployment that
+	// mints none, which is all of them until PALAI_SESSION_ACCOUNT_HELPER is set.
+	accounts SessionAccountReleaser
 }
+
+// SessionAccountReleaser is the half of the session-account lifecycle this layer owns: the release, after
+// the close has COMMITTED. The acquire half lives where a session first does work
+// (execution.Orchestrator.provisionFreshAllocation) and the two are wired from one value, because a
+// deployment that acquired without releasing would mint an account per session that nothing removes.
+type SessionAccountReleaser interface {
+	Release(ctx context.Context, sessionID string) error
+}
+
+// SetSessionAccounts wires the release. It is a setter for the reason every seam in this tree is: the
+// composition root decides, and every existing caller compiles and behaves unchanged.
+func (h *sessionHandler) SetSessionAccounts(a SessionAccountReleaser) { h.accounts = a }
 
 // create opens a session (spec §9.1 POST /v1/sessions). It is 201 + Location + the session
 // projection. Session creation is cheap and unkeyed: a retried create mints a new session.
@@ -289,6 +305,21 @@ func (h *sessionHandler) command(w http.ResponseWriter, r *http.Request) {
 	if out.SessionNotFound {
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such session in this project")
 		return
+	}
+	// THE ACCOUNT GOES WHEN THE SESSION DOES, and this is the only place that can do it: applyCloseSessionTx
+	// runs INSIDE the transaction, and destroying a local account is an exec that must not be attempted
+	// while a database transaction is open — a slow `sudo` there holds a session row lock, and a rollback
+	// after it cannot un-delete an account.
+	//
+	// So it happens here, after AcceptCommand has committed. Best effort by contract: the session IS closed,
+	// and refusing the caller because a uid could not be removed would report a failure for something that
+	// succeeded. The slot stays held until an operator reconciles (`mac-sessions.sh down --mode accounts`),
+	// which is the same trade Release itself makes — losing a slot is cheaper than handing a live account's
+	// index to the next session.
+	if req.Kind == "close_session" && h.accounts != nil {
+		if err := h.accounts.Release(r.Context(), r.PathValue("session_id")); err != nil {
+			log.Printf("session %s closed, account not released: %v", r.PathValue("session_id"), err)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)

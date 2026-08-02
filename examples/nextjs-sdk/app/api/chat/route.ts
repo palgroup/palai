@@ -468,6 +468,31 @@ function writeFrame(
       emit({ type: "usage", ...pickUsage(d) });
       return false;
 
+    // SUBAGENTS. A delegated run is journaled on the PARENT's stream as a request and later a terminal;
+    // the child's own model steps are never here, because it runs in its own session. Surfacing the
+    // delegation is what stops "waiting on four children" from looking identical to "stuck".
+    //
+    // The field names are the ones child_dispatch.go actually journals — child_request_id, child_run_id,
+    // status, reason. An earlier draft read `run_id`, the PARENT's field, which is absent from these
+    // events and would have rendered every subagent as unknown.
+    //
+    // PORTED AT THE MERGE, NOT PICKED. This arm arrived from main written against the AI SDK's
+    // `writer.write({type:"data-subagent"})`; this branch replaced that protocol with palcore's frames,
+    // so git auto-merged it into a function that has no `writer` at all. Taking either side whole would
+    // have deleted a shipped feature or broken the file — the mapping is what had to be carried over.
+    case "child.requested.v1":
+    case "child.completed.v1":
+    case "child.denied.v1":
+      emit({
+        type: "subagent",
+        id: str(d.child_run_id) || str(d.child_request_id) || "child",
+        requestId: str(d.child_request_id) || null,
+        state: evt.type === "child.requested.v1" ? "requested" : evt.type === "child.completed.v1" ? "completed" : "denied",
+        status: str(d.status) || null,
+        reason: str(d.reason) || null,
+      });
+      return false;
+
     case "attempt.recovering.v1":
     case "recovery.proof.v1":
       emit({
@@ -685,6 +710,31 @@ async function joinToolCall(emit: Emit, responseID: string, toolCallID: string, 
         hasResult: Object.hasOwn(row, "result"),
         joined: true,
       });
+
+      // THE AGENT SHOWING YOU SOMETHING gets its own part, because a screenshot rendered as a row in a
+      // tool-result table is a screenshot nobody looks at. palai.workspace.show_media answers with an
+      // artifact id and a caption; the bytes stay in the store and the browser fetches them through the
+      // relay that already existed, so a 20 MB recording never has to fit in a chat frame.
+      //
+      // It rides the LEDGER JOIN rather than the event stream for the reason the join exists at all: the
+      // event payload is {run_id, tool_call_id} and carries no tool result, so the id would never arrive.
+      //
+      // PORTED AT THE MERGE. It arrived from main as `writer.write({type:"data-media"})`; this branch
+      // speaks palcore's frames, so the mapping was carried over rather than either side taken whole.
+      // It also moved INSIDE the retry loop's success path: on this branch the join retries ten times,
+      // and a media part emitted outside that path would fire on an attempt that found no row.
+      const shown = row.result as Record<string, unknown> | null | undefined;
+      if (str(row.name) === "palai.workspace.show_media" && shown && str(shown.artifact_id) !== "") {
+        emit({
+          type: "media",
+          id: toolCallID,
+          artifactId: str(shown.artifact_id),
+          mediaType: str(shown.media_type) || null,
+          caption: str(shown.caption) || null,
+          path: str(shown.path) || null,
+          bytes: typeof shown.bytes === "number" ? shown.bytes : null,
+        });
+      }
       return;
     } catch (error) {
       lastError = error instanceof Error ? error.message : "the tool call could not be read";

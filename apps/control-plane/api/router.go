@@ -377,7 +377,7 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	// carry their own idempotency (command_id), so the POST needs no Idempotency-Key header.
 	// nil in tiers that do not exercise sessions (the Docker-free conformance HTTP tier).
 	if sessions != nil {
-		sh := &sessionHandler{sessions: sessions}
+		sh := &sessionHandler{sessions: sessions, accounts: cfg.sessionAccounts}
 		mux.HandleFunc("POST /v1/sessions", sh.create)
 		mux.HandleFunc("GET /v1/sessions", sh.list)
 		mux.HandleFunc("GET /v1/sessions/{session_id}", sh.get)

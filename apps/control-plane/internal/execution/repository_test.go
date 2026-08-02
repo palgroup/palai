@@ -49,7 +49,7 @@ func TestPrepareRepositoryResolvesRunsRecords(t *testing.T) {
 	}}
 	tenant := coordinator.Tenant{Organization: "org_x", Project: "prj_x"}
 
-	prep, err := PrepareRepository(ctx, store, repositories.NewLocalBroker(), tenant, PrepareRepositoryInput{
+	prep, err := PrepareRepository(ctx, store, repositories.NewAnonymousBroker(), tenant, PrepareRepositoryInput{
 		BindingID:    "repo_abc",
 		RunID:        "run_y",
 		RequestedRef: remote.head,
@@ -75,7 +75,7 @@ func TestPrepareRepositoryResolvesRunsRecords(t *testing.T) {
 
 	// A missing binding fails closed — no clone, no receipt.
 	store.found = false
-	if _, err := PrepareRepository(ctx, store, repositories.NewLocalBroker(), tenant, PrepareRepositoryInput{
+	if _, err := PrepareRepository(ctx, store, repositories.NewAnonymousBroker(), tenant, PrepareRepositoryInput{
 		BindingID: "repo_missing", TargetDir: filepath.Join(t.TempDir(), "repo"), SecretsDir: t.TempDir(),
 	}); err == nil {
 		t.Fatal("PrepareRepository with a missing binding returned nil error, want fail-closed")
@@ -100,7 +100,7 @@ func TestPrepareRepositoryResolvesBindingConnectionRef(t *testing.T) {
 		store := &fakeRepoStore{found: true, binding: contracts.RepositoryBinding{
 			ID: "repo_abc", CloneUrl: remote.url, DefaultBranch: "main", ConnectionRef: ref,
 		}}
-		_, err := PrepareRepository(ctx, store, repositories.NewLocalBroker(), tenant, PrepareRepositoryInput{
+		_, err := PrepareRepository(ctx, store, repositories.NewAnonymousBroker(), tenant, PrepareRepositoryInput{
 			BindingID:         "repo_abc",
 			RunID:             "run_y",
 			RequestedRef:      remote.head,

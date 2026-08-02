@@ -10,7 +10,7 @@ import (
 // publication caller of DirectWorkAllowed (spec §30.5/§30.9). A generated agent/<...> branch is allowed.
 func TestPushToProtectedDefaultBranchDenied(t *testing.T) {
 	for _, branch := range []string{"main", "master", "release"} {
-		_, err := PushBranch(context.Background(), NewLocalBroker(), PushRequest{
+		_, err := PushBranch(context.Background(), NewAnonymousBroker(), PushRequest{
 			Remote: "/tmp/does-not-matter", RepoDir: t.TempDir(), Branch: branch, HeadSHA: "deadbeef",
 			Protected: []string{"release"}, SecretsDir: t.TempDir(),
 		})

@@ -42,8 +42,27 @@ set -euo pipefail
 
 SUBCOMMANDS="plan up verify down selftest"
 
-PREFIX="palai-s"
-UID_BASE=700
+# PREFIX is the account-name prefix this script owns. It is overridable for ONE reason and it is the same
+# reason PALAI_MAC_SESSIONS_HOST_UUID is: a test that drives this script has to be able to scan a namespace
+# no real machine uses.
+#
+# WITHOUT IT, THE DOC'S OWN INSTRUCTIONS BREAK THE DOC'S OWN TESTS. tests/docs runs the real script against
+# real directory services with a pinned fake host UUID, so a genuine session account — the thing
+# mac-sessions.md tells every operator to create — carries a marker minted on the REAL host UUID, collides
+# by name, and turns a dry run into exit 2. Measured 2026-08-02: one `palai-s01` on the box made
+# TestMacSessionsDestructiveSubcommandsNeedAnExplicitFlag red at HEAD. An operator who followed the page
+# could not run `make verify` again.
+#
+# IT IS NOT AUTHORITY. Nothing may be deleted on the strength of a name: deletion_is_permitted also requires
+# the uid this script would have allocated, the marker written into the record (root-only), and that
+# marker's host UUID matching this Mac. Renaming the namespace changes what is SCANNED, never what is
+# permitted — which is why this is a variable and the marker is not.
+PREFIX="${PALAI_MAC_SESSIONS_PREFIX:-palai-s}"
+# UID_BASE is overridable for the same reason PREFIX is, and it is the SECOND half of the same isolation:
+# renaming the namespace alone was not enough. A test that scans `palaitest-sNN` still allocates uid 701 for
+# index 01, which the operator's real `palai-s01` already holds — measured 2026-08-02, the dry run refused
+# with "uid 701 already belongs to palai-s01". A namespace is a name AND a uid range or it is neither.
+UID_BASE="${PALAI_MAC_SESSIONS_UID_BASE:-700}"
 MAX_SESSIONS=99
 MARKER_ATTR="dsAttrTypeNative:palai_mac_session"
 MARKER_MAGIC="palai-mac-sessions"
@@ -56,6 +75,11 @@ GIB_FOR_HOST=8
 
 MODE=""
 COUNT=""
+# ONLY narrows every session loop to ONE index. It exists for the privileged wrapper
+# (palai-session-account), whose whole safety argument is that it can name a single session and nothing
+# else: `--count N` means sessions 1..N, so a wrapper built on it would create or delete every
+# lower-numbered account as a side effect of asking about one.
+ONLY=""
 APPLY=0
 SIMULATOR=0
 DIRS_ROOT="${PALAI_SESSIONS_ROOT:-$HOME/palai-sessions}"
@@ -84,6 +108,34 @@ host_uuid() {
 	fi
 	is_macos || return 0
 	ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/{print $4; exit}'
+}
+
+# session_seq is `seq FIRST LAST` that yields NOTHING when the range is empty, which BSD seq does not do.
+#
+# ON THIS MACHINE, MEASURED 2026-08-02: `seq 2 1` prints "2\n1" and `seq 1 0` prints "1\n0" — BSD seq
+# counts DOWN when the first number exceeds the last, where GNU seq prints nothing. Every `for n in $(seq
+# ...)` in this file was written expecting the GNU behaviour, and one of them shipped two defects because of
+# it, both of them shapes this repository keeps finding:
+#
+#   `verify_device_sets` looped `seq 2 "$COUNT"` to compare every OTHER session against session 1. With one
+#   session that became n=2 then n=1. n=2 is a session that does not exist, so `as_session` failed, the
+#   output was empty, the case fell to its default arm and it reported **PASS — a green line about a machine
+#   that is not there**. n=1 is session one itself, which of course sees its own device, and it reported
+#   **FAIL "s01's set cannot see s01's device"** — an assertion that reads like a boundary violation and is
+#   actually a session compared with itself.
+#
+# So the range is bounded here rather than at four call sites, because the next loop written in this file
+# would have inherited it.
+session_seq() {
+	# --only collapses every range to that one index, and it is enforced HERE for the same reason the
+	# empty range is: there are seven loops and the next one written would not have known.
+	if [ -n "$ONLY" ]; then
+		[ "$1" -le "$((10#$ONLY))" ] && [ "$((10#$ONLY))" -le "$2" ] 2>/dev/null || return 0
+		printf '%d\n' "$((10#$ONLY))"
+		return 0
+	fi
+	[ "$1" -le "$2" ] 2>/dev/null || return 0
+	seq "$1" "$2"
 }
 
 session_name() { printf '%s%02d' "$PREFIX" "$1"; }
@@ -338,7 +390,7 @@ cmd_plan() {
 		say "  It reads the durable run ledger and FAILS if the runs never overlapped."
 
 		hdr "WOULD ALLOCATE (mode=${MODE:-accounts}, count=$COUNT)"
-		for n in $(seq 1 "$COUNT"); do
+		for n in $(session_seq 1 "$COUNT"); do
 			name="$(session_name "$n")"
 			uid="$(session_uid "$n")"
 			if [ "${MODE:-accounts}" = "dirs" ]; then
@@ -387,6 +439,21 @@ create_account() { # create_account <index>
 		-fullName "Palai session $(session_id "$n")" \
 		-UID "$uid" -GID 20 -shell /bin/zsh -home "/Users/$name" 2>&1 | sed 's/^/    /'
 	dscl . -create "/Users/$name" "$MARKER_ATTR" "$(marker_for "$name" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+	# -home ASSIGNS a home directory; it does not CREATE one. sysadminctl says so in its own output —
+	# "Home directory is assigned (not created!)" — and this script used to read straight past it into a
+	# chmod that failed with "No such file or directory", leaving a real account with no home and the run
+	# dead on set -e. Found on 2026-08-02 by running it; nothing else could have found it, because every
+	# check in this file ran AFTER the step that aborted.
+	#
+	# createhomedir is the only supported way to populate one from the user template. -c is "this machine",
+	# -u names the account.
+	createhomedir -c -u "$name" 2>&1 | sed 's/^/    /'
+	# AND THEN VERIFY IT, because createhomedir exits 0 on paths it did not create — a mobile-account
+	# variant, a full disk, a /Users that is not writable. A directory this script is about to chmod 700
+	# and hand a session is one it must have SEEN, not one it asked for.
+	if [ ! -d "/Users/$name" ]; then
+		die "created account $name but its home /Users/$name does not exist. createhomedir did not populate it, so this session has nowhere to run; remove the account with 'down --mode accounts --apply' before retrying"
+	fi
 	# The default is drwxr-x--- with group staff, which lets every other session traverse the top
 	# level of this one. 700 is the first thing to fix on any shared Mac.
 	chmod 700 "/Users/$name"
@@ -407,7 +474,7 @@ cmd_up() {
 		[ "$APPLY" -eq 0 ] || is_root || die "up --mode accounts --apply must run as root (use sudo)"
 		# Refuse the whole run before creating anything if any name or uid is already spoken for by
 		# something we did not create. Half a fleet is worse than none.
-		for n in $(seq 1 "$COUNT"); do
+		for n in $(session_seq 1 "$COUNT"); do
 			name="$(session_name "$n")"
 			uid="$(session_uid "$n")"
 			if ds_exists "$name"; then
@@ -427,7 +494,7 @@ cmd_up() {
 		[ "$refused" -eq 0 ] || die "refusing to continue — resolve the collisions above"
 	fi
 
-	for n in $(seq 1 "$COUNT"); do
+	for n in $(session_seq 1 "$COUNT"); do
 		name="$(session_name "$n")"
 		if [ "$APPLY" -eq 0 ]; then
 			if [ "$MODE" = "accounts" ]; then
@@ -485,7 +552,7 @@ cmd_up() {
 verify_posture() {
 	local n name uid home mode marker
 	if [ "$MODE" = "dirs" ]; then
-		for n in $(seq 1 "${COUNT:-0}"); do
+		for n in $(session_seq 1 "${COUNT:-0}"); do
 			mode="$(stat -f '%Lp' "$(session_root "$n")" 2>/dev/null || echo none)"
 			if [ "$mode" = "700" ]; then
 				check PASS "$(session_id "$n") directory is 700" "$(session_root "$n")"
@@ -495,7 +562,7 @@ verify_posture() {
 		done
 		return 0
 	fi
-	for n in $(seq 1 "${COUNT:-0}"); do
+	for n in $(session_seq 1 "${COUNT:-0}"); do
 		name="$(session_name "$n")"
 		if ! ds_exists "$name"; then
 			check FAIL "$name exists" "no directory-services record"
@@ -614,8 +681,16 @@ verify_device_sets() {
 	else
 		check PASS "the default device set cannot see session s01's device" "$udid"
 	fi
-	for n in $(seq 2 "${COUNT:-1}"); do
+	for n in $(session_seq 2 "${COUNT:-0}"); do
 		others="$(as_session "$n" xcrun simctl --set "$(device_set "$n")" list devices 2>/dev/null || true)"
+		# AN EMPTY LISTING IS NOT A CLEAN SEPARATION. `as_session` fails for a session that does not exist,
+		# and simctl prints nothing when it cannot read a set at all — both land in the same default arm as a
+		# genuine "not listed" and used to report PASS. A check that passes because it could not run is the
+		# thing the header of this file says UNVERIFIED exists for.
+		if [ -z "$(printf '%s' "$others" | tr -d '[:space:]')" ]; then
+			check UNVERIFIED "$(session_id "$n")'s set cannot see s01's device" "$(session_id "$n") listed no devices at all, so nothing was compared"
+			continue
+		fi
 		case "$others" in
 		*"$udid"*) check FAIL "$(session_id "$n")'s set cannot see s01's device" "it is listed" ;;
 		*) check PASS "$(session_id "$n")'s set cannot see s01's device" "" ;;
@@ -652,7 +727,7 @@ print(phones[-1]["identifier"], newest["identifier"])
 verify_aqua() {
 	local n uid
 	is_macos || return 0
-	for n in $(seq 1 "${COUNT:-0}"); do
+	for n in $(session_seq 1 "${COUNT:-0}"); do
 		uid="$(session_uid "$n")"
 		[ "$MODE" = "dirs" ] && uid="$(id -u)"
 		if launchctl print "gui/$uid" >/dev/null 2>&1; then
@@ -687,7 +762,7 @@ verify_simulator() {
 	}
 	say ""
 	say "  measuring ${COUNT} session(s) CONCURRENTLY — this is the load-bearing unknown"
-	for n in $(seq 1 "$COUNT"); do
+	for n in $(session_seq 1 "$COUNT"); do
 		drive_one "$n" >"${TMPDIR:-/tmp}/palai-mac-sessions-$(session_id "$n").log" 2>&1 &
 		pids="$pids $!"
 	done
@@ -696,7 +771,7 @@ verify_simulator() {
 	done
 	# Re-tally from what the children printed. Their own $fail/$unverified died with their subshells,
 	# and a concurrency measurement whose failures do not reach the summary is not a measurement.
-	for n in $(seq 1 "$COUNT"); do
+	for n in $(session_seq 1 "$COUNT"); do
 		log="${TMPDIR:-/tmp}/palai-mac-sessions-$(session_id "$n").log"
 		cat "$log"
 		fail=$((fail + $(grep -c '^  \[FAIL' "$log" || true)))
@@ -829,7 +904,7 @@ discover_count() {
 			$(session_records)
 		EOF
 	else
-		for n in $(seq 1 "$MAX_SESSIONS"); do
+		for n in $(session_seq 1 "$MAX_SESSIONS"); do
 			if [ -d "$DIRS_ROOT/$(session_id "$n")" ]; then found="$n"; fi
 		done
 	fi
@@ -870,7 +945,7 @@ cmd_down() {
 			say "DRY RUN: nothing was changed. Re-run with --apply."
 			return 0
 		fi
-		for n in $(seq 1 "$MAX_SESSIONS"); do
+		for n in $(session_seq 1 "$MAX_SESSIONS"); do
 			[ -d "$(device_set "$n")" ] || continue
 			xcrun simctl --set "$(device_set "$n")" delete all >/dev/null 2>&1 || true
 		done
@@ -932,7 +1007,7 @@ cmd_selftest() {
 	local rc=0 huuid good
 	huuid="$(host_uuid)"
 	[ -n "$huuid" ] || die "selftest needs a host identity; set PALAI_MAC_SESSIONS_HOST_UUID"
-	good="$MARKER_MAGIC:$MARKER_VERSION:$huuid:palai-s01:2026-07-28T00:00:00Z"
+	good="$MARKER_MAGIC:$MARKER_VERSION:$huuid:${PREFIX}01:2026-07-28T00:00:00Z"
 
 	say "selftest — the deletion guard, on host identity $huuid"
 
@@ -957,27 +1032,27 @@ cmd_selftest() {
 	}
 
 	case_is PERMIT "an account this script created on this Mac" \
-		"palai-s01" 701 "$good" no "0,501"
+		"${PREFIX}01" $((UID_BASE + 1)) "$good" no "0,501"
 	case_is REFUSE "the same name with no marker at all" \
-		"palai-s01" 701 "" no "0,501"
+		"${PREFIX}01" $((UID_BASE + 1)) "" no "0,501"
 	case_is REFUSE "a marker minted on another Mac" \
-		"palai-s01" 701 "$MARKER_MAGIC:$MARKER_VERSION:SOME-OTHER-MAC:palai-s01:2026-07-28T00:00:00Z" no "0,501"
+		"${PREFIX}01" $((UID_BASE + 1)) "$MARKER_MAGIC:$MARKER_VERSION:SOME-OTHER-MAC:${PREFIX}01:2026-07-28T00:00:00Z" no "0,501"
 	case_is REFUSE "a marker for a different session" \
-		"palai-s01" 701 "$MARKER_MAGIC:$MARKER_VERSION:$huuid:palai-s07:2026-07-28T00:00:00Z" no "0,501"
+		"${PREFIX}01" $((UID_BASE + 1)) "$MARKER_MAGIC:$MARKER_VERSION:$huuid:${PREFIX}07:2026-07-28T00:00:00Z" no "0,501"
 	case_is REFUSE "a uid that does not match the name" \
-		"palai-s01" 705 "$good" no "0,501"
+		"${PREFIX}01" $((UID_BASE + 5)) "$good" no "0,501"
 	case_is REFUSE "an account outside our uid range" \
-		"palai-s01" 501 "$good" no "0,501"
+		"${PREFIX}01" 501 "$good" no "0,501"
 	case_is REFUSE "an admin account wearing our name" \
-		"palai-s01" 701 "$good" yes "0,501"
+		"${PREFIX}01" $((UID_BASE + 1)) "$good" yes "0,501"
 	case_is REFUSE "the operator's own account" \
-		"palai-s01" 701 "$good" no "0,501,701"
+		"${PREFIX}01" $((UID_BASE + 1)) "$good" no "0,501,$((UID_BASE + 1))"
 	case_is REFUSE "someone else's account entirely" \
 		"konuk" 503 "$good" no "0,501"
 	case_is REFUSE "a name with a path in it" \
-		"palai-s01/../../etc" 701 "$good" no "0,501"
+		"${PREFIX}01/../../etc" $((UID_BASE + 1)) "$good" no "0,501"
 	case_is REFUSE "session index zero" \
-		"palai-s00" 700 "$MARKER_MAGIC:$MARKER_VERSION:$huuid:palai-s00:2026-07-28T00:00:00Z" no "0,501"
+		"${PREFIX}00" $((UID_BASE + 0)) "$MARKER_MAGIC:$MARKER_VERSION:$huuid:${PREFIX}00:2026-07-28T00:00:00Z" no "0,501"
 
 	say ""
 	if [ "$rc" -eq 0 ]; then
@@ -1005,6 +1080,10 @@ while [ "$#" -gt 0 ]; do
 		COUNT="${2:-}"
 		shift 2 || die "--count needs a value"
 		;;
+	--only)
+		ONLY="${2:-}"
+		shift 2 || die "--only needs a value"
+		;;
 	--mode)
 		MODE="${2:-}"
 		shift 2 || die "--mode needs a value"
@@ -1024,6 +1103,18 @@ while [ "$#" -gt 0 ]; do
 	*) die "unknown flag $(printf %q "$1")" ;;
 	esac
 done
+
+# --only names ONE session, so it also answers "how many" — an operator (or the privileged wrapper) must
+# not have to pass a count that would be ignored, and a count that disagreed with it would be a second
+# source of truth for the same question.
+if [ -n "$ONLY" ]; then
+	case "$ONLY" in
+	0[1-9] | [1-9][0-9]) ;;
+	*) die "--only takes exactly two digits, 01..99 (got $(printf %q "$ONLY"))" ;;
+	esac
+	[ -z "$COUNT" ] || die "--only and --count both name how many sessions this acts on; pass one"
+	COUNT="$((10#$ONLY))"
+fi
 
 if [ -n "$COUNT" ]; then
 	case "$COUNT" in

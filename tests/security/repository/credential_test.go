@@ -39,7 +39,7 @@ func TestBrokeredCredentialAbsentFromAllSurfaces(t *testing.T) {
 	// preparation makes, so the scan reads the REAL remote-URL / process-args / env surfaces.
 	trace := installGitTrace(t)
 
-	broker := repositories.NewLocalBrokerWithToken(brokerSentinel)
+	broker := repositories.NewFixtureBrokerWithToken(brokerSentinel)
 	res, err := repositories.Prepare(ctx, broker, repositories.Request{
 		CloneURL:      remote.url,
 		RequestedRef:  remote.head,
@@ -98,7 +98,7 @@ func TestReadCredentialRevokedAfterPreparation(t *testing.T) {
 	target := t.TempDir()
 	secrets := t.TempDir()
 
-	broker := repositories.NewLocalBrokerWithToken(brokerSentinel)
+	broker := repositories.NewFixtureBrokerWithToken(brokerSentinel)
 	if _, err := repositories.Prepare(ctx, broker, repositories.Request{
 		CloneURL:      remote.url,
 		RequestedRef:  remote.head,

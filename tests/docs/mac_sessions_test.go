@@ -20,7 +20,10 @@ import (
 
 const (
 	macScript = "scripts/ops/mac-sessions.sh"
-	macDoc    = "docs/operations/mac-sessions.md"
+	// macTestPrefix is the namespace runMacSessions pins; the assertions must name the same one or
+	// they assert about accounts this test never scanned.
+	macTestPrefix = "palaitest-s"
+	macDoc        = "docs/operations/mac-sessions.md"
 )
 
 // runMacSessions executes a subcommand and returns combined output plus the exit code. The host UUID
@@ -30,7 +33,20 @@ func runMacSessions(t *testing.T, args ...string) (string, int) {
 	root := repoRoot(t)
 	cmd := exec.Command("bash", append([]string{filepath.Join(root, macScript)}, args...)...)
 	cmd.Dir = root
-	cmd.Env = append(cmd.Environ(), "PALAI_MAC_SESSIONS_HOST_UUID=TEST-HOST-UUID")
+	// A NAMESPACE NO REAL MACHINE USES, and it is not tidiness. This test drives the REAL script against
+	// REAL directory services, so without it the scan finds the operator's own session accounts — the ones
+	// docs/operations/mac-sessions.md tells them to create — whose markers were minted on the real host
+	// UUID and therefore collide with the fake one pinned below, turning a dry run into exit 2. That was
+	// measured on 2026-08-02: a single palai-s01 on the box made this test red, so following the page made
+	// `make verify` impossible. The pinned UUID alone could not fix it, because the collision is found by
+	// NAME before any marker is read.
+	cmd.Env = append(cmd.Environ(),
+		"PALAI_MAC_SESSIONS_HOST_UUID=TEST-HOST-UUID",
+		"PALAI_MAC_SESSIONS_PREFIX=palaitest-s",
+		// A name alone is not a namespace: index 01 still allocates uid 701, which the operator's own
+		// palai-s01 holds. Both halves or neither.
+		"PALAI_MAC_SESSIONS_UID_BASE=900",
+	)
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if ee, ok := err.(*exec.ExitError); ok {
@@ -72,10 +88,10 @@ func TestMacSessionsPlanIsReadOnlyAndNamesBothModes(t *testing.T) {
 	for _, want := range []string{
 		"--mode dirs",     // the cheap option, offered first
 		"--mode accounts", // the expensive one
-		"palai-s01",       // the names it would allocate
-		"palai-s04",
-		"701", // and their uids
-		"704",
+		macTestPrefix + "01", // the names it would allocate
+		macTestPrefix + "04",
+		"901", // and their uids — the pinned base, not the shipped one
+		"904",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("`plan --count 4` output does not mention %q:\n%s", want, out)

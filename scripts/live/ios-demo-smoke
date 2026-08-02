@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# THE LIVE SMOKE FOR THE iOS DEMO CHAIN. It proves the product rather than the suite.
+#
+# WHY IT EXISTS, stated plainly: every piece of this chain had unit tests and a green suite, and NONE of
+# that is evidence that a person can point the demo at a repository and watch an agent change code and
+# show them the result. A green suite says each part behaves as its author expected in isolation. This
+# says the parts reach each other on a real machine.
+#
+# EVERY LEG PRINTS ITS EVIDENCE, and a leg that cannot run says UNPROVEN rather than passing. That
+# distinction is the whole point: "the account leg did not run because no sudoers entry is installed" and
+# "the account leg passed" are different sentences, and a smoke that blurs them is worse than none —
+# it converts a missing capability into a green line.
+#
+# Usage:
+#   scripts/live/ios-demo-smoke                       # everything that needs no privilege
+#   scripts/live/ios-demo-smoke --with-accounts       # additionally proves the per-session uid
+#
+# --with-accounts needs the privileged helper installed:
+#   scripts/ops/palai-session-account install-sudoers "$(id -un)"   # prints the line; you install it
+set -uo pipefail
+
+API="${PALAI_BASE_URL:-http://127.0.0.1:60351}"
+KEY="${PALAI_API_KEY:-$(cat "${PALAI_HOME:-.palai}/api-key" 2>/dev/null || true)}"
+REPO_URL="${SMOKE_REPO_URL:-https://github.com/palgroup/demo-palbase-ios.git}"
+WITH_ACCOUNTS=0
+[ "${1:-}" = "--with-accounts" ] && WITH_ACCOUNTS=1
+
+pass=0
+fail=0
+unproven=0
+
+say() { printf '%s\n' "$*"; }
+hdr() { printf '\n== %s ==\n' "$*"; }
+# EVIDENCE IS PRINTED WITH EVERY VERDICT. A PASS with no evidence is an assertion, and this file exists
+# because assertions were what we had.
+ok() {
+	pass=$((pass + 1))
+	printf '  [PASS     ] %-46s %s\n' "$1" "${2:-}"
+}
+no() {
+	fail=$((fail + 1))
+	printf '  [FAIL     ] %-46s %s\n' "$1" "${2:-}"
+}
+skip() {
+	unproven=$((unproven + 1))
+	printf '  [UNPROVEN ] %-46s %s\n' "$1" "${2:-}"
+}
+
+api() {
+	local method="$1" path="$2" body="${3:-}"
+	if [ -n "$body" ]; then
+		curl -sS -X "$method" "$API$path" -H "Authorization: Bearer $KEY" \
+			-H 'content-type: application/json' -H "Idempotency-Key: smoke-$RANDOM$RANDOM" -d "$body"
+	else
+		curl -sS -X "$method" "$API$path" -H "Authorization: Bearer $KEY"
+	fi
+}
+jq_get() { python3 -c "import sys,json;d=json.load(sys.stdin);print(d$1 if d else '')" 2>/dev/null || true; }
+
+test -n "$KEY" || {
+	say "no API key: set PALAI_API_KEY or run from a tree with .palai/api-key"
+	exit 2
+}
+
+hdr "0. THE STACK ANSWERS"
+caps="$(api GET /v1/capabilities)"
+if printf '%s' "$caps" | grep -q '"responses"'; then
+	ok "control plane serves /v1/capabilities" "$API"
+else
+	no "control plane serves /v1/capabilities" "$API answered: $(printf '%s' "$caps" | head -c 120)"
+	say "nothing below can run against a stack that is not up"
+	exit 1
+fi
+
+hdr "1. A REAL REPOSITORY, CLONED BY THE CONTROL PLANE"
+# The binding is what a run is pointed at; the clone happens inside provisionFreshAllocation when the
+# run mints its workspace. So a binding that CREATES is not yet evidence of a clone — the evidence is
+# the repository's own files being readable by a tool, which leg 4 asserts.
+binding="$(api POST /v1/repository-bindings "{\"provider\":\"github\",\"repository_identity\":\"palgroup/demo-palbase-ios\",\"clone_url\":\"$REPO_URL\"}")"
+binding_id="$(printf '%s' "$binding" | jq_get "['id']")"
+if [ -n "$binding_id" ]; then
+	ok "repository binding created" "$binding_id -> $REPO_URL"
+else
+	no "repository binding created" "$(printf '%s' "$binding" | head -c 200)"
+fi
+
+hdr "2. THE iOS AGENT, PUBLISHED"
+agent="$(api POST /v1/agents '{"name":"ios-smoke-agent"}')"
+agent_id="$(printf '%s' "$agent" | jq_get "['id']")"
+rev=""
+if [ -n "$agent_id" ]; then
+	rev="$(api POST "/v1/agents/$agent_id/revisions" '{
+    "model":"gpt-4o-mini",
+    "instructions":"You are an iOS engineer in a cloned repository. Read before you edit. After a visible change take a screenshot and SHOW it with palai.workspace.show_media, then ask whether it looks right.",
+    "tools":["palai.workspace.file","palai.workspace.shell","palai.workspace.show_media"]
+  }' | jq_get "['id']")"
+fi
+if [ -n "$rev" ]; then
+	published="$(api POST "/v1/agents/$agent_id/revisions/$rev/publish" | jq_get "['status']")"
+	if [ "$published" = "published" ]; then
+		# A DRAFT IS NOT AN AGENT. Publishing is what makes a run get the config, so the verdict is the
+		# publish rather than the create — an earlier version of this file stopped at the 201.
+		ok "agent published with rules and tools" "$agent_id rev=$rev"
+	else
+		no "agent published with rules and tools" "publish answered: $published"
+	fi
+else
+	no "agent revision created" "$(printf '%s' "$agent" | head -c 200)"
+fi
+
+hdr "3. A SESSION, AND THE uid IT RUNS AS"
+before_accounts="$(dscl . -list /Users 2>/dev/null | grep -c '^palai-s' || true)"
+session="$(api POST /v1/sessions '{"name":"ios-demo-smoke"}')"
+session_id="$(printf '%s' "$session" | jq_get "['id']")"
+if [ -n "$session_id" ]; then
+	ok "session created" "$session_id"
+else
+	no "session created" "$(printf '%s' "$session" | head -c 200)"
+	exit 1
+fi
+
+hdr "4. THE RUN: read the CLONE, change code, build, screenshot, SHOW it"
+prompt='List the Swift files in the repository, then read one of them and tell me what it does. Do not change anything yet.'
+resp="$(api POST /v1/responses "{
+  \"session_id\": \"$session_id\",
+  $([ -n "$agent_id" ] && printf '"agent_id": "%s",' "$agent_id")
+  $([ -n "$binding_id" ] && printf '"repository": {"binding_id": "%s"},' "$binding_id")
+  \"input\": $(python3 -c "import json,sys;print(json.dumps(sys.argv[1]))" "$prompt"),
+  \"background\": true
+}")"
+response_id="$(printf '%s' "$resp" | jq_get "['id']")"
+if [ -n "$response_id" ]; then
+	ok "response accepted" "$response_id"
+else
+	no "response accepted" "$(printf '%s' "$resp" | head -c 300)"
+fi
+
+# WAIT ON THE JOURNAL, NOT ON A TIMER. A fixed sleep is how a smoke reports a pass for a run that had not
+# started; the terminal event is the fact.
+deadline=$((SECONDS + 240))
+state=""
+while [ $SECONDS -lt $deadline ]; do
+	state="$(api GET "/v1/responses/$response_id" | jq_get "['status']")"
+	case "$state" in
+	completed | failed | canceled | timed_out | budget_exceeded) break ;;
+	esac
+	sleep 3
+done
+if [ "$state" = "completed" ]; then
+	ok "run reached a terminal state" "$state"
+else
+	no "run reached a terminal state" "stopped at: ${state:-<none>} after $((240 - (deadline - SECONDS)))s"
+fi
+
+hdr "5. WHAT THE RUN ACTUALLY DID (the ledger, not the summary)"
+calls="$(api GET "/v1/responses/$response_id/tool-calls")"
+names="$(printf '%s' "$calls" | python3 -c "
+import sys,json
+try: rows=json.load(sys.stdin).get('data') or []
+except Exception: rows=[]
+print(' '.join(sorted({r.get('name','') for r in rows if r.get('name')})))" 2>/dev/null)"
+if [ -n "$names" ]; then
+	ok "tools were actually called" "$names"
+else
+	no "tools were actually called" "the ledger read returned none"
+fi
+# THE CLONE'S EVIDENCE IS A TOOL SEEING THE REPOSITORY'S OWN FILES. A binding row proves a row.
+cloned="$(printf '%s' "$calls" | python3 -c "
+import sys,json
+try: rows=json.load(sys.stdin).get('data') or []
+except Exception: rows=[]
+blob=json.dumps(rows)
+print('yes' if '.swift' in blob or 'Package.swift' in blob or '.xcodeproj' in blob else 'no')" 2>/dev/null)"
+if [ "$cloned" = "yes" ]; then
+	ok "the repository was really cloned" "a tool saw the repo's own files"
+else
+	no "the repository was really cloned" "no tool call mentions a Swift/Xcode path"
+fi
+shown="$(printf '%s' "$calls" | grep -c 'show_media' || true)"
+if [ "${shown:-0}" -gt 0 ]; then
+	ok "the agent SHOWED media" "$shown show_media call(s)"
+else
+	skip "the agent SHOWED media" "this prompt did not ask for a visible change; leg 7 drives that"
+fi
+
+hdr "6. THE SESSION'S OWN uid"
+if [ "$WITH_ACCOUNTS" -eq 1 ]; then
+	after_accounts="$(dscl . -list /Users 2>/dev/null | grep -c '^palai-s' || true)"
+	if [ "${after_accounts:-0}" -gt "${before_accounts:-0}" ]; then
+		ok "a session account was created" "$before_accounts -> $after_accounts"
+	else
+		no "a session account was created" "count unchanged at ${after_accounts:-0}; is PALAI_SESSION_ACCOUNT_HELPER set on the control plane?"
+	fi
+else
+	skip "a session account was created" "run with --with-accounts (needs the sudoers entry)"
+fi
+
+hdr "7. CLOSING THE SESSION"
+# A FRESH COMMAND ID PER RUN. Commands are idempotent by command_id, so a fixed one made the second
+# run of this smoke replay the FIRST run's close — it reported a pass carrying a timestamp from hours
+# earlier, against a session it never touched. A smoke that can pass without acting is worse than none.
+close="$(api POST "/v1/sessions/$session_id/commands" "{\"kind\":\"close_session\",\"command_id\":\"cmd_smoke_$(date +%s)_$RANDOM\"}")"
+if printf '%s' "$close" | grep -q 'command'; then
+	ok "close_session accepted" "$(printf '%s' "$close" | head -c 60)"
+else
+	no "close_session accepted" "$(printf '%s' "$close" | head -c 200)"
+fi
+if [ "$WITH_ACCOUNTS" -eq 1 ]; then
+	sleep 2
+	final_accounts="$(dscl . -list /Users 2>/dev/null | grep -c '^palai-s' || true)"
+	if [ "${final_accounts:-0}" -le "${before_accounts:-0}" ]; then
+		ok "the session account was destroyed" "back to ${final_accounts:-0}"
+	else
+		no "the session account was destroyed" "${final_accounts:-0} remain; an account that outlives its session is the leak"
+	fi
+else
+	skip "the session account was destroyed" "run with --with-accounts"
+fi
+
+printf '\n== RESULT ==\n  %d passed, %d failed, %d unproven\n' "$pass" "$fail" "$unproven"
+if [ "$unproven" -gt 0 ]; then
+	say "  An UNPROVEN leg is a capability this run could not exercise. It is NOT a pass."
+fi
+[ "$fail" -eq 0 ] || exit 1

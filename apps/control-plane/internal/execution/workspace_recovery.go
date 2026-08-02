@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -45,7 +46,14 @@ type WorkspaceRecovery struct {
 	// failing remover to exercise the destroy-failure→quarantine path (SAN-008). ponytail: one function
 	// field, not a Destroyer interface — there is exactly one real implementation.
 	remove func(string) error
+	// accounts releases the uid this allocation's tools ran under. Nil means the deployment mints none.
+	accounts SessionAccounts
 }
+
+// SetSessionAccounts wires the account release into allocation teardown. It is the OTHER half of
+// Orchestrator.SetSessionAccounts and a composition root that wires one without the other leaks an
+// account per allocation — which is why main.go sets both from the same value.
+func (r *WorkspaceRecovery) SetSessionAccounts(a SessionAccounts) { r.accounts = a }
 
 // NewWorkspaceRecovery binds the durable spine, the snapshot restore path, and the provision root (which
 // doubles as the local-tier host identity for quarantine).
@@ -159,6 +167,11 @@ type DestroyInput struct {
 	SessionID   string
 	ResponseID  string
 	HostPath    string
+	// AllocationID names the allocation being torn down, and it is CARRIED rather than derived from
+	// HostPath. filepath.Base(HostPath) is the same string today — provisionFreshAllocation joins the root
+	// and the id — but an identity recovered by parsing a path is the shape this tree keeps finding
+	// defeated, and the thing it would key here is a privileged account deletion. Empty releases nothing.
+	AllocationID string
 }
 
 // DestroyAllocation tears an allocation down: it drives the workspace ready/paused/failed→destroying→
@@ -184,6 +197,20 @@ func (r *WorkspaceRecovery) DestroyAllocation(ctx context.Context, tenant coordi
 		}
 	default:
 		return err
+	}
+	// THE ACCOUNT GOES BEFORE THE BYTES, and the order is the point: destroying the account kills every
+	// process still running as that uid (sysadminctl does this itself), so the directory removal that
+	// follows is not racing a build that is still writing into it. Reversed, a stale `xcodebuild` could
+	// recreate paths under a tree that was just removed.
+	//
+	// A FAILURE HERE DOES NOT STOP THE TEARDOWN. The bytes are the tenant data; leaving them because an
+	// account could not be removed would be the worse of the two residues, and mac-sessions.sh's `down`
+	// is the operator's reconciliation for the account that stayed.
+	if r.accounts != nil {
+		if err := r.accounts.Release(ctx, in.AllocationID); err != nil {
+			log.Printf("workspace %s: allocation %s account not released, its slot is held until an operator reconciles: %v",
+				in.WorkspaceID, in.AllocationID, err)
+		}
 	}
 	if err := r.remove(in.HostPath); err != nil {
 		// The teardown failed — the host may still hold tenant bytes, so quarantine it and refuse future

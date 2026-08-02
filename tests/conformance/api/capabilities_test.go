@@ -40,10 +40,22 @@ func TestCapabilities(t *testing.T) {
 		if body.Capabilities["responses"] != "preview" {
 			t.Errorf("responses capability = %q, want preview", body.Capabilities["responses"])
 		}
-		// Workspaces is derived from PALAI_WORKSPACE_ROOT (E09 T10): this Docker-free tier configures no
-		// coding stack, so both sessions and workspaces are unavailable here.
-		if body.Capabilities["sessions"] != "unavailable" || body.Capabilities["workspaces"] != "unavailable" {
-			t.Errorf("sessions/workspaces should be unavailable without a coding stack: %+v", body.Capabilities)
+		// THE TWO ARE DERIVED DIFFERENTLY AND THIS ASSERTION USED TO TREAT THEM AS ONE, which is what made
+		// it wrong rather than merely outdated. `workspaces` DERIVES from PALAI_WORKSPACE_ROOT (E09 T10), so
+		// a Docker-free tier that configures no coding stack correctly reports it unavailable. `sessions` is
+		// TYPED "preview" (capabilities.go), because the session surface is served whether or not a
+		// workspace root exists — a session with no coding workspace is an ordinary session.
+		//
+		// Asserting them together read as one measured fact and was two: one measured, one stale. It went
+		// red when sessions became typed and stayed red, which is how a suite teaches a reader to skip a
+		// name. Its own guard is TestSessionsCapabilityAgreesWithTheServedSurface, which drives the session
+		// surface and reads the word off the same router rather than trusting either of us.
+		if body.Capabilities["workspaces"] != "unavailable" {
+			t.Errorf("workspaces should be unavailable without a coding stack (no PALAI_WORKSPACE_ROOT): %+v", body.Capabilities)
+		}
+		if body.Capabilities["sessions"] != "preview" {
+			t.Errorf("sessions = %q, want preview — the session surface is served with or without a coding "+
+				"workspace: %+v", body.Capabilities["sessions"], body.Capabilities)
 		}
 		if body.Retention.StoreFalseTTLSeconds != 0 {
 			t.Errorf("default store_false_ttl_seconds = %d, want 0 (disabled)", body.Retention.StoreFalseTTLSeconds)
