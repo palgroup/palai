@@ -86,6 +86,27 @@ host_uuid() {
 	ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/{print $4; exit}'
 }
 
+# session_seq is `seq FIRST LAST` that yields NOTHING when the range is empty, which BSD seq does not do.
+#
+# ON THIS MACHINE, MEASURED 2026-08-02: `seq 2 1` prints "2\n1" and `seq 1 0` prints "1\n0" — BSD seq
+# counts DOWN when the first number exceeds the last, where GNU seq prints nothing. Every `for n in $(seq
+# ...)` in this file was written expecting the GNU behaviour, and one of them shipped two defects because of
+# it, both of them shapes this repository keeps finding:
+#
+#   `verify_device_sets` looped `seq 2 "$COUNT"` to compare every OTHER session against session 1. With one
+#   session that became n=2 then n=1. n=2 is a session that does not exist, so `as_session` failed, the
+#   output was empty, the case fell to its default arm and it reported **PASS — a green line about a machine
+#   that is not there**. n=1 is session one itself, which of course sees its own device, and it reported
+#   **FAIL "s01's set cannot see s01's device"** — an assertion that reads like a boundary violation and is
+#   actually a session compared with itself.
+#
+# So the range is bounded here rather than at four call sites, because the next loop written in this file
+# would have inherited it.
+session_seq() {
+	[ "$1" -le "$2" ] 2>/dev/null || return 0
+	seq "$1" "$2"
+}
+
 session_name() { printf '%s%02d' "$PREFIX" "$1"; }
 session_id() { printf 's%02d' "$1"; }
 session_uid() { printf '%d' "$((UID_BASE + $1))"; }
@@ -338,7 +359,7 @@ cmd_plan() {
 		say "  It reads the durable run ledger and FAILS if the runs never overlapped."
 
 		hdr "WOULD ALLOCATE (mode=${MODE:-accounts}, count=$COUNT)"
-		for n in $(seq 1 "$COUNT"); do
+		for n in $(session_seq 1 "$COUNT"); do
 			name="$(session_name "$n")"
 			uid="$(session_uid "$n")"
 			if [ "${MODE:-accounts}" = "dirs" ]; then
@@ -422,7 +443,7 @@ cmd_up() {
 		[ "$APPLY" -eq 0 ] || is_root || die "up --mode accounts --apply must run as root (use sudo)"
 		# Refuse the whole run before creating anything if any name or uid is already spoken for by
 		# something we did not create. Half a fleet is worse than none.
-		for n in $(seq 1 "$COUNT"); do
+		for n in $(session_seq 1 "$COUNT"); do
 			name="$(session_name "$n")"
 			uid="$(session_uid "$n")"
 			if ds_exists "$name"; then
@@ -442,7 +463,7 @@ cmd_up() {
 		[ "$refused" -eq 0 ] || die "refusing to continue — resolve the collisions above"
 	fi
 
-	for n in $(seq 1 "$COUNT"); do
+	for n in $(session_seq 1 "$COUNT"); do
 		name="$(session_name "$n")"
 		if [ "$APPLY" -eq 0 ]; then
 			if [ "$MODE" = "accounts" ]; then
@@ -500,7 +521,7 @@ cmd_up() {
 verify_posture() {
 	local n name uid home mode marker
 	if [ "$MODE" = "dirs" ]; then
-		for n in $(seq 1 "${COUNT:-0}"); do
+		for n in $(session_seq 1 "${COUNT:-0}"); do
 			mode="$(stat -f '%Lp' "$(session_root "$n")" 2>/dev/null || echo none)"
 			if [ "$mode" = "700" ]; then
 				check PASS "$(session_id "$n") directory is 700" "$(session_root "$n")"
@@ -510,7 +531,7 @@ verify_posture() {
 		done
 		return 0
 	fi
-	for n in $(seq 1 "${COUNT:-0}"); do
+	for n in $(session_seq 1 "${COUNT:-0}"); do
 		name="$(session_name "$n")"
 		if ! ds_exists "$name"; then
 			check FAIL "$name exists" "no directory-services record"
@@ -629,8 +650,16 @@ verify_device_sets() {
 	else
 		check PASS "the default device set cannot see session s01's device" "$udid"
 	fi
-	for n in $(seq 2 "${COUNT:-1}"); do
+	for n in $(session_seq 2 "${COUNT:-0}"); do
 		others="$(as_session "$n" xcrun simctl --set "$(device_set "$n")" list devices 2>/dev/null || true)"
+		# AN EMPTY LISTING IS NOT A CLEAN SEPARATION. `as_session` fails for a session that does not exist,
+		# and simctl prints nothing when it cannot read a set at all — both land in the same default arm as a
+		# genuine "not listed" and used to report PASS. A check that passes because it could not run is the
+		# thing the header of this file says UNVERIFIED exists for.
+		if [ -z "$(printf '%s' "$others" | tr -d '[:space:]')" ]; then
+			check UNVERIFIED "$(session_id "$n")'s set cannot see s01's device" "$(session_id "$n") listed no devices at all, so nothing was compared"
+			continue
+		fi
 		case "$others" in
 		*"$udid"*) check FAIL "$(session_id "$n")'s set cannot see s01's device" "it is listed" ;;
 		*) check PASS "$(session_id "$n")'s set cannot see s01's device" "" ;;
@@ -667,7 +696,7 @@ print(phones[-1]["identifier"], newest["identifier"])
 verify_aqua() {
 	local n uid
 	is_macos || return 0
-	for n in $(seq 1 "${COUNT:-0}"); do
+	for n in $(session_seq 1 "${COUNT:-0}"); do
 		uid="$(session_uid "$n")"
 		[ "$MODE" = "dirs" ] && uid="$(id -u)"
 		if launchctl print "gui/$uid" >/dev/null 2>&1; then
@@ -702,7 +731,7 @@ verify_simulator() {
 	}
 	say ""
 	say "  measuring ${COUNT} session(s) CONCURRENTLY — this is the load-bearing unknown"
-	for n in $(seq 1 "$COUNT"); do
+	for n in $(session_seq 1 "$COUNT"); do
 		drive_one "$n" >"${TMPDIR:-/tmp}/palai-mac-sessions-$(session_id "$n").log" 2>&1 &
 		pids="$pids $!"
 	done
@@ -711,7 +740,7 @@ verify_simulator() {
 	done
 	# Re-tally from what the children printed. Their own $fail/$unverified died with their subshells,
 	# and a concurrency measurement whose failures do not reach the summary is not a measurement.
-	for n in $(seq 1 "$COUNT"); do
+	for n in $(session_seq 1 "$COUNT"); do
 		log="${TMPDIR:-/tmp}/palai-mac-sessions-$(session_id "$n").log"
 		cat "$log"
 		fail=$((fail + $(grep -c '^  \[FAIL' "$log" || true)))
@@ -844,7 +873,7 @@ discover_count() {
 			$(session_records)
 		EOF
 	else
-		for n in $(seq 1 "$MAX_SESSIONS"); do
+		for n in $(session_seq 1 "$MAX_SESSIONS"); do
 			if [ -d "$DIRS_ROOT/$(session_id "$n")" ]; then found="$n"; fi
 		done
 	fi
@@ -885,7 +914,7 @@ cmd_down() {
 			say "DRY RUN: nothing was changed. Re-run with --apply."
 			return 0
 		fi
-		for n in $(seq 1 "$MAX_SESSIONS"); do
+		for n in $(session_seq 1 "$MAX_SESSIONS"); do
 			[ -d "$(device_set "$n")" ] || continue
 			xcrun simctl --set "$(device_set "$n")" delete all >/dev/null 2>&1 || true
 		done
