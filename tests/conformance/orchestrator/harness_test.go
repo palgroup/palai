@@ -197,6 +197,10 @@ func (f *fakeControlPlane) RenameSession(_ context.Context, _ middleware.Scope, 
 	return api.SessionResult{}, nil
 }
 
+func (f *fakeControlPlane) SetSessionAutoApprove(_ context.Context, _ middleware.Scope, _ string, _, _ bool) (api.SessionResult, error) {
+	return api.SessionResult{}, nil
+}
+
 func (f *fakeControlPlane) GetSession(_ context.Context, _ middleware.Scope, id string) (api.SessionResult, error) {
 	f.mu.Lock()
 	r := f.bySession[id]
