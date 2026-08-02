@@ -82,7 +82,9 @@ func (s *Store) ListSessions(ctx context.Context, tenant Tenant, p ListParams) (
 	for rows.Next() {
 		v := SessionView{Found: true}
 		var derived *string
-		if err := rows.Scan(&v.ID, &v.State, &v.CreatedAt, &v.Name, &derived, &v.Agents,
+		if err := rows.Scan(&v.ID, &v.State, &v.CreatedAt, &v.Name,
+			&v.AutoApprove.Tools, &v.AutoApprove.Publications, &v.AutoApprove.SetBy, &v.AutoApprove.SetAt,
+			&derived, &v.Agents,
 			&v.InputTokens, &v.OutputTokens, &v.FirstActivityAt, &v.LastActivityAt); err != nil {
 			return nil, fmt.Errorf("scan session row: %w", err)
 		}

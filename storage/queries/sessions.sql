@@ -70,6 +70,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- SessionStateInScope above before reaching for it to answer "does this session exist".
 -- name: GetSessionInScope
 SELECT s.id, s.state, s.created_at, s.name,
+       s.auto_approve_tools, s.auto_approve_publications, s.auto_approve_set_by, s.auto_approve_set_at,
        label.derived_name,
        agg.agent_names,
        COALESCE(tok.input_tokens, 0)  AS input_tokens,
@@ -140,7 +141,8 @@ WHERE s.id = $1 AND s.organization_id = $2 AND s.project_id = $3;
 -- same session id would be summed straight into this row.
 -- name: ListSessions
 WITH page AS (
-    SELECT id, state, created_at, name
+    SELECT id, state, created_at, name,
+           auto_approve_tools, auto_approve_publications, auto_approve_set_by, auto_approve_set_at
     FROM sessions
     WHERE organization_id = $1 AND project_id = $2
       AND ($3 = '' OR state = $3)
@@ -151,6 +153,7 @@ WITH page AS (
     LIMIT $8
 )
 SELECT p.id, p.state, p.created_at, p.name,
+       p.auto_approve_tools, p.auto_approve_publications, p.auto_approve_set_by, p.auto_approve_set_at,
        label.derived_name,
        agg.agent_names,
        COALESCE(tok.input_tokens, 0)  AS input_tokens,

@@ -48,6 +48,15 @@ type SessionView struct {
 	State      string
 	CreatedAt  time.Time
 	Found      bool
+	// AutoApprove is the session's STANDING AUTHORIZATION for its own approvals (E30 T1, migration
+	// 000056), and it is on the projection because an operator must be able to SEE from the screen that
+	// a session is deciding its own gated calls. A switch whose state is only visible to the code that
+	// reads it is a switch nobody can audit from the outside.
+	//
+	// It is read by BOTH the detail query and the list query. That is deliberate rather than thorough:
+	// populating it on one and leaving the other at the zero value would make a list screen quietly
+	// report every armed session as unarmed, which is the more dangerous of the two directions.
+	AutoApprove AutoApproveView
 	Name       string
 	NameSource string
 	Agents     []string
@@ -101,7 +110,9 @@ func (s *Store) GetSession(ctx context.Context, tenant Tenant, sessionID string)
 		derived *string
 	)
 	err := s.pool.QueryRow(ctx, storage.Query("GetSessionInScope"), sessionID, tenant.Organization, tenant.Project).
-		Scan(&v.ID, &v.State, &v.CreatedAt, &v.Name, &derived, &v.Agents,
+		Scan(&v.ID, &v.State, &v.CreatedAt, &v.Name,
+			&v.AutoApprove.Tools, &v.AutoApprove.Publications, &v.AutoApprove.SetBy, &v.AutoApprove.SetAt,
+			&derived, &v.Agents,
 			&v.InputTokens, &v.OutputTokens, &v.FirstActivityAt, &v.LastActivityAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SessionView{}, nil

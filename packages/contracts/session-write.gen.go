@@ -2,5 +2,7 @@
 package contracts
 
 type SessionWrite struct {
-	Name *string `json:"name,omitempty"`
+	AutoApprovePublications *bool   `json:"auto_approve_publications,omitempty"`
+	AutoApproveTools        *bool   `json:"auto_approve_tools,omitempty"`
+	Name                    *string `json:"name,omitempty"`
 }

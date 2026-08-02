@@ -27,6 +27,14 @@ type SessionManager interface {
 	// POST /v1/responses, so a create-time name would leave exactly the sessions a Sessions screen is
 	// full of with no way to be labelled.
 	RenameSession(ctx context.Context, scope middleware.Scope, id, name string) (SessionResult, error)
+	// SetSessionAutoApprove arms or disarms the session's two approval families (E30 T1). It takes the
+	// two halves as separate arguments rather than a struct with a combined flag, so that a caller
+	// physically cannot ask for "auto-approve" without saying WHICH — the signature carries the split
+	// that the columns, the schema and the screen all carry.
+	//
+	// There is no principal parameter: the store stamps it from the verified scope, the same rule
+	// ApprovalDecision states for a click.
+	SetSessionAutoApprove(ctx context.Context, scope middleware.Scope, id string, tools, publications bool) (SessionResult, error)
 	AcceptCommand(ctx context.Context, scope middleware.Scope, sessionID string, req contracts.CommandCreateRequest) (CommandResult, error)
 }
 
@@ -142,8 +150,54 @@ func (h *sessionHandler) rename(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+	// THE AUTO-APPROVE ARM (E30 T1) SHARES THIS ROUTE, and the two changes are kept apart rather than
+	// merged, for a reason this tree has paid for before: a request that carries only a name must not
+	// touch the standing authorization, and a request that carries only the flags must not blank the
+	// label. Both fields are POINTERS in the generated contract precisely so absent and false are
+	// distinguishable — with a plain bool, `PATCH {"name":"x"}` would decode both flags as false and
+	// SILENTLY DISARM a session the operator armed a minute ago.
+	if req.AutoApproveTools != nil || req.AutoApprovePublications != nil {
+		// A PATCH that names one half leaves the other EXACTLY as it was, which means reading the current
+		// state first. Sending false for the unnamed half would make "arm publications" a way to disarm
+		// tools, and the whole point of two columns is that one is never a lever on the other.
+		current, err := h.sessions.GetSession(r.Context(), scope, r.PathValue("session_id"))
+		if err != nil {
+			middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+			return
+		}
+		if !current.Found {
+			middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such session in this project")
+			return
+		}
+		tools, publications, ok := currentAutoApprove(w, r, current.Body)
+		if !ok {
+			return
+		}
+		if req.AutoApproveTools != nil {
+			tools = *req.AutoApproveTools
+		}
+		if req.AutoApprovePublications != nil {
+			publications = *req.AutoApprovePublications
+		}
+		out, err := h.sessions.SetSessionAutoApprove(r.Context(), scope, r.PathValue("session_id"), tools, publications)
+		if err != nil {
+			middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+			return
+		}
+		if !out.Found {
+			middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such session in this project")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(out.Body)
+		return
+	}
+
 	if req.Name == nil {
-		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "name is required")
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request",
+			"name is required (or an auto_approve_tools / auto_approve_publications field)")
 		return
 	}
 	out, err := h.sessions.RenameSession(r.Context(), scope, r.PathValue("session_id"), *req.Name)
@@ -158,6 +212,21 @@ func (h *sessionHandler) rename(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out.Body)
+}
+
+// currentAutoApprove reads the two flags back out of a rendered session projection, so a PATCH that
+// names one half can leave the other untouched.
+//
+// It parses the PROJECTION rather than taking a second store method, because the projection is the one
+// shape both GET and PATCH already agree on — a separate read path here would be a second answer to
+// "what is this session's standing authorization", and two answers is how they come to disagree.
+func currentAutoApprove(w http.ResponseWriter, r *http.Request, body []byte) (tools, publications, ok bool) {
+	var current contracts.Session
+	if err := json.Unmarshal(body, &current); err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return false, false, false
+	}
+	return current.AutoApproveTools, current.AutoApprovePublications, true
 }
 
 // decodeSessionWrite reads the shared {name} body both session write routes take. An EMPTY body is a

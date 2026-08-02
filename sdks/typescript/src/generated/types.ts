@@ -295,6 +295,10 @@ export interface ResponseCreateRequest {
 
 export interface Session {
   agents: string[];
+  auto_approve_publications?: boolean;
+  auto_approve_set_at?: string | null;
+  auto_approve_set_by?: string;
+  auto_approve_tools?: boolean;
   created_at: string;
   duration_ms?: number | null;
   first_activity_at?: string | null;
@@ -312,6 +316,8 @@ export interface Session {
 }
 
 export interface SessionWrite {
+  auto_approve_publications?: boolean | null;
+  auto_approve_tools?: boolean | null;
   name?: string | null;
 }
 

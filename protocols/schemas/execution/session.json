@@ -3,15 +3,42 @@
   "$id": "https://schemas.palai.dev/execution/session.json",
   "title": "Session",
   "type": "object",
-  "required": ["id", "object", "status", "created_at", "name", "name_source", "agents", "input_tokens", "output_tokens"],
+  "required": [
+    "id",
+    "object",
+    "status",
+    "created_at",
+    "name",
+    "name_source",
+    "agents",
+    "input_tokens",
+    "output_tokens"
+  ],
   "properties": {
-    "id": {"$ref": "../common/id.json#/$defs/session_id"},
-    "object": {"type": "string", "const": "session"},
-    "organization_id": {"$ref": "../common/id.json#/$defs/organization_id"},
-    "project_id": {"$ref": "../common/id.json#/$defs/project_id"},
-    "status": {"type": "string"},
-    "created_at": {"type": "string", "format": "date-time"},
-    "metadata": {"type": "object", "maxProperties": 64},
+    "id": {
+      "$ref": "../common/id.json#/$defs/session_id"
+    },
+    "object": {
+      "type": "string",
+      "const": "session"
+    },
+    "organization_id": {
+      "$ref": "../common/id.json#/$defs/organization_id"
+    },
+    "project_id": {
+      "$ref": "../common/id.json#/$defs/project_id"
+    },
+    "status": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "metadata": {
+      "type": "object",
+      "maxProperties": 64
+    },
     "name": {
       "type": "string",
       "maxLength": 200,
@@ -19,12 +46,18 @@
     },
     "name_source": {
       "type": "string",
-      "enum": ["operator", "derived", "none"],
+      "enum": [
+        "operator",
+        "derived",
+        "none"
+      ],
       "description": "Where `name` came from. `operator` is a label a human typed; `derived` is a cut of the session's first prompt and is NOT something anyone chose; `none` means the session has neither a label nor a prompt to derive one from, and `name` is empty. A screen offering a rename affordance needs the distinction — presenting a derived cut as the session's name is a claim nobody made."
     },
     "agents": {
       "type": "array",
-      "items": {"type": "string"},
+      "items": {
+        "type": "string"
+      },
       "description": "The DISTINCT agent-profile names this session's RUNS pinned, sorted. Deliberately plural: there is no session-to-agent association in this system — a run pins an agent revision, so a session may have used none, one, or several — and a screen that labels this column 'Agent' singular is asserting something the data does not say. Empty for a session whose runs pinned no agent profile, which includes every run pinned to a run template: a template carries executable config but must not impersonate an agent identity."
     },
     "input_tokens": {
@@ -38,23 +71,60 @@
       "description": "Output tokens METERED for this session, summed from the usage ledger. Same floor caveat as input_tokens."
     },
     "first_activity_at": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "format": "date-time",
       "description": "When this session's earliest run was created, or null when it has never run. Null is a session with no duration, not one lasting zero."
     },
     "last_activity_at": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "format": "date-time",
       "description": "When this session's latest run last CHANGED STATE, or null when it has never run. On a session with a run still in flight this is the last transition and not the present moment, so it is not 'now' — elapsed time for a live session is the reader's own clock minus first_activity_at."
     },
     "duration_ms": {
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 0,
       "description": "last_activity_at minus first_activity_at in milliseconds, or null when the session has never run. It spans RECORDED activity: for a session still running it is the span so far between transitions, not wall-clock elapsed."
+    },
+    "auto_approve_tools": {
+      "type": "boolean",
+      "description": "Whether this session decides its own gated TOOL calls through the standing authorization an operator armed, instead of parking the run for a human each time (E30 T1, migration 000056). It is on the projection because an operator must be able to SEE from the screen that a session is answering its own approvals — a switch whose state is visible only to the code that reads it is a switch nobody can audit from outside. False for every session that never armed it, which is every session created before the field existed."
+    },
+    "auto_approve_publications": {
+      "type": "boolean",
+      "description": "Whether this session decides its own PUBLICATIONS — pushes, pull requests, merges — through the standing authorization. SEPARATE from auto_approve_tools, and the screen must render the two separately, because they are not the same risk: a gated tool call's effects land in the run's own workspace while an operator watches, and a publication writes to somebody's repository and outlives the session. A screen that showed one 'auto-approve: on' badge for both would be telling an operator something false about the second."
+    },
+    "auto_approve_set_by": {
+      "type": "string",
+      "description": "The principal whose standing authorization decides this session's approvals — the human who armed it, stamped server-side from the verified key. It is NOT decoration: the auto-decision is made AS this principal and still passes the project's `approvers` policy for them, so an armed session grants exactly what that person could have granted by clicking. Empty when nothing was ever armed, and empty means unidentified, which a project WITH an approver list refuses."
+    },
+    "auto_approve_set_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "description": "When the standing authorization was last armed, or null when neither half is armed — so 'armed at' never outlives the arming."
     }
   },
   "additionalProperties": true,
   "$defs": {
-    "known_statuses": {"enum": ["active", "paused", "closing", "closed", "deleted"]}
+    "known_statuses": {
+      "enum": [
+        "active",
+        "paused",
+        "closing",
+        "closed",
+        "deleted"
+      ]
+    }
   }
 }

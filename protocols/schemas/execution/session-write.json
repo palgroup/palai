@@ -3,7 +3,7 @@
   "$id": "https://schemas.palai.dev/execution/session-write.json",
   "title": "SessionWrite",
   "type": "object",
-  "description": "The body of POST /v1/sessions and PATCH /v1/sessions/{session_id}. One field, because a session's label is the only thing about a session a caller supplies — everything else on the resource is either minted by the server or aggregated from the session's own runs and meters.",
+  "description": "The body of POST /v1/sessions and PATCH /v1/sessions/{session_id}. The label is the only thing about a session a caller DESCRIBES; the two auto-approve fields are the only thing a caller DECIDES, and they are the session's standing authorization for its own approvals. Everything else on the resource is minted by the server or aggregated from the session's own runs and meters. There is deliberately no `auto_approve_set_by`: the principal is stamped server-side from the verified key — the same rule ApprovalDecision states for a click — because a request that could name its own approver would let anyone arm a session as anyone.",
   "required": [],
   "properties": {
     "name": {
@@ -12,7 +12,21 @@
         "null"
       ],
       "maxLength": 200,
-      "description": "The display label. ABSENT and EMPTY are different values here, which is why the type admits null: absent (or null) means the caller is not setting a label — on create the session simply has none and its projection derives one from the first prompt, and on PATCH it is a 400, because a rename that renames nothing is a request that lost its field. An empty string is a real value that CLEARS the operator label and returns the row to the derived one."
+      "description": "The display label. ABSENT and EMPTY are different values here, which is why the type admits null: absent (or null) means the caller is not setting a label — on create the session simply has none and its projection derives one from the first prompt, and on PATCH it is a 400 UNLESS the request sets an auto-approve field instead, because a PATCH that changes nothing at all is a request that lost its field. An empty string is a real value that CLEARS the operator label and returns the row to the derived one."
+    },
+    "auto_approve_tools": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Arms this session's gated TOOL calls: a tool whose revision declares approval_required is decided by the session's standing authorization instead of parking the run for a human. ABSENT AND FALSE ARE DIFFERENT, which is why the type admits null: absent means this PATCH is not touching the tool half (so renaming a session cannot silently disarm it), while false is a real value that DISARMS it. Defaults to false, and every session created before this field existed reads false, so the gate is unchanged for anyone who does not ask. IT DOES NOT SKIP THE APPROVAL — the row is written and then decided, through the same function a human's click goes through, stamped with the principal that armed the session. So the approvals surface still shows it, the project's `approvers` policy still applies to that principal, and arming grants exactly what clicking would have granted."
+    },
+    "auto_approve_publications": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Arms this session's PUBLICATIONS: a push, pull request or merge is decided by the session's standing authorization instead of parking the run for a human. SEPARATE FROM auto_approve_tools ON PURPOSE, and the separation is the design rather than caution — a gated tool call's effects land in the run's own workspace while an operator watches, while a publication writes to somebody's repository and outlives the session entirely. One flag for both would mean the operator who stopped confirming every `xcodebuild` had also, in the same click, stopped confirming every push. ABSENT AND FALSE ARE DIFFERENT here too: absent leaves the publication half exactly as it was. Defaults to false and stays false unless it is asked for by name."
     }
   },
   "additionalProperties": false
