@@ -1301,7 +1301,12 @@ func gitHubAppPublisherFromEnv() (repositories.Broker, repositories.PullRequestC
 	installID := os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID")
 	keyFile := os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE")
 	if !api.GitHubAppConfigured() {
-		if appID != "" || installID != "" || keyFile != "" {
+		// THE CONDITION IS THE TWO IDENTIFIERS, NOT THE KEY PATH, and it was measured: every bring-up sets
+		// PALAI_GITHUB_APP_PRIVATE_KEY_FILE (native.go's env map and compose.yaml both write it
+		// unconditionally, at a file-secret slot that exists EMPTY until an App is configured), so a line
+		// conditioned on it printed on a stack that had configured NOTHING — seen on the live native stack
+		// 2026-08-02 at boot. `palai up` calls that crying wolf and removed it once already.
+		if appID != "" || installID != "" {
 			log.Printf("repository publisher: PALAI_GITHUB_APP_ID/PALAI_GITHUB_APP_INSTALLATION_ID/" +
 				"PALAI_GITHUB_APP_PRIVATE_KEY_FILE are required TOGETHER; at least one is missing, so the " +
 				"deployment-global App is OFF — only a binding carrying its own connection_ref can publish")

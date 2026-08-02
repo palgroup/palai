@@ -1065,16 +1065,27 @@ func GitHubAppConfigured() bool {
 }
 
 // gitHubAppPartiallyConfigured is the state an operator reaches by editing .env.local and being
-// interrupted: one or two of three. It must not read as configured and must not read as unconfigured —
-// it is the one case where the operator believes they finished.
+// interrupted. It must not read as configured and must not read as unconfigured — it is the one case
+// where the operator believes they finished.
+//
+// IT COUNTS THE TWO IDENTIFIERS AND NOT THE KEY PATH, and that distinction was MEASURED rather than
+// reasoned. A first version asked "are one or two of the three set", and on the live native stack
+// (2026-08-02) it reported BLOCKING on a deployment that had configured nothing:
+//
+//	GET /v1/deployment -> publication_github_app_partial, "PALAI_GITHUB_APP_ID, ...INSTALLATION_ID is unset"
+//
+// because EVERY shipped bring-up sets the key PATH regardless of intent — native.go's env map writes
+// PALAI_GITHUB_APP_PRIVATE_KEY_FILE unconditionally and compose.yaml writes it literally, both pointing at
+// a file-secret slot that exists EMPTY until an App is configured. So the path is a property of the
+// bring-up, not a thing the operator decided, and a severity derived from it is a red banner on every
+// healthy single-tenant stack. `palai up` already names that failure in its own words: a warning on every
+// bring-up is crying wolf.
+//
+// The identifiers are different: nothing sets PALAI_GITHUB_APP_ID or PALAI_GITHUB_APP_INSTALLATION_ID
+// except an operator. Naming one of them IS the unfinished intent this warning is about.
 func gitHubAppPartiallyConfigured() bool {
-	set := 0
-	for _, name := range gitHubAppSettings {
-		if os.Getenv(name) != "" {
-			set++
-		}
-	}
-	return set > 0 && set < len(gitHubAppSettings)
+	started := os.Getenv("PALAI_GITHUB_APP_ID") != "" || os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID") != ""
+	return started && !GitHubAppConfigured()
 }
 
 // gitHubAppSettings are the three names, in one place, because both warnings below quote them and a

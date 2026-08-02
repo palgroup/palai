@@ -494,6 +494,23 @@ func TestDeploymentSaysWhatCanAndCannotBePublished(t *testing.T) {
 			warnPublishAppPartial)
 	}
 
+	// AND THE SHAPE EVERY SHIPPED BRING-UP ACTUALLY HAS, which a first version of this warning got wrong
+	// and the live stack caught: PALAI_GITHUB_APP_PRIVATE_KEY_FILE is written UNCONDITIONALLY by
+	// native.go's env map and by compose.yaml, at a file-secret slot that exists EMPTY until an App is
+	// configured. Counting it as "one of three set" reported BLOCKING on a healthy single-tenant stack —
+	// measured on the live native stack 2026-08-02, GET /v1/deployment. A path nothing but the bring-up
+	// decided is not an operator's unfinished intent.
+	t.Setenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE", "/run/secrets/github_app_key")
+	body, _ = deploymentBodyOf(t, bareRouter())
+	if _, ok := warningCoded(body, warnPublishAppPartial); ok {
+		t.Errorf("the key PATH alone raised %q: every bring-up sets it, so this puts a blocking banner on "+
+			"every stack that configured no App at all", warnPublishAppPartial)
+	}
+	if _, ok := warningCoded(body, warnPublishAppAbsent); !ok {
+		t.Errorf("the key PATH alone cleared %q: this deployment still has no App and still cannot publish "+
+			"a binding without its own connection_ref", warnPublishAppAbsent)
+	}
+
 	// HALF-CONFIGURED is the blocking one, and it is raised for each of the three in turn: a warning that
 	// only noticed a missing app id would leave the other two silent.
 	full := map[string]string{
