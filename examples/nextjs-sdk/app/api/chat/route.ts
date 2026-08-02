@@ -154,6 +154,12 @@ async function pumpPalaiFrames(
   // Publications whose approval APPLIED but whose push has not been confirmed. See the
   // approval.approved.v1 arm for why the two are not the same event.
   const approvedPublications = new Set<string>();
+  // THE REPLAY CLASS IS ON THE EXECUTING FRAME AND NOT ON THE COMPLETED ONE, so it has to be
+  // remembered across the pair. Both parts share a `data-tool` id, so the AI SDK REPLACES the first
+  // with the second — and a completed part that omitted the class would blank a field the operator
+  // had already been shown. Measured as a red spec: the card lost "irreversible" the moment the call
+  // finished.
+  const replayClasses = new Map<string, string>();
 
   try {
     for (;;) {
@@ -170,7 +176,7 @@ async function pumpPalaiFrames(
         const evt = parseFrame(frame);
         if (evt === null) continue;
 
-        const terminal = writeFrame(writer, evt, openText, textId, responseId, pending, approvedPublications);
+        const terminal = writeFrame(writer, evt, openText, textId, responseId, pending, approvedPublications, replayClasses);
         if (terminal) {
           if (textOpen) {
             writer.write({ type: "text-end", id: textId });
@@ -219,6 +225,7 @@ function writeFrame(
   responseId: string,
   pending: Promise<void>[],
   approvedPublications: Set<string>,
+  replayClasses: Map<string, string>,
 ): boolean {
   const d = evt.data;
   switch (evt.type) {
@@ -248,23 +255,54 @@ function writeFrame(
     // CLOSING IT is a control-plane change (put the name on the frame, or give the events API a join), not
     // an adapter change, and inventing a second lookup here would hide the gap rather than report it.
     case "tool_call.executing.v1":
+      if (str(d.tool_call_id) !== "" && str(d.replay_class) !== "") {
+        replayClasses.set(str(d.tool_call_id), str(d.replay_class));
+      }
       writer.write({
         type: "data-tool",
         id: String(d.tool_call_id ?? "tool"),
         data: {
           id: d.tool_call_id ?? null,
           replayClass: d.replay_class ?? null,
+          name: str(d.tool_name) || null,
           state: "running",
-          nameUnavailable: true,
+          // THE GAP THAT USED TO BE HERE IS CLOSED. This arm previously wrote
+          // `nameUnavailable: true`, because the frame genuinely carried no name and printing one the
+          // frame never held is how a demo tells a confident lie. The control plane now puts
+          // `tool_name` on both tool frames (E30 T2) — so the chat can say `palai.workspace.shell`
+          // the moment a call starts, which is what makes an iOS build legible while it is running
+          // rather than only after it finishes.
+          nameUnavailable: str(d.tool_name) === "",
         },
       });
       return false;
+
+    // A COMPLETED CALL IS JOINED TO ITS LEDGER ROW, server-side, where the credential already is.
+    //
+    // The frame carries the name and NOT the arguments or the result, and that split is deliberate
+    // rather than an oversight to work around: an event payload is POSTed to every registered webhook
+    // endpoint and stored immutably per delivery, and a trivial `xcodebuild` build measures 51,422
+    // bytes. So the bytes live on the `tool_calls` ledger and are read here, once, when there is
+    // something to render — GET /v1/responses/{id}/tool-calls.
+    //
+    // It rides `pending` rather than blocking the pump, the same discipline the approval join uses: a
+    // slow join must not stop the run's own frames from reaching the chat, and it is awaited before
+    // the stream closes so no part is left in flight.
     case "tool_call.completed.v1":
       writer.write({
         type: "data-tool",
         id: String(d.tool_call_id ?? "tool"),
-        data: { id: d.tool_call_id ?? null, state: "done", nameUnavailable: true },
+        data: {
+          id: d.tool_call_id ?? null,
+          name: str(d.tool_name) || null,
+          state: "done",
+          // Carried from the executing frame: the completed frame does not repeat it, and this part
+          // REPLACES that one on the same id.
+          replayClass: replayClasses.get(str(d.tool_call_id)) ?? null,
+          nameUnavailable: str(d.tool_name) === "",
+        },
       });
+      pending.push(joinToolCall(writer, responseId, str(d.tool_call_id), str(d.tool_name)));
       return false;
 
     // THE APPROVAL, AND THIS IS THE PART THE OWNER ASKED FOR. It is a custom data part precisely because the
@@ -465,6 +503,79 @@ async function joinApproval(
       type: "data-approval",
       id: partId,
       data: { ...base, joined: false, joinNote: error instanceof Error ? error.message : "the approval row could not be read" },
+    });
+  }
+}
+
+// joinToolCall reads ONE completed tool call's arguments and result off the ledger and writes the part
+// the iOS renderer draws from.
+//
+// WHY IT IS A READ AND NOT A WIDER FRAME, stated here because this is where a future reader will be
+// tempted to "just put it on the event": automation/webhook_pump.go:328 puts an event's whole payload
+// in the body it POSTs to every registered endpoint and stores that envelope immutably so a redelivery
+// replays it byte-for-byte. A tool's arguments and result are model-authored and unbounded — a trivial
+// `xcodebuild` build measured 51,422 bytes — so widening the frame ships megabytes off-box, once per
+// endpoint, permanently, to save this one request.
+//
+// IT MATCHES ON THE CALL ID rather than taking the last row: a run makes many tool calls and the list
+// is the whole response's. Matching by position would attach one build's output to another's card.
+//
+// A FAILED JOIN IS REPORTED, NOT DROPPED. The `data-tool` part above has already been written, so the
+// call is on screen either way; this only adds what it ran and what came back. Writing `joined: false`
+// lets the screen say "the output could not be read" instead of rendering an empty successful build,
+// which is the difference between a demo that is honest and one that is merely quiet.
+async function joinToolCall(
+  writer: StreamWriter,
+  responseID: string,
+  toolCallID: string,
+  toolName: string,
+): Promise<void> {
+  if (toolCallID === "") return;
+  try {
+    const res = await fetch(`${rawBaseURL()}/v1/responses/${encodeURIComponent(responseID)}/tool-calls`, {
+      headers: rawHeaders(),
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`GET /v1/responses/{id}/tool-calls answered HTTP ${res.status}`);
+    const page = (await res.json()) as { data?: Record<string, unknown>[] };
+    const rows = Array.isArray(page.data) ? page.data : [];
+    const row = rows.find((r) => str(r.id) === toolCallID) ?? null;
+    if (row === null) {
+      writer.write({
+        type: "data-tool-detail",
+        id: toolCallID,
+        data: { id: toolCallID, name: toolName || null, joined: false, joinNote: "this call is not on the ledger read" },
+      });
+      return;
+    }
+    writer.write({
+      type: "data-tool-detail",
+      id: toolCallID,
+      data: {
+        id: toolCallID,
+        name: str(row.name) || toolName || null,
+        state: str(row.state) || null,
+        replayClass: str(row.replay_class) || null,
+        arguments: row.arguments ?? null,
+        // `result` is ABSENT rather than null when a call has none (parked, still running, or an
+        // unretained tool whose output is deliberately not stored). The screen must not draw an
+        // absent result as an empty one — "nothing is known yet" and "the tool returned nothing" are
+        // different sentences.
+        result: Object.hasOwn(row, "result") ? row.result : null,
+        hasResult: Object.hasOwn(row, "result"),
+        joined: true,
+      },
+    });
+  } catch (error) {
+    writer.write({
+      type: "data-tool-detail",
+      id: toolCallID,
+      data: {
+        id: toolCallID,
+        name: toolName || null,
+        joined: false,
+        joinNote: error instanceof Error ? error.message : "the tool call could not be read",
+      },
     });
   }
 }

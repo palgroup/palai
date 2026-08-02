@@ -113,6 +113,27 @@ func (o *Orchestrator) parkOnPendingPublication(ctx context.Context, st *attempt
 	if err != nil || !found || pub.RunID != string(st.attempt.RunID) {
 		return false, err
 	}
+
+	// THE SESSION'S STANDING AUTHORIZATION FOR THE PUBLICATION FAMILY (E30 T1, migration 000056).
+	//
+	// It is read HERE, from its OWN column, and that is the point of the whole split: a session armed for
+	// tools reaches this line with `auto_approve_publications` still false and parks exactly as it always
+	// did. Arming `xcodebuild` does not arm a push, and the two questions are answered by two columns
+	// rather than by one flag wearing two hats.
+	//
+	// A decision that does not apply falls through to the park — the behaviour of a session that armed
+	// nothing — so every refusal in autoDecidePublication (an approver policy that excludes the arming
+	// principal, a closed session, a command another path settled) still ends with a human being asked.
+	decided, aerr := o.autoDecidePublication(ctx, st, pub)
+	if aerr != nil {
+		return false, aerr
+	}
+	if decided {
+		// Approved in advance by a named human. The run does NOT park: the publication is `approved` and
+		// the boundary pump will reach it, which is the same state a click would have left behind.
+		return false, nil
+	}
+
 	// No response command: waiting_for_approval is ResponseTable's, not this epic's (see parkRun).
 	return true, o.parkRun(ctx, st, "")
 }

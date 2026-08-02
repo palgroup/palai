@@ -10,6 +10,7 @@
 // also shows the SDK sends the credential server-side — while the browser scan shows it never
 // reaches the client. A /__introspect endpoint reports the cancel count so a test can assert
 // a browser abort closed the transport WITHOUT cancelling the run (LP6: disconnect ≠ cancel).
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 
 const PORT = Number(process.env.FAKE_UPSTREAM_PORT ?? 3101);
@@ -155,9 +156,12 @@ function streamEvents(request, response, events = scriptedEvents()) {
 // convenience. A fake that is more generous than production writes code against a shape that does not
 // exist, and this tree has been bitten by that twice. In particular:
 //
-//   * tool_call.executing.v1 carries {run_id, replay_class, tool_call_id} and NO NAME, so the test
-//     can assert the screen says the name is missing. A fake that added `name` would delete the very
-//     defect the demo is honest about.
+//   * tool_call.executing.v1 / tool_call.completed.v1 NOW CARRY `tool_name`, because production does
+//     since E30 T2. This comment used to say the opposite and it was right at the time: the frames
+//     carried no name, and the fake reproduced that so the test could assert the screen SAID SO. The
+//     defect is fixed, so the fake tracks the fix — a fake still emitting the old shape would test the
+//     new renderer against bytes the control plane no longer sends, which is the same class of error
+//     as a fake more generous than production, only pointed backwards.
 //   * approval.requested.v1 for a PUBLICATION carries {publication_id, operation, branch,
 //     request_hash, display} and NO approval_id, no remote, no base, no head_sha and no credential.
 //     That is what forces the server-side join to GET /v1/approvals, and it is the bug that made the
@@ -200,11 +204,99 @@ const TRANSCRIPT_BODY = [
   "",
 ].join("\n");
 
+
+// ---------------------------------------------------------------------------------------------
+// THE TOOL-CALLS READ (E30 T2), answered with BYTES THE REAL TOOLS PRODUCED.
+//
+// THE ARGUMENTS ARE `argv`, NOT `command`, AND THAT CORRECTION COST A SILENT BUG. This fake first
+// sent `{"command": "xcodebuild …"}` — a shape I had invented. The real `palai.workspace.shell`
+// sends `{"argv": ["bash", "-c", "cd repo && xcodebuild …"]}`, measured on a live run 2026-08-02.
+// Against the live control plane the renderer found no command, drew NOTHING, and every iOS card
+// silently vanished — no error, no blank card, no card. A fake shaped differently from production is
+// worse than no fake, because the suite stays green while the product is broken.
+//
+// The event frames carry the tool NAME and deliberately not the arguments or the result, so this is
+// where the iOS renderer gets what it draws. The three results below are read from
+// tests/fixtures/*.txt, captured by running the real `xcodebuild` and `xcrun simctl` on a Mac
+// against a real iOS Simulator destination — NOT hand-written to match the parser.
+//
+// That direction matters: a fixture invented to satisfy the parser proves the parser agrees with its
+// author. These bytes came out of Xcode 26.6 and the parser has to agree with THEM.
+// ---------------------------------------------------------------------------------------------
+const IOS_FIXTURES = {
+  build: readFileSync(new URL("./fixtures/xcodebuild-build-fail.txt", import.meta.url), "utf8"),
+  test: readFileSync(new URL("./fixtures/xcodebuild-test-ok.txt", import.meta.url), "utf8"),
+  sim: readFileSync(new URL("./fixtures/simctl-list.txt", import.meta.url), "utf8"),
+};
+
+const CODING_TOOL_CALLS = [
+  {
+    id: "tcall_coding_1",
+    object: "tool_call",
+    name: "palai.workspace.shell",
+    state: "completed",
+    replay_class: "irreversible",
+    arguments: { argv: ["bash", "-c", "git -C repo add CONTRIBUTING.md"] },
+    result: { exit_code: 0, stdout: "" },
+    created_at: "2026-08-02T00:00:03Z",
+    updated_at: "2026-08-02T00:00:04Z",
+  },
+  {
+    id: "tcall_ios_build",
+    object: "tool_call",
+    name: "palai.workspace.shell",
+    state: "completed",
+    replay_class: "irreversible",
+    arguments: { argv: ["bash", "-c", "cd repo && xcodebuild -scheme PalaiDemo -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build"] },
+    // exit 65 is what xcodebuild returns for a build failure — a RESULT FIELD, not a transport error.
+    result: { exit_code: 65, stdout: IOS_FIXTURES.build },
+    created_at: "2026-08-02T00:00:05Z",
+    updated_at: "2026-08-02T00:00:06Z",
+  },
+  {
+    id: "tcall_ios_test",
+    object: "tool_call",
+    name: "palai.workspace.shell",
+    state: "completed",
+    replay_class: "irreversible",
+    arguments: { argv: ["bash", "-c", "cd repo && xcodebuild -scheme PalaiDemo -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test"] },
+    result: { exit_code: 0, stdout: IOS_FIXTURES.test },
+    created_at: "2026-08-02T00:00:07Z",
+    updated_at: "2026-08-02T00:00:08Z",
+  },
+  {
+    id: "tcall_ios_sim",
+    object: "tool_call",
+    name: "palai.workspace.shell",
+    state: "completed",
+    replay_class: "irreversible",
+    arguments: { argv: ["bash", "-c", "xcrun simctl list devices"] },
+    result: { exit_code: 0, stdout: IOS_FIXTURES.sim },
+    created_at: "2026-08-02T00:00:09Z",
+    updated_at: "2026-08-02T00:00:10Z",
+  },
+];
+
+// The session's standing authorization, as the fake records it. It starts OFF for both halves — the
+// state every session is born in — and the PATCH below moves only the half the body names, which is
+// the property the screen's toggle depends on.
+const codingAutoApprove = { auto_approve_tools: false, auto_approve_publications: false, auto_approve_set_by: "" };
+
+// A RUN WHOSE TOOL FRAMES CARRY NO NAME — what a stack that has not taken E30 T2 still emits, and
+// what a run that STARTED before the upgrade replays. The screen has to draw that honestly rather
+// than as a tool named "", so the suite needs to be able to produce one.
+//
+// The flag is set by the create request and read by the event stream opened immediately after it;
+// app/api/chat/route.ts awaits responses.create() before it opens the stream, so the ordering holds.
+// It is cleared by /__reset-coding along with everything else.
+let codingOmitsToolName = false;
+
 let approvalDecision = null; // null | "approved" | "denied"
 const createdBindings = [];
 const createdSecrets = [];
 
 function codingEvents() {
+  const named = (payload) => (codingOmitsToolName ? { ...payload, tool_name: undefined } : payload);
   const base = {
     source: "palai://fake-control-plane",
     specversion: "1.0",
@@ -215,8 +307,16 @@ function codingEvents() {
   const rows = [
     ["run.queued.v1", { run_id: CODING_RUN_ID, state: "queued" }],
     ["run.running.v1", { run_id: CODING_RUN_ID, state: "running" }],
-    ["tool_call.executing.v1", { run_id: CODING_RUN_ID, replay_class: "irreversible", tool_call_id: "tcall_coding_1" }],
-    ["tool_call.completed.v1", { run_id: CODING_RUN_ID, tool_call_id: "tcall_coding_1" }],
+    ["tool_call.executing.v1", named({ run_id: CODING_RUN_ID, replay_class: "irreversible", tool_call_id: "tcall_coding_1", tool_name: "palai.workspace.shell" })],
+    ["tool_call.completed.v1", named({ run_id: CODING_RUN_ID, tool_call_id: "tcall_coding_1", tool_name: "palai.workspace.shell" })],
+    // THE iOS CALLS. Three shell calls, named, each answered by the tool-calls read below with REAL
+    // captured output: a failing build, a passing test run, and a simulator boot.
+    ["tool_call.executing.v1", { run_id: CODING_RUN_ID, replay_class: "irreversible", tool_call_id: "tcall_ios_build", tool_name: "palai.workspace.shell" }],
+    ["tool_call.completed.v1", { run_id: CODING_RUN_ID, tool_call_id: "tcall_ios_build", tool_name: "palai.workspace.shell" }],
+    ["tool_call.executing.v1", { run_id: CODING_RUN_ID, replay_class: "irreversible", tool_call_id: "tcall_ios_test", tool_name: "palai.workspace.shell" }],
+    ["tool_call.completed.v1", { run_id: CODING_RUN_ID, tool_call_id: "tcall_ios_test", tool_name: "palai.workspace.shell" }],
+    ["tool_call.executing.v1", { run_id: CODING_RUN_ID, replay_class: "irreversible", tool_call_id: "tcall_ios_sim", tool_name: "palai.workspace.shell" }],
+    ["tool_call.completed.v1", { run_id: CODING_RUN_ID, tool_call_id: "tcall_ios_sim", tool_name: "palai.workspace.shell" }],
     ["approval.requested.v1", {
       publication_id: PUBLICATION_ID,
       operation: "push_branch",
@@ -262,6 +362,32 @@ function handleCoding(method, pathname, request, response) {
       created_at: "2026-08-02T00:00:00Z",
       output: [{ type: "message", content: "Added CONTRIBUTING.md and requested a push." }],
       usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18, tool_calls: 1 },
+    });
+    return true;
+  }
+
+  if (method === "GET" && pathname === `/v1/responses/${CODING_RESPONSE_ID}/tool-calls`) {
+    sendJSON(response, 200, { object: "list", data: CODING_TOOL_CALLS });
+    return true;
+  }
+
+  // PATCH /v1/sessions/{id} — the standing authorization. It applies ONLY the half the body names,
+  // exactly as the control plane does, because that is the property the screen depends on: a click
+  // on one switch must not move the other.
+  if (method === "PATCH" && pathname === `/v1/sessions/${CODING_SESSION_ID}`) {
+    let raw = "";
+    request.on("data", (chunk) => { raw += chunk; });
+    request.once("end", () => {
+      let body = {};
+      try { body = JSON.parse(raw || "{}"); } catch { body = {}; }
+      if (typeof body.auto_approve_tools === "boolean") codingAutoApprove.auto_approve_tools = body.auto_approve_tools;
+      if (typeof body.auto_approve_publications === "boolean") codingAutoApprove.auto_approve_publications = body.auto_approve_publications;
+      // The principal is stamped SERVER-SIDE from the verified key and never taken from the body —
+      // the same rule the control plane applies, and reproducing it here is what lets the spec assert
+      // the screen shows whose authority it is.
+      codingAutoApprove.auto_approve_set_by =
+        codingAutoApprove.auto_approve_tools || codingAutoApprove.auto_approve_publications ? "key:demo-operator" : "";
+      sendJSON(response, 200, { id: CODING_SESSION_ID, object: "session", status: "active", ...codingAutoApprove });
     });
     return true;
   }
@@ -382,6 +508,22 @@ function handleCoding(method, pathname, request, response) {
     return true;
   }
 
+  // A TEST-CONTROL RESET, and it exists because the leak it fixes was real. `codingAutoApprove` is
+  // module state on ONE server shared by every spec (workers: 1, fullyParallel: false), so a test
+  // that armed the session left it armed for the next one — and two specs passed or failed purely on
+  // the order they happened to run in. A test whose result depends on its neighbours is measuring
+  // the suite, not the product.
+  if (method === "POST" && pathname === "/__reset-coding") {
+    codingAutoApprove.auto_approve_tools = false;
+    codingAutoApprove.auto_approve_publications = false;
+    codingAutoApprove.auto_approve_set_by = "";
+    codingOmitsToolName = false;
+    approvalDecision = null;
+    request.resume();
+    request.once("end", () => sendJSON(response, 200, { reset: true }));
+    return true;
+  }
+
   if (method === "GET" && pathname === "/__introspect-coding") {
     sendJSON(response, 200, { approvalDecision, createdBindings, createdSecrets });
     return true;
@@ -432,6 +574,9 @@ const server = createServer((request, response) => {
       // A create carrying the coding session belongs to the coding scenario; everything else keeps
       // the original single-shot proof exactly as it was.
       if (safeJSON(createBody).session_id === CODING_SESSION_ID) {
+        // The suite asks for the pre-E30 shape by saying so in the turn itself, which keeps the
+        // scenario visible in the test that uses it rather than hidden in a setup call.
+        codingOmitsToolName = String(safeJSON(createBody).input ?? "").includes("unnamed tool");
         sendJSON(response, 202, {
           id: CODING_RESPONSE_ID,
           object: "response",

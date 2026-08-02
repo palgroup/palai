@@ -1,0 +1,7 @@
+== Devices ==
+-- iOS 18.4 --
+    skh18 (2C32479F-C395-4F63-B9CE-18A9D785649F) (Shutdown) 
+-- iOS 26.5 --
+    iPhone 17 Pro (D51D94F3-1F89-4BDD-94C1-37EBF0907F76) (Booted) 
+    Lavabo Preview iPhone 17 Pro (8A1E3F5F-47FE-437E-B0F8-E02B5786833B) (Shutdown) 
+    palstore-scaffold-demo (43CBFF43-4230-4952-8ADD-85F077FDB1B0) (Shutdown) 

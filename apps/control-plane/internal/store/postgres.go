@@ -358,6 +358,30 @@ func (s *Store) CreateSession(ctx context.Context, scope middleware.Scope, name 
 // implicitly by POST /v1/responses never passed through CreateSession and has no label to have been
 // given one. An unknown or foreign id is a miss (Found=false → 404) and writes nothing, the same
 // no-existence-disclosure contract retrieval has.
+// SetSessionAutoApprove arms or disarms a session's two approval families within the request's verified
+// scope (E30 T1, migration 000056).
+//
+// THE PRINCIPAL IS THE VERIFIED KEY, never a body field. It is stamped here, from the same scope the
+// route authenticated, for the reason api.ApprovalDecision states about a click: a request that could
+// name its own approver would let anyone arm a session as anyone — and since the auto-decision is MADE
+// as this principal and checked against the project's approver policy, a caller who could name it could
+// hand themselves an approval authority the project deliberately withheld.
+//
+// An unknown or foreign id is a miss (Found=false → 404) and writes nothing.
+func (s *Store) SetSessionAutoApprove(ctx context.Context, scope middleware.Scope, id string, tools, publications bool) (api.SessionResult, error) {
+	principal := coordinator.ApproverPrincipal(coordinator.ApproverSurfaceKey, "", scope.APIKeyID)
+	view, err := s.spine.SetSessionAutoApprove(ctx, tenantOf(scope), id, principal, tools, publications)
+	if err != nil {
+		return api.SessionResult{}, err
+	}
+	if !view.Found {
+		return api.SessionResult{}, nil
+	}
+	// Re-read the full projection so the caller sees the SAME shape GET renders, with the flags it just
+	// set — rather than a partial body the screen would have to merge by hand.
+	return s.GetSession(ctx, scope, id)
+}
+
 func (s *Store) RenameSession(ctx context.Context, scope middleware.Scope, id, name string) (api.SessionResult, error) {
 	view, err := s.spine.RenameSession(ctx, tenantOf(scope), id, name)
 	if err != nil {
@@ -562,6 +586,17 @@ func marshalSession(scope middleware.Scope, view coordinator.SessionView) ([]byt
 		Agents:         view.Agents,
 		InputTokens:    int(view.InputTokens),
 		OutputTokens:   int(view.OutputTokens),
+		// THE STANDING AUTHORIZATION ON THE WIRE (E30 T1). Both halves, separately, because they are
+		// separate decisions — a screen that folded them into one badge would be telling an operator
+		// something false about the publication half. SetBy rides along because "auto-approved" and
+		// "auto-approved on WHOSE authority" are different facts, and only the second one is auditable.
+		AutoApproveTools:        view.AutoApprove.Tools,
+		AutoApprovePublications: view.AutoApprove.Publications,
+		AutoApproveSetBy:        view.AutoApprove.SetBy,
+	}
+	if view.AutoApprove.SetAt != nil {
+		armed := view.AutoApprove.SetAt.UTC().Format(time.RFC3339Nano)
+		out.AutoApproveSetAt = &armed
 	}
 	if out.Agents == nil {
 		out.Agents = []string{}

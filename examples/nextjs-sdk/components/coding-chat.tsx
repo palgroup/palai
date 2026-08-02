@@ -19,7 +19,8 @@ import {
   PromptInputTextarea,
   PromptInputTools,
 } from "@/components/ai-elements/prompt-input";
-import { ApprovalPart, NoticePart, PublicationPart, ToolPart } from "@/components/chat-parts";
+import { type AutoApproveState, AutoApproveControls } from "@/components/auto-approve";
+import { ApprovalPart, NoticePart, PublicationPart, ToolDetailPart, ToolPart } from "@/components/chat-parts";
 import { type Binding, RepositoryPicker } from "@/components/repository-picker";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WorkspacePanel } from "@/components/workspace-panel";
@@ -85,6 +86,9 @@ export function CodingChat() {
   const [binding, setBinding] = useState<Binding | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [responseId, setResponseId] = useState<string | null>(null);
+  // The standing authorization as THE SERVER records it. It starts off for both halves, which is the
+  // state every session is born in, and only ever moves to what a PATCH came back saying.
+  const [autoApprove, setAutoApprove] = useState<AutoApproveState>({ tools: false, publications: false, setBy: "" });
 
   // The transport's body callback must read the current session and binding WITHOUT re-creating the
   // transport on every turn, so both ride refs alongside the state that renders them.
@@ -144,6 +148,13 @@ export function CodingChat() {
               credential is server-side.
             </p>
           </header>
+
+          <AutoApproveControls
+            sessionId={sessionId}
+            state={autoApprove}
+            onChange={setAutoApprove}
+            disabled={busy}
+          />
 
           <Conversation className="min-h-0 flex-1">
             <ConversationContent className="gap-6 p-4">
@@ -225,6 +236,8 @@ function Part({ part }: { part: UIPart }) {
   switch (part.type) {
     case "data-tool":
       return <ToolPart data={d} />;
+    case "data-tool-detail":
+      return <ToolDetailPart data={d} />;
     case "data-approval":
       return <ApprovalPart data={d} />;
     case "data-publication":

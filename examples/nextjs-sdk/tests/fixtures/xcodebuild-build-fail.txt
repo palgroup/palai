@@ -1,0 +1,3 @@
+/tmp/claude-501/-Users-salih-workspace-poc-ios-render-palai/08e26614-63d8-40a3-b5df-5cb9f7531ffe/scratchpad/iosdemo/Sources/PalaiDemo/Greeter.swift:5:49: error: cannot convert return expression of type 'String' to return type 'Int'
+** BUILD FAILED **
+The following build commands failed:

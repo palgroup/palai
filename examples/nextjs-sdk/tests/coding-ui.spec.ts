@@ -132,7 +132,19 @@ test("the credential form SUBMITS, posts only {name,value}, and the token never 
   await expect(page.locator("body")).not.toContainText(token);
 });
 
-test("a tool call renders as the AI Elements tool component AND the screen says the name is not carried", async ({ page }) => {
+// THIS TEST USED TO ASSERT THE OPPOSITE, and rewriting it rather than deleting it is the point.
+//
+// It read: "the screen says the name is not carried", and it was correct — the tool frames carried
+// {run_id, replay_class, tool_call_id} and nothing else, so the card said so in as many words rather
+// than printing a label the stream never held. E30 T2 put `tool_name` on both frames, so the sentence
+// the old assertion demanded is now the wrong thing for the screen to say.
+//
+// THE PROPERTY IT GUARDED HAS NOT CHANGED: the card must never lie about the name. ToolHeader renders
+// an EMPTY SPAN when handed nothing usable, which reads as a rendering bug, and a placeholder reads as
+// a tool actually called that. So this asserts the real name now, and the companion below keeps the
+// other half — a frame WITHOUT a name must still say so, which is what a run started before this
+// deployment upgraded looks like.
+test("a tool call renders as the AI Elements tool component AND carries its real name", async ({ page }) => {
   await page.goto(CHAT);
   await pickFirstRepo(page);
   await send(page, "add a contributing guide");
@@ -140,19 +152,40 @@ test("a tool call renders as the AI Elements tool component AND the screen says 
   const tool = page.getByTestId("chat-tool");
   await expect(tool.first()).toBeVisible({ timeout: 30_000 });
 
-  // The header must NOT be blank. ToolHeader renders an empty span when handed nothing usable, which
-  // reads as a rendering bug; and a placeholder in the name's position reads as a tool actually
-  // called that. Both are worse than the sentence.
-  await expect(page.getByTestId("chat-tool-header").first()).toContainText("does not carry its name");
+  await expect(page.getByTestId("chat-tool-header").first()).toContainText("palai.workspace.shell");
 
+  // THE CARD IS OPENED BEFORE THE ABSENCE IS ASSERTED, and that ordering is the assertion. ToolContent
+  // is a Radix CollapsibleContent, which UNMOUNTS while closed — so `toHaveCount(0)` against a shut
+  // card is true of every card ever rendered, including one still full of the old apology. This tree
+  // has the same defect on record from an axe sweep that scanned routes with every dialog closed and
+  // reported a cleaner number while covering less.
   await page.getByTestId("chat-tool-header").first().click();
-  const gap = page.getByTestId("chat-tool-name-gap").first();
-  await expect(gap).toContainText("name");
-  await expect(gap).toContainText("not carried on Palai");
+  await expect(page.getByTestId("chat-tool").first()).toContainText("tcall_coding_1");
 
-  // And what the frame DOES carry is shown, so the statement is checkable rather than an apology.
+  // NOW the absence means something: the content is mounted, and the apology is not in it. Leaving it
+  // would be the screen excusing a gap that no longer exists, which is its own kind of lie.
+  await expect(page.getByTestId("chat-tool-name-gap")).toHaveCount(0);
+
+  // And what the frame carries is still shown, so the label is checkable rather than asserted.
   await expect(tool.first()).toContainText("tcall_coding_1");
   await expect(tool.first()).toContainText("irreversible");
+});
+
+// THE NON-VACUITY HALF, and without it the test above is satisfied by a build that simply deleted the
+// fallback. A frame with no `tool_name` — a run that started before this deployment took E30 T2, or a
+// stack that has not — must still be drawn honestly rather than as a tool named "".
+test("a frame that carries no tool name still says so", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "unnamed tool please");
+
+  // Same reason as above: the sentence lives inside the collapsible, so the card is opened first.
+  await expect(page.getByTestId("chat-tool-header").first()).toBeVisible({ timeout: 30_000 });
+  await page.getByTestId("chat-tool-header").first().click();
+
+  const gap = page.getByTestId("chat-tool-name-gap").first();
+  await expect(gap).toBeVisible();
+  await expect(gap).toContainText("tool_name");
 });
 
 test("the approval renders the destination AND the identity, both of which the frame does not carry", async ({ page }) => {

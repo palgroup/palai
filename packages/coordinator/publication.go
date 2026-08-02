@@ -418,7 +418,19 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 		pubID, tenant.Organization, tenant.Project, newState, "pending_approval"); err != nil {
 		return 0, fmt.Errorf("transition publication: %w", err)
 	}
-	if _, err := tx.Exec(ctx, storage.Query("SetApprovalDecision"), pubID, commandID); err != nil {
+	// WHO DECIDED, AND THIS COLUMN USED TO HOLD THE WRONG THING. It was passed `commandID`, so every
+	// publication approval this system has ever recorded answered "who authorized this write" with a
+	// `cmd_…` id — while the query's own comment said "records who decided an approval (audit)" and
+	// slack_decision.go:258 said "recorded durably on the approval's decided_by, which is where an
+	// identity belongs". Three sentences describing a principal, over a column holding a command id.
+	//
+	// `approver` was in scope the whole time: approverAuthorizedTx above already decides authorization on
+	// it. The gated-tool family has always written the principal here (SetToolApprovalDecision), so the
+	// two families disagreed about what their shared column meant.
+	//
+	// Nothing read it as a command id — the command's own identity is on the journalled event below and
+	// on the commands table — so this narrows the value to the one the name promises.
+	if _, err := tx.Exec(ctx, storage.Query("SetApprovalDecision"), pubID, approver); err != nil {
 		return 0, fmt.Errorf("record approval decision: %w", err)
 	}
 	if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, event,

@@ -650,8 +650,23 @@ func (s *Store) BeginToolCall(ctx context.Context, tenant Tenant, sessionID, res
 		return fmt.Errorf("pre-write tool call: %w", err)
 	}
 	if tag.RowsAffected() > 0 {
+		// THE TOOL'S NAME RIDES THE FRAME, and until E30 T2 it did not — while `name` was a parameter of
+		// this very function. A consumer watching the journal could see THAT a tool ran and never WHAT,
+		// so every renderer either labelled the call "tool" or, honestly, said the name was unavailable.
+		//
+		// THE NAME AND ONLY THE NAME. The arguments and the result stay on the ledger and are read
+		// through GET /v1/responses/{id}/tool-calls, because this payload does not stop here:
+		// automation/webhook_pump.go:328 puts the whole thing in the body it POSTs to every registered
+		// endpoint and STORES that envelope immutably for byte-for-byte redelivery, and packages/audit
+		// hashes it. Measured on this box, a trivial `xcodebuild` build — one print statement — emits
+		// 51,422 bytes, and nothing in this package bounds an event payload. Putting a tool's output
+		// here would ship model-authored megabytes off-box, once per endpoint, forever.
+		//
+		// The name is safe where they are not: it is short, and it comes from the closed set of tools the
+		// deployment registered (the broker answers ErrUnknownTool for anything else), so it is a label
+		// the operator configured rather than a string the model composed.
 		if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, "tool_call.executing.v1",
-			mustMarshal(map[string]any{"run_id": runID, "tool_call_id": callID, "replay_class": replayClass})); err != nil {
+			mustMarshal(map[string]any{"run_id": runID, "tool_call_id": callID, "replay_class": replayClass, "tool_name": name})); err != nil {
 			return err
 		}
 	}

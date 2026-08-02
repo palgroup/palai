@@ -13,6 +13,8 @@ import {
   ConfirmationTitle,
 } from "@/components/ai-elements/confirmation";
 import { Tool, ToolContent, ToolHeader, ToolInput } from "@/components/ai-elements/tool";
+import { IOSPart } from "@/components/ios-parts";
+import { exitCodeOf, outputTextOf, readIOSOutput, shellCommandOf } from "@/lib/ios-output";
 import { cn } from "@/lib/utils";
 
 type Data = Record<string, unknown>;
@@ -20,31 +22,35 @@ type Data = Record<string, unknown>;
 const s = (v: unknown): string => (typeof v === "string" ? v : "");
 
 // =============================================================================================
-// A TOOL CALL, IN THE ECOSYSTEM'S TOOL COMPONENT, WITH THE HOLE LEFT VISIBLE
+// A TOOL CALL, IN THE ECOSYSTEM'S TOOL COMPONENT — AND THE HOLE IS CLOSED
 // =============================================================================================
 //
-// AI Elements' ToolHeader wants a NAME. Palai's stream does not have one. Measured on the live
-// journal 2026-08-02, and this is the entire payload of both tool frames:
+// THIS COMPONENT USED TO EXIST TO REPORT A GAP. Measured on the live journal 2026-08-02, the entire
+// payload of both tool frames was:
 //
 //     tool_call.executing.v1 -> {"run_id","replay_class","tool_call_id"}
 //     tool_call.completed.v1 -> {"run_id","tool_call_id"}
 //
-// No name, no arguments, no result. They live on the durable tool_calls ledger, and no HTTP route
-// reads it (RunToolCalls has two consumers, both inside execution/changeset.go).
+// No name, no arguments, no result — so this card said so, in as many words, rather than printing a
+// label the stream never carried. That was the honest thing to do and it was also a permanent hole
+// in every rendering of every tool call.
 //
-// THE FAILURE MODE THIS COMPONENT IS SHAPED TO AVOID. ToolHeader derives its label from `type`:
-// pass type="tool-x" and it renders "x". Pass nothing usable and — measured in the vendored source —
-// it renders an EMPTY SPAN, silently. A tool card with a blank where the name goes reads like a
-// rendering bug; a tool card labelled "tool" reads like a tool actually named that. Both are worse
-// than the truth, so `title` is set explicitly to a sentence and the gap is restated in the body.
+// IT IS CLOSED NOW, AND IN TWO PIECES, because the two halves are not the same kind of value:
+//   * the NAME rides the frame (E30 T2) — short, and drawn from the closed set of tools the
+//     deployment registered — so the card is labelled the moment the call starts;
+//   * the ARGUMENTS and RESULT are joined server-side from GET /v1/responses/{id}/tool-calls, because
+//     an event payload is POSTed to every registered webhook endpoint and stored immutably per
+//     delivery, and a trivial `xcodebuild` build measures 51,422 bytes.
 //
-// ToolInput is given the frame's REAL payload rather than a fabricated input. That turns the
-// component's "Parameters" section into an accurate statement — this is what Palai sent — instead
-// of an empty box.
+// `nameUnavailable` IS STILL HANDLED AND STILL MEANS SOMETHING. A run that started before this
+// deployment upgraded — or any frame that arrives without the field — must not be drawn as a tool
+// named "". The card falls back to naming the gap, exactly as it used to.
 export function ToolPart({ data }: { data: Data }) {
   const id = s(data.id) || "unknown";
+  const name = s(data.name);
   const running = s(data.state) === "running";
   const replayClass = s(data.replayClass);
+  const named = name !== "";
   // THE OPEN STATE IS CONTROLLED HERE RATHER THAN LEFT TO THE COLLAPSIBLE, and that is a bug fix
   // rather than a preference. `Tool` is an uncontrolled Radix Collapsible; while a run is still
   // streaming, every new part re-renders this subtree and the card an operator had just opened
@@ -56,30 +62,63 @@ export function ToolPart({ data }: { data: Data }) {
     <Tool open={open} onOpenChange={setOpen} data-testid="chat-tool" className="mb-2">
       <ToolHeader
         type="dynamic-tool"
-        toolName={id}
-        title="a tool call — Palai's stream does not carry its name"
+        toolName={named ? name : id}
+        title={named ? name : "a tool call — this frame carried no name"}
         state={running ? "input-available" : "output-available"}
         data-testid="chat-tool-header"
       />
       <ToolContent>
-        <div className="space-y-2 p-4 pb-0">
-          <p data-testid="chat-tool-name-gap" className="text-[13px] text-muted-foreground leading-5">
-            <AlertTriangleIcon className="mr-1 inline size-3.5 align-[-2px] text-brand" aria-hidden />
-            The tool&rsquo;s <strong className="text-foreground">name</strong>, its arguments and its
-            result are not carried on Palai&rsquo;s event stream. The whole payload is below. Closing
-            this is a control-plane change — put the name on the frame, or give the events API a join
-            to the tool_calls ledger — not something this adapter can fix by looking somewhere else.
-          </p>
-          {replayClass !== "" ? (
-            <p className="text-[13px] text-muted-foreground">
-              What the frame does say is whether the call was reversible:{" "}
-              <span className={cn("font-mono", replayClass === "irreversible" && "text-brand")}>{replayClass}</span>.
+        {named ? null : (
+          <div className="space-y-2 p-4 pb-0">
+            <p data-testid="chat-tool-name-gap" className="text-[13px] text-muted-foreground leading-5">
+              <AlertTriangleIcon className="mr-1 inline size-3.5 align-[-2px] text-brand" aria-hidden />
+              This frame carried no <strong className="text-foreground">tool_name</strong>. The control
+              plane puts one on both tool frames since E30 T2, so this is either a run that started
+              before the upgrade or a stack that has not taken it.
             </p>
-          ) : null}
-        </div>
-        <ToolInput input={{ tool_call_id: id, replay_class: replayClass || null }} />
+          </div>
+        )}
+        <ToolInput input={{ tool_call_id: id, tool_name: name || null, replay_class: replayClass || null }} />
       </ToolContent>
     </Tool>
+  );
+}
+
+// =============================================================================================
+// WHAT THE TOOL ACTUALLY RAN, AND WHAT CAME BACK
+// =============================================================================================
+//
+// The `data-tool-detail` part carries the ledger join: the arguments and the result. For a shell
+// call driving `xcodebuild` or `simctl` that is the interesting half of the whole screen, so it is
+// handed to the iOS renderer, which decides — from the COMMAND, not from the output — whether this
+// was a build, a test run, simulator work, or an ordinary command.
+//
+// A FAILED JOIN RENDERS AS A FAILED JOIN. The tool card above is already on screen either way; this
+// part only adds detail, and saying "the output could not be read" is the difference between an
+// honest screen and one that quietly draws an empty successful build.
+export function ToolDetailPart({ data }: { data: Data }) {
+  if (data.joined !== true) {
+    return (
+      <p data-testid="chat-tool-detail-unjoined" className="mb-2 text-[12px] text-muted-foreground">
+        <AlertTriangleIcon className="mr-1 inline size-3.5 align-[-2px]" aria-hidden />
+        This call ran, but its output could not be read
+        {s(data.joinNote) !== "" ? `: ${s(data.joinNote)}` : "."}
+      </p>
+    );
+  }
+
+  const command = shellCommandOf(data.arguments);
+  // A tool call with no command line is not shell work — a knowledge query, a child run, an MCP
+  // write. Drawing it through the iOS renderer would put an Xcode hammer over a Jira ticket.
+  if (command === "") {
+    return null;
+  }
+
+  const report = readIOSOutput(command, outputTextOf(data.result), exitCodeOf(data.result));
+  return (
+    <div className="mb-2" data-testid="chat-tool-detail" data-kind={report.kind}>
+      <IOSPart report={report} />
+    </div>
   );
 }
 
