@@ -210,32 +210,74 @@ test("the connection ref is a HANDLE chosen from the secret-ref list, never a ty
     const box = await node.boundingBox();
     expect((box?.width ?? 0) <= 1 && (box?.height ?? 0) <= 1, "an excluded input is large enough to be typed into").toBe(true);
   }
-  const textFields = await form
-    .locator('input[type="text"]:not([aria-hidden="true"]), input:not([type]):not([aria-hidden="true"]), textarea')
-    .evaluateAll((els) => els.map((el) => el.getAttribute("data-testid") ?? el.getAttribute("name") ?? "<unnamed>"));
+  const freeText = async (): Promise<string[]> =>
+    (
+      await form
+        .locator('input[type="text"]:not([aria-hidden="true"]), input:not([type]):not([aria-hidden="true"]), textarea')
+        .evaluateAll((els) => els.map((el) => el.getAttribute("data-testid") ?? el.getAttribute("name") ?? "<unnamed>"))
+    ).sort();
+
+  const BASE = [
+    "binding-classification-input",
+    "binding-clone-url-input",
+    "binding-default-branch-input",
+    "binding-identity-input",
+    "binding-operations-input",
+    "binding-policy-input",
+    "binding-provider-input",
+    "binding-region-input",
+  ].sort();
+
+  // THE DEFAULT STATE — *Repository access: None*, a public repository. No credential control exists in the
+  // DOM at all, so the enumeration is the eight it always was.
   expect(
-    textFields.sort(),
+    await freeText(),
     "the binding form's free-text fields are enumerated: a connection_ref or a credential box among them would " +
       "be a value crossing a screen that is only allowed to carry a handle",
-  ).toEqual(
-    [
-      "binding-classification-input",
-      "binding-clone-url-input",
-      "binding-default-branch-input",
-      "binding-identity-input",
-      "binding-operations-input",
-      "binding-policy-input",
-      "binding-provider-input",
-      "binding-region-input",
-    ].sort(),
-  );
-  // No password field either: this screen takes no secret at all, unlike T4's.
-  await expect(form.locator('input[type="password"]')).toHaveCount(0);
+  ).toEqual(BASE);
+  await expect(form.locator('input[type="password"]'), "no credential control before one is asked for").toHaveCount(0);
 
-  // WHICHEVER STATE THE COLLECTION IS IN, exactly one of these two is true and the other is absent.
+  // THE SEAL MODE — and this arm is why the test above is no longer the whole claim. The page can now take a
+  // token, so "this screen takes no secret at all" (what this test used to assert, in one line, with the
+  // dialog in its default state) stopped being a true description of the screen the moment sealing moved
+  // here. What survives, and is asserted per mode below, is the property that sentence existed to protect:
+  // A REF IS NEVER TYPED INTO A FREE-TEXT BOX AS A POINTER TO SOMETHING THAT MUST ALREADY EXIST.
+  //
+  // In this mode the operator does type a NAME — and that is not the defect the rule guards against. The
+  // failure mode is a ref that names nothing, which fails at CLONE TIME inside a run with a refusal about git
+  // authentication; a name typed HERE is CREATED by the same submit, so it cannot dangle. The credential
+  // beside it is a password input and not a text one, and it is the only password input on the form.
+  await chooseOption(page, "binding-connection-mode", "new");
+  expect(
+    await freeText(),
+    "the seal mode adds exactly one free-text field and it is the credential's NAME — a second one would be a " +
+      "value or a ref typed where neither belongs",
+  ).toEqual([...BASE, "binding-connection-name-input"].sort());
+  const credential = form.locator('input[type="password"]');
+  await expect(credential, "the credential is one password input and there is exactly one").toHaveCount(1);
+  await expect(credential).toHaveAttribute("data-testid", "binding-connection-token-input");
+  // NEW-PASSWORD, NOT off: the risk this attribute addresses is the browser dropping the operator's saved
+  // console password into the box and sealing it as a credential an agent will then use.
+  await expect(credential).toHaveAttribute("autocomplete", "new-password");
+
+  // THE PICKER ARM — reachable only when the organization HAS secret refs, because a mode that leads to an
+  // empty dropdown is a dead end an operator has to back out of, so it is not offered. That replaces the old
+  // `${testId}-empty` branch: what stands in place of an unsatisfiable control is now a mode that is absent
+  // rather than a note under one that is present.
+  const modeRows = await page.getByTestId("binding-connection-mode").getAttribute("data-value");
+  expect(modeRows, "the mode control is a ui/Select and carries its value").toBe("new");
+  await page.getByTestId("binding-connection-mode").click();
+  const offersExisting =
+    (await page.getByRole("listbox").locator('[role="option"][data-value="existing"]').count()) === 1;
+  await page.keyboard.press("Escape");
+  if (!offersExisting) {
+    // A stack with no secret refs. Nothing more to check here — the seal mode above is the way forward, and
+    // it was just proven to exist.
+    return;
+  }
+  await chooseOption(page, "binding-connection-mode", "existing");
   const picker = page.getByTestId("binding-connection-select");
-  const empty = page.getByTestId("binding-connection-select-empty");
-  if ((await picker.count()) === 1) {
+  {
     // The options are the API's OWN list of NAMES. A secret ref's read projection carries {name, version,
     // updated_at} and no value (identity/secrets.go secretRefView), so a name is all there is to offer.
     const listed = await page.evaluate(async () => {
@@ -259,9 +301,12 @@ test("the connection ref is a HANDLE chosen from the secret-ref list, never a ty
       .locator('[role="option"]')
       .evaluateAll((els) => els.map((el) => el.getAttribute("data-value") ?? "").filter((v) => v !== ""));
     expect(offered.sort()).toEqual([...listed].sort());
-  } else {
-    await expect(empty).toContainText("no secret refs");
   }
+  // AND THE CREDENTIAL CONTROL IS GONE AGAIN. Leaving the seal mode must UNMOUNT the password input rather
+  // than hide it: a credential field still in the DOM is a credential still in the page, and this is the
+  // one transition an operator makes by accident (seal, change their mind, pick an existing ref instead).
+  await expect(form.locator('input[type="password"]'), "leaving the seal mode left the credential input mounted").toHaveCount(0);
+  expect(await freeText(), "leaving the seal mode left its name field behind").toEqual(BASE);
 });
 
 // --- THE AGENT LINEAGE ----------------------------------------------------------------------------------
