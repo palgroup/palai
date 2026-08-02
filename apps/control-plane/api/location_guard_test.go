@@ -334,8 +334,21 @@ func (probeBindings) CreateRepositoryBinding(context.Context, middleware.Scope, 
 func (probeBindings) GetRepositoryBinding(context.Context, middleware.Scope, string) (BindingResult, error) {
 	return BindingResult{}, nil
 }
-func (probeBindings) ListRepositoryBindings(context.Context, middleware.Scope, ListQuery) ([]ListRow, error) {
+func (probeBindings) ListRepositoryBindings(context.Context, middleware.Scope, ListQuery, bool) ([]ListRow, error) {
 	return nil, nil
+}
+
+// The E30 lifecycle half. This probe answers "nothing changed" for all three, which is what this guard
+// wants: it walks the router asserting every 201 carries a Location header, and a write that reports no
+// change takes the 404 arm and never reaches that assertion.
+func (probeBindings) SetRepositoryBindingConnection(context.Context, middleware.Scope, string, string) (bool, error) {
+	return false, nil
+}
+func (probeBindings) ArchiveRepositoryBinding(context.Context, middleware.Scope, string) (bool, error) {
+	return false, nil
+}
+func (probeBindings) UnarchiveRepositoryBinding(context.Context, middleware.Scope, string) (bool, error) {
+	return false, nil
 }
 
 type probeEnvironments struct{}
