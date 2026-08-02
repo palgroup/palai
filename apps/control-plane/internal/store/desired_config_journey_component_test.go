@@ -96,13 +96,30 @@ func TestDesiredConfigJourneyWritesADocumentTheDeploymentReadReports(t *testing.
 			"refusal cosmetic", got)
 	}
 
-	// --- 2b. A PLANE WITH NO READER IS REFUSED, NOT STORED --------------------------------------------
-	// Nothing hands cmd/runner a document — it reads its environment at exec — so a runner_pool row would
-	// change no machine while the screen reported a save. The refusal is the honest shape and the schema is
-	// ready for the day it stops being one: the CHECK carries the value, the key carries the scope.
-	put(t, ts.URL, `{"plane":"runner_pool","scope_id":"pool_default","settings":{}}`, http.StatusBadRequest)
-	if got := revisionCount(t, repo); got != 1 {
-		t.Errorf("the journal holds %d revisions after a refused runner_pool write", got)
+	// --- 2b. THE RUNNER PLANE HAS A READER NOW, SO THE WRITE IS ACCEPTED ------------------------------
+	// THIS ASSERTION AND ITS COMMENT BOTH USED TO SAY THE OPPOSITE, and the comment was the worse half —
+	// it sat on the exact line a reader would check to learn why. It read: "Nothing hands cmd/runner a
+	// document — it reads its environment at exec — so a runner_pool row would change no machine while
+	// the screen reported a save." That sentence was true when it was written and `ffb84f3b` made it
+	// false, so the refusal it justified became the regression.
+	//
+	// WHAT IS TRUE NOW, BY BRANCH, because "it works now" is the kind of sentence this comment is being
+	// punished for:
+	//   * A MACHINE ENROLLING receives its pool's document in the answer to its own enrolment —
+	//     RunnerGateway.settingsFor (execution/runner_gateway.go:787) reads DesiredSettingsForPool and
+	//     returns it with the identity, and cmd/runner's planeIntDefault PREFERS it over the machine's
+	//     own environment. So a row written here does change a machine.
+	//   * A MACHINE ALREADY RUNNING does NOT. Delivery rides enrolment and nothing pushes a later
+	//     revision at a live runner; the gateway says so itself one comment up — "what is lost is a
+	//     configuration the machine picks up on its next enrolment". Writing here and expecting a
+	//     running fleet to change is still wrong, and that is a real limit rather than a bug.
+	// The pool asked about comes from the RESOLVED GRANT and never from the request, so accepting this
+	// write did not give one machine a way to read another pool's document.
+	put(t, ts.URL, `{"plane":"runner_pool","scope_id":"pool_default","settings":{}}`, http.StatusOK)
+	if got := revisionCount(t, repo); got != 2 {
+		t.Errorf("the journal holds %d revisions after an ACCEPTED runner_pool write, want 2 — an accept that "+
+			"appended nothing would make the 200 cosmetic, which is the same defect the refusal used to prevent "+
+			"pointed the other way", got)
 	}
 
 	// --- 3. APPEND-ONLY, ENFORCED BY THE DATABASE -----------------------------------------------------
@@ -121,10 +138,21 @@ func TestDesiredConfigJourneyWritesADocumentTheDeploymentReadReports(t *testing.
 	// --- 4. THE CURRENT DOCUMENT IS THE HIGHEST REVISION ----------------------------------------------
 	// A second write, and it REPLACES: PALAI_QUEUE_DEADLINE is absent from it, which is how an operator
 	// stops deciding a setting and hands it back to the deployment's own default.
+	// THE REVISION IS THE JOURNAL'S, NOT THIS PLANE'S, and this assertion used to hard-code `2` — a
+	// literal that silently encoded "no other plane can ever write". That was safe only while the
+	// runner_pool write was refused; the moment 2b started succeeding, the deployment's next write became
+	// revision 3 without anything about the deployment document changing. So the number is READ rather
+	// than pinned, and what is asserted is the property: the write advanced the journal.
+	//
+	// WORTH KNOWING, and it is a real consequence rather than a test detail: an operator watching the
+	// revision on the deployment screen will see it move when somebody writes a runner_pool document,
+	// because there is one append-only journal and `revision` is a position in it, not a per-plane count.
+	before := deploymentRead(t, ts.URL).Desired.Revision
 	put(t, ts.URL, `{"settings":{"PALAI_DISPATCH_WORKERS":"1"}}`, http.StatusOK)
 	body = deploymentRead(t, ts.URL)
-	if body.Desired.Revision != 2 {
-		t.Fatalf("revision after the second write = %d, want 2", body.Desired.Revision)
+	if body.Desired.Revision <= before {
+		t.Fatalf("revision after the second write = %d, want greater than %d — an accepted write that did not "+
+			"advance the journal is a write nothing recorded", body.Desired.Revision, before)
 	}
 	if body.Desired.Pending {
 		t.Errorf("desired now asks for exactly what this process holds and the surface still reports a pending "+
