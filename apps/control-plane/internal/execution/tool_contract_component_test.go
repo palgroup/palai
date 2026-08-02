@@ -100,7 +100,7 @@ func TestEveryToolRegistryCreateAdvertisesAnAddressThatResolves(t *testing.T) {
 	// (2) The tool revision.
 	rev := client.post(201, "/v1/tools/"+toolID+"/revisions", map[string]any{
 		"executor": "remote_http", "replay_class": "idempotent",
-		"description": "a revision whose Location must resolve",
+		"description":  "a revision whose Location must resolve",
 		"input_schema": map[string]any{"type": "object"},
 	})
 	revID, _ := rev["id"].(string)

@@ -157,7 +157,33 @@ type HookFirer interface {
 // brokers into one kernel. The model route defaults to the deterministic fake provider;
 // main.go overrides it for a live provider via SetModelRoute.
 func NewOrchestrator(st *store.Store, dialer EngineDialer, models *modelbroker.Broker, tools *toolbroker.Broker) *Orchestrator {
-	return &Orchestrator{store: st, spine: st.Spine(), dialer: dialer, models: models, tools: tools, tasks: newTaskRegistry(st.Spine()), publications: newPublicationRegistry(st.Spine()), route: defaultModelRoute, DialHandshakeDeadline: dialHandshakeDeadline}
+	o := &Orchestrator{store: st, spine: st.Spine(), dialer: dialer, models: models, tools: tools, tasks: newTaskRegistry(st.Spine()), route: defaultModelRoute, DialHandshakeDeadline: dialHandshakeDeadline}
+	// The publication registry is handed o.canPublish rather than the publisher itself, and the two-step
+	// construction is what that costs. The registry runs when a push TOOL is called; the publisher is
+	// injected later by SetPublisher, so a captured copy would be the nil one every time. A method value
+	// reads o.publisher when the question is asked.
+	o.publications = newPublicationRegistry(st.Spine(), o.canPublish)
+	return o
+}
+
+// canPublish asks the WIRED publisher whether a publication naming this connection ref has a credential
+// path on this deployment — BEFORE a pending approval is recorded and a human is asked about it.
+//
+// A publication that cannot be published must not become a question. The alternative is the shape this
+// tree calls silent-skip in its most expensive form: a human reads a push, presses Approve, is told the
+// run woke, and no write ever happens.
+//
+// IT IS INERT WITH NO PUBLISHER WIRED, and that ceiling is stated rather than hidden. A deployment with no
+// publisher publishes nothing either — but PRODUCTION ALWAYS WIRES ONE (main.go calls SetPublisher
+// unconditionally; TestABindingsOwnCredentialPublishesWithNoGitHubApp pins that the constructor never
+// returns nil), so the inert case is the deterministic tiers, where an orchestrator with no publisher is
+// how every non-publication test is built and parking an approval nobody will pump is the point.
+func (o *Orchestrator) canPublish(connectionRef string) error {
+	prechecker, ok := o.publisher.(PublicationPrechecker)
+	if !ok {
+		return nil
+	}
+	return prechecker.CanPublish(connectionRef)
 }
 
 // SetModelRoute sets the DEPLOYMENT-DEFAULT provider/model/secret the composition root (main.go) selects

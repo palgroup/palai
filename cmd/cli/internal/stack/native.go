@@ -341,6 +341,22 @@ func startNative(cfg Config, p paths, bin string, composeEnv []string, listen, r
 // stopNative stops the control plane a native bring-up started, and reports whether there was one.
 // It is called by every teardown path unconditionally: a stack that was never native has no record
 // and this is a no-op.
+// restartNative is the native deployment's drift repair: stop this machine's control-plane process and
+// bring it back with the desired document applied.
+//
+// IT IS THE COUNTERPART OF recreateControlPlane AND NOT AN ALIAS FOR IT. That one recreates the COMPOSE
+// SERVICE, which on a native bring-up is in a profile and deliberately not running — asking compose to
+// start it takes the port the native process holds, and the bring-up that had already succeeded is
+// reported as a failure. The two collide because they are the same port and different processes, so the
+// repair has to know which one this deployment actually runs.
+//
+// UpNative is idempotent (it stops a previous process before starting one), so the repair is simply
+// running it again: the desired values are read from the environment this call re-exports.
+func restartNative(_ Config, _ paths, get func(string) string) error {
+	_, err := UpNative(get)
+	return err
+}
+
 func stopNative(p paths) (bool, error) {
 	raw, err := os.ReadFile(p.nativePID)
 	if os.IsNotExist(err) {

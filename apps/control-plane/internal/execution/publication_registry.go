@@ -21,10 +21,15 @@ type publicationRegistry struct {
 	// hooks fires before_repository_publish (spec §28.17, E12 T8) once the destination is resolved. Nil ⇒ no
 	// hook fires (bit-unchanged). The orchestrator propagates its firer here via SetHookFirer.
 	hooks HookFirer
+	// canPublish answers whether this deployment has a credential path for a publication carrying the
+	// binding's connection_ref, BEFORE a pending approval is recorded. Nil ⇒ no precheck (the fakes in this
+	// package, which record approvals nothing will ever pump). Orchestrator.canPublish is what production
+	// passes; it delegates to the wired publisher's own CanPublish, so this is not a second copy of the rule.
+	canPublish func(connectionRef string) error
 }
 
-func newPublicationRegistry(store *coordinator.Store) *publicationRegistry {
-	return &publicationRegistry{store: store}
+func newPublicationRegistry(store *coordinator.Store, canPublish func(connectionRef string) error) *publicationRegistry {
+	return &publicationRegistry{store: store, canPublish: canPublish}
 }
 
 // RequestPublication records a pending publication + approval and returns the pending-approval result
@@ -46,6 +51,31 @@ func (r *publicationRegistry) RequestPublication(ctx context.Context, scope tool
 	}
 	if !found {
 		return nil, fmt.Errorf("publication tool: the run prepared no repository, nothing to publish")
+	}
+
+	// REFUSED BEFORE A HUMAN IS ASKED, and this is the earliest point at which the question can be
+	// answered: target.ConnectionRef is the binding's own credential handle and it has just been resolved.
+	//
+	// WHY IT IS HERE RATHER THAN AT THE PUMP. The pump's refusal already exists and lands as a warning on
+	// the row — but by then a human has read a push, pressed Approve, and been told the run woke. An
+	// approval that authorizes nothing is worse than a refusal, because it is indistinguishable from one
+	// that worked. So a publication with no credential path never becomes a pending approval at all.
+	//
+	// IT IS AN ANSWER AND NOT A FAULT, and that distinction is not decoration — it was MEASURED on the
+	// live native stack, 2026-08-02, with a first version of this check that returned a plain error. A
+	// ref-less binding's push then produced: three `attempt.recovering.v1` from one checkpoint and
+	// `run.failed.v1`. answer.go's own header describes exactly that shape and exists to prevent it — an
+	// unclassified error is a FAULT, the attempt dies with the tool_call row `executing`, and the retry
+	// ladder spends itself reproducing a refusal that will never change. A guard that wedges the run is
+	// worse than the silent skip it replaced.
+	//
+	// AnswerUnavailable is the right code: answer.go defines it as "the tool is not wired on this
+	// deployment — the model cannot fix it, but being told beats a run that never ends, and the
+	// tool_calls row records the refusal for the operator who can fix it." That is this case exactly.
+	if r.canPublish != nil {
+		if err := r.canPublish(target.ConnectionRef); err != nil {
+			return nil, toolbroker.Answer(toolbroker.AnswerUnavailable, fmt.Errorf("publication tool: %w", err))
+		}
 	}
 
 	// THE MERGE DESTINATION IS RESOLVED HERE, and it is resolved from a row the model never touched (E23

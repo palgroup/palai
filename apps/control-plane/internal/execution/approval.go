@@ -280,14 +280,22 @@ func publishApproved(ctx context.Context, spine PublicationPump, publisher Publi
 // everything else comes from the publication row + the attempt's workspace, so the model never supplies
 // a destination.
 type RepositoryPublisher struct {
+	// Broker is the DEPLOYMENT-GLOBAL credential — the GitHub App — and it is nil on a deployment that has
+	// not configured one. NIL IS A SUPPORTED STATE, not a half-built object: a single-tenant stack whose
+	// bindings each name their own connection_ref needs no App at all, and requiring one is what used to
+	// make the per-binding credential unreachable. A publication with no ConnectionRef is then REFUSED by
+	// CanPublish rather than published under nothing.
 	Broker    repositories.Broker
-	PRClient  repositories.PullRequestClient // nil disables PR publication (push-only stacks)
+	PRClient  repositories.PullRequestClient // nil disables PR publication (push-only stacks, and App-less ones)
 	Protected []string                       // policy-widened protected branches (default main/master always)
 	// ConnectionSecrets resolves a binding's OWN credential handle to its bytes, server-side. It is the
 	// same function the clone half already uses (main.repositoryConnectionSecret), passed in rather than
 	// re-implemented, so exactly one place in this tree turns a connection_ref into a credential.
 	//
-	// nil — or a target carrying no ConnectionRef — keeps the deployment-global behaviour untouched.
+	// THE TWO NIL CASES ARE DIFFERENT AND ONLY ONE OF THEM IS QUIET. A target carrying no ConnectionRef
+	// never reads this field, so the deployment-global path is untouched by its absence. A target that
+	// DOES carry one and finds this nil is REFUSED — a binding that deliberately named its own credential
+	// must not publish under the deployment App because the resolver went missing.
 	ConnectionSecrets func(org, ref string) ([]byte, error)
 	// PRClientFor builds a pull-request client over an ALREADY-RESOLVED token, for one owner/repo. It is a
 	// factory rather than a client because after this change both the credential and the repository are
@@ -305,59 +313,9 @@ func (p *RepositoryPublisher) Publish(ctx context.Context, target PublishTarget)
 		Run: pub.RunID, AttemptFence: target.AttemptFence, ToolCall: pub.ID,
 	}
 
-	// WHICH CREDENTIAL THIS WRITE IS MADE UNDER, resolved before anything leaves the machine.
-	//
-	// A binding that names its own connection_ref publishes under THAT credential; a binding without one
-	// keeps the deployment-global App. This is the clone half's rule (E13 T9) applied to the way OUT, and
-	// until now the two disagreed: a tenant provisioned a credential in the admin panel, it was honoured
-	// inbound, and every push and pull request went out as the deployment's App.
-	//
-	// A MISS IS AN ERROR AND THERE IS NO FALLBACK. main.repositoryConnectionSecret says that for clone;
-	// here it is stronger, because falling back does not fail — it SUCCEEDS AS THE WRONG IDENTITY. It
-	// lands a branch, or opens a pull request, in somebody's repository, and the receipt says the
-	// deployment's App did it. Returning an error is what makes that impossible by construction rather
-	// than by a check somebody can delete.
-	broker, prClient := p.Broker, p.PRClient
-	if target.ConnectionRef != "" {
-		if p.ConnectionSecrets == nil {
-			return nil, fmt.Errorf("publish %s: the binding names credential %q and no connection-secret "+
-				"resolver is wired: refusing to publish under the deployment App", pub.ID, target.ConnectionRef)
-		}
-		tokenBytes, err := p.ConnectionSecrets(target.Org, target.ConnectionRef)
-		if err != nil {
-			return nil, fmt.Errorf("publish %s: resolve binding credential %q: %w (refusing to fall back to "+
-				"the deployment App)", pub.ID, target.ConnectionRef, err)
-		}
-		token := strings.TrimSpace(string(tokenBytes))
-		if token == "" {
-			return nil, fmt.Errorf("publish %s: binding credential %q resolved empty: refusing to publish",
-				pub.ID, target.ConnectionRef)
-		}
-		// THE TOKEN BROKER GIVES NO SCOPE NARROWING, and that is the tenant's trade rather than a defect
-		// this code can fix. broker.go's own comment says it: the App broker mints a token whose
-		// permissions match the scope, while this hands back the one durable credential the tenant
-		// supplied — "a PAT's rights are whatever the tenant granted it". A tenant choosing to hold its own
-		// credential also chooses to scope it themselves, and the alternative (declining to publish under
-		// a tenant credential at all) is the feature the owner asked for.
-		broker = repositories.NewTokenBroker(token)
-
-		// The pull-request client is rebuilt per binding too, because owner/repo is now the BINDING's
-		// (target.Identity) rather than PALAI_GITHUB_REPO. That env var is why one stack could open pull
-		// requests against exactly one repository however many bindings it served — while publish.go's own
-		// comment already claimed "Owner/repo come from the binding, not the model".
-		prClient = nil
-		if p.PRClientFor != nil && needsPRClient(pub.Operation) {
-			owner, repo, ok := splitIdentity(target.Identity)
-			if !ok {
-				return nil, fmt.Errorf("publish %s: the binding's repository_identity %q is not owner/repo, so "+
-					"no pull-request client can be built for it", pub.ID, target.Identity)
-			}
-			c, err := p.PRClientFor(token, owner, repo)
-			if err != nil {
-				return nil, fmt.Errorf("publish %s: build a pull-request client for %s: %w", pub.ID, target.Identity, err)
-			}
-			prClient = c
-		}
+	broker, prClient, err := p.credentialFor(target)
+	if err != nil {
+		return nil, err
 	}
 
 	switch pub.Operation {
@@ -424,6 +382,108 @@ func (p *RepositoryPublisher) Publish(ctx context.Context, target PublishTarget)
 	default:
 		return nil, fmt.Errorf("publish %s: unknown operation %q", pub.ID, pub.Operation)
 	}
+}
+
+// CanPublish answers whether a publication carrying this connection ref has a credential PATH on this
+// deployment at all. It is the STRUCTURAL half of the decision credentialFor makes below, factored out so
+// that the answer the publish boundary gives and the answer a human is given BEFORE they approve cannot
+// disagree — they are the same call, not two copies of one rule.
+//
+// THE SECOND BRANCH IS THE ONE THIS EXISTS FOR. A binding with no connection_ref has always meant "publish
+// under the deployment's GitHub App". On a deployment that has no App there is nothing for that to mean,
+// and both wrong answers are worse than a refusal: publishing anonymously, or publishing under whatever
+// credential happens to be reachable. Before this, the whole publisher was built inside the App gate, so
+// this case was not refused — it was INVISIBLE: the pump had no publisher, an approved row sat at
+// `approved` forever, and a human had been told they authorized a push.
+//
+// WHAT IT DOES NOT CLAIM, and the qualification is load-bearing: it does not say the credential RESOLVES.
+// A ref naming a secret nobody provisioned passes here and fails at publish, with a warning on the row.
+// That split is deliberate — resolving a tenant's secret to throw the bytes away is a read this question
+// does not need, and the refusal it would add is one the publish boundary already makes.
+func (p *RepositoryPublisher) CanPublish(connectionRef string) error {
+	if connectionRef != "" {
+		if p.ConnectionSecrets == nil {
+			return fmt.Errorf("the binding names its own credential %q and no connection-secret resolver is "+
+				"wired on this deployment: refusing to publish under the deployment App", connectionRef)
+		}
+		return nil
+	}
+	if p.Broker == nil {
+		return errors.New("this binding names no connection_ref, so it would publish under the deployment's " +
+			"GitHub App — and this deployment has no App configured (PALAI_GITHUB_APP_ID, " +
+			"PALAI_GITHUB_APP_INSTALLATION_ID and PALAI_GITHUB_APP_PRIVATE_KEY_FILE are required together). " +
+			"Give the binding its own connection_ref (POST /v1/secret-refs, then the binding's connection_ref), " +
+			"or configure the App")
+	}
+	return nil
+}
+
+// PublicationPrechecker is a Publisher that can answer CanPublish. It is a SEPARATE interface from
+// Publisher rather than a second method on it, because the seam it serves is a different one: Publisher is
+// the pump's, and this is the publication REGISTRY's — the tool that records a pending approval, which
+// runs long before any pump. A Publisher that cannot answer (a test fake) leaves the precheck inert, which
+// is the same fail-open-to-today discipline every other optional seam in this file uses.
+type PublicationPrechecker interface {
+	CanPublish(connectionRef string) error
+}
+
+// credentialFor decides WHICH CREDENTIAL one publication is made under, and it returns fresh values rather
+// than overwriting a pair pre-loaded with the deployment App's.
+//
+// THAT IS THE STRUCTURAL HALF OF "IMPOSSIBLE BY CONSTRUCTION", and it is why this is a function rather
+// than four lines in Publish. The two paths are disjoint and only ONE of them can name p.Broker: a binding
+// carrying its own credential reaches only returns built from the token it resolved, so there is no
+// variable in that branch holding the App's broker for a later edit to leak. A binding carrying none
+// returns p.Broker, or CanPublish's refusal.
+//
+// A MISS IS AN ERROR AND THERE IS NO FALLBACK. main.repositoryConnectionSecret says that for clone; here
+// it is stronger, because falling back does not fail — it SUCCEEDS AS THE WRONG IDENTITY. It lands a
+// branch, or opens a pull request, in somebody's repository, and the receipt says the deployment's App did
+// it.
+func (p *RepositoryPublisher) credentialFor(target PublishTarget) (repositories.Broker, repositories.PullRequestClient, error) {
+	pub := target.Publication
+	if err := p.CanPublish(target.ConnectionRef); err != nil {
+		return nil, nil, fmt.Errorf("publish %s: %w", pub.ID, err)
+	}
+	if target.ConnectionRef == "" {
+		return p.Broker, p.PRClient, nil
+	}
+	tokenBytes, err := p.ConnectionSecrets(target.Org, target.ConnectionRef)
+	if err != nil {
+		return nil, nil, fmt.Errorf("publish %s: resolve binding credential %q: %w (refusing to fall back to "+
+			"the deployment App)", pub.ID, target.ConnectionRef, err)
+	}
+	token := strings.TrimSpace(string(tokenBytes))
+	if token == "" {
+		return nil, nil, fmt.Errorf("publish %s: binding credential %q resolved empty: refusing to publish",
+			pub.ID, target.ConnectionRef)
+	}
+	// THE TOKEN BROKER GIVES NO SCOPE NARROWING, and that is the tenant's trade rather than a defect this
+	// code can fix. broker.go's own comment says it: the App broker mints a token whose permissions match
+	// the scope, while this hands back the one durable credential the tenant supplied — "a PAT's rights are
+	// whatever the tenant granted it". A tenant choosing to hold its own credential also chooses to scope
+	// it themselves, and the alternative (declining to publish under a tenant credential at all) is the
+	// feature the owner asked for.
+	broker := repositories.NewTokenBroker(token)
+
+	// The pull-request client is built per binding too, because owner/repo is the BINDING's
+	// (target.Identity) rather than PALAI_GITHUB_REPO. That env var is why one stack could open pull
+	// requests against exactly one repository however many bindings it served — while publish.go's own
+	// comment already claimed "Owner/repo come from the binding, not the model".
+	var prClient repositories.PullRequestClient
+	if p.PRClientFor != nil && needsPRClient(pub.Operation) {
+		owner, repo, ok := splitIdentity(target.Identity)
+		if !ok {
+			return nil, nil, fmt.Errorf("publish %s: the binding's repository_identity %q is not owner/repo, so "+
+				"no pull-request client can be built for it", pub.ID, target.Identity)
+		}
+		c, err := p.PRClientFor(token, owner, repo)
+		if err != nil {
+			return nil, nil, fmt.Errorf("publish %s: build a pull-request client for %s: %w", pub.ID, target.Identity, err)
+		}
+		prClient = c
+	}
+	return broker, prClient, nil
 }
 
 // needsPRClient reports whether an operation talks to the provider API rather than to Git. A push needs a

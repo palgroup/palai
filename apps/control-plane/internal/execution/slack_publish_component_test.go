@@ -278,7 +278,7 @@ func (h *publishHarness) wireSlack(t *testing.T, cs *coordinator.Store) (*extens
 func (h *publishHarness) execEnv() toolbroker.ExecEnv {
 	return toolbroker.ExecEnv{
 		WorkspaceRoot: h.root,
-		Publications:  newPublicationRegistry(h.spine),
+		Publications:  newPublicationRegistry(h.spine, nil),
 		Scope: toolbroker.TaskScope{
 			Org: h.tenant.Organization, Project: h.tenant.Project,
 			SessionID: h.sessionID, RunID: h.runID, ResponseID: h.respID,
@@ -310,7 +310,7 @@ func (h *publishHarness) dispatch(tool toolbroker.Tool, callID string, fence uin
 	h.t.Helper()
 	ch := &recordingChannel{}
 	orch := &Orchestrator{
-		spine: h.spine, tools: toolbroker.New(tool), publications: newPublicationRegistry(h.spine),
+		spine: h.spine, tools: toolbroker.New(tool), publications: newPublicationRegistry(h.spine, nil),
 	}
 	st := &attemptState{
 		attempt: AttemptDescriptor{

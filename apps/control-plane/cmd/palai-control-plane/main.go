@@ -656,13 +656,13 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		// rows are created directly today — which is a NAMED gap, not a claim this task closes.
 		orch.SetRemoteChildren(a2a.NewStore(spine.Pool(), middleware.NewID),
 			a2a.NewClient(a2a.ClientConfig{Secrets: a2aRemoteSecretResolver}))
-		// Wire the repository publisher the approval pump publishes through (spec §30.9-30.10), gated on
-		// the GitHub App environment. Absent it, an approved publication waits (the pump is a no-op) — no
-		// push happens without a configured destination. ponytail: the live wave sets the env; the
-		// deterministic tier proves the pump with a fake publisher.
-		if publisher := repositoryPublisherFromEnv(); publisher != nil {
-			orch.SetPublisher(publisher)
-		}
+		// Wire the repository publisher the approval pump publishes through (spec §30.9-30.10).
+		// UNCONDITIONALLY, and the `if publisher != nil` this replaces is the defect: the publisher was
+		// built inside the GitHub App gate, so a deployment with no App wired none — and a nil publisher
+		// makes pumpApprovedPublications a no-op, which is indistinguishable from success on every surface
+		// a human looks at. A binding carrying its own connection_ref now publishes on a deployment with no
+		// App at all, and a binding carrying none is REFUSED there with a sentence rather than ignored.
+		orch.SetPublisher(repositoryPublisher())
 		// Wire the checkpoint + snapshot sinks whenever an object store exists (spec §26.1-26.2, §29.10).
 		// Unlike the changeset writer, neither is gated on a coding workspace — a checkpoint boundary
 		// applies to any run, and the snapshot sink is a no-op for a run with no workspace. Absent an
@@ -705,12 +705,12 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		orch.SetEnvironmentSecrets(environmentValueSecret)
 		if root := os.Getenv("PALAI_WORKSPACE_ROOT"); root != "" {
 			orch.SetWorkspaceProvisioner(root, repositoryBrokerFromEnv())
-	// PER-SESSION ACCOUNTS (macOS), ACQUIRE HALF: the uid a session's tools run under, created when the
-	// session first provisions a workspace. It is the SAME INSTANCE the release half holds — they share the
-	// map of which session owns which slot, and two instances would give the releaser an empty one.
-	if sessionAccounts != nil {
-		orch.SetSessionAccounts(sessionAccounts)
-	}
+			// PER-SESSION ACCOUNTS (macOS), ACQUIRE HALF: the uid a session's tools run under, created when the
+			// session first provisions a workspace. It is the SAME INSTANCE the release half holds — they share the
+			// map of which session owns which slot, and two instances would give the releaser an empty one.
+			if sessionAccounts != nil {
+				orch.SetSessionAccounts(sessionAccounts)
+			}
 			// A binding that names a connection_ref clones under its own tenant's credential (E13 T9);
 			// the resolver is inert for the ref-less bindings that take the global broker above.
 			orch.SetConnectionSecrets(repositoryConnectionSecret)
@@ -1249,41 +1249,85 @@ func startMCPOrphanSweep(ctx context.Context, supervisor *coordinator.Supervisor
 	go supervisor.Supervise(ctx, "mcp-orphan-sweep", func(ctx context.Context) error { return sweeper.Run(ctx, interval) })
 }
 
-// repositoryPublisherFromEnv builds the repository publisher the approval pump publishes through (spec
-// §30.9-30.10), gated on the GitHub App environment. The App private key arrives via the LP-0
-// file-secret bridge (PALAI_GITHUB_APP_PRIVATE_KEY_FILE — a PATH, never inline), sealed at rest by E13;
-// this process only mints short-lived scoped tokens against it and never logs it. Absent any required
-// var it returns nil, so an approved publication simply waits — no push without a configured
-// destination. ponytail: env gating like modelBrokerFromEnv; the live wave sets these, the deterministic
-// tier proves the pump with a fake publisher.
+// repositoryPublisher builds the repository publisher the approval pump publishes through (spec
+// §30.9-30.10). IT HAS TWO CREDENTIAL PATHS AND THEY ARE CONSTRUCTED INDEPENDENTLY — which is the whole
+// shape of this function rather than a stylistic preference, so the reason is here and not in a plan.
 //
-// "SIMPLY WAITS" IS THE PART THAT NEEDED A VOICE (E22 T4). A nil publisher makes pumpApprovedPublications
-// a no-op, which is the right refusal — but it is INDISTINGUISHABLE from success on every surface a human
-// looks at: the model got its pending_approval, the approver pressed Approve, the Slack message says
-// "Approved: push agent/… -> …", the publication row says approved. Nothing anywhere says the push cannot
-// happen. So a HALF-configured App now says so at boot, once, naming the variables — the same reason
-// `palai up` warns before the stack is even built. A stack that configured NOTHING stays silent: it never
-// asked to publish.
-func repositoryPublisherFromEnv() execution.Publisher {
+// THE DEFECT THIS SHAPE REPLACES. Every field below, the connection_ref resolver included, used to be
+// built INSIDE `if appID == "" || installID == "" || keyFile == "" { return nil }`. So the object that
+// knows how to publish under a TENANT's own credential was constructed only on a deployment that had
+// configured the DEPLOYMENT-GLOBAL App — the thing that path exists to replace. On a stack with no App,
+// main.go wired nothing, pumpApprovedPublications became a no-op, and an APPROVED push waited forever:
+// the model got its pending_approval, a human pressed Approve, the run woke, and nothing was pushed.
+// Measured on the live native stack, 2026-08-02: no App configured, a binding carrying connection_ref
+// `demo-local-token`, and no push possible.
+//
+// SO THE PUBLISHER IS ALWAYS BUILT AND main.go ALWAYS WIRES IT. The App half is an OPTIONAL EXTRA
+// (gitHubAppPublisherFromEnv, below) rather than a gate around the rest, and a deployment that configured
+// no App gets a publisher whose Broker is nil. A publication whose binding names no connection_ref is
+// then REFUSED by RepositoryPublisher.CanPublish — with a sentence naming the three variables — instead of
+// being silently not-attempted. A refusal reaches the operator (the publication row's warning, and the
+// publication tool refuses it before a human is ever asked); a no-op reached nobody.
+//
+// The App private key arrives via the LP-0 file-secret bridge (PALAI_GITHUB_APP_PRIVATE_KEY_FILE — a PATH,
+// never inline), sealed at rest by E13; this process only mints short-lived scoped tokens against it and
+// never logs it.
+func repositoryPublisher() execution.Publisher {
+	publisher := &execution.RepositoryPublisher{
+		// THE BINDING'S OWN CREDENTIAL, on the way OUT, and it is wired UNCONDITIONALLY. The clone half has
+		// resolved this since E13 T9 (SetConnectionSecrets, above). It is the SAME function, passed rather
+		// than re-implemented, so one place in this tree turns a connection_ref into a credential.
+		ConnectionSecrets: repositoryConnectionSecret,
+		// And the pull-request client per binding, over that credential and the binding's own owner/repo —
+		// also unconditional, because a binding's identity is a property of the binding and not of the App.
+		PRClientFor: func(token, owner, repo string) (repositories.PullRequestClient, error) {
+			return repositories.NewTokenPullRequestClient(token, "", owner, repo)
+		},
+	}
+	publisher.Broker, publisher.PRClient = gitHubAppPublisherFromEnv()
+	return publisher
+}
+
+// gitHubAppPublisherFromEnv builds the DEPLOYMENT-GLOBAL half — the credential a binding that names no
+// connection_ref of its own publishes under. Both returns are nil when no App is configured, which is a
+// supported deployment and not a failure: see repositoryPublisher above.
+//
+// The App path stays exactly as it was for the fleet case it is right for, where handing a run a tenant
+// PAT would hand it that account's whole reach. What changed is only that its absence no longer removes
+// the other path.
+//
+// "AN APPROVED PUSH WILL WAIT FOREVER" NO LONGER BELONGS AT THIS LOG LINE, and dropping it is a
+// correction rather than a tidy-up: after this change nothing waits silently — a ref-less publication on
+// an App-less deployment is refused at the tool, before a human is asked, and GET /v1/deployment carries
+// the warning. What the half-configured case still deserves is its own line, because it is the one state
+// an operator reaches BELIEVING they finished.
+func gitHubAppPublisherFromEnv() (repositories.Broker, repositories.PullRequestClient) {
 	appID := os.Getenv("PALAI_GITHUB_APP_ID")
 	installID := os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID")
 	keyFile := os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE")
-	if appID == "" || installID == "" || keyFile == "" {
+	if !api.GitHubAppConfigured() {
+		// THE CONDITION IS THE TWO IDENTIFIERS, NOT THE KEY PATH, and it was measured: every bring-up sets
+		// PALAI_GITHUB_APP_PRIVATE_KEY_FILE (native.go's env map and compose.yaml both write it
+		// unconditionally, at a file-secret slot that exists EMPTY until an App is configured), so a line
+		// conditioned on it printed on a stack that had configured NOTHING — seen on the live native stack
+		// 2026-08-02 at boot. `palai up` calls that crying wolf and removed it once already.
 		if appID != "" || installID != "" {
 			log.Printf("repository publisher: PALAI_GITHUB_APP_ID/PALAI_GITHUB_APP_INSTALLATION_ID/" +
-				"PALAI_GITHUB_APP_PRIVATE_KEY_FILE are required TOGETHER; one is missing, so publication is " +
-				"disabled and an APPROVED push will wait forever")
+				"PALAI_GITHUB_APP_PRIVATE_KEY_FILE are required TOGETHER; at least one is missing, so the " +
+				"deployment-global App is OFF — only a binding carrying its own connection_ref can publish")
 		}
-		return nil
+		return nil, nil
 	}
 	keyPEM, err := os.ReadFile(keyFile)
 	if err != nil {
-		log.Printf("repository publisher: read app key file: %v (publication disabled)", err)
-		return nil
+		log.Printf("repository publisher: read app key file: %v (the deployment-global App is OFF)", err)
+		return nil, nil
 	}
-	// owner/repo for the pull-request client. PALAI_GITHUB_REPO is this binary's own name for it;
+	// owner/repo for the App's pull-request client. PALAI_GITHUB_REPO is this binary's own name for it;
 	// PALAI_GIT_REPO is the one §0.2 asks the operator for and the repository binding already uses, so both
-	// are read rather than letting a stack be configured correctly and publish nothing.
+	// are read rather than letting a stack be configured correctly and publish nothing. It narrows ONLY the
+	// App path: a binding with its own credential brings its own owner/repo (target.Identity), which is why
+	// one stack no longer opens pull requests against exactly one repository however many bindings it serves.
 	owner, repo := "", ""
 	slug := os.Getenv("PALAI_GITHUB_REPO")
 	if slug == "" {
@@ -1299,39 +1343,23 @@ func repositoryPublisherFromEnv() execution.Publisher {
 	}
 	broker, err := repositories.NewGitHubAppBroker(cfg)
 	if err != nil {
-		log.Printf("repository publisher: app broker: %v (publication disabled)", err)
-		return nil
+		log.Printf("repository publisher: app broker: %v (the deployment-global App is OFF)", err)
+		return nil, nil
 	}
-	publisher := &execution.RepositoryPublisher{
-		Broker: broker,
-		// THE BINDING'S OWN CREDENTIAL, on the way OUT. The clone half has resolved this since E13 T9
-		// (SetConnectionSecrets, above); the publish half was blind to it, so a tenant's panel-provisioned
-		// credential was honoured inbound and every push and pull request went out as the deployment App.
-		// It is the SAME function, passed rather than re-implemented, so one place in this tree turns a
-		// connection_ref into a credential.
-		ConnectionSecrets: repositoryConnectionSecret,
-		// And the pull-request client per binding, over that credential and the binding's own owner/repo.
-		// PALAI_GITHUB_REPO below stays the fallback for ref-less bindings; it is why a stack could
-		// otherwise open pull requests against exactly one repository however many bindings it served.
-		PRClientFor: func(token, owner, repo string) (repositories.PullRequestClient, error) {
-			return repositories.NewTokenPullRequestClient(token, "", owner, repo)
-		},
-	}
-	switch {
-	case owner == "" || repo == "":
+	if owner == "" || repo == "" {
 		// A push publishes without this (its remote comes from the binding); a pull request cannot, and
 		// answers "no pull-request client wired" at the pump. Said out loud, because the operator's only
 		// other symptom is an approved PR that never opens.
-		log.Printf("repository publisher: no owner/repo (set PALAI_GIT_REPO=owner/repo) — pushes publish, " +
-			"pull requests do NOT")
-	default:
-		if prClient, err := repositories.NewGitHubPullRequestClient(cfg, owner, repo); err != nil {
-			log.Printf("repository publisher: pr client: %v (pull requests disabled)", err)
-		} else {
-			publisher.PRClient = prClient
-		}
+		log.Printf("repository publisher: no owner/repo (set PALAI_GIT_REPO=owner/repo) — App pushes publish, " +
+			"App pull requests do NOT")
+		return broker, nil
 	}
-	return publisher
+	prClient, err := repositories.NewGitHubPullRequestClient(cfg, owner, repo)
+	if err != nil {
+		log.Printf("repository publisher: pr client: %v (App pull requests disabled)", err)
+		return broker, nil
+	}
+	return broker, prClient
 }
 
 // startWebhookPump launches the supervised outbound-webhook delivery pump (spec §21.4-21.6). It is a

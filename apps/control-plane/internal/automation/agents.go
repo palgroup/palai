@@ -37,6 +37,10 @@ var ErrUnknownField = errors.New("automation: revision body carries an unsupport
 // ErrProfileNotFound is returned when a revision is created against a profile absent from the scope.
 var ErrProfileNotFound = errors.New("automation: agent profile not found in scope")
 
+// ErrProfileNameTaken is a profile name that already exists in this project. It is the caller's to fix
+// — a different name, or the existing profile's id — so it must never reach a client as a 500.
+var ErrProfileNameTaken = errors.New("agent profile name already exists")
+
 // ErrEnvironmentNotFound is returned when a revision names an `environment` that does not exist in the
 // caller's organization (E25 T3), at create and again at publish.
 //
@@ -123,6 +127,16 @@ func (s *Store) CreateProfile(ctx context.Context, org, project, name string) (s
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	id := newID("aprof")
 	if _, err := s.pool.Exec(ctx, storage.Query("InsertAgentProfile"), id, org, project, name); err != nil {
+		// A NAME ALREADY IN USE IS THE CALLER'S ANSWER, NOT THE SERVER'S FAULT. Measured 2026-08-02 against
+		// the live control plane: re-registering an existing profile name served
+		// `500 internal_error retryable:true` with NO log line — so the request_id in the body led
+		// nowhere, and `retryable` told the client to do the one thing that can never work. `palai up`'s
+		// Slack step and the iOS live smoke both read that 500 as a broken control plane on every run
+		// after the first.
+		var pgErr interface{ SQLState() string }
+		if errors.As(err, &pgErr) && pgErr.SQLState() == "23505" {
+			return "", fmt.Errorf("%w: %q", ErrProfileNameTaken, name)
+		}
 		return "", fmt.Errorf("insert agent profile: %w", err)
 	}
 	return id, nil

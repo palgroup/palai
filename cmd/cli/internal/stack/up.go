@@ -185,7 +185,25 @@ func Bootstrap(envFile string, native bool) error {
 	// the same discipline the live round trip below applies to the model provider. A bring-up that reported
 	// success on a stack running something other than the operator's document would be the "declared, and
 	// nothing happens" defect wearing this command's own report.
-	desiredLine, err := verifyDesiredApplied(api, func() error { return recreateControlPlane(cfg, p) })
+	// THE REPAIR MUST RESTART THE CONTROL PLANE THIS DEPLOYMENT ACTUALLY RUNS. recreateControlPlane
+	// recreates the COMPOSE SERVICE, and on a native bring-up that service is not the control plane —
+	// it is in a profile and deliberately not started, while the real one is a process on this machine.
+	//
+	// Measured 2026-08-02: with a drifted desired document, `palai up --native` brought the native
+	// control plane up cleanly (pid printed, doctor 14/15) and then failed at [4/6] with
+	//
+	//   Error response from daemon: Ports are not available: exposing port TCP 127.0.0.1:60351
+	//
+	// because the repair asked compose to start a container that wanted the port the native process had
+	// just taken. The bring-up it had already completed was reported as a failure, and on the run before
+	// it — where the container was still up from an earlier `local up` — the collision went the other
+	// way: the NATIVE process died on bind, the container kept serving, and the command printed PROVEN
+	// LIVE for a round trip against the very container it was replacing.
+	//
+	// A native deployment therefore repairs by restarting its own process. Refusing instead would be
+	// worse: a drifted document is exactly when an operator needs the bring-up to converge.
+	repair := func() error { return restartControlPlane(cfg, p, get, native) }
+	desiredLine, err := verifyDesiredApplied(api, repair)
 	if err != nil {
 		return err
 	}
@@ -202,7 +220,7 @@ func Bootstrap(envFile string, native bool) error {
 	}
 
 	// [6/6] Slack, if and only if the workspace values are present. Never fatal.
-	slackFact, slackLine, slackWarns := wireSlack(api, cfg, p, get)
+	slackFact, slackLine, slackWarns := wireSlack(api, cfg, p, get, native)
 	fmt.Fprintf(os.Stderr, "[6/6] slack     %s\n", slackLine)
 
 	caps, err := api.capabilities()
@@ -454,13 +472,19 @@ const gitHubAppKeySlot = "github-app-key"
 // applyGitHubAppEnv wires the GitHub App the approval pump publishes THROUGH (§0.2), and removes the
 // silence around it.
 //
-// THE SILENCE IT REMOVES, because it is the whole reason this function exists rather than three more lines
-// in compose: repositoryPublisherFromEnv (main.go) returns nil when any of the three variables is missing,
-// and a nil publisher makes pumpApprovedPublications a no-op. So an operator could grant the publish tools,
-// watch the agent propose a push, press Approve, see the message repaired to "Approved: push agent/… -> …"
-// — and nothing would ever happen. Not an error, not a log line the operator sees, not a retry: an approved
-// row sitting in the database forever. That is E21 T2's silent-skip in its most expensive form, because
-// this one has a human believing they authorized something.
+// THE SILENCE IT REMOVED, and what is left of it after the publisher was un-gated. This function was
+// written when main.repositoryPublisherFromEnv returned nil for a missing App variable and a nil publisher
+// made pumpApprovedPublications a no-op — so an operator could grant the publish tools, watch the agent
+// propose a push, press Approve, see the message repaired to "Approved: push agent/… -> …", and nothing
+// would ever happen: an approved row sitting in the database forever, with a human believing they
+// authorized something.
+//
+// The publisher is no longer gated on the App (main.repositoryPublisher), so that silence is gone: a
+// binding carrying its own connection_ref publishes with no App at all, and a binding carrying none is
+// REFUSED by the publication tool before a human is asked. THIS WARNING STILL FIRES AND STILL EARNS ITS
+// LINE, for the branch it was always really about: the repository `palai up` binds from PALAI_GIT_CLONE_URL
+// has NO connection_ref, so on a stack with no App it is exactly the binding that cannot publish. The
+// operator now learns it at bring-up instead of at the refusal.
 //
 // WHAT RIDES WHERE. The App id and the installation id are identifiers, so they ride the compose
 // environment like every other knob. The PRIVATE KEY does not: its bytes are copied into the 0600
@@ -658,14 +682,14 @@ func slackReport(o slackOutcome) (fact string, line string) {
 // agent can touch CODE at all (the repository binding, E22 T3). Folding one into the other would let
 // a connected socket read as a working integration while every Approve click is silently refused,
 // which is the same over-claiming in a new place.
-func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fact string, line string, warns []string) {
+func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string, native bool) (fact string, line string, warns []string) {
 	body, skip := slackRegistration(get)
 	if skip != "" {
 		o := slackOutcome{skip: skip}
 		if n, err := api.slackConnectionCount(); err == nil && n > 0 {
 			// A workspace registered by an earlier run may well be live; look before saying so.
 			o.existing = n
-			o.connected, o.detail = observeSlackSocket(cfg, p, 0)
+			o.connected, o.detail = observeSlackSocket(cfg, p, native, 0)
 		}
 		// No body was sent, so nothing here knows the STORED connection's approver list — and
 		// guessing at it is exactly what slackApproverWarning exists to replace. The skip itself IS
@@ -743,14 +767,21 @@ func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fa
 	// therefore cannot be seen by the control-plane that was already running, so look first and
 	// recreate only if the socket is not already up. --force-recreate rather than restart, so the
 	// log read afterwards carries this boot alone.
-	if o.connected, o.detail = observeSlackSocket(cfg, p, 0); !o.connected {
+	// BOTH HALVES BELOW ASK THE DEPLOYMENT THIS BRING-UP ACTUALLY RUNS, and neither did before. Measured
+	// 2026-08-02 on `palai up --native`: the observe read the COMPOSE container's logs, which on a native
+	// bring-up hold the previous posture's boot or nothing at all — so a socket that was connected (and
+	// said so in .palai/control-plane.log two lines above) read as disconnected. That sent the step into
+	// the repair, and the repair recreated the compose service, which is exactly the container this
+	// deployment deliberately does not run: `exit status 1`, and a Slack step that reported the workspace
+	// dormant on a stack where Slack was connected the whole time.
+	if o.connected, o.detail = observeSlackSocket(cfg, p, native, 0); !o.connected {
 		fmt.Fprintln(os.Stderr, "        the control-plane is restarting to pick up the workspace (Socket Mode resolves it at boot)")
-		if err := recreateControlPlane(cfg, p); err != nil {
+		if err := restartControlPlane(cfg, p, get, native); err != nil {
 			o.detail = fmt.Sprintf("the control-plane could not be recreated to pick up the registration: %v", err)
 			fact, line = slackReport(o)
 			return fact, line, warns
 		}
-		o.connected, o.detail = observeSlackSocket(cfg, p, 45*time.Second)
+		o.connected, o.detail = observeSlackSocket(cfg, p, native, 45*time.Second)
 	}
 	// warns ride alongside whatever the socket turned out to be. A connected socket does not retire
 	// them — that is the case they matter MOST in, because the events now arriving are the ones whose
@@ -793,11 +824,36 @@ func recreateControlPlane(cfg Config, p paths) error {
 // connection row. No endpoint exposes that, and inventing one to report it would be a bigger change
 // than the wiring it reports on. The lines it reads carry no credential by construction
 // (TestSlackSocketNeverLogsTheTokenOrTheTicket is the guard on that).
-func observeSlackSocket(cfg Config, p paths, within time.Duration) (bool, string) {
+// controlPlaneLog reads the log of whichever control plane this deployment runs — the compose service's,
+// or the native process's own file. One reader, because a caller that picks the wrong one does not fail:
+// it reads an EMPTY log and concludes the thing it was looking for is absent.
+func controlPlaneLog(cfg Config, p paths, native bool) string {
+	if native {
+		b, err := os.ReadFile(p.nativeLog)
+		if err != nil {
+			return ""
+		}
+		return string(b)
+	}
+	out, _ := runCaptured(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project,
+		"-f", p.compose, "logs", "--no-color", "control-plane")
+	return out
+}
+
+// restartControlPlane restarts whichever control plane this deployment runs. Its compose and native halves
+// are NOT interchangeable and this is the second call site that learned it the expensive way; see the
+// comment above the desired-config repair in Bootstrap.
+func restartControlPlane(cfg Config, p paths, get func(string) string, native bool) error {
+	if native {
+		return restartNative(cfg, p, get)
+	}
+	return recreateControlPlane(cfg, p)
+}
+
+func observeSlackSocket(cfg Config, p paths, native bool, within time.Duration) (bool, string) {
 	deadline := time.Now().Add(within)
 	for {
-		out, _ := runCaptured(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project,
-			"-f", p.compose, "logs", "--no-color", "control-plane")
+		out := controlPlaneLog(cfg, p, native)
 		connected, detail := readSlackSocketLog(out)
 		if connected || !time.Now().Before(deadline) {
 			return connected, detail
@@ -1615,7 +1671,19 @@ func (c *apiClient) ensureSlackAgentRevision(tools, mcp []string) (id string, mi
 		if err != nil {
 			return "", false, fmt.Errorf("create the %q agent profile: %w", slackAgentProfileName, err)
 		}
-		if status != http.StatusCreated || created.ID == "" {
+		if status == http.StatusConflict {
+			// SOMEONE ELSE HAS THE NAME, which after the pagination fix above means a concurrent bring-up
+			// rather than a lookup that missed. Re-reading is the whole recovery: the profile exists, and
+			// this run wants its id, not the right to have created it.
+			again, ferr := c.findAgentProfile(slackAgentProfileName)
+			if ferr != nil {
+				return "", false, ferr
+			}
+			if again == "" {
+				return "", false, fmt.Errorf("POST /v1/agents = 409 for %q, but no profile of that name is listed", slackAgentProfileName)
+			}
+			created.ID = again
+		} else if status != http.StatusCreated || created.ID == "" {
 			return "", false, fmt.Errorf("POST /v1/agents = %d, want 201 with an id", status)
 		}
 		profileID = created.ID
@@ -1670,25 +1738,53 @@ func (c *apiClient) ensureSlackAgentRevision(tools, mcp []string) (id string, mi
 
 // findAgentProfile returns the id of the profile lineage with this name, or "" when there is none.
 func (c *apiClient) findAgentProfile(name string) (string, error) {
-	var page struct {
-		Data []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"data"`
-	}
-	status, err := c.do(http.MethodGet, "/v1/agents", nil, &page)
-	if err != nil {
-		return "", fmt.Errorf("list agent profiles: %w", err)
-	}
-	if status != http.StatusOK {
-		return "", fmt.Errorf("GET /v1/agents = %d, want 200", status)
-	}
-	for _, p := range page.Data {
-		if p.Name == name {
-			return p.ID, nil
+	// IT WALKS EVERY PAGE, and the version that read only the first one was wrong in a way that stayed
+	// invisible for as long as the deployment was small. Measured 2026-08-02 against the live control
+	// plane: 42 profiles, a 20-row default page, and "slack" on the second one — so this returned "" for
+	// a profile that plainly existed, and `palai up` tried to CREATE it on every bring-up. What that cost
+	// depended entirely on a detail nobody was thinking about: the name is UNIQUE, so the create failed
+	// (a 500 until this commit, now a 409) and the Slack step reported "NOT registered" against a
+	// deployment that was registered. Had the name NOT been unique this would have minted a second
+	// "slack" profile per bring-up, and which one a Slack message routed to would be a lottery.
+	//
+	// `after` takes the previous page's next_cursor — the names differ and the spec says so
+	// (protocols/openapi/openapi-3.2.yaml: "Opaque cursor from a previous page's next_cursor"). Passing
+	// `?cursor=` instead re-serves page one with has_more still true, which is an infinite loop that
+	// looks like paging.
+	cursor := ""
+	for pages := 0; pages < 200; pages++ {
+		var page struct {
+			Data []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"data"`
+			HasMore    bool   `json:"has_more"`
+			NextCursor string `json:"next_cursor"`
 		}
+		path := "/v1/agents?limit=100"
+		if cursor != "" {
+			path += "&after=" + url.QueryEscape(cursor)
+		}
+		status, err := c.do(http.MethodGet, path, nil, &page)
+		if err != nil {
+			return "", fmt.Errorf("list agent profiles: %w", err)
+		}
+		if status != http.StatusOK {
+			return "", fmt.Errorf("GET /v1/agents = %d, want 200", status)
+		}
+		for _, p := range page.Data {
+			if p.Name == name {
+				return p.ID, nil
+			}
+		}
+		// A next_cursor that repeats is a server that is not advancing; stopping beats looping forever
+		// while printing nothing.
+		if !page.HasMore || page.NextCursor == "" || page.NextCursor == cursor {
+			return "", nil
+		}
+		cursor = page.NextCursor
 	}
-	return "", nil
+	return "", fmt.Errorf("listing agent profiles did not terminate after 200 pages")
 }
 
 // publishedAgentRevision returns a published revision of this profile, or "" when it has none.

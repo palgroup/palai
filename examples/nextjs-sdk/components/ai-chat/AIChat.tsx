@@ -499,6 +499,31 @@ export function AIChat({
                 {/* Error chip — sits BELOW the content and does not recolour it. Streaming errors often
                     arrive after a chunk of perfectly valid prose; painting that prose red made the whole
                     UI look broken. */}
+                {/* PROSE THAT PERFORMS A TOOL CALL MUST NOT PASS AS ONE.
+                    MEASURED on the live stack 2026-08-02: a turn with ZERO tool calls and ZERO ledger
+                    rows answered with "**Tool Call:** … Status: Completed … Terminal: ```** BUILD
+                    SUCCEEDED **```" and an invented simctl listing — one device UUID was literally
+                    `…CC24CFXX-XXXX`. Rendered as markdown that is indistinguishable from a real build.
+                    Every other defect on this screen made the demo look broken; this one makes it look
+                    like it WORKED, which is the only kind an operator cannot catch.
+
+                    THE SENTENCE IS UNCONDITIONALLY TRUE WHENEVER IT RENDERS, and that is the whole
+                    design. It fires only when the turn recorded NO tool calls, so it can never
+                    contradict a real one — the tool rows above come from the ledger and are evidence;
+                    this is the absence of evidence, said out loud. The code-fence test only decides
+                    whether the caption is WORTH showing, never whether it is true: a turn with no
+                    fenced block is not claiming to have run anything, so the note would be noise. */}
+                {!m.isStreaming && (m.toolCalls ?? []).length === 0 && m.content.includes("```") ? (
+                  <p
+                    data-testid="chat-unverified-output"
+                    className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-200 leading-4"
+                  >
+                    No tool call was recorded for this turn. Anything above that reads as a command or
+                    its output was written by the model — it was not executed, and this screen has no
+                    evidence that it ran.
+                  </p>
+                ) : null}
+
                 {/* One quiet line when the turn settles, and nothing at all while it runs. */}
                 {!m.isStreaming && m.runStatus ? (
                   <p data-testid="chat-run" className="mt-2 text-[11px] text-text-tertiary">

@@ -79,9 +79,9 @@ type JobSpec struct {
 	AttemptID        string
 	Capability       string
 	Operation        string
-	InputRefs        []string          // input artifact refs
-	SecretHandleRefs []string          // secret_refs NAMES (job-scoped handles); never values
-	Deadline         time.Time         // the job deadline; the secret handle expires with it
+	InputRefs        []string  // input artifact refs
+	SecretHandleRefs []string  // secret_refs NAMES (job-scoped handles); never values
+	Deadline         time.Time // the job deadline; the secret handle expires with it
 	ResourceLimits   map[string]any
 	OutputSchema     map[string]any
 	NetworkPolicy    map[string]any
@@ -111,10 +111,10 @@ type Claim struct {
 // (an uncertain failure quarantines the job rather than retrying it — §31.6). Receipt is the execution
 // receipt (usage, logs digest, output artifact ref) — the worker MUST NOT put a secret value in it.
 type Outcome struct {
-	Class        string // "completed" | "failed" | "uncertain"
-	Operation    string // must equal the claim's operation (defence in depth against a re-typed submit)
-	Receipt      map[string]any
-	OutputRefs   []string
+	Class      string // "completed" | "failed" | "uncertain"
+	Operation  string // must equal the claim's operation (defence in depth against a re-typed submit)
+	Receipt    map[string]any
+	OutputRefs []string
 }
 
 // SecretResolver resolves a secret_ref name to its value within an organization. It is exactly

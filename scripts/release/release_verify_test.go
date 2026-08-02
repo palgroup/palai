@@ -689,7 +689,7 @@ func TestReleaseVerifyRefusesAVerifierInsideTheRelease(t *testing.T) {
 		// stage plants the verifier and returns (script path, the release as the run names it).
 		stage func(t *testing.T, dir string) (string, string)
 	}{{
-		arm: "at the release root — the only shape exact equality ever saw",
+		arm:   "at the release root — the only shape exact equality ever saw",
 		stage: func(t *testing.T, dir string) (string, string) { return plantVerifier(t, dir), dir },
 	}, {
 		arm: "one directory down: tools/, every sibling present and neutered",
