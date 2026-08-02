@@ -269,6 +269,28 @@ A claim here is only worth what re-running it proves.
 - §2.3: the assertion is that no production writer exists. The perturbation that proves the test is
   honest: add a writer, confirm a client sees deltas; remove it, confirm the client sees none.
   A green result with the writer removed means the test measures something else.
+
+  **Done, 2026-08-02, both directions.** Removing `deltas.add()` reported *"no model_step.delta.v1
+  was journalled"*; removing `deltas.close()` lost the 4 KiB tail window and reported 1 delta where
+  12 KiB across an 8 KiB threshold must produce more than one. Both reverted; green with the two
+  neighbouring `TestDispatch*` component tests.
+
+  **And the surface, not only the mechanism** — the component test asserts the *journal*, so the
+  claim that a client sees the text was still an inference. Driven end to end against the running
+  stack on a real provider:
+
+  ```
+  PUT /v1/deployment/desired {"settings":{"PALAI_DISPATCH_WORKERS":"2"}}   → revision 1
+  palai up --env-file .env.local                                           → applied; effective = 2
+                                                                              round trip proven
+  POST /v1/responses  →  GET /v1/sessions/{id}/events
+  ```
+
+  The stream carried `model_step.created.v1`, **five `model_step.delta.v1`** (seq 5-9), then
+  `model_step.completed.v1` (seq 10) — every delta strictly inside the bracket, and the windows
+  concatenating to coherent prose rather than to a string with a hole in it. This also exercised the
+  panel path in §2.6 for a `kindValue` setting: written to the desired document, applied by the
+  bring-up, and read back as effective.
 - §2.4: the isolation rows are reproductions of T14/T17 on this host. Re-run them on any new
   hardware before assuming the verdict transfers — a ceiling inherited from another epic is dated
   (CLAUDE.md rule 4).
@@ -280,8 +302,14 @@ A claim here is only worth what re-running it proves.
 
 1. **Measure §3.3.** `sudo bash scripts/ops/mac-sessions.sh verify --simulator`. Nothing below is
    safe to build before this row is closed — it can invalidate §3.1.
-2. **Live view (§3.6, option B).** Coalescing delta sink in `model_dispatch.go`, journalled as
-   `model_step.delta.v1`, asserted end-to-end through the SSE endpoint.
+2. ~~**Live view (§3.6, option B).**~~ **DONE 2026-08-02.** Coalescing delta sink in
+   `model_dispatch.go`, journalled as `model_step.delta.v1` through an advisory
+   `coordinator.AppendModelStepDelta`, guarded by a component test that drives `dispatchModel`
+   rather than the store method, and proven end-to-end through the SSE endpoint on a live provider
+   (§5). The window is the SSE poll interval for the reason given in `model_delta_sink.go`.
+
+   What it does NOT do: option C (a live channel that bypasses the journal) remains the end state
+   for true token-level streaming. Today's granularity is the 500 ms tail plus the window.
 3. **Runner-plane desired reader (§3.5).** `cmd/runner` fetches and applies its scoped document;
    `deployment_desired.go:131` becomes an accept; console surfaces the scope.
 4. **Session account lifecycle (§3.1, §3.2).** Privileged helper with two verbs; create on session
