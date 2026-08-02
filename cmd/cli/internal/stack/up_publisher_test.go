@@ -10,11 +10,18 @@ import (
 // E22 T4: the GitHub App an APPROVED publication publishes through.
 //
 // THE FAILURE THIS FILE REFUSES is the most expensive shape of E21 T2's silent skip, because a human is
-// inside it. repositoryPublisherFromEnv returns nil when any of its three variables is missing, and a nil
-// publisher makes the approval pump a no-op. Every surface then reports success: the model gets
+// inside it. repositoryPublisherFromEnv returned nil when any of its three variables was missing, and a nil
+// publisher made the approval pump a no-op. Every surface then reported success: the model gets
 // pending_approval, the approver presses Approve, the Slack message is repaired to "Approved: push agent/…",
 // the publication row says approved. And the branch is never pushed. Not failed — never attempted, with no
 // error, no log and no retry anywhere.
+//
+// THE CONTROL-PLANE HALF OF THAT WAS FIXED (main.repositoryPublisher builds the connection_ref path
+// independently of the App, and a publication with no credential path is refused rather than dropped), and
+// these tests are unchanged by it because they assert a DIFFERENT thing: what `palai up` tells the operator
+// before the stack is even built, and where the App private key's bytes go. The bring-up warning still
+// earns its line for the binding `palai up` itself creates — PALAI_GIT_CLONE_URL yields a binding with NO
+// connection_ref, which is precisely the one that cannot publish without an App.
 //
 // So the three variables are configuration, and their ABSENCE is a warning an operator can read.
 

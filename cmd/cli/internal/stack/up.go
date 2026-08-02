@@ -475,13 +475,19 @@ const gitHubAppKeySlot = "github-app-key"
 // applyGitHubAppEnv wires the GitHub App the approval pump publishes THROUGH (§0.2), and removes the
 // silence around it.
 //
-// THE SILENCE IT REMOVES, because it is the whole reason this function exists rather than three more lines
-// in compose: repositoryPublisherFromEnv (main.go) returns nil when any of the three variables is missing,
-// and a nil publisher makes pumpApprovedPublications a no-op. So an operator could grant the publish tools,
-// watch the agent propose a push, press Approve, see the message repaired to "Approved: push agent/… -> …"
-// — and nothing would ever happen. Not an error, not a log line the operator sees, not a retry: an approved
-// row sitting in the database forever. That is E21 T2's silent-skip in its most expensive form, because
-// this one has a human believing they authorized something.
+// THE SILENCE IT REMOVED, and what is left of it after the publisher was un-gated. This function was
+// written when main.repositoryPublisherFromEnv returned nil for a missing App variable and a nil publisher
+// made pumpApprovedPublications a no-op — so an operator could grant the publish tools, watch the agent
+// propose a push, press Approve, see the message repaired to "Approved: push agent/… -> …", and nothing
+// would ever happen: an approved row sitting in the database forever, with a human believing they
+// authorized something.
+//
+// The publisher is no longer gated on the App (main.repositoryPublisher), so that silence is gone: a
+// binding carrying its own connection_ref publishes with no App at all, and a binding carrying none is
+// REFUSED by the publication tool before a human is asked. THIS WARNING STILL FIRES AND STILL EARNS ITS
+// LINE, for the branch it was always really about: the repository `palai up` binds from PALAI_GIT_CLONE_URL
+// has NO connection_ref, so on a stack with no App it is exactly the binding that cannot publish. The
+// operator now learns it at bring-up instead of at the refusal.
 //
 // WHAT RIDES WHERE. The App id and the installation id are identifiers, so they ride the compose
 // environment like every other knob. The PRIVATE KEY does not: its bytes are copied into the 0600

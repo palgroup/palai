@@ -32,12 +32,16 @@ import (
 // push from asking. Nobody who wants the first wants the second by implication, so they are two
 // columns, two fields, and two separate sentences on the screen.
 //
-// AND ONE MEASURED REASON THE PUBLICATION HALF IS DIFFERENT IN KIND, not merely in degree. On a
-// deployment whose GitHub App is not configured, `repositoryPublisherFromEnv` returns nil and the
-// approval pump is a silent no-op: the publication row reaches `approved`, `approval.approved.v1` is
-// journalled, the run wakes, and NOTHING IS PUSHED. With a human in the loop somebody is at least
-// watching for the receipt. Armed, there is nobody left to notice — so this half is the one that
-// defaults off and stays off unless it is asked for by name.
+// AND ONE MEASURED REASON THE PUBLICATION HALF IS DIFFERENT IN KIND, not merely in degree. A publish can
+// fail after the decision — a diverged remote, a revoked tenant credential, a 405 from branch protection —
+// and each of those lands as a warning on the publication row that somebody has to read. With a human in
+// the loop somebody is at least watching for the receipt. Armed, there is nobody left to notice, so this
+// half is the one that defaults off and stays off unless it is asked for by name.
+//
+// The sharpest instance of that used to be a MISSING GitHub App: `repositoryPublisherFromEnv` returned nil,
+// the pump was a silent no-op, and the row sat at `approved` forever. That one is closed — the publisher is
+// built independently of the App and a publication with no credential path is refused at the tool, before
+// any decision — which narrows the hazard without removing it.
 
 // AutoApprove is a session's standing authorization, as the two gates read it.
 //
