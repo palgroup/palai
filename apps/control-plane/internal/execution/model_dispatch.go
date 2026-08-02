@@ -208,10 +208,29 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 	// Accumulate the streamed-so-far text so an interrupt can record it as the explicit partial
 	// item (spec §25.16), not None. onDelta runs synchronously inside Route on this goroutine,
 	// so a plain builder needs no lock.
+	//
+	// THE SECOND READER of that same callback is the delta sink, and it is the half that was missing.
+	// The accumulated text used to be observable ONLY when the step was interrupted, so a step that
+	// completed normally streamed its answer to nobody and the client saw created -> completed with
+	// everything arriving at once. The sink coalesces the same text into windows and journals each one
+	// as an advisory model_step.delta.v1. It cannot write inline here: onDelta runs inside the
+	// provider's read loop, and a Postgres round trip there stalls the stream it reports on
+	// (model_delta_sink.go).
+	//
+	// It is given the OUTER ctx rather than modelCtx on purpose — modelCtx is cancelled to abort the
+	// provider call on interrupt, and the tail of an interrupted step is exactly the text worth having.
 	var partial strings.Builder
+	deltas := newDeltaSink(ctx, func(dctx context.Context, text string) {
+		// Best-effort by contract: a delta describes text whose authoritative record is the step's own
+		// terminal event, so a failed append must not fail the step. The error is dropped here rather
+		// than returned to a caller with nothing useful to do with it.
+		_ = o.spine.AppendModelStepDelta(dctx, st.tenant, st.sessionID, st.responseID,
+			string(st.attempt.RunID), requestID, text)
+	})
 	onDelta := func(d modelbroker.Delta) {
 		if d.Text != "" {
 			partial.WriteString(d.Text)
+			deltas.add(d.Text)
 		}
 	}
 
@@ -246,6 +265,10 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		RouteRevision: route.Revision,
 	}, onDelta)
 	cancelModel()
+	// Flush the last window BEFORE this step's terminal event is journalled. close() is synchronous for
+	// that reason: a delta that landed after its own model_step.completed.v1 would put a client's
+	// transcript out of order, which is a worse failure than a delta that never arrived at all.
+	deltas.close()
 	// Provider call/error counters (E14 Task 6): count the call, count an error only for an UPSTREAM
 	// failure (see providerCallOutcome — config/budget/interrupt do not count).
 	metrics.RecordProviderCall(providerCallOutcome(err, result))

@@ -14,6 +14,16 @@ import (
 const (
 	eventModelStepCreated   = "model_step.created.v1"
 	eventModelStepCompleted = "model_step.completed.v1"
+	// eventModelStepDelta is the streamed text of an OPEN model step, coalesced into windows by
+	// deltaSink. Like tool_call.progress.v1 it advances NO state machine — it is emitted through an
+	// advisory append (coordinator.AppendModelStepDelta), best-effort.
+	//
+	// It was in the canonical registry and in the AsyncAPI x-event-types list from the beginning and
+	// had NO PRODUCTION WRITER until now: the dispatch loop accumulated streamed text into a local
+	// builder so an interrupt could record a partial (spec §25.16) and journalled none of it, so every
+	// client saw created -> completed with the answer arriving whole. The declared event was real; the
+	// writer was the missing half.
+	eventModelStepDelta = "model_step.delta.v1"
 	// eventModelStepInterrupted is the partial record of an interrupt-aborted provider call: a
 	// user-initiated partial, NOT a failure (spec §25.11: "its outcome is recorded as partial",
 	// spec §9.2 interrupt). Distinct from model_step.failed.v1 so the journal never mislabels an
@@ -70,6 +80,7 @@ var toolCallCompletedEvent = mustTransitionEvent(statemachines.ToolCallExecuting
 var emittedEventTypes = []string{
 	eventModelStepCreated,
 	eventModelStepCompleted,
+	eventModelStepDelta,
 	eventModelStepInterrupted,
 	eventConfigRevised,
 	eventWarningRaised,

@@ -43,6 +43,61 @@ func (s *Store) AppendModelStep(ctx context.Context, tenant Tenant, sessionID, r
 	return nil
 }
 
+// maxDeltaText caps one journalled delta's text. The dispatch-side sink coalesces a provider's token
+// stream into windows before it ever reaches here, so this is the second bound rather than the first:
+// it stops a single pathological window from bloating the journal, the way maxProgressMessage stops a
+// hostile MCP server doing it per notification.
+const maxDeltaText = 16 * 1024
+
+// AppendModelStepDelta journals ONE advisory model_step.delta.v1 event: the text a provider streamed
+// during an OPEN model step, coalesced into a window by the caller.
+//
+// WHY THIS EXISTS AT ALL. model_step.delta.v1 has been in the canonical registry and in the AsyncAPI
+// x-event-types list since the event catalogue was written, and until now NOTHING IN PRODUCTION WROTE
+// IT — the dispatch loop's onDelta accumulated into a local strings.Builder so an interrupt could
+// record a partial (spec §25.16) and did nothing else. A client therefore saw model_step.created.v1
+// and then model_step.completed.v1 with the whole answer arriving at once. The declared event existed;
+// the writer did not.
+//
+// IT IS ADVISORY, exactly like AppendToolProgress and for the same reason: a delta advances no state
+// machine, touches no model_requests row, and folds no delivered message. Callers treat a failure as
+// nothing — a delta that cannot be journalled must never fail the model step whose text it describes.
+//
+// It is run-active-guarded like AppendModelStep: a delta belonging to a run that is already gone
+// journals nothing rather than appending to a dead run's stream.
+func (s *Store) AppendModelStepDelta(ctx context.Context, tenant Tenant, sessionID, responseID, runID, requestID, text string) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	if sessionID == "" {
+		return fmt.Errorf("model step delta needs a session id")
+	}
+	if text == "" {
+		return nil // an empty window is not an event
+	}
+	if len(text) > maxDeltaText {
+		text = text[:maxDeltaText]
+	}
+	payload := mustMarshal(map[string]any{
+		"run_id":           runID,
+		"model_request_id": requestID,
+		"text":             text,
+	})
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin model step delta: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := guardRunActive(ctx, tx, tenant, runID); err != nil {
+		return err
+	}
+	if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, "model_step.delta.v1", payload); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit model step delta: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) AppendToolProgress(ctx context.Context, tenant Tenant, sessionID, responseID, callID string, progress, total float64, message string) error {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	if sessionID == "" {
