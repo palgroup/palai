@@ -376,6 +376,28 @@ function writeFrame(
       writer.write({ type: "data-usage", data: pickUsage(d), transient: true });
       return false;
 
+    // SUBAGENTS. A delegated run is journaled on the PARENT's stream as a request and later a terminal;
+    // the child's own model steps are never here, because it runs in its own session. Surfacing the
+    // delegation is what stops "waiting on four children" from looking identical to "stuck".
+    //
+    // The field names are the ones child_dispatch.go actually journals — child_request_id, child_run_id,
+    // status, reason. An earlier draft read `run_id`, the PARENT's field, which is absent from these
+    // events and would have rendered every subagent as unknown.
+    case "child.requested.v1":
+    case "child.completed.v1":
+    case "child.denied.v1":
+      writer.write({
+        type: "data-subagent",
+        data: {
+          id: (d.child_run_id as string) ?? null,
+          requestId: (d.child_request_id as string) ?? null,
+          state: evt.type === "child.requested.v1" ? "requested" : evt.type === "child.completed.v1" ? "completed" : "denied",
+          status: (d.status as string) ?? null,
+          reason: (d.reason as string) ?? null,
+        },
+      });
+      return false;
+
     case "attempt.recovering.v1":
     case "recovery.proof.v1":
       writer.write({

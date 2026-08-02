@@ -5,6 +5,7 @@ import { DefaultChatTransport } from "ai";
 import { useEffect, useRef, useState } from "react";
 
 import { fetchHistory, toUIMessages } from "@/lib/history";
+import { SubagentPart, type ChildPart } from "@/components/subagent-parts";
 
 import {
   Conversation,
@@ -290,6 +291,8 @@ function Part({ part }: { part: UIPart }) {
       return <PublicationPart data={d} />;
     case "data-notice":
       return <NoticePart data={d} />;
+    case "data-subagent":
+      return <SubagentPart child={d as unknown as ChildPart} />;
     case "data-run":
       return (
         <p data-testid="chat-run" className="text-[12px] text-muted-foreground">

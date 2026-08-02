@@ -87,6 +87,23 @@ export function projectEvent(event: Event): Record<string, unknown> {
       return { ...head, tool: { id: data.tool_call_id, name: data.name, result: data.result ?? null } };
     case "usage.updated.v1":
       return { ...head, usage: pickUsage(data) };
+    // SUBAGENTS. A delegated run is a CHILD: the parent journals that it asked for one, and later that
+    // the child finished or was denied admission. The child's OWN model steps never enter this stream —
+    // it has its own session — so what a reader can see here is the delegation itself, and that is worth
+    // showing: an agent that spawned four children and is waiting on them looks identical to an agent
+    // that is stuck, unless the delegation is on the screen.
+    case "child.requested.v1":
+      return { ...head, child: { id: data.child_run_id ?? null, requestId: data.child_request_id ?? null, state: "requested" } };
+    case "child.completed.v1":
+      return { ...head, child: { id: data.child_run_id ?? null, requestId: data.child_request_id ?? null, state: "completed", status: data.status ?? null } };
+    // THE FIELD NAMES ARE MEASURED, not guessed: child_dispatch.go journals child_request_id,
+    // child_run_id, status and output. An earlier draft here read `run_id`, which is the PARENT's field
+    // name and is simply absent from these events — it would have rendered every subagent as "unknown".
+    //
+    // A DENIAL IS NOT A FAILURE OF THE CHILD, it is the admission layer refusing to start one — a budget,
+    // a depth limit, a policy. Rendering it as an error would send a reader looking at the wrong thing.
+    case "child.denied.v1":
+      return { ...head, child: { id: data.child_run_id ?? null, requestId: data.child_request_id ?? null, state: "denied", reason: data.reason ?? null } };
     default:
       return head;
   }
