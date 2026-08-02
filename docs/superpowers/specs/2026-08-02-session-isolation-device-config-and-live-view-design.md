@@ -298,7 +298,48 @@ A claim here is only worth what re-running it proves.
 
 ---
 
-## 5.5 THE ORDERING ABOVE WAS WRONG, AND THIS SECTION IS WHY (added 2026-08-02, same day)
+## 5.4 CORRECTION TO §5.5 — THE RELAY IS NOT ON THIS PATH (added 2026-08-02, after §5.5)
+
+§5.5 below concluded the fleet requirement was blocked on `FLT-P15` and put the execution relay first.
+**That was wrong, and the error was in how the requirement was read rather than in any measurement.**
+
+The operator's deployment is `palai up --native`: the control plane runs ON the Mac, so the tools —
+which run in the control plane's process — already run on the Mac. That is the shipped, measured
+posture. `FLT-P15` describes a *different* shape: one control plane with tools that must execute on
+some other machine. Nothing in the stated requirement asks for that shape, so nothing in it needs the
+relay. §5.5 is retained below as the record of a wrong turn, not as guidance.
+
+**What the requirement actually needs, measured:**
+
+```
+apps/control-plane/api/deployment_desired.go:127-138
+  control_plane : "a SINGLETON — one process per deployment — so it takes no scope_id"
+  runner_pool   : refused, the reader is a second binary and does not exist
+  (there is no third plane)
+
+cmd/cli/internal/stack/up.go:146,212  →  --native runs the CP as a process on this machine
+                                          and registers it with nothing
+```
+
+So N native Macs are N deployments, each with its own desired document in its own database, and there
+is no surface that can see or change another one. **That — not execution — is why an operator would
+have to open a terminal on each machine.**
+
+The mechanism to fix it already exists and is pointed at the wrong place. The desired document is
+already read → applied → verified → drift-refused by the bring-up (§2.6). What is missing is that the
+reader fetches from a CENTRAL control plane using an identity for THIS machine, which is the same shape
+as the `runner_pool` plane's missing reader and belongs beside it: a third plane whose scope is a
+machine rather than a pool.
+
+Two things follow that the relay framing obscured:
+
+- **Linux and Mac are the same story here**, which is what the operator asked for. Neither needs the
+  relay to be centrally configured; both need an addressable desired document.
+- **`FLT-P13` still applies and is unchanged by this correction** — a rented machine that reboots mints
+  a new identity and waits for a human again. Whatever identity the config reader uses has to survive a
+  reboot, or the fleet requirement fails on the second boot rather than the first.
+
+## 5.5 A WRONG TURN, KEPT AS RECORD (superseded by §5.4)
 
 Everything above was written for the deployment this tree ships today: one control plane, on one Mac.
 The operator then stated the actual product requirement — *rent a Mac from a cloud provider when the
@@ -337,13 +378,16 @@ than a row; `runners.public_key_sha256` is already recorded.
 
 ## 6. Work items, in order
 
-0. **The execution relay — `FLT-P15`, E27 `T7a` (shell) + `T7b` (workspace).** Added after §5.5. It is
-   first because every other item on this list is worth less without it, and two of them are worth
-   nothing: per-device config configures the wrong machine, and the account lifecycle becomes a
-   per-host script run a hundred times. The split point is already written down in
-   `docs/superpowers/plans/phase-24-runner-fleet.md` §7. Its companion for a rented fleet is `FLT-P13`
-   (approve a key fingerprint, not an enrolment row) — without it an on-demand Mac waits for a human
-   every time it boots, or strict mode stays off.
+0. **Central, per-machine configuration — the third desired-config plane (§5.4).** A native control
+   plane fetches its own scoped desired document from a central control plane at bring-up, using an
+   identity that survives a reboot. This is what makes a rented Mac configurable without a terminal on
+   it, and it is the same mechanism the bring-up already runs — read, apply, verify, refuse on drift —
+   pointed at a central reader instead of its own. Companion: `FLT-P13`, because an identity that is
+   re-minted on every boot cannot address a document.
+
+   **NOT the execution relay.** `FLT-P15` was put here first and that was wrong (§5.4): it describes a
+   control plane whose tools must run on another machine, and the `--native` posture has the tools on
+   the Mac already.
 
 1. **Measure §3.3.** `sudo bash scripts/ops/mac-sessions.sh verify --simulator`. Nothing below is
    safe to build before this row is closed — it can invalidate §3.1. Note it is a per-HARDWARE-MODEL
