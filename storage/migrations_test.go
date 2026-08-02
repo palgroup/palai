@@ -64,15 +64,15 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	// each was cut when 51 was the tip. Whichever lands second renames — filename pair, `VALUES (52)`
 	// marker, embed var, and this assertion — and this test is what makes the rename finish.
 	head := migrations[len(migrations)-1]
-	if head.Version != 55 || head.Name != "run_instructions" {
-		t.Fatalf("chain head = %06d_%s, want 000055_run_instructions", head.Version, head.Name)
+	if head.Version != 56 || head.Name != "session_auto_approve" {
+		t.Fatalf("chain head = %06d_%s, want 000056_session_auto_approve", head.Version, head.Name)
 	}
 	// The penultimate moves every time a new head lands, and asserting BOTH is what forces a renumber
 	// to finish: a rename that updated the filename pair but not the `VALUES (n)` marker or the embed
 	// var leaves these two disagreeing. 000054 was itself renumbered from 52 on the way in.
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 54 || penultimate.Name != "run_output_contract" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000054_run_output_contract", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 55 || penultimate.Name != "run_instructions" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000055_run_instructions", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

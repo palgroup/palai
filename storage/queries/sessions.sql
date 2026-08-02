@@ -236,3 +236,33 @@ WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
   AND retracted_at IS NULL
   AND created_at < (SELECT created_at FROM responses WHERE id = $4)
 ORDER BY created_at, id;
+
+-- ---------------------------------------------------------------------------------------------------
+-- THE SESSION'S STANDING AUTHORIZATION (E30 T1, migration 000056, spec §22.4).
+-- ---------------------------------------------------------------------------------------------------
+--
+-- SetSessionAutoApprove arms or disarms one session's two approval families and STAMPS THE PRINCIPAL.
+-- The principal is not a log line: it is the identity the auto-decision is later made AS, so an armed
+-- session can never authorize anything the person who armed it could not have authorized by clicking
+-- (the decision still passes ApproverAllowed).
+--
+-- set_at is cleared when BOTH halves go off, so "armed at" never outlives the arming. The set_by is
+-- kept in that case rather than blanked — who disarmed it is the same question as who armed it, and a
+-- row that forgets is a row that cannot be audited.
+-- name: SetSessionAutoApprove
+UPDATE sessions
+SET auto_approve_tools = $4,
+    auto_approve_publications = $5,
+    auto_approve_set_by = $6,
+    auto_approve_set_at = CASE WHEN $4 OR $5 THEN clock_timestamp() ELSE NULL END,
+    updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3
+RETURNING auto_approve_tools, auto_approve_publications, auto_approve_set_by, auto_approve_set_at;
+
+-- SessionAutoApprove reads the standing authorization the two gates consult. A session that never
+-- armed anything reads (false, false, '') — the shape every session in every deployment alive before
+-- 000056 has, and the shape that leaves both gates bit-unchanged.
+-- name: SessionAutoApprove
+SELECT auto_approve_tools, auto_approve_publications, auto_approve_set_by
+FROM sessions
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;

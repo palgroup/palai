@@ -191,7 +191,43 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 			}); err != nil {
 				return err
 			}
-			return o.parkRun(ctx, st, "") // waiting_for_approval is E23's to bind (see parkRun)
+
+			// 2a-i. THE SESSION'S STANDING AUTHORIZATION (E30 T1, migration 000056). The owner asked to be
+			// able to arm a session so a coding sitting can drive `xcodebuild` and `simctl` without being
+			// asked forty times.
+			//
+			// IT SITS AFTER THE ROW IS WRITTEN, NOT INSTEAD OF IT, and that ordering is the whole design.
+			// An armed session does not SKIP the approval — it ANSWERS it. The approvals row exists, carries
+			// the arguments, the hash and the deadline, and is then decided through DecideToolApproval: the
+			// same one throat a Slack button and an HTTP POST go through. Three things follow, and each one
+			// is a property a skip would have destroyed:
+			//
+			//   - The approvals surface shows what happened, and `decided_by` names the human whose standing
+			//     authorization decided it. A gate that silently omits rows is, from every screen a human
+			//     looks at, identical to a gate that was never there.
+			//   - The project's approver policy still applies, to the ARMING PRINCIPAL. So arming grants
+			//     exactly what that person could have granted by clicking and not one thing more; a project
+			//     whose `approvers` list does not name them auto-approves NOTHING and this run parks below.
+			//   - The one-shot hash binding still holds, because the decision is made against the row that
+			//     was just written for these exact bytes.
+			//
+			// FAIL CLOSED, TWICE. A decision that does not apply — an unauthorized principal, a policy that
+			// refuses, a row a racing path already moved — leaves `decided` false and falls through to the
+			// park, which is the behaviour of a session that armed nothing. And an ERROR reading or applying
+			// the standing authorization is returned rather than swallowed: a gate that opens because its own
+			// lookup failed is worse than no gate.
+			decided, aerr := o.autoDecideToolApproval(ctx, st, callID, requestHash)
+			if aerr != nil {
+				return aerr
+			}
+			if !decided {
+				return o.parkRun(ctx, st, "") // waiting_for_approval is E23's to bind (see parkRun)
+			}
+			// The call is `ready` now, decided in advance by a named human. From here it is an APPROVED
+			// call and takes the approved path below — pre-written whatever its class, executed off the
+			// arguments its own approval row carries. It is NOT `found`: this attempt wrote the row, so the
+			// consult above never saw it.
+			approved = true
 		}
 	}
 
