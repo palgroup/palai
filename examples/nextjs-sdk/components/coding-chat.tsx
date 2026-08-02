@@ -4,31 +4,81 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { useRef, useState } from "react";
 
-// THE ECOSYSTEM'S CHAT UI, ON PALAI. This component uses @ai-sdk/react's useChat unmodified — the same hook
-// a Vercel AI SDK app uses against an OpenAI route — and everything Palai-specific lives behind
-// /api/chat, which translates Palai's journal frames into UI-message-stream parts.
-//
-// It holds NO API key. The browser talks only to this app's own routes; the Palai credential is server-side
-// in lib/palai.ts and lib/raw.ts, both guarded by `server-only`.
-export function CodingChat() {
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [bindingId, setBindingId] = useState("");
-  const [input, setInput] = useState("");
-  // The session id has to be readable by the transport's body callback WITHOUT re-creating the transport on
-  // every turn, so it rides a ref alongside the state that renders it.
-  const sessionRef = useRef<string | null>(null);
-  const bindingRef = useRef("");
-  bindingRef.current = bindingId;
+import {
+  Conversation,
+  ConversationContent,
+  ConversationEmptyState,
+  ConversationScrollButton,
+} from "@/components/ai-elements/conversation";
+import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
+import {
+  PromptInput,
+  PromptInputBody,
+  PromptInputFooter,
+  PromptInputSubmit,
+  PromptInputTextarea,
+  PromptInputTools,
+} from "@/components/ai-elements/prompt-input";
+import { ApprovalPart, NoticePart, PublicationPart, ToolPart } from "@/components/chat-parts";
+import { type Binding, RepositoryPicker } from "@/components/repository-picker";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { WorkspacePanel } from "@/components/workspace-panel";
 
-  const { messages, sendMessage, status, error } = useChat({
+// =============================================================================================
+// THE DEMO.
+//
+// The owner's ask, verbatim: "ben chat ederek ai'a kod yazdırmak istiyorum repo seçeceğim demo
+// ekrandan o repoda kod yazdırmak istiyorum" — chat, pick a repository ON THE SCREEN, and have the
+// AI write code in that repository.
+//
+// So the layout puts the REPOSITORY in the middle and the largest share of the page, the picker in
+// the rail on the left, and the chat on the right as its control surface. The screen's subject is
+// the repository changing; the chat is how you drive it.
+//
+// The chat itself is @ai-sdk/react's useChat, unmodified — the same hook a Vercel AI SDK app uses
+// against an OpenAI route — and every visible component is Vercel's AI Elements, vendored. Only the
+// adapter at /api/chat is ours. That is a much stronger answer to "can Palai be driven by the
+// ecosystem" than a hand-built chat would be, and it is also what makes the gaps meaningful: where
+// an AI Elements component cannot be filled, the gap is in Palai's stream, not in our rendering.
+//
+// NO KEY IN THE BROWSER. Every network call this component makes is to this app's own /api/* routes.
+// The Palai credential is read server-side in lib/palai.ts and lib/raw.ts, both guarded by
+// `server-only`, which makes importing them from a Client Component a build error.
+// =============================================================================================
+
+// MEASURED, AND THE REASON THIS STRING EXISTS. `palai.workspace.shell` runs with cwd = the
+// ALLOCATION ROOT, not the clone: adapters/sandboxes/host/exec.go:152 sets c.Dir =
+// cmd.WorkspaceRoot, and the clone is one level down at <root>/repo. The tool's JSON schema has no
+// cwd/workdir field, AND it does not set additionalProperties:false — so a `cwd` argument invented
+// by a hopeful caller is accepted and silently ignored (packages/tool-broker/conformance_math.go:50).
+//
+// Driven live 2026-08-02 without this hint, gpt-4o-mini ran `git status`, got "not a git
+// repository", ran `git init` AT THE ROOT, and committed into a brand-new empty repository beside
+// the clone. The clone stayed untouched at its real HEAD. Nothing errored. A push from that state
+// would have proposed a write nobody meant.
+//
+// The only correct affordance is to tell the model where the repository is, so the demo does.
+const REPO_HINT =
+  "The repository is cloned at ./repo, and shell commands start in the workspace root ABOVE it — " +
+  "always use `git -C repo …` or paths beginning with `repo/`. Do not run `git init`.";
+
+export function CodingChat() {
+  const [binding, setBinding] = useState<Binding | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [responseId, setResponseId] = useState<string | null>(null);
+
+  // The transport's body callback must read the current session and binding WITHOUT re-creating the
+  // transport on every turn, so both ride refs alongside the state that renders them.
+  const sessionRef = useRef<string | null>(null);
+  const bindingRef = useRef<string>("");
+  bindingRef.current = binding?.id ?? "";
+
+  const { messages, sendMessage, status, error, stop } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
-      // WHAT GOES UP IS THE HISTORY *AND* THE SESSION, and the route deliberately uses only the newest turn:
-      // Palai already holds the conversation server-side, so replaying the history here would double every
-      // prior turn into the context it re-sends anyway.
       body: () => ({
         sessionId: sessionRef.current,
-        ...(bindingRef.current ? { bindingId: bindingRef.current } : {}),
+        ...(bindingRef.current !== "" ? { bindingId: bindingRef.current } : {}),
       }),
     }),
     onData: (part) => {
@@ -39,178 +89,136 @@ export function CodingChat() {
           setSessionId(id);
         }
       }
+      if (part.type === "data-run") {
+        const id = (part.data as { responseId?: string })?.responseId;
+        if (typeof id === "string") setResponseId(id);
+      }
     },
   });
 
   const busy = status === "streaming" || status === "submitted";
 
   return (
-    <main style={{ fontFamily: "ui-sans-serif, system-ui, sans-serif", maxWidth: 900, margin: "2rem auto", padding: "0 1rem" }}>
-      <h1 style={{ marginBottom: "0.25rem" }}>Coding session</h1>
-      <p style={{ color: "#666", marginTop: 0 }}>
-        Vercel AI SDK <code>useChat</code> over Palai. Tell it what to do; the tools it runs and the approval it
-        needs appear inline.
-      </p>
+    <TooltipProvider>
+      <div className="flex h-dvh flex-col bg-background text-foreground xl:flex-row">
+        {/* ------------------------------------------------------------------------ the rail */}
+        {/* MEASURED (design-reference §1): 256px, and rgb(13,13,13) — DARKER than the page, which
+            is the reverse of what this tree assumed before it measured. */}
+        <aside className="w-full shrink-0 border-border border-b bg-rail xl:h-full xl:w-64 xl:border-r xl:border-b-0">
+          <RepositoryPicker selectedId={binding?.id ?? ""} onSelect={setBinding} disabled={busy} />
+        </aside>
 
-      <p data-testid="chat-key-note" style={{ background: "#fff8e1", border: "1px solid #ffe0a3", padding: "0.6rem 0.8rem", borderRadius: 6 }}>
-        <strong>No key in this page.</strong> The browser talks only to <code>/api/chat</code>; the Palai
-        credential is server-side.
-      </p>
+        {/* ------------------------------------------------------- the subject: the repository */}
+        <main className="order-last min-h-0 min-w-0 flex-1 xl:order-none">
+          <WorkspacePanel binding={binding} responseId={responseId} running={busy} sessionId={sessionId} />
+        </main>
 
-      <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap", margin: "1rem 0" }}>
-        <input
-          data-testid="chat-binding"
-          value={bindingId}
-          onChange={(e) => setBindingId(e.target.value)}
-          placeholder="repository binding id (optional — repo_… to make it a coding session)"
-          style={{ flex: "1 1 320px", padding: "0.5rem" }}
-          aria-label="Repository binding id"
-        />
-        <span data-testid="chat-session" style={{ color: "#666", fontSize: "0.9rem" }}>
-          {sessionId ? `session ${sessionId}` : "no session yet"}
-        </span>
+        {/* ------------------------------------------------- the control surface: the chat */}
+        <section
+          className="flex min-h-0 w-full shrink-0 flex-col border-border border-t xl:h-full xl:w-[420px] xl:border-t-0 xl:border-l"
+          aria-label="Chat"
+        >
+          <header className="border-border border-b px-4 py-3">
+            <h2 className="font-medium text-[15px]">Coding session</h2>
+            <p data-testid="chat-key-note" className="mt-0.5 text-[12px] text-muted-foreground leading-4">
+              No key in this page — the browser talks only to <code>/api/*</code>, and the Palai
+              credential is server-side.
+            </p>
+          </header>
+
+          <Conversation className="min-h-0 flex-1">
+            <ConversationContent className="gap-6 p-4">
+              {messages.length === 0 ? (
+                <ConversationEmptyState
+                  title={binding ? `Ready on ${binding.repository_identity}` : "Pick a repository first"}
+                  description={
+                    binding
+                      ? "Ask for a change. The clone, the shell and any publication happen inside that repository."
+                      : "Choose one in the rail — that is what gives the session a clone to work in."
+                  }
+                />
+              ) : null}
+
+              {messages.map((m) => (
+                <Message from={m.role} key={m.id} data-testid={`chat-message-${m.role}`}>
+                  <MessageContent>
+                    {m.parts.map((part, i) => (
+                      <Part key={i} part={part as UIPart} />
+                    ))}
+                  </MessageContent>
+                </Message>
+              ))}
+            </ConversationContent>
+            <ConversationScrollButton />
+          </Conversation>
+
+          {error ? (
+            <p data-testid="chat-error" className="mx-4 mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[13px] text-destructive">
+              {error.message}
+            </p>
+          ) : null}
+
+          <div className="p-3">
+            <PromptInput
+              data-testid="chat-form"
+              onSubmit={(message) => {
+                const text = message.text.trim();
+                if (text === "" || busy) return;
+                // The repository hint rides with the FIRST turn of a session only. Palai holds the
+                // conversation server-side and replays it, so repeating the hint every turn would
+                // spend context re-teaching something already in the transcript.
+                const withHint = messages.length === 0 && binding !== null ? `${text}\n\n(${REPO_HINT})` : text;
+                sendMessage({ text: withHint });
+              }}
+            >
+              <PromptInputBody>
+                <PromptInputTextarea
+                  data-testid="chat-input"
+                  placeholder={binding ? `Ask for a change in ${binding.repository_identity}…` : "Pick a repository to start…"}
+                  aria-label="Message"
+                />
+              </PromptInputBody>
+              <PromptInputFooter>
+                <PromptInputTools>
+                  <span className="px-1 text-[12px] text-muted-foreground" data-testid="chat-session">
+                    {sessionId ? `session ${sessionId.slice(0, 16)}…` : "no session yet"}
+                  </span>
+                </PromptInputTools>
+                <PromptInputSubmit status={status} onStop={stop} data-testid="chat-send" />
+              </PromptInputFooter>
+            </PromptInput>
+          </div>
+        </section>
       </div>
-
-      <ol data-testid="chat-messages" style={{ listStyle: "none", padding: 0, display: "grid", gap: "0.75rem" }}>
-        {messages.map((m) => (
-          <li key={m.id} data-testid={`chat-message-${m.role}`} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "0.75rem" }}>
-            <strong style={{ fontSize: "0.85rem", color: "#666" }}>{m.role}</strong>
-            {m.parts.map((part, i) => (
-              <Part key={i} part={part as Part} />
-            ))}
-          </li>
-        ))}
-      </ol>
-
-      {error ? (
-        <p data-testid="chat-error" style={{ color: "#b00" }}>
-          {error.message}
-        </p>
-      ) : null}
-
-      <form
-        style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (input.trim() === "" || busy) return;
-          sendMessage({ text: input });
-          setInput("");
-        }}
-      >
-        <input
-          data-testid="chat-input"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="e.g. read the README and tell me what this repo does"
-          style={{ flex: 1, padding: "0.5rem", fontSize: "1rem" }}
-          aria-label="Message"
-        />
-        <button data-testid="chat-send" type="submit" disabled={busy} style={{ padding: "0.5rem 1rem" }}>
-          {busy ? "Working…" : "Send"}
-        </button>
-      </form>
-    </main>
+    </TooltipProvider>
   );
 }
 
-type Part = { type: string; text?: string; data?: Record<string, unknown>; id?: string };
+type UIPart = { type: string; text?: string; data?: Record<string, unknown>; id?: string };
 
-// Part renders ONE UI-message-stream part. The `data-*` arms are the Palai-specific half; `text` is the
-// ecosystem's own and needs no translation at all, which is itself part of the answer.
-function Part({ part }: { part: Part }) {
+// Part renders ONE UI-message-stream part. The `text` arm is the ecosystem's own and needs no
+// translation at all, which is itself part of the answer; the `data-*` arms are the Palai half.
+function Part({ part }: { part: UIPart }) {
   if (part.type === "text") {
-    return <p style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0 0" }}>{part.text}</p>;
+    return <MessageResponse>{part.text ?? ""}</MessageResponse>;
   }
-  const d = (part.data ?? {}) as Record<string, unknown>;
+  const d = part.data ?? {};
   switch (part.type) {
     case "data-tool":
-      return (
-        <div data-testid="chat-tool" style={{ fontFamily: "ui-monospace, monospace", fontSize: "0.85rem", background: "#f6f6f6", padding: "0.5rem", borderRadius: 6, marginTop: "0.5rem" }}>
-          {/* NO TOOL NAME, AND THE SCREEN SAYS SO RATHER THAN INVENTING ONE. Palai's tool_call frames carry
-              only the call id and the replay class — measured on the journal — so an operator watching this
-              chat can see THAT a tool ran and whether it was reversible, and cannot see WHICH. Rendering a
-              placeholder in the name's position would read as a tool actually called that. */}
-          <strong>tool call</strong> {String(d.id ?? "")} — {String(d.state ?? "")}
-          {d.replayClass ? <span> ({String(d.replayClass)})</span> : null}
-          {d.nameUnavailable ? (
-            <div data-testid="chat-tool-name-gap" style={{ color: "#a60", marginTop: "0.25rem" }}>
-              the tool&apos;s name is not carried on Palai&apos;s event stream
-            </div>
-          ) : null}
-        </div>
-      );
+      return <ToolPart data={d} />;
     case "data-approval":
-      return <ApprovalButton data={d} />;
+      return <ApprovalPart data={d} />;
     case "data-publication":
-      return (
-        <p data-testid="chat-publication" style={{ marginTop: "0.5rem" }}>
-          published <strong>{String(d.operation ?? "")}</strong>
-          {d.receipt ? <code style={{ marginLeft: "0.4rem" }}>{JSON.stringify(d.receipt)}</code> : null}
-        </p>
-      );
+      return <PublicationPart data={d} />;
     case "data-notice":
-      return (
-        <p data-testid="chat-notice" style={{ marginTop: "0.5rem", color: d.level === "error" ? "#b00" : "#a60" }}>
-          {String(d.text ?? "")}
-        </p>
-      );
+      return <NoticePart data={d} />;
     case "data-run":
       return (
-        <p data-testid="chat-run" style={{ marginTop: "0.5rem", color: "#666", fontSize: "0.85rem" }}>
+        <p data-testid="chat-run" className="text-[12px] text-muted-foreground">
           run {String(d.status ?? "")}
         </p>
       );
     default:
       return null;
   }
-}
-
-// ApprovalButton is the owner's sentence made true: the agent proposes a write, a button appears IN THE
-// CHAT, a human presses it, and the run continues. It posts to the app's own relay, which forwards the
-// one-shot request hash the run emitted — the binding that makes an approval authorize the exact call that
-// was proposed rather than whatever it became.
-function ApprovalButton({ data }: { data: Record<string, unknown> }) {
-  const [state, setState] = useState<"open" | "sending" | "approved" | "denied" | "refused">("open");
-  const [detail, setDetail] = useState("");
-
-  async function decide(approve: boolean) {
-    setState("sending");
-    const res = await fetch("/api/chat/approve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ approvalId: data.approvalId, requestHash: data.requestHash, approve }),
-    });
-    if (res.ok) {
-      setState(approve ? "approved" : "denied");
-      return;
-    }
-    // The three refusals have three different fixes and the relay passes the status through, so the chat
-    // says which one it was rather than "failed".
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-    setState("refused");
-    setDetail(String(body.detail ?? `HTTP ${res.status}`));
-  }
-
-  return (
-    <div data-testid="chat-approval" style={{ marginTop: "0.5rem", border: "1px solid #f0c36d", background: "#fffbf0", borderRadius: 6, padding: "0.6rem" }}>
-      <p style={{ margin: 0 }}>
-        <strong>A human decision is needed</strong> — {String(data.operation ?? "a publication")}
-      </p>
-      {data.display ? <p style={{ margin: "0.25rem 0 0", color: "#555" }}>{String(data.display)}</p> : null}
-      {state === "open" || state === "sending" ? (
-        <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
-          <button data-testid="chat-approve" onClick={() => decide(true)} disabled={state === "sending"}>
-            Approve
-          </button>
-          <button data-testid="chat-deny" onClick={() => decide(false)} disabled={state === "sending"}>
-            Deny
-          </button>
-        </div>
-      ) : (
-        <p data-testid="chat-approval-outcome" style={{ margin: "0.5rem 0 0", color: state === "refused" ? "#b00" : "#060" }}>
-          {state === "refused" ? `refused: ${detail}` : state}
-        </p>
-      )}
-    </div>
-  );
 }
