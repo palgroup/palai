@@ -139,7 +139,7 @@ func main() {
 	// whose certificate has already expired.
 	runnerPoolKeys := fleet.NewPoolEnrollmentKeys(repo.Spine().Pool(), middleware.NewID, nil)
 
-	gateway := startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"), runnerRegistry, runnerPoolKeys, repo.Spine())
+	gateway := startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"), runnerRegistry, runnerPoolKeys, repo.Spine(), repo)
 
 	// The capability-worker gateway (E17 T9, spec §31): the outbound-enrolled enroll/claim/redeem/result
 	// surface an out-of-process worker dials. Built here so the secret store above (nil unless a master key
@@ -1718,7 +1718,7 @@ func withSupervisorStatus(next http.Handler, supervisor *coordinator.Supervisor,
 // itself. It returns the gateway so startDispatch can drive the production exec-path over it
 // as the orchestrator's EngineDialer. addr empty disables the gateway (returns nil) — the
 // public router carries a nil runner handler and dispatch stays assignment-only.
-func startRunnerGateway(addr string, registry fleet.Registry, poolKeys execution.PoolEnrollment, waker execution.CapacityWaker) *execution.RunnerGateway {
+func startRunnerGateway(addr string, registry fleet.Registry, poolKeys execution.PoolEnrollment, waker execution.CapacityWaker, poolSettings execution.PoolSettings) *execution.RunnerGateway {
 	if strings.TrimSpace(addr) == "" {
 		return nil
 	}
@@ -1763,6 +1763,13 @@ func startRunnerGateway(addr string, registry fleet.Registry, poolKeys execution
 	// run placed in an empty pool waits forever instead of ~2.5 minutes, which is a worse bug than the
 	// one it replaces — so it is fenced by name in a test, for the reason T3 fenced three call sites.
 	gateway.SetCapacityWaker(waker)
+	// The runner-plane desired-configuration reader (E29's second plane). Until this line the plane existed
+	// in the document's key and in migration 000053's CHECK, and the write path refused it BY NAME because
+	// "a row written here would be a setting no machine ever sees" — the reader was a second binary and
+	// nothing handed it a document. This is that hand-off: a machine's pool document rides the answer to its
+	// own enrolment, so an operator configures a fleet from one screen instead of editing an env file on
+	// every box.
+	gateway.SetPoolSettings(poolSettings)
 
 	srv := &http.Server{
 		Addr:              addr,

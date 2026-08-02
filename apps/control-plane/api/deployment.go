@@ -102,6 +102,13 @@ const (
 	planeRunnerPool = "runner_pool"
 )
 
+// PlaneRunnerPool is planeRunnerPool for the ONE caller outside this package: the enrolment handler's
+// store read (store.DesiredSettingsForPool), which answers a machine its own pool's document. Exported
+// rather than re-spelled as a literal because migration 000053's CHECK constraint enforces the same two
+// words, and a second spelling of a value a database constraint holds is a silent mismatch waiting for
+// the first typo.
+const PlaneRunnerPool = planeRunnerPool
+
 // The DESIRED-value grammar. Every writable setting declares one, and it names the STANDARD LIBRARY CALL
 // this binary's own reader makes — not a shape somebody thought looked right.
 //
@@ -330,6 +337,25 @@ var deploymentCatalogue = []catalogueEntry{
 		// The reader is this file's own DispatchWorkers, and main.dispatchWorkerCount delegates to it, so
 		// the number this surface reports and the number startDispatch gates on are the same number.
 		ReaderFile: "apps/control-plane/api/deployment.go", ReaderFunc: "DispatchWorkers",
+		DesiredValue: desiredInt,
+	},
+	{
+		// THE FIRST RUNNER-PLANE ENTRY, and it is here because the plane finally has a reader. Every comment
+		// above saying PALAI_RUNNER_CONCURRENCY is absent from this catalogue was correct when written: the
+		// variable lives on the RUNNER, this process holds no copy, and a surface reporting its own blank as
+		// somebody else's setting would be a confident wrong answer. What changed is not that this process can
+		// now READ it — it still cannot — but that it can now SEND it: RunnerGateway.handleEnroll answers a
+		// machine its pool's document and cmd/runner takes this value from it.
+		//
+		// Plane is what keeps the old comment's point intact. The row builder already marks a runner-plane
+		// entry `Observable: false`, so this reports as a setting that EXISTS and is decided elsewhere, rather
+		// than as an effective value this process invented. That is why it leaves unreportedSettings: it is no
+		// longer an unreported variable, it is a catalogued one whose reader is the other binary.
+		Name: "PALAI_RUNNER_CONCURRENCY", Group: "execution", Kind: kindValue, Default: "1",
+		Plane:      planeRunnerPool,
+		Effect:     "How many leases ONE MACHINE in this pool serves at once — the fleet's parallelism knob. A Mac that takes four sessions is this set to 4 on that Mac's pool. The runner reads it at enrolment, so a change reaches a machine when it next enrols rather than at once.",
+		Mutability: mutabilityBringUp, ChangeWith: changeDesired,
+		ReaderFile: "cmd/runner/main.go", ReaderFunc: "main",
 		DesiredValue: desiredInt,
 	},
 	{
@@ -619,10 +645,6 @@ var deploymentCatalogue = []catalogueEntry{
 // The two reasons are the only two there are: the value is a credential, or the value is not this
 // process's to report.
 var unreportedSettings = map[string]string{
-	"PALAI_RUNNER_CONCURRENCY": "runner-scoped: it is set on the RUNNER container and this process's copy is unset. " +
-		"cmd/cli/internal/stack/upgrade.go already records what happens to a reader that forgets — \"reading a runner-scoped var off " +
-		"the control-plane container always misses it\" — and a confident wrong answer is worse than the absence. " +
-		"The fleet's live lease count (GET /v1/runners) is what this deployment can observe about a machine's capacity.",
 	"PALAI_CONTROLLER_URL":  "runner-scoped: the address the RUNNER dials this control plane on. This process holds no copy.",
 	"PALAI_CONTROLLER_DNS":  "runner-scoped: the SAN the RUNNER pins its gateway connection to. This process holds no copy.",
 	"PALAI_COMPOSE_PROJECT": "runner-scoped: the compose project label the RUNNER tags engine sandboxes with. This process holds no copy.",
@@ -753,6 +775,27 @@ func desiredWritable() map[string]catalogueEntry {
 // deploy/compose's "does the shipped compose file actually pass this variable?" walk, and the composition
 // root's round-trip through the real readers. It is exported for those two and has no production caller:
 // production reads desiredWritable() above, which carries the entries.
+// DesiredWritableSettingsFor is DesiredWritableSettings narrowed to ONE plane.
+//
+// It exists because "writable" and "readable by this process" stopped being the same set the day the
+// runner plane got a reader. A guard in the control-plane binary that round-trips every writable setting
+// through its own reader can only do that for settings this binary reads; a runner-plane setting's reader
+// is cmd/runner, and asserting it here would either fail honestly or pass by measuring the wrong process.
+func DesiredWritableSettingsFor(plane string) []string {
+	names := make([]string, 0, len(deploymentCatalogue))
+	writable := desiredWritable()
+	for _, entry := range deploymentCatalogue {
+		if _, ok := writable[entry.Name]; ok && planeOf(entry) == plane {
+			names = append(names, entry.Name)
+		}
+	}
+	return names
+}
+
+// ControlPlaneName is planeControlPlane for guards outside this package that must name the plane whose
+// readers live in the control-plane binary.
+const ControlPlaneName = planeControlPlane
+
 func DesiredWritableSettings() []string {
 	names := make([]string, 0, len(deploymentCatalogue))
 	for _, entry := range deploymentCatalogue {

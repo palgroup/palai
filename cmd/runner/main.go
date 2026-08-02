@@ -114,7 +114,7 @@ func main() {
 		Log:        log.Printf,
 		// Default 1 (LP-0 + existing stacks unchanged); the delegation-capable stack sets 2 so a
 		// run's parent and its inline child each hold an engine on this runner (spec §25.18).
-		Concurrency: envIntDefault("PALAI_RUNNER_CONCURRENCY", 1),
+		Concurrency: planeIntDefault(identity.Settings, "PALAI_RUNNER_CONCURRENCY", 1),
 		// The managed allocation root every leased workspace path must sit under before this runner
 		// bind-mounts it (spec §30.13, carry (b)). Unset disables the check (pre-E09 behaviour).
 		WorkspaceRoot: os.Getenv("PALAI_WORKSPACE_ROOT"),
@@ -198,4 +198,25 @@ func envIntDefault(name string, def int) int {
 		return n
 	}
 	return def
+}
+
+// planeIntDefault reads a positive-integer setting the ADMIN PLANE sent with this machine's identity,
+// falling back to the machine's own environment and then to the built-in default.
+//
+// THE ORDER IS THE PRODUCT DECISION AND THE FALLBACK IS THE MIGRATION PATH. The plane wins because the
+// whole point of the runner_pool document is that an operator configures a fleet from one screen instead
+// of editing a file on every box. The environment is still read second, and deleting that second read
+// would break every deployment built before this field existed — the compose file, the Helm chart and the
+// systemd unit all set this variable today, and a runner that ignored them would come up misconfigured
+// against a control plane nobody had given a document to.
+//
+// A value the plane sent that does not parse falls through to the environment rather than to the default,
+// so a typo in the panel is not silently indistinguishable from an unconfigured pool.
+func planeIntDefault(settings map[string]string, name string, def int) int {
+	if v, ok := settings[name]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return envIntDefault(name, def)
 }

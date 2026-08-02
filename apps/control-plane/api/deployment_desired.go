@@ -129,11 +129,21 @@ func DecodeDesiredSettings(body []byte) (DesiredWrite, error) {
 			return DesiredWrite{}, fmt.Errorf("%w: the control plane is a SINGLETON — one process per deployment — so it takes no scope_id (got %q)", ErrDesiredRefused, in.Scope)
 		}
 	case planeRunnerPool:
-		return DesiredWrite{}, fmt.Errorf("%w: this deployment cannot apply a %s document yet. The storage is scoped for it and the "+
-			"catalogue can carry it, but the READER is a second binary: cmd/runner reads its environment at exec (main.go:117 for "+
-			"PALAI_RUNNER_CONCURRENCY, main.go:120 for PALAI_WORKSPACE_ROOT) and nothing hands it a document. A row written here would "+
-			"be a setting no machine ever sees. Configure a pool's posture and enrolment through POST/PATCH /v1/runner-pools, which "+
-			"the registry does enforce", ErrDesiredRefused, planeRunnerPool)
+		// THE READER NOW EXISTS, WHICH IS THE ONLY THING THAT EVER MADE THIS A REFUSAL. It read, verbatim:
+		// "the READER is a second binary: cmd/runner reads its environment at exec ... and nothing hands it
+		// a document. A row written here would be a setting no machine ever sees." That is no longer true —
+		// RunnerGateway.handleEnroll answers an enrolling machine its pool's document
+		// (store.DesiredSettingsForPool), and cmd/runner takes its lease concurrency from that answer.
+		//
+		// THE SCOPE IS STILL REQUIRED AND IS CHECKED HERE RATHER THAN LEFT TO THE DATABASE. Migration
+		// 000053's CHECK enforces `plane = 'runner_pool' AND scope_id <> ''`, so an empty scope is refused
+		// either way — but as a constraint violation surfacing as a 500, rather than as a sentence naming
+		// what the operator left out.
+		if in.Scope == "" {
+			return DesiredWrite{}, fmt.Errorf("%w: a %s document configures ONE pool, so it needs a scope_id naming which "+
+				"(a pool id from GET /v1/runner-pools). The control plane is the singleton that takes no scope; a pool is not",
+				ErrDesiredRefused, planeRunnerPool)
+		}
 	default:
 		return DesiredWrite{}, fmt.Errorf("%w: %q is not a plane this deployment knows. The two are %q and %q", ErrDesiredRefused, in.Plane, planeControlPlane, planeRunnerPool)
 	}

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -97,7 +98,10 @@ type RunnerGateway struct {
 	// the chain exactly as it was — file token only, default pool — which is every deployment built
 	// before this task and is what makes `SetPoolKeys` a setter rather than a constructor parameter.
 	poolKeys PoolEnrollment
-	now      func() time.Time
+	// poolSettings answers an enrolling machine its pool's desired configuration. Nil sends none, which
+	// leaves the runner on the configuration it was started with.
+	poolSettings PoolSettings
+	now          func() time.Time
 	// pools is the rendezvous, one queue per pool (E24 T2). It replaced a SINGLE unbuffered channel
 	// every parked runner sent itself down and every Dial received from, which made a Mac pool and a
 	// container pool two names for one queue: any parked machine satisfied any attempt.
@@ -233,6 +237,20 @@ func (g *RunnerGateway) SetRegistry(r fleet.Registry) { g.registry = r }
 // credential chain. Unset, the gateway admits only the file token and every machine lands in the
 // default pool — the pre-E24 posture, unchanged to the byte.
 func (g *RunnerGateway) SetPoolKeys(k PoolEnrollment) { g.poolKeys = k }
+
+// PoolSettings answers one pool's desired configuration — what the admin plane decided this machine
+// should be, which is the half a machine cannot know about itself.
+//
+// The poolID it is asked about comes from the RESOLVED GRANT and never from the enrolment request, so a
+// machine cannot read another pool's document by declaring that pool.
+type PoolSettings interface {
+	DesiredSettingsForPool(ctx context.Context, poolID string) (map[string]string, error)
+}
+
+// SetPoolSettings wires the desired-configuration read into enrolment. Unset, every enrolment answers with
+// no settings and every runner falls back to the configuration it was started with — the posture of every
+// deployment built before the runner plane had a reader.
+func (g *RunnerGateway) SetPoolSettings(s PoolSettings) { g.poolSettings = s }
 
 // SetCapacityWaker wires the durable wake a machine's arrival performs (E24 T4). Unset, handleConnect
 // wakes nothing — the posture every Docker-free wire proof runs in, where there are no durable runs.
@@ -656,6 +674,16 @@ type enrollResponse struct {
 	// still learns the real one, and a runner too old to read this field still works, because its
 	// certificate's SAN carries the same id and that is what renew matches on.
 	RunnerID string `json:"runner_id,omitempty"`
+	// Settings is the machine's configuration as the ADMIN PLANE decided it — this pool's desired document.
+	//
+	// IT RIDES THIS ANSWER RATHER THAN A NEW ENDPOINT, for a credential reason rather than a convenience:
+	// the operator surface for the same document is gated on the `provision` capability, and a runner holds
+	// no API key and must not be given one. It already authenticates for THIS call, so this is the one place
+	// a machine can be told what it is without widening what it holds.
+	//
+	// `omitempty` is the same contract RunnerID documents above: a control plane with no document for the
+	// pool sends nothing, and a runner receiving nothing runs on the configuration it was started with.
+	Settings map[string]string `json:"settings,omitempty"`
 }
 
 // handleEnroll exchanges a bearer bootstrap token for a short-lived client certificate: it spends the
@@ -735,7 +763,33 @@ func (g *RunnerGateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(enrollResponse{
 		Certificate: base64.StdEncoding.EncodeToString(certDER),
 		RunnerID:    runnerID,
+		// grant.PoolID, never request.PoolID: the grant is the credential chain's verdict about which pool
+		// this machine's key belongs to, and reading the request instead would let a machine ask for another
+		// pool's configuration by naming it.
+		Settings: g.settingsFor(r.Context(), grant.PoolID),
 	})
+}
+
+// settingsFor reads the pool's desired configuration, and answers nothing rather than failing.
+//
+// A LOOKUP FAILURE MUST NOT REFUSE THE ENROLMENT. A machine's identity does not depend on its
+// configuration: a runner that enrols with no settings runs on what it was started with, which is what
+// every runner did before this document existed. Refusing here would turn a database blip into a fleet
+// that cannot come back, and what is lost by answering anyway is a configuration the machine picks up on
+// its next enrolment.
+//
+// The two answers are deliberately identical to the caller and different in the log: "no document" is an
+// ordinary state for a pool nobody has configured, and an error is not.
+func (g *RunnerGateway) settingsFor(ctx context.Context, poolID string) map[string]string {
+	if g.poolSettings == nil || poolID == "" {
+		return nil
+	}
+	settings, err := g.poolSettings.DesiredSettingsForPool(ctx, poolID)
+	if err != nil {
+		log.Printf("runner enrolment: pool %s desired configuration unreadable, enrolling without it: %v", poolID, err)
+		return nil
+	}
+	return settings
 }
 
 // resolveEnrollment is THE CREDENTIAL CHAIN, tried in one order and in one place: a pool key first, the

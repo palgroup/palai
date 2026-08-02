@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -25,6 +26,48 @@ import (
 //
 // THE SCOPE IS STILL USED, for the one thing it legitimately says here: WHO wrote the revision. The
 // principal comes from the VERIFIED credential and never from a body field.
+
+// DesiredSettingsForPool answers one pool's desired settings, or nil when nobody has written any.
+//
+// IT TAKES NO middleware.Scope, which is the difference between it and GetDesiredConfig below, so the
+// reason is written here rather than assumed. GetDesiredConfig serves an OPERATOR holding an API key and
+// is gated on the `provision` capability. This one serves the ENROLMENT HANDLER, which has no API key and
+// must never be given one: a runner authenticates with a certificate, and handing a fleet a
+// provision-scoped credential so it can read its own configuration would be a far larger grant than the
+// thing being read.
+//
+// WHAT REPLACES THE CAPABILITY IS THE POOL ID'S PROVENANCE. The caller passes the pool from the RESOLVED
+// GRANT — the credential chain's verdict about which pool this machine's key belongs to — never a pool the
+// request named. A machine therefore cannot read another pool's document by declaring it, which is the
+// property the capability check stands in for here. The one caller is RunnerGateway.handleEnroll; a second
+// caller sourcing its poolID from a request body would defeat this and must not be added.
+//
+// A pool nobody has configured answers nil rather than an error: that machine runs on the configuration it
+// was started with, which is what every runner did before this document existed.
+func (s *Store) DesiredSettingsForPool(ctx context.Context, poolID string) (map[string]string, error) {
+	if poolID == "" {
+		return nil, nil
+	}
+	var (
+		revision  int64
+		raw       []byte
+		writtenAt time.Time
+		writtenBy string
+	)
+	err := s.spine.Pool().QueryRow(storage.WithSystemScope(ctx), storage.Query("LatestDeploymentDesired"),
+		api.PlaneRunnerPool, poolID).Scan(&revision, &raw, &writtenAt, &writtenBy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read pool %s desired configuration: %w", poolID, err)
+	}
+	var settings map[string]string
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return nil, fmt.Errorf("decode pool %s desired document revision %d: %w", poolID, revision, err)
+	}
+	return settings, nil
+}
 
 // GetDesiredConfig reads the current desired document, or nil when no operator has written one.
 //

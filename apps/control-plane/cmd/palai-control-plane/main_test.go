@@ -695,7 +695,11 @@ func TestEveryDesiredValueThisBinaryAcceptsIsParsedByItsOwnReader(t *testing.T) 
 	for _, tc := range cases {
 		covered[tc.setting] = true
 	}
-	for _, name := range api.DesiredWritableSettings() {
+	// CONTROL-PLANE WRITABLES ONLY, and the narrowing is the honest half rather than a loophole: this table
+	// round-trips a value through THIS BINARY's reader, and a runner-plane setting is read by cmd/runner.
+	// Asserting it here would measure the wrong process. Its own guard is TestThePlaneWinsOverTheBoxsOwn
+	// Environment in cmd/runner, which drives the reader that actually takes it.
+	for _, name := range api.DesiredWritableSettingsFor(api.ControlPlaneName) {
 		if !covered[name] {
 			t.Errorf("%s is writable from the panel and this round trip does not cover it. An accepted value whose "+
 				"reader nobody checked is the whole defect: the panel shows one number and the process runs another", name)

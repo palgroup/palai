@@ -354,9 +354,20 @@ func TestDesiredWriteAcceptsTheValuesAnOperatorActuallyTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("refused a document naming every writable setting with a value its own reader parses: %v", err)
 	}
-	if len(got.Settings) != len(DesiredWritableSettings()) {
-		t.Fatalf("accepted %d of %d writable settings; this document names all of them, so any shortfall is a "+
-			"setting the panel advertises and the decoder will not take", len(got.Settings), len(DesiredWritableSettings()))
+	// CONTROL-PLANE WRITABLES, because this document is a control-plane document. The count stopped being
+	// "every writable setting" the day a second plane got a reader: a runner-plane setting cannot appear in
+	// this body at all — the plane check refuses it — so comparing against the whole set would make this
+	// guard fail for the one reason it is not about.
+	if len(got.Settings) != len(DesiredWritableSettingsFor(planeControlPlane)) {
+		t.Fatalf("accepted %d of %d control-plane writable settings; this document names all of them, so any "+
+			"shortfall is a setting the panel advertises and the decoder will not take",
+			len(got.Settings), len(DesiredWritableSettingsFor(planeControlPlane)))
+	}
+	// And the narrowing must not become a hole: every writable setting belongs to one of the two planes, so
+	// a name that is in neither list is a setting no guard covers.
+	if a, b := len(DesiredWritableSettingsFor(planeControlPlane))+len(DesiredWritableSettingsFor(planeRunnerPool)), len(DesiredWritableSettings()); a != b {
+		t.Fatalf("the per-plane lists carry %d writable settings and the whole set carries %d; a setting in "+
+			"neither plane's list is one this guard silently stopped covering", a, b)
 	}
 	// AND IT LANDS ON THE CONTROL PLANE BY DEFAULT. A body with no `plane` is every existing caller's body,
 	// and it must go where the reader is rather than nowhere.
@@ -505,8 +516,21 @@ func TestARunnerPlaneRowNeverReportsThisProcessesCopyOfIt(t *testing.T) {
 		if row.Plane != planeRunnerPool {
 			t.Errorf("%s reports plane %q on the wire, so a screen cannot tell it apart from an unset local setting", entry.Name, row.Plane)
 		}
-		if row.Writable {
-			t.Errorf("%s is offered as writable; the runner plane has no reader for a desired document", entry.Name)
+		// WRITABLE IFF IT IS CONFIGURATION RATHER THAN IDENTITY, and the distinction is the reason this is
+		// not simply "the runner plane is writable now". PALAI_RUNNER_CONCURRENCY is a decision an operator
+		// makes about a fleet — four sessions on this Mac's pool — and it now reaches the machine on its
+		// enrolment answer. PALAI_RUNNER_POOL and PALAI_RUNNER_POSTURE are what a machine IS: the pool comes
+		// from the credential it presented and the posture from the box it is. A panel that could write
+		// either would be able to move a machine between pools, or to relabel an unsandboxed host as a
+		// sandboxed one, by editing a document — and the enrolment answer is delivered by the very pool
+		// lookup that would then be reading a value the panel supplied.
+		//
+		// The catalogue already encodes it: a setting is writable exactly when it declares a DesiredValue
+		// grammar, so this asserts the two agree rather than restating the list.
+		if want := entry.DesiredValue != ""; row.Writable != want {
+			t.Errorf("%s reports writable=%v, want %v — a runner-plane setting is writable exactly when it is "+
+				"configuration (it declares a desired grammar) and never when it is the machine's identity",
+				entry.Name, row.Writable, want)
 		}
 		if row.Default == "" {
 			t.Errorf("%s carries no default. Its VALUE is not what a reader wants — its existence and what a runner "+
@@ -552,51 +576,57 @@ func TestThePlaneGuardCanTellTheTwoPlanesApart(t *testing.T) {
 
 // TestARunnerPlaneWriteIsRefusedByNameRatherThanStored is the scoping decision made testable.
 //
-// THE MODEL HAS THE PLANE AND THIS DEPLOYMENT HAS NO READER FOR IT. Migration 000052 keys the journal by
-// (plane, scope_id) because a flat document cannot express the product's own shape — `GET /v1/runner-pools`
-// returned 17 on the live stack, and PALAI_WORKSPACE_ROOT has two readers with two different jobs under one
-// name (control plane: where workspaces are ALLOCATED; cmd/runner/main.go:120: the root a leased path must
-// sit under before that runner bind-mounts it, "unset disables the check"). But nothing hands cmd/runner a
-// document: it reads its environment at exec, and the second binary that would read one is not this task.
+// THE PLANE NOW HAS A READER, AND THIS TEST IS THE RECORD OF WHAT THAT CHANGED. It used to assert the
+// opposite — that a runner_pool write was REFUSED — and the refusal's own sentence said why: "nothing hands
+// cmd/runner a document: it reads its environment at exec, and the second binary that would read one is not
+// this task." That binary now reads one. RunnerGateway.handleEnroll answers an enrolling machine its pool's
+// desired document and cmd/runner takes its lease concurrency from that answer, so a stored row changes a
+// machine instead of being a save nobody consults.
 //
-// SO THE WRITE IS REFUSED, NOT STORED. Storing it would be the defect this entire surface exists to expose
-// — a row nobody consults, with a screen reporting the save succeeded — and refusing it silently would be
-// the same defect with better manners. The refusal NAMES the missing reader and points at the surface that
-// does work today, so an operator who wants per-machine configuration is not left to conclude it is
-// impossible.
-func TestARunnerPlaneWriteIsRefusedByNameRatherThanStored(t *testing.T) {
-	_, err := DecodeDesiredSettings([]byte(`{"plane":"runner_pool","scope_id":"pool_default","settings":{}}`))
-	if err == nil {
-		t.Fatal("a runner_pool document was ACCEPTED. Nothing in this deployment reads one, so it would be a row " +
-			"that changes no machine while the screen reported a save")
+// WHAT SURVIVES THE FLIP IS THE SCOPE. A control-plane document is a singleton and takes no scope_id; a
+// runner_pool document configures ONE pool out of the seventeen the live stack returned, so a scope is the
+// difference between configuring a fleet and configuring nothing in particular. Migration 000053's CHECK
+// enforces it too, but a constraint violation reaches an operator as a 500 — this reaches them as a
+// sentence naming what they left out.
+func TestARunnerPlaneWriteIsAcceptedNowThatAMachineReadsIt(t *testing.T) {
+	got, err := DecodeDesiredSettings([]byte(`{"plane":"runner_pool","scope_id":"pool_default","settings":{"PALAI_RUNNER_CONCURRENCY":"4"}}`))
+	if err != nil {
+		t.Fatalf("a runner_pool document was refused: %v. The enrolment answer carries it to the machine now, "+
+			"so refusing it leaves an operator unable to configure a fleet from the panel", err)
 	}
-	for _, want := range []string{"cmd/runner", "reader", "/v1/runner-pools"} {
-		if !strings.Contains(strings.ToLower(err.Error()), want) {
-			t.Errorf("the refusal does not mention %q. An operator asking for per-machine configuration needs the "+
-				"reader that is missing AND the surface that does work, or they will read this as 'not possible'.\n  got: %v", want, err)
-		}
+	if got.Plane != planeRunnerPool || got.Scope != "pool_default" {
+		t.Fatalf("decoded plane=%q scope=%q, want the runner plane scoped to the pool that was named", got.Plane, got.Scope)
 	}
-
-	// THE CONTROL PLANE IS A SINGLETON and a scope_id on it is a caller who thinks otherwise — refused, so
-	// the error arrives at the request rather than as a CHECK violation surfacing from the database as a 500.
-	if _, err := DecodeDesiredSettings([]byte(`{"plane":"control_plane","scope_id":"pool_default","settings":{}}`)); err == nil {
-		t.Error("the control plane accepted a scope_id. There is one control-plane process per deployment, so a " +
-			"scoped one names something that does not exist")
-	}
-	// AND AN UNKNOWN PLANE NAMES THE TWO THAT EXIST rather than answering "invalid".
-	_, err = DecodeDesiredSettings([]byte(`{"plane":"machine","settings":{}}`))
-	if err == nil || !strings.Contains(err.Error(), planeRunnerPool) {
-		t.Errorf("an unknown plane must be refused with the vocabulary spelled out; got %v", err)
+	if got.Settings["PALAI_RUNNER_CONCURRENCY"] != "4" {
+		t.Fatalf("decoded settings %v, want the value the operator typed", got.Settings)
 	}
 }
 
-// TestASettingCannotBeWrittenIntoAPlaneItIsNotReadOn is the guard that cannot fire today and is written
-// anyway, because the day it CAN fire is the day somebody adds the first runner-plane catalogue entry —
-// which is exactly when nobody will be looking here.
-//
-// It perturbs a real catalogue entry onto the runner plane and asserts a control-plane document refuses it.
-// A value exported into a process that never reads it is the "declared, and nothing happens" defect with an
-// extra layer of indirection, and the indirection is what would make it hard to see.
+// A pool document with no pool is refused BY NAME rather than by the database's CHECK constraint, so the
+// operator reads a sentence instead of a 500.
+func TestARunnerPlaneWriteWithoutAScopeIsRefusedByName(t *testing.T) {
+	_, err := DecodeDesiredSettings([]byte(`{"plane":"runner_pool","settings":{"PALAI_RUNNER_CONCURRENCY":"4"}}`))
+	if err == nil {
+		t.Fatal("a scopeless runner_pool document was accepted; migration 000053's CHECK would then refuse it as " +
+			"a 500, which tells an operator nothing about what they left out")
+	}
+	for _, want := range []string{"scope_id", "pool"} {
+		if !strings.Contains(strings.ToLower(err.Error()), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// A control-plane document must still not carry a runner-plane setting: the value would be exported into a
+// process that never reads it, which is the defect the plane check exists for.
+func TestAControlPlaneDocumentRefusesARunnerPlaneSetting(t *testing.T) {
+	_, err := DecodeDesiredSettings([]byte(`{"settings":{"PALAI_RUNNER_CONCURRENCY":"4"}}`))
+	if err == nil {
+		t.Fatal("the control-plane document accepted a runner-plane setting; it would be exported into a process " +
+			"that never reads it while the screen reported a save")
+	}
+}
+
 func TestASettingCannotBeWrittenIntoAPlaneItIsNotReadOn(t *testing.T) {
 	const victim = "PALAI_DISPATCH_WORKERS"
 	index := -1

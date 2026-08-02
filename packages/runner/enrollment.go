@@ -28,6 +28,11 @@ type Identity struct {
 	RunnerID    string
 	Certificate tls.Certificate
 	NotAfter    time.Time
+	// Settings is the configuration the control plane sent with this identity, nil when it sent none. It is
+	// carried on the identity rather than returned beside it because the two answer one question a machine
+	// asks once — who am I, and what am I — and splitting them lets a caller take the certificate and forget
+	// the configuration.
+	Settings map[string]string
 }
 
 // BootstrapConfig is the enrollment input. EnrollmentToken is presented and never
@@ -73,6 +78,13 @@ type enrollmentRequest struct {
 
 type enrollmentResponse struct {
 	Certificate string `json:"certificate"`
+	// Settings is this machine's configuration as the admin plane decided it — the pool's desired document.
+	// It arrives HERE rather than from a file on the machine, which is the point: an operator configures a
+	// fleet from one screen instead of editing an env file on every box.
+	//
+	// Absent means "no document for this pool", not "an empty configuration": the runner then uses what it
+	// was started with, which is what every runner did before this field existed.
+	Settings map[string]string `json:"settings,omitempty"`
 	// RunnerID is the id the CONTROL PLANE minted (E24 T1). The runner_id this runner sent is a label
 	// — the compose entrypoint hardcodes it, so it is not unique across machines — and the server's is
 	// the one that names this machine everywhere else. A control plane too old to send it leaves this
@@ -159,6 +171,7 @@ func Enroll(ctx context.Context, config BootstrapConfig) (Identity, error) {
 		RunnerID:    runnerID,
 		Certificate: tls.Certificate{Certificate: [][]byte{certDER}, PrivateKey: privateKey, Leaf: leaf},
 		NotAfter:    leaf.NotAfter,
+		Settings:    decoded.Settings,
 	}, nil
 }
 
