@@ -151,6 +151,9 @@ async function pumpPalaiFrames(
   // a stalled join must not stop the run's own frames from reaching the chat. They are awaited
   // before the pump returns so the stream is never closed with a part still in flight.
   const pending: Promise<void>[] = [];
+  // Publications whose approval APPLIED but whose push has not been confirmed. See the
+  // approval.approved.v1 arm for why the two are not the same event.
+  const approvedPublications = new Set<string>();
 
   try {
     for (;;) {
@@ -167,7 +170,7 @@ async function pumpPalaiFrames(
         const evt = parseFrame(frame);
         if (evt === null) continue;
 
-        const terminal = writeFrame(writer, evt, openText, textId, responseId, pending);
+        const terminal = writeFrame(writer, evt, openText, textId, responseId, pending, approvedPublications);
         if (terminal) {
           if (textOpen) {
             writer.write({ type: "text-end", id: textId });
@@ -215,6 +218,7 @@ function writeFrame(
   textId: string,
   responseId: string,
   pending: Promise<void>[],
+  approvedPublications: Set<string>,
 ): boolean {
   const d = evt.data;
   switch (evt.type) {
@@ -300,7 +304,29 @@ function writeFrame(
       );
       return false;
 
+    // AN APPROVAL THAT APPLIED IS NOT A PUSH THAT HAPPENED, and on this tree those two are
+    // routinely confused because every surface a human sees says the first one.
+    //
+    // MEASURED 2026-08-02, end to end through this very screen: pressed Approve, the relay returned
+    // 200, `approval.approved.v1` arrived carrying a command_id, the publications row moved
+    // pending_approval -> approved, and the parked run woke and completed. NOTHING PUSHED. The row's
+    // `receipt` stayed NULL and the git server received no git-receive-pack at all.
+    //
+    // Cause, cited: repositoryPublisherFromEnv (main.go:1231) returns nil unless PALAI_GITHUB_APP_ID,
+    // PALAI_GITHUB_APP_INSTALLATION_ID and PALAI_GITHUB_APP_PRIVATE_KEY_FILE are ALL set, and a nil
+    // publisher makes pumpApprovedPublications a no-op. The function's own comment says the failure is
+    // "INDISTINGUISHABLE from success on every surface a human looks at".
+    //
+    // So this adapter watches the pair. `approval.approved.v1` is remembered; `publication.published.v1`
+    // clears it; anything still outstanding when the run reaches a terminal state becomes a NOTICE that
+    // says the push was not confirmed. That is the difference between a demo that shows a green tick
+    // and one an operator can trust.
+    case "approval.approved.v1":
+      if (typeof d.publication_id === "string") approvedPublications.add(d.publication_id);
+      return false;
+
     case "publication.published.v1":
+      if (typeof d.publication_id === "string") approvedPublications.delete(d.publication_id);
       writer.write({
         type: "data-publication",
         id: String(d.publication_id ?? "publication"),
@@ -336,6 +362,25 @@ function writeFrame(
     case "run.failed.v1":
     case "run.cancelled.v1":
     case "run.completed.v1":
+      // The unconfirmed pushes are reported BEFORE the terminal part, so the notice sits with the
+      // approval it belongs to rather than after the run's closing line.
+      for (const publicationId of approvedPublications) {
+        writer.write({
+          type: "data-notice",
+          data: {
+            level: "error",
+            text:
+              `The approval for ${publicationId} applied — the publication row moved to "approved" — but no ` +
+              "publication.published.v1 arrived before this run ended, so THE PUSH IS NOT CONFIRMED. On this " +
+              "stack that is a missing publisher: repositoryPublisherFromEnv returns nil unless " +
+              "PALAI_GITHUB_APP_ID, PALAI_GITHUB_APP_INSTALLATION_ID and PALAI_GITHUB_APP_PRIVATE_KEY_FILE " +
+              "are all set, and a nil publisher makes the approval pump a no-op. Note this is true even when " +
+              "the binding carries its own connection_ref: the credential-resolving publisher is built " +
+              "INSIDE the GitHub-App gate, so a binding credential cannot publish on a stack with no App.",
+          },
+        });
+      }
+      approvedPublications.clear();
       writer.write({ type: "data-run", data: { responseId, status: evt.type.split(".")[1] } });
       return true;
 

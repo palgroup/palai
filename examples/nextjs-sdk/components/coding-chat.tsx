@@ -58,9 +58,28 @@ import { WorkspacePanel } from "@/components/workspace-panel";
 // would have proposed a write nobody meant.
 //
 // The only correct affordance is to tell the model where the repository is, so the demo does.
+// AND THE SECOND CLAUSE IS THERE BECAUSE THE FIRST VERSION OF THIS HINT CAUSED A BUG. It said only
+// "use `git -C repo …` or paths beginning with `repo/`", and the model dutifully ran
+//     git -C repo add repo/CONTRIBUTING.md   -> exit 128, "pathspec did not match any files"
+// because `-C repo` has ALREADY entered the clone, so the path must be relative to it. The two tools
+// take paths in two different frames and the hint has to say which is which.
+//
+// THE THIRD CLAUSE IS A PRODUCT GAP, NOT A MODEL ONE, AND IT IS WORTH SAYING PLAINLY. The clone is
+// prepared with `git init` + `git fetch` + `git checkout` (adapters/repositories/prepare.go:93-133)
+// and NOTHING EVER SETS user.email OR user.name. So the first `git commit` of every coding session
+// fails:
+//     git -C repo commit -m …  -> exit 128, "Author identity unknown ... unable to auto-detect email
+//                                 address (got 'unknown@<hostname>')"
+// Measured twice on 2026-08-02, on two different runs, and both times the model recovered by running
+// `git config --global …` — which writes the OPERATOR'S global git config, on an unsandboxed host, as
+// a side effect of asking an agent to commit. Passing `-c` per invocation keeps it to the one command.
 const REPO_HINT =
-  "The repository is cloned at ./repo, and shell commands start in the workspace root ABOVE it — " +
-  "always use `git -C repo …` or paths beginning with `repo/`. Do not run `git init`.";
+  "The repository is cloned at ./repo and shell commands start in the workspace root ABOVE it. " +
+  "For the file tool, use paths beginning with `repo/`. For git, use `git -C repo …` and then give " +
+  "paths RELATIVE TO the clone (`git -C repo add CONTRIBUTING.md`, not `repo/CONTRIBUTING.md`). " +
+  "The clone has no git identity configured, so commit with " +
+  "`git -C repo -c user.email=agent@palai.local -c user.name=Palai commit -m \"…\"` — do not run " +
+  "`git config --global`. Do not run `git init`.";
 
 export function CodingChat() {
   const [binding, setBinding] = useState<Binding | null>(null);
