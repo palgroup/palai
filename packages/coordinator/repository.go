@@ -65,10 +65,12 @@ func (s *Store) GetRepositoryBinding(ctx context.Context, tenant Tenant, id stri
 		allowedRaw []byte
 		policyRaw  []byte
 		createdAt  time.Time
+		archivedAt *time.Time
 	)
 	err := s.pool.QueryRow(ctx, storage.Query("GetRepositoryBinding"), id, tenant.Organization, tenant.Project).
 		Scan(&binding.ID, &binding.Provider, &binding.RepositoryIdentity, &binding.CloneUrl, &binding.DefaultBranch,
-			&binding.ConnectionRef, &allowedRaw, &policyRaw, &binding.DataClassification, &binding.RegionConstraint, &createdAt)
+			&binding.ConnectionRef, &allowedRaw, &policyRaw, &binding.DataClassification, &binding.RegionConstraint,
+			&createdAt, &archivedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return contracts.RepositoryBinding{}, false, nil
 	}
@@ -79,9 +81,77 @@ func (s *Store) GetRepositoryBinding(ctx context.Context, tenant Tenant, id stri
 	binding.OrganizationID = contracts.OrganizationID(tenant.Organization)
 	binding.ProjectID = contracts.ProjectID(tenant.Project)
 	binding.CreatedAt = createdAt.UTC().Format(time.RFC3339)
+	// AN ARCHIVED BINDING IS STILL READABLE, and that is the point of the read route keeping it: the
+	// admission guard answers "not found" for a retired binding (RepositoryBindingExists), so this is the
+	// only surface that can tell an operator WHY their run was refused. `omitempty` on the generated field
+	// means a live binding carries no key at all rather than a null.
+	if archivedAt != nil {
+		binding.ArchivedAt = archivedAt.UTC().Format(time.RFC3339)
+	}
 	_ = json.Unmarshal(allowedRaw, &binding.AllowedOperations)
 	_ = json.Unmarshal(policyRaw, &binding.Policy)
 	return binding, true, nil
+}
+
+// SetRepositoryBindingConnection points a binding at a different credential handle, or at none (E30,
+// migration 000057). found is false for an unknown, foreign, OR archived id — the same answer for the
+// same reason the reads give it, and the archived case is deliberate: nothing can run against a retired
+// binding, so re-crediting one would be a write with no effect anybody could observe.
+//
+// ref MAY BE EMPTY, and that is the detach direction: the repository became public, or the token was
+// retired and the binding should fall back to whatever the deployment's global broker offers. Refusing it
+// would leave the same dead end this method exists to remove, one step further along.
+//
+// THE RAW CREDENTIAL DOES NOT PASS THROUGH HERE AND CANNOT. ref is a secret_refs NAME; the bytes behind it
+// are written over POST /v1/secret-refs and read at clone time by the resolver — this method moves a
+// pointer, which is why it can be an ordinary tenant-scoped UPDATE with nothing sensitive in its
+// parameters, its error text, or any log line that records it.
+func (s *Store) SetRepositoryBindingConnection(ctx context.Context, tenant Tenant, id, ref string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	var updated string
+	err := s.pool.QueryRow(ctx, storage.Query("SetRepositoryBindingConnection"),
+		id, tenant.Organization, tenant.Project, ref).Scan(&updated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("set repository binding connection: %w", err)
+	}
+	return true, nil
+}
+
+// ArchiveRepositoryBinding retires a binding: it leaves the default list and, through the
+// `archived_at IS NULL` clause on RepositoryBindingExists, refuses new runs. changed is false when the
+// id is unknown, foreign, or ALREADY archived — the query's own predicate makes it idempotent, so a
+// second call cannot rewrite when the retirement happened.
+//
+// It is not a delete: preparation_receipts.repository_binding_id is a foreign key onto this table, and
+// the provenance those rows carry outlives the binding by design.
+func (s *Store) ArchiveRepositoryBinding(ctx context.Context, tenant Tenant, id string) (bool, error) {
+	return s.flipArchive(ctx, tenant, id, "ArchiveRepositoryBinding")
+}
+
+// UnarchiveRepositoryBinding puts a retired binding back in service. changed is false for an unknown,
+// foreign, or already-live id. Archiving is operator hygiene rather than a security decision, so it is
+// reversible; taking a binding's ACCESS away is the other method on this file — detach its connection.
+func (s *Store) UnarchiveRepositoryBinding(ctx context.Context, tenant Tenant, id string) (bool, error) {
+	return s.flipArchive(ctx, tenant, id, "UnarchiveRepositoryBinding")
+}
+
+// flipArchive is the shared body of the two above. They differ only in which statement they issue — both
+// are tenant-scoped, both are idempotent by predicate, and both report "did this call change anything"
+// the same way — so one implementation is one place for the scope declaration to be right.
+func (s *Store) flipArchive(ctx context.Context, tenant Tenant, id, query string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	var updated string
+	err := s.pool.QueryRow(ctx, storage.Query(query), id, tenant.Organization, tenant.Project).Scan(&updated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", query, err)
+	}
+	return true, nil
 }
 
 // PreparationReceiptInput records the model-independent preparation provenance (spec §30.3 step 10,

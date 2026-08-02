@@ -3,6 +3,7 @@ package contracts
 
 type RepositoryBinding struct {
 	AllowedOperations  []string            `json:"allowed_operations,omitempty"`
+	ArchivedAt         string              `json:"archived_at,omitempty"`
 	CloneUrl           string              `json:"clone_url"`
 	ConnectionRef      string              `json:"connection_ref,omitempty"`
 	CreatedAt          string              `json:"created_at,omitempty"`

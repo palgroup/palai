@@ -19,10 +19,28 @@ import (
 type BindingRegistrar interface {
 	CreateRepositoryBinding(ctx context.Context, scope middleware.Scope, req RepositoryBindingCreate) (BindingResult, error)
 	// GetRepositoryBinding + ListRepositoryBindings are the E13 T4 read side. Both run under RLS, so
-	// the request scope confines them; a missing/foreign id is NotFound (404), and the list carries
-	// only the keyset position + created_at bounds (a binding has no lifecycle state to filter on).
+	// the request scope confines them; a missing/foreign id is NotFound (404). The list carries the keyset
+	// position + created_at bounds, plus ONE lifecycle switch: archived bindings are hidden unless
+	// includeArchived says otherwise (E30, migration 000057). It is a parameter rather than a second
+	// method because a forked list is a second place for the tenant predicate to be got wrong.
 	GetRepositoryBinding(ctx context.Context, scope middleware.Scope, id string) (BindingResult, error)
-	ListRepositoryBindings(ctx context.Context, scope middleware.Scope, q ListQuery) ([]ListRow, error)
+	ListRepositoryBindings(ctx context.Context, scope middleware.Scope, q ListQuery, includeArchived bool) ([]ListRow, error)
+
+	// SetRepositoryBindingConnection points an EXISTING binding at a different credential handle, or at
+	// none (E30). It exists because its absence was the gap: measured on a live stack, 20 bindings carried
+	// no connection_ref and nothing anywhere — route, seam, statement or CLI verb — could give one to any
+	// of them, so a binding registered before its credential existed was unfixable and "register another"
+	// was the only move. changed is false for an unknown, foreign, or ARCHIVED id.
+	//
+	// It takes a REF and never a credential. The bytes are written over POST /v1/secret-refs and read at
+	// clone time; this moves a pointer, which is why nothing sensitive appears in its parameters.
+	SetRepositoryBindingConnection(ctx context.Context, scope middleware.Scope, id, ref string) (bool, error)
+	// ArchiveRepositoryBinding / UnarchiveRepositoryBinding retire and restore a binding. Retiring is not
+	// a delete — preparation_receipts holds a foreign key onto the row and this API has no destructive
+	// verb anywhere — and it is more than a display flag: the run-admission guard refuses an archived
+	// binding. changed is false when the call was a no-op (unknown, foreign, or already in that state).
+	ArchiveRepositoryBinding(ctx context.Context, scope middleware.Scope, id string) (bool, error)
+	UnarchiveRepositoryBinding(ctx context.Context, scope middleware.Scope, id string) (bool, error)
 }
 
 // RepositoryBindingCreate is the resolved create body (spec §30.1). Provider + RepositoryIdentity are
@@ -152,7 +170,10 @@ func (h *bindingHandler) list(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := h.bindings.ListRepositoryBindings(r.Context(), scope, q)
+	// `?include_archived=true` and nothing looser. A truthy-string parser here would make
+	// `include_archived=false` mean "yes", which is the direction that silently widens what an operator
+	// is shown; anything that is not exactly "true" leaves retired bindings hidden.
+	rows, err := h.bindings.ListRepositoryBindings(r.Context(), scope, q, r.URL.Query().Get("include_archived") == "true")
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -186,4 +207,108 @@ func bindingIDOf(body []byte) string {
 	}
 	_ = json.Unmarshal(body, &probe)
 	return probe.ID
+}
+
+// connectionBody is the PUT /v1/repository-bindings/{id}/connection body: a secret_refs NAME and nothing
+// else. There is deliberately no credential field — the same structural property the create side has, for
+// the same reason, and a reviewer should be able to see it by reading this struct.
+type connectionBody struct {
+	ConnectionRef string `json:"connection_ref"`
+}
+
+// setConnection points an existing binding at a different credential handle (E30).
+//
+// WHY A NARROW SUB-RESOURCE RATHER THAN A PATCH ON THE BINDING. `provider`, `repository_identity` and
+// `clone_url` are the binding's IDENTITY, and every preparation_receipts row already written against it
+// asserts which repository a past run cloned; making identity mutable would retroactively falsify that
+// provenance, and no receipt could tell a reader it had happened. A credential says only HOW the fetch
+// authenticated. A general PATCH would put both behind one verb and one permission, so the field list
+// would become the only thing standing between a rotation and a rewrite of history.
+//
+// `allowed_operations` and `policy` are excluded too, and that is a decision rather than an omission:
+// they are CEILINGS a run reads at preparation time, and lowering one under a session that is already
+// running is a different question that wants a boundary rather than an UPDATE.
+//
+// PUT, because it is idempotent and total for this sub-resource: the same call twice leaves the same
+// state, and there is no partial form of "which credential does this binding use".
+func (h *bindingHandler) setConnection(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body could not be read")
+		return
+	}
+	var body connectionBody
+	// DisallowUnknownFields so a caller that sends `{"credential": "..."}` — the shape somebody WILL try —
+	// is refused loudly instead of having it silently dropped and believing the binding took it.
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request",
+			"the body takes connection_ref (a secret ref NAME) and no other field; a credential is written with POST /v1/secret-refs")
+		return
+	}
+	changed, err := h.bindings.SetRepositoryBindingConnection(r.Context(), scope, r.PathValue("binding_id"), body.ConnectionRef)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	if !changed {
+		// One answer for unknown, foreign and archived, matching every other read on this resource: an
+		// archived binding accepts no runs, so it accepts no credential either, and the operator finds out
+		// which of the three it was from GET, whose projection carries archived_at.
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found",
+			"no such repository binding in this project, or it is archived — an archived binding is restored before it is re-credited")
+		return
+	}
+	h.get(w, r)
+}
+
+// archive retires a binding (E30). It is POST rather than DELETE because it is not one: the row stays,
+// preparation_receipts keeps its foreign key, and the operation is reversible.
+func (h *bindingHandler) archive(w http.ResponseWriter, r *http.Request) {
+	h.flipArchive(w, r, true)
+}
+
+// unarchive puts a retired binding back in service.
+func (h *bindingHandler) unarchive(w http.ResponseWriter, r *http.Request) {
+	h.flipArchive(w, r, false)
+}
+
+// flipArchive is the shared body of the two above. A no-op — unknown, foreign, or already in the target
+// state — is a 404 rather than a 200, so an operator who archives a typo'd id is told, instead of reading
+// a success for something that never happened.
+func (h *bindingHandler) flipArchive(w http.ResponseWriter, r *http.Request, retire bool) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	id := r.PathValue("binding_id")
+	var (
+		changed bool
+		err     error
+	)
+	if retire {
+		changed, err = h.bindings.ArchiveRepositoryBinding(r.Context(), scope, id)
+	} else {
+		changed, err = h.bindings.UnarchiveRepositoryBinding(r.Context(), scope, id)
+	}
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	if !changed {
+		detail := "no such repository binding in this project, or it is already archived"
+		if !retire {
+			detail = "no such repository binding in this project, or it is not archived"
+		}
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", detail)
+		return
+	}
+	h.get(w, r)
 }

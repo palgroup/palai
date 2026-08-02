@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -122,6 +123,10 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 	toolCall, backgroundTask := newID("call"), newID("bgt")
 	runnerPool, webhookEndpoint := newID("pool"), newID("whe")
 	trigger, schedule, deletedSchedule, occurrence, hook := newID("trg"), newID("sch"), newID("sch"), newID("occ"), newID("hook")
+	// The E30 repository-binding pair (000057): one LIVE, one ARCHIVED. Two rows rather than one because
+	// every claim this suite makes about them is a claim about the DIFFERENCE — the list hides one, the
+	// admission guard refuses one, and a single row could not tell either apart from "returned nothing".
+	liveBinding, archivedBinding := newID("repo"), newID("repo")
 	stmts := []struct {
 		sql  string
 		args []any
@@ -135,6 +140,16 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 			[]any{run, org, project, session, response}},
 		{`INSERT INTO artifacts (id, organization_id, project_id, run_id, object_key, size_bytes, checksum) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 			[]any{artifact, org, project, run, org + "/" + project + "/" + run + "/" + artifact, 12, "sha256:deadbeef"}},
+		// THE REPOSITORY BINDINGS (000009, archived_at from 000057). `connection_ref` is seeded NON-EMPTY on
+		// the live row so the credential-rotation statement below has something to overwrite — an UPDATE
+		// asserted against a column that was already '' cannot tell "the write was denied" from "the write
+		// landed and changed nothing".
+		{`INSERT INTO repository_bindings (id, organization_id, project_id, provider, repository_identity, clone_url, connection_ref)
+		  VALUES ($1, $2, $3, 'github', 'palai/live', 'https://example.invalid/live.git', $4)`,
+			[]any{liveBinding, org, project, "seeded-ref-" + org}},
+		{`INSERT INTO repository_bindings (id, organization_id, project_id, provider, repository_identity, clone_url, archived_at)
+		  VALUES ($1, $2, $3, 'github', 'palai/retired', 'https://example.invalid/retired.git', now())`,
+			[]any{archivedBinding, org, project}},
 		// The E25 T3 environment pair (000046). Both are ORG-scoped rather than project-scoped, matching
 		// secret_refs (000031:16), so both are seeded with the org and no project — a mismatch would make the
 		// WHERE-less canary below pass for the wrong reason.
@@ -704,4 +719,127 @@ func newID(prefix string) string {
 		panic(err)
 	}
 	return prefix + "_" + hex.EncodeToString(raw[:])
+}
+
+// bindingOf reads a tenant's seeded binding id as the OWNER, live or archived.
+func (s *suite) bindingOf(t *testing.T, org string, archived bool) string {
+	t.Helper()
+	predicate := "archived_at IS NULL"
+	if archived {
+		predicate = "archived_at IS NOT NULL"
+	}
+	var id string
+	// ORDER BY so the read is deterministic: exactly one row matches today, and a LIMIT over an unordered
+	// result is how this tree has twice decided a security outcome by accident.
+	if err := s.owner.QueryRow(context.Background(),
+		`SELECT id FROM repository_bindings WHERE organization_id = $1 AND `+predicate+` ORDER BY id LIMIT 1`,
+		org).Scan(&id); err != nil {
+		t.Fatalf("read %s binding of %s: %v", predicate, org, err)
+	}
+	return id
+}
+
+// TestTheRepositoryBindingLifecycleStatementsAreConfinedAndRefuseArchivedRows runs the SHIPPED statements
+// E30 added — the three writes and the two reads that gained a lifecycle clause — and asks the two
+// questions only the real statements can answer. It is modelled on the automation-list test above and
+// separates the same two layers, because they fail independently and only one of them is RLS.
+//
+//   - A FOREIGN row moving is a TENANCY failure. Each write carries its own organization/project
+//     predicate AND runs under the policy, so this binds the FOREIGN tenant's real ids into the shipped
+//     statement while the connection declares org A. The database must change nothing even though the
+//     parameters ask for everything, and the owner-side re-read afterwards is what proves the row is
+//     untouched rather than merely unreported.
+//   - An ARCHIVED row being admitted is an APPLICATION failure. `archived_at IS NULL` is a clause in the
+//     query and nothing beneath it enforces that — no policy, no constraint, no role. If it is deleted
+//     from RepositoryBindingExists, every layer below is still perfectly correct and a retired binding
+//     silently starts serving runs again. That clause is the ONLY thing that makes archiving more than a
+//     display flag, so it gets an assertion of its own rather than riding the list's.
+func TestTheRepositoryBindingLifecycleStatementsAreConfinedAndRefuseArchivedRows(t *testing.T) {
+	s := newSuite(t)
+	ctx := context.Background()
+	projectA, projectB := s.projectOf(t, s.orgA), s.projectOf(t, s.orgB)
+	liveA, archivedA := s.bindingOf(t, s.orgA, false), s.bindingOf(t, s.orgA, true)
+	liveB := s.bindingOf(t, s.orgB, false)
+
+	s.asOrg(t, s.orgA, func(tx pgx.Tx) {
+		// 1. THE LIST HIDES THE ARCHIVED ROW. $8=false is the default every caller takes.
+		if n := countRows(t, ctx, tx, storage.Query("ListRepositoryBindings"),
+			s.orgA, projectA, nil, nil, nil, "", 100, false); n != 1 {
+			t.Fatalf("ListRepositoryBindings(org A, include_archived=false) returned %d row(s), want exactly the 1 live one.\n"+
+				"A second row here is the ARCHIVED binding: `archived_at IS NULL` is an APPLICATION predicate and no "+
+				"policy, constraint or role re-states it — if the clause goes, this is what notices.", n)
+		}
+		// 2. AND SHOWS IT WHEN ASKED. Without this the arm above would also pass if the statement returned
+		// nothing at all, which is the shape of green this corpus keeps having to re-measure.
+		if n := countRows(t, ctx, tx, storage.Query("ListRepositoryBindings"),
+			s.orgA, projectA, nil, nil, nil, "", 100, true); n != 2 {
+			t.Fatalf("ListRepositoryBindings(org A, include_archived=true) returned %d row(s), want both seeded", n)
+		}
+		// 3. THE SAME STATEMENT, FOREIGN PARAMETERS, connection still declaring org A.
+		if n := countRows(t, ctx, tx, storage.Query("ListRepositoryBindings"),
+			s.orgB, projectB, nil, nil, nil, "", 100, true); n != 0 {
+			t.Fatalf("ListRepositoryBindings asked for the FOREIGN tenant returned %d row(s); RLS did not confine the shipped statement", n)
+		}
+
+		// 4. THE ADMISSION GUARD. This is the clause that makes archiving mean anything: a run's
+		// `repository` attachment is verified through RepositoryBindingExists, so a retired binding must
+		// look exactly as absent there as a foreign one.
+		if n := countRows(t, ctx, tx, storage.Query("RepositoryBindingExists"), liveA, s.orgA, projectA); n != 1 {
+			t.Fatalf("RepositoryBindingExists(live binding) returned %d row(s), want 1 — admission would refuse a healthy binding", n)
+		}
+		if n := countRows(t, ctx, tx, storage.Query("RepositoryBindingExists"), archivedA, s.orgA, projectA); n != 0 {
+			t.Fatalf("RepositoryBindingExists(ARCHIVED binding) returned %d row(s), want 0.\n"+
+				"An archived binding still admits runs, which makes archived_at a display flag: the retired row "+
+				"keeps cloning and the operator who retired it is not told.", n)
+		}
+		if n := countRows(t, ctx, tx, storage.Query("RepositoryBindingExists"), liveB, s.orgB, projectB); n != 0 {
+			t.Fatalf("RepositoryBindingExists asked for the FOREIGN tenant's live binding returned %d row(s), want 0", n)
+		}
+
+		// 5. THE CREDENTIAL WRITE, AIMED AT THE FOREIGN TENANT'S REAL BINDING ID. Every parameter names
+		// org B; the policy says org A. Nothing may be returned, and nothing may move.
+		if n := countRows(t, ctx, tx, storage.Query("SetRepositoryBindingConnection"),
+			liveB, s.orgB, projectB, "hijacked-by-org-a"); n != 0 {
+			t.Fatalf("SetRepositoryBindingConnection updated %d foreign row(s); one tenant re-credited another's binding", n)
+		}
+		// 6. AND IT REFUSES AN ARCHIVED ROW OF THE CALLER'S OWN TENANT — the application clause again,
+		// asserted separately from the tenancy one so a failure names which layer broke.
+		if n := countRows(t, ctx, tx, storage.Query("SetRepositoryBindingConnection"),
+			archivedA, s.orgA, projectA, "re-credit-a-retired-binding"); n != 0 {
+			t.Fatalf("SetRepositoryBindingConnection updated an ARCHIVED binding (%d row(s)); nothing can run against it, so the write is a no-op the caller would read as success", n)
+		}
+		// 7. AND IT WORKS AT ALL. Without this, arms 5 and 6 would both pass against a statement that
+		// updates nothing ever — the perturbation that is invisible to a pure-absence proof.
+		if n := countRows(t, ctx, tx, storage.Query("SetRepositoryBindingConnection"),
+			liveA, s.orgA, projectA, "rotated-by-org-a"); n != 1 {
+			t.Fatalf("SetRepositoryBindingConnection updated %d row(s) of the caller's OWN live binding, want 1", n)
+		}
+
+		// 8. ARCHIVE, AIMED AT THE FOREIGN TENANT. A tenant that could retire another's binding could stop
+		// their runs, which is a denial of service with no audit trail on the victim's side.
+		if n := countRows(t, ctx, tx, storage.Query("ArchiveRepositoryBinding"), liveB, s.orgB, projectB); n != 0 {
+			t.Fatalf("ArchiveRepositoryBinding retired %d foreign row(s); one tenant disabled another's repository", n)
+		}
+		if n := countRows(t, ctx, tx, storage.Query("UnarchiveRepositoryBinding"), archivedA, s.orgA, projectA); n != 1 {
+			t.Fatalf("UnarchiveRepositoryBinding restored %d row(s) of the caller's own archived binding, want 1", n)
+		}
+	})
+
+	// THE OWNER RE-READS WHAT ORG B ACTUALLY HOLDS. Everything above ran under org A's policy, where a
+	// denied write and a silently-successful one both surface as "no rows returned"; only a read outside
+	// that policy can tell them apart. This is the arm that would catch a policy which reported nothing
+	// while letting the UPDATE through.
+	var refB string
+	var archivedB *time.Time
+	if err := s.owner.QueryRow(ctx,
+		`SELECT connection_ref, archived_at FROM repository_bindings WHERE id = $1`, liveB).Scan(&refB, &archivedB); err != nil {
+		t.Fatalf("owner re-read of org B's binding: %v", err)
+	}
+	if refB != "seeded-ref-"+s.orgB {
+		t.Fatalf("org B's connection_ref is %q, want the seeded %q — org A's write reached another tenant's credential pointer",
+			refB, "seeded-ref-"+s.orgB)
+	}
+	if archivedB != nil {
+		t.Fatalf("org B's binding is archived (%v); org A retired another tenant's repository", archivedB)
+	}
 }

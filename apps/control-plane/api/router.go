@@ -60,6 +60,24 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("POST /v1/repository-bindings", bh.create)
 		mux.HandleFunc("GET /v1/repository-bindings", bh.list)
 		mux.HandleFunc("GET /v1/repository-bindings/{binding_id}", bh.get)
+		// THE LIFECYCLE HALF (E30, migration 000057), and it closes a measured dead end rather than adding
+		// a convenience: on a live stack 20 bindings carried no connection_ref and NOTHING could give one
+		// to any of them — this block was POST + GET + GET, the store seam was Create/Get/List, and
+		// queries/repository_bindings.sql held one INSERT and no UPDATE. A binding registered before its
+		// credential existed was unfixable, and since there was no delete either, "register another" left
+		// the original in the picker forever (8 of those 20 were duplicates of one repository).
+		//
+		// THE CREDENTIAL IS THE ONLY MUTABLE FIELD and it gets its own sub-resource rather than a PATCH on
+		// the binding. Identity is what preparation_receipts have already asserted about past runs; a
+		// general PATCH would put a rotation and a rewrite-of-history behind the same verb.
+		//
+		// ARCHIVE IS NOT DELETE. preparation_receipts holds a foreign key onto the row, this API has no
+		// destructive verb anywhere, and the runner fleet already ships the shape being borrowed
+		// (cordon/resume, never delete). What makes it more than a display flag is one clause in
+		// RepositoryBindingExists — the run-admission guard — so an archived binding REFUSES NEW RUNS.
+		mux.HandleFunc("PUT /v1/repository-bindings/{binding_id}/connection", bh.setConnection)
+		mux.HandleFunc("POST /v1/repository-bindings/{binding_id}/archive", bh.archive)
+		mux.HandleFunc("POST /v1/repository-bindings/{binding_id}/unarchive", bh.unarchive)
 	}
 
 	// The automation-agent management surface (spec §20.2.1, §10, E11 Task 1): AgentProfiles +
