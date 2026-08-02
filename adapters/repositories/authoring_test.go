@@ -87,6 +87,33 @@ func TestWorkingStatusCountsIgnoredFilesIndividually(t *testing.T) {
 	assertChanges(t, changes, map[string]string{".gitignore": "added"})
 }
 
+// TestWorkingStatusReadsAConflictedPathWhole is the third parser trap, and the one that was written
+// wrong first: a `u` (unmerged) record carries THREE stage hashes and three modes where an ordinary
+// `1` record carries two hashes, so it is ELEVEN space-separated fields, not nine. Splitting it like
+// an ordinary record silently folds the last two hashes into the path — a changeset entry whose
+// "path" is "<hash> <hash> f.txt". The shell tool can leave a clone in this state with one `git
+// merge` or `git apply -3`, so it is reachable, and the corrupted form would still look like data.
+func TestWorkingStatusReadsAConflictedPathWhole(t *testing.T) {
+	repoDir := newStatusRepo(t)
+	git := statusGit(t, repoDir)
+	git("checkout", "-q", "-b", "other")
+	writeStatusFile(t, filepath.Join(repoDir, "f.txt"), "other\n")
+	git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qam", "other")
+	git("checkout", "-q", "main")
+	writeStatusFile(t, filepath.Join(repoDir, "f.txt"), "main\n")
+	git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qam", "main")
+	// The merge conflicts, which is the point; its non-zero exit is not a test failure.
+	merge := exec.Command("git", "merge", "other")
+	merge.Dir = repoDir
+	_ = merge.Run()
+
+	changes, _, err := WorkingStatus(context.Background(), repoDir)
+	if err != nil {
+		t.Fatalf("WorkingStatus() error = %v", err)
+	}
+	assertChanges(t, changes, map[string]string{"f.txt": "modified"})
+}
+
 func assertChanges(t *testing.T, got []WorkingChange, want map[string]string) {
 	t.Helper()
 	byPath := map[string]string{}

@@ -104,22 +104,33 @@ func WorkingStatus(ctx context.Context, repoDir string) (changes []WorkingChange
 			changes = append(changes, WorkingChange{Path: path, Change: changeAdded})
 		case '!': // "! <path>" — ignored: counted, never listed
 			ignored++
-		case '1', 'u': // "<type> <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>" (unmerged carries more hashes)
-			parts := strings.SplitN(record, " ", 9)
-			if len(parts) < 9 {
-				return nil, 0, fmt.Errorf("git status: malformed record %q", record)
+		case '1': // "1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>"
+			path, xy, perr := statusFields(record, 9)
+			if perr != nil {
+				return nil, 0, perr
 			}
-			changes = append(changes, WorkingChange{Path: parts[8], Change: changeFromXY(parts[1])})
+			changes = append(changes, WorkingChange{Path: path, Change: changeFromXY(xy)})
+		case 'u': // "u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>" — a conflicted path
+			// ELEVEN fields, not nine: an unmerged entry carries a mode and a hash for all THREE merge
+			// stages. Splitting it like an ordinary record folds the last two hashes into the path.
+			path, xy, perr := statusFields(record, 11)
+			if perr != nil {
+				return nil, 0, perr
+			}
+			changes = append(changes, WorkingChange{Path: path, Change: changeFromXY(xy)})
 		case '2': // "2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>" NUL "<origPath>"
-			parts := strings.SplitN(record, " ", 10)
-			if len(parts) < 10 || i+1 >= len(fields) {
-				return nil, 0, fmt.Errorf("git status: malformed rename record %q", record)
+			path, xy, perr := statusFields(record, 10) // one field more than '1': the rename score
+			if perr != nil {
+				return nil, 0, perr
+			}
+			if i+1 >= len(fields) {
+				return nil, 0, fmt.Errorf("git status: rename record %q has no original path", record)
 			}
 			i++ // the original path is its own NUL-terminated field
-			changes = append(changes, WorkingChange{Path: parts[9], Change: changeAdded})
+			changes = append(changes, WorkingChange{Path: path, Change: changeAdded})
 			// A rename empties the old path; a COPY leaves it in place, and calling that a deletion
 			// would be a claim about a file this run never touched.
-			if strings.HasPrefix(parts[1], "R") {
+			if strings.HasPrefix(xy, "R") {
 				changes = append(changes, WorkingChange{Path: fields[i], Change: changeDeleted})
 			}
 		}
@@ -156,6 +167,20 @@ func statusPathAfter(record, prefix string) (string, error) {
 		return "", fmt.Errorf("git status: malformed record %q", record)
 	}
 	return path, nil
+}
+
+// statusFields splits a porcelain-v2 record into exactly `fields` parts and returns its trailing path
+// and its XY status pair. The count is per record TYPE and is the whole reason this is a parameter:
+// the path is whatever remains after the fixed fields, so a count that is one too small silently
+// prepends a field to the path instead of failing. A record with fewer fields than its type declares
+// is an error rather than a best effort — under-reporting the changed set is the defect this scan
+// exists to remove.
+func statusFields(record string, fields int) (path, xy string, err error) {
+	parts := strings.SplitN(record, " ", fields)
+	if len(parts) < fields || parts[fields-1] == "" {
+		return "", "", fmt.Errorf("git status: malformed %q record %q", record[:1], record)
+	}
+	return parts[fields-1], parts[1], nil
 }
 
 // WorkingDiff returns the unified patch of repoDir's working tree — added, modified, and deleted

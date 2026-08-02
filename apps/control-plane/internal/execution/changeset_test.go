@@ -282,7 +282,7 @@ func TestChangesetKeepsToolCallProvenanceWhereTheFileToolWroteIt(t *testing.T) {
 	root, base := newAllocRepo(t)
 	repoDir := filepath.Join(root, "repo")
 
-	writeFile(t, filepath.Join(repoDir, "f.txt"), "changed\n")     // the file tool wrote this one
+	writeFile(t, filepath.Join(repoDir, "f.txt"), "changed\n")      // the file tool wrote this one
 	writeFile(t, filepath.Join(repoDir, "shell.txt"), "by shell\n") // and this one has no ledger row
 
 	ledger := &fakeChangesetLedger{
