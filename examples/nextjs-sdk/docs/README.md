@@ -204,29 +204,51 @@ screens are what `xcodebuild` and `xcrun simctl` actually printed, not prose wri
 | `ios-7-tools-armed-pushes-not.png` | **THE SPLIT.** Build commands ON, pushes and pull requests still OFF, and a publication in the same run still asking a human for a decision. This is the screen the two columns exist for. |
 | `ios-8-both-armed-warning-visible.png` | Both armed, with the publication half's own warning: "Writes to the repository with NO human in the loop. That write outlives this session." |
 
-### What these screens do NOT show, and it matters
+### And the same screens against the LIVE stack
 
-A green `xcodebuild` **driven by a live run**. That was measured and it does not work on this stack, for
-a reason that is nothing to do with this code:
+`ios-live-*.png` are the same UI driving the real control plane on this Mac: a real repository binding,
+a real clone, **Sonnet 5** as the model, and real `xcodebuild` / `xcrun simctl` on the host.
+
+| shot | what it shows |
+| --- | --- |
+| `ios-live-1-armed-tools-only.png` | Build commands armed mid-run, pushes still off, under the principal the control plane stamped (`key:key_local`). |
+| `ios-live-2-real-xcodebuild-succeeded.png` | The finished turn. |
+| `ios-live-3-build-card.png` | **`** BUILD SUCCEEDED **`** from a real `xcodebuild` against `platform=iOS Simulator,name=iPhone 17 Pro`, with the real DerivedData path and the real DVT stderr — and beside it `2 passed`, `testGreetsByName` 0.002s, `testGreetsEmpty` 0.001s from a real `xcodebuild test`. |
+| `ios-live-4-test-card.png` | The test card on its own. |
+| `ios-live-5-simulator-card.png` | `simctl`, listing this Mac's actual simulators. |
+
+Measured on that run through the endpoint this work added:
+
+    GET /v1/responses/{id}/tool-calls
+      3 rows, all palai.workspace.shell, results 38016 / 43443 / 337 bytes
+      ** BUILD SUCCEEDED **   ** TEST SUCCEEDED **   Executed 2 tests, with 0 failures
+    events.payload->>'tool_name'  ->  palai.workspace.shell x3
+
+### The ceiling that had to be cleared first, because it will come back
+
+The first live attempt did NOT work, and the reason is worth keeping:
 
     xcodebuild … build   -> exit 134, Abort trap: 6
     DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3),
                        error = "Input/output error"
     xcrun simctl list devices -> exit 127, command not found
 
-The shell tool really does run on the host — a live probe run returned the full host `PATH`,
-`ls`'d `/usr/bin/xcodebuild` and `/usr/bin/xcrun`, and resolved `xcode-select -p` to `Xcode.app`.
-But `whoami` in that shell returns **`501`**, the numeric uid rather than a username: `getpwuid()` is
-failing, and the same fault makes `confstr(_CS_DARWIN_USER_CACHE_DIR)` fail, which is exactly what
-Xcode's DVT layer aborts on.
+The shell tool was already running on the host — the probe returned the full host `PATH`, `ls`'d
+`/usr/bin/xcodebuild` and `/usr/bin/xcrun`, and resolved `xcode-select -p`. But `whoami` returned
+**`501`**, the numeric uid: `getpwuid()` was failing, and the same fault makes
+`confstr(_CS_DARWIN_USER_CACHE_DIR)` fail, which is exactly what Xcode's DVT layer aborts on.
 
-It is NOT the minimal environment `adapters/sandboxes/host/exec.go` builds. A real build under exactly
+It was NOT the minimal environment `adapters/sandboxes/host/exec.go` builds. A real build under exactly
 those variables succeeds:
 
     env -i PATH="$PATH" LANG=… HOME=<scratch> TMPDIR=<scratch> \
       xcodebuild -scheme PalaiDemo -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
     -> ** BUILD SUCCEEDED **      (and `whoami` -> salih)
 
-The control-plane process is `ppid 1, sess 0` — orphaned onto launchd — so its children have no
-per-user bootstrap namespace to resolve a user or a per-user cache directory through. The fix is to
-run the control plane from a live user session; it is an operator action, not a code change.
+The control-plane process was `ppid 1, sess 0` — orphaned onto launchd — so its children had no
+per-user bootstrap namespace. Restarting it from a live session fixed it: `whoami` -> `salih`, and the
+builds above are the result. **`PALAI_SHELL_NATIVE=unsandboxed-host` being set is not the same as the
+tools working; drive one run and read `whoami` before believing otherwise.**
+
+(Session id alone is not the discriminator — an ordinary interactive shell is also `sess 0` and works.
+The bootstrap namespace is, and its effect is observable without being attachable after the fact.)
