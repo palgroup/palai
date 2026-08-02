@@ -106,8 +106,14 @@ test("an operator seals a credential and binds a private repository without leav
 
   // AND IN NO RESPONSE BODY. The read side of secret_refs projects {name, version, updated_at}; this asserts
   // the projection rather than trusting it.
-  for (const resp of responses) {
-    if (!resp.url().includes("/api/palai/v1/")) continue;
+  //
+  // THE COUNT IS ASSERTED BECAUSE A SWEEP OVER NOTHING CANNOT FAIL. If the filter below ever stops matching
+  // — a relay path change, a spec that navigates before the responses land — this loop passes having read
+  // zero bodies and reports the same green as one that read forty. The positive control is above:
+  // `sealBody` DOES contain the token, so the needle is findable when it is genuinely there.
+  const apiResponses = responses.filter((r) => r.url().includes("/api/palai/v1/"));
+  expect(apiResponses.length, "no relay response was examined — this sweep would pass over an empty set").toBeGreaterThan(0);
+  for (const resp of apiResponses) {
     const body = await resp.text().catch(() => "");
     expect(body).not.toContain(TOKEN);
   }
