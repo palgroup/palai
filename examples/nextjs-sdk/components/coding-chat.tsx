@@ -2,7 +2,9 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+
+import { fetchHistory, toUIMessages } from "@/lib/history";
 
 import {
   Conversation,
@@ -96,7 +98,9 @@ export function CodingChat() {
   const bindingRef = useRef<string>("");
   bindingRef.current = binding?.id ?? "";
 
-  const { messages, sendMessage, status, error, stop } = useChat({
+  const [resumed, setResumed] = useState<{ truncated: boolean; drained: boolean } | null>(null);
+
+  const { messages, setMessages, sendMessage, status, error, stop } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
       body: () => ({
@@ -118,6 +122,34 @@ export function CodingChat() {
       }
     },
   });
+
+  // RESUMING A SESSION: ?session=<id> opens the chat on a conversation that already exists, with its
+  // transcript replayed from the journal.
+  //
+  // WHY THE URL AND NOT LOCAL STORAGE. A session id in the address bar is a link — it survives a reload,
+  // it can be pasted to a colleague, and it is the only form that lets somebody else look at the same
+  // run. Local storage would make "the session I was in" a property of one browser profile.
+  //
+  // It runs ONCE and only when there is no session yet: a resume that fired after the chat had started
+  // its own session would replace live messages with an older transcript.
+  useEffect(() => {
+    if (typeof window === "undefined" || sessionRef.current !== null) return;
+    const resume = new URLSearchParams(window.location.search).get("session")?.trim();
+    if (!resume) return;
+    let cancelled = false;
+    void (async () => {
+      const history = await fetchHistory(resume);
+      if (cancelled || !history) return;
+      sessionRef.current = history.sessionId;
+      setSessionId(history.sessionId);
+      setMessages(toUIMessages(history.events));
+      setResumed({ truncated: history.truncated, drained: history.drained });
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const busy = status === "streaming" || status === "submitted";
 
@@ -212,6 +244,20 @@ export function CodingChat() {
                 <PromptInputTools>
                   <span className="px-1 text-[12px] text-muted-foreground" data-testid="chat-session">
                     {sessionId ? `session ${sessionId.slice(0, 16)}…` : "no session yet"}
+                    {/* A PARTIAL TRANSCRIPT MUST NOT READ AS A COMPLETE ONE. `drained: false` means the
+                        replay hit its deadline with the journal still going, and `truncated` means the
+                        oldest events were dropped to bound the page. Either way the reader is looking at
+                        less than happened, and saying so is the whole reason the route reports it. */}
+                    {resumed && !resumed.drained ? (
+                      <span className="ml-2 text-amber-600" data-testid="history-partial">
+                        · history partial (still catching up)
+                      </span>
+                    ) : null}
+                    {resumed?.truncated ? (
+                      <span className="ml-2 text-amber-600" data-testid="history-truncated">
+                        · oldest messages trimmed
+                      </span>
+                    ) : null}
                   </span>
                 </PromptInputTools>
                 <PromptInputSubmit status={status} onStop={stop} data-testid="chat-send" />

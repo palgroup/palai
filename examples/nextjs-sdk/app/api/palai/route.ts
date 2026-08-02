@@ -74,7 +74,7 @@ export async function POST(request: Request): Promise<Response> {
 // projectEvent maps a canonical Event to a curated browser projection. Data-plane events
 // (text delta, tool, usage) carry their canonical payload fields; every other event projects
 // only its type + sequence, feeding the ordered timeline without leaking any raw payload.
-function projectEvent(event: Event): Record<string, unknown> {
+export function projectEvent(event: Event): Record<string, unknown> {
   const data = (event.data ?? {}) as Record<string, unknown>;
   const head = { type: event.type, sequence: event.sequence };
   switch (event.type) {
