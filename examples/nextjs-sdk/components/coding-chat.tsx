@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { fetchHistory, toUIMessages } from "@/lib/history";
 import { SubagentPart, type ChildPart } from "@/components/subagent-parts";
+import { MediaPart, type MediaPartData } from "@/components/media-parts";
 
 import {
   Conversation,
@@ -293,6 +294,8 @@ function Part({ part }: { part: UIPart }) {
       return <NoticePart data={d} />;
     case "data-subagent":
       return <SubagentPart child={d as unknown as ChildPart} />;
+    case "data-media":
+      return <MediaPart data={d as unknown as MediaPartData} />;
     case "data-run":
       return (
         <p data-testid="chat-run" className="text-[12px] text-muted-foreground">

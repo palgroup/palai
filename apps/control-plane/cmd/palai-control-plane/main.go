@@ -585,6 +585,11 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			tools.FileTool(),
 			tools.ShellTool(),
 			tools.BackgroundKillTool(), // E26 T2: stop a task the shell tool's `background` parameter started
+			// The agent's own way to SHOW a human what it did — a simulator screenshot or a screen
+			// recording. Registered beside the file tool because it is the same confinement and the same
+			// workspace; what differs is where the bytes go, which is the artifact store rather than the
+			// model's context.
+			tools.MediaTool(),
 			tools.CommitTool(),
 			tools.PushTool(),
 			tools.PullRequestTool(),

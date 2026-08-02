@@ -588,6 +588,27 @@ async function joinToolCall(
         joined: true,
       },
     });
+    // THE AGENT SHOWING YOU SOMETHING gets its own part, because a screenshot rendered as a row in a
+    // tool-result table is a screenshot nobody looks at. palai.workspace.show_media answers with an
+    // artifact id and a caption; the bytes stay in the store and the browser fetches them through the
+    // relay that already existed, so a 20 MB recording never has to fit in a chat frame.
+    //
+    // It rides the LEDGER JOIN rather than the event stream for the reason the join exists at all: the
+    // event payload is {run_id, tool_call_id} and carries no tool result, so the id would never arrive.
+    const shown = row.result as Record<string, unknown> | null | undefined;
+    if (str(row.name) === "palai.workspace.show_media" && shown && str(shown.artifact_id) !== "") {
+      writer.write({
+        type: "data-media",
+        id: toolCallID,
+        data: {
+          artifactId: str(shown.artifact_id),
+          mediaType: str(shown.media_type) || null,
+          caption: str(shown.caption) || null,
+          path: str(shown.path) || null,
+          bytes: typeof shown.bytes === "number" ? shown.bytes : null,
+        },
+      });
+    }
   } catch (error) {
     writer.write({
       type: "data-tool-detail",
