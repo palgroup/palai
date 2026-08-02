@@ -298,7 +298,46 @@ A claim here is only worth what re-running it proves.
 
 ---
 
-## 5.4 CORRECTION TO §5.5 — THE RELAY IS NOT ON THIS PATH (added 2026-08-02, after §5.5)
+## 5.3 THE OPERATOR CHOSE A SHAPE — AND IT IS THE ONE THE RELAY BLOCKS (2026-08-02, supersedes §5.4)
+
+§5.5 said the relay comes first. §5.4 then said it does not. Both were written against a guess about
+which deployment shape was wanted; the operator has now stated it, so this section records the shape
+rather than another inference, and the two below are kept only as the record of the thrash.
+
+**The stated model, verbatim:** *"benim elimde 5 tane mac var, 4 tane session alıyor, 20 session
+paralel demek. 21. session gelince veya 18. session geldiğinde mac ayağa kaldırıp palai setup edilmesi
+lazım, runner olarak fleet'e eklenmesi lazım."*
+
+That is **one fleet, N machines joined as RUNNERS** — not N independent native deployments. §5.4 read
+`--native` as the target and was answering a question that had not been asked.
+
+**What that model already has, measured:**
+
+| Step in the stated model | Status |
+|---|---|
+| Join a Mac to a pool; identify, approve, revoke it | **Built** (E24). One `palai poolkey create`, N machines self-enrol |
+| 21st session arrives, no free machine, the run must WAIT rather than die | **Built** (E24 T4) — the capacity park |
+| Notice the queue and rent a machine | **Absent.** `grep -rniE 'scaler\|autoscal' --include='*.go' apps packages cmd` → **0** |
+| Talk to a cloud provider | **Absent** — one spawn seam for ten providers, deferred |
+| That Mac actually runs `xcodebuild` | **Absent** — `FLT-P15` |
+
+The park was written for this exact scenario, and `packages/coordinator/placement.go` says why:
+
+> *"a run whose pool holds no machine goes running->waiting and its ATTEMPT is marked
+> `awaiting_capacity`, atomically. Before this, such a run … dead-lettered in about two and a half
+> minutes — while AWS documents a Mac host taking six to twenty minutes to start. So 'bring a Mac up
+> when load arrives' was not an economic choice, it was an unreachable behaviour."*
+
+So the tree deliberately built the **waiting** half of the operator's loop and deferred the renting
+half (`phase-24-runner-fleet.md:758` → E26 T1; E26 became background execution instead).
+
+**Ordering, and one item makes the others moot.** A perfect scaler adds machines that cannot do the
+work while `FLT-P15` stands: a `lease.offer` carries an engine digest, and the shell and file tools
+stay in the control plane's process. Twenty parallel sessions would all try to build on whichever host
+the control plane is on. **So the relay is first, the scaler and spawn seam are second, and per-machine
+config and the account lifecycle sit on top of both.**
+
+## 5.4 SUPERSEDED — written against the wrong shape (kept as record)
 
 §5.5 below concluded the fleet requirement was blocked on `FLT-P15` and put the execution relay first.
 **That was wrong, and the error was in how the requirement was read rather than in any measurement.**
@@ -378,16 +417,21 @@ than a row; `runners.public_key_sha256` is already recorded.
 
 ## 6. Work items, in order
 
-0. **Central, per-machine configuration — the third desired-config plane (§5.4).** A native control
-   plane fetches its own scoped desired document from a central control plane at bring-up, using an
-   identity that survives a reboot. This is what makes a rented Mac configurable without a terminal on
-   it, and it is the same mechanism the bring-up already runs — read, apply, verify, refuse on drift —
-   pointed at a central reader instead of its own. Companion: `FLT-P13`, because an identity that is
-   re-minted on every boot cannot address a document.
+0. **The execution relay — `FLT-P15`, `T7a` (shell) + `T7b` (workspace).** First, because the operator's
+   model is one fleet with machines joined as runners (§5.3), and under it every other item is worth
+   nothing until a runner can run a tool: a `lease.offer` carries an engine digest, so a Mac in a pool
+   routes the model loop and leaves `xcodebuild` on whatever host the control plane is on. The split
+   point is written in `docs/superpowers/plans/phase-24-runner-fleet.md` §7.
 
-   **NOT the execution relay.** `FLT-P15` was put here first and that was wrong (§5.4): it describes a
-   control plane whose tools must run on another machine, and the `--native` posture has the tools on
-   the Mac already.
+0b. **The scaler and the spawn seam.** Queue depth → capacity, then one seam for the cloud providers.
+   The half that makes them meaningful — a run that can WAIT for a machine — is already built (E24 T4's
+   capacity park); `phase-24-runner-fleet.md:758` says the scaler is written on top of that fix rather
+   than beside it. A recorded first line for it: read Scaleway's `deletable_at` field rather than
+   computing `now + 24h`, because clock skew and provider differences break the computation.
+
+0c. **Per-machine configuration and `FLT-P13`.** Once machines are runners, the runner-plane desired
+   document (§3.5) is the panel surface for them, and an approval that admits an enrolment rather than
+   a machine means a rented Mac waits for a human on every boot.
 
 1. **Measure §3.3.** `sudo bash scripts/ops/mac-sessions.sh verify --simulator`. Nothing below is
    safe to build before this row is closed — it can invalidate §3.1. Note it is a per-HARDWARE-MODEL
