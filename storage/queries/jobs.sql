@@ -6,6 +6,34 @@
 INSERT INTO durable_jobs (id, organization_id, project_id, kind, payload)
 VALUES ($1, $2, $3, $4, $5);
 
+-- name: EnqueueWokenRunJob
+-- The response.run job a CAPACITY WAKE opens, seeded with the budget the run has already spent.
+--
+-- A fresh durable_jobs row starts at attempt_count 0, and until 2026-08-02 the wake used one. That is
+-- what made a capacity park a retry-ladder RESET: the park ends its attempt with nil, so the worker
+-- COMPLETES the job, and the wake then handed the run five more attempts. A run whose engine died at
+-- the first model step every single time therefore produced eight jobs and twenty-nine attempts in six
+-- minutes on a live stack (attempt_count across those jobs: 5,5,5,5,5,5,5,6) and reached a terminal
+-- only when one job's five failures happened not to be interrupted by a park.
+--
+-- A park is not progress, so what the run has spent survives the wake and the ceiling still binds.
+-- The seed is the LAST response.run job's own count — the job that just parked — rather than a MAX or a
+-- SUM: a resume, a retry and a bounce each leave their own row, and the question is what THIS run has
+-- burned since it was last handed a budget. ORDER BY is total (created_at, id) because an unordered
+-- LIMIT 1 has decided outcomes in this tree twice.
+--
+-- A run parked on its FIRST attempt — the case the whole feature exists for, a Mac taking six to twenty
+-- minutes to boot — seeds 1 and keeps four, which is the behaviour before this statement existed.
+INSERT INTO durable_jobs (id, organization_id, project_id, kind, payload, attempt_count)
+SELECT $1, $2, $3, 'response.run', $4,
+       coalesce((SELECT j.attempt_count
+                   FROM durable_jobs j
+                  WHERE j.organization_id = $2 AND j.project_id = $3
+                    AND j.kind = 'response.run'
+                    AND j.payload->>'run_id' = $5
+                  ORDER BY j.created_at DESC, j.id DESC
+                  LIMIT 1), 0);
+
 -- name: ClaimJob
 WITH claimable AS (
     SELECT id

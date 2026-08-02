@@ -28,6 +28,24 @@ import (
 // it.
 var errRunAwaitingCapacity = errors.New("run_awaiting_capacity")
 
+// errPoolNotServable ends an attempt whose resolved pool is not one this tenant can be served by, and
+// it exists because the alternative shipped and produced runs nothing could ever move.
+//
+// `fleet.ResolvePool`'s last resort is the CONSTANT `pool_default`, which belongs to the BOOTSTRAP
+// tenant. Every other tenant that has configured nothing resolves to it, `RecordRunPool` correctly
+// refuses to record another tenant's pool, and `runs.pool_id` stays NULL — while the dial went ahead
+// and PARKED the run. The park's own wake, `OldestRunAwaitingCapacity`, matches on `r.pool_id = $3`;
+// NULL matches nothing. So the run was `waiting` with an `awaiting_capacity` attempt and no machine
+// joining any pool could reach it, no reaper covered it (`SweepExpiredCapacityParks` is a no-op unless
+// PALAI_FLEET_PARK_TTL is set, and the shipped default is unset), and no error reached the caller. Two
+// runs on a live stack sat exactly like that for thirty-one hours.
+//
+// It is a FAILURE and not a park on purpose. A park is a promise that something will come; nothing
+// will come to a pool this tenant has no machine in and cannot enrol one into. The honest answer is a
+// terminal the caller can read and an operator can act on — create a pool for the project, or name one
+// in its config_policy — which is the same stance failProvisioning takes for a bad clone URL.
+var errPoolNotServable = errors.New("run_pool_not_servable")
+
 // place decides WHERE this attempt runs, carries the tenant onto the descriptor, and records the
 // decision on the run.
 //
@@ -67,8 +85,21 @@ func (o *Orchestrator) place(ctx context.Context, tenant coordinator.Tenant, att
 	}
 	// Written once. A run that already carries a pool is left alone by the statement itself, so a resume
 	// returns to the SAME pool rather than being re-placed into another posture.
+	//
+	// AND THE WRITE IS CHECKED, which is the 2026-08-02 fix. RecordRunPool records nothing for a pool
+	// this tenant cannot be served by, and until now that was silent: the attempt dialled into a pool it
+	// had not recorded, parked there, and left a run its own wake could not find (errPoolNotServable).
+	// The recorded id is carried onto the descriptor rather than the resolved one, so an attempt that
+	// lost a race to record dials where the DURABLE decision says, not where its own resolution said.
 	if inputs.PoolID == "" {
-		return o.spine.RecordRunPool(ctx, tenant, string(attempt.RunID), attempt.PoolID)
+		recorded, err := o.spine.RecordRunPool(ctx, tenant, string(attempt.RunID), attempt.PoolID)
+		if err != nil {
+			return err
+		}
+		if recorded == "" {
+			return errPoolNotServable
+		}
+		attempt.PoolID = recorded
 	}
 	return nil
 }
