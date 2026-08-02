@@ -75,6 +75,11 @@ GIB_FOR_HOST=8
 
 MODE=""
 COUNT=""
+# ONLY narrows every session loop to ONE index. It exists for the privileged wrapper
+# (palai-session-account), whose whole safety argument is that it can name a single session and nothing
+# else: `--count N` means sessions 1..N, so a wrapper built on it would create or delete every
+# lower-numbered account as a side effect of asking about one.
+ONLY=""
 APPLY=0
 SIMULATOR=0
 DIRS_ROOT="${PALAI_SESSIONS_ROOT:-$HOME/palai-sessions}"
@@ -122,6 +127,13 @@ host_uuid() {
 # So the range is bounded here rather than at four call sites, because the next loop written in this file
 # would have inherited it.
 session_seq() {
+	# --only collapses every range to that one index, and it is enforced HERE for the same reason the
+	# empty range is: there are seven loops and the next one written would not have known.
+	if [ -n "$ONLY" ]; then
+		[ "$1" -le "$((10#$ONLY))" ] && [ "$((10#$ONLY))" -le "$2" ] 2>/dev/null || return 0
+		printf '%d\n' "$((10#$ONLY))"
+		return 0
+	fi
 	[ "$1" -le "$2" ] 2>/dev/null || return 0
 	seq "$1" "$2"
 }
@@ -1068,6 +1080,10 @@ while [ "$#" -gt 0 ]; do
 		COUNT="${2:-}"
 		shift 2 || die "--count needs a value"
 		;;
+	--only)
+		ONLY="${2:-}"
+		shift 2 || die "--only needs a value"
+		;;
 	--mode)
 		MODE="${2:-}"
 		shift 2 || die "--mode needs a value"
@@ -1087,6 +1103,18 @@ while [ "$#" -gt 0 ]; do
 	*) die "unknown flag $(printf %q "$1")" ;;
 	esac
 done
+
+# --only names ONE session, so it also answers "how many" — an operator (or the privileged wrapper) must
+# not have to pass a count that would be ignored, and a count that disagreed with it would be a second
+# source of truth for the same question.
+if [ -n "$ONLY" ]; then
+	case "$ONLY" in
+	0[1-9] | [1-9][0-9]) ;;
+	*) die "--only takes exactly two digits, 01..99 (got $(printf %q "$ONLY"))" ;;
+	esac
+	[ -z "$COUNT" ] || die "--only and --count both name how many sessions this acts on; pass one"
+	COUNT="$((10#$ONLY))"
+fi
 
 if [ -n "$COUNT" ]; then
 	case "$COUNT" in
