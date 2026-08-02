@@ -52,6 +52,9 @@ export function ToolPart({ data }: { data: Data }) {
   const running = s(data.state) === "running";
   const replayClass = s(data.replayClass);
   const named = name !== "";
+  // The joined arguments, when the ledger read has landed. `null` is "not known yet", which is a
+  // different sentence from "this call had no arguments" and is rendered as such below.
+  const args = data.arguments !== undefined && data.arguments !== null ? data.arguments : null;
   // THE OPEN STATE IS CONTROLLED HERE RATHER THAN LEFT TO THE COLLAPSIBLE, and that is a bug fix
   // rather than a preference. `Tool` is an uncontrolled Radix Collapsible; while a run is still
   // streaming, every new part re-renders this subtree and the card an operator had just opened
@@ -79,7 +82,37 @@ export function ToolPart({ data }: { data: Data }) {
             </p>
           </div>
         )}
-        <ToolInput input={{ tool_call_id: id, tool_name: name || null, replay_class: replayClass || null }} />
+        {/* "PARAMETERS" MUST MEAN THE CALL'S PARAMETERS.
+            UAT opened a tool card and found `{tool_call_id, tool_name, replay_class}` — three
+            identifiers, one of which is already printed in the header it just clicked. It was reported
+            as a fixture defect, and measuring it says otherwise: the deterministic and the live paths
+            render this block from the SAME component with the SAME three fields, so the fake was
+            faithful and the card was thin. A card that opens onto its own id teaches an operator that
+            opening cards is not worth doing.
+            The arguments come from the ledger join, so they arrive a moment after the card does; until
+            then the identifiers are all there is, and the card says which it is showing rather than
+            letting an operator read a call id as the command. */}
+        {args !== null ? (
+          <>
+            <ToolInput data-testid="chat-tool-args" input={args as Record<string, unknown>} />
+            {/* THE REPLAY CLASS STAYS. It is the one field on the frame that tells an operator whether
+                the thing that just ran can be undone, and it would have been lost by simply swapping
+                this block for the arguments. It is a footnote rather than a heading because "what did
+                it run" is the question somebody opened the card to answer. */}
+            <p data-testid="chat-tool-ids" className="px-4 pb-4 font-mono text-[11px] text-muted-foreground">
+              {id}
+              {replayClass !== "" ? ` · ${replayClass}` : ""}
+            </p>
+          </>
+        ) : (
+          <>
+            <ToolInput input={{ tool_call_id: id, tool_name: name || null, replay_class: replayClass || null }} />
+            <p data-testid="chat-tool-args-pending" className="px-4 pb-4 text-[12px] text-muted-foreground">
+              These are the frame&rsquo;s identifiers, not the call&rsquo;s arguments — the arguments live
+              on the <code>tool_calls</code> ledger and are read once the call completes.
+            </p>
+          </>
+        )}
       </ToolContent>
     </Tool>
   );

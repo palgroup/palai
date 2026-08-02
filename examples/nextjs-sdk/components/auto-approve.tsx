@@ -119,10 +119,17 @@ export function AutoApproveControls({
       />
 
       <p className="text-[11px] text-muted-foreground leading-4" data-testid="auto-approve-state">
+        {/* WHICH HALF IS ARMED, NAMED. The line used to read only "Approvals are answered automatically
+            under key:key_local" — true for one switch on, both on, and either one, which are four
+            different exposures collapsed into one sentence. The SPLIT is the safety property this whole
+            control exists for: arming builds while pushes stay off is the state an operator actually
+            wants, and it is worth nothing if the screen cannot distinguish it from having armed both.
+            Same class as "unset" vs "this process holds no copy" — two states an operator must be able
+            to tell apart before they can trust either. */}
         {!armable
           ? "Send a message first — a session is opened on the first turn."
           : state.tools || state.publications
-            ? `Approvals are answered automatically under ${state.setBy || "an unidentified principal"}. Each one still becomes a decided row on the approvals surface.`
+            ? `${armedPhrase(state.tools, state.publications)} — answered automatically under ${state.setBy || "an unidentified principal"}. ${unarmedPhrase(state.tools, state.publications)} Each automatic decision still becomes a decided row on the approvals surface.`
             : "Nothing is armed. Every gated call and every push parks the run and waits for you."}
       </p>
 
@@ -160,6 +167,24 @@ export function AutoApproveControls({
 // authorization on and off, and `aria-checked` on a switch is what a screen reader announces as
 // "on"/"off" rather than "checked". `aria-busy` covers the in-flight moment, because the state it
 // reports is the SERVER's and it is briefly unknown.
+// armedPhrase names the half that IS armed, and unarmedPhrase names the half that is not. They are two
+// functions rather than one ternary because the "one on, one off" case is the one an operator has to be
+// able to read at a glance, and it is the case a single sentence kept flattening.
+function armedPhrase(tools: boolean, publications: boolean): string {
+  if (tools && publications) return "BOTH gated tool calls AND pushes are armed";
+  if (tools) return "Gated tool calls are armed";
+  return "Pushes and pull requests are armed";
+}
+
+// The unarmed half is stated POSITIVELY rather than left to inference. "Pushes still wait for you" is
+// the sentence that makes arming builds a safe thing to do, and silence about it is what made the old
+// line read as though everything had been opened at once.
+function unarmedPhrase(tools: boolean, publications: boolean): string {
+  if (tools && publications) return "Nothing waits for a human.";
+  if (tools) return "Pushes and pull requests still park the run and wait for you.";
+  return "Gated tool calls still park the run and wait for you.";
+}
+
 function Switch({
   testId,
   icon,

@@ -164,12 +164,38 @@ test("a tool call renders as the AI Elements tool component AND carries its real
 
   await expect(page.getByTestId("chat-tool-header").first()).toContainText("palai.workspace.shell");
 
-  // THE CARD IS OPENED BEFORE THE ABSENCE IS ASSERTED, and that ordering is the assertion. ToolContent
-  // is a Radix CollapsibleContent, which UNMOUNTS while closed — so `toHaveCount(0)` against a shut
-  // card is true of every card ever rendered, including one still full of the old apology. This tree
-  // has the same defect on record from an axe sweep that scanned routes with every dialog closed and
-  // reported a cleaner number while covering less.
+  // OPENING THE CARD SHOWS WHAT THE CALL RAN. UAT opened one and found three identifiers under a
+  // heading that says PARAMETERS — one of them the tool name already printed on the header it had just
+  // clicked. It was reported as a fixture defect; measuring said otherwise, because the live and the
+  // deterministic paths render this block from the same component with the same fields. The card was
+  // thin on both. A card that opens onto its own id teaches an operator not to open cards.
   await page.getByTestId("chat-tool-header").first().click();
+  // THE TIMEOUT IS THE SYNTAX HIGHLIGHTER, NOT THE PRODUCT, and it is worth naming because the failure
+  // it produced was thoroughly misleading. CodeBlock highlights asynchronously, so when the arguments
+  // replace the identifier fallback the card renders the NEW footer beside the OLD highlighted body —
+  // a state that looks like the args branch printing identifiers, which is impossible in the source.
+  // Measured by hand: the settled card holds the argv. Waiting for the re-highlight is waiting on a
+  // real render, not smoothing over a race in what is being asserted.
+  // ASSERTED ON THE ARGUMENTS BLOCK ITSELF, not on the whole card. Against the card, this matched the
+  // stale identifier JSON for the full timeout while a hand-driven browser — same ordering, same
+  // fixture — showed the argv settled in the DOM. Rather than widen the timeout again on a difference
+  // I could not explain, the assertion now names the one element it is about. The card's own text is
+  // a concatenation of a syntax-highlighted <pre> under `content-visibility: auto`, a header and a
+  // footer, and matching a command line inside that is asking a broad locator a narrow question.
+  await expect(page.getByTestId("chat-tool-args").first()).toContainText("git -C repo add CONTRIBUTING.md", {
+    timeout: 15_000,
+  });
+  // And once the arguments are known, the identifier fallback is NOT also shown — two "parameters"
+  // blocks would be the card hedging rather than answering.
+  await expect(page.getByTestId("chat-tool-args-pending")).toHaveCount(0);
+
+  // THE CARD IS ALREADY OPEN, and that ordering is the assertion. ToolContent is a Radix
+  // CollapsibleContent, which UNMOUNTS while closed — so `toHaveCount(0)` against a shut card is true
+  // of every card ever rendered, including one still full of the old apology. This tree has the same
+  // defect on record from an axe sweep that scanned routes with every dialog closed and reported a
+  // cleaner number while covering less. (It used to click here a second time, which would now SHUT the
+  // card the assertion above opened — a toggle clicked twice is a closed card, and every absence below
+  // it would have gone vacuous.)
   await expect(page.getByTestId("chat-tool").first()).toContainText("tcall_coding_1");
 
   // NOW the absence means something: the content is mounted, and the apology is not in it. Leaving it
@@ -319,6 +345,31 @@ test("the auto-approve panel says which calls the switch actually gates", async 
   await expect(scope).toBeVisible();
   await expect(scope).toContainText("approval_required");
   await expect(scope).toContainText("a build runs either way");
+});
+
+// THE STATE LINE NAMES WHICH HALF IS ARMED. Arming builds while pushes stay off is the safety property
+// the whole two-switch design exists for, and it is worth nothing if the screen renders the same
+// sentence for "tools armed", "pushes armed" and "both armed" — three different exposures. The old line
+// said only "Approvals are answered automatically under key:…", which is true of all three.
+//
+// THE UNARMED HALF IS ASSERTED TOO, because that is the half an operator is trusting.
+test("the armed state names WHICH half is armed, and says the other still waits", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "add a contributing guide");
+  await expect(page.getByTestId("chat-run").first()).toContainText("completed", { timeout: 30_000 });
+
+  const state = page.getByTestId("auto-approve-state");
+
+  await page.getByTestId("auto-approve-tools").click();
+  await expect(state).toContainText("Gated tool calls are armed");
+  await expect(state).toContainText("Pushes and pull requests still park the run");
+  // The sentence must not be the both-armed one — that is the confusion this test exists for.
+  await expect(state).not.toContainText("BOTH");
+
+  await page.getByTestId("auto-approve-publications").click();
+  await expect(state).toContainText("BOTH gated tool calls AND pushes are armed");
+  await expect(state).toContainText("Nothing waits for a human.");
 });
 
 test("the file tree states that it can only ever show what the run changed", async ({ page }) => {

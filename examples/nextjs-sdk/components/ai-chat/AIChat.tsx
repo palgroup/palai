@@ -343,6 +343,9 @@ export function AIChat({
                         name: tc.nameUnavailable ? "" : tc.name,
                         state: tc.status === "running" ? "running" : "done",
                         replayClass: tc.replayClass ?? "",
+                        // The ledger join's arguments, so opening the card shows what the call RAN
+                        // rather than the id of the frame that announced it.
+                        arguments: tc.detail?.joined === true ? (tc.detail.arguments ?? null) : null,
                       }}
                     />
                     {tc.detail ? <ToolDetailPart data={tc.detail} /> : null}

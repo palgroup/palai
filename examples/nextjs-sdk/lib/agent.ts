@@ -76,6 +76,17 @@ export const AGENT_NAME = "ios-coder";
 // wrong one. xcodebuild has no `-C`, so it has to run from inside the clone — `cd` works in this
 // shell, which was measured separately.
 //
+// THE LAST CLAUSE IS THE OWNER'S FIRST COMPLAINT, AND IT TOOK TWO ROUNDS TO FIND ITS REAL CAUSE.
+// They said: "bir sürü tool eventi geldi, sebeplerini anlamadım." Moving the hint off their message
+// took turn one from FIVE tool calls to zero — but UAT measured turn two, "naber", still running two:
+// `git -C repo log --oneline -10` and `ls repo`. For a greeting.
+//
+// The cause is this very file. Instructions that describe the repository layout in detail read, to a
+// model, as an invitation to go and look at it — the more precisely you explain where things are, the
+// more it wants to confirm. Describing the workspace and never saying when NOT to act is a one-sided
+// instruction, so the last clause is the other side. It is cheap to state and it is the difference
+// between an agent that answers "naber" and one that runs `git log` at somebody saying hello.
+//
 // A SIDE EFFECT WORTH KNOWING: xcodebuild writes to DerivedData under ~/Library, NOT into the clone,
 // so it does not bury the changed-files panel the way `swift build` did by writing `.build/` inside
 // the package. The panel collapses those either way (workspace-panel.tsx) — one fix should not be
@@ -95,7 +106,12 @@ export const AGENT_INSTRUCTIONS =
   "The clone has no git identity configured, so commit with " +
   "`git -C repo -c user.email=agent@palai.local -c user.name=Palai commit -m \"…\"` — do not run " +
   "`git config --global`. Do not run `git init`.\n" +
-  "When you run a build, a test or any shell command, name the exact command you ran in your reply.";
+  "When you run a build, a test or any shell command, name the exact command you ran in your reply.\n" +
+  "DO NOT USE TOOLS UNLESS THE REQUEST NEEDS THEM. A greeting, a thank-you, a question about what you " +
+  "can do, or small talk is answered in words alone — do not list files, do not read git history, do " +
+  "not look around the repository first. Reach for a tool only when the operator has asked for a " +
+  "change, a build, a test, or a fact that can only be obtained by looking. When you are unsure what " +
+  "they want, ASK rather than explore.";
 
 // The model the revision pins. MEASURED on the live stack: a turn with no pinned model reported
 // `model: "claude-sonnet-5"`, so this pins what the deployment was already choosing rather than
