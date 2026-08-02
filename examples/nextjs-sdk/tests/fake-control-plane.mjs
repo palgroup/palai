@@ -353,6 +353,23 @@ let codingOmitsToolName = false;
 // never helps, and the screen must say the join failed rather than draw an empty successful build.
 let codingUnjoinable = false;
 
+// A RUN THAT FAILED TO PROVISION ITS WORKSPACE — the path an operator meets FIRST and the one this
+// suite had never driven. MEASURED on the live stack 2026-08-02: the owner typed "selam", the run came
+// back `status: "failed"` carrying a complete, actionable error, and the chat said the answer "never
+// became readable ... The run itself is on the control plane and did not fail." Both halves false, and
+// the truth was in the response the whole time.
+let codingFailsProvisioning = false;
+const CODING_FAIL_ERROR = {
+  code: "workspace_provisioning_failed",
+  title: "Workspace could not be prepared",
+  detail:
+    "the run's repository workspace could not be prepared: git fetch: exit status 128: could not read " +
+    "Username for 'https://github.com': terminal prompts disabled. Check the binding's clone_url and " +
+    "default branch, and whether a private repository needs a connection_ref naming a token in this " +
+    "deployment's secret store.",
+  request_id: "req_c460acf1fake0000",
+};
+
 // AN UPSTREAM THAT ANSWERS WITH SOMETHING THAT IS NOT JSON. Measured on the live stack while its
 // control plane was down: the arming control showed the operator
 //     Failed to execute 'json' on 'Response': Unexpected end of JSON input
@@ -476,6 +493,31 @@ function codingEventsTurn2() {
 // ONE. That is what the control plane does, and a fake that pre-populates a journal is a fake in which
 // an adapter reading the cursor before it created anything would see events that cannot exist yet.
 function codingJournal() {
+  // A provisioning failure never reaches a model step: the workspace could not be prepared, so there is
+  // no text, no tool call and nothing to stream. The journal is three frames and a terminal — which is
+  // exactly why the UI's fallback path is the ONLY thing an operator sees on this turn, and why it
+  // getting the sentence wrong mattered so much.
+  if (codingFailsProvisioning) {
+    const base = {
+      source: "palai://fake-control-plane",
+      specversion: "1.0",
+      session_id: CODING_SESSION_ID,
+      run_id: CODING_RUN_ID,
+      datacontenttype: "application/json",
+    };
+    return [
+      ["run.queued.v1", { run_id: CODING_RUN_ID, state: "queued" }],
+      ["run.provisioning.v1", { run_id: CODING_RUN_ID, state: "provisioning" }],
+      ["run.failed.v1", { run_id: CODING_RUN_ID, state: "failed" }],
+    ].map(([type, data], i) => ({
+      ...base,
+      id: `evt_fail_${String(i + 1).padStart(4, "0")}`,
+      type,
+      sequence: i + 1,
+      time: new Date(Date.UTC(2026, 7, 2, 0, 0, i + 1)).toISOString(),
+      data,
+    }));
+  }
   if (codingTurns >= 2) return [...codingEvents(), ...codingEventsTurn2()];
   if (codingTurns >= 1) return codingEvents();
   return [];
@@ -528,6 +570,23 @@ function handleCoding(method, pathname, request, response) {
 
   if (method === "GET" && pathname === `/v1/responses/${CODING_RESPONSE_2_ID}/tool-calls`) {
     sendJSON(response, 200, { object: "list", data: CODING_TURN2_TOOL_CALLS });
+    return true;
+  }
+
+  if (method === "GET" && pathname === `/v1/responses/${CODING_RESPONSE_ID}` && codingFailsProvisioning) {
+    // `output` is EMPTY and stays empty — there is no answer, and waiting for one proves a negative.
+    // `error` is where the truth is, and `status` says so on the first read.
+    sendJSON(response, 200, {
+      id: CODING_RESPONSE_ID,
+      object: "response",
+      status: "failed",
+      model: "fake",
+      session_id: CODING_SESSION_ID,
+      run_id: CODING_RUN_ID,
+      created_at: "2026-08-02T00:00:00Z",
+      output: [],
+      error: CODING_FAIL_ERROR,
+    });
     return true;
   }
 
@@ -717,6 +776,7 @@ function handleCoding(method, pathname, request, response) {
     codingAutoApprove.auto_approve_set_by = "";
     codingOmitsToolName = false;
     codingUnjoinable = false;
+    codingFailsProvisioning = false;
     approvalDecision = null;
     codingTurns = 0;
     codingInstructions.length = 0;
@@ -865,6 +925,7 @@ const server = createServer((request, response) => {
         // scenario visible in the test that uses it rather than hidden in a setup call.
         codingOmitsToolName = String(safeJSON(createBody).input ?? "").includes("unnamed tool");
         codingUnjoinable = String(safeJSON(createBody).input ?? "").includes("unjoinable");
+        codingFailsProvisioning = String(safeJSON(createBody).input ?? "").includes("unprovisionable");
         // THE INSTRUCTIONS LAYER IS RECORDED, because the whole point of moving the repository hint
         // off the user's text is that it still REACHES the model — on every turn. A test that only
         // asserted the bubble is clean would pass just as well if the hint had been deleted.

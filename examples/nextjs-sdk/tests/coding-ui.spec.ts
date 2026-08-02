@@ -401,6 +401,47 @@ test("the collapsed line names WHICH half is armed", async ({ page }) => {
   await expect(summary).not.toContainText("pushes armed");
 });
 
+// A FAILED RUN'S OWN ERROR IS THE ANSWER, AND THE SCREEN THREW IT AWAY.
+//
+// MEASURED on the live stack 2026-08-02. The owner typed "selam". The chat said:
+//   "This run reached a terminal state but its answer never became readable — GET /v1/responses/…
+//    still had an empty `output` after 10908ms. The run itself is on the control plane and did not fail."
+// The response said `"status": "failed"` and carried a complete, operator-addressed error naming the
+// cause AND the next step. Both halves of the sentence were false, and the truth had been sitting in the
+// response the whole time. The fallback polled `output`, never read `status`, timed out, and then
+// narrated its own timeout as a fact about the run.
+//
+// This is the same shape as the SyntaxError one layer over — an ordinary failure with no representation
+// escaping as something structural — but worse, because "did not fail" reads as authoritative.
+//
+// THE FAILURE PATH OF THIS DEMO HAD NEVER BEEN DRIVEN, and it is the path an operator meets first.
+test("a run that failed shows the platform's own error, not a story about polling", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "unprovisionable please");
+
+  // THE DETAIL, verbatim from the control plane — the cause and the next step.
+  const notice = page.getByTestId("chat-notice").filter({ hasText: "could not be prepared" });
+  await expect(notice).toBeVisible({ timeout: 30_000 });
+  await expect(notice).toContainText("terminal prompts disabled");
+  await expect(notice).toContainText("connection_ref");
+
+  // WHAT MAKES IT DIAGNOSABLE. A detail with no code and no request id is a sentence; with them it is
+  // something an operator can hand to somebody.
+  await expect(notice).toContainText("workspace_provisioning_failed");
+  await expect(notice).toContainText("req_c460acf1fake0000");
+
+  // AND THE FALSE SENTENCES ARE GONE. Each is asserted separately because they failed for different
+  // reasons: "did not fail" was an inference from an absence, and "never became readable" was true of
+  // `output` and false of the response.
+  const body = page.locator("body");
+  await expect(body).not.toContainText("did not fail");
+  await expect(body).not.toContainText("never became readable");
+
+  // The run's terminal state is named as what it is.
+  await expect(page.getByTestId("chat-run").first()).toContainText("failed");
+});
+
 // AN UPSTREAM THAT IS DOWN IS AN ANSWER, NOT AN EXCEPTION.
 //
 // MEASURED on the live stack while its control plane was unreachable: pressing the arming control

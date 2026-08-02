@@ -140,18 +140,39 @@ export async function POST(request: Request): Promise<Response> {
         // is not made to say everything twice.
         if (!streamedText) {
           const final = await settledOutput(client, created.id);
-          if (final.text !== "") {
+          if (final.error !== null) {
+            // THE PLATFORM'S OWN ACCOUNT, RENDERED. This branch did not exist, and its absence produced
+            // the worst sentence this demo has ever shown: a run whose status was `failed` and which
+            // carried a complete, actionable error was reported as "its answer never became readable …
+            // The run itself is on the control plane and did not fail." Both halves false, and the truth
+            // was in the response the whole time.
+            //
+            // A demo whose purpose is to show the platform working has to show it failing honestly too —
+            // and this platform fails WELL: the live detail named the git error and the exact thing to
+            // check. Throwing that away and substituting a story about polling was the defect.
+            emit({
+              type: "notice",
+              level: "error",
+              text:
+                `${final.error.title !== "" ? `${final.error.title}: ` : ""}${final.error.detail}` +
+                `${final.error.code !== "" ? `\n\ncode: ${final.error.code}` : ""}` +
+                `${final.error.requestId !== "" ? `  ·  request id: ${final.error.requestId}` : ""}`,
+            });
+          } else if (final.text !== "") {
             emit({ type: "text_delta", text: final.text });
           } else {
-            // SILENCE IS THE ONE ANSWER THAT MISLEADS. A completed run whose projection never filled
-            // is a real state and the screen has to say so rather than render an empty bubble.
+            // NO TEXT AND NO ERROR IS A REAL STATE, AND THE HONEST SENTENCE NAMES THE STREAM RATHER THAN
+            // THE RUN. The old one inferred "did not fail" from "no failure reached me", which is
+            // precisely the inference that breaks in the case that matters: an absence on the stream is
+            // a fact about the stream. What the run did is what its `status` says, so that is quoted
+            // instead of characterised.
             emit({
               type: "notice",
               level: "warn",
               text:
-                `This run reached a terminal state but its answer never became readable — ` +
-                `GET /v1/responses/${created.id} still had an empty \`output\` after ${final.waitedMs}ms. ` +
-                `The run itself is on the control plane and did not fail.`,
+                `This run reported status "${final.status || "unknown"}" and produced no answer text — ` +
+                `GET /v1/responses/${created.id} had an empty \`output\` after ${final.waitedMs}ms, and ` +
+                `the response carried no error either. Nothing further is known from here.`,
             });
           }
           if (final.usage !== null) emit({ type: "usage", ...final.usage });
@@ -556,10 +577,22 @@ function writeFrame(
 async function settledOutput(
   client: ReturnType<typeof getPalaiClient>,
   responseId: string,
-): Promise<{ text: string; usage: Record<string, unknown> | null; waitedMs: number }> {
+): Promise<{
+  text: string;
+  status: string;
+  error: { code: string; title: string; detail: string; requestId: string } | null;
+  usage: Record<string, unknown> | null;
+  waitedMs: number;
+}> {
   const startedAt = Date.now();
   let final = await client.responses.retrieve(responseId);
-  for (let i = 0; i < 40 && (final.output ?? []).length === 0; i += 1) {
+  // STATUS IS READ BEFORE `output` IS WAITED ON, and this loop used to do the opposite.
+  //
+  // A `failed` response is TERMINAL: its output is empty and will stay empty, so every poll after the
+  // first proves a negative. Measured on the live stack — 10,908ms spent waiting for an answer that
+  // could never arrive, on a run whose very first read already said `"status": "failed"` and carried
+  // the reason.
+  for (let i = 0; i < 40 && (final.output ?? []).length === 0 && !isTerminalFailure(final); i += 1) {
     await new Promise((r) => setTimeout(r, 250));
     final = await client.responses.retrieve(responseId);
   }
@@ -569,9 +602,31 @@ async function settledOutput(
     .join("\n");
   return {
     text,
+    status: str((final as { status?: unknown }).status),
+    error: readError(final),
     usage: final.usage ? (final.usage as unknown as Record<string, unknown>) : null,
     waitedMs: Date.now() - startedAt,
   };
+}
+
+function isTerminalFailure(r: unknown): boolean {
+  const status = str((r as { status?: unknown })?.status);
+  return status === "failed" || status === "cancelled" || status === "canceled";
+}
+
+// readError pulls the control plane's OWN account of what went wrong. It is the most valuable thing on a
+// failed response and this adapter used to discard it entirely: `code` and `request_id` are what make a
+// failure diagnosable rather than merely visible, and `detail` on this platform is written FOR an
+// operator — the live one named the exact git error and the exact thing to check.
+function readError(r: unknown): { code: string; title: string; detail: string; requestId: string } | null {
+  const e = (r as { error?: unknown })?.error;
+  if (e === null || e === undefined || typeof e !== "object") return null;
+  const row = e as Record<string, unknown>;
+  const detail = str(row.detail);
+  const code = str(row.code);
+  const title = str(row.title);
+  if (detail === "" && code === "" && title === "") return null;
+  return { code, title, detail, requestId: str(row.request_id) };
 }
 
 // joinApproval turns a publication approval NOTIFICATION into the row a human can decide on.
