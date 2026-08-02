@@ -401,6 +401,46 @@ test("the collapsed line names WHICH half is armed", async ({ page }) => {
   await expect(summary).not.toContainText("pushes armed");
 });
 
+// A MODEL THAT PERFORMS A TOOL CALL IN PROSE MUST NOT RENDER AS EVIDENCE ONE RAN.
+//
+// MEASURED on the live stack 2026-08-02: a turn with ZERO tool calls and ZERO ledger rows answered with
+// "**Tool Call:** `cd repo && xcodebuild …` / Status: Completed / Terminal: ```** BUILD SUCCEEDED **```"
+// and an invented simctl listing whose device UUID was literally `…CC24CFXX-XXXX`. As markdown it is
+// indistinguishable from a real build. Every other defect fixed today made the demo look broken; this
+// one makes it look like it WORKED, and the owner has already been burned once by a macOS build
+// standing in for an iOS one.
+//
+// THIS TEST IS PERMANENT ON PURPOSE. The screen cannot tell true prose from false prose and must not
+// try; what it can say — and what this pins — is that NOTHING WAS RECORDED. If a model's text can wear
+// the appearance of a tool card, the real cards stop meaning anything.
+test("a turn whose text performs a tool call is marked as unverified when nothing ran", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "fabricate a build for me");
+
+  const warning = page.getByTestId("chat-unverified-output");
+  await expect(warning).toBeVisible({ timeout: 30_000 });
+  await expect(warning).toContainText("No tool call was recorded");
+  await expect(warning).toContainText("not executed");
+
+  // AND THERE IS GENUINELY NO TOOL CARD — the warning is about an absence, so the absence is asserted
+  // rather than assumed. A build that rendered a card here would make the warning a lie.
+  await expect(page.getByTestId("chat-tool")).toHaveCount(0);
+});
+
+// THE OTHER HALF, AND WITHOUT IT THE ONE ABOVE IS SATISFIED BY A BANNER ON EVERY TURN. A turn that
+// really did call tools must NOT be captioned as unverified — the caption has to be about the absence
+// of a ledger row, not about the presence of a code fence.
+test("a turn that really called tools is not marked unverified", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "add a contributing guide");
+
+  await expect(page.getByTestId("chat-tool").first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("chat-run").first()).toContainText("completed", { timeout: 30_000 });
+  await expect(page.getByTestId("chat-unverified-output")).toHaveCount(0);
+});
+
 // A FAILED RUN'S OWN ERROR IS THE ANSWER, AND THE SCREEN THREW IT AWAY.
 //
 // MEASURED on the live stack 2026-08-02. The owner typed "selam". The chat said:

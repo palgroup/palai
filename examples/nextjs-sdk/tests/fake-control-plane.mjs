@@ -359,6 +359,16 @@ let codingUnjoinable = false;
 // became readable ... The run itself is on the control plane and did not fail." Both halves false, and
 // the truth was in the response the whole time.
 let codingFailsProvisioning = false;
+
+// A TURN WHOSE MODEL TEXT PERFORMS A TOOL CALL THAT NEVER HAPPENED. Measured on the live stack
+// 2026-08-02: zero tool calls, zero ledger rows, and an answer containing "**Tool Call:** …
+// Status: Completed … Terminal: ```…```" with an invented simctl listing — one device UUID was
+// literally `…CC24CFXX-XXXX`. Rendered as markdown it is indistinguishable from a real build.
+// This is the ONLY defect on this screen that makes the demo look like it WORKED.
+let codingFabricates = false;
+const CODING_FABRICATED_TEXT =
+  "Projeyi derledim.\n\n**Tool Call:** `cd repo && xcodebuild -scheme PalaiDemo build`\n" +
+  "Status: Completed\n\nTerminal:\n```\n** BUILD SUCCEEDED **\n```\n\nHer şey yolunda görünüyor.";
 const CODING_FAIL_ERROR = {
   code: "workspace_provisioning_failed",
   title: "Workspace could not be prepared",
@@ -493,6 +503,16 @@ function codingEventsTurn2() {
 // ONE. That is what the control plane does, and a fake that pre-populates a journal is a fake in which
 // an adapter reading the cursor before it created anything would see events that cannot exist yet.
 function codingJournal() {
+  if (codingFabricates) {
+    const base = { source: "palai://fake-control-plane", specversion: "1.0", session_id: CODING_SESSION_ID,
+                   run_id: CODING_RUN_ID, datacontenttype: "application/json" };
+    return [
+      ["run.queued.v1", { run_id: CODING_RUN_ID, state: "queued" }],
+      ["run.running.v1", { run_id: CODING_RUN_ID, state: "running" }],
+      ["run.completed.v1", { run_id: CODING_RUN_ID, state: "completed" }],
+    ].map(([type, data], i) => ({ ...base, id: `evt_fab_${String(i + 1).padStart(4, "0")}`, type,
+      sequence: i + 1, time: new Date(Date.UTC(2026, 7, 2, 0, 0, i + 1)).toISOString(), data }));
+  }
   // A provisioning failure never reaches a model step: the workspace could not be prepared, so there is
   // no text, no tool call and nothing to stream. The journal is three frames and a terminal — which is
   // exactly why the UI's fallback path is the ONLY thing an operator sees on this turn, and why it
@@ -570,6 +590,15 @@ function handleCoding(method, pathname, request, response) {
 
   if (method === "GET" && pathname === `/v1/responses/${CODING_RESPONSE_2_ID}/tool-calls`) {
     sendJSON(response, 200, { object: "list", data: CODING_TURN2_TOOL_CALLS });
+    return true;
+  }
+
+  if (method === "GET" && pathname === `/v1/responses/${CODING_RESPONSE_ID}` && codingFabricates) {
+    sendJSON(response, 200, {
+      id: CODING_RESPONSE_ID, object: "response", status: "completed", model: "fake",
+      session_id: CODING_SESSION_ID, run_id: CODING_RUN_ID, created_at: "2026-08-02T00:00:00Z",
+      output: [{ type: "message", content: CODING_FABRICATED_TEXT }],
+    });
     return true;
   }
 
@@ -777,6 +806,7 @@ function handleCoding(method, pathname, request, response) {
     codingOmitsToolName = false;
     codingUnjoinable = false;
     codingFailsProvisioning = false;
+    codingFabricates = false;
     approvalDecision = null;
     codingTurns = 0;
     codingInstructions.length = 0;
@@ -926,6 +956,7 @@ const server = createServer((request, response) => {
         codingOmitsToolName = String(safeJSON(createBody).input ?? "").includes("unnamed tool");
         codingUnjoinable = String(safeJSON(createBody).input ?? "").includes("unjoinable");
         codingFailsProvisioning = String(safeJSON(createBody).input ?? "").includes("unprovisionable");
+        codingFabricates = String(safeJSON(createBody).input ?? "").includes("fabricate");
         // THE INSTRUCTIONS LAYER IS RECORDED, because the whole point of moving the repository hint
         // off the user's text is that it still REACHES the model — on every turn. A test that only
         // asserted the bubble is clean would pass just as well if the hint had been deleted.
