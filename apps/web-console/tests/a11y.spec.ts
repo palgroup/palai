@@ -146,7 +146,20 @@ const scannedDialogs = new Set<string>();
 // tests/constants.ts for what was uncounted before this.
 for (const d of [...FORM_DIALOGS, ...PRIMITIVE_DIALOGS]) {
   test(`axe-core reports zero violations with ${d.dialog} open`, async ({ page }) => {
-    await page.goto(d.route);
+    // A DIALOG ON A DYNAMIC ROUTE HAS NO PATH UNTIL ONE IS RESOLVED (E30). `dynamic` names the
+    // DYNAMIC_CONSOLE_ROUTES pattern, and concreteDynamicPath reads the first row of that collection or
+    // CREATES one — it refuses to skip, which is the property that keeps "the deployment has no bindings"
+    // from silently meaning "these two dialogs went unscanned".
+    const dynamic = "dynamic" in d && typeof d.dynamic === "string" ? d.dynamic : "";
+    if (dynamic !== "") {
+      const route = DYNAMIC_CONSOLE_ROUTES.find((r) => r.pattern === dynamic);
+      if (route === undefined) {
+        throw new Error(`FORM_DIALOGS row for ${d.dialog} names dynamic route ${dynamic}, which lib/routes.ts does not declare`);
+      }
+      await page.goto(await concreteDynamicPath(page, route));
+    } else {
+      await page.goto(d.route);
+    }
     // The opener is inside a PANEL's head, so it does not exist until that panel has settled — the same
     // readiness rule the route loop follows, applied one interaction later.
     await expect(page.getByTestId(d.open)).toBeVisible({ timeout: 15_000 });

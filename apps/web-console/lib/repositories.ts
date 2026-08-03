@@ -23,6 +23,13 @@ export interface BindingRow extends Record<string, unknown> {
   data_classification?: string;
   region_constraint?: string;
   created_at?: string;
+  /**
+   * PRESENT ONLY ON A RETIRED BINDING (E30, migration 000057). `omitempty` on the wire, so a live binding
+   * carries no key at all rather than a null — and the difference matters here: `archived_at === undefined`
+   * is the live state, and a component testing truthiness of an empty string would get it right by accident
+   * and wrong the day the field starts being emitted as "".
+   */
+  archived_at?: string;
   organization_id?: string;
   project_id?: string;
 }

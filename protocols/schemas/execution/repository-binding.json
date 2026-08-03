@@ -18,7 +18,8 @@
     "policy": {"type": "object"},
     "data_classification": {"type": "string"},
     "region_constraint": {"type": "string"},
-    "created_at": {"type": "string", "format": "date-time"}
+    "created_at": {"type": "string", "format": "date-time"},
+    "archived_at": {"type": "string", "format": "date-time"}
   },
   "additionalProperties": true
 }
