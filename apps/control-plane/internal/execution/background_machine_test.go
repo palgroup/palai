@@ -16,8 +16,6 @@ package execution
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -54,15 +52,14 @@ func (r *machineBoundRunner) Kill(_ context.Context, h toolbroker.Handle) error 
 
 // foreignTask is a row a DIFFERENT machine wrote: its handle names a process group on that machine, and
 // this control plane has never seen it.
+// NO ALLOCATION ROOT, AND THAT IS LOAD-BEARING RATHER THAN LAZY. backgroundTail re-resolves the run's
+// environment keys through the spine to redact the output, so a task with a root drags a database into a
+// test about ROUTING — and worse, it hides what a perturbation is saying: with the machine comparison
+// removed these tests died on a nil-spine panic instead of on their own assertions, which points a
+// reader at the wrong file entirely. An empty root makes backgroundTail return its note immediately, so
+// a broken routing fails HERE, by name.
 func foreignTask(t *testing.T, handle string, deadline *time.Time) coordinator.BackgroundTask {
 	t.Helper()
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "logs"), 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "logs", "bgt_foreign.log"), []byte("compiling\n"), 0o600); err != nil {
-		t.Fatalf("write log: %v", err)
-	}
 	return coordinator.BackgroundTask{
 		ID:             "bgt_foreign",
 		Tenant:         coordinator.Tenant{Organization: "org_1", Project: "prj_1"},
@@ -72,7 +69,7 @@ func foreignTask(t *testing.T, handle string, deadline *time.Time) coordinator.B
 		Posture:        string(toolbroker.PostureUnsandboxedHost),
 		Handle:         handle,
 		OutputPath:     "logs/bgt_foreign.log",
-		AllocationRoot: root,
+		AllocationRoot: "",
 		DeadlineAt:     deadline,
 		// THE MACHINE THAT STARTED IT. Mac-A; this control plane is on Mac-B.
 		MachineID: "mac-A",
@@ -148,9 +145,6 @@ func TestThisMachinesOwnTaskIsStillProbedNormally(t *testing.T) {
 
 	task := foreignTask(t, handle, nil)
 	task.MachineID = "mac-A" // this machine's own row
-	// No allocation root, so the tail read returns its note without touching the spine. What this test
-	// is about is the ROUTING; the tail has its own coverage in the component tier.
-	task.AllocationRoot = ""
 
 	outcome, done, err := o.observeBackgroundTask(context.Background(), task)
 	if err != nil {
