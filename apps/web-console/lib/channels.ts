@@ -152,7 +152,14 @@ export interface ChannelSelfTest {
   /** The command, with the bot's own id filled in. Everything else is a placeholder: this console holds no
    *  API key and renders none. */
   command: (botID: string) => string;
-  /** What a green run does NOT prove. Required, because that is the sentence that keeps it honest. */
+  /**
+   * WHAT A GREEN RUN PROVES AND WHAT IT DOES NOT, in one sentence, and required.
+   *
+   * It must carry BOTH halves. "What was checked" alone invites the reading this whole panel exists to
+   * prevent — an operator seeing four green legs and concluding their bot works — and "what was not
+   * checked" alone reads as a disclaimer nobody can act on. The page renders it in the amber warn band
+   * rather than the success band for the same reason.
+   */
   caveat: string;
 }
 
@@ -311,7 +318,7 @@ const SLACK: Channel = {
         "  slack-bot selftest <channel-id>",
       ].join("\n"),
     caveat:
-      "A green run says these credentials can do what a relay needs to do. It does NOT say a relay is running, that a mention reaches one, or that a run answers — a bot with no agent revision passes all four legs and still cannot say a word to a person.",
+      "What four green legs mean: these credentials are valid, this workspace is the right one, and the app can post and stream in that channel. What they do NOT mean: that a relay process is running, that an @mention reaches it, or that a run answers. Those are never touched by any of the four — a bot with no agent revision passes all of them and still cannot say a word to a person.",
   },
 };
 

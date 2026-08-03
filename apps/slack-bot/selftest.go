@@ -110,6 +110,10 @@ func runSelfTest(ctx context.Context, channel string) error {
 	if !report.OK() {
 		return fmt.Errorf("the self-test did not pass")
 	}
+	// THE LAST THING A PASSING RUN PRINTS, and it is last on purpose. This is the moment an operator
+	// decides the job is done, and four green legs do not say that — see relay.SelfTestUnproven for why
+	// the words live beside the type rather than in this line.
+	log.Printf("slack-bot: %s", relay.SelfTestUnproven)
 	return nil
 }
 

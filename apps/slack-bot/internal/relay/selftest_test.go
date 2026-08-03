@@ -295,6 +295,26 @@ func TestSelfTestObservesAppendSemantics(t *testing.T) {
 	}
 }
 
+// TestSelfTestUnprovenNamesTheRunPipeline pins the sentence a passing report is read alongside.
+//
+// The risk this guards is specific: an operator sees four green legs and concludes their bot works. It
+// does not follow, and nothing in the four legs touches the pipeline that would make it follow — so the
+// limit has to name that pipeline in words an operator can act on, not merely say "this is not a full
+// test". A caveat that only subtracts reads as a disclaimer and gets skipped, which is why the constant
+// states what the legs DO settle first.
+func TestSelfTestUnprovenNamesTheRunPipeline(t *testing.T) {
+	for _, want := range []string{"relay process is running", "@mention", "run answers", "agent_revision_id"} {
+		if !strings.Contains(SelfTestUnproven, want) {
+			t.Errorf("SelfTestUnproven does not name %q, so a passing run leaves it for the operator to infer:\n%s", want, SelfTestUnproven)
+		}
+	}
+	// AND IT MUST NOT BE REACHABLE AS A CLAIM ABOUT THE LEGS THEMSELVES: the legs passed. A sentence that
+	// said the credentials were unproven would be false and would send somebody back to Step 2.
+	if strings.Contains(SelfTestUnproven, "the token") || strings.Contains(SelfTestUnproven, "the channel is") {
+		t.Errorf("SelfTestUnproven casts doubt on a leg that PASSED:\n%s", SelfTestUnproven)
+	}
+}
+
 // TestSelfTestCatchesReplaceSemantics IS THE REASON LEG 4 EXISTS.
 //
 // A workspace whose chat.stopStream replaces rather than appends erases text that earlier appends already

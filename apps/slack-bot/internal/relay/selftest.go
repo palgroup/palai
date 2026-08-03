@@ -124,6 +124,21 @@ type Report struct {
 // OK reports whether every leg passed. It exists because four bools are four chances to check three.
 func (r Report) OK() bool { return r.AuthOK && r.SocketOK && r.PostOK && r.StreamOK }
 
+// SelfTestUnproven is what a PASSING run has not shown, and it lives here — beside Report, exported, one
+// string — rather than inside whichever renderer happens to print the result.
+//
+// The reason is that the sentence is easiest to forget exactly where it matters most. A failing report
+// sends an operator somewhere; a PASSING one is the report that gets read as "my bot works", and every
+// renderer of a green Report is therefore one place that can quietly drop the limit. Owning the words next
+// to the type means a second renderer has to go out of its way to omit them instead of merely not thinking
+// of them.
+//
+// It is not a hedge. The four legs really do settle four things, and this names them before it names what
+// they leave open: a caveat that only subtracts reads as a disclaimer and gets skipped.
+const SelfTestUnproven = "WHAT THIS DID NOT CHECK: that a relay process is running, that an @mention reaches it, or that a run answers. " +
+	"All four legs are properties of the CREDENTIALS and the CHANNEL — the run pipeline is untouched by every one of them, " +
+	"and a bot with no agent_revision_id passes all four and still cannot say a word to a person."
+
 // SelfTest drives the four legs against a real workspace and reports what each one did.
 //
 // THE ERROR RETURN IS NOT A LEG FAILURE. It is returned only for a seam this package was handed

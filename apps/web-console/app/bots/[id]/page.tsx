@@ -578,7 +578,12 @@ export default function BotPage() {
               ? "This bot is disabled in the registry, so the command will refuse before it contacts Slack: enable it first."
               : "The credentials it redeems are the ones named in Step 2, so seal them first."}
           </p>
-          <p className="form-status" data-testid="bot-selftest-caveat">
+          {/* THE CAVEAT IS AMBER AND NOT GREEN, and that is the point rather than decoration. A bare
+              `.form-status` is this console's SUCCESS band — the one the credential save reports into —
+              so rendering the sentence that limits a green result in the same style as a green result
+              would undercut the only line stopping "all four legs passed" from being read as "my bot
+              works". `data-glyph="warn"` is the contrast-verified amber variant (globals.css). */}
+          <p className="form-status" data-glyph="warn" data-testid="bot-selftest-caveat">
             <span className="glyph" aria-hidden="true">
               !
             </span>{" "}

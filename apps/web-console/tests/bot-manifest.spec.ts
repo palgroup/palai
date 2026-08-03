@@ -379,10 +379,18 @@ test.describe("the bot's own page", () => {
     await page.getByTestId("bot-selftest-copy").click();
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(shown);
 
-    // FOUR LEGS, AND THE SENTENCE THAT KEEPS THE PANEL HONEST. A recipe that claimed an outcome without
-    // saying what a green run does NOT prove is the expensive lie this whole step was written to avoid.
+    // FOUR LEGS, AND THE SENTENCE THAT KEEPS THE PANEL HONEST — in BOTH halves. A caveat that only
+    // subtracts reads as a disclaimer and gets skipped; one that only adds is the expensive lie this whole
+    // step was written to avoid. It has to say what four green legs mean AND what they do not.
     await expect(page.getByTestId("bot-selftest-legs").locator("li")).toHaveCount(4);
-    await expect(page.getByTestId("bot-selftest-caveat")).toContainText("does NOT say a relay is running");
+    const caveat = page.getByTestId("bot-selftest-caveat");
+    await expect(caveat).toContainText("What four green legs mean");
+    await expect(caveat).toContainText("do NOT mean");
+    await expect(caveat, "the run pipeline is what an operator would wrongly infer, so it must be named").toContainText("relay process is running");
+
+    // AMBER, NOT GREEN. A bare `.form-status` is this console's SUCCESS band — the one the credential save
+    // reports into — so the sentence that limits a green result must not be dressed as one.
+    await expect(caveat, "the caveat is rendered in the success band it exists to qualify").toHaveAttribute("data-glyph", "warn");
   });
 
   test("over the cap the manifest is withdrawn, and the count says by how much", async ({ page }) => {
