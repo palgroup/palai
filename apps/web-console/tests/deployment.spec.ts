@@ -118,8 +118,15 @@ test("the deployment screen reports each setting's value, its fallback and what 
 
   // 2. THE MUTABILITY IS ON THE SCREEN, AND SO IS THE THING THAT DOES CHANGE IT. A screen that says a value
   //    cannot be changed here and does not say what changes it has told the operator to go and find out.
+  //
+  //    WHERE it says so moved, and the intent did not. This row's remedy is one MANY rows share, so the row
+  //    points at a numbered way and the sentence is stated once beneath the table — rather than being
+  //    repeated on every row that carries it, which is what buried the rows whose remedy differs. The
+  //    assertion follows the pointer instead of dropping: the operator must still be able to learn the
+  //    command without leaving this screen, and that is what is checked.
   await expect(unsetRow).toContainText("Needs a bring-up");
-  await expect(unsetRow).toContainText("palai up");
+  await expect(unsetRow).toContainText("below");
+  await expect(page.getByTestId("panel-deployment-settings-footnote")).toContainText("palai up");
 
   // 3. A SETTING WITH A LIVE OVERRIDE IS NOT CALLED "NEEDS A BRING-UP". A project that publishes a model
   //    route dispatches through it with no restart, so labelling the env default the same way as a genuine
@@ -139,4 +146,45 @@ test("a path-valued setting is shown as a path and labelled as one", async ({ pa
   const keyRow = page.getByTestId("panel-deployment-settings").locator("tr", { hasText: "PALAI_SECRET_MASTER_KEY_FILE" });
   await expect(keyRow).toContainText("/run/secrets/master_key");
   await expect(keyRow).toContainText("never the contents");
+});
+
+// NO REMEDY SENTENCE APPEARS TWICE ON THE SCREEN. This is the invariant that replaced "one sentence is
+// carried by a majority", and the replacement is not a relaxation — it is the property the majority rule was
+// reaching for, stated directly.
+//
+// The old rule suppressed only the single strict-majority `change_with`, which was right when 29 of 35 rows
+// carried one and repeating it buried the six that said something else (one of them says a stored secret
+// rotates LIVE). Measured 2026-08-03 the catalogue is 20 / 12 / 2 and 6 with no remedy — four groups, no
+// majority — so the rule suppressed nothing and printed twenty identical sentences down one column. Numbering
+// every distinct remedy and stating each once below the table restores the intent for any number of groups,
+// and unlike a majority it gets STRONGER as the catalogue grows.
+//
+// IT IS ASSERTED ON THE RENDERED PAGE, not on the data, because "appears once" is a fact about the screen. The
+// Go guard is the other half and asserts something different: that the page holds no remedy sentence as a
+// LITERAL, so what renders here can only have come from the rows.
+test("each distinct remedy is stated exactly once on the page", async ({ page }) => {
+  await page.goto("/deployment");
+  const panel = page.getByTestId("panel-deployment-settings");
+  await expect(panel).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("panel-deployment-settings-footnote")).toBeVisible();
+
+  const served = await page.evaluate(async () => {
+    const res = await fetch("/api/palai/v1/deployment");
+    const body = (await res.json()) as { settings?: { change_with?: string }[] };
+    return [...new Set((body.settings ?? []).map((s) => s.change_with ?? "").filter((s) => s !== ""))];
+  });
+  // NON-VACUITY: one remedy cannot distinguish "each appears once" from "only one is rendered at all".
+  expect(served.length).toBeGreaterThan(1);
+
+  const text = (await page.locator("main").innerText()).replace(/\s+/g, " ");
+  for (const sentence of served) {
+    const needle = sentence.replace(/\s+/g, " ");
+    const occurrences = text.split(needle).length - 1;
+    expect(
+      occurrences,
+      `the remedy ${JSON.stringify(needle)} appears ${occurrences} time(s) on /deployment. Once is the ` +
+        `contract: repeated, it buries the rows whose remedy differs — which are the rows worth reading; ` +
+        `absent, a reader has no way to learn how to change those settings at all.`,
+    ).toBe(1);
+  }
 });
