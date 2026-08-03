@@ -40,6 +40,22 @@ import (
 	"github.com/palgroup/palai/storage"
 )
 
+// ErrRunPoolNotRecordable reports that a placement decision matched NO row: the pool is not one this
+// tenant can be served by, so nothing was written and the run still carries no pool.
+//
+// IT IS AN ERROR RATHER THAN AN EMPTY STRING BECAUSE A CALLER CAN IGNORE A STRING. `RecordRunPool` is
+// deliberately a no-op for a foreign or missing pool — a config_policy naming a pool that does not
+// exist is a typo, and a foreign-key abort would kill every run in that project — but until
+// 2026-08-02 it then returned `nil`, and the caller dialled into the pool it had not recorded, PARKED
+// the run there, and left `runs.pool_id` NULL. `OldestRunAwaitingCapacity` matches on exactly that
+// column, so two runs on a live stack sat `waiting` for thirty-one hours with no machine able to reach
+// them and no reaper covering them.
+//
+// A write that matched nothing must not report success. That sentence is the general form of the
+// defect, and fixing it here rather than at the one call site is what stops the next resolver bug from
+// producing the same silent NULL.
+var ErrRunPoolNotRecordable = errors.New("run pool is not one this tenant can be served by")
+
 // AttemptAwaitingCapacity is the attempts.state value that marks the one waiting reason a machine's
 // arrival may wake. Exported so a proof can assert on the durable marker rather than on a behaviour
 // that happens to follow from it.
