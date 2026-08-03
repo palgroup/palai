@@ -6,61 +6,183 @@
 // the point: an operator configures a bot in the admin panel, not in a file, and a Slack token is
 // never this process's environment variable.
 //
-// This is the process SKELETON (2026-08-03 plan, Task 5): it loads its config, resolves its own bot
-// row, refuses if that row is missing or disabled, logs what it is, and waits for a shutdown
-// signal. The Socket Mode connection, the relay and the durable store are later tasks (6-10) — this
-// file does not open PALAI_BOT_DATABASE_URL yet, it only carries it through config.Load.
+// THE SHAPE OF A RUNNING BOT, in the order this file builds it:
+//
+//	config.Load             the four variables
+//	Bots.Get                its own row: what it is, and the NAMES its credentials are sealed under
+//	parseSlackConfig        the row's `config` document (the keys apps/web-console/lib/channels.ts writes)
+//	store.Open + Migrate    its own database: which Palai session a Slack thread is talking to
+//	redeemSlackCredentials  the handles → the token bytes  ← REFUSES TODAY; see credentials.go
+//	socket.Run              the Socket Mode connection, held open and reconnected until shutdown
+//
+// Everything a misconfigured ROW would fail on is answered first, for free, before a Postgres pool or a
+// WebSocket is opened to discover it. The credentials come last, immediately before the only two things
+// that need them, so nothing earlier in this function is ever holding a live token.
+//
+// WHAT THIS PROCESS CANNOT DO TODAY, stated here because a reader deserves it at the top rather than
+// three files in: it cannot redeem its own Slack tokens. The console seals them through POST
+// /v1/secret-refs and stores only the handle NAMES in this row — and the platform has no read-back path
+// for a sealed secret, measured rather than assumed (credentials.go carries the transcript). So this
+// process starts, reads its row, validates it, and then refuses at exactly that step. Reading
+// SLACK_BOT_TOKEN out of the environment instead is not the workaround; it is the arrangement the bot
+// registry exists to end.
 package main
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	palai "github.com/palgroup/palai/sdks/go"
 
 	"github.com/palgroup/palai/apps/slack-bot/internal/config"
+	"github.com/palgroup/palai/apps/slack-bot/internal/relay"
+	"github.com/palgroup/palai/apps/slack-bot/internal/socket"
+	"github.com/palgroup/palai/apps/slack-bot/internal/store"
 )
+
+// slackAPIBase is where every outbound Slack call goes. It is a constant and not a variable because this
+// process reads FOUR environment variables and nothing else (internal/config's own rule); the control
+// plane's PALAI_SLACK_API_BASE_URL override exists for a staging deployment of a service that already
+// reads dozens of variables, and adding a fifth here to match would be the first crack in that rule.
+const slackAPIBase = "https://slack.com/api"
+
+// shutdownGrace bounds how long a shutdown waits for relays that are still draining a run into Slack.
+// They do not stop when the socket does — a relay detaches from the socket's context on purpose, so the
+// message it opened gets closed rather than left "streaming" forever — so this is a wait, not a kill.
+// When it runs out, the process says how many were still in flight instead of exiting quietly.
+const shutdownGrace = 30 * time.Second
 
 func main() {
 	log.SetFlags(0)
 
-	// Signal handling starts before anything that can block, so an operator's Ctrl-C or a
-	// container's SIGTERM interrupts a slow bot-row fetch too, not just the idle wait at the end.
+	// Signal handling starts before anything that can block, so an operator's Ctrl-C or a container's
+	// SIGTERM interrupts a slow bot-row fetch too, not just the socket at the end.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if err := run(ctx); err != nil {
+		log.Fatalf("slack-bot: %v", err)
+	}
+	log.Printf("slack-bot: stopped")
+}
+
+// run is main with an error return, so every failure below leaves through one place and every deferred
+// close actually runs — log.Fatal in the middle of this function would skip them.
+func run(ctx context.Context) error {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("slack-bot: %v", err)
+		return err
 	}
 
 	client, err := palai.New(palai.WithBaseURL(cfg.PalaiBaseURL), palai.WithAPIKey(cfg.PalaiAPIKey))
 	if err != nil {
-		log.Fatalf("slack-bot: construct SDK client: %v", err)
+		return fmt.Errorf("construct SDK client: %w", err)
 	}
 
 	bot, err := client.Bots.Get(ctx, cfg.BotID)
 	if err != nil {
 		var apiErr *palai.APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
-			log.Fatalf("slack-bot: PALAI_BOT_ID=%s has no row in the bot registry — register it first", cfg.BotID)
+			return fmt.Errorf("PALAI_BOT_ID=%s has no row in the bot registry — register it first", cfg.BotID)
 		}
-		log.Fatalf("slack-bot: fetch bot row PALAI_BOT_ID=%s: %v", cfg.BotID, err)
+		return fmt.Errorf("fetch bot row PALAI_BOT_ID=%s: %w", cfg.BotID, err)
 	}
-	// A disabled row is a refusal, not a warning: starting anyway would relay messages for a bot
-	// an operator deliberately turned off.
+	// A disabled row is a refusal, not a warning: starting anyway would relay messages for a bot an
+	// operator deliberately turned off.
 	if bot.Disabled {
-		log.Fatalf("slack-bot: bot %s (%q) is disabled in the registry — enable it in the admin panel before starting this process", bot.ID, bot.Name)
+		return fmt.Errorf("bot %s (%q) is disabled in the registry — enable it in the admin panel before starting this process", bot.ID, bot.Name)
+	}
+	// The KIND is checked because this binary is one channel's relay, not a generic one. The registry
+	// accepts any kind by design (a bare string nothing branches on) precisely so tomorrow's WhatsApp row
+	// costs no control-plane change — which means a row pointed at the wrong binary is a real mistake an
+	// operator can make, and it must be named here rather than surface as a Slack API call that fails for
+	// an unrelated-looking reason.
+	if bot.Kind != "slack" {
+		return fmt.Errorf("bot %s (%q) has kind %q; this process relays Slack and nothing else", bot.ID, bot.Name, bot.Kind)
 	}
 
-	log.Printf("slack-bot: running as %s %q (kind=%s, agent_revision_id=%s, repository_binding_id=%s)",
-		bot.ID, bot.Name, bot.Kind, bot.AgentRevisionID, bot.RepositoryBindingID)
+	slackCfg, err := parseSlackConfig(bot.Config)
+	if err != nil {
+		return fmt.Errorf("bot %s (%q): %w", bot.ID, bot.Name, err)
+	}
+	log.Printf("slack-bot: running as %s %q (kind=%s agent_revision_id=%s repository_binding_id=%s)",
+		bot.ID, bot.Name, bot.Kind, orNone(bot.AgentRevisionID), orNone(bot.RepositoryBindingID))
+	log.Printf("slack-bot: %s", slackCfg.describe())
 
-	<-ctx.Done()
-	log.Printf("slack-bot: shutting down")
+	st, err := store.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	// Task 8 left Migrate deliberately unwired ("a caller, in whichever later task first needs a live
+	// *Store, is expected to call Migrate once, right after Open, at process boot"). This is that caller.
+	if err := st.Migrate(ctx); err != nil {
+		return err
+	}
+
+	// The credentials are redeemed LAST, immediately before the two things that need them — the outbound
+	// Slack clients and the dial. Nothing above this line can use a token, so nothing above it should be
+	// holding one.
+	creds, err := redeemSlackCredentials(ctx, client, slackCfg)
+	if err != nil {
+		return err
+	}
+
+	// Every relay.Run this process starts is tracked, so shutdown can wait for the ones still draining a
+	// run into Slack rather than dropping them mid-message.
+	var inflight sync.WaitGroup
+	runInBackground := func(f func()) {
+		inflight.Add(1)
+		go func() {
+			defer inflight.Done()
+			f()
+		}()
+	}
+
+	d := &dispatcher{
+		approvals: relay.ApprovalDeps{
+			Palai:            relay.NewApprovalsPalaiClient(client),
+			Slack:            relay.NewApprovalSlack(http.DefaultClient, slackAPIBase, creds.botToken),
+			AllowedApprovers: slackCfg.AllowedApprovers,
+		},
+		botUserID: slackCfg.BotUserID,
+	}
+	d.inbound = relay.NewInboundDeps(
+		st,
+		relay.NewPalaiClient(client),
+		relay.NewChannelSlackStreamer(http.DefaultClient, slackAPIBase, creds.botToken),
+		runInBackground,
+		d.onApprovalRequested,
+		bot.ID, slackCfg.BotUserID, bot.AgentRevisionID, bot.RepositoryBindingID,
+	)
+
+	log.Printf("slack-bot: opening Socket Mode")
+	socketErr := socket.Run(ctx, socket.Config{
+		AppToken: creds.appToken,
+		APIBase:  slackAPIBase,
+		Doer:     http.DefaultClient,
+	}, d)
+
+	// The socket is closed. Relays still draining a run are NOT cancelled with it — the Slack message each
+	// one opened has to be closed, or it renders as permanently streaming — so this waits for them, and
+	// says so if the wait runs out.
+	drained := make(chan struct{})
+	go func() {
+		inflight.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(shutdownGrace):
+		log.Printf("slack-bot: some runs were still streaming into Slack after %s; exiting anyway — their messages may stay open until Slack closes them", shutdownGrace)
+	}
+	return socketErr
 }
