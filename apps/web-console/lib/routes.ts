@@ -121,6 +121,20 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // except the environment picker, and BOTH of its states — a select, or the "create one first" note — are
   // real states worth scanning), while the panel is the one part that can still be a spinner.
   { path: "/environments", label: "Environments", group: "Build", readyTestId: "panel-environments", lead: "The named KEY=value sets an agent's shell commands run against. A value is written here and never read back." },
+  // panel-credentials. IN "Build" BESIDE Tools AND NOT IN "Manage", and the distinction is the one this
+  // console's nav is organised around: you BUILD the things a run needs. A Slack workspace is a way for a
+  // person to start one, which makes it a sibling of Agents and Repositories rather than of Deployment.
+  //
+  // It is its OWN route rather than a panel on /tools because they answer different questions: /tools is
+  // what a MODEL may call, this is how a HUMAN reaches this deployment. The second question is about to have
+  // siblings — POST /v1/queue-connections is the same shape with the same missing screen — so the plural
+  // label is deliberate and the page is built to grow a second panel rather than be renamed.
+  //
+  // The readiness signal is the LIST panel: the form renders synchronously behind a dialog, and the panel is
+  // the only part that can still be a spinner. It is EMPTY on a bootstrap stack, so on the real profile this
+  // scan covers the empty state — the state a first-day operator meets, and the one the connect button sits
+  // in.
+  { path: "/integrations", label: "Integrations", group: "Build", readyTestId: "panel-slack-connections", lead: "The chat workspaces people can start runs from. Credentials are sealed into this deployment's secret store — they are not written to any machine's disk." },
   // E29. FIRST IN "Operate", because a session is the thing every other row on this surface belongs to: a run
   // has a session, a response has a session, an approval is raised inside one. Until now the console could
   // list RESPONSES (/history) and had no screen for the container they live in, so "what has this deployment

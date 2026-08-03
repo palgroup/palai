@@ -191,6 +191,8 @@ let connectionSeq = 0;
 let routeSeq = 0;
 let routeRevisionSeq = 0;
 const ROUTE_REVISIONS = [];
+// The Slack workspace registration sequence (panel-credentials).
+let slackSeq = 0;
 
 // --- THE AGENT LINEAGE (E25 T6) --------------------------------------------------------------------------
 //
@@ -802,7 +804,17 @@ const USAGE_LEDGER = [
 const ADMIN = {
   organizations: listView([{ id: "org_local", object: "organization", display_name: "Local Org" }]),
   projects: listView([{ id: "proj_local", object: "project", organization_id: "org_local", display_name: "Default Project" }]),
-  "api-keys": listView([{ id: "key_admin", object: "api_key", project_id: "proj_local", scopes: ["provision", "responses"], revoked_at: null }]),
+  // `principal_id` JOINED THIS ROW BECAUSE THE REAL PROJECTION HAS ALWAYS CARRIED IT and this fixture did
+  // not. Measured against the live stack 2026-08-03:
+  //
+  //   GET /v1/api-keys -> {"id": "key_local", …, "principal_id": "prin_local", "scopes": [], …}
+  //
+  // A console control that offers principals — /integrations' "Run as principal", which needs one because
+  // vetSlackDefaultPolicy requires principal_id — would have rendered an EMPTY picker against this fixture
+  // and a full one against every real deployment. That is the fixture-is-thinner-than-production half of
+  // this tree's own rule, and it is the half that produces a console coded against a shape the API does not
+  // serve rather than one it cannot.
+  "api-keys": listView([{ id: "key_admin", object: "api_key", project_id: "proj_local", principal_id: "prin_admin", scopes: ["provision", "responses"], revoked_at: null }]),
   // `provider: "provider-one"`, NOT "fake". The seed used to say "fake", which is a family an operator can
   // never select — it is the deterministic in-process adapter, deliberately absent from
   // modelbroker.Families(). A fixture row nothing could have created is a fixture that teaches the console
@@ -821,6 +833,12 @@ const ADMIN = {
   // missing field. The real projection is identity/secrets.go secretRefView: {name, object, version,
   // updated_at} with updated_at a non-nil pointer on every scanned row.
   "secret-refs": listView([{ name: "provider-key", version: 2, object: "secret_ref", updated_at: "2026-07-24T00:00:00Z" }]),
+  // ONE WORKSPACE, SEEDED SO THE CONFLICT ARM IS REACHABLE. `T-FIXTURE-BOUND` exists so a spec can drive the
+  // retry an operator actually meets — a 409 AFTER the three seals have already succeeded, which is the only
+  // path on which "the credentials survived and here is what they are called" has to be said.
+  "slack-connections": listView([
+    { id: "slkc_1", object: "slack_connection", team_id: "T-FIXTURE-BOUND", enterprise_id: "", bot_user_id: "U-FIXTURE-BOT", disabled: false, created_at: "2026-07-24T00:00:00Z" },
+  ]),
   // The knowledge-base row carries the field names the REAL projection carries — `name`, not `display_name`,
   // plus `created_at` (knowledge/views.go knowledgeBaseView; embedding_route and active_index_revision_id are
   // omitempty and absent on a freshly created base). It said `display_name` until E25 T2, which nothing had
@@ -1854,6 +1872,70 @@ export const ROUTES = [
   },
 
   { method: "GET", pattern: "/v1/secret-refs", handle: adminList("secret-refs") },
+
+  // --- THE SLACK WORKSPACE REGISTRATION (panel-credentials). ---
+  //
+  // It mirrors api/slack_connections.go's vetSlackRegistration refusal-for-refusal, because that vetting IS
+  // the security boundary this surface has: slackRegistrationBody declares no signing_secret / bot_token /
+  // app_token field at all, so DisallowUnknownFields turns an inline credential into a 400. A fixture that
+  // silently ACCEPTED an inline value would make the console's most important property — that it seals
+  // first and sends only handles — untestable, because the wrong console would pass.
+  { method: "GET", pattern: "/v1/slack-connections", handle: adminList("slack-connections") },
+  {
+    method: "POST",
+    pattern: "/v1/slack-connections",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        // THE INLINE-CREDENTIAL REFUSAL, FIRST AND BY NAME. This is the arm that must never soften.
+        for (const forbidden of ["signing_secret", "bot_token", "app_token"]) {
+          if (body[forbidden] !== undefined) {
+            return sendProblem(
+              response,
+              400,
+              "invalid_request",
+              "the body accepts only team_id, enterprise_id, bot_user_id, the *_ref credential HANDLES, scopes, allowed_channels, allowed_users and default_policy — a raw signing secret or token is never accepted",
+            );
+          }
+        }
+        const teamID = typeof body.team_id === "string" ? body.team_id : "";
+        if (teamID === "") return sendProblem(response, 400, "invalid_request", "team_id is required");
+        if (typeof body.signing_secret_ref !== "string" || body.signing_secret_ref === "") {
+          return sendProblem(response, 400, "invalid_request", "signing_secret_ref is required (the v0 signature verify redeems it)");
+        }
+        const policy = body.default_policy;
+        if (policy === undefined || policy === null || typeof policy !== "object") {
+          return sendProblem(response, 400, "invalid_request", "default_policy is required: it carries the run target every event on this connection admits with");
+        }
+        if (typeof policy.agent_revision_id !== "string" || policy.agent_revision_id === "" || typeof policy.principal_id !== "string" || policy.principal_id === "") {
+          return sendProblem(
+            response,
+            400,
+            "invalid_request",
+            "default_policy.agent_revision_id and default_policy.principal_id are required — a binding that has not been told what to run, or as whom, admits nothing",
+          );
+        }
+        // THE CONFLICT. A workspace is registered ONCE (the E19 T1 cross-tenant hijack fix), and the fixture
+        // seeds `T-FIXTURE-BOUND` so a spec can drive the retry path an operator meets after the seals have
+        // already happened. One detail for both conflict kinds, exactly as the handler does: telling them
+        // apart would prove another tenant holds the workspace.
+        if (ADMIN["slack-connections"].data.some((r) => r.team_id === teamID)) {
+          return sendProblem(response, 409, "conflict", "this Slack workspace is already bound; it can be registered once");
+        }
+        slackSeq += 1;
+        const row = {
+          id: `slkc_console_${String(slackSeq).padStart(4, "0")}`,
+          object: "slack_connection",
+          team_id: teamID,
+          enterprise_id: typeof body.enterprise_id === "string" ? body.enterprise_id : "",
+          bot_user_id: typeof body.bot_user_id === "string" ? body.bot_user_id : "",
+          disabled: false,
+          created_at: new Date().toISOString(),
+        };
+        ADMIN["slack-connections"].data.unshift(row);
+        sendJSON(response, 201, { id: row.id, object: "slack_connection" });
+      }),
+  },
   {
     // WRITING THE CREDENTIAL — the first half of the console's two-call connection flow (E29). The
     // connection surface stores a REF, so a screen that takes a key must seal it here first and then name
@@ -3027,11 +3109,29 @@ const compiled = ROUTES.map((route) => ({ ...route, re: compile(route.pattern) }
 
 // dispatch is the ONLY thing that answers a /v1 request. A path that matches no row is a 404 — which is
 // exactly what the sweep relies on when it asserts this table is the fixture's whole surface.
+// dispatch matches a request against the table and runs the handler, STAMPING which row matched.
+//
+// THE HEADER EXISTS FOR THE CONFORMANCE SWEEP'S ARM 1, whose claim is "the table IS the dispatcher" and
+// which could only ever check that claim through a PROXY: it asserted the fixture does not answer 404. That
+// proxy is wrong in one direction and it has now cost twice. A handler that IS dispatched and answers a
+// legitimate application 404 — `POST /v1/model-routes/{route_id}/revisions` with an id that does not exist,
+// `PUT /v1/repository-bindings/{binding_id}/connection` likewise — is indistinguishable from a pattern
+// nothing routes, because both go out as sendProblem(404, "not_found"). Arm 1 therefore FAILED on two
+// correctly-dispatched routes, and because it asserts inside a loop it reported only the first: on `main`
+// that was repository-bindings, and adding the model-route write path merely changed WHICH one got named.
+//
+// Answering it by reordering a handler's validation so the probe gets a 400 would be making production lie
+// to a test. Answering it here makes the guard check the thing it actually claims, and it is STRICTER, not
+// looser: a pattern in the table that no compiled row matches still emits no header and still fails, which
+// is the defect arm 1 was written to catch. What stops failing is the false positive.
 function dispatch(method, pathname, request, response) {
   for (const route of compiled) {
     if (route.method !== method) continue;
     const m = route.re.exec(pathname);
     if (m !== null) {
+      // Set BEFORE the handler runs: a handler that answers immediately has already written the head by the
+      // time it returns, and a setHeader after that throws ERR_HTTP_HEADERS_SENT.
+      response.setHeader("x-fixture-dispatched", route.pattern);
       route.handle(request, response, m.groups ?? {});
       return true;
     }

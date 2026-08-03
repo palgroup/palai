@@ -514,18 +514,36 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
 
   // ARM 1 — the fixture's table IS its surface. Without this, ROUTES could describe routes the fixture does
   // not serve, and every later arm would be auditing a document instead of a server.
+  //
+  // IT ASKS THE DISPATCHER DIRECTLY NOW, and the change is a STRENGTHENING rather than a relaxation.
+  //
+  // This arm asserted `status !== 404`, which is a PROXY for "a row matched" and is wrong in one direction:
+  // a handler that IS dispatched and answers a legitimate application 404 — a write to a sub-resource of an
+  // id that does not exist, which is most of the id-bearing write patterns in the table — emits exactly the
+  // same `sendProblem(404, "not_found")` as a pattern nothing routes at all. So the arm failed on correctly
+  // served routes, and because it asserts inside a loop it named only the FIRST: on `main` that was
+  // `PUT /v1/repository-bindings/{binding_id}/connection`, and adding the model-route write path only
+  // changed which one got named. Two real instances, one visible, and the invisible one would have come
+  // back the moment the other was fixed.
+  //
+  // `x-fixture-dispatched` carries the PATTERN the dispatcher matched, so this now checks the claim itself,
+  // and checks something the old form could not: that the row which matched is the row being probed. A
+  // pattern in the table that no compiled row serves emits no header and still fails — which is the defect
+  // this arm exists for, and it is now the ONLY thing that fails it.
   it("every row of the fixture's route table is genuinely served by the fixture", async () => {
     for (const route of ROUTES) {
       const res = await fakeFetch(concretePath(route.pattern), {
         method: route.method,
         body: route.method === "POST" ? "{}" : undefined,
       });
+      const dispatched = res.headers.get("x-fixture-dispatched");
       await res.body?.cancel().catch(() => {});
-      assert.notEqual(
-        res.status,
-        404,
-        `the table declares ${route.method} ${route.pattern} but the fixture 404s it — the table is not the ` +
-          "dispatcher, so nothing this sweep concludes about the fixture is trustworthy",
+      assert.equal(
+        dispatched,
+        route.pattern,
+        `the table declares ${route.method} ${route.pattern} but the fixture dispatched ` +
+          `${dispatched === null ? "NOTHING" : dispatched} for it — the table is not the dispatcher, so nothing ` +
+          "this sweep concludes about the fixture is trustworthy",
       );
     }
   });

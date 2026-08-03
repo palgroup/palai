@@ -124,6 +124,10 @@ export const FORM_DIALOGS: { route: string; open: string; dialog: string; label:
   // runs actually use. Its picker and model field do not exist until the dialog is open, which is exactly
   // the shape that walked out of the contrast sweep once already.
   { route: "/registry", open: "route-publish-open", dialog: "route-publish-dialog", label: "Point runs at a connection" },
+  // The Slack workspace registration (panel-credentials). Three credential fields that do not exist in the
+  // DOM until the dialog is open — the largest single block of secret-bearing controls this console has, and
+  // therefore the one most worth scanning OPEN rather than at rest.
+  { route: "/integrations", open: "slack-connect-open", dialog: "slack-connect-dialog", label: "Connect a Slack workspace" },
   // THE FIRST TWO ROWS ON A DYNAMIC ROUTE (E30), and `dynamic` is what makes that expressible. Every row
   // above names a path the loop can `goto` directly; a binding's own page is keyed by an id, so this names
   // the DYNAMIC_CONSOLE_ROUTES pattern instead and the loop resolves it through concreteDynamicPath —
