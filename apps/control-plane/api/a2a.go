@@ -114,7 +114,6 @@ func (a a2aRuns) Admit(ctx context.Context, req a2a.RunRequest) (a2a.RunResult, 
 		Usage:          contracts.Usage{},
 		SessionID:      contracts.SessionID(sessionID),
 		RunID:          contracts.RunID(runID),
-		OrganizationID: contracts.OrganizationID(req.Org),
 		ProjectID:      contracts.ProjectID(req.Project),
 	})
 	if err != nil {
