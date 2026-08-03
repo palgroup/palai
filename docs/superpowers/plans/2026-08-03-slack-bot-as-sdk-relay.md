@@ -904,9 +904,26 @@ last run is still open, and the choice is a test case, not a comment.
 
 The implementer must read the `repository` object's own shape from the response-create JSON schema
 (`protocols/schemas/execution/response-create.json`) rather than guessing it, and must confirm
-whether `ResponseCreateRequest` is decoded with `DisallowUnknownFields` too. **The Go SDK's
-`Responses.Create` may not expose all of these fields yet — check `sdks/go/responses.go` first; if a
-needed field is missing, adding it is part of this task.**
+whether `ResponseCreateRequest` is decoded with `DisallowUnknownFields` too.
+
+**VE İKİNCİ ÇAĞRI BUGÜNKÜ SDK İLE YAPILAMAZ — ÖLÇÜLDÜ 2026-08-03, T9 DISPATCH EDİLMEDEN ÖNCE.**
+Sunucunun sözleşmesi altı alan taşıyor; SDK'nın `ResponseCreateRequest`'i (`sdks/go/types.go:321`)
+**hiçbirini** taşımıyor:
+
+```
+$ grep -oE '^\s+(AgentID|AgentRevisionID|Repository|Workspace|Delegation|RunTemplateRevisionID)\s' \
+      packages/contracts/response-create.gen.go
+  AgentID  AgentRevisionID  Delegation  Repository  RunTemplateRevisionID  Workspace
+$ … aynı grep sdks/go/types.go üzerinde
+  (boş)
+```
+
+Yani bugünkü SDK ile bir bot **agent'a bağlı bir run başlatamaz**: `agent_revision_id`'yi
+gönderecek alan yok. **T9'un kapsamı bunu içerir** — `AgentID`, `AgentRevisionID` ve `Repository`
+SDK'ya eklenir, sunucunun kendi şemasındaki adlarla. Diğer üçü (`Workspace`, `Delegation`,
+`RunTemplateRevisionID`) bu planın işi değildir ve **eklenmez**: kullanılmayan alan ölü koddur.
+
+`Metadata map[string]any` SDK'da **zaten var** — ve T16'nın bot atfı için muhtemel yeri odur.
 
 - [ ] **Step 1: Başarısız testi yaz**
 
