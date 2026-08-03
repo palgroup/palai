@@ -176,13 +176,24 @@ export function DesiredConfig({ reloadKey, onSaved }: { reloadKey: number; onSav
 
       {/* AND WHAT IT IS NOT, named rather than left as an absence. An operator who came here for
           per-machine configuration and finds none must learn that the axis exists elsewhere — otherwise
-          they conclude the product cannot do it. PALAI_RUNNER_CONCURRENCY is the one genuinely per-machine
-          knob and the control plane holds no copy of it, which is why it is not even listed below. */}
+          they conclude the product cannot do it.
+
+          THE SECOND SENTENCE USED TO SAY PALAI_RUNNER_CONCURRENCY "lives on the runner container itself:
+          this process holds no copy of it". Counting which halves are still true, because CLAUDE.md says
+          to do that rather than write "now it works":
+            * "this process holds no copy" — STILL TRUE, and it is why the row reports `observable: false`
+              rather than an effective value.
+            * "lives on the runner container itself" — NO LONGER TRUE as the whole story. A pool document
+              and a machine document both carry it (migration 000060), the control plane answers a machine
+              its own document on enrolment AND on a settings poll, and the machine applies it live.
+          So the correction is not "it moved" — it is that the value now has a WRITER here and a reader
+          there, which is exactly the pair the old sentence said did not exist. */}
       <p className="muted" data-testid="desired-config-not-per-machine">
-        To configure <strong>machines</strong>, use a runner pool on Fleet — a pool&apos;s posture and enrolment are
-        enforced by the registry. The one per-machine knob, <code>PALAI_RUNNER_CONCURRENCY</code>, lives on the runner
-        container itself: this process holds no copy of it, so it is not on this screen at all rather than reported as
-        unset.
+        To configure <strong>machines</strong>, use a runner pool or a single machine on Fleet — a pool&apos;s posture
+        and enrolment are enforced by the registry, and a machine&apos;s own configuration is laid over its
+        pool&apos;s. <code>PALAI_RUNNER_CONCURRENCY</code> is configured there, not here: this process holds no copy
+        of it, so it is not on this screen at all rather than reported as unset. A machine reports back whether it
+        applied what was saved, and Fleet shows that — <strong>saved is not the same as running.</strong>
       </p>
 
       {loadError === "" ? null : (
