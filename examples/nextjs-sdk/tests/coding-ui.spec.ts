@@ -710,16 +710,24 @@ test("the operator's bubble holds ONLY what the operator typed — and the hint 
   // AND THE STEERING STILL REACHED THE MODEL — by a different road than it used to. The create
   // carries `agent_id`, and the agent's published revision carries the text. Reading BOTH is what
   // makes this test survive the move: `input` is exactly what was typed, and the steering exists.
-  const seen = await page.request.get(`http://127.0.0.1:${UPSTREAM_PORT}/__introspect-coding`, {
-    headers: { Authorization: `Bearer ${API_KEY}` },
-  });
-  const body = (await seen.json()) as {
-    codingInputs: string[];
-    codingAgentIds: string[];
-    agentProfiles: { id: string; name: string }[];
-    agentRevisions: Record<string, { status: string; instructions: string }[]>;
+  // THE ASSERTION IS ABOUT THE WIRE, SO IT WAITS ON THE WIRE. The bubble above renders optimistically
+  // from client state, so `toHaveText("selam")` proves the client STARTED the create, not that the
+  // fake upstream received it — and this read is of the upstream's own memory. Reading it once, right
+  // after a UI condition, loses that race: MEASURED 2026-08-03, one full-suite run in three reported
+  // `codingInputs[0]` as undefined while the same test passed alone and on re-run.
+  const introspect = async () => {
+    const seen = await page.request.get(`http://127.0.0.1:${UPSTREAM_PORT}/__introspect-coding`, {
+      headers: { Authorization: `Bearer ${API_KEY}` },
+    });
+    return (await seen.json()) as {
+      codingInputs: string[];
+      codingAgentIds: string[];
+      agentProfiles: { id: string; name: string }[];
+      agentRevisions: Record<string, { status: string; instructions: string }[]>;
+    };
   };
-  expect(body.codingInputs[0]).toBe("selam");
+  await expect.poll(async () => (await introspect()).codingInputs[0]).toBe("selam");
+  const body = await introspect();
 
   const profile = body.agentProfiles.find((p) => p.name === "ios-coder")!;
   expect(body.codingAgentIds[0]).toBe(profile.id);
