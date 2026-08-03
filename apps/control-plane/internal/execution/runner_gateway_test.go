@@ -941,7 +941,8 @@ func TestGatewayRevokeDropsInFlightSessionFrames(t *testing.T) {
 
 // runnerSide plays the runner over an open lease: it streams one engine.ready frame,
 // expects the controller frame the gateway relays back, and reports the terminal
-// outcome — the exact wire packages/runner drives in production.
+// outcome — the exact wire packages/runner drives in production, routed by the same
+// RelayInbound serveLease runs so the relay under test is the shipped one.
 func runnerSide(ctx context.Context, session runner.Session) error {
 	lease, err := session.OpenLease(ctx)
 	if err != nil {
@@ -959,9 +960,14 @@ func runnerSide(ctx context.Context, session runner.Session) error {
 	if err := lease.SendEngineFrame(ctx, ready); err != nil {
 		return err
 	}
-	controllerFrame, err := lease.ReceiveControllerFrame(ctx)
-	if err != nil {
-		return err
+	inbound := make(chan contracts.EngineFrame, 1)
+	go runner.RelayInbound(ctx, lease, runner.NewToolServer(nil), inbound, func(string, ...any) {})
+
+	var controllerFrame contracts.EngineFrame
+	select {
+	case controllerFrame = <-inbound:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	if controllerFrame.Type != "run.start" {
 		return errors.New("runner did not receive the relayed run.start")

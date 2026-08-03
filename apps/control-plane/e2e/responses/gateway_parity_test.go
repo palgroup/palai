@@ -293,14 +293,17 @@ func (p *parityGateway) supervise(ctx context.Context, t *testing.T, image strin
 		defer func() { _ = closer.Close() }()
 	}
 
+	// The routing is the SHIPPED one. This loop used to be hand-written here, which made the parity it
+	// proves the parity of a runner nobody runs: serveLease routes through RelayInbound, and a copy
+	// cannot diverge visibly — it just keeps passing. Recording is layered on top rather than inlined,
+	// so what is observed is the frames the real relay emitted.
+	relayed := make(chan contracts.EngineFrame)
+	go runner.RelayInbound(ctx, lease, runner.NewToolServer(nil), relayed, func(string, ...any) {})
+
 	inbound := make(chan contracts.EngineFrame)
 	go func() {
 		defer close(inbound)
-		for {
-			frame, err := lease.ReceiveControllerFrame(ctx)
-			if err != nil {
-				return
-			}
+		for frame := range relayed {
 			recorder.record(frameJSON(frame))
 			select {
 			case inbound <- frame:

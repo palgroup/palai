@@ -73,9 +73,13 @@ func TestEnrolledRunnerReconnectsWithShortLivedIdentity(t *testing.T) {
 
 // TestLeaseSessionRelaysFramesAndReportsOutcome proves the persistent lease: OpenLease
 // keeps the connection open, SendEngineFrame delivers a runner->controller engine frame
-// the control plane can read, ReceiveControllerFrame decodes the controller.frame relayed
-// back, and Complete reports the terminal outcome and redacted stderr digest — the wire
+// the control plane can read, RelayInbound routes the controller.frame relayed back to the
+// engine, and Complete reports the terminal outcome and redacted stderr digest — the wire
 // the runner gateway (Task 11c) drives.
+//
+// It reads the frame off RelayInbound's channel rather than decoding one itself, because that
+// channel is what feeds the supervisor's stdin injection in production (packages/runner/serve.go):
+// asserting on the routed frame proves the relay a run depends on, not just the decode.
 func TestLeaseSessionRelaysFramesAndReportsOutcome(t *testing.T) {
 	stub := newStubControlPlane(t, []string{"enroll-token-1"}, stubOptions{now: conformanceNow(), relay: true})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -109,9 +113,14 @@ func TestLeaseSessionRelaysFramesAndReportsOutcome(t *testing.T) {
 		t.Fatalf("send engine frame: %v", err)
 	}
 
-	controllerFrame, err := lease.ReceiveControllerFrame(ctx)
-	if err != nil {
-		t.Fatalf("receive controller frame: %v", err)
+	inbound := make(chan contracts.EngineFrame, 1)
+	go runner.RelayInbound(ctx, lease, runner.NewToolServer(nil), inbound, func(string, ...any) {})
+
+	var controllerFrame contracts.EngineFrame
+	select {
+	case controllerFrame = <-inbound:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the relayed controller frame never reached the engine's inbound channel")
 	}
 	if controllerFrame.Type != "model.result" || controllerFrame.ID != contracts.FrameID("frm_controller1") {
 		t.Fatalf("relayed controller frame = %+v, want the model.result frame", controllerFrame)

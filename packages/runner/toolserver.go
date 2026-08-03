@@ -128,10 +128,16 @@ func decodeExecCommand(data map[string]any) (toolbroker.ShellCommand, error) {
 	return cmd, nil
 }
 
-// relayInbound reads control-plane->runner messages for the life of the lease and routes each one by
+// RelayInbound reads control-plane->runner messages for the life of the lease and routes each one by
 // type: an engine frame goes to the engine's stdin through inbound, an exec request runs on this
 // machine. It closes inbound when the connection ends, which is how the supervisor learns the
 // controller stopped sending.
+//
+// It is EXPORTED so that a test outside this package can drive the routing that ships instead of
+// re-spelling it. That is not hypothetical: apps/control-plane/e2e/responses/gateway_parity_test.go
+// carried a hand-written copy of this loop, and the copy had already diverged — it could only relay,
+// so the parity it proved was the parity of a runner that does not exist. A test that reimplements
+// the path it means to measure stays green while the real path changes underneath it.
 //
 // AN EXEC RUNS IN ITS OWN GOROUTINE SO THE READER KEEPS MOVING. Handling it inline would be simpler
 // and wrong: a command is allowed to take minutes (`xcodebuild` is the case this epic exists for),
@@ -144,7 +150,7 @@ func decodeExecCommand(data map[string]any) (toolbroker.ShellCommand, error) {
 // An unknown type still ends the relay, which is the behaviour that shipped before this branch
 // existed: the runner has no way to act on a message it cannot name, and continuing would leave the
 // control plane waiting on a reply the runner will never form.
-func relayInbound(ctx context.Context, session *LeaseSession, tools *ToolServer, inbound chan<- contracts.EngineFrame, logf func(string, ...any)) {
+func RelayInbound(ctx context.Context, session *LeaseSession, tools *ToolServer, inbound chan<- contracts.EngineFrame, logf func(string, ...any)) {
 	defer close(inbound)
 	for {
 		message, err := session.ReceiveMessage(ctx)

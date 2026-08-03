@@ -95,14 +95,14 @@ func TestToolServerAnswersWhenNoExecutorIsWired(t *testing.T) {
 // TestControllerFrameStillReachesTheEngine is this task's REGRESSION GATE. Before the branch existed
 // every inbound message was a controller.frame and went to the engine's stdin; adding a second type
 // must not cost that path, because if it does, every run dies. It drives the shipped reader over a
-// real websocket — relayInbound reading a real LeaseSession — so it measures the routing that ships,
+// real websocket — RelayInbound reading a real LeaseSession — so it measures the routing that ships,
 // not a re-spelling of it.
 func TestControllerFrameStillReachesTheEngine(t *testing.T) {
 	session, plane := leasePair(t)
 	inbound := make(chan contracts.EngineFrame, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go relayInbound(ctx, session, NewToolServer(nil), inbound, func(string, ...any) {})
+	go RelayInbound(ctx, session, NewToolServer(nil), inbound, func(string, ...any) {})
 
 	writeMessage(t, plane, contracts.RunnerMessage{
 		Protocol: RunnerProtocolV1,
@@ -138,7 +138,7 @@ func TestExecRequestRunsOnTheMachineAndAnswersOverTheWire(t *testing.T) {
 	inbound := make(chan contracts.EngineFrame, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go relayInbound(ctx, session, NewToolServer(exec), inbound, func(string, ...any) {})
+	go RelayInbound(ctx, session, NewToolServer(exec), inbound, func(string, ...any) {})
 
 	writeMessage(t, plane, contracts.RunnerMessage{
 		Protocol: RunnerProtocolV1,

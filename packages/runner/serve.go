@@ -504,7 +504,7 @@ func serveLease(ctx context.Context, supervisor *StreamSupervisor, leaseSession 
 	// requests on the same connection are not relayed at all — they run on THIS machine's executor
 	// (toolserver.go), which is the whole of what a lease can now be asked to do beyond an engine.
 	inbound := make(chan contracts.EngineFrame)
-	go relayInbound(leaseCtx, leaseSession, tools, inbound, logf)
+	go RelayInbound(leaseCtx, leaseSession, tools, inbound, logf)
 
 	sink := func(ctx context.Context, frame contracts.EngineFrame) error {
 		return leaseSession.SendEngineFrame(ctx, frame)

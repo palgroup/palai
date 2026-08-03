@@ -189,10 +189,11 @@ func closeConnection(connection *websocket.Conn, transport *http.Transport) {
 }
 
 // LeaseSession is a lease held over a live connection. After OpenLease the runner relays
-// each supervised engine frame to the controller with SendEngineFrame, feeds controller
-// frames back into the supervisor via ReceiveControllerFrame, and reports the terminal
-// outcome and redacted stderr digest with Complete. It stays outbound-only: the runner
-// still opens no inbound port, it keeps the one connection it dialed.
+// each supervised engine frame to the controller with SendEngineFrame, routes the inbound
+// messages with RelayInbound — engine frames to the supervisor, exec requests to this
+// machine's executor — and reports the terminal outcome and redacted stderr digest with
+// Complete. It stays outbound-only: the runner still opens no inbound port, it keeps the
+// one connection it dialed.
 type LeaseSession struct {
 	conn      *websocket.Conn
 	transport *http.Transport
@@ -210,7 +211,7 @@ func (l *LeaseSession) SendEngineFrame(ctx context.Context, frame contracts.Engi
 }
 
 // ReceiveMessage reads one controller->runner message off the lease connection and returns it
-// WITHOUT deciding what it is. The type branch belongs to the caller (relayInbound), because the
+// WITHOUT deciding what it is. The type branch belongs to the caller (RelayInbound), because the
 // runner now does two different things with an inbound message: a controller.frame is relayed into
 // the engine's stdin, an exec.request runs on this machine. A reader that decoded straight to an
 // engine frame could only express the first.
@@ -227,23 +228,6 @@ func (l *LeaseSession) ReceiveMessage(ctx context.Context) (contracts.RunnerMess
 		return contracts.RunnerMessage{}, fmt.Errorf("decode controller message: %w", err)
 	}
 	return message, nil
-}
-
-// ReceiveControllerFrame reads one controller->runner engine frame from a
-// controller.frame message and returns it for injection into the supervisor. It refuses any other
-// type, which is what makes it the narrow reader the engine conformance suite drives
-// (tests/conformance/engine/handshake_test.go): the lease's own relay uses ReceiveMessage and
-// branches, so a machine can be asked to run a command, but a caller that asked for an ENGINE frame
-// is still told when it did not get one.
-func (l *LeaseSession) ReceiveControllerFrame(ctx context.Context) (contracts.EngineFrame, error) {
-	message, err := l.ReceiveMessage(ctx)
-	if err != nil {
-		return contracts.EngineFrame{}, err
-	}
-	if message.Type != controllerFrameType {
-		return contracts.EngineFrame{}, fmt.Errorf("unexpected message type %q, want %s", message.Type, controllerFrameType)
-	}
-	return decodeRelayFrame(message.Data)
 }
 
 // SendExecResult writes a tool server's answer back to the control plane, wrapping it in the
