@@ -49,6 +49,33 @@ func TestConfigRefusesAMissingDatabaseURL(t *testing.T) {
 	}
 }
 
+// TestConfigRefusesANonPostgresDatabaseURL locks the cheap shape check on PALAI_BOT_DATABASE_URL: a
+// value that parses as a URL but is not postgres — the "wrong scheme" fat-finger — is refused at
+// startup rather than surfacing several tasks later when Task 8's store first dials it.
+func TestConfigRefusesANonPostgresDatabaseURL(t *testing.T) {
+	t.Setenv("PALAI_BOT_ID", "bot_1")
+	t.Setenv("PALAI_API_URL", "https://cp.example")
+	t.Setenv("PALAI_API_KEY", "ak_1")
+	t.Setenv("PALAI_BOT_DATABASE_URL", "not-a-url")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "PALAI_BOT_DATABASE_URL") {
+		t.Fatalf("error %v does not name the variable that is wrong", err)
+	}
+}
+
+// TestConfigRefusesAMalformedDatabaseURL is the other branch of the same check: a value url.Parse
+// itself rejects (not even URL-shaped).
+func TestConfigRefusesAMalformedDatabaseURL(t *testing.T) {
+	t.Setenv("PALAI_BOT_ID", "bot_1")
+	t.Setenv("PALAI_API_URL", "https://cp.example")
+	t.Setenv("PALAI_API_KEY", "ak_1")
+	t.Setenv("PALAI_BOT_DATABASE_URL", "postgres://%zz")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "PALAI_BOT_DATABASE_URL") {
+		t.Fatalf("error %v does not name the variable that is wrong", err)
+	}
+}
+
 // TestConfigLoadsAllFourVariables is the happy path: all four variables set, all four fields
 // carried through unchanged.
 func TestConfigLoadsAllFourVariables(t *testing.T) {

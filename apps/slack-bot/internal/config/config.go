@@ -8,6 +8,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 )
 
@@ -46,6 +47,9 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if err := validatePostgresURL(databaseURL); err != nil {
+		return Config{}, err
+	}
 	return Config{
 		BotID:        botID,
 		PalaiBaseURL: baseURL,
@@ -62,4 +66,19 @@ func requireEnv(name string) (string, error) {
 		return "", fmt.Errorf("%s is required", name)
 	}
 	return v, nil
+}
+
+// validatePostgresURL checks that PALAI_BOT_DATABASE_URL is at least URL-shaped with a postgres
+// scheme, so a fat-fingered value is refused here rather than several tasks later when the store
+// (Task 8) first dials it, from a different component. It parses and checks the scheme only —
+// opening a connection stays Task 8's job, not this skeleton's.
+func validatePostgresURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("PALAI_BOT_DATABASE_URL is not a valid URL: %w", err)
+	}
+	if u.Scheme != "postgres" && u.Scheme != "postgresql" {
+		return fmt.Errorf("PALAI_BOT_DATABASE_URL must be a postgres:// or postgresql:// URL, got %q", raw)
+	}
+	return nil
 }
