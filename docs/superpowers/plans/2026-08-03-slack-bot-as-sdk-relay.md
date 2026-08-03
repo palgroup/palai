@@ -642,44 +642,49 @@ git commit -m "feat(slack-bot): process skeleton and four-variable config"
 
 ---
 
-### Task 6: Slack protokol kodunun taşınması
+### Task 6: Adapter YERİNDE kalır — bot onu import eder
 
-**Files:**
-- Move: `adapters/integrations/slack/*.go` → `apps/slack-bot/internal/slack/`
+**ÖLÇÜM BU GÖREVİ DEĞİŞTİRDİ (2026-08-03).** Plan başta `git mv` diyordu. Sonra import yüzeyi
+ölçüldü:
 
-- [ ] **Step 1: Bağımsızlığı yeniden ölç**
+```
+$ grep -rl 'adapters/integrations/slack' --include='*.go' . | wc -l     → 61
+$ … | sed 's|/[^/]*$||' | sort | uniq -c | sort -rn
+  19 apps/control-plane/internal/extensions      4 tests/live/slack
+   9 apps/control-plane/internal/store           3 tests/uat/tool-approval
+   6 apps/control-plane/api                      2 tests/uat/code-and-ship
+   5 apps/control-plane/internal/execution       … (kalanı 1'er)
+   4 tests/uat
+```
+
+**61 dosyanın 41'i control plane'in içinde ve T15 onları zaten SİLİYOR.** Şimdi taşımak, 61 import'u
+düzeltip birkaç görev sonra 41'ini çöpe atmak demek — hem israf hem gereksiz risk, ve ikisi de bu
+projenin direktiflerine aykırı.
+
+**Bot ile adapter aynı modüldedir** (`github.com/palgroup/palai`), yani bot `adapters/integrations/slack`'i
+**bugün olduğu yerden import edebilir**. Taşımanın tek kazancı dizin estetiğidir ve o, T15'ten sonra
+20 dosyaya düşmüş bir yüzeyde bir dakikalık iştir.
+
+- [ ] **Step 1: Bağımsızlığı ölç ve KAYDET**
 
 Run: `grep -h 'palai/' adapters/integrations/slack/*.go | grep -v _test | grep '"'`
-Expected: **boş**. Boş değilse bu görev durur ve bağ önce kesilir — plan bu ölçüme dayanıyor.
+Expected: **boş** — adapter hiçbir Palai paketine bağlı değil (2026-08-03'te ölçüldü, boş).
+Boş değilse bağ önce kesilir; botun onu import etmesi bu ölçüme dayanıyor.
 
-- [ ] **Step 2: Taşı**
+- [ ] **Step 2: Botun adapter'ı kullandığını kanıtlayan bir test yaz**
 
-```bash
-git mv adapters/integrations/slack apps/slack-bot/internal/slack
-```
+Bu görev kod taşımaz; **botun bu paketi kullanabildiğini** sabitler. `apps/slack-bot` içinden
+adapter'ın bir saf fonksiyonunu (örneğin `slack.TruncateMarkdown` ya da imza doğrulama) çağıran,
+gerçekten bir şey iddia eden bir test yeterlidir.
 
-- [ ] **Step 3: Paket yolunu düzelt**
+- [ ] **Step 3: Derle, etiketli vet dahil**
 
-Run: `rg -l 'adapters/integrations/slack' --glob '*.go'`
-Her import `apps/slack-bot/internal/slack`'e çevrilir. **CP tarafındaki dosyalar T14'e kadar bu
-importu taşımaya devam eder** — o yüzden bu adımda CP hâlâ derlenir.
+Run: `go build ./... && go vet -tags="component live" ./... && go test ./apps/slack-bot/...`
 
-- [ ] **Step 4: Derle ve testleri koştur**
+- [ ] **Step 4: Commit**
 
-Run: `go build ./... && go test ./apps/slack-bot/...`
-Expected: PASS
-
-- [ ] **Step 5: Etiketli derlemeyi de doğrula**
-
-Run: `go vet -tags="component live" ./...`
-Expected: temiz. (Düz `vet` etiketli testlerdeki bayat çağıranları kaçırır — bu ağacın kayıtlı
-kuralı.)
-
-- [ ] **Step 6: Commit**
-
-```bash
-git commit -am "refactor(slack): move the pure Slack protocol code into the bot"
-```
+**Taşıma T15'ten SONRA yapılır** ve o zaman planın son adımı olarak kaydedilir:
+`git mv adapters/integrations/slack apps/slack-bot/internal/slack` + kalan ~20 import.
 
 ---
 
