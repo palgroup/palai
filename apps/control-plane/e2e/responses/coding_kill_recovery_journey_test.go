@@ -103,11 +103,10 @@ func TestCodingJourneyWithKillRecoveryDeterministic(t *testing.T) {
 	// provider SIGKILLs the engine at the push boundary after its checkpoint is durable. ---
 	const marker = "CODING-KILL-RECOVERY-DET-7d2b19"
 	store := newMemCheckpointStore()
-	dialer := &killableDialer{inner: subprocessDialer{engineDir: h.engineDir}}
+	dialer := &killableDialer{inner: subprocessDialer{engineDir: h.engineDir, shell: hostShellRunner{}}}
 	provider := &codingKillProvider{inner: &codingProvider{marker: marker}, kill: dialer.killLatest}
 	orch := h.newOrchestratorWithTools(dialer, provider, tools.FileTool(), tools.ShellTool(),
 		tools.CommitTool(), tools.TaskTool(), tools.PushTool(), tools.PullRequestTool())
-	orch.SetShellRunner(hostShellRunner{})
 	orch.SetCheckpointSink(h.checkpointSink(store))
 
 	// attempt-1: reaches the push boundary (checkpoint durable, push pending recorded), then SIGKILL.

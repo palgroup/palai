@@ -56,6 +56,9 @@ type parkFixture struct {
 	runID      string
 	root       string
 	orch       *Orchestrator
+	// exec is this fixture's machine: since A.3 the synchronous executor rides the attempt's channel,
+	// so every scripted dialer below carries it.
+	exec toolbroker.ShellRunner
 }
 
 func newParkFixture(t *testing.T) *parkFixture {
@@ -109,7 +112,10 @@ func newParkFixture(t *testing.T) *parkFixture {
 	// background runner — which is exactly what main.go wires on a native posture.
 	exec := host.NewExecutor(0)
 	f.orch = NewOrchestrator(repo, nil, modelbroker.New(modelbroker.Config{}), toolbroker.New(tools.ShellTool(), tools.FileTool()))
-	f.orch.SetShellRunner(exec)
+	// The SYNCHRONOUS executor is no longer set here (A.3): it reaches an attempt through that attempt's
+	// own channel, so it is handed to the scripted dialer below. The BACKGROUND one is still
+	// process-wide, which is the asymmetry orchestrator.go names.
+	f.exec = exec
 	// SetBackgroundRunner also wires the cancellation killer onto the orchestrator's OWN spine
 	// (repo.Spine()), which in production is the same *coordinator.Store startDispatch cancels through.
 	// This fixture holds a second handle to the same database for its seeding, so a cancellation proof
@@ -149,10 +155,21 @@ func (c *scriptedChannel) Close() error { return nil }
 
 // scriptedDialer hands the run loop the scripted engine. It replaces the gateway, and nothing else in
 // ExecuteAttempt is replaced.
-type scriptedDialer struct{ ch *scriptedChannel }
+//
+// Since A.3 it also carries the attempt's MACHINE, because that is where an executor comes from now:
+// the channel it hands back answers exec requests on `exec`, the same way a gatewayChannel answers them
+// on the runner that took the lease. A dialer with no exec yields an attempt with no shell — which is
+// what the tests about a machineless attempt want, so it stays expressible.
+type scriptedDialer struct {
+	ch   *scriptedChannel
+	exec toolbroker.ShellRunner
+}
 
 func (d *scriptedDialer) Dial(context.Context, AttemptDescriptor) (EngineChannel, error) {
-	return d.ch, nil
+	if d.exec == nil {
+		return d.ch, nil
+	}
+	return hostMachineChannel{EngineChannel: d.ch, exec: d.exec}, nil
 }
 
 func engineFrame(seq int, typ string, data map[string]any) contracts.EngineFrame {
@@ -186,7 +203,7 @@ func (f *parkFixture) runAttempt(t *testing.T, outcome string, background int) e
 	}
 	frames = append(frames, engineFrame(seq, "run.terminal", map[string]any{"outcome": outcome}))
 
-	f.orch.dialer = &scriptedDialer{ch: &scriptedChannel{frames: frames}}
+	f.orch.dialer = &scriptedDialer{ch: &scriptedChannel{frames: frames}, exec: f.exec}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	err := f.orch.ExecuteAttempt(ctx, AttemptDescriptor{
@@ -427,7 +444,7 @@ func TestALiveResponseReachesInProgressBeforeItParks(t *testing.T) {
 	// still live when the context ends and the response is observed mid-run.
 	f.orch.dialer = &scriptedDialer{ch: &scriptedChannel{frames: []contracts.EngineFrame{
 		engineFrame(1, "engine.ready", map[string]any{"selected_protocol": engineProtocol}),
-	}}}
+	}}, exec: f.exec}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = f.orch.ExecuteAttempt(ctx, AttemptDescriptor{

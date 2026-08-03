@@ -30,10 +30,9 @@ import (
 // workspace provisioner (root dir + local broker), the coding tools, a host shell runner, and a
 // recording changeset writer.
 func codingProvisionOrch(h *harness, marker, provisionRoot string) *execution.Orchestrator {
-	orch := h.newOrchestratorWithTools(subprocessDialer{engineDir: h.engineDir},
+	orch := h.newOrchestratorWithTools(subprocessDialer{engineDir: h.engineDir, shell: hostShellRunner{}},
 		&codingProvider{marker: marker}, tools.FileTool(), tools.ShellTool(), tools.CommitTool(),
 		tools.TaskTool(), tools.PushTool(), tools.PullRequestTool())
-	orch.SetShellRunner(hostShellRunner{})
 	orch.SetWorkspaceProvisioner(provisionRoot, repositories.NewAnonymousBroker())
 	orch.SetChangesetWriter(&recordingArtifactWriter{h: h})
 	return orch

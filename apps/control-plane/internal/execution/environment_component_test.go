@@ -81,7 +81,6 @@ func TestAnEnvironmentReachesARunsShellAndItsValueEntersNoDurableRow(t *testing.
 
 	orch := &Orchestrator{
 		spine: cs,
-		shell: host.NewExecutor(30 * time.Second),
 		// The resolver main.go wires, minus the env-file fallback this feature has no use for.
 		envSecrets: func(org, ref string) ([]byte, error) {
 			v, ok, err := secrets.Resolve(ctx, org, ref)
@@ -98,6 +97,9 @@ func TestAnEnvironmentReachesARunsShellAndItsValueEntersNoDurableRow(t *testing.
 		attempt:   AttemptDescriptor{RunID: contracts.RunID(runID), AttemptID: contracts.AttemptID(pinnedID("att")), Fence: 1},
 		tenant:    tenant,
 		sessionID: sessionID,
+		// The executor arrives with the ATTEMPT since A.3, not on the orchestrator: a command runs on the
+		// machine that took the lease, and this test's machine is this process.
+		ch: hostMachineChannel{exec: host.NewExecutor(30 * time.Second)},
 	}
 
 	// 1. ATTEMPT START — KEY NAMES ONLY. This is the scope half of the worker secret-handle pattern: the

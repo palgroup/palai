@@ -76,10 +76,9 @@ func TestCodingAutoProvisionDeterministic(t *testing.T) {
 	// carries NO workspace path.
 	const marker = "AUTOPROVISION-DET-4b1e9c"
 	provisionRoot := newAllocationRoot(t)
-	orch := h.newOrchestratorWithTools(subprocessDialer{engineDir: h.engineDir},
+	orch := h.newOrchestratorWithTools(subprocessDialer{engineDir: h.engineDir, shell: hostShellRunner{}},
 		&codingProvider{marker: marker}, tools.FileTool(), tools.ShellTool(), tools.CommitTool(),
 		tools.TaskTool(), tools.PushTool(), tools.PullRequestTool())
-	orch.SetShellRunner(hostShellRunner{})
 	orch.SetWorkspaceProvisioner(provisionRoot, repositories.NewAnonymousBroker())
 	orch.SetChangesetWriter(&recordingArtifactWriter{h: h})
 

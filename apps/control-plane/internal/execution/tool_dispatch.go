@@ -449,15 +449,40 @@ func (o *Orchestrator) deliverToolResult(ctx context.Context, st *attemptState, 
 	return st.ch.Send(ctx, o.frame(st, "tool.result", data, string(frame.ID)))
 }
 
+// shellFor derives the executor ONE attempt's commands run on, from the connection that attempt holds.
+// This is the whole of A.3 at the control plane: the executor is a property of the machine that took
+// the lease, so two attempts on two machines run on two executors.
+//
+// A CHANNEL THAT REACHES NO MACHINE YIELDS NO SHELL, AND THERE IS NO FALLBACK TO THIS HOST. That is
+// deliberate and it is the epic's purpose rather than a gap: a command that quietly ran beside the
+// control plane is the behaviour being removed, and it is worse than a refusal because nothing in the
+// run records where it ran. tools/shell.go turns the nil into an `unavailable` ANSWER, so the model is
+// told and the run continues.
+//
+// Exactly two kinds of channel exist in this tree and only the first is a machine. A *gatewayChannel
+// (runner_gateway.go) carries a runner's lease and implements ExecConn. A bare engine channel — the
+// subprocess dialer the deterministic e2e tier uses, and a2a/child stand-ins — speaks only engine
+// frames and does not; those attempts have no machine to run a command on, which is exactly what the
+// refusal says.
+func shellFor(ch EngineChannel) toolbroker.ShellRunner {
+	conn, ok := ch.(ExecConn)
+	if !ok {
+		// An untyped nil: a typed nil *RemoteShell here would be a NON-nil interface, and shell.go's
+		// `env.Shell == nil` refusal would never fire.
+		return nil
+	}
+	return NewRemoteShell(conn)
+}
+
 // execEnv is the per-attempt sandbox context the broker hands a workspace-touching tool: the
 // allocation root every path confines to, whether this attempt holds a read-only snapshot, and the
-// shell runner. A workspace-less attempt (no host path) yields a zero root, so a workspace tool
-// fails cleanly instead of touching the control plane's own filesystem.
+// shell runner this attempt's machine answers on. A workspace-less attempt (no host path) yields a
+// zero root, so a workspace tool fails cleanly instead of touching the control plane's own filesystem.
 func (o *Orchestrator) execEnv(st *attemptState) toolbroker.ExecEnv {
 	return toolbroker.ExecEnv{
 		WorkspaceRoot: st.attempt.WorkspaceHostPath,
 		ReadOnly:      st.attempt.WorkspaceReadOnly,
-		Shell:         o.shell,
+		Shell:         shellFor(st.ch),
 		// The background orchestration, BOUND TO THIS RUN (E26 T2). The run id travels with the seam rather
 		// than being read off an argument, so "kill task X" can be answered safely: a task id belongs to the
 		// run that started it, and a model naming somebody else's id is refused by the lookup itself.

@@ -251,10 +251,9 @@ func TestScheduledInvestigationJourneyDeterministic(t *testing.T) {
 	// attempt-1; attempt-2 restores via the ladder and emits the SINGLE strict-schema report. ---
 	reportJSON := `{"summary":"db pool exhausted under the retry storm","severity":"high","recommended_action":"cap the pool and add backoff"}`
 	ckStore := newMemCheckpointStore()
-	dialer := &killableDialer{inner: subprocessDialer{engineDir: h.engineDir}}
+	dialer := &killableDialer{inner: subprocessDialer{engineDir: h.engineDir, shell: hostShellRunner{}}}
 	provider := &investigationKillProvider{report: reportJSON, kill: dialer.killLatest}
 	orch := h.newOrchestratorWithTools(dialer, provider, tools.FileTool(), tools.ShellTool())
-	orch.SetShellRunner(hostShellRunner{})
 	orch.SetCheckpointSink(h.checkpointSink(ckStore))
 
 	alloc := newAllocationRoot(t)

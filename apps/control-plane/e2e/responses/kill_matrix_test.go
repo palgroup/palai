@@ -43,7 +43,11 @@ func (d *killableDialer) Dial(ctx context.Context, a execution.AttemptDescriptor
 	if err != nil {
 		return nil, err
 	}
-	if sc, ok := ch.(*subprocessChannel); ok && sc.cmd != nil && sc.cmd.Process != nil {
+	// LOOK THROUGH THE MACHINE WRAPPER (A.3). A dial that carries an executor returns a
+	// hostMachineChannel around the engine subprocess, and a bare assertion for *subprocessChannel would
+	// simply stop matching: procs would stay empty, killLatest would kill nothing, and every recovery
+	// proved below would pass without a kill ever happening.
+	if sc, ok := engineSubprocessOf(ch); ok && sc.cmd != nil && sc.cmd.Process != nil {
 		d.mu.Lock()
 		d.procs = append(d.procs, sc.cmd.Process)
 		d.mu.Unlock()

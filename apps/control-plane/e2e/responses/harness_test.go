@@ -316,6 +316,11 @@ type subprocessDialer struct {
 	onSend    func(contracts.EngineFrame)
 	dupType   string
 	mutateDup bool
+	// shell is this attempt's MACHINE (A.3). Since the orchestrator no longer holds a process-wide
+	// executor, an attempt that runs commands gets one through the channel its dial returns — so a test
+	// that needs the shell tool sets this, and one that does not leaves it nil and its attempt truthfully
+	// has no machine.
+	shell toolbroker.ShellRunner
 }
 
 func (d subprocessDialer) Dial(_ context.Context, attempt execution.AttemptDescriptor) (execution.EngineChannel, error) {
@@ -353,7 +358,41 @@ func (d subprocessDialer) Dial(_ context.Context, attempt execution.AttemptDescr
 	if err := ch.write(helloFrame(attempt)); err != nil {
 		return nil, err
 	}
-	return ch, nil
+	if d.shell == nil {
+		return ch, nil
+	}
+	return hostMachineChannel{EngineChannel: ch, shell: d.shell}, nil
+}
+
+// hostMachineChannel is this tier's machine: an engine channel that also answers exec requests, by
+// running the command HERE. It is the deterministic mirror of a gatewayChannel, whose exec requests
+// travel to the runner that took the lease — same seam, same interface, one process instead of two.
+//
+// The ceiling is the same one hostShellRunner already documents: this proves the file->shell tool
+// round-trip and the shared-workspace observation, never the sandbox enforcement.
+type hostMachineChannel struct {
+	execution.EngineChannel
+	shell toolbroker.ShellRunner
+}
+
+// engineSubprocessOf resolves the engine subprocess behind a dialed channel, whether or not that
+// channel was wrapped to also reach a machine.
+func engineSubprocessOf(ch execution.EngineChannel) (*subprocessChannel, bool) {
+	if machine, wrapped := ch.(hostMachineChannel); wrapped {
+		ch = machine.EngineChannel
+	}
+	sc, ok := ch.(*subprocessChannel)
+	return sc, ok
+}
+
+func (c hostMachineChannel) StartExec(ctx context.Context, _ string, cmd toolbroker.ShellCommand) (<-chan execution.ExecAnswer, func(), error) {
+	answers := make(chan execution.ExecAnswer, 1)
+	// Its own goroutine, as the real transport is: the caller selects on this channel and its context.
+	go func() {
+		result, err := c.shell.Run(ctx, cmd)
+		answers <- execution.ExecAnswer{Result: result, Err: err}
+	}()
+	return answers, func() {}, nil
 }
 
 type subprocessChannel struct {

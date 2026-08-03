@@ -129,7 +129,8 @@ func (h *backgroundHarness) attempt(fence uint64) (*Orchestrator, *attemptState,
 		shellTool := tools.ShellTool()
 		shellTool.RequiresApproval = h.gated
 		h.orch = &Orchestrator{spine: h.spine, tools: toolbroker.New(shellTool, tools.FileTool(), tools.BackgroundKillTool())}
-		h.orch.SetShellRunner(h.shell)
+		// Only the BACKGROUND runner is process-wide since A.3. The synchronous one rides the attempt's
+		// channel below, which is where production's comes from too.
 		h.orch.SetBackgroundRunner(h.background)
 	}
 	ch := &recordingChannel{}
@@ -143,7 +144,10 @@ func (h *backgroundHarness) attempt(fence uint64) (*Orchestrator, *attemptState,
 		sessionID:  h.sessionID,
 		responseID: h.responseID,
 	}
-	st.ch = ch
+	// The attempt's machine, counted by the same countingShell the assertions read: a command reaches it
+	// through the connection now, so wrapping the recording channel is how this harness says "this
+	// attempt landed on a machine that runs commands".
+	st.ch = hostMachineChannel{EngineChannel: ch, exec: h.shell}
 	return orch, st, ch
 }
 

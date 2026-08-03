@@ -117,10 +117,9 @@ func TestCodingJourneyDeterministic(t *testing.T) {
 	// provider is FORCED (by script) to write repo/feature.txt then run a test that reads it back — the
 	// real tool round-trip against the prepared workspace, the deterministic mirror of the live T4 loop. ---
 	const marker = "CODING-JOURNEY-DET-8f3a2c"
-	orch := h.newOrchestratorWithTools(subprocessDialer{engineDir: h.engineDir},
+	orch := h.newOrchestratorWithTools(subprocessDialer{engineDir: h.engineDir, shell: hostShellRunner{}},
 		&codingProvider{marker: marker}, tools.FileTool(), tools.ShellTool(), tools.CommitTool(),
 		tools.TaskTool(), tools.PushTool(), tools.PullRequestTool())
-	orch.SetShellRunner(hostShellRunner{})
 
 	if err := orch.ExecuteAttempt(ctx, h.workspaceDescriptor(runID, 1, alloc)); err != nil {
 		t.Fatalf("execute coding attempt: %v", err)

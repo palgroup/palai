@@ -56,13 +56,21 @@ type Orchestrator struct {
 	models *modelbroker.Broker
 	tools  *toolbroker.Broker
 	route  ModelRoute
-	// shell runs argv commands for the workspace shell tool inside the sandbox (spec §28.8). Nil
-	// when no sandbox driver is wired into this control plane — a shell tool call then fails
-	// cleanly rather than escaping. main.go injects it via SetShellRunner where a driver exists.
-	shell toolbroker.ShellRunner
-	// background starts a shell command that OUTLIVES the attempt that started it (E26 T1). It is a
-	// SEPARATE field from shell rather than a capability of it, and separate because the two answer
-	// different questions: a ShellRunner returns a result, a BackgroundRunner returns a handle. Nil when
+	// THERE IS NO `shell` FIELD, AND ITS ABSENCE IS THE POINT (A.3). A ShellRunner held here would be
+	// one executor for the whole process, and every attempt got it: two runs on two machines were two
+	// runs on the SAME executor, so "this one on a Mac, that one in a container" could not be expressed.
+	// The runner is now derived per attempt from the connection that attempt holds — shellFor in
+	// tool_dispatch.go, where the branch that yields none is also named.
+	//
+	// background is UNCHANGED and still process-wide, which is a real inconsistency rather than an
+	// oversight: a background task outlives the attempt that started it, so the attempt's connection is
+	// the wrong lifetime to hang it on. Moving it needs a machine-side task registry, which is E26 T5's
+	// seam and not this epic's. Today a synchronous command runs on the attempt's machine while a
+	// backgrounded one runs beside the control plane.
+	//
+	// background starts a shell command that OUTLIVES the attempt that started it (E26 T1). It answers a
+	// different question from a ShellRunner: a ShellRunner returns a result, a BackgroundRunner returns a
+	// handle. Nil when
 	// the wired posture cannot detach — a background tool call then fails cleanly, and specifically does
 	// NOT fall back to running the command synchronously: a model that asked for a background task and
 	// got a blocking call is blocked in exactly the way the feature exists to prevent. main.go injects it
@@ -192,14 +200,10 @@ func (o *Orchestrator) canPublish(connectionRef string) error {
 // dispatches through that route instead (effectiveRoute), and a project without one runs on this.
 func (o *Orchestrator) SetModelRoute(r ModelRoute) { o.route = r }
 
-// SetShellRunner injects the sandbox shell runner the workspace shell tool executes through. Left
-// unset, a shell tool call fails cleanly (no runner) rather than escaping the sandbox.
-func (o *Orchestrator) SetShellRunner(s toolbroker.ShellRunner) { o.shell = s }
-
 // SetBackgroundRunner injects the detached shell runner a background task is started through (E26 T1).
 // Left unset — which is every deployment before E26 and every posture that cannot detach — the dispatch
-// is bit-unchanged: the same SetShellRunner/SetHookFirer/SetPublisher discipline, where an unwired seam
-// means the feature is simply absent rather than half-present.
+// is bit-unchanged: the same SetHookFirer/SetPublisher discipline, where an unwired seam means the
+// feature is simply absent rather than half-present.
 //
 // IT ALSO WIRES THE CANCELLATION KILLER, IN THE SAME CALL AND DELIBERATELY (E26 T5). A deployment that
 // can START a background task and cannot END one when its run is cancelled is precisely the orphan this

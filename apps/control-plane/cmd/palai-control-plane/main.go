@@ -788,8 +788,13 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			orch.SetConnectionSecrets(repositoryConnectionSecret)
 			// The changeset writer is wired above on the object store (it doubles as the research
 			// body-artifact seam); a workspace-bound run reuses that same writer for its changeset compile.
+			// THE SYNCHRONOUS SHELL IS NO LONGER WIRED HERE, AND NOTHING REPLACED IT (A.3). A command
+			// now runs on the machine that holds the attempt's lease, derived from that attempt's own
+			// connection (execution.shellFor) — so there is nothing process-wide left to inject. This
+			// posture still builds an executor for the DETACHED half below, and that asymmetry is real:
+			// a background task outlives its attempt, so it stays on the control plane's own host until
+			// the machine grows a task registry of its own.
 			if shell := shellRunnerFromEnv(); shell != nil {
-				orch.SetShellRunner(shell)
 				// The DETACHED half of the same posture (E26 T1). Both shipped executors can start a command
 				// that outlives the attempt, so the assertion holds for both today — but it is written as a
 				// type assertion rather than assumed, because ShellRunner is the interface main.go builds

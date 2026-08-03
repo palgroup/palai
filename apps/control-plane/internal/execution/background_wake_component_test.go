@@ -99,7 +99,7 @@ func (f *wakeFixture) spawnAndTerminal(t *testing.T, outcome string) {
 			_ = syscall.Kill(-pgid, syscall.SIGKILL)
 		}
 	})
-	f.orch.dialer = &scriptedDialer{ch: &scriptedChannel{frames: frames}}
+	f.orch.dialer = &scriptedDialer{ch: &scriptedChannel{frames: frames}, exec: f.exec}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := f.orch.ExecuteAttempt(ctx, AttemptDescriptor{
@@ -168,7 +168,9 @@ func (f *wakeFixture) secondPlane(t *testing.T) *Orchestrator {
 	t.Cleanup(repo.Close)
 	exec := host.NewExecutor(0)
 	orch := NewOrchestrator(repo, nil, modelbroker.New(modelbroker.Config{}), toolbroker.New(tools.ShellTool(), tools.FileTool()))
-	orch.SetShellRunner(exec)
+	// Only the BACKGROUND half is process-wide since A.3, and only it is what this plane is for: it
+	// observes and reaps a task the FIRST plane started. A synchronous executor would reach an attempt
+	// through that attempt's channel, and this plane opens no attempt.
 	orch.SetBackgroundRunner(exec)
 	return orch
 }

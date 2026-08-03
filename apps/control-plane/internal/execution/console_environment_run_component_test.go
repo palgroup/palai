@@ -206,7 +206,6 @@ func TestAConsoleWrittenEnvironmentReachesTheShellOfARunItPinned(t *testing.T) {
 	// the sealed values behind it.
 	orch := &Orchestrator{
 		spine: cs,
-		shell: host.NewExecutor(30 * time.Second),
 		envSecrets: func(org, ref string) ([]byte, error) {
 			v, ok, err := secrets.Resolve(ctx, org, ref)
 			if err != nil {
@@ -222,6 +221,8 @@ func TestAConsoleWrittenEnvironmentReachesTheShellOfARunItPinned(t *testing.T) {
 		attempt:   AttemptDescriptor{RunID: contracts.RunID(runID), AttemptID: contracts.AttemptID(pinnedID("att")), Fence: 1},
 		tenant:    tenant,
 		sessionID: sessionID,
+		// The executor arrives with the ATTEMPT since A.3 — this test's machine is this process.
+		ch: hostMachineChannel{exec: host.NewExecutor(30 * time.Second)},
 	}
 	keys, err := orch.resolveEnvKeys(ctx, st)
 	if err != nil {
