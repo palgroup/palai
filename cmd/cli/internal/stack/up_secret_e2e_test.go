@@ -5,6 +5,7 @@ package stack
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -20,8 +21,9 @@ import (
 // the owner met — "secrets do not survive a restart" — was not what was happening. Secrets are
 // envelope-encrypted rows in Postgres and identity/secrets.go re-reads the row on every resolve; there
 // is no cache to lose. What the stack lost was the POINTER: compose interpolated
-// PALAI_SECRET_MASTER_KEY_FILE from the invoking shell, only `palai up`'s applySlackEnv ever exported
-// it, and it did so only when Slack credentials were present. Without them dbSecretStore was nil, the
+// PALAI_SECRET_MASTER_KEY_FILE from the invoking shell, the only thing that ever exported it was the
+// bring-up's Slack env step, and that ran only when Slack credentials were present (the step is gone
+// entirely now, and compose writes the path literally). Without them dbSecretStore was nil, the
 // /v1/secret-refs routes were never mounted, and step 2 below answered 404 — the write never happened
 // at all, on either side of the restart.
 //
@@ -37,8 +39,9 @@ func TestASecretSurvivesARestartOnAStackWithNoSlackApp(t *testing.T) {
 	t.Setenv("PALAI_COMPOSE_FILE", filepath.Join(root, "deploy", "compose", "compose.yaml"))
 	t.Setenv("PALAI_DISPATCH_WORKERS", "1")
 	t.Setenv("PALAI_MODEL_PROVIDER", "fake")
-	// The three Slack variables `palai up` used to key the secret store off. Explicitly cleared so a
-	// developer's exported shell cannot make this test pass for the wrong reason.
+	// The three Slack variables `palai up` used to key the secret store off — it no longer reads them at
+	// all — and the POINTER, which is the one that still decides this test. All cleared so a developer's
+	// exported shell cannot make it pass for the wrong reason.
 	for _, v := range []string{"SLACK_TEAM_ID", "SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "PALAI_SECRET_MASTER_KEY_FILE"} {
 		t.Setenv(v, "")
 	}
@@ -78,7 +81,7 @@ func TestASecretSurvivesARestartOnAStackWithNoSlackApp(t *testing.T) {
 	// 2. Write a secret. A 404 here is the whole bug: the routes are mounted only when dbSecretStore is
 	//    non-nil, which is only when the master-key POINTER reached the container.
 	const canary = "e21-t2-canary"
-	if err := api.putSecretRef(canary, "value-that-must-outlive-a-restart"); err != nil {
+	if err := storeSecretRef(api, canary, "value-that-must-outlive-a-restart"); err != nil {
 		t.Fatalf("store a secret on a Slack-free stack: %v", err)
 	}
 
@@ -90,7 +93,7 @@ func TestASecretSurvivesARestartOnAStackWithNoSlackApp(t *testing.T) {
 
 	// 4. The store is still mounted after the restart — the write path proves it end to end, since a
 	//    nil dbSecretStore leaves the route absent rather than failing.
-	if err := api.putSecretRef(canary+"-after", "written after the restart"); err != nil {
+	if err := storeSecretRef(api, canary+"-after", "written after the restart"); err != nil {
 		t.Fatalf("the secret store did not survive the restart: %v", err)
 	}
 
@@ -122,5 +125,28 @@ func TestASecretSurvivesARestartOnAStackWithNoSlackApp(t *testing.T) {
 	if string(plain) != "value-that-must-outlive-a-restart" {
 		// Length only: the assertion is the round-trip, and a mismatch must not print either value.
 		t.Fatalf("the secret decrypted to %d bytes, not the value that was stored", len(plain))
+	}
+}
+
+// storeSecretRef writes one credential VALUE under its handle through the E13 T3 secret store — the SAME
+// write-path a production tenant uses, envelope-encrypted at rest.
+//
+// It lives here rather than on apiClient because `palai up` no longer stores a secret itself: the one caller
+// it had was the Slack wiring, and a method kept alive for its test alone is the dead code this task exists
+// to remove. The 404 arm is spelled out because it is the WHOLE bug this test guards: the /v1/secret-refs
+// routes are mounted only when the control-plane booted with a resolvable master-key pointer, so a stack
+// that lost it answers "no such route" rather than failing the write.
+func storeSecretRef(c *apiClient, name, value string) error {
+	status, err := c.do(http.MethodPost, "/v1/secret-refs", map[string]any{"name": name, "value": value}, nil)
+	switch {
+	case err != nil:
+		return err
+	case status == http.StatusCreated:
+		return nil
+	case status == http.StatusNotFound:
+		return fmt.Errorf("POST /v1/secret-refs = 404: the control-plane booted with no secret store, so the handle %q "+
+			"could resolve nowhere (PALAI_SECRET_MASTER_KEY_FILE must name a 32-byte hex key when the container starts)", name)
+	default:
+		return fmt.Errorf("POST /v1/secret-refs = %d storing the handle %q, want 201", status, name)
 	}
 }

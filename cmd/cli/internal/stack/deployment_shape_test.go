@@ -38,9 +38,12 @@ func TestComposeOnlyHelpersAreReachedThroughAShapeDispatcher(t *testing.T) {
 	}
 	// dispatchers are the functions allowed to call them: each one picks by the native flag, which is
 	// what makes the call correct rather than lucky.
+	//
+	// controlPlaneLog was the second one until the Slack step that read the control-plane's log left this
+	// package entirely; it had no other caller, so it went with it. The rule is unchanged and so is its
+	// reason — what shrank is the set of helpers it has to govern.
 	dispatchers := map[string]bool{
 		"restartControlPlane": true,
-		"controlPlaneLog":     true,
 	}
 
 	fset := token.NewFileSet()
@@ -95,7 +98,6 @@ func TestTheShapeDispatchersBranchOnNative(t *testing.T) {
 	// want maps each dispatcher to the native-side call its branch must make.
 	want := map[string]string{
 		"restartControlPlane": "restartNative",
-		"controlPlaneLog":     "ReadFile",
 	}
 	seen := map[string]bool{}
 	for _, p := range pkg {

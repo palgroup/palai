@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -106,177 +107,115 @@ func TestEveryBringUpLeavesABootableMasterKey(t *testing.T) {
 	}
 }
 
-// TestMasterKeyIsNoLongerSlackConditional: the master key is not a Slack feature. applySlackEnv used to
-// own it — which is exactly why a stack with no Slack app had no usable secret store. The bring-up must
-// leave a bootable key whether or not any Slack value is present.
-func TestMasterKeyIsNoLongerSlackConditional(t *testing.T) {
+// TestMasterKeyIsMintedOnceAndNeverReplaced: the master key seals every secret in the store, so a
+// second `palai up` that re-minted it would make every previously stored credential undecryptable — and
+// the fail-closed resolver would then refuse rather than fall back, taking every *_ref handle on the
+// stack down with it.
+func TestMasterKeyIsMintedOnceAndNeverReplaced(t *testing.T) {
 	p := tempPaths(t)
-	if w := applySlackEnv(p, func(string) string { return "" }); len(w) != 0 {
-		t.Fatalf("a Slack-free environment produced Slack warnings: %v", w)
+	if err := ensureMasterKey(p); err != nil {
+		t.Fatalf("mint the master key: %v", err)
 	}
+	first, err := os.ReadFile(p.masterKey)
+	if err != nil {
+		t.Fatalf("read the minted key: %v", err)
+	}
+	if _, err := hex.DecodeString(strings.TrimSpace(string(first))); err != nil || len(strings.TrimSpace(string(first))) != 64 {
+		t.Fatalf("the minted key is not 64 hex chars (identity.ParseMasterKey's AES-256 contract): %d chars", len(first))
+	}
+	info, err := os.Stat(p.masterKey)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("the master key file is mode %v, want 0600", info.Mode().Perm())
+	}
+	if err := ensureMasterKey(p); err != nil {
+		t.Fatalf("second ensure: %v", err)
+	}
+	second, _ := os.ReadFile(p.masterKey)
+	if string(second) != string(first) {
+		t.Fatal("the master key was replaced on a second bring-up: every secret already sealed under it is now undecryptable")
+	}
+}
+
+// TestMasterKeyRefusesToGuessAtAnUnusableOne: a file holding something that is not a 32-byte hex key
+// makes the control-plane log.Fatalf at boot (identity.ParseMasterKey is a startup error by design).
+// Overwriting it would destroy whatever it was; booting on it would take the stack down. Refuse and
+// say so instead.
+func TestMasterKeyRefusesToGuessAtAnUnusableOne(t *testing.T) {
+	p := tempPaths(t)
+	if err := os.WriteFile(p.masterKey, []byte("REPLACE_WITH_OPENSSL_RAND_HEX_32"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := ensureMasterKey(p)
+	if err == nil {
+		t.Fatal("an unusable master key was accepted; the control-plane would refuse to boot on it")
+	}
+	if !strings.Contains(err.Error(), p.masterKey) {
+		t.Fatalf("the refusal must name the file so it can be fixed, got: %v", err)
+	}
+	after, _ := os.ReadFile(p.masterKey)
+	if string(after) != "REPLACE_WITH_OPENSSL_RAND_HEX_32" {
+		t.Fatal("the existing master key was overwritten")
+	}
+}
+
+// TestEverySecretSlotComposeMountsExists: compose bind-mounts each file-secret and a MISSING source
+// fails `compose up` outright — which is why `palai init` has always created the provider-one slot
+// empty. The master-key slot joins it, and a stack initialised by an earlier build (whose .palai has
+// no such file, and whose `init` short-circuits on an existing config.json) must be repaired by the
+// bring-up rather than left unable to start.
+func TestEverySecretSlotComposeMountsExists(t *testing.T) {
+	p := tempPaths(t)
 	if err := ensureSecretSlots(p); err != nil {
 		t.Fatalf("ensure the secret slots: %v", err)
 	}
-	key, _ := readTrimmed(p.masterKey)
-	if len(key) != 64 {
-		t.Fatal("a bring-up with NO Slack credentials left no usable master key — the secret store would stay nil, " +
-			"which is the whole of §3.6 D5")
-	}
-}
-
-// --- the two ids `palai up` used to demand and silently skip over ---------------------------------
-
-// TestRunTargetIsNoLongerAPrerequisiteForRegistration is the item-2 RED. Today a missing
-// SLACK_AGENT_REVISION_ID / SLACK_PRINCIPAL_ID makes slackRegistration return a SKIP, `palai up` exits
-// green, and the operator sees a successful install that cannot run anything. Registration must no
-// longer refuse for want of ids the bring-up can provision itself.
-func TestRunTargetIsNoLongerAPrerequisiteForRegistration(t *testing.T) {
-	get := envGetter(map[string]string{
-		"SLACK_TEAM_ID":        "T123",
-		"SLACK_SIGNING_SECRET": "shhh",
-	})
-	body, skip := slackRegistration(get)
-	if skip != "" {
-		t.Fatalf("registration skipped for want of a run target it can provision: %q", skip)
-	}
-	if body["team_id"] != "T123" {
-		t.Fatalf("team_id = %v", body["team_id"])
-	}
-	// The body is built WITHOUT a run target; wireSlack fills it from resolveRunTarget, so nothing here
-	// may invent one.
-	if _, present := body["default_policy"]; present {
-		t.Fatal("slackRegistration invented a default_policy: the run target is resolved against the running stack, not guessed")
-	}
-}
-
-// TestExplicitRunTargetAlwaysWins: an operator who names both ids gets exactly those, and the bring-up
-// creates nothing. Explicit configuration is never overridden by provisioning.
-func TestExplicitRunTargetAlwaysWins(t *testing.T) {
-	api, calls := fakeProvisioningAPI(t)
-	target, err := resolveRunTarget(api, envGetter(map[string]string{
-		"SLACK_AGENT_REVISION_ID": "arev_explicit",
-		"SLACK_PRINCIPAL_ID":      "prin_explicit",
-	}), false)
-	if err != nil {
-		t.Fatalf("resolve the run target: %v", err)
-	}
-	if target.revision != "arev_explicit" || target.principal != "prin_explicit" {
-		t.Fatalf("explicit configuration was overridden: %+v", target)
-	}
-	if len(*calls) != 0 {
-		t.Fatalf("the bring-up provisioned against a fully-configured run target: %v", *calls)
-	}
-	if target.resolved != "" {
-		t.Fatalf("nothing was resolved, but the report claims %q", target.resolved)
-	}
-}
-
-// TestMissingRunTargetIsProvisionedAndSaidOutLoud is the behaviour the plan names: with neither id set,
-// `palai up` establishes both over the EXISTING provisioning API (no new path), and PRINTS what it
-// bound. A binding the operator is not told about is the same silence in a new place.
-func TestMissingRunTargetIsProvisionedAndSaidOutLoud(t *testing.T) {
-	api, calls := fakeProvisioningAPI(t)
-	target, err := resolveRunTarget(api, envGetter(nil), false)
-	if err != nil {
-		t.Fatalf("resolve the run target: %v", err)
-	}
-	if target.revision == "" || target.principal == "" {
-		t.Fatalf("the run target was not provisioned: %+v", target)
-	}
-	if target.resolved == "" {
-		t.Fatal("both ids were established and the operator is told nothing — the silent skip has become a silent create")
-	}
-	if !strings.Contains(target.resolved, target.revision) || !strings.Contains(target.resolved, target.principal) {
-		t.Fatalf("the report line names neither id it bound: %q", target.resolved)
-	}
-	// The revision must be PUBLISHED: coordinator.store verifies published_at before pinning a run, so a
-	// draft revision is a registration that admits nothing — today's failure with an extra step.
-	if !strings.Contains(strings.Join(*calls, " "), "/publish") {
-		t.Fatalf("the created agent revision was never published, so no run can pin it: %v", *calls)
-	}
-	// It opens NO new path: every call is an existing /v1 provisioning route.
-	for _, c := range *calls {
-		if !strings.Contains(c, "/v1/agents") && !strings.Contains(c, "/v1/api-keys") {
-			t.Fatalf("the bring-up called %q — the plan allows only the EXISTING provisioning API", c)
+	for _, path := range []string{p.secretPath("provider-one"), p.masterKey} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("compose mounts %s as a file-secret and it does not exist: %v", filepath.Base(path), err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s is mode %v, want 0600", filepath.Base(path), info.Mode().Perm())
 		}
 	}
-}
-
-// TestProvisionedRunTargetIsReusedOnASecondBringUp: `palai up` is re-run constantly. A bring-up that
-// minted a fresh agent profile every time would leave a pile of orphan revisions and change which one
-// the workspace is bound to on each run.
-func TestProvisionedRunTargetIsReusedOnASecondBringUp(t *testing.T) {
-	api, calls := fakeProvisioningAPI(t)
-	first, err := resolveRunTarget(api, envGetter(nil), false)
-	if err != nil {
-		t.Fatalf("first resolve: %v", err)
+	// A filled slot is never clobbered by a later bring-up.
+	if err := os.WriteFile(p.secretPath("provider-one"), []byte("sk-already-here"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	before := len(*calls)
-	second, err := resolveRunTarget(api, envGetter(nil), false)
-	if err != nil {
-		t.Fatalf("second resolve: %v", err)
+	if err := ensureSecretSlots(p); err != nil {
+		t.Fatalf("second ensure: %v", err)
 	}
-	if first.revision != second.revision {
-		t.Fatalf("a second bring-up minted a second agent revision (%s then %s): the binding would move under the operator",
-			first.revision, second.revision)
-	}
-	for _, c := range (*calls)[before:] {
-		if strings.HasPrefix(c, "POST ") {
-			t.Fatalf("the second bring-up wrote %q against an already-provisioned run target", c)
-		}
-	}
-	// It still SAYS what it bound — an operator re-running `palai up` needs the ids as much as the
-	// one who ran it first — but it says "reused", not "created".
-	if !strings.Contains(second.resolved, "reused") {
-		t.Fatalf("the second bring-up reports its reused revision as though it made it: %q", second.resolved)
-	}
-}
-
-// TestSkipIsReportedAsAWarningNotSwallowed is item 3. A half-configured Slack install that does nothing
-// must not read as a clean success. The no-team case stays a plain line: an operator with no Slack app
-// did not ask for one, and warning them every bring-up is the same crying-wolf this task removes from
-// the orphan sweep.
-func TestSkipIsReportedAsAWarningNotSwallowed(t *testing.T) {
-	half := slackSkipWarning(envGetter(map[string]string{"SLACK_TEAM_ID": "T123"}), "SLACK_SIGNING_SECRET is missing")
-	if half == "" {
-		t.Fatal("a configured-but-unusable Slack install skipped silently inside a green bring-up")
-	}
-	if !strings.Contains(half, "SLACK_SIGNING_SECRET is missing") {
-		t.Fatalf("the warning does not carry the reason: %q", half)
-	}
-	if none := slackSkipWarning(envGetter(nil), "no SLACK_TEAM_ID in the environment"); none != "" {
-		t.Fatalf("an operator with no Slack app at all was warned about it: %q", none)
+	if got, _ := os.ReadFile(p.secretPath("provider-one")); string(got) != "sk-already-here" {
+		t.Fatalf("a stored credential was cleared by the slot ensure: %q", got)
 	}
 }
 
 // --- helpers ---------------------------------------------------------------------------------------
 
+// tempPaths builds a paths rooted at a temp dir, so the slot/key helpers can be driven without
+// touching the developer's real .palai.
+func tempPaths(t *testing.T) paths {
+	t.Helper()
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "secrets"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return paths{
+		home:       home,
+		secretsDir: filepath.Join(home, "secrets"),
+		masterKey:  filepath.Join(home, "secrets", "master-key"),
+	}
+}
+
 func envGetter(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
-// fakeProvisioningAPI stands in for a running control-plane's provisioning surface: the bootstrap key's
-// principal, the agent-profile lineage, its revisions, and publish. It records every path so a test can
-// assert the bring-up opened NO new route, and it keeps created state so a second resolve can reuse.
+// fakeProvisioningAPI stands in for a running control-plane's repository-binding surface. It records
+// every path so a test can assert the bring-up opened NO new route, and it keeps created state so a
+// second resolve can reuse.
 func fakeProvisioningAPI(t *testing.T) (*apiClient, *[]string) {
-	c, calls, _ := fakeProvisioningAPIWithTools(t)
-	return c, calls
-}
-
-// fakeProvisioningAPIWithTools additionally hands back the switch for the revision list's `tools` field.
-func fakeProvisioningAPIWithTools(t *testing.T) (*apiClient, *[]string, *bool) {
 	t.Helper()
 	var calls []string
-	profileID, revisionID, published := "", "", false
-	// The revision remembers the tools it was created with. A fake that forgets them is not modelling this
-	// API: `palai up` reuses a published revision only when its tool list already matches what was asked
-	// for, so a forgetful fixture would prove reuse that the real server never performs.
-	var revisionTools, revisionMCP []string
-	revisionSeq := 0
-	// listCarriesTools models the server-side CONFIG fields this fixture depends on — `tools` since E21 T4
-	// and `mcp_connections` since E22 T6. A test can turn it OFF to reproduce a server that omits them and
-	// prove the reuse check actually needs them.
-	listCarriesTools := true
 	// The repository-binding surface (E22 T3), modelled the way the real one behaves: a re-POST registers a
 	// DISTINCT binding (bindings are durable configuration, not idempotent operations — api/repository_bindings.go
 	// says so), so a bring-up that does not look before it creates will visibly pile them up here.
@@ -290,49 +229,6 @@ func fakeProvisioningAPIWithTools(t *testing.T) (*apiClient, *[]string, *bool) {
 			_ = json.NewEncoder(w).Encode(v)
 		}
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/api-keys/"+bootstrapKeyID:
-			write(http.StatusOK, map[string]any{"id": bootstrapKeyID, "principal_id": "prin_local"})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/agents":
-			data := []any{}
-			if profileID != "" {
-				data = append(data, map[string]any{"id": profileID, "name": slackAgentProfileName})
-			}
-			write(http.StatusOK, map[string]any{"object": "list", "data": data})
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/agents":
-			profileID = "aprof_fake"
-			write(http.StatusCreated, map[string]any{"id": profileID, "name": slackAgentProfileName})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/agents/"+profileID+"/revisions":
-			data := []any{}
-			if revisionID != "" && published {
-				// The revision list mirrors what the REAL server returns. This was WRONG until 2026-07-27:
-				// the fake carried `tools` here while apps/control-plane/internal/store/agents.go's
-				// ListAgentRevisions did not serialise it, so every reuse check compared against nil and
-				// `palai up` minted a fresh revision on EVERY bring-up. Measured against the running stack,
-				// not reasoned about — two published revisions with identical tool lists.
-				rev := map[string]any{"id": revisionID, "status": "published"}
-				if listCarriesTools {
-					rev["tools"] = revisionTools
-					rev["mcp_connections"] = revisionMCP
-				}
-				data = append(data, rev)
-			}
-			write(http.StatusOK, map[string]any{"object": "list", "data": data})
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/agents/"+profileID+"/revisions":
-			var body struct {
-				Tools          []string `json:"tools"`
-				MCPConnections []string `json:"mcp_connections"`
-			}
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			revisionTools, revisionMCP = body.Tools, body.MCPConnections
-			// A DISTINCT id per revision, as the real server issues: a fixture that reuses one id cannot
-			// show the difference between reusing a revision and minting a replacement.
-			revisionSeq++
-			revisionID = fmt.Sprintf("arev_fake_%d", revisionSeq)
-			published = false
-			write(http.StatusCreated, map[string]any{"id": revisionID, "status": "draft"})
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/agents/"+profileID+"/revisions/"+revisionID+"/publish":
-			published = true
-			write(http.StatusOK, map[string]any{"id": revisionID, "status": "published"})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/repository-bindings":
 			write(http.StatusOK, map[string]any{"object": "list", "data": bindings})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/repository-bindings":
@@ -362,5 +258,5 @@ func fakeProvisioningAPIWithTools(t *testing.T) (*apiClient, *[]string, *bool) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return &apiClient{baseURL: srv.URL, key: "test", http: &http.Client{Timeout: 5 * time.Second}}, &calls, &listCarriesTools
+	return &apiClient{baseURL: srv.URL, key: "test", http: &http.Client{Timeout: 5 * time.Second}}, &calls
 }

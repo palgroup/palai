@@ -53,7 +53,7 @@ const credentialEnv = "OPENAI_API_KEY"
 func Bootstrap(envFile string, native bool) error {
 	fmt.Fprintln(os.Stderr, "palai up — bring the stack up and PROVE it is live")
 
-	// [1/6] The dotenv file. Only key NAMES are ever printed, and only the PALAI_* knobs below are
+	// [1/5] The dotenv file. Only key NAMES are ever printed, and only the PALAI_* knobs below are
 	// exported to the child `docker compose` environment — a credential read here reaches exactly
 	// one destination: the 0600 file secret AddProvider writes.
 	fileEnv, found, err := loadEnvFile(envFile)
@@ -61,13 +61,13 @@ func Bootstrap(envFile string, native bool) error {
 		return err
 	}
 	if found {
-		fmt.Fprintf(os.Stderr, "[1/6] env       %s: %d values (%s)\n", envFile, len(fileEnv), strings.Join(sortedKeys(fileEnv), ", "))
+		fmt.Fprintf(os.Stderr, "[1/5] env       %s: %d values (%s)\n", envFile, len(fileEnv), strings.Join(sortedKeys(fileEnv), ", "))
 	} else {
-		fmt.Fprintf(os.Stderr, "[1/6] env       %s absent — running on the process environment alone\n", envFile)
+		fmt.Fprintf(os.Stderr, "[1/5] env       %s absent — running on the process environment alone\n", envFile)
 	}
 	get := lookup(fileEnv)
 
-	// [2/6] The provider decision comes BEFORE `init`, so a refusal leaves no .palai behind and
+	// [2/5] The provider decision comes BEFORE `init`, so a refusal leaves no .palai behind and
 	// costs nothing. secretSlotFilled is honest either way: an absent .palai has no slot, and
 	// `init` would only ever create an EMPTY one.
 	p, err := resolvePaths()
@@ -83,7 +83,7 @@ func Bootstrap(envFile string, native bool) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "[2/6] provider  selector %s — %s\n", liveSelector, choice.source)
+	fmt.Fprintf(os.Stderr, "[2/5] provider  selector %s — %s\n", liveSelector, choice.source)
 	if err := Init(); err != nil {
 		return err
 	}
@@ -93,7 +93,7 @@ func Bootstrap(envFile string, native bool) error {
 		}
 	}
 
-	// [3/6] The compose interpolation contract. PALAI_MODEL_PROVIDER is what selects the live
+	// [3/5] The compose interpolation contract. PALAI_MODEL_PROVIDER is what selects the live
 	// adapter; PALAI_DISPATCH_WORKERS defaults to 0 (queued-only) in compose.yaml, which would
 	// leave every run parked in `queued` and the proof unprovable.
 	if err := os.Setenv("PALAI_MODEL_PROVIDER", liveSelector); err != nil {
@@ -129,27 +129,22 @@ func Bootstrap(envFile string, native bool) error {
 		}
 	}
 
-	// The Slack knobs the CONTAINER needs must be exported before compose creates it: a running
-	// control-plane never re-reads its environment, so a socket switched on after the fact stays off
-	// until the next bring-up. Failures here are reported and carried — an unusable master key must
+	// The publication destination's CREDENTIAL must be exported before compose creates the container: a
+	// running control-plane never re-reads its environment. An approved push publishes through a GitHub App
+	// the control-plane resolves at boot, so a stack brought up without one has an approval chain that ends
+	// in silence (see applyGitHubAppEnv). Failures here are reported and carried — a publication path must
 	// not fail a bring-up whose model round-trip is about to be proven.
-	for _, w := range applySlackEnv(p, get) {
-		fmt.Fprintf(os.Stderr, "        WARNING %s\n", w)
-	}
-	// The publication destination's CREDENTIAL, for the same reason and at the same moment: an approved
-	// push publishes through a GitHub App the control-plane resolves at boot, so a stack brought up without
-	// one has an approval chain that ends in silence (see applyGitHubAppEnv).
 	for _, w := range applyGitHubAppEnv(p, get) {
 		fmt.Fprintf(os.Stderr, "        WARNING %s\n", w)
 	}
 	posture := "container control plane (docker compose)"
 	if native {
-		fmt.Fprintln(os.Stderr, "[3/6] stack     NATIVE: postgres + object-store + runner in docker, control plane on this machine")
+		fmt.Fprintln(os.Stderr, "[3/5] stack     NATIVE: postgres + object-store + runner in docker, control plane on this machine")
 		if posture, err = UpNative(get); err != nil {
 			return err
 		}
 	} else {
-		fmt.Fprintln(os.Stderr, "[3/6] stack     docker compose up (this builds on a first run)")
+		fmt.Fprintln(os.Stderr, "[3/5] stack     docker compose up (this builds on a first run)")
 		if err := Up(); err != nil {
 			return err
 		}
@@ -165,15 +160,15 @@ func Bootstrap(envFile string, native bool) error {
 	}
 	api := &apiClient{baseURL: cfg.BaseURL, key: key, http: &http.Client{Timeout: 30 * time.Second}}
 
-	// [4/6] Health, from doctor's OWN checks — no second set of thresholds. A still-red check is
+	// [4/5] Health, from doctor's OWN checks — no second set of thresholds. A still-red check is
 	// reported and CARRIED, not swallowed and not fatal: the live proof below is the real verdict,
 	// and a red check that actually blocks the stack will surface there with its detail on screen.
 	report := waitHealthy(cfg, p, 90*time.Second)
 	red := redChecks(report)
 	if len(red) == 0 {
-		fmt.Fprintf(os.Stderr, "[4/6] health    doctor: %d/%d green\n", len(report.Checks), len(report.Checks))
+		fmt.Fprintf(os.Stderr, "[4/5] health    doctor: %d/%d green\n", len(report.Checks), len(report.Checks))
 	} else {
-		fmt.Fprintf(os.Stderr, "[4/6] health    doctor: %d/%d green — NOT green: %s\n",
+		fmt.Fprintf(os.Stderr, "[4/5] health    doctor: %d/%d green — NOT green: %s\n",
 			len(report.Checks)-len(red), len(report.Checks), strings.Join(red, "; "))
 	}
 
@@ -209,8 +204,8 @@ func Bootstrap(envFile string, native bool) error {
 	}
 	fmt.Fprintf(os.Stderr, "        config    %s\n", desiredLine)
 
-	// [5/6] The point of the whole command.
-	fmt.Fprintln(os.Stderr, "[5/6] proof     one real single-step run...")
+	// [5/5] The point of the whole command.
+	fmt.Fprintln(os.Stderr, "[5/5] proof     one real single-step run...")
 	rt, err := roundTripProof(api)
 	if err != nil {
 		if len(red) > 0 {
@@ -219,33 +214,43 @@ func Bootstrap(envFile string, native bool) error {
 		return err
 	}
 
-	// [6/6] Slack, if and only if the workspace values are present. Never fatal.
-	slackFact, slackLine, slackWarns := wireSlack(api, cfg, p, get, native)
-	fmt.Fprintf(os.Stderr, "[6/6] slack     %s\n", slackLine)
-
 	caps, err := api.capabilities()
 	if err != nil {
 		return fmt.Errorf("read /v1/capabilities for the status table: %w", err)
 	}
+
+	// WHAT THE STACK IS READY TO DO, said out loud. Every line below is unconditional — each one names a
+	// state whose only other symptom is silence, and none of them belongs to any one integration.
+	var warns []string
+	// WHICH REPOSITORY A SESSION CAN CODE AGAINST (E22 T3). The binding is created from the two values
+	// §0.2 asks the operator for; a session, an agent or a bot then references it by id.
+	repo := resolveRepository(api, get)
+	if repo.resolved != "" {
+		fmt.Fprintf(os.Stderr, "        %s\n", repo.resolved)
+	}
+	warns = appendWarn(warns, repo.warn)
 	if native {
 		// A control plane on a Mac with no declared shell posture has a nil shell runner, so the
 		// whole reason for running natively — the host's own toolchain — is silently absent.
-		slackWarns = appendWarn(slackWarns, nativeShellWarning(get))
+		warns = appendWarn(warns, nativeShellWarning(get))
 	}
-	// WHO MAY APPROVE (E23 T2). Unconditional, not Slack-conditional: the HTTP approve surface exists on
-	// every stack whether or not a workspace was ever wired.
-	slackWarns = appendWarn(slackWarns, approverListWarning(api))
-	// HOW MANY RUNS AT ONCE (§3.6 D11). Unconditional for the same reason: a second machine that nothing
-	// can reach is the shape of a fleet that was bought and is not being used.
-	slackWarns = appendWarn(slackWarns, dispatchWorkerFleetWarning(api, get))
-	// WHICH OF THE TWO MODEL-CREDENTIAL AUTHORITIES ACTUALLY SERVED THIS RUN. Unconditional, and placed
-	// AFTER the round trip on purpose: by here the proof has happened, so the operator is being told which
-	// credential produced the `PROVEN LIVE` line they are about to read.
-	slackWarns = appendWarn(slackWarns, modelAuthorityWarning(api, get))
-	// WHAT THE FLEET IS DOING (E24 T6). Unconditional and NOT a warning: a machine held in a strict pool's
-	// waiting room is a machine an operator will otherwise read as broken, and it is the report — not a
-	// conditional line — that they look at after a bring-up.
-	printReport(cfg, posture, rt, caps, observedFacts(rt, slackFact), fleetLine(api.fleet()), red, slackWarns...)
+	// WHO MAY APPROVE (E23 T2): the HTTP approve surface exists on every stack.
+	warns = appendWarn(warns, approverListWarning(api))
+	// HOW MANY RUNS AT ONCE (§3.6 D11): a second machine that nothing can reach is the shape of a fleet
+	// that was bought and is not being used.
+	warns = appendWarn(warns, dispatchWorkerFleetWarning(api, get))
+	// WHICH OF THE TWO MODEL-CREDENTIAL AUTHORITIES ACTUALLY SERVED THIS RUN. Placed AFTER the round trip
+	// on purpose: by here the proof has happened, so the operator is being told which credential produced
+	// the `PROVEN LIVE` line they are about to read.
+	warns = appendWarn(warns, modelAuthorityWarning(api, get))
+	// WHETHER ANY AGENT ON THIS STACK CAN CALL A TOOL AT ALL. A revision's tool list is a CEILING
+	// intersected with the project's default_tools baseline, so a project whose config_policy is NULL —
+	// which is every project until somebody sets one — resolves EVERY agent to the empty set. The runs
+	// complete. They answer in one step. They call nothing, and no layer says why.
+	warns = appendWarn(warns, api.emptyToolBaselineWarning())
+	// WHAT THE FLEET IS DOING (E24 T6), on the report rather than in a warning: a machine held in a strict
+	// pool's waiting room is a machine an operator will otherwise read as broken.
+	printReport(cfg, posture, rt, caps, observedFacts(rt), fleetLine(api.fleet()), red, warns...)
 	return nil
 }
 
@@ -389,30 +394,7 @@ func proveLive(rt roundTrip) error {
 	return nil
 }
 
-// --- slack ---------------------------------------------------------------------------------
-
-// slackSecretSlots is the ONE table behind every Slack credential this command touches: the
-// registration field that names the handle, the handle's prefix, and the .env.local variable
-// holding the value stored under it.
-//
-// It is one table because the failure it closes is a PAIRING failure. `palai up` used to register
-// `signing_secret_ref: slack-signing-<team>` — correctly a handle, never a secret — while nothing
-// stored a value under that name anywhere the control-plane could redeem it. The handle resolved to
-// nothing, and every consumer of it fails SILENTLY by design: an unresolvable signing secret is a
-// verification refusal (no config oracle), an unresolvable app token is a dial that never happens.
-// Deriving the registered handle and the stored secret's NAME from the same row is what makes them
-// incapable of drifting apart.
-//
-// Where each value comes from is docs/superpowers/plans/phase-19-integration-wiring.md §0.1.
-var slackSecretSlots = []struct{ field, prefix, env, purpose string }{
-	{"signing_secret_ref", "slack-signing-", "SLACK_SIGNING_SECRET", "verifies the v0 signature on the HTTP Events/interactivity callbacks"},
-	{"bot_token_ref", "slack-bot-", "SLACK_BOT_TOKEN", "posts and updates the bot's own messages in the thread"},
-	{"app_token_ref", "slack-app-", "SLACK_APP_TOKEN", "opens the Socket Mode connection (apps.connections.open)"},
-}
-
-// slackAppTokenSlot is the row Socket Mode's only authentication lives on — named once so
-// slackSocketTeam cannot drift from the table.
-const slackAppTokenSlot = "app_token_ref"
+// --- the deployment's own knobs ---------------------------------------------------------------
 
 // defaultModelRouteAlias is the ONLY route alias a run resolves through — coordinator.DefaultModelRouteAlias,
 // which internal/store/model_routes.go enforces by refusing every other name. It is spelled here rather than
@@ -423,70 +405,6 @@ const defaultModelRouteAlias = "default"
 // containerMasterKeyPath is where compose mounts the master-key file secret. A PATH, never a value,
 // so it rides the compose environment like every other knob.
 const containerMasterKeyPath = "/run/secrets/master_key"
-
-// slackSocketTeam returns the workspace Socket Mode should dial, or "" to leave the connect loop
-// dormant. It follows the APP-LEVEL TOKEN rather than the team id, because the app-level token is
-// Socket Mode's only authentication (adapters/integrations/slack, D7): switching the loop on
-// without one produces a control-plane that dials, fails and logs on a timer, which reads as a
-// broken stack rather than an unconfigured one.
-func slackSocketTeam(get func(string) string) string {
-	team := strings.TrimSpace(get("SLACK_TEAM_ID"))
-	if team == "" || strings.TrimSpace(get("SLACK_APP_TOKEN")) == "" {
-		return ""
-	}
-	return team
-}
-
-// slackSecretValues maps each secret-ref NAME to the value that must be stored under it. Values
-// present in .env.local only; a slot with no value is left out entirely, so a handle is never
-// registered for a credential the operator does not have.
-func slackSecretValues(get func(string) string) map[string]string {
-	team := strings.TrimSpace(get("SLACK_TEAM_ID"))
-	if team == "" {
-		return nil
-	}
-	out := map[string]string{}
-	for _, slot := range slackSecretSlots {
-		if v := strings.TrimSpace(get(slot.env)); v != "" {
-			out[slot.prefix+team] = v
-		}
-	}
-	return out
-}
-
-// applySlackEnv exports the compose interpolation the CONTAINER needs for Slack, and returns any
-// operator warnings. It runs BEFORE `docker compose up` because a running control-plane never
-// re-reads its environment.
-//
-// ONE variable now, optional and empty by default in compose.yaml, so a deployment with no Slack app
-// is byte-for-byte unchanged: PALAI_SLACK_SOCKET_TEAM_ID switches on main.startSlackSocket.
-//
-// PALAI_SECRET_MASTER_KEY_FILE USED TO BE EXPORTED HERE and no longer is (E21 T2, §3.6 D5). That was
-// the bug: the secret store is not a Slack feature — every *_ref handle on the stack redeems through
-// it — but it was mounted only when Slack credentials happened to be present, so a stack without them
-// resolved every handle nowhere. compose.yaml now writes the path literally and ensureSecretSlots
-// mints the key it names, on every bring-up, Slack or not.
-//
-// p stays in the signature deliberately: an env-shaping step that cannot see the stack's own paths is
-// where the next "only when Slack is configured" special case gets added back.
-func applySlackEnv(p paths, get func(string) string) []string {
-	values := slackSecretValues(get)
-	if len(values) == 0 {
-		return nil
-	}
-	var warnings []string
-	switch team := slackSocketTeam(get); team {
-	case "":
-		warnings = append(warnings, "SLACK_APP_TOKEN is unset, so Socket Mode stays off: an app-level token (xapp-…) is its only "+
-			"authentication, and without a public callback URL nothing can reach this stack from Slack "+
-			"(§0.1 — App → Basic Information → App-Level Tokens → Generate, scope connections:write)")
-	default:
-		if err := os.Setenv("PALAI_SLACK_SOCKET_TEAM_ID", team); err != nil {
-			warnings = append(warnings, fmt.Sprintf("could not export PALAI_SLACK_SOCKET_TEAM_ID: %v", err))
-		}
-	}
-	return warnings
-}
 
 // containerGitHubAppKeyPath is where compose mounts the GitHub App private key file secret. compose.yaml
 // writes it LITERALLY, the way it writes the master key's path: the value an operator puts in .env.local is
@@ -521,8 +439,8 @@ const gitHubAppKeySlot = "github-app-key"
 // argv and no log — the same posture the provider credential and the master key already have, and the
 // reason main.go can say it "only mints short-lived scoped tokens against it".
 //
-// It runs BEFORE `docker compose up` for the reason applySlackEnv gives: a running control-plane never
-// re-reads its environment.
+// It runs BEFORE `docker compose up` because a running control-plane never re-reads its environment: a
+// key staged after the fact stays unresolved until the next bring-up.
 func applyGitHubAppEnv(p paths, get func(string) string) []string {
 	appID := strings.TrimSpace(get("PALAI_GITHUB_APP_ID"))
 	installID := strings.TrimSpace(get("PALAI_GITHUB_APP_INSTALLATION_ID"))
@@ -649,184 +567,6 @@ func isHex(s string) bool {
 	return err == nil
 }
 
-// slackOutcome is what a bring-up actually OBSERVED about Slack — the input to the report, kept
-// separate from the printing so the "what earns the word live" rule is a testable function rather
-// than a format string.
-type slackOutcome struct {
-	team         string
-	connectionID string
-	stored       int    // secret refs whose VALUE is now redeemable on this stack
-	existing     int    // workspaces already registered (the skip path)
-	connected    bool   // Slack sent the Socket Mode `hello` frame on this boot
-	detail       string // the control-plane's own last word about the socket
-	skip         string // why the step did nothing at all
-	problem      string // a registration/storage failure, already operator-readable
-}
-
-// slackReport turns an observation into (fact, line). fact is what the capability table shows, and
-// a NON-EMPTY fact renders the row as `live` — which is the whole point of this function.
-//
-// THE RULE: `slack` is live only when the control-plane observed Slack's own `hello` frame, the
-// first message on an authenticated Socket Mode connection. Everything short of that is dormant.
-// A 201 from POST /v1/slack-connections proves a row was written; it proves nothing about whether
-// anything can arrive, which is exactly what the previous `slack live — workspace T… registered`
-// claimed. This repo has found nine surfaces reporting more than they proved; this is not a tenth.
-func slackReport(o slackOutcome) (fact string, line string) {
-	switch {
-	case o.skip != "":
-		if o.connected {
-			return fmt.Sprintf("Socket Mode connected — %s", o.detail),
-				fmt.Sprintf("SKIPPED — %s (%d workspace(s) already registered, and Socket Mode IS connected on this stack)", o.skip, o.existing)
-		}
-		if o.existing > 0 {
-			return "", fmt.Sprintf("SKIPPED — %s (%d workspace(s) already registered, but Socket Mode is NOT connected: %s)", o.skip, o.existing, o.detail)
-		}
-		return "", "SKIPPED — " + o.skip
-	case o.problem != "":
-		return "", o.problem
-	case o.connected:
-		return fmt.Sprintf("Socket Mode connected for workspace %s — %s", o.team, o.detail),
-			fmt.Sprintf("registered %s for team %s; %d secret ref(s) stored and redeemable; Socket Mode CONNECTED — %s",
-				o.connectionID, o.team, o.stored, o.detail)
-	default:
-		return "", fmt.Sprintf("registered %s for team %s; %d secret ref(s) stored — but NOT CONNECTED: %s. "+
-			"Nothing will arrive from Slack until that line changes, so `slack` is reported dormant.",
-			o.connectionID, o.team, o.stored, o.detail)
-	}
-}
-
-// wireSlack does the whole last mile after the stack is up: store the credential VALUES where the
-// control-plane can redeem them, register the workspace against those handles, and then OBSERVE
-// whether Slack actually opened a socket. It never fails the bring-up — an absent Slack app is a
-// normal state, and a Slack hiccup does not un-prove the live round-trip above.
-//
-// It returns (fact, line, warns). fact is the observed-state string the capability table shows for
-// `slack`, line is the operator-facing step result, and warns are non-fatal conditions the final
-// report must repeat because the operator would otherwise only meet them as silence.
-//
-// warns is a SEPARATE return rather than more prose on line, and that separation is the point: they
-// carry different truths about the same connection — whether anything can ARRIVE from Slack (the
-// socket, on line), whether anything can be APPROVED once it does (the allow-list), and whether the
-// agent can touch CODE at all (the repository binding, E22 T3). Folding one into the other would let
-// a connected socket read as a working integration while every Approve click is silently refused,
-// which is the same over-claiming in a new place.
-func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string, native bool) (fact string, line string, warns []string) {
-	body, skip := slackRegistration(get)
-	if skip != "" {
-		o := slackOutcome{skip: skip}
-		if n, err := api.slackConnectionCount(); err == nil && n > 0 {
-			// A workspace registered by an earlier run may well be live; look before saying so.
-			o.existing = n
-			o.connected, o.detail = observeSlackSocket(cfg, p, native, 0)
-		}
-		// No body was sent, so nothing here knows the STORED connection's approver list — and
-		// guessing at it is exactly what slackApproverWarning exists to replace. The skip itself IS
-		// carried out, though: a half-configured install that silently does nothing is what item 3
-		// of this task exists to end.
-		fact, line = slackReport(o)
-		return fact, line, appendWarn(nil, slackSkipWarning(get, skip))
-	}
-	team, _ := body["team_id"].(string)
-	o := slackOutcome{team: team}
-
-	// AGAINST WHAT REPOSITORY (E22 T3). It runs BEFORE resolveRunTarget because the answer decides the tool
-	// list: the workspace tools are bound only when a repository actually exists to use them on. Absent
-	// configuration is a WARNING rather than a silent skip — see resolveRepository.
-	repo := resolveRepository(api, get)
-	if repo.resolved != "" {
-		fmt.Fprintf(os.Stderr, "        %s\n", repo.resolved)
-	}
-	warns = appendWarn(warns, repo.warn)
-
-	// WHAT to run and AS WHOM. Resolved against the running stack (explicit config wins, otherwise
-	// provisioned) rather than demanded from .env.local — see resolveRunTarget. It runs AFTER the
-	// team/signing checks above so a stack with no Slack app provisions nothing at all.
-	target, err := resolveRunTarget(api, get, repo.id != "")
-	if err != nil {
-		o.problem = "NOT registered: " + err.Error()
-		fact, line = slackReport(o)
-		return fact, line, warns
-	}
-	policy := map[string]any{"agent_revision_id": target.revision, "principal_id": target.principal}
-	if repo.id != "" {
-		// The repository rides the CONNECTION, exactly like the revision and the principal beside it: every
-		// event on this workspace admits against this binding, and no Slack payload can name a different one.
-		policy["repository_binding_id"] = repo.id
-	}
-	body["default_policy"] = policy
-	if target.resolved != "" {
-		fmt.Fprintf(os.Stderr, "        %s\n", target.resolved)
-	}
-
-	// The VALUES first: a connection registered against handles that resolve nowhere is precisely
-	// the state this task exists to end, so the redemption path is filled before the row names it.
-	for name, value := range slackSecretValues(get) {
-		if err := api.putSecretRef(name, value); err != nil {
-			// No connection row was created, so there is no allow-list to warn about yet. The repository
-			// warning still rides: it is about what this stack CAN do, not about a row that got written.
-			o.problem = "NOT wired: " + err.Error()
-			fact, line = slackReport(o)
-			return fact, line, warns
-		}
-		o.stored++
-	}
-
-	id, status, err := api.createSlackConnection(body)
-	switch {
-	case err != nil:
-		o.problem = "NOT registered: " + err.Error()
-		fact, line = slackReport(o)
-		return fact, line, warns
-	case status == http.StatusConflict:
-		// The workspace is already bound (possibly from an earlier run). The refs it was bound with
-		// are the same handles — derived from the team id — so the values just stored still apply.
-		// The approver list, though, is the STORED connection's and not this body's: nothing here
-		// changed it and nothing here read it, so no warning is claimed about it either way.
-		o.connectionID = "(already bound)"
-	default:
-		o.connectionID = id
-		// A row was written from THIS body, so what it does and does not authorize is known. Derived
-		// from the body actually sent, never from an assumption about what `palai up` usually does.
-		warns = appendWarn(warns, slackApproverWarning(body))
-	}
-
-	// The connect loop resolves its workspace ONCE, at boot (extensions.SlackSocket's documented
-	// ceiling, and the remedy its own log line names). A workspace registered by THIS bring-up
-	// therefore cannot be seen by the control-plane that was already running, so look first and
-	// recreate only if the socket is not already up. --force-recreate rather than restart, so the
-	// log read afterwards carries this boot alone.
-	// BOTH HALVES BELOW ASK THE DEPLOYMENT THIS BRING-UP ACTUALLY RUNS, and neither did before. Measured
-	// 2026-08-02 on `palai up --native`: the observe read the COMPOSE container's logs, which on a native
-	// bring-up hold the previous posture's boot or nothing at all — so a socket that was connected (and
-	// said so in .palai/control-plane.log two lines above) read as disconnected. That sent the step into
-	// the repair, and the repair recreated the compose service, which is exactly the container this
-	// deployment deliberately does not run: `exit status 1`, and a Slack step that reported the workspace
-	// dormant on a stack where Slack was connected the whole time.
-	if o.connected, o.detail = observeSlackSocket(cfg, p, native, 0); !o.connected {
-		fmt.Fprintln(os.Stderr, "        the control-plane is restarting to pick up the workspace (Socket Mode resolves it at boot)")
-		if err := restartControlPlane(cfg, p, get, native); err != nil {
-			o.detail = fmt.Sprintf("the control-plane could not be recreated to pick up the registration: %v", err)
-			fact, line = slackReport(o)
-			return fact, line, warns
-		}
-		o.connected, o.detail = observeSlackSocket(cfg, p, native, 45*time.Second)
-	}
-	// AN AGENT WITH NO EFFECTIVE TOOLS LOOKS EXACTLY LIKE AN AGENT THAT CHOSE NOT TO USE ANY. This is
-	// the check for the condition that cost a whole evening of live driving: a revision's tool list is a
-	// CEILING intersected with the project's default_tools baseline, so a project whose config_policy is
-	// NULL — which is every project until somebody sets one — resolves EVERY agent to the empty set. The
-	// runs complete. They answer in one step. They call nothing, and no layer says why: the revision
-	// plainly lists its tools, the tools are plainly registered, and the intersection that empties them
-	// is not written down anywhere a reader passes.
-	warns = appendWarn(warns, api.emptyToolBaselineWarning())
-
-	// warns ride alongside whatever the socket turned out to be. A connected socket does not retire
-	// them — that is the case they matter MOST in, because the events now arriving are the ones whose
-	// Approve buttons will be refused, or whose agent has no repository to work in.
-	fact, line = slackReport(o)
-	return fact, line, warns
-}
-
 // appendWarn adds a non-empty warning to the list. Empty warnings are dropped here rather than at every
 // call site, because a "" in the report renders as a blank WARNING block.
 func appendWarn(warns []string, w string) []string {
@@ -852,31 +592,6 @@ func recreateControlPlane(cfg Config, p paths) error {
 	return waitForAPI(cfg, p)
 }
 
-// observeSlackSocket reads the control-plane's OWN log until it says Slack sent `hello`, or the
-// window elapses. within == 0 is a single look (the "is it already up?" probe).
-//
-// It is a log read because the `hello` frame is the only evidence that exists: it is Slack's first
-// message on an authenticated Socket Mode connection, so seeing it means apps.connections.open
-// accepted the app-level token AND the WebSocket is open AND the workspace resolved to a real
-// connection row. No endpoint exposes that, and inventing one to report it would be a bigger change
-// than the wiring it reports on. The lines it reads carry no credential by construction
-// (TestSlackSocketNeverLogsTheTokenOrTheTicket is the guard on that).
-// controlPlaneLog reads the log of whichever control plane this deployment runs — the compose service's,
-// or the native process's own file. One reader, because a caller that picks the wrong one does not fail:
-// it reads an EMPTY log and concludes the thing it was looking for is absent.
-func controlPlaneLog(cfg Config, p paths, native bool) string {
-	if native {
-		b, err := os.ReadFile(p.nativeLog)
-		if err != nil {
-			return ""
-		}
-		return string(b)
-	}
-	out, _ := runCaptured(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project,
-		"-f", p.compose, "logs", "--no-color", "control-plane")
-	return out
-}
-
 // restartControlPlane restarts whichever control plane this deployment runs. Its compose and native halves
 // are NOT interchangeable and this is the second call site that learned it the expensive way; see the
 // comment above the desired-config repair in Bootstrap.
@@ -887,247 +602,51 @@ func restartControlPlane(cfg Config, p paths, get func(string) string, native bo
 	return recreateControlPlane(cfg, p)
 }
 
-func observeSlackSocket(cfg Config, p paths, native bool, within time.Duration) (bool, string) {
-	deadline := time.Now().Add(within)
-	for {
-		out := controlPlaneLog(cfg, p, native)
-		connected, detail := readSlackSocketLog(out)
-		if connected || !time.Now().Before(deadline) {
-			return connected, detail
-		}
-		time.Sleep(2 * time.Second)
-	}
-}
+// --- the repository a session codes against (E22 T3) -----------------------------------------------
 
-// The three shapes the control-plane's log carries about Socket Mode.
-const (
-	// slackSocketConnected is what extensions.SlackSocket writes when Slack's `hello` arrives.
-	slackSocketConnected = "slack socket: connected"
-	// slackSocketPrefix marks every line the connect loop writes itself.
-	slackSocketPrefix = "slack socket: "
-	// slackSocketEnabled is main.startSlackSocket announcing the loop was mounted at all.
-	slackSocketEnabled = "Slack Socket Mode enabled"
-	// slackSocketSupervised is the coordinator restarting the loop after a DIAL failure. This one is
-	// easy to miss and is the most actionable of the three: a dial that fails returns to the
-	// supervisor, so `apps.connections.open refused: "invalid_auth"` — the difference between a wrong
-	// app-level token and a stack still waiting — appears ONLY here, never on a `slack socket:` line.
-	// A probe against a real stack with a deliberately bogus token is what surfaced that.
-	slackSocketSupervised = `supervised "slack-socket" failed`
-)
+// bootstrapProjectID is the project this stack's bootstrap key is scoped to (identity.firstProject).
+// It is the project whose approver list and tool baseline `palai up` reports on, because it is the only
+// one this command's own credential can read. install_backup.go pins the same bootstrap ids.
+const bootstrapProjectID = "prj_local"
 
-// readSlackSocketLog reads the control-plane's log for the socket's LATEST state and reports it in
-// the operator's terms. The outcomes are distinguished on purpose — reporting a bare "not connected"
-// for all of them would send someone hunting for a Slack app problem when the real fault is a
-// variable that never reached the container, or hand them "still waiting" when Slack has in fact
-// been refusing their token once a second.
-func readSlackSocketLog(logs string) (bool, string) {
-	last, started := "", false
-	for _, line := range strings.Split(logs, "\n") {
-		switch i, j := strings.Index(line, slackSocketPrefix), strings.Index(line, slackSocketSupervised); {
-		case i >= 0:
-			last = strings.TrimSpace(line[i:])
-		case j >= 0:
-			// The supervisor's own line, which carries the dial reason after "restarting after backoff:".
-			last, started = strings.TrimSpace(line[j:]), true
-		case strings.Contains(line, slackSocketEnabled):
-			started = true
-		}
-	}
-	switch {
-	case strings.HasPrefix(last, slackSocketConnected):
-		return true, last
-	case last != "":
-		return false, last
-	case started:
-		return false, "the connect loop started but Slack has not sent `hello` on this boot"
-	default:
-		return false, "the control-plane logged nothing about Socket Mode at all: PALAI_SLACK_SOCKET_TEAM_ID reached no container, " +
-			"so the connect loop never started (set SLACK_TEAM_ID and SLACK_APP_TOKEN in .env.local and re-run `palai up`)"
-	}
-}
-
-// slackRegistration builds the POST /v1/slack-connections body from the .env.local values, or
-// returns the reason the step is skipped. It NEVER sends a credential: the endpoint refuses inline
-// values and accepts only *_ref handles, so a value is read here ONLY to decide whether its handle
-// can honestly be registered at all — a handle with no value behind it is worse than an absent one,
-// because the row then claims a capability that silently does nothing.
-func slackRegistration(get func(string) string) (map[string]any, string) {
-	team := strings.TrimSpace(get("SLACK_TEAM_ID"))
-	if team == "" {
-		return nil, "no SLACK_TEAM_ID in the environment. A Slack workspace needs an app at https://api.slack.com/apps; " +
-			"the values and where each is found are in docs/superpowers/plans/phase-19-integration-wiring.md §0.1"
-	}
-	// The run target (default_policy.agent_revision_id + principal_id) is NOT checked here any more,
-	// and its absence is no longer a skip (E21 T2). It used to be both: a missing SLACK_AGENT_REVISION_ID
-	// or SLACK_PRINCIPAL_ID made the whole registration skip and `palai up` still exit green — an
-	// operator watching a successful install that could not run anything. wireSlack resolves the target
-	// against the running stack instead (resolveRunTarget: explicit config wins, otherwise provisioned
-	// over the existing API) and fills default_policy in. Nothing here may guess at it.
-	//
-	// signing_secret_ref is the one handle the API itself requires, and this command no longer
-	// registers a handle it cannot store a value for — so an absent signing secret is a skip with
-	// its source named, not a 400 the operator has to decode.
-	if strings.TrimSpace(get("SLACK_SIGNING_SECRET")) == "" {
-		return nil, "SLACK_TEAM_ID is set but SLACK_SIGNING_SECRET is missing. POST /v1/slack-connections requires signing_secret_ref, " +
-			"and a handle with no value behind it resolves nowhere (§0.1 — App → Basic Information → App Credentials → Signing Secret)"
-	}
-	body := map[string]any{"team_id": team}
-	// HANDLES, never secrets — and only for the credentials this bring-up can actually store a value
-	// for, off the same table slackSecretValues writes from.
-	for _, slot := range slackSecretSlots {
-		if strings.TrimSpace(get(slot.env)) != "" {
-			body[slot.field] = slot.prefix + team
-		}
-	}
-	if v := strings.TrimSpace(get("SLACK_BOT_USER_ID")); v != "" {
-		body["bot_user_id"] = v
-	}
-	// The two SCOPES, and both are absent-by-default on purpose.
-	//
-	// SLACK_ALLOWED_CHANNELS, not SLACK_TEST_CHANNEL. The latter belongs to the live test harness
-	// (tests/live/slack) and means "a channel the bot was invited to so a test can post there"; it used
-	// to be written here as allowed_channels, which turned a variable an operator set to make the tests
-	// run into a production security scope confining their bot to their test channel. Unset ⇒ the field
-	// is not sent at all ⇒ NO channel restriction, which is the production default.
-	if v := splitList(get("SLACK_ALLOWED_CHANNELS")); len(v) > 0 {
-		body["allowed_channels"] = v
-	}
-	// allowed_users is deny-by-default server-side, so an unset value really does mean nobody can approve.
-	// That is the correct posture and it is not softened here — it is SAID OUT LOUD instead, by
-	// slackApproverWarning, in the final report.
-	if v := splitList(get("SLACK_APPROVER_IDS")); len(v) > 0 {
-		body["allowed_users"] = v
-	}
-	return body, ""
-}
-
-// --- the run target (E21 T2, plan §4 T2 item 2) ----------------------------------------------------
-
-const (
-	// bootstrapKeyID is the fixed id of a stack's first API key (identity.firstKey, seeded by
-	// ProvisionFirstOrg). It is the key `palai up` itself authenticates with, so its principal is the
-	// identity this operator already acts as. install_backup.go pins the same four bootstrap ids.
-	bootstrapKeyID = "key_local"
-	// bootstrapProjectID is the project that same bootstrap key is scoped to (identity.firstProject).
-	// It is the project whose approver list `palai up` reports on, because it is the only one this
-	// command's own credential can read.
-	bootstrapProjectID = "prj_local"
-	// slackAgentProfileName is the profile lineage a bring-up provisions when the operator named no
-	// SLACK_AGENT_REVISION_ID. Looked up by name so a re-run reuses it instead of piling up lineages.
-	slackAgentProfileName = "slack"
-)
-
-// slackRunTarget is what a Slack binding must be told before it can admit anything: WHAT to run
-// (a published agent revision) and AS WHOM (a principal). resolved is operator-facing prose naming
-// the target and where each half came from; it is empty only when the operator configured both.
-type slackRunTarget struct {
-	revision  string
-	principal string
-	resolved  string
-}
-
-// resolveRunTarget answers the two questions POST /v1/slack-connections refuses a binding without.
-//
-// It exists because the alternative was worse than an error: a missing SLACK_AGENT_REVISION_ID or
-// SLACK_PRINCIPAL_ID used to SKIP the whole registration while `palai up` still exited green, so an
-// operator watched a successful install that could never run anything. Neither id is a Slack value —
-// they are Palai-side ids no Slack app page will ever hand you — so demanding them from .env.local
-// asked the operator for something only the running stack could tell them.
-//
-// EXPLICIT CONFIGURATION ALWAYS WINS, per id: anything the operator named is used verbatim and
-// nothing is provisioned for it. It opens NO new path — both halves come off the existing
-// provisioning API (§4 T2), and neither writes a credential.
-func resolveRunTarget(api *apiClient, get func(string) string, hasRepository bool) (slackRunTarget, error) {
-	t := slackRunTarget{
-		revision:  strings.TrimSpace(get("SLACK_AGENT_REVISION_ID")),
-		principal: strings.TrimSpace(get("SLACK_PRINCIPAL_ID")),
-	}
-	if t.revision != "" && t.principal != "" {
-		return t, nil
-	}
-	var how []string
-	if t.principal == "" {
-		// The bootstrap key's OWN principal, read back — not a freshly minted one. The only API that
-		// creates a principal is POST /v1/api-keys, which also mints a full-scope key whose plaintext is
-		// returned once and would then be discarded: a live admin credential nobody holds, left in the
-		// database forever, to obtain an id that differs from this one only in its characters. Slack runs
-		// therefore admit as the same principal an operator's own API calls do, which is the truth of a
-		// single-operator self-host stack. Set SLACK_PRINCIPAL_ID to attribute them to a different one.
-		p, err := api.bootstrapPrincipal()
-		if err != nil {
-			return slackRunTarget{}, err
-		}
-		t.principal = p
-		how = append(how, fmt.Sprintf("as principal %s (this stack's bootstrap-key principal — set SLACK_PRINCIPAL_ID to bind a different one)", p))
-	}
-	if t.revision == "" {
-		tools := slackAgentTools(get, hasRepository)
-		mcp := slackAgentMCP(get)
-		rev, minted, err := api.ensureSlackAgentRevision(tools, mcp)
-		if err != nil {
-			return slackRunTarget{}, err
-		}
-		t.revision = rev
-		// What the agent can DO is the part an operator most needs to see, so it is named rather than
-		// counted: "2 tools" tells nobody whether they just granted a web fetch or a shell.
-		grant := "NO tools — it can answer and nothing else, so its runs are single-step (set SLACK_AGENT_TOOLS to widen)"
-		if len(tools) > 0 {
-			grant = "tools: " + strings.Join(tools, ", ")
-		}
-		// The MCP rider is said in the SAME line and with the same discipline, because reaching a
-		// third-party server is a grant of exactly the kind an operator must be able to read off the
-		// bring-up. The empty case is stated rather than omitted: "the agent cannot reach Jira" is
-		// otherwise discovered as an agent that answers as if Jira does not exist.
-		grant += "; " + slackMCPGrant(mcp)
-		switch {
-		case minted:
-			how = append(how, fmt.Sprintf("running agent revision %s, created and published by this bring-up — %s", rev, grant))
-		default:
-			how = append(how, fmt.Sprintf("running agent revision %s, reused from the %q profile an earlier bring-up created — %s", rev, slackAgentProfileName, grant))
-		}
-	}
-	t.resolved = "Slack run target: " + strings.Join(how, ", ")
-	return t, nil
-}
-
-// slackRepository is the repository this bring-up bound to the Slack connection, or the reason it bound
-// none. id empty means the agent can talk and search and cannot touch code — a legitimate posture, and the
-// one every stack had before E22.
-type slackRepository struct {
+// repositoryBinding is the repository this bring-up bound, or the reason it bound none. id empty means
+// nothing on this stack has a repository to work in — a legitimate posture, and the one every stack has
+// until an operator names one.
+type repositoryBinding struct {
 	id       string
 	resolved string // operator-facing prose: what was created or reused, printed as it happens
 	warn     string // a condition the final report must repeat, because its only other symptom is silence
 }
 
-// resolveRepository creates (or reuses) the repository binding a Slack thread codes against, from the two
-// values §0.2 asks the operator for.
+// resolveRepository creates (or reuses) the repository binding a run codes against, from the two values
+// §0.2 asks the operator for. Nothing here attaches it: the id is durable configuration, and what
+// references it — a session, an agent revision, a bot row — is chosen afterwards in the console.
 //
 // IT WARNS RATHER THAN SKIPPING SILENTLY, and that is E21 T2's lesson arriving in the same file for the
 // second time: a bring-up that quietly does nothing is indistinguishable from one that worked. An operator
-// who wired Slack and expected the agent to write code would otherwise meet the gap only as an agent that
-// keeps answering "no workspace bound for this run", with no line anywhere connecting that to a variable
-// they never set.
+// who expected the agent to write code would otherwise meet the gap only as an agent that keeps answering
+// "no workspace bound for this run", with no line anywhere connecting that to a variable they never set.
 //
 // ponytail: no PALAI_REPOSITORY_BINDING_ID override. Every other id in this file has one because the
 // operator may already hold it; a binding is created BY this command, so an operator holding one can pass
 // its clone_url and get it reused by the lookup below. Add the override when someone has a binding they
 // cannot describe.
-func resolveRepository(api *apiClient, get func(string) string) slackRepository {
+func resolveRepository(api *apiClient, get func(string) string) repositoryBinding {
 	cloneURL := strings.TrimSpace(get("PALAI_GIT_CLONE_URL"))
 	branch := strings.TrimSpace(get("PALAI_GIT_BASE_BRANCH"))
 	switch {
 	case cloneURL == "" && branch == "":
-		return slackRepository{warn: "no repository is bound to this Slack workspace: PALAI_GIT_CLONE_URL and " +
-			"PALAI_GIT_BASE_BRANCH are unset, so the agent can read and search but CANNOT clone, edit or commit " +
-			"anything. Its tool list is the read-only three; set both in .env.local and re-run `palai up` to bind one."}
+		return repositoryBinding{warn: "no repository is bound on this stack: PALAI_GIT_CLONE_URL and " +
+			"PALAI_GIT_BASE_BRANCH are unset, so a run can read and search but CANNOT clone, edit or commit " +
+			"anything. Set both in .env.local and re-run `palai up` to bind one, or register one on /repositories."}
 	case cloneURL == "":
-		return slackRepository{warn: "PALAI_GIT_BASE_BRANCH is set but PALAI_GIT_CLONE_URL is not: a binding needs " +
+		return repositoryBinding{warn: "PALAI_GIT_BASE_BRANCH is set but PALAI_GIT_CLONE_URL is not: a binding needs " +
 			"BOTH — the clone URL says WHICH repository, the base branch says which branch a pull request will " +
-			"target. No repository was bound, and the agent keeps the read-only tool list."}
+			"target. No repository was bound."}
 	case branch == "":
-		return slackRepository{warn: "PALAI_GIT_CLONE_URL is set but PALAI_GIT_BASE_BRANCH is not: a binding needs " +
-			"BOTH, and the base branch is not a default worth guessing — it is the branch every pull request from " +
-			"this workspace will target. No repository was bound."}
+		return repositoryBinding{warn: "PALAI_GIT_CLONE_URL is set but PALAI_GIT_BASE_BRANCH is not: a binding needs " +
+			"BOTH, and the base branch is not a default worth guessing — it is the branch every pull request against " +
+			"this repository will target. No repository was bound."}
 	}
 	// The provider repository identity is the authoritative name (spec §30.1); the clone URL is not trusted as
 	// identity. PALAI_GIT_REPO is what §0.2 asks for; deriving it from the URL is the fallback so an operator
@@ -1138,19 +657,19 @@ func resolveRepository(api *apiClient, get func(string) string) slackRepository 
 	}
 	id, reused, err := api.ensureRepositoryBinding(identity, cloneURL, branch)
 	if err != nil {
-		return slackRepository{warn: "no repository was bound: " + err.Error() +
-			". The Slack agent keeps the read-only tool list until this is fixed."}
+		return repositoryBinding{warn: "no repository was bound: " + err.Error() +
+			". Nothing on this stack can clone, edit or commit until this is fixed."}
 	}
 	verb := "registered"
 	if reused {
 		verb = "reused"
 	}
-	return slackRepository{
+	return repositoryBinding{
 		id: id,
 		// The BASE BRANCH is named because it is the whole of "open the PR against dev": the publication
 		// destination is resolved from this binding's default_branch and is never asked of the model.
-		resolved: fmt.Sprintf("Slack repository: %s %s for %s (clone %s, base branch %s — a pull request from this "+
-			"workspace targets %s, and no model chooses that)", verb, id, identity, cloneURL, branch, branch),
+		resolved: fmt.Sprintf("repository: %s %s for %s (clone %s, base branch %s — a pull request against this "+
+			"binding targets %s, and no model chooses that)", verb, id, identity, cloneURL, branch, branch),
 	}
 }
 
@@ -1171,11 +690,11 @@ func repositoryIdentityFrom(cloneURL string) string {
 // ensureRepositoryBinding returns the id of a binding for this clone URL + base branch, reusing one this
 // project already has. Reuse is by (clone_url, default_branch) because those two ARE the binding an operator
 // described in .env.local: `palai up` is re-run constantly, and a fresh binding each time would leave a pile
-// of duplicates and — worse — move the connection's repository underneath a thread mid-conversation.
+// of duplicates and — worse — move the repository underneath whatever already references the old id.
 //
 // It matches on default_branch too rather than clone_url alone, so an operator who retargets
 // PALAI_GIT_BASE_BRANCH from `main` to `dev` gets a binding that says `dev` instead of a silently inert
-// change. Same discipline publishedAgentRevision applies to the tool list, one function up.
+// change.
 func (c *apiClient) ensureRepositoryBinding(identity, cloneURL, branch string) (id string, reused bool, err error) {
 	var page struct {
 		Data []struct {
@@ -1190,7 +709,7 @@ func (c *apiClient) ensureRepositoryBinding(identity, cloneURL, branch string) (
 		return "", false, fmt.Errorf("list repository bindings: %w", err)
 	case status == http.StatusNotFound:
 		return "", false, fmt.Errorf("GET /v1/repository-bindings = 404: this control-plane mounts no repository " +
-			"binding surface, so a repository cannot be bound to a Slack workspace on this stack")
+			"binding surface, so no repository can be bound on this stack")
 	case status != http.StatusOK:
 		return "", false, fmt.Errorf("GET /v1/repository-bindings = %d, want 200", status)
 	}
@@ -1205,7 +724,7 @@ func (c *apiClient) ensureRepositoryBinding(identity, cloneURL, branch string) (
 	}
 	// allowed_operations is left empty on purpose and it is NOT a permission grant this omits: nothing in the
 	// tree reads that column today (it is stored and projected, never evaluated), so writing a list here would
-	// be a security-shaped string that enforces nothing. What actually bounds this agent is the tool list.
+	// be a security-shaped string that enforces nothing. What actually bounds a run is its tool list.
 	status, err = c.do(http.MethodPost, "/v1/repository-bindings", map[string]any{
 		"provider":            "github",
 		"repository_identity": identity,
@@ -1221,42 +740,13 @@ func (c *apiClient) ensureRepositoryBinding(identity, cloneURL, branch string) (
 	return created.ID, false, nil
 }
 
-// slackSkipWarning turns a registration skip into the report's WARNING section — but only when the
-// operator was evidently trying to wire Slack (E21 T2 item 3). A skip inside a green bring-up is how
-// an install that does nothing reads as an install that worked.
+// approverListWarning exists because a project with no approvers list refuses NOTHING —
+// config_policy.approvers is unrestricted when absent, deliberately (see coordinator.ConfigPolicy.ApproverAllowed:
+// a control that changes behaviour for deployments that never asked for it is an outage). So the open door is
+// the default, and the only honest thing to do is say so out loud rather than let an operator discover it.
 //
-// A stack with no SLACK_TEAM_ID at all is NOT warned about: that operator did not ask for Slack, and
-// warning them on every single bring-up is precisely the crying-wolf this same task removes from the
-// orphan sweep. The step line still says SKIPPED either way — the warning is the escalation.
-func slackSkipWarning(get func(string) string, skip string) string {
-	if strings.TrimSpace(get("SLACK_TEAM_ID")) == "" {
-		return ""
-	}
-	return "Slack is configured in this environment but was NOT wired: " + skip +
-		". The bring-up above still succeeded, so nothing else will tell you — but no message will reach the agent until this is fixed."
-}
-
-// splitList parses a comma-separated operator value: trimmed, empties dropped. nil when nothing is left,
-// so a caller can distinguish "not configured" from "configured empty".
-func splitList(raw string) []string {
-	var out []string
-	for _, part := range strings.Split(raw, ",") {
-		if p := strings.TrimSpace(part); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// approverListWarning is the platform-level sibling of slackApproverWarning below, and it warns about the
-// OPPOSITE failure. That one exists because a connection with no allowed_users refuses everything in
-// silence; this one exists because a project with no approvers list refuses NOTHING — config_policy.approvers
-// is unrestricted when absent, deliberately (see coordinator.ConfigPolicy.ApproverAllowed: a control that
-// changes behaviour for deployments that never asked for it is an outage). So the open door is the default,
-// and the only honest thing to do is say so out loud rather than let an operator discover it.
-//
-// It names what is actually open, not a generality: the HTTP approve surface. Slack clicks are still gated
-// by the connection's own allowed_users, which is why that half is not claimed here.
+// It names what is actually open, not a generality: the HTTP approve surface. A channel adapter that gates
+// its own clicks separately is not claimed here.
 //
 // Derived from what the running stack ACTUALLY serves — GET /v1/projects/{id} — never from an assumption
 // about what `palai up` usually writes. A read that fails warns about the read, because "I could not tell"
@@ -1271,7 +761,7 @@ func approverListWarning(api *apiClient) string {
 		return ""
 	}
 	return "no project approver list is configured; the HTTP approve surface is gated only by tenant-scoped key possession — " +
-		"set one with `palai admin project set-policy " + bootstrapProjectID + " --approvers key:<api_key_id>,slack:<team_id>:<user_id>` " +
+		"set one with `palai admin project set-policy " + bootstrapProjectID + " --approvers key:<api_key_id>` " +
 		"(see docs/operations/approvals.md). Leaving it unset is a supported posture, not a bug — it is just not a gate"
 }
 
@@ -1557,21 +1047,6 @@ func (c *apiClient) projectApprovers(projectID string) ([]string, error) {
 	return body.ConfigPolicy.Approvers, nil
 }
 
-// slackApproverWarning is the line an operator would otherwise only learn from a silently refused Approve
-// click. ApproverAuthorized is deny-by-default — correctly: a connection that has not been told who may
-// approve must not let any member of the workspace authorize a privileged operation. But a `palai up` that
-// registers no approver and says nothing leaves a real operator mentioning the bot, clicking Approve, and
-// getting NOTHING back, with no surface anywhere that explains it.
-//
-// Derived from the body actually sent, never from an assumption about what `palai up` usually does.
-func slackApproverWarning(body map[string]any) string {
-	if users, ok := body["allowed_users"].([]string); ok && len(users) > 0 {
-		return ""
-	}
-	return "slack: registered, but NO approver is allow-listed, so every approve/deny click will be refused; " +
-		"set SLACK_APPROVER_IDS=U… (comma-separated Slack user ids) and re-run"
-}
-
 // --- the final report ------------------------------------------------------------------------
 
 // capRow is one line of the capability table.
@@ -1580,14 +1055,13 @@ type capRow struct{ name, state, reason string }
 // observedFacts collects what THIS bring-up actually observed, keyed by capability name. Only a
 // capability with a fact here is called live; everything else is dormant with the tier the
 // deployment served as its reason.
-func observedFacts(rt roundTrip, slackFact string) map[string]string {
-	facts := map[string]string{
+//
+// The round trip is the one thing this command PROVES, so it is the one fact there is. A capability this
+// bring-up merely configured does not earn `live` — that word is reserved for something observed.
+func observedFacts(rt roundTrip) map[string]string {
+	return map[string]string{
 		"responses": fmt.Sprintf("real round-trip proven: %s, %d in / %d out", rt.Model, rt.InputTokens, rt.OutputTokens),
 	}
-	if slackFact != "" {
-		facts["slack"] = slackFact
-	}
-	return facts
 }
 
 // capabilityRows derives the status table from the RUNNING stack: the row set is exactly what
@@ -1655,7 +1129,8 @@ func printReport(cfg Config, posture string, rt roundTrip, caps map[string]strin
 // --- plumbing ------------------------------------------------------------------------------
 
 // apiClient speaks the public API with the bootstrap key. It is the only HTTP in this file; the
-// four calls below (create, retrieve, capabilities, slack) all route through it.
+// calls below (create, retrieve, capabilities, and the deployment's own configuration reads) all route
+// through it.
 type apiClient struct {
 	baseURL string
 	key     string
@@ -1764,398 +1239,6 @@ func (c *apiClient) capabilities() (map[string]string, error) {
 		return nil, fmt.Errorf("GET /v1/capabilities = %d, want 200", status)
 	}
 	return body.Capabilities, nil
-}
-
-func (c *apiClient) slackConnectionCount() (int, error) {
-	var body struct {
-		Data []json.RawMessage `json:"data"`
-	}
-	status, err := c.do(http.MethodGet, "/v1/slack-connections", nil, &body)
-	if err != nil {
-		return 0, err
-	}
-	if status != http.StatusOK {
-		return 0, fmt.Errorf("GET /v1/slack-connections = %d", status)
-	}
-	return len(body.Data), nil
-}
-
-// bootstrapPrincipal reads back the principal behind the stack's bootstrap API key — the identity
-// this command is already authenticated as. Metadata only: GET /v1/api-keys/{id} never renders a key.
-func (c *apiClient) bootstrapPrincipal() (string, error) {
-	var body struct {
-		PrincipalID string `json:"principal_id"`
-	}
-	status, err := c.do(http.MethodGet, "/v1/api-keys/"+bootstrapKeyID, nil, &body)
-	switch {
-	case err != nil:
-		return "", fmt.Errorf("read this stack's own principal: %w", err)
-	case status != http.StatusOK:
-		return "", fmt.Errorf("GET /v1/api-keys/%s = %d: this stack has no bootstrap key row to take a principal from, "+
-			"so a Slack binding cannot be told who to run as — set SLACK_PRINCIPAL_ID to name one", bootstrapKeyID, status)
-	case body.PrincipalID == "":
-		return "", fmt.Errorf("GET /v1/api-keys/%s returned no principal_id", bootstrapKeyID)
-	}
-	return body.PrincipalID, nil
-}
-
-// ensureSlackAgentRevision returns a PUBLISHED agent revision for the Slack binding to pin, reusing
-// the one an earlier bring-up made where possible. minted reports whether THIS call created it.
-//
-// Published is not a nicety: coordinator's admission verifies published_at before pinning a run, so a
-// draft revision would register a binding that admits nothing — today's silent failure with one more
-// step in front of it. The reuse lookup is by profile NAME because `palai up` is re-run constantly,
-// and a bring-up that minted a fresh lineage each time would move the workspace's binding underneath
-// the operator and leave a pile of orphan revisions behind.
-func (c *apiClient) ensureSlackAgentRevision(tools, mcp []string) (id string, minted bool, err error) {
-	profileID, err := c.findAgentProfile(slackAgentProfileName)
-	if err != nil {
-		return "", false, err
-	}
-	if profileID != "" {
-		if rev, err := c.publishedAgentRevision(profileID, tools, mcp); err != nil {
-			return "", false, err
-		} else if rev != "" {
-			return rev, false, nil
-		}
-	} else {
-		var created struct {
-			ID string `json:"id"`
-		}
-		status, err := c.do(http.MethodPost, "/v1/agents", map[string]any{"name": slackAgentProfileName}, &created)
-		if err != nil {
-			return "", false, fmt.Errorf("create the %q agent profile: %w", slackAgentProfileName, err)
-		}
-		if status == http.StatusConflict {
-			// SOMEONE ELSE HAS THE NAME, which after the pagination fix above means a concurrent bring-up
-			// rather than a lookup that missed. Re-reading is the whole recovery: the profile exists, and
-			// this run wants its id, not the right to have created it.
-			again, ferr := c.findAgentProfile(slackAgentProfileName)
-			if ferr != nil {
-				return "", false, ferr
-			}
-			if again == "" {
-				return "", false, fmt.Errorf("POST /v1/agents = 409 for %q, but no profile of that name is listed", slackAgentProfileName)
-			}
-			created.ID = again
-		} else if status != http.StatusCreated || created.ID == "" {
-			return "", false, fmt.Errorf("POST /v1/agents = %d, want 201 with an id", status)
-		}
-		profileID = created.ID
-	}
-
-	// The model and instructions stay EMPTY on purpose: the revision inherits the deployment's model, and
-	// guessing an instruction here would bake a `palai up` opinion into every Slack run, invisibly, with the
-	// operator having no idea where it came from.
-	//
-	// TOOLS ARE DIFFERENT, and E21 T4 is where they arrive. A revision with an empty effective tool set is
-	// single-step — it can answer, and it can do nothing else — so leaving the list empty was not neutrality,
-	// it was a ceiling nobody had chosen either. What IS a real choice is which tools, and the default is
-	// deliberately the narrow one:
-	//
-	//   READ-ONLY BY DEFAULT. A Slack DM is the lowest-friction surface this platform has — anyone in the
-	//   workspace can reach it, and E20 granted im:history so the panel conversation works at all. Binding
-	//   the workspace and publish tools here would hand every one of those people a shell and a push, as a
-	//   standing capability nobody opted into. That is the same class of decision as im:history itself, and
-	//   it belongs to the workspace owner, at install time, in the open.
-	//
-	//   SLACK_AGENT_TOOLS widens it, explicitly and by name. An operator who wants the agent to write code
-	//   from Slack sets it — and can see in one line what they granted. Explicit configuration always wins,
-	//   the same rule the revision and principal ids follow above.
-	//
-	// mcp_connections stays EMPTY unless the operator named connections, and its absence is still the
-	// fail-closed default for EXTERNAL tools: a Slack run reaches no MCP server until somebody registers one
-	// and names it here. The rider is the capability ceiling (extensions/lookup.go), so an empty one is a
-	// run that cannot reach outward at all. E22 T6 gives that decision a spelling — SLACK_AGENT_MCP — rather
-	// than changing the default; a bring-up that guessed a connection would hand every workspace member a
-	// path out to a third party's server, and a Jira ticket's body is written by whoever can file a ticket.
-	var rev struct {
-		ID string `json:"id"`
-	}
-	status, err := c.do(http.MethodPost, "/v1/agents/"+profileID+"/revisions",
-		map[string]any{"tools": tools, "mcp_connections": mcp}, &rev)
-	if err != nil {
-		return "", false, fmt.Errorf("create an agent revision under %s: %w", profileID, err)
-	}
-	if status != http.StatusCreated || rev.ID == "" {
-		return "", false, fmt.Errorf("POST /v1/agents/%s/revisions = %d, want 201 with an id", profileID, status)
-	}
-	status, err = c.do(http.MethodPost, "/v1/agents/"+profileID+"/revisions/"+rev.ID+"/publish", map[string]any{}, nil)
-	if err != nil {
-		return "", false, fmt.Errorf("publish agent revision %s: %w", rev.ID, err)
-	}
-	if status != http.StatusOK {
-		return "", false, fmt.Errorf("publish agent revision %s = %d, want 200: a DRAFT revision pins no run, so the "+
-			"binding would admit nothing", rev.ID, status)
-	}
-	return rev.ID, true, nil
-}
-
-// findAgentProfile returns the id of the profile lineage with this name, or "" when there is none.
-func (c *apiClient) findAgentProfile(name string) (string, error) {
-	// IT WALKS EVERY PAGE, and the version that read only the first one was wrong in a way that stayed
-	// invisible for as long as the deployment was small. Measured 2026-08-02 against the live control
-	// plane: 42 profiles, a 20-row default page, and "slack" on the second one — so this returned "" for
-	// a profile that plainly existed, and `palai up` tried to CREATE it on every bring-up. What that cost
-	// depended entirely on a detail nobody was thinking about: the name is UNIQUE, so the create failed
-	// (a 500 until this commit, now a 409) and the Slack step reported "NOT registered" against a
-	// deployment that was registered. Had the name NOT been unique this would have minted a second
-	// "slack" profile per bring-up, and which one a Slack message routed to would be a lottery.
-	//
-	// `after` takes the previous page's next_cursor — the names differ and the spec says so
-	// (protocols/openapi/openapi-3.2.yaml: "Opaque cursor from a previous page's next_cursor"). Passing
-	// `?cursor=` instead re-serves page one with has_more still true, which is an infinite loop that
-	// looks like paging.
-	cursor := ""
-	for pages := 0; pages < 200; pages++ {
-		var page struct {
-			Data []struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			} `json:"data"`
-			HasMore    bool   `json:"has_more"`
-			NextCursor string `json:"next_cursor"`
-		}
-		path := "/v1/agents?limit=100"
-		if cursor != "" {
-			path += "&after=" + url.QueryEscape(cursor)
-		}
-		status, err := c.do(http.MethodGet, path, nil, &page)
-		if err != nil {
-			return "", fmt.Errorf("list agent profiles: %w", err)
-		}
-		if status != http.StatusOK {
-			return "", fmt.Errorf("GET /v1/agents = %d, want 200", status)
-		}
-		for _, p := range page.Data {
-			if p.Name == name {
-				return p.ID, nil
-			}
-		}
-		// A next_cursor that repeats is a server that is not advancing; stopping beats looping forever
-		// while printing nothing.
-		if !page.HasMore || page.NextCursor == "" || page.NextCursor == cursor {
-			return "", nil
-		}
-		cursor = page.NextCursor
-	}
-	return "", fmt.Errorf("listing agent profiles did not terminate after 200 pages")
-}
-
-// publishedAgentRevision returns a published revision of this profile, or "" when it has none.
-// It reuses a published revision ONLY when that revision already carries the wanted tool list AND the
-// wanted MCP rider. Reusing one with a different config would make SLACK_AGENT_TOOLS silently inert on
-// every bring-up after the first — the operator would set it, see a green `palai up`, and get the old
-// toolless revision anyway. That is the same silent-skip shape E21 T2 removed from this file, so it is not
-// reintroduced one function down.
-//
-// THE RIDER IS CHECKED FOR THE SAME REASON AND WAS ADDED SECOND (E22 T6), which is worth saying plainly:
-// the tool half of this comparison already existed, and adding SLACK_AGENT_MCP without extending it would
-// have shipped the identical defect a third time — a Jira connection an operator named, on a stack that had
-// been brought up once before, resolving to ErrUnknownTool forever with a green install behind it.
-func (c *apiClient) publishedAgentRevision(profileID string, wantTools, wantMCP []string) (string, error) {
-	var page struct {
-		Data []struct {
-			ID             string   `json:"id"`
-			Status         string   `json:"status"`
-			Tools          []string `json:"tools"`
-			MCPConnections []string `json:"mcp_connections"`
-		} `json:"data"`
-	}
-	status, err := c.do(http.MethodGet, "/v1/agents/"+profileID+"/revisions", nil, &page)
-	if err != nil {
-		return "", fmt.Errorf("list revisions of %s: %w", profileID, err)
-	}
-	if status != http.StatusOK {
-		return "", fmt.Errorf("GET /v1/agents/%s/revisions = %d, want 200", profileID, status)
-	}
-	for _, r := range page.Data {
-		if r.Status == "published" && sameTools(r.Tools, wantTools) && sameTools(r.MCPConnections, wantMCP) {
-			return r.ID, nil
-		}
-	}
-	return "", nil
-}
-
-// sameTools compares two name lists as SETS: the API's order is not a promise, and an operator who reorders
-// SLACK_AGENT_TOOLS or SLACK_AGENT_MCP has not asked for a new revision.
-func sameTools(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	seen := make(map[string]int, len(a))
-	for _, t := range a {
-		seen[t]++
-	}
-	for _, t := range b {
-		seen[t]--
-		if seen[t] < 0 {
-			return false
-		}
-	}
-	return true
-}
-
-// slackAgentTools is the tool list bound to the revision `palai up` creates. The default is READ-ONLY on
-// purpose (see ensureSlackAgentRevision); SLACK_AGENT_TOOLS replaces it wholesale, by name, so what an
-// operator granted is legible in one line rather than assembled from a default plus a delta.
-//
-// "Give this agent nothing" is a real posture and needs to stay reachable, so it has an explicit spelling:
-// SLACK_AGENT_TOOLS=none. Blank is treated as unset, because a variable that got emptied by a stray line in
-// .env.local should not silently disarm the agent.
-//
-// hasRepository is E22 T3's ONE conditional, and the condition is what makes it honest: the workspace tools
-// — and, since T4, the publish tools — are added only when this bring-up actually bound a repository. A tool
-// whose every call ends in "no workspace bound for this run" is worse than an absent tool — it is an
-// advertised capability that cannot work, which is the shape E21 T5 already paid for from the other
-// direction (a real tool no list named).
-func slackAgentTools(get func(string) string, hasRepository bool) []string {
-	raw := strings.TrimSpace(get("SLACK_AGENT_TOOLS"))
-	if raw == "" {
-		if hasRepository {
-			out := append(append([]string{}, slackDefaultTools...), slackRepositoryTools...)
-			return append(out, slackPublishTools...)
-		}
-		return slackDefaultTools
-	}
-	if strings.EqualFold(raw, "none") {
-		return nil
-	}
-	var out []string
-	for _, name := range strings.Split(raw, ",") {
-		if name = strings.TrimSpace(name); name != "" {
-			out = append(out, name)
-		}
-	}
-	return out
-}
-
-// slackDefaultTools: read-only, side-effect-free, and functional on a plain compose stack — no workspace
-// root, no repository, no sandbox driver required. palai.research.fetch carries its own egress guards;
-// palai.knowledge.retrieve is ACL-first and fail-closed to KB-wide sources; palai.slack.search reads this
-// workspace's PUBLIC channels and stores nothing (its own two gates are elsewhere and both must hold — the
-// workspace must have granted search:read.public, and the RUN must carry an action_token, or the broker
-// lookup never offers the tool at all).
-//
-// A NAME MISSING FROM THIS LIST IS A TOOL THAT CANNOT EXIST, and that is not obvious from either side:
-// advertisedTools iterates the run's EFFECTIVE SET and only asks the broker about names it already holds,
-// so a tool absent here is never resolved no matter how completely it is wired. palai.slack.search was
-// missing for exactly that reason and the whole search feature was unreachable — mounted, tested, and dead.
-// TestEverySlackDefaultToolResolves is the guard, and it lives control-plane-side because that is the only
-// place that can see both this list and the real broker.
-var slackDefaultTools = []string{"palai.research.fetch", "palai.knowledge.retrieve", "palai.slack.search"}
-
-// slackRepositoryTools are added to the list above ONLY when this bring-up bound a repository to the Slack
-// connection (E22 T3). They are the coding half — read a file, run a command, commit — and every one of them
-// refuses cleanly without a workspace root, which is precisely why they are conditional rather than default:
-// binding them to a connection with no repository would advertise three tools whose every call answers "no
-// workspace bound for this run".
-//
-// The publish half is the SEPARATE list below, and the two stay separate after E22 T4 opened it: this one
-// is what an agent may do to a workspace nobody else can see, and that one is what leaves the machine.
-// E26 T2 adds the fourth, and it belongs on THIS list for a reason that is an asymmetry rather than a
-// preference: `background` is a PARAMETER of palai.workspace.shell, so an agent granted the shell tool can
-// already START a long-running task, and without this name it could never stop one. A run that can begin a
-// build it cannot kill is the orphan this epic exists to prevent, granted by omission.
-var slackRepositoryTools = []string{"palai.workspace.file", "palai.workspace.shell", "palai.workspace.commit", "palai.workspace.background_kill", "palai.workspace.show_media"}
-
-// slackPublishTools are the publish half (E22 T4), added under the SAME condition as the coding half and
-// for the same reason: without a binding RunPublicationTarget answers "the run prepared no repository", so
-// offering them would advertise two tools whose every call fails.
-//
-// GRANTING THEM IS NOT GRANTING A PUSH, and that is the whole shape of this task. Neither tool acts: each
-// records a PENDING publication and returns pending_approval (push.go:19, pull_request.go:20), and the
-// operation happens only after a human presses Approve on a message only SLACK_APPROVER_IDS may press. The
-// destination is never in the list either — remote, branch and base come from the binding
-// (RunPublicationTarget), so "open the PR against dev" is the operator's PALAI_GIT_BASE_BRANCH and not
-// something a model can name. What this list decides is whether the agent may ASK.
-//
-// A stack that granted these and configured no GitHub App gets an approved publication that waits forever;
-// resolveGitHubApp warns about exactly that, because silence is the failure mode this file has now paid for
-// three times.
-// E23 T6 adds the third and it belongs on THIS list rather than a fourth: merging is what leaves the
-// machine, exactly like the other two, and it asks the same human the same way. What it does NOT do is
-// widen who decides or what may be named — the pull request it merges is the one this run opened.
-var slackPublishTools = []string{"palai.publish.push", "palai.publish.pull_request", "palai.publish.merge_pull_request"}
-
-// slackAgentMCP is the mcp_connections rider bound to the revision `palai up` creates (E22 T6): the names
-// of the MCP connections a Slack run may reach. It is the EXTERNAL capability ceiling — a run resolves a
-// connection's tools only when its revision names it (extensions/lookup.go), so an empty rider is a run
-// that cannot reach outward at all.
-//
-// EMPTY IS THE DEFAULT AND STAYS THE DEFAULT. What changes here is only that the operator now has a
-// spelling: SLACK_AGENT_MCP=jira, alongside the tool set that carries the Jira tools. Registering the
-// connection and approving its tools is still a separate, deliberate ceremony
-// (docs/operations/jira-mcp-connection.md) — this variable decides only whether the Slack agent is one of
-// the things allowed to use it.
-//
-// It takes CONNECTION NAMES rather than ids for the same reason SLACK_AGENT_TOOLS takes tool names: an
-// operator writing .env.local has the name they chose at registration, not an `mcpc_…` id they would have
-// to go and look up.
-//
-// `none` and blank both leave the rider empty, which makes them equivalent TODAY — the default is already
-// empty. The word is kept anyway: it means the same thing it means on SLACK_AGENT_TOOLS, and "deliberately
-// nothing" should be sayable without deleting a line.
-func slackAgentMCP(get func(string) string) []string {
-	raw := strings.TrimSpace(get("SLACK_AGENT_MCP"))
-	if raw == "" || strings.EqualFold(raw, "none") {
-		return nil
-	}
-	return splitList(raw)
-}
-
-// slackMCPGrant is the operator-facing sentence for the rider. The empty case is a sentence rather than
-// silence: a Slack agent that cannot reach Jira looks exactly like one whose Jira connection is broken, and
-// the difference is a variable nobody would think to look for.
-func slackMCPGrant(mcp []string) string {
-	if len(mcp) == 0 {
-		return "NO MCP connection — it cannot reach Jira or any other external server (set SLACK_AGENT_MCP to name one)"
-	}
-	return "MCP connections: " + strings.Join(mcp, ", ") +
-		" (their tools must also be approved and pinned into the tool set — see docs/operations/jira-mcp-connection.md)"
-}
-
-// putSecretRef stores one credential VALUE under its handle through the E13 T3 secret store — the
-// SAME write-path a production tenant uses, envelope-encrypted at rest and resolved fresh, so the
-// resolver chain that fronts every consumer (dbSecret) redeems the handle with no restart.
-//
-// The value travels in a POST body over loopback and nowhere else: not argv (which `ps` shows), not
-// an env var (which `docker inspect` shows), not a log, not a file this command leaves behind. It
-// is write-only at the far end too — every projection the API serves is metadata, so nothing can
-// read it back out.
-func (c *apiClient) putSecretRef(name, value string) error {
-	status, err := c.do(http.MethodPost, "/v1/secret-refs", map[string]any{"name": name, "value": value}, nil)
-	switch {
-	case err != nil:
-		// c.do builds its error from the method, path and response body — never from the request.
-		return fmt.Errorf("store the secret ref %q: %w", name, err)
-	case status == http.StatusCreated:
-		return nil
-	case status == http.StatusNotFound:
-		return fmt.Errorf("POST /v1/secret-refs = 404: the control-plane booted with no secret store, so the handle %q could resolve nowhere. "+
-			"Fix: PALAI_SECRET_MASTER_KEY_FILE must name a 32-byte hex key file when the container starts (a running one never re-reads it)", name)
-	case status == http.StatusForbidden:
-		return fmt.Errorf("POST /v1/secret-refs = 403: this API key lacks the `provision` capability, so it cannot store the handle %q", name)
-	default:
-		return fmt.Errorf("POST /v1/secret-refs = %d storing the handle %q, want 201", status, name)
-	}
-}
-
-func (c *apiClient) createSlackConnection(body map[string]any) (string, int, error) {
-	var created struct {
-		ID     string `json:"id"`
-		Detail string `json:"detail"`
-	}
-	status, err := c.do(http.MethodPost, "/v1/slack-connections", body, &created)
-	if err != nil {
-		return "", status, err
-	}
-	switch status {
-	case http.StatusCreated, http.StatusConflict:
-		return created.ID, status, nil
-	default:
-		return "", status, fmt.Errorf("POST /v1/slack-connections = %d: %s", status, created.Detail)
-	}
 }
 
 // waitHealthy re-runs DOCTOR'S OWN checks until they are all green or they stop improving. It

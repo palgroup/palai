@@ -1,6 +1,8 @@
 package stack
 
 import (
+	"io"
+	"os"
 	"strings"
 	"testing"
 )
@@ -150,65 +152,6 @@ func TestCredentialNeverAppearsInOperatorProse(t *testing.T) {
 	}
 }
 
-// TestSlackStepSkipsCleanlyWithoutValues: an absent Slack app is normal. The skip must name what is
-// missing and where it comes from, not just say "skipped".
-func TestSlackStepSkipsCleanlyWithoutValues(t *testing.T) {
-	body, skip := slackRegistration(env())
-	if body != nil {
-		t.Fatal("a registration body was built with no SLACK_TEAM_ID")
-	}
-	for _, want := range []string{"SLACK_TEAM_ID", "api.slack.com/apps", "§0.1"} {
-		if !strings.Contains(skip, want) {
-			t.Fatalf("the skip reason must mention %q, got: %q", want, skip)
-		}
-	}
-}
-
-// TestATeamIdAndASigningSecretAreEnoughToRegister replaces the old
-// TestSlackSkipNamesTheMissingRunTarget, and the replacement IS the E21 T2 behaviour change.
-//
-// That test pinned a skip: a team id alone could not be registered because the API refuses a binding
-// with no run target, so `palai up` named SLACK_AGENT_REVISION_ID / SLACK_PRINCIPAL_ID and did
-// nothing. The skip was accurate and the outcome was still wrong — those two are Palai-side ids that
-// no Slack app page hands you, `palai up` exited GREEN having wired nothing, and an operator saw a
-// successful install that could not answer a message. The bring-up resolves them itself now
-// (resolveRunTarget), so the only Slack values an operator must supply are Slack's own.
-func TestATeamIdAndASigningSecretAreEnoughToRegister(t *testing.T) {
-	body, skip := slackRegistration(env("SLACK_TEAM_ID", "T0001", "SLACK_SIGNING_SECRET", "s3cr3t"))
-	if skip != "" {
-		t.Fatalf("registration skipped for want of ids the bring-up provisions itself: %q", skip)
-	}
-	if body["team_id"] != "T0001" {
-		t.Fatalf("team_id = %v", body["team_id"])
-	}
-}
-
-// TestSlackRegistrationSendsHandlesNeverCredentials: POST /v1/slack-connections refuses an inline
-// credential, and more to the point the CLI must never put one on the wire. The signing secret's
-// VALUE must appear nowhere in the body.
-func TestSlackRegistrationSendsHandlesNeverCredentials(t *testing.T) {
-	const secret = "8f14e45fceea167a5a36dedd4bea2543"
-	body, skip := slackRegistration(env(
-		"SLACK_TEAM_ID", "T0001", "SLACK_SIGNING_SECRET", secret,
-		"SLACK_AGENT_REVISION_ID", "agr_1", "SLACK_PRINCIPAL_ID", "prn_1", "SLACK_TEST_CHANNEL", "C0001"))
-	if skip != "" {
-		t.Fatalf("a complete Slack environment was skipped: %s", skip)
-	}
-	if body["signing_secret_ref"] != "slack-signing-T0001" {
-		t.Fatalf("signing_secret_ref = %v, want a handle derived from the team id", body["signing_secret_ref"])
-	}
-	for k, v := range body {
-		if s, ok := v.(string); ok && strings.Contains(s, secret) {
-			t.Fatalf("field %q carries the signing secret VALUE", k)
-		}
-	}
-	// default_policy is no longer built here: wireSlack fills it from resolveRunTarget, against the
-	// running stack. TestExplicitRunTargetAlwaysWins is where the two explicit ids are proven to survive.
-	if _, present := body["default_policy"]; present {
-		t.Fatalf("slackRegistration built a default_policy from the environment: %v", body["default_policy"])
-	}
-}
-
 // TestCapabilityRowsComeFromTheServedBody: the table's rows are whatever the running stack served —
 // a capability this binary has never heard of still gets a row, and a dormant one carries the tier
 // the deployment itself reported as its reason.
@@ -239,6 +182,47 @@ func TestCapabilityRowsComeFromTheServedBody(t *testing.T) {
 	if got := byName["slack"]; got.state != "dormant" || !strings.Contains(got.reason, "exercised nothing") {
 		t.Fatalf("slack row = %+v, want dormant naming that this run exercised nothing on it", got)
 	}
+}
+
+// TestAProvenRoundTripDoesNotSuppressTheWarnings pins the seam where the report meets the conditions
+// Bootstrap gathers after it. They answer DIFFERENT questions — the round trip answers "does this stack
+// talk to a real model?", the warnings answer "will anything an operator does next actually happen?" —
+// and a report is exactly where one quietly swallows the other.
+//
+// The PROVEN case is the one under test on purpose. A bring-up that printed PROVEN LIVE is where an
+// operator STOPS reading, and it is also precisely when the refused Approve clicks begin.
+func TestAProvenRoundTripDoesNotSuppressTheWarnings(t *testing.T) {
+	rt := roundTrip{ResponseID: "resp_1", Status: "completed", Model: "claude-x", InputTokens: 1, OutputTokens: 2}
+	warn := "no project approver list is configured; the HTTP approve surface is gated only by tenant-scoped key possession"
+	out := captureStdout(t, func() {
+		printReport(Config{BaseURL: "http://127.0.0.1:8080"}, "container control plane (docker compose)", rt,
+			map[string]string{"responses": "preview"}, observedFacts(rt), "1 pool(s), 1 active runner(s), 0 pending approval",
+			nil, warn)
+	})
+	if !strings.Contains(out, "PROVEN LIVE") || !strings.Contains(out, "live") {
+		t.Fatalf("the report lost the proof — an observed round trip must read as live:\n%s", out)
+	}
+	if !strings.Contains(out, warn) {
+		t.Fatalf("the report lost the warning: a proven round trip suppressed it, so every refused approve click "+
+			"stays unexplained:\n%s", out)
+	}
+}
+
+// captureStdout collects what printReport writes, which is os.Stdout directly.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = saved }()
+	done := make(chan string, 1)
+	go func() { b, _ := io.ReadAll(r); done <- string(b) }()
+	fn()
+	w.Close()
+	return <-done
 }
 
 // TestParseEnvReadsTheShapeThisRepoUses covers the file `.env.local` actually is, plus the `export`
@@ -275,81 +259,5 @@ func TestRedChecksCarryTheirDetail(t *testing.T) {
 	}})
 	if len(red) != 1 || !strings.Contains(red[0], "disk:") || !strings.Contains(red[0], "PalaiDiskLow") {
 		t.Fatalf("redChecks = %v, want the failing check with its detail", red)
-	}
-}
-
-// TestSlackTestChannelNeverBecomesAProductionScope is Finding 2, and it is a NAMING guarantee with a
-// security consequence rather than a style rule. SLACK_TEST_CHANNEL belongs to the live test harness
-// (tests/live/slack) — it is "the channel the bot was invited to so a test can post there". `palai up`
-// used to copy it into allowed_channels, so an operator who set it to make the live tests run silently
-// confined their PRODUCTION bot to their test channel, and an operator who did not set it got a bot with
-// no scope while the field looked like one.
-func TestSlackTestChannelNeverBecomesAProductionScope(t *testing.T) {
-	// SLACK_SIGNING_SECRET is in the base because a COMPLETE environment now includes it: `palai up`
-	// registers signing_secret_ref only when it can store a value under that handle, so without the
-	// value the whole registration is a skip and there is no body to assert scoping on. It is fixture
-	// completeness only — nothing below reads it, and both scopes stay independent of it.
-	base := []string{"SLACK_TEAM_ID", "T0001", "SLACK_AGENT_REVISION_ID", "agr_1", "SLACK_PRINCIPAL_ID", "prn_1",
-		"SLACK_SIGNING_SECRET", "shh"}
-
-	body, skip := slackRegistration(env(append(base, "SLACK_TEST_CHANNEL", "C_TEST")...))
-	if skip != "" {
-		t.Fatalf("a complete Slack environment was skipped: %s", skip)
-	}
-	if got, ok := body["allowed_channels"]; ok {
-		t.Fatalf("SLACK_TEST_CHANNEL became allowed_channels=%v — a variable named 'test channel' must never silently become a production security scope", got)
-	}
-
-	// Unset ⇒ NO channel restriction. That is the production default and it must be the ABSENCE of the
-	// field, not an empty list that a later reader could mistake for "nothing is allowed".
-	bare, _ := slackRegistration(env(base...))
-	if _, ok := bare["allowed_channels"]; ok {
-		t.Fatalf("with no allow-list configured the body still carried allowed_channels=%v; an unconfigured connection must be registered with no channel restriction at all", bare["allowed_channels"])
-	}
-
-	// The honestly-named variable is the one that scopes, and it takes a comma-separated LIST — one channel
-	// was never the right shape for an allow-list.
-	scoped, _ := slackRegistration(env(append(base, "SLACK_ALLOWED_CHANNELS", " C1, C2 ,,C3 ")...))
-	got, ok := scoped["allowed_channels"].([]string)
-	if !ok || len(got) != 3 || got[0] != "C1" || got[1] != "C2" || got[2] != "C3" {
-		t.Fatalf("SLACK_ALLOWED_CHANNELS parsed to %#v, want [C1 C2 C3] — comma-separated, trimmed, empties dropped", scoped["allowed_channels"])
-	}
-}
-
-// TestSlackApproverSetIsRegisteredAndItsAbsenceIsSaidOutLoud is Finding 3. The deny-by-default in
-// ApproverAuthorized is CORRECT and stays; what was broken is that `palai up` registered no approver at
-// all and said nothing, so a real operator's first Approve click was refused with no way to learn why.
-func TestSlackApproverSetIsRegisteredAndItsAbsenceIsSaidOutLoud(t *testing.T) {
-	// SLACK_SIGNING_SECRET is in the base because a COMPLETE environment now includes it: `palai up`
-	// registers signing_secret_ref only when it can store a value under that handle, so without the
-	// value the whole registration is a skip and there is no body to assert scoping on. It is fixture
-	// completeness only — nothing below reads it, and both scopes stay independent of it.
-	base := []string{"SLACK_TEAM_ID", "T0001", "SLACK_AGENT_REVISION_ID", "agr_1", "SLACK_PRINCIPAL_ID", "prn_1",
-		"SLACK_SIGNING_SECRET", "shh"}
-
-	with, _ := slackRegistration(env(append(base, "SLACK_APPROVER_IDS", "U1, U2")...))
-	users, ok := with["allowed_users"].([]string)
-	if !ok || len(users) != 2 || users[0] != "U1" || users[1] != "U2" {
-		t.Fatalf("SLACK_APPROVER_IDS parsed to %#v, want [U1 U2]", with["allowed_users"])
-	}
-	if warn := slackApproverWarning(with); warn != "" {
-		t.Fatalf("a connection WITH approvers warned anyway: %q", warn)
-	}
-
-	// The silent case: registered, and every approve/deny click will be refused.
-	bare, _ := slackRegistration(env(base...))
-	if _, ok := bare["allowed_users"]; ok {
-		t.Fatalf("with no SLACK_APPROVER_IDS the body carried allowed_users=%v; it must send nothing rather than guess", bare["allowed_users"])
-	}
-	warn := slackApproverWarning(bare)
-	if warn == "" {
-		t.Fatal("a connection registered with NO approver produced no warning — the operator learns of it as a silently refused Approve click, which is exactly the failure this warning exists to prevent")
-	}
-	// It must name the consequence AND the fix; "no approvers configured" alone tells an operator nothing
-	// about the click that is about to be swallowed.
-	for _, want := range []string{"NO approver", "refused", "SLACK_APPROVER_IDS"} {
-		if !strings.Contains(warn, want) {
-			t.Fatalf("the warning must mention %q, got: %q", want, warn)
-		}
 	}
 }
