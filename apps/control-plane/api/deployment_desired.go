@@ -144,8 +144,26 @@ func DecodeDesiredSettings(body []byte) (DesiredWrite, error) {
 				"(a pool id from GET /v1/runner-pools). The control plane is the singleton that takes no scope; a pool is not",
 				ErrDesiredRefused, planeRunnerPool)
 		}
+	case planeRunnerMachine:
+		// ONE MACHINE, and the scope is a runner id. The reader is the same binary the pool plane's is —
+		// cmd/runner — so what this arm adds is not a reader but a NARROWER SCOPE, resolved on top of the
+		// pool's document by store.DesiredSettingsForMachine.
+		//
+		// THE ID IS NOT CHECKED AGAINST THE REGISTRY HERE and that is deliberate rather than missed. This
+		// function decodes a body; it holds no store handle and inventing one would give the value grammar a
+		// database dependency. The existence check belongs to the WRITE PATH, which has the registry and can
+		// say which id it did not find — see store.PutDesiredConfig, where a machine document naming no
+		// enrolled runner is refused rather than landing silently. A schema-level foreign key was the other
+		// candidate and 000060's header says why it is wrong: an operator configures a machine they are about
+		// to enrol as readily as one already enrolled.
+		if in.Scope == "" {
+			return DesiredWrite{}, fmt.Errorf("%w: a %s document configures ONE machine, so it needs a scope_id naming which "+
+				"(a runner id from GET /v1/runners). To configure every machine in a pool at once, write a %s document instead",
+				ErrDesiredRefused, planeRunnerMachine, planeRunnerPool)
+		}
 	default:
-		return DesiredWrite{}, fmt.Errorf("%w: %q is not a plane this deployment knows. The two are %q and %q", ErrDesiredRefused, in.Plane, planeControlPlane, planeRunnerPool)
+		return DesiredWrite{}, fmt.Errorf("%w: %q is not a plane this deployment knows. The three are %q, %q and %q",
+			ErrDesiredRefused, in.Plane, planeControlPlane, planeRunnerPool, planeRunnerMachine)
 	}
 	if in.Settings == nil {
 		// An ABSENT `settings` is refused rather than read as "clear everything". Clearing every setting is a
@@ -168,12 +186,19 @@ func DecodeDesiredSettings(body []byte) (DesiredWrite, error) {
 			return DesiredWrite{}, fmt.Errorf("%w: %s is not a setting this deployment declares. The catalogue is an allow-list: "+
 				"a variable nobody has decided about is not writable, whatever it is called", ErrDesiredRefused, name)
 		}
-		// THE PLANE MUST MATCH. A control-plane document may only carry settings the control plane reads —
-		// otherwise the value is exported into a process that never looks at it, and the screen reports a
-		// change that reached nothing. The catalogue is entirely control-plane today, so this cannot fire
-		// yet; it is written now because the day it can fire is the day somebody adds a runner-plane entry,
-		// and that is exactly when nobody will be looking here.
-		if planeOf(entry) != in.Plane {
+		// THE READER MUST MATCH, WHICH IS NOT THE SAME TEST AS "THE PLANE MUST MATCH", and the difference is
+		// what the machine scope forced into the open. A control-plane document may only carry settings the
+		// control-plane process reads — otherwise the value is exported into a process that never looks at
+		// it and the screen reports a change that reached nothing, which is the whole defect this gate
+		// exists for. But `runner_pool` and `runner_machine` name ONE reader (cmd/runner) at two scopes, so
+		// a strict plane equality would refuse PALAI_RUNNER_CONCURRENCY — catalogued `runner_pool` — in the
+		// machine document that exists precisely to set it per machine.
+		//
+		// So the comparison is on readerOf() rather than on the plane string. Writing it as equality and
+		// special-casing the pair at the call site was the alternative, and it is worse in the way this tree
+		// keeps paying for: the exception would live at ONE of the places that compare planes, and the next
+		// comparison somebody adds would inherit the strict form silently.
+		if readerOf(planeOf(entry)) != readerOf(in.Plane) {
 			return DesiredWrite{}, fmt.Errorf("%w: %s is read on the %s plane and this document configures %s. A value written "+
 				"into the wrong plane's document is exported into a process that never reads it", ErrDesiredRefused, name, planeOf(entry), in.Plane)
 		}

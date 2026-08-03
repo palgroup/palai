@@ -432,3 +432,41 @@ SELECT r.id
  ORDER BY r.created_at, r.id
  LIMIT 1
  FOR UPDATE SKIP LOCKED;
+
+-- name: RunnerExistsForConfig
+-- Does ANY machine carry this id? The existence check behind a `runner_machine` desired document, so a
+-- write naming a machine that has never enrolled is refused with the id in the sentence rather than
+-- landing in an append-only journal nothing will ever resolve.
+--
+-- IT IS SYSTEM-SCOPED AND CROSSES TENANTS ON PURPOSE, which is the one thing about it worth arguing.
+-- deployment_desired carries no organization_id — that absence IS its security property (000052) — so a
+-- per-tenant existence check would be asking a question the document it guards cannot express. The
+-- authority is the same one the rest of this surface runs under: the `provision` capability, checked in the
+-- handler before the store is reached. The leak is bounded to one bit about an id the caller already typed,
+-- and the caller is a deployment operator rather than a tenant.
+--
+-- A FOREIGN KEY WOULD HAVE BEEN THE OTHER PLACE TO PUT THIS and 000060's header records why it is not:
+-- an operator configures a machine they are ABOUT to enrol as readily as one already enrolled, and a
+-- constraint can only refuse — it cannot offer.
+SELECT EXISTS (SELECT 1 FROM runners WHERE id = $1);
+
+-- name: RecordRunnerConfigReport
+-- The machine's own answer about the configuration it holds: which revision it resolved, and its verdict
+-- per setting (`applied` / `pending_restart`).
+--
+-- KEYED ON runner_dns, not on id, for the reason RecordRunnerSeen is: the machine authenticates this write
+-- with a CERTIFICATE and the wire carries no id — the DNS is the identity the certificate proves. A body
+-- field naming the runner would be a machine telling the control plane which row to write, which is the
+-- one thing this key makes unnecessary.
+--
+-- IT RETURNS THE ROW IT WROTE so a caller can tell "recorded" from "matched nothing". A silent zero-row
+-- UPDATE is the defect RecordRunPool was fixed for: the write reports success, the panel reports the
+-- machine has taken the value, and the row that would have said otherwise was never touched. The one
+-- legitimate no-match — a runner enrolled before the registry existed, which has no row at all — is
+-- distinguished by the CALLER rather than swallowed here.
+UPDATE runners
+   SET config_revision = $2,
+       config_applied = $3::jsonb,
+       config_reported_at = $4
+ WHERE runner_dns = $1
+RETURNING id, pool_id;

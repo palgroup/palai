@@ -34,7 +34,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	bootstrap, tokenFile, sessionURL, renewURL, controllerDNS, controllerCAs := loadConfig()
+	bootstrap, tokenFile, sessionURL, renewURL, settingsURL, controllerDNS, controllerCAs := loadConfig()
 
 	identity, err := runner.Enroll(ctx, bootstrap)
 	if err != nil {
@@ -115,7 +115,21 @@ func main() {
 		Log:        log.Printf,
 		// Default 1 (LP-0 + existing stacks unchanged); the delegation-capable stack sets 2 so a
 		// run's parent and its inline child each hold an engine on this runner (spec §25.18).
+		//
+		// THIS IS THE STARTING VALUE AND NO LONGER THE FINAL ONE. It is what the machine serves until its
+		// first settings poll answers, which matters on exactly one path: a control plane that is
+		// unreachable at poll time leaves the machine on the configuration it enrolled with, rather than on
+		// a default it never chose.
 		Concurrency: planeIntDefault(identity.Settings, "PALAI_RUNNER_CONCURRENCY", 1),
+		// THE CHANGE-PROPAGATION HALF. Enrolment answers a machine its configuration ONCE; this asks again
+		// on a timer, so an operator editing the panel reaches a machine that is already running instead of
+		// having to restart it. It authenticates with the certificate this machine already holds — no new
+		// credential, and no inbound port, which is the property cmd/runner's header states and this must
+		// not cost.
+		Settings: settingsPoll(settingsURL, controllerCAs, controllerDNS),
+		// Unset uses packages/runner's own default (30s). It is read here rather than baked so an operator
+		// running a large fleet can lengthen it, and a demo can shorten it, without a new build.
+		SettingsInterval: envDurationDefault("PALAI_SETTINGS_INTERVAL", 0),
 		// The managed allocation root every leased workspace path must sit under before this runner
 		// bind-mounts it (spec §30.13, carry (b)). Unset disables the check (pre-E09 behaviour).
 		WorkspaceRoot: os.Getenv("PALAI_WORKSPACE_ROOT"),
@@ -134,7 +148,7 @@ func main() {
 // into the environment, and it is the file the expired-identity recovery path re-reads. Unset
 // leaves the runner with no recovery path — an expired identity is then terminal, and the
 // serve loop says so.
-func loadConfig() (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, renewURL, controllerDNS string, controllerCAs *x509.CertPool) {
+func loadConfig() (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, renewURL, settingsURL, controllerDNS string, controllerCAs *x509.CertPool) {
 	token := os.Getenv("PALAI_ENROLLMENT_TOKEN")
 	_ = os.Unsetenv("PALAI_ENROLLMENT_TOKEN")
 	tokenFile = os.Getenv("PALAI_ENROLLMENT_TOKEN_FILE")
@@ -195,6 +209,7 @@ func loadConfig() (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, rene
 	return bootstrap, tokenFile,
 		derivedEnv("PALAI_SESSION_URL", controllerURL, joinPath("/v1/runner/connect")),
 		derivedEnv("PALAI_RENEW_URL", controllerURL, joinPath("/v1/runner/renew")),
+		derivedEnv("PALAI_SETTINGS_URL", controllerURL, joinPath("/v1/runner/settings")),
 		controllerDNS, pool
 }
 
@@ -289,4 +304,36 @@ func planeIntDefault(settings map[string]string, name string, def int) int {
 		}
 	}
 	return envIntDefault(name, def)
+}
+
+// settingsPoll builds the settings-poll function ServeConfig drives on its timer, or nil when this machine
+// has no settings URL — which disables the poll entirely and leaves the machine on the configuration it
+// enrolled with, the behaviour of every runner built before the endpoint existed.
+//
+// IT IS BUILT HERE RATHER THAN IN packages/runner FOR THE REASON Renew IS: the package owns the protocol
+// and the composition root owns the wiring, so a deployment that wants to point the poll somewhere else —
+// or switch it off — does so without the package knowing there is such a thing as an environment variable.
+func settingsPoll(settingsURL string, cas *x509.CertPool, dns string) func(context.Context, runner.Identity, runner.Settings) (runner.Settings, error) {
+	if settingsURL == "" {
+		return nil
+	}
+	config := runner.SettingsConfig{SettingsURL: settingsURL, ControllerCAs: cas, ControllerDNS: dns, Now: time.Now}
+	return func(ctx context.Context, current runner.Identity, report runner.Settings) (runner.Settings, error) {
+		return runner.FetchSettings(ctx, current, report, config)
+	}
+}
+
+// envDurationDefault reads a Go duration env var, falling back to def when unset or unparseable.
+//
+// AN UNPARSEABLE VALUE FALLS BACK RATHER THAN FAILING THE BOOT, which is the same position every other
+// reader in this file takes, but it is worth naming what that costs: `10min` is ten minutes to a human and
+// nothing to time.ParseDuration, so a machine given one polls on the default and says nothing. That is
+// acceptable HERE and would not be for a security parameter — this variable decides only how stale a
+// machine's configuration may get, and the control plane's own write path refuses the same malformed value
+// before it could ever reach a document.
+func envDurationDefault(name string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(os.Getenv(name)); err == nil && d > 0 {
+		return d
+	}
+	return def
 }

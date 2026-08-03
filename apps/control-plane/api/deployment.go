@@ -69,23 +69,44 @@ const (
 // THE PLANE VOCABULARY — WHICH PROCESS reads the setting. It is a different question from mutability and
 // from kind, and it is the axis this surface did not have until E29's scoping pass.
 //
-// THE QUESTION IT ANSWERS is "can this be configured per MACHINE?", and the honest answer for this
-// catalogue is no: all thirty-five are read by the control-plane PROCESS, one process shared by every
-// project and every machine on the deployment. Measured per binary, 2026-08-01:
+// THE QUESTION IT ANSWERS is "can this be configured per MACHINE?", and the answer is now three-of-thirty-
+// nine rather than the none this paragraph used to report. It said "all thirty-five are read by the
+// control-plane PROCESS"; both numbers had moved. Re-measured against the live stack 2026-08-03 — and the
+// command is carried so the next reader re-runs it instead of trusting the sentence:
+//
+//	curl -s .../v1/deployment | jq -r '.settings[].plane' | sort | uniq -c
+//	  36 control_plane
+//	   3 runner_pool
+//
+// Measured per binary the same day, by grepping each variable in cmd/runner and packages/runner:
 //
 //	                          control plane          cmd/runner
-//	PALAI_RUNNER_CONCURRENCY  —                      main.go:117  envIntDefault(...)
+//	PALAI_RUNNER_CONCURRENCY  —                      main.go:118  planeIntDefault(identity.Settings, …)
 //	PALAI_SANDBOX_IMAGE       main.go:69, 926        —
-//	PALAI_SHELL_NATIVE        main.go:69, 927        —
-//	PALAI_WORKSPACE_ROOT      main.go:677            main.go:120
+//	PALAI_SHELL_NATIVE        main.go:69, 1026       —            (ZERO runner readers — see below)
+//	PALAI_WORKSPACE_ROOT      main.go:677            main.go:121
 //
-// The first row is why PALAI_RUNNER_CONCURRENCY is in unreportedSettings and not here: it is the ONE
-// genuinely per-machine knob and this process holds no copy of it. The last row is the sharpest and it is
-// why the plane belongs in the KEY rather than in a document — PALAI_WORKSPACE_ROOT has two readers with
-// two DIFFERENT jobs under one name (the control plane ALLOCATES workspaces under it; the runner refuses
-// to bind-mount a leased path that does not sit under it, and "unset disables the check"). A flat document
-// forces one string into both and, reaching only the control plane, would move the allocation root while
-// leaving the check that guards it switched off.
+// THE FIRST ROW HAS INVERTED SINCE THIS TABLE WAS WRITTEN, and the sentence under it inverted with it. It
+// read: "why PALAI_RUNNER_CONCURRENCY is in unreportedSettings and not here: it is the ONE genuinely
+// per-machine knob and this process holds no copy of it." The variable is now a catalogue ENTRY (the
+// runner-plane one, `Observable: false`) and is NOT in unreportedSettings; what stayed true is the reason
+// it was there — this process still holds no copy, which is what Observable=false reports.
+//
+// THE THIRD ROW IS THE ONE THAT DECIDES WHAT A MACHINE PLANE MAY CARRY. PALAI_SHELL_NATIVE has ZERO readers
+// in cmd/runner and packages/runner:
+//
+//	grep -rn PALAI_SHELL_NATIVE --include='*.go' cmd/runner/ packages/runner/   ->  (no output, 2026-08-03)
+//
+// A runner does not run tools — the lease carries the engine and the shell tool runs control-plane-side —
+// so putting the shell posture on either runner plane would write a value into a process that never reads
+// it, which is exactly what readerOf() refuses. It is a control-plane setting on a machine that happens to
+// host a control plane, and that is a different sentence from "a per-machine setting".
+//
+// THE LAST ROW IS THE SHARPEST and it is why the plane belongs in the KEY rather than in a document —
+// PALAI_WORKSPACE_ROOT has two readers with two DIFFERENT jobs under one name (the control plane ALLOCATES
+// workspaces under it; the runner refuses to bind-mount a leased path that does not sit under it, and
+// "unset disables the check"). A flat document forces one string into both and, reaching only the control
+// plane, would move the allocation root while leaving the check that guards it switched off.
 const (
 	// planeControlPlane: read by the control-plane process. Every catalogued setting is one of these, and
 	// planeMatchesReader() is what makes that a test rather than a claim.
@@ -96,18 +117,46 @@ const (
 	// sends them (runner_gateway.go's enrolRequest calls them "inventory (T4 may compare them)"), so a
 	// design that selected machines by either would be selecting on a field nothing populates.
 	//
-	// NOTHING IN THIS CATALOGUE CARRIES IT YET, and that is the honest state: the plane exists in the key
-	// so the model is not wrong, and the write path refuses it BY NAME because the reader is a second
-	// binary this task does not ship.
+	// THREE CATALOGUE ENTRIES CARRY IT, and this sentence replaces one that said none did. It read
+	// "NOTHING IN THIS CATALOGUE CARRIES IT YET ... the write path refuses it BY NAME because the reader is
+	// a second binary this task does not ship", and it was true when written; `ffb84f3b` gave the plane a
+	// reader and three entries moved onto it while the paragraph justifying their absence stayed. Measured
+	// against the live stack 2026-08-03, which is the form that cannot go stale silently:
+	//
+	//	curl -s .../v1/deployment | jq -r '.settings[] | select(.plane=="runner_pool") | .name'
+	//	  PALAI_RUNNER_CONCURRENCY   (writable)
+	//	  PALAI_RUNNER_POSTURE       (not writable — no DesiredValue grammar)
+	//	  PALAI_RUNNER_POOL          (not writable — no DesiredValue grammar)
 	planeRunnerPool = "runner_pool"
+	// planeRunnerMachine: read by the SAME process as planeRunnerPool — a runner's own — and scoped to ONE
+	// machine by runner id. The two planes differ in SCOPE, not in reader, and that conflation is inherited
+	// rather than introduced: `plane` in this model has always answered both "which process reads it" and
+	// "which scope does the document configure", and migration 000060's header records what a two-axis
+	// model would have cost instead.
+	//
+	// IT EXISTS BECAUSE "THIS MAC" IS NOT A POOL. A rented Mac that serves four sessions and one that
+	// serves one sit in the same pool — posture `unsandboxed-host` is what a pool carries — and before this
+	// plane the only way to configure them apart was a pool per machine, which turns the unit that owns
+	// POSTURE and ENROLMENT KEYS into a per-machine container it was not designed to be.
+	//
+	// A MACHINE DOCUMENT OVERLAYS ITS POOL'S, KEY BY KEY (store.DesiredSettingsForMachine). It is resolved
+	// on read rather than flattened on write, so a later pool edit still reaches a machine that has been
+	// individually configured — a flattened copy would freeze the pool's values at write time and leave the
+	// pool edit silently not arriving, which is "declared, and nothing happens" one layer down.
+	planeRunnerMachine = "runner_machine"
 )
 
-// PlaneRunnerPool is planeRunnerPool for the ONE caller outside this package: the enrolment handler's
-// store read (store.DesiredSettingsForPool), which answers a machine its own pool's document. Exported
-// rather than re-spelled as a literal because migration 000053's CHECK constraint enforces the same two
-// words, and a second spelling of a value a database constraint holds is a silent mismatch waiting for
-// the first typo.
+// PlaneRunnerPool is planeRunnerPool for the callers outside this package: the enrolment handler's store
+// read (store.DesiredSettingsForPool) and the settings poll's overlay (store.DesiredSettingsForMachine),
+// which answer a machine its own pool's document. Exported rather than re-spelled as a literal because
+// migration 000053's CHECK constraint enforces the same two words, and a second spelling of a value a
+// database constraint holds is a silent mismatch waiting for the first typo.
 const PlaneRunnerPool = planeRunnerPool
+
+// PlaneRunnerMachine is planeRunnerMachine for the same reason and the same callers — 000060's CHECK
+// constraint carries the identical string, and the overlay in store.DesiredSettingsForMachine is the one
+// production reader that keys on it.
+const PlaneRunnerMachine = planeRunnerMachine
 
 // The DESIRED-value grammar. Every writable setting declares one, and it names the STANDARD LIBRARY CALL
 // this binary's own reader makes — not a shape somebody thought looked right.
@@ -279,6 +328,30 @@ func planeOf(entry catalogueEntry) string {
 	return entry.Plane
 }
 
+// readerOf collapses a plane to the BINARY that reads it, and it exists because `plane` answers two
+// questions at once — which process reads the setting, and which scope the document configures.
+//
+// `runner_pool` and `runner_machine` answer the first identically and the second differently. Every
+// comparison that means "would this value reach a process that reads it?" must therefore go through here
+// rather than comparing plane strings, or a machine document is refused the very setting it exists to
+// carry. Every comparison that means "which scope is this?" must NOT: those still compare planes.
+//
+// The two runner planes returning one string is the whole of the function, and the exhaustive switch is
+// what makes a fourth plane a compile-time-visible decision rather than a silent default: a new plane that
+// nobody classifies lands in the default arm and gets a reader that matches nothing, so it can carry no
+// setting at all until somebody says which binary reads it. That is the safe direction — the same one
+// planeMatchesReader takes when a reader file matches no prefix list.
+func readerOf(plane string) string {
+	switch plane {
+	case planeControlPlane:
+		return "control-plane process"
+	case planeRunnerPool, planeRunnerMachine:
+		return "runner process"
+	default:
+		return "unclassified plane " + plane
+	}
+}
+
 // controlPlaneReaderFiles are the paths whose code runs INSIDE the control-plane process. A citation into
 // one of them means the setting is read there, whatever the entry claims.
 //
@@ -291,9 +364,16 @@ var controlPlaneReaderFiles = []string{
 	"packages/version/",
 }
 
-// runnerReaderFiles are the paths whose code runs inside a RUNNER process. Empty of catalogue entries
-// today and listed anyway, because the guard has to be able to tell the two apart to be worth running:
-// with only one list it would be asserting that everything is what everything is.
+// runnerReaderFiles are the paths whose code runs inside a RUNNER process. THREE catalogue entries cite
+// into it — PALAI_RUNNER_CONCURRENCY, PALAI_RUNNER_POSTURE, PALAI_RUNNER_POOL — which is a change from the
+// state this comment used to describe ("empty of catalogue entries today, and listed anyway so the guard
+// can tell the two apart"). It is listed for the original reason as well as the current one: with a single
+// list the guard would be asserting that everything is what everything is.
+//
+// It backs BOTH runner planes. readerOf collapses planeRunnerPool and planeRunnerMachine onto one binary,
+// and this list is the file-level statement of the same fact — a machine-scoped setting is read by the
+// same cmd/runner a pool-scoped one is, so there is no second list to add and adding one would make the
+// two planes derivable to different readers.
 var runnerReaderFiles = []string{
 	"cmd/runner/",
 }
@@ -612,10 +692,21 @@ var deploymentCatalogue = []catalogueEntry{
 	// EXISTENCE is. `Effect` says what the runner does with each and `Default` says what a runner that was
 	// given nothing falls back to, which is the question an operator debugging an unplaced run actually has.
 	//
-	// They are on the runner plane, so desiredWritable() never admits them (the plane check in
-	// DecodeDesiredSettings refuses a control-plane document that names one) and the runner plane has no
-	// writer at all yet. Catalogued now because a catalogue that omits what nothing sets is a catalogue that
-	// will keep omitting it.
+	// NEITHER IS WRITABLE, AND THE REASON IS NOW THE ONLY ONE. This paragraph used to give two — "they are
+	// on the runner plane, so desiredWritable() never admits them" and "the runner plane has no writer at
+	// all yet" — and BOTH have stopped being true, while the conclusion they supported is still correct.
+	// The runner plane has two writers today (a pool document and a machine document), and the plane is not
+	// what excludes these: readerOf() admits any runner-plane setting into either runner document.
+	//
+	// What excludes them is that neither declares a DesiredValue grammar, which is the single gate
+	// desiredWritable() applies. That is a DECISION rather than an omission, and it is the same one for
+	// both: each is a value the MACHINE declares about itself at enrolment (its posture, its pool), read by
+	// loadConfig before the machine has an identity to be sent a document for. The control plane learns
+	// them; it cannot hand them back. Writing either into a desired document would produce a value whose
+	// only reader has already run.
+	//
+	// Catalogued anyway, because a catalogue that omits what nothing sets is a catalogue that will keep
+	// omitting it.
 	{
 		Name: "PALAI_RUNNER_POSTURE", Group: "fleet", Kind: kindValue, Plane: planeRunnerPool,
 		Default: "unset — the machine declares no posture and the registry places it on its pool's own (fleet/store.go)",
