@@ -122,6 +122,15 @@ func (s *fakeSelfTestStream) AppendStream(_ context.Context, _, ts, markdownText
 	return nil
 }
 
+// UpdateTask completes the relay.Slack interface. The self-test drives the four legs of the STREAM trio
+// and never renders a run's steps, so this records the call and touches no message text — folding a card
+// into parent.messages would make leg 4's read-back (which classifies stopStream's append-vs-replace
+// semantics from that exact string) measure something the real chat.stopStream never put there.
+func (s *fakeSelfTestStream) UpdateTask(_ context.Context, _, _ string, task slack.Task) error {
+	s.parent.calls = append(s.parent.calls, "updateTask("+task.ID+")")
+	return nil
+}
+
 func (s *fakeSelfTestStream) StopStream(_ context.Context, _, ts, markdownText string) error {
 	s.parent.calls = append(s.parent.calls, "stopStream("+markdownText+")")
 	if s.stopErr != nil {
@@ -205,7 +214,9 @@ func TestSelfTestNamesEachLegByNumber(t *testing.T) {
 	}{
 		{
 			name: "socket", leg: "leg 2", code: "not_allowed_token_type",
-			break_:   func(f *fakeSelfTestSlack, _ *fakeSelfTestStream) { f.socketErr = &slack.APIError{Code: "not_allowed_token_type"} },
+			break_: func(f *fakeSelfTestSlack, _ *fakeSelfTestStream) {
+				f.socketErr = &slack.APIError{Code: "not_allowed_token_type"}
+			},
 			wantPrev: func(r Report) bool { return r.AuthOK && !r.SocketOK },
 		},
 		{
@@ -220,7 +231,9 @@ func TestSelfTestNamesEachLegByNumber(t *testing.T) {
 		},
 		{
 			name: "read-back", leg: "leg 4", code: "channel_not_found",
-			break_:   func(f *fakeSelfTestSlack, _ *fakeSelfTestStream) { f.readErr = &slack.APIError{Code: "channel_not_found"} },
+			break_: func(f *fakeSelfTestSlack, _ *fakeSelfTestStream) {
+				f.readErr = &slack.APIError{Code: "channel_not_found"}
+			},
 			wantPrev: func(r Report) bool { return r.AuthOK && r.SocketOK && r.PostOK && !r.StreamOK },
 		},
 	} {

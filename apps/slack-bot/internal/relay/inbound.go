@@ -114,15 +114,38 @@ func (s *channelSlackStream) StartStream(ctx context.Context, channel, threadTS,
 		Channel: channel, ThreadTS: threadTS,
 		RecipientUserID: s.recipientUserID, RecipientTeamID: s.recipientTeamID,
 		MarkdownText: markdownText,
+		// Set HERE because chat.startStream is the only call that accepts it, and because it OPENS THE
+		// STREAM IN CHUNK MODE — a whole-stream decision, not a formatting hint (see slack.StartStream). It
+		// is why every method below sends chunks: on this stream `markdown_text` is refused.
+		TaskDisplayMode: slack.TaskDisplayModeTimeline,
 	})
 }
 
+// AppendStream carries the MODEL'S OWN WORDS, and on a chunk-mode stream even those must travel as a chunk —
+// `markdown_text` is refused with streaming_mode_mismatch. The relay above is unaware of any of this: it
+// still calls AppendStream with a string, and the mode stays the wiring's business.
 func (s *channelSlackStream) AppendStream(ctx context.Context, channel, ts, markdownText string) error {
-	return slack.AppendStream(ctx, s.doer, s.apiBase, s.token, channel, ts, markdownText)
+	return slack.AppendStreamChunks(ctx, s.doer, s.apiBase, s.token, channel, ts,
+		[]map[string]any{slack.MarkdownChunk(markdownText)})
 }
 
+// StopStream closes the stream, flushing any text the relay never managed to deliver. It goes through the
+// CHUNK closer for the reason StopStreamChunks documents: closing a chunk stream with markdown_text does not
+// close it, and a stream that never closes reads as permanently "streaming" (SLK-P2).
 func (s *channelSlackStream) StopStream(ctx context.Context, channel, ts, markdownText string) error {
-	return slack.StopStream(ctx, s.doer, s.apiBase, s.token, channel, ts, markdownText, nil)
+	var chunks []map[string]any
+	if markdownText != "" {
+		chunks = append(chunks, slack.MarkdownChunk(markdownText))
+	}
+	return slack.StopStreamChunks(ctx, s.doer, s.apiBase, s.token, channel, ts, chunks)
+}
+
+func (s *channelSlackStream) UpdateTask(ctx context.Context, channel, ts string, task slack.Task) error {
+	chunk := slack.TaskUpdateChunk(task)
+	if chunk == nil {
+		return nil // unrenderable (no title and no id) — TaskUpdateChunk's own refusal, not a wire error
+	}
+	return slack.AppendStreamChunks(ctx, s.doer, s.apiBase, s.token, channel, ts, []map[string]any{chunk})
 }
 
 // RunFailedHook is what happens to the error a background relay.Run returns.

@@ -167,10 +167,19 @@ const MaxTaskSources = 10
 //
 // `canceled` maps to error rather than complete on purpose: a cancelled task did not do what it said, and the
 // one thing the mapping must never do is report unfinished work as finished.
+//
+// `failed` IS OURS TOO even though the palai.task tool does not offer it: it is what a TOOL CALL does
+// (`tool_call.failed.v1`, packages/state-machines/tool_call.go) and the relay maps a run's tool calls
+// through this same table so both surfaces speak one vocabulary. It was added because fail-closed-to-pending
+// is the RIGHT default for a status nobody has taught this table and the WRONG one for a status we know
+// means failure: a failed step rendered `pending` is a card that spins forever, which reads as a hung run
+// rather than a finished one — the opposite mistake from the one the fallback protects against, and just as
+// misleading.
 var taskStatus = map[string]string{
 	"open":        "pending",
 	"in_progress": "in_progress",
 	"done":        "complete",
+	"failed":      "error",
 	"canceled":    "error",
 }
 
@@ -570,27 +579,105 @@ func tableBlock(result Result) any {
 // bounded and known: Slack answers invalid_blocks, the stop fails, and the reply pump's next attempt posts
 // the answer as a plain message (slack_reply.go). The answer is never lost, only undecorated. §6 leg 1
 // measures it.
+// taskFields renders the part of a task that is genuinely IDENTICAL on both surfaces it can appear on: the
+// `task_card` block that travels on chat.stopStream, and the `task_update` chunk that travels live on
+// chat.appendStream (TaskUpdateChunk). That part is {title, status, sources} — computed once here so a
+// status mapping or a broadcast escape fixed on one surface cannot go on being wrong on the other.
+//
+// THE ID IS NOT SHARED AND NEITHER IS THE DETAIL, because Slack does not name them the same way on the two
+// surfaces — MEASURED against the live API on 2026-08-04, not read off a page:
+//
+//	block  (task_card):    "task_id", and "details" as a rich_text OBJECT
+//	chunk  (task_update):  "id",      and "details" as a plain STRING
+//
+// Sending the block's spelling in a chunk is answered `invalid_arguments` with
+// "failed to match exactly one allowed schema [json-pointer:/chunks/0]". So each caller attaches its own
+// rather than this helper guessing which surface it is feeding.
+//
+// ok is false for a task with no title even after falling back to its id: a card without one is
+// invalid_blocks, and an untitled task says nothing to a reader anyway.
+func taskFields(task Task) (map[string]any, bool) {
+	title := NeutralizeBroadcasts(task.Title)
+	if title == "" {
+		title = NeutralizeBroadcasts(task.ID)
+	}
+	if title == "" {
+		return nil, false
+	}
+	fields := map[string]any{
+		"title":  title,
+		"status": TaskStatus(task.Status),
+	}
+	if sources := taskSources(task.Sources); len(sources) > 0 {
+		fields["sources"] = sources
+	}
+	return fields, true
+}
+
+// TaskUpdateChunk renders one task as the `task_update` chunk chat.appendStream carries — the surface that
+// makes a run's steps STEPS rather than prose in the answer.
+//
+// CONTRACT, AND IT IS THE MEASURED ONE BECAUSE THE TWO PUBLISHED PAGES DISAGREE — the same shape of vendor
+// contradiction S12 already records, resolved here by driving the real API (2026-08-04, workspace
+// T0AMPM5JX8U) rather than by picking a page:
+//
+//   - https://docs.slack.dev/ai/developing-agents/ shows the task NESTED — {"type":"task_update","task":
+//     {"task_id":…,"output":{rich_text}}}. Sent verbatim, the live API answers `invalid_arguments`:
+//     "failed to match exactly one allowed schema [json-pointer:/chunks/0]".
+//   - https://docs.slack.dev/reference/methods/chat.appendStream/ shows it FLAT —
+//     {"type":"task_update","id":…,"title":…,"status":…,"details":…,"output":…,"sources":[…]}. That one is
+//     ACCEPTED, and it is what this builds.
+//
+// The status vocabulary (pending|in_progress|complete|error) comes from
+// https://docs.slack.dev/reference/block-kit/blocks/task-card-block/ and is applied by TaskStatus.
+//
+// REPEATING AN id IS HOW A STEP PROGRESSES — one card is updated rather than a second drawn — but the fields
+// do not all update the same way, which is measured and is the reason Detail is usually left empty:
+// `title` and `status` REPLACE, while **`details` APPENDS**. Sending the same detail on a step's start and
+// again on its finish renders `palai.workspace.filepalai.workspace.file`. So a caller sends a detail only
+// when it has something NEW to add, and omits it otherwise — an omitted `details` leaves what is already
+// there untouched.
+//
+// It returns nil for a task that cannot be rendered, so a caller sends nothing rather than a malformed chunk.
+func TaskUpdateChunk(task Task) map[string]any {
+	chunk, ok := taskFields(task)
+	if !ok {
+		return nil
+	}
+	chunk["type"] = "task_update"
+	chunk["id"] = task.ID
+	// A plain string: the chunk schema takes text here and Slack renders it into the card's rich_text
+	// itself. Sending the block's rich_text object instead is one of the two shapes measured to be refused.
+	if detail := NeutralizeBroadcasts(task.Detail); detail != "" {
+		chunk["details"] = detail
+	}
+	return chunk
+}
+
+// MarkdownChunk is the OTHER chunk type, and a chunk-mode stream needs it for every scrap of body text it
+// carries — including the model's own answer.
+//
+// CONTRACT: https://docs.slack.dev/reference/methods/chat.appendStream/ (checked 2026-08-04) — the markdown
+// chunk's field is `text`, NOT `markdown_text`. The agents guide's example uses the latter and the live API
+// refuses it; this is the same page disagreement TaskUpdateChunk documents, on the same call.
+//
+// The text is truncated and defused exactly as the markdown_text argument is: a chunk is not a way around
+// the 12,000-character budget or the broadcast rule.
+func MarkdownChunk(text string) map[string]any {
+	return map[string]any{"type": "markdown_text", "text": TruncateMarkdown(text)}
+}
+
 func taskBlocks(result Result) []any {
 	cards := make([]any, 0, len(result.Tasks))
 	for _, task := range result.Tasks {
-		title := NeutralizeBroadcasts(task.Title)
-		if title == "" {
-			title = NeutralizeBroadcasts(task.ID)
+		card, ok := taskFields(task)
+		if !ok {
+			continue
 		}
-		if title == "" {
-			continue // a card without a title is invalid_blocks, and an untitled task says nothing anyway
-		}
-		card := map[string]any{
-			"type":    "task_card",
-			"task_id": task.ID,
-			"title":   title,
-			"status":  TaskStatus(task.Status),
-		}
+		card["type"] = "task_card"
+		card["task_id"] = task.ID
 		if detail := NeutralizeBroadcasts(task.Detail); detail != "" {
 			card["details"] = richText(detail)
-		}
-		if sources := taskSources(task.Sources); len(sources) > 0 {
-			card["sources"] = sources
 		}
 		cards = append(cards, card)
 	}

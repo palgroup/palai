@@ -216,7 +216,243 @@ func TestModelTextCannotBroadcast(t *testing.T) {
 	if text, _ := peer.decode(t, 0)["markdown_text"].(string); strings.Contains(text, "<!channel>") {
 		t.Fatalf("a streamed line reached Slack with a live broadcast: %q", text)
 	}
-	if body := string(ThreadReply("C1", "1.1", hostile, "resp_1")); strings.Contains(body, "<!channel>") {
-		t.Fatalf("a posted reply reached Slack with a live broadcast: %q", body)
+	// DECODED, and the decode is the whole assertion. Reading the raw marshalled bytes for `<!channel>` is
+	// a check that CANNOT FAIL: encoding/json escapes `<`, `>` and `&` by default, so a live broadcast is
+	// spelled `<!channel>` in the body and the substring is absent whether or not
+	// NeutralizeBroadcasts ran at all. This leg passed on hostile input for exactly that reason.
+	var reply map[string]any
+	if err := json.Unmarshal(ThreadReply("C1", "1.1", hostile, "resp_1"), &reply); err != nil {
+		t.Fatalf("decode ThreadReply: %v", err)
+	}
+	if text, _ := reply["markdown_text"].(string); strings.Contains(text, "<!channel>") {
+		t.Fatalf("a posted reply reached Slack with a live broadcast: %q", text)
+	}
+}
+
+// TestTaskUpdateChunkCarriesTheDocumentedShape pins the `task_update` chunk against the shape the LIVE API
+// accepts, which is the flat one from the method reference — NOT the nested {"task":{…}} form the agents
+// guide prints. The nested form is answered `invalid_arguments` ("failed to match exactly one allowed
+// schema [json-pointer:/chunks/0]"), measured 2026-08-04; see TaskUpdateChunk's own contract note.
+//
+// The distinction this test really guards is the pair of key names, because getting either wrong fails at
+// the wire and nowhere earlier: `id` (not `task_id`, which is the BLOCK's spelling) and a `details` STRING
+// (not the block's rich_text object).
+func TestTaskUpdateChunkCarriesTheDocumentedShape(t *testing.T) {
+	chunk := TaskUpdateChunk(Task{
+		ID: "tc_1", Title: "Reading files", Status: "in_progress", Detail: "palai.workspace.file",
+	})
+	// Round-trip through JSON: what Slack receives is the encoded form, so the assertion is made against
+	// that rather than against the Go map a caller happens to hold.
+	raw, err := json.Marshal(chunk)
+	if err != nil {
+		t.Fatalf("marshal chunk: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode chunk: %v", err)
+	}
+	for field, want := range map[string]any{
+		"type": "task_update", "id": "tc_1", "title": "Reading files",
+		"status": "in_progress", "details": "palai.workspace.file",
+	} {
+		if got[field] != want {
+			t.Fatalf("chunk.%s = %v, want %v — the whole chunk was %s", field, got[field], want, raw)
+		}
+	}
+	// The BLOCK's spellings must not appear: sending them is what the live API refuses.
+	if _, present := got["task"]; present {
+		t.Fatalf("the chunk nests its fields under `task`, which the live API refuses: %s", raw)
+	}
+	if _, present := got["task_id"]; present {
+		t.Fatalf("the chunk uses the block's `task_id` rather than the chunk's `id`: %s", raw)
+	}
+	// A task with nothing to title it is not a card Slack can draw, so it is refused rather than sent.
+	if TaskUpdateChunk(Task{Status: "done"}) != nil {
+		t.Fatal("a task with neither title nor id produced a chunk; want nil")
+	}
+	// An empty detail is OMITTED, and that is load-bearing rather than tidy: `details` APPENDS across
+	// updates of one id, so a caller that has nothing new to add must send no key at all — sending "" or
+	// repeating the old value is how a card ends up reading `palai.workspace.filepalai.workspace.file`.
+	done := TaskUpdateChunk(Task{ID: "tc_1", Title: "Reading files", Status: "done"})
+	if _, present := done["details"]; present {
+		t.Fatalf("a task with no new detail still sent `details`: %v", done)
+	}
+	if done["status"] != "complete" {
+		t.Fatalf("status = %v, want complete", done["status"])
+	}
+}
+
+// TestMarkdownChunkUsesTheTextKey: the markdown chunk's field is `text`. The agents guide's example calls it
+// `markdown_text` and the live API refuses that, which is the same page disagreement as the task shape and
+// fails in exactly the same invisible way — at the wire, on a call that looks right.
+func TestMarkdownChunkUsesTheTextKey(t *testing.T) {
+	chunk := MarkdownChunk("Projede toplam 7 Swift dosyası var")
+	if chunk["type"] != "markdown_text" {
+		t.Fatalf("chunk type = %v, want markdown_text", chunk["type"])
+	}
+	if chunk["text"] != "Projede toplam 7 Swift dosyası var" {
+		t.Fatalf("chunk.text = %v, want the text", chunk["text"])
+	}
+	if _, present := chunk["markdown_text"]; present {
+		t.Fatalf("the chunk carries a `markdown_text` key, which the live API refuses: %v", chunk)
+	}
+	// The chunk path is not a way around the budget or the broadcast rule.
+	if got := MarkdownChunk("ping <!channel>")["text"].(string); strings.Contains(got, "<!channel>") {
+		t.Fatalf("a markdown chunk carried a live broadcast: %q", got)
+	}
+	if got := MarkdownChunk(strings.Repeat("x", MaxStreamMarkdown+500))["text"].(string); len([]rune(got)) > MaxStreamMarkdown {
+		t.Fatalf("a markdown chunk carried %d characters, over the %d budget", len([]rune(got)), MaxStreamMarkdown)
+	}
+}
+
+// TestATaskCardCannotBroadcast: a card's title and output are strings a MODEL had a hand in (the detail
+// carries a tool's own progress message), so they go through the same defusing every other outbound string
+// does. The assertion is made on the DECODED payload — see the note in TestModelTextCannotBroadcast for why
+// a raw-bytes check here would be vacuous.
+func TestATaskCardCannotBroadcast(t *testing.T) {
+	raw, err := json.Marshal(TaskUpdateChunk(Task{
+		ID: "tc_1", Title: "ping <!channel>", Status: "in_progress", Detail: "cc <@U0BADBAD> <!here>",
+	}))
+	if err != nil {
+		t.Fatalf("marshal chunk: %v", err)
+	}
+	var got struct {
+		Title   string `json:"title"`
+		Details string `json:"details"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode chunk: %v", err)
+	}
+	for _, live := range []string{"<!channel>", "<!here>", "<@U0BADBAD>"} {
+		if strings.Contains(got.Title, live) || strings.Contains(got.Details, live) {
+			t.Fatalf("a task card carried a live %s (title %q, details %q)", live, got.Title, got.Details)
+		}
+	}
+}
+
+// TestStartStreamPicksTheStreamMode pins the measured mode split, which is the thing about this API that
+// fails latest and most confusingly: chat.startStream decides FOR THE STREAM'S WHOLE LIFE whether it speaks
+// text or chunks, and the penalty for getting it wrong lands on a later, unrelated-looking call —
+// `streaming_mode_mismatch` on an append, or on the close, which leaves the message streaming forever.
+//
+// So the assertion is that the opening call sends one form and NOT the other. A start that sent both would
+// look fine here and in the docs, and would still have picked a mode.
+func TestStartStreamPicksTheStreamMode(t *testing.T) {
+	peer := &recordingPeer{}
+	// Chunk mode: asked for by wanting task cards at all.
+	if _, err := StartStream(context.Background(), peer, "https://slack.test/api", []byte("x"), StreamStart{
+		Channel: "C1", ThreadTS: "1.1", RecipientUserID: "U1", RecipientTeamID: "T1",
+		MarkdownText: "Working…\n", TaskDisplayMode: TaskDisplayModeTimeline,
+	}); err != nil {
+		t.Fatalf("StartStream: %v", err)
+	}
+	chunked := peer.decode(t, 0)
+	if got := chunked["task_display_mode"]; got != "timeline" {
+		t.Fatalf("task_display_mode = %v, want timeline", got)
+	}
+	if _, present := chunked["markdown_text"]; present {
+		t.Fatalf("a chunk-mode start also sent markdown_text, which opens a TEXT stream and makes every "+
+			"later task card fail: %v", chunked)
+	}
+	chunks, _ := chunked["chunks"].([]any)
+	if len(chunks) != 1 {
+		t.Fatalf("a chunk-mode start sent %v for chunks, want the opening text as one markdown chunk", chunked["chunks"])
+	}
+	if first, _ := chunks[0].(map[string]any); first["type"] != "markdown_text" || first["text"] != "Working…\n" {
+		t.Fatalf("the opening chunk = %v, want the opening text as a markdown_text chunk", chunks[0])
+	}
+
+	// Text mode: no display mode asked for, so nothing changes for the callers that were here first.
+	if _, err := StartStream(context.Background(), peer, "https://slack.test/api", []byte("x"), StreamStart{
+		Channel: "C1", ThreadTS: "1.1", RecipientUserID: "U1", RecipientTeamID: "T1", MarkdownText: "working…",
+	}); err != nil {
+		t.Fatalf("StartStream: %v", err)
+	}
+	text := peer.decode(t, 1)
+	if _, present := text["task_display_mode"]; present {
+		t.Fatal("an unset display mode was sent as a field; want it omitted")
+	}
+	if text["markdown_text"] != "working…" {
+		t.Fatalf("a text-mode start sent markdown_text = %v, want the text", text["markdown_text"])
+	}
+	if _, present := text["chunks"]; present {
+		t.Fatalf("a text-mode start also sent chunks: %v", text)
+	}
+}
+
+// TestStopStreamChunksClosesAChunkStream: the mode split reaches the CLOSING call, and this is the half that
+// matters most — chat.stopStream with markdown_text on a chunk stream is refused, so a stream closed the
+// ordinary way does not close at all and renders as permanently "streaming" (SLK-P2).
+func TestStopStreamChunksClosesAChunkStream(t *testing.T) {
+	peer := &recordingPeer{}
+	if err := StopStreamChunks(context.Background(), peer, "https://slack.test/api", []byte("x"), "C1", "1.1",
+		[]map[string]any{MarkdownChunk("the last words")}); err != nil {
+		t.Fatalf("StopStreamChunks: %v", err)
+	}
+	if !strings.HasSuffix(peer.urls[0], "/chat.stopStream") {
+		t.Fatalf("posted to %q, want chat.stopStream", peer.urls[0])
+	}
+	body := peer.decode(t, 0)
+	if _, present := body["markdown_text"]; present {
+		t.Fatalf("the closing call carried markdown_text, which a chunk stream refuses: %v", body)
+	}
+	if chunks, _ := body["chunks"].([]any); len(chunks) != 1 {
+		t.Fatalf("chunks = %v, want the final text as one chunk", body["chunks"])
+	}
+	// Nothing left to say still CLOSES — the call is made, with no chunks. A close skipped because there was
+	// no final text is a message stuck streaming.
+	if err := StopStreamChunks(context.Background(), peer, "https://slack.test/api", []byte("x"), "C1", "1.1", nil); err != nil {
+		t.Fatalf("StopStreamChunks(nil): %v", err)
+	}
+	if len(peer.bodies) != 2 {
+		t.Fatalf("a close with no final text made %d call(s) total, want 2 — it must still close", len(peer.bodies))
+	}
+	if _, present := peer.decode(t, 1)["chunks"]; present {
+		t.Fatalf("a close with nothing to add still sent a chunks key: %v", peer.decode(t, 1))
+	}
+}
+
+// TestAppendStreamChunksSendsNoBodyText is the SLK-P6 property at the wire: a step travels as a chunk, and
+// the message body is not touched. A markdown_text of "" riding alongside would append an empty line to the
+// answer and, worse, make the call ambiguous about what it is appending.
+func TestAppendStreamChunksSendsNoBodyText(t *testing.T) {
+	peer := &recordingPeer{}
+	chunk := TaskUpdateChunk(Task{ID: "tc_1", Title: "Reading files", Status: "complete"})
+	if err := AppendStreamChunks(context.Background(), peer, "https://slack.test/api", []byte("x"),
+		"C1", "1.1", []map[string]any{chunk}); err != nil {
+		t.Fatalf("AppendStreamChunks: %v", err)
+	}
+	if !strings.HasSuffix(peer.urls[0], "/chat.appendStream") {
+		t.Fatalf("posted to %q, want chat.appendStream", peer.urls[0])
+	}
+	body := peer.decode(t, 0)
+	if _, present := body["markdown_text"]; present {
+		t.Fatalf("a chunks-only append carried markdown_text: %v", body)
+	}
+	chunks, _ := body["chunks"].([]any)
+	if len(chunks) != 1 {
+		t.Fatalf("chunks = %v, want exactly the one task update", body["chunks"])
+	}
+	// No chunks is no call at all, rather than a request Slack has nothing to do with.
+	if err := AppendStreamChunks(context.Background(), peer, "https://slack.test/api", []byte("x"),
+		"C1", "1.1", nil); err != nil {
+		t.Fatalf("AppendStreamChunks(nil): %v", err)
+	}
+	if len(peer.bodies) != 1 {
+		t.Fatalf("an empty chunk list made %d call(s), want 1 (the earlier one only)", len(peer.bodies))
+	}
+}
+
+// TestAFinishedCallNeverRendersAsPending: TaskStatus falls back to `pending` for a status it has not been
+// taught, which is the right default for an UNKNOWN one and the wrong answer for a call that ended. A
+// failed tool rendered `pending` is a card that spins forever in a finished message.
+func TestAFinishedCallNeverRendersAsPending(t *testing.T) {
+	for ours, want := range map[string]string{"done": "complete", "failed": "error", "canceled": "error"} {
+		if got := TaskStatus(ours); got != want {
+			t.Fatalf("TaskStatus(%q) = %q, want %q", ours, got, want)
+		}
+	}
+	if got := TaskStatus("something-new"); got != "pending" {
+		t.Fatalf("TaskStatus of an unknown status = %q, want the fail-closed pending", got)
 	}
 }

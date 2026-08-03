@@ -17,6 +17,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/palgroup/palai/adapters/integrations/slack"
 	palai "github.com/palgroup/palai/sdks/go"
 )
 
@@ -42,6 +43,9 @@ type Slack interface {
 	AppendStream(ctx context.Context, channel, ts, markdownText string) error
 	// StopStream closes the message, appending markdownText (if any) one last time.
 	StopStream(ctx context.Context, channel, ts, markdownText string) error
+	// UpdateTask renders one step of the run in the message's task timeline — a card, not body prose.
+	// Calling it again with the same Task.ID advances THAT card rather than drawing a second one.
+	UpdateTask(ctx context.Context, channel, ts string, task slack.Task) error
 }
 
 // ApprovalHook is what Run does with an approval.requested.v1 event: hand it to the approval bridge
@@ -67,7 +71,13 @@ type Deps struct {
 
 // startingStatus is what the Slack message shows the instant a relay begins, before anything has
 // journaled: the wait between a run being born and its first model step is otherwise a silent gap.
-const startingStatus = "Working…"
+//
+// THE TRAILING NEWLINE IS THE SAME SEPARATOR emitStatus guarantees, and it is needed HERE for a reason that
+// path does not cover: this text is chat.startStream's markdown_text, so it never passes through emitStatus
+// at all, and the first model_step.delta.v1 appends directly onto it. Without it a plain question — no tool
+// calls, which per E08 is EVERY real single-step run — comes back reading `Working…Projede toplam 7 Swift
+// dosyası var`. That is the `doneProjede` defect on the one path that had no status line to blame.
+const startingStatus = "Working…\n"
 
 // runTerminalEvents is Run's own copy of the run terminal set. It MIRRORS terminalEventTypes in
 // apps/control-plane/api/events.go — the SSE endpoint's own closing set — rather than importing it,
@@ -99,7 +109,8 @@ func Run(ctx context.Context, deps Deps, sessionID, channel, threadTS string) (e
 		return fmt.Errorf("relay: start stream for session %s: %w", sessionID, startErr)
 	}
 
-	st := &openStream{deps: deps, channel: channel, threadTS: threadTS, ts: ts}
+	st := &openStream{deps: deps, channel: channel, threadTS: threadTS, ts: ts,
+		taskTitles: map[string]string{}, taskDetailed: map[string]bool{}}
 	defer st.stop(ctx, sessionID, &err)
 
 	for {
@@ -139,6 +150,14 @@ type openStream struct {
 	// turns a StopStream failure into Run's returned error via *outErr, so a caller can act on it), but
 	// the Slack message itself will be missing the text either way.
 	pending strings.Builder
+
+	// taskTitles is the title each card was drawn with, keyed by tool_call_id, because the events that
+	// advance a card do not all carry the tool's name (see updateTask). It is per-Run state and dies with
+	// the stream — a tool_call_id is unique to one run's ledger, so nothing here outlives its usefulness.
+	taskTitles map[string]string
+	// taskDetailed records which cards have already been given a detail, because a card's `details` field
+	// APPENDS rather than replaces — so the second and later details need a separator in front of them.
+	taskDetailed map[string]bool
 }
 
 // stop closes the stream exactly once, from Run's single deferred call, so every exit path — a run
@@ -168,12 +187,16 @@ func (o *openStream) handle(ctx context.Context, event palai.Event) {
 	switch event.Type {
 	case "model_step.delta.v1":
 		o.emit(ctx, dataString(event.Data, "text"))
-	case "tool_call.executing.v1":
-		o.emitStatus(ctx, fmt.Sprintf("\n\n▶️ Running `%s`…", toolLabel(event.Data)))
 	case "tool_call.progress.v1":
-		o.emitStatus(ctx, toolProgressLine(event.Data))
-	case "tool_call.completed.v1":
-		o.emitStatus(ctx, fmt.Sprintf("\n✅ `%s` done", toolLabel(event.Data)))
+		// Progress keeps the step IN PROGRESS and replaces what the card shows underneath it, so a long
+		// tool reads as one step whose detail advances rather than a growing pile of lines.
+		//
+		// A notification with nothing to say updates NOTHING. Re-sending the card with an empty detail
+		// would blank whatever the previous update put there, so a messageless progress event — which is
+		// most of them, since the field is advisory — would erase the line it was supposed to refine.
+		if detail := toolProgressDetail(event.Data); detail != "" {
+			o.updateTask(ctx, event.Data, "in_progress", detail)
+		}
 	case ApprovalRequestedEventType:
 		// A GATED CALL PARKED THE RUN, and this is the only place the bot learns of it: the approval
 		// bridge (approvals.go) posts the message a human decides from, and until this case existed
@@ -184,7 +207,132 @@ func (o *openStream) handle(ctx context.Context, event palai.Event) {
 		// waiting on a person, and a stream that simply stops reads as a hang.
 		o.emitStatus(ctx, "\n\n⏸️ Waiting for an approval — see the message below.")
 		o.deps.OnApproval(ctx, o.channel, o.threadTS, event)
+	default:
+		if status, ok := toolCallStatus[event.Type]; ok {
+			// NO DETAIL ON A TERMINAL, and it is not an omission: a card's `details` APPENDS across updates
+			// of the same id (measured — slack.TaskUpdateChunk records it), so repeating the tool's name
+			// when the step finishes renders `palai.workspace.filepalai.workspace.file`. The name was
+			// already attached when the step began; the terminal changes only the status.
+			detail := ""
+			if status == "in_progress" {
+				detail = toolName(event.Data)
+			}
+			o.updateTask(ctx, event.Data, status, detail)
+		}
 	}
+}
+
+// toolCallStatus maps a tool call's journalled events onto the task vocabulary blocks.go renders
+// (adapters/integrations/slack, TaskStatus: open|in_progress|done|failed|canceled → Slack's
+// pending|in_progress|complete|error).
+//
+// IT IS EXHAUSTIVE OVER THE STATE MACHINE'S TERMINALS ON PURPOSE, and that is the SLK-P2 lesson applied to
+// a card instead of a stream: a terminal this map omits leaves its step drawn `in_progress` forever, so the
+// finished message shows a run still working. Every state packages/state-machines/tool_call.go can reach
+// from `executing` is listed, plus the three an `uncertain` call is reconciled to.
+//
+// MEASURED WRITERS (2026-08-03, `grep -rn '"tool_call\.<state>\.v1"' --include='*.go' .` minus tests and
+// the transition table itself): executing 3, completed 2, canceled 2, reconciled_completed 2, uncertain 1,
+// reconciled_not_applied 1, manual_resolution 1 — and **failed 0**. `tool_call.failed.v1` is declared by the
+// transition table and journalled by NOTHING today: a tool that returns an error does so as a RESULT FIELD
+// on a `completed` call (the tree records this as "a tool error is an ANSWER"), so the failure a reader
+// actually sees arrives as text, not as this event. It is mapped anyway because the transition exists and
+// the cost of mapping an event that never fires is nothing, while the cost of the reverse — the event
+// starting to fire into a map that does not know it — is a card that spins forever.
+var toolCallStatus = map[string]string{
+	"tool_call.executing.v1":              "in_progress",
+	"tool_call.completed.v1":              "done",
+	"tool_call.reconciled_completed.v1":   "done",
+	"tool_call.failed.v1":                 "failed",
+	"tool_call.canceled.v1":               "canceled",
+	"tool_call.uncertain.v1":              "failed",
+	"tool_call.reconciled_not_applied.v1": "failed",
+	"tool_call.manual_resolution.v1":      "failed",
+}
+
+// updateTask draws (or advances) the ONE card this tool call owns.
+//
+// THE ID IS THE WHOLE MECHANISM: Slack advances a card when a later task_update repeats its task_id and
+// draws a second card when it does not, so the id must be something the executing event and its terminal
+// already SHARE rather than a counter this package invents. `tool_call_id` is that thing — both writers
+// hardcode it into the payload (packages/coordinator/orchestration.go BeginToolCall and
+// apps/control-plane/internal/execution/tool_dispatch.go, measured 2026-08-03) — and it is stable across
+// the pair by construction, because it IS the ledger row's primary key.
+//
+// A card is skipped rather than guessed when there is no id to hang it on: an empty task_id is not a card
+// Slack can update, and two steps sharing one would overwrite each other, which is worse than the step not
+// being drawn. Nothing is lost that a reader needed — the answer text is untouched either way.
+func (o *openStream) updateTask(ctx context.Context, data map[string]any, status, detail string) {
+	id := dataString(data, "tool_call_id")
+	if id == "" {
+		return
+	}
+	// THE TITLE IS REMEMBERED PER CARD BECAUSE NOT EVERY EVENT CARRIES ONE. A progress notification's
+	// payload is {tool_call_id, progress, total, message} and nothing else
+	// (packages/coordinator/mcp_progress.go AppendToolProgress, measured 2026-08-03) — no tool_name. Deriving
+	// the title from each event alone would therefore RENAME a live step from "Reading files" to the
+	// no-name fallback the moment it reported progress, which is worse than never having titled it.
+	title := o.taskTitles[id]
+	if named := dataString(data, "tool_name"); named != "" || title == "" {
+		title = toolTitle(data)
+		o.taskTitles[id] = title
+	}
+	// A CARD'S DETAIL APPENDS, so consecutive details need the separator for the same reason the message
+	// body does — without it the live workspace returned
+	// `palai.workspace.fileSwiftUIListApp.swift (3/7)`, which is `doneProjede` again, on the card. The
+	// FIRST detail takes no newline: it has nothing to be separated from.
+	if detail != "" {
+		if o.taskDetailed[id] {
+			detail = "\n" + detail
+		}
+		o.taskDetailed[id] = true
+	}
+	// The error is DROPPED, and that is a decision rather than an oversight: a card is decoration over an
+	// answer delivered by an entirely separate path, so a failed update must not fail the relay, and it must
+	// not enter openStream.pending either — that buffer is the model's words retrying, and a step's card
+	// arriving late on the back of a text append would be worse than the step simply not advancing. The
+	// answer still arrives whatever this call does.
+	_ = o.deps.Slack.UpdateTask(ctx, o.channel, o.ts, slack.Task{
+		ID: id, Title: title, Status: status, Detail: detail,
+	})
+}
+
+// toolTitles turns a tool's registered name into something a human reads. The names are a closed set the
+// deployment registers, measured from the tree on 2026-08-03 with
+// `grep -rhoE '"palai\.[a-z_.]+"' --include='*.go' packages/ apps/ adapters/ | sort -u` → 16, of which the
+// 15 real ones are below (`palai.conformance.math.add` is a conformance fixture, not a thing to narrate).
+//
+// AN UNLISTED NAME FALLS BACK TO ITSELF rather than to a guess: an MCP server contributes tool names this
+// tree has never seen, and `palai.workspace.file` read as "reading files" is a kindness only because
+// somebody checked what it does. Inventing a title from an unknown identifier is how a card ends up
+// confidently describing the wrong action.
+var toolTitles = map[string]string{
+	"palai.workspace.file":             "Reading files",
+	"palai.workspace.shell":            "Running a command",
+	"palai.workspace.commit":           "Committing changes",
+	"palai.workspace.background_kill":  "Stopping a background task",
+	"palai.workspace.show_media":       "Showing a screenshot",
+	"palai.publish.pull_request":       "Opening a pull request",
+	"palai.publish.merge_pull_request": "Merging the pull request",
+	"palai.publish.push":               "Pushing the branch",
+	"palai.task":                       "Updating the task list",
+	"palai.todo":                       "Updating the to-do list",
+	"palai.web.search":                 "Searching the web",
+	"palai.slack.search":               "Searching Slack",
+	"palai.research.fetch":             "Fetching a page",
+	"palai.knowledge.retrieve":         "Searching the knowledge base",
+	"palai.fs.write":                   "Writing a file",
+}
+
+// toolTitle is the card's headline: what the step IS, in words. The raw name stays available underneath it
+// (updateTask passes it as the card's detail), so nothing is hidden — it is just not the first thing a
+// reader is shown.
+func toolTitle(data map[string]any) string {
+	name := toolName(data)
+	if title, ok := toolTitles[name]; ok {
+		return title
+	}
+	return name
 }
 
 // emitStatus writes one STATUS line — a line this package composed, never the model's own words — and
@@ -227,29 +375,32 @@ func (o *openStream) emit(ctx context.Context, text string) {
 	o.pending.Reset()
 }
 
-// toolLabel names a tool_call.executing.v1/completed.v1 event's tool (packages/coordinator/orchestration.go
-// BeginToolCall — "the tool's name rides the frame", E30 T2). tool_name is expected on both; a server
-// that omits it (or a malformed event) still gets a readable, generic line instead of dropping the call.
-func toolLabel(data map[string]any) string {
+// toolName is the raw registered name off a tool_call.* event (packages/coordinator/orchestration.go
+// BeginToolCall — "the tool's name rides the frame", E30 T2). tool_name is expected on every tool_call
+// event; a server that omits it (or a malformed event) still gets a readable, generic word rather than a
+// card titled with the empty string, which Slack rejects.
+func toolName(data map[string]any) string {
 	if name := dataString(data, "tool_name"); name != "" {
 		return name
 	}
 	return "a tool"
 }
 
-// toolProgressLine renders an MCP tools/call progress notification (packages/coordinator/mcp_progress.go
-// AppendToolProgress), which is advisory and often has nothing worth a line: a message with no total is
-// still shown, but a call with neither is skipped rather than rendering a bare newline.
-func toolProgressLine(data map[string]any) string {
+// toolProgressDetail renders an MCP tools/call progress notification (packages/coordinator/mcp_progress.go
+// AppendToolProgress) as the line under a step's card. It is advisory and often carries nothing worth
+// showing: a message with no total is still shown, but a notification with neither leaves the card's detail
+// EMPTY — which, because it keeps the same task_id, leaves the step exactly as it was rather than blanking
+// what the previous update put there.
+func toolProgressDetail(data map[string]any) string {
 	message := dataString(data, "message")
 	if message == "" {
 		return ""
 	}
 	if total, ok := dataFloat64(data, "total"); ok && total > 0 {
 		progress, _ := dataFloat64(data, "progress")
-		return fmt.Sprintf("\n   ↳ %s (%.0f/%.0f)", message, progress, total)
+		return fmt.Sprintf("%s (%.0f/%.0f)", message, progress, total)
 	}
-	return fmt.Sprintf("\n   ↳ %s", message)
+	return message
 }
 
 // dataString reads a string field out of an event's decoded payload, or "" if it is absent or not a

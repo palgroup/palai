@@ -71,21 +71,60 @@ type StreamStart struct {
 	RecipientUserID string
 	RecipientTeamID string
 	MarkdownText    string
+	// TaskDisplayMode opens the stream in CHUNK MODE and says how its task cards are drawn. Empty opens an
+	// ordinary text stream. THIS IS A WHOLE-STREAM DECISION, NOT A FORMATTING HINT — see StartStream.
+	TaskDisplayMode string
 }
+
+// TaskDisplayModeTimeline shows a run's steps IN THE ORDER THEY HAPPEN, which is the honest mode for this
+// tree's agent and the reason the alternative is not offered.
+//
+// CONTRACT: https://docs.slack.dev/reference/methods/chat.startStream/ (checked 2026-08-03) — task_display_mode
+// is `timeline` (the default), `plan` or `dense`, and it is an argument of chat.startStream ONLY: a stream
+// cannot change how its steps are drawn once it is open.
+//
+// `plan` GROUPS STEPS DECLARED UP FRONT, and we do not have them. A Palai run discovers its tool calls as the
+// model makes them — the relay learns of a step from tool_call.executing.v1, i.e. as it BEGINS — so a plan
+// view would be a to-do list this bot cannot write: it would either render one step at a time (a plan of one,
+// repeatedly) or claim foreknowledge of work not yet chosen. `timeline` says exactly what is true, which is
+// that these things happened in this order.
+const TaskDisplayModeTimeline = "timeline"
 
 // StartStream opens a streaming message in a channel thread and returns the ts Slack assigned it — the handle
 // every later append and the final stop address. A missing recipient or thread refuses without calling.
+//
+// IT ALSO FIXES THE STREAM'S MODE FOR LIFE, which is the single most surprising thing about this API and is
+// MEASURED rather than documented (2026-08-04, workspace T0AMPM5JX8U — no Slack page states it):
+//
+//   - Opened with `markdown_text`, the stream is a TEXT stream. Every later chunk is refused with
+//     `streaming_mode_mismatch`.
+//   - Opened with `chunks`, it is a CHUNK stream. Every later `markdown_text` is refused the same way —
+//     on chat.appendStream AND on chat.stopStream, so a chunk stream that tries to flush its last words as
+//     text cannot even close, and a message left open renders as permanently "streaming" (SLK-P2).
+//
+// There is no mixing and no switching. TaskDisplayMode is therefore what CHOOSES the mode here rather than a
+// display preference bolted onto an otherwise unchanged call: task cards can only exist in chunk mode, so
+// asking for them and asking for chunk mode are one decision. A caller in chunk mode must use
+// AppendStreamChunks and StopStreamChunks for everything, including the model's own prose.
 func StartStream(ctx context.Context, doer Doer, apiBase string, token []byte, req StreamStart) (string, error) {
 	if req.ThreadTS == "" || req.RecipientUserID == "" || req.RecipientTeamID == "" {
 		return "", fmt.Errorf("%w (channel %s)", ErrNoStreamRecipient, req.Channel)
 	}
-	body, _ := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"channel":           req.Channel,
 		"thread_ts":         req.ThreadTS,
 		"recipient_user_id": req.RecipientUserID,
 		"recipient_team_id": req.RecipientTeamID,
-		"markdown_text":     TruncateMarkdown(req.MarkdownText),
-	})
+	}
+	if req.TaskDisplayMode != "" {
+		payload["task_display_mode"] = req.TaskDisplayMode
+		// The opening text rides a CHUNK, because sending it as markdown_text would open a text stream and
+		// every task card this mode exists for would then be refused.
+		payload["chunks"] = []map[string]any{MarkdownChunk(req.MarkdownText)}
+	} else {
+		payload["markdown_text"] = TruncateMarkdown(req.MarkdownText)
+	}
+	body, _ := json.Marshal(payload)
 	res, err := PostMessage(ctx, doer, PostRequest{MethodURL: apiBase + "/chat.startStream", Token: token, Body: body}, PostOptions{})
 	if err != nil {
 		return "", err
@@ -113,6 +152,51 @@ func AppendStream(ctx context.Context, doer Doer, apiBase string, token []byte, 
 		"markdown_text": TruncateMarkdown(markdownText),
 	})
 	_, err := PostMessage(ctx, doer, PostRequest{MethodURL: apiBase + "/chat.appendStream", Token: token, Body: body}, PostOptions{})
+	return err
+}
+
+// AppendStreamChunks appends CHUNKS rather than body text — the call that puts a run's steps in Slack's
+// task timeline instead of writing them into the answer as prose.
+//
+// WHY IT IS A SEPARATE FUNCTION rather than a field on AppendStream: the two are not variations of one
+// call, they belong to the two different STREAM MODES StartStream documents. `markdown_text` is refused
+// outright on a chunk stream, so a caller does not choose between them per call — it chose once, at start.
+//
+// MEASURED (2026-08-04): a chunks-only chat.appendStream is answered ok:true. The reference lists
+// `markdown_text` among the REQUIRED arguments, which read literally would make this call impossible; it is
+// not required here, and sending it would in fact be the thing that fails.
+//
+// The chunks are built by TaskUpdateChunk (blocks.go), which is where the defusing and the status mapping
+// live. This function is pure wire and does not inspect them.
+func AppendStreamChunks(ctx context.Context, doer Doer, apiBase string, token []byte, channel, ts string, chunks []map[string]any) error {
+	if len(chunks) == 0 {
+		return nil
+	}
+	body, _ := json.Marshal(map[string]any{
+		"channel": channel,
+		"ts":      ts,
+		"chunks":  chunks,
+	})
+	_, err := PostMessage(ctx, doer, PostRequest{MethodURL: apiBase + "/chat.appendStream", Token: token, Body: body}, PostOptions{})
+	return err
+}
+
+// StopStreamChunks closes a CHUNK-MODE stream.
+//
+// IT EXISTS BECAUSE THE MODE SPLIT REACHES THE CLOSING CALL TOO, which is the half of the measurement that
+// actually bites: chat.stopStream with `markdown_text` on a chunk stream is refused with
+// `streaming_mode_mismatch` (measured 2026-08-04), so a chunk stream closed the ordinary way does not close
+// AT ALL — and a stream that never closes renders as permanently "streaming" in Slack, which is SLK-P2, the
+// exact defect the relay's whole deferred-stop design exists to prevent.
+//
+// Closing with no final text is normal and sends no chunks: everything has usually already been appended.
+func StopStreamChunks(ctx context.Context, doer Doer, apiBase string, token []byte, channel, ts string, chunks []map[string]any) error {
+	payload := map[string]any{"channel": channel, "ts": ts}
+	if len(chunks) > 0 {
+		payload["chunks"] = chunks
+	}
+	body, _ := json.Marshal(payload)
+	_, err := PostMessage(ctx, doer, PostRequest{MethodURL: apiBase + "/chat.stopStream", Token: token, Body: body}, PostOptions{})
 	return err
 }
 

@@ -143,6 +143,7 @@ type fakeStreamSlack struct {
 	mu                               sync.Mutex
 	recipientUserID, recipientTeamID string
 	appended                         []string
+	tasks                            []slack.Task
 	stopped                          int
 	// failStop makes the closing chat.stopStream refuse. It is the cheapest way to make relay.Run return
 	// a non-nil error from inside the background goroutine — the value this bot once discarded.
@@ -167,6 +168,16 @@ func (f *fakeStreamSlack) StopStream(context.Context, string, string, string) er
 	if f.failStop {
 		return errors.New("slack: chat post failed: invalid_arguments")
 	}
+	return nil
+}
+
+// UpdateTask records the task cards the relay drew. They are kept SEPARATE from appended: a card is a
+// task_update chunk, not body text, and folding the two together here would let a test claiming "the answer
+// contains no status prose" pass while prose was still being written.
+func (f *fakeStreamSlack) UpdateTask(_ context.Context, _, _ string, task slack.Task) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tasks = append(f.tasks, task)
 	return nil
 }
 
