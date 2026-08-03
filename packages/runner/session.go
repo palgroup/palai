@@ -61,6 +61,10 @@ type Session struct {
 	ControllerCAs *x509.CertPool
 	ControllerDNS string
 	Now           func() time.Time
+	// Background answers the bg.* triple while this session is PARKED (A.3 T7). Nil is a machine that
+	// runs no background task; it still answers, with a refusal, because a control plane blocked on a
+	// probe must learn it will get no result rather than wait forever (BackgroundServer.Handle).
+	Background *BackgroundServer
 	// DialHandshakeTimeout bounds the outbound dial + runner.v1 handshake. Zero uses
 	// dialHandshakeDeadline. It never bounds the lease-offer park or a held lease.
 	DialHandshakeTimeout time.Duration
@@ -151,26 +155,50 @@ func (s Session) openConnection(ctx context.Context) (*websocket.Conn, *http.Tra
 		return nil, nil, Lease{}, fmt.Errorf("write runner hello: %w", err)
 	}
 
-	messageType, payload, err := connection.Read(ctx)
-	if err != nil {
-		closeConnection(connection, transport)
-		return nil, nil, Lease{}, fmt.Errorf("read lease offer: %w", err)
+	// THE PARK IS A LOOP SINCE A.3 T7, AND IT HAD TO BECOME ONE. It was a single Read that required a
+	// lease.offer, which was correct while a lease was the only thing a control plane could address a
+	// machine about. A background task outlives the attempt that started it, so the sweep that probes it
+	// later finds this machine PARKED — and a bg.* request arriving at a single-read park was consumed
+	// as a malformed offer, which closed the connection and killed the park.
+	//
+	// So a bg.* request is answered HERE and the park continues. Anything else still ends it exactly as
+	// before: an unparseable offer is the same error it always was.
+	for {
+		messageType, payload, err := connection.Read(ctx)
+		if err != nil {
+			closeConnection(connection, transport)
+			return nil, nil, Lease{}, fmt.Errorf("read lease offer: %w", err)
+		}
+		if messageType != websocket.MessageText {
+			closeConnection(connection, transport)
+			return nil, nil, Lease{}, errors.New("lease offer must be a text message")
+		}
+		var message contracts.RunnerMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			closeConnection(connection, transport)
+			return nil, nil, Lease{}, fmt.Errorf("decode lease offer: %w", err)
+		}
+		switch message.Type {
+		case BackgroundStartType, BackgroundProbeType, BackgroundKillType:
+			// Answered INLINE rather than on its own goroutine, unlike the same verbs during a lease. The
+			// difference is what this goroutine is doing: during a lease it is the sole reader of a live
+			// relay and must keep moving, while here it is only waiting for an offer that cannot arrive
+			// until the control plane sends one. Answering inline keeps the park single-threaded, which is
+			// what makes "the next Read is still the offer" true.
+			answer := s.Background.Handle(ctx, message)
+			if err := writeRunnerMessage(ctx, connection, Lease{}, s.Now, answer.Type, answer.Data); err != nil {
+				closeConnection(connection, transport)
+				return nil, nil, Lease{}, fmt.Errorf("answer %s while parked: %w", message.Type, err)
+			}
+			continue
+		}
+		lease, err := ParseLeaseOffer(message)
+		if err != nil {
+			closeConnection(connection, transport)
+			return nil, nil, Lease{}, err
+		}
+		return connection, transport, lease, nil
 	}
-	if messageType != websocket.MessageText {
-		closeConnection(connection, transport)
-		return nil, nil, Lease{}, errors.New("lease offer must be a text message")
-	}
-	var message contracts.RunnerMessage
-	if err := json.Unmarshal(payload, &message); err != nil {
-		closeConnection(connection, transport)
-		return nil, nil, Lease{}, fmt.Errorf("decode lease offer: %w", err)
-	}
-	lease, err := ParseLeaseOffer(message)
-	if err != nil {
-		closeConnection(connection, transport)
-		return nil, nil, Lease{}, err
-	}
-	return connection, transport, lease, nil
 }
 
 // helloData carries the runner's advertised version in the hello's data map, or nil when the runner is
@@ -259,21 +287,29 @@ func (l *LeaseSession) Close() error {
 }
 
 func (l *LeaseSession) write(ctx context.Context, messageType string, data map[string]any) error {
+	return writeRunnerMessage(ctx, l.conn, l.lease, l.now, messageType, data)
+}
+
+// writeRunnerMessage puts one runner.v1 message on a connection. It is a free function because the PARK has
+// to write too (a bg.* answer, before any lease exists) and a parked runner has no LeaseSession —
+// a zero Lease there leaves the identity fields empty, which is the honest envelope for a message that
+// is about a machine rather than about an attempt.
+func writeRunnerMessage(ctx context.Context, conn *websocket.Conn, lease Lease, now func() time.Time, messageType string, data map[string]any) error {
 	message := contracts.RunnerMessage{
 		Protocol:  RunnerProtocolV1,
 		Type:      messageType,
-		Time:      l.now().UTC().Format(time.RFC3339),
-		LeaseID:   l.lease.LeaseID,
-		RunID:     l.lease.RunID,
-		AttemptID: l.lease.AttemptID,
-		Fence:     int(l.lease.Fence),
+		Time:      now().UTC().Format(time.RFC3339),
+		LeaseID:   lease.LeaseID,
+		RunID:     lease.RunID,
+		AttemptID: lease.AttemptID,
+		Fence:     int(lease.Fence),
 		Data:      data,
 	}
 	payload, err := json.Marshal(message)
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", messageType, err)
 	}
-	return l.conn.Write(ctx, websocket.MessageText, payload)
+	return conn.Write(ctx, websocket.MessageText, payload)
 }
 
 // decodeRelayFrame extracts the single engine.v1 frame a relay message carries in its

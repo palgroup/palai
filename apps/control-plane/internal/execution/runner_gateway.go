@@ -129,6 +129,11 @@ type RunnerGateway struct {
 	// the reaper cuts. A machine may hold several (PALAI_RUNNER_CONCURRENCY parks one loop per concurrent
 	// lease), so this is a set of connections and not a map keyed by runner id.
 	sessions map[*pendingRunner]struct{}
+	// calls is the set of bg.* questions this gateway has asked machines and not yet heard back about
+	// (A.3 T7). It lives on the GATEWAY rather than on a lease channel because a background task
+	// outlives the attempt that started it, so the answer arrives on a connection that may be parked —
+	// see machine_call.go, which owns every method that touches it.
+	calls machineCalls
 	// cpVersion is this control-plane's version stamp, checked against the runner's advertised version in
 	// the connect handshake for the §48.2 support window (OPS-008). Defaulted to version.Resolve; a test
 	// or a deploy override sets it with SetControlPlaneVersion.
@@ -1753,8 +1758,23 @@ func (g *RunnerGateway) readLoop(pr *pendingRunner) {
 			return
 		}
 		gc := pr.gc.Load()
+		// A MACHINE-ADDRESSED ANSWER IS ROUTED BEFORE THE LEASE IS CONSULTED (A.3 T7), and it has to be
+		// before: a bg.result answers a question about a task that outlives its attempt, so it arrives
+		// on whatever session the machine happens to hold — often a PARKED one, which the arm below
+		// discards. That discard's comment ("a runner sends nothing before a lease") was true until this
+		// pair existed and is what this branch corrects.
+		//
+		// It costs one extra decode on text messages and buys not restructuring the arms below, whose
+		// error paths all report through the lease channel a parked connection does not have.
+		if messageType == websocket.MessageText {
+			var addressed contracts.RunnerMessage
+			if err := json.Unmarshal(payload, &addressed); err == nil && addressed.Type == runner.BackgroundResultType {
+				g.calls.deliver(addressed.Data)
+				continue
+			}
+		}
 		if gc == nil {
-			continue // parked: a runner sends nothing before a lease; ignore any stray frame
+			continue // parked: nothing else a runner sends before a lease is addressed to anybody
 		}
 		if messageType != websocket.MessageText {
 			gc.failRelay(errors.New("runner session frame must be a text message"))

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func nativeRunnerTestConfig() Config {
@@ -183,9 +184,18 @@ func TestNativeRunnerStopKillsTheProcessGroupAndClearsTheRecord(t *testing.T) {
 	if _, err := os.Stat(p.nativeRunnerPID); !os.IsNotExist(err) {
 		t.Fatalf("the pid record survived the stop (%v)", err)
 	}
-	if err := syscall.Kill(-pid, 0); err == nil {
-		t.Fatal("the process group is still alive after stopNativeRunner")
+	// POLLED RATHER THAN ASSERTED ONCE. stopNativeRunner waits for the group LEADER to go, and a child
+	// the leader backgrounded can outlive it by a moment — so a single check here races the kernel. The
+	// control plane's twin of this test asserts immediately and flakes about one run in three
+	// (TestNativeStopKillsTheProcessGroupAndClearsTheRecord, measured 2026-08-04); this is the same
+	// property without the race.
+	for i := 0; i < 200; i++ {
+		if err := syscall.Kill(-pid, 0); err != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	t.Fatal("the process group is still alive two seconds after stopNativeRunner")
 }
 
 // TestNativeRunnerStopRefusesAPidThatIsNotTheRunner is the pid-reuse guard: a stale record plus a

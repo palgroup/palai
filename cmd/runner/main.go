@@ -54,6 +54,12 @@ func main() {
 		ControllerCAs: controllerCAs,
 		ControllerDNS: controllerDNS,
 		Now:           time.Now,
+		// The bg.* answers this machine gives WHILE PARKED (A.3 T7). It is on the session rather than on
+		// the lease because that is when the question arrives: a background task outlives the attempt
+		// that started it, so the sweep that probes it finds this machine between leases. The executor is
+		// the detached half of the same posture the shell tool runs on, so a machine that cannot detach
+		// answers a refusal rather than falling silent.
+		Background: runner.NewBackgroundServer(posture.BackgroundRunnerFor(shellRunnerFromEnv())),
 		// Advertise this runner build's stamp so the control-plane enforces the §48.2 support window
 		// (OPS-008): a runner more than two minors behind is rejected at connect with the hop message.
 		Version: version.Resolve(),

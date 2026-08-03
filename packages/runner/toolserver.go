@@ -166,6 +166,106 @@ func decodeExecCommand(data map[string]any) (toolbroker.ShellCommand, error) {
 	return cmd, nil
 }
 
+// BackgroundServer answers the bg.* triple on this machine's own background runner. It is the
+// background half of what ToolServer is for a synchronous command: the executor here is the one THIS
+// machine was built with, so a task started through it is a process on this box and the handle names
+// this box's kernel.
+type BackgroundServer struct {
+	runner toolbroker.BackgroundRunner
+}
+
+// NewBackgroundServer binds the detached executor. A nil one is a machine that cannot start a task
+// that outlives an attempt; it still answers every request (see Handle).
+func NewBackgroundServer(r toolbroker.BackgroundRunner) *BackgroundServer {
+	return &BackgroundServer{runner: r}
+}
+
+// Handle answers one bg.* request. LIKE ToolServer.Handle IT NEVER RETURNS AN ERROR, and for the same
+// reason: a control plane that asked is blocked on the answer, so silence is not a degraded mode, it is
+// a sweep that never settles a row and a run that waits forever.
+//
+// A REFUSAL IS DISTINGUISHABLE FROM AN OUTCOME. data.error means the machine did not do the thing;
+// data.status / data.handle mean it did. Collapsing them would let "this machine runs no background
+// task" read as "the task is gone", which is the wrong answer this whole seam exists to stop.
+func (s *BackgroundServer) Handle(ctx context.Context, request contracts.RunnerMessage) contracts.RunnerMessage {
+	bgID, _ := request.Data["bg_id"].(string)
+	if s == nil || s.runner == nil {
+		return backgroundRefusal(bgID, errors.New("this runner was not wired with a background executor, so it can start and probe no task"))
+	}
+	switch request.Type {
+	case BackgroundStartType:
+		cmd, err := decodeExecCommand(request.Data)
+		if err != nil {
+			return backgroundRefusal(bgID, err)
+		}
+		spec, err := decodeBackgroundSpec(request.Data)
+		if err != nil {
+			return backgroundRefusal(bgID, err)
+		}
+		handle, err := s.runner.Start(ctx, cmd, spec)
+		if err != nil {
+			return backgroundRefusal(bgID, err)
+		}
+		return backgroundAnswer(bgID, map[string]any{"handle": handle})
+	case BackgroundProbeType:
+		handle, err := decodeBackgroundHandle(request.Data)
+		if err != nil {
+			return backgroundRefusal(bgID, err)
+		}
+		status, err := s.runner.Probe(ctx, handle)
+		if err != nil {
+			return backgroundRefusal(bgID, err)
+		}
+		return backgroundAnswer(bgID, map[string]any{"status": status})
+	case BackgroundKillType:
+		handle, err := decodeBackgroundHandle(request.Data)
+		if err != nil {
+			return backgroundRefusal(bgID, err)
+		}
+		if err := s.runner.Kill(ctx, handle); err != nil {
+			return backgroundRefusal(bgID, err)
+		}
+		return backgroundAnswer(bgID, map[string]any{"killed": true})
+	}
+	return backgroundRefusal(bgID, fmt.Errorf("unknown background verb %q", request.Type))
+}
+
+func backgroundAnswer(bgID string, payload map[string]any) contracts.RunnerMessage {
+	return contracts.RunnerMessage{Type: BackgroundResultType, Data: BackgroundRequestData(bgID, payload)}
+}
+
+func backgroundRefusal(bgID string, err error) contracts.RunnerMessage {
+	return contracts.RunnerMessage{Type: BackgroundResultType, Data: BackgroundRequestData(bgID, map[string]any{"error": err.Error()})}
+}
+
+// decodeBackgroundSpec and decodeBackgroundHandle re-marshal before decoding, the same way
+// decodeExecCommand does: a value is a map[string]any once it has crossed the wire and the struct
+// itself when it has not.
+func decodeBackgroundSpec(data map[string]any) (toolbroker.BackgroundSpec, error) {
+	var spec toolbroker.BackgroundSpec
+	return spec, remarshal(data, "spec", &spec)
+}
+
+func decodeBackgroundHandle(data map[string]any) (toolbroker.Handle, error) {
+	var handle toolbroker.Handle
+	return handle, remarshal(data, "handle", &handle)
+}
+
+func remarshal(data map[string]any, field string, into any) error {
+	raw, ok := data[field]
+	if !ok {
+		return fmt.Errorf("background request carries no %s", field)
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", field, err)
+	}
+	if err := json.Unmarshal(encoded, into); err != nil {
+		return fmt.Errorf("decode %s: %w", field, err)
+	}
+	return nil
+}
+
 // RelayInbound reads control-plane->runner messages for the life of the lease and routes each one by
 // type: an engine frame goes to the engine's stdin through inbound, an exec request runs on this
 // machine. It closes inbound when the connection ends, which is how the supervisor learns the
@@ -189,6 +289,14 @@ func decodeExecCommand(data map[string]any) (toolbroker.ShellCommand, error) {
 // existed: the runner has no way to act on a message it cannot name, and continuing would leave the
 // control plane waiting on a reply the runner will never form.
 func RelayInbound(ctx context.Context, session *LeaseSession, tools *ToolServer, inbound chan<- contracts.EngineFrame, logf func(string, ...any)) {
+	RelayInboundWithBackground(ctx, session, tools, nil, inbound, logf)
+}
+
+// RelayInboundWithBackground is RelayInbound plus the bg.* triple (A.3 T7). The two are separate
+// entry points rather than one with a nil argument at every call site, because every caller that
+// predates the background triple relays exactly what it always did — a machine with no background
+// server answers a bg.* request with a refusal rather than ending the lease on an unknown type.
+func RelayInboundWithBackground(ctx context.Context, session *LeaseSession, tools *ToolServer, background *BackgroundServer, inbound chan<- contracts.EngineFrame, logf func(string, ...any)) {
 	defer close(inbound)
 	for {
 		message, err := session.ReceiveMessage(ctx)
@@ -207,6 +315,16 @@ func RelayInbound(ctx context.Context, session *LeaseSession, tools *ToolServer,
 			case <-ctx.Done():
 				return
 			}
+		case BackgroundStartType, BackgroundProbeType, BackgroundKillType:
+			// THE SAME GOROUTINE ARGUMENT AS AN EXEC, and it is not weaker here. A probe is fast, but a
+			// START runs whatever the executor does to spawn a process, and a reader blocked on that is a
+			// reader that cannot see the interrupt frame the command pump sends next.
+			go func() {
+				answer := background.Handle(ctx, message)
+				if err := session.SendExecResult(ctx, answer); err != nil {
+					logf("send background result: %v", err)
+				}
+			}()
 		case ExecRequestType:
 			go func() {
 				answer := tools.Handle(ctx, message)
