@@ -412,6 +412,111 @@ func TestChangesetSurvivesTheCommitTool(t *testing.T) {
 	}
 }
 
+// TestChangesetSummaryArtifactCarriesTheIgnoredCountToAReader closes the last mile of this branch's
+// own defect. IgnoredFileCount was computed correctly, written durably and folded into the content
+// hash — and read by NOTHING: `changesets` has no SELECT, no route and no reader, so for a run whose
+// only writes were .gitignore'd the screen still said "This run changed no file inside the clone".
+// A value that is load-bearing for identity while invisible to every human is the shape this tree
+// names most often, and this branch had produced an instance of it.
+//
+// The count rides the path that ALREADY travels rather than a second one: the workspace panel lists a
+// response's artifacts and fetches them by logical_type, which is how it gets the patch today. So the
+// compiler writes a third artifact — a small JSON summary — and the count is reachable with no new
+// route and no contract change.
+//
+// It is written even when NOTHING changed, and that is the point rather than an edge case: "no
+// changeset was compiled" and "a changeset was compiled and the run changed nothing" are different
+// facts, and a reader that only ever sees an absent artifact cannot tell them apart.
+func TestChangesetSummaryArtifactCarriesTheIgnoredCountToAReader(t *testing.T) {
+	requireGit(t)
+	root, base := newAllocRepo(t)
+	repoDir := filepath.Join(root, "repo")
+
+	// The ignore rule belongs to the BASE, not to the run. Writing .gitignore here as part of the run
+	// would make it a real tracked change and the case unreachable — the changed set would legitimately
+	// hold one file and the test would be measuring a world its own setup had ruled out.
+	run := repoGit(t, repoDir)
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), ".build/\n")
+	run("add", ".gitignore")
+	run("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "ignore rules")
+	base = run("rev-parse", "HEAD")
+
+	// The owner's case: a compiler wrote build output and nothing else. Ignored, so it is absent from
+	// both the changed set and the patch — and the ONLY record that it happened is the count.
+	if err := os.MkdirAll(filepath.Join(repoDir, ".build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(repoDir, ".build", "a.o"), "obj\n")
+	writeFile(t, filepath.Join(repoDir, ".build", "b.o"), "obj\n")
+
+	aw := &fakeArtifactWriter{}
+	ledger := &fakeChangesetLedger{
+		base: base, baseOK: true,
+		rows: []coordinator.ToolCallRow{shellRow("tc_1", []string{"swift", "build"}, 0, "")},
+	}
+	rec, compiled, err := CompileChangeset(context.Background(), ledger, aw,
+		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+	if err != nil || !compiled {
+		t.Fatalf("CompileChangeset() = compiled %v err %v, want compiled", compiled, err)
+	}
+	if rec.IgnoredFileCount != 2 {
+		t.Fatalf("ignored count = %d, want 2 — the fixture did not produce the case", rec.IgnoredFileCount)
+	}
+
+	var summary *recordedWrite
+	for i := range aw.writes {
+		if aw.writes[i].logicalType == changesetSummaryType {
+			summary = &aw.writes[i]
+		}
+	}
+	if summary == nil {
+		t.Fatalf("no %q artifact written; a reader has no way to learn the count (written: %+v)", changesetSummaryType, aw.writes)
+	}
+	if summary.mediaType != "application/json" {
+		t.Fatalf("summary media type = %q, want application/json", summary.mediaType)
+	}
+	var got struct {
+		Files            []coordinator.ChangesetFile `json:"files"`
+		IgnoredFileCount int                         `json:"ignored_file_count"`
+		ChangesetID      string                      `json:"changeset_id"`
+	}
+	if err := json.Unmarshal([]byte(summary.content), &got); err != nil {
+		t.Fatalf("summary is not JSON a reader can parse: %v\n%s", err, summary.content)
+	}
+	if got.IgnoredFileCount != 2 {
+		t.Fatalf("summary ignored_file_count = %d, want 2 — the count did not reach the reader", got.IgnoredFileCount)
+	}
+	// The two facts a screen has to tell apart: the changed set really is empty, AND two ignored files
+	// were written. Either alone is one of the two lies.
+	if len(got.Files) != 0 {
+		t.Fatalf("summary files = %+v, want none — ignored output must not be listed as a change", got.Files)
+	}
+	if got.ChangesetID != rec.ID {
+		t.Fatalf("summary changeset_id = %q, want %q", got.ChangesetID, rec.ID)
+	}
+}
+
+// TestChangesetSummaryIsWrittenEvenWhenNothingChanged is the other half of the same claim, and the
+// reason the summary is not written conditionally: a reader must be able to distinguish "this run
+// changed nothing" from "no changeset exists for this run". An artifact that appears only when there
+// is something to say leaves those two as one absent file.
+func TestChangesetSummaryIsWrittenEvenWhenNothingChanged(t *testing.T) {
+	requireGit(t)
+	root, base := newAllocRepo(t)
+	aw := &fakeArtifactWriter{}
+	_, compiled, err := CompileChangeset(context.Background(), &fakeChangesetLedger{base: base, baseOK: true}, aw,
+		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+	if err != nil || !compiled {
+		t.Fatalf("CompileChangeset() = compiled %v err %v", compiled, err)
+	}
+	for _, w := range aw.writes {
+		if w.logicalType == changesetSummaryType {
+			return
+		}
+	}
+	t.Fatalf("a run that changed nothing wrote no %q artifact, so a reader cannot tell it apart from a run with no changeset at all (written: %+v)", changesetSummaryType, aw.writes)
+}
+
 // TestTwoRunsOnTheSameBaseCompileToDistinctChangesetIDs is a SECOND defect, found while measuring the
 // first and made near-certain by it. The changeset id is content-addressed so an E10 replay
 // re-compiles to the same id and the primary key dedupes it — but the hash covered only

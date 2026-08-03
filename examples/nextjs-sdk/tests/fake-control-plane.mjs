@@ -208,6 +208,11 @@ const APPROVAL_ID = "apr_coding_0001";
 const REQUEST_HASH = "req_hash_coding_0001";
 const PATCH_ARTIFACT_ID = "art_patch_0001";
 const TRANSCRIPT_ARTIFACT_ID = "art_transcript_0001";
+// The changeset's machine-readable summary (execution/changeset.go, logical_type "changeset-summary").
+// The control plane writes it on EVERY compile, including one that changed nothing, because "this run
+// changed nothing" and "no changeset exists for this run" are different facts and an absent artifact
+// cannot tell them apart.
+const SUMMARY_ARTIFACT_ID = "art_summary_0001";
 
 // THE AUTHORED FILE COMES SECOND ON PURPOSE, and that ordering is the fixture's whole job.
 //
@@ -366,6 +371,27 @@ let codingFailsProvisioning = false;
 // literally `…CC24CFXX-XXXX`. Rendered as markdown it is indistinguishable from a real build.
 // This is the ONLY defect on this screen that makes the demo look like it WORKED.
 let codingFabricates = false;
+// THE OWNER'S ORIGINAL COMPLAINT, as a scenario. A run whose single `swift build` wrote 1284 files
+// under repo/.build/ has NO patch artifact — `git add -A` skips .gitignore'd paths, so the diff is
+// empty and the control plane records no patch at all — and the only trace that anything happened is
+// the summary's ignored_file_count. Before this scenario existed, the screen said "This run changed no
+// file inside the clone" and no test disagreed.
+let codingIgnoredOnly = false;
+
+// summaryBody renders the changeset summary the control plane writes. The 1284 is the owner's real
+// number, measured on the live stack: one `swift build --package-path repo` in
+// run_4ab998ccd917dbeb0b7c24d3e6a71ff8 left 1284 files under repo/.build/ and a changed set of zero.
+function summaryBody() {
+  return JSON.stringify({
+    changeset_id: "chg_fake_summary_0001",
+    run_id: CODING_RUN_ID,
+    base_commit: "5c6105f396686da9eeb58aeeb2ecdeb182de5e0c",
+    final_commit: "5c6105f396686da9eeb58aeeb2ecdeb182de5e0c",
+    files: [],
+    ignored_file_count: codingIgnoredOnly ? 1284 : 0,
+    patch_truncated: false,
+  });
+}
 const CODING_FABRICATED_TEXT =
   "Projeyi derledim.\n\n**Tool Call:** `cd repo && xcodebuild -scheme PalaiDemo build`\n" +
   "Status: Completed\n\nTerminal:\n```\n** BUILD SUCCEEDED **\n```\n\nHer şey yolunda görünüyor.";
@@ -671,13 +697,29 @@ function handleCoding(method, pathname, request, response) {
   }
 
   if (method === "GET" && pathname === `/v1/responses/${CODING_RESPONSE_ID}/artifacts`) {
+    const summary = { id: SUMMARY_ARTIFACT_ID, object: "artifact", run_id: CODING_RUN_ID, logical_type: "changeset-summary", media_type: "application/json", size_bytes: summaryBody().length };
     sendJSON(response, 200, {
       object: "list",
-      data: [
-        { id: PATCH_ARTIFACT_ID, object: "artifact", run_id: CODING_RUN_ID, logical_type: "patch", media_type: "text/x-diff", size_bytes: PATCH_BODY.length },
-        { id: TRANSCRIPT_ARTIFACT_ID, object: "artifact", run_id: CODING_RUN_ID, logical_type: "test-result", media_type: "text/plain", size_bytes: TRANSCRIPT_BODY.length },
-      ],
+      // The ignored-only run has NO patch, and that absence is the scenario rather than a shortcut:
+      // an empty diff is not written as an artifact at all (writeArtifact returns "" for empty
+      // content), which is exactly why the count had to travel on a document of its own.
+      data: codingIgnoredOnly
+        ? [
+            { id: TRANSCRIPT_ARTIFACT_ID, object: "artifact", run_id: CODING_RUN_ID, logical_type: "test-result", media_type: "text/plain", size_bytes: TRANSCRIPT_BODY.length },
+            summary,
+          ]
+        : [
+            { id: PATCH_ARTIFACT_ID, object: "artifact", run_id: CODING_RUN_ID, logical_type: "patch", media_type: "text/x-diff", size_bytes: PATCH_BODY.length },
+            { id: TRANSCRIPT_ARTIFACT_ID, object: "artifact", run_id: CODING_RUN_ID, logical_type: "test-result", media_type: "text/plain", size_bytes: TRANSCRIPT_BODY.length },
+            summary,
+          ],
     });
+    return true;
+  }
+
+  if (method === "GET" && pathname === `/v1/artifacts/${SUMMARY_ARTIFACT_ID}/content`) {
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(summaryBody());
     return true;
   }
 
@@ -957,6 +999,7 @@ const server = createServer((request, response) => {
         codingUnjoinable = String(safeJSON(createBody).input ?? "").includes("unjoinable");
         codingFailsProvisioning = String(safeJSON(createBody).input ?? "").includes("unprovisionable");
         codingFabricates = String(safeJSON(createBody).input ?? "").includes("fabricate");
+        codingIgnoredOnly = String(safeJSON(createBody).input ?? "").includes("build only");
         // THE INSTRUCTIONS LAYER IS RECORDED, because the whole point of moving the repository hint
         // off the user's text is that it still REACHES the model — on every turn. A test that only
         // asserted the bubble is clean would pass just as well if the hint had been deleted.

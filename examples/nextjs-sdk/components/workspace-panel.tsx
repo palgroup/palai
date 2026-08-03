@@ -64,7 +64,36 @@ interface WorkspaceView {
   files: ChangedFile[];
   patch: string;
   artifacts: { id: string; logicalType: string | null; mediaType: string | null; sizeBytes: number | null }[];
+  // How many .gitignore'd files the run wrote that the changeset deliberately did not list, and
+  // whether a changeset was compiled at all. null is NOT zero: it means nothing measured this run.
+  ignoredFileCount: number | null;
+  changesetCompiled: boolean;
   notes: { transcriptLogicalType: string | null; settledOnly: boolean };
+}
+
+// emptyTreeSentence is the three-way answer to "what did this run do to the clone", and it exists
+// because for a long time there was only one sentence for three different facts.
+//
+// MEASURED, and it is the complaint that started the work: a run whose single `swift build` wrote 1284
+// files under repo/.build/ was told "This run changed no file inside the clone." Those files are real
+// and the run really wrote them; they are simply not part of the repository, because the repository's
+// own .gitignore says so.
+//
+// AND THE OPPOSITE SENTENCE WOULD BE A NEW LIE. "1284 files changed" about paths that are not in the
+// tree and never will be is wrong in the other direction, and worse, because it reads like work. So
+// the count is never shown without saying what those files are: written, ignored, not part of the
+// repository.
+function emptyTreeSentence(ignoredFileCount: number | null, changesetCompiled: boolean): string {
+  if (!changesetCompiled) {
+    // No summary artifact travelled, so nothing measured this run's clone. Saying "changed nothing"
+    // here would be asserting a measurement that was never taken.
+    return "No changeset was compiled for this run, so what it did to the clone was never recorded.";
+  }
+  if (ignoredFileCount !== null && ignoredFileCount > 0) {
+    const files = ignoredFileCount === 1 ? "file" : "files";
+    return `This run changed no file tracked by the repository. It did write ${ignoredFileCount} ${files} the repository ignores — build output, excluded by its own .gitignore and never part of a commit.`;
+  }
+  return "This run changed no file inside the clone.";
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -190,7 +219,7 @@ export function WorkspacePanel({
                 ? "Nothing yet."
                 : running
                   ? "The diff is written when the run settles."
-                  : "This run changed no file inside the clone."}
+                  : emptyTreeSentence(view?.ignoredFileCount ?? null, view?.changesetCompiled ?? false)}
               <br />
               <span className="text-muted-foreground/80">
                 This tree lists only what the run changed. Palai exposes no route that enumerates a
