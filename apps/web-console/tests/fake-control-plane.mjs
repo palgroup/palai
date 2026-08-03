@@ -2272,6 +2272,63 @@ export const ROUTES = [
         sendJSON(response, 201, row);
       }),
   },
+  {
+    method: "GET",
+    pattern: "/v1/bots/{bot_id}",
+    handle: (_request, response, { bot_id: id }) => {
+      const found = ADMIN.bots.data.find((r) => r.id === id);
+      // SYNTHESISED FOR AN UNKNOWN ID, like the repository-binding and environment detail routes and for the
+      // same reason: the conformance sweep probes every declared pattern with a placeholder id, and a 404
+      // there would read as "the table declares a route the fixture does not serve". The real route 404s.
+      sendJSON(response, 200, found ?? { id, object: "bot", name: id, kind: "slack", agent_revision_id: "", repository_binding_id: "", principal_id: "", config: {}, disabled: false, created_at: "2026-07-24T00:00:00Z" });
+    },
+  },
+  {
+    method: "PATCH",
+    pattern: "/v1/bots/{bot_id}",
+    // A REVISION, AND `config` IS AN ASSIGNMENT RATHER THAN A MERGE — which is the fidelity that matters here
+    // and the reason this arm is written out rather than shallow-merged. storage/queries/bots.sql's UpdateBot
+    // is `config = COALESCE($8, config)`: a document that is PRESENT replaces the stored one whole, so a
+    // console that sent only the handles it had just sealed would delete every other key in the row. A
+    // fixture that merged would make app/bots/[id] pass while doing exactly that.
+    //
+    // It accepts a raw token inside `config` for the same reason the create route does: the control plane
+    // never decodes the document, so the console's seal-then-name flow is the only boundary — and a fixture
+    // stricter than production would make the assertion that no credential is sent pass for the wrong reason.
+    handle: (request, response, { bot_id: id }) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        // DisallowUnknownFields, as botPatchBody declares it — and `kind` is deliberately NOT among them.
+        const known = ["name", "agent_revision_id", "repository_binding_id", "principal_id", "config", "disabled"];
+        const unknown = Object.keys(body).find((key) => !known.includes(key));
+        if (unknown !== undefined) {
+          return sendProblem(response, 400, "invalid_request",
+            "a revision accepts only name, agent_revision_id, repository_binding_id, principal_id, config and disabled — kind is immutable");
+        }
+        if (body.name === "") return sendProblem(response, 400, "invalid_request", "name cannot be cleared");
+        const found = ADMIN.bots.data.find((r) => r.id === id);
+        if (found === undefined) return sendProblem(response, 404, "not_found", "no such bot in this project");
+        for (const field of ["name", "agent_revision_id", "repository_binding_id", "principal_id", "disabled"]) {
+          if (body[field] !== undefined && body[field] !== null) found[field] = body[field];
+        }
+        if (body.config !== undefined && body.config !== null) found.config = body.config;
+        sendJSON(response, 200, found);
+      }),
+  },
+  {
+    method: "DELETE",
+    pattern: "/v1/bots/{bot_id}",
+    // A HARD DELETE AND A 204, matching api/bots.go: nothing in the tenant's schema holds a foreign key onto
+    // integration_bots, so there is no receipt a delete could falsify. A no-op is a 404 rather than a 204 —
+    // unregistering a typo'd id must not read as success.
+    handle: (_request, response, { bot_id: id }) => {
+      const at = ADMIN.bots.data.findIndex((r) => r.id === id);
+      if (at === -1) return sendProblem(response, 404, "not_found", "no such bot in this project");
+      ADMIN.bots.data.splice(at, 1);
+      response.writeHead(204, { "cache-control": "no-store" });
+      response.end();
+    },
+  },
 
   // --- THE SLACK WORKSPACE REGISTRATION (panel-credentials). ---
   //

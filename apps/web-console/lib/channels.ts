@@ -27,6 +27,8 @@
 // between an operator's token and a durable row, and tests/bots.spec.ts asserts it on the wire rather
 // than trusting it.
 
+import { buildManifest, type ManifestDraft, type ManifestInput, type ManifestPrompt, MANIFEST_LIMITS, SLACK_MANIFEST_DEFAULTS } from "@/lib/botManifest";
+
 /** A plain text field of a channel's `config` document. */
 export interface ChannelField {
   /** The key this value is stored under in `config`. */
@@ -65,6 +67,62 @@ export interface ChannelForm {
   secrets: ChannelSecret[];
 }
 
+/**
+ * One value the operator fills in before the manifest is generated — the channel's OWN vocabulary.
+ *
+ * A manifest is a platform concept and so is every word in it ("agent panel", "bot user"), which is why
+ * these are declared here beside the credential slots rather than written into the page. The page renders
+ * what the row declares and hands the values straight back to `build`.
+ */
+export interface ManifestField {
+  /** The key `build` receives this value under. */
+  name: string;
+  label: string;
+  hint: string;
+  testId: string;
+  /** A long value gets a textarea; the default is a single-line box. */
+  multiline?: boolean;
+  /** The platform's published cap, in characters. Shown as a live count so the refusal is never a surprise. */
+  limit: number;
+  /** This field starts as the BOT'S OWN NAME — the operator named the bot once and should not name it twice. */
+  fromBotName?: boolean;
+  /** What it starts as when it is not the bot's name. */
+  initial?: string;
+}
+
+/** A repeated pair of values the manifest carries a list of. Declared only by a channel that has one. */
+export interface ManifestPromptGroup {
+  label: string;
+  note: string;
+  addLabel: string;
+  titleLabel: string;
+  messageLabel: string;
+  initial: readonly ManifestPrompt[];
+}
+
+/**
+ * THE DOCUMENT AN OPERATOR CARRIES TO THE CHANNEL, and it is optional for a reason that is not tidiness.
+ *
+ * Slack asks for a manifest; another platform may ask for nothing but a token, or for a webhook URL it
+ * gives you rather than one you give it. A disabled row has none of this at all — inventing a manifest for
+ * an adapter nobody has written would be a form whose output is a document that configures nothing, which
+ * is the same mistake as inventing credential fields for it.
+ */
+export interface ChannelManifest {
+  /** What the platform calls it. Rendered as the section's name. */
+  label: string;
+  /** One sentence: what pasting it decides. */
+  lead: string;
+  /** The click path, in the platform's own words, so the operator does not need a second tab to find it. */
+  where: string;
+  /** Where they go. A constant of this file — never a value an operator or an API supplied. */
+  href: string;
+  fields: readonly ManifestField[];
+  prompts?: ManifestPromptGroup;
+  /** Renders the document, or refuses and says why. See lib/botManifest.ts for why it never truncates. */
+  build: (values: Record<string, string>, prompts: readonly ManifestPrompt[]) => ManifestDraft;
+}
+
 export interface Channel {
   /** The registry's `kind`, verbatim. The control plane never interprets it. */
   id: string;
@@ -75,6 +133,8 @@ export interface Channel {
   note?: string;
   /** Present exactly when `enabled` — an enabled channel that asks for nothing could not be configured. */
   form?: ChannelForm;
+  /** Present only on an enabled channel whose platform is configured by a pasted document. */
+  manifest?: ChannelManifest;
 }
 
 /**
@@ -141,6 +201,57 @@ const SLACK: Channel = {
         hint: "App → Basic Information → App-Level Tokens (xapp-…), with connections:write. It is Socket Mode's ONLY authentication; without it the relay's connect loop stays dormant and an @mention never arrives.",
       },
     ],
+  },
+  // THE MANIFEST STEP. It comes BEFORE the credentials above and not after, because the tokens do not exist
+  // until the app does: an operator generates this, creates the app from it, and only then has a signing
+  // secret to bring back. lib/botManifest.ts holds the document and the argument for every fixed line in it.
+  manifest: {
+    label: "App manifest",
+    lead: "Slack builds the app from this document, and it is what decides which events the workspace will deliver and which scopes the app will hold.",
+    where: "Create New App → From a manifest → pick the workspace → YAML",
+    href: "https://api.slack.com/apps",
+    fields: [
+      {
+        name: "name",
+        label: "App name",
+        testId: "manifest-name-input",
+        limit: MANIFEST_LIMITS.name,
+        fromBotName: true,
+        hint: "What the workspace lists the app under. It starts as this bot's name; nothing joins the two afterwards, so renaming the bot here does not rename the app in Slack.",
+      },
+      {
+        name: "displayName",
+        label: "Bot display name",
+        testId: "manifest-display-name-input",
+        limit: MANIFEST_LIMITS.displayName,
+        fromBotName: true,
+        hint: "What the bot is called when it speaks in a channel. Slack's reference names an allowed character set (a-z, 0-9, - _ .) that the manifest this deployment already runs on does not obey, so it is not enforced here — only the length is.",
+      },
+      {
+        name: "description",
+        label: "Agent panel description",
+        testId: "manifest-description-input",
+        limit: MANIFEST_LIMITS.description,
+        multiline: true,
+        initial: SLACK_MANIFEST_DEFAULTS.description,
+        hint: "The first thing a person reads when they open the agent panel. Slack REQUIRES it whenever a panel is declared and refuses the whole manifest without it.",
+      },
+    ],
+    prompts: {
+      label: "Suggested prompts",
+      note: "Buttons Slack renders in the empty panel. They are static — part of this document, no API call and no runtime — and they are optional.",
+      addLabel: "Add a prompt",
+      titleLabel: "Button",
+      messageLabel: "Sends",
+      initial: SLACK_MANIFEST_DEFAULTS.prompts,
+    },
+    build: (values, prompts) =>
+      buildManifest({
+        name: values.name ?? "",
+        displayName: values.displayName ?? "",
+        description: values.description ?? "",
+        prompts: prompts.map((p) => ({ title: p.title, message: p.message })),
+      } satisfies ManifestInput),
   },
 };
 

@@ -1,3 +1,5 @@
+import { CHANNELS } from "@/lib/channels";
+
 // THE ROUTE TABLE — the ONE source of the console's navigation and of its accessibility sweep (E25 T2).
 //
 // It exists because of a measured hole (plan §3.6 D17): Playwright collects a new `*.spec.ts` automatically
@@ -303,5 +305,22 @@ export const DYNAMIC_CONSOLE_ROUTES: readonly DynamicConsoleRoute[] = [
       clone_url: "https://example.invalid/palai-example/axe-coverage-probe.git",
     },
     build: (id) => `/repositories/${encodeURIComponent(id)}`,
+  },
+  // THE BOT'S OWN PAGE (2026-08-03 plan, Task 12). It is a resource screen because the manifest it generates
+  // is about ONE bot — the app's name starts as that bot's name — and because the credentials it takes are
+  // written back to that row. /bots creates; this is where a bot is made real.
+  //
+  // `create` carries the two fields POST /v1/bots requires (api/bots.go: "name and kind are required"), and
+  // the kind is READ OFF lib/channels.ts rather than typed here — both because that file is the console's
+  // only place a channel is named, and because a probe row of a kind this console offers no form for would
+  // resolve a path whose manifest and credential sections do not render at all: the scan would then cover the
+  // page's empty half and report a clean bill of health for the rest of it.
+  {
+    pattern: "/bots/[id]",
+    label: "Bot",
+    readyTestId: "panel-bot-record",
+    sampleFrom: "/bots",
+    create: { name: "axe-coverage-probe", kind: CHANNELS.find((c) => c.enabled)?.id ?? "" },
+    build: (id) => `/bots/${encodeURIComponent(id)}`,
   },
 ];

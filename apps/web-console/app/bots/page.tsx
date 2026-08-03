@@ -277,9 +277,14 @@ export default function BotsPage() {
     {
       header: "Bot",
       sort: (r) => String(r.name ?? ""),
+      // THE NAME IS THE WAY IN (Task 12). A bot's row is where an operator starts, and what they came for —
+      // the manifest to paste into the channel, and the boxes its tokens come back into — is on the bot's own
+      // page. A list that could only create would leave the whole second half of the job with no door.
       render: (r) => (
         <span className="cell-id-group">
-          <NameCell name={String(r.name ?? "")} id={shortId(String(r.id ?? ""))} />
+          <a className="cell-name-link" href={`/bots/${encodeURIComponent(String(r.id ?? ""))}`} data-testid="bot-link">
+            <NameCell name={String(r.name ?? "")} id={shortId(String(r.id ?? ""))} />
+          </a>
           <CopyButton value={String(r.id ?? "")} label="bot ID" testId="bot-copy-id" />
         </span>
       ),

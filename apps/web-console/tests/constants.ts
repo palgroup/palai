@@ -179,6 +179,18 @@ export const FORM_DIALOGS: { route: string; open: string; dialog: string; label:
     dialog: "binding-archive-dialog",
     label: "Archive this binding",
   },
+  // A BOT'S CREDENTIALS (Task 12), the second half of the manifest wizard: the operator comes back from the
+  // channel with three tokens. It is the largest block of secret-bearing controls on a dynamic route, and it
+  // is behind a dialog for a reason tests/auth.spec.ts measured — a form SERVED on a path that sweep cannot
+  // fetch is a form whose method="post" nothing checks. The opener exists on any bot whose channel this
+  // console has a form for, which is what `create` in lib/routes.ts guarantees the resolved row is.
+  {
+    route: "/bots/[id]",
+    dynamic: "/bots/[id]",
+    open: "bot-credentials-open",
+    dialog: "bot-credentials-dialog",
+    label: "Set this bot's credentials",
+  },
 ];
 
 /**
