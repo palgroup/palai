@@ -124,10 +124,12 @@ export const FORM_DIALOGS: { route: string; open: string; dialog: string; label:
   // runs actually use. Its picker and model field do not exist until the dialog is open, which is exactly
   // the shape that walked out of the contrast sweep once already.
   { route: "/registry", open: "route-publish-open", dialog: "route-publish-dialog", label: "Point runs at a connection" },
-  // The Slack workspace registration (panel-credentials). Three credential fields that do not exist in the
-  // DOM until the dialog is open — the largest single block of secret-bearing controls this console has, and
-  // therefore the one most worth scanning OPEN rather than at rest.
-  { route: "/integrations", open: "slack-connect-open", dialog: "slack-connect-dialog", label: "Connect a Slack workspace" },
+  // The bot registration (panel-bots). Three credential fields that do not exist in the DOM until the dialog
+  // is open — the largest single block of secret-bearing controls this console has, and therefore the one
+  // most worth scanning OPEN rather than at rest. They belong to the CHOSEN channel, which is why
+  // app/bots/page.tsx opens the dialog on one rather than on a blank selector: on a blank one they would not
+  // be rendered at all and both sweeps would cover less while reporting a cleaner number.
+  { route: "/bots", open: "bot-create-open", dialog: "bot-create-dialog", label: "Create a bot" },
   // THE TWO ROW-MENU DIALOGS (machine-config), AND `rowMenu` IS WHAT MAKES THEM DECLARABLE AT ALL.
   //
   // Every row above names a control that is VISIBLE when its route loads — a panel head's `+ Create X`. A

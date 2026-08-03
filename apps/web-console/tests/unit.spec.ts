@@ -13,6 +13,7 @@ import {
   positionOf,
   relativeTime,
 } from "../lib/sessions";
+import { CHANNELS } from "../lib/channels";
 import { WARNING_SCREENS, warningsFor } from "../lib/deployment";
 import { CONSOLE_ROUTES } from "../lib/routes";
 import { laneFor } from "../lib/timeline";
@@ -263,4 +264,43 @@ test("warningsFor gives a screen only the warnings that screen is responsible fo
   // /history shows a dispatch-off run as `queued`, which is the truth — the screen reports a state rather
   // than promising a result, so it carries no banner.
   expect(warningsFor("/history", [dispatch, unknown])).toEqual([]);
+});
+
+// THE CHANNEL TABLE IS THE ONE PLACE A `kind` COMES FROM, AND THREE OF ITS INVARIANTS ARE LOAD-BEARING
+// (2026-08-03 plan, Task 11).
+//
+// lib/channels.ts is what keeps `kind === "slack"` out of app/bots/page.tsx: the screen renders whatever
+// the chosen row declares, so adding WhatsApp is a row there and nothing else. That only holds while the
+// rows are well formed, and each of these three would break something QUIETLY rather than loudly:
+//
+//   handleKey must name a REQUIRED field — the sealed secret's name is `${prefix}${that value}`, so an
+//   empty one would seal every bot's credentials under the same handle and one bot would silently rotate
+//   another's token. This is the invariant ChannelForm's own doc states, asserted instead of trusted.
+//
+//   an ENABLED channel must have a form — a channel offered with nothing to fill in is a bot that can be
+//   created and can never connect.
+//
+//   a DISABLED channel must carry a note and no form — the roadmap rows are shown to an operator, and a
+//   row that says only "WhatsApp" beside a control that refuses it reads as a bug rather than as a plan.
+test("every channel row can actually be filled in, and every roadmap row says why it cannot", () => {
+  expect(CHANNELS.length, "an empty channel table means no bot can be created at all").toBeGreaterThan(0);
+  expect(new Set(CHANNELS.map((c) => c.id)).size, "two channels share an id, so one shadows the other").toBe(CHANNELS.length);
+  expect(CHANNELS.some((c) => c.enabled), "no channel is connectable, so the create dialog offers nothing").toBe(true);
+
+  for (const channel of CHANNELS) {
+    if (!channel.enabled) {
+      expect(channel.form, `${channel.id} is a roadmap row and declares a form nothing can submit`).toBe(undefined);
+      expect(channel.note ?? "", `${channel.id} is offered as disabled with no reason beside it`).not.toBe("");
+      continue;
+    }
+    const form = channel.form;
+    expect(form, `${channel.id} is enabled and asks for nothing, so a bot of that kind can never connect`).not.toBe(undefined);
+    if (form === undefined) continue;
+    const key = form.fields.find((f) => f.name === form.handleKey);
+    expect(key, `${channel.id}'s handleKey "${form.handleKey}" names no field of its own form`).not.toBe(undefined);
+    expect(key?.required, `${channel.id} names its handles after an OPTIONAL field — an empty one would seal every bot's credentials under the same name`).toBe(true);
+    // A slot whose handle key collides with another's is the same failure one line further down.
+    expect(new Set(form.secrets.map((s) => s.prefix)).size, `${channel.id} has two credential slots sharing a prefix`).toBe(form.secrets.length);
+    expect(new Set(form.secrets.map((s) => s.field)).size, `${channel.id} has two credential slots writing one config key`).toBe(form.secrets.length);
+  }
 });

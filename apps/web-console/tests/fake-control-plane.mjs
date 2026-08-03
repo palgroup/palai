@@ -193,6 +193,8 @@ let routeRevisionSeq = 0;
 const ROUTE_REVISIONS = [];
 // The Slack workspace registration sequence (panel-credentials).
 let slackSeq = 0;
+// The bot registration sequence (panel-bots).
+let botSeq = 0;
 
 // --- THE AGENT LINEAGE (E25 T6) --------------------------------------------------------------------------
 //
@@ -205,12 +207,26 @@ let slackSeq = 0;
 // field is a `status` STRING of "draft"/"published". Nothing caught it because the sweep's item arm probes
 // /v1/agents/{agent_id}/revisions with a placeholder id, which on a real stack is an unknown profile and
 // answers an EMPTY page. T6's seed substitutes a REAL agent id there, so this shape is now compared.
+//
+// agt_02 EXISTS SO THAT "PUBLISHED" AND "NEWEST" ARE DISTINGUISHABLE, and it was added because they were
+// not (2026-08-03, Task 11). agt_01's lineage has the published revision AT THE HEAD, so a console that
+// pinned `newest` and a console that pinned `published` send the same id and every assertion about the
+// rule passes either way — a test that cannot fail for the reason it names. Here the newest revision is a
+// DRAFT: pinning it would create a bot that is refused at admission on its first message, which is exactly
+// what app/bots resolves against, and tests/bots.spec.ts asserts the OLDER, published id comes back.
 const revisions = new Map([
   [
     "agt_01",
     [
       { id: "agrev_2", revision_number: 2, model: "fake", tools: ["add", "push"], instructions: "", environment: "", status: "published" },
       { id: "agrev_1", revision_number: 1, model: "fake", tools: ["add"], instructions: "", environment: "", status: "draft" },
+    ],
+  ],
+  [
+    "agt_02",
+    [
+      { id: "agrev_4", revision_number: 4, model: "fake", tools: ["add"], instructions: "", environment: "", status: "draft" },
+      { id: "agrev_3", revision_number: 3, model: "fake", tools: ["add"], instructions: "", environment: "", status: "published" },
     ],
   ],
 ]);
@@ -838,6 +854,31 @@ const ADMIN = {
   // path on which "the credentials survived and here is what they are called" has to be said.
   "slack-connections": listView([
     { id: "slkc_1", object: "slack_connection", team_id: "T-FIXTURE-BOUND", enterprise_id: "", bot_user_id: "U-FIXTURE-BOT", disabled: false, created_at: "2026-07-24T00:00:00Z" },
+  ]),
+  // THE BOT REGISTRY (2026-08-03 plan, Task 4). One row, and every field of it is the REAL projection —
+  // measured against the live stack rather than copied from the struct:
+  //
+  //   GET /v1/bots -> {"id":"bot_7bc…","object":"bot","name":"ios-bot","kind":"slack",
+  //                    "agent_revision_id":"","repository_binding_id":"","principal_id":"",
+  //                    "config":{…},"disabled":false,"created_at":"…"}
+  //
+  // The three ids are EMPTY STRINGS rather than absent, because migration 000061 defaults them to '' rather
+  // than making them nullable — a fixture that omitted them would let a console ship that renders `undefined`
+  // for the state a fresh bot is actually in. `disabled: true` is not seeded: the row a spec needs is one a
+  // relay would start against, and the disabled arm is reachable by PATCH when a screen writes one.
+  bots: listView([
+    {
+      id: "bot_fixture_0001",
+      object: "bot",
+      name: "fixture-bot",
+      kind: "slack",
+      agent_revision_id: "",
+      repository_binding_id: "",
+      principal_id: "",
+      config: { team_id: "T-FIXTURE-BOUND", signing_secret_ref: "slack-signing-T-FIXTURE-BOUND" },
+      disabled: false,
+      created_at: "2026-07-24T00:00:00Z",
+    },
   ]),
   // The knowledge-base row carries the field names the REAL projection carries — `name`, not `display_name`,
   // plus `created_at` (knowledge/views.go knowledgeBaseView; embedding_route and active_index_revision_id are
@@ -2167,6 +2208,70 @@ export const ROUTES = [
   },
 
   { method: "GET", pattern: "/v1/secret-refs", handle: adminList("secret-refs") },
+
+  // --- THE BOT REGISTRY (2026-08-03 plan, Task 4 / Task 11). ---
+  //
+  // IT MIRRORS apps/control-plane/api/bots.go REFUSAL FOR REFUSAL, INCLUDING THE ONE IT DOES NOT MAKE, and
+  // that omission is the most important line in this block. The Slack handler above refuses an inline
+  // credential by NAME, because slackRegistrationBody declares no field for one and DisallowUnknownFields
+  // turns it into a 400. `config` is a `json.RawMessage` the control plane never decodes, so POST /v1/bots
+  // ACCEPTS a raw token inside it — happily, and by design, since that opacity is what lets a new channel
+  // arrive without a control-plane change.
+  //
+  // A fixture that refused one anyway would be STRICTER than production, and the cost of that is exact:
+  // tests/bots.spec.ts's "the registration carried no credential" sweep would pass because the fake would
+  // have rejected the request, not because the console never sent one. The console's seal-then-name flow is
+  // the only boundary left on this surface, so the fixture must be willing to store a token in order for
+  // the assertion that none is sent to mean anything.
+  { method: "GET", pattern: "/v1/bots", handle: adminList("bots") },
+  {
+    method: "POST",
+    pattern: "/v1/bots",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        // DisallowUnknownFields, as botCreateBody declares it: name, kind, agent_revision_id,
+        // repository_binding_id, principal_id, config — and nothing else at the top level.
+        const known = ["name", "kind", "agent_revision_id", "repository_binding_id", "principal_id", "config"];
+        const unknown = Object.keys(body).find((key) => !known.includes(key));
+        if (unknown !== undefined) {
+          return sendProblem(
+            response,
+            400,
+            "invalid_request",
+            "the body accepts only name, kind, agent_revision_id, repository_binding_id, principal_id and config",
+          );
+        }
+        const name = typeof body.name === "string" ? body.name : "";
+        const kind = typeof body.kind === "string" ? body.kind : "";
+        if (name === "" || kind === "") return sendProblem(response, 400, "invalid_request", "name and kind are required");
+        // MIGRATION 000061's UNIQUE (organization_id, project_id, name), surfaced as ErrBotNameTaken's 409
+        // rather than as a 500. It is the refusal an operator meets AFTER the seals have already succeeded,
+        // which is the only path on which "the credentials survived and here is what they are called" has to
+        // be said — the retry arm tests/bots.spec.ts drives.
+        if (ADMIN.bots.data.some((r) => r.name === name)) {
+          return sendProblem(response, 409, "conflict", "a bot with that name already exists in this project");
+        }
+        botSeq += 1;
+        const row = {
+          id: `bot_console_${String(botSeq).padStart(4, "0")}`,
+          object: "bot",
+          name,
+          kind,
+          agent_revision_id: typeof body.agent_revision_id === "string" ? body.agent_revision_id : "",
+          repository_binding_id: typeof body.repository_binding_id === "string" ? body.repository_binding_id : "",
+          principal_id: typeof body.principal_id === "string" ? body.principal_id : "",
+          // STORED VERBATIM, key order and all. The column is `json` rather than `jsonb` precisely so the
+          // caller's document comes back as it went in (migration 000061 measured the reshape), and a
+          // fixture that normalised it would hide a console that depends on the reshape.
+          config: body.config === undefined || body.config === null ? {} : body.config,
+          disabled: false,
+          created_at: new Date().toISOString(),
+        };
+        ADMIN.bots.data.unshift(row);
+        sendJSON(response, 201, row);
+      }),
+  },
 
   // --- THE SLACK WORKSPACE REGISTRATION (panel-credentials). ---
   //

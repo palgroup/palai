@@ -52,6 +52,18 @@ import type { SVGProps } from "react";
 export interface SelectOption {
   value: string;
   label: string;
+  /**
+   * A row that is SHOWN AND NOT SELECTABLE — a roadmap, not a hidden thing.
+   *
+   * Its one caller is /bots' channel list, where WhatsApp and Telegram are real rows with no adapter
+   * written yet (lib/channels.ts). Hiding them would leave an operator to ask whether they exist; a
+   * free-text box would let one be typed and fail several steps later about something else.
+   *
+   * Base UI renders a disabled Item as `aria-disabled` rather than with a `disabled` attribute — it is a
+   * `<div role="option">`, and useFocusableWhenDisabled applies the attribute only to native buttons — so
+   * the state is exposed to a screen reader and to Playwright's toBeDisabled(), which reads both.
+   */
+  disabled?: boolean;
 }
 
 export function Select({
@@ -112,7 +124,13 @@ export function Select({
         <BaseSelect.Positioner className="ui-select-positioner" sideOffset={4} alignItemWithTrigger={false}>
           <BaseSelect.Popup className="ui-select-popup">
             {options.map((option) => (
-              <BaseSelect.Item key={option.value} value={option.value} className="ui-select-item" data-value={option.value}>
+              <BaseSelect.Item
+                key={option.value}
+                value={option.value}
+                disabled={option.disabled}
+                className="ui-select-item"
+                data-value={option.value}
+              >
                 {/* THE INDICATOR IS A GLYPH, NOT A COLOUR — the rule components/Status.tsx already follows.
                     `[data-selected]` also carries a background, and that is the redundant third layer rather
                     than the carrier: remove the colour and the check still says which row is chosen. It is

@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 
 import { Field } from "@/components/ui/Field";
-import { Select } from "@/components/ui/Select";
+import { Select, type SelectOption } from "@/components/ui/Select";
 
 // ONE SELECT, ONE RULE (E25 T6).
 //
@@ -23,10 +23,11 @@ import { Select } from "@/components/ui/Select";
 // components/ui/Select.tsx over @base-ui/react, and the label/hint wiring is components/ui/Field.tsx. The
 // options-less rule above, the `${testId}-empty` contract and the `field-<name>` id all survive verbatim;
 // what changes is that the dropdown is drawn by this stylesheet rather than by the operating system.
-export interface PickerOption {
-  value: string;
-  label: string;
-}
+// IT IS THE LISTBOX'S OWN OPTION TYPE RATHER THAN A SECOND COPY OF IT. The two were declared separately and
+// structurally identical, which is exactly how a field added to one silently fails to reach callers of the
+// other: `disabled` (a shown-but-unselectable row, see ui/Select.tsx) is passed straight through to the
+// control, and an alias is what makes that true by construction rather than by both files being edited.
+export type PickerOption = SelectOption;
 
 export function Picker({
   id,
