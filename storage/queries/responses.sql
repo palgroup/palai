@@ -104,7 +104,10 @@ VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8);
 -- ChildRunOutcome reads a finished ChildRun's terminal run state and its response projection,
 -- so the parent can fold the child.result and link the child run. Tenant-scoped by primary key.
 -- name: ChildRunOutcome
-SELECT r.state, resp.output
+-- The child's own response id is returned alongside its outcome because the fold may have to FINALIZE
+-- it: an inline child whose attempt ended mid-flight is settled by foldChildResult, and finalizing the
+-- parent's response (the only one the caller holds) would end the parent on its child's behalf.
+SELECT r.state, resp.output, r.response_id
 FROM runs r
 JOIN responses resp ON resp.id = r.response_id
 WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3;
