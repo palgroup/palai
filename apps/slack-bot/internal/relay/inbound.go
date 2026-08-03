@@ -398,11 +398,14 @@ func (deps InboundDeps) openNewSession(ctx context.Context, tk threadKey) (strin
 //
 // Two events on the SAME orphaned thread can reach this call at once: both read the same oldSessionID,
 // both open a new Palai session here, and both call RebindThread. Only one write lands (won=true); the
-// loser's session is a live one on Palai's side that this call just orphaned itself. The SDK exposes no
-// close-session call (Sessions only has Create/Steer/Events), so the best available recovery is to
-// never bind or use it: re-read the mapping and hand the WINNER's session back to the caller instead —
-// still correct (the thread ends up talking to A session either way), just not the one this particular
-// call minted.
+// loser's session is a live one on Palai's side that this call just orphaned itself. The PLATFORM CAN
+// close it — close_session is a real, accepted command kind (apps/control-plane/api/commands.go:341)
+// — but this SDK does not surface it (Sessions only has Create/Steer/Events; `grep -n
+// 'close_session\|CloseSession' sdks/go/*.go` is empty), and adding it is not this task's scope. So the
+// best THIS CODE can do today is never bind or use the loser's session: re-read the mapping and hand
+// the WINNER's session back to the caller instead — still correct (the thread ends up talking to A
+// session either way), just not the one this particular call minted. The loser's session stays live and
+// unreferenced on Palai's side until Sessions.Close exists to close it.
 func (deps InboundDeps) rebindOrphan(ctx context.Context, tk threadKey, oldSessionID string) (string, error) {
 	sess, err := deps.Palai.CreateSession(ctx, palai.CreateSessionParams{Name: tk.channelID + "/" + tk.threadTS})
 	if err != nil {
