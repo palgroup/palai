@@ -91,6 +91,9 @@ type routerConfig struct {
 	// bots is the kind-agnostic bot registry (migration, 2026-08-03 plan Task 4); nil ⇒ routes
 	// unmounted, the posture every other optional surface takes.
 	bots BotRegistry
+	// botCredentials resolves the secret handles a bot row names; nil ⇒ the redemption route is unmounted,
+	// which is what a deployment with no master key gets.
+	botCredentials BotCredentials
 }
 
 // WithDesiredConfig mounts the desired-configuration write path and gives GET /v1/deployment its desired
@@ -282,4 +285,13 @@ func WithMetrics(h http.Handler) RouterOption {
 // unmounted rather than 500 on a nil seam.
 func WithBots(bots BotRegistry) RouterOption {
 	return func(c *routerConfig) { c.bots = bots }
+}
+
+// WithBotCredentials mounts GET /v1/bots/{bot_id}/credentials, the redemption route a relay process
+// running outside this control plane needs to turn its own row's secret handles into tokens. Separate
+// from WithBots because it needs a master key and the registry does not: a stack with no
+// identity.SecretStore wires this option not at all and the route stays unmounted rather than answering
+// with nothing.
+func WithBotCredentials(credentials BotCredentials) RouterOption {
+	return func(c *routerConfig) { c.botCredentials = credentials }
 }

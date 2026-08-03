@@ -36,6 +36,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
+	"github.com/palgroup/palai/apps/control-plane/internal/botcreds"
 	"github.com/palgroup/palai/apps/control-plane/internal/bots"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	tools "github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
@@ -257,6 +258,14 @@ func main() {
 		// the design: an environment value IS a secret_refs version, so an environment surface without a
 		// master key could list names it can never fill. One `if`, two families, no way to mount half of it.
 		routerOpts = append(routerOpts, api.WithEnvironments(secretStore))
+		// Bot credential redemption (2026-08-03 plan Task 14.5) rides the same condition for the same
+		// reason: it opens sealed values, so with no master key there is nothing to open. It is the ONE
+		// route by which a relay process running outside this binary can turn the handles its own registry
+		// row names into tokens — without it a bot is configurable and unstartable.
+		routerOpts = append(routerOpts, api.WithBotCredentials(botcreds.New(
+			func(ctx context.Context, project string) (string, error) {
+				return storage.OrganizationForProject(ctx, repo.Spine().Pool(), project)
+			}, botStore, secretStore)))
 	}
 	// The DESIRED configuration (E29, migration 000052): what this MACHINE should be running with, written
 	// by the admin panel and applied by the next bring-up.

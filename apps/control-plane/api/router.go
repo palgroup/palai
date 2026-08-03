@@ -383,6 +383,16 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("DELETE /v1/bots/{bot_id}", bh.delete)
 	}
 
+	// Credential redemption sits beside the registry but behind its OWN seam and its own capability, and
+	// the split is not cosmetic: a stack can wire the registry (so a console can create bots) while wiring
+	// no resolver at all, which is what a deployment with no master key has — identity.SecretStore is nil
+	// there and there is nothing to redeem with. See bot_credentials.go for the route's whole argument,
+	// including why it does not gate on `provision`.
+	if cfg.botCredentials != nil {
+		bch := &botCredentialsHandler{credentials: cfg.botCredentials}
+		mux.HandleFunc("GET /v1/bots/{bot_id}/credentials", bch.get)
+	}
+
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}
 	mux.HandleFunc("GET /v1/sessions/{session_id}/events", stream.stream)
 
