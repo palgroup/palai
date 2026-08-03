@@ -1017,6 +1017,14 @@ const RUNNERS = [
     os: "darwin", arch: "arm64", posture: "unsandboxed-host", capacity: 2,
     created_at: "2026-07-25T10:00:00Z", enrolled_at: "2026-07-25T10:00:00Z",
     cert_not_after: "2026-10-25T10:00:00Z", last_seen_at: "2026-07-31T07:55:00Z",
+    // THE ONE MACHINE THAT HAS REPORTED (migration 000060). It is in `pool_mac`, whose seeded document
+    // (DESIRED, below) asks for four concurrent leases at revision 1 — and this says the machine took it.
+    // The pair is what makes the /fleet configuration column readable at all: a report with no document is
+    // a verdict about nothing, and a document with no report is exactly the "saved, and nothing happened"
+    // state the column exists to distinguish from this one.
+    config_revision: 1,
+    config_applied: { PALAI_RUNNER_CONCURRENCY: "applied" },
+    config_reported_at: "2026-08-03T08:08:31Z",
   },
   {
     id: "run_active_01", object: "runner", pool_id: "pool_default", label: "ci-linux-01",
@@ -1346,6 +1354,293 @@ function filterSessions(url) {
 }
 
 let sessionSeq = 0;
+
+// --- THE DEPLOYMENT CATALOGUE AND THE DESIRED DOCUMENTS (machine-config) --------------------------------
+//
+// THE ROWS MOVED OUT OF THE HANDLER SO THE WRITE PATH CAN READ THEM. GET /v1/deployment publishes which
+// settings are `writable` and on which `plane`; PUT /v1/deployment/desired refuses by exactly that
+// allow-list (api/deployment_desired.go's desiredWritable()). Leaving the rows inline in the read handler
+// would have meant a second hand-typed copy of "which settings are writable" for the write handler to
+// check against — two lists that can disagree, in a fixture whose whole job is to answer what the real
+// stack answers.
+//
+// PALAI_RUNNER_CONCURRENCY IS THE ROW THIS SECTION WAS ADDED FOR, and it was missing while the real
+// catalogue carried it:
+//
+//	curl -s .../v1/deployment | jq -r '.settings[] | select(.plane=="runner_pool") | .name'
+//	  PALAI_RUNNER_CONCURRENCY   (writable)
+//	  PALAI_RUNNER_POSTURE       (not writable — no DesiredValue grammar)
+//	  PALAI_RUNNER_POOL          (not writable — no DesiredValue grammar)
+//
+// (api/deployment.go:126-129, measured against the live stack 2026-08-03.) Its absence here made the fake
+// the ONLY deployment on which the runner plane has no writable setting — so a /fleet configuration form
+// built from that flag would have rendered an empty dialog on the fake and a populated one on the real
+// stack, which is the fixture-diverges-from-real trap this file exists to refuse.
+const DEPLOYMENT_SETTINGS = [
+  {
+    name: "PALAI_DISPATCH_WORKERS",
+    group: "execution",
+    value: "1",
+    set: true,
+    default: "1",
+    kind: "value",
+    effect:
+      "How many durable dispatch workers run. ZERO IS NOT 'SLOWER', IT IS OFF: startDispatch returns before it builds anything, so the deployment admits runs through POST /v1/responses and executes none.",
+    mutability: "bring_up",
+    change_with: "recreate the control-plane with the new value (`palai up`)",
+    reader_file: "apps/control-plane/api/deployment.go",
+    reader_func: "DispatchWorkers",
+    // THE DESIRED HALF (E29). These five fields exist on EVERY row the real control plane serves, and
+    // the values below are what a real stack with no saved document answers: writable where the
+    // catalogue says so, and desired_set false everywhere because nothing has been written. A fixture
+    // that omitted `writable` would leave the console's Edit control DISABLED — so the a11y sweep
+    // could not open the dialog, and the panel would be measured in a state the real profile never has.
+    writable: true,
+    value_grammar: "integer",
+    plane: "control_plane",
+    observable: true,
+    desired: "",
+    desired_set: false,
+    drift: false,
+  },
+  {
+    name: "PALAI_MODEL_PROVIDER",
+    group: "model",
+    value: "fake",
+    set: true,
+    default: "fake",
+    kind: "value",
+    effect:
+      "The DEPLOYMENT-DEFAULT model route. Exactly one value — `provider-one` — selects a live provider; every other value falls through to the deterministic fake adapter.",
+    mutability: "bring_up_default_only",
+    change_with:
+      "for ONE project, publish a model route (POST /v1/model-routes) — it is resolved per attempt and overrides this with no restart",
+    reader_file: "apps/control-plane/cmd/palai-control-plane/main.go",
+    reader_func: "modelBrokerFromEnv",
+    writable: true,
+    value_grammar: "token",
+    plane: "control_plane",
+    observable: true,
+    desired: "",
+    desired_set: false,
+    drift: false,
+  },
+  // AN UNSET ROW, because "unset" is the state this screen most has to render well: it is the
+  // difference between "one worker" and "no object store at all", and both wear the same word.
+  {
+    name: "PALAI_SANDBOX_IMAGE",
+    group: "shell",
+    value: "",
+    set: false,
+    default: "none — there is no shell tool; a shell call fails cleanly rather than escaping",
+    kind: "value",
+    effect: "The pinned command image the workspace shell tool runs inside.",
+    mutability: "bring_up",
+    change_with: "recreate the control-plane with the new value (`palai up`)",
+    reader_file: "apps/control-plane/cmd/palai-control-plane/main.go",
+    reader_func: "shellRunnerFromEnv",
+    writable: false,
+    plane: "control_plane",
+    observable: true,
+    not_writable_because:
+      "an IMAGE REFERENCE, for the same reason: it is the container every workspace shell call runs inside, with the workspace mounted. Choosing it is a supply-chain decision made at install time, not a setting.",
+    desired: "",
+    desired_set: false,
+    drift: false,
+  },
+  // A PATH ROW. The compose stack passes this (compose.yaml:126), and it is what makes the credential
+  // rule visible on the screen: the master key's PATH is reported and the key never is.
+  {
+    name: "PALAI_SECRET_MASTER_KEY_FILE",
+    group: "identity",
+    value: "/run/secrets/master_key",
+    set: true,
+    default: "unset — the DB-backed secret store is DISABLED",
+    kind: "path",
+    effect: "The file holding the master key the envelope-encrypted secret store redeems through.",
+    mutability: "bring_up",
+    change_with:
+      "a stored secret is rotated live through POST /v1/secret-refs and needs no restart; changing the MASTER KEY's location needs a recreate",
+    reader_file: "apps/control-plane/cmd/palai-control-plane/main.go",
+    reader_func: "main",
+    writable: false,
+    plane: "control_plane",
+    observable: true,
+    not_writable_because:
+      "a path, and the sharpest one: it names the file the ENTIRE secret store redeems through. Moving it from a form points the store at a file the operator chose and the process reads at boot with no further question.",
+    desired: "",
+    desired_set: false,
+    drift: false,
+  },
+  // THE WRITABLE RUNNER-PLANE ROW, and it is the ONE the real catalogue has: `DesiredValue: desiredInt`
+  // on api/deployment.go:444-450. `observable: false` is load-bearing in the same way it is on the row
+  // below — the control plane holds no copy of a variable it does not read, so `value`/`set` are empty
+  // because there is nothing here to report rather than because the machines have nothing set.
+  {
+    name: "PALAI_RUNNER_CONCURRENCY",
+    group: "execution",
+    value: "",
+    set: false,
+    default: "1",
+    kind: "value",
+    effect:
+      "How many leases ONE MACHINE in this pool serves at once — the fleet's parallelism knob. A Mac that takes four sessions is this set to 4 on that Mac's pool.",
+    mutability: "bring_up",
+    change_with: "save it here; the machine takes it on its next settings poll",
+    reader_file: "cmd/runner/main.go",
+    reader_func: "main",
+    writable: true,
+    value_grammar: "integer",
+    plane: "runner_pool",
+    observable: false,
+    desired: "",
+    desired_set: false,
+    drift: false,
+  },
+  // A RUNNER-PLANE ROW THAT IS NOT WRITABLE. The real catalogue carries two (PALAI_RUNNER_POSTURE,
+  // PALAI_RUNNER_POOL): cmd/runner reads them and NO compose file sets them, so the compose walk could
+  // never find them and only a list could. Keeping one here is what makes "the form offers the WRITABLE
+  // runner-plane rows" a real narrowing rather than "the form offers the runner-plane rows".
+  {
+    name: "PALAI_RUNNER_POOL",
+    group: "fleet",
+    value: "",
+    set: false,
+    default: "unset — the machine names no pool and the registry places it on the deployment default",
+    kind: "value",
+    effect: "WHICH POOL this machine enrols into, and therefore which pool's posture and strict-enrolment rules apply to it.",
+    mutability: "bring_up",
+    change_with: "set it on the RUNNER and restart that machine's runner",
+    reader_file: "cmd/runner/main.go",
+    reader_func: "loadConfig",
+    writable: false,
+    plane: "runner_pool",
+    observable: false,
+    not_writable_because:
+      "read by a RUNNER, not by this process, and this deployment declares no value grammar for it — so there is nothing a document could carry that a machine would parse.",
+    desired: "",
+    desired_set: false,
+    drift: false,
+  },
+];
+
+/**
+ * THE DESIRED DOCUMENTS, keyed `<plane>:<scope_id>` exactly as migration 000052/000060 key the table.
+ *
+ * ONE STORE FOR ALL THREE PLANES, because there is one write route for all three: PUT /v1/deployment/desired
+ * carries `plane` and `scope_id` and api/deployment_desired.go validates every scope through one decoder. A
+ * fixture with a separate box per plane would let the console pass here against a shape the real validator
+ * refuses.
+ *
+ * THE SEEDED ROW IS A POOL DOCUMENT, and it is what makes the /fleet configuration column say something on
+ * this profile: `pool_mac` asks for four concurrent leases, and `run_active_02` (below) has REPORTED that it
+ * applied exactly that revision. A machine's report and the document it is about are only meaningful
+ * together, so seeding one without the other would have rendered a column nothing could be read off.
+ */
+const DESIRED = new Map([
+  [
+    "runner_pool:pool_mac",
+    {
+      revision: 1,
+      plane: "runner_pool",
+      scope_id: "pool_mac",
+      settings: { PALAI_RUNNER_CONCURRENCY: "4" },
+      written_at: "2026-08-03T08:08:00Z",
+      written_by: "key_console_fixture",
+    },
+  ],
+]);
+const DESIRED_PRISTINE = structuredClone([...DESIRED.entries()]);
+// The revision is a SINGLE generated identity shared by every plane (000060's header: "revision is a single
+// generated identity shared by both planes and therefore totally ordered across them"), so one counter here
+// rather than one per scope — a per-scope counter would mint revisions the real journal cannot produce, and
+// DesiredSettingsForMachine's max(pool, machine) comparison only means anything under a total order.
+let desiredSeq = 1;
+
+/** desiredView is the read routes' envelope. `desired: null` is a REAL answer: nobody has written one. */
+function desiredView(plane, scopeID) {
+  return { object: "deployment_desired", plane, scope_id: scopeID, desired: DESIRED.get(`${plane}:${scopeID}`) ?? null };
+}
+
+/**
+ * controlPlaneDesiredView is GET /v1/deployment's own `desired` field: the control-plane document plus the
+ * two facts the document does not carry — whether a bring-up is pending, and which settings differ.
+ *
+ * THE DRIFT IS COMPUTED OVER RAW ENVIRONMENT STRINGS, which is what api/deployment_desired.go's desiredDrift
+ * does and it says why: "unset" and "1" are the same BEHAVIOUR to DispatchWorkers and opposite behaviours to
+ * compose.yaml, so a drift check over effective behaviour would report no drift for the one edit that
+ * matters.
+ */
+function controlPlaneDesiredView() {
+  const doc = DESIRED.get("control_plane:");
+  if (doc === undefined) return null;
+  const drifted = Object.entries(doc.settings)
+    .filter(([name, want]) => (DEPLOYMENT_SETTINGS.find((s) => s.name === name)?.value ?? "") !== want)
+    .map(([name]) => name)
+    .sort();
+  return {
+    plane: "control_plane",
+    scope_id: "",
+    revision: doc.revision,
+    written_at: doc.written_at,
+    written_by: doc.written_by,
+    pending: drifted.length > 0,
+    drifted,
+  };
+}
+
+/**
+ * refuseDesired mirrors api/deployment_desired.go's DecodeDesiredSettings, in ITS order, and returns the
+ * refusal sentence or "".
+ *
+ * IT IS A MIRROR AND NOT A CONVENIENCE. The console shows the server's refusal VERBATIM and writes none of
+ * its own, so a fixture that accepted a body the real decoder refuses would let a form ship that produces a
+ * 400 an operator only meets in production. The four gates below are that decoder's four, and the sentences
+ * are its sentences.
+ */
+function refuseDesired(plane, scopeID, settings) {
+  if (plane === "control_plane") {
+    if (scopeID !== "") {
+      return `the control plane is a SINGLETON — one process per deployment — so it takes no scope_id (got "${scopeID}")`;
+    }
+  } else if (plane === "runner_pool" || plane === "runner_machine") {
+    if (scopeID === "") {
+      return `a ${plane} document configures ONE ${plane === "runner_pool" ? "pool" : "machine"}, so it needs a scope_id naming which`;
+    }
+  } else {
+    return `"${plane}" is not a plane this deployment knows. The three are "control_plane", "runner_pool" and "runner_machine"`;
+  }
+  // AN ABSENT `settings` IS REFUSED RATHER THAN READ AS "CLEAR EVERYTHING". Clearing every setting is a real
+  // operation and it is spelled `{"settings":{}}`; a body that forgot the field would otherwise silently
+  // perform the most destructive write this surface has (deployment_desired.go:168-173).
+  if (settings === null || typeof settings !== "object" || Array.isArray(settings)) {
+    return '`settings` is required and must be an object — send {"settings":{}} to clear every desired value';
+  }
+  for (const [name, value] of Object.entries(settings)) {
+    const row = DEPLOYMENT_SETTINGS.find((s) => s.name === name);
+    if (row === undefined || row.writable !== true) {
+      return `${name} is not writable from this surface — ${row?.not_writable_because ?? "the catalogue is an allow-list and does not declare it"}`;
+    }
+    // THE READER MUST MATCH, WHICH IS NOT THE SAME TEST AS "THE PLANE MUST MATCH" (deployment_desired.go:189-204):
+    // runner_pool and runner_machine name ONE reader (cmd/runner) at two scopes, so a machine document may
+    // carry a setting the catalogue files under runner_pool. Writing this as plane equality is the mistake
+    // the real decoder's comment names, and a fixture that made it would refuse the machine form's only field.
+    const readerOf = (p) => (p === "runner_machine" ? "runner_pool" : p);
+    if (readerOf(row.plane ?? "control_plane") !== readerOf(plane)) {
+      return `${name} is read on the ${row.plane} plane and this document configures ${plane}. A value written into the wrong plane's document is exported into a process that never reads it`;
+    }
+    if (typeof value !== "string" || value === "") {
+      return `${name}: an empty value is not a setting. Remove the key to go back to this deployment's own default`;
+    }
+    if (/[\u0000-\u001f\u007f]/.test(value) || /[$`\\"']/.test(value)) {
+      return `${name}: carries a character that means something on the way to the process`;
+    }
+    if (row.value_grammar === "integer" && (!/^(0|[1-9][0-9]*)$/.test(value))) {
+      return `${name}: not an integer this binary's own reader would parse. It reads an unparseable value as its default and says nothing, so the panel would show a number the process is not running`;
+    }
+  }
+  return "";
+}
 
 // --- THE ROUTE TABLE --------------------------------------------------------------------------------
 //
@@ -2801,130 +3096,15 @@ export const ROUTES = [
     handle: (_request, response) =>
       sendJSON(response, 200, {
         object: "deployment",
-        settings: [
-          {
-            name: "PALAI_DISPATCH_WORKERS",
-            group: "execution",
-            value: "1",
-            set: true,
-            default: "1",
-            kind: "value",
-            effect:
-              "How many durable dispatch workers run. ZERO IS NOT 'SLOWER', IT IS OFF: startDispatch returns before it builds anything, so the deployment admits runs through POST /v1/responses and executes none.",
-            mutability: "bring_up",
-            change_with: "recreate the control-plane with the new value (`palai up`)",
-            reader_file: "apps/control-plane/api/deployment.go",
-            reader_func: "DispatchWorkers",
-            // THE DESIRED HALF (E29). These five fields exist on EVERY row the real control plane serves, and
-            // the values below are what a real stack with no saved document answers: writable where the
-            // catalogue says so, and desired_set false everywhere because nothing has been written. A fixture
-            // that omitted `writable` would leave the console's Edit control DISABLED — so the a11y sweep
-            // could not open the dialog, and the panel would be measured in a state the real profile never has.
-            writable: true,
-            value_grammar: "integer",
-            plane: "control_plane",
-            observable: true,
-            desired: "",
-            desired_set: false,
-            drift: false,
-          },
-          {
-            name: "PALAI_MODEL_PROVIDER",
-            group: "model",
-            value: "fake",
-            set: true,
-            default: "fake",
-            kind: "value",
-            effect:
-              "The DEPLOYMENT-DEFAULT model route. Exactly one value — `provider-one` — selects a live provider; every other value falls through to the deterministic fake adapter.",
-            mutability: "bring_up_default_only",
-            change_with:
-              "for ONE project, publish a model route (POST /v1/model-routes) — it is resolved per attempt and overrides this with no restart",
-            reader_file: "apps/control-plane/cmd/palai-control-plane/main.go",
-            reader_func: "modelBrokerFromEnv",
-            writable: true,
-            value_grammar: "token",
-            plane: "control_plane",
-            observable: true,
-            desired: "",
-            desired_set: false,
-            drift: false,
-          },
-          // AN UNSET ROW, because "unset" is the state this screen most has to render well: it is the
-          // difference between "one worker" and "no object store at all", and both wear the same word.
-          {
-            name: "PALAI_SANDBOX_IMAGE",
-            group: "shell",
-            value: "",
-            set: false,
-            default: "none — there is no shell tool; a shell call fails cleanly rather than escaping",
-            kind: "value",
-            effect: "The pinned command image the workspace shell tool runs inside.",
-            mutability: "bring_up",
-            change_with: "recreate the control-plane with the new value (`palai up`)",
-            reader_file: "apps/control-plane/cmd/palai-control-plane/main.go",
-            reader_func: "shellRunnerFromEnv",
-            writable: false,
-            plane: "control_plane",
-            observable: true,
-            not_writable_because:
-              "an IMAGE REFERENCE, for the same reason: it is the container every workspace shell call runs inside, with the workspace mounted. Choosing it is a supply-chain decision made at install time, not a setting.",
-            desired: "",
-            desired_set: false,
-            drift: false,
-          },
-          // A PATH ROW. The compose stack passes this (compose.yaml:126), and it is what makes the credential
-          // rule visible on the screen: the master key's PATH is reported and the key never is.
-          {
-            name: "PALAI_SECRET_MASTER_KEY_FILE",
-            group: "identity",
-            value: "/run/secrets/master_key",
-            set: true,
-            default: "unset — the DB-backed secret store is DISABLED",
-            kind: "path",
-            effect: "The file holding the master key the envelope-encrypted secret store redeems through.",
-            mutability: "bring_up",
-            change_with:
-              "a stored secret is rotated live through POST /v1/secret-refs and needs no restart; changing the MASTER KEY's location needs a recreate",
-            reader_file: "apps/control-plane/cmd/palai-control-plane/main.go",
-            reader_func: "main",
-            writable: false,
-            plane: "control_plane",
-            observable: true,
-            not_writable_because:
-              "a path, and the sharpest one: it names the file the ENTIRE secret store redeems through. Moving it from a form points the store at a file the operator chose and the process reads at boot with no further question.",
-            desired: "",
-            desired_set: false,
-            drift: false,
-          },
-          // A RUNNER-PLANE ROW. The real catalogue carries two (PALAI_RUNNER_POSTURE, PALAI_RUNNER_POOL):
-          // cmd/runner reads them and NO compose file sets them, so the compose walk could never find them
-          // and only a list could. `observable: false` is the load-bearing field — the control plane never
-          // looks up its own copy of a variable it does not read, so value/set are empty for a reason the
-          // console has to STATE rather than render as "— unset". Those are opposite facts sharing one word,
-          // which is the confusion this whole screen exists to end.
-          {
-            name: "PALAI_RUNNER_POOL",
-            group: "fleet",
-            value: "",
-            set: false,
-            default: "unset — the machine names no pool and the registry places it on the deployment default",
-            kind: "value",
-            effect: "WHICH POOL this machine enrols into, and therefore which pool's posture and strict-enrolment rules apply to it.",
-            mutability: "bring_up",
-            change_with: "set it on the RUNNER and restart that machine's runner",
-            reader_file: "cmd/runner/main.go",
-            reader_func: "loadConfig",
-            writable: false,
-            plane: "runner_pool",
-            observable: false,
-            not_writable_because:
-              "read by a RUNNER, not by this process. The desired document is keyed by plane and the runner plane has no reader.",
-            desired: "",
-            desired_set: false,
-            drift: false,
-          },
-        ],
+        // BUILT PER REQUEST FROM THE STORE, so a document written through PUT /v1/deployment/desired shows
+        // up on the next read exactly as it does on a real stack. DEPLOYMENT_SETTINGS itself is never
+        // mutated: a fixture that edited its own catalogue in place would carry one project's writes into
+        // the next project's reads, which is the leak SESSIONS_PRISTINE exists to undo.
+        settings: DEPLOYMENT_SETTINGS.map((row) => {
+          const wanted = DESIRED.get("control_plane:")?.settings?.[row.name];
+          if (wanted === undefined) return row;
+          return { ...row, desired: wanted, desired_set: true, drift: wanted !== row.value };
+        }),
         warnings: [
           {
             code: "model_provider_fake",
@@ -2937,16 +3117,62 @@ export const ROUTES = [
             settings: ["PALAI_MODEL_PROVIDER", "PALAI_MODEL"],
           },
         ],
-        // NULL, NOT AN EMPTY OBJECT, and it matches what the real profile's stack answers: nothing has ever
-        // written a desired document to it. The two are DIFFERENT facts — "nobody has configured this
-        // machine from the panel" versus "somebody saved a document with nothing in it" — and the console
-        // renders a different sentence for each, so a fixture that flattened them would prove the wrong one.
+        // NULL, NOT AN EMPTY OBJECT, until something writes one — and that matches what the real profile's
+        // stack answers on a fresh bootstrap: nothing has ever written a desired document to it. The two are
+        // DIFFERENT facts — "nobody has configured this machine from the panel" versus "somebody saved a
+        // document with nothing in it" — and the console renders a different sentence for each, so a fixture
+        // that flattened them would prove the wrong one.
         //
-        // When it is NOT null the real body carries `plane` and `scope_id` beside the revision, because a
-        // document is scoped: `control_plane` is this process, `runner_pool` is a pool's machines. Only the
-        // first has a reader today.
-        desired: null,
+        // THIS FIELD IS THE CONTROL-PLANE DOCUMENT AND ONLY THAT. A pool's and a machine's are read from
+        // GET /v1/runner-pools/{id}/desired and GET /v1/runners/{id}/desired, because this route reports
+        // THIS PROCESS's environment and a machine's document belongs to the surface that reports that
+        // machine (api/runners.go's desiredForScope carries the argument).
+        desired: controlPlaneDesiredView(),
       }),
+  },
+  // --- THE DESIRED DOCUMENTS: ONE WRITE ROUTE, TWO SCOPED READS -----------------------------------------
+  {
+    // THE WRITE PATH FOR ALL THREE SCOPES. `plane` is optional and defaults to control_plane, which is what
+    // keeps every body written before the runner planes existed valid — api/deployment_desired.go:119-121.
+    method: "PUT",
+    pattern: "/v1/deployment/desired",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const plane = typeof body.plane === "string" && body.plane !== "" ? body.plane : "control_plane";
+        const scopeID = typeof body.scope_id === "string" ? body.scope_id : "";
+        const settings = body.settings === undefined || body.settings === null ? null : body.settings;
+        const refusal = refuseDesired(plane, scopeID, settings);
+        if (refusal !== "") return sendProblem(response, 400, "invalid_request", `desired configuration refused: ${refusal}`);
+        desiredSeq += 1;
+        // REPLACE, NEVER MERGE. The document is presence-keyed: a key that is absent means "this deployment's
+        // own default", so a merging store would make "stop deciding this setting" inexpressible — which is
+        // the property the console's own omit-empty-fields rule depends on.
+        const doc = {
+          revision: desiredSeq,
+          plane,
+          scope_id: scopeID,
+          settings: { ...settings },
+          written_at: new Date().toISOString(),
+          written_by: "key_console_fixture",
+        };
+        DESIRED.set(`${plane}:${scopeID}`, doc);
+        sendJSON(response, 200, { object: "deployment_desired", ...doc });
+      }),
+  },
+  {
+    method: "GET",
+    pattern: "/v1/runner-pools/{pool_id}/desired",
+    handle: (_req, response, { pool_id: id }) => sendJSON(response, 200, desiredView("runner_pool", id)),
+  },
+  {
+    // A SCOPE THAT NAMES NO ENROLLED MACHINE ANSWERS `desired: null` RATHER THAN 404, and that is the real
+    // route's decision rather than a shortcut here: "a 404 would mean 'there is no such pool', which this
+    // route cannot know and must not imply" (api/runners.go's desiredForScope). Drawing the distinction
+    // would turn a configuration read into an existence oracle for ids the caller did not mint.
+    method: "GET",
+    pattern: "/v1/runners/{runner_id}/desired",
+    handle: (_req, response, { runner_id: id }) => sendJSON(response, 200, desiredView("runner_machine", id)),
   },
   {
     method: "GET",
@@ -3155,11 +3381,16 @@ const server = createServer((request, response) => {
     for (const row of structuredClone(SESSIONS_PRISTINE)) SESSIONS.push(row);
     const fresh = structuredClone(ADMIN_PRISTINE);
     for (const key of Object.keys(ADMIN)) ADMIN[key] = fresh[key];
-    // ROUTE_REVISIONS is NOT in ADMIN — it is a flat array the publish handler mutates across a route's
-    // whole set — so the loop above cannot reach it. Reset it by name, and say so in the response: this
-    // block's own comment is that a reset which silently misses a collection is worse than none.
+    // TWO COLLECTIONS THE LOOP ABOVE CANNOT REACH, and the same rule covers both: a reset that silently
+    // misses a collection is worse than no reset, because the file that calls it then believes it is
+    // isolated. ROUTE_REVISIONS is a flat array the publish handler mutates across a route's whole set;
+    // DESIRED holds what PUT /v1/deployment/desired left, which every read of a pool's or a machine's
+    // configuration is made against.
     ROUTE_REVISIONS.length = 0;
-    return sendJSON(response, 200, { reset: ["sessions", ...Object.keys(ADMIN), "model-route-revisions"], sessions: SESSIONS.length });
+    DESIRED.clear();
+    for (const [key, doc] of structuredClone(DESIRED_PRISTINE)) DESIRED.set(key, doc);
+    desiredSeq = 1;
+    return sendJSON(response, 200, { reset: ["sessions", "desired", ...Object.keys(ADMIN), "model-route-revisions"], sessions: SESSIONS.length });
   }
   // The route table as this server dispatches from it — the runtime half of the conformance sweep's
   // "the table IS the surface" claim (the sweep also imports ROUTES directly, and asserts the two agree).

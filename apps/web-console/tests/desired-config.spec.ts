@@ -278,6 +278,14 @@ test("the panel says which scope it configures, and names the one it does not", 
   const elsewhere = page.getByTestId("desired-config-not-per-machine");
   await expect(elsewhere).toContainText("runner pool");
   await expect(elsewhere).toContainText("PALAI_RUNNER_CONCURRENCY");
+  // AND THE DISTINCTION THE WHOLE SURFACE EXISTS TO KEEP. A machine now reports whether it APPLIED what
+  // was saved (migration 000060), so this screen must not let an operator read "saved" as "running" — a
+  // panel that accepted an edit and showed it as live when the machine had merely received it is the
+  // defect one hop further from the operator, where it is harder to see. The sentence is asserted rather
+  // than trusted because prose that nothing drives is prose that goes stale: the paragraph it replaced
+  // claimed PALAI_RUNNER_CONCURRENCY "lives on the runner container itself", which stopped being the
+  // whole story the day a pool document could carry it.
+  await expect(elsewhere).toContainText("saved is not the same as running");
   await expect(page.getByTestId("panel-deployment-settings").locator("table")).not.toContainText("PALAI_RUNNER_CONCURRENCY");
 });
 

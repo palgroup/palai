@@ -58,6 +58,17 @@ type RunnerItem struct {
 	// real and important value here — it is the one that means the Mac can be unplugged — and a plain int
 	// would render it identically to a deployment that wired no gateway at all.
 	ActiveLeases *int64
+	// THE MACHINE'S OWN ANSWER about its configuration (migration 000060). Together they are what lets a
+	// panel say "this Mac is running what you saved" instead of "saved" — the distinction the whole desired-
+	// configuration surface exists to keep, carried the last hop to the screen.
+	//
+	// ConfigRevision is 0 when the machine has never reported, which is the honest state for every runner
+	// enrolled before the settings poll existed. ConfigApplied is its verdict per setting and is nil in the
+	// same case; an EMPTY map is the different, meaningful answer that the machine polled and the plane had
+	// no document for it.
+	ConfigRevision   int64
+	ConfigApplied    map[string]string
+	ConfigReportedAt time.Time
 }
 
 // RunnerListWindow is the keyset page window the registry read takes — declared here rather than
@@ -209,7 +220,14 @@ type RunnerRegistryAPI interface {
 	ApproveRunner(ctx context.Context, scope middleware.Scope, id string) (RunnerItem, ApprovalOutcome, error)
 }
 
-type runnerHandler struct{ runners RunnerRegistryAPI }
+type runnerHandler struct {
+	runners RunnerRegistryAPI
+	// desired serves the per-pool and per-machine desired documents. Nil on a deployment with no durable
+	// spine, in which case the two read routes are not registered at all — an absent route is a better
+	// answer than one that always reports "no document", which would be indistinguishable from a
+	// deployment nobody had configured.
+	desired DesiredConfigAPI
+}
 
 // listRunners returns a tenant-scoped page of enrolled machines (GET /v1/runners).
 func (h *runnerHandler) listRunners(w http.ResponseWriter, r *http.Request) {
@@ -637,6 +655,7 @@ func runnerView(it RunnerItem) map[string]any {
 	}
 	for key, at := range map[string]time.Time{
 		"cert_not_after": it.CertNotAfter, "enrolled_at": it.EnrolledAt, "last_seen_at": it.LastSeenAt,
+		"config_reported_at": it.ConfigReportedAt,
 	} {
 		if !at.IsZero() {
 			view[key] = at
@@ -649,5 +668,73 @@ func runnerView(it RunnerItem) map[string]any {
 	if it.ActiveLeases != nil {
 		view["active_leases"] = *it.ActiveLeases
 	}
+	// THE CONFIGURATION REPORT IS RENDERED ONLY WHEN THE MACHINE HAS MADE ONE, and the absence is the
+	// message: a machine that has never reported is one this control plane has never confirmed is running
+	// what the panel says. A screen that showed `config_revision: 0` would render that as a number, and an
+	// operator reads a number as an answer. Absence they have to ask about.
+	if !it.ConfigReportedAt.IsZero() {
+		view["config_revision"] = it.ConfigRevision
+		// Rendered even when empty, which is a REAL answer distinct from the absence above: the machine
+		// polled and this deployment had no document for it, so it is running its own defaults and knows it.
+		applied := it.ConfigApplied
+		if applied == nil {
+			applied = map[string]string{}
+		}
+		view["config_applied"] = applied
+	}
 	return view
+}
+
+// desiredForScope serves the desired document for ONE pool or ONE machine.
+//
+// WHY IT IS HERE AND NOT ON /v1/deployment. That route's own comment states the rule this follows: "GET
+// /v1/deployment reports THIS PROCESS's environment — a machine's document belongs to whatever surface
+// reports that machine, and serving it here would put a pool's configuration under a heading that says
+// 'this deployment'". The surface that reports machines is this one, so this is where their configuration
+// is read.
+//
+// IT IS A READ AND THERE IS NO MATCHING WRITE ROUTE, deliberately: the write is PUT /v1/deployment/desired
+// carrying `plane` and `scope_id`, which is ONE write path for all three scopes. A second one here would be
+// a second validator of the same document — the exact defect deployment_desired.go's header says the whole
+// surface was built to avoid.
+//
+// THE SCOPE COMES FROM THE PATH, and the tenant boundary comes from RLS on the machine lookup rather than
+// from this document (which has no organization_id and cannot have one). That is why the pool/runner id is
+// NOT verified to belong to the caller here: the `provision` capability is the authority for the whole
+// desired surface, and a provision key that could read one scope of a system-scoped document can read them
+// all. Naming a scope that does not exist reads as no document, which is also what an unwritten one reads
+// as — a distinction this route deliberately does not draw, because drawing it would turn a configuration
+// read into an existence oracle for ids the caller did not mint.
+func (h *runnerHandler) desiredForScope(plane, pathValue string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		scope, ok := middleware.ScopeFrom(r.Context())
+		if !ok {
+			middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+			return
+		}
+		if !scope.HasScope(provisionScope) {
+			middleware.WriteProblem(w, r, http.StatusForbidden, "insufficient_scope", "this API key lacks the provision capability")
+			return
+		}
+		scopeID := r.PathValue(pathValue)
+		if scopeID == "" {
+			middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the path carries no "+pathValue)
+			return
+		}
+		doc, err := h.desired.GetDesiredConfig(r.Context(), scope, plane, scopeID)
+		if err != nil {
+			middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "the desired configuration could not be read")
+			return
+		}
+		// NIL IS SERVED AS AN EXPLICIT NULL rather than as a 404, and the two say different things. A 404
+		// would mean "there is no such pool", which this route cannot know and must not imply; a null
+		// document means "nobody has decided anything for this scope", which is the true and useful answer
+		// and the one a form needs in order to render empty fields rather than an error.
+		body := map[string]any{"object": "deployment_desired", "plane": plane, "scope_id": scopeID, "desired": nil}
+		if doc != nil {
+			body["desired"] = doc
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(body)
+	}
 }

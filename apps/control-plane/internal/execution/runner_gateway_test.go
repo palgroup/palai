@@ -170,11 +170,24 @@ func (o *oneUseTokens) Consume(token string) error {
 
 // gatewayFixture wires the real gateway behind a real mutually-authenticated TLS server.
 type gatewayFixture struct {
-	gateway    *execution.RunnerGateway
-	ca         *gatewayCA
-	enrollURL  string
-	renewURL   string
-	sessionURL string
+	gateway     *execution.RunnerGateway
+	ca          *gatewayCA
+	enrollURL   string
+	renewURL    string
+	sessionURL  string
+	settingsURL string
+}
+
+// settingsConfig points a settings poll at this fixture's cert-authenticated settings endpoint. The
+// machine is identified by the certificate it presents, exactly as renewal is — there is no runner id on
+// this wire for a test (or a machine) to substitute.
+func (f *gatewayFixture) settingsConfig() runner.SettingsConfig {
+	return runner.SettingsConfig{
+		SettingsURL:   f.settingsURL,
+		ControllerCAs: f.ca.pool,
+		ControllerDNS: gwControllerDNS,
+		Now:           time.Now,
+	}
 }
 
 // tokens is the execution.EnrollmentTokens the gateway redeems against: newOneUseTokens for the
@@ -224,11 +237,12 @@ func newGatewayFixtureWithCA(t *testing.T, ca *gatewayCA, tokens execution.Enrol
 	})
 	addr := listener.Addr().String()
 	return &gatewayFixture{
-		gateway:    gateway,
-		ca:         ca,
-		enrollURL:  "https://" + addr + "/v1/runner/enroll",
-		renewURL:   "https://" + addr + "/v1/runner/renew",
-		sessionURL: "wss://" + addr + "/v1/runner/connect",
+		gateway:     gateway,
+		ca:          ca,
+		enrollURL:   "https://" + addr + "/v1/runner/enroll",
+		renewURL:    "https://" + addr + "/v1/runner/renew",
+		sessionURL:  "wss://" + addr + "/v1/runner/connect",
+		settingsURL: "https://" + addr + "/v1/runner/settings",
 	}
 }
 
