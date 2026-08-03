@@ -38,7 +38,10 @@ import (
 type ThreadStore interface {
 	SessionForThread(ctx context.Context, botID, teamID, channelID, threadTS string) (string, bool, error)
 	BindThread(ctx context.Context, botID, teamID, channelID, threadTS, sessionID string) (string, error)
-	RebindThread(ctx context.Context, botID, teamID, channelID, threadTS, sessionID string) error
+	// RebindThread is a compare-and-swap: the write lands only if the row still names oldSessionID.
+	// won=false means a concurrent recovery on the SAME orphaned thread got there first — see
+	// rebindOrphan, the one caller.
+	RebindThread(ctx context.Context, botID, teamID, channelID, threadTS, oldSessionID, newSessionID string) (bool, error)
 }
 
 // Palai is the SDK surface HandleEvent drives, flattened out of the client's nested Sessions/
@@ -342,7 +345,7 @@ func HandleEvent(ctx context.Context, deps InboundDeps, ev slack.Event) error {
 		}
 		// Orphan (Task 8's expected steady state): the session this process believes is still
 		// streaming no longer exists server-side. Recover and fall through to starting a fresh run.
-		sessionID, err = deps.rebindOrphan(ctx, tk)
+		sessionID, err = deps.rebindOrphan(ctx, tk, sessionID)
 		if err != nil {
 			return err
 		}
@@ -380,16 +383,36 @@ func (deps InboundDeps) openNewSession(ctx context.Context, tk threadKey) (strin
 	return bound, nil
 }
 
-// rebindOrphan opens a REPLACEMENT session for a thread whose stored session no longer resolves
-// server-side, and REBINDS it — unlike openNewSession/BindThread, this overwrites the stale mapping
-// (Task 8's RebindThread), because the old row is known-dead rather than possibly-concurrent.
-func (deps InboundDeps) rebindOrphan(ctx context.Context, tk threadKey) (string, error) {
+// rebindOrphan opens a REPLACEMENT session for a thread whose stored session (oldSessionID — the
+// exact value the caller just got a 404 against, never anything else) no longer resolves server-side,
+// and tries to move the thread's mapping onto it via RebindThread's compare-and-swap.
+//
+// Two events on the SAME orphaned thread can reach this call at once: both read the same oldSessionID,
+// both open a new Palai session here, and both call RebindThread. Only one write lands (won=true); the
+// loser's session is a live one on Palai's side that this call just orphaned itself. The SDK exposes no
+// close-session call (Sessions only has Create/Steer/Events), so the best available recovery is to
+// never bind or use it: re-read the mapping and hand the WINNER's session back to the caller instead —
+// still correct (the thread ends up talking to A session either way), just not the one this particular
+// call minted.
+func (deps InboundDeps) rebindOrphan(ctx context.Context, tk threadKey, oldSessionID string) (string, error) {
 	sess, err := deps.Palai.CreateSession(ctx, palai.CreateSessionParams{Name: tk.channelID + "/" + tk.threadTS})
 	if err != nil {
 		return "", fmt.Errorf("relay: recreate orphaned session: %w", err)
 	}
-	if err := deps.Store.RebindThread(ctx, tk.botID, tk.teamID, tk.channelID, tk.threadTS, sess.ID); err != nil {
+	won, err := deps.Store.RebindThread(ctx, tk.botID, tk.teamID, tk.channelID, tk.threadTS, oldSessionID, sess.ID)
+	if err != nil {
 		return "", fmt.Errorf("relay: rebind orphaned thread: %w", err)
+	}
+	if !won {
+		winnerID, found, selErr := deps.Store.SessionForThread(ctx, tk.botID, tk.teamID, tk.channelID, tk.threadTS)
+		if selErr != nil {
+			return "", fmt.Errorf("relay: resolve winning session after a lost rebind race: %w", selErr)
+		}
+		if !found {
+			return "", fmt.Errorf("relay: lost a rebind race on %s/%s but no row was found afterward", tk.channelID, tk.threadTS)
+		}
+		deps.state.resetSequence(tk)
+		return winnerID, nil
 	}
 	deps.state.resetSequence(tk)
 	return sess.ID, nil
@@ -402,7 +425,7 @@ func (deps InboundDeps) rebindOrphan(ctx context.Context, tk threadKey) (string,
 func (deps InboundDeps) startRun(ctx context.Context, tk threadKey, sessionID string, ev slack.Event) error {
 	_, err := deps.createResponse(ctx, sessionID, ev.Text)
 	if isNotFound(err) {
-		sessionID, err = deps.rebindOrphan(ctx, tk)
+		sessionID, err = deps.rebindOrphan(ctx, tk, sessionID)
 		if err != nil {
 			return err
 		}

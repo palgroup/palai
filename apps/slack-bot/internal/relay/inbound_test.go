@@ -15,12 +15,15 @@ import (
 
 // fakeStore is ThreadStore's test double: an in-memory map keyed the same way Task 8's real Postgres
 // table is (bot_id, team_id, channel_id, thread_ts), with BindThread's ON-CONFLICT-DO-NOTHING and
-// RebindThread's always-overwrites semantics reproduced so a test can tell the two apart.
+// RebindThread's real compare-and-swap semantics reproduced — a test simulates a lost race by
+// pre-seeding bound[key] to a value OTHER than the oldSessionID the code under test will pass, exactly
+// as a concurrent winner would have left it.
 type fakeStore struct {
-	mu      sync.Mutex
-	bound   map[threadKey]string
-	binds   int
-	rebinds int
+	mu         sync.Mutex
+	bound      map[threadKey]string
+	binds      int
+	rebinds    int
+	rebindsWon int
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{bound: make(map[threadKey]string)} }
@@ -44,12 +47,17 @@ func (f *fakeStore) BindThread(ctx context.Context, botID, teamID, channelID, th
 	return sessionID, nil
 }
 
-func (f *fakeStore) RebindThread(ctx context.Context, botID, teamID, channelID, threadTS, sessionID string) error {
+func (f *fakeStore) RebindThread(ctx context.Context, botID, teamID, channelID, threadTS, oldSessionID, newSessionID string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.rebinds++
-	f.bound[threadKey{botID: botID, teamID: teamID, channelID: channelID, threadTS: threadTS}] = sessionID
-	return nil
+	key := threadKey{botID: botID, teamID: teamID, channelID: channelID, threadTS: threadTS}
+	if f.bound[key] != oldSessionID {
+		return false, nil // the real compare-and-swap: only wins if the row still names oldSessionID
+	}
+	f.bound[key] = newSessionID
+	f.rebindsWon++
+	return true, nil
 }
 
 // fakePalai is Palai's test double: it counts calls, records the last request each method saw, can be
@@ -72,16 +80,25 @@ type fakePalai struct {
 	failNextSteerNotFound    bool
 
 	stream func() EventStream
+
+	// onCreateSession, if set, runs after a session is minted but before CreateSession returns — the
+	// exact window rebindOrphan's own CreateSession-then-RebindThread ordering opens up for a
+	// concurrent recovery on the same thread to land first. A test uses it to simulate exactly that.
+	onCreateSession func()
 }
 
 func (f *fakePalai) CreateSession(ctx context.Context, p palai.CreateSessionParams) (*palai.Session, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.sessionsCreated++
 	id := f.nextSessionID
 	if id == "" {
 		f.sessionSeq++
 		id = fmt.Sprintf("ses_%d", f.sessionSeq)
+	}
+	hook := f.onCreateSession
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
 	}
 	return &palai.Session{ID: id, Object: "session", Status: "active"}, nil
 }
@@ -385,12 +402,56 @@ func TestAnOrphanedSessionIsRecoveredWithANewSessionAndRebind(t *testing.T) {
 	if fp.responses != 1 {
 		t.Fatalf("responses = %d, want 1 (the retried create, after recovery)", fp.responses)
 	}
-	if fs.rebinds != 1 {
-		t.Fatalf("rebinds = %d, want 1", fs.rebinds)
+	if fs.rebinds != 1 || fs.rebindsWon != 1 {
+		t.Fatalf("rebinds=%d rebindsWon=%d, want 1/1", fs.rebinds, fs.rebindsWon)
 	}
 	sessionID, found, err := fs.SessionForThread(context.Background(), "bot_1", "T1", "C1", "1.1")
 	if err != nil || !found || sessionID == "ses_stale" {
 		t.Fatalf("thread mapping = (%s,%v), want it moved off the stale session", sessionID, found)
+	}
+}
+
+// TestALostRebindRaceUsesTheWinnersSession is the CAS's other branch (store/threads.go's RebindThread
+// review round): two events on the same orphaned thread can both open a replacement session and both
+// call RebindThread with the same oldSessionID, but the row can only move once. This simulates the
+// LOSING side — the store already carries a DIFFERENT session (the concurrent winner's) by the time
+// this call's compare-and-swap runs — and asserts the loser abandons the session it just minted (never
+// writes it anywhere, never uses it for the turn) and uses the winner's session instead.
+func TestALostRebindRaceUsesTheWinnersSession(t *testing.T) {
+	deps, fp, fs := newTestDeps(t)
+	if _, err := fs.BindThread(context.Background(), "bot_1", "T1", "C1", "1.1", "ses_stale"); err != nil {
+		t.Fatalf("seed BindThread: %v", err)
+	}
+	fp.failNextResponseNotFound = true
+
+	// Simulate a concurrent winner landing in the exact window rebindOrphan opens: after THIS call has
+	// already read "ses_stale" (resolveSession, before HandleEvent even starts here) and minted its own
+	// replacement session, but before its RebindThread compare-and-swap runs. onCreateSession fires
+	// synchronously inside that window.
+	fp.onCreateSession = func() {
+		fs.mu.Lock()
+		fs.bound[threadKey{botID: "bot_1", teamID: "T1", channelID: "C1", threadTS: "1.1"}] = "ses_winner"
+		fs.mu.Unlock()
+	}
+
+	ev := slack.Event{Type: "app_mention", Kind: slack.KindMessage,
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", UserID: "U2", Text: "hi"}
+	if err := HandleEvent(context.Background(), deps, ev); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+
+	if fs.rebinds != 1 || fs.rebindsWon != 0 {
+		t.Fatalf("rebinds=%d rebindsWon=%d, want 1/0 (this call must lose the race)", fs.rebinds, fs.rebindsWon)
+	}
+	if fp.responses != 1 {
+		t.Fatalf("responses = %d, want 1 (the turn still completes, on the winner's session)", fp.responses)
+	}
+	if got := *fp.lastCreateReq.SessionID; got != "ses_winner" {
+		t.Fatalf("Responses.Create session_id = %s, want ses_winner — the loser must not use the session it minted", got)
+	}
+	sessionID, found, err := fs.SessionForThread(context.Background(), "bot_1", "T1", "C1", "1.1")
+	if err != nil || !found || sessionID != "ses_winner" {
+		t.Fatalf("thread mapping = (%s,%v), want it left at ses_winner, untouched by the loser", sessionID, found)
 	}
 }
 
