@@ -68,54 +68,42 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx); err != nil {
+	if err := dispatch(ctx, os.Args[1:]); err != nil {
 		log.Fatalf("slack-bot: %v", err)
 	}
-	log.Printf("slack-bot: stopped")
+}
+
+// dispatch picks what this invocation is: the relay, or the one-shot self-test (selftest.go).
+//
+// A SUBCOMMAND AND NOT A VARIABLE, for the reason stated at the top of this file: this process reads four
+// environment variables and nothing else, and a fifth one selecting a mode would be the first crack in that
+// rule. Everything else about both modes still comes from the row.
+//
+// Anything unrecognised is a refusal carrying the usage, rather than a silent fall-through to the relay: a
+// mistyped subcommand that started a long-lived Socket Mode connection instead would look, to the operator
+// who typed it, exactly like a self-test that hung.
+func dispatch(ctx context.Context, args []string) error {
+	switch {
+	case len(args) == 0:
+		if err := run(ctx); err != nil {
+			return err
+		}
+		log.Printf("slack-bot: stopped")
+		return nil
+	case args[0] == "selftest" && len(args) == 2:
+		return runSelfTest(ctx, args[1])
+	}
+	return fmt.Errorf("usage:\n  slack-bot                        hold Socket Mode open and relay (what a deployment runs)\n  slack-bot selftest <channel-id>  run the four-leg live test once and exit, where <channel-id> is %s",
+		selfTestChannelHelp)
 }
 
 // run is main with an error return, so every failure below leaves through one place and every deferred
 // close actually runs — log.Fatal in the middle of this function would skip them.
 func run(ctx context.Context) error {
-	cfg, err := config.Load()
+	cfg, client, bot, slackCfg, err := loadBot(ctx)
 	if err != nil {
 		return err
 	}
-
-	client, err := palai.New(palai.WithBaseURL(cfg.PalaiBaseURL), palai.WithAPIKey(cfg.PalaiAPIKey))
-	if err != nil {
-		return fmt.Errorf("construct SDK client: %w", err)
-	}
-
-	bot, err := client.Bots.Get(ctx, cfg.BotID)
-	if err != nil {
-		var apiErr *palai.APIError
-		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
-			return fmt.Errorf("PALAI_BOT_ID=%s has no row in the bot registry — register it first", cfg.BotID)
-		}
-		return fmt.Errorf("fetch bot row PALAI_BOT_ID=%s: %w", cfg.BotID, err)
-	}
-	// A disabled row is a refusal, not a warning: starting anyway would relay messages for a bot an
-	// operator deliberately turned off.
-	if bot.Disabled {
-		return fmt.Errorf("bot %s (%q) is disabled in the registry — enable it in the admin panel before starting this process", bot.ID, bot.Name)
-	}
-	// The KIND is checked because this binary is one channel's relay, not a generic one. The registry
-	// accepts any kind by design (a bare string nothing branches on) precisely so tomorrow's WhatsApp row
-	// costs no control-plane change — which means a row pointed at the wrong binary is a real mistake an
-	// operator can make, and it must be named here rather than surface as a Slack API call that fails for
-	// an unrelated-looking reason.
-	if bot.Kind != "slack" {
-		return fmt.Errorf("bot %s (%q) has kind %q; this process relays Slack and nothing else", bot.ID, bot.Name, bot.Kind)
-	}
-
-	slackCfg, err := parseSlackConfig(bot.Config)
-	if err != nil {
-		return fmt.Errorf("bot %s (%q): %w", bot.ID, bot.Name, err)
-	}
-	log.Printf("slack-bot: running as %s %q (kind=%s agent_revision_id=%s repository_binding_id=%s)",
-		bot.ID, bot.Name, bot.Kind, orNone(bot.AgentRevisionID), orNone(bot.RepositoryBindingID))
-	log.Printf("slack-bot: %s", slackCfg.describe())
 
 	st, err := store.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -185,4 +173,53 @@ func run(ctx context.Context) error {
 		log.Printf("slack-bot: some runs were still streaming into Slack after %s; exiting anyway — their messages may stay open until Slack closes them", shutdownGrace)
 	}
 	return socketErr
+}
+
+// loadBot is everything BOTH modes do before they diverge: the four variables, this bot's own row, the
+// checks that a row can produce a working bot at all, and its `config` document. It stops short of
+// redeeming the credentials, so nothing here is ever holding a token — and the self-test redeems them at
+// exactly the same point in its own sequence, for the same reason.
+func loadBot(ctx context.Context) (config.Config, *palai.Client, *palai.Bot, slackConfig, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return config.Config{}, nil, nil, slackConfig{}, err
+	}
+
+	client, err := palai.New(palai.WithBaseURL(cfg.PalaiBaseURL), palai.WithAPIKey(cfg.PalaiAPIKey))
+	if err != nil {
+		return cfg, nil, nil, slackConfig{}, fmt.Errorf("construct SDK client: %w", err)
+	}
+
+	bot, err := client.Bots.Get(ctx, cfg.BotID)
+	if err != nil {
+		var apiErr *palai.APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+			return cfg, nil, nil, slackConfig{}, fmt.Errorf("PALAI_BOT_ID=%s has no row in the bot registry — register it first", cfg.BotID)
+		}
+		return cfg, nil, nil, slackConfig{}, fmt.Errorf("fetch bot row PALAI_BOT_ID=%s: %w", cfg.BotID, err)
+	}
+	// A disabled row is a refusal, not a warning: starting anyway would relay messages for a bot an
+	// operator deliberately turned off. It refuses the SELF-TEST too, and that is deliberate rather than
+	// incidental — a green self-test on a disabled bot is a report that the thing works, about a thing that
+	// is switched off.
+	if bot.Disabled {
+		return cfg, nil, nil, slackConfig{}, fmt.Errorf("bot %s (%q) is disabled in the registry — enable it in the admin panel before starting this process", bot.ID, bot.Name)
+	}
+	// The KIND is checked because this binary is one channel's relay, not a generic one. The registry
+	// accepts any kind by design (a bare string nothing branches on) precisely so tomorrow's WhatsApp row
+	// costs no control-plane change — which means a row pointed at the wrong binary is a real mistake an
+	// operator can make, and it must be named here rather than surface as a Slack API call that fails for
+	// an unrelated-looking reason.
+	if bot.Kind != "slack" {
+		return cfg, nil, nil, slackConfig{}, fmt.Errorf("bot %s (%q) has kind %q; this process relays Slack and nothing else", bot.ID, bot.Name, bot.Kind)
+	}
+
+	slackCfg, err := parseSlackConfig(bot.Config)
+	if err != nil {
+		return cfg, nil, nil, slackConfig{}, fmt.Errorf("bot %s (%q): %w", bot.ID, bot.Name, err)
+	}
+	log.Printf("slack-bot: running as %s %q (kind=%s agent_revision_id=%s repository_binding_id=%s)",
+		bot.ID, bot.Name, bot.Kind, orNone(bot.AgentRevisionID), orNone(bot.RepositoryBindingID))
+	log.Printf("slack-bot: %s", slackCfg.describe())
+	return cfg, client, bot, slackCfg, nil
 }
