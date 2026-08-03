@@ -17,6 +17,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -468,17 +470,104 @@ func TestNoSlackCredentialComesFromTheEnvironment(t *testing.T) {
 	}
 }
 
-// The credential step refuses rather than starting a half-configured bot, and the refusal NAMES what is
-// missing: the handles it holds and the route that would redeem them. An error a reader cannot act on is
-// a support ticket.
-func TestCredentialRedemptionRefusesAndSaysWhy(t *testing.T) {
-	_, err := redeemSlackCredentials(context.Background(), nil, slackConfig{
+// credentialServer stands in for the control plane's GET /v1/bots/{bot_id}/credentials, answering the
+// body the route renders. It is an httptest server rather than a stubbed method because the assertions
+// below are about what this process asks for and what it does with the answer — including the PATH, which
+// is the one part a fake method would let drift silently.
+func credentialServer(t *testing.T, body string, status int) (*palai.Client, *string) {
+	t.Helper()
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	client, err := palai.New(palai.WithBaseURL(srv.URL), palai.WithAPIKey("sk-test"))
+	if err != nil {
+		t.Fatalf("build client: %v", err)
+	}
+	return client, &gotPath
+}
+
+// The happy path, which is the whole of Task 14.5 on this side: the handles the row names come back as
+// token BYTES, read out of the map by the CONFIG KEY rather than by the secret's name.
+func TestCredentialRedemptionReadsTheValuesByConfigKey(t *testing.T) {
+	client, gotPath := credentialServer(t, `{"bot_id":"bot_1","object":"bot_credentials",`+
+		`"credentials":{"app_token_ref":"xapp-live","bot_token_ref":"xoxb-live","signing_secret_ref":"sig"},`+
+		`"unresolved":[]}`, 200)
+
+	creds, err := redeemSlackCredentials(context.Background(), client, "bot_1", slackConfig{
+		AppTokenRef: "slack-app-T1", BotTokenRef: "slack-bot-T1",
+	})
+	if err != nil {
+		t.Fatalf("redeemSlackCredentials: %v", err)
+	}
+	if *gotPath != "/v1/bots/bot_1/credentials" {
+		t.Fatalf("path = %q, want /v1/bots/bot_1/credentials", *gotPath)
+	}
+	if string(creds.appToken) != "xapp-live" || string(creds.botToken) != "xoxb-live" {
+		t.Fatalf("creds = %q/%q, want the values keyed by app_token_ref/bot_token_ref", creds.appToken, creds.botToken)
+	}
+}
+
+// A handle the control plane could not resolve is a REFUSAL, not an empty token. This is the assertion
+// that would fail if the caller stopped reading `unresolved`: the map lookup alone yields "" and a bot
+// built on it dials Slack and then cannot say a word, which looks like it is working.
+func TestAnUnresolvedHandleRefusesAndNamesIt(t *testing.T) {
+	client, _ := credentialServer(t, `{"bot_id":"bot_1","object":"bot_credentials",`+
+		`"credentials":{"app_token_ref":"xapp-live"},"unresolved":["bot_token_ref"]}`, 200)
+
+	_, err := redeemSlackCredentials(context.Background(), client, "bot_1", slackConfig{
 		AppTokenRef: "slack-app-T1", BotTokenRef: "slack-bot-T1",
 	})
 	if err == nil {
-		t.Fatal("redeemSlackCredentials succeeded; the platform has no read-back path for a sealed secret")
+		t.Fatal("redeemSlackCredentials succeeded with bot_token_ref unresolved")
 	}
-	for _, want := range []string{"slack-app-T1", "slack-bot-T1", "/v1/secret-refs", "GET /v1/bots/{bot_id}/credentials"} {
+	for _, want := range []string{"bot_token_ref", "slack-bot-T1", "seal it"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal does not mention %q: %v", want, err)
+		}
+	}
+	// The refusal names the HANDLE and never a redeemed value, including the one that DID resolve.
+	if strings.Contains(err.Error(), "xapp-live") {
+		t.Fatalf("the refusal echoed a redeemed token: %v", err)
+	}
+}
+
+// THE SECOND GUARD, and it needs its own test because the first one hides it. A control plane that
+// reports a key as RESOLVED and hands back an empty string is a different failure from one that reports
+// it unresolved — `unresolved` is empty here — and only the value check catches it. Perturbing that check
+// while driving TestAnUnresolvedHandleRefusesAndNamesIt leaves that test green, because the handle is
+// listed there and the first arm answers first.
+func TestAnEmptyRedeemedTokenIsRefused(t *testing.T) {
+	client, _ := credentialServer(t, `{"bot_id":"bot_1","object":"bot_credentials",`+
+		`"credentials":{"app_token_ref":"xapp-live","bot_token_ref":""},"unresolved":[]}`, 200)
+
+	_, err := redeemSlackCredentials(context.Background(), client, "bot_1", slackConfig{
+		AppTokenRef: "slack-app-T1", BotTokenRef: "slack-bot-T1",
+	})
+	if err == nil {
+		t.Fatal("redeemSlackCredentials accepted an empty bot token")
+	}
+	if !strings.Contains(err.Error(), "bot_token_ref") {
+		t.Fatalf("the refusal does not name the empty handle: %v", err)
+	}
+}
+
+// A control plane that does not serve the route — an older one, or one wired with no master key — must
+// refuse in a way an operator can act on rather than fail somewhere downstream.
+func TestAMissingCredentialsRouteRefusesAndSaysWhy(t *testing.T) {
+	client, _ := credentialServer(t, `{"type":"not_found","title":"not_found"}`, 404)
+
+	_, err := redeemSlackCredentials(context.Background(), client, "bot_1", slackConfig{
+		AppTokenRef: "slack-app-T1", BotTokenRef: "slack-bot-T1",
+	})
+	if err == nil {
+		t.Fatal("redeemSlackCredentials succeeded against a control plane with no such route")
+	}
+	for _, want := range []string{"/v1/bots/bot_1/credentials", "bots.credentials"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("the refusal does not mention %q: %v", want, err)
 		}

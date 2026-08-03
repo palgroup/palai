@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	palai "github.com/palgroup/palai/sdks/go"
 )
@@ -15,49 +16,63 @@ type slackCredentials struct {
 	botToken []byte
 }
 
-// redeemSlackCredentials turns the bot row's secret HANDLES into the token bytes. It cannot, today, and
-// this function exists to say so exactly once, at the one place it matters, rather than let the failure
-// arrive as a 404 somewhere downstream.
+// redeemSlackCredentials turns the bot row's secret HANDLES into the token bytes, over
+// GET /v1/bots/{bot_id}/credentials.
 //
-// THE PLATFORM HAS NO READ-BACK PATH FOR A SEALED SECRET. Measured 2026-08-03 against the running control
-// plane, not cited:
+// WHY A ROUTE AND NOT A READ OF THE SECRET STORE. A sealed secret has no read-back path — POST
+// /v1/secret-refs is write-only and GET /v1/secret-refs/{name} answers metadata with no parameter that
+// adds the value — and every in-tree resolver that opens one runs INSIDE the control-plane process,
+// holding the master key. This process holds no master key. So the redemption happens over a route whose
+// only input is a BOT ID: the control plane resolves the `_ref` keys in THAT row's own config and nothing
+// else, which is why the route can hand back a value at all without becoming an arbitrary secret reader.
 //
-//	$ curl -XPOST …/v1/secret-refs -d '{"name":"probe-readback","value":"the-secret-value-xyz"}'  → 201
-//	$ curl …/v1/secret-refs/probe-readback
-//	  {"name":"probe-readback","object":"secret_ref","version":1,"updated_at":"2026-08-03T21:03:11+03:00"}
+// The map comes back keyed by CONFIG KEY, so this function asks for exactly the two keys parseSlackConfig
+// already refused to start without — it does not need to know, and is never told, what those handles are
+// named.
 //
-// Metadata only, and no parameter adds the value. The control plane says the same in its own words —
-// apps/control-plane/api/secret_refs.go: "the value is envelope-encrypted at rest and has NO read-back
-// path"; apps/control-plane/internal/identity/environments.go on the sibling surface: "THE VALUES ARE NOT
-// HERE AND THERE IS NO PARAMETER THAT WOULD ADD THEM." Every resolver that DOES redeem one
-// (slackSecretResolver, remoteToolSecretResolver, the MCP and A2A resolvers) runs INSIDE the control-plane
-// process, holding the master key. This process holds no master key and is not that process.
-//
-// The one out-of-process redemption in the tree is apps/control-plane/internal/workers — a capability
-// worker redeems a job-scoped handle over the worker gateway (Store.RedeemSecretHandle), guarded by a
-// fence, a per-job scope and an expiry that rides the job's deadline. A long-lived bot has no job, no
-// fence and no deadline, so that path is not reusable as it stands.
-//
-// SO THE BOT REFUSES, AND THE REFUSAL IS THE POINT. The alternative — reading SLACK_BOT_TOKEN out of this
-// process's environment — is precisely the arrangement the bot registry exists to end: "an operator
-// configures a bot in the admin panel, not in a file, and a Slack token is never this process's
-// environment variable" (main.go's own opening). A bot that quietly fell back to the environment would
-// make the console's sealing ceremony decorative, and nothing downstream would ever notice.
-//
-// WHAT CLOSES IT: a narrow control-plane route that resolves ONLY the handles named in the caller's own
-// bot row — the shape of GET /v1/bots/{bot_id}/credentials — plus the SDK method for it. That is a
-// deliberate hole in a stated security property and therefore an owner's decision, not one to make on the
-// way past. It was not written here for a second reason as well: it is org-scoped
-// (identity.SecretStore.Resolve takes an org, storage.WithTenant scopes it), and the tenancy surface it
-// would have to be written against is being rewritten in this tree right now.
-func redeemSlackCredentials(_ context.Context, _ *palai.Client, cfg slackConfig) (slackCredentials, error) {
-	return slackCredentials{}, fmt.Errorf(
-		"this bot's row carries secret HANDLES and not tokens — config.app_token_ref=%q, config.bot_token_ref=%q — "+
-			"and the control plane has no route that resolves a handle back to its value: POST /v1/secret-refs is write-only, "+
-			"and GET /v1/secret-refs/{name} answers {name,object,version,updated_at} with no value and no parameter that adds one "+
-			"(measured 2026-08-03; apps/control-plane/api/secret_refs.go: \"the value is envelope-encrypted at rest and has NO read-back path\"). "+
-			"So a relay process running outside the control plane cannot redeem its own credentials today, and this bot stops here rather than start half-configured. "+
-			"WHAT IS MISSING is one route — GET /v1/bots/{bot_id}/credentials, gated on the caller's own key and resolving ONLY the *_ref names in that bot's own config row — plus the SDK method for it. "+
-			"Setting SLACK_BOT_TOKEN in this process's environment is NOT the workaround: it is the arrangement the bot registry exists to end",
-		cfg.AppTokenRef, cfg.BotTokenRef)
+// IT REFUSES ON A MISSING VALUE RATHER THAN CARRYING AN EMPTY ONE, and reads `Unresolved` to do it. A key
+// absent from the map and a key holding "" are the same thing to a map lookup, and an empty xapp- token
+// would surface much later as an opaque Slack auth failure. The row is the thing an operator repairs, so
+// the refusal names the config key, and names the seal step if the control plane said the handle resolves
+// to no sealed secret.
+func redeemSlackCredentials(ctx context.Context, client *palai.Client, botID string, cfg slackConfig) (slackCredentials, error) {
+	out, err := client.Bots.Credentials(ctx, botID)
+	if err != nil {
+		return slackCredentials{}, fmt.Errorf(
+			"redeem this bot's sealed credentials (GET /v1/bots/%s/credentials): %w — "+
+				"a 403 means this process's API key lacks the bots.credentials capability; "+
+				"a 404 means the control plane serving this URL has no such bot, or is old enough not to have the route at all",
+			botID, err)
+	}
+	unresolved := make(map[string]bool, len(out.Unresolved))
+	for _, key := range out.Unresolved {
+		unresolved[key] = true
+	}
+
+	var creds slackCredentials
+	var missing []string
+	for _, want := range []struct {
+		key  string
+		name string
+		into *[]byte
+	}{
+		{key: "app_token_ref", name: cfg.AppTokenRef, into: &creds.appToken},
+		{key: "bot_token_ref", name: cfg.BotTokenRef, into: &creds.botToken},
+	} {
+		value := out.Credentials[want.key]
+		switch {
+		case unresolved[want.key]:
+			missing = append(missing, fmt.Sprintf("%s names %q and nothing is sealed under that name — seal it in the admin panel (Bots → this bot → Credentials)", want.key, want.name))
+		case value == "":
+			missing = append(missing, fmt.Sprintf("%s (%q) came back empty", want.key, want.name))
+		default:
+			*want.into = []byte(value)
+		}
+	}
+	if len(missing) > 0 {
+		return slackCredentials{}, fmt.Errorf(
+			"bot %s cannot start: %s. It stops here rather than connect half-configured — a bot with no bot token dials Slack successfully and then cannot say a word, which looks like it is working",
+			botID, strings.Join(missing, "; "))
+	}
+	return creds, nil
 }

@@ -131,7 +131,7 @@ func run(ctx context.Context) error {
 	// The credentials are redeemed LAST, immediately before the two things that need them — the outbound
 	// Slack clients and the dial. Nothing above this line can use a token, so nothing above it should be
 	// holding one.
-	creds, err := redeemSlackCredentials(ctx, client, slackCfg)
+	creds, err := redeemSlackCredentials(ctx, client, bot.ID, slackCfg)
 	if err != nil {
 		return err
 	}
