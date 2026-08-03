@@ -55,7 +55,7 @@ func newRegistrationFixture(t *testing.T, repo *store.Store, org, project string
 	t.Helper()
 	registry := extensions.NewSlackRegistry(extensions.New(repo.Spine().Pool()))
 	ts := httptest.NewServer(api.NewRouter(
-		scopedVerifier{middleware.Scope{Organization: org, Project: project, Principal: "prin_registration"}},
+		scopedVerifier{middleware.Scope{Project: project, Principal: "prin_registration"}},
 		repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		api.SSEConfig{}, nil, nil, api.WithSlackConnections(registry)))
 	t.Cleanup(ts.Close)

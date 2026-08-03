@@ -358,7 +358,7 @@ func TestDeploymentRefusesAKeyWithoutTheProvisionCapability(t *testing.T) {
 	// A key with a NON-EMPTY, narrow scope set. The bootstrap key the console signs in with carries no
 	// scopes at all, which middleware.Scope.HasScope reads as unrestricted — so an empty set here would
 	// pass the gate and prove nothing.
-	narrow := scopedVerifier{scope: middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1", Scopes: []string{"responses"}}}
+	narrow := scopedVerifier{scope: middleware.Scope{Project: "prj_1", Principal: "prin_1", Scopes: []string{"responses"}}}
 	router := NewRouter(narrow, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil)
 	ts := httptest.NewServer(router)
 	defer ts.Close()

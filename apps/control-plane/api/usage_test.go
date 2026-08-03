@@ -70,7 +70,7 @@ func usageTestServer(t *testing.T, verifier middleware.Verifier, usage UsageAPI)
 // creation — a re-POST restates the same resource), the lists and the summary are 200, and a
 // strict-decode reject is a 400.
 func TestUsageSurface(t *testing.T) {
-	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	admin := scopedVerifier{middleware.Scope{Project: "prj_1"}}
 	fake := &fakeUsage{
 		write: ProvisionResult{Body: []byte(`{"object":"budget","meter_prefix":"model.","limit_quantity":1000}`)},
 		read:  ProvisionResult{Body: []byte(`{"object":"list","data":[]}`)},
@@ -109,7 +109,7 @@ func TestUsageSurface(t *testing.T) {
 // a limit is an administrative act, but SEEING what a tenant has spent is ordinary metering visibility —
 // gating the read behind the provision capability would hide a tenant's own usage from its own key.
 func TestUsageWritesRequireProvisionScopeButReadsDoNot(t *testing.T) {
-	limited := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Scopes: []string{"responses"}}}
+	limited := scopedVerifier{middleware.Scope{Project: "prj_1", Scopes: []string{"responses"}}}
 	fake := &fakeUsage{read: ProvisionResult{Body: []byte(`{"object":"list","data":[]}`)}}
 	base := usageTestServer(t, limited, fake)
 
@@ -133,7 +133,7 @@ func TestUsageWritesRequireProvisionScopeButReadsDoNot(t *testing.T) {
 // list uses — one over-fetch, one tenant-bound cursor, one rejection for a foreign one — rather than a
 // second pagination dialect. The ledger carries no lifecycle state, so ?status= is an explicit 400.
 func TestUsageLedgerPageReusesTheSharedCursor(t *testing.T) {
-	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	admin := scopedVerifier{middleware.Scope{Project: "prj_1"}}
 	fake := &fakeUsage{}
 	base := usageTestServer(t, admin, fake)
 
@@ -162,7 +162,7 @@ func TestUsageLedgerPageReusesTheSharedCursor(t *testing.T) {
 		t.Fatal("store saw no keyset position after a cursor was presented")
 	}
 	// ...and a cursor minted for a DIFFERENT resource kind is an explicit 400, never a silent page.
-	foreign := encodeCursor(cursorKey(), "responses", middleware.Scope{Organization: "org_1", Project: "prj_1"},
+	foreign := encodeCursor(cursorKey(), "responses", middleware.Scope{Project: "prj_1"},
 		ListCursor{CreatedAt: now, ID: "resp_1"})
 	resp := do(t, "GET", base+"/v1/usage/ledger?after="+foreign, ``, nil)
 	defer resp.Body.Close()
@@ -204,7 +204,7 @@ func getUsagePage(t *testing.T, base, query string) contracts.Page {
 // to the shared parse would give every list on this surface two parameters it silently ignores, which is
 // the very defect being fixed here.
 func TestUsageLedgerNarrowsBySessionAndMeter(t *testing.T) {
-	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	admin := scopedVerifier{middleware.Scope{Project: "prj_1"}}
 	fake := &fakeUsage{}
 	base := usageTestServer(t, admin, fake)
 
@@ -234,7 +234,7 @@ func TestUsageLedgerNarrowsBySessionAndMeter(t *testing.T) {
 // DIFFERENT question than the one asked, under a heading that says otherwise — this surface already
 // refuses `limit=101` for the same reason instead of quietly serving 100.
 func TestUsageSeriesRejectsBeforeItQueries(t *testing.T) {
-	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	admin := scopedVerifier{middleware.Scope{Project: "prj_1"}}
 	fake := &fakeUsage{read: ProvisionResult{Body: []byte(`{"object":"usage_series","points":[]}`)}}
 	base := usageTestServer(t, admin, fake)
 
@@ -273,7 +273,7 @@ func TestUsageSeriesRejectsBeforeItQueries(t *testing.T) {
 // assume. The store interpolates the bucket into a SQL interval literal, so "the handler validated it"
 // is load-bearing rather than tidy: this test is what makes that claim true at the seam.
 func TestUsageSeriesResolvesTheWindowBeforeItReachesTheStore(t *testing.T) {
-	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	admin := scopedVerifier{middleware.Scope{Project: "prj_1"}}
 	fake := &fakeUsage{read: ProvisionResult{Body: []byte(`{"object":"usage_series","points":[]}`)}}
 	base := usageTestServer(t, admin, fake)
 
@@ -314,7 +314,7 @@ func TestUsageSeriesResolvesTheWindowBeforeItReachesTheStore(t *testing.T) {
 // rest of the metering READS: a tenant's own key must be able to see what that tenant spent, or the
 // metering is invisible to the party paying for it. Only the limit-SETTING routes need `provision`.
 func TestUsageSeriesReadNeedsNoProvisionCapability(t *testing.T) {
-	plain := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	plain := scopedVerifier{middleware.Scope{Project: "prj_1"}}
 	fake := &fakeUsage{read: ProvisionResult{Body: []byte(`{"object":"usage_series","points":[]}`)}}
 	base := usageTestServer(t, plain, fake)
 
@@ -322,7 +322,7 @@ func TestUsageSeriesReadNeedsNoProvisionCapability(t *testing.T) {
 	if res != http.StatusOK {
 		t.Fatalf("series status = %d, want 200 without the provision capability", res)
 	}
-	if fake.lastScope.Organization != "org_1" || fake.lastScope.Project != "prj_1" {
+	if fake.lastScope.Project != "prj_1" {
 		t.Fatalf("store saw scope %+v, want the verified identity — the scope is never a query parameter", fake.lastScope)
 	}
 }

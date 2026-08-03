@@ -115,7 +115,11 @@ func KnownScheduleStatus(s string) bool {
 // row), computes the initial next_fire_at, and inserts the schedule. It verifies the target trigger is in
 // the tenant's scope (a schedule can never fire a foreign trigger). created_by records the principal the
 // firing admits AS.
-func (s *ScheduleStore) CreateSchedule(ctx context.Context, org, project, principal string, in ScheduleInput) (string, error) {
+func (s *ScheduleStore) CreateSchedule(ctx context.Context, project, principal string, in ScheduleInput) (string, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return "", err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	spec, err := s.validate(ctx, org, project, in)
 	if err != nil {
@@ -138,7 +142,11 @@ func (s *ScheduleStore) CreateSchedule(ctx context.Context, org, project, princi
 // ReviseSchedule applies a firing-relevant edit in place, bumping revision and recomputing next_fire_at
 // (the no-schedule_revisions-table decision — occurrences pin the revision they fired under). A revise
 // re-activates a paused/failed schedule. Returns found=false when the schedule is absent from scope.
-func (s *ScheduleStore) ReviseSchedule(ctx context.Context, org, project, id string, in ScheduleInput) (int, bool, error) {
+func (s *ScheduleStore) ReviseSchedule(ctx context.Context, project, id string, in ScheduleInput) (int, bool, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return 0, false, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	// A revise edits only the firing config — name/trigger are immutable and the schedule already exists in
 	// scope, so only the firing shape (cron/tz/kind) is re-validated (not name/trigger/scope).
@@ -168,7 +176,11 @@ func (s *ScheduleStore) ReviseSchedule(ctx context.Context, org, project, id str
 // recomputes next_fire_at from now — a resumed schedule fires fresh, never replaying its stale missed
 // window (which for policy=fail would re-enter the misfire machine and re-fail — review #4). Returns
 // found=false when absent from scope.
-func (s *ScheduleStore) SetPaused(ctx context.Context, org, project, id string, paused bool) (bool, error) {
+func (s *ScheduleStore) SetPaused(ctx context.Context, project, id string, paused bool) (bool, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return false, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	if paused {
 		switch err := s.pool.QueryRow(ctx, storage.Query("PauseSchedule"), id, org, project).Scan(new(string)); {
@@ -181,7 +193,7 @@ func (s *ScheduleStore) SetPaused(ctx context.Context, org, project, id string, 
 	}
 
 	// Resume: recompute next_fire_at from now off the schedule's stored firing config.
-	view, found, err := s.GetSchedule(ctx, org, project, id)
+	view, found, err := s.GetSchedule(ctx, project, id)
 	if err != nil || !found {
 		return false, err
 	}
@@ -220,7 +232,11 @@ func scheduleInputFromView(v ScheduleView) ScheduleInput {
 
 // DeleteSchedule soft-deletes a schedule (deleted_at set): the due-scan skips it while its occurrence rows
 // + linked deliveries stay queryable under retention (B9). Returns found=false when absent.
-func (s *ScheduleStore) DeleteSchedule(ctx context.Context, org, project, id string) (bool, error) {
+func (s *ScheduleStore) DeleteSchedule(ctx context.Context, project, id string) (bool, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return false, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	switch err := s.pool.QueryRow(ctx, storage.Query("SoftDeleteSchedule"), id, org, project).Scan(new(string)); {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -232,7 +248,11 @@ func (s *ScheduleStore) DeleteSchedule(ctx context.Context, org, project, id str
 }
 
 // GetSchedule reads a schedule's management projection, or found=false when absent (or soft-deleted).
-func (s *ScheduleStore) GetSchedule(ctx context.Context, org, project, id string) (ScheduleView, bool, error) {
+func (s *ScheduleStore) GetSchedule(ctx context.Context, project, id string) (ScheduleView, bool, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return ScheduleView{}, false, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var v ScheduleView
 	switch err := s.pool.QueryRow(ctx, storage.Query("GetSchedule"), id, org, project).Scan(
@@ -254,7 +274,11 @@ func (s *ScheduleStore) GetSchedule(ctx context.Context, org, project, id string
 //
 // The caller over-fetches by asking for Limit+1 (the shared renderPage contract); this method neither
 // clamps nor pads, so "how many rows fit on a page" stays one decision, made in the API's parse.
-func (s *ScheduleStore) ListSchedules(ctx context.Context, org, project string, w ListWindow, status string) ([]ScheduleView, error) {
+func (s *ScheduleStore) ListSchedules(ctx context.Context, project string, w ListWindow, status string) ([]ScheduleView, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return nil, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListSchedules"),
 		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, nullableText(status), w.Limit)
@@ -284,7 +308,11 @@ func (s *ScheduleStore) ListSchedules(ctx context.Context, org, project string, 
 // The limit<=0 clamp below is now UNREACHABLE from the route, which validates the page size before it gets
 // here (1..100). It stays for the store's own callers and its own tests: a store read that silently
 // returned every row of an unbounded table would be a worse default than 100.
-func (s *ScheduleStore) ListOccurrences(ctx context.Context, org, project, id string, w ListWindow) ([]OccurrenceView, error) {
+func (s *ScheduleStore) ListOccurrences(ctx context.Context, project, id string, w ListWindow) ([]OccurrenceView, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return nil, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	limit := w.Limit
 	if limit <= 0 || limit > 500 {

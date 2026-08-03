@@ -49,7 +49,7 @@ func secretRefTestServer(t *testing.T, verifier middleware.Verifier, api SecretR
 // TestSecretRefSurface pins the routing + rendering contract: a create is 201, a read/list/rotate is 200,
 // a strict-decode reject is a 400, and an absent name is a 404. An admin key (empty scopes) passes the gate.
 func TestSecretRefSurface(t *testing.T) {
-	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	admin := scopedVerifier{middleware.Scope{Project: "prj_1"}}
 	fake := &fakeSecretRefs{
 		write: ProvisionResult{Body: []byte(`{"name":"provider-one","version":1,"object":"secret_ref"}`)},
 		read:  ProvisionResult{Body: []byte(`{"name":"provider-one","version":1,"object":"secret_ref"}`)},
@@ -90,7 +90,7 @@ func TestSecretRefSurface(t *testing.T) {
 // TestSecretRefValueNeverEchoed is the write-only contract: the value goes IN on create/rotate but the
 // handler writes only the store's metadata Body, so no response ever carries the plaintext.
 func TestSecretRefValueNeverEchoed(t *testing.T) {
-	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	admin := scopedVerifier{middleware.Scope{Project: "prj_1"}}
 	fake := &fakeSecretRefs{
 		write: ProvisionResult{Body: []byte(`{"name":"provider-one","version":2,"object":"secret_ref"}`)},
 		read:  ProvisionResult{Body: []byte(`{"name":"provider-one","version":2,"object":"secret_ref"}`)},
@@ -113,7 +113,7 @@ func TestSecretRefValueNeverEchoed(t *testing.T) {
 // TestSecretRefRequiresProvisionScope proves the basic-scope gate: a key whose non-empty scopes omit
 // `provision` is refused (403) on every secret-ref route and the store is never reached.
 func TestSecretRefRequiresProvisionScope(t *testing.T) {
-	runOnly := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Scopes: []string{"run"}}}
+	runOnly := scopedVerifier{middleware.Scope{Project: "prj_1", Scopes: []string{"run"}}}
 	fake := &fakeSecretRefs{write: ProvisionResult{Body: []byte(`{"name":"x"}`)}, read: ProvisionResult{Body: []byte(`{}`)}}
 	base := secretRefTestServer(t, runOnly, fake)
 
@@ -133,7 +133,7 @@ func TestSecretRefRequiresProvisionScope(t *testing.T) {
 // TestSecretRefRoutesUnmountedWhenNil proves the nil-seam guard: a tier that wires no secret-ref API mounts
 // no secret-ref route (a POST is 404), so the Docker-free conformance tiers stay unaffected.
 func TestSecretRefRoutesUnmountedWhenNil(t *testing.T) {
-	srv := httptest.NewServer(NewRouter(scopedVerifier{middleware.Scope{Organization: "org_1"}}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
+	srv := httptest.NewServer(NewRouter(scopedVerifier{middleware.Scope{Project: "prj_1"}}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 	if resp := do(t, "POST", srv.URL+"/v1/secret-refs", `{}`, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("nil secret-ref POST status = %d, want 404 (route unmounted)", resp.StatusCode)

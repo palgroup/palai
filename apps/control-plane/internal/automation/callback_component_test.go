@@ -33,18 +33,18 @@ func TestOutputMappingBoundedSameLanguageAsInput(t *testing.T) {
 	principal := seedPrincipal(t, pool, org, project)
 
 	webhooks := NewWebhookStore(pool)
-	endpointID, err := webhooks.CreateEndpoint(ctx, org, project, defaultEndpoint("https://cb.example/hook", "cbref"))
+	endpointID, err := webhooks.CreateEndpoint(ctx, project, defaultEndpoint("https://cb.example/hook", "cbref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
 
-	triggerID, err := store.CreateTrigger(ctx, org, project, principal, "with-callback", "manual_api")
+	triggerID, err := store.CreateTrigger(ctx, project, principal, "with-callback", "manual_api")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
 
 	// A valid output_mapping (same language) + an in-scope callback endpoint is accepted and persisted.
-	rev, err := store.ReviseTrigger(ctx, org, project, triggerID, TriggerRevisionInput{
+	rev, err := store.ReviseTrigger(ctx, project, triggerID, TriggerRevisionInput{
 		OutputMapping:      json.RawMessage(`{"fields":{"result":{"select":"output"}},"required":["result"]}`),
 		CallbackEndpointID: endpointID,
 	})
@@ -66,7 +66,7 @@ func TestOutputMappingBoundedSameLanguageAsInput(t *testing.T) {
 	}
 
 	// The output_mapping is the SAME language as the input: an escape verb is rejected at compile, not run.
-	if _, err := store.ReviseTrigger(ctx, org, project, triggerID, TriggerRevisionInput{
+	if _, err := store.ReviseTrigger(ctx, project, triggerID, TriggerRevisionInput{
 		OutputMapping: json.RawMessage(`{"fields":{"x":{"fetch":"http://169.254.169.254/"}}}`),
 	}); err == nil {
 		t.Fatal("an output_mapping carrying an escape verb was accepted; the mapping-language bound must reject it")
@@ -74,12 +74,12 @@ func TestOutputMappingBoundedSameLanguageAsInput(t *testing.T) {
 
 	// SECURITY (the planner's catch): a callback_endpoint_id belonging to ANOTHER tenant is a not-found
 	// reject — the global FK alone would let a run result be delivered to a foreign tenant's URL.
-	otherOrg, otherProject, _ := seedSession(t, pool)
-	foreignEndpoint, err := webhooks.CreateEndpoint(ctx, otherOrg, otherProject, defaultEndpoint("https://evil.example/steal", "evilref"))
+	_, otherProject, _ := seedSession(t, pool)
+	foreignEndpoint, err := webhooks.CreateEndpoint(ctx, otherProject, defaultEndpoint("https://evil.example/steal", "evilref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint(foreign) error = %v", err)
 	}
-	if _, err := store.ReviseTrigger(ctx, org, project, triggerID, TriggerRevisionInput{
+	if _, err := store.ReviseTrigger(ctx, project, triggerID, TriggerRevisionInput{
 		CallbackEndpointID: foreignEndpoint,
 	}); err == nil {
 		t.Fatal("a foreign-tenant callback_endpoint_id was accepted; a run result would leak cross-tenant")
@@ -117,7 +117,7 @@ func TestCallbackEnqueuedOnRunTerminal(t *testing.T) {
 	org, project, _ := seedSession(t, pool)
 	principal := seedPrincipal(t, pool, org, project)
 	webhooks := NewWebhookStore(pool)
-	endpointID, err := webhooks.CreateEndpoint(ctx, org, project, defaultEndpoint("https://cb.example/hook", "cbref"))
+	endpointID, err := webhooks.CreateEndpoint(ctx, project, defaultEndpoint("https://cb.example/hook", "cbref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
@@ -196,7 +196,7 @@ func TestCallbackDeliveredOncePerDeliveryAcrossRetries(t *testing.T) {
 	})
 
 	webhooks := NewWebhookStore(pool)
-	endpointID, err := webhooks.CreateEndpoint(ctx, org, project, defaultEndpoint(srv.URL, "cbref"))
+	endpointID, err := webhooks.CreateEndpoint(ctx, project, defaultEndpoint(srv.URL, "cbref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
@@ -247,7 +247,7 @@ func TestCallbackFailureLeavesRunTerminalIntact(t *testing.T) {
 	webhooks := NewWebhookStore(pool)
 	ep := defaultEndpoint(srv.URL, "cbref")
 	ep.MaxAttempts = 2 // dead-letter quickly
-	endpointID, err := webhooks.CreateEndpoint(ctx, org, project, ep)
+	endpointID, err := webhooks.CreateEndpoint(ctx, project, ep)
 	if err != nil {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}

@@ -44,9 +44,11 @@ func TestResponseAcceptedReturns202WithLocation(t *testing.T) {
 	}
 
 	// The resource is bound to the verified tenant, not to anything the client can
-	// choose: the response carries the authenticated org/project (spec §39.2).
-	if r.OrganizationID != contracts.OrganizationID(testScope.Organization) {
-		t.Fatalf("organization_id = %q, want verified %q", r.OrganizationID, testScope.Organization)
+	// choose: the response carries the authenticated org/project (spec §39.2). The organization is
+	// resolved fresh from the project (A.2 Task 3), which fakeBackend.ResolveOrganization fixes at
+	// "org_test" for every project.
+	if r.OrganizationID != contracts.OrganizationID("org_test") {
+		t.Fatalf("organization_id = %q, want verified %q", r.OrganizationID, "org_test")
 	}
 	if r.ProjectID != contracts.ProjectID(testScope.Project) {
 		t.Fatalf("project_id = %q, want verified %q", r.ProjectID, testScope.Project)
@@ -70,8 +72,8 @@ func TestResponseIgnoresBodyScopeOverride(t *testing.T) {
 	if r.ProjectID != contracts.ProjectID(testScope.Project) {
 		t.Fatalf("project_id = %q, want verified %q (body override leaked)", r.ProjectID, testScope.Project)
 	}
-	if r.OrganizationID != contracts.OrganizationID(testScope.Organization) {
-		t.Fatalf("organization_id = %q, want verified %q (body override leaked)", r.OrganizationID, testScope.Organization)
+	if r.OrganizationID != contracts.OrganizationID("org_test") {
+		t.Fatalf("organization_id = %q, want verified %q (body override leaked)", r.OrganizationID, "org_test")
 	}
 	if string(r.ProjectID) == "prj_evil" || string(r.OrganizationID) == "org_evil" {
 		t.Fatalf("injected scope leaked into the response: %+v", r)

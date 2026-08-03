@@ -22,7 +22,7 @@ import (
 func TestModelRouteWritesRejectAnOrgGranularKey(t *testing.T) {
 	s := &Store{}
 	ctx := context.Background()
-	orgOnly := middleware.Scope{Organization: "org_1"}
+	orgOnly := middleware.Scope{}
 
 	conn, err := s.CreateModelConnection(ctx, orgOnly, []byte(`{"provider":"provider-one","secret_ref":"openai"}`))
 	if err != nil || conn.MissingField == "" {
@@ -51,7 +51,7 @@ func TestModelRouteWritesRejectAnOrgGranularKey(t *testing.T) {
 func TestModelRouteReadsRejectAnOrgGranularKey(t *testing.T) {
 	s := &Store{}
 	ctx := context.Background()
-	orgOnly := middleware.Scope{Organization: "org_1"}
+	orgOnly := middleware.Scope{}
 
 	reads := []struct {
 		name string
@@ -88,7 +88,7 @@ func TestModelRouteReadsRejectAnOrgGranularKey(t *testing.T) {
 // The guard runs before any query, so this needs no database.
 func TestCreateModelConnectionRefusesAnUnknownProviderFamily(t *testing.T) {
 	s := &Store{}
-	scope := middleware.Scope{Organization: "org_1", Project: "prj_1"}
+	scope := middleware.Scope{Project: "prj_1"}
 
 	for _, provider := range []string{"openai", "anthropic", "gpt-4o-mini", "Provider-One", ""} {
 		out, err := s.CreateModelConnection(context.Background(), scope,
@@ -111,7 +111,7 @@ func TestCreateModelConnectionRefusesAnUnknownProviderFamily(t *testing.T) {
 // been shipping them to OpenAI, with a key they minted for something else, and nothing would have said so.
 func TestCreateModelConnectionEndpointRule(t *testing.T) {
 	s := &Store{}
-	scope := middleware.Scope{Organization: "org_1", Project: "prj_1"}
+	scope := middleware.Scope{Project: "prj_1"}
 	call := func(body string) (api.ProvisionResult, error) {
 		return s.CreateModelConnection(context.Background(), scope, []byte(body))
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/fleet"
+	"github.com/palgroup/palai/storage"
 )
 
 // TestEveryFleetRouteRefusesATenantKey is Faz A.1 Task 3 (2026-08-03): the machine fleet — runners,
@@ -58,11 +59,25 @@ func TestEveryFleetRouteRefusesATenantKey(t *testing.T) {
 	runnerRegistry := fleet.NewStore(repo.Spine().Pool(), middleware.NewID, nil)
 	runnerAPI := fleet.NewRegistryAPI(runnerRegistry, nil)
 
+	// The "system" key's project must be a REAL row: every fleet handler now resolves its organization
+	// fresh from the project (A.2 Task 3, storage.OrganizationForProject) before it does anything else, so
+	// a synthetic project id with no backing row would turn every route's success case into a 500 the
+	// assertion below (checks only for 401/403) would never catch — proving nothing about systemOnly and
+	// everything about a missing fixture row instead.
+	sys := storage.WithSystemScope(ctx)
+	if _, err := repo.Spine().Pool().Exec(sys, `INSERT INTO organizations (id) VALUES ($1)`, "org_fleet_system"); err != nil {
+		t.Fatalf("seed org_fleet_system: %v", err)
+	}
+	if _, err := repo.Spine().Pool().Exec(sys, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`,
+		"prj_fleet_system", "org_fleet_system"); err != nil {
+		t.Fatalf("seed prj_fleet_system: %v", err)
+	}
+
 	verifier := keyedVerifier{
-		"tenant": {Organization: "org_fleet_tenant", Project: "prj_fleet_tenant", Principal: "prin_fleet_tenant"},
+		"tenant": {Project: "prj_fleet_tenant", Principal: "prin_fleet_tenant"},
 		// provision + approve so the ONLY thing standing between this key and every fleet route is
 		// whichever capability systemOnly checks — see the doc comment above.
-		"system": {Organization: "org_fleet_system", Project: "prj_fleet_system", Principal: "prin_fleet_system",
+		"system": {Project: "prj_fleet_system", Principal: "prin_fleet_system",
 			Scopes: []string{middleware.ScopeSystem, "provision", "approve"}},
 	}
 	router := api.NewRouter(verifier, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,

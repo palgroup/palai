@@ -58,7 +58,7 @@ func TestTheScopedDesiredRoutesAnswerTheShapeAConsoleReads(t *testing.T) {
 	// fleet's systemOnly gate (Faz A.1 Task 3) on top of the pre-existing `provision` check
 	// (desiredForScope), and fakeVerifier's key carries neither scope explicitly (its empty Scopes is
 	// unrestricted only for the ordinary axis, never for `system` — see middleware/auth_test.go).
-	verifier := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1",
+	verifier := scopedVerifier{middleware.Scope{Project: "prj_1", Principal: "prin_1",
 		Scopes: []string{middleware.ScopeSystem, "provision"}}}
 	srv := httptest.NewServer(NewRouter(verifier, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		SSEConfig{}, nil, nil, WithRunners(&fakeRunnerRegistry{}), WithDesiredConfig(docs)))
@@ -145,7 +145,7 @@ func TestTheScopedDesiredRoutesRequireTheProvisionCapability(t *testing.T) {
 	// treats as unrestricted (the admin/bootstrap-key idiom) — so a refusal leg built on it would never
 	// refuse and would pass for a reason unrelated to its claim.
 	docs := &scopedDesired{docs: map[string]*DesiredDocument{}}
-	verifier := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1", Scopes: []string{"responses"}}}
+	verifier := scopedVerifier{middleware.Scope{Project: "prj_1", Principal: "prin_1", Scopes: []string{"responses"}}}
 	srv := httptest.NewServer(NewRouter(verifier, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		SSEConfig{}, nil, nil, WithRunners(&fakeRunnerRegistry{}), WithDesiredConfig(docs)))
 	defer srv.Close()

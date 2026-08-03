@@ -74,7 +74,7 @@ func TestOrchestratorRetryStormSingleRun(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i], errs[i] = store.CreateDeliveryIdempotent(ctx, org, project, principal, keyedTrigger, key, body)
+			results[i], errs[i] = store.CreateDeliveryIdempotent(ctx, project, principal, keyedTrigger, key, body)
 		}(i)
 	}
 	wg.Wait()
@@ -105,7 +105,7 @@ func TestOrchestratorRetryStormSingleRun(t *testing.T) {
 	// Reconcile-by-key: a post-storm replay (the orchestrator recovering with only its workflow id)
 	// re-derives the key and resolves back to the SAME settled run — never a duplicate. By now the winner
 	// has driven the pipeline to run_created, so the replay carries the canonical run + response identity.
-	reconciled, err := store.CreateDeliveryIdempotent(ctx, org, project, principal, keyedTrigger, key, body)
+	reconciled, err := store.CreateDeliveryIdempotent(ctx, project, principal, keyedTrigger, key, body)
 	if err != nil {
 		t.Fatalf("reconcile replay error = %v", err)
 	}

@@ -106,17 +106,17 @@ func TestLiveInboundWebhookRun(t *testing.T) {
 	}
 
 	store := automation.NewTriggerStore(pool).WithAdmitter(spine).WithInboundSecrets(resolver).WithInboundGate(nil, 5*time.Minute, 256, 0)
-	triggerID, err := store.CreateTrigger(ctx, org, project, principal, randID("inbound-orders"), "webhook")
+	triggerID, err := store.CreateTrigger(ctx, project, principal, randID("inbound-orders"), "webhook")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
-	if _, err := store.ReviseTrigger(ctx, org, project, triggerID, automation.TriggerRevisionInput{
+	if _, err := store.ReviseTrigger(ctx, project, triggerID, automation.TriggerRevisionInput{
 		AgentRevisionID: rev.ID,
 		InputMapping:    []byte(`{"fields":{"input":{"select":"order.summary"}},"required":["input"]}`),
 	}); err != nil {
 		t.Fatalf("ReviseTrigger error = %v", err)
 	}
-	if err := store.SetInboundSecretRefs(ctx, org, project, triggerID, ref, ""); err != nil {
+	if err := store.SetInboundSecretRefs(ctx, project, triggerID, ref, ""); err != nil {
 		t.Fatalf("SetInboundSecretRefs error = %v", err)
 	}
 

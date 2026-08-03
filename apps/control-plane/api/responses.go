@@ -39,6 +39,10 @@ type Admitter interface {
 	// foreign id), Purged is a 410, and a hit carries the canceled (or already-terminal)
 	// projection. It is a monotonic no-op on an already-terminal run — cancel is retry-safe.
 	CancelResponse(ctx context.Context, scope middleware.Scope, id string) (RetrieveResult, error)
+	// ResolveOrganization resolves the organization a project belongs to (A.2 Task 3): the one value the
+	// request scope no longer carries, needed here only to render the wire organization_id field on the
+	// synchronous "queued" projection a create request persists as the response's initial body.
+	ResolveOrganization(ctx context.Context, project string) (string, error)
 }
 
 // RetrieveResult is the outcome of a response retrieval. Found is false for an unknown
@@ -260,6 +264,11 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	organization, err := h.admitter.ResolveOrganization(r.Context(), scope.Project)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
 	responseID := middleware.NewID("resp")
 	runID := middleware.NewID("run")
 	sessionID := middleware.NewID("ses")
@@ -273,7 +282,7 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 		Usage:          contracts.Usage{},
 		SessionID:      contracts.SessionID(sessionID),
 		RunID:          contracts.RunID(runID),
-		OrganizationID: contracts.OrganizationID(scope.Organization),
+		OrganizationID: contracts.OrganizationID(organization),
 		ProjectID:      contracts.ProjectID(scope.Project),
 	}
 	body, err := json.Marshal(projection)

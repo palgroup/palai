@@ -44,7 +44,10 @@ var approvalDisplayFor = slack.DeriveApprovalDisplay
 // read exactly. A tool that no longer resolves renders as "(no operator label)" rather than dropping the
 // row: the ARGUMENTS are the authority on this screen and they came off the ledger.
 func (s *Store) ListPendingApprovals(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.PendingApproval, error) {
-	tenant := tenantOf(scope)
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
 	window := coordinator.ToolApprovalWindow{
 		CreatedGTE: q.CreatedGTE, CreatedLTE: q.CreatedLTE, Limit: q.Limit,
 	}
@@ -127,7 +130,10 @@ func (s *Store) ListPendingApprovals(ctx context.Context, scope middleware.Scope
 // The approval id is resolved FIRST, within the tenant, so an unknown or foreign id refuses before any
 // decision is attempted and the two are indistinguishable to the caller.
 func (s *Store) DecideApproval(ctx context.Context, scope middleware.Scope, approvalID string, d api.ApprovalDecision) (api.ApprovalOutcome, error) {
-	tenant := tenantOf(scope)
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return api.ApprovalOutcome{}, err
+	}
 	parked, found, err := s.spine.ToolApprovalByID(ctx, tenant, approvalID)
 	if err != nil {
 		return api.ApprovalOutcome{}, fmt.Errorf("read the approval to decide: %w", err)

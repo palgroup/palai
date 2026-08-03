@@ -59,8 +59,8 @@ func TestArtifactRetrievalSurface(t *testing.T) {
 	if fake.lastID != "art_1" {
 		t.Fatalf("metadata reached the seam with id %q, want art_1", fake.lastID)
 	}
-	if fake.lastScope.Organization != "org_1" {
-		t.Fatalf("metadata seam scope org = %q, want the verified org_1 (identity, not a body field)", fake.lastScope.Organization)
+	if fake.lastScope.Project != "prj_1" {
+		t.Fatalf("metadata seam scope project = %q, want the verified prj_1 (identity, not a body field)", fake.lastScope.Project)
 	}
 	if resp := do(t, "GET", base+"/v1/responses/resp_9/artifacts", ``, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET run-scoped list status = %d, want 200", resp.StatusCode)

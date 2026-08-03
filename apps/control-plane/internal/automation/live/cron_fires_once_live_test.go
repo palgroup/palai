@@ -83,11 +83,11 @@ func TestLiveCronFiresOnce(t *testing.T) {
 
 	// A type='cron' trigger pinned to the revision, mapping a constant task into the run input.
 	triggers := automation.NewTriggerStore(pool).WithAdmitter(spine)
-	triggerID, err := triggers.CreateTrigger(ctx, org, project, principal, randID("cron"), "cron")
+	triggerID, err := triggers.CreateTrigger(ctx, project, principal, randID("cron"), "cron")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
-	if _, err := triggers.ReviseTrigger(ctx, org, project, triggerID, automation.TriggerRevisionInput{
+	if _, err := triggers.ReviseTrigger(ctx, project, triggerID, automation.TriggerRevisionInput{
 		AgentRevisionID: rev.ID,
 		InputMapping:    []byte(`{"fields":{"input":{"const":"summarize today's scheduled report"}},"required":["input"]}`),
 	}); err != nil {

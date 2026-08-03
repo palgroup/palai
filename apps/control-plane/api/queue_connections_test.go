@@ -14,26 +14,26 @@ import (
 
 // fakeQueueAPI records what reached the store seam.
 type fakeQueueAPI struct {
-	createdOrg, createdProject string
-	created                    *automation.QueueConnectionInput
-	items                      []automation.QueueConnectionItem
-	lastWindow                 automation.ListWindow
-	listedOrg, listedProject   string
-	gotOrg, gotProject, gotID  string
+	createdProject    string
+	created           *automation.QueueConnectionInput
+	items             []automation.QueueConnectionItem
+	lastWindow        automation.ListWindow
+	listedProject     string
+	gotProject, gotID string
 }
 
-func (f *fakeQueueAPI) CreateQueueConnection(_ context.Context, org, project string, in automation.QueueConnectionInput) (string, error) {
-	f.createdOrg, f.createdProject, f.created = org, project, &in
+func (f *fakeQueueAPI) CreateQueueConnection(_ context.Context, project string, in automation.QueueConnectionInput) (string, error) {
+	f.createdProject, f.created = project, &in
 	return "qconn_1", nil
 }
 
-func (f *fakeQueueAPI) ListQueueConnections(_ context.Context, org, project string, w automation.ListWindow) ([]automation.QueueConnectionItem, error) {
-	f.listedOrg, f.listedProject, f.lastWindow = org, project, w
+func (f *fakeQueueAPI) ListQueueConnections(_ context.Context, project string, w automation.ListWindow) ([]automation.QueueConnectionItem, error) {
+	f.listedProject, f.lastWindow = project, w
 	return f.items, nil
 }
 
-func (f *fakeQueueAPI) GetQueueConnectionItem(_ context.Context, org, project, id string) (automation.QueueConnectionItem, bool, error) {
-	f.gotOrg, f.gotProject, f.gotID = org, project, id
+func (f *fakeQueueAPI) GetQueueConnectionItem(_ context.Context, project, id string) (automation.QueueConnectionItem, bool, error) {
+	f.gotProject, f.gotID = project, id
 	for _, it := range f.items {
 		if it.ID == id {
 			return it, true, nil
@@ -90,11 +90,11 @@ func TestQueueConnectionCreateTakesTenantFromTheVerifiedScope(t *testing.T) {
 	if got["id"] != "qconn_1" || got["object"] != "queue_connection" {
 		t.Fatalf("followed body = %v, want the created connection in the list's projection", got)
 	}
-	if fake.gotOrg != "org_1" || fake.gotProject != "prj_1" {
-		t.Fatalf("read ran in (%s, %s), want the verified scope — a singular read takes its tenant from the bearer like the create does", fake.gotOrg, fake.gotProject)
+	if fake.gotProject != "prj_1" {
+		t.Fatalf("read ran in project %s, want the verified scope — a singular read takes its tenant from the bearer like the create does", fake.gotProject)
 	}
-	if fake.createdOrg != "org_1" || fake.createdProject != "prj_1" {
-		t.Fatalf("connection created in (%s, %s), want the verified scope (org_1, prj_1)", fake.createdOrg, fake.createdProject)
+	if fake.createdProject != "prj_1" {
+		t.Fatalf("connection created in project %s, want the verified scope prj_1", fake.createdProject)
 	}
 	if fake.created.Kind != "local" {
 		t.Fatalf("kind = %q, want local (the only adapter this binary has)", fake.created.Kind)
@@ -182,8 +182,8 @@ func TestQueueConnectionListRendersThePageEnvelope(t *testing.T) {
 	if page.Data[0]["object"] != "queue_connection" || page.Data[0]["direction"] != "inbound" {
 		t.Fatalf("row projection = %v", page.Data[0])
 	}
-	if fake.listedOrg != "org_1" || fake.listedProject != "prj_1" {
-		t.Fatalf("listed (%s, %s), want the verified scope", fake.listedOrg, fake.listedProject)
+	if fake.listedProject != "prj_1" {
+		t.Fatalf("listed under project %s, want the verified scope", fake.listedProject)
 	}
 	if fake.lastWindow.Limit != 3 {
 		t.Fatalf("store asked for Limit=%d, want limit+1 (the has_more over-fetch)", fake.lastWindow.Limit)

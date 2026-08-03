@@ -67,17 +67,22 @@ func (in QueueConnectionInput) withDefaults() QueueConnectionInput {
 
 // CreateQueueConnection is the api.QueueConnectionAPI create seam — CreateConnection under the name the
 // HTTP surface's interface uses, so the admin route needs no adapter type.
-func (s *QueueStore) CreateQueueConnection(ctx context.Context, org, project string, in QueueConnectionInput) (string, error) {
-	return s.CreateConnection(ctx, org, project, in)
+func (s *QueueStore) CreateQueueConnection(ctx context.Context, project string, in QueueConnectionInput) (string, error) {
+	return s.CreateConnection(ctx, project, in)
 }
 
 // CreateConnection registers a queue binding in the verified scope and returns its server-minted id.
-func (s *QueueStore) CreateConnection(ctx context.Context, org, project string, in QueueConnectionInput) (string, error) {
+// Organization is resolved fresh from project (A.2 Task 3): the request scope no longer carries one.
+func (s *QueueStore) CreateConnection(ctx context.Context, project string, in QueueConnectionInput) (string, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return "", fmt.Errorf("resolve organization for project: %w", err)
+	}
 	in = in.withDefaults()
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	id := newID("qconn")
 	var out string
-	err := s.pool.QueryRow(ctx, storage.Query("CreateQueueConnection"),
+	err = s.pool.QueryRow(ctx, storage.Query("CreateQueueConnection"),
 		id, org, project, in.Name, in.Kind, in.Direction,
 		in.Capacity, int(in.Visibility.Seconds()), in.MaxDeliveries, string(in.Config)).Scan(&out)
 	return out, err
@@ -100,7 +105,11 @@ type QueueConnectionItem struct {
 }
 
 // ListQueueConnections returns a tenant-scoped page of queue bindings, newest-first.
-func (s *QueueStore) ListQueueConnections(ctx context.Context, org, project string, w ListWindow) ([]QueueConnectionItem, error) {
+func (s *QueueStore) ListQueueConnections(ctx context.Context, project string, w ListWindow) ([]QueueConnectionItem, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return nil, fmt.Errorf("resolve organization for project: %w", err)
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListQueueConnections"),
 		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
@@ -123,7 +132,11 @@ func (s *QueueStore) ListQueueConnections(ctx context.Context, org, project stri
 // an unknown or foreign id (E29 T2: the address the create's 201 Location has always named). RLS confines
 // the read to the caller's tenant, and the query's own org/project predicate is defence in depth behind it;
 // a foreign id is therefore indistinguishable from an absent one, which is the intended answer.
-func (s *QueueStore) GetQueueConnectionItem(ctx context.Context, org, project, connID string) (QueueConnectionItem, bool, error) {
+func (s *QueueStore) GetQueueConnectionItem(ctx context.Context, project, connID string) (QueueConnectionItem, bool, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return QueueConnectionItem{}, false, fmt.Errorf("resolve organization for project: %w", err)
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("GetQueueConnectionItem"), connID, org, project)
 	if err != nil {

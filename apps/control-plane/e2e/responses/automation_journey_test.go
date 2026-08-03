@@ -152,7 +152,7 @@ func TestScheduledInvestigationJourneyDeterministic(t *testing.T) {
 	// ref + a callback endpoint (this is the run the journey executes end to end); (b) a cron trigger + a
 	// schedule (the occurrence half). ---
 	receiver := newCallbackReceiver(t)
-	endpointID, err := h.webhooks.CreateEndpoint(ctx, org, proj, automation.EndpointCreate{
+	endpointID, err := h.webhooks.CreateEndpoint(ctx, proj, automation.EndpointCreate{
 		URL: receiver.url(), EventFilter: []string{"trigger.callback.v1"}, SigningSecretRef: "cbref",
 		TimeoutMS: 3000, MaxAttempts: 20, RetryWindowSeconds: 3600, AllowPrivateDestination: true,
 	})
@@ -167,7 +167,7 @@ func TestScheduledInvestigationJourneyDeterministic(t *testing.T) {
 			`"output_mapping":{"fields":{"result":{"select":"status"}}},"callback_endpoint_id":"`+endpointID+`"}`); st != http.StatusCreated {
 		t.Fatalf("revise webhook trigger status = %d, want 201", st)
 	}
-	if err := h.triggers.SetInboundSecretRefs(ctx, org, proj, whTrigger, "journeyref", ""); err != nil {
+	if err := h.triggers.SetInboundSecretRefs(ctx, proj, whTrigger, "journeyref", ""); err != nil {
 		t.Fatalf("set inbound secret ref: %v", err)
 	}
 

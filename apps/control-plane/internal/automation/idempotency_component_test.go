@@ -49,7 +49,7 @@ func TestOrchestratorRetrySameIdempotencyKeySingleEverything(t *testing.T) {
 
 	var first DeliveryResult
 	for i := 0; i < 3; i++ {
-		del, err := store.CreateDeliveryIdempotent(ctx, org, project, principal, triggerID, key, payload)
+		del, err := store.CreateDeliveryIdempotent(ctx, project, principal, triggerID, key, payload)
 		if err != nil {
 			t.Fatalf("retry %d CreateDeliveryIdempotent error = %v", i, err)
 		}
@@ -79,7 +79,7 @@ func TestOrchestratorRetrySameIdempotencyKeySingleEverything(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i], errs[i] = store.CreateDeliveryIdempotent(ctx, org, project, principal, triggerID, raceKey, racePayload)
+			results[i], errs[i] = store.CreateDeliveryIdempotent(ctx, project, principal, triggerID, raceKey, racePayload)
 		}(i)
 	}
 	wg.Wait()
@@ -107,10 +107,10 @@ func TestSameIdempotencyKeyDifferentBodyConflict409(t *testing.T) {
 	})
 
 	key := "same-key-different-body"
-	if _, err := store.CreateDeliveryIdempotent(ctx, org, project, principal, triggerID, key, []byte(`{"a":1}`)); err != nil {
+	if _, err := store.CreateDeliveryIdempotent(ctx, project, principal, triggerID, key, []byte(`{"a":1}`)); err != nil {
 		t.Fatalf("first CreateDeliveryIdempotent error = %v", err)
 	}
-	if _, err := store.CreateDeliveryIdempotent(ctx, org, project, principal, triggerID, key, []byte(`{"a":2}`)); !errors.Is(err, ErrIdempotencyMismatch) {
+	if _, err := store.CreateDeliveryIdempotent(ctx, project, principal, triggerID, key, []byte(`{"a":2}`)); !errors.Is(err, ErrIdempotencyMismatch) {
 		t.Fatalf("second (different body) error = %v, want ErrIdempotencyMismatch", err)
 	}
 }
@@ -129,7 +129,7 @@ func TestRetryAfterTriggerDisabledReplaysWinner(t *testing.T) {
 
 	payload := []byte(`{"o":1}`)
 	key := "retry-after-disable"
-	first, err := store.CreateDeliveryIdempotent(ctx, org, project, principal, triggerID, key, payload)
+	first, err := store.CreateDeliveryIdempotent(ctx, project, principal, triggerID, key, payload)
 	if err != nil {
 		t.Fatalf("first CreateDeliveryIdempotent error = %v", err)
 	}
@@ -141,7 +141,7 @@ func TestRetryAfterTriggerDisabledReplaysWinner(t *testing.T) {
 	mustExec(t, pool, `UPDATE triggers SET enabled=false WHERE id=$1`, triggerID)
 
 	// A retry under the same key+body replays the winner's projection, NOT ErrTriggerDisabled.
-	retry, err := store.CreateDeliveryIdempotent(ctx, org, project, principal, triggerID, key, payload)
+	retry, err := store.CreateDeliveryIdempotent(ctx, project, principal, triggerID, key, payload)
 	if err != nil {
 		t.Fatalf("retry after disable error = %v, want the recorded winner (not ErrTriggerDisabled)", err)
 	}
@@ -150,7 +150,7 @@ func TestRetryAfterTriggerDisabledReplaysWinner(t *testing.T) {
 	}
 
 	// A genuinely-NEW delivery on the disabled trigger still errors (the reorder didn't weaken the gate).
-	if _, err := store.CreateDeliveryIdempotent(ctx, org, project, principal, triggerID, "brand-new-key", payload); !errors.Is(err, ErrTriggerDisabled) {
+	if _, err := store.CreateDeliveryIdempotent(ctx, project, principal, triggerID, "brand-new-key", payload); !errors.Is(err, ErrTriggerDisabled) {
 		t.Fatalf("new delivery on disabled trigger error = %v, want ErrTriggerDisabled", err)
 	}
 }
@@ -169,14 +169,14 @@ func TestOrchestratorRetryDifferentKeySameDedupeSingleAction(t *testing.T) {
 	})
 
 	payload := []byte(`{"order":{"id":"o-shared"}}`)
-	first, err := store.CreateDeliveryIdempotent(ctx, org, project, principal, triggerID, "key-A", payload)
+	first, err := store.CreateDeliveryIdempotent(ctx, project, principal, triggerID, "key-A", payload)
 	if err != nil {
 		t.Fatalf("first CreateDeliveryIdempotent error = %v", err)
 	}
 	if first.State != "run_created" || first.RunID == "" {
 		t.Fatalf("first delivery = %+v, want run_created with a run", first)
 	}
-	second, err := store.CreateDeliveryIdempotent(ctx, org, project, principal, triggerID, "key-B", payload)
+	second, err := store.CreateDeliveryIdempotent(ctx, project, principal, triggerID, "key-B", payload)
 	if err != nil {
 		t.Fatalf("second CreateDeliveryIdempotent error = %v", err)
 	}

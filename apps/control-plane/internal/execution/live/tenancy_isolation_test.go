@@ -93,8 +93,8 @@ func TestLiveTenancyIsolationCrossOrgDeny(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyAPIKey(org-B) error = %v", err)
 	}
-	if scopeA.Organization == scopeB.Organization {
-		t.Fatalf("the two keys resolved to the SAME organization %q — the fixture is not two tenants", scopeA.Organization)
+	if scopeA.Project == scopeB.Project {
+		t.Fatalf("the two keys resolved to the SAME project %q — the fixture is not two tenants", scopeA.Project)
 	}
 
 	// LAYER 1 — API surface: org-A retrieves its own run; org-B's key gets a clean 404 (Found=false), the
@@ -117,9 +117,12 @@ func TestLiveTenancyIsolationCrossOrgDeny(t *testing.T) {
 	// LAYER 2 — database: a WHERE-less-on-tenant count under org-B's scope must not include org-A's row.
 	// This is the RLS deny at Postgres: the query asks for exactly org-A's response id and the policy hides
 	// it, so even a query that forgot to scope by organization sees nothing across the boundary.
-	if n := countUnderTenant(t, pool, scopeB.Organization, scopeB.Project,
+	// "" for organization is the point, not an oversight: migration 000062 keys this table's RLS on
+	// project_id alone, so an org_id GUC that was never set to anything real still proves the SAME deny —
+	// project_id is what is carrying the isolation now.
+	if n := countUnderTenant(t, pool, "", scopeB.Project,
 		`SELECT count(*) FROM responses WHERE id=$1`, respA); n != 0 {
-		t.Fatalf("org-B-scoped DB read saw %d of org-A's response rows, want 0 (migration 000029 RLS deny)", n)
+		t.Fatalf("org-B-scoped DB read saw %d of org-A's response rows, want 0 (migration 000062 RLS deny)", n)
 	}
 	if n := countUnderTenant(t, pool, tenantA.Organization, tenantA.Project,
 		`SELECT count(*) FROM responses WHERE id=$1`, respA); n != 1 {

@@ -116,7 +116,7 @@ func TestAdminCLIAgainstRealRouter(t *testing.T) {
 	}
 
 	sec := &fakeSec{}
-	base := realRouterServer(t, staticVerifier{scope: middleware.Scope{Organization: "org_1", Project: "prj_1"}}, sec)
+	base := realRouterServer(t, staticVerifier{scope: middleware.Scope{Project: "prj_1"}}, sec)
 	t.Setenv("PALAI_BASE_URL", base)
 	t.Setenv("PALAI_API_KEY", "bootstrap-admin-key")
 
@@ -166,7 +166,7 @@ func TestAdminCLIAgainstRealRouter(t *testing.T) {
 // TestAdminCLIRealRouterInsufficientScope drives the real provision-capability gate: a run-only key is
 // refused with a 403 whose RFC9457 problem the CLI renders (code + request id).
 func TestAdminCLIRealRouterInsufficientScope(t *testing.T) {
-	base := realRouterServer(t, staticVerifier{scope: middleware.Scope{Organization: "org_1", Scopes: []string{"run"}}}, &fakeSec{})
+	base := realRouterServer(t, staticVerifier{scope: middleware.Scope{Project: "prj_1", Scopes: []string{"run"}}}, &fakeSec{})
 	t.Setenv("PALAI_BASE_URL", base)
 	t.Setenv("PALAI_API_KEY", "run-only-key")
 

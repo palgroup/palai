@@ -149,9 +149,9 @@ func mintScopedKey(t *testing.T, repo *store.Store, cs *coordinator.Store, tenan
 	if err != nil {
 		t.Fatalf("VerifyAPIKey() error = %v", err)
 	}
-	if scope.Organization != tenant.Organization || scope.Project != tenant.Project {
-		t.Fatalf("the minted key verified into %s/%s, want %s/%s",
-			scope.Organization, scope.Project, tenant.Organization, tenant.Project)
+	if scope.Project != tenant.Project {
+		t.Fatalf("the minted key verified into project %s, want %s",
+			scope.Project, tenant.Project)
 	}
 	return httpApprover{
 		token:     token,

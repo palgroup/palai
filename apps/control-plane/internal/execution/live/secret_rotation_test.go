@@ -83,7 +83,7 @@ func TestLiveSecretRefRestartlessRotation(t *testing.T) {
 
 	// Provision a brand-new tenant on the LIVE store (the second-tenant-with-no-restart path).
 	org := provisionLiveTenant(t, idstore, "live-secret-tenant")
-	scope := middleware.Scope{Organization: org.ID}
+	scope := middleware.Scope{Project: org.DefaultProjectID}
 
 	const refName = "provider-upstream-token"
 

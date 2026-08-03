@@ -84,7 +84,7 @@ func repoRootFromTest(t *testing.T) string {
 // everything IS mounted the tiers equal the recompute exactly. What stays forbidden is the shortcut: exempting
 // a capability from the assert because a router did not mount it.
 func fullyMountedRouter() http.Handler {
-	srv := &a2a.Server{Interfaces: stubIfaceStore{iface: a2a.PublishedInterface{ID: "if_tier"}}, ScopeFunc: a2aScopeFunc}
+	srv := &a2a.Server{Interfaces: stubIfaceStore{iface: a2a.PublishedInterface{ID: "if_tier"}}, ScopeFunc: newA2AScopeFunc(stubOrgResolver{})}
 	return NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		SSEConfig{}, nil, nil, WithA2A(srv, srv.PublicCardHandler()), WithCapabilityWorkers(),
 		WithSlack(newSlackBridge([]byte("tier-probe"))), WithKnowledge(stubKnowledge{}),

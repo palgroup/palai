@@ -26,7 +26,7 @@ func TestRetrievalToolCitesVerifiableOffsetsEndToEnd(t *testing.T) {
 	// The fake-engine run invokes the built-in tool; ks is the server-side Retriever (grants server-derived,
 	// none here -> KB-wide only). env.Scope carries the run's tenant identity.
 	tool := tools.KnowledgeRetrievalTool(ks)
-	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: scope.Organization, Project: scope.Project, RunID: "run_e2e"}}
+	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: scope.Project, RunID: "run_e2e"}}
 	out, err := tool.Exec(context.Background(), env, map[string]any{"knowledge_base_id": kb, "query": "full text search ranking"})
 	if err != nil {
 		t.Fatalf("tool Exec error = %v", err)

@@ -36,7 +36,7 @@ import (
 
 const orchToken = "orch-conformance-token"
 
-var orchScope = middleware.Scope{Organization: "org_orch", Project: "prj_orch", Principal: "prin_orch"}
+var orchScope = middleware.Scope{Project: "prj_orch", Principal: "prin_orch"}
 
 // run is one canonical run the fake control plane owns. The identity (responseID/runID/sessionID) is
 // minted once at admission and NEVER replaced; status advances queued → terminal on an explicit
@@ -151,18 +151,18 @@ func (f *fakeControlPlane) ListResponses(_ context.Context, _ middleware.Scope, 
 }
 
 // EventReader — the SSE wait's server half. SessionExists gates the stream; After tails the run's journal.
-func (f *fakeControlPlane) SessionExists(_ context.Context, _, _, sessionID string) (bool, error) {
+func (f *fakeControlPlane) SessionExists(_ context.Context, _, sessionID string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	_, ok := f.bySession[sessionID]
 	return ok, nil
 }
 
-func (f *fakeControlPlane) ResolveCursor(_ context.Context, _, _, _, _ string) (int64, bool, error) {
+func (f *fakeControlPlane) ResolveCursor(_ context.Context, _, _, _ string) (int64, bool, error) {
 	return 0, false, nil
 }
 
-func (f *fakeControlPlane) After(_ context.Context, _, _, sessionID string, cursor int64, limit int) ([]contracts.Event, error) {
+func (f *fakeControlPlane) After(_ context.Context, _, sessionID string, cursor int64, limit int) ([]contracts.Event, error) {
 	f.mu.Lock()
 	r := f.bySession[sessionID]
 	f.mu.Unlock()
@@ -183,7 +183,11 @@ func (f *fakeControlPlane) After(_ context.Context, _, _, sessionID string, curs
 	return out, nil
 }
 
-func (f *fakeControlPlane) RecordAttachDenied(_ context.Context, _, _, _, _ string) error { return nil }
+func (f *fakeControlPlane) RecordAttachDenied(_ context.Context, _, _, _ string) error { return nil }
+
+func (f *fakeControlPlane) ResolveOrganization(_ context.Context, _ string) (string, error) {
+	return "org_test", nil
+}
 
 // SessionManager — STEP 3's message command. AcceptCommand accepts a steer for a known session; an
 // unknown session is a 404 with no existence disclosure.

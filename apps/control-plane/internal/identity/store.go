@@ -148,16 +148,21 @@ func (s *Store) ProvisionFirstOrg(ctx context.Context, bootstrapKey string) erro
 	})
 }
 
-// orgScope widens the request to its whole organization for a provisioning read/write. The organization
-// comes from the verified key (never a body field), so this can only ever reach the caller's own tenant;
-// it relaxes ONLY the intra-org project narrowing, because identity resources are managed org-wide.
+// orgScope widens the request to its whole organization for a provisioning read/write. The organization is
+// resolved fresh from the caller's own project (A.2 Task 3: middleware.Scope no longer carries one) —
+// still only ever the caller's own tenant, since project is itself verified — and it relaxes ONLY the
+// intra-org project narrowing, because identity resources are managed org-wide.
 //
 // storage.WithOrgScope, not storage.WithTenant with an empty project (A.2 Task 1): WithTenant now REFUSES
 // to acquire a connection with no project, because once organizations are gone an empty project would mean
 // every project rather than a boundary. WithOrgScope is the named, narrow exception for exactly this
 // surface — see its doc comment for why identity/provisioning keeps it for now.
-func orgScope(ctx context.Context, scope middleware.Scope) context.Context {
-	return storage.WithOrgScope(ctx, scope.Organization)
+func orgScope(ctx context.Context, pool *pgxpool.Pool, project string) (context.Context, string, error) {
+	organization, err := storage.OrganizationForProject(ctx, pool, project)
+	if err != nil {
+		return ctx, "", fmt.Errorf("resolve organization for project: %w", err)
+	}
+	return storage.WithOrgScope(ctx, organization), organization, nil
 }
 
 // CreateOrganization opens a NEW tenant: an organization, its default project, a service principal, and a
@@ -199,7 +204,11 @@ func (s *Store) CreateOrganization(ctx context.Context, _ middleware.Scope, body
 // ListOrganizations lists the organizations visible in the caller's scope — under RLS, the caller's own
 // organization (no cross-tenant listing).
 func (s *Store) ListOrganizations(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	ctx = orgScope(ctx, scope)
+	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = scopedCtx
 	rows, err := s.pool.Query(ctx, storage.Query("ListOrganizations"))
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("list organizations: %w", err)
@@ -221,7 +230,11 @@ func (s *Store) ListOrganizations(ctx context.Context, scope middleware.Scope) (
 
 // GetOrganization reads one organization within the caller's scope; a foreign/unknown id is a miss (404).
 func (s *Store) GetOrganization(ctx context.Context, scope middleware.Scope, id string) (api.ProvisionResult, error) {
-	ctx = orgScope(ctx, scope)
+	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = scopedCtx
 	v, err := scanOrganization(s.pool.QueryRow(ctx, storage.Query("GetOrganization"), id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.ProvisionResult{NotFound: true}, nil
@@ -240,18 +253,26 @@ func (s *Store) CreateProject(ctx context.Context, scope middleware.Scope, body 
 	if err := strictDecode(body, &in); err != nil {
 		return api.ProvisionResult{BadField: true}, nil
 	}
-	ctx = orgScope(ctx, scope)
+	scopedCtx, org, err := orgScope(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = scopedCtx
 	projID := middleware.NewID("prj")
-	if _, err := s.pool.Exec(ctx, storage.Query("InsertProject"), projID, scope.Organization, in.DisplayName); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("InsertProject"), projID, org, in.DisplayName); err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("insert project: %w", err)
 	}
-	v := projectView{ID: projID, Object: "project", OrganizationID: scope.Organization, DisplayName: in.DisplayName, ConfigPolicy: json.RawMessage("null")}
+	v := projectView{ID: projID, Object: "project", OrganizationID: org, DisplayName: in.DisplayName, ConfigPolicy: json.RawMessage("null")}
 	return api.ProvisionResult{Body: mustJSON(v)}, nil
 }
 
 // ListProjects lists every project in the caller's organization.
 func (s *Store) ListProjects(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	ctx = orgScope(ctx, scope)
+	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = scopedCtx
 	rows, err := s.pool.Query(ctx, storage.Query("ListProjects"))
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("list projects: %w", err)
@@ -273,7 +294,11 @@ func (s *Store) ListProjects(ctx context.Context, scope middleware.Scope) (api.P
 
 // GetProject reads one project within the caller's organization; a foreign/unknown id is a miss (404).
 func (s *Store) GetProject(ctx context.Context, scope middleware.Scope, id string) (api.ProvisionResult, error) {
-	ctx = orgScope(ctx, scope)
+	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = scopedCtx
 	return s.readProject(ctx, id)
 }
 
@@ -294,7 +319,11 @@ func (s *Store) UpdateProjectPolicy(ctx context.Context, scope middleware.Scope,
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("marshal config policy: %w", err)
 	}
-	ctx = orgScope(ctx, scope)
+	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = scopedCtx
 	var updated string
 	err = s.pool.QueryRow(ctx, storage.Query("UpdateProjectConfigPolicy"), id, policyJSON).Scan(&updated)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -321,7 +350,11 @@ func (s *Store) CreateAPIKey(ctx context.Context, scope middleware.Scope, body [
 	if in.ProjectID == "" {
 		return api.ProvisionResult{MissingField: "project_id"}, nil
 	}
-	ctx = orgScope(ctx, scope)
+	scopedCtx, org, err := orgScope(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = scopedCtx
 	if err := s.pool.QueryRow(ctx, storage.Query("ProjectExists"), in.ProjectID).Scan(new(int)); errors.Is(err, pgx.ErrNoRows) {
 		return api.ProvisionResult{NotFound: true}, nil
 	} else if err != nil {
@@ -339,18 +372,18 @@ func (s *Store) CreateAPIKey(ctx context.Context, scope middleware.Scope, body [
 		return api.ProvisionResult{}, fmt.Errorf("begin create api key: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, storage.Query("InsertPrincipal"), principalID, scope.Organization, in.ProjectID, "service"); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("InsertPrincipal"), principalID, org, in.ProjectID, "service"); err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("insert principal: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertAPIKey"),
-		keyID, scope.Organization, in.ProjectID, principalID, coordinator.HashAPIKey(secret), scopes, in.ExpiresAt); err != nil {
+		keyID, org, in.ProjectID, principalID, coordinator.HashAPIKey(secret), scopes, in.ExpiresAt); err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("insert api key: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("commit create api key: %w", err)
 	}
 	v := apiKeyView{
-		ID: keyID, Object: "api_key", OrganizationID: scope.Organization, ProjectID: in.ProjectID,
+		ID: keyID, Object: "api_key", OrganizationID: org, ProjectID: in.ProjectID,
 		PrincipalID: principalID, Scopes: scopes, ExpiresAt: in.ExpiresAt, Key: secret,
 	}
 	return api.ProvisionResult{Body: mustJSON(v)}, nil
@@ -358,7 +391,11 @@ func (s *Store) CreateAPIKey(ctx context.Context, scope middleware.Scope, body [
 
 // ListAPIKeys lists key METADATA (never the hash or plaintext) for every key in the caller's organization.
 func (s *Store) ListAPIKeys(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	ctx = orgScope(ctx, scope)
+	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = scopedCtx
 	rows, err := s.pool.Query(ctx, storage.Query("ListAPIKeys"))
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("list api keys: %w", err)
@@ -380,7 +417,11 @@ func (s *Store) ListAPIKeys(ctx context.Context, scope middleware.Scope) (api.Pr
 
 // GetAPIKey reads one key's metadata within the caller's organization; a foreign/unknown id is a miss (404).
 func (s *Store) GetAPIKey(ctx context.Context, scope middleware.Scope, id string) (api.ProvisionResult, error) {
-	ctx = orgScope(ctx, scope)
+	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = scopedCtx
 	v, err := scanAPIKey(s.pool.QueryRow(ctx, storage.Query("GetAPIKey"), id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.ProvisionResult{NotFound: true}, nil
@@ -394,9 +435,13 @@ func (s *Store) GetAPIKey(ctx context.Context, scope middleware.Scope, id string
 // RevokeAPIKey revokes a key in the caller's organization (idempotent — the first revoked_at is kept). A
 // foreign/unknown id is a miss (404). The response renders the key's current metadata.
 func (s *Store) RevokeAPIKey(ctx context.Context, scope middleware.Scope, id string) (api.ProvisionResult, error) {
-	ctx = orgScope(ctx, scope)
+	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = scopedCtx
 	var revoked string
-	err := s.pool.QueryRow(ctx, storage.Query("RevokeAPIKey"), id).Scan(&revoked)
+	err = s.pool.QueryRow(ctx, storage.Query("RevokeAPIKey"), id).Scan(&revoked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.ProvisionResult{NotFound: true}, nil
 	}

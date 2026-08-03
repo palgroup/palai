@@ -86,7 +86,7 @@ func seedSlackWorkspace(t *testing.T, s *Store, org, project string) (*identity.
 	secrets := identity.NewSecretStore(s.pool, key)
 
 	team := testID("T")
-	scope := middleware.Scope{Organization: org, Project: project}
+	scope := middleware.Scope{Project: project}
 	refs := map[string]string{
 		"slack-signing-" + team: redeemSigning,
 		"slack-bot-" + team:     redeemBotToken,

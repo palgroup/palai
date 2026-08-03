@@ -100,7 +100,7 @@ func TestDeletingAWebhookEndpointTwiceIs204Then404(t *testing.T) {
 // its own review. The gap is real and it is reported rather than quietly closed or quietly ignored.
 func TestDeletingAWebhookEndpointRequiresTheProvisionCapability(t *testing.T) {
 	fake := newFakeWebhookAPI("whe_1")
-	runOnly := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Scopes: []string{"responses"}}}
+	runOnly := scopedVerifier{middleware.Scope{Project: "prj_1", Scopes: []string{"responses"}}}
 	srv := httptest.NewServer(NewRouter(runOnly, nil, nil, nil, nil, nil, fake, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 

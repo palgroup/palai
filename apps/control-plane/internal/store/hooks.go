@@ -8,6 +8,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
+	"github.com/palgroup/palai/storage"
 )
 
 // The E12 Task 8 hooks management surface (spec §28.17, TOL-012). These adapt the tenant-scoped api.HookAPI
@@ -17,7 +18,11 @@ import (
 // CreateHook registers a hook. An unknown point/category/executor, an out-of-matrix pair, an invalid config,
 // or an inline secret is a BadField (400); a name collision is a Conflict (409).
 func (s *Store) CreateHook(ctx context.Context, scope middleware.Scope, body []byte) (api.HookResult, error) {
-	hook, err := s.tools.CreateHook(ctx, scope.Organization, scope.Project, body)
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
+	if err != nil {
+		return api.HookResult{}, err
+	}
+	hook, err := s.tools.CreateHook(ctx, org, scope.Project, body)
 	if res, mapped := hookReject(err); mapped {
 		return res, nil
 	}
@@ -34,7 +39,11 @@ func (s *Store) CreateHook(ctx context.Context, scope middleware.Scope, body []b
 // GetHook reads one hook's management projection (GET /v1/hooks/{id}, E29 T1). An absent or foreign hook is
 // a NotFound (404) — a tenant-scoped miss, never an existence disclosure.
 func (s *Store) GetHook(ctx context.Context, scope middleware.Scope, id string) (api.HookResult, error) {
-	hook, err := s.tools.GetHook(ctx, scope.Organization, scope.Project, id)
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
+	if err != nil {
+		return api.HookResult{}, err
+	}
+	hook, err := s.tools.GetHook(ctx, org, scope.Project, id)
 	if errors.Is(err, extensions.ErrHookNotFound) {
 		return api.HookResult{NotFound: true}, nil
 	}
@@ -52,7 +61,11 @@ func (s *Store) ListHooks(ctx context.Context, scope middleware.Scope, q api.Lis
 		window.AfterCreatedAt = &q.After.CreatedAt
 		window.AfterID = q.After.ID
 	}
-	hooks, err := s.tools.ListHooks(ctx, scope.Organization, scope.Project, window)
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
+	if err != nil {
+		return nil, err
+	}
+	hooks, err := s.tools.ListHooks(ctx, org, scope.Project, window)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +100,11 @@ func hookProjection(hook extensions.Hook) []byte {
 
 // DisableHook flips a hook's admin kill-switch. An unknown hook is a NotFound (404).
 func (s *Store) DisableHook(ctx context.Context, scope middleware.Scope, id string) (api.HookResult, error) {
-	existed, err := s.tools.DisableHook(ctx, scope.Organization, scope.Project, id)
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
+	if err != nil {
+		return api.HookResult{}, err
+	}
+	existed, err := s.tools.DisableHook(ctx, org, scope.Project, id)
 	if err != nil {
 		return api.HookResult{}, err
 	}

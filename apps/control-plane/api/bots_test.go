@@ -15,28 +15,28 @@ import (
 // fakeBotRegistry records what reached the store seam and scripts its outcomes, matching the
 // fakeSlackConnectionAPI idiom this file is modelled on.
 type fakeBotRegistry struct {
-	createdOrg, createdProject string
-	created                    BotCreate
-	createErr                  error
+	createdProject string
+	created        BotCreate
+	createErr      error
 
-	items                    []ListRow
-	listedOrg, listedProject string
-	lastQuery                ListQuery
+	items         []ListRow
+	listedProject string
+	lastQuery     ListQuery
 
-	missing            bool
-	detailBody         []byte
-	getOrg, getProject string
+	missing    bool
+	detailBody []byte
+	getProject string
 
-	patched                  BotPatch
-	patchedID                string
-	patchOrg, patchProject   string
-	patchErr                 error
-	deletedID                string
-	deleteOrg, deleteProject string
+	patched       BotPatch
+	patchedID     string
+	patchProject  string
+	patchErr      error
+	deletedID     string
+	deleteProject string
 }
 
 func (f *fakeBotRegistry) CreateBot(_ context.Context, scope middleware.Scope, req BotCreate) (BotResult, error) {
-	f.createdOrg, f.createdProject, f.created = scope.Organization, scope.Project, req
+	f.createdProject, f.created = scope.Project, req
 	if f.createErr != nil {
 		return BotResult{}, f.createErr
 	}
@@ -56,12 +56,12 @@ func (f *fakeBotRegistry) CreateBot(_ context.Context, scope middleware.Scope, r
 }
 
 func (f *fakeBotRegistry) ListBots(_ context.Context, scope middleware.Scope, q ListQuery) ([]ListRow, error) {
-	f.listedOrg, f.listedProject, f.lastQuery = scope.Organization, scope.Project, q
+	f.listedProject, f.lastQuery = scope.Project, q
 	return f.items, nil
 }
 
 func (f *fakeBotRegistry) GetBot(_ context.Context, scope middleware.Scope, id string) (BotResult, error) {
-	f.getOrg, f.getProject = scope.Organization, scope.Project
+	f.getProject = scope.Project
 	if f.missing {
 		return BotResult{NotFound: true}, nil
 	}
@@ -77,7 +77,7 @@ func (f *fakeBotRegistry) GetBot(_ context.Context, scope middleware.Scope, id s
 }
 
 func (f *fakeBotRegistry) PatchBot(_ context.Context, scope middleware.Scope, id string, patch BotPatch) (BotResult, error) {
-	f.patchOrg, f.patchProject, f.patchedID, f.patched = scope.Organization, scope.Project, id, patch
+	f.patchProject, f.patchedID, f.patched = scope.Project, id, patch
 	if f.patchErr != nil {
 		return BotResult{}, f.patchErr
 	}
@@ -89,7 +89,7 @@ func (f *fakeBotRegistry) PatchBot(_ context.Context, scope middleware.Scope, id
 }
 
 func (f *fakeBotRegistry) DeleteBot(_ context.Context, scope middleware.Scope, id string) (bool, error) {
-	f.deleteOrg, f.deleteProject, f.deletedID = scope.Organization, scope.Project, id
+	f.deleteProject, f.deletedID = scope.Project, id
 	return !f.missing, nil
 }
 
@@ -154,8 +154,8 @@ func TestBotsCreateTakesTenantFromTheVerifiedScope(t *testing.T) {
 	if loc := resp.Header.Get("Location"); loc != "/v1/bots/bot_1" {
 		t.Fatalf("Location = %q, want /v1/bots/bot_1", loc)
 	}
-	if fake.createdOrg != "org_1" || fake.createdProject != "prj_1" {
-		t.Fatalf("bot created in (%s, %s), want the verified scope (org_1, prj_1)", fake.createdOrg, fake.createdProject)
+	if fake.createdProject != "prj_1" {
+		t.Fatalf("bot created in project %s, want the verified scope's prj_1", fake.createdProject)
 	}
 }
 
@@ -188,7 +188,7 @@ func TestBotsCreateRejectsUnknownField(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
-	if fake.createdOrg != "" {
+	if fake.createdProject != "" {
 		t.Fatalf("a body refused at the boundary still reached the store seam")
 	}
 }
@@ -214,8 +214,8 @@ func TestBotsListIsScopedAndPaged(t *testing.T) {
 	if page.Data[0].(map[string]any)["id"] != "bot_1" {
 		t.Fatalf("page row = %v, want id bot_1", page.Data[0])
 	}
-	if fake.listedOrg != "org_1" || fake.listedProject != "prj_1" {
-		t.Fatalf("listed (%s, %s), want the verified scope (org_1, prj_1)", fake.listedOrg, fake.listedProject)
+	if fake.listedProject != "prj_1" {
+		t.Fatalf("listed under project %s, want the verified scope's prj_1", fake.listedProject)
 	}
 	if fake.lastQuery.Limit != 5 {
 		t.Fatalf("limit = %d, want 5", fake.lastQuery.Limit)
@@ -263,8 +263,8 @@ func TestBotsPatchRepairsUnderTheVerifiedScopeAndLeavesTheRestAlone(t *testing.T
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
-	if fake.patchedID != "bot_1" || fake.patchOrg != "org_1" {
-		t.Fatalf("patch scope = %s/%s id=%s, want org_1/bot_1", fake.patchOrg, fake.patchProject, fake.patchedID)
+	if fake.patchedID != "bot_1" || fake.patchProject != "prj_1" {
+		t.Fatalf("patch scope = %s id=%s, want prj_1/bot_1", fake.patchProject, fake.patchedID)
 	}
 	if fake.patched.AgentRevisionID == nil || *fake.patched.AgentRevisionID != "rev_1" {
 		t.Fatalf("agent_revision_id = %v, want rev_1", fake.patched.AgentRevisionID)
@@ -314,8 +314,8 @@ func TestBotsDeleteRemovesItAndAnUnknownIsNotFound(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", resp.StatusCode)
 	}
-	if fake.deletedID != "bot_1" || fake.deleteOrg != "org_1" {
-		t.Fatalf("delete = %q under %q, want bot_1 under org_1", fake.deletedID, fake.deleteOrg)
+	if fake.deletedID != "bot_1" || fake.deleteProject != "prj_1" {
+		t.Fatalf("delete = %q under %q, want bot_1 under prj_1", fake.deletedID, fake.deleteProject)
 	}
 
 	fake2 := &fakeBotRegistry{missing: true}

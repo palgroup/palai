@@ -150,12 +150,15 @@ func parseCursorPayload(payload []byte) (ListCursor, error) {
 	return ListCursor{CreatedAt: time.Unix(0, nanos).UTC(), ID: string(payload[8:])}, nil
 }
 
-// cursorMAC binds the position to the tenant and resource kind. The kind, organization, and
-// project are length-prefixed so ("a","b") and ("ab","") cannot collide into one MAC input.
+// cursorMAC binds the position to the tenant and resource kind. The kind and project are
+// length-prefixed so ("a","b") and ("ab","") cannot collide into one MAC input.
+//
+// No organization (A.2 Task 3): the request scope no longer resolves one, and project alone is the
+// isolation boundary now (migration 000062) — a cursor minted for one project already cannot be replayed
+// against another, which is the property this MAC exists to enforce.
 func cursorMAC(key []byte, kind string, scope middleware.Scope, payload []byte) []byte {
 	h := hmac.New(sha256.New, key)
 	writeField(h, kind)
-	writeField(h, scope.Organization)
 	writeField(h, scope.Project)
 	h.Write(payload)
 	return h.Sum(nil)[:macLen]

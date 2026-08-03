@@ -29,7 +29,7 @@ func TestQueueConnectionSingularReadIsTenantScopedAndMatchesTheList(t *testing.T
 	ctx := context.Background()
 
 	org, project, _ := seedSession(t, pool)
-	stranger, strangerProject, _ := seedSession(t, pool)
+	_, strangerProject, _ := seedSession(t, pool)
 
 	config, err := json.Marshal(map[string]string{"agent_revision_id": "arev_1", "principal_id": "prin_1"})
 	if err != nil {
@@ -40,7 +40,7 @@ func TestQueueConnectionSingularReadIsTenantScopedAndMatchesTheList(t *testing.T
 	})
 
 	// 1. The address resolves to the row that was created.
-	got, found, err := store.GetQueueConnectionItem(ctx, org, project, connID)
+	got, found, err := store.GetQueueConnectionItem(ctx, project, connID)
 	if err != nil {
 		t.Fatalf("GetQueueConnectionItem error = %v", err)
 	}
@@ -59,12 +59,12 @@ func TestQueueConnectionSingularReadIsTenantScopedAndMatchesTheList(t *testing.T
 
 	// 2. It is confined to the creating tenant. A foreign id is indistinguishable from an absent one:
 	// RLS makes the row invisible, so there is no oracle telling a stranger the id exists at all.
-	if _, found, err := store.GetQueueConnectionItem(ctx, stranger, strangerProject, connID); err != nil {
+	if _, found, err := store.GetQueueConnectionItem(ctx, strangerProject, connID); err != nil {
 		t.Fatalf("foreign-tenant read error = %v", err)
 	} else if found {
 		t.Fatal("another tenant read this connection: the singular read is not confined, and the route built on it would leak a connection's run target across tenants")
 	}
-	if _, found, err := store.GetQueueConnectionItem(ctx, org, project, "qconn_does_not_exist"); err != nil {
+	if _, found, err := store.GetQueueConnectionItem(ctx, project, "qconn_does_not_exist"); err != nil {
 		t.Fatalf("unknown-id read error = %v", err)
 	} else if found {
 		t.Fatal("an id that was never created reads back as found")
@@ -72,7 +72,7 @@ func TestQueueConnectionSingularReadIsTenantScopedAndMatchesTheList(t *testing.T
 
 	// 3. The two projections agree field for field. They share one scan function precisely so they cannot
 	// drift; this asserts the sharing rather than trusting it.
-	page, err := store.ListQueueConnections(ctx, org, project, ListWindow{Limit: 50})
+	page, err := store.ListQueueConnections(ctx, project, ListWindow{Limit: 50})
 	if err != nil {
 		t.Fatalf("ListQueueConnections error = %v", err)
 	}

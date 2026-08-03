@@ -15,22 +15,24 @@ import (
 // §20.2.2, E11 Task 2). The automation TriggerStore implements it; production wires it, and tiers that do
 // not touch triggers pass nil so the routes stay unmounted. Every method is scoped by the verified
 // identity, never a request-body field (§39.2). A delivery admits AS the verified principal.
+// No organization parameter (A.2 Task 3): the request scope no longer resolves one, and TriggerStore
+// resolves it fresh from project where it still needs one internally.
 type TriggerAPI interface {
-	CreateTrigger(ctx context.Context, org, project, principal, name, triggerType string) (string, error)
-	ReviseTrigger(ctx context.Context, org, project, triggerID string, in automation.TriggerRevisionInput) (automation.TriggerRevision, error)
-	GetTrigger(ctx context.Context, org, project, triggerID string) (automation.TriggerView, bool, error)
+	CreateTrigger(ctx context.Context, project, principal, name, triggerType string) (string, error)
+	ReviseTrigger(ctx context.Context, project, triggerID string, in automation.TriggerRevisionInput) (automation.TriggerRevision, error)
+	GetTrigger(ctx context.Context, project, triggerID string) (automation.TriggerView, bool, error)
 	// ListTriggers is the E13 T4 read side: a tenant-scoped page of triggers (RLS-confined). It returns
 	// the automation store's own row type; the handler maps each to the shared list envelope.
-	ListTriggers(ctx context.Context, org, project string, w automation.ListWindow) ([]automation.TriggerListItem, error)
-	CreateDeliveryIdempotent(ctx context.Context, org, project, principal, triggerID, idempotencyKey string, payload []byte) (automation.DeliveryResult, error)
-	GetDelivery(ctx context.Context, org, project, deliveryID string) (automation.TriggerDeliveryView, bool, error)
+	ListTriggers(ctx context.Context, project string, w automation.ListWindow) ([]automation.TriggerListItem, error)
+	CreateDeliveryIdempotent(ctx context.Context, project, principal, triggerID, idempotencyKey string, payload []byte) (automation.DeliveryResult, error)
+	GetDelivery(ctx context.Context, project, deliveryID string) (automation.TriggerDeliveryView, bool, error)
 	// IngestInbound is the unauthenticated signed-webhook receiver (E11 Task 5): the source signature is
 	// the auth. Global by server-minted id; verification precedes persistence; a durable row commits before
 	// the ack. Mounted on the top mux (see router.go).
 	IngestInbound(ctx context.Context, triggerID string, headers map[string]string, rawBody []byte) (automation.InboundResult, error)
 	// SetInboundSecretRefs rotates the trigger's inbound source-secret handles in place (the PATCH surface;
 	// rotation is not a pipeline revision).
-	SetInboundSecretRefs(ctx context.Context, org, project, triggerID, ref, refNext string) error
+	SetInboundSecretRefs(ctx context.Context, project, triggerID, ref, refNext string) error
 }
 
 type triggerHandler struct {
@@ -56,7 +58,7 @@ func (h *triggerHandler) createTrigger(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "name is required")
 		return
 	}
-	id, err := h.triggers.CreateTrigger(r.Context(), scope.Organization, scope.Project, scope.Principal, body.Name, body.Type)
+	id, err := h.triggers.CreateTrigger(r.Context(), scope.Project, scope.Principal, body.Name, body.Type)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -82,7 +84,7 @@ func (h *triggerHandler) listTriggers(w http.ResponseWriter, r *http.Request) {
 		window.AfterCreatedAt = &q.After.CreatedAt
 		window.AfterID = q.After.ID
 	}
-	items, err := h.triggers.ListTriggers(r.Context(), scope.Organization, scope.Project, window)
+	items, err := h.triggers.ListTriggers(r.Context(), scope.Project, window)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -114,7 +116,7 @@ func (h *triggerHandler) reviseInboundSecret(w http.ResponseWriter, r *http.Requ
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body is not valid JSON")
 		return
 	}
-	err := h.triggers.SetInboundSecretRefs(r.Context(), scope.Organization, scope.Project, r.PathValue("trigger_id"), body.InboundSecretRef, body.InboundSecretRefNext)
+	err := h.triggers.SetInboundSecretRefs(r.Context(), scope.Project, r.PathValue("trigger_id"), body.InboundSecretRef, body.InboundSecretRefNext)
 	if errors.Is(err, automation.ErrTriggerNotFound) {
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such trigger in this project")
 		return
@@ -152,7 +154,7 @@ func (h *triggerHandler) reviseTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 	// The dedupe/correlation key exprs are JSON rule objects in the same mapping language (stored as
 	// TEXT); carry the raw JSON through as the expr string.
-	rev, err := h.triggers.ReviseTrigger(r.Context(), scope.Organization, scope.Project, r.PathValue("trigger_id"), automation.TriggerRevisionInput{
+	rev, err := h.triggers.ReviseTrigger(r.Context(), scope.Project, r.PathValue("trigger_id"), automation.TriggerRevisionInput{
 		AgentRevisionID:       body.AgentRevisionID,
 		RunTemplateRevisionID: body.RunTemplateRevisionID,
 		InputMapping:          body.InputMapping,
@@ -192,7 +194,7 @@ func (h *triggerHandler) getTrigger(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	view, found, err := h.triggers.GetTrigger(r.Context(), scope.Organization, scope.Project, r.PathValue("trigger_id"))
+	view, found, err := h.triggers.GetTrigger(r.Context(), scope.Project, r.PathValue("trigger_id"))
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -214,7 +216,7 @@ func (h *triggerHandler) createDelivery(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	key := middleware.IdempotencyKey(r.Context())
-	del, err := h.triggers.CreateDeliveryIdempotent(r.Context(), scope.Organization, scope.Project, scope.Principal, r.PathValue("trigger_id"), key, raw)
+	del, err := h.triggers.CreateDeliveryIdempotent(r.Context(), scope.Project, scope.Principal, r.PathValue("trigger_id"), key, raw)
 	switch {
 	case errors.Is(err, automation.ErrTriggerNotFound):
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such trigger in this project")
@@ -246,7 +248,7 @@ func (h *triggerHandler) getDelivery(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	view, found, err := h.triggers.GetDelivery(r.Context(), scope.Organization, scope.Project, r.PathValue("delivery_id"))
+	view, found, err := h.triggers.GetDelivery(r.Context(), scope.Project, r.PathValue("delivery_id"))
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return

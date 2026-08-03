@@ -60,11 +60,11 @@ func TestAckedDeliveryCrashBeforeRunRecoversExactlyOnce(t *testing.T) {
 		t.Fatalf("PublishRevision error = %v", err)
 	}
 	store := automation.NewTriggerStore(pool).WithAdmitter(spine)
-	triggerID, err := store.CreateTrigger(ctx, org, proj, principal, randID("inbound-trg"), "webhook")
+	triggerID, err := store.CreateTrigger(ctx, proj, principal, randID("inbound-trg"), "webhook")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
-	triggerRev, err := store.ReviseTrigger(ctx, org, proj, triggerID, automation.TriggerRevisionInput{
+	triggerRev, err := store.ReviseTrigger(ctx, proj, triggerID, automation.TriggerRevisionInput{
 		AgentRevisionID: rev.ID,
 		InputMapping:    []byte(`{"fields":{"input":{"select":"order.summary"}},"required":["input"]}`),
 	})

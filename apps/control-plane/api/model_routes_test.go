@@ -84,7 +84,7 @@ func (f *fakeModelRoutes) GetModelRouteRevision(_ context.Context, s middleware.
 // 201, a publish is 200, a strict-decode reject is 400, and a route id the caller cannot see is a
 // NON-DISCLOSING 404 (never a 403 — a 403 would confirm the id exists in another tenant).
 func TestModelRouteSurface(t *testing.T) {
-	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	admin := scopedVerifier{middleware.Scope{Project: "prj_1"}}
 	fake := &fakeModelRoutes{out: ProvisionResult{Body: []byte(`{"id":"mroute_1","object":"model_route"}`)}}
 	srv := modelRouteTestServer(t, admin, WithModelRoutes(fake))
 
@@ -112,8 +112,8 @@ func TestModelRouteSurface(t *testing.T) {
 	if fake.lastRoute != "mroute_1" || fake.lastRev != "mrev_1" {
 		t.Fatalf("publish reached the store with (%q, %q), want (mroute_1, mrev_1)", fake.lastRoute, fake.lastRev)
 	}
-	if fake.lastScope.Organization != "org_1" || fake.lastScope.Project != "prj_1" {
-		t.Fatalf("store scope = %+v, want the verified identity's org/project (never a body field)", fake.lastScope)
+	if fake.lastScope.Project != "prj_1" {
+		t.Fatalf("store scope = %+v, want the verified identity's project (never a body field)", fake.lastScope)
 	}
 
 	fake.out = ProvisionResult{BadField: true}
@@ -137,7 +137,7 @@ func TestModelRouteSurface(t *testing.T) {
 // TestModelRouteSurfaceRequiresProvisionCapability proves model routing is an org-admin operation: a key
 // without the provision capability is refused, and an unauthenticated request never reaches the store.
 func TestModelRouteSurfaceRequiresProvisionCapability(t *testing.T) {
-	limited := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Scopes: []string{"responses"}}}
+	limited := scopedVerifier{middleware.Scope{Project: "prj_1", Scopes: []string{"responses"}}}
 	fake := &fakeModelRoutes{out: ProvisionResult{Body: []byte(`{}`)}}
 	srv := modelRouteTestServer(t, limited, WithModelRoutes(fake))
 
@@ -156,7 +156,7 @@ func TestModelRouteSurfaceRequiresProvisionCapability(t *testing.T) {
 // VERIFIED identity's scope (never a body/query field), a LIST renders 200, and an id the caller cannot
 // see is a NON-DISCLOSING 404 (the store's NotFound, never a 403 that would confirm the id exists).
 func TestModelRouteReadSurface(t *testing.T) {
-	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	admin := scopedVerifier{middleware.Scope{Project: "prj_1"}}
 	fake := &fakeModelRoutes{out: ProvisionResult{Body: []byte(`{"object":"list","data":[]}`)}}
 	srv := modelRouteTestServer(t, admin, WithModelRoutes(fake))
 
@@ -173,8 +173,8 @@ func TestModelRouteReadSurface(t *testing.T) {
 		}
 		resp.Body.Close()
 	}
-	if fake.lastScope.Organization != "org_1" || fake.lastScope.Project != "prj_1" {
-		t.Fatalf("a list reached the store with scope %+v, want the verified identity's org/project", fake.lastScope)
+	if fake.lastScope.Project != "prj_1" {
+		t.Fatalf("a list reached the store with scope %+v, want the verified identity's project", fake.lastScope)
 	}
 
 	// Singular GETs carry the path ids through to the store.
@@ -216,7 +216,7 @@ func TestModelRouteReadSurface(t *testing.T) {
 // the provision capability is refused BEFORE the store is reached (a read must not leak another tenant's
 // routing to a run-only key).
 func TestModelRouteReadsRequireProvisionCapability(t *testing.T) {
-	limited := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Scopes: []string{"responses"}}}
+	limited := scopedVerifier{middleware.Scope{Project: "prj_1", Scopes: []string{"responses"}}}
 	fake := &fakeModelRoutes{out: ProvisionResult{Body: []byte(`{"object":"list","data":[]}`)}}
 	srv := modelRouteTestServer(t, limited, WithModelRoutes(fake))
 
@@ -225,7 +225,7 @@ func TestModelRouteReadsRequireProvisionCapability(t *testing.T) {
 		t.Fatalf("limited-key list status = %d, want 403", resp.StatusCode)
 	}
 	resp.Body.Close()
-	if fake.lastScope.Organization != "" {
+	if fake.lastScope.Project != "" {
 		t.Fatal("a key without the provision capability reached the store on a read")
 	}
 }
@@ -233,7 +233,7 @@ func TestModelRouteReadsRequireProvisionCapability(t *testing.T) {
 // TestModelRoutesUnmountedWithoutOption proves the seam is opt-in: a router built without the option
 // serves no model-route path at all (the tiers that never touch routing stay bit-unchanged).
 func TestModelRoutesUnmountedWithoutOption(t *testing.T) {
-	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	admin := scopedVerifier{middleware.Scope{Project: "prj_1"}}
 	srv := modelRouteTestServer(t, admin)
 	resp := do(t, "POST", srv+"/v1/model-routes", `{"name":"default"}`, nil)
 	defer resp.Body.Close()
@@ -258,7 +258,7 @@ func TestModelRoutesUnmountedWithoutOption(t *testing.T) {
 // REQUEST was wrong, sending them to re-read the API when what they need to re-read is their key. 404 keeps
 // its one real meaning: no such connection in this tenant, indistinguishable from another tenant's.
 func TestVerifyModelConnectionIsMountedAndScoped(t *testing.T) {
-	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	admin := scopedVerifier{middleware.Scope{Project: "prj_1"}}
 	fake := &fakeModelRoutes{out: ProvisionResult{Body: []byte(`{"object":"model_connection_verification","outcome":"credential_rejected"}`)}}
 	srv := modelRouteTestServer(t, admin, WithModelRoutes(fake))
 
@@ -271,7 +271,7 @@ func TestVerifyModelConnectionIsMountedAndScoped(t *testing.T) {
 	if fake.lastConn != "mconn_1" {
 		t.Fatalf("verify reached the store with %q, want mconn_1", fake.lastConn)
 	}
-	if fake.lastScope.Organization != "org_1" || fake.lastScope.Project != "prj_1" {
+	if fake.lastScope.Project != "prj_1" {
 		t.Fatalf("verify scope = %+v, want the verified identity (never a path or body field)", fake.lastScope)
 	}
 
@@ -286,7 +286,7 @@ func TestVerifyModelConnectionIsMountedAndScoped(t *testing.T) {
 // The probe is behind the SAME provision capability as every other model-routing route. It redeems a
 // credential and dials a third party; a run-scoped key must not be able to make the control plane do either.
 func TestVerifyModelConnectionRequiresProvisionCapability(t *testing.T) {
-	limited := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Scopes: []string{"responses"}}}
+	limited := scopedVerifier{middleware.Scope{Project: "prj_1", Scopes: []string{"responses"}}}
 	fake := &fakeModelRoutes{out: ProvisionResult{Body: []byte(`{}`)}}
 	srv := modelRouteTestServer(t, limited, WithModelRoutes(fake))
 
@@ -308,7 +308,7 @@ func TestVerifyModelConnectionRequiresProvisionCapability(t *testing.T) {
 // WRITES the verification stamp; this reads and writes nothing, in this process or upstream. Leaving the
 // process is not by itself what makes a POST — if it were, every read behind this capability would be one.
 func TestConnectionModelsListIsAProvisionGatedGET(t *testing.T) {
-	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	admin := scopedVerifier{middleware.Scope{Project: "prj_1"}}
 	fake := &fakeModelRoutes{out: ProvisionResult{Body: []byte(
 		`{"object":"model_listing","connection_id":"mconn_1","outcome":"credential_accepted","data":[]}`)}}
 	srv := modelRouteTestServer(t, admin, WithModelRoutes(fake))
@@ -321,8 +321,8 @@ func TestConnectionModelsListIsAProvisionGatedGET(t *testing.T) {
 	if fake.lastConn != "mconn_1" {
 		t.Fatalf("the models list reached the store with connection %q, want mconn_1", fake.lastConn)
 	}
-	if fake.lastScope.Organization != "org_1" || fake.lastScope.Project != "prj_1" {
-		t.Fatalf("store scope = %+v, want the verified identity's org/project (never a path or query field)", fake.lastScope)
+	if fake.lastScope.Project != "prj_1" {
+		t.Fatalf("store scope = %+v, want the verified identity's project (never a path or query field)", fake.lastScope)
 	}
 
 	// EVERY OUTCOME THE PROVIDER ANSWERED IS A 200, including a rejected credential — the same argument the
@@ -347,7 +347,7 @@ func TestConnectionModelsListIsAProvisionGatedGET(t *testing.T) {
 // A key without the provision capability never reaches the store — the models list is fetched with the
 // connection's credential, so it is exactly as privileged as reading the connection itself.
 func TestConnectionModelsListRequiresProvisionCapability(t *testing.T) {
-	limited := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Scopes: []string{"responses"}}}
+	limited := scopedVerifier{middleware.Scope{Project: "prj_1", Scopes: []string{"responses"}}}
 	fake := &fakeModelRoutes{out: ProvisionResult{Body: []byte(`{}`)}}
 	srv := modelRouteTestServer(t, limited, WithModelRoutes(fake))
 

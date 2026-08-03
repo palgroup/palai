@@ -49,7 +49,7 @@ type createdPool struct {
 	StrictEnrollment        bool
 }
 
-func (f *fakeFleet) ListRunners(context.Context, string, string, capi.RunnerListWindow) ([]capi.RunnerItem, error) {
+func (f *fakeFleet) ListRunners(context.Context, string, capi.RunnerListWindow) ([]capi.RunnerItem, error) {
 	return []capi.RunnerItem{{
 		ID: "rnr_one", PoolID: "pool_mac", Label: "mac-mini-01", DNS: "rnr_one.runners.palai.internal",
 		State: "active", Posture: "unsandboxed-host", Capacity: 1,
@@ -57,11 +57,11 @@ func (f *fakeFleet) ListRunners(context.Context, string, string, capi.RunnerList
 	}}, nil
 }
 
-func (f *fakeFleet) GetRunner(_ context.Context, _, _, id string) (capi.RunnerItem, bool, error) {
+func (f *fakeFleet) GetRunner(_ context.Context, _, id string) (capi.RunnerItem, bool, error) {
 	return capi.RunnerItem{ID: id, State: "active", PoolID: "pool_mac"}, true, nil
 }
 
-func (f *fakeFleet) ListRunnerPools(context.Context, string, string, capi.RunnerListWindow) ([]capi.RunnerPoolItem, error) {
+func (f *fakeFleet) ListRunnerPools(context.Context, string, capi.RunnerListWindow) ([]capi.RunnerPoolItem, error) {
 	if f.created.Name == "" {
 		return []capi.RunnerPoolItem{}, nil
 	}
@@ -75,7 +75,7 @@ func (f *fakeFleet) ListRunnerPools(context.Context, string, string, capi.Runner
 }
 
 // CreateRunnerPool and SetRunnerPoolStrictEnrollment are the E28 T1 surface `palai pool` fronts.
-func (f *fakeFleet) CreateRunnerPool(_ context.Context, _, _ string, in capi.RunnerPoolCreate) (capi.RunnerPoolItem, error) {
+func (f *fakeFleet) CreateRunnerPool(_ context.Context, _ string, in capi.RunnerPoolCreate) (capi.RunnerPoolItem, error) {
 	f.created = createdPool{Name: in.Name, Posture: in.Posture, OS: in.OS, Arch: in.Arch, StrictEnrollment: in.StrictEnrollment}
 	return capi.RunnerPoolItem{
 		ID: "pool_created", Name: in.Name, Posture: in.Posture, OS: in.OS, Arch: in.Arch,
@@ -83,26 +83,26 @@ func (f *fakeFleet) CreateRunnerPool(_ context.Context, _, _ string, in capi.Run
 	}, nil
 }
 
-func (f *fakeFleet) SetRunnerPoolStrictEnrollment(_ context.Context, _, _, poolID string, strict bool) (capi.RunnerPoolItem, bool, error) {
+func (f *fakeFleet) SetRunnerPoolStrictEnrollment(_ context.Context, _, poolID string, strict bool) (capi.RunnerPoolItem, bool, error) {
 	f.strictID, f.strict = poolID, &strict
 	return capi.RunnerPoolItem{ID: poolID, Name: "mac-pool", Posture: "unsandboxed-host", StrictEnrollment: strict}, true, nil
 }
 
-func (f *fakeFleet) MintRunnerPoolKey(context.Context, string, string, string, *time.Time) (capi.RunnerPoolKeyItem, bool, error) {
+func (f *fakeFleet) MintRunnerPoolKey(context.Context, string, string, *time.Time) (capi.RunnerPoolKeyItem, bool, error) {
 	return capi.RunnerPoolKeyItem{}, false, nil
 }
 
-func (f *fakeFleet) ListRunnerPoolKeys(context.Context, string, string, string) ([]capi.RunnerPoolKeyItem, error) {
+func (f *fakeFleet) ListRunnerPoolKeys(context.Context, string, string) ([]capi.RunnerPoolKeyItem, error) {
 	return []capi.RunnerPoolKeyItem{}, nil
 }
 
-func (f *fakeFleet) RevokeRunnerPoolKey(context.Context, string, string, string) (capi.RunnerPoolKeyItem, bool, error) {
+func (f *fakeFleet) RevokeRunnerPoolKey(context.Context, string, string) (capi.RunnerPoolKeyItem, bool, error) {
 	return capi.RunnerPoolKeyItem{}, false, nil
 }
 
 // SetRunnerState is the surface this task adds and the surface this test demands: the operator's
 // cordon/resume/revoke of ONE machine, named by the id the server minted.
-func (f *fakeFleet) SetRunnerState(_ context.Context, _, _, id, action string) (capi.RunnerItem, bool, error) {
+func (f *fakeFleet) SetRunnerState(_ context.Context, _, id, action string) (capi.RunnerItem, bool, error) {
 	f.action, f.id = action, id
 	state := map[string]string{"cordon": "cordoned", "resume": "active", "revoke": "revoked"}[action]
 	return capi.RunnerItem{ID: id, State: state, PoolID: "pool_mac"}, true, nil
@@ -137,7 +137,7 @@ func grantSystemAlongside(scopes []string) []string {
 // is the point: the test is what turns "implemented" into "reachable".
 func TestRunnerLifecycleCLIReachesTheRealRouter(t *testing.T) {
 	fleet := &fakeFleet{}
-	h := capi.NewRouter(staticVerifier{scope: middleware.Scope{Organization: "org_1", Project: "prj_1",
+	h := capi.NewRouter(staticVerifier{scope: middleware.Scope{Project: "prj_1",
 		Scopes: grantSystemAlongside(nil)}},
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fakeProv{}, nil, capi.SSEConfig{}, nil, nil,
 		capi.WithRunners(fleet))
@@ -196,7 +196,7 @@ func TestRunnerLifecycleRejectsASecondPositional(t *testing.T) {
 // `provision` must be refused by the real gate — and `list`, a read, must not be.
 func TestRunnerLifecycleNeedsTheProvisionCapability(t *testing.T) {
 	fleet := &fakeFleet{}
-	h := capi.NewRouter(staticVerifier{scope: middleware.Scope{Organization: "org_1", Project: "prj_1",
+	h := capi.NewRouter(staticVerifier{scope: middleware.Scope{Project: "prj_1",
 		Scopes: grantSystemAlongside([]string{"run"})}},
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fakeProv{}, nil, capi.SSEConfig{}, nil, nil,
 		capi.WithRunners(fleet))
@@ -223,7 +223,7 @@ func TestRunnerLifecycleNeedsTheProvisionCapability(t *testing.T) {
 // response carries the decommissioned state rather than a bare 200 an operator has to interpret.
 func TestRunnerLifecycleRevokeIsRenderedAsIrreversible(t *testing.T) {
 	fleet := &fakeFleet{}
-	h := capi.NewRouter(staticVerifier{scope: middleware.Scope{Organization: "org_1", Project: "prj_1",
+	h := capi.NewRouter(staticVerifier{scope: middleware.Scope{Project: "prj_1",
 		Scopes: grantSystemAlongside(nil)}},
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fakeProv{}, nil, capi.SSEConfig{}, nil, nil,
 		capi.WithRunners(fleet))

@@ -8,6 +8,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/packages/coordinator"
+	"github.com/palgroup/palai/storage"
 )
 
 // The adapter that makes Store the api.RunnerRegistryAPI the read routes take. It is a projection and
@@ -15,8 +16,13 @@ import (
 // health. The registry records when a machine last authenticated; deciding what that MEANS is T5's,
 // and a `healthy` bool invented in this file would be a lie with a type.
 
-// ListRunners implements api.RunnerRegistryAPI.
-func (s *Store) ListRunners(ctx context.Context, org, project string, w api.RunnerListWindow) ([]api.RunnerItem, error) {
+// ListRunners implements api.RunnerRegistryAPI. Organization is resolved fresh from project (A.2 Task 3):
+// the request scope no longer carries one.
+func (s *Store) ListRunners(ctx context.Context, project string, w api.RunnerListWindow) ([]api.RunnerItem, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.List(ctx, org, project, ListWindow{
 		CreatedGTE: w.CreatedGTE, CreatedLTE: w.CreatedLTE,
 		AfterCreatedAt: w.AfterCreatedAt, AfterID: w.AfterID, Limit: w.Limit,
@@ -31,8 +37,13 @@ func (s *Store) ListRunners(ctx context.Context, org, project string, w api.Runn
 	return out, nil
 }
 
-// GetRunner implements api.RunnerRegistryAPI.
-func (s *Store) GetRunner(ctx context.Context, org, project, id string) (api.RunnerItem, bool, error) {
+// GetRunner implements api.RunnerRegistryAPI. Shadowed by RegistryAPI.GetRunner below in production; kept
+// consistent with the interface for the same reason that one is.
+func (s *Store) GetRunner(ctx context.Context, project, id string) (api.RunnerItem, bool, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return api.RunnerItem{}, false, err
+	}
 	row, found, err := s.Get(ctx, org, project, id)
 	if err != nil || !found {
 		return api.RunnerItem{}, false, err
@@ -40,8 +51,12 @@ func (s *Store) GetRunner(ctx context.Context, org, project, id string) (api.Run
 	return runnerItem(row), true, nil
 }
 
-// ListRunnerPools implements api.RunnerRegistryAPI (E24 T2).
-func (s *Store) ListRunnerPools(ctx context.Context, org, project string, w api.RunnerListWindow) ([]api.RunnerPoolItem, error) {
+// ListRunnerPools implements api.RunnerRegistryAPI (E24 T2). Shadowed by RegistryAPI.ListRunnerPools below.
+func (s *Store) ListRunnerPools(ctx context.Context, project string, w api.RunnerListWindow) ([]api.RunnerPoolItem, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.ListPools(ctx, org, project, ListWindow{
 		CreatedGTE: w.CreatedGTE, CreatedLTE: w.CreatedLTE,
 		AfterCreatedAt: w.AfterCreatedAt, AfterID: w.AfterID, Limit: w.Limit,
@@ -104,7 +119,11 @@ func (a *RegistryAPI) WithLifecycle(live RunnerLifecycle) *RegistryAPI {
 // that reached only the row takes effect at the machine's next connect, which for a Mac mid-run is hours
 // away. Both, in that order, means a crash between them leaves the safe state: recorded but not yet
 // applied, which the machine's next connect resolves because handleConnect adopts the row.
-func (a *RegistryAPI) SetRunnerState(ctx context.Context, org, project, id, action string) (api.RunnerItem, bool, error) {
+func (a *RegistryAPI) SetRunnerState(ctx context.Context, project, id, action string) (api.RunnerItem, bool, error) {
+	org, err := storage.OrganizationForProject(ctx, a.pool, project)
+	if err != nil {
+		return api.RunnerItem{}, false, err
+	}
 	row, found, err := a.Store.SetState(ctx, org, project, id, action)
 	if errors.Is(err, ErrUnknownLifecycleAction) {
 		return api.RunnerItem{}, false, err
@@ -138,7 +157,11 @@ func (a *RegistryAPI) SetRunnerState(ctx context.Context, org, project, id, acti
 // session still waiting. The gateway is told on every FOUND approval rather than only on the one that moved
 // the row — see RunnerGateway.ApproveRunner for the race that makes the retry the fix.
 func (a *RegistryAPI) ApproveRunner(ctx context.Context, scope middleware.Scope, id string) (api.RunnerItem, api.ApprovalOutcome, error) {
-	admission, err := a.Store.Approve(ctx, scope.Organization, scope.Project, id,
+	org, err := storage.OrganizationForProject(ctx, a.pool, scope.Project)
+	if err != nil {
+		return api.RunnerItem{}, api.ApprovalOutcome{}, err
+	}
+	admission, err := a.Store.Approve(ctx, org, scope.Project, id,
 		coordinator.ApproverPrincipal(coordinator.ApproverSurfaceKey, "", scope.APIKeyID))
 	switch {
 	case errors.Is(err, coordinator.ErrApproverNotAuthorized):
@@ -159,7 +182,11 @@ func (a *RegistryAPI) ApproveRunner(ctx context.Context, scope middleware.Scope,
 // CreateRunnerPool implements api.RunnerRegistryAPI (E28 T1). The name collision comes back as the api
 // package's typed value so the handler renders a 409 without parsing a SQLSTATE — and it is translated
 // HERE rather than raised there because this is the only layer that has seen the driver's error.
-func (s *Store) CreateRunnerPool(ctx context.Context, org, project string, in api.RunnerPoolCreate) (api.RunnerPoolItem, error) {
+func (s *Store) CreateRunnerPool(ctx context.Context, project string, in api.RunnerPoolCreate) (api.RunnerPoolItem, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return api.RunnerPoolItem{}, err
+	}
 	row, err := s.CreatePool(ctx, org, project, Pool{
 		Name: in.Name, Posture: in.Posture, OS: in.OS, Arch: in.Arch, StrictEnrollment: in.StrictEnrollment,
 	})
@@ -173,7 +200,11 @@ func (s *Store) CreateRunnerPool(ctx context.Context, org, project string, in ap
 }
 
 // SetRunnerPoolStrictEnrollment implements api.RunnerRegistryAPI (E28 T1).
-func (s *Store) SetRunnerPoolStrictEnrollment(ctx context.Context, org, project, poolID string, strict bool) (api.RunnerPoolItem, bool, error) {
+func (s *Store) SetRunnerPoolStrictEnrollment(ctx context.Context, project, poolID string, strict bool) (api.RunnerPoolItem, bool, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return api.RunnerPoolItem{}, false, err
+	}
 	row, found, err := s.SetStrictEnrollment(ctx, org, project, poolID, strict)
 	if err != nil || !found {
 		return api.RunnerPoolItem{}, false, err
@@ -190,8 +221,8 @@ func (s *Store) SetRunnerPoolStrictEnrollment(ctx context.Context, org, project,
 // single-pool route: the gap row named this placement itself ("the authenticated runner-pool read"). What
 // it borrows from ActiveLeases verbatim is the POINTER, because a deployment that bound no runner listener
 // could not ask, and "could not ask" is not "nothing is waiting".
-func (a *RegistryAPI) ListRunnerPools(ctx context.Context, org, project string, w api.RunnerListWindow) ([]api.RunnerPoolItem, error) {
-	items, err := a.Store.ListRunnerPools(ctx, org, project, w)
+func (a *RegistryAPI) ListRunnerPools(ctx context.Context, project string, w api.RunnerListWindow) ([]api.RunnerPoolItem, error) {
+	items, err := a.Store.ListRunnerPools(ctx, project, w)
 	if err != nil || a.live == nil {
 		return items, err
 	}
@@ -205,7 +236,11 @@ func (a *RegistryAPI) ListRunnerPools(ctx context.Context, org, project string, 
 // GetRunner shadows the embedded Store's so a single machine's read carries its LIVE lease count. It is
 // the per-runner counter's operator-facing consumer: after cordoning a Mac, "how many leases is it still
 // serving" is the only question left before unplugging it, and before this there was no way to ask.
-func (a *RegistryAPI) GetRunner(ctx context.Context, org, project, id string) (api.RunnerItem, bool, error) {
+func (a *RegistryAPI) GetRunner(ctx context.Context, project, id string) (api.RunnerItem, bool, error) {
+	org, err := storage.OrganizationForProject(ctx, a.pool, project)
+	if err != nil {
+		return api.RunnerItem{}, false, err
+	}
 	row, found, err := a.Store.Get(ctx, org, project, id)
 	if err != nil || !found {
 		return api.RunnerItem{}, false, err
@@ -225,9 +260,13 @@ func (a *RegistryAPI) decorate(row Runner) api.RunnerItem {
 }
 
 // MintRunnerPoolKey implements api.RunnerRegistryAPI.
-func (a *RegistryAPI) MintRunnerPoolKey(ctx context.Context, org, project, poolID string, expiresAt *time.Time) (api.RunnerPoolKeyItem, bool, error) {
+func (a *RegistryAPI) MintRunnerPoolKey(ctx context.Context, project, poolID string, expiresAt *time.Time) (api.RunnerPoolKeyItem, bool, error) {
 	if a.keys == nil {
 		return api.RunnerPoolKeyItem{}, false, nil
+	}
+	org, err := storage.OrganizationForProject(ctx, a.pool, project)
+	if err != nil {
+		return api.RunnerPoolKeyItem{}, false, err
 	}
 	minted, err := a.keys.Mint(ctx, org, project, poolID, expiresAt)
 	if errors.Is(err, ErrUnknownPool) {
@@ -243,9 +282,13 @@ func (a *RegistryAPI) MintRunnerPoolKey(ctx context.Context, org, project, poolI
 }
 
 // ListRunnerPoolKeys implements api.RunnerRegistryAPI.
-func (a *RegistryAPI) ListRunnerPoolKeys(ctx context.Context, org, project, poolID string) ([]api.RunnerPoolKeyItem, error) {
+func (a *RegistryAPI) ListRunnerPoolKeys(ctx context.Context, project, poolID string) ([]api.RunnerPoolKeyItem, error) {
 	if a.keys == nil {
 		return []api.RunnerPoolKeyItem{}, nil
+	}
+	org, err := storage.OrganizationForProject(ctx, a.pool, project)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := a.keys.List(ctx, org, project, poolID)
 	if err != nil {
@@ -259,9 +302,13 @@ func (a *RegistryAPI) ListRunnerPoolKeys(ctx context.Context, org, project, pool
 }
 
 // RevokeRunnerPoolKey implements api.RunnerRegistryAPI.
-func (a *RegistryAPI) RevokeRunnerPoolKey(ctx context.Context, org, project, keyID string) (api.RunnerPoolKeyItem, bool, error) {
+func (a *RegistryAPI) RevokeRunnerPoolKey(ctx context.Context, project, keyID string) (api.RunnerPoolKeyItem, bool, error) {
 	if a.keys == nil {
 		return api.RunnerPoolKeyItem{}, false, nil
+	}
+	org, err := storage.OrganizationForProject(ctx, a.pool, project)
+	if err != nil {
+		return api.RunnerPoolKeyItem{}, false, err
 	}
 	revoked, err := a.keys.Revoke(ctx, org, project, keyID)
 	if errors.Is(err, ErrUnknownPoolKey) {

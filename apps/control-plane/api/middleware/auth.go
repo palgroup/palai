@@ -12,10 +12,16 @@ import (
 // Scope is the verified tenant an API key resolves to. It comes from identity,
 // never from a request-body field (spec §39.2), and is the only source handlers
 // use to scope writes.
+//
+// NO ORGANIZATION (A.2 Task 3): the request scope resolves a project and nothing above it. Palai is
+// becoming single-tenant per installation (storage/migrations/000062's header), so the HTTP layer no
+// longer needs to know which organization a project belongs to — the handful of call sites that
+// genuinely still need that value (identity's org-wide provisioning listing, a coordinator.Tenant
+// construction, a wire-rendered organization_id) resolve it fresh via storage.OrganizationForProject,
+// keyed off Project, rather than reading it from here.
 type Scope struct {
-	Organization string
-	Project      string
-	Principal    string
+	Project   string
+	Principal string
 	// APIKeyID is the id of the key this request authenticated with (E23 T2). It is not the same as
 	// Principal — several keys may share a principal — and it is what an approver list names, because a
 	// key is what an operator revokes.
@@ -85,11 +91,14 @@ func Auth(v Verifier) func(http.Handler) http.Handler {
 				return
 			}
 			// The verified scope is also published to the database layer, so every query this
-			// request issues runs under palai.org_id / palai.project_id and migration 000029's
-			// policies enforce the same boundary the handlers' WHERE clauses claim. This is the
-			// ONLY place a request's tenant enters the DB scope — it comes from the credential,
-			// never from a body field (spec §39.2).
-			ctx := storage.WithTenant(r.Context(), scope.Organization, scope.Project)
+			// request issues runs under palai.project_id and migration 000062's policies enforce the
+			// same boundary the handlers' WHERE clauses claim. This is the ONLY place a request's
+			// tenant enters the DB scope — it comes from the credential, never from a body field
+			// (spec §39.2). No organization to publish anymore (A.2 Task 3): palai.org_id is set empty,
+			// which is harmless for every project_id-keyed policy (000062) — the three tables still
+			// keyed on organization_id (api_keys, principals, usage_ledger) are never reached through
+			// this top-level scope, only through storage.WithOrgScope's own, separately-resolved org.
+			ctx := storage.WithTenant(r.Context(), "", scope.Project)
 			ctx = context.WithValue(ctx, scopeKey{}, scope)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

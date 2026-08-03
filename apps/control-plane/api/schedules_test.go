@@ -29,33 +29,33 @@ type fakeScheduleAPI struct {
 	listCalledAt int
 }
 
-func (f *fakeScheduleAPI) CreateSchedule(_ context.Context, _, _, _ string, in automation.ScheduleInput) (string, error) {
+func (f *fakeScheduleAPI) CreateSchedule(_ context.Context, _, _ string, in automation.ScheduleInput) (string, error) {
 	f.createIn = &in
 	if f.createErr != nil {
 		return "", f.createErr
 	}
 	return "sch_created", nil
 }
-func (f *fakeScheduleAPI) GetSchedule(context.Context, string, string, string) (automation.ScheduleView, bool, error) {
+func (f *fakeScheduleAPI) GetSchedule(context.Context, string, string) (automation.ScheduleView, bool, error) {
 	return automation.ScheduleView{ID: "sch_1", Name: "nightly"}, f.getFound, nil
 }
-func (f *fakeScheduleAPI) ReviseSchedule(_ context.Context, _, _, _ string, in automation.ScheduleInput) (int, bool, error) {
+func (f *fakeScheduleAPI) ReviseSchedule(_ context.Context, _, _ string, in automation.ScheduleInput) (int, bool, error) {
 	f.reviseIn = &in
 	return 2, f.reviseFound, nil
 }
-func (f *fakeScheduleAPI) SetPaused(_ context.Context, _, _, _ string, paused bool) (bool, error) {
+func (f *fakeScheduleAPI) SetPaused(_ context.Context, _, _ string, paused bool) (bool, error) {
 	f.pausedTo = &paused
 	return f.pauseFound, nil
 }
-func (f *fakeScheduleAPI) DeleteSchedule(context.Context, string, string, string) (bool, error) {
+func (f *fakeScheduleAPI) DeleteSchedule(context.Context, string, string) (bool, error) {
 	return f.deleteFound, nil
 }
-func (f *fakeScheduleAPI) ListSchedules(_ context.Context, _, _ string, w automation.ListWindow, status string) ([]automation.ScheduleView, error) {
+func (f *fakeScheduleAPI) ListSchedules(_ context.Context, _ string, w automation.ListWindow, status string) ([]automation.ScheduleView, error) {
 	f.listWindow, f.listStatus = &w, &status
 	f.listCalledAt++
 	return f.schedules, nil
 }
-func (f *fakeScheduleAPI) ListOccurrences(_ context.Context, _, _, _ string, w automation.ListWindow) ([]automation.OccurrenceView, error) {
+func (f *fakeScheduleAPI) ListOccurrences(_ context.Context, _, _ string, w automation.ListWindow) ([]automation.OccurrenceView, error) {
 	f.occWindow = &w
 	return f.occurrences, nil
 }
@@ -216,7 +216,7 @@ func TestScheduleListRoutes(t *testing.T) {
 // deployment that took the security advice.
 func TestTheShippedOccurrenceLogIsNotRetroGated(t *testing.T) {
 	fake := &fakeScheduleAPI{occurrences: []automation.OccurrenceView{{OccurrenceID: "occ_1", State: "admitted"}}}
-	narrow := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1", Scopes: []string{"responses"}}}
+	narrow := scopedVerifier{middleware.Scope{Project: "prj_1", Principal: "prin_1", Scopes: []string{"responses"}}}
 	srv := httptest.NewServer(NewRouter(narrow, nil, nil, nil, nil, nil, nil, nil, fake, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 

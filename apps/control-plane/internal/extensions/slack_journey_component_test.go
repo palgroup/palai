@@ -209,11 +209,11 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 	// The trigger the Slack pipeline delivers through: dedupe on the SLACK EVENT ID (the canonical
 	// source-dedupe, not a parallel mechanism) and named_session correlation onto the thread's session, so a
 	// message arriving while the run is live becomes a QUEUED send_message — never a second run (step 6).
-	triggerID, err := triggers.CreateTrigger(ctx, org, project, principal, "slack-journey", "manual_api")
+	triggerID, err := triggers.CreateTrigger(ctx, project, principal, "slack-journey", "manual_api")
 	if err != nil {
 		t.Fatalf("create slack trigger: %v", err)
 	}
-	if _, err := triggers.ReviseTrigger(ctx, org, project, triggerID, automation.TriggerRevisionInput{
+	if _, err := triggers.ReviseTrigger(ctx, project, triggerID, automation.TriggerRevisionInput{
 		DedupeKeyExpr:      `{"select":"slack.event_id"}`,
 		CorrelationMode:    "named_session",
 		CorrelationKeyExpr: `{"select":"slack.session_id"}`,

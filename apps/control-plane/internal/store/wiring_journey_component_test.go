@@ -158,7 +158,7 @@ func newWiringFixture(t *testing.T) *wiringFixture {
 		pusher: pusher, pushSink: pushSink, queueSink: queueSink, statuses: map[string]int{},
 	}
 
-	scope := middleware.Scope{Organization: base.org, Project: base.project, Principal: base.principal}
+	scope := middleware.Scope{Project: base.project, Principal: base.principal}
 	ts := httptest.NewServer(api.NewRouter(
 		scopedVerifier{scope}, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		api.SSEConfig{}, nil, nil,

@@ -90,19 +90,20 @@ func TestProvisionSecondTenantViaAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyAPIKey(alpha admin key) error = %v", err)
 	}
-	if scopeA.Organization != aOrg || scopeA.Project != aProj {
-		t.Fatalf("alpha key resolved to (%s,%s), want (%s,%s)", scopeA.Organization, scopeA.Project, aOrg, aProj)
+	// Organization is no longer part of the resolved scope (A.2 Task 3): only Project is asserted.
+	if scopeA.Project != aProj {
+		t.Fatalf("alpha key resolved to project %s, want %s", scopeA.Project, aProj)
 	}
 	scopeB, err := cs.VerifyAPIKey(ctx, bKey)
 	if err != nil {
 		t.Fatalf("VerifyAPIKey(beta admin key) error = %v", err)
 	}
-	if scopeB.Organization != bOrg {
-		t.Fatalf("beta key resolved to org %s, want %s", scopeB.Organization, bOrg)
+	if scopeB.Project != bProj {
+		t.Fatalf("beta key resolved to project %s, want %s", scopeB.Project, bProj)
 	}
 
 	// Isolation: listing projects under beta's scope returns beta's default project and NOT alpha's.
-	list, err := idstore.ListProjects(ctx, middleware.Scope{Organization: bOrg, Project: bProj})
+	list, err := idstore.ListProjects(ctx, middleware.Scope{Project: bProj})
 	if err != nil {
 		t.Fatalf("ListProjects(beta) error = %v", err)
 	}
@@ -124,7 +125,7 @@ func TestConfigPolicyResolverReachable(t *testing.T) {
 	idstore := identity.New(cs.Pool())
 
 	org, proj, _ := provisionOrg(t, idstore, "gamma")
-	scope := middleware.Scope{Organization: org, Project: proj}
+	scope := middleware.Scope{Project: proj}
 	if _, err := idstore.UpdateProjectPolicy(ctx, scope, proj,
 		[]byte(`{"config_policy":{"allowed_models":["gpt-x"],"default_tools":["file"]}}`)); err != nil {
 		t.Fatalf("UpdateProjectPolicy error = %v", err)
@@ -149,8 +150,8 @@ func TestProvisioningStrictDecodeRejectsUnknownField(t *testing.T) {
 	ctx := context.Background()
 	idstore := identity.New(cs.Pool())
 
-	org, proj, _ := provisionOrg(t, idstore, "delta")
-	scope := middleware.Scope{Organization: org, Project: proj}
+	_, proj, _ := provisionOrg(t, idstore, "delta")
+	scope := middleware.Scope{Project: proj}
 
 	if r, _ := idstore.CreateProject(ctx, scope, []byte(`{"nope":1}`)); !r.BadField {
 		t.Fatal("CreateProject with an unknown field was not rejected")
@@ -171,9 +172,9 @@ func TestCreateAPIKeyForForeignProjectDenied(t *testing.T) {
 	ctx := context.Background()
 	idstore := identity.New(cs.Pool())
 
-	aOrg, aProj, _ := provisionOrg(t, idstore, "eps-a")
+	_, aProj, _ := provisionOrg(t, idstore, "eps-a")
 	_, bProj, _ := provisionOrg(t, idstore, "eps-b")
-	scopeA := middleware.Scope{Organization: aOrg, Project: aProj}
+	scopeA := middleware.Scope{Project: aProj}
 
 	if r, _ := idstore.CreateAPIKey(ctx, scopeA, []byte(`{"project_id":"`+bProj+`"}`)); !r.NotFound {
 		t.Fatal("minting a key for another tenant's project was not denied")
@@ -194,8 +195,8 @@ func TestListAPIKeysMetadataOnly(t *testing.T) {
 	ctx := context.Background()
 	idstore := identity.New(cs.Pool())
 
-	org, proj, _ := provisionOrg(t, idstore, "zeta")
-	scope := middleware.Scope{Organization: org, Project: proj}
+	_, proj, _ := provisionOrg(t, idstore, "zeta")
+	scope := middleware.Scope{Project: proj}
 	if _, err := idstore.CreateAPIKey(ctx, scope, []byte(`{"project_id":"`+proj+`"}`)); err != nil {
 		t.Fatalf("CreateAPIKey error = %v", err)
 	}
@@ -224,7 +225,7 @@ func TestBootstrapFirstOrgResolvable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyAPIKey(bootstrap key) error = %v", err)
 	}
-	if scope.Organization == "" || scope.Project == "" {
+	if scope.Project == "" {
 		t.Fatalf("bootstrap key resolved to an incomplete scope: %+v", scope)
 	}
 	// Re-seeding is a clean no-op (ON CONFLICT DO NOTHING), so the key still resolves.

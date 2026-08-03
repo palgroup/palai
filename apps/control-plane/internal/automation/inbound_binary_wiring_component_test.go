@@ -95,16 +95,16 @@ func TestInboundWebhookWiredIntoRunningBinary(t *testing.T) {
 	go supervisor.Supervise(loopCtx, "delivery-reconciler", rec.Run)
 
 	// A webhook trigger created AS the principal, pinned to a revision, with the secret ref set.
-	triggerID, err := triggerStore.CreateTrigger(ctx, org, proj, principal, randID("wired-inbound"), "webhook")
+	triggerID, err := triggerStore.CreateTrigger(ctx, proj, principal, randID("wired-inbound"), "webhook")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
-	if _, err := triggerStore.ReviseTrigger(ctx, org, proj, triggerID, automation.TriggerRevisionInput{
+	if _, err := triggerStore.ReviseTrigger(ctx, proj, triggerID, automation.TriggerRevisionInput{
 		InputMapping: []byte(`{"fields":{"input":{"select":"order.summary"}},"required":["input"]}`),
 	}); err != nil {
 		t.Fatalf("ReviseTrigger error = %v", err)
 	}
-	if err := triggerStore.SetInboundSecretRefs(ctx, org, proj, triggerID, ref, ""); err != nil {
+	if err := triggerStore.SetInboundSecretRefs(ctx, proj, triggerID, ref, ""); err != nil {
 		t.Fatalf("SetInboundSecretRefs error = %v", err)
 	}
 

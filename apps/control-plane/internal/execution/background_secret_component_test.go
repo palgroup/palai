@@ -90,7 +90,7 @@ func newSecretFixture(t *testing.T) *secretFixture {
 	}
 	// The write path is the REAL one: PutEnvironmentValue seals into secret_refs under the derived name
 	// the SQL rebuilds, so a disagreement between the two spellings would resolve nothing here.
-	out, err := secrets.PutEnvironmentValue(ctx, middleware.Scope{Organization: f.tenant.Organization},
+	out, err := secrets.PutEnvironmentValue(ctx, middleware.Scope{Project: f.tenant.Project},
 		f.envID, []byte(`{"key":"DEPLOY_TOKEN","value":"`+envValueSentinel+`"}`))
 	if err != nil || out.BadField || out.NotFound {
 		t.Fatalf("PutEnvironmentValue: %+v %v", out, err)

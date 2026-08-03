@@ -34,7 +34,7 @@ import (
 func TestCreatingAModelRouteRefusesAnAliasDispatchWillNeverRead(t *testing.T) {
 	s := &Store{}
 	ctx := context.Background()
-	scope := middleware.Scope{Organization: "org_1", Project: "prj_1"}
+	scope := middleware.Scope{Project: "prj_1"}
 
 	out, err := s.CreateModelRoute(ctx, scope, []byte(`{"name":"anthropic-default"}`))
 	if err != nil {
@@ -73,7 +73,7 @@ func TestCreatingTheDefaultModelRouteAliasIsUnaffected(t *testing.T) {
 		}
 	}()
 	_, _ = (&Store{}).CreateModelRoute(context.Background(),
-		middleware.Scope{Organization: "org_1", Project: "prj_1"},
+		middleware.Scope{Project: "prj_1"},
 		[]byte(`{"name":"`+coordinator.DefaultModelRouteAlias+`"}`))
 }
 

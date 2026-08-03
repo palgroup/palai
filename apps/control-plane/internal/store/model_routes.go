@@ -65,7 +65,11 @@ func (s *Store) CreateModelConnection(ctx context.Context, scope middleware.Scop
 	if out, ok := vetConnectionEndpoint(in.Provider, in.BaseURL); !ok {
 		return out, nil
 	}
-	id, err := s.spine.CreateModelConnection(ctx, tenantOf(scope), in.Provider, in.SecretRef, in.BaseURL)
+	_tenant, _terr := s.tenantOf(ctx, scope)
+	if _terr != nil {
+		return api.ProvisionResult{}, _terr
+	}
+	id, err := s.spine.CreateModelConnection(ctx, _tenant, in.Provider, in.SecretRef, in.BaseURL)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -166,7 +170,11 @@ func (s *Store) CreateModelRoute(ctx context.Context, scope middleware.Scope, bo
 			" (the only alias a run resolves through — a route by any other name would be created, published, " +
 			"and never consulted by a single run; got " + strconv.Quote(in.Name) + ")"}, nil
 	}
-	id, err := s.spine.CreateModelRoute(ctx, tenantOf(scope), in.Name)
+	_tenant, _terr := s.tenantOf(ctx, scope)
+	if _terr != nil {
+		return api.ProvisionResult{}, _terr
+	}
+	id, err := s.spine.CreateModelRoute(ctx, _tenant, in.Name)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -192,7 +200,11 @@ func (s *Store) CreateModelRouteRevision(ctx context.Context, scope middleware.S
 	if in.ConnectionID == "" {
 		return api.ProvisionResult{MissingField: "connection_id"}, nil
 	}
-	rev, err := s.spine.CreateModelRouteRevision(ctx, tenantOf(scope), routeID, in.Model, in.ConnectionID)
+	_tenant, _terr := s.tenantOf(ctx, scope)
+	if _terr != nil {
+		return api.ProvisionResult{}, _terr
+	}
+	rev, err := s.spine.CreateModelRouteRevision(ctx, _tenant, routeID, in.Model, in.ConnectionID)
 	switch {
 	case errors.Is(err, coordinator.ErrModelRouteNotFound), errors.Is(err, coordinator.ErrModelConnectionNotFound):
 		return api.ProvisionResult{NotFound: true}, nil
@@ -208,7 +220,11 @@ func (s *Store) PublishModelRouteRevision(ctx context.Context, scope middleware.
 	if out, ok := requireProjectScope(scope); !ok {
 		return out, nil
 	}
-	err := s.spine.PublishModelRouteRevision(ctx, tenantOf(scope), routeID, revisionID)
+	_tenant, _terr := s.tenantOf(ctx, scope)
+	if _terr != nil {
+		return api.ProvisionResult{}, _terr
+	}
+	err := s.spine.PublishModelRouteRevision(ctx, _tenant, routeID, revisionID)
 	switch {
 	case errors.Is(err, coordinator.ErrModelRouteNotFound), errors.Is(err, coordinator.ErrModelRouteRevisionNotFound):
 		return api.ProvisionResult{NotFound: true}, nil
@@ -307,7 +323,10 @@ func (s *Store) VerifyModelConnection(ctx context.Context, scope middleware.Scop
 	if out, ok := requireProjectScope(scope); !ok {
 		return out, nil
 	}
-	tenant := tenantOf(scope)
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
 	rec, err := s.spine.GetModelConnection(ctx, tenant, connectionID)
 	if errors.Is(err, coordinator.ErrModelConnectionNotFound) {
 		return api.ProvisionResult{NotFound: true}, nil
@@ -407,7 +426,10 @@ func (s *Store) ListConnectionModels(ctx context.Context, scope middleware.Scope
 	if out, ok := requireProjectScope(scope); !ok {
 		return out, nil
 	}
-	tenant := tenantOf(scope)
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
 	rec, err := s.spine.GetModelConnection(ctx, tenant, connectionID)
 	if errors.Is(err, coordinator.ErrModelConnectionNotFound) {
 		return api.ProvisionResult{NotFound: true}, nil
@@ -511,7 +533,11 @@ func (s *Store) ListModelConnections(ctx context.Context, scope middleware.Scope
 	if out, ok := requireProjectScope(scope); !ok {
 		return out, nil
 	}
-	recs, err := s.spine.ListModelConnections(ctx, tenantOf(scope))
+	_tenant, _terr := s.tenantOf(ctx, scope)
+	if _terr != nil {
+		return api.ProvisionResult{}, _terr
+	}
+	recs, err := s.spine.ListModelConnections(ctx, _tenant)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -527,7 +553,11 @@ func (s *Store) GetModelConnection(ctx context.Context, scope middleware.Scope, 
 	if out, ok := requireProjectScope(scope); !ok {
 		return out, nil
 	}
-	rec, err := s.spine.GetModelConnection(ctx, tenantOf(scope), connectionID)
+	_tenant, _terr := s.tenantOf(ctx, scope)
+	if _terr != nil {
+		return api.ProvisionResult{}, _terr
+	}
+	rec, err := s.spine.GetModelConnection(ctx, _tenant, connectionID)
 	if errors.Is(err, coordinator.ErrModelConnectionNotFound) {
 		return api.ProvisionResult{NotFound: true}, nil
 	}
@@ -542,7 +572,11 @@ func (s *Store) ListModelRoutes(ctx context.Context, scope middleware.Scope) (ap
 	if out, ok := requireProjectScope(scope); !ok {
 		return out, nil
 	}
-	recs, err := s.spine.ListModelRoutes(ctx, tenantOf(scope))
+	_tenant, _terr := s.tenantOf(ctx, scope)
+	if _terr != nil {
+		return api.ProvisionResult{}, _terr
+	}
+	recs, err := s.spine.ListModelRoutes(ctx, _tenant)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -558,7 +592,11 @@ func (s *Store) GetModelRoute(ctx context.Context, scope middleware.Scope, route
 	if out, ok := requireProjectScope(scope); !ok {
 		return out, nil
 	}
-	rec, err := s.spine.GetModelRoute(ctx, tenantOf(scope), routeID)
+	_tenant, _terr := s.tenantOf(ctx, scope)
+	if _terr != nil {
+		return api.ProvisionResult{}, _terr
+	}
+	rec, err := s.spine.GetModelRoute(ctx, _tenant, routeID)
 	if errors.Is(err, coordinator.ErrModelRouteNotFound) {
 		return api.ProvisionResult{NotFound: true}, nil
 	}
@@ -573,7 +611,11 @@ func (s *Store) ListModelRouteRevisions(ctx context.Context, scope middleware.Sc
 	if out, ok := requireProjectScope(scope); !ok {
 		return out, nil
 	}
-	revs, err := s.spine.ListModelRouteRevisions(ctx, tenantOf(scope), routeID)
+	_tenant, _terr := s.tenantOf(ctx, scope)
+	if _terr != nil {
+		return api.ProvisionResult{}, _terr
+	}
+	revs, err := s.spine.ListModelRouteRevisions(ctx, _tenant, routeID)
 	if errors.Is(err, coordinator.ErrModelRouteNotFound) {
 		return api.ProvisionResult{NotFound: true}, nil
 	}
@@ -628,7 +670,11 @@ func (s *Store) GetModelRouteRevision(ctx context.Context, scope middleware.Scop
 	if out, ok := requireProjectScope(scope); !ok {
 		return out, nil
 	}
-	rev, err := s.spine.GetModelRouteRevision(ctx, tenantOf(scope), routeID, revisionID)
+	_tenant, _terr := s.tenantOf(ctx, scope)
+	if _terr != nil {
+		return api.ProvisionResult{}, _terr
+	}
+	rev, err := s.spine.GetModelRouteRevision(ctx, _tenant, routeID, revisionID)
 	switch {
 	case errors.Is(err, coordinator.ErrModelRouteNotFound), errors.Is(err, coordinator.ErrModelRouteRevisionNotFound):
 		return api.ProvisionResult{NotFound: true}, nil

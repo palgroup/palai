@@ -51,8 +51,8 @@ func TestEnvironmentWriteResolveRotateAndUnbind(t *testing.T) {
 	idstore := identity.New(cs.Pool())
 	store := identity.NewSecretStore(cs.Pool(), masterKey(t))
 
-	org, _, _ := provisionOrg(t, idstore, "env-alpha")
-	scope := middleware.Scope{Organization: org}
+	org, project, _ := provisionOrg(t, idstore, "env-alpha")
+	scope := middleware.Scope{Project: project}
 
 	envID := createEnvironment(t, store, scope, "production")
 
@@ -173,8 +173,8 @@ func TestEnvironmentRefusesReservedAndMalformedKeyNames(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
 	store := identity.NewSecretStore(cs.Pool(), masterKey(t))
-	org, _, _ := provisionOrg(t, identity.New(cs.Pool()), "env-keys")
-	scope := middleware.Scope{Organization: org}
+	_, project, _ := provisionOrg(t, identity.New(cs.Pool()), "env-keys")
+	scope := middleware.Scope{Project: project}
 	envID := createEnvironment(t, store, scope, "keyrules")
 
 	for _, key := range []string{"lowercase", "With_Mixed", "WITH-DASH", "1LEADING", "HAS SPACE", "PALAI_ANYTHING", "PALAI_SIMCTL_SET", ""} {
@@ -204,10 +204,10 @@ func TestAForeignTenantCannotReachAnotherOrgsEnvironment(t *testing.T) {
 	idstore := identity.New(cs.Pool())
 	store := identity.NewSecretStore(cs.Pool(), masterKey(t))
 
-	orgA, _, _ := provisionOrg(t, idstore, "env-tenant-a")
-	orgB, _, _ := provisionOrg(t, idstore, "env-tenant-b")
-	scopeA := middleware.Scope{Organization: orgA}
-	scopeB := middleware.Scope{Organization: orgB}
+	orgA, projectA, _ := provisionOrg(t, idstore, "env-tenant-a")
+	orgB, projectB, _ := provisionOrg(t, idstore, "env-tenant-b")
+	scopeA := middleware.Scope{Project: projectA}
+	scopeB := middleware.Scope{Project: projectB}
 
 	envA := createEnvironment(t, store, scopeA, "a-production")
 	if out, err := store.PutEnvironmentValue(ctx, scopeA, envA, []byte(`{"key":"JIRA_TOKEN","value":"`+sentinelValue+`"}`)); err != nil || out.BadField {

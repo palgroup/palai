@@ -36,7 +36,7 @@ func assertPageLen(t *testing.T, resp *http.Response, want int) contracts.Page {
 // same keyset position under that same scope and resource kind.
 func TestCursorRoundTrips(t *testing.T) {
 	key := testCursorKey()
-	scope := middleware.Scope{Organization: "org_a", Project: "prj_a"}
+	scope := middleware.Scope{Project: "prj_a"}
 	pos := ListCursor{CreatedAt: time.Unix(0, 1_700_000_000_123_456_789).UTC(), ID: "resp_abc123"}
 
 	tok := encodeCursor(key, "responses", scope, pos)
@@ -49,20 +49,20 @@ func TestCursorRoundTrips(t *testing.T) {
 	}
 }
 
-// TestCursorRejectsForeignTenant is the TEN-001 cursor-fuzz core: a cursor minted for tenant A
-// is REJECTED — an explicit error, not a silently-different page — when presented by tenant B.
+// TestCursorRejectsForeignTenant is the TEN-001 cursor-fuzz core: a cursor minted for one project is
+// REJECTED — an explicit error, not a silently-different page — when presented under another project.
+//
+// This no longer has an "same project, different organization" leg (A.2 Task 3): middleware.Scope carries
+// no Organization anymore, so two scopes cannot differ on org while agreeing on project — project is the
+// whole tenant boundary now (cursorMAC's own comment says the same). Testing that vanished dimension would
+// mean building two scopes that are identical in every field the type still has, which asserts nothing.
 func TestCursorRejectsForeignTenant(t *testing.T) {
 	key := testCursorKey()
-	orgA := middleware.Scope{Organization: "org_a", Project: "prj_a"}
-	orgB := middleware.Scope{Organization: "org_b", Project: "prj_a"}
-	tok := encodeCursor(key, "responses", orgA, ListCursor{CreatedAt: time.Now().UTC(), ID: "resp_x"})
+	prjA := middleware.Scope{Project: "prj_a"}
+	prjC := middleware.Scope{Project: "prj_c"}
+	tok := encodeCursor(key, "responses", prjA, ListCursor{CreatedAt: time.Now().UTC(), ID: "resp_x"})
 
-	if _, err := decodeCursor(key, "responses", orgB, tok); err == nil {
-		t.Fatal("a cursor minted for org_a decoded under org_b; the foreign cursor was not rejected")
-	}
-	// A different project within the same org is also a foreign cursor.
-	orgAProjC := middleware.Scope{Organization: "org_a", Project: "prj_c"}
-	if _, err := decodeCursor(key, "responses", orgAProjC, tok); err == nil {
+	if _, err := decodeCursor(key, "responses", prjC, tok); err == nil {
 		t.Fatal("a cursor minted for prj_a decoded under prj_c; the foreign cursor was not rejected")
 	}
 }
@@ -71,7 +71,7 @@ func TestCursorRejectsForeignTenant(t *testing.T) {
 // a /v1/responses cursor is rejected when presented to the /v1/sessions list.
 func TestCursorRejectsForeignKind(t *testing.T) {
 	key := testCursorKey()
-	scope := middleware.Scope{Organization: "org_a", Project: "prj_a"}
+	scope := middleware.Scope{Project: "prj_a"}
 	tok := encodeCursor(key, "responses", scope, ListCursor{CreatedAt: time.Now().UTC(), ID: "resp_x"})
 	if _, err := decodeCursor(key, "sessions", scope, tok); err == nil {
 		t.Fatal("a responses cursor decoded on the sessions list; the cross-kind cursor was not rejected")
@@ -82,7 +82,7 @@ func TestCursorRejectsForeignKind(t *testing.T) {
 // and non-base64 garbage all fail closed with errBadCursor rather than a 500 or a wrong page.
 func TestCursorRejectsTamperAndGarbage(t *testing.T) {
 	key := testCursorKey()
-	scope := middleware.Scope{Organization: "org_a", Project: "prj_a"}
+	scope := middleware.Scope{Project: "prj_a"}
 	tok := encodeCursor(key, "responses", scope, ListCursor{CreatedAt: time.Now().UTC(), ID: "resp_x"})
 
 	raw, err := base64.RawURLEncoding.DecodeString(tok)
@@ -108,7 +108,7 @@ func TestCursorRejectsTamperAndGarbage(t *testing.T) {
 // payload contains neither the organization nor the project id (they live only in the HMAC).
 func TestCursorDoesNotLeakTenant(t *testing.T) {
 	key := testCursorKey()
-	scope := middleware.Scope{Organization: "org_secret_tenant", Project: "prj_secret_tenant"}
+	scope := middleware.Scope{Project: "prj_secret_tenant"}
 	tok := encodeCursor(key, "responses", scope, ListCursor{CreatedAt: time.Now().UTC(), ID: "resp_x"})
 
 	raw, err := base64.RawURLEncoding.DecodeString(tok)

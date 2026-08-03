@@ -131,7 +131,11 @@ type TriggerListItem struct {
 }
 
 // ListTriggers returns a tenant-scoped page of triggers newest-first (spec §20.2.2).
-func (s *TriggerStore) ListTriggers(ctx context.Context, org, project string, w ListWindow) ([]TriggerListItem, error) {
+func (s *TriggerStore) ListTriggers(ctx context.Context, project string, w ListWindow) ([]TriggerListItem, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return nil, fmt.Errorf("resolve organization for project: %w", err)
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListTriggers"),
 		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)

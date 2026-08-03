@@ -21,32 +21,32 @@ type fakeTriggerAPI struct {
 	triggers    []automation.TriggerListItem
 }
 
-func (f *fakeTriggerAPI) CreateTrigger(context.Context, string, string, string, string, string) (string, error) {
+func (f *fakeTriggerAPI) CreateTrigger(context.Context, string, string, string, string) (string, error) {
 	return "trg_created", nil
 }
 func (f *fakeTriggerAPI) IngestInbound(context.Context, string, map[string]string, []byte) (automation.InboundResult, error) {
 	return automation.InboundResult{}, nil
 }
-func (f *fakeTriggerAPI) SetInboundSecretRefs(context.Context, string, string, string, string, string) error {
+func (f *fakeTriggerAPI) SetInboundSecretRefs(context.Context, string, string, string, string) error {
 	return nil
 }
-func (f *fakeTriggerAPI) ReviseTrigger(_ context.Context, _, _, _ string, in automation.TriggerRevisionInput) (automation.TriggerRevision, error) {
+func (f *fakeTriggerAPI) ReviseTrigger(_ context.Context, _, _ string, in automation.TriggerRevisionInput) (automation.TriggerRevision, error) {
 	f.revised = &in
 	if f.reviseErr != nil {
 		return automation.TriggerRevision{}, f.reviseErr
 	}
 	return automation.TriggerRevision{ID: "trev_1", RevisionNumber: 1}, nil
 }
-func (f *fakeTriggerAPI) GetTrigger(context.Context, string, string, string) (automation.TriggerView, bool, error) {
+func (f *fakeTriggerAPI) GetTrigger(context.Context, string, string) (automation.TriggerView, bool, error) {
 	return automation.TriggerView{ID: "trg_1", Name: "nightly"}, f.triggerHit, nil
 }
-func (f *fakeTriggerAPI) ListTriggers(context.Context, string, string, automation.ListWindow) ([]automation.TriggerListItem, error) {
+func (f *fakeTriggerAPI) ListTriggers(context.Context, string, automation.ListWindow) ([]automation.TriggerListItem, error) {
 	return f.triggers, nil
 }
-func (f *fakeTriggerAPI) CreateDeliveryIdempotent(context.Context, string, string, string, string, string, []byte) (automation.DeliveryResult, error) {
+func (f *fakeTriggerAPI) CreateDeliveryIdempotent(context.Context, string, string, string, string, []byte) (automation.DeliveryResult, error) {
 	return f.delivery, f.deliveryErr
 }
-func (f *fakeTriggerAPI) GetDelivery(context.Context, string, string, string) (automation.TriggerDeliveryView, bool, error) {
+func (f *fakeTriggerAPI) GetDelivery(context.Context, string, string) (automation.TriggerDeliveryView, bool, error) {
 	return automation.TriggerDeliveryView{ID: "tdel_1", State: "run_created"}, f.deliveryHit, nil
 }
 

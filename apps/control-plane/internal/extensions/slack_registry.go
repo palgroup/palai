@@ -38,7 +38,11 @@ var _ api.SlackConnectionAPI = (*SlackRegistry)(nil)
 // another customer exists and holds that workspace. Collapsing it here means the HTTP layer is structurally
 // incapable of telling them apart. The control-plane-side log inside CreateSlackConnection still names the
 // colliding connection id for the operator who has to resolve it.
-func (r *SlackRegistry) CreateSlackConnection(ctx context.Context, org, project string, raw []byte) (string, error) {
+func (r *SlackRegistry) CreateSlackConnection(ctx context.Context, project string, raw []byte) (string, error) {
+	org, err := storage.OrganizationForProject(ctx, r.store.pool, project)
+	if err != nil {
+		return "", err
+	}
 	conn, err := r.store.CreateSlackConnection(ctx, org, project, raw)
 	switch {
 	case errors.Is(err, ErrSlackConnectionExists), errors.Is(err, ErrSlackWorkspaceBoundElsewhere):
@@ -53,7 +57,11 @@ func (r *SlackRegistry) CreateSlackConnection(ctx context.Context, org, project 
 
 // ListSlackConnections returns a tenant-scoped page of registered workspaces, newest-first. The projection
 // carries no secret-ref handles (storage/queries/slack.sql omits them from the list).
-func (r *SlackRegistry) ListSlackConnections(ctx context.Context, org, project string, w api.SlackListWindow) ([]api.SlackConnectionItem, error) {
+func (r *SlackRegistry) ListSlackConnections(ctx context.Context, project string, w api.SlackListWindow) ([]api.SlackConnectionItem, error) {
+	org, err := storage.OrganizationForProject(ctx, r.store.pool, project)
+	if err != nil {
+		return nil, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := r.store.pool.Query(ctx, storage.Query("ListSlackConnections"),
 		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
@@ -75,7 +83,11 @@ func (r *SlackRegistry) ListSlackConnections(ctx context.Context, org, project s
 // GetSlackConnection reads one binding's handles for the repair surface. The store method it wraps already
 // scopes to the tenant and answers ErrSlackConnectionNotFound for a foreign id, so a cross-tenant read is
 // indistinguishable here from a nonexistent one — which is what the 404 upstream depends on.
-func (r *SlackRegistry) GetSlackConnection(ctx context.Context, org, project, id string) (api.SlackConnectionDetail, bool, error) {
+func (r *SlackRegistry) GetSlackConnection(ctx context.Context, project, id string) (api.SlackConnectionDetail, bool, error) {
+	org, err := storage.OrganizationForProject(ctx, r.store.pool, project)
+	if err != nil {
+		return api.SlackConnectionDetail{}, false, err
+	}
 	conn, err := r.store.GetSlackConnection(ctx, org, project, id)
 	switch {
 	case errors.Is(err, ErrSlackConnectionNotFound):
@@ -93,7 +105,11 @@ func (r *SlackRegistry) GetSlackConnection(ctx context.Context, org, project, id
 // UpdateSlackConnection applies a partial revision. Every nil field COALESCEs to the stored value in the
 // statement, so this method converts "absent" to SQL NULL and nothing else — it does not read-modify-write,
 // which would race a concurrent revise and silently restore whatever it had read.
-func (r *SlackRegistry) UpdateSlackConnection(ctx context.Context, org, project, id string, patch api.SlackConnectionPatch) (bool, error) {
+func (r *SlackRegistry) UpdateSlackConnection(ctx context.Context, project, id string, patch api.SlackConnectionPatch) (bool, error) {
+	org, err := storage.OrganizationForProject(ctx, r.store.pool, project)
+	if err != nil {
+		return false, err
+	}
 	channels, err := jsonListOrNil(patch.AllowedChannels)
 	if err != nil {
 		return false, err
@@ -123,7 +139,11 @@ func (r *SlackRegistry) UpdateSlackConnection(ctx context.Context, org, project,
 // reference, so the connection cannot be deleted while any thread points at it) and both statements share
 // ONE transaction: a half-applied unbind would leave correlations pointing at a connection that is gone,
 // and every later event in those threads would resolve a row the registry no longer has.
-func (r *SlackRegistry) DeleteSlackConnection(ctx context.Context, org, project, id string) (bool, error) {
+func (r *SlackRegistry) DeleteSlackConnection(ctx context.Context, project, id string) (bool, error) {
+	org, err := storage.OrganizationForProject(ctx, r.store.pool, project)
+	if err != nil {
+		return false, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	tx, err := r.store.pool.Begin(ctx)
 	if err != nil {

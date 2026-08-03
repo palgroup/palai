@@ -212,9 +212,9 @@ func TestApprovalRoutesCarryTheVerifiedScopeAndTheRoutesDecision(t *testing.T) {
 		if fake.id != "apr_7" {
 			t.Fatalf("%s decided approval %q, want apr_7", tc.path, fake.id)
 		}
-		if fake.scope.Organization != "org_1" || fake.scope.Project != "prj_1" {
-			t.Fatalf("%s ran in (%s, %s), want the verified scope (org_1, prj_1)",
-				tc.path, fake.scope.Organization, fake.scope.Project)
+		if fake.scope.Project != "prj_1" {
+			t.Fatalf("%s ran in project %s, want the verified scope's prj_1",
+				tc.path, fake.scope.Project)
 		}
 	}
 }

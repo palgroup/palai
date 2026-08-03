@@ -16,7 +16,10 @@ import (
 // checked first and only a genuinely absent (or foreign) id is NotFound. Answering 404 for "this run
 // used no tools" would make a perfectly ordinary chat turn look like a broken id.
 func (s *Store) ListResponseToolCalls(ctx context.Context, scope middleware.Scope, responseID string) (api.ToolCallsResult, error) {
-	tenant := tenantOf(scope)
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return api.ToolCallsResult{}, err
+	}
 	view, err := s.spine.GetResponse(ctx, tenant, responseID)
 	if err != nil {
 		return api.ToolCallsResult{}, err

@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"errors"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ErrProjectRequired is returned by a connection acquisition when the acquiring context carries a
@@ -104,4 +106,27 @@ func ScopeToTenant(ctx context.Context, organization, project string) context.Co
 func scopeFrom(ctx context.Context) scope {
 	s, _ := ctx.Value(scopeKey{}).(scope)
 	return s
+}
+
+// OrganizationForProject resolves the organization a project belongs to (A.2 Task 3). It is the one place
+// Go code still needs a real organization value now that the request scope no longer resolves one
+// (middleware.Scope dropped its Organization field): identity's own org-wide provisioning surface and the
+// handful of call sites that still populate a coordinator.Tenant/wire-rendered organization_id use this in
+// place of the removed Scope field. It runs system-scoped, mirroring VerifyAPIKey and bootstrap:
+// establishing which organization owns a project cannot itself be gated behind that organization.
+//
+// IT IS SCAFFOLDING, NOT ARCHITECTURE, AND IT HAS A NAMED END. Palai is becoming single-tenant: the
+// organization_id columns are dropped in A.2 Task 5, and this function goes with them. Nothing new
+// should be built on it.
+//
+// ITS COST, MEASURED RATHER THAN WAVED AT: 96 call sites, no cache, so one store-method call is one
+// extra `SELECT organization_id FROM projects`. That price is paid to keep feeding a column already
+// scheduled for deletion, which is exactly why it is temporary and why the count is written here —
+// a bridge whose toll is undocumented reads like a design.
+//
+//	grep -rn 'OrganizationForProject(' --include='*.go' . | grep -v _test | grep -v 'func ' | wc -l  -> 96
+func OrganizationForProject(ctx context.Context, pool *pgxpool.Pool, project string) (string, error) {
+	var organization string
+	err := pool.QueryRow(WithSystemScope(ctx), Query("OrganizationForProject"), project).Scan(&organization)
+	return organization, err
 }

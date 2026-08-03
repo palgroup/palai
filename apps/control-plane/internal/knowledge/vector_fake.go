@@ -160,7 +160,11 @@ func (s *Store) SetVectorAdapter(a VectorAdapter) { s.vector = a }
 // silently embedded. Non-restricted sources embed normally. This exists so the vector/hybrid strategy has an
 // index to search in a test without a real store.
 func (s *Store) IndexKBIntoVector(ctx context.Context, scope middleware.Scope, kbID string, route EmbeddingRoute, policy EmbeddingPolicy) error {
-	ctx = tenantScope(ctx, scope)
+	scopedCtx, org, err := tenantScope(ctx, s.pool, scope.Project)
+	if err != nil {
+		return err
+	}
+	ctx = scopedCtx
 	idxID, _, ok, err := s.resolveIndexRevision(ctx, kbID, "")
 	if err != nil {
 		return err
@@ -197,7 +201,7 @@ func (s *Store) IndexKBIntoVector(ctx context.Context, scope middleware.Scope, k
 	}
 	for _, c := range chunks {
 		rec := VectorRecord{
-			Organization: scope.Organization, Project: scope.Project, KnowledgeBaseID: kbID,
+			Organization: org, Project: scope.Project, KnowledgeBaseID: kbID,
 			DocumentRevision: c.docRev, ChunkID: c.chunkID, IndexRevisionID: idxID,
 		}
 		if err := s.vector.Upsert(ctx, rec, deterministicEmbed(c.content)); err != nil {
@@ -211,7 +215,7 @@ func (s *Store) IndexKBIntoVector(ctx context.Context, scope middleware.Scope, k
 // source of truth), asks the vector store for candidates, then RE-RESOLVES every candidate against that set
 // — a record whose scope does not match or whose chunk is not authorized is dropped (§25.15.3: the store is
 // never trusted). Hybrid additionally runs the keyword strategy and fuses the two rankings.
-func (s *Store) runVectorStrategy(ctx context.Context, scope middleware.Scope, strategy, kbID, idxID, query string, grants []string, limit int) ([]RetrievedChunk, RetrievalCost, error) {
+func (s *Store) runVectorStrategy(ctx context.Context, org, project, strategy, kbID, idxID, query string, grants []string, limit int) ([]RetrievedChunk, RetrievalCost, error) {
 	if !s.vector.Enabled() {
 		return nil, RetrievalCost{Strategy: strategy}, ErrVectorDisabled
 	}
@@ -227,13 +231,13 @@ func (s *Store) runVectorStrategy(ctx context.Context, scope middleware.Scope, s
 		admittedIDs[id] = struct{}{}
 	}
 	recs, err := s.vector.Search(ctx, VectorScope{
-		Organization: scope.Organization, Project: scope.Project, KnowledgeBaseID: kbID, IndexRevisionID: idxID,
+		Organization: org, Project: project, KnowledgeBaseID: kbID, IndexRevisionID: idxID,
 		AdmittedChunkIDs: admittedIDs,
 	}, deterministicEmbed(query), limit)
 	if err != nil {
 		return nil, RetrievalCost{}, fmt.Errorf("vector search: %w", err)
 	}
-	vhits := resolveVectorHits(recs, scope.Organization, scope.Project, kbID, idxID, admitted)
+	vhits := resolveVectorHits(recs, org, project, kbID, idxID, admitted)
 
 	cost := RetrievalCost{Strategy: strategy, VectorHits: len(vhits), EmbeddingTokens: len(strings.Fields(query))}
 	if strategy == strategyVector {

@@ -253,7 +253,11 @@ type EndpointCreate struct {
 }
 
 // CreateEndpoint registers an endpoint in the verified scope and returns its server-minted id.
-func (s *WebhookStore) CreateEndpoint(ctx context.Context, org, project string, c EndpointCreate) (string, error) {
+func (s *WebhookStore) CreateEndpoint(ctx context.Context, project string, c EndpointCreate) (string, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return "", err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	id := newID("whe")
 	fixed := c.FixedHeaders
@@ -307,7 +311,11 @@ type EndpointView struct {
 // ListEndpoints returns the scope's endpoints, newest first and then by id — a TOTAL order, so two reads of
 // an unchanged table return one sequence. See ListWebhookEndpoints in webhooks.sql for what the tiebreaker
 // is doing there.
-func (s *WebhookStore) ListEndpoints(ctx context.Context, org, project string) ([]EndpointView, error) {
+func (s *WebhookStore) ListEndpoints(ctx context.Context, project string) ([]EndpointView, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return nil, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListWebhookEndpoints"), org, project)
 	if err != nil {
@@ -342,7 +350,11 @@ type DeliveryView struct {
 }
 
 // ListDeliveries returns the scope's deliveries, optionally filtered by state (state="" = all).
-func (s *WebhookStore) ListDeliveries(ctx context.Context, org, project, state string, limit int) ([]DeliveryView, error) {
+func (s *WebhookStore) ListDeliveries(ctx context.Context, project, state string, limit int) ([]DeliveryView, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return nil, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	if limit <= 0 {
 		limit = 100
@@ -356,7 +368,11 @@ func (s *WebhookStore) ListDeliveries(ctx context.Context, org, project, state s
 }
 
 // GetDelivery returns a single delivery in scope, or (nil, false) if not found.
-func (s *WebhookStore) GetDelivery(ctx context.Context, org, project, id string) (*DeliveryView, bool, error) {
+func (s *WebhookStore) GetDelivery(ctx context.Context, project, id string) (*DeliveryView, bool, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return nil, false, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("GetWebhookDelivery"), id, org, project)
 	if err != nil {
@@ -393,7 +409,11 @@ type AttemptView struct {
 }
 
 // ListAttempts returns the sanitized attempt view for a delivery in scope.
-func (s *WebhookStore) ListAttempts(ctx context.Context, org, project, deliveryID string) ([]AttemptView, error) {
+func (s *WebhookStore) ListAttempts(ctx context.Context, project, deliveryID string) ([]AttemptView, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return nil, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListDeliveryAttempts"), deliveryID, org, project)
 	if err != nil {
@@ -414,10 +434,14 @@ func (s *WebhookStore) ListAttempts(ctx context.Context, org, project, deliveryI
 // Redeliver revives a dead/pending delivery with the same id + payload (spec §21.6). Returns false if no
 // such delivery exists in scope, and ErrDeliveryEndpointDeleted if the delivery is there but the endpoint it
 // was addressed to has been unregistered — see that error's comment for why those are different answers.
-func (s *WebhookStore) Redeliver(ctx context.Context, org, project, id string) (bool, error) {
+func (s *WebhookStore) Redeliver(ctx context.Context, project, id string) (bool, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return false, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var out string
-	err := s.pool.QueryRow(ctx, storage.Query("RedeliverDelivery"), id, org, project).Scan(&out)
+	err = s.pool.QueryRow(ctx, storage.Query("RedeliverDelivery"), id, org, project).Scan(&out)
 	if err == pgx.ErrNoRows {
 		// The UPDATE matched nothing for one of two reasons and they deserve different answers. Ask which.
 		var exists int
@@ -439,10 +463,14 @@ func (s *WebhookStore) Redeliver(ctx context.Context, org, project, id string) (
 // GetEndpoint reads one endpoint in the verified scope. The projection is the list's, character for
 // character (GetWebhookEndpoint in webhooks.sql sits next to ListWebhookEndpoints for that reason): a caller
 // that got a different shape from the two routes would be looking at two resources.
-func (s *WebhookStore) GetEndpoint(ctx context.Context, org, project, id string) (*EndpointView, bool, error) {
+func (s *WebhookStore) GetEndpoint(ctx context.Context, project, id string) (*EndpointView, bool, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return nil, false, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var e EndpointView
-	err := s.pool.QueryRow(ctx, storage.Query("GetWebhookEndpoint"), id, org, project).Scan(
+	err = s.pool.QueryRow(ctx, storage.Query("GetWebhookEndpoint"), id, org, project).Scan(
 		&e.ID, &e.URL, &e.Enabled, &e.EventFilter, &e.APIRevision,
 		&e.SigningSecretRef, &e.SigningSecretRefNext,
 		&e.TimeoutMS, &e.MaxAttempts, &e.RetryWindowSeconds,
@@ -469,10 +497,14 @@ func (s *WebhookStore) GetEndpoint(ctx context.Context, org, project, id string)
 // every delivery and every attempt away with the endpoint. A delivery is an audit record of a payload this
 // deployment actually sent, and unregistering the address does not un-send it; the surviving rows keep the
 // deleted id, unresolvable on purpose. Future sending stops because DueDeliveries inner-joins this table.
-func (s *WebhookStore) DeleteEndpoint(ctx context.Context, org, project, id string) (bool, error) {
+func (s *WebhookStore) DeleteEndpoint(ctx context.Context, project, id string) (bool, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return false, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var out string
-	err := s.pool.QueryRow(ctx, storage.Query("DeleteWebhookEndpoint"), id, org, project).Scan(&out)
+	err = s.pool.QueryRow(ctx, storage.Query("DeleteWebhookEndpoint"), id, org, project).Scan(&out)
 	if err == pgx.ErrNoRows {
 		return false, nil
 	}

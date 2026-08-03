@@ -23,9 +23,8 @@ const testToken = "test-token"
 // testScope is the tenant the fake resolves testToken to. Handlers must derive
 // scope from this identity, never from a request-body project_id.
 var testScope = middleware.Scope{
-	Organization: "org_test",
-	Project:      "prj_test",
-	Principal:    "prin_test",
+	Project:   "prj_test",
+	Principal: "prin_test",
 }
 
 // fakeBackend is the in-process store seam: it implements auth verification and
@@ -141,20 +140,24 @@ func (f *fakeBackend) CancelResponse(_ context.Context, _ middleware.Scope, id s
 // EventReader: the response-admission conformance tier never streams, so these
 // satisfy the interface without a journal. The SSE contract is proven end-to-end
 // against real Postgres in tests/e2e/sse.
-func (f *fakeBackend) SessionExists(context.Context, string, string, string) (bool, error) {
+func (f *fakeBackend) SessionExists(context.Context, string, string) (bool, error) {
 	return false, nil
 }
 
-func (f *fakeBackend) ResolveCursor(context.Context, string, string, string, string) (int64, bool, error) {
+func (f *fakeBackend) ResolveCursor(context.Context, string, string, string) (int64, bool, error) {
 	return 0, false, nil
 }
 
-func (f *fakeBackend) After(context.Context, string, string, string, int64, int) ([]contracts.Event, error) {
+func (f *fakeBackend) After(context.Context, string, string, int64, int) ([]contracts.Event, error) {
 	return nil, nil
 }
 
-func (f *fakeBackend) RecordAttachDenied(context.Context, string, string, string, string) error {
+func (f *fakeBackend) RecordAttachDenied(context.Context, string, string, string) error {
 	return nil
+}
+
+func (f *fakeBackend) ResolveOrganization(context.Context, string) (string, error) {
+	return "org_test", nil
 }
 
 // newTestServer starts the real router + middleware stack over a fresh fake

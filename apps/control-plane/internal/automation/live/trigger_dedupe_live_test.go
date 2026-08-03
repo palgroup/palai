@@ -115,11 +115,11 @@ func TestLiveTriggerDedupeRun(t *testing.T) {
 
 	// A trigger pinned to the revision, deduping on the order id, mapping the order summary to the input.
 	store := automation.NewTriggerStore(pool).WithAdmitter(spine)
-	triggerID, err := store.CreateTrigger(ctx, org, project, principal, randID("orders"), "manual_api")
+	triggerID, err := store.CreateTrigger(ctx, project, principal, randID("orders"), "manual_api")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
-	if _, err := store.ReviseTrigger(ctx, org, project, triggerID, automation.TriggerRevisionInput{
+	if _, err := store.ReviseTrigger(ctx, project, triggerID, automation.TriggerRevisionInput{
 		AgentRevisionID: rev.ID,
 		InputMapping:    []byte(`{"fields":{"input":{"select":"order.summary"}},"required":["input"]}`),
 		DedupeKeyExpr:   `{"select":"order.id"}`,

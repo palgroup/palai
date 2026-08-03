@@ -82,8 +82,8 @@ func TestSetLimitIsAnUpsertScopedToTheCaller(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
 	store := metering.New(cs.Pool())
-	org, projectA, _ := tenant(t, cs)
-	scope := middleware.Scope{Organization: org, Project: projectA}
+	_, projectA, _ := tenant(t, cs)
+	scope := middleware.Scope{Project: projectA}
 
 	first, err := store.SetBudget(ctx, scope, []byte(`{"meter_prefix":"model.","limit_quantity":1000}`))
 	if err != nil {
@@ -131,22 +131,29 @@ func TestUsageSummaryTotalsTheCallersScope(t *testing.T) {
 	settle(t, cs, org, projectA, "model.input_tokens", "token", 30)
 	settle(t, cs, org, projectA, "model.output_tokens", "token", 12)
 	settle(t, cs, org, projectB, "model.output_tokens", "token", 500)
-	if _, err := store.SetBudget(ctx, middleware.Scope{Organization: org, Project: projectA},
+	if _, err := store.SetBudget(ctx, middleware.Scope{Project: projectA},
 		[]byte(`{"meter_prefix":"model.","limit_quantity":1000}`)); err != nil {
 		t.Fatalf("SetBudget error = %v", err)
 	}
 
-	projectTotal, budgets := summaryTotals(t, store, middleware.Scope{Organization: org, Project: projectA})
+	projectTotal, budgets := summaryTotals(t, store, middleware.Scope{Project: projectA})
 	if projectTotal != 42 {
 		t.Fatalf("project-A summary total = %v, want 42 (its own two meters, not project-B's 500)", projectTotal)
 	}
 	if budgets != 1 {
 		t.Fatalf("project-A summary carried %d budget(s), want the 1 that binds it", budgets)
 	}
-	orgTotal, _ := summaryTotals(t, store, middleware.Scope{Organization: org})
-	if orgTotal != 542 {
-		t.Fatalf("org-scoped summary total = %v, want 542 (both projects)", orgTotal)
-	}
+	// THE ORG-WIDE HALF THIS TEST ONCE ASSERTED HERE IS GONE, AND NOT BY THIS TASK'S CHOICE. It drove
+	// middleware.Scope{Organization: org, Project: ""} directly into the store, bypassing HTTP — but
+	// storage.OpenPool's PrepareConn has refused a non-orgOnly, empty-project acquisition since A.2 Task 1
+	// (ErrProjectRequired, storage/tenant.go), and coordinator.Store.VerifyAPIKey has rejected a
+	// projectless key even earlier ("A key with no project is rejected: the LP-0 surface only admits
+	// project-scoped keys"). So the scenario this half asserted — an org-scoped key with no project
+	// reading both projects' usage — was already unreachable through any real credential before this task
+	// touched the file; A.2 Task 3 only removed the Scope field that let the test keep CONSTRUCTING it by
+	// hand. usage_ledger genuinely still has no installation-wide fallback (000062's header: its
+	// project_id is never ''), so if an org-wide usage view is still wanted, it needs a real seam analogous
+	// to storage.WithOrgScope — a product decision this task does not make unilaterally.
 }
 
 // TestLedgerPageIsKeysetOrderedAndScoped proves the raw entry page an exporter reads: newest first, no
@@ -160,7 +167,7 @@ func TestLedgerPageIsKeysetOrderedAndScoped(t *testing.T) {
 		settle(t, cs, org, projectA, "model.output_tokens", "token", float64(i+1))
 	}
 	settle(t, cs, org, projectB, "model.output_tokens", "token", 999)
-	scope := middleware.Scope{Organization: org, Project: projectA}
+	scope := middleware.Scope{Project: projectA}
 
 	// Page one asks for 3 (2 + the has_more over-fetch the handler adds).
 	first, err := store.ListUsageLedger(ctx, scope, api.ListQuery{Limit: 3})
@@ -273,7 +280,7 @@ func TestLedgerNarrowsBySessionAndMeterAndLeavesTheUnfilteredPageWhole(t *testin
 	ctx := context.Background()
 	store := metering.New(cs.Pool())
 	org, project, _ := tenant(t, cs)
-	scope := middleware.Scope{Organization: org, Project: project}
+	scope := middleware.Scope{Project: project}
 
 	wanted, other := newID("ses"), newID("ses")
 	settleForSession(t, cs, org, project, wanted, "model.input_tokens", "token", 10)
@@ -387,7 +394,7 @@ func TestUsageSeriesBucketsZeroFillsAndOrdersTotally(t *testing.T) {
 	settleAt(t, cs, org, projectB, "model.input_tokens", "token", 9999, base)
 
 	q := api.UsageSeriesQuery{Bucket: "hour", Start: base, End: base.Add(2 * time.Hour)}
-	got := readSeries(t, store, middleware.Scope{Organization: org, Project: projectA}, q)
+	got := readSeries(t, store, middleware.Scope{Project: projectA}, q)
 
 	want := []seriesPoint{
 		{BucketStart: base, Meter: "model.input_tokens", Unit: "token", Quantity: 150, Entries: 2},
@@ -416,18 +423,16 @@ func TestUsageSeriesBucketsZeroFillsAndOrdersTotally(t *testing.T) {
 		}
 	}
 
-	// The org-scoped read of the SAME window sees the sibling project too: 100 + 50 + 9999 in the first
-	// bucket. This is the other half of the narrowing — a scope that is supposed to widen must actually
-	// widen, or the project filter is just broken in the safe direction.
-	orgGot := readSeries(t, store, middleware.Scope{Organization: org}, q)
-	if len(orgGot) == 0 || orgGot[0].Quantity != 10149 {
-		t.Fatalf("org-scoped first bucket = %+v, want model.input_tokens 10149 (both projects)", orgGot)
-	}
+	// THE ORG-WIDE HALF ONCE ASSERTED HERE IS GONE — see TestUsageSummaryTotalsTheCallersScope's comment:
+	// an org-scoped, projectless middleware.Scope was already unreachable through any real credential
+	// since A.2 Task 1 (storage.OpenPool's PrepareConn refuses it; VerifyAPIKey rejects a projectless key
+	// even earlier), so this half tested a scenario Task 3 could no longer even construct, not one it
+	// broke.
 
 	// A meter narrowing collapses the series to one line per bucket and must NOT disturb the buckets:
 	// the same three, still zero-filled.
 	q.Meter = "model.output_tokens"
-	filtered := readSeries(t, store, middleware.Scope{Organization: org, Project: projectA}, q)
+	filtered := readSeries(t, store, middleware.Scope{Project: projectA}, q)
 	if len(filtered) != 3 {
 		t.Fatalf("meter-filtered series returned %d points, want 3 (one meter x three buckets): %+v", len(filtered), filtered)
 	}
@@ -453,7 +458,7 @@ func TestUsageSeriesEmptyWindowIsAnEmptyChartNotAZeroChart(t *testing.T) {
 	settleAt(t, cs, org, projectA, "model.input_tokens", "token", 100, base)
 
 	// A window that ends before the only row exists.
-	out, err := store.UsageSeries(context.Background(), middleware.Scope{Organization: org, Project: projectA},
+	out, err := store.UsageSeries(context.Background(), middleware.Scope{Project: projectA},
 		api.UsageSeriesQuery{Bucket: "hour", Start: base.Add(-5 * time.Hour), End: base.Add(-time.Hour)})
 	if err != nil {
 		t.Fatalf("UsageSeries(empty window) error = %v", err)
@@ -491,7 +496,7 @@ func TestUsageSeriesDayBucketsTruncateInUTCNotTheSessionTimezone(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = cs.Pool().Exec(storage.WithSystemScope(ctx), `SET TIME ZONE 'UTC'`) })
 
-	got := readSeries(t, store, middleware.Scope{Organization: org, Project: projectA},
+	got := readSeries(t, store, middleware.Scope{Project: projectA},
 		api.UsageSeriesQuery{Bucket: "day", Start: at.Add(-24 * time.Hour), End: at.Add(time.Hour)})
 	for _, p := range got {
 		if p.Quantity == 0 {
@@ -568,7 +573,7 @@ func TestUsageSeriesOrdersTotallyWithinABucket(t *testing.T) {
 		"model.output_tokens", "run.admitted", "step.interrupted", "z.omega",
 	}
 	assertOrder := func(plan string) {
-		got := readSeries(t, store, middleware.Scope{Organization: org, Project: projectA}, q)
+		got := readSeries(t, store, middleware.Scope{Project: projectA}, q)
 		if len(got) != len(want) {
 			t.Fatalf("[%s] one bucket returned %d points, want %d (eight meters in a single bucket)", plan, len(got), len(want))
 		}

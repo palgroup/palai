@@ -82,20 +82,30 @@ func (s *Store) VerifyAPIKey(ctx context.Context, token string) (middleware.Scop
 		return middleware.Scope{}, err
 	}
 	return middleware.Scope{
-		Organization: id.Organization,
-		Project:      id.Project,
-		Principal:    id.Principal,
-		APIKeyID:     id.APIKeyID,
-		Scopes:       id.Scopes,
+		Project:   id.Project,
+		Principal: id.Principal,
+		APIKeyID:  id.APIKeyID,
+		Scopes:    id.Scopes,
 	}, nil
+}
+
+// ResolveOrganization resolves the organization a project belongs to (A.2 Task 3): the api.Admitter seam
+// the create handler uses to render organization_id on the synchronous "queued" projection it persists as
+// a new response's initial body, now that middleware.Scope no longer carries one itself.
+func (s *Store) ResolveOrganization(ctx context.Context, project string) (string, error) {
+	return storage.OrganizationForProject(ctx, s.spine.Pool(), project)
 }
 
 // AdmitResponse runs the idempotent admission transaction within the request's
 // verified scope. The Location id is read back from the returned body so a replay
 // points at the original resource, not a freshly minted one.
 func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.AdmitResult, error) {
+	tenant, err := s.tenantOf(ctx, req.Scope)
+	if err != nil {
+		return api.AdmitResult{}, err
+	}
 	adm, err := s.spine.AdmitResponse(ctx,
-		coordinator.Tenant{Organization: req.Scope.Organization, Project: req.Scope.Project},
+		tenant,
 		coordinator.AdmissionInput{
 			Principal:             req.Scope.Principal,
 			IdempotencyKey:        req.IdempotencyKey,
@@ -164,7 +174,11 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 // problem-shaped error whose request_id is stamped from this retrieval (spec §22.3,
 // §8.3).
 func (s *Store) GetResponse(ctx context.Context, scope middleware.Scope, id string) (api.RetrieveResult, error) {
-	view, err := s.spine.GetResponse(ctx, coordinator.Tenant{Organization: scope.Organization, Project: scope.Project}, id)
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return api.RetrieveResult{}, err
+	}
+	view, err := s.spine.GetResponse(ctx, tenant, id)
 	if err != nil {
 		return api.RetrieveResult{}, err
 	}
@@ -217,7 +231,11 @@ func (s *Store) GetResponse(ctx context.Context, scope middleware.Scope, id stri
 // projection GetResponse returns, minus the decoded output blob — model/usage/output come from the
 // per-id GET, so a page is a cheap keyset scan.
 func (s *Store) ListResponses(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
-	items, err := s.spine.ListResponses(ctx, tenantOf(scope), toListParams(q))
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	items, err := s.spine.ListResponses(ctx, tenant, toListParams(q))
 	if err != nil {
 		return nil, err
 	}
@@ -231,8 +249,8 @@ func (s *Store) ListResponses(ctx context.Context, scope middleware.Scope, q api
 			Output:         []contracts.ContentItem{},
 			Usage:          contracts.Usage{},
 			SessionID:      contracts.SessionID(it.SessionID),
-			OrganizationID: contracts.OrganizationID(scope.Organization),
-			ProjectID:      contracts.ProjectID(scope.Project),
+			OrganizationID: contracts.OrganizationID(tenant.Organization),
+			ProjectID:      contracts.ProjectID(tenant.Project),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("marshal response list row: %w", err)
@@ -284,7 +302,10 @@ func toAutomationWindow(q api.ListQuery) automation.ListWindow {
 // retry-safe and cancel-after-terminal is safe. The read-back renders the projection body
 // (stamping the retrieval's request_id on the problem), reusing the retrieval path.
 func (s *Store) CancelResponse(ctx context.Context, scope middleware.Scope, id string) (api.RetrieveResult, error) {
-	tenant := coordinator.Tenant{Organization: scope.Organization, Project: scope.Project}
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return api.RetrieveResult{}, err
+	}
 	runID, found, err := s.spine.RunIDForResponse(ctx, tenant, id)
 	if err != nil {
 		return api.RetrieveResult{}, err
@@ -342,11 +363,15 @@ func uncertainSideEffectProjection() ([]byte, error) {
 // the projection this renders. name is the optional operator label (E29) and is "" for a body that
 // omitted it, in which case the projection derives one from the first prompt instead.
 func (s *Store) CreateSession(ctx context.Context, scope middleware.Scope, name string) (api.SessionResult, error) {
-	view, err := s.spine.CreateSession(ctx, tenantOf(scope), middleware.NewID("ses"), name)
+	tenant, err := s.tenantOf(ctx, scope)
 	if err != nil {
 		return api.SessionResult{}, err
 	}
-	body, err := marshalSession(scope, view)
+	view, err := s.spine.CreateSession(ctx, tenant, middleware.NewID("ses"), name)
+	if err != nil {
+		return api.SessionResult{}, err
+	}
+	body, err := marshalSession(tenant, view)
 	if err != nil {
 		return api.SessionResult{}, err
 	}
@@ -369,8 +394,12 @@ func (s *Store) CreateSession(ctx context.Context, scope middleware.Scope, name 
 //
 // An unknown or foreign id is a miss (Found=false → 404) and writes nothing.
 func (s *Store) SetSessionAutoApprove(ctx context.Context, scope middleware.Scope, id string, tools, publications bool) (api.SessionResult, error) {
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return api.SessionResult{}, err
+	}
 	principal := coordinator.ApproverPrincipal(coordinator.ApproverSurfaceKey, "", scope.APIKeyID)
-	view, err := s.spine.SetSessionAutoApprove(ctx, tenantOf(scope), id, principal, tools, publications)
+	view, err := s.spine.SetSessionAutoApprove(ctx, tenant, id, principal, tools, publications)
 	if err != nil {
 		return api.SessionResult{}, err
 	}
@@ -383,14 +412,18 @@ func (s *Store) SetSessionAutoApprove(ctx context.Context, scope middleware.Scop
 }
 
 func (s *Store) RenameSession(ctx context.Context, scope middleware.Scope, id, name string) (api.SessionResult, error) {
-	view, err := s.spine.RenameSession(ctx, tenantOf(scope), id, name)
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return api.SessionResult{}, err
+	}
+	view, err := s.spine.RenameSession(ctx, tenant, id, name)
 	if err != nil {
 		return api.SessionResult{}, err
 	}
 	if !view.Found {
 		return api.SessionResult{}, nil
 	}
-	body, err := marshalSession(scope, view)
+	body, err := marshalSession(tenant, view)
 	if err != nil {
 		return api.SessionResult{}, err
 	}
@@ -400,13 +433,17 @@ func (s *Store) RenameSession(ctx context.Context, scope middleware.Scope, id, n
 // ListSessions returns a tenant-scoped page of sessions within the request's verified scope (spec
 // §9.1, E13 T4). Each row is the same projection GetSession renders.
 func (s *Store) ListSessions(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
-	views, err := s.spine.ListSessions(ctx, tenantOf(scope), toListParams(q))
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	views, err := s.spine.ListSessions(ctx, tenant, toListParams(q))
 	if err != nil {
 		return nil, err
 	}
 	rows := make([]api.ListRow, 0, len(views))
 	for _, v := range views {
-		body, err := marshalSession(scope, v)
+		body, err := marshalSession(tenant, v)
 		if err != nil {
 			return nil, err
 		}
@@ -418,7 +455,11 @@ func (s *Store) ListSessions(ctx context.Context, scope middleware.Scope, q api.
 // GetRepositoryBinding reads a binding within the request's verified scope (spec §30.1, E13 T4). A
 // missing or foreign id is NotFound (404), leaking no cross-tenant existence.
 func (s *Store) GetRepositoryBinding(ctx context.Context, scope middleware.Scope, id string) (api.BindingResult, error) {
-	binding, found, err := s.spine.GetRepositoryBinding(ctx, tenantOf(scope), id)
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return api.BindingResult{}, err
+	}
+	binding, found, err := s.spine.GetRepositoryBinding(ctx, tenant, id)
 	if err != nil {
 		return api.BindingResult{}, err
 	}
@@ -435,7 +476,11 @@ func (s *Store) GetRepositoryBinding(ctx context.Context, scope middleware.Scope
 // ListRepositoryBindings returns a tenant-scoped page of bindings within the request's verified scope
 // (spec §30.1, E13 T4). Each row is the same projection GetRepositoryBinding renders.
 func (s *Store) ListRepositoryBindings(ctx context.Context, scope middleware.Scope, q api.ListQuery, includeArchived bool) ([]api.ListRow, error) {
-	items, err := s.spine.ListRepositoryBindings(ctx, tenantOf(scope), toListParams(q), includeArchived)
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	items, err := s.spine.ListRepositoryBindings(ctx, tenant, toListParams(q), includeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -453,14 +498,18 @@ func (s *Store) ListRepositoryBindings(ctx context.Context, scope middleware.Sco
 // GetSession reads a session projection within the request's verified scope (spec §9.1). A
 // missing or foreign row is a miss (404), leaking no cross-tenant existence.
 func (s *Store) GetSession(ctx context.Context, scope middleware.Scope, id string) (api.SessionResult, error) {
-	view, err := s.spine.GetSession(ctx, tenantOf(scope), id)
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return api.SessionResult{}, err
+	}
+	view, err := s.spine.GetSession(ctx, tenant, id)
 	if err != nil {
 		return api.SessionResult{}, err
 	}
 	if !view.Found {
 		return api.SessionResult{}, nil
 	}
-	body, err := marshalSession(scope, view)
+	body, err := marshalSession(tenant, view)
 	if err != nil {
 		return api.SessionResult{}, err
 	}
@@ -475,7 +524,10 @@ func (s *Store) CreateRepositoryBinding(ctx context.Context, scope middleware.Sc
 	if req.Provider == "" || req.RepositoryIdentity == "" || req.CloneURL == "" {
 		return api.BindingResult{Invalid: true}, nil
 	}
-	tenant := tenantOf(scope)
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return api.BindingResult{}, err
+	}
 	bindingID := middleware.NewID("repo")
 	if err := s.spine.CreateRepositoryBinding(ctx, tenant, coordinator.RepositoryBindingInput{
 		BindingID:          bindingID,
@@ -550,7 +602,11 @@ func (s *Store) AcceptCommand(ctx context.Context, scope middleware.Scope, sessi
 	if err != nil {
 		return api.CommandResult{}, err
 	}
-	cmd, err := s.spine.AcceptCommand(ctx, tenantOf(scope), sessionID, input)
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return api.CommandResult{}, err
+	}
+	cmd, err := s.spine.AcceptCommand(ctx, tenant, sessionID, input)
 	if err != nil {
 		return api.CommandResult{}, err
 	}
@@ -564,8 +620,8 @@ func (s *Store) AcceptCommand(ctx context.Context, scope middleware.Scope, sessi
 	return api.CommandResult{Body: body}, nil
 }
 
-// marshalSession renders a session projection. organization_id/project_id come from the
-// verified scope, never a request field (spec §39.2).
+// marshalSession renders a session projection. organization_id/project_id come from the resolved
+// tenant, never a request field (spec §39.2).
 //
 // The E29 fields — label, agents, metered tokens, activity span — are rendered here and NOT re-derived
 // per row: the store hands back one already-populated SessionView per session, so a page of 50 is one
@@ -573,14 +629,14 @@ func (s *Store) AcceptCommand(ctx context.Context, scope middleware.Scope, sessi
 // whose runs pinned no agent; a screen must not have to tell those apart, because they are the same
 // fact. duration_ms is computed from the two timestamps here, in one place, so it cannot disagree
 // with them.
-func marshalSession(scope middleware.Scope, view coordinator.SessionView) ([]byte, error) {
+func marshalSession(tenant coordinator.Tenant, view coordinator.SessionView) ([]byte, error) {
 	out := contracts.Session{
 		ID:             contracts.SessionID(view.ID),
 		Object:         "session",
 		Status:         view.State,
 		CreatedAt:      view.CreatedAt.UTC().Format(time.RFC3339Nano),
-		OrganizationID: contracts.OrganizationID(scope.Organization),
-		ProjectID:      contracts.ProjectID(scope.Project),
+		OrganizationID: contracts.OrganizationID(tenant.Organization),
+		ProjectID:      contracts.ProjectID(tenant.Project),
 		Name:           view.Name,
 		NameSource:     view.NameSource,
 		Agents:         view.Agents,
@@ -639,9 +695,17 @@ func marshalCommand(cmd coordinator.Command) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// tenantOf projects a verified scope onto the coordinator tenant key.
-func tenantOf(scope middleware.Scope) coordinator.Tenant {
-	return coordinator.Tenant{Organization: scope.Organization, Project: scope.Project}
+// tenantOf projects a verified scope onto the coordinator tenant key. Organization is resolved fresh from
+// Project (A.2 Task 3): middleware.Scope no longer carries one, but coordinator.Tenant still does (Task 3b
+// removes that field) and the durable spine's own tables still hold a NOT NULL organization_id column
+// (Task 4 drops it) — so this is the one place Store still needs a real value, looked up the same way
+// storage.OrganizationForProject documents.
+func (s *Store) tenantOf(ctx context.Context, scope middleware.Scope) (coordinator.Tenant, error) {
+	organization, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
+	if err != nil {
+		return coordinator.Tenant{}, fmt.Errorf("resolve organization for project: %w", err)
+	}
+	return coordinator.Tenant{Organization: organization, Project: scope.Project}, nil
 }
 
 // PurgeExpiredStoreFalse runs one retention sweep over the durable spine, reaping the
@@ -654,26 +718,44 @@ func (s *Store) PurgeExpiredStoreFalse(ctx context.Context, ttl time.Duration) (
 
 // SessionExists reports whether the session is visible in the given tenant scope;
 // the event stream uses it as the 404 gate for a foreign or unknown session.
-func (s *Store) SessionExists(ctx context.Context, org, project, sessionID string) (bool, error) {
+//
+// No organization parameter (A.2 Task 3): resolved fresh from project, same as tenantOf.
+func (s *Store) SessionExists(ctx context.Context, project, sessionID string) (bool, error) {
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), project)
+	if err != nil {
+		return false, fmt.Errorf("resolve organization for project: %w", err)
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	return s.journal.SessionExists(ctx, org, project, sessionID)
 }
 
 // ResolveCursor maps a Last-Event-ID to its per-session sequence within scope.
-func (s *Store) ResolveCursor(ctx context.Context, org, project, sessionID, eventID string) (int64, bool, error) {
+func (s *Store) ResolveCursor(ctx context.Context, project, sessionID, eventID string) (int64, bool, error) {
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), project)
+	if err != nil {
+		return 0, false, fmt.Errorf("resolve organization for project: %w", err)
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	return s.journal.ResolveCursor(ctx, org, project, sessionID, eventID)
 }
 
 // After returns up to limit tenant-scoped events with sequence greater than
 // afterSeq, in ascending order, as CloudEvents envelopes.
-func (s *Store) After(ctx context.Context, org, project, sessionID string, afterSeq int64, limit int) ([]contracts.Event, error) {
+func (s *Store) After(ctx context.Context, project, sessionID string, afterSeq int64, limit int) ([]contracts.Event, error) {
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), project)
+	if err != nil {
+		return nil, fmt.Errorf("resolve organization for project: %w", err)
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	return s.journal.After(ctx, org, project, sessionID, afterSeq, limit)
 }
 
 // RecordAttachDenied records a content-free audit denial for an out-of-scope attach.
-func (s *Store) RecordAttachDenied(ctx context.Context, org, project, principal, sessionID string) error {
+func (s *Store) RecordAttachDenied(ctx context.Context, project, principal, sessionID string) error {
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), project)
+	if err != nil {
+		return fmt.Errorf("resolve organization for project: %w", err)
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	return s.journal.RecordAttachDenied(ctx, org, project, principal, sessionID)
 }
@@ -691,16 +773,28 @@ func responseID(body []byte) string {
 // SetRepositoryBindingConnection points an existing binding at a different credential handle within the
 // request's verified scope (E30). The ref is a secret_refs NAME; no credential passes through this path.
 func (s *Store) SetRepositoryBindingConnection(ctx context.Context, scope middleware.Scope, id, ref string) (bool, error) {
-	return s.spine.SetRepositoryBindingConnection(ctx, tenantOf(scope), id, ref)
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return false, err
+	}
+	return s.spine.SetRepositoryBindingConnection(ctx, tenant, id, ref)
 }
 
 // ArchiveRepositoryBinding retires a binding within the request's verified scope (E30). Not a delete: the
 // row and its preparation receipts survive, and the run-admission guard is what stops new work.
 func (s *Store) ArchiveRepositoryBinding(ctx context.Context, scope middleware.Scope, id string) (bool, error) {
-	return s.spine.ArchiveRepositoryBinding(ctx, tenantOf(scope), id)
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return false, err
+	}
+	return s.spine.ArchiveRepositoryBinding(ctx, tenant, id)
 }
 
 // UnarchiveRepositoryBinding restores a retired binding within the request's verified scope (E30).
 func (s *Store) UnarchiveRepositoryBinding(ctx context.Context, scope middleware.Scope, id string) (bool, error) {
-	return s.spine.UnarchiveRepositoryBinding(ctx, tenantOf(scope), id)
+	tenant, err := s.tenantOf(ctx, scope)
+	if err != nil {
+		return false, err
+	}
+	return s.spine.UnarchiveRepositoryBinding(ctx, tenant, id)
 }

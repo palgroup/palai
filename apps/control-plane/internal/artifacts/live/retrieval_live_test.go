@@ -115,7 +115,7 @@ func TestLiveArtifactRetrievalOverAPI(t *testing.T) {
 		t.Fatalf("Write() error = %v", err)
 	}
 
-	verifier := scopedVerifier{middleware.Scope{Organization: org, Project: project}}
+	verifier := scopedVerifier{middleware.Scope{Project: project}}
 	reader := artifacts.NewReader(s3, pool)
 	srv := httptest.NewServer(api.NewRouter(verifier, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, reader, api.SSEConfig{}, nil, nil))
 	defer srv.Close()

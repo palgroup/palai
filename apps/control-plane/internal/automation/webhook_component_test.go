@@ -226,7 +226,7 @@ func TestSignedDeliveryEndToEndRealHTTP(t *testing.T) {
 	})
 
 	org, project, session := seedSession(t, pool)
-	if _, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint(srv.URL, "ref1")); err != nil {
+	if _, err := store.CreateEndpoint(ctx, project, defaultEndpoint(srv.URL, "ref1")); err != nil {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
 	appendEvent(t, pool, org, project, session, 1, "run.completed.v1", `{"run_id":"run_1"}`)
@@ -240,7 +240,7 @@ func TestSignedDeliveryEndToEndRealHTTP(t *testing.T) {
 		if err := pump.Tick(ctx); err != nil {
 			t.Fatalf("Tick error = %v", err)
 		}
-		views, err := store.ListDeliveries(ctx, org, project, "delivered", 10)
+		views, err := store.ListDeliveries(ctx, project, "delivered", 10)
 		if err != nil {
 			t.Fatalf("ListDeliveries error = %v", err)
 		}
@@ -287,7 +287,7 @@ func TestLateCommitLowerJournalIdStillDelivered(t *testing.T) {
 	srv, certs, _, _ := tlsReceiver(t, secret, func(int) int { return http.StatusOK })
 
 	org, project, session := seedSession(t, pool)
-	if _, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint(srv.URL, "ref1")); err != nil {
+	if _, err := store.CreateEndpoint(ctx, project, defaultEndpoint(srv.URL, "ref1")); err != nil {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
 	pump := pumpFor(store, certs, secret, "ref1")
@@ -306,7 +306,7 @@ func TestLateCommitLowerJournalIdStillDelivered(t *testing.T) {
 		if err := pump.Tick(ctx); err != nil {
 			t.Fatalf("Tick error = %v", err)
 		}
-		views, err := store.ListDeliveries(ctx, org, project, "delivered", 10)
+		views, err := store.ListDeliveries(ctx, project, "delivered", 10)
 		if err != nil {
 			t.Fatalf("ListDeliveries error = %v", err)
 		}
@@ -331,7 +331,7 @@ func TestNewEndpointDoesNotReplayHistory(t *testing.T) {
 	org, project, session := seedSession(t, pool)
 	appendEvent(t, pool, org, project, session, 1, "run.completed.v1", `{"run_id":"run_history"}`) // BEFORE the endpoint
 
-	if _, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint(srv.URL, "ref1")); err != nil {
+	if _, err := store.CreateEndpoint(ctx, project, defaultEndpoint(srv.URL, "ref1")); err != nil {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
 	appendEvent(t, pool, org, project, session, 2, "run.completed.v1", `{"run_id":"run_post"}`) // AFTER the endpoint
@@ -340,7 +340,7 @@ func TestNewEndpointDoesNotReplayHistory(t *testing.T) {
 	postID, _ := driveTo(t, ctx, store, pump, org, project, "delivered")
 
 	// Exactly one delivery — the post-creation event — and it is NOT the history event.
-	views, err := store.ListDeliveries(ctx, org, project, "", 10)
+	views, err := store.ListDeliveries(ctx, project, "", 10)
 	if err != nil {
 		t.Fatalf("ListDeliveries error = %v", err)
 	}
@@ -375,7 +375,7 @@ func TestConcurrentTarpitDeliveriesDoNotSerialize(t *testing.T) {
 	org, project, session := seedSession(t, pool)
 	// Two endpoints to the same tarpit, one event → two deliveries → two concurrent attempts.
 	for i := 0; i < 2; i++ {
-		if _, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint(tarpit.URL, "ref1")); err != nil {
+		if _, err := store.CreateEndpoint(ctx, project, defaultEndpoint(tarpit.URL, "ref1")); err != nil {
 			t.Fatalf("CreateEndpoint error = %v", err)
 		}
 	}
@@ -415,7 +415,7 @@ func TestRedeliveryReusesDeliveryIdAndPayload(t *testing.T) {
 	org, project, session := seedSession(t, pool)
 	ep := defaultEndpoint(srv.URL, "ref1")
 	ep.MaxAttempts = 3 // small cap so it dead-letters quickly
-	if _, err := store.CreateEndpoint(ctx, org, project, ep); err != nil {
+	if _, err := store.CreateEndpoint(ctx, project, ep); err != nil {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
 	appendEvent(t, pool, org, project, session, 1, "run.completed.v1", `{"run_id":"run_dead"}`)
@@ -426,7 +426,7 @@ func TestRedeliveryReusesDeliveryIdAndPayload(t *testing.T) {
 	deadID, deadPayload := driveTo(t, ctx, store, pump, org, project, "dead")
 
 	// Operator redelivery: same id + payload, back to pending.
-	ok, err := store.Redeliver(ctx, org, project, deadID)
+	ok, err := store.Redeliver(ctx, project, deadID)
 	if err != nil || !ok {
 		t.Fatalf("Redeliver ok=%v err=%v, want true/nil", ok, err)
 	}
@@ -444,7 +444,7 @@ func TestRedeliveryReusesDeliveryIdAndPayload(t *testing.T) {
 	// F6: the attempt view retains ALL attempts — the 3 dead-cycle failures PLUS the healed
 	// redelivery attempt — with monotonic numbers, not silently dropped by an attempt_number collision
 	// after the redelivery reset attempt_count to 0.
-	attempts, err := store.ListAttempts(ctx, org, project, deadID)
+	attempts, err := store.ListAttempts(ctx, project, deadID)
 	if err != nil {
 		t.Fatalf("ListAttempts error = %v", err)
 	}
@@ -466,7 +466,7 @@ func driveTo(t *testing.T, ctx context.Context, store *WebhookStore, pump *Webho
 		if err := pump.Tick(ctx); err != nil {
 			t.Fatalf("Tick error = %v", err)
 		}
-		views, err := store.ListDeliveries(ctx, org, project, wantState, 10)
+		views, err := store.ListDeliveries(ctx, project, wantState, 10)
 		if err != nil {
 			t.Fatalf("ListDeliveries error = %v", err)
 		}
@@ -497,7 +497,7 @@ func TestAttemptViewSanitizedNoSecret(t *testing.T) {
 	org, project, session := seedSession(t, pool)
 	ep := defaultEndpoint(srv.URL, "ref1")
 	ep.FixedHeaders = map[string]string{"X-Partner-Token": fixedHeaderSecretValue}
-	if _, err := store.CreateEndpoint(ctx, org, project, ep); err != nil {
+	if _, err := store.CreateEndpoint(ctx, project, ep); err != nil {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
 	appendEvent(t, pool, org, project, session, 1, "run.completed.v1", `{"run_id":"run_x"}`)
@@ -505,7 +505,7 @@ func TestAttemptViewSanitizedNoSecret(t *testing.T) {
 	pump := pumpFor(store, certs, secret, "ref1")
 	id, _ := driveTo(t, ctx, store, pump, org, project, "delivered")
 
-	attempts, err := store.ListAttempts(ctx, org, project, id)
+	attempts, err := store.ListAttempts(ctx, project, id)
 	if err != nil {
 		t.Fatalf("ListAttempts error = %v", err)
 	}
@@ -540,10 +540,10 @@ func TestPumpSupervisedEndpointDownDoesNotStarveOthers(t *testing.T) {
 	down.Close()
 
 	org, project, session := seedSession(t, pool)
-	if _, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint(healthy.URL, "ref1")); err != nil {
+	if _, err := store.CreateEndpoint(ctx, project, defaultEndpoint(healthy.URL, "ref1")); err != nil {
 		t.Fatalf("CreateEndpoint(healthy) error = %v", err)
 	}
-	if _, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint(downURL, "ref1")); err != nil {
+	if _, err := store.CreateEndpoint(ctx, project, defaultEndpoint(downURL, "ref1")); err != nil {
 		t.Fatalf("CreateEndpoint(down) error = %v", err)
 	}
 	appendEvent(t, pool, org, project, session, 1, "run.completed.v1", `{"run_id":"run_starve"}`)
@@ -558,7 +558,7 @@ func TestPumpSupervisedEndpointDownDoesNotStarveOthers(t *testing.T) {
 		if err := pump.Tick(ctx); err != nil {
 			t.Fatalf("Tick error = %v", err)
 		}
-		views, err := store.ListDeliveries(ctx, org, project, "delivered", 10)
+		views, err := store.ListDeliveries(ctx, project, "delivered", 10)
 		if err != nil {
 			t.Fatalf("ListDeliveries error = %v", err)
 		}

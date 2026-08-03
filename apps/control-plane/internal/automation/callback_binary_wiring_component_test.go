@@ -43,7 +43,7 @@ func TestCallbackWiredIntoRunningBinary(t *testing.T) {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 	token := randID("tok")
-	org, project := seedTenantWithKey(t, repo.Spine().Pool(), token)
+	_, project := seedTenantWithKey(t, repo.Spine().Pool(), token)
 
 	// A real local TLS receiver that verifies the HMAC server-side (a sham verifier would not prove the
 	// contract) and records the callback it accepts.
@@ -79,7 +79,7 @@ func TestCallbackWiredIntoRunningBinary(t *testing.T) {
 
 	// A callback endpoint filtered to trigger.callback.v1 (the operator convention that keeps the general
 	// journal fan-out off this endpoint; the callback delivery itself bypasses fan-out).
-	endpointID, err := webhookStore.CreateEndpoint(ctx, org, project, automation.EndpointCreate{
+	endpointID, err := webhookStore.CreateEndpoint(ctx, project, automation.EndpointCreate{
 		URL: rcv.URL, EventFilter: []string{"trigger.callback.v1"}, SigningSecretRef: "cbref",
 		TimeoutMS: 3000, MaxAttempts: 20, RetryWindowSeconds: 3600, AllowPrivateDestination: true,
 	})

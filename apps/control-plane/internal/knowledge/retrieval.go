@@ -141,7 +141,11 @@ func (s *Store) Retrieve(ctx context.Context, scope middleware.Scope, kbID strin
 		return api.ProvisionResult{BadField: true}, nil
 	}
 
-	ctx = tenantScope(ctx, scope)
+	scopedCtx, org, err := tenantScope(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = scopedCtx
 	if _, ok, err := s.knowledgeBase(ctx, kbID); err != nil {
 		return api.ProvisionResult{}, err
 	} else if !ok {
@@ -174,7 +178,7 @@ func (s *Store) Retrieve(ctx context.Context, scope middleware.Scope, kbID strin
 	}
 
 	grants := derivePrincipalGrants(scope)
-	hits, cost, err := s.runStrategy(ctx, scope, strategy, kbID, idxID, in.Query, grants, limit)
+	hits, cost, err := s.runStrategy(ctx, org, scope.Project, strategy, kbID, idxID, in.Query, grants, limit)
 	if err != nil {
 		if errors.Is(err, ErrVectorDisabled) {
 			return api.ProvisionResult{Conflict: true, Body: mustJSON(map[string]any{
@@ -212,10 +216,10 @@ func (s *Store) Retrieve(ctx context.Context, scope middleware.Scope, kbID strin
 // runStrategy dispatches the requested retrieval strategy. keyword is the real, local FTS path; vector and
 // hybrid route through the deterministic fake adapter (vector_fake.go) — the compose Postgres has no
 // pgvector, so a real vector store is an operator leg (§6 leg 4). Each returns its hits + a cost record.
-func (s *Store) runStrategy(ctx context.Context, scope middleware.Scope, strategy, kbID, idxID, query string, grants []string, limit int) ([]RetrievedChunk, RetrievalCost, error) {
+func (s *Store) runStrategy(ctx context.Context, org, project, strategy, kbID, idxID, query string, grants []string, limit int) ([]RetrievedChunk, RetrievalCost, error) {
 	switch strategy {
 	case strategyVector, strategyHybrid:
-		return s.runVectorStrategy(ctx, scope, strategy, kbID, idxID, query, grants, limit)
+		return s.runVectorStrategy(ctx, org, project, strategy, kbID, idxID, query, grants, limit)
 	default:
 		hits, err := s.keywordSearch(ctx, kbID, idxID, query, grants, limit)
 		return hits, RetrievalCost{Strategy: strategyKeyword, KeywordHits: len(hits)}, err

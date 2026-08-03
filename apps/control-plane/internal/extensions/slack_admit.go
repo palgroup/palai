@@ -270,7 +270,7 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 		}
 	}
 
-	scope := middleware.Scope{Organization: conn.Org, Project: conn.Project, Principal: target.principal}
+	scope := middleware.Scope{Project: conn.Project, Principal: target.principal}
 	responseID, runID, sessionID := newID("resp"), newID("run"), newID("ses")
 
 	// FETCH THE SHARED IMAGES BEFORE THE ADMISSION, and the ordering is not incidental — slack_vision.go

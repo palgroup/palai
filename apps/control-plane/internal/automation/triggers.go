@@ -139,7 +139,11 @@ type TriggerRevision struct {
 // CreateTrigger inserts a named trigger lineage and returns its id. triggerType defaults to manual_api.
 // principal is stamped as created_by — the identity a non-interactive (inbound/scheduled) run admits AS
 // (§20.9 idempotency is principal-scoped), the schedules.created_by precedent for the source case.
-func (s *TriggerStore) CreateTrigger(ctx context.Context, org, project, principal, name, triggerType string) (string, error) {
+func (s *TriggerStore) CreateTrigger(ctx context.Context, project, principal, name, triggerType string) (string, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return "", err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	if triggerType == "" {
 		triggerType = "manual_api"
@@ -155,7 +159,11 @@ func (s *TriggerStore) CreateTrigger(ctx context.Context, org, project, principa
 // verified + the overlap ref), WITHOUT minting a pipeline revision (the mutable-endpoint-column precedent
 // — rotation is not a config edit). The refs are handles, never bytes; the resolver redeems them. An
 // unknown trigger in scope is ErrTriggerNotFound.
-func (s *TriggerStore) SetInboundSecretRefs(ctx context.Context, org, project, triggerID, ref, refNext string) error {
+func (s *TriggerStore) SetInboundSecretRefs(ctx context.Context, project, triggerID, ref, refNext string) error {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	tag, err := s.pool.Exec(ctx, storage.Query("SetInboundSecretRefs"), triggerID, org, project, ref, refNext)
 	if err != nil {
@@ -171,7 +179,11 @@ func (s *TriggerStore) SetInboundSecretRefs(ctx context.Context, org, project, t
 // UPDATE — the 000019 discipline). It verifies the trigger is in scope first, then compiles the mapping +
 // key exprs so a malformed/escape-carrying mapping is rejected before it is stored (fail-closed). The
 // active revision is simply the highest revision_number; there is no publish flag (AGT-002).
-func (s *TriggerStore) ReviseTrigger(ctx context.Context, org, project, triggerID string, in TriggerRevisionInput) (TriggerRevision, error) {
+func (s *TriggerStore) ReviseTrigger(ctx context.Context, project, triggerID string, in TriggerRevisionInput) (TriggerRevision, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return TriggerRevision{}, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	if _, err := s.triggerEnabled(ctx, org, project, triggerID); err != nil {
 		return TriggerRevision{}, err
@@ -228,7 +240,11 @@ type TriggerView struct {
 }
 
 // GetTrigger reads a trigger's management projection, or found=false when it is absent from the scope.
-func (s *TriggerStore) GetTrigger(ctx context.Context, org, project, triggerID string) (TriggerView, bool, error) {
+func (s *TriggerStore) GetTrigger(ctx context.Context, project, triggerID string) (TriggerView, bool, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return TriggerView{}, false, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	v := TriggerView{ID: triggerID}
 	switch err := s.pool.QueryRow(ctx, storage.Query("GetTrigger"), triggerID, org, project).
@@ -260,7 +276,11 @@ type TriggerDeliveryView struct {
 }
 
 // GetDelivery reads a delivery's projection, or found=false when it is absent from the scope.
-func (s *TriggerStore) GetDelivery(ctx context.Context, org, project, deliveryID string) (TriggerDeliveryView, bool, error) {
+func (s *TriggerStore) GetDelivery(ctx context.Context, project, deliveryID string) (TriggerDeliveryView, bool, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return TriggerDeliveryView{}, false, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	v := TriggerDeliveryView{ID: deliveryID}
 	switch err := s.pool.QueryRow(ctx, storage.Query("GetTriggerDelivery"), deliveryID, org, project).

@@ -79,8 +79,9 @@ func TestRetrievalToolQuarantinesUntrustedContent(t *testing.T) {
 	}
 
 	// The tool derives scope server-side and supplies NO ACL grant in the body (authorization is not a tool
-	// argument).
-	if fr.gotScope.Organization != "org1" || fr.gotScope.Project != "prj1" {
+	// argument). Organization is not part of middleware.Scope anymore (A.2 Task 3), so only Project is
+	// asserted here.
+	if fr.gotScope.Project != "prj1" {
 		t.Fatalf("tool did not derive scope from the run identity: %+v", fr.gotScope)
 	}
 	if len(fr.gotScope.Scopes) != 0 {

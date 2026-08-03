@@ -8,6 +8,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
+	"github.com/palgroup/palai/storage"
 )
 
 // The E12 Task 5 MCP connection management surface (spec §28.13-28.14). These adapt the tenant-scoped
@@ -21,7 +22,11 @@ func (s *Store) SetMCP(client extensions.MCPClient) { s.tools.SetMCP(client) }
 // CreateMCPConnection registers an MCP connection. An invalid transport/config/name or an inline secret is a
 // BadField (400); a name collision is a Conflict (409).
 func (s *Store) CreateMCPConnection(ctx context.Context, scope middleware.Scope, body []byte) (api.MCPConnectionResult, error) {
-	conn, err := s.tools.CreateMCPConnection(ctx, scope.Organization, scope.Project, body)
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
+	if err != nil {
+		return api.MCPConnectionResult{}, err
+	}
+	conn, err := s.tools.CreateMCPConnection(ctx, org, scope.Project, body)
 	if res, mapped := mcpReject(err); mapped {
 		return res, nil
 	}
@@ -38,7 +43,11 @@ func (s *Store) CreateMCPConnection(ctx context.Context, scope middleware.Scope,
 // DiscoverMCPConnection lists a connection's tools and materialises them as draft revisions. An unknown
 // connection is a NotFound (404); a dial/protocol failure surfaces as a 500 (the handler maps err).
 func (s *Store) DiscoverMCPConnection(ctx context.Context, scope middleware.Scope, id string) (api.MCPConnectionResult, error) {
-	result, err := s.tools.DiscoverConnection(ctx, scope.Organization, scope.Project, id)
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
+	if err != nil {
+		return api.MCPConnectionResult{}, err
+	}
+	result, err := s.tools.DiscoverConnection(ctx, org, scope.Project, id)
 	if res, mapped := mcpReject(err); mapped {
 		return res, nil
 	}
@@ -55,7 +64,11 @@ func (s *Store) DiscoverMCPConnection(ctx context.Context, scope middleware.Scop
 // GetMCPConnection reads a connection's non-secret metadata within scope (spec §28.13, E13 T4). A
 // missing/foreign id is NotFound (404).
 func (s *Store) GetMCPConnection(ctx context.Context, scope middleware.Scope, id string) (api.MCPConnectionResult, error) {
-	conn, err := s.tools.GetMCPConnection(ctx, scope.Organization, scope.Project, id)
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
+	if err != nil {
+		return api.MCPConnectionResult{}, err
+	}
+	conn, err := s.tools.GetMCPConnection(ctx, org, scope.Project, id)
 	if errors.Is(err, extensions.ErrConnectionNotFound) {
 		return api.MCPConnectionResult{NotFound: true}, nil
 	}
@@ -69,7 +82,11 @@ func (s *Store) GetMCPConnection(ctx context.Context, scope middleware.Scope, id
 // ListMCPConnections returns a tenant-scoped page of MCP connections (spec §28.13, E13 T4). The
 // secret_ref is never surfaced — a list carries only the non-secret metadata.
 func (s *Store) ListMCPConnections(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
-	items, err := s.tools.ListMCPConnections(ctx, scope.Organization, scope.Project, toExtensionsWindow(q))
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
+	if err != nil {
+		return nil, err
+	}
+	items, err := s.tools.ListMCPConnections(ctx, org, scope.Project, toExtensionsWindow(q))
 	if err != nil {
 		return nil, err
 	}

@@ -120,9 +120,9 @@ func (h *bindingSecretHarness) bind(t *testing.T, tenant coordinator.Tenant, clo
 }
 
 // putSecret provisions a secret-ref through the real write-path (the engine behind POST /v1/secret-refs).
-func (h *bindingSecretHarness) putSecret(t *testing.T, org, name, value string) {
+func (h *bindingSecretHarness) putSecret(t *testing.T, project, name, value string) {
 	t.Helper()
-	out, err := h.secrets.CreateSecretRef(context.Background(), middleware.Scope{Organization: org},
+	out, err := h.secrets.CreateSecretRef(context.Background(), middleware.Scope{Project: project},
 		[]byte(`{"name":"`+name+`","value":"`+value+`"}`))
 	if err != nil {
 		t.Fatalf("CreateSecretRef() error = %v", err)
@@ -146,7 +146,7 @@ func TestBindingConnectionRefClonesUnderTenantCredential(t *testing.T) {
 	remote := newAuthedGitRemote(t, tenantToken)
 
 	tenant, runID := h.seedTenant(t)
-	h.putSecret(t, tenant.Organization, "github-conn", tenantToken)
+	h.putSecret(t, tenant.Project, "github-conn", tenantToken)
 	bindingID := h.bind(t, tenant, remote.url, "github-conn")
 
 	calls := 0
@@ -207,7 +207,7 @@ func TestBindingConnectionRefClonesUnderTenantCredential(t *testing.T) {
 	// Case 3: a SECOND tenant with a secret of the SAME name resolves its own value (RLS, migration
 	// 000031), which the first tenant's remote refuses — a binding can never redeem another org's secret.
 	other, _ := h.seedTenant(t)
-	h.putSecret(t, other.Organization, "github-conn", "palai-REPMARK-other-tenant-token")
+	h.putSecret(t, other.Project, "github-conn", "palai-REPMARK-other-tenant-token")
 	otherBinding := h.bind(t, other, remote.url, "github-conn")
 	if _, err := PrepareRepository(ctx, h.spine, repositories.NewAnonymousBroker(), other, PrepareRepositoryInput{
 		BindingID:         otherBinding,

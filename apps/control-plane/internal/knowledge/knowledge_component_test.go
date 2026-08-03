@@ -71,7 +71,7 @@ func provisionTenant(t *testing.T, cs *coordinator.Store, name string) middlewar
 	if r.ID == "" || r.DefaultProjectID == "" {
 		t.Fatalf("incomplete tenant: %s", out.Body)
 	}
-	return middleware.Scope{Organization: r.ID, Project: r.DefaultProjectID}
+	return middleware.Scope{Project: r.DefaultProjectID}
 }
 
 // createKB provisions a knowledge base and returns its id.
@@ -333,7 +333,10 @@ func TestRetrievalIsTenantAndACLScoped(t *testing.T) {
 // a stored revision row. Both statements must be refused by a privilege error, not merely affect 0 rows.
 func assertAppendOnly(t *testing.T, cs *coordinator.Store, scope middleware.Scope, table, id string) {
 	t.Helper()
-	ctx := storage.WithTenant(context.Background(), scope.Organization, scope.Project)
+	// "" for organization is harmless here: migration 000062 keys the knowledge tables' RLS on project_id
+	// alone, and this scope only needs to publish palai.project_id for the REVOKE probe below to run
+	// inside the tenant that owns the row.
+	ctx := storage.WithTenant(context.Background(), "", scope.Project)
 	_, updErr := cs.Pool().Exec(ctx, "UPDATE "+table+" SET checksum = 'tampered' WHERE id = $1", id)
 	if !isPrivilegeError(updErr) {
 		t.Fatalf("UPDATE %s was not refused by the append-only REVOKE: err = %v", table, updErr)

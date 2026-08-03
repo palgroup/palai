@@ -11,14 +11,17 @@ import (
 )
 
 // EventReader is the data seam the SSE endpoint uses. store.Store implements it in
-// production; every method is tenant-scoped by org+project so a session from another
+// production; every method is tenant-scoped by project so a session from another
 // tenant is never readable (spec §39.2). RecordAttachDenied is the one write: the endpoint
 // audits its own out-of-scope denials through the same seam.
+//
+// No organization parameter (A.2 Task 3): the request scope no longer resolves one, and store.Store's
+// implementation resolves it fresh from project where it still needs one internally.
 type EventReader interface {
-	SessionExists(ctx context.Context, org, project, sessionID string) (bool, error)
-	ResolveCursor(ctx context.Context, org, project, sessionID, eventID string) (int64, bool, error)
-	After(ctx context.Context, org, project, sessionID string, afterSeq int64, limit int) ([]contracts.Event, error)
-	RecordAttachDenied(ctx context.Context, org, project, principal, sessionID string) error
+	SessionExists(ctx context.Context, project, sessionID string) (bool, error)
+	ResolveCursor(ctx context.Context, project, sessionID, eventID string) (int64, bool, error)
+	After(ctx context.Context, project, sessionID string, afterSeq int64, limit int) ([]contracts.Event, error)
+	RecordAttachDenied(ctx context.Context, project, principal, sessionID string) error
 }
 
 // SSEConfig tunes the event-stream timers. Zero values take production defaults
@@ -77,7 +80,7 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("session_id")
 	ctx := r.Context()
 
-	exists, err := h.reader.SessionExists(ctx, scope.Organization, scope.Project, sessionID)
+	exists, err := h.reader.SessionExists(ctx, scope.Project, sessionID)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -87,7 +90,7 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 		// another tenant (spec §39.2). Record a content-free denial keyed to the actor's
 		// tenant; the cross-tenant and unknown cases produce the identical row, so the audit
 		// discloses no existence. Best-effort: an audit hiccup must not change the 404.
-		_ = h.reader.RecordAttachDenied(ctx, scope.Organization, scope.Project, scope.Principal, sessionID)
+		_ = h.reader.RecordAttachDenied(ctx, scope.Project, scope.Principal, sessionID)
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "the session does not exist")
 		return
 	}
@@ -116,7 +119,7 @@ func (h *eventsHandler) resolveCursor(ctx context.Context, scope middleware.Scop
 		return 0 // ponytail: lenient — a garbage cursor replays from the start, never errors
 	}
 	if last := r.Header.Get("Last-Event-ID"); last != "" {
-		if seq, ok, err := h.reader.ResolveCursor(ctx, scope.Organization, scope.Project, sessionID, last); err == nil && ok {
+		if seq, ok, err := h.reader.ResolveCursor(ctx, scope.Project, sessionID, last); err == nil && ok {
 			return seq
 		}
 	}
@@ -132,7 +135,7 @@ func (h *eventsHandler) pump(ctx context.Context, w http.ResponseWriter, rc *htt
 	lastWrite := time.Now()
 
 	for {
-		batch, err := h.reader.After(ctx, scope.Organization, scope.Project, sessionID, cursor, h.cfg.BatchLimit)
+		batch, err := h.reader.After(ctx, scope.Project, sessionID, cursor, h.cfg.BatchLimit)
 		if err != nil {
 			return // ctx canceled (client gone) or read error — the journal keeps the events
 		}

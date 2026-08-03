@@ -17,21 +17,24 @@ import (
 // ScheduleStore implements it; production wires it, and tiers that do not touch schedules pass nil so the
 // routes stay unmounted. Every method is scoped by the verified identity, never a request-body field
 // (§39.2). A firing admits AS the creating principal.
+//
+// No organization parameter (A.2 Task 3): the request scope no longer resolves one, and ScheduleStore
+// resolves it fresh from project where it still needs one internally.
 type ScheduleAPI interface {
-	CreateSchedule(ctx context.Context, org, project, principal string, in automation.ScheduleInput) (string, error)
-	GetSchedule(ctx context.Context, org, project, id string) (automation.ScheduleView, bool, error)
-	ReviseSchedule(ctx context.Context, org, project, id string, in automation.ScheduleInput) (int, bool, error)
-	SetPaused(ctx context.Context, org, project, id string, paused bool) (bool, error)
-	DeleteSchedule(ctx context.Context, org, project, id string) (bool, error)
+	CreateSchedule(ctx context.Context, project, principal string, in automation.ScheduleInput) (string, error)
+	GetSchedule(ctx context.Context, project, id string) (automation.ScheduleView, bool, error)
+	ReviseSchedule(ctx context.Context, project, id string, in automation.ScheduleInput) (int, bool, error)
+	SetPaused(ctx context.Context, project, id string, paused bool) (bool, error)
+	DeleteSchedule(ctx context.Context, project, id string) (bool, error)
 	// ListSchedules is the E29 T1 read side. Until it landed, a schedule could be found again only by an id
 	// its creator kept — and a schedule is the one object in this tree that fires on a wall clock with
 	// nobody watching, so the id outliving the terminal that printed it is the normal case, not the edge.
 	// status filters the lifecycle column; empty is unfiltered.
-	ListSchedules(ctx context.Context, org, project string, w automation.ListWindow, status string) ([]automation.ScheduleView, error)
+	ListSchedules(ctx context.Context, project string, w automation.ListWindow, status string) ([]automation.ScheduleView, error)
 	// ListOccurrences takes a WINDOW rather than a bare limit (E29 T1). The bare limit was always passed as
 	// 0, the store clamped 0 to 100, and the response envelope had no has_more — so the hundred-and-first
 	// occurrence of a per-minute schedule was indistinguishable from no hundred-and-first occurrence.
-	ListOccurrences(ctx context.Context, org, project, id string, w automation.ListWindow) ([]automation.OccurrenceView, error)
+	ListOccurrences(ctx context.Context, project, id string, w automation.ListWindow) ([]automation.OccurrenceView, error)
 }
 
 type scheduleHandler struct {
@@ -82,7 +85,7 @@ func (h *scheduleHandler) createSchedule(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	id, err := h.schedules.CreateSchedule(r.Context(), scope.Organization, scope.Project, scope.Principal, in)
+	id, err := h.schedules.CreateSchedule(r.Context(), scope.Project, scope.Principal, in)
 	if bad := scheduleProblem(w, r, err); bad {
 		return
 	}
@@ -97,7 +100,7 @@ func (h *scheduleHandler) getSchedule(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	view, found, err := h.schedules.GetSchedule(r.Context(), scope.Organization, scope.Project, r.PathValue("schedule_id"))
+	view, found, err := h.schedules.GetSchedule(r.Context(), scope.Project, r.PathValue("schedule_id"))
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -120,7 +123,7 @@ func (h *scheduleHandler) reviseSchedule(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	revision, found, err := h.schedules.ReviseSchedule(r.Context(), scope.Organization, scope.Project, r.PathValue("schedule_id"), in)
+	revision, found, err := h.schedules.ReviseSchedule(r.Context(), scope.Project, r.PathValue("schedule_id"), in)
 	if bad := scheduleProblem(w, r, err); bad {
 		return
 	}
@@ -145,7 +148,7 @@ func (h *scheduleHandler) setPaused(w http.ResponseWriter, r *http.Request, paus
 		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	found, err := h.schedules.SetPaused(r.Context(), scope.Organization, scope.Project, r.PathValue("schedule_id"), paused)
+	found, err := h.schedules.SetPaused(r.Context(), scope.Project, r.PathValue("schedule_id"), paused)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -169,7 +172,7 @@ func (h *scheduleHandler) deleteSchedule(w http.ResponseWriter, r *http.Request)
 		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	found, err := h.schedules.DeleteSchedule(r.Context(), scope.Organization, scope.Project, r.PathValue("schedule_id"))
+	found, err := h.schedules.DeleteSchedule(r.Context(), scope.Project, r.PathValue("schedule_id"))
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -207,7 +210,7 @@ func (h *scheduleHandler) listSchedules(w http.ResponseWriter, r *http.Request) 
 			"status must be one of "+strings.Join(automation.ScheduleStatuses, ", "))
 		return
 	}
-	views, err := h.schedules.ListSchedules(r.Context(), scope.Organization, scope.Project, listWindow(q), q.Status)
+	views, err := h.schedules.ListSchedules(r.Context(), scope.Project, listWindow(q), q.Status)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -251,7 +254,7 @@ func (h *scheduleHandler) listOccurrences(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	occs, err := h.schedules.ListOccurrences(r.Context(), scope.Organization, scope.Project, r.PathValue("schedule_id"), listWindow(q))
+	occs, err := h.schedules.ListOccurrences(r.Context(), scope.Project, r.PathValue("schedule_id"), listWindow(q))
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return

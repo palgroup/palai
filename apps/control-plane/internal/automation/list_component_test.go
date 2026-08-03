@@ -71,14 +71,14 @@ func TestListAgentsAndTriggersTenantScoped(t *testing.T) {
 	// Triggers: two in A, one in B.
 	triggers := NewTriggerStore(s.pool)
 	for _, n := range []string{"nightly", "on-push"} {
-		if _, err := triggers.CreateTrigger(ctx, orgA, projA, "prin_test", n, "manual_api"); err != nil {
+		if _, err := triggers.CreateTrigger(ctx, projA, "prin_test", n, "manual_api"); err != nil {
 			t.Fatalf("create trigger A/%s: %v", n, err)
 		}
 	}
-	if _, err := triggers.CreateTrigger(ctx, orgB, projB, "prin_test", "b-only", "manual_api"); err != nil {
+	if _, err := triggers.CreateTrigger(ctx, projB, "prin_test", "b-only", "manual_api"); err != nil {
 		t.Fatalf("create trigger B: %v", err)
 	}
-	list, err := triggers.ListTriggers(ctx, orgA, projA, ListWindow{Limit: 10})
+	list, err := triggers.ListTriggers(ctx, projA, ListWindow{Limit: 10})
 	if err != nil || len(list) != 2 {
 		t.Fatalf("ListTriggers(A) err=%v len=%d, want 2", err, len(list))
 	}

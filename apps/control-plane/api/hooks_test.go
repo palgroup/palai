@@ -156,7 +156,7 @@ func TestHookReadsRequireProvisionAndTheShippedWritesDoNot(t *testing.T) {
 		disable: HookResult{Body: []byte(`{"id":"hook_1","object":"hook","disabled":true}`)},
 		get:     HookResult{Body: []byte(`{"id":"hook_1","object":"hook"}`)},
 	}
-	narrow := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1", Scopes: []string{"responses"}}}
+	narrow := scopedVerifier{middleware.Scope{Project: "prj_1", Principal: "prin_1", Scopes: []string{"responses"}}}
 	srv := httptest.NewServer(NewRouter(narrow, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, reg, nil, nil, SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 

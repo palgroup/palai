@@ -70,7 +70,7 @@ func KnowledgeRetrievalTool(r Retriever) toolbroker.Tool {
 			body, _ := json.Marshal(req)
 			// Server-side scope from the run identity; NO ACL grants supplied (fail-closed — a grant can
 			// only come from a verified key at the API endpoint, never from a model tool call).
-			scope := middleware.Scope{Organization: env.Scope.Org, Project: env.Scope.Project}
+			scope := middleware.Scope{Project: env.Scope.Project}
 			out, err := r.Retrieve(ctx, scope, kbID, body)
 			if err != nil {
 				return nil, fmt.Errorf("knowledge retrieve: %w", err)

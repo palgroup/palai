@@ -13,36 +13,36 @@ import (
 // store's typed sentinels so the handler's status mapping is pinned against the REAL errors rather than
 // against a stand-in the handler could not actually receive.
 type fakeSlackConnectionAPI struct {
-	createdOrg, createdProject string
-	createdBody                []byte
-	createErr                  error
-	items                      []SlackConnectionItem
-	lastWindow                 SlackListWindow
-	listedOrg, listedProject   string
+	createdProject string
+	createdBody    []byte
+	createErr      error
+	items          []SlackConnectionItem
+	lastWindow     SlackListWindow
+	listedProject  string
 
 	// The repair half. missing makes every by-id call report not-found, so the 404 mapping is pinned.
-	detail                   SlackConnectionDetail
-	missing                  bool
-	patched                  SlackConnectionPatch
-	patchedID, deletedID     string
-	repairOrg, repairProject string
+	detail               SlackConnectionDetail
+	missing              bool
+	patched              SlackConnectionPatch
+	patchedID, deletedID string
+	repairProject        string
 }
 
-func (f *fakeSlackConnectionAPI) CreateSlackConnection(_ context.Context, org, project string, raw []byte) (string, error) {
-	f.createdOrg, f.createdProject, f.createdBody = org, project, raw
+func (f *fakeSlackConnectionAPI) CreateSlackConnection(_ context.Context, project string, raw []byte) (string, error) {
+	f.createdProject, f.createdBody = project, raw
 	if f.createErr != nil {
 		return "", f.createErr
 	}
 	return "slkc_1", nil
 }
 
-func (f *fakeSlackConnectionAPI) ListSlackConnections(_ context.Context, org, project string, w SlackListWindow) ([]SlackConnectionItem, error) {
-	f.listedOrg, f.listedProject, f.lastWindow = org, project, w
+func (f *fakeSlackConnectionAPI) ListSlackConnections(_ context.Context, project string, w SlackListWindow) ([]SlackConnectionItem, error) {
+	f.listedProject, f.lastWindow = project, w
 	return f.items, nil
 }
 
-func (f *fakeSlackConnectionAPI) GetSlackConnection(_ context.Context, org, project, id string) (SlackConnectionDetail, bool, error) {
-	f.repairOrg, f.repairProject = org, project
+func (f *fakeSlackConnectionAPI) GetSlackConnection(_ context.Context, project, id string) (SlackConnectionDetail, bool, error) {
+	f.repairProject = project
 	if f.missing {
 		return SlackConnectionDetail{}, false, nil
 	}
@@ -51,13 +51,13 @@ func (f *fakeSlackConnectionAPI) GetSlackConnection(_ context.Context, org, proj
 	return d, true, nil
 }
 
-func (f *fakeSlackConnectionAPI) UpdateSlackConnection(_ context.Context, org, project, id string, patch SlackConnectionPatch) (bool, error) {
-	f.repairOrg, f.repairProject, f.patchedID, f.patched = org, project, id, patch
+func (f *fakeSlackConnectionAPI) UpdateSlackConnection(_ context.Context, project, id string, patch SlackConnectionPatch) (bool, error) {
+	f.repairProject, f.patchedID, f.patched = project, id, patch
 	return !f.missing, nil
 }
 
-func (f *fakeSlackConnectionAPI) DeleteSlackConnection(_ context.Context, org, project, id string) (bool, error) {
-	f.repairOrg, f.repairProject, f.deletedID = org, project, id
+func (f *fakeSlackConnectionAPI) DeleteSlackConnection(_ context.Context, project, id string) (bool, error) {
+	f.repairProject, f.deletedID = project, id
 	return !f.missing, nil
 }
 
@@ -88,8 +88,8 @@ func TestSlackConnectionCreateTakesTenantFromTheVerifiedScope(t *testing.T) {
 	if loc := resp.Header.Get("Location"); loc != "/v1/slack-connections/slkc_1" {
 		t.Fatalf("Location = %q, want /v1/slack-connections/slkc_1", loc)
 	}
-	if fake.createdOrg != "org_1" || fake.createdProject != "prj_1" {
-		t.Fatalf("connection created in (%s, %s), want the verified scope (org_1, prj_1)", fake.createdOrg, fake.createdProject)
+	if fake.createdProject != "prj_1" {
+		t.Fatalf("connection created in project %s, want the verified scope prj_1", fake.createdProject)
 	}
 }
 
@@ -232,8 +232,8 @@ func TestSlackConnectionListIsScopedAndCarriesNoSecretRef(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list status = %d, want 200", resp.StatusCode)
 	}
-	if fake.listedOrg != "org_1" || fake.listedProject != "prj_1" {
-		t.Fatalf("listed (%s, %s), want the verified scope (org_1, prj_1)", fake.listedOrg, fake.listedProject)
+	if fake.listedProject != "prj_1" {
+		t.Fatalf("listed under project %s, want the verified scope prj_1", fake.listedProject)
 	}
 	var page struct {
 		Data    []map[string]any `json:"data"`
@@ -293,8 +293,8 @@ func TestSlackConnectionPatchRepairsAHandleUnderTheVerifiedScope(t *testing.T) {
 	if fake.patchedID != "slkc_1" {
 		t.Fatalf("patched id = %q, want slkc_1", fake.patchedID)
 	}
-	if fake.repairOrg != "org_1" || fake.repairProject != "prj_1" {
-		t.Fatalf("patch scope = %s/%s, want the bearer's org_1/prj_1", fake.repairOrg, fake.repairProject)
+	if fake.repairProject != "prj_1" {
+		t.Fatalf("patch scope project = %s, want the bearer's prj_1", fake.repairProject)
 	}
 	if fake.patched.AppTokenRef == nil || *fake.patched.AppTokenRef != "slack/app" {
 		t.Fatalf("app_token_ref = %v, want slack/app", fake.patched.AppTokenRef)
@@ -389,8 +389,8 @@ func TestSlackConnectionDeleteUnbindsTheWorkspace(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
 	}
-	if fake.deletedID != "slkc_1" || fake.repairOrg != "org_1" {
-		t.Fatalf("delete = %q under %q, want slkc_1 under the bearer's org", fake.deletedID, fake.repairOrg)
+	if fake.deletedID != "slkc_1" || fake.repairProject != "prj_1" {
+		t.Fatalf("delete = %q under project %q, want slkc_1 under the bearer's prj_1", fake.deletedID, fake.repairProject)
 	}
 }
 

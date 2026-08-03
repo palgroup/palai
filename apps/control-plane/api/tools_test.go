@@ -170,7 +170,7 @@ func TestToolReadRoutes(t *testing.T) {
 type narrowedVerifier struct{}
 
 func (narrowedVerifier) VerifyAPIKey(context.Context, string) (middleware.Scope, error) {
-	return middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1", Scopes: []string{"responses"}}, nil
+	return middleware.Scope{Project: "prj_1", Principal: "prin_1", Scopes: []string{"responses"}}, nil
 }
 
 // TestToolRevisionReadRoutes pins the two E25 T7 reads at the HANDLER contract: the path segments reach the

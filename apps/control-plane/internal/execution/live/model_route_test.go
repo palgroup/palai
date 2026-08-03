@@ -180,7 +180,7 @@ func routeLiveProject(t *testing.T, ctx context.Context, repo *store.Store, idst
 	t.Helper()
 	org := provisionLiveTenant(t, idstore, name)
 	tenant := coordinator.Tenant{Organization: org.ID, Project: org.DefaultProjectID}
-	scope := middleware.Scope{Organization: org.ID, Project: org.DefaultProjectID}
+	scope := middleware.Scope{Project: org.DefaultProjectID}
 
 	secretRef := name + "-credential"
 	// The credential value travels in the request body of the write-only secret API and lands as sealed

@@ -20,7 +20,6 @@ import (
 
 // fakeRunnerRegistry records the tenant the handler asked for and answers with one pool.
 type fakeRunnerRegistry struct {
-	askedOrg     string
 	askedProject string
 	pools        []RunnerPoolItem
 	// keyFound scripts the store's found=false leg, which is how a pool (or key) belonging to another
@@ -52,24 +51,24 @@ type fakeRunnerRegistry struct {
 	poolFound   bool
 }
 
-func (f *fakeRunnerRegistry) ListRunners(context.Context, string, string, RunnerListWindow) ([]RunnerItem, error) {
+func (f *fakeRunnerRegistry) ListRunners(context.Context, string, RunnerListWindow) ([]RunnerItem, error) {
 	return nil, nil
 }
 
-func (f *fakeRunnerRegistry) GetRunner(context.Context, string, string, string) (RunnerItem, bool, error) {
+func (f *fakeRunnerRegistry) GetRunner(context.Context, string, string) (RunnerItem, bool, error) {
 	return RunnerItem{}, false, nil
 }
 
-func (f *fakeRunnerRegistry) ListRunnerPools(_ context.Context, org, project string, _ RunnerListWindow) ([]RunnerPoolItem, error) {
-	f.askedOrg, f.askedProject = org, project
+func (f *fakeRunnerRegistry) ListRunnerPools(_ context.Context, project string, _ RunnerListWindow) ([]RunnerPoolItem, error) {
+	f.askedProject = project
 	return f.pools, nil
 }
 
 // CreateRunnerPool and SetRunnerPoolStrictEnrollment are E28 T1's birth path. They record what reached the
 // store so a route test can assert WHAT was asked for rather than that something answered 201 — and
 // `nameTaken`/`poolFound` script the two refusals the routes translate (a 409 and a non-disclosing 404).
-func (f *fakeRunnerRegistry) CreateRunnerPool(_ context.Context, org, project string, in RunnerPoolCreate) (RunnerPoolItem, error) {
-	f.askedOrg, f.askedProject = org, project
+func (f *fakeRunnerRegistry) CreateRunnerPool(_ context.Context, project string, in RunnerPoolCreate) (RunnerPoolItem, error) {
+	f.askedProject = project
 	if f.nameTaken {
 		return RunnerPoolItem{}, ErrRunnerPoolNameTaken
 	}
@@ -80,8 +79,8 @@ func (f *fakeRunnerRegistry) CreateRunnerPool(_ context.Context, org, project st
 	}, nil
 }
 
-func (f *fakeRunnerRegistry) SetRunnerPoolStrictEnrollment(_ context.Context, org, project, poolID string, strict bool) (RunnerPoolItem, bool, error) {
-	f.askedOrg, f.askedProject = org, project
+func (f *fakeRunnerRegistry) SetRunnerPoolStrictEnrollment(_ context.Context, project, poolID string, strict bool) (RunnerPoolItem, bool, error) {
+	f.askedProject = project
 	f.strictPool, f.strictSet = poolID, &strict
 	if !f.poolFound {
 		return RunnerPoolItem{}, false, nil
@@ -134,9 +133,9 @@ func TestRunnerPoolsRenderThePostureForTheCallersTenant(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("GET /v1/runner-pools = %d, want 200: %s", status, body)
 	}
-	if registry.askedOrg != "org_1" || registry.askedProject != "prj_1" {
-		t.Fatalf("the handler asked for tenant (%q,%q), want the verified bearer's (org_1,prj_1)",
-			registry.askedOrg, registry.askedProject)
+	if registry.askedProject != "prj_1" {
+		t.Fatalf("the handler asked for project %q, want the verified bearer's prj_1",
+			registry.askedProject)
 	}
 	var page struct {
 		Data []map[string]any `json:"data"`
@@ -173,8 +172,8 @@ func TestRunnerPoolsRouteUnmountedWithoutARegistry(t *testing.T) {
 // Postgres in internal/execution's component leg; a router test that faked a store and then asserted
 // the fake had hashed something would be a test of the fake.
 
-func (f *fakeRunnerRegistry) MintRunnerPoolKey(_ context.Context, org, project, poolID string, expiresAt *time.Time) (RunnerPoolKeyItem, bool, error) {
-	f.askedOrg, f.askedProject = org, project
+func (f *fakeRunnerRegistry) MintRunnerPoolKey(_ context.Context, project, poolID string, expiresAt *time.Time) (RunnerPoolKeyItem, bool, error) {
+	f.askedProject = project
 	if !f.keyFound {
 		return RunnerPoolKeyItem{}, false, nil
 	}
@@ -185,8 +184,8 @@ func (f *fakeRunnerRegistry) MintRunnerPoolKey(_ context.Context, org, project, 
 	}, true, nil
 }
 
-func (f *fakeRunnerRegistry) ListRunnerPoolKeys(_ context.Context, org, project, poolID string) ([]RunnerPoolKeyItem, error) {
-	f.askedOrg, f.askedProject = org, project
+func (f *fakeRunnerRegistry) ListRunnerPoolKeys(_ context.Context, project, poolID string) ([]RunnerPoolKeyItem, error) {
+	f.askedProject = project
 	// The listed row carries a Value the RENDERER must drop: if the projection ever leaked one, this is
 	// the value that would show up in the assertion below.
 	return []RunnerPoolKeyItem{{
@@ -195,8 +194,8 @@ func (f *fakeRunnerRegistry) ListRunnerPoolKeys(_ context.Context, org, project,
 	}}, nil
 }
 
-func (f *fakeRunnerRegistry) RevokeRunnerPoolKey(_ context.Context, org, project, keyID string) (RunnerPoolKeyItem, bool, error) {
-	f.askedOrg, f.askedProject = org, project
+func (f *fakeRunnerRegistry) RevokeRunnerPoolKey(_ context.Context, project, keyID string) (RunnerPoolKeyItem, bool, error) {
+	f.askedProject = project
 	if !f.keyFound {
 		return RunnerPoolKeyItem{}, false, nil
 	}
@@ -211,8 +210,8 @@ func (f *fakeRunnerRegistry) RevokeRunnerPoolKey(_ context.Context, org, project
 	}, true, nil
 }
 
-func (f *fakeRunnerRegistry) SetRunnerState(_ context.Context, org, project, id, action string) (RunnerItem, bool, error) {
-	f.askedOrg, f.askedProject = org, project
+func (f *fakeRunnerRegistry) SetRunnerState(_ context.Context, project, id, action string) (RunnerItem, bool, error) {
+	f.askedProject = project
 	f.lifecycleAction, f.lifecycleRunner = action, id
 	if !f.runnerFound {
 		return RunnerItem{}, false, nil
@@ -229,7 +228,7 @@ func (f *fakeRunnerRegistry) SetRunnerState(_ context.Context, org, project, id,
 // deciding principal is derived from the key id on it and a route that dropped the scope would silently
 // approve as nobody. approveOutcome scripts the three answers the store can give.
 func (f *fakeRunnerRegistry) ApproveRunner(_ context.Context, scope middleware.Scope, id string) (RunnerItem, ApprovalOutcome, error) {
-	f.askedOrg, f.askedProject, f.approvedScope, f.approvedRunner = scope.Organization, scope.Project, scope, id
+	f.askedProject, f.approvedScope, f.approvedRunner = scope.Project, scope, id
 	if !f.runnerFound {
 		return RunnerItem{}, ApprovalOutcome{}, nil
 	}
@@ -265,7 +264,7 @@ func scopedRouter(t *testing.T, registry RunnerRegistryAPI, scopes []string) *ht
 	}
 	// scopedVerifier is model_routes_test.go's — reused rather than re-declared, which is the whole point
 	// of a package-level test helper.
-	verifier := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1", Scopes: granted}}
+	verifier := scopedVerifier{middleware.Scope{Project: "prj_1", Principal: "prin_1", Scopes: granted}}
 	ts := httptest.NewServer(NewRouter(verifier, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil, WithRunners(registry)))
 	t.Cleanup(ts.Close)
 	return ts
@@ -318,8 +317,8 @@ func TestRunnerPoolKeyValueIsRenderedOnCreateAndNowhereElse(t *testing.T) {
 	if registry.mintedExpiry == nil || registry.mintedExpiry.Year() != 2030 {
 		t.Fatalf("the requested expiry did not reach the store: %v", registry.mintedExpiry)
 	}
-	if registry.askedOrg != "org_1" || registry.askedProject != "prj_1" {
-		t.Fatalf("the handler asked for tenant (%q,%q), want the verified bearer's", registry.askedOrg, registry.askedProject)
+	if registry.askedProject != "prj_1" {
+		t.Fatalf("the handler asked for project %q, want the verified bearer's", registry.askedProject)
 	}
 
 	status, body = doKeyRequest(t, ts, http.MethodGet, "/v1/runner-pools/pool_mac/keys", "")

@@ -27,7 +27,7 @@ import (
 
 func mustCreateQueueConn(t *testing.T, store *QueueStore, org, project string, in QueueConnectionInput) string {
 	t.Helper()
-	id, err := store.CreateConnection(context.Background(), org, project, in)
+	id, err := store.CreateConnection(context.Background(), project, in)
 	if err != nil {
 		t.Fatalf("CreateConnection error = %v", err)
 	}

@@ -25,7 +25,7 @@ func TestReaderMetadataAndContent(t *testing.T) {
 	ctx := context.Background()
 	org, project, runID := h.seedRun(t)
 	reader := NewReader(h.s3, h.pool)
-	scope := middleware.Scope{Organization: org, Project: project}
+	scope := middleware.Scope{Project: project}
 
 	content := []byte("diff --git a/main.go b/main.go\n+ // fixed\n")
 	art, err := h.writer.Write(ctx, WriteRequest{
@@ -97,7 +97,7 @@ func TestReaderCrossTenantIsMiss(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
 	orgA, projectA, runA := h.seedRun(t)
-	orgB, projectB, _ := h.seedRun(t)
+	_, projectB, _ := h.seedRun(t)
 	reader := NewReader(h.s3, h.pool)
 
 	art, err := h.writer.Write(ctx, WriteRequest{Organization: orgA, Project: projectA, RunID: runA, Content: []byte("secret build log")})
@@ -105,7 +105,7 @@ func TestReaderCrossTenantIsMiss(t *testing.T) {
 		t.Fatalf("Write() error = %v", err)
 	}
 
-	foreign := middleware.Scope{Organization: orgB, Project: projectB}
+	foreign := middleware.Scope{Project: projectB}
 	metaRes, err := reader.GetArtifact(ctx, foreign, art.ID)
 	if err != nil {
 		t.Fatalf("cross-tenant GetArtifact() error = %v", err)
@@ -133,7 +133,7 @@ func TestReaderListRunArtifacts(t *testing.T) {
 	ctx := context.Background()
 	org, project, responseID, runID := h.seedResponseRun(t)
 	reader := NewReader(h.s3, h.pool)
-	scope := middleware.Scope{Organization: org, Project: project}
+	scope := middleware.Scope{Project: project}
 
 	for _, c := range [][]byte{[]byte("patch bytes"), []byte("test log bytes")} {
 		if _, err := h.writer.Write(ctx, WriteRequest{Organization: org, Project: project, RunID: runID, Content: c}); err != nil {
@@ -199,7 +199,7 @@ func TestReaderContentLengthFallsBackToRowSize(t *testing.T) {
 		artID, org, project, runID, "stub/key", int64(len(payload)), "sha256:"+hex.EncodeToString(sum[:]))
 
 	reader := NewReader(stubStore, h.pool)
-	cnt, err := reader.OpenArtifactContent(ctx, middleware.Scope{Organization: org, Project: project}, artID)
+	cnt, err := reader.OpenArtifactContent(ctx, middleware.Scope{Project: project}, artID)
 	if err != nil {
 		t.Fatalf("OpenArtifactContent() error = %v", err)
 	}

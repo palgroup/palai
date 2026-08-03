@@ -29,10 +29,11 @@ func granted(scope middleware.Scope, labels ...string) middleware.Scope {
 	return scope
 }
 
-// secondProject opens a second project in the same organization and returns its id.
-func secondProject(t *testing.T, idstore *identity.Store, org string) string {
+// secondProject opens a second project in the same organization as project and returns its new id.
+// Organization is resolved fresh from project (A.2 Task 3): middleware.Scope no longer carries one.
+func secondProject(t *testing.T, idstore *identity.Store, project string) string {
 	t.Helper()
-	out, err := idstore.CreateProject(context.Background(), middleware.Scope{Organization: org}, []byte(`{"display_name":"p2"}`))
+	out, err := idstore.CreateProject(context.Background(), middleware.Scope{Project: project}, []byte(`{"display_name":"p2"}`))
 	if err != nil || out.Body == nil {
 		t.Fatalf("CreateProject error = %v out = %+v", err, out)
 	}
@@ -248,8 +249,8 @@ func TestCrossProjectACLNegative(t *testing.T) {
 	cs, ks := openStore(t)
 	p1 := provisionTenant(t, cs, "kno-xproj")
 	idstore := identity.New(cs.Pool())
-	p2ID := secondProject(t, idstore, p1.Organization)
-	p2 := middleware.Scope{Organization: p1.Organization, Project: p2ID}
+	p2ID := secondProject(t, idstore, p1.Project)
+	p2 := middleware.Scope{Project: p2ID}
 
 	kb1 := createKB(t, ks, p1, "p1-kb")
 	src1 := createSource(t, ks, p1, kb1, "restricted")

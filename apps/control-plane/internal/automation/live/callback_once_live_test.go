@@ -125,7 +125,7 @@ func TestLiveCallbackOnce(t *testing.T) {
 
 	// The callback endpoint + a trigger pinned to the revision, shaping the run output into the callback.
 	webhookStore := automation.NewWebhookStore(pool)
-	endpointID, err := webhookStore.CreateEndpoint(ctx, org, project, automation.EndpointCreate{
+	endpointID, err := webhookStore.CreateEndpoint(ctx, project, automation.EndpointCreate{
 		URL: rcv.URL, EventFilter: []string{"trigger.callback.v1"}, SigningSecretRef: "cbref",
 		TimeoutMS: 5000, MaxAttempts: 20, RetryWindowSeconds: 3600, AllowPrivateDestination: true,
 	})
@@ -133,11 +133,11 @@ func TestLiveCallbackOnce(t *testing.T) {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
 	store := automation.NewTriggerStore(pool).WithAdmitter(spine)
-	triggerID, err := store.CreateTrigger(ctx, org, project, principal, randID("orders"), "manual_api")
+	triggerID, err := store.CreateTrigger(ctx, project, principal, randID("orders"), "manual_api")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
-	if _, err := store.ReviseTrigger(ctx, org, project, triggerID, automation.TriggerRevisionInput{
+	if _, err := store.ReviseTrigger(ctx, project, triggerID, automation.TriggerRevisionInput{
 		AgentRevisionID:    rev.ID,
 		InputMapping:       []byte(`{"fields":{"input":{"select":"order.summary"}},"required":["input"]}`),
 		OutputMapping:      []byte(`{"fields":{"result":{"select":"output"}},"required":["result"]}`),

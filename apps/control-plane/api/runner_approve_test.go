@@ -59,9 +59,9 @@ func TestRunnerApproveCarriesTheVerifiedScopeAndTheMachine(t *testing.T) {
 	if registry.approvedRunner != "rnr_mac" {
 		t.Errorf("the store was asked to approve %q, want rnr_mac", registry.approvedRunner)
 	}
-	if registry.approvedScope.Organization != "org_1" || registry.approvedScope.Project != "prj_1" {
-		t.Errorf("the store was handed tenant (%q,%q), want the verified bearer's (org_1,prj_1)",
-			registry.approvedScope.Organization, registry.approvedScope.Project)
+	if registry.approvedScope.Project != "prj_1" {
+		t.Errorf("the store was handed project %q, want the verified bearer's prj_1",
+			registry.approvedScope.Project)
 	}
 	if registry.approvedScope.Principal == "" {
 		t.Error("the store was handed a scope with no principal: the approver policy is checked against an identity, and a decision by nobody is refused by every configured list")

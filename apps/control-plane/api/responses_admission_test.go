@@ -30,6 +30,9 @@ func (s scriptedAdmitter) CancelResponse(context.Context, middleware.Scope, stri
 func (s scriptedAdmitter) ListResponses(context.Context, middleware.Scope, ListQuery) ([]ListRow, error) {
 	return nil, nil
 }
+func (s scriptedAdmitter) ResolveOrganization(context.Context, string) (string, error) {
+	return "org_1", nil
+}
 
 func admissionTestServer(t *testing.T, result AdmitResult) *httptest.Server {
 	t.Helper()

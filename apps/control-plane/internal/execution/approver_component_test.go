@@ -66,9 +66,9 @@ func (h *approvalPumpHarness) mintKey(t *testing.T, repo *store.Store) keyedAppr
 	if err != nil {
 		t.Fatalf("VerifyAPIKey() error = %v", err)
 	}
-	if scope.Organization != h.tenant.Organization || scope.Project != h.tenant.Project {
-		t.Fatalf("the minted key verified into %s/%s, want the harness tenant %s/%s",
-			scope.Organization, scope.Project, h.tenant.Organization, h.tenant.Project)
+	if scope.Project != h.tenant.Project {
+		t.Fatalf("the minted key verified into project %s, want the harness tenant's %s",
+			scope.Project, h.tenant.Project)
 	}
 	return keyedApprover{scope: scope, principal: coordinator.ApproverPrincipal(coordinator.ApproverSurfaceKey, "", scope.APIKeyID)}
 }

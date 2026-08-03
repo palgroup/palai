@@ -31,12 +31,12 @@ func wiredScheduleStore(t *testing.T) (*ScheduleStore, *TriggerStore, *pgxpool.P
 func seedCronTrigger(t *testing.T, ts *TriggerStore, pool *pgxpool.Pool, org, project string) string {
 	t.Helper()
 	ctx := context.Background()
-	triggerID, err := ts.CreateTrigger(ctx, org, project, "", randID("cron-trg"), "cron")
+	triggerID, err := ts.CreateTrigger(ctx, project, "", randID("cron-trg"), "cron")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
 	revID := seedPublishedAgentRevision(t, pool, org, project)
-	if _, err := ts.ReviseTrigger(ctx, org, project, triggerID, TriggerRevisionInput{
+	if _, err := ts.ReviseTrigger(ctx, project, triggerID, TriggerRevisionInput{
 		AgentRevisionID: revID,
 		InputMapping:    []byte(`{"fields":{"input":{"const":"scheduled work"}}}`),
 	}); err != nil {
@@ -233,7 +233,7 @@ func TestResumeAfterFailRecomputesNextFire(t *testing.T) {
 	}
 
 	// Resume: next_fire_at recomputed from now (future), status active, reason cleared.
-	if ok, err := ss.SetPaused(ctx, org, project, schID, false); err != nil || !ok {
+	if ok, err := ss.SetPaused(ctx, project, schID, false); err != nil || !ok {
 		t.Fatalf("resume SetPaused = (%v, %v), want (true, nil)", ok, err)
 	}
 	var next time.Time
@@ -488,7 +488,7 @@ func TestPauseAndDeleteStopAdmission(t *testing.T) {
 
 	// Paused: the due-scan skips it → zero occurrences.
 	paused := seedScheduleRow(t, pool, org, project, triggerID, principal, "* * * * *", "UTC", planned, "fire_once_now", 0, 0)
-	if ok, err := ss.SetPaused(ctx, org, project, paused, true); err != nil || !ok {
+	if ok, err := ss.SetPaused(ctx, project, paused, true); err != nil || !ok {
 		t.Fatalf("SetPaused = (%v, %v), want (true, nil)", ok, err)
 	}
 	if err := ss.fireDueSchedules(ctx, now, 100, t.Logf); err != nil {
@@ -507,14 +507,14 @@ func TestPauseAndDeleteStopAdmission(t *testing.T) {
 	if len(before) != 1 {
 		t.Fatalf("pre-delete occurrences = %d, want 1", len(before))
 	}
-	if ok, err := ss.DeleteSchedule(ctx, org, project, deleted); err != nil || !ok {
+	if ok, err := ss.DeleteSchedule(ctx, project, deleted); err != nil || !ok {
 		t.Fatalf("DeleteSchedule = (%v, %v), want (true, nil)", ok, err)
 	}
 	// GetSchedule hides a soft-deleted schedule, but its occurrences persist (retention).
-	if _, found, err := ss.GetSchedule(ctx, org, project, deleted); err != nil || found {
+	if _, found, err := ss.GetSchedule(ctx, project, deleted); err != nil || found {
 		t.Fatalf("GetSchedule after delete = (found:%v, %v), want (false, nil)", found, err)
 	}
-	if occs, err := ss.ListOccurrences(ctx, org, project, deleted, ListWindow{Limit: 100}); err != nil || len(occs) != 1 {
+	if occs, err := ss.ListOccurrences(ctx, project, deleted, ListWindow{Limit: 100}); err != nil || len(occs) != 1 {
 		t.Fatalf("ListOccurrences after delete = (%d, %v), want the 1 preserved row", len(occs), err)
 	}
 	// Advance the clock a minute and re-fire: the deleted schedule admits no new occurrence.

@@ -81,7 +81,11 @@ func (s *TriggerStore) CreateScheduledDelivery(ctx context.Context, org, project
 // trigger_deliveries INSERT commit in ONE tx, so the claim can never point at a missing delivery. The
 // route embeds the trigger id, so "same key + SAME trigger = same delivery" is the scope; the record stays
 // principal-scoped (§20.9). A key reused with a different body is ErrIdempotencyMismatch.
-func (s *TriggerStore) CreateDeliveryIdempotent(ctx context.Context, org, project, principal, triggerID, idempotencyKey string, payload []byte) (DeliveryResult, error) {
+func (s *TriggerStore) CreateDeliveryIdempotent(ctx context.Context, project, principal, triggerID, idempotencyKey string, payload []byte) (DeliveryResult, error) {
+	org, err := storage.OrganizationForProject(ctx, s.pool, project)
+	if err != nil {
+		return DeliveryResult{}, err
+	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	if idempotencyKey == "" {
 		return DeliveryResult{}, errors.New("automation: delivery idempotency key is required")
@@ -188,7 +192,7 @@ func (s *TriggerStore) recordedDelivery(ctx context.Context, org, project, princ
 	if err := json.Unmarshal(respBody, &body); err != nil {
 		return DeliveryResult{}, true, fmt.Errorf("decode idempotency body: %w", err)
 	}
-	view, found, err := s.GetDelivery(ctx, org, project, body["id"])
+	view, found, err := s.GetDelivery(ctx, project, body["id"])
 	if err != nil {
 		return DeliveryResult{}, true, err
 	}

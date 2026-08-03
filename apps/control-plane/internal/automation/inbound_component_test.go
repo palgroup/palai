@@ -109,18 +109,18 @@ func newInboundHarness(t *testing.T, maxInflight, backlogMax int) *inboundHarnes
 		WithInboundGate(audit.Log, 5*time.Minute, maxInflight, backlogMax)
 
 	// A webhook trigger created AS the principal (created_by), pinned to a revision, with a secret ref set.
-	triggerID, err := ts.CreateTrigger(ctx, org, proj, principal, randID("inbound"), "webhook")
+	triggerID, err := ts.CreateTrigger(ctx, proj, principal, randID("inbound"), "webhook")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
 	// The mapping operates on the event's opaque data payload (source-dedupe replaces content dedupe for
 	// inbound, so no dedupe_key_expr).
-	if _, err := ts.ReviseTrigger(ctx, org, proj, triggerID, automation.TriggerRevisionInput{
+	if _, err := ts.ReviseTrigger(ctx, proj, triggerID, automation.TriggerRevisionInput{
 		InputMapping: []byte(`{"fields":{"input":{"select":"order.summary"}},"required":["input"]}`),
 	}); err != nil {
 		t.Fatalf("ReviseTrigger error = %v", err)
 	}
-	if err := ts.SetInboundSecretRefs(ctx, org, proj, triggerID, inboundSecretRef, ""); err != nil {
+	if err := ts.SetInboundSecretRefs(ctx, proj, triggerID, inboundSecretRef, ""); err != nil {
 		t.Fatalf("SetInboundSecretRefs error = %v", err)
 	}
 
@@ -349,14 +349,14 @@ func TestRedeliveryAfterLostAckDoesNotDuplicate(t *testing.T) {
 func (h *inboundHarness) newTrigger(in automation.TriggerRevisionInput) string {
 	h.t.Helper()
 	ctx := context.Background()
-	id, err := h.store.CreateTrigger(ctx, h.org, h.proj, h.principal, randID("t"), "webhook")
+	id, err := h.store.CreateTrigger(ctx, h.proj, h.principal, randID("t"), "webhook")
 	if err != nil {
 		h.t.Fatalf("newTrigger CreateTrigger error = %v", err)
 	}
-	if _, err := h.store.ReviseTrigger(ctx, h.org, h.proj, id, in); err != nil {
+	if _, err := h.store.ReviseTrigger(ctx, h.proj, id, in); err != nil {
 		h.t.Fatalf("newTrigger ReviseTrigger error = %v", err)
 	}
-	if err := h.store.SetInboundSecretRefs(ctx, h.org, h.proj, id, inboundSecretRef, ""); err != nil {
+	if err := h.store.SetInboundSecretRefs(ctx, h.proj, id, inboundSecretRef, ""); err != nil {
 		h.t.Fatalf("newTrigger SetInboundSecretRefs error = %v", err)
 	}
 	return id
@@ -665,16 +665,16 @@ func TestTriggerWithoutCreatedByIsUnavailable(t *testing.T) {
 	h := newInboundHarness(t, 0, 0)
 	ctx := context.Background()
 	// A webhook trigger created with an EMPTY principal (created_by=''), given a revision + secret ref.
-	trg, err := h.store.CreateTrigger(ctx, h.org, h.proj, "", randID("no-principal"), "webhook")
+	trg, err := h.store.CreateTrigger(ctx, h.proj, "", randID("no-principal"), "webhook")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
-	if _, err := h.store.ReviseTrigger(ctx, h.org, h.proj, trg, automation.TriggerRevisionInput{
+	if _, err := h.store.ReviseTrigger(ctx, h.proj, trg, automation.TriggerRevisionInput{
 		InputMapping: []byte(`{"fields":{"input":{"select":"order.summary"}},"required":["input"]}`),
 	}); err != nil {
 		t.Fatalf("ReviseTrigger error = %v", err)
 	}
-	if err := h.store.SetInboundSecretRefs(ctx, h.org, h.proj, trg, inboundSecretRef, ""); err != nil {
+	if err := h.store.SetInboundSecretRefs(ctx, h.proj, trg, inboundSecretRef, ""); err != nil {
 		t.Fatalf("SetInboundSecretRefs error = %v", err)
 	}
 	resp := h.post(trg, "evt-noprin", time.Now(), []byte(`{"source":"harness","data":{"order":{"summary":"x"}}}`), h.secret)

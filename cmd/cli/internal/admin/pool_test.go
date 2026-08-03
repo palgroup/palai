@@ -35,7 +35,7 @@ import (
 // the tree exactly where it is.
 func TestPoolCreateReachesTheRealRouter(t *testing.T) {
 	fleet := &fakeFleet{}
-	srv := poolCLIServer(t, fleet, middleware.Scope{Organization: "org_1", Project: "prj_1"})
+	srv := poolCLIServer(t, fleet, middleware.Scope{Project: "prj_1"})
 	t.Setenv("PALAI_BASE_URL", srv.URL)
 	t.Setenv("PALAI_API_KEY", "bootstrap-admin-key")
 
@@ -78,7 +78,7 @@ func TestPoolCreateReachesTheRealRouter(t *testing.T) {
 // production builds" verbatim.
 func TestPoolSetStrictReachesTheRealRouter(t *testing.T) {
 	fleet := &fakeFleet{}
-	srv := poolCLIServer(t, fleet, middleware.Scope{Organization: "org_1", Project: "prj_1"})
+	srv := poolCLIServer(t, fleet, middleware.Scope{Project: "prj_1"})
 	t.Setenv("PALAI_BASE_URL", srv.URL)
 	t.Setenv("PALAI_API_KEY", "bootstrap-admin-key")
 
@@ -150,7 +150,7 @@ func TestE24HandoverBlockStillDoesNotWork(t *testing.T) {
 func TestPoolNeedsTheProvisionCapability(t *testing.T) {
 	fleet := &fakeFleet{}
 	srv := poolCLIServer(t, fleet,
-		middleware.Scope{Organization: "org_1", Project: "prj_1", Scopes: []string{"run"}})
+		middleware.Scope{Project: "prj_1", Scopes: []string{"run"}})
 	t.Setenv("PALAI_BASE_URL", srv.URL)
 	t.Setenv("PALAI_API_KEY", "run-only-key")
 
@@ -225,7 +225,7 @@ func TestNoPoolFlagCarriesACredential(t *testing.T) {
 // verifier is the only thing that can hand the real router a scope with no project.
 func TestPoolCreateNeedsAProjectScope(t *testing.T) {
 	fleet := &fakeFleet{}
-	srv := poolCLIServer(t, fleet, middleware.Scope{Organization: "org_1", Scopes: []string{"provision"}})
+	srv := poolCLIServer(t, fleet, middleware.Scope{Scopes: []string{"provision"}})
 	t.Setenv("PALAI_BASE_URL", srv.URL)
 	t.Setenv("PALAI_API_KEY", "org-wide-key")
 

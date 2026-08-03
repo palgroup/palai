@@ -17,15 +17,18 @@ import (
 // WebhookStore implements it; production wires it, and tiers that do not touch webhooks (the
 // conformance HTTP tier, the SSE read-path e2e) pass nil, so the routes stay unmounted there. Every
 // method is scoped by the verified identity, never a request-body field (§39.2).
+//
+// No organization parameter (A.2 Task 3): the request scope no longer resolves one, and WebhookStore
+// resolves it fresh from project where it still needs one internally.
 type WebhookAPI interface {
-	CreateEndpoint(ctx context.Context, org, project string, c automation.EndpointCreate) (string, error)
-	ListEndpoints(ctx context.Context, org, project string) ([]automation.EndpointView, error)
-	GetEndpoint(ctx context.Context, org, project, id string) (*automation.EndpointView, bool, error)
-	DeleteEndpoint(ctx context.Context, org, project, id string) (bool, error)
-	ListDeliveries(ctx context.Context, org, project, state string, limit int) ([]automation.DeliveryView, error)
-	GetDelivery(ctx context.Context, org, project, id string) (*automation.DeliveryView, bool, error)
-	ListAttempts(ctx context.Context, org, project, deliveryID string) ([]automation.AttemptView, error)
-	Redeliver(ctx context.Context, org, project, id string) (bool, error)
+	CreateEndpoint(ctx context.Context, project string, c automation.EndpointCreate) (string, error)
+	ListEndpoints(ctx context.Context, project string) ([]automation.EndpointView, error)
+	GetEndpoint(ctx context.Context, project, id string) (*automation.EndpointView, bool, error)
+	DeleteEndpoint(ctx context.Context, project, id string) (bool, error)
+	ListDeliveries(ctx context.Context, project, state string, limit int) ([]automation.DeliveryView, error)
+	GetDelivery(ctx context.Context, project, id string) (*automation.DeliveryView, bool, error)
+	ListAttempts(ctx context.Context, project, deliveryID string) ([]automation.AttemptView, error)
+	Redeliver(ctx context.Context, project, id string) (bool, error)
 }
 
 type webhookHandler struct {
@@ -103,7 +106,7 @@ func (h *webhookHandler) createEndpoint(w http.ResponseWriter, r *http.Request) 
 	// /v1/repository-bindings (a re-post registers a distinct resource). Endpoint creation is a rare
 	// operator action, and a duplicate endpoint is operator-visible + deletable. Full idempotent-create
 	// via the idempotency_records admission tx (the /v1/responses path) is the upgrade path, deferred.
-	id, err := h.webhooks.CreateEndpoint(r.Context(), scope.Organization, scope.Project, automation.EndpointCreate{
+	id, err := h.webhooks.CreateEndpoint(r.Context(), scope.Project, automation.EndpointCreate{
 		URL:                     body.URL,
 		EventFilter:             body.EventFilter,
 		APIRevision:             body.APIRevision,
@@ -141,7 +144,7 @@ func (h *webhookHandler) getEndpoint(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	endpoint, found, err := h.webhooks.GetEndpoint(r.Context(), scope.Organization, scope.Project, r.PathValue("endpoint_id"))
+	endpoint, found, err := h.webhooks.GetEndpoint(r.Context(), scope.Project, r.PathValue("endpoint_id"))
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -181,7 +184,7 @@ func (h *webhookHandler) deleteEndpoint(w http.ResponseWriter, r *http.Request) 
 		middleware.WriteProblem(w, r, http.StatusForbidden, "insufficient_scope", "this API key lacks the provision capability")
 		return
 	}
-	deleted, err := h.webhooks.DeleteEndpoint(r.Context(), scope.Organization, scope.Project, r.PathValue("endpoint_id"))
+	deleted, err := h.webhooks.DeleteEndpoint(r.Context(), scope.Project, r.PathValue("endpoint_id"))
 	switch {
 	case errors.Is(err, automation.ErrEndpointPinned):
 		middleware.WriteProblem(w, r, http.StatusConflict, "endpoint_pinned",
@@ -204,7 +207,7 @@ func (h *webhookHandler) listEndpoints(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	endpoints, err := h.webhooks.ListEndpoints(r.Context(), scope.Organization, scope.Project)
+	endpoints, err := h.webhooks.ListEndpoints(r.Context(), scope.Project)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -226,7 +229,7 @@ func (h *webhookHandler) listDeliveries(w http.ResponseWriter, r *http.Request) 
 			limit = n
 		}
 	}
-	deliveries, err := h.webhooks.ListDeliveries(r.Context(), scope.Organization, scope.Project, r.URL.Query().Get("state"), limit)
+	deliveries, err := h.webhooks.ListDeliveries(r.Context(), scope.Project, r.URL.Query().Get("state"), limit)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -243,7 +246,7 @@ func (h *webhookHandler) getDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("delivery_id")
-	delivery, found, err := h.webhooks.GetDelivery(r.Context(), scope.Organization, scope.Project, id)
+	delivery, found, err := h.webhooks.GetDelivery(r.Context(), scope.Project, id)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -252,7 +255,7 @@ func (h *webhookHandler) getDelivery(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such webhook delivery")
 		return
 	}
-	attempts, err := h.webhooks.ListAttempts(r.Context(), scope.Organization, scope.Project, id)
+	attempts, err := h.webhooks.ListAttempts(r.Context(), scope.Project, id)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -270,7 +273,7 @@ func (h *webhookHandler) redeliver(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("delivery_id")
-	found, err := h.webhooks.Redeliver(r.Context(), scope.Organization, scope.Project, id)
+	found, err := h.webhooks.Redeliver(r.Context(), scope.Project, id)
 	switch {
 	// A delivery can outlive its endpoint from E29 T3 onward, and re-queuing one of those would answer 202
 	// for work that can never happen — the pump's due-scan joins webhook_endpoints, so nothing would ever

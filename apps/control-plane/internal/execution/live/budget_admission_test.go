@@ -82,7 +82,7 @@ func TestLiveBudgetRejectsSecondRunAndLedgerReconciles(t *testing.T) {
 
 	token, tenant := seedTenantWithKey(t, pool, "budget")
 	meters := metering.New(pool)
-	scope := middleware.Scope{Organization: tenant.Organization, Project: tenant.Project}
+	scope := middleware.Scope{Project: tenant.Project}
 
 	// The tenant sets its own low budget through the very code POST /v1/budgets calls.
 	if _, err := meters.SetBudget(ctx, scope,

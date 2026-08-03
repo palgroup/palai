@@ -61,11 +61,11 @@ func seedPrincipal(t *testing.T, pool *pgxpool.Pool, org, project string) string
 func seedTrigger(t *testing.T, s *TriggerStore, org, project, name string, in TriggerRevisionInput) (string, string) {
 	t.Helper()
 	ctx := context.Background()
-	triggerID, err := s.CreateTrigger(ctx, org, project, "", name, "manual_api")
+	triggerID, err := s.CreateTrigger(ctx, project, "", name, "manual_api")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
-	rev, err := s.ReviseTrigger(ctx, org, project, triggerID, in)
+	rev, err := s.ReviseTrigger(ctx, project, triggerID, in)
 	if err != nil {
 		t.Fatalf("ReviseTrigger error = %v", err)
 	}
@@ -78,8 +78,8 @@ func seedTrigger(t *testing.T, s *TriggerStore, org, project, name string, in Tr
 func TestRevisionValidationRejectsBadCombos(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	triggerID, err := store.CreateTrigger(ctx, org, project, "", "validate", "manual_api")
+	_, project, _ := seedSession(t, pool)
+	triggerID, err := store.CreateTrigger(ctx, project, "", "validate", "manual_api")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
@@ -95,12 +95,12 @@ func TestRevisionValidationRejectsBadCombos(t *testing.T) {
 		{"bad concurrency_policy", TriggerRevisionInput{ConcurrencyPolicy: "yolo"}, ErrInvalidConcurrencyPolicy},
 		{"replace without a key", TriggerRevisionInput{ConcurrencyPolicy: "replace"}, ErrReplaceNeedsKey},
 	} {
-		if _, err := store.ReviseTrigger(ctx, org, project, triggerID, tc.in); !errors.Is(err, tc.want) {
+		if _, err := store.ReviseTrigger(ctx, project, triggerID, tc.in); !errors.Is(err, tc.want) {
 			t.Errorf("%s: ReviseTrigger error = %v, want %v", tc.name, err, tc.want)
 		}
 	}
 	// A valid combo (named_session + allow) still succeeds.
-	if _, err := store.ReviseTrigger(ctx, org, project, triggerID, TriggerRevisionInput{CorrelationMode: "named_session", ConcurrencyPolicy: "allow", CorrelationKeyExpr: `{"select":"s"}`}); err != nil {
+	if _, err := store.ReviseTrigger(ctx, project, triggerID, TriggerRevisionInput{CorrelationMode: "named_session", ConcurrencyPolicy: "allow", CorrelationKeyExpr: `{"select":"s"}`}); err != nil {
 		t.Fatalf("valid named_session + allow rejected: %v", err)
 	}
 }
@@ -145,7 +145,7 @@ func TestAcceptedDeliveryPinsExactRevision(t *testing.T) {
 	}
 
 	// A revise creates a NEW immutable revision (N+1) — not an in-place UPDATE of rev1's config.
-	rev2, err := store.ReviseTrigger(ctx, org, project, triggerID, TriggerRevisionInput{})
+	rev2, err := store.ReviseTrigger(ctx, project, triggerID, TriggerRevisionInput{})
 	if err != nil {
 		t.Fatalf("ReviseTrigger error = %v", err)
 	}

@@ -170,7 +170,7 @@ func TestDesiredConfigJourneyWritesADocumentTheDeploymentReadReports(t *testing.
 type provisionVerifier struct{}
 
 func (provisionVerifier) VerifyAPIKey(context.Context, string) (middleware.Scope, error) {
-	return middleware.Scope{Organization: "org_local", Project: "prj_local", Principal: "prin_local", Scopes: []string{"provision"}}, nil
+	return middleware.Scope{Project: "prj_local", Principal: "prin_local", Scopes: []string{"provision"}}, nil
 }
 
 func put(t *testing.T, base, body string, want int) {

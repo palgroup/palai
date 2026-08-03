@@ -87,7 +87,7 @@ func provisioningTestServer(t *testing.T, verifier middleware.Verifier, prov Pro
 // EXCEPT organization creation, which Task 2 gates separately on middleware.ScopeSystem — that route is
 // asserted below against its own system-scoped key instead of the shared admin one.
 func TestProvisioningSurface(t *testing.T) {
-	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1"}}
+	admin := scopedVerifier{middleware.Scope{Project: "prj_1", Principal: "prin_1"}}
 	fake := &fakeProvisioning{
 		create: ProvisionResult{Body: []byte(`{"id":"x_1","object":"resource"}`)},
 		read:   ProvisionResult{Body: []byte(`{"object":"resource"}`)},
@@ -150,7 +150,7 @@ func TestProvisioningSurface(t *testing.T) {
 // TestProvisioningRequiresProvisionScope proves the basic-scope gate: a key whose non-empty scopes omit
 // `provision` is refused (403) on every provisioning route, while an admin key (empty scopes) is admitted.
 func TestProvisioningRequiresProvisionScope(t *testing.T) {
-	runOnly := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Scopes: []string{"run"}}}
+	runOnly := scopedVerifier{middleware.Scope{Project: "prj_1", Scopes: []string{"run"}}}
 	fake := &fakeProvisioning{create: ProvisionResult{Body: []byte(`{"id":"x_1"}`)}, read: ProvisionResult{Body: []byte(`{}`)}}
 	base := provisioningTestServer(t, runOnly, fake)
 
@@ -172,7 +172,7 @@ func TestProvisioningRequiresProvisionScope(t *testing.T) {
 // in the create body (the ONE place a key is disclosed) and never in a read, because the handler writes the
 // store's Body verbatim and the store's read projections omit it.
 func TestAPIKeyPlaintextOnlyInCreateResponse(t *testing.T) {
-	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	admin := scopedVerifier{middleware.Scope{Project: "prj_1"}}
 	fake := &fakeProvisioning{
 		create: ProvisionResult{Body: []byte(`{"id":"key_1","object":"api_key","key":"sk_secret","scopes":[]}`)},
 		read:   ProvisionResult{Body: []byte(`{"id":"key_1","object":"api_key","scopes":[]}`)},
@@ -192,7 +192,7 @@ func TestAPIKeyPlaintextOnlyInCreateResponse(t *testing.T) {
 // TestProvisioningRoutesUnmountedWhenNil proves the nil-seam guard: a tier that wires no provisioning API
 // mounts no provisioning route (a POST is 404), so the Docker-free conformance tiers stay unaffected.
 func TestProvisioningRoutesUnmountedWhenNil(t *testing.T) {
-	base := provisioningTestServer(t, scopedVerifier{middleware.Scope{Organization: "org_1"}}, nil)
+	base := provisioningTestServer(t, scopedVerifier{middleware.Scope{Project: "prj_1"}}, nil)
 	if resp := do(t, "POST", base+"/v1/organizations", `{}`, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("nil provisioning POST status = %d, want 404 (route unmounted)", resp.StatusCode)
 	}

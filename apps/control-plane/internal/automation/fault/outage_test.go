@@ -100,11 +100,11 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("PublishRevision error = %v", err)
 	}
 	triggers := automation.NewTriggerStore(pool).WithAdmitter(spine)
-	triggerID, err := triggers.CreateTrigger(ctx, org, proj, principal, randID("cron-trg"), "cron")
+	triggerID, err := triggers.CreateTrigger(ctx, proj, principal, randID("cron-trg"), "cron")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
-	if _, err := triggers.ReviseTrigger(ctx, org, proj, triggerID, automation.TriggerRevisionInput{
+	if _, err := triggers.ReviseTrigger(ctx, proj, triggerID, automation.TriggerRevisionInput{
 		AgentRevisionID: rev.ID,
 		InputMapping:    []byte(`{"fields":{"input":{"const":"scheduled work"}}}`),
 	}); err != nil {

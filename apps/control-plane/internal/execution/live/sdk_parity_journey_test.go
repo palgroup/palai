@@ -298,7 +298,7 @@ func provisionAPITenant(t *testing.T, base, bootstrapToken, name string) (coordi
 // to (provider, model, connection) — the production write surface, the credential sealed AES-256-GCM.
 func publishRoute(t *testing.T, ctx context.Context, repo *store.Store, secrets *identity.SecretStore, tenant coordinator.Tenant, provider, model, credential string) {
 	t.Helper()
-	scope := middleware.Scope{Organization: tenant.Organization, Project: tenant.Project}
+	scope := middleware.Scope{Project: tenant.Project}
 	secretRef := provider + "-credential"
 	body, err := json.Marshal(map[string]string{"name": secretRef, "value": credential})
 	if err != nil {

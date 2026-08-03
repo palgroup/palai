@@ -186,7 +186,7 @@ func TestTheModelListingProjectionOmitsDataUnlessTheProviderAnswered(t *testing.
 // naming what is missing, before any query and before anything leaves the process.
 func TestListConnectionModelsRejectsAnOrgGranularKey(t *testing.T) {
 	s := &Store{}
-	out, err := s.ListConnectionModels(context.Background(), middleware.Scope{Organization: "org_1"}, "mconn_1")
+	out, err := s.ListConnectionModels(context.Background(), middleware.Scope{}, "mconn_1")
 	if err != nil || out.MissingField == "" {
 		t.Fatalf("ListConnectionModels(org-granular key) = (%+v, %v), want a MissingField reject (400)", out, err)
 	}

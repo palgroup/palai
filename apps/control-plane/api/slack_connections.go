@@ -72,14 +72,16 @@ type SlackListWindow struct {
 // STRICT decoder that refuses an inline `signing_secret` / `bot_token` / `app_token` value, and duplicating
 // that shape here would create a second definition of "what a registration is" that could drift from the
 // one the database actually enforces.
+// No organization parameter (A.2 Task 3): the request scope no longer resolves one, and the Slack store
+// resolves it fresh from project where it still needs one internally.
 type SlackConnectionAPI interface {
-	CreateSlackConnection(ctx context.Context, org, project string, raw []byte) (id string, err error)
-	ListSlackConnections(ctx context.Context, org, project string, w SlackListWindow) ([]SlackConnectionItem, error)
+	CreateSlackConnection(ctx context.Context, project string, raw []byte) (id string, err error)
+	ListSlackConnections(ctx context.Context, project string, w SlackListWindow) ([]SlackConnectionItem, error)
 	// The repair half. Each mutation reports found=false for an id that is not in the caller's tenant, so
 	// the handler answers 404 without ever learning whether it exists elsewhere.
-	GetSlackConnection(ctx context.Context, org, project, id string) (SlackConnectionDetail, bool, error)
-	UpdateSlackConnection(ctx context.Context, org, project, id string, patch SlackConnectionPatch) (bool, error)
-	DeleteSlackConnection(ctx context.Context, org, project, id string) (bool, error)
+	GetSlackConnection(ctx context.Context, project, id string) (SlackConnectionDetail, bool, error)
+	UpdateSlackConnection(ctx context.Context, project, id string, patch SlackConnectionPatch) (bool, error)
+	DeleteSlackConnection(ctx context.Context, project, id string) (bool, error)
 }
 
 type slackConnectionHandler struct{ slack SlackConnectionAPI }
@@ -151,7 +153,7 @@ func (h *slackConnectionHandler) createConnection(w http.ResponseWriter, r *http
 		return
 	}
 
-	id, err := h.slack.CreateSlackConnection(r.Context(), scope.Organization, scope.Project, body)
+	id, err := h.slack.CreateSlackConnection(r.Context(), scope.Project, body)
 	switch {
 	case errors.Is(err, ErrSlackRegistrationConflict):
 		// One detail for both conflict kinds: this handler cannot tell them apart, and the wording names
@@ -224,7 +226,7 @@ func (h *slackConnectionHandler) listConnections(w http.ResponseWriter, r *http.
 	if q.After != nil {
 		window.AfterCreatedAt, window.AfterID = &q.After.CreatedAt, q.After.ID
 	}
-	items, err := h.slack.ListSlackConnections(r.Context(), scope.Organization, scope.Project, window)
+	items, err := h.slack.ListSlackConnections(r.Context(), scope.Project, window)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -312,7 +314,7 @@ func (h *slackConnectionHandler) getConnection(w http.ResponseWriter, r *http.Re
 		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	detail, found, err := h.slack.GetSlackConnection(r.Context(), scope.Organization, scope.Project, r.PathValue("connection_id"))
+	detail, found, err := h.slack.GetSlackConnection(r.Context(), scope.Project, r.PathValue("connection_id"))
 	switch {
 	case err != nil:
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
@@ -346,7 +348,7 @@ func (h *slackConnectionHandler) reviseConnection(w http.ResponseWriter, r *http
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", detail)
 		return
 	}
-	found, err := h.slack.UpdateSlackConnection(r.Context(), scope.Organization, scope.Project, r.PathValue("connection_id"), patch)
+	found, err := h.slack.UpdateSlackConnection(r.Context(), scope.Project, r.PathValue("connection_id"), patch)
 	switch {
 	case err != nil:
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
@@ -367,7 +369,7 @@ func (h *slackConnectionHandler) deleteConnection(w http.ResponseWriter, r *http
 		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	found, err := h.slack.DeleteSlackConnection(r.Context(), scope.Organization, scope.Project, r.PathValue("connection_id"))
+	found, err := h.slack.DeleteSlackConnection(r.Context(), scope.Project, r.PathValue("connection_id"))
 	switch {
 	case err != nil:
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")

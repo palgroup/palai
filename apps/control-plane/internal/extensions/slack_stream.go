@@ -300,7 +300,7 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 		if ctx.Err() != nil {
 			return
 		}
-		batch, err := f.events.After(ctx, tg.org, tg.project, tg.sessionID, cursor, slackStreamBatch)
+		batch, err := f.events.After(ctx, tg.project, tg.sessionID, cursor, slackStreamBatch)
 		if err != nil {
 			log.Printf("slack: could not tail the journal for run %s: %v", tg.runID, err)
 			return
@@ -391,7 +391,7 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 func (f *SlackStreamFollower) journalHead(ctx context.Context, tg slackStreamTarget) (int64, error) {
 	var cursor int64
 	for {
-		batch, err := f.events.After(ctx, tg.org, tg.project, tg.sessionID, cursor, slackStreamBatch)
+		batch, err := f.events.After(ctx, tg.project, tg.sessionID, cursor, slackStreamBatch)
 		if err != nil {
 			return 0, err
 		}

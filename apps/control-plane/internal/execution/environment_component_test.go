@@ -57,7 +57,7 @@ func TestAnEnvironmentReachesARunsShellAndItsValueEntersNoDurableRow(t *testing.
 	// bytes the API path sealed, not a fixture INSERT.
 	envID := pinnedID("env")
 	exec(`INSERT INTO environments (id, organization_id, name) VALUES ($1,$2,'production')`, envID, tenant.Organization)
-	scope := middleware.Scope{Organization: tenant.Organization}
+	scope := middleware.Scope{Project: tenant.Project}
 	for _, body := range []string{
 		`{"key":"JIRA_TOKEN","value":"` + envSentinel + `"}`,
 		`{"key":"DEPLOY_TARGET","value":"staging.example.internal"}`,

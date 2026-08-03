@@ -31,8 +31,8 @@ func TestInstallRestoreSecretCanaryTwoMasterKeys(t *testing.T) {
 	keyA := masterKey(t)
 	keyB := masterKey(t) // a DIFFERENT per-host master key — the restore-to-a-fresh-stack case
 
-	org, _, _ := provisionOrg(t, idstore, "sec-canary")
-	scope := middleware.Scope{Organization: org}
+	org, project, _ := provisionOrg(t, idstore, "sec-canary")
+	scope := middleware.Scope{Project: project}
 
 	// Seal a secret under master key A (the source stack's key).
 	storeA := identity.NewSecretStore(cs.Pool(), keyA)
@@ -42,7 +42,9 @@ func TestInstallRestoreSecretCanaryTwoMasterKeys(t *testing.T) {
 
 	// Read the raw ciphertext exactly as the canary does (SELECT encode(ciphertext,'hex')).
 	var ctHex string
-	if err := cs.Pool().QueryRow(storage.WithTenant(ctx, org, ""),
+	// secret_refs carries no project_id (000031); WithOrgScope is the named exception WithTenant no
+	// longer allows for an empty project (A.2 Task 1).
+	if err := cs.Pool().QueryRow(storage.WithOrgScope(ctx, org),
 		"SELECT encode(ciphertext, 'hex') FROM secret_refs LIMIT 1").Scan(&ctHex); err != nil {
 		t.Fatalf("read ciphertext: %v", err)
 	}

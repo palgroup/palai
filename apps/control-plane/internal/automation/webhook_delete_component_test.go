@@ -40,14 +40,14 @@ func TestASurplusWebhookEndpointIsDeletedAndItsTwinSurvives(t *testing.T) {
 	pool := componentPool(t)
 	store := NewWebhookStore(pool)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
+	_, project, _ := seedSession(t, pool)
 
 	const url = "https://hooks.example/the-same-address"
-	keep, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint(url, "ref"))
+	keep, err := store.CreateEndpoint(ctx, project, defaultEndpoint(url, "ref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint(keep) error = %v", err)
 	}
-	surplus, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint(url, "ref"))
+	surplus, err := store.CreateEndpoint(ctx, project, defaultEndpoint(url, "ref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint(surplus) error = %v", err)
 	}
@@ -55,7 +55,7 @@ func TestASurplusWebhookEndpointIsDeletedAndItsTwinSurvives(t *testing.T) {
 		t.Fatal("the two creates returned one id; this test needs the non-idempotent create it is about")
 	}
 
-	deleted, err := store.DeleteEndpoint(ctx, org, project, surplus)
+	deleted, err := store.DeleteEndpoint(ctx, project, surplus)
 	if err != nil {
 		t.Fatalf("DeleteEndpoint() error = %v", err)
 	}
@@ -64,7 +64,7 @@ func TestASurplusWebhookEndpointIsDeletedAndItsTwinSurvives(t *testing.T) {
 	}
 
 	// DELETE is idempotent: the second call changes nothing and says so.
-	again, err := store.DeleteEndpoint(ctx, org, project, surplus)
+	again, err := store.DeleteEndpoint(ctx, project, surplus)
 	if err != nil {
 		t.Fatalf("second DeleteEndpoint() error = %v", err)
 	}
@@ -72,14 +72,14 @@ func TestASurplusWebhookEndpointIsDeletedAndItsTwinSurvives(t *testing.T) {
 		t.Fatal("the second delete claimed to remove a row that was already gone")
 	}
 
-	listed, err := store.ListEndpoints(ctx, org, project)
+	listed, err := store.ListEndpoints(ctx, project)
 	if err != nil {
 		t.Fatalf("ListEndpoints() error = %v", err)
 	}
 	if len(listed) != 1 || listed[0].ID != keep {
 		t.Fatalf("after deleting the surplus the list is %v, want exactly [%s]", ids(listed), keep)
 	}
-	if _, found, err := store.GetEndpoint(ctx, org, project, surplus); err != nil || found {
+	if _, found, err := store.GetEndpoint(ctx, project, surplus); err != nil || found {
 		t.Fatalf("GetEndpoint(deleted) = found %v, err %v; want not-found", found, err)
 	}
 }
@@ -102,7 +102,7 @@ func TestDeletingAWebhookEndpointLeavesEveryDeliveryAndAttemptOfItIntact(t *test
 	ctx := context.Background()
 	org, project, session := seedSession(t, pool)
 
-	endpoint, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint("https://hooks.example/audit", "ref"))
+	endpoint, err := store.CreateEndpoint(ctx, project, defaultEndpoint("https://hooks.example/audit", "ref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint() error = %v", err)
 	}
@@ -126,7 +126,7 @@ func TestDeletingAWebhookEndpointLeavesEveryDeliveryAndAttemptOfItIntact(t *test
 		t.Fatalf("fixture is %d deliveries / %d attempts, want 3/3", deliveriesBefore, attemptsBefore)
 	}
 
-	if _, err := store.DeleteEndpoint(ctx, org, project, endpoint); err != nil {
+	if _, err := store.DeleteEndpoint(ctx, project, endpoint); err != nil {
 		t.Fatalf("DeleteEndpoint() error = %v", err)
 	}
 
@@ -145,7 +145,7 @@ func TestDeletingAWebhookEndpointLeavesEveryDeliveryAndAttemptOfItIntact(t *test
 	}
 
 	// The trail is still READABLE through the shipped route's store method, not merely present in the table.
-	listed, err := store.ListDeliveries(ctx, org, project, "", 100)
+	listed, err := store.ListDeliveries(ctx, project, "", 100)
 	if err != nil {
 		t.Fatalf("ListDeliveries() error = %v", err)
 	}
@@ -165,7 +165,13 @@ func TestDeletingAWebhookEndpointLeavesEveryDeliveryAndAttemptOfItIntact(t *test
 
 	// And the pump stops on its own: an orphaned PENDING delivery is not due, because DueDeliveries joins
 	// the endpoint. This is what makes "the endpoint is deleted" mean "nothing more is sent".
-	due, err := store.DueDeliveries(ctx, 100)
+	//
+	// DueDeliveries is the pump's own cross-tenant sweep (webhook_pump.go's Tick applies WithSystemScope
+	// before calling it, for the same reason: it scans every tenant's due rows at once, by construction,
+	// so no single-tenant scope could ever be the right one). This call needs the same scope Tick gives
+	// it — a bare ctx has never carried one, and PrepareConn refuses to acquire a connection under no
+	// scope at all rather than silently seeing nothing (A.2 Task 1, ErrProjectRequired).
+	due, err := store.DueDeliveries(storage.WithSystemScope(ctx), 100)
 	if err != nil {
 		t.Fatalf("DueDeliveries() error = %v", err)
 	}
@@ -255,7 +261,7 @@ func TestAWebhookEndpointPinnedByATriggerRevisionIsRefusedRatherThanOrphaningIt(
 	ctx := context.Background()
 	org, project, _ := seedSession(t, pool)
 
-	endpoint, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint("https://hooks.example/cb", "ref"))
+	endpoint, err := store.CreateEndpoint(ctx, project, defaultEndpoint("https://hooks.example/cb", "ref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint() error = %v", err)
 	}
@@ -265,7 +271,7 @@ func TestAWebhookEndpointPinnedByATriggerRevisionIsRefusedRatherThanOrphaningIt(
 	mustExec(t, pool, `INSERT INTO trigger_revisions (id, organization_id, project_id, trigger_id, revision_number, callback_endpoint_id)
 		VALUES ($1,$2,$3,$4,1,$5)`, revision, org, project, trigger, endpoint)
 
-	deleted, err := store.DeleteEndpoint(ctx, org, project, endpoint)
+	deleted, err := store.DeleteEndpoint(ctx, project, endpoint)
 	if !errors.Is(err, ErrEndpointPinned) {
 		t.Fatalf("DeleteEndpoint(pinned) = (%v, %v), want ErrEndpointPinned. A trigger revision is immutable and "+
 			"live: deleting the endpoint it names either fails as a raw constraint violation (a 500 an operator "+
@@ -275,7 +281,7 @@ func TestAWebhookEndpointPinnedByATriggerRevisionIsRefusedRatherThanOrphaningIt(
 	if deleted {
 		t.Fatal("DeleteEndpoint reported a deletion alongside the refusal")
 	}
-	if _, found, err := store.GetEndpoint(ctx, org, project, endpoint); err != nil || !found {
+	if _, found, err := store.GetEndpoint(ctx, project, endpoint); err != nil || !found {
 		t.Fatalf("the refused delete removed the endpoint anyway: found %v, err %v", found, err)
 	}
 }
@@ -292,7 +298,7 @@ func TestRedeliveringToADeletedEndpointIsRefusedRatherThanQueuedForever(t *testi
 	ctx := context.Background()
 	org, project, session := seedSession(t, pool)
 
-	endpoint, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint("https://hooks.example/gone", "ref"))
+	endpoint, err := store.CreateEndpoint(ctx, project, defaultEndpoint("https://hooks.example/gone", "ref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint() error = %v", err)
 	}
@@ -303,17 +309,17 @@ func TestRedeliveringToADeletedEndpointIsRefusedRatherThanQueuedForever(t *testi
 
 	// While the endpoint exists, redelivery is exactly as it was — the non-vacuity half, so a blanket
 	// refusal could not pass this test.
-	found, err := store.Redeliver(ctx, org, project, delivery)
+	found, err := store.Redeliver(ctx, project, delivery)
 	if err != nil || !found {
 		t.Fatalf("Redeliver(live endpoint) = (%v, %v), want (true, nil)", found, err)
 	}
 	mustExec(t, pool, `UPDATE webhook_deliveries SET state = 'dead' WHERE id = $1`, delivery)
 
-	if _, err := store.DeleteEndpoint(ctx, org, project, endpoint); err != nil {
+	if _, err := store.DeleteEndpoint(ctx, project, endpoint); err != nil {
 		t.Fatalf("DeleteEndpoint() error = %v", err)
 	}
 
-	found, err = store.Redeliver(ctx, org, project, delivery)
+	found, err = store.Redeliver(ctx, project, delivery)
 	if !errors.Is(err, ErrDeliveryEndpointDeleted) {
 		t.Fatalf("Redeliver(orphaned) = (%v, %v), want ErrDeliveryEndpointDeleted. The UPDATE matches and the row "+
 			"goes back to `pending`, but DueDeliveries joins webhook_endpoints, so nothing will ever attempt it: "+
@@ -336,26 +342,26 @@ func TestAForeignTenantsWebhookEndpointIsNeitherReadNorDeleted(t *testing.T) {
 	pool := componentPool(t)
 	store := NewWebhookStore(pool)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	otherOrg, otherProject, _ := seedSession(t, pool)
+	_, project, _ := seedSession(t, pool)
+	_, otherProject, _ := seedSession(t, pool)
 
-	victim, err := store.CreateEndpoint(ctx, otherOrg, otherProject, defaultEndpoint("https://hooks.example/theirs", "ref"))
+	victim, err := store.CreateEndpoint(ctx, otherProject, defaultEndpoint("https://hooks.example/theirs", "ref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint(foreign) error = %v", err)
 	}
 
-	if _, found, err := store.GetEndpoint(ctx, org, project, victim); err != nil || found {
+	if _, found, err := store.GetEndpoint(ctx, project, victim); err != nil || found {
 		t.Fatalf("GetEndpoint across tenants = found %v, err %v; another tenant's receiver URL and secret handle "+
 			"are readable by id", found, err)
 	}
-	deleted, err := store.DeleteEndpoint(ctx, org, project, victim)
+	deleted, err := store.DeleteEndpoint(ctx, project, victim)
 	if err != nil {
 		t.Fatalf("DeleteEndpoint across tenants error = %v", err)
 	}
 	if deleted {
 		t.Fatal("one tenant deleted another tenant's webhook endpoint: their notifications stop and nothing tells them")
 	}
-	if _, found, err := store.GetEndpoint(ctx, otherOrg, otherProject, victim); err != nil || !found {
+	if _, found, err := store.GetEndpoint(ctx, otherProject, victim); err != nil || !found {
 		t.Fatalf("the foreign endpoint is gone from its OWNER's scope: found %v, err %v", found, err)
 	}
 }
@@ -371,12 +377,12 @@ func TestAWebhookEndpointsFixedHeadersReachNoReader(t *testing.T) {
 	pool := componentPool(t)
 	store := NewWebhookStore(pool)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
+	_, project, _ := seedSession(t, pool)
 
 	const secretHeader = "Bearer sk-live-not-a-real-credential"
 	create := defaultEndpoint("https://hooks.example/headers", "ref")
 	create.FixedHeaders = map[string]string{"Authorization": secretHeader}
-	endpoint, err := store.CreateEndpoint(ctx, org, project, create)
+	endpoint, err := store.CreateEndpoint(ctx, project, create)
 	if err != nil {
 		t.Fatalf("CreateEndpoint() error = %v", err)
 	}
@@ -391,11 +397,11 @@ func TestAWebhookEndpointsFixedHeadersReachNoReader(t *testing.T) {
 		t.Fatalf("the fixture never stored the header (%s); this scan would pass no matter what the readers did", stored)
 	}
 
-	single, found, err := store.GetEndpoint(ctx, org, project, endpoint)
+	single, found, err := store.GetEndpoint(ctx, project, endpoint)
 	if err != nil || !found {
 		t.Fatalf("GetEndpoint() = (%v, %v)", found, err)
 	}
-	listed, err := store.ListEndpoints(ctx, org, project)
+	listed, err := store.ListEndpoints(ctx, project)
 	if err != nil {
 		t.Fatalf("ListEndpoints() error = %v", err)
 	}
@@ -422,18 +428,18 @@ func TestTheEndpointProjectionCarriesTheDeliveryPolicy(t *testing.T) {
 	pool := componentPool(t)
 	store := NewWebhookStore(pool)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
+	_, project, _ := seedSession(t, pool)
 
 	create := EndpointCreate{
 		URL: "https://hooks.example/policy", EventFilter: []string{"run.completed.v1"},
 		SigningSecretRef: "secret_ref_live", SigningSecretRefNext: "secret_ref_next",
 		TimeoutMS: 4321, MaxAttempts: 9, RetryWindowSeconds: 12345, AllowPrivateDestination: true,
 	}
-	endpoint, err := store.CreateEndpoint(ctx, org, project, create)
+	endpoint, err := store.CreateEndpoint(ctx, project, create)
 	if err != nil {
 		t.Fatalf("CreateEndpoint() error = %v", err)
 	}
-	view, found, err := store.GetEndpoint(ctx, org, project, endpoint)
+	view, found, err := store.GetEndpoint(ctx, project, endpoint)
 	if err != nil || !found {
 		t.Fatalf("GetEndpoint() = (%v, %v)", found, err)
 	}
@@ -450,7 +456,7 @@ func TestTheEndpointProjectionCarriesTheDeliveryPolicy(t *testing.T) {
 
 	// The singular read and the list are the SAME projection. A caller that got a different shape from two
 	// routes would be looking at two resources.
-	listed, err := store.ListEndpoints(ctx, org, project)
+	listed, err := store.ListEndpoints(ctx, project)
 	if err != nil || len(listed) != 1 {
 		t.Fatalf("ListEndpoints() = %v, %v", listed, err)
 	}
@@ -489,7 +495,7 @@ func TestTwoWebhookEndpointsSharingACreatedAtListInAnOrderTheQueryDecides(t *tes
 
 	listOf := func(p tiedPair) []string {
 		t.Helper()
-		listed, err := store.ListEndpoints(ctx, p.org, p.project)
+		listed, err := store.ListEndpoints(ctx, p.project)
 		if err != nil {
 			t.Fatalf("ListEndpoints() error = %v", err)
 		}
@@ -514,7 +520,7 @@ func TestTwoWebhookEndpointsSharingACreatedAtListInAnOrderTheQueryDecides(t *tes
 	// compare equal on the full key, so the returned sequence must be strictly decreasing. Leg 1 can only
 	// catch a tie the fixture happened to produce; this catches the property itself.
 	for _, p := range []tiedPair{forward, reverse} {
-		listed, err := store.ListEndpoints(ctx, p.org, p.project)
+		listed, err := store.ListEndpoints(ctx, p.project)
 		if err != nil {
 			t.Fatalf("ListEndpoints() error = %v", err)
 		}
@@ -541,7 +547,7 @@ func TestTwoWebhookDeliveriesSharingACreatedAtPageInAnOrderTheQueryDecides(t *te
 	const pageSize = 2
 	pageOf := func(p tiedPair) []string {
 		t.Helper()
-		listed, err := store.ListDeliveries(ctx, p.org, p.project, "", pageSize)
+		listed, err := store.ListDeliveries(ctx, p.project, "", pageSize)
 		if err != nil {
 			t.Fatalf("ListDeliveries() error = %v", err)
 		}
@@ -565,7 +571,7 @@ func TestTwoWebhookDeliveriesSharingACreatedAtPageInAnOrderTheQueryDecides(t *te
 	}
 
 	for _, p := range []tiedPair{forward, reverse} {
-		listed, err := store.ListDeliveries(ctx, p.org, p.project, "", 100)
+		listed, err := store.ListDeliveries(ctx, p.project, "", 100)
 		if err != nil {
 			t.Fatalf("ListDeliveries() error = %v", err)
 		}
@@ -593,11 +599,11 @@ func newTiedEndpointPair(t *testing.T, pool *pgxpool.Pool, store *WebhookStore, 
 	ctx := context.Background()
 	org, project, _ := seedSession(t, pool)
 
-	first, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint("https://hooks.example/a", "ref"))
+	first, err := store.CreateEndpoint(ctx, project, defaultEndpoint("https://hooks.example/a", "ref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint() error = %v", err)
 	}
-	second, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint("https://hooks.example/b", "ref"))
+	second, err := store.CreateEndpoint(ctx, project, defaultEndpoint("https://hooks.example/b", "ref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint() error = %v", err)
 	}
@@ -620,7 +626,7 @@ func newTiedDeliveryTriple(t *testing.T, pool *pgxpool.Pool, store *WebhookStore
 	t.Helper()
 	ctx := context.Background()
 	org, project, session := seedSession(t, pool)
-	endpoint, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint("https://hooks.example/deliveries", "ref"))
+	endpoint, err := store.CreateEndpoint(ctx, project, defaultEndpoint("https://hooks.example/deliveries", "ref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint() error = %v", err)
 	}

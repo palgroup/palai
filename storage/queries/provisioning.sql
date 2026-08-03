@@ -70,3 +70,11 @@ RETURNING id;
 -- it (a foreign project is invisible under RLS, so this returns no row).
 -- name: ProjectExists
 SELECT 1 FROM projects WHERE id = $1;
+
+-- OrganizationForProject resolves the organization a project belongs to (A.2 Task 3). It is the one place
+-- Go code still needs a real organization value now that the request scope no longer resolves one
+-- (middleware.Scope.Organization is gone): storage.OrganizationForProject runs this system-scoped, the
+-- same reason VerifyAPIKey does — establishing which organization owns a project cannot itself be gated
+-- behind that organization.
+-- name: OrganizationForProject
+SELECT organization_id FROM projects WHERE id = $1;

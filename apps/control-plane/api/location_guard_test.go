@@ -290,19 +290,22 @@ func (probeAdmitter) ListResponses(context.Context, middleware.Scope, ListQuery)
 func (probeAdmitter) CancelResponse(context.Context, middleware.Scope, string) (RetrieveResult, error) {
 	return RetrieveResult{}, nil
 }
+func (probeAdmitter) ResolveOrganization(context.Context, string) (string, error) {
+	return "org_1", nil
+}
 
 type probeEvents struct{}
 
-func (probeEvents) SessionExists(context.Context, string, string, string) (bool, error) {
+func (probeEvents) SessionExists(context.Context, string, string) (bool, error) {
 	return false, nil
 }
-func (probeEvents) ResolveCursor(context.Context, string, string, string, string) (int64, bool, error) {
+func (probeEvents) ResolveCursor(context.Context, string, string, string) (int64, bool, error) {
 	return 0, false, nil
 }
-func (probeEvents) After(context.Context, string, string, string, int64, int) ([]contracts.Event, error) {
+func (probeEvents) After(context.Context, string, string, int64, int) ([]contracts.Event, error) {
 	return nil, nil
 }
-func (probeEvents) RecordAttachDenied(context.Context, string, string, string, string) error {
+func (probeEvents) RecordAttachDenied(context.Context, string, string, string) error {
 	return nil
 }
 

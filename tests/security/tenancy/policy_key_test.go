@@ -96,7 +96,7 @@ func TestPolicyIsolatesProjectsWithinOneInstallation(t *testing.T) {
 }
 
 // TestInstallationWideRowsAreVisibleToEveryProject is the subtlety this task's brief names as the easiest
-// thing to get wrong. budgets/quotas (migration 000032) use project_id = '' to mean "covers the whole
+// thing to get wrong. budgets/quotas (migration 000032) use project_id = ” to mean "covers the whole
 // organization"; once organizations are gone that means "the whole installation", and such a row MUST
 // stay visible to every project. A naive project_id = current_setting(...) policy hides it instead — the
 // budget then applies to nothing, every spend passes, and no test goes red on its own, because an

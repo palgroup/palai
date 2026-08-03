@@ -170,15 +170,17 @@ type RunnerPoolKeyEnrollment struct {
 //
 // AND IT GAINED A MACHINE-MOVING HALF IN E24 T5 (SetRunnerState), gated on the same capability for the
 // same reason: taking a Mac out of service and decommissioning one are org administration.
+// No organization parameter (A.2 Task 3): the request scope no longer resolves one, and the fleet store
+// resolves it fresh from project where it still needs one internally.
 type RunnerRegistryAPI interface {
-	ListRunners(ctx context.Context, org, project string, w RunnerListWindow) ([]RunnerItem, error)
+	ListRunners(ctx context.Context, project string, w RunnerListWindow) ([]RunnerItem, error)
 	// GetRunner reports found=false for an id that is not in the caller's tenant, so the handler
 	// answers 404 without ever learning whether it exists elsewhere.
-	GetRunner(ctx context.Context, org, project, id string) (RunnerItem, bool, error)
+	GetRunner(ctx context.Context, project, id string) (RunnerItem, bool, error)
 	// ListRunnerPools pages this tenant's pools. It is on the SAME interface as the runner reads
 	// rather than an interface of its own because there is one implementation and one mount, and a
 	// second seam would be an abstraction bought before anything asked for it.
-	ListRunnerPools(ctx context.Context, org, project string, w RunnerListWindow) ([]RunnerPoolItem, error)
+	ListRunnerPools(ctx context.Context, project string, w RunnerListWindow) ([]RunnerPoolItem, error)
 	// CreateRunnerPool writes ONE pool for this tenant (E28 T1) — the birth path E24 left absent, and the
 	// reason this interface has it: before it, `InsertDefaultRunnerPool` was the only statement that wrote a
 	// pool row and it wrote the name, the posture and the strict flag as LITERALS, so a rented-Mac pool could
@@ -186,21 +188,21 @@ type RunnerRegistryAPI interface {
 	//
 	// It returns ErrRunnerPoolNameTaken for a name this project already uses, so a duplicate is a 409 rather
 	// than a 500 — an operator who typed a name twice is not told their control plane is broken.
-	CreateRunnerPool(ctx context.Context, org, project string, in RunnerPoolCreate) (RunnerPoolItem, error)
+	CreateRunnerPool(ctx context.Context, project string, in RunnerPoolCreate) (RunnerPoolItem, error)
 	// SetRunnerPoolStrictEnrollment opens or closes ONE pool's waiting room. It is the ONLY field a pool can
 	// be patched through, and that is a correctness requirement rather than a limitation: a machine INHERITS
 	// its pool's posture at enrolment, so moving a populated pool's posture would retroactively change what
 	// the machines already in it ARE. found=false is an unknown or foreign id, rendered as the same
 	// non-disclosing 404 the lifecycle verbs give.
-	SetRunnerPoolStrictEnrollment(ctx context.Context, org, project, poolID string, strict bool) (RunnerPoolItem, bool, error)
+	SetRunnerPoolStrictEnrollment(ctx context.Context, project, poolID string, strict bool) (RunnerPoolItem, bool, error)
 	// MintRunnerPoolKey mints an enrolment key for one of this tenant's pools and returns its value
 	// EXACTLY ONCE. found=false is a pool that is not the caller's (or does not exist), rendered 404.
-	MintRunnerPoolKey(ctx context.Context, org, project, poolID string, expiresAt *time.Time) (RunnerPoolKeyItem, bool, error)
+	MintRunnerPoolKey(ctx context.Context, project, poolID string, expiresAt *time.Time) (RunnerPoolKeyItem, bool, error)
 	// ListRunnerPoolKeys lists key metadata — never a value, never a digest.
-	ListRunnerPoolKeys(ctx context.Context, org, project, poolID string) ([]RunnerPoolKeyItem, error)
+	ListRunnerPoolKeys(ctx context.Context, project, poolID string) ([]RunnerPoolKeyItem, error)
 	// RevokeRunnerPoolKey closes a key and reports the machines it already admitted, none of which is
 	// stopped. Idempotent; found=false for an unknown or foreign id.
-	RevokeRunnerPoolKey(ctx context.Context, org, project, keyID string) (RunnerPoolKeyItem, bool, error)
+	RevokeRunnerPoolKey(ctx context.Context, project, keyID string) (RunnerPoolKeyItem, bool, error)
 	// SetRunnerState cordons, resumes or revokes ONE machine (E24 T5). action is one of
 	// "cordon"/"resume"/"revoke" and is bound at route registration, so an implementation never has to
 	// validate a caller-supplied string. found=false is an unknown or foreign id — or a machine already
@@ -211,7 +213,7 @@ type RunnerRegistryAPI interface {
 	// and §3.6 D15 is why it does now: `Revoke()` was implemented, tested, catalogued as SAN-011's hard stop
 	// and CALLED BY NOTHING. A security control with no operator surface is a security control that does
 	// not exist.
-	SetRunnerState(ctx context.Context, org, project, id, action string) (RunnerItem, bool, error)
+	SetRunnerState(ctx context.Context, project, id, action string) (RunnerItem, bool, error)
 	// ApproveRunner admits ONE machine out of a strict pool's waiting room (E24 T6). It takes the whole
 	// verified Scope rather than org/project because the DECIDING PRINCIPAL is derived from the key id on it
 	// — the ApprovalAPI posture, for the same reason: a decision carries an identity, and a caller that
@@ -246,7 +248,7 @@ func (h *runnerHandler) listRunners(w http.ResponseWriter, r *http.Request) {
 	if q.After != nil {
 		window.AfterCreatedAt, window.AfterID = &q.After.CreatedAt, q.After.ID
 	}
-	items, err := h.runners.ListRunners(r.Context(), scope.Organization, scope.Project, window)
+	items, err := h.runners.ListRunners(r.Context(), scope.Project, window)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -279,7 +281,7 @@ func (h *runnerHandler) listRunnerPools(w http.ResponseWriter, r *http.Request) 
 	if q.After != nil {
 		window.AfterCreatedAt, window.AfterID = &q.After.CreatedAt, q.After.ID
 	}
-	items, err := h.runners.ListRunnerPools(r.Context(), scope.Organization, scope.Project, window)
+	items, err := h.runners.ListRunnerPools(r.Context(), scope.Project, window)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -344,7 +346,7 @@ func (h *runnerHandler) createRunnerPool(w http.ResponseWriter, r *http.Request)
 			"posture must be one of sandboxed-linux, unsandboxed-host")
 		return
 	}
-	item, err := h.runners.CreateRunnerPool(r.Context(), scope.Organization, scope.Project, RunnerPoolCreate{
+	item, err := h.runners.CreateRunnerPool(r.Context(), scope.Project, RunnerPoolCreate{
 		Name: strings.TrimSpace(body.Name), Posture: body.Posture, OS: body.OS, Arch: body.Arch,
 		StrictEnrollment: body.StrictEnrollment,
 	})
@@ -392,7 +394,7 @@ func (h *runnerHandler) patchRunnerPool(w http.ResponseWriter, r *http.Request) 
 			"strict_enrollment is required; a pool's posture is fixed at creation because its machines inherit it")
 		return
 	}
-	item, found, err := h.runners.SetRunnerPoolStrictEnrollment(r.Context(), scope.Organization, scope.Project,
+	item, found, err := h.runners.SetRunnerPoolStrictEnrollment(r.Context(), scope.Project,
 		r.PathValue("pool_id"), *body.StrictEnrollment)
 	switch {
 	case err != nil:
@@ -413,7 +415,7 @@ func (h *runnerHandler) getRunner(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	item, found, err := h.runners.GetRunner(r.Context(), scope.Organization, scope.Project, r.PathValue("runner_id"))
+	item, found, err := h.runners.GetRunner(r.Context(), scope.Project, r.PathValue("runner_id"))
 	switch {
 	case err != nil:
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
@@ -447,7 +449,7 @@ func (h *runnerHandler) mintPoolKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	item, found, err := h.runners.MintRunnerPoolKey(r.Context(), scope.Organization, scope.Project, r.PathValue("pool_id"), body.ExpiresAt)
+	item, found, err := h.runners.MintRunnerPoolKey(r.Context(), scope.Project, r.PathValue("pool_id"), body.ExpiresAt)
 	switch {
 	case err != nil:
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
@@ -465,7 +467,7 @@ func (h *runnerHandler) listPoolKeys(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := h.runners.ListRunnerPoolKeys(r.Context(), scope.Organization, scope.Project, r.PathValue("pool_id"))
+	items, err := h.runners.ListRunnerPoolKeys(r.Context(), scope.Project, r.PathValue("pool_id"))
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -485,7 +487,7 @@ func (h *runnerHandler) revokePoolKey(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	item, found, err := h.runners.RevokeRunnerPoolKey(r.Context(), scope.Organization, scope.Project, r.PathValue("key_id"))
+	item, found, err := h.runners.RevokeRunnerPoolKey(r.Context(), scope.Project, r.PathValue("key_id"))
 	switch {
 	case err != nil:
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
@@ -513,7 +515,7 @@ func (h *runnerHandler) setRunnerState(action string) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		item, found, err := h.runners.SetRunnerState(r.Context(), scope.Organization, scope.Project,
+		item, found, err := h.runners.SetRunnerState(r.Context(), scope.Project,
 			r.PathValue("runner_id"), action)
 		switch {
 		case err != nil:

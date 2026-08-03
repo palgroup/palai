@@ -17,7 +17,7 @@ import (
 type fakeVerifier struct{}
 
 func (fakeVerifier) VerifyAPIKey(context.Context, string) (middleware.Scope, error) {
-	return middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1"}, nil
+	return middleware.Scope{Project: "prj_1", Principal: "prin_1"}, nil
 }
 
 // fakeWebhookAPI records what reached the store seam and scripts a redeliver miss. `endpoints` is the
@@ -36,14 +36,14 @@ type fakeWebhookAPI struct {
 	redeliverErr error
 }
 
-func (f *fakeWebhookAPI) CreateEndpoint(_ context.Context, _, _ string, c automation.EndpointCreate) (string, error) {
+func (f *fakeWebhookAPI) CreateEndpoint(_ context.Context, _ string, c automation.EndpointCreate) (string, error) {
 	f.created = &c
 	if f.endpoints != nil {
 		f.endpoints["whe_created"] = automation.EndpointView{ID: "whe_created", URL: c.URL}
 	}
 	return "whe_created", nil
 }
-func (f *fakeWebhookAPI) ListEndpoints(context.Context, string, string) ([]automation.EndpointView, error) {
+func (f *fakeWebhookAPI) ListEndpoints(context.Context, string) ([]automation.EndpointView, error) {
 	if f.endpoints == nil {
 		return nil, nil
 	}
@@ -58,14 +58,14 @@ func (f *fakeWebhookAPI) ListEndpoints(context.Context, string, string) ([]autom
 	}
 	return out, nil
 }
-func (f *fakeWebhookAPI) GetEndpoint(_ context.Context, _, _, id string) (*automation.EndpointView, bool, error) {
+func (f *fakeWebhookAPI) GetEndpoint(_ context.Context, _, id string) (*automation.EndpointView, bool, error) {
 	view, ok := f.endpoints[id]
 	if !ok {
 		return nil, false, nil
 	}
 	return &view, true, nil
 }
-func (f *fakeWebhookAPI) DeleteEndpoint(_ context.Context, _, _, id string) (bool, error) {
+func (f *fakeWebhookAPI) DeleteEndpoint(_ context.Context, _, id string) (bool, error) {
 	f.deletes++
 	if id == f.pinned {
 		return false, automation.ErrEndpointPinned
@@ -76,16 +76,16 @@ func (f *fakeWebhookAPI) DeleteEndpoint(_ context.Context, _, _, id string) (boo
 	delete(f.endpoints, id)
 	return true, nil
 }
-func (f *fakeWebhookAPI) ListDeliveries(context.Context, string, string, string, int) ([]automation.DeliveryView, error) {
+func (f *fakeWebhookAPI) ListDeliveries(context.Context, string, string, int) ([]automation.DeliveryView, error) {
 	return nil, nil
 }
-func (f *fakeWebhookAPI) GetDelivery(context.Context, string, string, string) (*automation.DeliveryView, bool, error) {
+func (f *fakeWebhookAPI) GetDelivery(context.Context, string, string) (*automation.DeliveryView, bool, error) {
 	return nil, false, nil
 }
-func (f *fakeWebhookAPI) ListAttempts(context.Context, string, string, string) ([]automation.AttemptView, error) {
+func (f *fakeWebhookAPI) ListAttempts(context.Context, string, string) ([]automation.AttemptView, error) {
 	return nil, nil
 }
-func (f *fakeWebhookAPI) Redeliver(context.Context, string, string, string) (bool, error) {
+func (f *fakeWebhookAPI) Redeliver(context.Context, string, string) (bool, error) {
 	return f.redeliverOK, f.redeliverErr
 }
 

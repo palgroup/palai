@@ -14,6 +14,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/egress"
+	"github.com/palgroup/palai/storage"
 )
 
 // PinRunSkills freezes a run's skill pins ONCE at run-start (spec §28.16, TOL-011): it resolves the
@@ -95,7 +96,11 @@ func (s *Store) CreateSkill(ctx context.Context, scope middleware.Scope, body []
 	if err := dec.Decode(&req); err != nil {
 		return api.SkillResult{BadField: true}, nil
 	}
-	skill, err := s.tools.CreateSkill(ctx, scope.Organization, scope.Project, req.Name)
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
+	if err != nil {
+		return api.SkillResult{}, err
+	}
+	skill, err := s.tools.CreateSkill(ctx, org, scope.Project, req.Name)
 	if res, mapped := skillReject(err); mapped {
 		return res, nil
 	}
@@ -116,7 +121,11 @@ func (s *Store) InstallSkillRevision(ctx context.Context, scope middleware.Scope
 	if err := dec.Decode(&req); err != nil {
 		return api.SkillResult{BadField: true}, nil
 	}
-	rev, err := s.tools.InstallSkillRevisionFromURL(ctx, scope.Organization, scope.Project, skillID, req.SourceURL)
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
+	if err != nil {
+		return api.SkillResult{}, err
+	}
+	rev, err := s.tools.InstallSkillRevisionFromURL(ctx, org, scope.Project, skillID, req.SourceURL)
 	if res, mapped := skillReject(err); mapped {
 		return res, nil
 	}
@@ -132,7 +141,11 @@ func (s *Store) InstallSkillRevision(ctx context.Context, scope middleware.Scope
 
 // EnableSkillRevision enables an approved revision. Scan findings → Conflict (409); unknown → NotFound.
 func (s *Store) EnableSkillRevision(ctx context.Context, scope middleware.Scope, skillID, revisionID string) (api.SkillResult, error) {
-	exists, err := s.tools.EnableSkillRevision(ctx, scope.Organization, scope.Project, revisionID)
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
+	if err != nil {
+		return api.SkillResult{}, err
+	}
+	exists, err := s.tools.EnableSkillRevision(ctx, org, scope.Project, revisionID)
 	if res, mapped := skillReject(err); mapped {
 		return res, nil
 	}
@@ -147,7 +160,11 @@ func (s *Store) EnableSkillRevision(ctx context.Context, scope middleware.Scope,
 
 // ListSkills lists a project's skill lineages.
 func (s *Store) ListSkills(ctx context.Context, scope middleware.Scope) (api.SkillResult, error) {
-	skills, err := s.tools.ListSkills(ctx, scope.Organization, scope.Project)
+	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
+	if err != nil {
+		return api.SkillResult{}, err
+	}
+	skills, err := s.tools.ListSkills(ctx, org, scope.Project)
 	if err != nil {
 		return api.SkillResult{}, err
 	}

@@ -30,15 +30,15 @@ import (
 // journalReader is a session journal a stream can tail.
 type journalReader struct{ events []contracts.Event }
 
-func (r *journalReader) SessionExists(context.Context, string, string, string) (bool, error) {
+func (r *journalReader) SessionExists(context.Context, string, string) (bool, error) {
 	return true, nil
 }
 
-func (r *journalReader) ResolveCursor(context.Context, string, string, string, string) (int64, bool, error) {
+func (r *journalReader) ResolveCursor(context.Context, string, string, string) (int64, bool, error) {
 	return 0, false, nil
 }
 
-func (r *journalReader) After(_ context.Context, _, _, _ string, afterSeq int64, limit int) ([]contracts.Event, error) {
+func (r *journalReader) After(_ context.Context, _, _ string, afterSeq int64, limit int) ([]contracts.Event, error) {
 	var out []contracts.Event
 	for _, e := range r.events {
 		if int64(e.Sequence) > afterSeq && len(out) < limit {
@@ -48,7 +48,7 @@ func (r *journalReader) After(_ context.Context, _, _, _ string, afterSeq int64,
 	return out, nil
 }
 
-func (r *journalReader) RecordAttachDenied(context.Context, string, string, string, string) error {
+func (r *journalReader) RecordAttachDenied(context.Context, string, string, string) error {
 	return nil
 }
 
@@ -65,7 +65,7 @@ func parkEvent(seq int, typ string) contracts.Event {
 func attachStream(t *testing.T, journal EventReader, wait time.Duration) (body string, closed bool) {
 	t.Helper()
 	srv := httptest.NewServer(NewRouter(
-		scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1"}},
+		scopedVerifier{middleware.Scope{Project: "prj_1", Principal: "prin_1"}},
 		nil, journal, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		SSEConfig{Heartbeat: 20 * time.Millisecond, PollInterval: 5 * time.Millisecond, WriteTimeout: time.Second},
 		nil, nil))

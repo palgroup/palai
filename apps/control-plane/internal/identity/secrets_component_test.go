@@ -44,8 +44,8 @@ func TestSecretRefWriteResolveRotate(t *testing.T) {
 	idstore := identity.New(cs.Pool())
 	store := identity.NewSecretStore(cs.Pool(), masterKey(t))
 
-	org, _, _ := provisionOrg(t, idstore, "sec-alpha")
-	scope := middleware.Scope{Organization: org}
+	org, project, _ := provisionOrg(t, idstore, "sec-alpha")
+	scope := middleware.Scope{Project: project}
 
 	created, err := store.CreateSecretRef(ctx, scope, []byte(`{"name":"provider-one","value":"sk-live-v1"}`))
 	if err != nil {
@@ -97,7 +97,9 @@ func TestSecretRefWriteResolveRotate(t *testing.T) {
 	// tenant-scoped — an unscoped context sees zero rows under RLS (migration 000031), which is itself the
 	// isolation guarantee, so scope to the org to actually inspect the stored bytes.
 	var cipher []byte
-	if err := cs.Pool().QueryRow(storage.WithTenant(ctx, org, ""),
+	// secret_refs carries no project_id (000031); WithOrgScope is the named exception WithTenant no
+	// longer allows for an empty project (A.2 Task 1).
+	if err := cs.Pool().QueryRow(storage.WithOrgScope(ctx, org),
 		"SELECT ciphertext FROM secret_refs WHERE organization_id = $1 AND name = $2 ORDER BY version DESC LIMIT 1",
 		org, "provider-one").Scan(&cipher); err != nil {
 		t.Fatalf("read stored ciphertext: %v", err)
@@ -116,9 +118,13 @@ func TestSecretRefCrossOrgResolveDenied(t *testing.T) {
 	idstore := identity.New(cs.Pool())
 	store := identity.NewSecretStore(cs.Pool(), masterKey(t))
 
-	aOrg, _, _ := provisionOrg(t, idstore, "sec-b-a")
-	bOrg, _, _ := provisionOrg(t, idstore, "sec-b-b")
-	if _, err := store.CreateSecretRef(ctx, middleware.Scope{Organization: bOrg}, []byte(`{"name":"shared-name","value":"sk-b-only"}`)); err != nil {
+	_, aProj, _ := provisionOrg(t, idstore, "sec-b-a")
+	aOrg, err := storage.OrganizationForProject(ctx, cs.Pool(), aProj)
+	if err != nil {
+		t.Fatalf("resolve org A: %v", err)
+	}
+	_, bProj, _ := provisionOrg(t, idstore, "sec-b-b")
+	if _, err := store.CreateSecretRef(ctx, middleware.Scope{Project: bProj}, []byte(`{"name":"shared-name","value":"sk-b-only"}`)); err != nil {
 		t.Fatalf("CreateSecretRef(b) error = %v", err)
 	}
 
@@ -139,9 +145,9 @@ func TestSecretRefResolveWrongKeyIsDecryptError(t *testing.T) {
 	ctx := context.Background()
 	idstore := identity.New(cs.Pool())
 
-	org, _, _ := provisionOrg(t, idstore, "sec-wrongkey")
+	org, project, _ := provisionOrg(t, idstore, "sec-wrongkey")
 	writer := identity.NewSecretStore(cs.Pool(), masterKey(t))
-	if _, err := writer.CreateSecretRef(ctx, middleware.Scope{Organization: org}, []byte(`{"name":"k","value":"sk-under-key-a"}`)); err != nil {
+	if _, err := writer.CreateSecretRef(ctx, middleware.Scope{Project: project}, []byte(`{"name":"k","value":"sk-under-key-a"}`)); err != nil {
 		t.Fatalf("CreateSecretRef error = %v", err)
 	}
 
@@ -165,8 +171,8 @@ func TestSecretRefRotateUnknownIsNotFound(t *testing.T) {
 	idstore := identity.New(cs.Pool())
 	store := identity.NewSecretStore(cs.Pool(), masterKey(t))
 
-	org, _, _ := provisionOrg(t, idstore, "sec-gamma")
-	scope := middleware.Scope{Organization: org}
+	_, project, _ := provisionOrg(t, idstore, "sec-gamma")
+	scope := middleware.Scope{Project: project}
 
 	if r, _ := store.RotateSecretRef(ctx, scope, "never-created", []byte(`{"value":"x"}`)); !r.NotFound {
 		t.Fatal("rotate of an unknown secret was not a NotFound")
@@ -184,8 +190,8 @@ func TestSecretRefStrictDecode(t *testing.T) {
 	idstore := identity.New(cs.Pool())
 	store := identity.NewSecretStore(cs.Pool(), masterKey(t))
 
-	org, _, _ := provisionOrg(t, idstore, "sec-delta")
-	scope := middleware.Scope{Organization: org}
+	_, project, _ := provisionOrg(t, idstore, "sec-delta")
+	scope := middleware.Scope{Project: project}
 
 	if r, _ := store.CreateSecretRef(ctx, scope, []byte(`{"name":"x","value":"y","nope":1}`)); !r.BadField {
 		t.Fatal("create with an unknown field was not rejected")

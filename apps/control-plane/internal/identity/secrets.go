@@ -114,14 +114,18 @@ func (s *SecretStore) RotateSecretRef(ctx context.Context, scope middleware.Scop
 // backstop against a concurrent insert of the same version. requireExisting turns a rotate of a never-created
 // name into a NotFound.
 func (s *SecretStore) putVersion(ctx context.Context, scope middleware.Scope, name, value string, requireExisting bool) (api.ProvisionResult, error) {
-	ctx = orgScope(ctx, scope)
+	scopedCtx, org, err := orgScope(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = scopedCtx
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("begin put secret: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	version, createdAt, err := s.insertVersion(ctx, tx, scope.Organization, name, value, requireExisting)
+	version, createdAt, err := s.insertVersion(ctx, tx, org, name, value, requireExisting)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -171,7 +175,11 @@ func (s *SecretStore) insertVersion(ctx context.Context, tx pgx.Tx, org, name, v
 // ListSecretRefs lists secret-ref METADATA (name/version/updated_at) for the caller's organization — never a
 // value or ciphertext. One row per name, at its latest version.
 func (s *SecretStore) ListSecretRefs(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	ctx = orgScope(ctx, scope)
+	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = scopedCtx
 	rows, err := s.pool.Query(ctx, storage.Query("ListSecretRefs"))
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("list secret refs: %w", err)
@@ -194,7 +202,11 @@ func (s *SecretStore) ListSecretRefs(ctx context.Context, scope middleware.Scope
 // GetSecretRef reads one secret's metadata within the caller's organization; a foreign/unknown name is a
 // miss (404).
 func (s *SecretStore) GetSecretRef(ctx context.Context, scope middleware.Scope, name string) (api.ProvisionResult, error) {
-	ctx = orgScope(ctx, scope)
+	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = scopedCtx
 	v, err := scanSecretRef(s.pool.QueryRow(ctx, storage.Query("GetSecretRef"), name))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.ProvisionResult{NotFound: true}, nil

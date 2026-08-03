@@ -50,7 +50,7 @@ func TestTenantAdminKeyCannotOpenAnotherTenant(t *testing.T) {
 	idstore := identity.New(repo.Spine().Pool())
 
 	verifier := keyedVerifier{
-		"tenant-admin": {Organization: "org_existing", Project: "prj_existing", Principal: "prin_existing"},
+		"tenant-admin": {Project: "prj_existing", Principal: "prin_existing"},
 		"platform":     {Principal: "prin_platform", Scopes: []string{middleware.ScopeSystem}},
 	}
 	router := api.NewRouter(verifier, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, idstore, nil,

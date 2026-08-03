@@ -155,7 +155,7 @@ func newSessionListFixture(t *testing.T) *sessionListFixture {
 	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, f.org)
 	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, f.project, f.org)
 
-	scope := middleware.Scope{Organization: f.org, Project: f.project, Principal: newID("prin")}
+	scope := middleware.Scope{Project: f.project, Principal: newID("prin")}
 	ts := httptest.NewServer(api.NewRouter(
 		scopedVerifier{scope}, nil, nil, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		api.SSEConfig{}, nil, nil))

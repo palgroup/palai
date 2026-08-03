@@ -79,7 +79,7 @@ func TestLiveSecondTenantProvisionedViaAPI(t *testing.T) {
 	}
 
 	// Write a config_policy through the PATCH write-path and prove the §14 resolver reads it back.
-	adminScope := middleware.Scope{Organization: org.ID, Project: org.DefaultProjectID}
+	adminScope := middleware.Scope{Project: org.DefaultProjectID}
 	if _, err := idstore.UpdateProjectPolicy(ctx, adminScope, org.DefaultProjectID,
 		[]byte(`{"config_policy":{"default_tools":["file"]}}`)); err != nil {
 		t.Fatalf("UpdateProjectPolicy error = %v", err)
@@ -97,8 +97,8 @@ func TestLiveSecondTenantProvisionedViaAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyAPIKey(new admin key) error = %v", err)
 	}
-	if scope.Organization != org.ID || scope.Project != org.DefaultProjectID {
-		t.Fatalf("admin key resolved to (%s,%s), want (%s,%s)", scope.Organization, scope.Project, org.ID, org.DefaultProjectID)
+	if scope.Project != org.DefaultProjectID {
+		t.Fatalf("admin key resolved to project %s, want %s", scope.Project, org.DefaultProjectID)
 	}
 
 	// Seed a queued run for the freshly provisioned tenant and drive it to a REAL completion.

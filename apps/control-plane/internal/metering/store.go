@@ -153,10 +153,14 @@ func (s *Store) SetBudget(ctx context.Context, scope middleware.Scope, body []by
 	if in.LimitQuantity == nil || *in.LimitQuantity <= 0 {
 		return api.ProvisionResult{MissingField: "limit_quantity"}, nil
 	}
-	ctx = s.scoped(ctx, scope)
+	org, err := storage.OrganizationForProject(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = s.scoped(ctx, org, scope.Project)
 	v := budgetView{Object: "budget"}
 	if err := s.pool.QueryRow(ctx, storage.Query("UpsertBudget"),
-		middleware.NewID("bdg"), scope.Organization, scope.Project, *in.MeterPrefix, *in.LimitQuantity).
+		middleware.NewID("bdg"), org, scope.Project, *in.MeterPrefix, *in.LimitQuantity).
 		Scan(&v.ID, &v.ProjectID, &v.MeterPrefix, &v.LimitQuantity, &v.PeriodStart, &v.UpdatedAt); err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("upsert budget: %w", err)
 	}
@@ -183,10 +187,14 @@ func (s *Store) SetQuota(ctx context.Context, scope middleware.Scope, body []byt
 	if in.WindowSeconds == nil || *in.WindowSeconds <= 0 {
 		return api.ProvisionResult{MissingField: "window_seconds"}, nil
 	}
-	ctx = s.scoped(ctx, scope)
+	org, err := storage.OrganizationForProject(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = s.scoped(ctx, org, scope.Project)
 	v := quotaView{Object: "quota"}
 	if err := s.pool.QueryRow(ctx, storage.Query("UpsertQuota"),
-		middleware.NewID("quo"), scope.Organization, scope.Project, *in.MeterPrefix, *in.LimitQuantity, *in.WindowSeconds).
+		middleware.NewID("quo"), org, scope.Project, *in.MeterPrefix, *in.LimitQuantity, *in.WindowSeconds).
 		Scan(&v.ID, &v.ProjectID, &v.MeterPrefix, &v.LimitQuantity, &v.WindowSeconds, &v.UpdatedAt); err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("upsert quota: %w", err)
 	}
@@ -195,7 +203,11 @@ func (s *Store) SetQuota(ctx context.Context, scope middleware.Scope, body []byt
 
 // ListBudgets returns every budget that binds the caller.
 func (s *Store) ListBudgets(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	data, err := s.readBudgets(s.scoped(ctx, scope), scope)
+	org, err := storage.OrganizationForProject(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	data, err := s.readBudgets(s.scoped(ctx, org, scope.Project), org, scope.Project)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -204,7 +216,11 @@ func (s *Store) ListBudgets(ctx context.Context, scope middleware.Scope) (api.Pr
 
 // ListQuotas returns every quota that binds the caller.
 func (s *Store) ListQuotas(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	data, err := s.readQuotas(s.scoped(ctx, scope), scope)
+	org, err := storage.OrganizationForProject(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	data, err := s.readQuotas(s.scoped(ctx, org, scope.Project), org, scope.Project)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -214,14 +230,18 @@ func (s *Store) ListQuotas(ctx context.Context, scope middleware.Scope) (api.Pro
 // UsageSummary totals the settled ledger per meter for the caller's scope and reports it alongside the
 // limits those totals are measured against.
 func (s *Store) UsageSummary(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	ctx = s.scoped(ctx, scope)
-	rows, err := s.pool.Query(ctx, storage.Query("UsageTotals"), scope.Organization, scope.Project)
+	org, err := storage.OrganizationForProject(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = s.scoped(ctx, org, scope.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("UsageTotals"), org, scope.Project)
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("read usage totals: %w", err)
 	}
 	defer rows.Close()
 	out := summaryView{
-		Object: "usage_summary", OrganizationID: scope.Organization, ProjectID: scope.Project,
+		Object: "usage_summary", OrganizationID: org, ProjectID: scope.Project,
 		Meters: []meterTotal{},
 	}
 	for rows.Next() {
@@ -234,10 +254,10 @@ func (s *Store) UsageSummary(ctx context.Context, scope middleware.Scope) (api.P
 	if err := rows.Err(); err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("iterate usage totals: %w", err)
 	}
-	if out.Budgets, err = s.readBudgets(ctx, scope); err != nil {
+	if out.Budgets, err = s.readBudgets(ctx, org, scope.Project); err != nil {
 		return api.ProvisionResult{}, err
 	}
-	if out.Quotas, err = s.readQuotas(ctx, scope); err != nil {
+	if out.Quotas, err = s.readQuotas(ctx, org, scope.Project); err != nil {
 		return api.ProvisionResult{}, err
 	}
 	return api.ProvisionResult{Body: mustJSON(out)}, nil
@@ -253,15 +273,19 @@ func (s *Store) UsageSummary(ctx context.Context, scope middleware.Scope) (api.P
 // point's bucket_start is the truncated one containing it, and they differ by design. Nothing in Go
 // re-derives the truncation: date_trunc is the single implementation of what a bucket is.
 func (s *Store) UsageSeries(ctx context.Context, scope middleware.Scope, q api.UsageSeriesQuery) (api.ProvisionResult, error) {
-	ctx = s.scoped(ctx, scope)
+	org, err := storage.OrganizationForProject(ctx, s.pool, scope.Project)
+	if err != nil {
+		return api.ProvisionResult{}, err
+	}
+	ctx = s.scoped(ctx, org, scope.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("UsageSeries"),
-		scope.Organization, scope.Project, q.Bucket, q.Start, q.End, q.Meter)
+		org, scope.Project, q.Bucket, q.Start, q.End, q.Meter)
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("read usage series: %w", err)
 	}
 	defer rows.Close()
 	out := seriesView{
-		Object: "usage_series", OrganizationID: scope.Organization, ProjectID: scope.Project,
+		Object: "usage_series", OrganizationID: org, ProjectID: scope.Project,
 		Bucket: q.Bucket, Start: q.Start, End: q.End,
 		// Never nil: an empty window must render as `"points": []` rather than `null`, so a client can
 		// draw an empty chart without special-casing the JSON.
@@ -283,14 +307,18 @@ func (s *Store) UsageSeries(ctx context.Context, scope middleware.Scope, q api.U
 // ListUsageLedger returns a keyset page of settled entries. The store fetches exactly the Limit the
 // handler asked for (already the page size + 1), so has_more is decided without a second round trip.
 func (s *Store) ListUsageLedger(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
-	ctx = s.scoped(ctx, scope)
+	org, err := storage.OrganizationForProject(ctx, s.pool, scope.Project)
+	if err != nil {
+		return nil, err
+	}
+	ctx = s.scoped(ctx, org, scope.Project)
 	var afterTime *time.Time
 	afterID := ""
 	if q.After != nil {
 		afterTime, afterID = &q.After.CreatedAt, q.After.ID
 	}
 	rows, err := s.pool.Query(ctx, storage.Query("ListUsageLedger"),
-		scope.Organization, scope.Project, q.CreatedGTE, q.CreatedLTE, afterTime, afterID, q.Limit,
+		org, scope.Project, q.CreatedGTE, q.CreatedLTE, afterTime, afterID, q.Limit,
 		q.SessionID, q.Meter)
 	if err != nil {
 		return nil, fmt.Errorf("list usage ledger: %w", err)
@@ -323,8 +351,8 @@ func (s *Store) ListUsageLedger(ctx context.Context, scope middleware.Scope, q a
 	return out, nil
 }
 
-func (s *Store) readBudgets(ctx context.Context, scope middleware.Scope) ([]budgetView, error) {
-	rows, err := s.pool.Query(ctx, storage.Query("ListBudgets"), scope.Organization, scope.Project)
+func (s *Store) readBudgets(ctx context.Context, org, project string) ([]budgetView, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("ListBudgets"), org, project)
 	if err != nil {
 		return nil, fmt.Errorf("list budgets: %w", err)
 	}
@@ -343,8 +371,8 @@ func (s *Store) readBudgets(ctx context.Context, scope middleware.Scope) ([]budg
 	return out, nil
 }
 
-func (s *Store) readQuotas(ctx context.Context, scope middleware.Scope) ([]quotaView, error) {
-	rows, err := s.pool.Query(ctx, storage.Query("ListQuotas"), scope.Organization, scope.Project)
+func (s *Store) readQuotas(ctx context.Context, org, project string) ([]quotaView, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("ListQuotas"), org, project)
 	if err != nil {
 		return nil, fmt.Errorf("list quotas: %w", err)
 	}
@@ -366,8 +394,8 @@ func (s *Store) readQuotas(ctx context.Context, scope middleware.Scope) ([]quota
 // scoped binds the request to the verified tenant. On an HTTP request the auth middleware has already
 // published that scope and it wins (ScopeToTenant yields to it), so this only matters for an internal
 // caller driving the store directly — which then runs under the policies rather than around them.
-func (s *Store) scoped(ctx context.Context, scope middleware.Scope) context.Context {
-	return storage.ScopeToTenant(ctx, scope.Organization, scope.Project)
+func (s *Store) scoped(ctx context.Context, org, project string) context.Context {
+	return storage.ScopeToTenant(ctx, org, project)
 }
 
 // strictDecode decodes body into v rejecting unknown fields (the E11 T1 pattern), so a misspelled limit

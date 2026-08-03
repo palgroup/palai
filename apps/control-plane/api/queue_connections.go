@@ -19,13 +19,15 @@ import (
 // string (§2). Every method is scoped by the VERIFIED identity, never a request-body field (§39.2), so a
 // connection is always created inside the caller's own tenant and its server-minted id is the only key
 // anything later resolves it by.
+// No organization parameter (A.2 Task 3): the request scope no longer resolves one, and automation's
+// QueueStore resolves it fresh from project where it still needs one internally.
 type QueueConnectionAPI interface {
-	CreateQueueConnection(ctx context.Context, org, project string, in automation.QueueConnectionInput) (string, error)
-	ListQueueConnections(ctx context.Context, org, project string, w automation.ListWindow) ([]automation.QueueConnectionItem, error)
+	CreateQueueConnection(ctx context.Context, project string, in automation.QueueConnectionInput) (string, error)
+	ListQueueConnections(ctx context.Context, project string, w automation.ListWindow) ([]automation.QueueConnectionItem, error)
 	// GetQueueConnectionItem reads one connection in the list's projection. It is the address the create's
 	// 201 Location names; found=false covers both an unknown id and another tenant's, which are the same
 	// answer to a caller (E29 T2).
-	GetQueueConnectionItem(ctx context.Context, org, project, id string) (automation.QueueConnectionItem, bool, error)
+	GetQueueConnectionItem(ctx context.Context, project, id string) (automation.QueueConnectionItem, bool, error)
 }
 
 type queueConnectionHandler struct {
@@ -123,7 +125,7 @@ func (h *queueConnectionHandler) createConnection(w http.ResponseWriter, r *http
 		return
 	}
 
-	id, err := h.queues.CreateQueueConnection(r.Context(), scope.Organization, scope.Project, automation.QueueConnectionInput{
+	id, err := h.queues.CreateQueueConnection(r.Context(), scope.Project, automation.QueueConnectionInput{
 		Name:          body.Name,
 		Kind:          "local",
 		Direction:     body.Direction,
@@ -215,7 +217,7 @@ func (h *queueConnectionHandler) listConnections(w http.ResponseWriter, r *http.
 	if q.After != nil {
 		window.AfterCreatedAt, window.AfterID = &q.After.CreatedAt, q.After.ID
 	}
-	items, err := h.queues.ListQueueConnections(r.Context(), scope.Organization, scope.Project, window)
+	items, err := h.queues.ListQueueConnections(r.Context(), scope.Project, window)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -238,7 +240,7 @@ func (h *queueConnectionHandler) getConnection(w http.ResponseWriter, r *http.Re
 		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	it, found, err := h.queues.GetQueueConnectionItem(r.Context(), scope.Organization, scope.Project, r.PathValue("connection_id"))
+	it, found, err := h.queues.GetQueueConnectionItem(r.Context(), scope.Project, r.PathValue("connection_id"))
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return

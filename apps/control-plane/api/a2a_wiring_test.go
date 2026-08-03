@@ -34,6 +34,15 @@ func (s stubIfaceStore) Get(_ context.Context, org, project, id string) (a2a.Pub
 	return a2a.PublishedInterface{}, false, nil
 }
 
+// stubOrgResolver is the minimal Admitter this wiring test needs: only ResolveOrganization is ever called
+// (through newA2AScopeFunc, when an authed A2A route resolves its scope) — the test proves ROUTING/auth, not
+// admission, so every other Admitter method is unreachable and left panicking.
+type stubOrgResolver struct{ Admitter }
+
+func (stubOrgResolver) ResolveOrganization(context.Context, string) (string, error) {
+	return "org_1", nil
+}
+
 // TestA2ARouterWiringEnforcesAuthBoundary proves WithA2A mounts the surface correctly: the public Agent Card
 // is reachable WITHOUT a bearer (it bypasses auth on the top mux — a safe published projection, A2A-001),
 // while an authed A2A route is rejected by the router's auth middleware when no bearer is presented and
@@ -47,7 +56,7 @@ func TestA2ARouterWiringEnforcesAuthBoundary(t *testing.T) {
 	}
 	srv := &a2a.Server{
 		Interfaces: stubIfaceStore{iface: iface},
-		ScopeFunc:  a2aScopeFunc,
+		ScopeFunc:  newA2AScopeFunc(stubOrgResolver{}),
 		BaseURL:    "https://cp.test",
 		NewID:      func(p string) string { return p + "_x" },
 	}
@@ -76,7 +85,7 @@ func TestA2ARouterWiringEnforcesAuthBoundary(t *testing.T) {
 // discovery lie (advertise a2a while every A2A route 404s) cannot recur.
 func TestA2ACapabilityAdvertisedOnlyWhenMounted(t *testing.T) {
 	iface := a2a.PublishedInterface{ID: "a2aif_wire", Organization: "org_1", Project: "prj_1", Name: "Wired", Version: "1"}
-	srv := &a2a.Server{Interfaces: stubIfaceStore{iface: iface}, ScopeFunc: a2aScopeFunc, BaseURL: "https://cp.test"}
+	srv := &a2a.Server{Interfaces: stubIfaceStore{iface: iface}, ScopeFunc: newA2AScopeFunc(stubOrgResolver{}), BaseURL: "https://cp.test"}
 
 	mounted := NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil,
 		WithA2A(srv, srv.PublicCardHandler()))
