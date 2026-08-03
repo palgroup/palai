@@ -150,6 +150,59 @@ func TestCommandPreservesUnknownFields(t *testing.T) {
 	}
 }
 
+// TestApprovalPreservesUnknownFields is Session's sibling for Approval (approvals.go).
+func TestApprovalPreservesUnknownFields(t *testing.T) {
+	raw := `{"id":"apr_1","object":"approval","kind":"tool","tool_call_id":"tc_1","run_id":"run_1",` +
+		`"session_id":"sess_1","request_hash":"h1","created_at":"2026-08-03T00:00:00Z",` +
+		`"identity":"repo.write","operator_label":"Write to repo","arguments":"{}","truncated":false,` +
+		`"x_future_field":{"kept":true}}`
+
+	var a Approval
+	if err := json.Unmarshal([]byte(raw), &a); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if a.ID != "apr_1" || a.Kind != "tool" || a.ToolCallID != "tc_1" || a.SessionID != "sess_1" {
+		t.Fatalf("typed fields wrong: %+v", a)
+	}
+	out, err := json.Marshal(a)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("re-decode: %v", err)
+	}
+	future, ok := got["x_future_field"].(map[string]any)
+	if !ok || future["kept"] != true {
+		t.Fatalf("unknown field NOT preserved on round-trip: %s", out)
+	}
+}
+
+// TestApprovalDecisionResultPreservesUnknownFields is Command's sibling for ApprovalDecisionResult
+// (approvals.go), the type Approvals.Approve/Deny decode the server's confirmation into.
+func TestApprovalDecisionResultPreservesUnknownFields(t *testing.T) {
+	raw := `{"id":"apr_1","object":"approval.decision","decision":"approved","x_future_field":"kept"}`
+
+	var r ApprovalDecisionResult
+	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if r.ID != "apr_1" || r.Object != "approval.decision" || r.Decision != "approved" {
+		t.Fatalf("typed fields wrong: %+v", r)
+	}
+	out, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("re-decode: %v", err)
+	}
+	if got["x_future_field"] != "kept" {
+		t.Fatalf("unknown field NOT preserved on round-trip: %s", out)
+	}
+}
+
 // TestEnvelopeSplit locks the T1 Page/ListView distinction: the two envelopes decode into distinct
 // types and are NOT conflated (the second struct-decoder edge the corpus targets).
 func TestEnvelopeSplit(t *testing.T) {
