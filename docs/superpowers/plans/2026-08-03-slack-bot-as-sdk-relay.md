@@ -829,8 +829,32 @@ git commit -m "feat(slack-bot): thread-session correlation keyed by bot"
 - Test: `apps/slack-bot/internal/relay/inbound_test.go`
 
 **Interfaces:**
-- Consumes: T6 `slack.Socket`, T8 store, T1 `CreateSession`/`SteerSession`
+- Consumes: T6 `slack.Socket`, T8 store, T1 `c.Sessions.Create`/`c.Sessions.Steer`
 - Produces: `func HandleEvent(ctx, deps Deps, ev slack.InboundEvent) error`
+
+**THE BINDING SEAM — MEASURED 2026-08-03, and it is NOT where this plan first put it.**
+A session carries no agent and no repository: `SessionWrite` types `{AutoApprovePublications,
+AutoApproveTools, Name}` and decodes with `DisallowUnknownFields`, so `agent_revision_id` at session
+creation is a **400** (verified live). The agent, the repository and the run's own metadata ride the
+**RESPONSE**, not the session — `packages/contracts/response-create.gen.go` `ResponseCreateRequest`
+carries `AgentID`, `AgentRevisionID`, `SessionID`, `Repository`, `Metadata`, `Stream`.
+
+So a Slack turn is **two calls, not one**:
+
+```
+1. c.Sessions.Create({Name: "<channel> / <thread_ts>"})      -> session_id   (first message only)
+2. c.Responses.Create({SessionID, AgentRevisionID, Repository, Input, Stream})   -> the run
+```
+
+and a *subsequent* message in the same thread is either a second `Responses.Create` against the same
+session or a `Sessions.Steer` into the live run — the implementer picks based on whether the thread's
+last run is still open, and the choice is a test case, not a comment.
+
+The implementer must read the `repository` object's own shape from the response-create JSON schema
+(`protocols/schemas/execution/response-create.json`) rather than guessing it, and must confirm
+whether `ResponseCreateRequest` is decoded with `DisallowUnknownFields` too. **The Go SDK's
+`Responses.Create` may not expose all of these fields yet — check `sdks/go/responses.go` first; if a
+needed field is missing, adding it is part of this task.**
 
 - [ ] **Step 1: Başarısız testi yaz**
 
