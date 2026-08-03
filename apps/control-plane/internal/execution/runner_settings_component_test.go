@@ -185,23 +185,25 @@ func TestAPanelEditReachesAMachineThatIsAlreadyRunning(t *testing.T) {
 	// "This Mac is different from the rest of its pool" is the whole reason the machine scope exists. The
 	// pool still says 3; this machine is told 5.
 	//
-	// THE THREE LEASES FROM STEP 4 ARE STILL HELD, which is what makes this assertion mean anything: a
-	// fourth and fifth lease can only be taken if the machine's ceiling actually ROSE. With the overlay
-	// inverted — the pool winning over the machine — the ceiling stays at 3 and lease 4 never lands.
+	// THE WAIT IS ON THE REPORT AND NOT ON A DIAL, and that is a correction rather than a preference. An
+	// earlier version polled `tryDialInPool` every 25ms for fifteen seconds, which queues six hundred
+	// competing waiters on the pool — so when any slot freed, several were served at once and the failure
+	// surfaced three steps later as "a SIXTH lease was taken", naming the wrong thing entirely. The
+	// machine's own reported revision is a durable, single-valued fact; the ceiling is then measured ONCE,
+	// with each lease dialled exactly once.
+	poolRevision, _, _ := configReport(t, spine, identity.RunnerID)
 	putDesired(t, repo, ctx, `{"plane":"runner_machine","scope_id":"`+identity.RunnerID+`","settings":{"PALAI_RUNNER_CONCURRENCY":"5"}}`)
-	waitFor(t, 15*time.Second, "the machine document to raise this machine's ceiling above its pool's", func() bool {
-		ch, ok := tryDialInPool(t, f, poolID, tenant, 4)
-		if ok {
-			channels = append(channels, ch)
-		}
-		return ok
+	waitFor(t, 15*time.Second, "the machine to report the revision its own document produced", func() bool {
+		revision, _, _ := configReport(t, spine, identity.RunnerID)
+		return revision > poolRevision
 	})
-	ch, ok := tryDialInPool(t, f, poolID, tenant, 5)
-	if !ok {
-		t.Fatal("the machine took a fourth lease but not a fifth, so its ceiling is not the 5 its own document " +
-			"asks for")
-	}
-	channels = append(channels, ch)
+
+	// THE THREE LEASES FROM STEP 4 ARE STILL HELD, which is what makes this mean anything: a fourth and
+	// fifth lease can only be taken if this machine's ceiling actually ROSE above its pool's. With the
+	// overlay inverted — the pool winning over the machine — the ceiling stays at 3 and lease 4 never lands.
+	channels = append(channels, holdLeases(t, f, poolID, tenant, 4, 2,
+		"this machine's own document asks for 5 and its pool's asks for 3, but lease %d was refused. The "+
+			"machine document did not override its pool's, so configuring one Mac is not expressible")...)
 	if extra, ok := tryDialInPool(t, f, poolID, tenant, 6); ok {
 		channels = append(channels, extra)
 		t.Fatal("a SIXTH lease was taken while this machine's document asks for 5")
