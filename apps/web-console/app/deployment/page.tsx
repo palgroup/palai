@@ -30,32 +30,52 @@ import { DesiredConfig } from "./DesiredConfig";
 // silently change what the product does first, because alphabetical order is where PALAI_DISPATCH_WORKERS
 // was already hiding — between the CA paths and the engine image. The column offers a sort, so a reader who
 // wants the dump can have it; what they get on arrival is the order somebody decided.
-// markSharedRemedy flags the rows whose `change_with` is the one MOST of them carry, so the column can
-// print it once instead of once per row. It reads the majority off the data and never names it, so the
-// screen cannot disagree with the catalogue about which sentence is the common one.
+// numberRemedies assigns each DISTINCT `change_with` a 1-based number, so the column can point at a
+// sentence printed ONCE below the table instead of repeating it on every row that carries it.
 //
-// A TIE PRINTS EVERYTHING, which is the safe direction: `sharedRemedy` is only set when one sentence is
-// carried by strictly more rows than any other AND by more than half of them. Two sentences at 17 and 18
-// of 35 are not a background and a exception — they are two answers, and suppressing either would tell a
-// reader the row agrees with a sentence printed above the table when it does not.
-function markSharedRemedy(rows: DeploymentSetting[]): DeploymentSetting[] {
+// WHAT THIS REPLACED AND WHY, because the old design was right for a catalogue that no longer exists. It
+// suppressed the single STRICT-MAJORITY sentence — correct when 29 of 35 rows shared one and repeating it
+// buried the six that said something else, one of which says a stored secret rotates LIVE. Measured
+// 2026-08-03 the catalogue is 20 / 12 / 2 and 6 rows with no remedy, across FOUR groups: no majority, so
+// the flag suppressed nothing and all twenty identical sentences printed. The premise ended; the intent —
+// say each sentence once, keep the exceptions visible — is what this preserves for any number of groups.
+//
+// THE ORDER IS TOTAL AND COMPUTED OVER ALL ROWS. Descending count first so the commonest remedy is [1],
+// then the sentence itself to break a tie: two groups of equal size must not swap numbers between renders.
+// And it runs in `selectRows`, which is the only place with the WHOLE set in hand — numbering the FILTERED
+// rows would renumber the list as an operator types, and a row's [2] would mean a different sentence than
+// the one it meant a keystroke ago.
+export function numberRemedies(rows: DeploymentSetting[]): DeploymentSetting[] {
   const counts = new Map<string, number>();
-  for (const row of rows) counts.set(row.change_with, (counts.get(row.change_with) ?? 0) + 1);
-  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  const [top, second] = ranked;
-  const shared = top !== undefined && top[1] > rows.length / 2 && top[1] !== second?.[1] ? top[0] : null;
-  return rows.map((row) => ({ ...row, change_with_is_shared: shared !== null && row.change_with === shared }));
+  for (const row of rows) {
+    if (row.change_with !== "") counts.set(row.change_with, (counts.get(row.change_with) ?? 0) + 1);
+  }
+  const ordered = [...counts.entries()]
+    .sort((a, b) => (b[1] - a[1] !== 0 ? b[1] - a[1] : a[0].localeCompare(b[0])))
+    .map(([sentence]) => sentence);
+  return rows.map((row) => ({
+    ...row,
+    change_with_index: ordered.indexOf(row.change_with) + 1,
+    change_with_count: counts.get(row.change_with) ?? 0,
+  }));
 }
 
-// SHARED_REMEDY_COMMAND is the one thing the suppressed rows would otherwise have told the operator, and it
-// is stated here rather than quoted from a row because Panel's `note` is a static prop — it renders before
-// any row is fetched and cannot see them (components/Panel.tsx:150,276).
+// remedyList is the footnote's content: every distinct remedy, in numbering order, stated ONCE.
 //
-// A CONSTANT COPIED FROM A SERVER STRING IS A DRIFT WAITING TO HAPPEN, so it is not a promise: the Go test
-// TestSharedRemedyNoticeNamesTheCommandTheCatalogueGives reads this literal out of this file and asserts
-// the catalogue's majority `change_with` CONTAINS it. Reword the catalogue and the test goes red here,
-// which is the only place a reader would otherwise never learn it had.
-export const SHARED_REMEDY_COMMAND = "docker compose up -d --force-recreate control-plane";
+// It is derived from the rows the panel actually loaded rather than written here, which is the whole
+// property this screen now asserts — a sentence typed into this file would be a second copy able to drift
+// from the catalogue, and the Go guard TestTheDeploymentPageHardcodesNoRemedySentence forbids exactly that.
+export function remedyList(rows: DeploymentSetting[]): { index: number; sentence: string; count: number }[] {
+  const byIndex = new Map<number, { index: number; sentence: string; count: number }>();
+  for (const row of rows) {
+    const index = row.change_with_index ?? 0;
+    if (index === 0 || (row.change_with_count ?? 0) < 2) continue;
+    const seen = byIndex.get(index);
+    if (seen === undefined) byIndex.set(index, { index, sentence: row.change_with, count: 1 });
+    else seen.count += 1;
+  }
+  return [...byIndex.values()].sort((a, b) => a.index - b.index);
+}
 
 export default function DeploymentPage() {
   // ONE COUNTER, TWO READERS. Saving a desired value changes what BOTH the panel above and the table below
@@ -63,6 +83,11 @@ export default function DeploymentPage() {
   // so a save that refreshed only the form would leave the table claiming the old document until a reload.
   // That is the shape of a console disagreeing with itself about the machine it is showing.
   const [reloadKey, setReloadKey] = useState(0);
+  // THE ROWS, SO THE FOOTNOTE CAN BE DERIVED FROM THEM. Panel's `note` is a static prop that renders before
+  // any row is fetched; `footnote` is the slot documented as row-derived, and `onRows` is how a page gets
+  // the set to derive it from. That pairing is why the remedy sentences are never typed into this file.
+  const [rows, setRows] = useState<DeploymentSetting[]>([]);
+  const remedies = remedyList(rows);
 
   return (
     <>
@@ -80,7 +105,8 @@ export default function DeploymentPage() {
         title="Effective configuration"
         testId="panel-deployment-settings"
         fetchPath="/deployment"
-        selectRows={(body) => markSharedRemedy(Array.isArray(body.settings) ? (body.settings as DeploymentSetting[]) : [])}
+        selectRows={(body) => numberRemedies(Array.isArray(body.settings) ? (body.settings as DeploymentSetting[]) : [])}
+        onRows={setRows}
         // ONE SENTENCE, AND IT IS THE ONE THE TABLE CANNOT CARRY: the scope of the answer. Every row is the
         // CONTROL-PLANE process's own environment. PALAI_RUNNER_CONCURRENCY is absent for that reason and
         // not by oversight — it is set on the runner container, and cmd/cli/internal/stack/upgrade.go
@@ -91,9 +117,9 @@ export default function DeploymentPage() {
             These are the control-plane process&apos;s own settings. A runner-scoped setting (PALAI_RUNNER_CONCURRENCY) is
             not shown here because this process holds no copy of it — a confident wrong answer would be worse than the
             absence. What this deployment can observe about a machine&apos;s capacity is on Fleet. Changing anything
-            marked <span className="name">Needs a bring-up</span> means replacing the process with the new value —{" "}
-            <code>palai up</code>, or <code>{SHARED_REMEDY_COMMAND}</code> — and the rows that are changed some OTHER way
-            say so in that column.
+            marked <span className="name">Needs a bring-up</span> means replacing the process with the new value. HOW
+            differs by row and the ways are numbered in the Changing it column; each one is spelled out once beneath
+            the table.
           </>
         }
         // ONLY THE GROUP RIDES `.id`, AND THAT IS A MEASUREMENT RATHER THAN A LAYOUT PREFERENCE.
@@ -135,33 +161,37 @@ export default function DeploymentPage() {
           {
             header: "Changing it",
             sort: (row) => row.mutability,
-            // THE REMEDY IS PRINTED WHERE IT DIFFERS, AND ONCE WHERE IT DOES NOT. MEASURED against the
-            // running stack rather than assumed:
+            // THE COLUMN POINTS AT A REMEDY; IT DOES NOT REPEAT ONE. Measured against the running catalogue
+            // rather than assumed — the command, so the next reader re-measures instead of trusting this:
             //
             //   curl -s .../v1/deployment | jq -r '.settings[].change_with' | sort | uniq -c | sort -rn
-            //     29  recreate the control-plane with the new value (`palai up`, or `docker compose …`)
-            //      2  recreate the whole stack with the new value (`palai up`)
-            //      1  …model-routes…   1  …model-connections…   1  …secret-refs…   1  …model route names…
+            //     2026-08-03 -> 20 / 12 / 2, and 6 rows with no remedy at all. FOUR groups, no majority.
             //
-            // Twenty-nine identical sentences down one column is not information, it is the shape of the
-            // column drowning the four rows that say something ELSE — and those four are the valuable ones:
-            // PALAI_SECRET_MASTER_KEY_FILE's says a stored secret rotates live and only the master key's
-            // LOCATION needs a bring-up, which is the opposite of what a reader skimming a wall of identical
-            // text will take away.
+            // The sentences themselves are deliberately NOT quoted here. This file may not contain one: the
+            // Go guard TestTheDeploymentPageHardcodesNoRemedySentence forbids it, because a copy in this file
+            // is a copy that can drift from the catalogue — and the comment this replaced proved the point by
+            // doing exactly that. It recorded "29 identical sentences of 35" from a catalogue that has since
+            // become 20 of 40, and it went on describing a suppression rule the code no longer had.
             //
-            // The majority sentence is COMPUTED FROM THE ROWS, never written down here, and computed over
-            // `all` rather than the filtered set so a filter cannot promote a different sentence to
-            // "shared" and hide the row that was worth reading. If a future catalogue makes some other
-            // remedy the common one, this follows it; if it makes them all distinct, every row prints and
-            // nothing is suppressed. What cannot happen is a row being hidden behind a sentence it does
-            // not have.
-            // It is computed in `selectRows` above, which is the only place with the WHOLE set in hand, and
-            // deliberately not by giving Panel's `render` a second argument: a column that needs its
-            // siblings is a property of THIS screen and does not belong in the shared table.
+            // WHAT THE OLD RULE WAS FOR IS PRESERVED. Repeating one sentence twenty-nine times buried the six
+            // rows that said something ELSE, and those six are the valuable ones — PALAI_SECRET_MASTER_KEY_FILE's
+            // says a stored secret rotates LIVE and only the master key's LOCATION needs a bring-up, which is
+            // the opposite of what a reader skimming a wall of identical text takes away. Suppressing only the
+            // strict majority achieved that while a majority existed. Numbering every distinct remedy achieves
+            // it for any number of groups, and gets stronger as the catalogue grows instead of harder to hold.
+            //
+            // The numbering is computed in `selectRows` above, over ALL rows rather than the filtered set, so
+            // a filter cannot renumber the list as an operator types. It is deliberately not done by giving
+            // Panel's `render` a second argument: a column that needs its siblings is a property of THIS
+            // screen and does not belong in the shared table.
             render: (row) => (
               <span className="cell-name">
                 <span className="name">{mutabilityLabel(row.mutability)}</span>
-                {row.change_with_is_shared ? null : <span className="muted">{row.change_with}</span>}
+                {(row.change_with_index ?? 0) === 0 ? null : (row.change_with_count ?? 0) === 1 ? (
+                  <span className="muted">{row.change_with}</span>
+                ) : (
+                  <span className="muted">Way {row.change_with_index}, below</span>
+                )}
               </span>
             ),
           },
@@ -181,6 +211,37 @@ export default function DeploymentPage() {
             ),
           },
         ]}
+        // SPANS, NOT AN <ol>, AND THAT IS THE CONTAINER'S RULE RATHER THAN A STYLE PREFERENCE: Panel renders
+        // `footnote` inside a <p> (components/Panel.tsx:522), so a list or a nested <p> is invalid nesting the
+        // browser silently repairs into broken DOM. A <span> with `display: block` is valid there and reads
+        // the same.
+        //
+        // ONLY THE SHARED ONES. A remedy carried by a SINGLE row is stated on that row, because a group of one
+        // IS its row — and those are the rows worth reading. Sending them to a footnote would satisfy "once"
+        // while doing the very thing the original suppression existed to prevent: burying the exception.
+        //
+        // EACH REMEDY, ONCE. Derived from the loaded rows (never typed here, so it cannot drift from the
+        // catalogue), numbered to match the Changing it column, and rendered as an ordered LIST rather than a
+        // paragraph — a reader looking up "Way 3" is scanning, and a list is the element that supports it.
+        // The count is stated because "12 settings" is what tells an operator whether the way they are
+        // reading is the common one or the exception, which is what the old majority notice conveyed by
+        // being printed at all.
+        footnote={
+          remedies.length === 0 ? undefined : (
+            <>
+              <span className="remedy-way">Ways to change a setting on this deployment:</span>
+              {remedies.map((remedy) => (
+                <span className="remedy-way" key={remedy.index}>
+                  <span className="name">Way {remedy.index}</span>{" "}
+                  <span className="muted">
+                    ({remedy.count} {remedy.count === 1 ? "setting" : "settings"}):
+                  </span>{" "}
+                  {remedy.sentence}
+                </span>
+              ))}
+            </>
+          )
+        }
         filterLabel="Filter settings by name, group or value"
         filterPlaceholder="Setting, group or value…"
         matchOn={(row) => `${row.name} ${row.group} ${row.value} ${row.effect}`}
