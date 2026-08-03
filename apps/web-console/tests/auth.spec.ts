@@ -446,8 +446,22 @@ test("EVERY form the console serves is method=post — the sweep walks the route
   // a dynamic route that mounts a form ITSELF and cannot see one mounted by a component that route renders —
   // and `/agents/[id]` is exactly that today, via components/RevisePublish.tsx. The inventory below is what
   // makes that visible instead of merely true.
-  const unswept = [...mountsPerRoute.keys()].filter((path) => !routes.includes(path));
-  expect(unswept, "a page mounts a form on a route the served sweep cannot fetch — lib/routes.ts declares the swept paths, and a dynamic segment is not one of them").toEqual([]);
+  //
+  // WHAT IT REFUSES IS AN UNFETCHABLE ROUTE THAT WOULD SERVE SOMETHING, NOT ONE THAT MOUNTS ANYTHING (E30).
+  // The values in `mountsPerRoute` are already mounts MINUS the ones behind a FormDialog, so a remainder of
+  // zero means the route server-renders no form at all — there is nothing for this loop to have missed, and
+  // refusing it would be refusing a page for having a dialog. A remainder above zero on a path this loop
+  // cannot fetch is the real hole and still fails here.
+  //
+  // `/repositories/[id]` is the first route to exercise that distinction: E30 gave a binding's own page two
+  // ResourceForms — set the credential, archive — and BOTH sit behind a FormDialog, so it serves none.
+  // Their `method="post"` is carried by DIRECTION 2 below (one form element in the tree, and it has the
+  // attribute), and both are additionally opened and scanned by tests/a11y.spec.ts's dialog loop, which E30
+  // taught to resolve a dynamic route rather than skip it.
+  const unswept = [...mountsPerRoute.entries()]
+    .filter(([path, served]) => !routes.includes(path) && served > 0)
+    .map(([path]) => path);
+  expect(unswept, "a page SERVES a form on a route the served sweep cannot fetch — lib/routes.ts declares the swept paths, and a dynamic segment is not one of them, so nothing would check its method").toEqual([]);
 
   // THE MOUNTS THE DERIVATION CANNOT SEE, COUNTED RATHER THAN ASSUMED ABSENT. This is not an assertion and
   // deliberately not one: there is no static way to tell a mount that renders at first paint from one behind

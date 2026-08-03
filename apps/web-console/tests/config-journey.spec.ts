@@ -174,8 +174,18 @@ test("a repository binding is registered from the console and reads back on the 
   await expect(page.getByTestId("binding-operations")).toContainText("clone");
 
   // AND THE SENTENCE THAT USED TO BE THE LIST'S SECOND PARAGRAPH IS HERE, which is where an operator looks
-  // for the edit control that does not exist.
-  await expect(page.getByTestId("binding-correction-note")).toContainText("no way to change or remove");
+  // for the edit control.
+  //
+  // IT USED TO ASSERT "no way to change or remove", and that was true and was the whole defect: 20 bindings
+  // on the live stack carried no connection_ref and nothing could give one to any of them, so a private
+  // repository was unbindable and the operator was told to name a credential on a screen that could not
+  // take one. E30 made the CREDENTIAL mutable and nothing else, so the assertion is now the narrower true
+  // claim — the identity is fixed, and the reason is preparation receipts rather than a missing route.
+  await expect(page.getByTestId("binding-correction-note")).toContainText("credential is the only field that can change");
+  await expect(page.getByTestId("binding-correction-note"), "the reason the identity is fixed must be on the page, or it reads as an unfinished API").toContainText("preparation receipt");
+  // AND THE CONTROL EXISTS, beside the field it changes. A page that says the credential can change while
+  // offering nowhere to change it is the defect this whole branch is about, one sentence further along.
+  await expect(page.getByTestId("binding-connection-open")).toBeVisible();
   await expect(page.getByTestId("binding-reachability-note"), "the reachability ceiling is in the create dialog now, not on the record").toHaveCount(0);
 
   await expectAxeClean(page);
