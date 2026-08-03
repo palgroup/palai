@@ -36,8 +36,10 @@ type slackConfig struct {
 	// NEVER RECEIVES ONE: it speaks Socket Mode, whose documented contract is that the pre-authenticated
 	// WebSocket IS the authentication ("there's no need to verify or validate inbound events" —
 	// docs.slack.dev/apis/events-api/using-socket-mode). So this handle is decoded, reported at startup,
-	// and redeemed by nothing. It is not dead configuration: the console asks for it because a Slack app
-	// has one, and a future HTTP transport would need it.
+	// and used by nothing. Its VALUE does arrive here even so: the credentials route walks every `_ref` key
+	// generically, so the redemption carries this secret back alongside the two tokens and credentials.go
+	// simply never reads that key out of the map. It is not dead configuration: the console asks for it
+	// because a Slack app has one, and a future HTTP transport would need it.
 	SigningSecretRef string `json:"signing_secret_ref"`
 	// BotTokenRef is the xoxb- token every outbound call presents: the stream this bot opens in a thread,
 	// and the approval message a human clicks.

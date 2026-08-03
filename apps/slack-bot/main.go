@@ -12,20 +12,29 @@
 //	Bots.Get                its own row: what it is, and the NAMES its credentials are sealed under
 //	parseSlackConfig        the row's `config` document (the keys apps/web-console/lib/channels.ts writes)
 //	store.Open + Migrate    its own database: which Palai session a Slack thread is talking to
-//	redeemSlackCredentials  the handles → the token bytes  ← REFUSES TODAY; see credentials.go
+//	redeemSlackCredentials  the handles → the token bytes, over GET /v1/bots/{bot_id}/credentials
 //	socket.Run              the Socket Mode connection, held open and reconnected until shutdown
 //
 // Everything a misconfigured ROW would fail on is answered first, for free, before a Postgres pool or a
 // WebSocket is opened to discover it. The credentials come last, immediately before the only two things
 // that need them, so nothing earlier in this function is ever holding a live token.
 //
-// WHAT THIS PROCESS CANNOT DO TODAY, stated here because a reader deserves it at the top rather than
-// three files in: it cannot redeem its own Slack tokens. The console seals them through POST
-// /v1/secret-refs and stores only the handle NAMES in this row — and the platform has no read-back path
-// for a sealed secret, measured rather than assumed (credentials.go carries the transcript). So this
-// process starts, reads its row, validates it, and then refuses at exactly that step. Reading
-// SLACK_BOT_TOKEN out of the environment instead is not the workaround; it is the arrangement the bot
-// registry exists to end.
+// HOW THIS PROCESS COMES TO HOLD A SLACK TOKEN, stated here because a reader deserves it at the top rather
+// than three files in. The console seals the tokens through POST /v1/secret-refs and stores only the handle
+// NAMES in this row; that has not changed and is the point of the design. Neither has the property under
+// it: a sealed secret has no GENERAL read-back path, and GET /v1/secret-refs/{name} answers metadata with
+// no parameter that adds the value. What exists is one narrow route — GET /v1/bots/{bot_id}/credentials,
+// which this process calls with its OWN id at the step above (credentials.go) — and two of its properties
+// belong up here. The caller names a BOT and never a SECRET: there is no body, query or header a secret
+// name could ride in, so what gets opened is the `_ref` keys of the row named and nothing else, and no
+// input can widen that. And it is gated on a capability of its own, `bots.credentials`, deliberately not
+// `provision`: a key minted for a bot can be scoped to redeeming the handles of bots in its own project and
+// to nothing else, so the most exposed credential in a deployment is not also a provisioning key.
+//
+// Reading SLACK_BOT_TOKEN out of the environment instead is still not the arrangement. It is no longer a
+// workaround for anything either — but it is still one line, so it is enforced rather than promised:
+// TestNoSlackCredentialComesFromTheEnvironment (wiring_test.go) fails the build if any shipped file under
+// apps/slack-bot reads the environment outside internal/config.
 package main
 
 import (

@@ -9,11 +9,14 @@
 // the two agree with each other; only the real server settles that a real app-level token opens a real
 // connection and that our first frame handling is right about what arrives on it.
 //
-// IT IS THE ONLY LIVE PROOF THIS PROCESS CAN GIVE TODAY, and the reason is worth carrying here rather than
-// leaving in a report: the bot cannot redeem its own Slack tokens (see apps/slack-bot/credentials.go — a
-// sealed secret has no read-back path), so `go run ./apps/slack-bot` stops before it dials. This test
-// reads SLACK_APP_TOKEN from the environment of the machine RUNNING IT, which is exactly what the shipped
-// process may never do and what a credential-gated test is for. TestNoSlackCredentialComesFromTheEnvironment
+// WHY IT TAKES ITS TOKEN FROM THE ENVIRONMENT. It was written when it was this process's only live proof:
+// the bot could not redeem its own handles then, so `go run ./apps/slack-bot` stopped before it dialled.
+// That premise is gone — the process redeems over GET /v1/bots/{bot_id}/credentials
+// (apps/slack-bot/credentials.go) and `slack-bot selftest <channel-id>` drives four live legs through a real
+// row, this dial among them (apps/slack-bot/selftest.go). What this test still holds alone is a dial that
+// needs no row, no API key and no control plane: a token handed straight to the TEST. It reads
+// SLACK_APP_TOKEN from the environment of the machine RUNNING IT, which is exactly what the shipped process
+// may never do and what a credential-gated test is for. TestNoSlackCredentialComesFromTheEnvironment
 // (apps/slack-bot/wiring_test.go) enforces that split by skipping _test.go files and nothing else.
 //
 // It SKIPS rather than fails when the credential is absent, so a machine without one reports partial-green

@@ -423,8 +423,10 @@ func blockActionsPayload(userID, actionID, value string) json.RawMessage {
 
 // THE ARCHITECTURE'S ONE RULE, enforced rather than promised: a Slack credential never comes from this
 // process's environment. It is the reason the bot registry exists — "an operator configures a bot in the
-// admin panel, not in a file" — and it is exactly the rule a future edit would break to get past the
-// missing read-back path (see credentials.go), because doing so takes one line and makes the bot work.
+// admin panel, not in a file" — and it outlived the pressure that used to threaten it. When this process
+// could not redeem its own handles at all, reading SLACK_BOT_TOKEN was one line away from a working bot;
+// GET /v1/bots/{bot_id}/credentials closed that gap (see credentials.go), so the shortcut now buys nothing.
+// It is still one line, which is why the rule is enforced here rather than left to the reason for it.
 //
 // THE SCAN IS OVER THE SHIPPED SOURCE ONLY, and both halves of that are deliberate. It walks the whole
 // binary's tree rather than this one file, because the line that breaks the rule is as likely to appear
@@ -464,8 +466,9 @@ func TestNoSlackCredentialComesFromTheEnvironment(t *testing.T) {
 	}
 	if len(offenders) > 0 {
 		t.Fatalf("this process reads its environment outside internal/config:\n  %s\n"+
-			"A Slack token is never this process's environment variable — it comes from the bot's registry row. "+
-			"If the missing secret read-back path (credentials.go) is what pushed this line in, the fix is that route, not this line.",
+			"A Slack token is never this process's environment variable — it comes from the bot's registry row, "+
+			"redeemed over GET /v1/bots/{bot_id}/credentials (credentials.go). If that redemption is what failed, "+
+			"the fix is the row's handles or this key's bots.credentials capability, not this line.",
 			strings.Join(offenders, "\n  "))
 	}
 }
