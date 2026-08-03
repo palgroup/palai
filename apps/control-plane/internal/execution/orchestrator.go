@@ -228,7 +228,7 @@ func (o *Orchestrator) SetBackgroundRunner(b toolbroker.BackgroundRunner) {
 // actually binds.
 
 // SetHookFirer injects the hook dispatcher the five pinned points fire through (spec §28.17, E12 T8). Left
-// unset, no hook fires — the dispatch is bit-unchanged (the same discipline as SetShellRunner/SetPublisher).
+// unset, no hook fires — the dispatch is bit-unchanged (the same discipline as SetBackgroundRunner/SetPublisher).
 // It also propagates the firer to the publication registry, so the before_repository_publish point fires
 // from inside the publish tool's RequestPublication.
 func (o *Orchestrator) SetHookFirer(h HookFirer) {

@@ -19,7 +19,7 @@ import (
 // SetWorkspaceProvisioner wires the root run's workspace auto-provisioning (spec §29.7-30.3, E09 Task
 // 10): root is the host directory allocations are minted under (PALAI_WORKSPACE_ROOT), and broker mints
 // the short-lived read credential the clone runs behind. Left unset, a run with an attached binding
-// simply gets no workspace — its coding tools then fail cleanly (no host path), the SetShellRunner
+// simply gets no workspace — its coding tools then fail cleanly (no host path), the SetBackgroundRunner
 // discipline. main.go wires it env-gated where a sandbox is configured.
 func (o *Orchestrator) SetWorkspaceProvisioner(root string, broker repositories.Broker) {
 	o.provisionRoot, o.provisionBroker = root, broker
@@ -28,7 +28,7 @@ func (o *Orchestrator) SetWorkspaceProvisioner(root string, broker repositories.
 // SetSessionAccounts wires the per-allocation uid (macOS). Unset, an allocation gets no account and its
 // tools run as the control plane's own uid — which is what every deployment does today and is the
 // posture docs/operations/palai-on-a-mac.md §1 describes as "the boundary is the uid. Nothing else." A
-// setter rather than a constructor argument for the same reason SetShellRunner is one: the composition
+// setter rather than a constructor argument for the same reason SetBackgroundRunner is one: the composition
 // root decides, and every existing caller compiles and behaves unchanged.
 func (o *Orchestrator) SetSessionAccounts(a SessionAccounts) { o.sessionAccounts = a }
 

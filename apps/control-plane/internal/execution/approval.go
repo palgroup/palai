@@ -161,7 +161,7 @@ func (o *Orchestrator) parkOnPendingPublication(ctx context.Context, st *attempt
 // record (spec §30.9-30.10). RepositoryPublisher is the real implementation (push via the broker, PR via
 // the provider client); a fake proves the pump deterministically. A nil publisher disables the pump —
 // a stack with no repository publication wired (every existing orchestrator test) simply skips it, the
-// SetShellRunner discipline.
+// SetBackgroundRunner discipline.
 type Publisher interface {
 	Publish(ctx context.Context, target PublishTarget) (map[string]any, error)
 }

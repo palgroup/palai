@@ -60,7 +60,7 @@ func TestPushToolRecordsPendingPublicationAtWorkspaceHead(t *testing.T) {
 }
 
 // TestPushToolFailsCleanlyWithoutRegistry proves the push tool fails cleanly rather than acting when no
-// publication registry is wired (the SetShellRunner-nil discipline).
+// publication registry is wired (the SetBackgroundRunner-nil discipline).
 func TestPushToolFailsCleanlyWithoutRegistry(t *testing.T) {
 	if _, err := pushExec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: t.TempDir()}, nil); err == nil {
 		t.Fatal("pushExec with no registry = nil error, want a clean failure")

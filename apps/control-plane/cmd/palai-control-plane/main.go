@@ -649,8 +649,9 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		broker, route := modelBrokerFromEnv()
 		// Register the real coding tools alongside the conformance math tool: the workspace file and
 		// shell tools (spec §28.7-28.8) that E09's real tool round-trip dispatches. The file tool
-		// confines to the attempt's workspace; the shell tool runs behind the sandbox shell runner
-		// (injected where a sandbox driver is wired — SetShellRunner; nil fails a shell call cleanly).
+		// confines to the attempt's workspace; the shell tool runs on the MACHINE holding the attempt's
+		// lease (A.3, execution.shellFor) — there is no process-wide runner to inject here any more, and an
+		// attempt whose connection reaches no machine gets no shell rather than this host's.
 		toolBroker := toolbroker.New(
 			toolbroker.ConformanceMathAdd(),
 			tools.FileTool(),
