@@ -29,12 +29,13 @@ import (
 	"sync"
 
 	slack "github.com/palgroup/palai/adapters/integrations/slack"
+	"github.com/palgroup/palai/apps/slack-bot/internal/store"
 	palai "github.com/palgroup/palai/sdks/go"
 )
 
 // ThreadStore is Task 8's store, narrowed to the three methods HandleEvent calls — the same
 // "narrow to what this file needs" shape EventStream/Slack (relay.go) already use for the SDK/Slack
-// surfaces. *store.Store satisfies this structurally; a test substitutes a fake with no database.
+// surfaces.
 type ThreadStore interface {
 	SessionForThread(ctx context.Context, botID, teamID, channelID, threadTS string) (string, bool, error)
 	BindThread(ctx context.Context, botID, teamID, channelID, threadTS, sessionID string) (string, error)
@@ -43,6 +44,14 @@ type ThreadStore interface {
 	// rebindOrphan, the one caller.
 	RebindThread(ctx context.Context, botID, teamID, channelID, threadTS, oldSessionID, newSessionID string) (bool, error)
 }
+
+// var _ ThreadStore = (*store.Store)(nil) pins the two shapes together at COMPILE time. Without it,
+// ThreadStore and *store.Store can drift silently: this file's interface briefly kept RebindThread's
+// pre-review two-return-value signature after Task 8's review widened the real store to a
+// compare-and-swap, and nothing caught it — no production call site wires the two together yet (that
+// is a later task's job), so `go build ./...` stayed clean through the whole drift. This line is the
+// only thing standing in for that missing call site until one exists.
+var _ ThreadStore = (*store.Store)(nil)
 
 // Palai is the SDK surface HandleEvent drives, flattened out of the client's nested Sessions/
 // Responses resource groups so a test can substitute a fake with no HTTP round trip — the CreateResponse
