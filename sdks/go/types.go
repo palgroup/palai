@@ -318,6 +318,23 @@ type ListView[T any] struct {
 // ResponseCreateRequest is the create body (spec §22.1). Mirrors the server's
 // contracts.ResponseCreateRequest; Input is required, everything else omitempty. Unknown-forward is
 // not needed on a request the SDK constructs.
+//
+// AgentID / AgentRevisionID / Repository (2026-08-03 plan, Task 9) are the ONLY three of the server's
+// six run-binding fields this SDK carries — Delegation, RunTemplateRevisionID and Workspace are not:
+// no shipped caller sets them, and an unused field is dead code. They exist because a session itself
+// carries neither an agent nor a repository (SessionWrite is {AutoApprovePublications,
+// AutoApproveTools, Name}, DisallowUnknownFields — agent_revision_id there is a live 400, measured
+// against the running control plane): both ride the RESPONSE instead, so a caller that wants an
+// agent-bound run has no other field to put agent_revision_id in without these.
+//
+// Repository's real shape — measured from the server's own parser, apps/control-plane/api/
+// responses.go's resolveRepository, NOT from the published JSON schema (which types the field as a
+// bare `{"type":"object"}`) — is `{binding_id, ref}`. That function's own comment carries the
+// consequence a caller must not miss: "An absent field or empty binding_id yields "", "" — a
+// non-coding response." Omitting binding_id is therefore not a request error: the run is accepted,
+// answers in text, and attaches no workspace, so every workspace tool it calls answers "no workspace
+// bound for this run" — a silent failure a repository-bound caller must set binding_id to avoid, not
+// something this SDK can catch for them.
 type ResponseCreateRequest struct {
 	Input              any              `json:"input"`
 	Model              string           `json:"model,omitempty"`
@@ -333,6 +350,9 @@ type ResponseCreateRequest struct {
 	SessionID          *string          `json:"session_id,omitempty"`
 	PreviousResponseID *string          `json:"previous_response_id,omitempty"`
 	Engine             *string          `json:"engine,omitempty"`
+	AgentID            *string          `json:"agent_id,omitempty"`
+	AgentRevisionID    *string          `json:"agent_revision_id,omitempty"`
+	Repository         map[string]any   `json:"repository,omitempty"`
 	Background         bool             `json:"background,omitempty"`
 	Store              bool             `json:"store,omitempty"`
 	Stream             bool             `json:"stream,omitempty"`
