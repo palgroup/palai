@@ -925,6 +925,23 @@ SDK'ya eklenir, sunucunun kendi şemasındaki adlarla. Diğer üçü (`Workspace
 
 `Metadata map[string]any` SDK'da **zaten var** — ve T16'nın bot atfı için muhtemel yeri odur.
 
+**`repository` NESNESİNİN ŞEKLİ — ölçüldü 2026-08-03, ve JSON şemasından okunamaz.**
+`protocols/schemas/execution/response-create.json` bu alan için yalnız `{"type": "object"}` diyor;
+gerçek sözleşme sunucunun ayrıştırıcısındadır (`apps/control-plane/api/responses.go:524-539`):
+
+```json
+"repository": { "binding_id": "rbd_…", "ref": "main" }
+```
+
+Ve o fonksiyonun kendi yorumu bu görevin en önemli cümlesini taşıyor:
+
+> *"An absent field or empty `binding_id` yields "", "" — a **non-coding** response."*
+
+Yani **`binding_id` yoksa run sessizce kod yazamayan bir run olur** — hata değil, workspace hiç
+bağlanmaz ve beş workspace aracı "no workspace bound for this run" der. Bot bir repository'ye bağlı
+bir botsa ve bu alanı göndermezse, kullanıcı Slack'te bir cevap alır ama hiçbir dosya değişmez.
+**Bu, bir testi hak eden sessiz başarısızlıktır.**
+
 **T9 AYRICA AKIŞIN ALICISINI SAĞLAMAK ZORUNDADIR — ölçüldü 2026-08-03.** T7'nin `Deps`'i
 `StreamStart`'ın `RecipientUserID`/`RecipientTeamID` alanlarını bilerek dışarıda bıraktı ve bu
 **doğru sınırdır**: `StartStream` bu ikisi (ve `ThreadTS`) boşken **Slack'i hiç çağırmadan**
