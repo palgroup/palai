@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -119,14 +120,43 @@ func scopeFrom(ctx context.Context) scope {
 // organization_id columns are dropped in A.2 Task 5, and this function goes with them. Nothing new
 // should be built on it.
 //
-// ITS COST, MEASURED RATHER THAN WAVED AT: 96 call sites, no cache, so one store-method call is one
-// extra `SELECT organization_id FROM projects`. That price is paid to keep feeding a column already
-// scheduled for deletion, which is exactly why it is temporary and why the count is written here —
-// a bridge whose toll is undocumented reads like a design.
+// ITS COST, MEASURED RATHER THAN WAVED AT: 96 call sites. Each used to be its own extra
+// `SELECT organization_id FROM projects` — cheap alone, but the SSE events pump
+// (apps/control-plane/api/events.go, PollInterval = 500ms) resolves once per poll tick, so one open
+// stream paid ~120 of these a minute for its whole lifetime. It is now cached (organizationCache below),
+// so a given project is resolved from the database at most once per process — the toll this comment used
+// to just document is now actually paid once.
 //
 //	grep -rn 'OrganizationForProject(' --include='*.go' . | grep -v _test | grep -v 'func ' | wc -l  -> 96
 func OrganizationForProject(ctx context.Context, pool *pgxpool.Pool, project string) (string, error) {
+	if cached, ok := organizationCache.Load(project); ok {
+		return cached.(string), nil
+	}
 	var organization string
-	err := pool.QueryRow(WithSystemScope(ctx), Query("OrganizationForProject"), project).Scan(&organization)
-	return organization, err
+	if err := pool.QueryRow(WithSystemScope(ctx), Query("OrganizationForProject"), project).Scan(&organization); err != nil {
+		// A miss — project not found, or any other error — is never cached: a project created after this
+		// call must still resolve on the very next call instead of replaying today's error forever.
+		return "", err
+	}
+	organizationCache.Store(project, organization)
+	return organization, nil
 }
+
+// organizationCache memoizes OrganizationForProject: project id -> organization id, for the life of the
+// process, with no invalidation. That is safe ONLY because the mapping is IMMUTABLE, not because
+// organizations rarely change: projects.organization_id is `NOT NULL REFERENCES organizations (id)`
+// (migration 000001_core.up.sql) and no statement anywhere ever reassigns it —
+//
+//	grep -rh 'UPDATE projects' -A5 storage/queries/*.sql | grep -c 'organization_id\s*='   -> 0
+//
+// — so a project cannot move between organizations: no route, no query, nothing does it. If that command's
+// answer ever stops being 0, this cache is wrong and must be invalidated (or removed) in the same change
+// that adds the reassignment, or a caller would keep reading a project's OLD organization forever.
+//
+// sync.Map over a mutex+map: reads dominate (every one of the 96 call sites, plus the SSE pump every poll
+// tick), the key set only grows (never evicted — one entry per project for the process's life, matching
+// A.2 Task 5's plan to delete this whole function rather than ever needing to shrink it), and entries are
+// written once and never mutated after — the shape sync.Map is for. Two goroutines racing to resolve the
+// same not-yet-cached project may both query and both Store; that race is harmless because they store the
+// identical value.
+var organizationCache sync.Map
