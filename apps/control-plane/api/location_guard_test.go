@@ -270,6 +270,7 @@ func everyRouteMountedRouter(t *testing.T) http.Handler {
 		WithSlackConnections(&fakeSlackConnectionAPI{}),
 		WithRunners(&fakeRunnerRegistry{}),
 		WithApprovals(&fakeApprovalAPI{}),
+		WithBots(&fakeBotRegistry{}),
 	)
 }
 

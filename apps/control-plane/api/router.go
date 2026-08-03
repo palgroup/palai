@@ -369,6 +369,20 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("POST /v1/approvals/{approval_id}/deny", ah.deny)
 	}
 
+	// The kind-agnostic bot registry (2026-08-03 plan Task 4): a project's registered bots — one row per
+	// relay process the console can create. INSIDE the auth middleware like every other operator-facing
+	// registration surface here (queues, Slack connections, runners): a registration carries no source
+	// signature of its own, so the bearer scope is the only tenant authority. nil in tiers that wire no
+	// bot store.
+	if cfg.bots != nil {
+		bh := &botHandler{bots: cfg.bots}
+		mux.HandleFunc("POST /v1/bots", bh.create)
+		mux.HandleFunc("GET /v1/bots", bh.list)
+		mux.HandleFunc("GET /v1/bots/{bot_id}", bh.get)
+		mux.HandleFunc("PATCH /v1/bots/{bot_id}", bh.patch)
+		mux.HandleFunc("DELETE /v1/bots/{bot_id}", bh.delete)
+	}
+
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}
 	mux.HandleFunc("GET /v1/sessions/{session_id}/events", stream.stream)
 

@@ -64,15 +64,17 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	// each was cut when 51 was the tip. Whichever lands second renames — filename pair, `VALUES (52)`
 	// marker, embed var, and this assertion — and this test is what makes the rename finish.
 	head := migrations[len(migrations)-1]
-	if head.Version != 60 || head.Name != "machine_desired_config" {
-		t.Fatalf("chain head = %06d_%s, want 000060_machine_desired_config", head.Version, head.Name)
+	if head.Version != 61 || head.Name != "integration_bots" {
+		t.Fatalf("chain head = %06d_%s, want 000061_integration_bots", head.Version, head.Name)
 	}
 	// The penultimate moves every time a new head lands, and asserting BOTH is what forces a renumber
 	// to finish: a rename that updated the filename pair but not the `VALUES (n)` marker or the embed
-	// var leaves these two disagreeing. 000054 was itself renumbered from 52 on the way in.
+	// var leaves these two disagreeing. 000054 was itself renumbered from 52 on the way in, and
+	// integration_bots itself renumbered from 60 -> 61 for the same reason (machine_desired_config took
+	// 60 first).
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 59 || penultimate.Name != "repository_binding_lifecycle" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000059_repository_binding_lifecycle", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 60 || penultimate.Name != "machine_desired_config" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000060_machine_desired_config", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

@@ -36,6 +36,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
+	"github.com/palgroup/palai/apps/control-plane/internal/bots"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	tools "github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
@@ -141,6 +142,12 @@ func main() {
 
 	gateway := startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"), runnerRegistry, runnerPoolKeys, repo.Spine(), repo)
 
+	// The kind-agnostic bot registry (2026-08-03 plan Task 4): a project's registered bots, one row per
+	// relay process the console can create. It rides the same durable spine's pool as every other admin
+	// registry above and needs no external credential, so it is wired unconditionally (WithBots, appended
+	// to routerOpts below) — the WithKnowledge posture.
+	botStore := bots.NewStore(repo.Spine().Pool(), middleware.NewID, nil)
+
 	// The capability-worker gateway (E17 T9, spec §31): the outbound-enrolled enroll/claim/redeem/result
 	// surface an out-of-process worker dials. Built here so the secret store above (nil unless a master key
 	// is configured) is the resolver a job-scoped secret handle redeems through.
@@ -210,6 +217,7 @@ func main() {
 		api.WithUsage(metering.New(repo.Spine().Pool())),
 		api.WithModelRoutes(repo),
 		api.WithKnowledge(knowledge.New(repo.Spine().Pool())),
+		api.WithBots(botStore),
 		// WithToolCalls mounts the tool-call read (E30 T2), over the SAME non-nil repo the positional
 		// seams use, so it is unconditional like the two above. It is the only route from which a client
 		// can learn what a tool call actually was: the journal frames carry the tool's NAME and

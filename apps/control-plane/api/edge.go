@@ -88,6 +88,9 @@ type routerConfig struct {
 	// and GET /v1/deployment reports NO desired block at all — which is honest for a control plane with no
 	// durable spine, and distinct from reporting an empty document.
 	desired DesiredConfigAPI
+	// bots is the kind-agnostic bot registry (migration, 2026-08-03 plan Task 4); nil ⇒ routes
+	// unmounted, the posture every other optional surface takes.
+	bots BotRegistry
 }
 
 // WithDesiredConfig mounts the desired-configuration write path and gives GET /v1/deployment its desired
@@ -271,4 +274,12 @@ func WithApprovals(approvals ApprovalAPI) RouterOption {
 // tenant identity.
 func WithMetrics(h http.Handler) RouterOption {
 	return func(c *routerConfig) { c.metrics = h }
+}
+
+// WithBots mounts the kind-agnostic bot registry (2026-08-03 plan Task 4): a project's registered bots,
+// one row per relay process a console wizard can create. A trailing option for the reason WithSecretRefs
+// is — every existing caller compiles unchanged, and a stack that wires no bot store leaves the routes
+// unmounted rather than 500 on a nil seam.
+func WithBots(bots BotRegistry) RouterOption {
+	return func(c *routerConfig) { c.bots = bots }
 }

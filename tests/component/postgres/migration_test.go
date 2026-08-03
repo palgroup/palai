@@ -99,6 +99,10 @@ var allTables = []string{
 	// bounds that exist to hold a tenant — so it is also a BY-NAME entry in tests/security/tenancy's
 	// nonTenantTables, which is where a reader looking for "why is this one outside RLS" will look.
 	"deployment_desired",
+	// The kind-agnostic bot registry (migration 000061, 2026-08-03 plan Task 4). Referenced by NO other
+	// table — a later session.bot_id column carries this row's id as a plain opaque string, on purpose:
+	// the control plane must never learn what a bot IS, and an FK would be that knowledge.
+	"integration_bots",
 	"schema_migrations",
 }
 
