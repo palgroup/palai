@@ -290,8 +290,21 @@ test("every channel row can actually be filled in, and every roadmap row says wh
   for (const channel of CHANNELS) {
     if (!channel.enabled) {
       expect(channel.form, `${channel.id} is a roadmap row and declares a form nothing can submit`).toBe(undefined);
+      expect(channel.selfTest, `${channel.id} is a roadmap row and declares a live test for an adapter nobody has written`).toBe(undefined);
       expect(channel.note ?? "", `${channel.id} is offered as disabled with no reason beside it`).not.toBe("");
       continue;
+    }
+    // A SELF-TEST IS OPTIONAL AND ITS CAVEAT IS NOT (Task 13). The command is rendered by a console that
+    // cannot run it and cannot see its outcome, so the one thing that keeps the panel honest is the sentence
+    // saying what a green run does not prove. A recipe with no legs is a command with no expectations to
+    // match against, which is the same failure one step earlier.
+    const selfTest = channel.selfTest;
+    if (selfTest !== undefined) {
+      expect(selfTest.legs.length, `${channel.id}'s live test lists no legs, so nothing tells the operator what to match the output against`).toBeGreaterThan(0);
+      expect(selfTest.caveat, `${channel.id}'s live test claims an outcome with no statement of what it does NOT prove`).not.toBe("");
+      // The bot's id is the ONE value this console can fill in; a command that dropped it would be run
+      // against whatever PALAI_BOT_ID happened to be in the operator's shell.
+      expect(selfTest.command("bot_0123456789"), `${channel.id}'s live test command does not carry the bot's own id`).toContain("bot_0123456789");
     }
     const form = channel.form;
     expect(form, `${channel.id} is enabled and asks for nothing, so a bot of that kind can never connect`).not.toBe(undefined);

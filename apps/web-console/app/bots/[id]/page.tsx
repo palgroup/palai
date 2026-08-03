@@ -19,7 +19,12 @@ import { channelHandle, channelLabel, channelOf, csvList } from "@/lib/channels"
 //
 // THE FLOW THIS SCREEN IS THE MIDDLE OF, in the owner's words: choose the channel, receive a manifest, go and
 // install it, come back and paste the tokens, continue, then test from the channel itself. /bots does the
-// choosing; this page hands over the manifest and takes the credentials back. The live test is Task 13.
+// choosing; this page hands over the manifest, takes the credentials back, and hands over the live test.
+//
+// STEP 3 RENDERS A COMMAND RATHER THAN RUNNING ONE, and lib/channels.ts's ChannelSelfTest carries the whole
+// argument for why: the thing that drives Slack must hold this bot's Slack tokens, the relay is not
+// reachable from a browser, and the control plane deliberately does not know what a bot IS. A button here
+// that reported green would have to invent the green.
 //
 // WHY THE MANIFEST COMES FIRST AND THE TOKENS SECOND: the tokens do not exist yet. A signing secret and a bot
 // token are minted BY creating the app, so a screen that asked for them first would be asking for values the
@@ -130,6 +135,10 @@ export default function BotPage() {
   const channel = channelOf(String(bot?.kind ?? ""));
   const manifest = channel?.manifest;
   const form = channel?.form;
+  const selfTest = channel?.selfTest;
+  // Built once: the copy button and the visible block must hand over the SAME text, and two calls is two
+  // chances for them to stop doing so.
+  const selfTestCommand = selfTest?.command(botID) ?? "";
   const promptGroup = manifest?.prompts;
   const draft = manifest?.build(manifestValues, prompts);
 
@@ -535,6 +544,45 @@ export default function BotPage() {
             <Button variant="primary" testId="bot-credentials-open" onClick={() => setCredOpen(true)}>
               {named === 0 ? "Add credentials" : "Change credentials"}
             </Button>
+          </p>
+        </section>
+      )}
+
+      {selfTest === undefined || bot === null ? null : (
+        <section className="panel" data-testid="panel-bot-selftest" aria-labelledby="bot-selftest-h">
+          <div className="panel-head">
+            <h2 id="bot-selftest-h">Step 3 — {selfTest.label}</h2>
+          </div>
+          <p className="muted">{selfTest.lead}</p>
+          <ol data-testid="bot-selftest-legs">
+            {selfTest.legs.map((leg) => (
+              <li key={leg}>{leg}</li>
+            ))}
+          </ol>
+          <p>
+            <CopyButton value={selfTestCommand} label="self-test command" testId="bot-selftest-copy">
+              Copy command
+            </CopyButton>
+          </p>
+          <pre className="code" data-testid="bot-selftest-command">
+            {selfTestCommand}
+          </pre>
+          {/* THE SAME FOUR VARIABLES THE RELAY RUNS WITH, and saying so is what makes the placeholders
+              fillable: an operator who has started this bot's relay already has all four. The one worth
+              naming is the capability, because a key without it fails at the redemption with a 403 that
+              names no screen. */}
+          <p className="muted" data-testid="bot-selftest-note">
+            Those are the four variables the relay process itself runs with — nothing here is new
+            configuration, and this console holds no API key of its own to fill in.{" "}
+            {bot.disabled === true
+              ? "This bot is disabled in the registry, so the command will refuse before it contacts Slack: enable it first."
+              : "The credentials it redeems are the ones named in Step 2, so seal them first."}
+          </p>
+          <p className="form-status" data-testid="bot-selftest-caveat">
+            <span className="glyph" aria-hidden="true">
+              !
+            </span>{" "}
+            {selfTest.caveat}
           </p>
         </section>
       )}

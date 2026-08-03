@@ -356,6 +356,35 @@ test.describe("the bot's own page", () => {
     await expect(page.getByTestId("bot-manifest-copy")).toBeVisible();
   });
 
+  // STEP 3 — THE LIVE TEST (Task 13). This drives the RENDERED panel and not the table behind it, which is
+  // the rule this tree keeps relearning: a test written for a surface must drive that surface. The two
+  // things an operator uses are the visible block and the copy button, and they are two separate
+  // expressions in the source — so both are read here, and compared to each other.
+  test("step 3 hands over a live-test command carrying this bot's own id, and never a credential", async ({ page, context }) => {
+    const { id, name } = await probeBot(page);
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await openBot(page, name);
+
+    await expect(page.getByTestId("panel-bot-selftest")).toBeVisible();
+    const shown = await page.getByTestId("bot-selftest-command").innerText();
+    expect(shown, "the command does not name the bot it would test, so it would run against whatever PALAI_BOT_ID is in the operator's shell").toContain(id);
+
+    // NOTHING SECRET IS RENDERED, AND THE PLACEHOLDER IS THE PROOF. This console never holds an API key —
+    // the browser talks to a same-origin relay — so a command with a filled-in key could only come from
+    // somebody deciding to put one there, and this is the line that would fail on that day.
+    expect(shown, "the command renders a filled-in API key rather than a placeholder").toContain("PALAI_API_KEY=<");
+    expect(shown).not.toMatch(/xoxb-|xapp-/);
+
+    // The copy button hands over exactly what is on screen. An operator who copies gets what they read.
+    await page.getByTestId("bot-selftest-copy").click();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(shown);
+
+    // FOUR LEGS, AND THE SENTENCE THAT KEEPS THE PANEL HONEST. A recipe that claimed an outcome without
+    // saying what a green run does NOT prove is the expensive lie this whole step was written to avoid.
+    await expect(page.getByTestId("bot-selftest-legs").locator("li")).toHaveCount(4);
+    await expect(page.getByTestId("bot-selftest-caveat")).toContainText("does NOT say a relay is running");
+  });
+
   test("over the cap the manifest is withdrawn, and the count says by how much", async ({ page }) => {
     const { name } = await probeBot(page);
     await openBot(page, name);

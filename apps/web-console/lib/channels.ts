@@ -123,6 +123,39 @@ export interface ChannelManifest {
   build: (values: Record<string, string>, prompts: readonly ManifestPrompt[]) => ManifestDraft;
 }
 
+/**
+ * THE LIVE TEST — the last step of the flow, and the only one whose answer comes from the platform rather
+ * than from this deployment.
+ *
+ * WHY IT IS A RECIPE AND NOT A BUTTON THAT RUNS IT, stated here because it is the first question a reader
+ * has and the answer is architectural rather than a shortcut. The test drives Slack, so whatever runs it
+ * must hold this bot's Slack tokens. Two things can: the relay process, and the control plane. The relay is
+ * not reachable from a browser — it has no HTTP surface and is not addressed by anything the console can
+ * call. And the control plane deliberately does not know what a bot IS: `kind` is a bare string it never
+ * branches on, `config` is opaque to it, and `api/bots.go` carries a guard test that fails if that file so
+ * much as mentions a channel by name. A route that ran `auth.test` would end that property — which is the
+ * property this whole integration was rebuilt around.
+ *
+ * So this console renders the command and claims NOTHING about the outcome, which is the same posture Step
+ * 2 already takes about the credentials it seals ("Nothing is verified and no workspace is contacted"). A
+ * button that reported green from here would have to invent the green.
+ *
+ * A DISABLED CHANNEL HAS NONE OF THIS, structurally — a roadmap row carries no form, no manifest and no
+ * self-test, because a test for an adapter nobody has written is a command that runs nothing.
+ */
+export interface ChannelSelfTest {
+  label: string;
+  /** One sentence: what running it settles. */
+  lead: string;
+  /** What each leg checks, in the order they run — and they stop at the first failure. */
+  legs: readonly string[];
+  /** The command, with the bot's own id filled in. Everything else is a placeholder: this console holds no
+   *  API key and renders none. */
+  command: (botID: string) => string;
+  /** What a green run does NOT prove. Required, because that is the sentence that keeps it honest. */
+  caveat: string;
+}
+
 export interface Channel {
   /** The registry's `kind`, verbatim. The control plane never interprets it. */
   id: string;
@@ -135,6 +168,8 @@ export interface Channel {
   form?: ChannelForm;
   /** Present only on an enabled channel whose platform is configured by a pasted document. */
   manifest?: ChannelManifest;
+  /** Present only on an enabled channel whose relay can test itself against the platform. */
+  selfTest?: ChannelSelfTest;
 }
 
 /**
@@ -252,6 +287,31 @@ const SLACK: Channel = {
         description: values.description ?? "",
         prompts: prompts.map((p) => ({ title: p.title, message: p.message })),
       } satisfies ManifestInput),
+  },
+  // THE FOUR LEGS ARE apps/slack-bot/internal/relay/selftest.go's, in its order, and the wording is kept in
+  // step with it deliberately: an operator reads this list, runs the command, and matches what comes back
+  // line for line. A leg named differently in the two places is a support thread.
+  selfTest: {
+    label: "Live test",
+    lead: "The relay redeems this bot's sealed credentials and drives four things against the real workspace. It stops at the first failure and names which leg it was, carrying Slack's own error code.",
+    legs: [
+      "auth.test — the bot token is valid, and names the workspace this row claims. A token pasted from the wrong app is a VALID token; this is the only thing that catches it.",
+      "Socket Mode — the app-level token opens one connection and closes it. A different token from the one leg 1 checked, so leg 1 passing says nothing about this.",
+      "chat.postMessage — the app is in the channel and can speak there. `not_in_channel` means invite it; the app cannot list its own channels (channels:read is not one of the nine scopes).",
+      "The stream trio — startStream, two appends, stopStream, then the message read back out of the thread. This is the leg that measures whether Slack's closing call appends to the message or replaces it.",
+    ],
+    // The channel is an argument because nothing can default it: the row carries no channel — the relay
+    // answers wherever it is mentioned — and the app cannot discover one either.
+    command: (botID) =>
+      [
+        `PALAI_BOT_ID=${botID} \\`,
+        "PALAI_API_URL=<this control plane's URL> \\",
+        "PALAI_API_KEY=<a key holding the bots.credentials capability> \\",
+        "PALAI_BOT_DATABASE_URL=<postgres://…> \\",
+        "  slack-bot selftest <channel-id>",
+      ].join("\n"),
+    caveat:
+      "A green run says these credentials can do what a relay needs to do. It does NOT say a relay is running, that a mention reaches one, or that a run answers — a bot with no agent revision passes all four legs and still cannot say a word to a person.",
   },
 };
 
