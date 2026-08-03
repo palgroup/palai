@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestVerifyPublishedRevisionPropagatesQueryError proves the pin-check does NOT swallow an unexpected
@@ -21,7 +23,12 @@ func TestVerifyPublishedRevisionPropagatesQueryError(t *testing.T) {
 	if url == "" {
 		t.Skip("PALAI_COMPONENT_POSTGRES_URL is required; run make test-component TEST=postgres")
 	}
-	ctx := context.Background()
+	// System-scoped: this test's own transaction (BeginTx below) is a raw pool acquisition with no
+	// tenant of its own — the query-error propagation it drives is orthogonal to RLS. A bare
+	// context.Background() carries no scope at all, and PrepareConn refuses to acquire a connection
+	// under no scope rather than silently seeing nothing (A.2 Task 1, ErrProjectRequired) — this test
+	// predates that refusal and was never updated for it.
+	ctx := storage.WithSystemScope(context.Background())
 	cs, err := Open(ctx, url)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
