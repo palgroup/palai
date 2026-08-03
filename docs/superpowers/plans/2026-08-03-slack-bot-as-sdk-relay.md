@@ -994,8 +994,23 @@ Expected: FAIL
 
 - [ ] **Step 3: Implementasyon**
 
-Dedupe anahtarı `(team, channel, thread_ts, text-hash)` olur — `event_id` **değil**, çünkü ikiz
-olayların event_id'leri farklıdır (SLK-P5). Self-loop guard `bot_user_id`'dir.
+Dedupe anahtarı **`(team, channel, MessageTS)`** olur.
+
+**BU SATIR BİR KEZ YANLIŞ YAZILDI VE KUSUR ÜRETTİ (düzeltildi 2026-08-03).** Plan önce
+`(team, channel, thread_ts, text)` diyordu. `event_id` olmadığı için SLK-P5'i çözüyordu ama yeni bir
+şey kırıyordu: aynı thread'de **aynı metni ikinci kez** yazan bir insan (iki ayrı soruya "evet",
+"tamam", "tekrar dene") sessizce yutuluyordu — run yok, hata yok, ekranda hiçbir şey yok. Tekrarlanan
+bir cevaptan **daha kötüdür**, çünkü kişi bir şey olmadığını anlayamaz.
+
+Doğrusu adapter'da zaten vardı: **`slack.Event.MessageTS`** — etkilenen mesajın kendi `ts`'i, her
+olayda `MapEvent` tarafından doldurulur (`adapters/integrations/slack/inbound.go:90,365`). `app_mention`
+ve `message.channels` ikizleri **aynı fiziksel mesajın** iki teslimatı olduğu için aynı `ts`'i taşır;
+iki farklı mesaj asla taşımaz. Yani SLK-P5 çözülür ve çakışma yüzeyi kalmaz.
+
+`MessageTS` boş gelirse ne yapılacağı **bilinçli** seçilir ve yorumda söylenir — her şeyi yutmak da,
+hiçbir şeyi yutmamak da kötüdür.
+
+Self-loop guard `bot_user_id`'dir.
 
 - [ ] **Step 4: Testlerin geçtiğini gör**
 
