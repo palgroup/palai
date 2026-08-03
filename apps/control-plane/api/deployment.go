@@ -442,7 +442,7 @@ var deploymentCatalogue = []catalogueEntry{
 		// than as an effective value this process invented. That is why it leaves unreportedSettings: it is no
 		// longer an unreported variable, it is a catalogued one whose reader is the other binary.
 		Name: "PALAI_RUNNER_CONCURRENCY", Group: "execution", Kind: kindValue, Default: "1",
-		Plane:      planeRunnerPool,
+		Plane: planeRunnerPool,
 		// THE LAST SENTENCE WAS TRUE WHEN IT WAS WRITTEN AND STOPPED BEING TRUE IN THE COMMIT BELOW IT. It
 		// read: "The runner reads it at enrolment, so a change reaches a machine when it next enrols rather
 		// than at once." Counting which halves survived, rather than writing "now it works":
