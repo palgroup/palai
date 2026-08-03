@@ -799,9 +799,24 @@ Palai'da tutulamaz. Bu çıktı boş değilse bu görev yeniden değerlendirilir
 
 - [ ] **Step 2: Şemayı yaz**
 
-`storage/migrations/000035_slack.up.sql:40-54`'ün şekli birebir devralınır — **özellikle
+`storage/migrations/000035_slack.up.sql:40-54`'ün şekli devralınır — **özellikle
 `UNIQUE (bot_id, team_id, channel_id, thread_ts)`**: aynı thread'e gelen ikinci olay AYNI session'ı
 çözer ve eşzamanlı yarış veritabanında (23505) çöker, iki session doğmaz.
+
+**AMA DÖRT FOREIGN KEY DEVRALINMAZ, VE SEBEBİ MİMARİNİN KENDİSİDİR — ölçüldü 2026-08-03.**
+Eski tablo `organizations(id)`, `projects(id)`, `slack_connections(id)` ve `sessions(id)`'ye
+referans veriyor. Bot ayrı bir veritabanında yaşar ve Palai'ın tablolarına **sahip değildir**; bu
+yüzden `session_id` bota göre sadece bir **dizedir**, bir referans değil. Bu, "SDK'yı bir müşteri
+gibi kullan" ilkesinin doğrudan sonucudur ve iki şeyi zorunlu kılar:
+
+1. **Öksüz satır normaldir.** Palai tarafında silinen/kapanan bir session, bot'un tablosunda satırı
+   bırakır. Bot, bir thread'i çözerken session'ın hâlâ var olduğunu **varsaymaz**: `Sessions` üzerine
+   yapılan çağrı 404 dönerse bot **yeni bir session açar ve eşlemeyi günceller**. Bu bir hata yolu
+   değil, beklenen yoldur — ve bir testi hak eder.
+2. **Referans bütünlüğünü veritabanı vermez, bot verir.** Eski tasarımda `REFERENCES sessions(id)`
+   bir yanlış session id'sinin yazılmasını engelliyordu; burada onu engelleyen tek şey, id'nin
+   Palai'ın kendi cevabından gelmesidir. Bot asla bir session id'si **uydurmaz** ya da dışarıdan
+   (Slack mesajından, kullanıcı girdisinden) almaz.
 
 - [ ] **Step 3: Başarısız testi yaz**
 
