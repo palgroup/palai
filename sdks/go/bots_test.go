@@ -82,3 +82,69 @@ func TestBotsGetIsRetriedOnNetworkFailure(t *testing.T) {
 		t.Fatalf("one failure then success is two attempts, got %d", attempts)
 	}
 }
+
+// TestBotsCredentialsRequestsTheEscapedSubpath: the redemption route hangs off the escaped bot id, and
+// the values come back keyed by the CONFIG KEY the caller's own row carries.
+func TestBotsCredentialsRequestsTheEscapedSubpath(t *testing.T) {
+	var gotPath, gotMethod string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotPath, gotMethod = r.URL.EscapedPath(), r.Method
+		return jsonResp(200, `{"bot_id":"bot_1","object":"bot_credentials",`+
+			`"credentials":{"app_token_ref":"xapp-live","bot_token_ref":"xoxb-live"},"unresolved":[]}`), nil
+	})
+	c := testClient(t, rt)
+
+	creds, err := c.Bots.Credentials(context.Background(), "bot/needs-escape")
+	if err != nil {
+		t.Fatalf("Bots.Credentials: %v", err)
+	}
+	if gotMethod != http.MethodGet {
+		t.Fatalf("method = %q, want GET", gotMethod)
+	}
+	if gotPath != "/v1/bots/bot%2Fneeds-escape/credentials" {
+		t.Fatalf("path = %q, want the id escaped as ONE segment with /credentials after it", gotPath)
+	}
+	if creds.Credentials["app_token_ref"] != "xapp-live" || creds.Credentials["bot_token_ref"] != "xoxb-live" {
+		t.Fatalf("credentials = %v", creds.Credentials)
+	}
+}
+
+// TestBotsCredentialsCarriesUnresolvedThrough: the field that makes a missing credential loud must
+// survive the decode, or a caller checking it silently checks nothing.
+func TestBotsCredentialsCarriesUnresolvedThrough(t *testing.T) {
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return jsonResp(200, `{"bot_id":"bot_1","object":"bot_credentials",`+
+			`"credentials":{"app_token_ref":"xapp-live"},"unresolved":["bot_token_ref"]}`), nil
+	})
+	c := testClient(t, rt)
+
+	creds, err := c.Bots.Credentials(context.Background(), "bot_1")
+	if err != nil {
+		t.Fatalf("Bots.Credentials: %v", err)
+	}
+	if len(creds.Unresolved) != 1 || creds.Unresolved[0] != "bot_token_ref" {
+		t.Fatalf("unresolved = %v, want [bot_token_ref]", creds.Unresolved)
+	}
+	if _, present := creds.Credentials["bot_token_ref"]; present {
+		t.Fatalf("an unresolved key was carried as a value: %v", creds.Credentials)
+	}
+}
+
+// TestBotsCredentialsForbiddenIsTypedAPIError: a key without the capability must arrive as a 403
+// *APIError a caller can branch on, not as an opaque decode failure.
+func TestBotsCredentialsForbiddenIsTypedAPIError(t *testing.T) {
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return jsonResp(403, `{"type":"insufficient_scope","title":"Forbidden","status":403,`+
+			`"detail":"this API key lacks the bots.credentials capability"}`), nil
+	})
+	c := testClient(t, rt)
+
+	_, err := c.Bots.Credentials(context.Background(), "bot_1")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err = %v (%T), want *APIError", err, err)
+	}
+	if apiErr.Status != 403 {
+		t.Fatalf("status = %d, want 403", apiErr.Status)
+	}
+}
