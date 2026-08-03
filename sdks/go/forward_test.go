@@ -203,6 +203,37 @@ func TestApprovalDecisionResultPreservesUnknownFields(t *testing.T) {
 	}
 }
 
+// TestBotPreservesUnknownFields is Session's sibling for Bot (bots.go), the type Bots.Get decodes
+// the control plane's registry row into.
+func TestBotPreservesUnknownFields(t *testing.T) {
+	raw := `{"id":"bot_1","object":"bot","name":"ios-bot","kind":"slack","agent_revision_id":"rev_1",` +
+		`"repository_binding_id":"rb_1","principal_id":"prin_1","config":{"team_id":"T1"},` +
+		`"disabled":false,"created_at":"2026-08-03T00:00:00Z","x_future_field":{"kept":true}}`
+
+	var b Bot
+	if err := json.Unmarshal([]byte(raw), &b); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if b.ID != "bot_1" || b.Name != "ios-bot" || b.Kind != "slack" {
+		t.Fatalf("typed fields wrong: %+v", b)
+	}
+	out, err := json.Marshal(b)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("re-decode: %v", err)
+	}
+	future, ok := got["x_future_field"].(map[string]any)
+	if !ok || future["kept"] != true {
+		t.Fatalf("unknown field NOT preserved on round-trip: %s", out)
+	}
+	if len(got) != 11 {
+		t.Fatalf("expected 11 keys after round-trip, got %d: %s", len(got), out)
+	}
+}
+
 // TestEnvelopeSplit locks the T1 Page/ListView distinction: the two envelopes decode into distinct
 // types and are NOT conflated (the second struct-decoder edge the corpus targets).
 func TestEnvelopeSplit(t *testing.T) {

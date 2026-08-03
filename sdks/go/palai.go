@@ -42,6 +42,7 @@ type Client struct {
 	ModelRoutes *ModelRoutes
 	Sessions    *Sessions
 	Approvals   *Approvals
+	Bots        *Bots
 }
 
 // Option configures a Client (functional options — the idiomatic Go equivalent of the TS options
@@ -91,6 +92,7 @@ func New(opts ...Option) (*Client, error) {
 	c.ModelRoutes = &ModelRoutes{client: c}
 	c.Sessions = &Sessions{client: c}
 	c.Approvals = &Approvals{client: c}
+	c.Bots = &Bots{client: c}
 	return c, nil
 }
 
