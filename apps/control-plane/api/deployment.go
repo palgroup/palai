@@ -70,7 +70,7 @@ const (
 // from kind, and it is the axis this surface did not have until E29's scoping pass.
 //
 // THE QUESTION IT ANSWERS is "can this be configured per MACHINE?", and the honest answer for this
-// catalogue is no: all thirty-five are read by the control-plane PROCESS, one process shared by every
+// catalogue is no: EVERY entry is read by the control-plane PROCESS, one process shared by every
 // project and every machine on the deployment. Measured per binary, 2026-08-01:
 //
 //	                          control plane          cmd/runner
@@ -184,13 +184,13 @@ type deploymentSetting struct {
 	ReaderFile string `json:"reader_file"`
 	ReaderFunc string `json:"reader_func"`
 	// Writable reports whether the panel may write a DESIRED value for this setting. It is served rather
-	// than derived by each client, so a console and a CLI cannot disagree about which of thirty-five
+	// than derived by each client, so a console and a CLI cannot disagree about which
 	// controls exist — and a client written against an older deployment gets `false` and renders nothing,
 	// which is the safe direction.
 	Writable bool `json:"writable"`
 	// NotWritableBecause is the sentence from nonDesiredReason, empty when Writable. It is served for the
 	// same reason the effect prose is: an operator who cannot change something on this screen is entitled
-	// to the reason without reading Go source, and twenty-four of the thirty-five are in that position.
+	// to the reason without reading Go source, and most of the catalogue is in that position.
 	NotWritableBecause string `json:"not_writable_because,omitempty"`
 	// Desired is what the desired document asks for, and DesiredSet distinguishes "the operator decided
 	// this" from "no opinion" — an empty Desired with DesiredSet false is the second, and the two are
@@ -270,8 +270,8 @@ type catalogueEntry struct {
 }
 
 // planeOf reads an entry's plane, defaulting to the control plane. A default rather than a required field
-// on all thirty-five, because every one of them IS a control-plane setting and a field repeated
-// thirty-five times identically is a field nobody reads — the guard below is what keeps it honest.
+// on every entry, because every one of them IS a control-plane setting and a field repeated identically
+// on each of them is a field nobody reads — the guard below is what keeps it honest.
 func planeOf(entry catalogueEntry) string {
 	if entry.Plane == "" {
 		return planeControlPlane

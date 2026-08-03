@@ -417,39 +417,38 @@ func composeSettingNames(t *testing.T) []string {
 //
 // It asserts against the MAJORITY sentence rather than any sentence, because that is what the console
 // suppresses. A remedy that appears on one row is printed on that row and needs no notice.
-func TestSharedRemedyNoticeNamesTheCommandTheCatalogueGives(t *testing.T) {
+func TestTheDeploymentPageHardcodesNoRemedySentence(t *testing.T) {
 	const page = "../../web-console/app/deployment/page.tsx"
 	source, err := os.ReadFile(page)
 	if err != nil {
 		t.Fatalf("read %s: %v", page, err)
 	}
-	const marker = `export const SHARED_REMEDY_COMMAND = "`
-	start := strings.Index(string(source), marker)
-	if start < 0 {
-		t.Fatalf("%s no longer exports SHARED_REMEDY_COMMAND — if the notice was removed, delete this test with it; if it was renamed, this is the drift it exists to catch", page)
-	}
-	rest := string(source)[start+len(marker):]
-	end := strings.Index(rest, `"`)
-	if end < 0 {
-		t.Fatalf("SHARED_REMEDY_COMMAND in %s is not a closed string literal", page)
-	}
-	printed := rest[:end]
 
-	counts := map[string]int{}
+	// EVERY DISTINCT REMEDY, and the sentence has to be long enough for the containment test to mean
+	// something — a two-word remedy would match incidental prose and this guard would fail for the one
+	// reason it is not about.
+	seen := map[string]bool{}
 	for _, setting := range deploymentCatalogue {
-		counts[setting.ChangeWith]++
-	}
-	majority, best := "", 0
-	for sentence, n := range counts {
-		if n > best {
-			majority, best = sentence, n
+		if setting.ChangeWith == "" || seen[setting.ChangeWith] {
+			continue
+		}
+		seen[setting.ChangeWith] = true
+		if len(setting.ChangeWith) < 40 {
+			t.Fatalf("%s's remedy is only %d characters (%q); this guard tests for it as a SUBSTRING of a page, "+
+				"and a short sentence would match incidentally", setting.Name, len(setting.ChangeWith), setting.ChangeWith)
+		}
+		if strings.Contains(string(source), setting.ChangeWith) {
+			t.Fatalf("%s writes a remedy sentence into the page as a literal:\n  %q\nThe screen renders each "+
+				"remedy ONCE, derived from the rows it loaded, precisely so there is no second copy able to drift "+
+				"from the catalogue. A sentence typed here is that second copy, and the drift is invisible until an "+
+				"operator follows a command this deployment no longer names.", page, setting.ChangeWith)
 		}
 	}
-	if best*2 <= len(deploymentCatalogue) {
-		t.Fatalf("no sentence is carried by more than half the %d settings (best: %d), so the console suppresses nothing and the notice above its table is claiming a shared remedy that does not exist", len(deploymentCatalogue), best)
-	}
-	if !strings.Contains(majority, printed) {
-		t.Fatalf("the console prints %q above the settings table as THE way to change a bring-up setting, and the catalogue's majority remedy (%d of %d settings) does not contain it:\n  catalogue: %s\nOne of the two was reworded. An operator reading the console is being given a command this deployment no longer names.", printed, best, len(deploymentCatalogue), majority)
+	// NON-VACUITY: a loop over an empty catalogue asserts nothing, and a renamed field would produce exactly
+	// that silence.
+	if len(seen) < 2 {
+		t.Fatalf("the catalogue yielded %d distinct remedy sentence(s); with fewer than two this guard cannot "+
+			"distinguish a page that derives them from one that hardcodes them", len(seen))
 	}
 }
 

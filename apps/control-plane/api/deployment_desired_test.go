@@ -20,7 +20,7 @@ var interpolationPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)[^}]*
 // THE DESIRED CONFIGURATION — the WRITE half, and the four properties it has to have before a form is
 // worth putting in front of an operator.
 //
-// The read half (deployment_test.go) exists because thirty-five settings decided what this deployment does
+// The read half (deployment_test.go) exists because the catalogue of settings decided what this deployment does
 // and no client could see one of them. The write half exists because seeing them is not the whole of the
 // requirement: "no config should live locally, it must be pushed from the panel to the machine". The
 // measurement that decides the shape is in the catalogue's own header and re-run here on the live stack
@@ -30,7 +30,7 @@ var interpolationPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)[^}]*
 //	  32 bring_up
 //	   3 bring_up_default_only
 //
-// Thirty-two of thirty-five are read from the process environment, fixed at exec. So the panel cannot edit
+// Nearly all of them are read from the process environment, fixed at exec. So the panel cannot edit
 // a running process and a control that claimed to would be the defect this tree keeps finding. It writes a
 // DESIRED document instead; the bring-up reads it and turns it into the process's environment.
 //
@@ -554,7 +554,7 @@ func TestARunnerPlaneRowNeverReportsThisProcessesCopyOfIt(t *testing.T) {
 
 // TestThePlaneGuardCanTellTheTwoPlanesApart is the anti-vacuity leg, and it is not decoration.
 //
-// The guard above asserts that thirty-five entries all sit on one plane. With only one list of prefixes
+// The guard above asserts that every entry sits on one plane. With only one list of prefixes
 // that assertion is unfalsifiable — it would be checking that everything is what everything is, and it
 // would pass on a catalogue whose runner-plane entries had simply been mislabelled. So this drives the
 // SHIPPED function with a citation into the runner binary and requires it to come back with the other
