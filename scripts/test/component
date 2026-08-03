@@ -436,7 +436,7 @@ run_postgres() {
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v \
-        -run 'TestVerifyPublishedRevision|TestMigrationBoundedLockTimesOut|TestSessionListRowCarriesLabelAgentTokensAndSpan|TestSessionListPagesTotallyOrderedAcrossAClockTie|TestSessionRenameIsALabelNotAnIdentity|TestExhaustedBudgetNamesTheNarrowestLimitWhicheverRowWasWrittenFirst|TestExhaustedQuotaNamesTheNarrowestLimitWhicheverRowWasWrittenFirst' \
+        -run 'TestVerifyPublishedRevision|TestMigrationBoundedLockTimesOut|TestSessionListRowCarriesLabelAgentTokensAndSpan|TestSessionListPagesTotallyOrderedAcrossAClockTie|TestSessionRenameIsALabelNotAnIdentity|TestExhaustedBudgetNamesTheNarrowestLimitWhicheverRowWasWrittenFirst|TestExhaustedQuotaNamesTheNarrowestLimitWhicheverRowWasWrittenFirst|TestADeadJobRecordsWhyEachOfItsAttemptsFailed|TestASucceedingJobRecordsNoFailureReason' \
         ./packages/coordinator
     status=$?
   fi
