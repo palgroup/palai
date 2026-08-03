@@ -92,7 +92,21 @@ export function DesiredConfig({ reloadKey, onSaved }: { reloadKey: number; onSav
   }, []);
 
   const settings = body?.settings ?? [];
-  const writable = settings.filter((row) => row.writable === true);
+  // WRITABLE **AND ON THIS PLANE**, and the second half was missing until machine-config measured it.
+  //
+  // This panel writes a `control_plane` document, and the server refuses a control-plane document carrying a
+  // setting the control-plane process does not read — deployment_desired.go:201 compares `readerOf(plane)`
+  // and answers 400 "is read on the runner_pool plane and this document configures control_plane". The
+  // filter was `writable === true` alone, so the moment the catalogue gained a WRITABLE runner-plane row
+  // (PALAI_RUNNER_CONCURRENCY, api/deployment.go:444-450, `DesiredValue: desiredInt`) this dialog offered a
+  // field whose every value the server refuses. It was invisible because tests/fake-control-plane.mjs
+  // carried no such row: the fake's only runner-plane setting was NOT writable, so the fake was the one
+  // deployment on which the bug could not fire.
+  //
+  // An OLDER control plane sends no `plane` at all, which reads as undefined; api/deployment.go:313 records
+  // that the zero value IS planeControlPlane, so undefined is treated as this plane rather than dropped —
+  // dropping it would empty this dialog against every deployment predating the field.
+  const writable = settings.filter((row) => row.writable === true && (row.plane ?? "control_plane") === "control_plane");
   const desired = body?.desired ?? null;
   const drifted = desired?.drifted ?? [];
 

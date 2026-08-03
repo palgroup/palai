@@ -14,6 +14,15 @@ import { CopyButton, shortId, Stamp } from "@/components/Session";
 import { Status } from "@/components/Status";
 import { apiGet, apiSend, RelayError } from "@/lib/api";
 import { useQueryParam } from "@/lib/urlState";
+import {
+  MachineConfigDialog,
+  MachineConfigState,
+  PoolConfigDialog,
+  PLANE_RUNNER_MACHINE,
+  PLANE_RUNNER_POOL,
+  type ConfigReport,
+  type DesiredEnvelope,
+} from "./ScopedConfig";
 
 // THE FLEET SCREEN — POOLS, KEYS, MACHINES, THE WAITING ROOM, AND THE THREE THINGS IT REFUSES TO IMPLY.
 //
@@ -68,7 +77,7 @@ interface PoolRow extends Record<string, unknown> {
   waiting?: number;
 }
 
-interface RunnerRow extends Record<string, unknown> {
+interface RunnerRow extends ConfigReport, Record<string, unknown> {
   id?: string;
   pool_id?: string;
   label?: string;
@@ -187,6 +196,69 @@ export default function FleetPage() {
 
   const [admitStatus, setAdmitStatus] = useState("");
   const [admitErrors, setAdmitErrors] = useState<Record<string, string>>({});
+
+  // --- THE CONFIGURATION HALF (machine-config) ------------------------------------------------------------
+  //
+  // ONE SUBJECT AT A TIME, and it is one state rather than two booleans on purpose: the pool dialog and the
+  // machine dialog write to DIFFERENT scopes through the same route, and two of them open together would put
+  // two documents behind one Save with nothing on screen saying which is which.
+  const [configuring, setConfiguring] = useState<{ plane: string; id: string; name: string } | null>(null);
+  const [configStatus, setConfigStatus] = useState("");
+  /**
+   * THE SAVED REVISION PER SCOPE, which is the half the machine's own report cannot supply.
+   *
+   * A machine reports the revision it ACTED ON. Deciding whether that is the current one needs the revision
+   * the plane would answer it now, and internal/store/deployment_desired.go's DesiredSettingsForMachine
+   * defines that as max(pool document, machine document) — so both are read.
+   *
+   * THE COST IS ONE READ PER RENDERED MACHINE PLUS ONE PER POOL THOSE MACHINES ARE IN, and it is stated
+   * rather than hidden because there is no bulk route: `GET /v1/runners` carries the machine's REPORT and no
+   * document, and the two desired reads are per-scope by construction (api/runners.go's desiredForScope
+   * takes one id from the path). The panel renders at most one page of machines, so the fan-out is bounded
+   * by that page rather than by the fleet.
+   *
+   * A FAILED READ IS NOT A ZERO. `configDocsRead` false means this screen says nothing about whether a
+   * machine is current, which is the only safe direction: "up to date" is the answer an operator acts on.
+   */
+  const [poolRevisions, setPoolRevisions] = useState<Record<string, number>>({});
+  const [machineRevisions, setMachineRevisions] = useState<Record<string, number>>({});
+  const [configDocsRead, setConfigDocsRead] = useState(false);
+
+  useEffect(() => {
+    if (runners.length === 0) {
+      setConfigDocsRead(false);
+      return;
+    }
+    let live = true;
+    const machineIds = [...new Set(runners.map((r) => String(r.id ?? "")).filter((id) => id !== ""))];
+    const poolIds = [...new Set(runners.map((r) => String(r.pool_id ?? "")).filter((id) => id !== ""))];
+    const revisionOf = async (path: string) => {
+      const envelope = await apiGet<DesiredEnvelope>(path);
+      // NO DOCUMENT IS REVISION 0 AND THAT IS NOT A FICTION: `revision` is a generated identity starting at
+      // 1, so 0 is a value the journal can never mint and is what the store itself returns for "nothing".
+      return typeof envelope.desired?.revision === "number" ? envelope.desired.revision : 0;
+    };
+    void Promise.all([
+      Promise.all(poolIds.map(async (id) => [id, await revisionOf(`/runner-pools/${encodeURIComponent(id)}/desired`)] as const)),
+      Promise.all(machineIds.map(async (id) => [id, await revisionOf(`/runners/${encodeURIComponent(id)}/desired`)] as const)),
+    ])
+      .then(([pools, machines]) => {
+        if (!live) return;
+        setPoolRevisions(Object.fromEntries(pools));
+        setMachineRevisions(Object.fromEntries(machines));
+        setConfigDocsRead(true);
+      })
+      .catch(() => {
+        if (live) setConfigDocsRead(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [runners]);
+
+  /** The revision a machine's plane would answer it now: its pool's document or its own, whichever is later. */
+  const savedRevisionFor = (row: RunnerRow) =>
+    Math.max(poolRevisions[String(row.pool_id ?? "")] ?? 0, machineRevisions[String(row.id ?? "")] ?? 0);
 
   // The key panel opens on a REAL pool. A picker that opens empty invites a mint against nothing, and every
   // stack has at least one pool — the tenant is seeded one at birth. A pool id this deployment does not have
@@ -469,11 +541,20 @@ export default function FleetPage() {
                     trigger={<span aria-hidden="true">⋯</span>}
                     triggerClassName="row-menu-toggle"
                     triggerTestId={`pool-menu-${id}`}
-                    // TWO ITEMS, AND THAT IS THE API: a pool's whole write surface after creation is
-                    // PATCH /v1/runner-pools/{id} with `strict_enrollment`, and there is no delete.
-                    // Selecting it is not a write; it is where the keys below are read from.
+                    // THREE ITEMS. A pool's write surface is PATCH /v1/runner-pools/{id} with
+                    // `strict_enrollment` — there is still no delete — plus, since machine-config, a
+                    // desired document for every machine in it (PUT /v1/deployment/desired with
+                    // `plane: "runner_pool"`). Selecting is not a write; it is where the keys are read from.
                     items={[
                       { label: strict ? "Open enrolment" : "Require approval", testId: `pool-strict-${id}`, onSelect: () => void setStrict(r, !strict) },
+                      {
+                        label: "Configure machines in this pool",
+                        testId: `pool-config-${id}`,
+                        onSelect: () => {
+                          setConfigStatus("");
+                          setConfiguring({ plane: PLANE_RUNNER_POOL, id, name: String(r.name ?? "") });
+                        },
+                      },
                       { label: "Show enrolment keys", testId: `pool-keys-${id}`, onSelect: () => setKeyPool(id) },
                     ]}
                   />
@@ -791,6 +872,24 @@ export default function FleetPage() {
         column that is not there.
       </p>
 
+      {/* THE COLUMN THAT KEEPS "SAVED" AND "RUNNING" APART, which is the entire reason the configuration
+          surface exists. Saving a document decides a value; a machine ASKS for its configuration on a
+          schedule and then says what it did with it, and only that second half is evidence. A panel that
+          showed a saved value as live for a machine that had merely been offered it is the same
+          "declared, and nothing happens" defect one hop further from the operator, where it is harder to
+          see — so the column reports the MACHINE's own answer and nothing derived. */}
+      <p className="muted" data-testid="runner-config-note">
+        <strong>
+          <code>Configuration</code> is what each machine reported it did with the document saved for it.{" "}
+          Saved is not the same as running.
+        </strong>{" "}
+        A machine asks the control plane for its configuration about every 30 seconds and applies what it is
+        given, so an edit made here is visible on this column only once that machine has come back and said
+        so. A machine that has <strong>never reported</strong> is not a machine running revision 0: it is one
+        this control plane has never heard from about its configuration, which is the normal state of every
+        machine enrolled before the settings poll existed.
+      </p>
+
       <Panel<RunnerRow>
         title="Machines"
         testId="panel-runners"
@@ -831,6 +930,26 @@ export default function FleetPage() {
             render: (r) => (r.last_seen_at === undefined ? <span className="cell-none">— never</span> : <Stamp iso={r.last_seen_at} />),
           },
           {
+            // WHAT THIS MACHINE SAYS IT DID WITH WHAT WAS SAVED FOR IT (migration 000060). It is a column
+            // rather than a badge because there are four things to say and only one of them is a state:
+            // never reported, applied, reported-and-not-applied, and saved-but-not-arrived. See
+            // MachineConfigState for why the verdict set is not enumerated here.
+            //
+            // IT SORTS ON THE REPORTED REVISION, which orders the machines by how far behind they are and
+            // puts the ones that have never reported at the bottom of an ascending sort with a 0 they never
+            // sent. That 0 is a SORT KEY and never a rendered value — the cell says "never reported".
+            header: "Configuration",
+            sort: (r) => (typeof r.config_reported_at === "string" ? Number(r.config_revision ?? 0) : -1),
+            render: (r) => (
+              <MachineConfigState
+                runner={r}
+                saved={savedRevisionFor(r)}
+                savedKnown={configDocsRead}
+                testId={`runner-config-${String(r.id ?? "")}`}
+              />
+            ),
+          },
+          {
             header: "",
             // A PENDING MACHINE IS OFFERED NO CORDON, and that is the server's shape rather than tidiness:
             // `cordon` and `resume` answer 404 for a machine in the waiting room, because a cordon would
@@ -856,6 +975,18 @@ export default function FleetPage() {
                         : r.state === "cordoned"
                           ? [{ label: `Resume ${id}`, testId: `runner-resume-${id}`, onSelect: () => void move(r, "resume") }]
                           : [{ label: `Cordon ${id}`, testId: `runner-cordon-${id}`, onSelect: () => void move(r, "cordon") }]),
+                      // OFFERED TO A PENDING MACHINE TOO, and that is deliberate rather than an oversight:
+                      // a machine document is keyed by runner id and 000060's header records that "an
+                      // operator configures a machine they are about to enrol as readily as one already
+                      // enrolled" — the write path checks the registry, not this menu.
+                      {
+                        label: "Configure this machine",
+                        testId: `machine-config-${id}`,
+                        onSelect: () => {
+                          setConfigStatus("");
+                          setConfiguring({ plane: PLANE_RUNNER_MACHINE, id, name: String(r.label ?? "") });
+                        },
+                      },
                       { label: `Revoke ${id}`, testId: `runner-revoke-${id}`, danger: true, onSelect: () => void openRevoke(r) },
                     ]}
                   />
@@ -872,6 +1003,19 @@ export default function FleetPage() {
             ✖
           </span>{" "}
           {lifecycleError}
+        </p>
+      )}
+
+      {/* THE SAVE OUTCOME, ON THE LIST RATHER THAN IN THE DIALOG — the same shape the pool create takes,
+          for the same reason: the dialog closes on success, so a confirmation rendered inside it would
+          vanish at the moment it is earned. And it says what has NOT happened yet, because that is the
+          half an operator is most likely to assume. */}
+      {configStatus === "" ? null : (
+        <p role="status" className="form-status" data-testid="runner-config-status">
+          <span className="glyph" aria-hidden="true">
+            ✔
+          </span>{" "}
+          {configStatus}
         </p>
       )}
 
@@ -1036,6 +1180,40 @@ export default function FleetPage() {
           </table>
         )}
       </section>
+
+      {/* THE TWO CONFIGURATION DIALOGS. They are two mounts and not one with a prop, because the dialog's
+          ACCESSIBLE NAME is what tells a screen-reader operator which scope they are about to write —
+          "Configure this runner pool" reaches every machine in it, "Configure this machine" reaches one —
+          and a single mount with a computed label would put the two under one string. */}
+      {configuring?.plane === PLANE_RUNNER_POOL ? (
+        <PoolConfigDialog
+          poolId={configuring.id}
+          poolName={configuring.name}
+          onClose={() => setConfiguring(null)}
+          onSaved={(revision) => {
+            setConfigStatus(
+              `Revision ${String(revision)} is saved for pool ${configuring.id}. No machine has it yet: each one takes it when it next asks for its configuration, and says so in the Configuration column above.`,
+            );
+            setConfiguring(null);
+            setRunnerReload((n) => n + 1);
+          }}
+        />
+      ) : null}
+
+      {configuring?.plane === PLANE_RUNNER_MACHINE ? (
+        <MachineConfigDialog
+          runnerId={configuring.id}
+          runnerLabel={configuring.name}
+          onClose={() => setConfiguring(null)}
+          onSaved={(revision) => {
+            setConfigStatus(
+              `Revision ${String(revision)} is saved for ${configuring.id}. That machine does not have it yet: it takes it when it next asks for its configuration, and says so in the Configuration column above.`,
+            );
+            setConfiguring(null);
+            setRunnerReload((n) => n + 1);
+          }}
+        />
+      ) : null}
 
       {revokingKey === null ? null : (
         <ConfirmDestructive

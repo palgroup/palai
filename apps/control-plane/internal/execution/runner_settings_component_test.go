@@ -43,10 +43,21 @@ import (
 // registry runs on, and once as the api-level store that owns the desired document.
 func settingsSpine(t *testing.T) (*coordinator.Store, *store.Store, string) {
 	t.Helper()
-	dbURL := os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
-	if dbURL == "" {
+	base := os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
+	if base == "" {
 		t.Skip("PALAI_COMPONENT_POSTGRES_URL is required; run make test-component TEST=postgres")
 	}
+	// ITS OWN DATABASE, AND THIS IS NOT TIDINESS — it is the same lesson runner_registry_component_test.go's
+	// header records, learned again the same way. This file provisions the bootstrap organization because a
+	// machine cannot enrol into a deployment with no tenant, and ProvisionFirstOrg claims a SINGLETON whose
+	// every insert is ON CONFLICT DO NOTHING. On the shared component database that silently takes the
+	// identity leg's bootstrap key, and TestBootstrapFirstOrgResolvable — which runs AFTER this package in
+	// the chain — goes red with `VerifyAPIKey(bootstrap key) error = invalid_token`, naming a test that has
+	// nothing to do with fleet configuration. It did exactly that on the first full-suite run of this branch.
+	//
+	// A test that claims a singleton on a shared database breaks whichever leg runs after it, and the damage
+	// is invisible to the selector (`PALAI_SUITE_RUN` runs this package alone, where it passes every time).
+	dbURL := freshDatabase(t, base)
 	ctx := context.Background()
 	spine, err := coordinator.Open(ctx, dbURL)
 	if err != nil {

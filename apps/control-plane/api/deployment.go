@@ -443,7 +443,19 @@ var deploymentCatalogue = []catalogueEntry{
 		// longer an unreported variable, it is a catalogued one whose reader is the other binary.
 		Name: "PALAI_RUNNER_CONCURRENCY", Group: "execution", Kind: kindValue, Default: "1",
 		Plane:      planeRunnerPool,
-		Effect:     "How many leases ONE MACHINE in this pool serves at once — the fleet's parallelism knob. A Mac that takes four sessions is this set to 4 on that Mac's pool. The runner reads it at enrolment, so a change reaches a machine when it next enrols rather than at once.",
+		// THE LAST SENTENCE WAS TRUE WHEN IT WAS WRITTEN AND STOPPED BEING TRUE IN THE COMMIT BELOW IT. It
+		// read: "The runner reads it at enrolment, so a change reaches a machine when it next enrols rather
+		// than at once." Counting which halves survived, rather than writing "now it works":
+		//   * "the runner reads it at enrolment" — STILL TRUE. RunnerGateway.handleEnroll answers an
+		//     enrolling machine its pool's document and cmd/runner takes its lease count from that answer.
+		//   * "a change reaches a machine when it next ENROLS" — NO LONGER TRUE, and it was the operative
+		//     half. Migration 000060 added a settings POLL: packages/runner/serve.go's settingsLoop asks
+		//     every defaultSettingsInterval (30s unless PALAI_SETTINGS_INTERVAL says otherwise), and
+		//     applySettings RESIZES the lease pool live for this setting specifically. So a machine that has
+		//     been running for a week takes a new value without re-enrolling and without a restart.
+		// This sentence is rendered on /deployment and in the /fleet configuration forms, which is why it is
+		// worth the paragraph: it is what a reader accepts instead of reading cmd/runner.
+		Effect:     "How many leases ONE MACHINE in this pool serves at once — the fleet's parallelism knob. A Mac that takes four sessions is this set to 4 on that Mac's pool. A running machine asks for its configuration about every 30 seconds and resizes its lease pool live, so a change reaches it without a restart and without re-enrolling; shrinking is cooperative, so a loop in flight finishes its lease first.",
 		Mutability: mutabilityBringUp, ChangeWith: changeDesired,
 		ReaderFile: "cmd/runner/main.go", ReaderFunc: "main",
 		DesiredValue: desiredInt,
