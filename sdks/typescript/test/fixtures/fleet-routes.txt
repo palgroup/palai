@@ -1,0 +1,14 @@
+GET /v1/runner-pools
+GET /v1/runner-pools/{pool_id}/desired
+GET /v1/runner-pools/{pool_id}/keys
+GET /v1/runners
+GET /v1/runners/{runner_id}
+GET /v1/runners/{runner_id}/desired
+PATCH /v1/runner-pools/{pool_id}
+POST /v1/runner-pool-keys/{key_id}/revoke
+POST /v1/runner-pools
+POST /v1/runner-pools/{pool_id}/keys
+POST /v1/runners/{runner_id}/approve
+POST /v1/runners/{runner_id}/cordon
+POST /v1/runners/{runner_id}/resume
+POST /v1/runners/{runner_id}/revoke
