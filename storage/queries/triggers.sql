@@ -2,7 +2,8 @@
 -- (create trigger / revise / create+advance delivery); reads resolve the ACTIVE revision (highest
 -- revision_number — there is no publish flag, AGT-002 pin-at-accept) and drive dedupe / correlation /
 -- concurrency. A revise always INSERTs a new immutable revision — no statement here rewrites a revision's
--- config columns. Every statement is tenant-scoped by (organization_id, project_id).
+-- config columns. Every statement is tenant-scoped by project_id (000062 rekeyed the policy). The
+-- INSERTs still WRITE organization_id: triggers carries a UNIQUE index over it.
 
 -- name: InsertTrigger
 INSERT INTO triggers (id, organization_id, project_id, name, type, created_by)

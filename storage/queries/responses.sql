@@ -1,6 +1,7 @@
 -- Response/run execution-state queries (spec §22.3). Every query is tenant-scoped:
--- without organization and project it returns no row, so a caller cannot reach
--- another tenant's run by guessing an ID.
+-- without a project it returns no row, so a caller cannot reach another tenant's
+-- run by guessing an ID. The organization_id half of that predicate left in A.2
+-- Task 5 — 000062 rekeyed the policy to project_id and the predicate only mirrored it.
 
 -- name: LockRun
 SELECT session_id, response_id, state
@@ -12,7 +13,7 @@ FOR UPDATE;
 -- `concurrent` is the runs currently executing (provisioning/running/waiting), `queued` the runs
 -- still in the admission backlog. Child runs (parent_run_id NOT NULL) are excluded — they are
 -- spawned by an already-admitted root and are not admitted through /v1/responses. Read inside the
--- admission transaction, so it is tenant-scoped by RLS; the org/project predicate is defence-in-depth.
+-- admission transaction, so it is tenant-scoped by RLS; the project predicate is defence-in-depth.
 -- ponytail: a ReadCommitted count can overshoot the cap by the number of concurrent admissions racing
 -- past it — acceptable for a soft basic-tier cap; exact enforcement would need SERIALIZABLE or a
 -- per-project advisory lock.
@@ -29,7 +30,7 @@ SET state = $3, updated_at = clock_timestamp()
 WHERE id = $1 AND project_id = $2;
 
 -- RunQueueState locks a run and reports its state plus whether it has waited in the queue past the
--- deadline ($4 seconds since created_at) — the §20.12 queue-deadline check. FOR UPDATE so the timeout
+-- deadline ($3 seconds since created_at) — the §20.12 queue-deadline check. FOR UPDATE so the timeout
 -- transition that follows in the same transaction serialises against a worker's concurrent dispatch.
 -- name: RunQueueState
 SELECT state, (clock_timestamp() - created_at) > ($3 * interval '1 second') AS expired
@@ -45,10 +46,10 @@ FROM responses
 WHERE id = $1 AND project_id = $2;
 
 -- ListResponses pages a project's run history newest-first (spec §22.3, E13 T4). It is tenant-scoped
--- by RLS; the organization/project predicate is defence-in-depth (the same belt-and-braces every
--- response query carries). The keyset ($6, $7) pages strictly before the last row of the previous
--- page in (created_at DESC, id DESC) order, so paging is stable under concurrent inserts; $3 filters
--- by state, $4/$5 bound created_at. The list carries the durable columns only — model/usage/output
+-- by RLS; the project predicate is defence-in-depth (the same belt-and-braces every
+-- response query carries). The keyset ($5, $6) pages strictly before the last row of the previous
+-- page in (created_at DESC, id DESC) order, so paging is stable under concurrent inserts; $2 filters
+-- by state, $3/$4 bound created_at. The list carries the durable columns only — model/usage/output
 -- come from GetResponse, so a page never decodes N output blobs.
 -- ponytail: no (created_at, id) index exists (adding one is a migration; this task ships none), so a
 -- large history sorts in memory. Fine at basic-tier volumes; add an index if run history grows deep.
@@ -178,7 +179,7 @@ WHERE id = $1 AND project_id = $2
 -- side asks the table whether the command is legal from the state it read, and this statement commits
 -- the answer ONLY IF the row is still in that state.
 --
--- THE `state = $4` PREDICATE IS THE MONOTONICITY GUARD AND IT IS THE SAME DISCIPLINE UpdateResponse
+-- THE `state = $3` PREDICATE IS THE MONOTONICITY GUARD AND IT IS THE SAME DISCIPLINE UpdateResponse
 -- CARRIES. Between the read and this write, a cancel or an engine terminal can finalize the response;
 -- the from-state predicate makes such a write affect zero rows rather than reopening a finished
 -- response into a waiting one, which a caller would read as a run that is still going. Excluding
@@ -264,7 +265,7 @@ WHERE id = $1 AND project_id = $2 AND state IN ('executing', 'leased');
 -- reconciled_completed (the destination applied it), reconciled_not_applied (it did not), or
 -- manual_resolution (a human must decide — the irreversible default). Single winner on 'uncertain', so a
 -- racing reconcile settles once. result is set only when a resolution carries one (COALESCE keeps the
--- existing bytes otherwise). $4 the new state, $5 the reconciliation_state mirror, $6 the optional result.
+-- existing bytes otherwise). $3 the new state, $4 the reconciliation_state mirror, $5 the optional result.
 -- name: ReconcileToolCall
 UPDATE tool_calls
 SET state = $3, reconciliation_state = $4, result = COALESCE($5, result), updated_at = clock_timestamp()
@@ -405,8 +406,8 @@ VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8, $9, $10);
 -- content of store=false responses whose terminal state has aged past the configured
 -- TTL, leaving a tombstone. One statement is one transaction; the victim set is
 -- bounded (LIMIT) and taken FOR UPDATE SKIP LOCKED so a backlog cannot lock the table
--- or contend with a peer sweep. Every join carries the victim's own
--- organization/project, so a purge never crosses a tenant boundary. The data-modifying
+-- or contend with a peer sweep. Every join carries the victim's own project, so a
+-- purge never crosses a tenant boundary. The data-modifying
 -- CTEs read the victims' pre-purge content (all CTEs share one snapshot), so the
 -- idempotency tombstone fingerprints the outcome before the row is scrubbed. $1 is the
 -- TTL in milliseconds, $2 the batch bound. It returns one row: the count of purged

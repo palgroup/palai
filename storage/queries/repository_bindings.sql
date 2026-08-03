@@ -20,13 +20,13 @@ WHERE id = $1 AND project_id = $2;
 
 -- ListRepositoryBindings pages a project's bindings newest-first (spec §30.1, E13 T4). Tenant-scoped
 -- by RLS; the org/project predicate is defence-in-depth. Bindings carry no lifecycle state, so there
--- is no status filter — only the created_at bounds ($3/$4) and the ($5,$6) keyset, $7 the row cap.
+-- is no status filter — only the created_at bounds ($2/$3) and the ($4,$5) keyset, $6 the row cap.
 -- name: ListRepositoryBindings
 SELECT id, provider, repository_identity, clone_url, default_branch, connection_ref,
        allowed_operations, policy, data_classification, region_constraint, created_at, archived_at
 FROM repository_bindings
 WHERE project_id = $1
-  -- ARCHIVED ROWS ARE HIDDEN BY DEFAULT AND THE SWITCH IS A PARAMETER, NOT A SECOND STATEMENT ($8). A
+  -- ARCHIVED ROWS ARE HIDDEN BY DEFAULT AND THE SWITCH IS A PARAMETER, NOT A SECOND STATEMENT ($7). A
   -- forked "list archived too" query is a second place for the tenant predicate to be got wrong, which is
   -- the class of defect this corpus keeps finding. `deleted_at IS NULL`-style filtering is an APPLICATION
   -- decision and nothing beneath it enforces it — no policy, no constraint — so it is asserted directly
@@ -102,7 +102,7 @@ WHERE id = $1 AND project_id = $2 AND archived_at IS NULL;
 -- runs, so a mutable identity would falsify recorded provenance; a credential says only HOW the fetch
 -- authenticated and can never do that.
 --
--- $4 is allowed to be '' — detaching is a real operator move (the repository became public, or the token
+-- $3 is allowed to be '' — detaching is a real operator move (the repository became public, or the token
 -- was retired) and refusing it would leave the same dead end one step further along.
 --
 -- ARCHIVED ROWS ARE EXCLUDED. Re-crediting a retired binding is a contradiction: nothing can run against

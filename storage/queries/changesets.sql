@@ -1,6 +1,6 @@
 -- Changeset compilation + persistence queries (spec §30.6-30.7, REP-005). The migration owns the
 -- constraints; these are the read paths the compiler projects from and the write paths it records
--- through. Every query is tenant-scoped: without organization and project a read returns no row.
+-- through. Every query is tenant-scoped: without a project a read returns no row.
 
 -- RunToolCalls reads a run's completed tool-call ledger — the authoritative record of what the run
 -- did, independent of the model's prose (REP-005). The changeset compiler filters it for file-tool

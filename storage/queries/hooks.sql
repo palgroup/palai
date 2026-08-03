@@ -1,7 +1,8 @@
 -- Hooks registry management + dispatch-load resolution (spec §28.17, E12 Task 8, TOL-012). Create + disable
 -- are the admin management surface; HooksForPoint is the per-run dispatch load that walks a project's enabled
 -- hooks for one point in deterministic (created_at, id) registration order. Every statement is tenant-scoped
--- by (organization_id, project_id).
+-- by project_id (000062 rekeyed the policy). Rows still CARRY organization_id: hooks has a UNIQUE
+-- index over it, and a unique index treats NULL as distinct from NULL.
 
 -- name: InsertHook
 INSERT INTO hooks (id, organization_id, project_id, name, hook_point, category, executor, config, secret_ref, timeout_ms)
@@ -20,7 +21,7 @@ FROM hooks
 WHERE id = $1 AND project_id = $2;
 
 -- ListHooks pages a project's hooks newest-first (GET /v1/hooks, E29 T1). Tenant-scoped by
--- (organization_id, project_id) AND by RLS; cursor + created_at bounds.
+-- project_id AND by RLS; cursor + created_at bounds.
 --
 -- IT RETURNS DISABLED HOOKS TOO, and that is the whole reason it exists rather than reusing HooksForPoint
 -- below. HooksForPoint takes a POINT and filters `disabled_at IS NULL` — it is the dispatch loop's read,

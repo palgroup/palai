@@ -2,7 +2,9 @@
 -- are the management surface (create/revise/publish); reads back the immutable-check + the per-tenant
 -- broker lookup's pin-chain resolution. A revise always INSERTs a new revision — no statement here ever
 -- rewrites a revision's config columns, so a published revision is immutable by discipline (the only
--- UPDATE is the publish flip). Every statement is tenant-scoped by (organization_id, project_id).
+-- UPDATE is the publish flip). Every statement is tenant-scoped by project_id (000062 rekeyed the
+-- policy). The INSERTs still WRITE organization_id: tools carries two UNIQUE indexes over it and
+-- tool_set_revisions one, and a unique index treats NULL as distinct from NULL.
 
 -- name: InsertTool
 INSERT INTO tools (id, organization_id, project_id, canonical_name, model_visible_name)
@@ -112,7 +114,7 @@ RETURNING revision_number;
 -- WHERE published_at IS NULL guard makes a re-publish a zero-row no-op, so a published revision never
 -- re-stamps (immutable publish). RETURNING id distinguishes published-now from already-published/unknown.
 --
--- E23 T5: the operator's approval declaration ($4/$5, 000044 R3) rides the SAME once-only flip, because
+-- E23 T5: the operator's approval declaration ($3/$4, 000044 R3) rides the SAME once-only flip, because
 -- publishing IS the per-tool decision an operator already makes (jira-mcp-connection.md §3c) and a second
 -- ceremony would be a second thing to forget. Riding the guarded UPDATE has a consequence worth naming:
 -- a re-publish changes nothing, so a gate cannot be quietly REMOVED from a published revision by calling
@@ -169,9 +171,9 @@ SELECT published_at IS NOT NULL
 FROM tool_set_revisions
 WHERE id = $1 AND project_id = $2;
 
--- LookupRunTool resolves a registered tool the broker must execute by its model-visible short name ($4),
+-- LookupRunTool resolves a registered tool the broker must execute by its model-visible short name ($3),
 -- through the run's ($1) pinned revision's tool_sets → PUBLISHED tool_set_revisions → tool_pins →
--- tool_revisions → tools (tenant-scoped by $2/$3). It is the per-tenant broker-lookup chain: only a tool
+-- tool_revisions → tools (tenant-scoped by $2/$2). It is the per-tenant broker-lookup chain: only a tool
 -- pinned by a published set the run's pinned revision names is resolvable, so nothing outside the pin
 -- surface ever reaches the broker. Returns the executor binding + schemas + replay class for the row.
 -- POSTURE: the AgentRevision.tools ceiling is NOT re-checked here — capability restriction is an

@@ -1,6 +1,6 @@
 -- Slack connection management + inbound resolution + thread↔session correlation (spec §36, E17 Task 1,
--- SLK-001..008). Create/read/list are the admin management surface (tenant-scoped by organization_id +
--- project_id). ResolveSlackConnectionByTeam is the UNAUTHENTICATED inbound path's tenant establisher (the
+-- SLK-001..008). Create/read/list are the admin management surface (tenant-scoped by project_id since
+-- 000062; the rows still CARRY organization_id because three UNIQUE indexes here include it). ResolveSlackConnectionByTeam is the UNAUTHENTICATED inbound path's tenant establisher (the
 -- resolveInboundTrigger idiom): it is keyed by the Slack team id the callback carries and runs system-scoped
 -- because there is no tenant yet — the caller still has to present a valid v0 signature over the resolved
 -- connection's signing secret before anything is written. The thread queries collapse a (team, channel,
@@ -308,7 +308,7 @@ RETURNING r.id;
 -- appended to, because that is what an edit is: the human did not say a second thing, they changed what they
 -- said, and SLK-005 has called it a correction since E17 T1.
 --
--- to_jsonb($6::text) is what keeps the column a JSON STRING. responses.input IS the prompt (run.start hands
+-- to_jsonb($5::text) is what keeps the column a JSON STRING. responses.input IS the prompt (run.start hands
 -- it to the engine verbatim and model_dispatch serialises anything that is not a string), so writing an
 -- object here would put raw JSON in front of the model — the defect ed44544 fixed on the way in.
 --

@@ -2,7 +2,9 @@
 -- management surface (create/revise/publish); reads are admission validation and execution pin
 -- resolution. A revise always INSERTs a new draft — no statement here ever rewrites a revision's
 -- config columns, so a published revision is immutable by discipline (the only UPDATE is the publish
--- flip). Every statement is tenant-scoped by (organization_id, project_id).
+-- flip). Every statement is tenant-scoped by project_id (000062 rekeyed the policy). The INSERTs still
+-- WRITE organization_id: agent_profiles and run_template_revisions carry a UNIQUE index over it, and a
+-- unique index treats NULL as distinct from NULL, so leaving it unset would retire the constraint.
 
 -- name: InsertAgentProfile
 INSERT INTO agent_profiles (id, organization_id, project_id, name)
@@ -34,7 +36,7 @@ ORDER BY created_at DESC, id DESC
 LIMIT $6;
 
 -- ListAgentRevisions pages one profile's revisions newest-first (spec §10, E13 T4). Scoped by profile_id
--- ($3) on top of the tenant scope, so an unknown/foreign profile simply yields an empty page.
+-- ($2) on top of the tenant scope, so an unknown/foreign profile simply yields an empty page.
 --
 -- tool_sets JOINS THE PROJECTION IN E25 T7, and for the third time the same argument: there is no
 -- per-revision GET, so this list is the only read path for a config the API lets you write. It is the

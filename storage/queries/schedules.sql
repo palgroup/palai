@@ -1,7 +1,7 @@
 -- Schedule management + the ticker's due-scan / claim / handoff-sweep (spec §33, E11 Task 3). Writes are
 -- the management surface (create / firing-relevant revise / pause-resume / soft-delete) and the ticker's
 -- durable occurrence claim; reads drive the due-scan and the pending-occurrence handoff sweep. Every
--- management statement is tenant-scoped by (organization_id, project_id); the two system-loop scans
+-- management statement is tenant-scoped by project_id (000062 rekeyed the policy); the two system-loop scans
 -- (DueSchedules, PendingOccurrences) run cross-tenant like the delivery-reconciler's sweeps.
 
 -- name: InsertSchedule
@@ -38,9 +38,9 @@ SET status = 'paused', status_reason = 'paused by operator', updated_at = clock_
 WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL
 RETURNING id;
 
--- ResumeSchedule reactivates a paused OR failed schedule and RECOMPUTES next_fire_at from now ($4), so a
+-- ResumeSchedule reactivates a paused OR failed schedule and RECOMPUTES next_fire_at from now ($3), so a
 -- resumed schedule fires fresh rather than replaying its stale missed window — the fix for the policy=fail
--- resume deadlock (a stale past next_fire_at would re-enter the misfire machine and re-fail). $4 NULL when
+-- resume deadlock (a stale past next_fire_at would re-enter the misfire machine and re-fail). $3 NULL when
 -- the schedule is exhausted (a one_time already past). Tenant-scoped.
 -- name: ResumeSchedule
 UPDATE schedules
@@ -64,7 +64,7 @@ RETURNING id;
 -- has filtered tombstones since E11. A list that read the table without this clause would resurrect every
 -- deleted schedule and disagree with the singular read about whether a schedule exists at all.
 --
--- $7 is the status filter: NULL/'' means unfiltered. The VALUE is validated at the route before it reaches
+-- $6 is the status filter: NULL/'' means unfiltered. The VALUE is validated at the route before it reaches
 -- here (an unknown state is a 400, not an empty page), so this predicate never carries the rejection.
 -- ORDER BY is TOTAL — (created_at DESC, id DESC) — because created_at is a clock_timestamp() and two
 -- creates inside one microsecond tie; a partial order under LIMIT leaves the row at a page boundary free
@@ -145,8 +145,8 @@ VALUES ($1, $2, $3, $4, 'skipped', $5)
 ON CONFLICT (schedule_id, schedule_revision, planned_at) DO NOTHING;
 
 -- AdvanceNextFireAt moves a schedule's next_fire_at forward after a due tick, guarded on the revision +
--- the value the tick read ($5) so only the first replica to advance from that instant wins — a losing
--- replica's UPDATE affects 0 rows and it advances nothing. $6 NULL exhausts the schedule (a one_time that
+-- the value the tick read ($4) so only the first replica to advance from that instant wins — a losing
+-- replica's UPDATE affects 0 rows and it advances nothing. $5 NULL exhausts the schedule (a one_time that
 -- fired, or a cron past ends_at).
 -- name: AdvanceNextFireAt
 UPDATE schedules

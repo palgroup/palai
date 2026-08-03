@@ -1,6 +1,6 @@
 -- Publication + approval queries (spec §30.8-30.12, §22.4-22.5). The migration owns the constraints;
--- these are the read/write paths the coordinator issues. Every query is tenant-scoped — without
--- organization and project a read returns no row, so a cross-tenant id leaks nothing (§39.2). The
+-- these are the read/write paths the coordinator issues. Every query is tenant-scoped — without a
+-- project a read returns no row, so a cross-tenant id leaks nothing (§39.2). The
 -- publication's own (org, project, idempotency_key) uniqueness carries the operation-level idempotency
 -- (decision (b)): a duplicate request returns the original row rather than a second pending approval.
 
@@ -264,7 +264,7 @@ LIMIT 1;
 -- Keyset-ordered on (created_at, id) so the shared page envelope's cursor is total: created_at alone is a
 -- clock_timestamp() default and two approvals opened in the same transaction can share it. It ORDERS
 -- ASCENDING — unlike the other list surfaces, which are newest-first — because these are questions and the
--- oldest one is the one closest to expiring; the cursor ($5/$6) is therefore compared with `>` rather than
+-- oldest one is the one closest to expiring; the cursor ($4/$5) is therefore compared with `>` rather than
 -- the `<` a DESC list uses. An ORDER BY that disagreed with its own cursor predicate is how a page-2
 -- request comes back holding page 1 forever.
 --

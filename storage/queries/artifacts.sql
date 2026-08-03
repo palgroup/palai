@@ -1,5 +1,5 @@
 -- Artifact write-path queries (spec §22.6, LP §7.2). Every query is tenant-scoped:
--- without organization and project a read returns no row, so a caller cannot reach
+-- without a project a read returns no row, so a caller cannot reach
 -- another tenant's artifact by guessing an id (the existence-non-disclosure rule the
 -- retrieval path already enforces for responses).
 

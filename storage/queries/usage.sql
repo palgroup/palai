@@ -107,7 +107,7 @@ DO UPDATE SET limit_quantity = EXCLUDED.limit_quantity, updated_at = clock_times
 RETURNING id, project_id, meter_prefix, limit_quantity, period_start, updated_at;
 
 -- ListBudgets shows the caller everything that binds it: the organization-wide limits plus its own
--- project's. An org-scoped caller ($2 = '') sees every project's limits, since that is its whole scope.
+-- project's. An org-scoped caller ($1 = '') sees every project's limits, since that is its whole scope.
 -- name: ListBudgets
 SELECT id, project_id, meter_prefix, limit_quantity, period_start, updated_at
 FROM budgets

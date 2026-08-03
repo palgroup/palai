@@ -2,9 +2,10 @@
 -- queries over migration 000001's model_connections / model_routes / model_route_revisions — the tables
 -- have carried no reader since the schema landed, so this file needs no migration of its own.
 --
--- Tenancy: every statement runs under the caller's (organization, project) scope, so migration 000029's
--- row-level security is what isolates them; the org/project predicates below are the second, application
--- half of the same boundary (a foreign id then matches zero rows and renders a non-disclosing 404).
+-- Tenancy: every statement runs under the caller's project scope, so migration 000029's row-level
+-- security — rekeyed to project_id by 000062 — is what isolates them; the project_id predicates below
+-- are the second, application half of the same boundary (a foreign id then matches zero rows and
+-- renders a non-disclosing 404).
 --
 -- Credentials: a connection stores a secret REFERENCE only. The value lives in the E13 T3 secret store and
 -- is redeemed at call time by the broker; no query here selects, returns, or could carry a credential.

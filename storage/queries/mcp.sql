@@ -1,6 +1,7 @@
 -- MCP connection management + broker-lookup resolution (spec §28.13-28.14, E12 Task 5). Create is the admin
 -- management surface; the reads back a connection for discovery and the per-tenant broker lookup's
--- rider-intersected resolution. Every statement is tenant-scoped by (organization_id, project_id).
+-- rider-intersected resolution. Every statement is tenant-scoped by project_id (000062 rekeyed the
+-- policy; A.2 Task 5 dropped the organization_id half of the predicate that mirrored it).
 
 -- name: InsertMCPConnection
 INSERT INTO mcp_connections (id, organization_id, project_id, name, transport, config, secret_ref, trust_level)
@@ -50,7 +51,7 @@ SELECT digest FROM tool_revisions WHERE tool_id = $1 ORDER BY revision_number DE
 -- MCPConnectionForRun loads an enabled connection ONLY if the run's pinned AgentRevision (or template)
 -- mcp_connections rider names it — the capability ceiling as a single tenant-scoped join. A connection not
 -- in the rider, disabled, or out of tenant returns no row, so the broker yields ErrUnknownTool for its
--- tools (no silent capability drift, no cross-tenant reach). $4 is the connection id from the tool
+-- tools (no silent capability drift, no cross-tenant reach). $3 is the connection id from the tool
 -- revision's executor_config->>'connection_id'.
 -- name: MCPConnectionForRun
 SELECT c.id, c.name, c.transport, c.config, c.secret_ref, c.trust_level

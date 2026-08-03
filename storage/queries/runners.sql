@@ -64,7 +64,7 @@ RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_ke
 -- it (§3.6 D15).
 --
 -- REVOKE IS IRREVERSIBLE AND THAT IS THIS PREDICATE, not a rule in Go. `state <> 'revoked'` refuses to
--- move a decommissioned machine, and the `OR $4 = 'revoked'` clause is what keeps a REVOKE idempotent:
+-- move a decommissioned machine, and the `OR $3 = 'revoked'` clause is what keeps a REVOKE idempotent:
 -- revoking twice returns the row rather than a not-found an operator would read as "the id was wrong".
 -- The pairing matters — an idempotency that also let a resume through would make "irreversible" a comment.
 --
@@ -158,7 +158,7 @@ SELECT id, organization_id, project_id, pool_id, label, runner_dns, public_key_s
 
 -- name: ListRunners
 -- The tenant-scoped keyset page: (created_at, id) DESC, the ordering api/pagination.go mints its
--- cursor from. $6 is the over-fetch (page size + 1) so the handler detects a further page without a
+-- cursor from. $5 is the over-fetch (page size + 1) so the handler detects a further page without a
 -- second round trip.
 SELECT id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
        state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
@@ -213,7 +213,7 @@ RETURNING id, organization_id, project_id, name, posture, os, arch, strict_enrol
 
 -- name: ListRunnerPools
 -- The tenant-scoped keyset page of pools: (created_at, id) DESC, the ordering api/pagination.go mints
--- its cursor from. $7 is the over-fetch (page size + 1) so the handler detects a further page without a
+-- its cursor from. $6 is the over-fetch (page size + 1) so the handler detects a further page without a
 -- second round trip.
 --
 -- E28 T1 CORRECTED THE COMMENT THAT USED TO STAND HERE. It read "creating and deleting a pool is T5/T6's",

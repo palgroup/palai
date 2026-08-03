@@ -1,7 +1,7 @@
 -- Knowledge spine (E17 Task 4, 17b — KNO-001/KNO-002/KNO-004). The read/write half of migration 000035's
 -- six tables: the IMMUTABLE ingestion -> index -> retrieval spine on PostgreSQL FTS. Every statement runs
 -- under the caller's org+project scope (internal/knowledge), so RLS isolates one tenant's corpus from
--- another's — a query names only its own ids, and organization_id/project_id are enforced by the tenant
+-- another's — a query names only its own ids, and project_id is enforced by the tenant
 -- policy, never a WHERE clause here. Retrieval adds an ACL predicate AT THE QUERY LEVEL (never post-fetch):
 -- the ACL-first hook T5 hardens against the cross-ACL ranking/existence leak (KNO-003).
 
