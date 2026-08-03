@@ -1397,6 +1397,28 @@ git commit -am "test(docs): RED — the control plane still carries Slack"
 Run: `git rm apps/control-plane/api/slack*.go apps/control-plane/internal/extensions/slack*.go`
 `router.go`'daki Slack rotaları (`:437-443` ve interactions) kaldırılır.
 
+**AMA SİLMEK YETMEZ — BİR BAĞ KALIR, VE O BAĞ SLACK'E AİT DEĞİLDİR. Ölçüldü 2026-08-03:**
+dosyalar silindikten sonra bile CP'de adapter'ı import eden **8 dosya** kalır (3'ü test):
+`internal/store/approvals.go`, `internal/execution/approval_display.go`, `api/approvals.go` ve
+onların testleri. Bağ tek bir satırdır:
+
+```go
+// apps/control-plane/internal/store/approvals.go:36
+var approvalDisplayFor = slack.DeriveApprovalDisplay
+```
+
+**`DeriveApprovalDisplay` bir Slack özelliği değildir** — konsolun onay ekranı da aynı derivation'dan
+beslenir (`docs/operations/console.md:1295`), ve iki yüzeyin aynı şeyi göstermesinin sebebi budur.
+Slack paketinde yaşıyor olması tarihseldir.
+
+Bu yüzden cutover'ın son adımı bir **silme** değil, bir **ayırma**dır: derivation, her iki tarafın da
+import edebileceği nötr bir yere taşınır (`packages/` altında kendi paketi), Slack adapter'ı ve CP
+oradan tüketir. Aksi hâlde "CP Slack'i bilmez" iddiası yalan olur — CP, adı `slack` olan bir paketten
+kod çağırmaya devam eder ve bot ayrı bir servise gittiğinde o import bir hayalet olur.
+
+**Sıra önemlidir:** önce ayır (derivation taşınır, her iki taraf da yeni yerden import eder, testler
+yeşil), sonra sil. Tersi, ayırmayı yaparken CP'yi derlenemez bırakır.
+
 - [ ] **Step 5: Tabloları emekliye ayır**
 
 `slack_connections`, `slack_thread_sessions`, `slack_reply_deliveries`, `slack_message_turns`
