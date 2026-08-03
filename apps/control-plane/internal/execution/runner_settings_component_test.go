@@ -116,6 +116,7 @@ func TestAPanelEditReachesAMachineThatIsAlreadyRunning(t *testing.T) {
 			Session:     f.session(identity),
 			Supervisor:  runner.NewStreamSupervisor(blockingDriver{}),
 			Now:         time.Now,
+			Log:         t.Logf,
 			Backoff:     20 * time.Millisecond,
 			Concurrency: 1,
 			Settings: func(ctx context.Context, current runner.Identity, report runner.Settings) (runner.Settings, error) {
@@ -155,37 +156,56 @@ func TestAPanelEditReachesAMachineThatIsAlreadyRunning(t *testing.T) {
 	})
 
 	// --- 4. AND THE VERDICT IS NOT TAKEN ON TRUST -----------------------------------------------------
-	// The machine SAYS it applied 3. What proves it is that it now parks three leases at once, which is a
-	// property of the gateway's own dial path rather than of anything the machine reports. A claim of
-	// `applied` that had not resized is the precise defect the verdict exists to prevent, and asserting the
-	// claim alone would assert that the machine says what it says.
+	// The machine SAYS it applied 3. What proves it is the gateway's own dial path, which knows nothing
+	// about what the machine reported.
+	//
+	// THE CEILING IS THE ASSERTION AND THE COUNT IS NOT, and this paragraph is here because the first
+	// version of this test got it wrong in a way that stayed green under perturbation. It dialled three
+	// times and asserted three successes — which passes at ANY concurrency of one or more, because a
+	// released slot is immediately reusable. What distinguishes a machine running 3 from a machine running
+	// 1 is that the FOURTH lease is refused, so that refusal is what is asserted. A test that counts
+	// successes measures that leases work; only the boundary measures the number.
 	var channels []interface{ Close() error }
 	t.Cleanup(func() {
 		for _, ch := range channels {
 			_ = ch.Close()
 		}
 	})
-	for i := range 3 {
-		ch, ok := tryDialInPool(f, poolID, tenant, uint64(i+1))
-		if !ok {
-			t.Fatalf("the machine reported PALAI_RUNNER_CONCURRENCY=3 applied but lease %d of 3 was never taken. "+
-				"The number reached the panel's table and not the park loops, which is a screen reporting a machine "+
-				"did something it did not", i+1)
-		}
+	channels = append(channels, holdLeases(t, f, poolID, tenant, 1, 3,
+		"the machine reported PALAI_RUNNER_CONCURRENCY=3 applied but lease %d was never taken. The number "+
+			"reached the panel's table and not the park loops, which is a screen reporting a machine did "+
+			"something it did not")...)
+	if ch, ok := tryDialInPool(t, f, poolID, tenant, 4); ok {
 		channels = append(channels, ch)
+		t.Fatalf("a FOURTH lease was taken while the document asks for 3. The machine is serving more than it " +
+			"was told to, so `applied` names a number that reached the report and not the lease pool")
 	}
 
 	// --- 5. THE MACHINE DOCUMENT OVERRIDES ITS POOL'S -------------------------------------------------
 	// "This Mac is different from the rest of its pool" is the whole reason the machine scope exists. The
 	// pool still says 3; this machine is told 5.
+	//
+	// THE THREE LEASES FROM STEP 4 ARE STILL HELD, which is what makes this assertion mean anything: a
+	// fourth and fifth lease can only be taken if the machine's ceiling actually ROSE. With the overlay
+	// inverted — the pool winning over the machine — the ceiling stays at 3 and lease 4 never lands.
 	putDesired(t, repo, ctx, `{"plane":"runner_machine","scope_id":"`+identity.RunnerID+`","settings":{"PALAI_RUNNER_CONCURRENCY":"5"}}`)
-	waitFor(t, 15*time.Second, "the machine document to overlay its pool's", func() bool {
-		ch, ok := tryDialInPool(f, poolID, tenant, 9)
+	waitFor(t, 15*time.Second, "the machine document to raise this machine's ceiling above its pool's", func() bool {
+		ch, ok := tryDialInPool(t, f, poolID, tenant, 4)
 		if ok {
 			channels = append(channels, ch)
 		}
 		return ok
 	})
+	ch, ok := tryDialInPool(t, f, poolID, tenant, 5)
+	if !ok {
+		t.Fatal("the machine took a fourth lease but not a fifth, so its ceiling is not the 5 its own document " +
+			"asks for")
+	}
+	channels = append(channels, ch)
+	if extra, ok := tryDialInPool(t, f, poolID, tenant, 6); ok {
+		channels = append(channels, extra)
+		t.Fatal("a SIXTH lease was taken while this machine's document asks for 5")
+	}
 
 	// The POOL document is unchanged by the machine document, which is what makes the overlay an overlay
 	// rather than a move: another machine in this pool still gets 3.
@@ -281,21 +301,66 @@ func runnerPoolOf(t *testing.T, spine *coordinator.Store, runnerID string) strin
 	return poolID
 }
 
+// holdLeases takes `count` leases starting at `firstFence` and KEEPS them, returning the channels so the
+// caller can close them at the end. Holding is the point: a lease released between calls is a slot the
+// next call reuses, so releasing would make any concurrency look like any other.
+func holdLeases(t *testing.T, f *gatewayFixture, poolID string, tenant coordinator.Tenant, firstFence, count uint64, failure string) []interface{ Close() error } {
+	t.Helper()
+	var held []interface{ Close() error }
+	for fence := firstFence; fence < firstFence+count; fence++ {
+		ch, ok := tryDialInPool(t, f, poolID, tenant, fence)
+		if !ok {
+			t.Fatalf(failure, fence)
+		}
+		held = append(held, ch)
+	}
+	return held
+}
+
 // tryDialInPool offers a waiting attempt to the machine on the queue its registry row actually places it
 // on. Each call uses a distinct run/attempt id so three concurrent offers are three leases rather than one
 // repeated.
-func tryDialInPool(f *gatewayFixture, poolID string, tenant coordinator.Tenant, fence uint64) (execution.EngineChannel, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	ch, err := f.gateway.Dial(ctx, execution.AttemptDescriptor{
-		RunID:       contracts.RunID(fmt.Sprintf("run_set_%d", fence)),
-		AttemptID:   contracts.AttemptID(fmt.Sprintf("att_set_%d", fence)),
-		Fence:       fence,
-		Tenant:      tenant,
-		PoolID:      poolID,
-		ImageDigest: "sha256:" + strings.Repeat("a", 64),
-	})
-	return ch, err == nil
+func tryDialInPool(t *testing.T, f *gatewayFixture, poolID string, tenant coordinator.Tenant, fence uint64) (execution.EngineChannel, bool) {
+	t.Helper()
+	// THE LEASE CONTEXT OUTLIVES THIS CALL, and that is the whole reason this helper is not the two-line
+	// `tryDial` beside it. A dial context cancelled on return tears its own lease down, so the next dial
+	// reuses the slot and EVERY concurrency looks unbounded — which is precisely how the first version of
+	// this test passed a perturbation that inverted the overlay. Here the context is cancelled only at
+	// test cleanup, so a lease taken stays taken and the ceiling is observable.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	type result struct {
+		ch  execution.EngineChannel
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ch, err := f.gateway.Dial(ctx, execution.AttemptDescriptor{
+			RunID:       contracts.RunID(fmt.Sprintf("run_set_%d", fence)),
+			AttemptID:   contracts.AttemptID(fmt.Sprintf("att_set_%d", fence)),
+			Fence:       fence,
+			Tenant:      tenant,
+			PoolID:      poolID,
+			ImageDigest: "sha256:" + strings.Repeat("a", 64),
+			// LIMITS ARE NOT OPTIONAL AND OMITTING THEM DOES NOT FAIL THE DIAL, which is worth a sentence
+			// because it cost this test a wrong green. A descriptor with zero bounds is REFUSED BY THE MACHINE
+			// ("all lease resource and output bounds must be positive"), which re-parks the loop — so the
+			// gateway's Dial returns a channel, every call looks like a taken lease, and the ceiling is
+			// unobservable because no slot is ever occupied. The assertion was measuring offers the gateway
+			// handed out, not leases a machine served.
+			Limits: gwLimits(),
+		})
+		done <- result{ch, err}
+	}()
+	select {
+	case r := <-done:
+		return r.ch, r.err == nil
+	case <-time.After(3 * time.Second):
+		// Nothing was leased, so the waiter is abandoned rather than left parked on the pool's queue where
+		// it would take the next machine's offer out from under a later assertion.
+		cancel()
+		return nil, false
+	}
 }
 
 // waitFor polls a condition to a deadline. The message is written as the thing that did NOT happen, so a
