@@ -14,12 +14,26 @@ import (
 // layer here would retry against a budget that is not the workspace's.
 //
 // HONEST CEILING, at the top because it governs every line below and is the single most over-claimable thing
-// in this epic: THIS IS NOT TOKEN STREAMING. The run journal has no delta event — its finest-grained output
-// event is model_step.completed.v1 — and E08's rule (no tools are exposed to a real provider) makes a real
-// Slack run SINGLE-STEP. So a real run has exactly ONE thing to stream. What these calls buy is a live status
-// while the model is working and a message that appears when the step lands rather than after the terminal
-// transaction. Rich multi-step streaming is driven by a FAKE ENGINE and is named that way wherever it
-// appears. Token-level streaming needs an engine-side model_step.delta.v1; it is a separate epic.
+// in this epic: THIS IS STILL NOT TOKEN-LEVEL STREAMING, but the reason changed underneath it, and it is
+// stated precisely below rather than as "now correct" — a comment that only says a claim was fixed carries
+// no more information than the stale claim it replaced.
+//
+// STREAMING GRANULARITY. model_step.delta.v1 has had a production WRITER since 2026-08-02 (commit e3708ae6,
+// "the declared streaming event finally has a writer": packages/coordinator/mcp_progress.go's
+// AppendModelStepDelta, called from apps/control-plane/internal/execution/model_dispatch.go's onDelta). Text
+// arriving at AppendStream below can therefore be the model's real streamed output now, not only a status
+// line — but what arrives is a COALESCED WINDOW, not a token: the dispatch-side sink
+// (apps/control-plane/internal/execution/model_delta_sink.go) batches a provider's stream into 500ms windows
+// before journalling one, matching the SSE endpoint's own journal-tail poll cadence
+// (apps/control-plane/api/events.go's PollInterval, default 500ms — the two are the same number on purpose).
+// A live channel that bypasses the journal and delivers per token is still absent, and it is NOT needed here:
+// chat.appendStream is Tier 4, ~600ms between calls at its sustained rate (S8 below), a cadence the 500ms
+// window already matches.
+//
+// E08's rule (no tools are exposed to a real provider) is a SEPARATE axis this did not touch: it still makes
+// a real Slack run SINGLE-STEP, so a real run still has exactly one model step to stream — what changed is
+// how much of THAT step's text arrives live, not how many steps there are. Rich multi-step streaming is still
+// driven by a FAKE ENGINE and is named that way wherever it appears.
 //
 // THE TIER ASYMMETRY IS THE REAL CAPACITY LIMIT (S8): chat.startStream is Tier 2 (20+/min) while
 // chat.appendStream is Tier 4 (100+/min), so STARTING streams — i.e. concurrent runs — is five times scarcer
