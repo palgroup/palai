@@ -14,6 +14,14 @@
 FROM --platform=$BUILDPLATFORM golang:1.26.4@sha256:f96cc555eb8db430159a3aa6797cd5bae561945b7b0fe7d0e284c63a3b291609 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
+# go.mod carries `replace github.com/palgroup/palai/sdks/go => ./sdks/go`, and `go mod download` below
+# READS the replace target's own go.mod. Copying only the root pair left that path absent from the
+# build context until `COPY . .` (line below the RUN), so download failed on every build the moment
+# the replace landed — deterministically, in both images. This line is the replace directive's half of
+# `COPY go.mod go.sum`: it stays ABOVE the RUN so the dependency layer still caches independently of
+# the source tree, which is the whole reason the root pair is copied separately in the first place.
+# A NEW replace pointing at another in-tree module needs its go.mod added here too.
+COPY sdks/go/go.mod ./sdks/go/
 # The ONLY step allowed to reach the module proxy. Inputs are pinned by go.sum, and the compile step
 # below runs with GOPROXY=off against this warmed cache — so a MISSING module fails the build instead
 # of being fetched. `go mod verify` then re-hashes what the (shared, long-lived) cache mount already

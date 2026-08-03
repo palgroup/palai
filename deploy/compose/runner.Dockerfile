@@ -5,6 +5,9 @@
 FROM --platform=$BUILDPLATFORM golang:1.26.4@sha256:f96cc555eb8db430159a3aa6797cd5bae561945b7b0fe7d0e284c63a3b291609 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
+# The replace target's go.mod, for the reason spelled out in control-plane.Dockerfile: `go mod download`
+# reads it, and `COPY . .` below arrives too late.
+COPY sdks/go/go.mod ./sdks/go/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download && go mod verify
 COPY . .
 # The release version stamp (E15 T2): build.sh passes it so the runner advertises its git-describe stamp

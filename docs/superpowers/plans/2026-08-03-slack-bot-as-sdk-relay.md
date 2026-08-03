@@ -1266,6 +1266,25 @@ Expected: FAIL
 Üç bacak, sırayla: `auth.test` → Socket Mode bağlantısı → yapılandırılmış kanala bir test mesajı.
 Her bacak kendi sonucunu taşır; ilk hatada durur ve **hangi bacağın** düştüğünü söyler.
 
+**DÖRDÜNCÜ BACAK — VE BU, GERÇEK BİR WORKSPACE OLMADAN CEVAPLANAMAYAN TEK SORUYU KAPATIR.**
+T7'nin review'ı (2026-08-03) şunu açıkta bıraktı: `chat.stopStream`'in `markdown_text`'i mesaja
+**ekliyor** mu, yoksa **değiştiriyor** mu? Kod ve üretim emsali eklediğini söylüyor
+(`slack_reply.go:217-219` zaten bağımsız bir cevabı önceki append'lerin üstüne `StopStream` ile
+gönderiyor), ama hiçbir test bunu kanıtlamıyor ve yanlışsa sonuç **sessiz veri kaybıdır**: relay'in
+`pending`'i yalnız teslim EDİLMEMİŞ artığı taşır, dolayısıyla "replace" semantiği önceden başarıyla
+akıtılmış metni siler — tekrar etmez, **kaybeder**.
+
+Bu yüzden self-test'in dördüncü bacağı tam olarak o diziyi sürer:
+
+```
+appendStream("parça bir ")  →  appendStream("parça iki ")  →  stopStream("kalan üç")
+beklenen final mesaj:  "parça bir parça iki kalan üç"     (birleşir)
+kabul edilemez:        "kalan üç"                          (değiştirir → sessiz kayıp)
+```
+
+Sonuç bir **kayıt** olarak raporlanır (hangi semantik gözlendi), çünkü bu bir Slack davranışıdır ve
+bir gün değişirse relay'in tasarımı da değişir.
+
 - [ ] **Step 4: Testin geçtiğini gör**
 
 Run: `go test ./apps/slack-bot/internal/relay/ -v`
