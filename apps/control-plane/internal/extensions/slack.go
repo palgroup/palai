@@ -372,7 +372,7 @@ func (s *Store) reviseSlackTurn(ctx context.Context, query, org, project, team, 
 	if messageTS == "" {
 		return "", nil
 	}
-	args := append([]any{org, project, team, channel, messageTS}, extra...)
+	args := append([]any{project, team, channel, messageTS}, extra...)
 	var responseID string
 	switch err := s.pool.QueryRow(storage.ScopeToTenant(ctx, org, project), storage.Query(query), args...).Scan(&responseID); {
 	case errors.Is(err, pgx.ErrNoRows):

@@ -753,7 +753,7 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 			arg = *in.RequestedSessionID
 		}
 		var existingID, state string
-		switch err := tx.QueryRow(ctx, storage.Query(query), arg, tenant.Organization, tenant.Project).
+		switch err := tx.QueryRow(ctx, storage.Query(query), arg, tenant.Project).
 			Scan(&existingID, &state); {
 		case errors.Is(err, pgx.ErrNoRows):
 			return Admission{SessionNotFound: true}, nil
@@ -1059,7 +1059,7 @@ func resolvePublishedAgent(ctx context.Context, tx pgx.Tx, agentID string, tenan
 // arm), so admission fails closed with a 500 rather than committing a fake success. Runs in the tx.
 func verifyPublishedRevision(ctx context.Context, tx pgx.Tx, query, revisionID string, tenant Tenant) (Admission, bool, error) {
 	var published bool
-	switch err := tx.QueryRow(ctx, storage.Query(query), revisionID, tenant.Organization, tenant.Project).Scan(&published); {
+	switch err := tx.QueryRow(ctx, storage.Query(query), revisionID, tenant.Project).Scan(&published); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return Admission{PinnedRevisionNotFound: true}, false, nil
 	case err != nil:

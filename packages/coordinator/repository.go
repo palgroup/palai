@@ -144,7 +144,7 @@ func (s *Store) UnarchiveRepositoryBinding(ctx context.Context, tenant Tenant, i
 func (s *Store) flipArchive(ctx context.Context, tenant Tenant, id, query string) (bool, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var updated string
-	err := s.pool.QueryRow(ctx, storage.Query(query), id, tenant.Organization, tenant.Project).Scan(&updated)
+	err := s.pool.QueryRow(ctx, storage.Query(query), id, tenant.Project).Scan(&updated)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

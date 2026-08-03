@@ -293,7 +293,7 @@ func (s *Store) PublishToolRevision(ctx context.Context, org, project, revisionI
 	if err != nil {
 		return false, false, err
 	}
-	return s.publish(ctx, "PublishToolRevision", "ToolRevisionPublished", revisionID, org, project,
+	return s.publish(ctx, "PublishToolRevision", "ToolRevisionPublished", revisionID, project,
 		in.ApprovalRequired, in.ApprovalLabel)
 }
 
@@ -351,7 +351,7 @@ func (s *Store) CreateToolSetRevision(ctx context.Context, org, project, setName
 // PublishToolSetRevision flips a draft set revision to published exactly once.
 func (s *Store) PublishToolSetRevision(ctx context.Context, org, project, revisionID string) (published, exists bool, err error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	return s.publish(ctx, "PublishToolSetRevision", "ToolSetRevisionPublished", revisionID, org, project)
+	return s.publish(ctx, "PublishToolSetRevision", "ToolSetRevisionPublished", revisionID, project)
 }
 
 // pinTarget reads a pinned tool revision's publish state + declared timeout, distinguishing an unknown
@@ -372,15 +372,15 @@ func (s *Store) pinTarget(ctx context.Context, org, project, revisionID string) 
 // and on no flip disambiguate an unknown revision from an already-published one via the state read. extra
 // carries the flip statement's trailing parameters — the tool-revision flip stamps the operator's approval
 // declaration ($4/$5) alongside published_at, the set-revision flip passes none.
-func (s *Store) publish(ctx context.Context, flipQuery, stateQuery, revisionID, org, project string, extra ...any) (published, exists bool, err error) {
-	flipArgs := append([]any{revisionID, org, project}, extra...)
+func (s *Store) publish(ctx context.Context, flipQuery, stateQuery, revisionID, project string, extra ...any) (published, exists bool, err error) {
+	flipArgs := append([]any{revisionID, project}, extra...)
 	switch e := s.pool.QueryRow(ctx, storage.Query(flipQuery), flipArgs...).Scan(new(string)); {
 	case e == nil:
 		return true, true, nil
 	case !errors.Is(e, pgx.ErrNoRows):
 		return false, false, fmt.Errorf("publish revision: %w", e)
 	}
-	switch e := s.pool.QueryRow(ctx, storage.Query(stateQuery), revisionID, org, project).Scan(new(bool)); {
+	switch e := s.pool.QueryRow(ctx, storage.Query(stateQuery), revisionID, project).Scan(new(bool)); {
 	case errors.Is(e, pgx.ErrNoRows):
 		return false, false, nil
 	case e != nil:

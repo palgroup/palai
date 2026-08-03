@@ -198,7 +198,7 @@ func (s *Store) PublishRevision(ctx context.Context, org, project, revisionID st
 		// its environment is not.
 		return false, true, err
 	}
-	return s.publish(ctx, "PublishAgentRevision", "AgentRevisionPublished", revisionID, org, project)
+	return s.publish(ctx, "PublishAgentRevision", "AgentRevisionPublished", revisionID, project)
 }
 
 // verifyEnvironment refuses an `environment` that names no row in the caller's organization. An EMPTY
@@ -269,20 +269,20 @@ func (s *Store) CreateTemplateRevision(ctx context.Context, org, project, templa
 // PublishTemplateRevision flips a draft template revision to published exactly once (see PublishRevision).
 func (s *Store) PublishTemplateRevision(ctx context.Context, org, project, revisionID string) (published, exists bool, err error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	return s.publish(ctx, "PublishRunTemplateRevision", "RunTemplateRevisionPublished", revisionID, org, project)
+	return s.publish(ctx, "PublishRunTemplateRevision", "RunTemplateRevisionPublished", revisionID, project)
 }
 
 // publish is the shared once-only flip: try the conditional UPDATE, and on no flip disambiguate an
 // unknown revision from an already-published one via the publish-state read (both agent and template).
-func (s *Store) publish(ctx context.Context, flipQuery, stateQuery, revisionID, org, project string) (published, exists bool, err error) {
-	switch e := s.pool.QueryRow(ctx, storage.Query(flipQuery), revisionID, org, project).Scan(new(string)); {
+func (s *Store) publish(ctx context.Context, flipQuery, stateQuery, revisionID, project string) (published, exists bool, err error) {
+	switch e := s.pool.QueryRow(ctx, storage.Query(flipQuery), revisionID, project).Scan(new(string)); {
 	case e == nil:
 		return true, true, nil
 	case !errors.Is(e, pgx.ErrNoRows):
 		return false, false, fmt.Errorf("publish revision: %w", e)
 	}
 	// No flip: the revision is unknown or already published. The state read tells them apart.
-	switch e := s.pool.QueryRow(ctx, storage.Query(stateQuery), revisionID, org, project).Scan(new(bool)); {
+	switch e := s.pool.QueryRow(ctx, storage.Query(stateQuery), revisionID, project).Scan(new(bool)); {
 	case errors.Is(e, pgx.ErrNoRows):
 		return false, false, nil
 	case e != nil:
