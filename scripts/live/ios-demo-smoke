@@ -13,6 +13,7 @@
 #
 # Usage:
 #   scripts/live/ios-demo-smoke                       # everything that needs no privilege
+#   scripts/live/ios-demo-smoke --with-build          # additionally builds the app and shows a screenshot
 #   scripts/live/ios-demo-smoke --with-accounts       # additionally proves the per-session uid
 #
 # --with-accounts needs the privileged helper installed:
@@ -27,7 +28,15 @@ KEY="${PALAI_API_KEY:-$(cat "${PALAI_HOME:-.palai}/api-key" 2>/dev/null || true)
 # control plane does not have and must never have. 224 KiB, a SwiftUI todo list, one .xcodeproj.
 REPO_URL="${SMOKE_REPO_URL:-https://github.com/fredrik9000/TodoList_SwiftUI.git}"
 WITH_ACCOUNTS=0
-[ "${1:-}" = "--with-accounts" ] && WITH_ACCOUNTS=1
+WITH_BUILD=0
+# One nonce per invocation, so two runs of this file never present each other's idempotency keys.
+SMOKE_RUN="$(date +%s)$$"
+for arg in "$@"; do
+	case "$arg" in
+	--with-accounts) WITH_ACCOUNTS=1 ;;
+	--with-build) WITH_BUILD=1 ;;
+	esac
+done
 
 pass=0
 fail=0
@@ -50,11 +59,25 @@ skip() {
 	printf '  [UNPROVEN ] %-46s %s\n' "$1" "${2:-}"
 }
 
+# THE KEY COMES FROM /dev/urandom, AND THE TWO THINGS THAT DID NOT WORK ARE WHY.
+#
+# Every call here runs inside a command substitution, which is a SUBSHELL, and that fact defeats both
+# obvious answers. `$RANDOM` replays: a subshell inherits the RNG state, so each one produces the same
+# sequence — six POSTs in a loop, five rejected `idempotency_mismatch`. A monotonic `_seq=$((_seq+1))`
+# is worse, because it looks like the fix: the increment happens in the subshell and never reaches the
+# parent, so every call is number one again. That one survived a green run and only surfaced on the
+# SECOND POST to a path, since a key collides only when it is reused with a different body.
+#
+# /dev/urandom is read fresh inside the subshell, so it has no parent state to inherit or fail to write
+# back. A smoke whose own keys collide reports the product failing and points the reader at the wrong
+# file — which is the failure this tree pays for over and over.
 api() {
 	local method="$1" path="$2" body="${3:-}"
+	local nonce
+	nonce="$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 	if [ -n "$body" ]; then
 		curl -sS -X "$method" "$API$path" -H "Authorization: Bearer $KEY" \
-			-H 'content-type: application/json' -H "Idempotency-Key: smoke-$RANDOM$RANDOM" -d "$body"
+			-H 'content-type: application/json' -H "Idempotency-Key: smoke-$SMOKE_RUN-$nonce" -d "$body"
 	else
 		curl -sS -X "$method" "$API$path" -H "Authorization: Bearer $KEY"
 	fi
@@ -93,8 +116,17 @@ agent="$(api POST /v1/agents "{\"name\":\"ios-smoke-$(date +%s)\"}")"
 agent_id="$(printf '%s' "$agent" | jq_get "['id']")"
 rev=""
 if [ -n "$agent_id" ]; then
+	# NO `model` FIELD, AND THAT IS THE POINT. A revision that names one OVERRIDES the deployment's route,
+	# and a name the configured provider does not recognise comes back as a bare HTTP 404. Measured
+	# 2026-08-02: this file pinned "gpt-4o-mini" against an Anthropic-routed deployment; the engine parked
+	# at `safe_boundary before_model, step 1` and exited 0 without ever calling the model, the runner
+	# re-leased the run five times, and the whole record was `run.failed.v1 {state, run_id}` with an empty
+	# control-plane log. Four minutes of `in_progress`, and a smoke that read it as the CHAIN being broken.
+	#
+	# Leaving it out is also what `palai up` does for the Slack profile, and for the same reason: the
+	# deployment's operator chose the model, and an agent definition that silently re-chooses it is a
+	# second opinion nobody asked for.
 	rev="$(api POST "/v1/agents/$agent_id/revisions" '{
-    "model":"gpt-4o-mini",
     "instructions":"You are an iOS engineer in a cloned repository. Read before you edit. After a visible change take a screenshot and SHOW it with palai.workspace.show_media, then ask whether it looks right.",
     "tools":["palai.workspace.file","palai.workspace.shell","palai.workspace.show_media"]
   }' | jq_get "['id']")"
@@ -187,7 +219,78 @@ else
 	skip "the agent SHOWED media" "this prompt did not ask for a visible change; leg 7 drives that"
 fi
 
-hdr "6. THE SESSION'S OWN uid"
+hdr "6. THE WHOLE POINT: build it, run it in a simulator, SHOW the human"
+# THIS LEG IS THE PRODUCT. Everything above proves plumbing; this proves the sentence the owner
+# actually asked for — "change the code, build it, run it in the simulator, and show me a screenshot so
+# I can say whether I like it".
+#
+# IT IS OPT-IN because it drives a real xcodebuild against a real simulator: minutes, not seconds, and
+# a machine with no Xcode cannot run it at all. An UNPROVEN line says which of those it was.
+if [ "$WITH_BUILD" -eq 1 ]; then
+	build_prompt='Boot an iOS simulator, build this SwiftUI app for it with xcodebuild, install and launch it, then take a screenshot with `xcrun simctl io booted screenshot shot.png` and SHOW it to me with palai.workspace.show_media. Work step by step.'
+	bresp="$(api POST /v1/responses "{
+    \"session_id\": \"$session_id\",
+    $([ -n "$agent_id" ] && printf '"agent_id": "%s",' "$agent_id")
+    $([ -n "$binding_id" ] && printf '"repository": {"binding_id": "%s"},' "$binding_id")
+    \"input\": $(python3 -c "import json,sys;print(json.dumps(sys.argv[1]))" "$build_prompt"),
+    \"background\": true
+  }")"
+	bid="$(printf '%s' "$bresp" | jq_get "['id']")"
+	bstate=""
+	[ -n "$bid" ] || say "        the build response was NOT accepted: $(printf '%s' "$bresp" | head -c 220)"
+	if [ -n "$bid" ]; then
+		# A REAL BUILD DEADLINE. The first xcodebuild on a cold machine compiles a whole SwiftUI target and
+		# boots a simulator; 240s is a timeout, not a measurement.
+		bdeadline=$((SECONDS + 900))
+		while [ $SECONDS -lt $bdeadline ]; do
+			bstate="$(api GET "/v1/responses/$bid" | jq_get "['status']")"
+			case "$bstate" in
+			completed | failed | canceled | timed_out | budget_exceeded) break ;;
+			esac
+			sleep 5
+		done
+	fi
+	bcalls="$(api GET "/v1/responses/$bid/tool-calls")"
+	# THE EVIDENCE IS THE ARTIFACT'S BYTES, NOT THE CALL. A show_media call that answered with an id
+	# proves the model asked; fetching the object and reading a PNG header proves a picture exists. An
+	# earlier version of this file stopped at the call, which is the same mistake as trusting a terminal
+	# status over the ledger.
+	art="$(printf '%s' "$bcalls" | python3 -c "
+import sys,json
+rows=json.load(sys.stdin).get('data') or []
+for r in rows:
+    if (r.get('name') or '').endswith('show_media'):
+        res = r.get('result') or {}
+        if isinstance(res,str):
+            try: res=json.loads(res)
+            except Exception: res={}
+        print(res.get('artifact_id') or '')
+        break" 2>/dev/null)"
+	built="$(printf '%s' "$bcalls" | grep -c 'xcodebuild' || true)"
+	if [ "${built:-0}" -gt 0 ]; then
+		ok "the agent BUILT the app it cloned" "$built xcodebuild call(s)"
+	else
+		no "the agent BUILT the app it cloned" "no xcodebuild in the ledger (run state: ${bstate:-<none>})"
+	fi
+	if [ -n "$art" ]; then
+		hdr_bytes="$(curl -sS "$API/v1/artifacts/$art/content" -H "Authorization: Bearer $KEY" |
+			python3 -c "
+import sys
+d=sys.stdin.buffer.read()
+print('png' if d[:8]==b'\x89PNG\r\n\x1a\n' else 'not-png', len(d))" 2>/dev/null)"
+		case "$hdr_bytes" in
+		png*) ok "the agent SHOWED a real screenshot" "$art — $hdr_bytes bytes of PNG" ;;
+		*) no "the agent SHOWED a real screenshot" "$art fetched as: ${hdr_bytes:-<nothing>}" ;;
+		esac
+	else
+		no "the agent SHOWED a real screenshot" "no show_media call in the ledger (run state: ${bstate:-<none>})"
+	fi
+else
+	skip "the agent BUILT the app it cloned" "run with --with-build (a real xcodebuild, minutes)"
+	skip "the agent SHOWED a real screenshot" "run with --with-build"
+fi
+
+hdr "7. THE SESSION'S OWN uid"
 if [ "$WITH_ACCOUNTS" -eq 1 ]; then
 	after_accounts="$(dscl . -list /Users 2>/dev/null | grep -c '^palai-s' || true)"
 	if [ "${after_accounts:-0}" -gt "${before_accounts:-0}" ]; then
@@ -199,7 +302,7 @@ else
 	skip "a session account was created" "run with --with-accounts (needs the sudoers entry)"
 fi
 
-hdr "7. CLOSING THE SESSION"
+hdr "8. CLOSING THE SESSION"
 # A FRESH COMMAND ID PER RUN. Commands are idempotent by command_id, so a fixed one made the second
 # run of this smoke replay the FIRST run's close — it reported a pass carrying a timestamp from hours
 # earlier, against a session it never touched. A smoke that can pass without acting is worse than none.

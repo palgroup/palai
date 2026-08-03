@@ -783,6 +783,15 @@ func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string, nat
 		}
 		o.connected, o.detail = observeSlackSocket(cfg, p, native, 45*time.Second)
 	}
+	// AN AGENT WITH NO EFFECTIVE TOOLS LOOKS EXACTLY LIKE AN AGENT THAT CHOSE NOT TO USE ANY. This is
+	// the check for the condition that cost a whole evening of live driving: a revision's tool list is a
+	// CEILING intersected with the project's default_tools baseline, so a project whose config_policy is
+	// NULL — which is every project until somebody sets one — resolves EVERY agent to the empty set. The
+	// runs complete. They answer in one step. They call nothing, and no layer says why: the revision
+	// plainly lists its tools, the tools are plainly registered, and the intersection that empties them
+	// is not written down anywhere a reader passes.
+	warns = appendWarn(warns, api.emptyToolBaselineWarning())
+
 	// warns ride alongside whatever the socket turned out to be. A connected socket does not retire
 	// them — that is the case they matter MOST in, because the events now arriving are the ones whose
 	// Approve buttons will be refused, or whose agent has no repository to work in.
@@ -2149,4 +2158,40 @@ func applyConcurrencyEnv(get func(string) string) error {
 		}
 	}
 	return nil
+}
+
+// emptyToolBaselineWarning reports the project granting no tools, or "" when it grants some or when the
+// question cannot be answered. It reads the project this deployment's key is scoped to.
+//
+// IT IS SILENT ON FAILURE ON PURPOSE. A warning that cannot distinguish "this project grants nothing"
+// from "the read did not happen" is the shape this tree keeps paying for — it would fire on every
+// deployment whose policy route moved, and an operator who learns to ignore it has lost the real one.
+func (c *apiClient) emptyToolBaselineWarning() string {
+	var page struct {
+		Data []struct {
+			ID     string `json:"id"`
+			Policy *struct {
+				DefaultTools []string `json:"default_tools"`
+			} `json:"config_policy"`
+		} `json:"data"`
+	}
+	status, err := c.do(http.MethodGet, "/v1/projects", nil, &page)
+	if err != nil || status != http.StatusOK || len(page.Data) == 0 {
+		return ""
+	}
+	// The deployment's own project is the one this key writes to; `palai up` provisions prj_local.
+	for _, p := range page.Data {
+		if p.ID != "prj_local" {
+			continue
+		}
+		if p.Policy != nil && len(p.Policy.DefaultTools) > 0 {
+			return ""
+		}
+		return "this project grants NO default tools, so every agent's effective tool set is EMPTY: a " +
+			"revision's tool list is a ceiling INTERSECTED with the project baseline, and an empty baseline " +
+			"empties it. Runs will complete, answer in one step and call nothing. Grant a baseline with " +
+			"`palai admin project set-policy prj_local --default-tools=palai.workspace.file,palai.workspace.shell` " +
+			"(add palai.workspace.show_media for screenshots, palai.publish.push for commits)."
+	}
+	return ""
 }

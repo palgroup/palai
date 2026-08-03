@@ -747,6 +747,16 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 				return o.failContextOverflow(ctx, st)
 			}
 			if err != nil {
+				// THE CAUSE, WHERE AN OPERATOR CAN REACH IT. Measured 2026-08-02 driving the iOS live chain:
+				// an agent-driven run parked at `safe_boundary before_model, step 1`, the engine exited 0
+				// having never called the model, the runner re-leased it five times, and the whole event was
+				// `run.failed.v1 {state, run_id}` with an EMPTY control-plane log. The error was in this
+				// variable the entire time.
+				//
+				// It is logged rather than surfaced in the terminal problem for the reason terminalProblems
+				// exists: a model dispatch failure can carry raw PROVIDER text, and that must not reach a
+				// caller. The log is this deployment's own, and its operator is exactly who needs it.
+				log.Printf("run %s step %d: model dispatch failed: %v", st.attempt.RunID, st.modelStepIndex, err)
 				return abortIfTerminal(err)
 			}
 			// After a model result is committed and delivered, this is a safe boundary
