@@ -39,7 +39,7 @@ func moduleRoot(t *testing.T) string {
 // They always did. Secrets live in Postgres, envelope-encrypted, and identity/secrets.go re-reads the
 // row on every resolve — there is no in-memory cache to lose. What was lost is the POINTER: this line
 // interpolated PALAI_SECRET_MASTER_KEY_FILE from the shell that invoked compose, and the only thing
-// that ever exported it was `palai up`'s applySlackEnv — which ran ONLY when .env.local held Slack
+// that ever exported it was the bring-up's Slack env step, which ran ONLY when .env.local held Slack
 // credentials. So a plain `docker compose up -d`, or any `palai up` on a stack with no Slack app,
 // handed the container an EMPTY value, left dbSecretStore nil, unmounted the secret-ref routes, and
 // every handle resolved nowhere. deploy/compose/production.yml writes the path literally and has

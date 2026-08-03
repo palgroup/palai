@@ -16,7 +16,7 @@ import (
 // it wrong the stack came up, looked healthy, and then failed twenty seconds later as a TLS or DNS
 // error inside a container nobody was reading. These tests demand the refusal name the variable.
 
-// getFrom is the .env.local lookup shape resolveProvider/applySlackEnv already use.
+// getFrom is the .env.local lookup shape resolveProvider and applyGitHubAppEnv already use.
 func getFrom(values map[string]string) func(string) string {
 	return func(k string) string { return values[k] }
 }
