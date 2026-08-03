@@ -216,6 +216,7 @@ export interface Problem {
 
 export interface RepositoryBinding {
   allowed_operations?: string[];
+  archived_at?: string;
   clone_url: string;
   connection_ref?: string;
   created_at?: string;

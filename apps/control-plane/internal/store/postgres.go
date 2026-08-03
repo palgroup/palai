@@ -434,8 +434,8 @@ func (s *Store) GetRepositoryBinding(ctx context.Context, scope middleware.Scope
 
 // ListRepositoryBindings returns a tenant-scoped page of bindings within the request's verified scope
 // (spec §30.1, E13 T4). Each row is the same projection GetRepositoryBinding renders.
-func (s *Store) ListRepositoryBindings(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
-	items, err := s.spine.ListRepositoryBindings(ctx, tenantOf(scope), toListParams(q))
+func (s *Store) ListRepositoryBindings(ctx context.Context, scope middleware.Scope, q api.ListQuery, includeArchived bool) ([]api.ListRow, error) {
+	items, err := s.spine.ListRepositoryBindings(ctx, tenantOf(scope), toListParams(q), includeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -686,4 +686,21 @@ func responseID(body []byte) string {
 	}
 	_ = json.Unmarshal(body, &envelope)
 	return envelope.ID
+}
+
+// SetRepositoryBindingConnection points an existing binding at a different credential handle within the
+// request's verified scope (E30). The ref is a secret_refs NAME; no credential passes through this path.
+func (s *Store) SetRepositoryBindingConnection(ctx context.Context, scope middleware.Scope, id, ref string) (bool, error) {
+	return s.spine.SetRepositoryBindingConnection(ctx, tenantOf(scope), id, ref)
+}
+
+// ArchiveRepositoryBinding retires a binding within the request's verified scope (E30). Not a delete: the
+// row and its preparation receipts survive, and the run-admission guard is what stops new work.
+func (s *Store) ArchiveRepositoryBinding(ctx context.Context, scope middleware.Scope, id string) (bool, error) {
+	return s.spine.ArchiveRepositoryBinding(ctx, tenantOf(scope), id)
+}
+
+// UnarchiveRepositoryBinding restores a retired binding within the request's verified scope (E30).
+func (s *Store) UnarchiveRepositoryBinding(ctx context.Context, scope middleware.Scope, id string) (bool, error) {
+	return s.spine.UnarchiveRepositoryBinding(ctx, tenantOf(scope), id)
 }

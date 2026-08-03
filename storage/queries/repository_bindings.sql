@@ -14,7 +14,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
 -- Resolve a binding within tenant scope (spec §30.3 step 1). A foreign or unknown id returns no
 -- rows — existence is not disclosed across tenants.
 SELECT id, provider, repository_identity, clone_url, default_branch, connection_ref,
-       allowed_operations, policy, data_classification, region_constraint, created_at
+       allowed_operations, policy, data_classification, region_constraint, created_at, archived_at
 FROM repository_bindings
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
@@ -23,9 +23,15 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- is no status filter — only the created_at bounds ($3/$4) and the ($5,$6) keyset, $7 the row cap.
 -- name: ListRepositoryBindings
 SELECT id, provider, repository_identity, clone_url, default_branch, connection_ref,
-       allowed_operations, policy, data_classification, region_constraint, created_at
+       allowed_operations, policy, data_classification, region_constraint, created_at, archived_at
 FROM repository_bindings
 WHERE organization_id = $1 AND project_id = $2
+  -- ARCHIVED ROWS ARE HIDDEN BY DEFAULT AND THE SWITCH IS A PARAMETER, NOT A SECOND STATEMENT ($8). A
+  -- forked "list archived too" query is a second place for the tenant predicate to be got wrong, which is
+  -- the class of defect this corpus keeps finding. `deleted_at IS NULL`-style filtering is an APPLICATION
+  -- decision and nothing beneath it enforces it — no policy, no constraint — so it is asserted directly
+  -- in tests/security/tenancy.
+  AND ($8::boolean OR archived_at IS NULL)
   AND ($3::timestamptz IS NULL OR created_at >= $3)
   AND ($4::timestamptz IS NULL OR created_at <= $4)
   AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
@@ -75,4 +81,62 @@ LIMIT 1;
 -- Existence check within tenant scope (spec §30.1, §39.2): a response's `repository` field is verified
 -- at admit so a bad or foreign binding_id is a 404 there, not a run that fails when the clone cannot
 -- resolve the binding. Returns no row for an unknown OR foreign id (existence not disclosed cross-tenant).
-SELECT 1 FROM repository_bindings WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+--
+-- AND NO ROW FOR AN ARCHIVED ONE, WHICH IS WHAT MAKES ARCHIVING MEAN ANYTHING (migration 000057). A new
+-- durable state makes every OLD verb that ignores it a bypass, so the clause belongs HERE — at the one
+-- site a run's repository attachment passes through — rather than in the list, which only decides what an
+-- operator is shown. Without it, `archived_at` would be a display flag and a run naming a retired binding
+-- would clone exactly as before.
+--
+-- An archived binding is therefore answered the same way a foreign one is: not found. That is deliberate
+-- rather than lazy — the alternative, a distinct "this binding is archived" code, is a third answer the
+-- admission path would have to carry, and the operator-facing distinction already exists on the READ
+-- route, which returns the row with its archived_at set.
+SELECT 1 FROM repository_bindings
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND archived_at IS NULL;
+
+-- name: SetRepositoryBindingConnection
+-- Point a binding at a different credential, or at none (E30, migration 000057). This is the ONLY column
+-- of a binding any statement updates, and the migration header carries the argument: identity (provider /
+-- repository_identity / clone_url) is what preparation_receipts rows have already asserted about past
+-- runs, so a mutable identity would falsify recorded provenance; a credential says only HOW the fetch
+-- authenticated and can never do that.
+--
+-- $4 is allowed to be '' — detaching is a real operator move (the repository became public, or the token
+-- was retired) and refusing it would leave the same dead end one step further along.
+--
+-- ARCHIVED ROWS ARE EXCLUDED. Re-crediting a retired binding is a contradiction: nothing can run against
+-- it, so the write would silently do nothing useful. The caller unarchives first, deliberately.
+-- Tenant-scoped by RLS; the org/project predicate is defence-in-depth, and the RETURNING drives the
+-- handler's 404 for an unknown, foreign, or archived id without a second round trip.
+UPDATE repository_bindings
+SET connection_ref = $4
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND archived_at IS NULL
+RETURNING id;
+
+-- name: ArchiveRepositoryBinding
+-- Retire a binding: it leaves the default list and, through RepositoryBindingExists above, refuses new
+-- runs. It is NOT a delete and could not be — preparation_receipts.repository_binding_id is a foreign key
+-- onto this table, so removing the row would break or cascade away the provenance those receipts exist to
+-- keep, and this API has no destructive verb anywhere else.
+--
+-- IDEMPOTENT BY PREDICATE, NOT BY COALESCE: `archived_at IS NULL` means archiving twice leaves the FIRST
+-- timestamp standing and returns no row the second time, so the handler can tell "I retired it" from "it
+-- was already retired" — and a second call can never rewrite when it happened.
+UPDATE repository_bindings
+SET archived_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND archived_at IS NULL
+RETURNING id;
+
+-- name: UnarchiveRepositoryBinding
+-- Put a retired binding back in service. Archiving is operator hygiene rather than a security decision —
+-- "stop offering me this row" — and a one-way door in a table that also has no delete would be worse than
+-- the duplicates it exists to clear. Revoking a binding's ACCESS is a different operation that already
+-- exists: rotate or detach its connection_ref.
+--
+-- Symmetric to the archive above: `archived_at IS NOT NULL` makes it idempotent and lets the handler tell
+-- a restore from a no-op.
+UPDATE repository_bindings
+SET archived_at = NULL
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND archived_at IS NOT NULL
+RETURNING id;

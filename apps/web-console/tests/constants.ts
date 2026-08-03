@@ -113,13 +113,37 @@ export const API_KEY = IS_REAL ? realEnv("PALAI_API_KEY") : FAKE_API_KEY;
 // coverage test at the bottom of tests/a11y.spec.ts walks app/**/page.tsx for `<FormDialog` mounts and fails if the
 // count does not match the rows here — the same shape as the route coverage assertion, and for the same
 // reason: a surface nobody scans must be a red test rather than a thing somebody remembers.
-export const FORM_DIALOGS: { route: string; open: string; dialog: string; label: string }[] = [
+export const FORM_DIALOGS: { route: string; open: string; dialog: string; label: string; dynamic?: string }[] = [
   { route: "/agents", open: "agent-create-open", dialog: "agent-create-dialog", label: "Create an agent" },
   { route: "/repositories", open: "binding-create-open", dialog: "binding-create-dialog", label: "Register a repository binding" },
   { route: "/policy", open: "key-mint-open", dialog: "key-mint-dialog", label: "Mint an API key" },
   { route: "/fleet", open: "pool-create-open", dialog: "pool-create-dialog", label: "Create a runner pool" },
   { route: "/fleet", open: "poolkey-mint-open", dialog: "poolkey-mint-dialog", label: "Mint an enrolment key" },
   { route: "/deployment", open: "desired-config-edit", dialog: "desired-config-dialog", label: "Edit desired configuration" },
+  // THE FIRST TWO ROWS ON A DYNAMIC ROUTE (E30), and `dynamic` is what makes that expressible. Every row
+  // above names a path the loop can `goto` directly; a binding's own page is keyed by an id, so this names
+  // the DYNAMIC_CONSOLE_ROUTES pattern instead and the loop resolves it through concreteDynamicPath —
+  // which CREATES a binding when the collection is empty rather than skipping, the same refusal-to-skip
+  // that route already carries.
+  //
+  // Both openers exist only on a LIVE binding: an archived one accepts neither a credential (the API
+  // refuses the write) nor a second archive. That is not a hazard for the sweep, because the default list
+  // hides archived rows and concreteDynamicPath samples the first row of it, so the binding it resolves is
+  // always one whose controls are present.
+  {
+    route: "/repositories/[id]",
+    dynamic: "/repositories/[id]",
+    open: "binding-connection-open",
+    dialog: "binding-connection-dialog",
+    label: "Set this binding's credential",
+  },
+  {
+    route: "/repositories/[id]",
+    dynamic: "/repositories/[id]",
+    open: "binding-archive",
+    dialog: "binding-archive-dialog",
+    label: "Archive this binding",
+  },
 ];
 
 /**

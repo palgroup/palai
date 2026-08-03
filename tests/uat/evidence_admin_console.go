@@ -914,7 +914,7 @@ const AdminConsoleQueryLedger = `[
   {"file": "storage/queries/queues.sql", "statements": 21, "ciphertext_statements": []},
   {"file": "storage/queries/recovery.sql", "statements": 4, "ciphertext_statements": []},
   {"file": "storage/queries/remote_tools.sql", "statements": 9, "ciphertext_statements": []},
-  {"file": "storage/queries/repository_bindings.sql", "statements": 7, "ciphertext_statements": []},
+  {"file": "storage/queries/repository_bindings.sql", "statements": 10, "ciphertext_statements": []},
   {"file": "storage/queries/responses.sql", "statements": 37, "ciphertext_statements": []},
   {"file": "storage/queries/runners.sql", "statements": 22, "ciphertext_statements": []},
   {"file": "storage/queries/schedules.sql", "statements": 15, "ciphertext_statements": []},

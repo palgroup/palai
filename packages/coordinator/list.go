@@ -105,12 +105,18 @@ type RepositoryBindingListItem struct {
 }
 
 // ListRepositoryBindings returns a tenant-scoped page of bindings newest-first (spec §30.1, E13 T4).
-// Each row is the same projection GetRepositoryBinding renders (Status filter is ignored — bindings
-// have no lifecycle state).
-func (s *Store) ListRepositoryBindings(ctx context.Context, tenant Tenant, p ListParams) ([]RepositoryBindingListItem, error) {
+// Each row is the same projection GetRepositoryBinding renders.
+//
+// ARCHIVED BINDINGS ARE HIDDEN UNLESS ASKED FOR (E30, migration 000057), and `includeArchived` is a
+// PARAMETER of the one statement rather than a second query — a forked "list archived too" statement
+// would be a second place for the tenant predicate to be got wrong. The comment this replaces said
+// "Status filter is ignored — bindings have no lifecycle state", which was true when it was written and
+// is the exact sentence a reader would now trust while adding a retired row to a picker.
+func (s *Store) ListRepositoryBindings(ctx context.Context, tenant Tenant, p ListParams, includeArchived bool) ([]RepositoryBindingListItem, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListRepositoryBindings"),
-		tenant.Organization, tenant.Project, p.CreatedGTE, p.CreatedLTE, p.AfterCreatedAt, p.AfterID, p.Limit)
+		tenant.Organization, tenant.Project, p.CreatedGTE, p.CreatedLTE, p.AfterCreatedAt, p.AfterID, p.Limit,
+		includeArchived)
 	if err != nil {
 		return nil, fmt.Errorf("list repository bindings: %w", err)
 	}
@@ -122,10 +128,15 @@ func (s *Store) ListRepositoryBindings(ctx context.Context, tenant Tenant, p Lis
 			allowedRaw []byte
 			policyRaw  []byte
 			createdAt  time.Time
+			archivedAt *time.Time
 		)
 		if err := rows.Scan(&b.ID, &b.Provider, &b.RepositoryIdentity, &b.CloneUrl, &b.DefaultBranch,
-			&b.ConnectionRef, &allowedRaw, &policyRaw, &b.DataClassification, &b.RegionConstraint, &createdAt); err != nil {
+			&b.ConnectionRef, &allowedRaw, &policyRaw, &b.DataClassification, &b.RegionConstraint,
+			&createdAt, &archivedAt); err != nil {
 			return nil, fmt.Errorf("scan repository binding row: %w", err)
+		}
+		if archivedAt != nil {
+			b.ArchivedAt = archivedAt.UTC().Format(time.RFC3339)
 		}
 		b.Object = "repository_binding"
 		b.OrganizationID = contracts.OrganizationID(tenant.Organization)
