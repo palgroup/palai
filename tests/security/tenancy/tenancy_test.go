@@ -274,6 +274,14 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 // transaction-locally (set_config is_local=true) for isolation between subtests, whereas production sets it
 // session-level once per pool acquisition (storage.OpenPool, is_local=false). Both reach the same policy.
 // An empty org leaves the GUC unset — the "connection that never declared a tenant" case.
+//
+// ALSO sets palai.project_id to org's own seeded project (A.2 Task 2). Before migration 000062 org_id
+// alone was sufficient to see a tenant's rows on every ordinary table; 000062 rekeys the policy to
+// project_id, and a real caller always carries both — storage.WithTenant has required a non-empty
+// project since A.2 Task 1, so "org set, project empty" is now a shape ONLY storage.WithOrgScope
+// produces (identity/provisioning, secret_refs, environments — none of which this suite's org-only
+// subtests exercise). Without this, every subtest below would be asserting against a scope no real
+// caller can hold post-Task-1, on tables 000062 deliberately moved off it.
 func (s *suite) asOrg(t *testing.T, org string, fn func(tx pgx.Tx)) {
 	t.Helper()
 	ctx := context.Background()
@@ -285,6 +293,10 @@ func (s *suite) asOrg(t *testing.T, org string, fn func(tx pgx.Tx)) {
 	if org != "" {
 		if _, err := tx.Exec(ctx, "SELECT set_config('palai.org_id', $1, true)", org); err != nil {
 			t.Fatalf("set tenant GUC: %v", err)
+		}
+		project := s.projectOf(t, org)
+		if _, err := tx.Exec(ctx, "SELECT set_config('palai.project_id', $1, true)", project); err != nil {
+			t.Fatalf("set project GUC: %v", err)
 		}
 	}
 	fn(tx)
