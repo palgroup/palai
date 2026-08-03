@@ -11,13 +11,14 @@ import (
 // from: it attaches to an EXISTING session's event stream and survives being restarted, because
 // resume is keyed on a plain integer sequence the caller can persist itself, not on in-memory state.
 //
-// It deliberately reuses stream.go's framer (scanSSE, decodeEvent, IsTerminalEvent) and reconnect
-// backoff (fullJitterBackoff, sleep) rather than parsing SSE a second time. It does NOT reuse
-// ResponseStream's Last-Event-ID resume: the wire contract measured against the live control plane
+// It runs on stream.go's shared runStream engine — the exact reconnect/backoff/terminal loop
+// ResponseStream.Events uses — via sessionStreamTransport, so no control flow is duplicated between
+// the two streams; only the connect strategy and cursor bookkeeping differ, which is what
+// streamTransport exists to isolate. The wire contract measured against the live control plane
 // (apps/control-plane/api/events.go:111-112) resolves `?after_sequence=<n>` first, and the store's
 // After() read is `seq > afterSequence` (storage/queries/events.sql) — strictly greater-than — so
-// resuming with the last SEQUENCE actually seen is exactly correct on its own: no dedup-the-boundary
-// step is needed the way ResponseStream needs one for an id-keyed resume.
+// sessionStreamTransport resumes with the last SEQUENCE actually seen and, unlike
+// responseStreamTransport's Last-Event-ID resume, needs no dedup-the-boundary step.
 
 // EventsParams resumes a session's event stream after the given sequence. Zero (the default) is not
 // a special case to branch on — the store's own semantics make it "replay everything", since no real
@@ -36,12 +37,12 @@ type sessionStreamItem struct {
 
 // SessionEventStream is a resumable, pull-based consumer of a session's event stream (Next/Close) —
 // the shape a synchronous relay loop wants, unlike ResponseStream's range-over-func iterator. The
-// connection is read on its own goroutine (run) so a caller who stops calling Next(), or calls
-// Close(), cannot deadlock a blocked delivery: every send to items races a ctx cancellation.
+// connection is read on its own goroutine (run, on the shared runStream engine — see stream.go) so a
+// caller who stops calling Next(), or calls Close(), cannot deadlock a blocked delivery: every send
+// to items races a ctx cancellation.
 type SessionEventStream struct {
 	client    *Client
 	sessionID string
-	cursor    int64 // last sequence delivered (or the caller's starting point); read/written only by run
 
 	items  chan sessionStreamItem
 	cancel context.CancelFunc
@@ -50,6 +51,33 @@ type SessionEventStream struct {
 	maxReconnects int
 	backoffBaseMs int
 	backoffMaxMs  int
+}
+
+// sessionStreamTransport adapts SessionEventStream to streamTransport (stream.go): resume is the
+// ?after_sequence query param, tracked as a plain integer cursor updated from each decoded event's
+// own Sequence — no dedupe step is needed, unlike responseStreamTransport's Last-Event-ID resume,
+// because the server's After() read is strictly-greater-than (storage/queries/events.sql:61): resuming
+// from the last sequence actually seen can never redeliver it.
+type sessionStreamTransport struct {
+	client    *Client
+	sessionID string
+	cursor    int64
+}
+
+func (t *sessionStreamTransport) open(ctx context.Context) (*http.Response, error) {
+	return t.client.openSessionEventStream(ctx, t.sessionID, t.cursor)
+}
+
+func (t *sessionStreamTransport) processFrame(f SSEFrame) (Event, bool) {
+	if f.Data == "" {
+		return Event{}, false
+	}
+	e, ok := decodeEvent(f.Data)
+	if !ok {
+		return Event{}, false
+	}
+	t.cursor = int64(e.Sequence)
+	return e, true
 }
 
 // Events attaches to sessionID's event stream, resuming from params.AfterSequence. The first
@@ -93,7 +121,6 @@ func (s *Sessions) Events(ctx context.Context, sessionID string, params EventsPa
 	st := &SessionEventStream{
 		client:        s.client,
 		sessionID:     sessionID,
-		cursor:        params.AfterSequence,
 		items:         make(chan sessionStreamItem),
 		cancel:        cancel,
 		done:          make(chan struct{}),
@@ -101,7 +128,7 @@ func (s *Sessions) Events(ctx context.Context, sessionID string, params EventsPa
 		backoffBaseMs: 100,
 		backoffMaxMs:  5_000,
 	}
-	go st.run(streamCtx, resp)
+	go st.run(streamCtx, resp, params.AfterSequence)
 	return st, nil
 }
 
@@ -125,84 +152,18 @@ func (s *SessionEventStream) Close() error {
 	return nil
 }
 
-// run owns the single goroutine that reads scanSSE's callback stream and relays each decoded event
-// to items, reconnecting on a clean drop (EOF or a read error, neither of which is a terminal event)
-// with full-jitter backoff, resuming each reconnect from s.cursor. first is the already-open
-// connection Events() opened synchronously.
-func (s *SessionEventStream) run(ctx context.Context, first *http.Response) {
+// run drives the shared runStream engine (stream.go) with a sessionStreamTransport, translating its
+// deliver(Event, error) calls into sends on items. first is the already-open connection Events()
+// opened synchronously; startCursor seeds the transport's resume cursor for any later reconnect.
+func (s *SessionEventStream) run(ctx context.Context, first *http.Response, startCursor int64) {
 	defer close(s.done)
 	defer close(s.items)
 
-	resp := first
-	reconnects := 0
-	for {
-		if resp == nil {
-			opened, err := s.client.openSessionEventStream(ctx, s.sessionID, s.cursor)
-			if err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				if reconnects >= s.maxReconnects {
-					s.emit(ctx, sessionStreamItem{err: &ConnectionError{Message: "session event stream could not be (re)opened", Cause: err}})
-					return
-				}
-				if sleep(ctx, fullJitterBackoff(reconnects, s.backoffBaseMs, s.backoffMaxMs)) != nil {
-					return
-				}
-				reconnects++
-				continue
-			}
-			if opened.StatusCode/100 != 2 {
-				body, _ := io.ReadAll(io.LimitReader(opened.Body, maxSSELineBytes))
-				opened.Body.Close()
-				s.emit(ctx, sessionStreamItem{err: errorForResponse(opened.StatusCode, string(body), opened.Header.Get("Request-Id"))})
-				return
-			}
-			resp = opened
-		}
-
-		terminal, stopped := s.consume(ctx, resp)
-		resp = nil // this connection is spent either way; a next iteration (re)opens
-		if terminal || stopped || ctx.Err() != nil {
-			return
-		}
-		if reconnects >= s.maxReconnects {
-			s.emit(ctx, sessionStreamItem{err: &ConnectionError{Message: "session event stream dropped before a terminal event and exhausted reconnects"}})
-			return
-		}
-		if sleep(ctx, fullJitterBackoff(reconnects, s.backoffBaseMs, s.backoffMaxMs)) != nil {
-			return
-		}
-		reconnects++
+	t := &sessionStreamTransport{client: s.client, sessionID: s.sessionID, cursor: startCursor}
+	deliver := func(e Event, err error) bool {
+		return s.emit(ctx, sessionStreamItem{event: e, err: err})
 	}
-}
-
-// consume drains one connection's SSE frames until a terminal event (terminal=true), the caller
-// stops reading (stopped=true, via emit's ctx race), or the connection simply ends (both false — a
-// clean EOF or a read error, the two cases run treats identically: reconnect). It always closes resp
-// Body before returning.
-func (s *SessionEventStream) consume(ctx context.Context, resp *http.Response) (terminal, stopped bool) {
-	defer resp.Body.Close()
-	_ = scanSSE(resp.Body, func(f SSEFrame) bool {
-		if f.Data == "" {
-			return true
-		}
-		e, ok := decodeEvent(f.Data)
-		if !ok {
-			return true
-		}
-		s.cursor = int64(e.Sequence)
-		if !s.emit(ctx, sessionStreamItem{event: e}) {
-			stopped = true
-			return false
-		}
-		if IsTerminalEvent(e) {
-			terminal = true
-			return false
-		}
-		return true
-	})
-	return terminal, stopped
+	runStream(ctx, t, first, s.maxReconnects, s.backoffBaseMs, s.backoffMaxMs, deliver)
 }
 
 // emit sends item on items, or reports false if ctx ends first — the escape hatch that keeps a
