@@ -34,7 +34,7 @@ type SteerParams struct {
 }
 
 // commandCreateRequest is the wire body for POST /v1/sessions/{id}/commands (spec §22.4, §9.2).
-// It is unexported: SteerSession is the only delivery mode this task ships (kind=send_message,
+// It is unexported: Sessions.Steer is the only delivery mode this task ships (kind=send_message,
 // delivery=steer) — queue/interrupt and the other command kinds are a later task's surface.
 type commandCreateRequest struct {
 	CommandID string `json:"command_id"`

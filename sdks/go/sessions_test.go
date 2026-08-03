@@ -25,7 +25,7 @@ func TestCreateSessionPostsToV1Sessions(t *testing.T) {
 
 	s, err := c.Sessions.Create(context.Background(), CreateSessionParams{Name: "triage"})
 	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
+		t.Fatalf("Sessions.Create: %v", err)
 	}
 	if gotPath != "/v1/sessions" {
 		t.Fatalf("path = %q, want /v1/sessions", gotPath)
@@ -34,7 +34,7 @@ func TestCreateSessionPostsToV1Sessions(t *testing.T) {
 		t.Fatalf("body %q does not carry name", gotBody)
 	}
 	if gotIdempotencyKey != "" {
-		t.Fatalf("CreateSession must not send an Idempotency-Key (a retried create mints a new session), got %q", gotIdempotencyKey)
+		t.Fatalf("Sessions.Create must not send an Idempotency-Key (a retried create mints a new session), got %q", gotIdempotencyKey)
 	}
 	if s.ID != "sess_1" || s.Object != "session" || s.Status != "open" {
 		t.Fatalf("session = %+v, want id=sess_1 object=session status=open", s)
@@ -58,7 +58,7 @@ func TestCreateSessionDoesNotRetryOnNetworkFailure(t *testing.T) {
 		t.Fatalf("want *ConnectionError, got %v", err)
 	}
 	if attempts != 1 {
-		t.Fatalf("CreateSession must fail closed with a single attempt, got %d", attempts)
+		t.Fatalf("Sessions.Create must fail closed with a single attempt, got %d", attempts)
 	}
 }
 
@@ -74,7 +74,7 @@ func TestSteerSessionPostsDurableCommand(t *testing.T) {
 
 	cmd, err := c.Sessions.Steer(context.Background(), "sess_1", SteerParams{Message: "keep going"})
 	if err != nil {
-		t.Fatalf("SteerSession: %v", err)
+		t.Fatalf("Sessions.Steer: %v", err)
 	}
 	if gotPath != "/v1/sessions/sess_1/commands" {
 		t.Fatalf("path = %q, want /v1/sessions/sess_1/commands", gotPath)
@@ -106,7 +106,7 @@ func TestSteerSessionEscapesSessionIDInPath(t *testing.T) {
 	c := testClient(t, rt)
 
 	if _, err := c.Sessions.Steer(context.Background(), "a/b", SteerParams{Message: "hi"}); err != nil {
-		t.Fatalf("SteerSession: %v", err)
+		t.Fatalf("Sessions.Steer: %v", err)
 	}
 	if gotPath != "/v1/sessions/a%2Fb/commands" {
 		t.Fatalf("path = %q, want the session id percent-escaped (a%%2Fb), not spliced raw", gotPath)
@@ -125,14 +125,14 @@ func TestSteerSessionUsesCallerCommandID(t *testing.T) {
 	c := testClient(t, rt)
 
 	if _, err := c.Sessions.Steer(context.Background(), "sess_1", SteerParams{Message: "hi", CommandID: "cmd_caller_1"}); err != nil {
-		t.Fatalf("SteerSession: %v", err)
+		t.Fatalf("Sessions.Steer: %v", err)
 	}
 	if !strings.Contains(gotBody, `"command_id":"cmd_caller_1"`) {
 		t.Fatalf("body %q did not carry the caller's command_id", gotBody)
 	}
 }
 
-// TestSteerSessionRetriesNetworkFailureWithSameCommandID: SteerSession is marked idempotent
+// TestSteerSessionRetriesNetworkFailureWithSameCommandID: Sessions.Steer is marked idempotent
 // (command_id is the server's own dedupe key, spec §22.4), so a torn connection is retried, and the
 // SAME command_id rides every attempt — a different one per attempt would let a resend settle as a
 // second command.
@@ -159,7 +159,7 @@ func TestSteerSessionRetriesNetworkFailureWithSameCommandID(t *testing.T) {
 	c := testClient(t, rt)
 
 	if _, err := c.Sessions.Steer(context.Background(), "sess_1", SteerParams{Message: "hi"}); err != nil {
-		t.Fatalf("SteerSession: %v", err)
+		t.Fatalf("Sessions.Steer: %v", err)
 	}
 	if len(commandIDs) != 3 {
 		t.Fatalf("two network failures then success is three attempts, got %d", len(commandIDs))
