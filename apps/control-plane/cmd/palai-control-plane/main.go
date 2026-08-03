@@ -553,22 +553,68 @@ func migrateAndExit() bool {
 func dispatchWorkerCount() int { return api.DispatchWorkers() }
 
 // startDispatch launches the durable dispatch workers and the reconciler that drive
-// admitted response.run jobs. With a runner listener bound (gateway != nil) the worker
-// runs the full production exec-path: the orchestrator drives each claimed run through the
-// model broker, the conformance tool broker, and a live engine dialed over the gateway, to
-// a committed terminal response. Without it, the binary keeps the assignment-only behavior
-// the read-path SSE e2e drives (no broker/engine racing it). A killed worker's lease lapses
-// and its job is reclaimed at a higher fence, so no graceful shutdown is needed.
+// admitted response.run jobs. It requires a runner listener: the worker runs the full production
+// exec-path, driving each claimed run through the model broker, the conformance tool broker, and a
+// live engine dialed over the gateway, to a committed terminal response. A killed worker's lease
+// lapses and its job is reclaimed at a higher fence, so no graceful shutdown is needed.
 // PALAI_DISPATCH_WORKERS sets the worker count (default 1); 0 disables dispatch.
+//
+// THE SENTENCE THAT USED TO BE HERE SAID "Without it, the binary keeps the assignment-only behavior
+// the read-path SSE e2e drives", AND NO SUCH DRIVER EXISTS. scripts/test/e2e sets
+// PALAI_DISPATCH_WORKERS=0 — its own comment says it runs "without a dispatcher so no background
+// worker races those manual transitions" — so the early return fires and that branch is never built.
+// What the branch did reach was an operator's stack with dispatch on and no listener, where it marked
+// runs `running` and completed their jobs. See dispatchPosture.
+// dispatchPosture decides whether dispatch may start, and when it may not, the sentence that says why.
+//
+// IT EXISTS BECAUSE THE ALTERNATIVE STRANDED RUNS SILENTLY. `startDispatch` built the assignment-only
+// handler (`execution.AdvanceRun`) and replaced it with the real exec-path handler only inside
+// `if gateway != nil`. AdvanceRun drives a run queued -> provisioning -> running and reports SUCCESS
+// while opening no attempt and dialing nothing, so a stack with dispatch on and no runner listener
+// answered every response.run job by marking its run `running` and completing the job. Measured on a
+// live stack 2026-08-02: of 240 jobs, 227 carried result_hash `run:<id>:executed` and exactly one
+// carried `run:<id>:assigned` — a run that had been `running` with no attempt row and no terminal.
+//
+// THE COMMENT THIS REPLACES NAMED A DRIVER THAT DOES NOT EXIST: it said the assignment-only behaviour
+// is what the read-path SSE e2e drives. scripts/test/e2e sets PALAI_DISPATCH_WORKERS=0 and says so in
+// its own comment, so dispatchWorkerCount()'s early return fires and AdvanceRun is never constructed.
+// No shipped tier drives that branch, which is why refusing costs nothing.
+//
+// A refused stack leaves runs `queued`, which is the recoverable state — a properly-wired control
+// plane picks them up on its next boot — rather than a `running` claim nothing can honour.
+func dispatchPosture(workers int, gatewayBound bool) (start bool, refusal string) {
+	switch {
+	case workers <= 0:
+		return false, "" // dispatch is off by choice; nothing to explain
+	case !gatewayBound:
+		return false, "dispatch is configured (PALAI_DISPATCH_WORKERS>0) but no runner listener is bound: " +
+			"set PALAI_RUNNER_LISTEN_ADDR so runs can reach an engine. Refusing to dispatch — an " +
+			"assignment-only worker marks each run `running` and completes its job, leaving a run with no " +
+			"attempt, no engine and no terminal. Runs stay `queued` and are picked up once the listener is set."
+	default:
+		return true, ""
+	}
+}
+
 func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.RunnerGateway, supervisor *coordinator.Supervisor, artStore *artifacts.Store, slackSearchAuthorities *tools.SearchAuthorities, sessionAccounts *execution.SlotAccounts) {
 	workers := dispatchWorkerCount()
-	if workers <= 0 {
+	switch start, refusal := dispatchPosture(workers, gateway != nil); {
+	case start:
+	case refusal != "":
+		log.Printf("control plane: %s", refusal)
+		return
+	default:
 		return
 	}
 	spine := repo.Spine()
 	retry := coordinator.RetryPolicy{MaxAttempts: 5, BaseBackoff: 100 * time.Millisecond, MaxBackoff: 30 * time.Second}
 
-	handler := execution.AdvanceRun(spine)
+	// NO ASSIGNMENT-ONLY DEFAULT. This was `execution.AdvanceRun(spine)`, and it survived only when the
+	// gateway branch below did not fire — which is precisely the stack that could not execute anything.
+	// dispatchPosture has already refused that combination, so the handler is assigned exactly once,
+	// inside the block, and a nil here would be a wiring mistake rather than a posture. It is checked
+	// below rather than assumed: this file's job is to fail closed and name the wire.
+	var handler coordinator.Handler
 	// The observer the reconciler notices a finished background task through (E26 T4). It is declared
 	// out here because the orchestrator that owns it is built inside the gateway branch below, and the
 	// reconciler is built after it: a stack with no engine gateway starts no background task, so nil is
@@ -739,6 +785,15 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			}
 		}
 		handler = execution.ExecuteRun(spine, repo, orch)
+	}
+
+	// FAIL CLOSED ON A HANDLER NOBODY ASSIGNED. dispatchPosture guarantees the branch above ran, so this
+	// can only be reached by a future edit that moves the assignment — and a worker claiming jobs with a
+	// nil handler would panic per job while the runs it claimed stayed `running`. Refusing leaves them
+	// `queued` and says which wire is missing, exactly as the unbound-listener refusal does.
+	if handler == nil {
+		log.Print("control plane: refusing to dispatch — no response.run handler was wired (the runner gateway branch did not assign one)")
+		return
 	}
 
 	// Each worker, and the reconciler, run under the supervisor: a transient error restarts
