@@ -131,8 +131,14 @@ export const SLACK_MANIFEST_DEFAULTS: { description: string; prompts: ManifestPr
   ],
 };
 
-/** The app description. FIXED: it describes Palai, not this bot, and the shipped file's wording is it. */
-const APP_DESCRIPTION = "Palai agent platform — mentions open a run, buttons approve publications.";
+/**
+ * The app description. FIXED: it describes Palai rather than this bot, and the shipped file's wording is it.
+ *
+ * EXPORTED so tests/bot-manifest.spec.ts can re-derive it from `deploy/slack/app-manifest.yaml` like every
+ * other fixed value here. It was the one literal the drift guard did not cover while its own comment said
+ * the file is the source — a copy nothing checks, in the file whose whole argument is that copies drift.
+ */
+export const APP_DESCRIPTION = "Palai agent platform — mentions open a run, buttons approve publications.";
 
 /** count is the length in CODE POINTS — see MANIFEST_LIMITS on why the unit is stated rather than implied. */
 const count = (value: string): number => [...value].length;

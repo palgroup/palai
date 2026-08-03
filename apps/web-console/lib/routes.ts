@@ -1,4 +1,4 @@
-import { CHANNELS } from "@/lib/channels";
+import { CHANNELS, channelOf } from "@/lib/channels";
 
 // THE ROUTE TABLE — the ONE source of the console's navigation and of its accessibility sweep (E25 T2).
 //
@@ -227,6 +227,16 @@ export interface DynamicConsoleRoute {
   readyTestId: string;
   /** The /v1 collection path (after /v1) whose rows can fill the segment. */
   sampleFrom: string;
+  /**
+   * Which rows of that collection this screen can actually be DRIVEN on, when not every row will do.
+   *
+   * A dynamic route can render different controls for different rows — /bots/[id] shows a credential form
+   * only for a channel this console has a form for — and a sampler that always took the first row would
+   * resolve a path where a declared dialog does not exist, failing the sweeps with a locator timeout that
+   * says nothing about what they measure. Omit it and the first row is taken, which is right for a screen
+   * that renders the same controls for every row.
+   */
+  pick?: (row: Record<string, unknown>) => boolean;
   /** The body to POST to `sampleFrom` when it holds no row. An empty object is a valid create here. */
   create: Record<string, unknown>;
   /** The concrete browser path for one row's id. */
@@ -320,6 +330,10 @@ export const DYNAMIC_CONSOLE_ROUTES: readonly DynamicConsoleRoute[] = [
     label: "Bot",
     readyTestId: "panel-bot-record",
     sampleFrom: "/bots",
+    // AND THE SAMPLED ROW HAS TO BE ONE THIS SCREEN CAN DRIVE. POST /v1/bots accepts any `kind`, so a
+    // deployment's first bot may be one this console offers no form for — its credential dialog would not
+    // exist, and the sweeps that open it would time out on a control that is not missing but unrendered.
+    pick: (row) => channelOf(String(row.kind ?? ""))?.form !== undefined,
     create: { name: "axe-coverage-probe", kind: CHANNELS.find((c) => c.enabled)?.id ?? "" },
     build: (id) => `/bots/${encodeURIComponent(id)}`,
   },

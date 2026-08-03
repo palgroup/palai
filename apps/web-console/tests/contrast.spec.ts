@@ -219,12 +219,33 @@ test("every interactive control carries a 3:1 boundary against the surface behin
 
   const beforeDialogs = measured.length;
   for (const d of [...FORM_DIALOGS, ...PRIMITIVE_DIALOGS]) {
-    await page.goto(d.route);
+    // A DIALOG ON A DYNAMIC ROUTE HAS NO PATH UNTIL ONE IS RESOLVED, and this loop did not resolve one —
+    // measured 2026-08-03, when a fixture stopped inventing rows and three of these went red.
+    //
+    // It navigated to `d.route` verbatim, which for a dynamic row is the literal string `/repositories/[id]`
+    // or `/bots/[id]`: Next matches the pattern, the page asks the relay for a bot whose id is the six
+    // characters `[id]`, and the only reason a dialog ever opened is that tests/fake-control-plane.mjs
+    // SYNTHESISED a row for any unknown id. So these controls were measured on a page resolved from an id
+    // that does not exist, and on the real profile — where no such row is invented — they were measured on
+    // nothing at all. tests/a11y.spec.ts already resolves the pattern through concreteDynamicPath (which
+    // CREATES a row rather than skipping when the collection is empty); this is that half, here, so this
+    // sweep stops depending on a fixture's generosity for its coverage.
+    const dynamic = "dynamic" in d && typeof d.dynamic === "string" ? d.dynamic : "";
+    let path = d.route;
+    if (dynamic !== "") {
+      const route = DYNAMIC_CONSOLE_ROUTES.find((r) => r.pattern === dynamic);
+      if (route === undefined) {
+        throw new Error(`FORM_DIALOGS row for ${d.dialog} names dynamic route ${dynamic}, which lib/routes.ts does not declare`);
+      }
+      path = await concreteDynamicPath(page, route);
+    }
+    await page.goto(path);
     // The opener lives in a PANEL's head, or inside a ROW's `⋯` menu — profile.ts's openDeclaredDialog owns
     // both shapes and settles the dialog before returning, which is what keeps this a measurement of the
     // controls rather than of a shell that has not fetched its fields yet.
     await openDeclaredDialog(page, d);
-    const inside = await measureBoundaries(page, `${d.route} (${d.dialog})`);
+    // The RESOLVED path in the label, not the pattern: the evidence line must name what was measured.
+    const inside = await measureBoundaries(page, `${path} (${d.dialog})`);
     // THE POSITIVE CONTROL, PER DIALOG. A dialog that rendered nothing measurable would otherwise contribute
     // zero rows and pass — the same empty-haystack shape reveal-once.spec.ts was caught by this morning.
     expect(inside.boundaries.length, `${d.dialog} opened and offered no measurable control — this sweep would be judging an empty dialog`).toBeGreaterThan(1);

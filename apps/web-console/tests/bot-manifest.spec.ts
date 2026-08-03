@@ -3,8 +3,9 @@ import { resolve } from "node:path";
 
 import { expect, test, type Page, type Request as NetRequest } from "@playwright/test";
 
-import { buildManifest, MANIFEST_LIMITS, SLACK_BOT_EVENTS, SLACK_BOT_SCOPES, SLACK_MANIFEST_DEFAULTS } from "../lib/botManifest";
-import { CHANNELS } from "../lib/channels";
+import { APP_DESCRIPTION, buildManifest, MANIFEST_LIMITS, SLACK_BOT_EVENTS, SLACK_BOT_SCOPES, SLACK_MANIFEST_DEFAULTS } from "../lib/botManifest";
+import { CHANNELS, channelOf } from "../lib/channels";
+import { DYNAMIC_CONSOLE_ROUTES } from "../lib/routes";
 import { NEXT_PORT } from "./constants";
 import { announceProfile, resetFakeFixture, sessionHeaders, signIn } from "./profile";
 
@@ -101,6 +102,22 @@ function quotedValues(source: string, key: string): string[] {
     .map((l) => l.slice(l.indexOf('"') + 1, l.lastIndexOf('"')));
 }
 
+/**
+ * plainValue reads an UNQUOTED `key: value` line. It refuses to find more than one, so a key that starts
+ * appearing twice fails here rather than silently returning whichever came first.
+ *
+ * The `>` exclusion is what keeps `agent_description: >-` from being read as a value; the key match is
+ * anchored, so `agent_description` is not a `description` either.
+ */
+function plainValue(source: string, key: string): string {
+  const lines = source
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith(`${key}: `) && !l.startsWith(`${key}: >`));
+  expect(lines.length, `expected exactly one \`${key}:\` line in the shipped manifest, found ${String(lines.length)}`).toBe(1);
+  return stripComment(lines[0].slice(key.length + 2)).trim();
+}
+
 /** hasSetting is true when some line, comment stripped, is exactly this `key: value`. */
 const hasSetting = (source: string, setting: string): boolean => source.split("\n").some((l) => stripComment(l).trim() === setting);
 
@@ -151,6 +168,10 @@ test("the generated manifest carries the SHIPPED template's scopes, events and s
   // AND THE TWO DEFAULTS AN OPERATOR STARTS FROM ARE THE SHIPPED ONES: the wizard's first draft is the
   // manifest this deployment already runs on, with the names changed.
   expect(foldedValue(shipped, "agent_description")).toBe(SLACK_MANIFEST_DEFAULTS.description);
+  // AND THE APP DESCRIPTION, which is FIXED rather than a default — it describes Palai, not this bot — and
+  // was the one literal in the generator this guard did not cover while claiming the file is the source.
+  expect(plainValue(shipped, "description")).toBe(APP_DESCRIPTION);
+  expect(draft.yaml).toContain(`  description: "${APP_DESCRIPTION}"`);
   expect(quotedValues(shipped, "title")).toEqual(SLACK_MANIFEST_DEFAULTS.prompts.map((p) => p.title));
   expect(quotedValues(shipped, "message")).toEqual(SLACK_MANIFEST_DEFAULTS.prompts.map((p) => p.message));
 });
@@ -213,6 +234,23 @@ test("a channel with no adapter offers no manifest and no form", () => {
   expect(CHANNELS.filter((c) => c.manifest !== undefined).length).toBeGreaterThan(0);
 });
 
+test("the bot route samples only a row this screen can actually be driven on", () => {
+  // POST /v1/bots accepts ANY kind, so a deployment's first bot may be one this console offers no form for.
+  // The sweeps resolve a dynamic path by sampling that collection, and on such a row the credential dialog
+  // they are told to open does not exist — the failure is a locator timeout that says nothing about
+  // accessibility. `pick` is what keeps the sampled row one the screen renders controls for.
+  const route = DYNAMIC_CONSOLE_ROUTES.find((r) => r.pattern === "/bots/[id]");
+  expect(route?.pick, "the bot route declares no `pick`, so the sweeps take whatever row is first").toBeDefined();
+  const connectable = CHANNELS.find((c) => c.enabled);
+  expect(route?.pick?.({ kind: connectable?.id }), "a connectable channel's row must be usable").toBe(true);
+  const roadmap = CHANNELS.find((c) => !c.enabled);
+  expect(route?.pick?.({ kind: roadmap?.id }), "a row whose channel has no form must not be sampled").toBe(false);
+  expect(route?.pick?.({ kind: "a-kind-this-console-never-heard-of" })).toBe(false);
+  expect(route?.pick?.({}), "a row with no kind at all must not be sampled").toBe(false);
+  // The predicate is the console's own resolution rather than a second copy of it.
+  expect(channelOf(String(connectable?.id))?.form).toBeDefined();
+});
+
 // --- THE SCREEN ---------------------------------------------------------------------------------------
 
 // THREE DISTINCTIVE SENTINELS, one per credential, because a single shared needle cannot tell "the bot token
@@ -243,14 +281,14 @@ test.describe("the bot's own page", () => {
    * understand, which is what the preservation arm needs and what no fixture could honestly seed for the
    * real side.
    */
-  async function probeBot(page: Page): Promise<{ id: string; name: string }> {
+  async function probeBot(page: Page, config: Record<string, unknown> = {}): Promise<{ id: string; name: string }> {
     const channel = CHANNELS.find((c) => c.enabled);
     expect(channel, "this console offers no connectable channel, so there is no bot to make").toBeDefined();
     const origin = `http://127.0.0.1:${String(NEXT_PORT)}`;
     const name = `probe-detail-${Date.now().toString(36)}-${String(Math.floor(Math.random() * 1000))}`;
     const created = await page.request.post(`${origin}/api/palai/v1/bots`, {
       headers: { ...(await sessionHeaders(page)), Origin: origin, "Content-Type": "application/json" },
-      data: { name, kind: channel?.id, config: { [OPAQUE_KEY]: OPAQUE_VALUE } },
+      data: { name, kind: channel?.id, config: { [OPAQUE_KEY]: OPAQUE_VALUE, ...config } },
     });
     if (created.status() !== 201) {
       throw new Error(`POST /v1/bots answered ${String(created.status())} — nothing after this proves anything`);
@@ -267,6 +305,16 @@ test.describe("the bot's own page", () => {
       headers: { ...(await sessionHeaders(page)), Origin: origin },
     });
     if (gone.status() !== 204) throw new Error(`DELETE /v1/bots/{id} answered ${String(gone.status())}, so the refusal below would not happen`);
+  }
+
+  /** patchConfig writes a bot's config the way ANOTHER writer would — another operator, or the CLI. */
+  async function patchConfig(page: Page, id: string, config: Record<string, unknown>): Promise<void> {
+    const origin = `http://127.0.0.1:${String(NEXT_PORT)}`;
+    const res = await page.request.patch(`${origin}/api/palai/v1/bots/${encodeURIComponent(id)}`, {
+      headers: { ...(await sessionHeaders(page)), Origin: origin, "Content-Type": "application/json" },
+      data: { config },
+    });
+    if (res.status() !== 200) throw new Error(`PATCH /v1/bots/{id} answered ${String(res.status())} — the concurrent write did not happen`);
   }
 
   /** openBot walks the operator's own way in: the list, then that bot's row. */
@@ -359,6 +407,25 @@ test.describe("the bot's own page", () => {
     for (const secret of [SIGNING, BOT_TOKEN, APP_TOKEN]) {
       expect(body.includes(secret), "the revision carried a raw credential").toBe(false);
     }
+    // AND THE SAME SWEEP OVER THE DECODED BODY, because the raw one above is a scan over ENCODED bytes and
+    // this tree records that family: a token carrying a `"` or a newline is JSON-escaped on the wire and a
+    // substring search walks straight past it. These three sentinels have no such character, so the raw arm
+    // is sound for them — but the arm that must hold for any credential is this one, and it asserts it found
+    // strings to look at rather than passing over an empty walk.
+    const decoded: string[] = [];
+    const walk = (value: unknown): void => {
+      if (typeof value === "string") decoded.push(value);
+      else if (Array.isArray(value)) value.forEach(walk);
+      else if (value !== null && typeof value === "object") Object.values(value).forEach(walk);
+    };
+    walk(JSON.parse(body));
+    expect(decoded.length, "the decoded body held no strings — this sweep would be vacuous").toBeGreaterThan(0);
+    for (const value of decoded) {
+      for (const secret of [SIGNING, BOT_TOKEN, APP_TOKEN]) {
+        expect(value.includes(secret), "a decoded field of the revision held a raw credential").toBe(false);
+      }
+    }
+
     // AND IT NAMES THE HANDLES up.go WOULD HAVE NAMED — same workspace, same three prefixes — so a bot
     // configured from this panel and one configured by the CLI resolve to the same three secrets.
     const sent = JSON.parse(body) as { config?: Record<string, unknown> };
@@ -386,21 +453,175 @@ test.describe("the bot's own page", () => {
     for (const secret of [SIGNING, BOT_TOKEN, APP_TOKEN]) expect(content.includes(secret), "a credential is in the DOM").toBe(false);
   });
 
-  test("a refused write clears every credential field, and says by NAME what was already sealed", async ({ page }) => {
-    const { id, name } = await probeBot(page);
+  test("a WHITESPACE workspace id is refused by this console, and nothing is sealed", async ({ page }) => {
+    // HTML `required` FAILS ONLY ON THE EMPTY STRING. A single space passes constraint validation, the submit
+    // proceeds, and the console's own guard is what refuses — so this branch is live UI and its sentence is
+    // what the operator reads. The guard has to exist: the handle is `${prefix}${scope}`, so an empty scope
+    // would seal every bot in the deployment under the same three names.
+    const { name } = await probeBot(page);
+    const requests: NetRequest[] = [];
+    page.on("request", (r) => requests.push(r));
     await openBot(page, name);
-    // A REFUSAL THE SERVER PRODUCES, reachable on BOTH profiles because this test creates it: the row is
-    // unregistered from under the open page, which is exactly what a second operator in another tab does.
-    // The seals still happen — they are a different resource — so this drives the one arm that matters:
-    // three credentials are live in the secret store under handles that now bind nothing.
-    //
-    // The CLIENT-side refusal (an empty workspace id) is deliberately not what is driven here. The field
-    // carries `required`, so the browser's own constraint validation refuses the submit before any handler
-    // runs; the check in app/bots/[id]/page.tsx is the guard behind that, not the message an operator reads.
+    await openCredentials(page);
+
+    await page.getByTestId("bot-team-input").fill(" ");
+    await page.getByTestId("bot-signing-secret-input").fill(SIGNING);
+    await page.getByTestId("bot-token-input").fill(BOT_TOKEN);
+    await page.getByTestId("bot-app-token-input").fill(APP_TOKEN);
+    await page.getByTestId("bot-credentials-save").click();
+
+    const error = page.getByTestId("bot-credentials-error");
+    await expect(error).toBeVisible({ timeout: 15_000 });
+    await expect(error).toHaveAttribute("role", "alert");
+    await expect(error).toContainText("Nothing was sent");
+
+    // NOTHING WAS SEALED AND NOTHING WAS WRITTEN — the sentence above has to be true, or the refusal leaves
+    // three live credentials under a handle nothing references.
+    const writes = requests.filter((r) => (r.method() === "POST" || r.method() === "PATCH") && r.url().includes("/api/palai/"));
+    expect(writes.map((r) => new URL(r.url()).pathname), "the console wrote something before refusing").toEqual([]);
+
+    // AND THE CREDENTIALS STILL CLEARED. takeSecret() runs before the validation that returns early, which is
+    // the whole reason the values are read first.
+    for (const id of ["bot-signing-secret-input", "bot-token-input", "bot-app-token-input"]) {
+      await expect(page.getByTestId(id)).toHaveValue("");
+    }
+  });
+
+  test("a write started before somebody else's change does not erase it", async ({ page }) => {
+    // THE LOST UPDATE, DRIVEN. The page loads a copy of the row; PATCH carries no If-Match and `config =
+    // COALESCE($8, config)` replaces the document whole. So an operator who opens this screen at 09:00 and
+    // rotates one token at 09:20 must not rewrite what somebody else changed at 09:10 — and
+    // `allowed_approvers` is the ONLY per-human authorization the approval bridge has (lib/channels.ts), so
+    // an erased entry there is a person losing the right to approve.
+    const team = `T${Date.now().toString(36).toUpperCase()}`;
+    const { id, name } = await probeBot(page, { team_id: team, allowed_approvers: ["U_ALREADY"] });
+    await openBot(page, name);
+    await openCredentials(page);
+
+    // ANOTHER WRITER, between this page loading and this page saving: a second approver, and a key this
+    // console has never heard of.
+    await patchConfig(page, id, {
+      [OPAQUE_KEY]: OPAQUE_VALUE,
+      team_id: team,
+      allowed_approvers: ["U_ALREADY", "U_ADDED_MEANWHILE"],
+      arrived_after_this_page_loaded: "yes",
+    });
+
+    const requests: NetRequest[] = [];
+    page.on("request", (r) => requests.push(r));
+    // The operator rotates ONE token and types in no other box — which is exactly the case where every value
+    // on screen is a prefill rather than an assertion.
+    await page.getByTestId("bot-token-input").fill(BOT_TOKEN);
+    await page.getByTestId("bot-credentials-save").click();
+    await expect(page.getByTestId("bot-credentials-status")).toContainText(`slack-bot-${team}`, { timeout: 15_000 });
+
+    const revision = requests.filter((r) => r.method() === "PATCH" && r.url().includes("/api/palai/v1/bots/")).at(-1);
+    const sent = JSON.parse(revision?.postData() ?? "{}") as { config?: Record<string, unknown> };
+    expect(sent.config?.allowed_approvers, "an approver added while this page was open was erased by a token rotation").toEqual([
+      "U_ALREADY",
+      "U_ADDED_MEANWHILE",
+    ]);
+    expect(sent.config?.arrived_after_this_page_loaded, "a key written while this page was open was erased").toBe("yes");
+    // The write still does its own job: the rotated handle is named, under the workspace the row carries.
+    expect(sent.config?.bot_token_ref).toBe(`slack-bot-${team}`);
+    expect(sent.config?.team_id).toBe(team);
+  });
+
+  test("clearing the approver list actually removes it", async ({ page }) => {
+    // A CONTROL THAT LOOKS LIKE IT WORKS AND DOES NOTHING is the shape this tree keeps finding, and an edit
+    // surface that skips empty fields — which is right on a CREATE form, where there is nothing to remove —
+    // has exactly that shape here: the operator empties the box, saves, and the names come back. On this
+    // field it matters more than most: `allowed_approvers` is the only per-human authorization the approval
+    // bridge has, so "I removed them" must be true. Removing the key is as strict as an empty list —
+    // apps/slack-bot refuses every click when it is empty — so a clear is a real revocation either way.
+    const team = `T${Date.now().toString(36).toUpperCase()}`;
+    const { name } = await probeBot(page, { team_id: team, allowed_approvers: ["U_LEAVING"] });
+    const requests: NetRequest[] = [];
+    page.on("request", (r) => requests.push(r));
+    await openBot(page, name);
+    await openCredentials(page);
+
+    await expect(page.getByTestId("bot-approvers-input")).toHaveValue("U_LEAVING");
+    await page.getByTestId("bot-approvers-input").fill("");
+    await page.getByTestId("bot-credentials-save").click();
+    await expect(page.getByTestId("bot-credentials-status")).toBeVisible({ timeout: 15_000 });
+
+    const revision = requests.filter((r) => r.method() === "PATCH" && r.url().includes("/api/palai/v1/bots/")).at(-1);
+    const sent = JSON.parse(revision?.postData() ?? "{}") as { config?: Record<string, unknown> };
+    expect(Object.hasOwn(sent.config ?? {}, "allowed_approvers"), "the cleared approver list was sent back unchanged").toBe(false);
+    // And the clear removed ONE thing rather than emptying the document.
+    expect(sent.config?.team_id).toBe(team);
+    expect(sent.config?.[OPAQUE_KEY]).toEqual(OPAQUE_VALUE);
+  });
+
+  test("a bot that cannot be read renders NO record — not a green one", async ({ page }) => {
+    // THE STATE THE FIXTURE USED TO HIDE. It synthesised a 200 for any unknown id, so no profile could
+    // produce a failed read, and this page shipped a first draft that rendered "registered ✔︎" over a 404.
+    await page.goto("/bots/bot_this_id_was_never_here");
+
+    const error = page.getByTestId("bot-error");
+    await expect(error).toBeVisible({ timeout: 15_000 });
+    await expect(error).toHaveAttribute("role", "alert");
+
+    await expect(page.getByTestId("panel-bot-record"), "a record was rendered for a bot that could not be read").toHaveCount(0);
+    // AND NOT THE BADGE BY ITSELF EITHER: the assertion above would still pass if the state moved somewhere
+    // else on the page, and what must never appear is the CLAIM.
+    await expect(page.getByText("registered", { exact: false })).toHaveCount(0);
+    // Nor a manifest: a document generated for a bot this console could not read is a document about nothing.
+    await expect(page.getByTestId("bot-manifest")).toHaveCount(0);
+    await expect(page.getByTestId("bot-credentials-open")).toHaveCount(0);
+  });
+
+  test("a row unregistered from under the page is refused BEFORE anything is sealed", async ({ page }) => {
+    // A REFUSAL THE SERVER PRODUCES, on both profiles, because this test creates it: the row is unregistered
+    // from under the open page — what a second operator in another tab does. The re-read that exists to stop
+    // this page overwriting somebody else's change is what catches it, and it happens before the first seal,
+    // so an operator who was about to write to a bot that is gone is left with nothing sealed at all.
+    const { id, name } = await probeBot(page);
+    const requests: NetRequest[] = [];
+    page.on("request", (r) => requests.push(r));
+    await openBot(page, name);
+    await openCredentials(page);
     await unregister(page, id);
 
-    const team = `T${Date.now().toString(36).toUpperCase()}`;
+    await page.getByTestId("bot-team-input").fill(`T${Date.now().toString(36).toUpperCase()}`);
+    await page.getByTestId("bot-signing-secret-input").fill(SIGNING);
+    await page.getByTestId("bot-credentials-save").click();
+
+    const error = page.getByTestId("bot-credentials-error");
+    await expect(error).toBeVisible({ timeout: 15_000 });
+    await expect(error).toHaveAttribute("role", "alert");
+    await expect(error).toContainText("nothing was sent");
+
+    const writes = requests.filter((r) => (r.method() === "POST" || r.method() === "PATCH") && r.url().includes("/api/palai/"));
+    expect(writes.map((r) => new URL(r.url()).pathname), "a credential was sealed for a bot that is gone").toEqual([]);
+    await expect(page.getByTestId("bot-signing-secret-input")).toHaveValue("");
+  });
+
+  test("when the WRITE is refused, the operator is told which credentials are already live", async ({ page }) => {
+    // THE POST-SEAL REFUSAL, AND IT IS THE SERVER'S ANSWER THAT IS SYNTHESISED — nothing else. The three
+    // seals below are real POSTs to /v1/secret-refs against whichever upstream this profile runs, and three
+    // credentials really are live in the secret store when the assertion runs. Only the PATCH's answer is
+    // replaced, because the window it stands for — the row disappearing between this page's re-read and its
+    // write — is a race no test can produce on demand now that the re-read closed the deterministic path.
+    // What is under test is a CLIENT property: a refusal that named nothing would leave three live
+    // credentials the operator does not know exist.
+    const { name } = await probeBot(page);
+    const requests: NetRequest[] = [];
+    page.on("request", (r) => requests.push(r));
+    await openBot(page, name);
     await openCredentials(page);
+
+    await page.route("**/api/palai/v1/bots/**", async (route) => {
+      if (route.request().method() !== "PATCH") return route.continue();
+      return route.fulfill({
+        status: 404,
+        contentType: "application/problem+json",
+        body: JSON.stringify({ code: "not_found", status: 404, detail: "no such bot in this project" }),
+      });
+    });
+
+    const team = `T${Date.now().toString(36).toUpperCase()}`;
     await page.getByTestId("bot-team-input").fill(team);
     await page.getByTestId("bot-signing-secret-input").fill(SIGNING);
     await page.getByTestId("bot-token-input").fill(BOT_TOKEN);
@@ -410,10 +631,15 @@ test.describe("the bot's own page", () => {
     const error = page.getByTestId("bot-credentials-error");
     await expect(error).toBeVisible({ timeout: 15_000 });
     await expect(error).toHaveAttribute("role", "alert");
-    // BY NAME. A bare "the bot could not be updated" would leave three live credentials the operator does
-    // not know exist, under names nothing in the deployment references.
+    // BY NAME, all three: a bare "the bot could not be updated" would leave live credentials under handles
+    // nothing in the deployment references.
     await expect(error).toContainText(`slack-signing-${team}`);
+    await expect(error).toContainText(`slack-bot-${team}`);
     await expect(error).toContainText(`slack-app-${team}`);
+
+    // AND THE SEALS REALLY HAPPENED — otherwise the sentence above would be a warning about nothing.
+    const seals = requests.filter((r) => r.method() === "POST" && r.url().endsWith("/api/palai/v1/secret-refs"));
+    expect(seals).toHaveLength(3);
 
     // EVERY credential field is empty. takeSecret() reads and clears in one call, on every submit, success or
     // failure — three fields, three clears, and a test that checked only the first would miss two.

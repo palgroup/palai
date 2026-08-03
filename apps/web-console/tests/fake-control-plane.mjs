@@ -2275,12 +2275,21 @@ export const ROUTES = [
   {
     method: "GET",
     pattern: "/v1/bots/{bot_id}",
+    // A 404 FOR AN ID THAT IS NOT HERE, exactly as api/bots.go answers it — AND THE OBVIOUS ALTERNATIVE IS
+    // THE DEFECT. The repository-binding and environment detail routes above SYNTHESISE a row for an unknown
+    // id, and their comments give the reason: the conformance sweep probes every declared pattern with a
+    // placeholder and "a 404 there would read as the table declares a route the fixture does not serve".
+    // That reason expired. tests/conformance.test.mjs's arm 1 asserted `status !== 404` when those were
+    // written and now reads the `x-fixture-dispatched` header the dispatcher sets BEFORE the handler runs
+    // (see its own comment: "What stops failing is the false positive") — so a 404 keeps that arm green.
+    //
+    // WHAT THE SYNTHESIS COST WAS MEASURED RATHER THAN GUESSED: with it, no profile could produce a bot page
+    // whose read FAILED, and app/bots/[id] shipped a first draft that rendered a green "registered" badge
+    // over a 404. A fixture that cannot produce an error state is a fixture that hides one.
     handle: (_request, response, { bot_id: id }) => {
       const found = ADMIN.bots.data.find((r) => r.id === id);
-      // SYNTHESISED FOR AN UNKNOWN ID, like the repository-binding and environment detail routes and for the
-      // same reason: the conformance sweep probes every declared pattern with a placeholder id, and a 404
-      // there would read as "the table declares a route the fixture does not serve". The real route 404s.
-      sendJSON(response, 200, found ?? { id, object: "bot", name: id, kind: "slack", agent_revision_id: "", repository_binding_id: "", principal_id: "", config: {}, disabled: false, created_at: "2026-07-24T00:00:00Z" });
+      if (found === undefined) return sendProblem(response, 404, "not_found", "no such bot in this project");
+      sendJSON(response, 200, found);
     },
   },
   {

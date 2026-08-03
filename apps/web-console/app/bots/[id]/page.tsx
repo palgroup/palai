@@ -42,8 +42,17 @@ import { channelHandle, channelLabel, channelOf, csvList } from "@/lib/channels"
 // `config = COALESCE($8, config)` (storage/queries/bots.sql UpdateBot): a document that is present REPLACES
 // the stored one whole. Measured against the live stack on 2026-08-03, bot_7bc2…'s config carries five keys
 // this console has never heard of — the registry's opacity is real and other writers use it — so the write
-// below starts from the row as it was READ and overlays only what this screen owns. A console that sent just
+// below starts from the stored document and overlays only what this screen owns. A console that sent just
 // the handles would have deleted whatever else was in there.
+//
+// AND "THE STORED DOCUMENT" MEANS THE ONE READ AT SUBMIT TIME, NOT THE ONE THIS PAGE LOADED. That distinction
+// is a second defect rather than a refinement of the first: this screen is open while an operator walks to
+// Slack and back, so the copy it holds can be minutes old, and a write built from it would erase whatever
+// changed in between — including an approver somebody else added, which is the only per-human authorization
+// the approval bridge has. saveCredentials re-reads the row before it builds anything, and a box the
+// operator never typed in is taken from THAT read rather than from the prefill (see `touched`). There is no
+// If-Match on this API: the window is narrowed to the seal calls, not closed, and it is written down here
+// rather than claimed away.
 
 const detail = (err: unknown, fallback: string) => (err instanceof RelayError ? err.problem.detail : fallback);
 
@@ -74,7 +83,14 @@ export default function BotPage() {
 
   // The channel's own `config` fields, prefilled from the row so an operator returning to fix ONE of them is
   // not asked to retype the rest.
+  //
+  // `touched` IS WHAT KEEPS A PREFILL FROM BECOMING A WRITE, and it is the second half of the lost-update
+  // fix the header describes. A box the operator never typed in carries a value this page READ, not one they
+  // are asserting — so on submit an untouched field is taken from the row as it stands now rather than from
+  // the copy this page loaded. Without it, rotating a token at 09:20 would rewrite `allowed_approvers` from
+  // the 09:00 snapshot and silently strip the approver somebody else added at 09:10.
   const [channelValues, setChannelValues] = useState<Record<string, string>>({});
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [credOpen, setCredOpen] = useState(false);
   const [credError, setCredError] = useState("");
   const [credStatus, setCredStatus] = useState("");
@@ -122,6 +138,8 @@ export default function BotPage() {
     const row = await apiGet<BotRow>(`/bots/${encodeURIComponent(botID)}`);
     setBot(row);
     setChannelValues(Object.fromEntries((channelOf(String(row.kind ?? ""))?.form?.fields ?? []).map((f) => [f.name, prefill(row.config?.[f.name])])));
+    // The boxes now hold what the row holds, so nothing in them is an operator's assertion any more.
+    setTouched({});
   }
 
   async function saveCredentials() {
@@ -142,14 +160,38 @@ export default function BotPage() {
       setSaving(false);
       return;
     }
-    // A GUARD, NOT THE MESSAGE THE OPERATOR READS — and saying which is the point of this comment.
+
+    // THE ROW AS IT IS NOW, NOT AS IT WAS WHEN THIS PAGE LOADED — and this read is the whole of the
+    // lost-update fix rather than a freshness nicety.
     //
-    // The field carries `required`, so the browser's own constraint validation refuses the submit before this
-    // function runs at all: on a hydrated page this branch is unreachable, and what an operator sees is
-    // Chrome's own bubble. It stays because of what an empty value would DO rather than because it is nice to
-    // have — the handle is `${prefix}${scope}`, so an empty scope seals every bot in the deployment under the
-    // same three names, and one bot would silently rotate another's token.
-    const missing = form.fields.find((f) => f.required === true && (channelValues[f.name] ?? "").trim() === "");
+    // PATCH carries no If-Match and no version, and `config = COALESCE($8, config)` replaces the document
+    // whole, so whatever this console sends IS the row afterwards. The copy loaded at mount can be minutes
+    // old: another operator adding an approver in that window would be erased by a write that only meant to
+    // rotate a token, and `allowed_approvers` is the ONLY per-human authorization the approval bridge has.
+    // Re-reading here does not make the write atomic — the window is now the seals below rather than the
+    // whole time the page has been open — and there is no API surface that would.
+    let stored: Record<string, unknown>;
+    try {
+      stored = (await apiGet<BotRow>(`/bots/${encodeURIComponent(botID)}`)).config ?? {};
+    } catch (err: unknown) {
+      setCredError(
+        `this bot could not be re-read before writing: ${detail(err, "the read was refused")}. Writing from the copy ` +
+          "this page loaded could silently drop a change somebody else made in the meantime, so nothing was sent.",
+      );
+      setSaving(false);
+      return;
+    }
+
+    // WHAT A FIELD IS WORTH ON SUBMIT: what the operator TYPED, or — for a box they never touched — what the
+    // row holds now. See `touched` above for why a prefill is not an assertion.
+    const effective = (name: string) => (touched[name] === true ? (channelValues[name] ?? "") : prefill(stored[name])).trim();
+
+    // A LIVE GUARD, AND ITS MESSAGE IS WHAT THE OPERATOR READS. The field carries `required`, but HTML
+    // constraint validation only refuses the EMPTY string: a single space passes it, the submit proceeds and
+    // this is what refuses. It has to, because of what an empty scope would DO — the handle is
+    // `${prefix}${scope}`, so every bot in the deployment would seal under the same three names and one bot
+    // would silently rotate another's token.
+    const missing = form.fields.find((f) => f.required === true && effective(f.name) === "");
     if (missing !== undefined) {
       setCredError(`${missing.label} is required, and every credential below is sealed under a name derived from it. Nothing was sent.`);
       setSaving(false);
@@ -159,7 +201,7 @@ export default function BotPage() {
     // SEAL, then NAME. One call per slot that carries a value; an empty slot is not sealed and its handle is
     // left exactly as the row already had it — a handle that names nothing fails SILENTLY at every consumer,
     // which is the failure cmd/cli/internal/stack/up.go's slot table was written to close.
-    const scope = (channelValues[form.handleKey] ?? "").trim();
+    const scope = effective(form.handleKey);
     const handles: Record<string, string> = {};
     const sealedNames: string[] = [];
     for (const [i, slot] of form.secrets.entries()) {
@@ -182,13 +224,23 @@ export default function BotPage() {
       sealedNames.push(handle);
     }
 
-    // THE WHOLE DOCUMENT, STARTING FROM THE ONE THAT IS STORED. See the header: the API assigns rather than
-    // merges, so anything this console does not understand has to be carried across by this line or it is
-    // deleted.
-    const config: Record<string, unknown> = { ...(bot.config ?? {}) };
+    // THE WHOLE DOCUMENT, STARTING FROM THE ONE THAT IS STORED RIGHT NOW. See the header: the API assigns
+    // rather than merges, so anything this console does not understand has to be carried across by this line
+    // or it is deleted.
+    const config: Record<string, unknown> = { ...stored };
     for (const field of form.fields) {
-      const raw = (channelValues[field.name] ?? "").trim();
-      if (raw === "") continue;
+      const raw = effective(field.name);
+      if (raw === "") {
+        // CLEARING A BOX IS A REMOVAL, and on an EDIT surface it has to be. The create form skips an empty
+        // field because there is nothing to remove; here the same rule would mean an operator can empty the
+        // approver list, press save, and watch the names come back — a control that appears to work and does
+        // nothing, on the ONE per-human authorization boundary this integration has. Removing the key is
+        // exactly as strict as an empty list: apps/slack-bot refuses every approve/deny click when the list
+        // is empty and says so at startup ("NO approvers are configured"). An untouched box that the row has
+        // nothing for is simply absent, and deletes nothing.
+        if (touched[field.name] === true) delete config[field.name];
+        continue;
+      }
       config[field.name] = field.list === true ? csvList(raw) : raw;
     }
     // HANDLES, NEVER VALUES. Nothing at the edge would stop a token going in here — `config` is opaque by
@@ -198,7 +250,6 @@ export default function BotPage() {
 
     try {
       await apiSend("PATCH", `/bots/${encodeURIComponent(botID)}`, { config });
-      await reread();
       setCredStatus(
         (sealedNames.length === 0
           ? "Saved. No credential was sealed this time, so this bot connects with whatever it was already named. "
@@ -206,6 +257,15 @@ export default function BotPage() {
           "Nothing has been contacted: the relay process reads this row at startup, so a running one has to be restarted before it sees this.",
       );
       setCredOpen(false);
+      // OUTSIDE THE WRITE'S OWN try, AND THAT IS THE POINT. The PATCH has landed by here; a re-read that then
+      // fails is a stale SCREEN, not a failed write, and folding it into the catch below would tell an
+      // operator "the bot could not be updated — submit again with the same values" about a change that is
+      // already durable. The panel keeps the values it had; the status line above already says what happened.
+      try {
+        await reread();
+      } catch {
+        /* the row is written; the screen is one refresh behind, and the status says so */
+      }
     } catch (err: unknown) {
       // THE CREDENTIALS SURVIVE A REFUSED WRITE AND THE OPERATOR IS TOLD SO, BY NAME. The seals happened
       // first, so the values are sealed under handles the row does not yet reference; reporting only "it
@@ -252,10 +312,21 @@ export default function BotPage() {
         {bot === null ? <code>{shortId(botID)}</code> : String(bot.name ?? botID)}
       </h1>
 
-      {/* THE READINESS SIGNAL (lib/routes.ts names `panel-bot-record`) renders in BOTH settled states and in
-          neither pending one — a record over a spinner reads as a state the page is not in. */}
-      {bot === null && error === "" ? (
-        <p className="loading">Loading…</p>
+      {/* THE RECORD RENDERS FOR A ROW AND FOR NOTHING ELSE, and the first draft of this page got that wrong
+          in the exact way the sentence under it warns about: the panel rendered whenever the read had
+          SETTLED, failure included, so a 404 or a closed door produced the red alert AND a record — a green
+          "registered ✔︎" badge (`bot?.disabled === true` is false for a bot that does not exist), a blank
+          channel, a Created em dash. A page that states a bot is registered because it could not read one is
+          worse than a page that states nothing.
+          It was invisible to the suite as well, and that half is worth as much: tests/fake-control-plane.mjs
+          SYNTHESISED a row for any unknown id, so only the real profile could reach the state and nothing
+          opened an unknown id there. The fixture 404s now, and the arm below drives it.
+          `panel-bot-record` is this page's declared readiness signal (lib/routes.ts), and it is still the
+          honest one: it appears exactly when there is a record to read. */}
+      {bot === null ? (
+        error === "" ? (
+          <p className="loading">Loading…</p>
+        ) : null
       ) : (
         <section className="panel" data-testid="panel-bot-record" aria-labelledby="bot-record-h">
           <div className="panel-head">
@@ -516,7 +587,12 @@ export default function BotPage() {
               hint: field.hint,
               testId: field.testId,
               value: channelValues[field.name] ?? "",
-              onChange: (value: string) => setChannelValues((prev) => ({ ...prev, [field.name]: value })),
+              onChange: (value: string) => {
+                setChannelValues((prev) => ({ ...prev, [field.name]: value }));
+                // TYPING IS THE ASSERTION. Until this fires, the box is showing what the row said at mount,
+                // and the submit takes that field from the row instead — see `touched`.
+                setTouched((prev) => ({ ...prev, [field.name]: true }));
+              },
             }))}
             submitLabel="Save credentials"
             submittingLabel="Saving…"

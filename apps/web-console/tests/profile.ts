@@ -135,8 +135,16 @@ export async function concreteDynamicPath(page: Page, route: DynamicConsoleRoute
   if (list.status() !== 200) {
     throw new Error(`GET ${route.sampleFrom} answered ${list.status()} — ${route.label} cannot be resolved, so nothing after this proves anything`);
   }
-  const body = (await list.json()) as { data?: { id?: string }[] };
-  const first = body.data?.[0]?.id;
+  // THE FIRST ROW THE SCREEN CAN ACTUALLY SHOW, which is not always the first row (Task 12). A dynamic route
+  // renders different controls for different rows, and a sampler that always took `data[0]` would resolve a
+  // path whose declared dialog does not exist — on /bots/[id], a bot whose `kind` this console has no form
+  // for renders no credential section at all, and the axe and contrast dialog loops would then fail with a
+  // locator timeout that says nothing about accessibility. `pick` lets a route say which rows it can drive;
+  // a route without one keeps taking the first, and a route whose predicate matches nothing CREATES, which
+  // is the same refusal-to-skip the empty-collection arm already carries.
+  const body = (await list.json()) as { data?: Record<string, unknown>[] };
+  const usable = (body.data ?? []).find((row) => (route.pick === undefined ? true : route.pick(row)));
+  const first = usable?.id;
   if (typeof first === "string" && first !== "") return route.build(first);
 
   const created = await page.request.post(`${origin}/api/palai/v1${route.sampleFrom}`, {
