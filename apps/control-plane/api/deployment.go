@@ -359,9 +359,21 @@ func readerOf(plane string) string {
 // alone. What makes this one safe is the direction it fails in: a path that matches NOTHING here yields no
 // derived plane and planeMatchesReader REFUSES rather than passing. A new reader location is a red test
 // asking somebody to decide, never a silent control_plane.
+// adapters/sandboxes/posture/ IS IN THIS LIST AS A DECISION, AND IT IS THE FIRST ENTRY THAT IS NOT
+// WHOLLY TRUE (A.3). That file is read by BOTH binaries: the control plane builds its background runner
+// from it, and the runner builds the executor a synchronous command actually runs on. This catalogue has
+// one plane per setting, so one of the two readers cannot be named.
+//
+// It is placed here because the claim the plane makes — "this process reads it, and this process's copy
+// is reportable" — is TRUE of the control plane, and moving it to the runner list would make the surface
+// report observable:false for three variables this process demonstrably reads. What the placement does
+// NOT mean is that setting it here is sufficient: since A.3 a shell command runs on the machine that
+// holds the lease, so the MACHINE's copy is what decides whether `palai.workspace.shell` can run
+// anything at all. Each entry's Effect says so, because the plane field cannot.
 var controlPlaneReaderFiles = []string{
 	"apps/control-plane/",
 	"packages/version/",
+	"adapters/sandboxes/posture/",
 }
 
 // runnerReaderFiles are the paths whose code runs inside a RUNNER process. THREE catalogue entries cite
@@ -395,9 +407,13 @@ func planeMatchesReader(entry catalogueEntry) (derived string, ok bool) {
 }
 
 const (
-	cpMain    = "apps/control-plane/cmd/palai-control-plane/main.go"
-	changeCP  = "recreate the control-plane with the new value (`palai up`, or `docker compose up -d --force-recreate control-plane`)"
-	changeAll = "recreate the whole stack with the new value (`palai up`)"
+	cpMain = "apps/control-plane/cmd/palai-control-plane/main.go"
+	// shellPosture is where the three shell settings are READ since A.3. They moved out of cpMain
+	// because the RUNNER reads them too now — it is what executes the command — and a citation that
+	// still pointed at the control plane would name a file that no longer decides the answer.
+	shellPosture = "adapters/sandboxes/posture/posture.go"
+	changeCP     = "recreate the control-plane with the new value (`palai up`, or `docker compose up -d --force-recreate control-plane`)"
+	changeAll    = "recreate the whole stack with the new value (`palai up`)"
 	// changeDesired is what a WRITABLE setting's remedy became, and the second sentence is a CORRECTION to
 	// what this catalogue used to tell every operator.
 	//
@@ -536,21 +552,21 @@ var deploymentCatalogue = []catalogueEntry{
 	// --- where a shell command runs, which is a security posture rather than a feature ---------------
 	{
 		Name: "PALAI_SANDBOX_IMAGE", Group: "shell", Kind: kindValue, Default: "none — there is no shell tool; a shell call fails cleanly rather than escaping",
-		Effect:     "The pinned command image the workspace shell tool runs inside. Mutually exclusive with PALAI_SHELL_NATIVE — a stack runs its shell tool in the sandbox or on the host, never both.",
+		Effect:     "The pinned command image the workspace shell tool runs inside. Mutually exclusive with PALAI_SHELL_NATIVE — a machine runs its shell commands in the sandbox or on the host, never both. SET IT ON THE RUNNER: since A.3 a shell command runs on the machine that holds the attempt's lease, so this process's copy governs only detached background tasks and a run's shell tool reads the machine's.",
 		Mutability: mutabilityBringUp, ChangeWith: changeCP,
-		ReaderFile: cpMain, ReaderFunc: "shellRunnerFromEnv",
+		ReaderFile: shellPosture, ReaderFunc: "RunnerFromEnv",
 	},
 	{
 		Name: "PALAI_SHELL_NATIVE", Group: "shell", Kind: kindValue, Default: "unset — the sandboxed posture, which is how every existing deployment runs",
-		Effect:     "Set to the exact words `unsandboxed-host`, shell commands run on this machine as this uid with NO container boundary, no network denial and no resource bound. The value is a sentence rather than a `1` because deleting a security boundary should not be reachable by the reflex that switches a feature on.",
+		Effect:     "Set to the exact words `unsandboxed-host`, shell commands run on the machine as its uid with NO container boundary, no network denial and no resource bound. The value is a sentence rather than a `1` because deleting a security boundary should not be reachable by the reflex that switches a feature on. SET IT ON THE RUNNER: since A.3 that machine is the one holding the attempt's lease, and this process's copy governs only detached background tasks.",
 		Mutability: mutabilityBringUp, ChangeWith: changeCP,
-		ReaderFile: cpMain, ReaderFunc: "resolveShellPosture",
+		ReaderFile: shellPosture, ReaderFunc: "Resolve",
 	},
 	{
 		Name: "PALAI_SANDBOX_WALL_TIME", Group: "shell", Kind: kindValue, Default: "10m",
-		Effect:     "The wall time ONE shell call runs under. The container posture refuses a non-positive bound.",
+		Effect:     "The wall time ONE shell call runs under, in both postures and on both binaries — one derivation, so a machine cannot bound a command differently from the control plane that asked for it. The container posture refuses a non-positive bound.",
 		Mutability: mutabilityBringUp, ChangeWith: changeDesired,
-		ReaderFile: cpMain, ReaderFunc: "sandboxWallTime",
+		ReaderFile: shellPosture, ReaderFunc: "WallTime",
 		DesiredValue: desiredDuration,
 	},
 

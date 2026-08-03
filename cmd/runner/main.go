@@ -22,8 +22,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/palgroup/palai/adapters/sandboxes/host"
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
+	"github.com/palgroup/palai/adapters/sandboxes/posture"
 	"github.com/palgroup/palai/packages/runner"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 	"github.com/palgroup/palai/packages/version"
@@ -303,51 +303,30 @@ func envIntDefault(name string, def int) int {
 // A value the plane sent that does not parse falls through to the environment rather than to the default,
 // so a typo in the panel is not silently indistinguishable from an unconfigured pool.
 // shellRunnerFromEnv builds the executor this machine runs an exec.request on, or nil when the
-// deployment has declared no posture — and nil is what EVERY shipped deployment gets today:
+// deployment has declared no posture for it.
 //
-//	grep -rn "PALAI_SHELL_NATIVE\|PALAI_SANDBOX_IMAGE" deploy/    (2026-08-03)
-//	  compose.yaml:86            PALAI_SANDBOX_IMAGE -> the CONTROL-PLANE service
-//	  native-control-plane.yml:8 PALAI_SHELL_NATIVE  -> a comment
-//	  (no runner service in any file receives either variable)
+// BOTH POSTURES ARE REACHABLE HERE NOW, which is the half of A.3 that makes the epic's exit criterion
+// attainable: a Linux pool's commands run in the sandbox image ON THIS MACHINE rather than beside the
+// control plane. The derivation is adapters/sandboxes/posture's, shared with the control plane's own
+// root, because the OCI posture carries four bounds (image, wall time, max memory, max process count)
+// and a second writing of them is how two composition roots end up disagreeing about what contained a
+// command — a containment no operator can then reason about. Until A.3 exactly that copy was the reason
+// this function wired only the host posture.
 //
-// So this changes no deployment's behaviour: a runner keeps supervising engines and runs no command
-// until an operator declares a posture. That is deliberate for this task, which builds the wire —
-// nothing sends an exec.request yet. A nil executor is still not silence: the tool server answers
-// with a refusal (packages/runner/toolserver.go), so the control plane learns it will get no result
-// rather than blocking a tool call forever.
+// A REFUSED POSTURE IS FATAL HERE, and that asymmetry with the control plane is deliberate. The control
+// plane logs and carries on because it has a whole deployment to serve with the shell tool simply
+// absent; a runner that cannot decide where its commands run has nothing else to be, and a machine
+// silently in the OTHER posture is the outcome worth crashing to avoid.
 //
-// ONLY THE HOST POSTURE IS WIRED HERE, AND THE OMISSION IS DELIBERATE RATHER THAN AN OVERSIGHT. The
-// OCI posture needs the sandbox's resource bounds as well as its image — image, wall time, max memory
-// and max process count, which the control plane's composition root derives in sandboxLimitsFromEnv
-// (apps/control-plane/cmd/palai-control-plane/main.go:1133). Copying those four here would put a
-// SECOND spelling of a sandbox's bounds in the tree, and a bound that disagrees between two
-// composition roots is a containment the operator cannot reason about. The consolidation belongs to
-// whichever task edits the control plane's root next; until then a Linux pool's commands still run
-// control-plane-side, which is the epic's remaining gap and not a silent one.
+// A nil executor is still not silence: the tool server answers with a refusal
+// (packages/runner/toolserver.go), so a control plane learns it will get no result rather than blocking
+// a tool call forever.
 func shellRunnerFromEnv() toolbroker.ShellRunner {
-	native := os.Getenv("PALAI_SHELL_NATIVE")
-	if native == "" {
-		return nil
+	shell, err := posture.RunnerFromEnv()
+	if err != nil {
+		log.Fatalf("shell posture: %v", err)
 	}
-	// The same refusal the control plane makes (resolveShellPosture): the value states what the posture
-	// IS, because declaring it deletes the sandbox boundary. A misspelling must not silently leave the
-	// machine running commands in some other posture. The constant is the tool broker's, not a fifth
-	// copy of the literal — it is typed for the background seam but it is the same posture name the
-	// pool, the enrolment and the shell all compare against.
-	if native != string(toolbroker.PostureUnsandboxedHost) {
-		log.Fatalf("PALAI_SHELL_NATIVE must be exactly %q (got %q): the value states what the posture IS, "+
-			"because it deletes the sandbox boundary", toolbroker.PostureUnsandboxedHost, native)
-	}
-	if image := os.Getenv("PALAI_SANDBOX_IMAGE"); image != "" {
-		log.Fatalf("PALAI_SANDBOX_IMAGE and PALAI_SHELL_NATIVE are mutually exclusive: a machine runs its "+
-			"commands in the sandbox image or on the host, never both (image=%q, native=%q)", image, native)
-	}
-	// The default MUST match the control plane's defaultSandboxWallTime, and it is written here rather
-	// than left at zero because zero is not a neutral value on this seam — it is UNBOUNDED
-	// (adapters/sandboxes/host/exec.go:96). A machine that silently bounded a command less tightly than
-	// the control plane that asked for it would be the disagreement this function's header warns about,
-	// arriving through the one field it does wire.
-	return host.NewExecutor(envDurationDefault("PALAI_SANDBOX_WALL_TIME", 10*time.Minute))
+	return shell
 }
 
 func planeIntDefault(settings map[string]string, name string, def int) int {

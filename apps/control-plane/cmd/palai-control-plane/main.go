@@ -28,9 +28,8 @@ import (
 	"github.com/palgroup/palai/adapters/integrations/webhook"
 	"github.com/palgroup/palai/adapters/models/registry"
 	"github.com/palgroup/palai/adapters/repositories"
-	"github.com/palgroup/palai/adapters/sandboxes/host"
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
-	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
+	"github.com/palgroup/palai/adapters/sandboxes/posture"
 	remotehttp "github.com/palgroup/palai/adapters/tools/http"
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -68,7 +67,7 @@ func main() {
 	// where its shell commands run must not start at all (E22 plan §2). The declaration is printed
 	// once, here, so it is the first thing in the log of a stack that has no sandbox — including a
 	// stack with no workspace root, where the runner is never even bound.
-	nativeShell, err := resolveShellPosture(os.Getenv("PALAI_SANDBOX_IMAGE"), os.Getenv("PALAI_SHELL_NATIVE"))
+	nativeShell, err := posture.Resolve(os.Getenv("PALAI_SANDBOX_IMAGE"), os.Getenv("PALAI_SHELL_NATIVE"))
 	if err != nil {
 		log.Fatalf("shell posture: %v", err)
 	}
@@ -992,11 +991,10 @@ func repositoryBrokerFromEnv() repositories.Broker {
 	return broker
 }
 
-// shellPostureNative is the ONLY accepted value of PALAI_SHELL_NATIVE, and it is a sentence rather
-// than a boolean on purpose (E22 plan §2). Switching a security boundary off should not be reachable
-// by the reflex that switches a feature on, and `ps`/`docker inspect`/an env dump should say what
-// the posture IS rather than that some flag is 1.
-const shellPostureNative = "unsandboxed-host"
+// shellPostureNative is the ONLY accepted value of PALAI_SHELL_NATIVE. It is posture's constant since
+// A.3, not a copy: the RUNNER compares against the same word now that the runner is what executes the
+// command, and two spellings of one posture name is how a machine ends up in a posture nobody declared.
+const shellPostureNative = posture.Native
 
 // shellPostureDeclaration is the one line the control plane prints at boot when it runs its shell
 // tool on the host. It names the posture, what it costs, and the operating rule that replaces the
@@ -1006,64 +1004,25 @@ const shellPostureDeclaration = "shell posture: UNSANDBOXED HOST — commands ru
 	"no network denial and no resource bound; different customers MUST use different Macs " +
 	"(docs/research/macos-isolation-without-accounts.md §6, docs/operations/palai-on-a-mac.md)"
 
-// resolveShellPosture decides which shell posture a deployment declared, and refuses the two
-// configurations that would make that question unanswerable (E22 plan §2):
+// shellRunnerFromEnv is the control plane's read of the posture this deployment declared. Since A.3 the
+// derivation itself lives in adapters/sandboxes/posture, because the RUNNER makes the same decision and
+// a second writing of four sandbox bounds is how two machines end up disagreeing about what contained a
+// command.
 //
-//   - BOTH variables set — a stack runs its shell tool in a container or on the host. "Sometimes
-//     sandboxed" is not a posture; it is a deployment where nobody can say where a call ran.
-//   - PALAI_SHELL_NATIVE set to anything but the exact declaration string — `=1` is what an operator
-//     types to switch on a feature, and deleting the sandbox is not a feature.
+// WHAT IT BUILDS NO LONGER RUNS A TOOL CALL, and that is the A.3 change: a synchronous shell command
+// runs on the machine that holds the attempt's lease (execution.shellFor). This posture survives here
+// for the DETACHED half — backgroundRunnerFor below — which is still process-wide because a background
+// task outlives its attempt.
 //
-// Neither variable set is the default and is NOT an error: it is how every existing deployment runs.
-func resolveShellPosture(image, native string) (bool, error) {
-	if native == "" {
-		return false, nil
-	}
-	if image != "" {
-		return false, fmt.Errorf("PALAI_SANDBOX_IMAGE and PALAI_SHELL_NATIVE are mutually exclusive: "+
-			"a stack runs its shell tool in the sandbox image or on the host, never both (image=%q, native=%q)", image, native)
-	}
-	if native != shellPostureNative {
-		return false, fmt.Errorf("PALAI_SHELL_NATIVE must be exactly %q (got %q): the value states what the "+
-			"posture IS, because it deletes the sandbox boundary", shellPostureNative, native)
-	}
-	return true, nil
-}
-
-// shellRunnerFromEnv builds the shell runner the workspace shell tool runs through, in whichever
-// posture the deployment DECLARED (resolveShellPosture):
-//
-//   - the credential-free OCI sandbox (spec §28.8, SAN-002/003/004), gated on PALAI_SANDBOX_IMAGE
-//     (the pinned command image) and a working Docker driver. The sandbox mounts no credential/DB/S3:
-//     the credential broker stays CP-side (§24), so the engine and the sandbox never see cred/DB/S3;
-//   - the HOST executor (E22 T1), gated on PALAI_SHELL_NATIVE=unsandboxed-host, which runs the argv
-//     on this machine as this uid — no container, no network denial, no resource bound. That is how
-//     a control plane running on a Mac reaches the Mac's own tools (`xcodebuild`, `simctl`, `axe`)
-//     without Palai typing a single one of them.
-//
-// Absent either posture it returns nil, so a shell tool call fails cleanly (no runner) rather than
-// escaping — the SetShellRunner discipline, unchanged.
+// A refused posture is logged and yields nil rather than falling back to the other one; main() already
+// fail-fasts on it at boot, so this is the second of two doors, not the only one.
 func shellRunnerFromEnv() toolbroker.ShellRunner {
-	image := os.Getenv("PALAI_SANDBOX_IMAGE")
-	native, err := resolveShellPosture(image, os.Getenv("PALAI_SHELL_NATIVE"))
+	shell, err := posture.RunnerFromEnv()
 	if err != nil {
-		// main() already fail-fasts on this at boot; a refused posture here is never a fallback to the
-		// other one.
-		log.Printf("shell posture: %v (shell tool disabled)", err)
+		log.Printf("shell posture: %v (background tasks disabled)", err)
 		return nil
 	}
-	if native {
-		return host.NewExecutor(sandboxWallTime())
-	}
-	if image == "" {
-		return nil
-	}
-	driver, err := oci.NewDockerDriver()
-	if err != nil {
-		log.Printf("shell sandbox: bind docker driver: %v (shell tool disabled)", err)
-		return nil
-	}
-	return workspace.NewShellExecutor(driver, image, sandboxLimitsFromEnv())
+	return shell
 }
 
 // backgroundRunnerFor reports the DETACHED runner for a wired shell posture, or nil when that posture
@@ -1078,10 +1037,9 @@ func shellRunnerFromEnv() toolbroker.ShellRunner {
 // unwired so the tool refuses; falling back to a synchronous run would block the model in precisely the
 // way background execution exists to prevent.
 func backgroundRunnerFor(shell toolbroker.ShellRunner) toolbroker.BackgroundRunner {
-	background, ok := shell.(toolbroker.BackgroundRunner)
-	if !ok {
+	background := posture.BackgroundRunnerFor(shell)
+	if background == nil {
 		log.Printf("shell posture %T cannot start background tasks (the background parameter will be refused)", shell)
-		return nil
 	}
 	return background
 }
@@ -1113,36 +1071,23 @@ func backgroundRunnerFor(shell toolbroker.ShellRunner) toolbroker.BackgroundRunn
 // It also stays well below the 60m ceiling E26 chose for BACKGROUND tasks
 // (docs/superpowers/plans/phase-26-background-execution.md §0.2), keeping the two ordered: work that
 // needs an hour belongs in the background, which is that plan's own argument.
-const defaultSandboxWallTime = 10 * time.Minute
+// defaultSandboxWallTime is posture's constant, not a copy of it. It had been written down twice —
+// once here and once in cmd/runner — with a comment in the second saying it MUST match the first,
+// which is the shape of a number that eventually will not.
+const defaultSandboxWallTime = posture.DefaultWallTime
 
-// sandboxWallTime is the wall-time bound BOTH postures run under. One function rather than two call
-// sites because the postures had drifted apart through a shared unset variable once already, and a
-// bound that means different things on different machines is the defect this replaces.
-//
-// The postures get the SAME number on purpose: a wall time bounds the WORK, and nothing about a
-// container makes a compile faster. The tree's rule for these two executors is that they differ only
-// where the machine forces it (ReadOnly has no host equivalent; OOMKilled needs a cgroup) — a build
-// taking longer in one posture than the other is not such a place.
-//
-// ponytail: envDurationOr treats an UNPARSEABLE value as unset, so `PALAI_SANDBOX_WALL_TIME=10min`
-// (not a Go duration) silently gets the default. That is the existing helper's behaviour and it is
-// strictly better than what it replaces — a typo used to silently mean "unbounded".
-func sandboxWallTime() time.Duration {
-	return envDurationOr("PALAI_SANDBOX_WALL_TIME", defaultSandboxWallTime)
-}
+// sandboxWallTime is the PALAI_SANDBOX_WALL_TIME bound BOTH postures run under, on BOTH planes since
+// A.3. One derivation rather than several: the postures had drifted apart through a shared unset
+// variable once already, and a bound that means different things on different machines is the defect
+// this replaces.
+func sandboxWallTime() time.Duration { return posture.WallTime() }
 
-// sandboxLimitsFromEnv builds the OCI posture's resource bounds. It is a named function so a test can
-// assert what the composition root ACTUALLY builds: every sandbox test in this tree constructs its own
-// oci.Limits with an explicit WallTime, which is exactly why an unset variable that refused every
+// sandboxLimitsFromEnv builds the OCI posture's resource bounds — PALAI_SANDBOX_MAX_MEMORY_BYTES,
+// PALAI_SANDBOX_MAX_PROCS, PALAI_SANDBOX_NANO_CPUS — over that wall time. It is a named function so a
+// test can assert what the composition root ACTUALLY builds: every sandbox test in this tree constructs
+// its own oci.Limits with explicit values, which is exactly why an unset variable that refused every
 // containerised shell call was invisible to all of them.
-func sandboxLimitsFromEnv() oci.Limits {
-	return oci.Limits{
-		WallTime:        sandboxWallTime(),
-		MaxMemoryBytes:  int64(envIntDefault("PALAI_SANDBOX_MAX_MEMORY_BYTES", 1<<30)),
-		MaxProcessCount: int64(envIntDefault("PALAI_SANDBOX_MAX_PROCS", 128)),
-		NanoCPUs:        int64(envIntDefault("PALAI_SANDBOX_NANO_CPUS", 1_000_000_000)),
-	}
-}
+func sandboxLimitsFromEnv() oci.Limits { return posture.Limits() }
 
 // mcpManagerFromEnv builds the MCP client the discovered-tool dispatch + admin discover paths share (spec
 // §28.13-28.14, E12 T5). The stdio transport needs a Docker interactive driver (a per-call, network-less,

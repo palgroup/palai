@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/adapters/sandboxes/host"
+	"github.com/palgroup/palai/adapters/sandboxes/posture"
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
@@ -255,7 +256,7 @@ func TestSlackSocketStartsOnlyWhenTheWorkspaceIsNamed(t *testing.T) {
 // is a configuration mistake with a security consequence, so it is fatal at boot rather than
 // resolved by a precedence rule nobody would remember.
 func TestShellPostureRefusesBothSandboxImageAndNativeHost(t *testing.T) {
-	native, err := resolveShellPosture("palai/sandbox@sha256:"+strings.Repeat("a", 64), shellPostureNative)
+	native, err := posture.Resolve("palai/sandbox@sha256:"+strings.Repeat("a", 64), shellPostureNative)
 	if err == nil {
 		t.Fatalf("both postures configured and the binary accepted it (native=%v)", native)
 	}
@@ -270,7 +271,7 @@ func TestShellPostureRefusesBothSandboxImageAndNativeHost(t *testing.T) {
 // means — and it is what `ps` and `docker inspect` then show.
 func TestShellPostureAcceptsOnlyTheStringThatSaysWhatItIs(t *testing.T) {
 	for _, value := range []string{"1", "true", "yes", "on", "TRUE", "unsandboxed_host", "UNSANDBOXED-HOST", " unsandboxed-host", "unsandboxed-host "} {
-		native, err := resolveShellPosture("", value)
+		native, err := posture.Resolve("", value)
 		if err == nil || native {
 			t.Fatalf("PALAI_SHELL_NATIVE=%q was accepted as the unsandboxed host posture", value)
 		}
@@ -278,12 +279,12 @@ func TestShellPostureAcceptsOnlyTheStringThatSaysWhatItIs(t *testing.T) {
 			t.Fatalf("the refusal of %q does not name the only accepted value: %v", value, err)
 		}
 	}
-	native, err := resolveShellPosture("", shellPostureNative)
+	native, err := posture.Resolve("", shellPostureNative)
 	if err != nil || !native {
-		t.Fatalf("resolveShellPosture(%q) = %v, %v; want the native posture", shellPostureNative, native, err)
+		t.Fatalf("posture.Resolve(%q) = %v, %v; want the native posture", shellPostureNative, native, err)
 	}
 	// No posture at all is not an error — it is the default, and it stays that way.
-	native, err = resolveShellPosture("", "")
+	native, err = posture.Resolve("", "")
 	if err != nil || native {
 		t.Fatalf("no posture configured = %v, %v; want (false, nil)", native, err)
 	}

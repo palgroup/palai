@@ -33,8 +33,10 @@ import (
 // already resolved (checkout, PALAI_COMPOSE_FILE, or the materialised embedded copies).
 const nativeOverlayFile = "native-control-plane.yml"
 
-// nativeShellPosture is the one string the control plane accepts for the host shell posture. Named
-// here so the operator warning cannot drift from what main.resolveShellPosture actually takes.
+// nativeShellPosture is the one string a Palai process accepts for the host shell posture. Named here
+// so the operator warning cannot drift from what posture.Resolve actually takes — and since A.3 that
+// derivation is read by the RUNNER as well as the control plane, because the runner is what executes
+// the command.
 const nativeShellPosture = "unsandboxed-host"
 
 // UpNative brings the native posture up and returns the operator-facing posture line for the report.
