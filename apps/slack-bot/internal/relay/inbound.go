@@ -21,8 +21,6 @@ package relay
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -293,11 +291,18 @@ func (s *inboundState) resetSequence(tk threadKey) {
 	s.threads[tk] = r
 }
 
-// dedupeKey is the SLK-P5 dedupe identity: (team, channel, thread_ts, text-hash) — never event_id,
-// which differs between an app_mention and its message.channels twin for the SAME human message.
-func dedupeKey(teamID, channelID, threadTS, text string) string {
-	sum := sha256.Sum256([]byte(text))
-	return teamID + "|" + channelID + "|" + threadTS + "|" + hex.EncodeToString(sum[:])
+// dedupeKey is the SLK-P5 dedupe identity: (team, channel, messageTS) — messageTS is slack.Event's own
+// MessageTS, the AFFECTED MESSAGE's ts (MapEvent populates it on every event,
+// adapters/integrations/slack/inbound.go:90,365), NOT event_id and NOT the message text.
+//
+// event_id differs between an app_mention and its message.channels twin because they are two
+// DELIVERIES of one message; messageTS does not, because it is a property of the message ITSELF, and
+// two genuinely different messages never share a ts. An earlier version of this key hashed the text
+// instead — that has a real collision a human hits: typing the same short reply twice in one thread
+// ("yes", "ok", "retry", answering two different bot questions) would have silently swallowed the
+// second one, with no run, no error, nothing on screen. messageTS has no such collision.
+func dedupeKey(teamID, channelID, messageTS string) string {
+	return teamID + "|" + channelID + "|" + messageTS
 }
 
 // isNotFound reports whether err is the SDK's typed 404 — the shape a call against a session id
@@ -326,15 +331,28 @@ func HandleEvent(ctx context.Context, deps InboundDeps, ev slack.Event) error {
 		return nil
 	}
 
-	// SLK-005: an edit supersedes a prior turn and a deletion retracts one — neither is a new thing a
-	// human said, so neither should ever reach Palai as fresh input.
+	// Only KindMessage becomes a turn — every other Kind is dropped here, each for its own reason, not
+	// one blanket "not a message":
+	//   - KindCorrection (SLK-005): message_changed supersedes a prior turn rather than starting a new
+	//     one — the human revised what they already said, they did not say something new.
+	//   - KindTombstone (SLK-005): message_deleted retracts a turn — again nothing new was said.
+	//   - KindFileShare: adapters/integrations/slack/inbound.go's own Kind doc says a bare file share
+	//     gets "a scoped fetch+scan ... control-plane-side" — a separate pathway this file does not own
+	//     or duplicate.
+	//   - KindOther: anything MapEvent did not classify as a conversational turn at all.
 	if ev.Kind != slack.KindMessage {
 		return nil
 	}
 
-	key := dedupeKey(ev.TeamID, ev.ChannelID, ev.ThreadTS, ev.Text)
-	if !deps.state.markSeen(key) {
-		return nil // the app_mention/message.channels twin of a message already handled
+	// MessageTS is expected to be non-empty for every KindMessage event (Slack always sends a ts on a
+	// message-shaped event); IF it somehow is not, dedupe is SKIPPED rather than applied with an empty
+	// key — an empty key would collapse every such event in the channel into one dedupe slot, silently
+	// swallowing real messages, which is worse than occasionally admitting an undeduped twin.
+	if ev.MessageTS != "" {
+		key := dedupeKey(ev.TeamID, ev.ChannelID, ev.MessageTS)
+		if !deps.state.markSeen(key) {
+			return nil // the app_mention/message.channels twin of a message already handled
+		}
 	}
 
 	tk := threadKey{botID: deps.BotID, teamID: ev.TeamID, channelID: ev.ChannelID, threadTS: ev.ThreadTS}

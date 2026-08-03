@@ -80,6 +80,11 @@ type fakePalai struct {
 	failNextSteerNotFound    bool
 
 	stream func() EventStream
+	// sessionEventsParams records every EventsParams SessionEvents was called with, in call order —
+	// what proves (or disproves) AfterSequence resumption: an implementation that hardcoded
+	// AfterSequence: 0 would satisfy every OTHER assertion in this file identically, so a test that
+	// cares about resumption must inspect this rather than just observing the run complete.
+	sessionEventsParams []palai.EventsParams
 
 	// onCreateSession, if set, runs after a session is minted but before CreateSession returns — the
 	// exact window rebindOrphan's own CreateSession-then-RebindThread ordering opens up for a
@@ -133,6 +138,7 @@ func (f *fakePalai) CreateResponse(ctx context.Context, req palai.ResponseCreate
 
 func (f *fakePalai) SessionEvents(ctx context.Context, sessionID string, p palai.EventsParams) (EventStream, error) {
 	f.mu.Lock()
+	f.sessionEventsParams = append(f.sessionEventsParams, p)
 	supplier := f.stream
 	f.mu.Unlock()
 	if supplier != nil {
@@ -193,14 +199,17 @@ func newTestDeps(t *testing.T) (InboundDeps, *fakePalai, *fakeStore) {
 }
 
 // TestATopLevelMentionIsDeliveredOnce is SLK-P5: Slack sends both app_mention and its message.channels
-// twin for the SAME human message, each with its OWN event_id — a dedupe keyed on event_id would not
-// collapse them, so the guard must key on the message itself instead.
+// twin for the SAME human message, each with its OWN event_id but the SAME MessageTS (the affected
+// message's own ts — a property of the message, not the delivery). A dedupe keyed on event_id would
+// not collapse them; one keyed on MessageTS does.
 func TestATopLevelMentionIsDeliveredOnce(t *testing.T) {
 	deps, fp, _ := newTestDeps(t)
 	mention := slack.Event{Type: "app_mention", Kind: slack.KindMessage,
-		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", SourceEventID: "Ev1", UserID: "U2", Text: "hi"}
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001",
+		SourceEventID: "Ev1", UserID: "U2", Text: "hi"}
 	twin := slack.Event{Type: "message", Kind: slack.KindMessage,
-		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", SourceEventID: "Ev2", UserID: "U2", Text: "hi"}
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001",
+		SourceEventID: "Ev2", UserID: "U2", Text: "hi"}
 
 	if err := HandleEvent(context.Background(), deps, mention); err != nil {
 		t.Fatalf("HandleEvent(mention): %v", err)
@@ -214,6 +223,19 @@ func TestATopLevelMentionIsDeliveredOnce(t *testing.T) {
 	if fp.sessionsCreated != 1 {
 		t.Fatalf("sessionsCreated = %d, want 1", fp.sessionsCreated)
 	}
+
+	// The other direction, and the exact regression a text-keyed dedupe (this file's earlier version)
+	// introduced: a LATER, genuinely different message that happens to share the same TEXT ("yes",
+	// answering two different bot questions) must NOT be swallowed. Different MessageTS, same text.
+	again := slack.Event{Type: "message", Kind: slack.KindMessage,
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.002",
+		SourceEventID: "Ev4", UserID: "U2", Text: "hi"}
+	if err := HandleEvent(context.Background(), deps, again); err != nil {
+		t.Fatalf("HandleEvent(again): %v", err)
+	}
+	if fp.responses != 2 {
+		t.Fatalf("responses = %d, want 2 — a later message with the SAME text but a DIFFERENT MessageTS must not be swallowed", fp.responses)
+	}
 }
 
 // TestTheBotIgnoresItsOwnMessages pins the self-loop guard: an event whose UserID is the bot's own
@@ -222,7 +244,8 @@ func TestATopLevelMentionIsDeliveredOnce(t *testing.T) {
 func TestTheBotIgnoresItsOwnMessages(t *testing.T) {
 	deps, fp, _ := newTestDeps(t)
 	self := slack.Event{Type: "message", Kind: slack.KindMessage,
-		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", SourceEventID: "Ev3", UserID: deps.BotUserID, Text: "an answer"}
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001",
+		SourceEventID: "Ev3", UserID: deps.BotUserID, Text: "an answer"}
 
 	if err := HandleEvent(context.Background(), deps, self); err != nil {
 		t.Fatalf("HandleEvent: %v", err)
@@ -245,7 +268,7 @@ func TestFirstMessageInAThreadOpensASessionThenARun(t *testing.T) {
 	}
 
 	ev := slack.Event{Type: "app_mention", Kind: slack.KindMessage,
-		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", UserID: "U2", Text: "ship it"}
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001", UserID: "U2", Text: "ship it"}
 
 	if err := HandleEvent(context.Background(), deps, ev); err != nil {
 		t.Fatalf("HandleEvent: %v", err)
@@ -277,6 +300,9 @@ func TestFirstMessageInAThreadOpensASessionThenARun(t *testing.T) {
 	if err != nil || !found || sessionID == "" {
 		t.Fatalf("thread not bound after the first message: found=%v err=%v", found, err)
 	}
+	if len(fp.sessionEventsParams) != 1 || fp.sessionEventsParams[0].AfterSequence != 0 {
+		t.Fatalf("SessionEvents calls = %v, want exactly one with AfterSequence=0 (a brand-new session has nothing to resume past)", fp.sessionEventsParams)
+	}
 }
 
 // TestRepositoryIsOmittedWhenTheBotIsNotRepositoryBound pins the OTHER half of the silent-failure the
@@ -288,7 +314,7 @@ func TestRepositoryIsOmittedWhenTheBotIsNotRepositoryBound(t *testing.T) {
 	deps.RepositoryBindingID = ""
 
 	ev := slack.Event{Type: "message", Kind: slack.KindMessage,
-		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", UserID: "U2", Text: "hi"}
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001", UserID: "U2", Text: "hi"}
 	if err := HandleEvent(context.Background(), deps, ev); err != nil {
 		t.Fatalf("HandleEvent: %v", err)
 	}
@@ -314,13 +340,13 @@ func TestASecondMessageWhileARunIsOpenSteersIntoIt(t *testing.T) {
 	}
 
 	first := slack.Event{Type: "app_mention", Kind: slack.KindMessage,
-		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", UserID: "U2", Text: "start"}
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001", UserID: "U2", Text: "start"}
 	if err := HandleEvent(context.Background(), deps, first); err != nil {
 		t.Fatalf("HandleEvent(first): %v", err)
 	}
 
 	second := slack.Event{Type: "message", Kind: slack.KindMessage,
-		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", UserID: "U2", Text: "and also this"}
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.002", UserID: "U2", Text: "and also this"}
 	if err := HandleEvent(context.Background(), deps, second); err != nil {
 		t.Fatalf("HandleEvent(second): %v", err)
 	}
@@ -348,18 +374,38 @@ func TestASecondMessageWhileARunIsOpenSteersIntoIt(t *testing.T) {
 // same choice: once a thread's run has already finished, the NEXT message must open a fresh
 // Responses.Create — reusing the thread's session (Sessions.Create must NOT run again), not a Steer
 // into a run that no longer exists.
+//
+// It ALSO pins AfterSequence resumption, which no other test in this file can: the first run's fixture
+// carries real, non-zero sequence numbers (an implementation hardcoding AfterSequence: 0 would satisfy
+// every assertion in this file EXCEPT the ones below identically — an empty first stream never proves
+// resumption happened, only that a stream was opened at all). The second run must resume PAST the
+// first run's own terminal event, or it would see that stale terminal event first and stop immediately
+// without ever reaching the second run's events (sequenceTrackingStream's own doc comment, inbound.go).
 func TestASecondMessageAfterTheRunFinishedStartsAFreshResponseOnTheSameSession(t *testing.T) {
 	deps, fp, _ := newTestDeps(t)
 
+	firstRunEvents := []palai.Event{
+		{Type: "model_step.delta.v1", Sequence: 5, Data: map[string]any{"text": "ok"}},
+		{Type: "run.completed.v1", Sequence: 6, Data: map[string]any{}},
+	}
+	streamCalls := 0
+	fp.stream = func() EventStream {
+		streamCalls++
+		if streamCalls == 1 {
+			return staticStream(firstRunEvents)
+		}
+		return staticStream(nil) // the second run's own stream; its content is not this test's concern
+	}
+
 	first := slack.Event{Type: "app_mention", Kind: slack.KindMessage,
-		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", UserID: "U2", Text: "one"}
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001", UserID: "U2", Text: "one"}
 	if err := HandleEvent(context.Background(), deps, first); err != nil {
 		t.Fatalf("HandleEvent(first): %v", err)
 	}
 	firstSessionID := *fp.lastCreateReq.SessionID
 
 	second := slack.Event{Type: "message", Kind: slack.KindMessage,
-		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", UserID: "U2", Text: "two"}
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.002", UserID: "U2", Text: "two"}
 	if err := HandleEvent(context.Background(), deps, second); err != nil {
 		t.Fatalf("HandleEvent(second): %v", err)
 	}
@@ -376,6 +422,17 @@ func TestASecondMessageAfterTheRunFinishedStartsAFreshResponseOnTheSameSession(t
 	if *fp.lastCreateReq.SessionID != firstSessionID {
 		t.Fatalf("second response's session_id = %s, want %s (the same thread's session)", *fp.lastCreateReq.SessionID, firstSessionID)
 	}
+	if len(fp.sessionEventsParams) != 2 {
+		t.Fatalf("SessionEvents was called %d time(s), want 2 (one per run)", len(fp.sessionEventsParams))
+	}
+	if got := fp.sessionEventsParams[0].AfterSequence; got != 0 {
+		t.Fatalf("first run's AfterSequence = %d, want 0 (a brand-new session)", got)
+	}
+	if got := fp.sessionEventsParams[1].AfterSequence; got != 6 {
+		t.Fatalf("second run's AfterSequence = %d, want 6 (the first run's own terminal event's sequence) — "+
+			"an implementation that never resumes would send 0 here too and every OTHER assertion in "+
+			"this test would still pass", got)
+	}
 }
 
 // TestAnOrphanedSessionIsRecoveredWithANewSessionAndRebind is Task 8's expected steady state, exercised
@@ -391,7 +448,7 @@ func TestAnOrphanedSessionIsRecoveredWithANewSessionAndRebind(t *testing.T) {
 	fp.failNextResponseNotFound = true
 
 	ev := slack.Event{Type: "app_mention", Kind: slack.KindMessage,
-		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", UserID: "U2", Text: "hi"}
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001", UserID: "U2", Text: "hi"}
 	if err := HandleEvent(context.Background(), deps, ev); err != nil {
 		t.Fatalf("HandleEvent: %v", err)
 	}
@@ -435,7 +492,7 @@ func TestALostRebindRaceUsesTheWinnersSession(t *testing.T) {
 	}
 
 	ev := slack.Event{Type: "app_mention", Kind: slack.KindMessage,
-		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", UserID: "U2", Text: "hi"}
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001", UserID: "U2", Text: "hi"}
 	if err := HandleEvent(context.Background(), deps, ev); err != nil {
 		t.Fatalf("HandleEvent: %v", err)
 	}
@@ -461,12 +518,12 @@ func TestALostRebindRaceUsesTheWinnersSession(t *testing.T) {
 func TestAnEditOrDeleteNeverBecomesATurn(t *testing.T) {
 	deps, fp, _ := newTestDeps(t)
 	edit := slack.Event{Type: "message", Kind: slack.KindCorrection,
-		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", UserID: "U2", Text: "edited text"}
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001", UserID: "U2", Text: "edited text"}
 	if err := HandleEvent(context.Background(), deps, edit); err != nil {
 		t.Fatalf("HandleEvent(edit): %v", err)
 	}
 	del := slack.Event{Type: "message", Kind: slack.KindTombstone,
-		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.2", UserID: "U2"}
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.2", MessageTS: "100.002", UserID: "U2"}
 	if err := HandleEvent(context.Background(), deps, del); err != nil {
 		t.Fatalf("HandleEvent(delete): %v", err)
 	}
@@ -482,7 +539,7 @@ func TestHandleEventRefusesIncompleteDeps(t *testing.T) {
 	incomplete := InboundDeps{Store: fs, Palai: fp} // no NewSlack, no RunInBackground, no state, no BotID
 
 	ev := slack.Event{Type: "message", Kind: slack.KindMessage,
-		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", UserID: "U2", Text: "hi"}
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001", UserID: "U2", Text: "hi"}
 	if err := HandleEvent(context.Background(), incomplete, ev); err == nil {
 		t.Fatal("HandleEvent with incomplete InboundDeps succeeded")
 	}
