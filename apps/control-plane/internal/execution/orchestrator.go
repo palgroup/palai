@@ -76,6 +76,13 @@ type Orchestrator struct {
 	// got a blocking call is blocked in exactly the way the feature exists to prevent. main.go injects it
 	// via SetBackgroundRunner where the wired shell runner can also detach.
 	background toolbroker.BackgroundRunner
+	// machineID names the machine THIS process's background runner reaches (A.3 T6). It is recorded on
+	// every task this plane starts and compared before any later probe or signal, because a kernel
+	// cannot tell "never mine" from "exited" — both are ESRCH — so asking the wrong one produces a wrong
+	// answer rather than an error. Empty means this deployment has not named its machine; a task started
+	// under it is written with an empty machine and is therefore never probed locally afterwards, which
+	// is the same conservative reading rows predating the column get.
+	machineID string
 	// bgSpawn serialises the CEILING CHECK and the start it guards (E26 T5, §0.3). It is all that is left
 	// of a map from task id to handle: the durable background_tasks row replaced that map in T5, because a
 	// map dies with the process that made it and the whole point of a background task is to outlive that
@@ -217,6 +224,17 @@ func (o *Orchestrator) SetBackgroundRunner(b toolbroker.BackgroundRunner) {
 		o.spine.SetBackgroundKiller(o.BackgroundKiller())
 	}
 }
+
+// SetBackgroundMachine names the machine this process's background runner reaches (A.3 T6). It is
+// recorded on every task started here and compared before any later probe or signal.
+//
+// IT IS SEPARATE FROM SetBackgroundRunner BECAUSE THE TWO ANSWER DIFFERENT QUESTIONS, and folding them
+// would make the identity look like a property of the executor. It is a property of the HOST: a control
+// plane that restarts, or is replaced by a second process on the same box, reaches the same kernel and
+// must still settle what it started — which is the crash-restart property the wake suite proves. Left
+// unset, every task this plane starts is written with an unknown machine and is therefore never probed
+// locally again, which is the same conservative reading rows predating the column get.
+func (o *Orchestrator) SetBackgroundMachine(id string) { o.machineID = id }
 
 // THERE IS NO BackgroundRunner() ACCESSOR, AND ITS ABSENCE IS A DELETION. T5 shipped one whose doc comment
 // said it existed "so a COMPOSITION-ROOT test can ask what production actually wired" — and the E26 T7

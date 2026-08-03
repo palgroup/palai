@@ -803,6 +803,22 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 				// so a composition-root test can ask it what production wires.
 				if bg := backgroundRunnerFor(shell); bg != nil {
 					orch.SetBackgroundRunner(bg)
+					// WHOSE KERNEL THAT RUNNER REACHES (A.3 T6). A background task outlives the attempt
+					// that started it, so its row is read later — possibly by a restarted process, and the
+					// sweep is system-scoped, so possibly by a control plane on a different box. A probe
+					// there cannot fail, it answers `exited` for a process it never started, so the row
+					// has to say where it ran.
+					//
+					// The hostname is what identifies the kernel a pgid belongs to, and it behaves
+					// correctly in both shipped shapes: on a Mac it survives a restart, so this plane
+					// still settles its own tasks; in a container a recreate yields a new name AND a new
+					// PID namespace, where the old handles genuinely are lost. A machine renamed under a
+					// running task reads as lost too — the safe direction, since lost is never signalled.
+					if host, herr := os.Hostname(); herr == nil {
+						orch.SetBackgroundMachine(host)
+					} else {
+						log.Printf("background: this machine has no resolvable hostname (%v), so tasks it starts will not be probed again", herr)
+					}
 					// AND THE OTHER END OF THE SAME DECISION (E26 T4): the reconciler below notices a task
 					// finishing through THIS orchestrator's observer. Taken from the orchestrator rather than
 					// rebuilt here so the probe that decides a task is done is the same one the park gate and

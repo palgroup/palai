@@ -86,13 +86,17 @@ const BackgroundTailLimit = 2048
 // row deliberately does not store (output_path is allocation-relative so no row discloses a host path,
 // spec §29.9). The root is joined at read time from the run's session workspace.
 type BackgroundTask struct {
-	ID             string
-	Tenant         Tenant
-	RunID          string
-	SessionID      string
-	ResponseID     string
-	Posture        string
-	Handle         string
+	ID         string
+	Tenant     Tenant
+	RunID      string
+	SessionID  string
+	ResponseID string
+	Posture    string
+	Handle     string
+	// MachineID is the machine whose kernel Handle names (A.3 T6). EMPTY means the row predates the
+	// column and the machine is unrecoverable — the row never held it — which the observer reads as
+	// `lost` rather than probing locally.
+	MachineID      string
 	OutputPath     string
 	EnvKeys        []string
 	AllocationRoot string
@@ -185,7 +189,7 @@ func (s *Store) runningBackgroundTasks(ctx context.Context) ([]BackgroundTask, e
 	for rows.Next() {
 		var t BackgroundTask
 		if err := rows.Scan(&t.ID, &t.Tenant.Organization, &t.Tenant.Project, &t.RunID, &t.SessionID,
-			&t.ResponseID, &t.Posture, &t.Handle, &t.OutputPath, &t.EnvKeys, &t.DeadlineAt,
+			&t.ResponseID, &t.Posture, &t.Handle, &t.MachineID, &t.OutputPath, &t.EnvKeys, &t.DeadlineAt,
 			&t.AllocationRoot); err != nil {
 			return nil, fmt.Errorf("scan running background task: %w", err)
 		}
@@ -353,6 +357,9 @@ type BackgroundTaskInput struct {
 	Fence      uint64
 	Posture    string
 	Handle     string
+	// MachineID is the machine whose kernel Handle names (A.3 T6). It is written at spawn because it can
+	// only be known then: nothing later can recover which machine ran a process from the row alone.
+	MachineID  string
 	OutputPath string
 	// DeadlineAt is the ceiling the reaper will enforce, computed by the spawning attempt from the
 	// deployment's PALAI_BACKGROUND_MAX_WALL_TIME. NIL is an explicit `0` and means unbounded.
@@ -378,7 +385,7 @@ func (s *Store) RecordBackgroundTask(ctx context.Context, tenant Tenant, in Back
 	}
 	if _, err := s.pool.Exec(ctx, storage.Query("InsertBackgroundTask"),
 		in.TaskID, tenant.Organization, tenant.Project, in.RunID, in.SessionID, in.ResponseID,
-		in.ToolCallID, int64(in.Fence), in.Posture, in.Handle, in.OutputPath, keys, in.DeadlineAt); err != nil {
+		in.ToolCallID, int64(in.Fence), in.Posture, in.Handle, in.MachineID, in.OutputPath, keys, in.DeadlineAt); err != nil {
 		return fmt.Errorf("record background task: %w", err)
 	}
 	return nil

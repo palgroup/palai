@@ -111,6 +111,15 @@ const (
 type Handle struct {
 	Posture BackgroundPosture
 	Value   string
+	// MachineID names WHOSE KERNEL Value refers to (A.3 T6). Posture says what kind of object the handle
+	// is; this says where that object lives, and the two are needed for the same reason: a probe against
+	// the wrong one does not fail, it answers wrongly. `kill(pgid, 0)` returns ESRCH both for a group
+	// that ended and for one that was never on this machine, so an executor has no third answer to give
+	// and the caller must not ask.
+	//
+	// EMPTY IS "UNKNOWN", NOT "HERE". Rows written before the column existed carry it, and no reader may
+	// resolve that to a local probe — see BackgroundLost, which already means exactly this.
+	MachineID string
 }
 
 // BackgroundStatus is one probe's answer. ExitCode is a POINTER because "not known" is a real answer and

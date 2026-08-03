@@ -282,7 +282,7 @@ func (b *backgroundTasks) StartBackground(ctx context.Context, cmd toolbroker.Sh
 	if err := b.orch.spine.RecordBackgroundTask(ctx, b.tenant, coordinator.BackgroundTaskInput{
 		TaskID: taskID, RunID: b.runID, SessionID: b.sessionID, ResponseID: b.responseID,
 		ToolCallID: string(callID), Fence: b.fence,
-		Posture: string(handle.Posture), Handle: handle.Value, OutputPath: spec.OutputPath,
+		Posture: string(handle.Posture), Handle: handle.Value, MachineID: b.orch.machineID, OutputPath: spec.OutputPath,
 		DeadlineAt: deadline,
 		// env_keys holds KEY NAMES so the read path can re-resolve and mask them (T6). The VALUES are in
 		// cmd.Env and stay there; sorted so the column does not depend on Go's map iteration order.
@@ -327,7 +327,14 @@ func (b *backgroundTasks) KillBackground(ctx context.Context, taskID string) (to
 		}
 		return toolbroker.BackgroundTicket{}, err
 	}
-	handle := toolbroker.Handle{Posture: toolbroker.BackgroundPosture(task.Posture), Value: task.Handle}
+	// A TASK ON ANOTHER MACHINE IS NOT KILLED FROM HERE (A.3 T6). The signal would go to a process group
+	// of that number on THIS box, which is some other process or none — a pgid is a small integer. The
+	// model is told, rather than left to believe a build it asked to stop is stopping.
+	if !b.orch.reachesMachine(task.MachineID) {
+		return toolbroker.BackgroundTicket{}, toolbroker.Answerf(toolbroker.AnswerUnavailable,
+			"background task %s was started on another machine, so this control plane cannot stop it", taskID)
+	}
+	handle := toolbroker.Handle{Posture: toolbroker.BackgroundPosture(task.Posture), Value: task.Handle, MachineID: task.MachineID}
 	// WAS IT STILL RUNNING WHEN WE WERE ASKED. The answer decides whether the row records a kill, and it
 	// has to be taken BEFORE the signal because afterwards both cases look identical. A probe that cannot
 	// answer is treated as "not ours to claim" — the sweep will say what happened.
@@ -395,7 +402,13 @@ func (o *Orchestrator) BackgroundKiller() coordinator.BackgroundKiller {
 		return nil
 	}
 	return func(ctx context.Context, task coordinator.BackgroundTask) (string, error) {
-		handle := toolbroker.Handle{Posture: toolbroker.BackgroundPosture(task.Posture), Value: task.Handle}
+		// Same rule as every other signal site: a handle this machine cannot prove is ours is never
+		// signalled. `lost` is what the row records, which is also what it would record for a handle that
+		// stopped matching locally — the run is cancelled either way, and no stranger's process is hit.
+		if !o.reachesMachine(task.MachineID) {
+			return string(toolbroker.BackgroundLost), nil
+		}
+		handle := toolbroker.Handle{Posture: toolbroker.BackgroundPosture(task.Posture), Value: task.Handle, MachineID: task.MachineID}
 		switch err := o.background.Kill(ctx, handle); {
 		case errors.Is(err, toolbroker.ErrHandleLost):
 			return string(toolbroker.BackgroundLost), err
@@ -435,7 +448,13 @@ func (o *Orchestrator) runHasLiveBackgroundTask(ctx context.Context, tenant coor
 		return false
 	}
 	for _, task := range mine {
-		handle := toolbroker.Handle{Posture: toolbroker.BackgroundPosture(task.Posture), Value: task.Handle}
+		// A task on another machine cannot be probed here, and this gate must NOT read a local answer for
+		// it: an `exited` from the wrong kernel would let a run finish while its build is still compiling
+		// elsewhere. Not-ours counts as not-live for the park decision — the sweep settles it as `lost`.
+		if !o.reachesMachine(task.MachineID) {
+			continue
+		}
+		handle := toolbroker.Handle{Posture: toolbroker.BackgroundPosture(task.Posture), Value: task.Handle, MachineID: task.MachineID}
 		status, err := o.background.Probe(ctx, handle)
 		if err != nil {
 			log.Printf("probe background task %s of run %s: %v", task.ID, runID, err)
@@ -495,7 +514,32 @@ func (o *Orchestrator) observeBackgroundTask(ctx context.Context, task coordinat
 	if o.background == nil {
 		return coordinator.BackgroundOutcome{}, false, toolbroker.ErrBackgroundUnsupported
 	}
-	handle := toolbroker.Handle{Posture: toolbroker.BackgroundPosture(task.Posture), Value: task.Handle}
+	handle := toolbroker.Handle{
+		Posture:   toolbroker.BackgroundPosture(task.Posture),
+		Value:     task.Handle,
+		MachineID: task.MachineID,
+	}
+	// THE MACHINE IS CHECKED BEFORE THE KERNEL IS ASKED (A.3 T6), and it has to be BEFORE rather than
+	// after: this executor's answer for another machine's handle is not an error to interpret, it is a
+	// confident `exited` for a process that may still be compiling. kill(pgid, 0) returns ESRCH both for
+	// a group that ended and for one that was never here, so there is nothing in the answer to tell them
+	// apart afterwards.
+	//
+	// `lost` is not a compromise here, it is the definition: the process may still be running and this
+	// control plane cannot prove it is ours. It carries the safety property too — a lost handle is never
+	// signalled (T1's absolute rule), which is what stops the reaper from sending a deadline kill to a
+	// pgid that belongs to something else on this box.
+	// AND NO TAIL IS READ ON THIS PATH, which is a second decision and not an omission. backgroundTail
+	// resolves the row's output path against an allocation root and opens it HERE; the file a task on
+	// another machine wrote is on that machine. Reading anyway would usually find nothing, and on a
+	// shared filesystem it could find a DIFFERENT run's file at the same relative path — an excerpt from
+	// somebody else's build, handed to a model as this task's output. The note says why instead.
+	if !o.reachesMachine(task.MachineID) {
+		return coordinator.BackgroundOutcome{
+			State:    string(toolbroker.BackgroundLost),
+			TailNote: "this task was started on another machine, so this control plane can neither probe it nor read its output",
+		}, true, nil
+	}
 	status, err := o.background.Probe(ctx, handle)
 	if err != nil {
 		return coordinator.BackgroundOutcome{}, false, err
@@ -523,6 +567,20 @@ func (o *Orchestrator) observeBackgroundTask(ctx context.Context, task coordinat
 	}
 	tail, note := o.backgroundTail(ctx, task)
 	return coordinator.BackgroundOutcome{State: state, ExitCode: status.ExitCode, Tail: tail, TailNote: note}, true, nil
+}
+
+// reachesMachine reports whether THIS process's background runner can probe a handle that machine
+// started. It is the whole of the routing, and it is deliberately a comparison rather than a dial:
+// there is no protocol by which one control plane probes another machine's process group, so every
+// machine that is not this one is unreachable — and unreachable is `lost`.
+//
+// AN EMPTY MACHINE ON THE ROW IS UNREACHABLE, INCLUDING WHEN THIS PLANE IS ALSO UNNAMED. Two unknowns
+// are not a match: a row written before the column existed says nothing about where it ran, and a
+// deployment that never named its machine cannot claim it. Comparing them as equal would resolve the
+// oldest rows — the ones with the least evidence — to a local probe, which is exactly the wrong answer
+// this seam exists to stop.
+func (o *Orchestrator) reachesMachine(rowMachine string) bool {
+	return rowMachine != "" && rowMachine == o.machineID
 }
 
 // backgroundExpired is the state a task reaches when the reaper ended it for outliving its ceiling. It is

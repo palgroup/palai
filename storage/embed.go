@@ -821,6 +821,16 @@ var migrationUp63 string
 //go:embed migrations/000063_relax_organization_id.down.sql
 var migrationDown63 string
 
+// background_task_machine (2026-08-03 plan A.3 Task 6): a background task records which MACHINE started
+// it, because a probe on the wrong kernel answers `exited` rather than failing. ” is "unknown", which
+// the reader treats as `lost` — see the migration's own header.
+//
+//go:embed migrations/000064_background_task_machine.up.sql
+var migrationUp64 string
+
+//go:embed migrations/000064_background_task_machine.down.sql
+var migrationDown64 string
+
 // The runner registry statements (E24 T1, migration 000045). They back internal/fleet, which the
 // runner gateway takes as an interface — see the package comment there for why the store does not
 // live inside execution.
@@ -930,7 +940,7 @@ var knowledgeSQL string
 // (E11 Task 4 webhooks + events cursor rider) land in parallel and interleave here at merge; 000021 (E11
 // Task 2 triggers) opens from the tip of both; 000022 (E11 Task 3 schedules) opens from the tip of 000021.
 func MigrationUp() string {
-	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14 + "\n" + migrationUp15 + "\n" + migrationUp16 + "\n" + migrationUp17 + "\n" + migrationUp18 + "\n" + migrationUp19 + "\n" + migrationUp20 + "\n" + migrationUp21 + "\n" + migrationUp22 + "\n" + migrationUp23 + "\n" + migrationUp24 + "\n" + migrationUp25 + "\n" + migrationUp26 + "\n" + migrationUp27 + "\n" + migrationUp28 + "\n" + migrationUp29 + "\n" + migrationUp30 + "\n" + migrationUp31 + "\n" + migrationUp32 + "\n" + migrationUp33 + "\n" + migrationUp34 + "\n" + migrationUp35 + "\n" + migrationUp36 + "\n" + migrationUp37 + "\n" + migrationUp38 + "\n" + migrationUp39 + "\n" + migrationUp40 + "\n" + migrationUp41 + "\n" + migrationUp42 + "\n" + migrationUp43 + "\n" + migrationUp44 + "\n" + migrationUp45 + "\n" + migrationUp46 + "\n" + migrationUp47 + "\n" + migrationUp48 + "\n" + migrationUp49 + "\n" + migrationUp50 + "\n" + migrationUp51 + "\n" + migrationUp52 + "\n" + migrationUp53 + "\n" + migrationUp54 + "\n" + migrationUp55 + "\n" + migrationUp56 + "\n" + migrationUp57 + "\n" + migrationUp58 + "\n" + migrationUp59 + "\n" + migrationUp60 + "\n" + migrationUp61 + "\n" + migrationUp62 + "\n" + migrationUp63
+	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14 + "\n" + migrationUp15 + "\n" + migrationUp16 + "\n" + migrationUp17 + "\n" + migrationUp18 + "\n" + migrationUp19 + "\n" + migrationUp20 + "\n" + migrationUp21 + "\n" + migrationUp22 + "\n" + migrationUp23 + "\n" + migrationUp24 + "\n" + migrationUp25 + "\n" + migrationUp26 + "\n" + migrationUp27 + "\n" + migrationUp28 + "\n" + migrationUp29 + "\n" + migrationUp30 + "\n" + migrationUp31 + "\n" + migrationUp32 + "\n" + migrationUp33 + "\n" + migrationUp34 + "\n" + migrationUp35 + "\n" + migrationUp36 + "\n" + migrationUp37 + "\n" + migrationUp38 + "\n" + migrationUp39 + "\n" + migrationUp40 + "\n" + migrationUp41 + "\n" + migrationUp42 + "\n" + migrationUp43 + "\n" + migrationUp44 + "\n" + migrationUp45 + "\n" + migrationUp46 + "\n" + migrationUp47 + "\n" + migrationUp48 + "\n" + migrationUp49 + "\n" + migrationUp50 + "\n" + migrationUp51 + "\n" + migrationUp52 + "\n" + migrationUp53 + "\n" + migrationUp54 + "\n" + migrationUp55 + "\n" + migrationUp56 + "\n" + migrationUp57 + "\n" + migrationUp58 + "\n" + migrationUp59 + "\n" + migrationUp60 + "\n" + migrationUp61 + "\n" + migrationUp62 + "\n" + migrationUp63 + "\n" + migrationUp64
 
 }
 

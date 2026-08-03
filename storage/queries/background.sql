@@ -13,8 +13,8 @@
 -- name: InsertBackgroundTask
 INSERT INTO background_tasks
     (id, organization_id, project_id, run_id, session_id, response_id, tool_call_id,
-     attempt_fence, posture, handle, state, output_path, env_keys, deadline_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'running', $11, $12, $13);
+     attempt_fence, posture, handle, machine_id, state, output_path, env_keys, deadline_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'running', $12, $13, $14);
 
 -- RunningBackgroundTasks is the reaper's read: every task the DATABASE still believes is running,
 -- across every tenant, so it runs under WithSystemScope like the other sweeps. The partial index
@@ -45,19 +45,17 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'running', $11, $12, $13);
 -- ceiling and wrote a `0` to say so.
 -- name: RunningBackgroundTasks
 SELECT b.id, b.organization_id, b.project_id, b.run_id, b.session_id, b.response_id,
-       b.posture, b.handle, b.output_path, b.env_keys, b.deadline_at,
+       b.posture, b.handle, b.machine_id, b.output_path, b.env_keys, b.deadline_at,
        COALESCE((
            SELECT a.host_path
            FROM workspace_allocations a
            WHERE a.workspace_id = (
                    SELECT w.id FROM workspaces w
                    WHERE w.session_id = b.session_id
-                     AND w.organization_id = b.organization_id
                      AND w.project_id = b.project_id
                    ORDER BY w.created_at, w.id
                    LIMIT 1
                )
-             AND a.organization_id = b.organization_id
              AND a.project_id = b.project_id
            ORDER BY a.fence DESC
            LIMIT 1
@@ -82,11 +80,11 @@ ORDER BY b.started_at, b.id;
 -- ROW. A model must not be told "exit code 0" about a row that says killed.
 -- name: ClaimBackgroundNotice
 UPDATE background_tasks
-SET state = CASE WHEN state = 'running' THEN $4 ELSE state END,
-    exit_code = COALESCE(exit_code, $5::INTEGER),
+SET state = CASE WHEN state = 'running' THEN $3 ELSE state END,
+    exit_code = COALESCE(exit_code, $4::INTEGER),
     finished_at = COALESCE(finished_at, clock_timestamp()),
     notified_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND notified_at IS NULL
+WHERE id = $1 AND project_id = $2 AND notified_at IS NULL
 RETURNING run_id, session_id, response_id, state, exit_code, output_path;
 
 -- CountRunningBackgroundTasks IS THE CEILING'S ONLY SOURCE OF TRUTH (E26 T5, §0.3), and it counts ROWS
@@ -98,7 +96,7 @@ RETURNING run_id, session_id, response_id, state, exit_code, output_path;
 -- are tenants; the caller therefore runs this under WithSystemScope, exactly as the reconciler's sweeps
 -- do, and scopes the per-run half in the predicate instead of in the session.
 -- name: CountRunningBackgroundTasks
-SELECT count(*) FILTER (WHERE run_id = $1 AND organization_id = $2 AND project_id = $3) AS per_run,
+SELECT count(*) FILTER (WHERE run_id = $1 AND project_id = $2) AS per_run,
        count(*) AS per_host
 FROM background_tasks
 WHERE state = 'running';
@@ -114,7 +112,7 @@ WHERE state = 'running';
 -- name: BackgroundTaskForRun
 SELECT id, posture, handle, output_path, state
 FROM background_tasks
-WHERE id = $1 AND run_id = $2 AND organization_id = $3 AND project_id = $4;
+WHERE id = $1 AND run_id = $2 AND project_id = $3;
 
 -- RunningBackgroundTasksOfRun is the park gate's read (E26 T3) and the cancellation's kill list (T5).
 -- Both used to ask an in-memory map; a map answers wrongly after a restart in two opposite directions —
@@ -122,7 +120,7 @@ WHERE id = $1 AND run_id = $2 AND organization_id = $3 AND project_id = $4;
 -- name: RunningBackgroundTasksOfRun
 SELECT id, posture, handle, output_path
 FROM background_tasks
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'running'
+WHERE run_id = $1 AND project_id = $2 AND state = 'running'
 ORDER BY started_at, id;
 
 -- SettleEndedBackgroundTask records a task THIS CONTROL PLANE ENDED — a model's explicit kill or a run
@@ -138,10 +136,10 @@ ORDER BY started_at, id;
 -- answer the probe gave.
 -- name: SettleEndedBackgroundTask
 UPDATE background_tasks
-SET state = $4,
+SET state = $3,
     finished_at = COALESCE(finished_at, clock_timestamp()),
     notified_at = COALESCE(notified_at, clock_timestamp())
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'running';
+WHERE id = $1 AND project_id = $2 AND state = 'running';
 
 -- BackgroundLogRoots and RunningBackgroundTaskIDs are the log retention sweep's two inputs (E26 T5).
 --
