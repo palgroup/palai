@@ -94,6 +94,62 @@ func TestEventPreservesUnknownEventTypeAndField(t *testing.T) {
 	}
 }
 
+// TestSessionPreservesUnknownFields locks Session's Unmarshal/MarshalJSON pair (sessions.go) to the
+// same edge Response and Event are already held to: an unknown field survives a decode→encode
+// round-trip rather than a copy-paste slip in the type-alias trick silently stripping it.
+func TestSessionPreservesUnknownFields(t *testing.T) {
+	raw := `{"id":"sess_1","object":"session","status":"open","x_future_field":{"kept":true}}`
+
+	var s Session
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if s.ID != "sess_1" || s.Object != "session" || s.Status != "open" {
+		t.Fatalf("typed fields wrong: %+v", s)
+	}
+	out, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("re-decode: %v", err)
+	}
+	future, ok := got["x_future_field"].(map[string]any)
+	if !ok || future["kept"] != true {
+		t.Fatalf("unknown field NOT preserved on round-trip: %s", out)
+	}
+	if len(got) != 4 {
+		t.Fatalf("expected 4 keys after round-trip, got %d: %s", len(got), out)
+	}
+}
+
+// TestCommandPreservesUnknownFields is Session's sibling for Command, the other type sessions.go
+// added without a round-trip test the first time.
+func TestCommandPreservesUnknownFields(t *testing.T) {
+	raw := `{"id":"cmd_1","object":"command","session_id":"sess_1","kind":"send_message",` +
+		`"delivery":"steer","status":"queued","x_future_field":"kept"}`
+
+	var c Command
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if c.ID != "cmd_1" || c.SessionID != "sess_1" || c.Kind != "send_message" || c.Status != "queued" {
+		t.Fatalf("typed fields wrong: %+v", c)
+	}
+	out, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("re-decode: %v", err)
+	}
+	if got["x_future_field"] != "kept" {
+		t.Fatalf("unknown field NOT preserved on round-trip: %s", out)
+	}
+}
+
 // TestEnvelopeSplit locks the T1 Page/ListView distinction: the two envelopes decode into distinct
 // types and are NOT conflated (the second struct-decoder edge the corpus targets).
 func TestEnvelopeSplit(t *testing.T) {

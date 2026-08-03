@@ -10,10 +10,12 @@ import (
 	"time"
 )
 
-// The /v1/sessions resource (spec §9.1, §9.2): open a standalone session and deliver a durable
-// steer command into it. This mirrors the TS SDK's Sessions/SessionCommands split in shape, not in
-// file layout — CreateSession/SteerSession hang directly off *Client (not a nested resource group)
-// because that is the exact surface this SDK's first caller, the Slack bot, consumes.
+// Sessions is the /v1/sessions resource group (spec §9.1, §9.2): open a standalone session and
+// deliver a durable steer command into it. Mirrors Responses's shape (a struct hanging off *Client,
+// each method taking a trailing opts ...CallOption) rather than the TS SDK's separate
+// Sessions/SessionCommands split — Steer lives directly on Sessions since this task ships only the
+// one delivery mode; a later task can still add a nested Commands group without breaking this one.
+type Sessions struct{ client *Client }
 
 // CreateSessionParams carries the one thing a caller may supply when opening a session: its
 // display label (E29). Mirrors the TS SDK's SessionCreateParams; the server's SessionWrite decode
@@ -97,24 +99,28 @@ func (c Command) MarshalJSON() ([]byte, error) {
 	return forwardMarshal(alias(c), c.Extra)
 }
 
-// CreateSession opens a standalone session (201). Creation is cheap and unkeyed — a retried
-// create mints a NEW session, never the same one back — so, unlike Responses.Create, this carries
-// no Idempotency-Key: a connection torn after the server committed is left alone rather than
-// retried into a duplicate session.
-func (c *Client) CreateSession(ctx context.Context, p CreateSessionParams) (*Session, error) {
+// Create opens a standalone session (201). Creation is cheap and unkeyed — a retried create mints
+// a NEW session, never the same one back — so, unlike Responses.Create, this carries no
+// Idempotency-Key: a connection torn after the server committed is left alone rather than retried
+// into a duplicate session.
+func (s *Sessions) Create(ctx context.Context, p CreateSessionParams, opts ...CallOption) (*Session, error) {
+	o := requestOptions{body: p}
+	for _, opt := range opts {
+		opt(&o)
+	}
 	var out Session
-	if err := c.doJSON(ctx, http.MethodPost, "/v1/sessions", requestOptions{body: p}, &out); err != nil {
+	if err := s.client.doJSON(ctx, http.MethodPost, "/v1/sessions", o, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// SteerSession posts a durable send_message/steer command against a session (spec §22.4). It is
-// 202 (durably queued, not yet applied). CommandID rides in the body as the server's own dedupe
-// key (the command table's unique on it) — a duplicate command_id returns the original resource
-// unchanged, so a retried steer settles exactly one command; that is why this call, unlike
-// CreateSession, is safe to mark idempotent for the transport's network-failure retry.
-func (c *Client) SteerSession(ctx context.Context, sessionID string, p SteerParams) (*Command, error) {
+// Steer posts a durable send_message/steer command against a session (spec §22.4). It is 202
+// (durably queued, not yet applied). CommandID rides in the body as the server's own dedupe key
+// (the command table's unique on it) — a duplicate command_id returns the original resource
+// unchanged, so a retried steer settles exactly one command; that is why this call, unlike Create,
+// defaults to idempotent for the transport's network-failure retry.
+func (s *Sessions) Steer(ctx context.Context, sessionID string, p SteerParams, opts ...CallOption) (*Command, error) {
 	commandID := p.CommandID
 	if commandID == "" {
 		commandID = newCommandID()
@@ -125,10 +131,13 @@ func (c *Client) SteerSession(ctx context.Context, sessionID string, p SteerPara
 		Delivery:  "steer",
 		Message:   p.Message,
 	}
+	o := requestOptions{body: body, idempotent: true}
+	for _, opt := range opts {
+		opt(&o)
+	}
 	path := "/v1/sessions/" + escapePathSegment(sessionID) + "/commands"
 	var out Command
-	o := requestOptions{body: body, idempotent: true}
-	if err := c.doJSON(ctx, http.MethodPost, path, o, &out); err != nil {
+	if err := s.client.doJSON(ctx, http.MethodPost, path, o, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

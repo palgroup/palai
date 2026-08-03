@@ -23,7 +23,7 @@ func TestCreateSessionPostsToV1Sessions(t *testing.T) {
 	})
 	c := testClient(t, rt)
 
-	s, err := c.CreateSession(context.Background(), CreateSessionParams{Name: "triage"})
+	s, err := c.Sessions.Create(context.Background(), CreateSessionParams{Name: "triage"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestCreateSessionDoesNotRetryOnNetworkFailure(t *testing.T) {
 	})
 	c := testClient(t, rt)
 
-	_, err := c.CreateSession(context.Background(), CreateSessionParams{Name: "x"})
+	_, err := c.Sessions.Create(context.Background(), CreateSessionParams{Name: "x"})
 	var connErr *ConnectionError
 	if !errors.As(err, &connErr) {
 		t.Fatalf("want *ConnectionError, got %v", err)
@@ -72,7 +72,7 @@ func TestSteerSessionPostsDurableCommand(t *testing.T) {
 	})
 	c := testClient(t, rt)
 
-	cmd, err := c.SteerSession(context.Background(), "sess_1", SteerParams{Message: "keep going"})
+	cmd, err := c.Sessions.Steer(context.Background(), "sess_1", SteerParams{Message: "keep going"})
 	if err != nil {
 		t.Fatalf("SteerSession: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestSteerSessionEscapesSessionIDInPath(t *testing.T) {
 	})
 	c := testClient(t, rt)
 
-	if _, err := c.SteerSession(context.Background(), "a/b", SteerParams{Message: "hi"}); err != nil {
+	if _, err := c.Sessions.Steer(context.Background(), "a/b", SteerParams{Message: "hi"}); err != nil {
 		t.Fatalf("SteerSession: %v", err)
 	}
 	if gotPath != "/v1/sessions/a%2Fb/commands" {
@@ -124,7 +124,7 @@ func TestSteerSessionUsesCallerCommandID(t *testing.T) {
 	})
 	c := testClient(t, rt)
 
-	if _, err := c.SteerSession(context.Background(), "sess_1", SteerParams{Message: "hi", CommandID: "cmd_caller_1"}); err != nil {
+	if _, err := c.Sessions.Steer(context.Background(), "sess_1", SteerParams{Message: "hi", CommandID: "cmd_caller_1"}); err != nil {
 		t.Fatalf("SteerSession: %v", err)
 	}
 	if !strings.Contains(gotBody, `"command_id":"cmd_caller_1"`) {
@@ -158,7 +158,7 @@ func TestSteerSessionRetriesNetworkFailureWithSameCommandID(t *testing.T) {
 	})
 	c := testClient(t, rt)
 
-	if _, err := c.SteerSession(context.Background(), "sess_1", SteerParams{Message: "hi"}); err != nil {
+	if _, err := c.Sessions.Steer(context.Background(), "sess_1", SteerParams{Message: "hi"}); err != nil {
 		t.Fatalf("SteerSession: %v", err)
 	}
 	if len(commandIDs) != 3 {
