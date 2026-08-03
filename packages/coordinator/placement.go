@@ -124,11 +124,18 @@ func (s *Store) RecordRunPool(ctx context.Context, tenant Tenant, runID, poolID 
 	switch err := s.pool.QueryRow(ctx, storage.Query("RecordRunPool"),
 		runID, tenant.Organization, tenant.Project, poolID).Scan(&recorded); {
 	case errors.Is(err, pgx.ErrNoRows):
-		// Nothing was written by THIS call. Ask the row which of the two reasons it was.
+		// Nothing was written by THIS call, and the two reasons decide opposite things. Ask the row.
 		current, rerr := s.RunPlacement(ctx, tenant, runID)
 		if rerr != nil {
 			return "", rerr
 		}
+		if current.PoolID == "" {
+			// Nothing recorded and nothing already there: the pool is not one this tenant can be served
+			// by. REFUSE rather than report success — see ErrRunPoolNotRecordable.
+			return "", fmt.Errorf("%w: %s", ErrRunPoolNotRecordable, poolID)
+		}
+		// Write-once: a concurrent attempt (or this run's earlier one) already placed it. NOT an error —
+		// a resume returns to the SAME pool, and turning this into a failure would break every resume.
 		return current.PoolID, nil
 	case err != nil:
 		return "", fmt.Errorf("record run pool for %s: %w", runID, err)

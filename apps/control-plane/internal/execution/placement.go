@@ -93,11 +93,11 @@ func (o *Orchestrator) place(ctx context.Context, tenant coordinator.Tenant, att
 	// lost a race to record dials where the DURABLE decision says, not where its own resolution said.
 	if inputs.PoolID == "" {
 		recorded, err := o.spine.RecordRunPool(ctx, tenant, string(attempt.RunID), attempt.PoolID)
-		if err != nil {
-			return err
-		}
-		if recorded == "" {
+		switch {
+		case errors.Is(err, coordinator.ErrRunPoolNotRecordable):
 			return errPoolNotServable
+		case err != nil:
+			return err
 		}
 		attempt.PoolID = recorded
 	}
