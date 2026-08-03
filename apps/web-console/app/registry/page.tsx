@@ -1,13 +1,14 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import { FormDialog } from "@/components/FormDialog";
 import { NameCell, Panel, type Column } from "@/components/Panel";
 import { ResourceForm } from "@/components/ResourceForm";
 import { SecretField, takeSecret } from "@/components/SecretField";
 import { CopyButton, shortId, Stamp } from "@/components/Session";
 import { Button } from "@/components/ui/Button";
-import { apiSend, RelayError } from "@/lib/api";
+import { apiGet, apiSend, RelayError } from "@/lib/api";
 
 // MODEL WIRING — and since E29 this screen WRITES, which is the product's headline promise finally reaching
 // the panel.
@@ -97,6 +98,20 @@ const FAMILIES = [
   { value: "openai-compatible", label: "Custom (OpenAI-compatible)", endpoint: true },
 ] as const;
 
+/** familyLabel renders a wire family name for a human, falling back to the wire name for a family this
+ *  console does not know — a connection created by an older CLI must still be pickable, and an empty cell
+ *  would make it look unusable. */
+const familyLabel = (wire: string): string => FAMILIES.find((f) => f.value === wire)?.label ?? wire;
+
+// THE ONLY ALIAS A RUN RESOLVES, and the console does not offer the choice.
+//
+// coordinator.DefaultModelRouteAlias is "default", and internal/store/model_routes.go REFUSES every other
+// name with a sentence worth quoting because it is the whole reason there is no name field on the form:
+// "a route by any other name would be created, published, and never consulted by a single run". The
+// constant is duplicated here rather than fetched for the same reason FAMILIES is — there is no /v1 route
+// serving it, and the store's own 400 is what stops a stale console from writing an alias dispatch ignores.
+const DEFAULT_ROUTE_ALIAS = "default";
+
 /** outcomeWords renders a probe verdict as a SENTENCE. Never a bare colour or glyph: the three states an
  *  operator must tell apart are accepted / rejected / not checked, and `not_probed` in particular must read
  *  as "nothing was checked" rather than as a neutral-looking pass. */
@@ -133,6 +148,44 @@ export default function RegistryPage() {
   const [verifyStatus, setVerifyStatus] = useState("");
   const [verifyError, setVerifyError] = useState("");
   const [verifying, setVerifying] = useState("");
+
+  // THE ROUTE — the half without which everything above is configuration nothing dispatches to.
+  //
+  // This screen already SAID so, twice, and pointed nowhere: the create form's caveat read "Bind the
+  // connection to a project with a model route to make runs use it; until then it is configuration that
+  // nothing dispatches to", and the routes table's empty note sent the operator to "the provisioning API or
+  // `palai model route`". Both sentences were true. Neither was reachable from this console — `grep -rn
+  // 'model-routes' app/` found ONE hit, the read-only fetchPath below.
+  //
+  // MEASURED ON THE LIVE STACK, 2026-08-03 (127.0.0.1:60351): four model connections, and of the `default`
+  // route's four revisions exactly ONE carries `resolved_by_dispatch: true`. Three of the four credentials
+  // an operator had sealed steered nothing, and nothing on this screen could have told them.
+  const [routeOpen, setRouteOpen] = useState(false);
+  const [routeConnection, setRouteConnection] = useState("");
+  const [routeModel, setRouteModel] = useState("");
+  const [routeError, setRouteError] = useState("");
+  const [routeStatus, setRouteStatus] = useState("");
+  const [routing, setRouting] = useState(false);
+  const [routeReloadKey, setRouteReloadKey] = useState(0);
+
+  // The connections the route picker offers, re-read whenever one is created — an operator who adds a
+  // credential and immediately points runs at it must find it in this list, and the create above bumps
+  // `reloadKey`.
+  const [connections, setConnections] = useState<ConnectionRow[]>([]);
+  useEffect(() => {
+    let live = true;
+    apiGet<{ data?: ConnectionRow[] }>("/model-connections")
+      .then((body) => {
+        if (live) setConnections(body.data ?? []);
+      })
+      .catch(() => {
+        // An unreadable list leaves the picker empty, which renders its own note. Honest: an operator who
+        // cannot list connections cannot choose one either.
+      });
+    return () => {
+      live = false;
+    };
+  }, [reloadKey]);
 
   const needsEndpoint = FAMILIES.find((f) => f.value === provider)?.endpoint === true;
 
@@ -206,6 +259,107 @@ export default function RegistryPage() {
       setVerifying("");
     }
   }
+
+  // publishRoute points this project's runs at a connection: open the alias, add a revision naming the model
+  // and the connection, publish it. It is cmd/cli/internal/admin's routeThroughConnection, on the surface an
+  // operator actually has.
+  //
+  // THREE CALLS, BECAUSE THAT IS WHAT THE REVISION LIFECYCLE IS. api/model_routes.go:76 says it plainly —
+  // "A draft never steers a run; publishing it does" — so a flow that stopped at the revision would report
+  // success and change nothing, which is the failure this whole control exists to end.
+  //
+  // THE ALIAS IS NOT ASKED FOR, and that is the store's rule rather than a simplification: CreateModelRoute
+  // REFUSES every name but `default`, because dispatch resolves exactly that one (coordinator's
+  // DefaultModelRouteAlias) and "a route by any other name would be created, published, and never consulted
+  // by a single run". A name field here would be a control whose every other value is a silent no-op.
+  //
+  // THE POST IS UNCONDITIONAL AND THAT IS CORRECT: coordinator.CreateModelRoute:318-332 looks the alias up
+  // by name and returns the existing id before it inserts. Get-or-create. A console that fetched first to
+  // decide would make one more call and race a second operator on the same project.
+  //
+  // IT IS NOT ATOMIC, and the errors say which step failed rather than pretending otherwise. A failure after
+  // the alias exists leaves an alias with no published revision — which routes NOTHING and is therefore
+  // safe: the project keeps running on the deployment default. Re-submitting is the repair.
+  async function publishRoute() {
+    setRouting(true);
+    setRouteError("");
+    setRouteStatus("");
+    const model = routeModel.trim();
+    if (model === "" || routeConnection === "") {
+      setRouteError(
+        model === ""
+          ? "name the model id to send on the provider wire, e.g. gpt-4o-mini. Nothing was sent."
+          : "choose the connection whose credential these runs should use. Nothing was sent.",
+      );
+      setRouting(false);
+      return;
+    }
+
+    let routeID: string;
+    try {
+      const body = await apiSend<{ id?: string }>("POST", "/model-routes", { name: DEFAULT_ROUTE_ALIAS });
+      routeID = String(body.id ?? "");
+    } catch (err: unknown) {
+      setRouteError(`the route alias could not be opened: ${detail(err, "the route was refused")}. Nothing was changed.`);
+      setRouting(false);
+      return;
+    }
+
+    let revisionID: string;
+    try {
+      const body = await apiSend<{ id?: string }>("POST", `/model-routes/${encodeURIComponent(routeID)}/revisions`, {
+        model,
+        connection_id: routeConnection,
+      });
+      revisionID = String(body.id ?? "");
+    } catch (err: unknown) {
+      // The alias now exists and steers nothing. Saying so is the difference between an operator who
+      // re-submits and one who goes looking for a route they think they broke.
+      setRouteError(
+        `${detail(err, "the revision was refused")} — the "${DEFAULT_ROUTE_ALIAS}" alias exists and has no new published ` +
+          "revision, so runs are unchanged and still use the deployment default. Fix the field above and submit again.",
+      );
+      setRouting(false);
+      return;
+    }
+
+    try {
+      await apiSend("POST", `/model-routes/${encodeURIComponent(routeID)}/revisions/${encodeURIComponent(revisionID)}/publish`);
+    } catch (err: unknown) {
+      setRouteError(
+        `${detail(err, "the revision could not be published")} — revision ${revisionID} is stored as a DRAFT and steers ` +
+          "nothing until it is published, so runs are unchanged. Submitting again publishes a fresh revision.",
+      );
+      setRouting(false);
+      return;
+    }
+
+    const chosen = connections.find((c) => String(c.id ?? "") === routeConnection);
+    const ref = String(chosen?.secret_ref ?? "");
+    // THE STATUS SAYS WHAT CHANGED FOR A RUN, not that three calls returned 2xx. The thing an operator came
+    // here to find out is whether their key is now the one being used — and the sentence names the
+    // credential by REF, never by value, and says what it displaced.
+    setRouteStatus(
+      `Runs in this project now call ${model}` +
+        (ref === "" ? "" : ` with the credential sealed under ${ref}`) +
+        `${chosen === undefined ? "" : ` (${String(chosen.provider ?? "")}, connection ${shortId(routeConnection)})`}. ` +
+        "That replaces the deployment default — the key in this stack's own .env.local — for this project, with no restart. " +
+        "Nothing has been called yet: the first thing that exercises this is the next run.",
+    );
+    setRouteOpen(false);
+    setRouteModel("");
+    setRouteReloadKey((n) => n + 1);
+    setRouting(false);
+  }
+
+  const connectionOptions = connections
+    .filter((c) => typeof c.id === "string" && c.id !== "")
+    .map((c) => ({
+      value: String(c.id),
+      // THE REF NAME LEADS, because it is the only thing about a credential this console knows and the only
+      // thing an operator named themselves. The family and the short id disambiguate two refs with one name.
+      label: `${String(c.secret_ref ?? "— no ref")} — ${familyLabel(String(c.provider ?? ""))} (${shortId(String(c.id))})`,
+    }));
 
   return (
     <>
@@ -311,8 +465,10 @@ export default function RegistryPage() {
             <p className="muted">
               The credential is sealed by <code>POST /v1/secret-refs</code> — write-only, versioned if the name
               already exists — and the connection then NAMES that ref. The key is never stored on the connection
-              and is readable through no route. Bind the connection to a project with a model route to make runs
-              use it; until then it is configuration that nothing dispatches to.
+              and is readable through no route. Adding a connection does <strong>not</strong> start using it:
+              until a published route names it, runs keep calling the deployment default. Publish one with
+              &ldquo;Point runs at a connection&rdquo; under Model routes below — that control is the second
+              half, and this sentence used to name a CLI verb because the console had no equivalent.
             </p>
           ),
         }}
@@ -373,10 +529,20 @@ export default function RegistryPage() {
         />
       </ResourceForm>
 
+      {routeStatus === "" ? null : (
+        <p className="form-status" data-testid="route-publish-status">
+          <span className="glyph" aria-hidden="true">
+            ✔
+          </span>{" "}
+          {routeStatus}
+        </p>
+      )}
+
       <Panel
         title="Model routes"
         testId="panel-model-routes"
         fetchPath="/model-routes"
+        reloadKey={routeReloadKey}
         columns={[
           { header: "ID", sort: (r) => String(r.id ?? ""), render: (r) => <IdCell id={String(r.id ?? "")} label="route ID" /> },
           {
@@ -384,19 +550,121 @@ export default function RegistryPage() {
             sort: (r) => String(r.name ?? ""),
             render: (r) => <NameCell name={String(r.name ?? "")} id="" />,
           },
+          {
+            // WHETHER DISPATCH READS THIS ROW, straight off the projection rather than inferred from the
+            // name. store/model_routes.go writes `consulted_by_dispatch` and, for any other alias, a
+            // `dispatch_note` saying no run resolves it — a row that steers nothing must not look like a row
+            // that does, and this console spent its whole life so far unable to tell an operator which.
+            header: "Dispatch",
+            render: (r) =>
+              r.consulted_by_dispatch === true ? (
+                "runs resolve through this"
+              ) : (
+                <span className="cell-none">— no run resolves this alias</span>
+              ),
+          },
           created,
         ]}
+        action={
+          <Button variant="primary" testId="route-publish-open" onClick={() => setRouteOpen(true)}>
+            + Point runs at a connection
+          </Button>
+        }
         emptyNote={
           <>
             <p className="empty-title">No model routes yet</p>
             <p className="empty-body">
-              A route is a name a run can ask for instead of a model. With none, runs use the deployment
-              default; a per-project override is created through the provisioning API or{" "}
-              <code>palai model route</code>, and this screen is where it becomes visible.
+              Until one exists, every run in this project uses the <strong>deployment default</strong> — the
+              provider key in the stack&apos;s own <code>.env.local</code>, or the deterministic fake adapter
+              when there is none. A connection above is not enough on its own: it is a stored credential that
+              nothing dispatches to until a route names it.
             </p>
+            <Button variant="primary" testId="route-publish-open-empty" onClick={() => setRouteOpen(true)}>
+              Point runs at a connection
+            </Button>
           </>
         }
       />
+
+      {routeOpen ? (
+        <FormDialog
+          label="Point runs at a connection"
+          testId="route-publish-dialog"
+          onClose={() => {
+            setRouteOpen(false);
+            setRouteError("");
+          }}
+        >
+          <ResourceForm
+            title="Point runs at a connection"
+            testId="route-publish"
+            note={
+              <span data-testid="route-publish-note">
+                <strong>This is what makes a credential above actually get used.</strong> A connection on its
+                own is stored configuration; until a published route names it, every run in this project keeps
+                calling the provider key from the stack&apos;s <code>.env.local</code>. Publishing takes effect
+                on the next run, with no restart.
+              </span>
+            }
+            caveat={{
+              summary: "What is published, and what is not checked",
+              body: (
+                <p className="muted">
+                  Three things happen: the <code>{DEFAULT_ROUTE_ALIAS}</code> alias is opened if this project
+                  has none, a revision naming the model and the connection is added, and that revision is
+                  published. Revisions are immutable — choosing again publishes a new one rather than editing
+                  the old, so the history of what this project routed through stays readable. The model id is{" "}
+                  <strong>not validated</strong>: it is the string sent on the provider wire, and a wrong one
+                  shows up as a provider refusal inside the first run, not here.
+                </p>
+              ),
+            }}
+            fields={[
+              {
+                name: "route-connection",
+                label: "Connection",
+                kind: "select",
+                required: true,
+                value: routeConnection,
+                onChange: setRouteConnection,
+                options: connectionOptions,
+                placeholder: "Choose a connection…",
+                testId: "route-connection-select",
+                hint:
+                  connectionOptions.length === 0
+                    ? "There are no connections yet. Add one with the form above — a route can only name a connection that exists."
+                    : "Listed by the secret ref each one carries. The credential behind that name is redeemed server-side at call time and is readable from nowhere.",
+              },
+              {
+                name: "route-model",
+                label: "Model id",
+                required: true,
+                value: routeModel,
+                onChange: setRouteModel,
+                testId: "route-model-input",
+                hint: "Exactly as the provider spells it, e.g. gpt-4o-mini or claude-sonnet-5. This string goes on the wire unchanged.",
+              },
+            ]}
+            submitLabel="Publish route"
+            submittingLabel="Publishing…"
+            submitTestId="route-publish-button"
+            submitting={routing}
+            error={routeError}
+            onSubmit={publishRoute}
+            actions={
+              <Button
+                testId="route-publish-cancel"
+                onClick={() => {
+                  setRouteOpen(false);
+                  setRouteError("");
+                }}
+              >
+                Cancel
+              </Button>
+            }
+          />
+        </FormDialog>
+      ) : null}
 
       <Panel
         title="Knowledge bases"

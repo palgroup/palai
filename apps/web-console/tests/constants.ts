@@ -120,6 +120,14 @@ export const FORM_DIALOGS: { route: string; open: string; dialog: string; label:
   { route: "/fleet", open: "pool-create-open", dialog: "pool-create-dialog", label: "Create a runner pool" },
   { route: "/fleet", open: "poolkey-mint-open", dialog: "poolkey-mint-dialog", label: "Mint an enrolment key" },
   { route: "/deployment", open: "desired-config-edit", dialog: "desired-config-dialog", label: "Edit desired configuration" },
+  // The route publish (panel-credentials): the control that turns a stored connection into the credential
+  // runs actually use. Its picker and model field do not exist until the dialog is open, which is exactly
+  // the shape that walked out of the contrast sweep once already.
+  { route: "/registry", open: "route-publish-open", dialog: "route-publish-dialog", label: "Point runs at a connection" },
+  // The Slack workspace registration (panel-credentials). Three credential fields that do not exist in the
+  // DOM until the dialog is open — the largest single block of secret-bearing controls this console has, and
+  // therefore the one most worth scanning OPEN rather than at rest.
+  { route: "/integrations", open: "slack-connect-open", dialog: "slack-connect-dialog", label: "Connect a Slack workspace" },
   // THE TWO ROW-MENU DIALOGS (machine-config), AND `rowMenu` IS WHAT MAKES THEM DECLARABLE AT ALL.
   //
   // Every row above names a control that is VISIBLE when its route loads — a panel head's `+ Create X`. A

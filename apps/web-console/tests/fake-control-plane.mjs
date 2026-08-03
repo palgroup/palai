@@ -185,6 +185,14 @@ const AGENTS = Array.from({ length: 21 }, (_, i) => ({
 let agentSeq = 0;
 // The E29 connection sequence, so a console-minted id is distinguishable from the seed's.
 let connectionSeq = 0;
+// The route write path (panel-credentials). ROUTE_REVISIONS is flat and carries `route_id` rather than being
+// keyed by it, because the publish handler has to clear `resolved_by_dispatch` across a route's whole set —
+// only the newest published revision steers, which is the property that makes publishing MEAN something.
+let routeSeq = 0;
+let routeRevisionSeq = 0;
+const ROUTE_REVISIONS = [];
+// The Slack workspace registration sequence (panel-credentials).
+let slackSeq = 0;
 
 // --- THE AGENT LINEAGE (E25 T6) --------------------------------------------------------------------------
 //
@@ -796,7 +804,17 @@ const USAGE_LEDGER = [
 const ADMIN = {
   organizations: listView([{ id: "org_local", object: "organization", display_name: "Local Org" }]),
   projects: listView([{ id: "proj_local", object: "project", organization_id: "org_local", display_name: "Default Project" }]),
-  "api-keys": listView([{ id: "key_admin", object: "api_key", project_id: "proj_local", scopes: ["provision", "responses"], revoked_at: null }]),
+  // `principal_id` JOINED THIS ROW BECAUSE THE REAL PROJECTION HAS ALWAYS CARRIED IT and this fixture did
+  // not. Measured against the live stack 2026-08-03:
+  //
+  //   GET /v1/api-keys -> {"id": "key_local", …, "principal_id": "prin_local", "scopes": [], …}
+  //
+  // A console control that offers principals — /integrations' "Run as principal", which needs one because
+  // vetSlackDefaultPolicy requires principal_id — would have rendered an EMPTY picker against this fixture
+  // and a full one against every real deployment. That is the fixture-is-thinner-than-production half of
+  // this tree's own rule, and it is the half that produces a console coded against a shape the API does not
+  // serve rather than one it cannot.
+  "api-keys": listView([{ id: "key_admin", object: "api_key", project_id: "proj_local", principal_id: "prin_admin", scopes: ["provision", "responses"], revoked_at: null }]),
   // `provider: "provider-one"`, NOT "fake". The seed used to say "fake", which is a family an operator can
   // never select — it is the deterministic in-process adapter, deliberately absent from
   // modelbroker.Families(). A fixture row nothing could have created is a fixture that teaches the console
@@ -804,7 +822,10 @@ const ADMIN = {
   // `base_url` is absent here for the same reason: provider-one has an endpoint of its own and the store
   // REFUSES one on it (000049 / vetConnectionEndpoint).
   "model-connections": listView([{ id: "mc_1", object: "model_connection", provider: "provider-one", secret_ref: "provider-key" }]),
-  "model-routes": listView([{ id: "mr_1", object: "model_route", name: "default" }]),
+  // `consulted_by_dispatch` is on the REAL projection (store/model_routes.go:493 writes it from
+  // `rec.Name == coordinator.DefaultModelRouteAlias`), so the fixture carries it too: a console column that
+  // renders it must be driven against a row that HAS it, or the cell is proven by nothing.
+  "model-routes": listView([{ id: "mr_1", object: "model_route", name: "default", consulted_by_dispatch: true }]),
   // `updated_at` was ABSENT here until E25 T4 and nothing could catch it, for exactly the reason T2's seed
   // exists: a bootstrap stack's secret_refs collection is EMPTY, so the sweep's item arm had no real row to
   // compare against and skipped. T4's environment write is the first thing in this tree that PUTS a row
@@ -812,6 +833,12 @@ const ADMIN = {
   // missing field. The real projection is identity/secrets.go secretRefView: {name, object, version,
   // updated_at} with updated_at a non-nil pointer on every scanned row.
   "secret-refs": listView([{ name: "provider-key", version: 2, object: "secret_ref", updated_at: "2026-07-24T00:00:00Z" }]),
+  // ONE WORKSPACE, SEEDED SO THE CONFLICT ARM IS REACHABLE. `T-FIXTURE-BOUND` exists so a spec can drive the
+  // retry an operator actually meets — a 409 AFTER the three seals have already succeeded, which is the only
+  // path on which "the credentials survived and here is what they are called" has to be said.
+  "slack-connections": listView([
+    { id: "slkc_1", object: "slack_connection", team_id: "T-FIXTURE-BOUND", enterprise_id: "", bot_user_id: "U-FIXTURE-BOT", disabled: false, created_at: "2026-07-24T00:00:00Z" },
+  ]),
   // The knowledge-base row carries the field names the REAL projection carries — `name`, not `display_name`,
   // plus `created_at` (knowledge/views.go knowledgeBaseView; embedding_route and active_index_revision_id are
   // omitempty and absent on a freshly created base). It said `display_name` until E25 T2, which nothing had
@@ -2043,7 +2070,167 @@ export const ROUTES = [
   },
 
   { method: "GET", pattern: "/v1/model-routes", handle: adminList("model-routes") },
+
+  // --- THE ROUTE WRITE PATH: what makes a connection the credential runs actually use. ---
+  //
+  // Three routes because the revision lifecycle is three operations, and the fixture mirrors
+  // internal/store/model_routes.go's refusals rather than accepting whatever arrives — a fixture more
+  // generous than production makes the console code against a shape that does not exist.
+  //
+  // THE TWO PROPERTIES THAT MATTER MOST HERE ARE BOTH REAL-STORE BEHAVIOUR, and getting either wrong would
+  // make a console defect invisible:
+  //   1. CREATE IS GET-OR-CREATE. coordinator.CreateModelRoute:318-332 looks the alias up by name and
+  //      returns the existing id before inserting. A fixture that minted a new id per call would let a
+  //      console that piles up aliases pass.
+  //   2. EVERY NAME BUT `default` IS REFUSED, with the store's own reason. A fixture that accepted any name
+  //      would let a console ship a name field whose every other value silently steers nothing.
+  {
+    method: "POST",
+    pattern: "/v1/model-routes",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const name = typeof body.name === "string" ? body.name : "";
+        if (name === "") return sendProblem(response, 400, "invalid_request", "name is required");
+        if (name !== "default") {
+          return sendProblem(
+            response,
+            400,
+            "invalid_request",
+            'name "default" (the only alias a run resolves through — a route by any other name would be created, published, and never consulted by a single run) is required',
+          );
+        }
+        const rows = ADMIN["model-routes"].data;
+        const existing = rows.find((r) => r.name === name);
+        if (existing !== undefined) return sendJSON(response, 201, { id: existing.id, object: "model_route", name });
+        routeSeq += 1;
+        const row = { id: `mroute_console_${String(routeSeq).padStart(4, "0")}`, object: "model_route", name, consulted_by_dispatch: true };
+        rows.unshift(row);
+        sendJSON(response, 201, row);
+      }),
+  },
+  {
+    method: "POST",
+    pattern: "/v1/model-routes/{route_id}/revisions",
+    handle: (request, response, groups) =>
+      drainBody(request, (raw) => {
+        const routeID = groups.route_id ?? "";
+        const body = parseBody(raw);
+        const model = typeof body.model === "string" ? body.model : "";
+        const connectionID = typeof body.connection_id === "string" ? body.connection_id : "";
+        // A route the caller cannot see is a 404 — the same answer as one that never existed.
+        if (!ADMIN["model-routes"].data.some((r) => r.id === routeID)) {
+          return sendProblem(response, 404, "not_found", "model route not found");
+        }
+        if (model === "") return sendProblem(response, 400, "invalid_request", "model is required");
+        if (connectionID === "") return sendProblem(response, 400, "invalid_request", "connection_id is required");
+        // THE CONNECTION IS VERIFIED IN SCOPE, exactly as CreateModelRouteRevision does before inserting.
+        // Without this the console could publish a revision naming a connection that does not exist, which
+        // on the real stack is a 404 and here would have been a green.
+        if (!ADMIN["model-connections"].data.some((c) => c.id === connectionID)) {
+          return sendProblem(response, 404, "not_found", "model connection not found");
+        }
+        routeRevisionSeq += 1;
+        const row = {
+          id: `mrev_console_${String(routeRevisionSeq).padStart(4, "0")}`,
+          object: "model_route_revision",
+          route_id: routeID,
+          revision: routeRevisionSeq,
+          model,
+          connection_id: connectionID,
+          // A DRAFT. The whole point of the third call is that this is false until it is published.
+          published: false,
+        };
+        ROUTE_REVISIONS.push(row);
+        sendJSON(response, 201, row);
+      }),
+  },
+  {
+    method: "POST",
+    pattern: "/v1/model-routes/{route_id}/revisions/{revision_id}/publish",
+    handle: (request, response, groups) => {
+      const row = ROUTE_REVISIONS.find((r) => r.id === groups.revision_id && r.route_id === groups.route_id);
+      if (row === undefined) return sendProblem(response, 404, "not_found", "model route revision not found");
+      // Publishing is idempotent, and only the newest published revision steers (the real resolver reads one
+      // row, ordered) — so publishing this one un-steers the rest.
+      for (const other of ROUTE_REVISIONS) if (other.route_id === row.route_id) other.resolved_by_dispatch = false;
+      row.published = true;
+      row.resolved_by_dispatch = true;
+      sendJSON(response, 200, row);
+    },
+  },
+  {
+    method: "GET",
+    pattern: "/v1/model-routes/{route_id}/revisions",
+    handle: (request, response, groups) =>
+      sendJSON(response, 200, { object: "list", data: ROUTE_REVISIONS.filter((r) => r.route_id === groups.route_id) }),
+  },
+
   { method: "GET", pattern: "/v1/secret-refs", handle: adminList("secret-refs") },
+
+  // --- THE SLACK WORKSPACE REGISTRATION (panel-credentials). ---
+  //
+  // It mirrors api/slack_connections.go's vetSlackRegistration refusal-for-refusal, because that vetting IS
+  // the security boundary this surface has: slackRegistrationBody declares no signing_secret / bot_token /
+  // app_token field at all, so DisallowUnknownFields turns an inline credential into a 400. A fixture that
+  // silently ACCEPTED an inline value would make the console's most important property — that it seals
+  // first and sends only handles — untestable, because the wrong console would pass.
+  { method: "GET", pattern: "/v1/slack-connections", handle: adminList("slack-connections") },
+  {
+    method: "POST",
+    pattern: "/v1/slack-connections",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        // THE INLINE-CREDENTIAL REFUSAL, FIRST AND BY NAME. This is the arm that must never soften.
+        for (const forbidden of ["signing_secret", "bot_token", "app_token"]) {
+          if (body[forbidden] !== undefined) {
+            return sendProblem(
+              response,
+              400,
+              "invalid_request",
+              "the body accepts only team_id, enterprise_id, bot_user_id, the *_ref credential HANDLES, scopes, allowed_channels, allowed_users and default_policy — a raw signing secret or token is never accepted",
+            );
+          }
+        }
+        const teamID = typeof body.team_id === "string" ? body.team_id : "";
+        if (teamID === "") return sendProblem(response, 400, "invalid_request", "team_id is required");
+        if (typeof body.signing_secret_ref !== "string" || body.signing_secret_ref === "") {
+          return sendProblem(response, 400, "invalid_request", "signing_secret_ref is required (the v0 signature verify redeems it)");
+        }
+        const policy = body.default_policy;
+        if (policy === undefined || policy === null || typeof policy !== "object") {
+          return sendProblem(response, 400, "invalid_request", "default_policy is required: it carries the run target every event on this connection admits with");
+        }
+        if (typeof policy.agent_revision_id !== "string" || policy.agent_revision_id === "" || typeof policy.principal_id !== "string" || policy.principal_id === "") {
+          return sendProblem(
+            response,
+            400,
+            "invalid_request",
+            "default_policy.agent_revision_id and default_policy.principal_id are required — a binding that has not been told what to run, or as whom, admits nothing",
+          );
+        }
+        // THE CONFLICT. A workspace is registered ONCE (the E19 T1 cross-tenant hijack fix), and the fixture
+        // seeds `T-FIXTURE-BOUND` so a spec can drive the retry path an operator meets after the seals have
+        // already happened. One detail for both conflict kinds, exactly as the handler does: telling them
+        // apart would prove another tenant holds the workspace.
+        if (ADMIN["slack-connections"].data.some((r) => r.team_id === teamID)) {
+          return sendProblem(response, 409, "conflict", "this Slack workspace is already bound; it can be registered once");
+        }
+        slackSeq += 1;
+        const row = {
+          id: `slkc_console_${String(slackSeq).padStart(4, "0")}`,
+          object: "slack_connection",
+          team_id: teamID,
+          enterprise_id: typeof body.enterprise_id === "string" ? body.enterprise_id : "",
+          bot_user_id: typeof body.bot_user_id === "string" ? body.bot_user_id : "",
+          disabled: false,
+          created_at: new Date().toISOString(),
+        };
+        ADMIN["slack-connections"].data.unshift(row);
+        sendJSON(response, 201, { id: row.id, object: "slack_connection" });
+      }),
+  },
   {
     // WRITING THE CREDENTIAL — the first half of the console's two-call connection flow (E29). The
     // connection surface stores a REF, so a screen that takes a key must seal it here first and then name
@@ -3148,11 +3335,29 @@ const compiled = ROUTES.map((route) => ({ ...route, re: compile(route.pattern) }
 
 // dispatch is the ONLY thing that answers a /v1 request. A path that matches no row is a 404 — which is
 // exactly what the sweep relies on when it asserts this table is the fixture's whole surface.
+// dispatch matches a request against the table and runs the handler, STAMPING which row matched.
+//
+// THE HEADER EXISTS FOR THE CONFORMANCE SWEEP'S ARM 1, whose claim is "the table IS the dispatcher" and
+// which could only ever check that claim through a PROXY: it asserted the fixture does not answer 404. That
+// proxy is wrong in one direction and it has now cost twice. A handler that IS dispatched and answers a
+// legitimate application 404 — `POST /v1/model-routes/{route_id}/revisions` with an id that does not exist,
+// `PUT /v1/repository-bindings/{binding_id}/connection` likewise — is indistinguishable from a pattern
+// nothing routes, because both go out as sendProblem(404, "not_found"). Arm 1 therefore FAILED on two
+// correctly-dispatched routes, and because it asserts inside a loop it reported only the first: on `main`
+// that was repository-bindings, and adding the model-route write path merely changed WHICH one got named.
+//
+// Answering it by reordering a handler's validation so the probe gets a 400 would be making production lie
+// to a test. Answering it here makes the guard check the thing it actually claims, and it is STRICTER, not
+// looser: a pattern in the table that no compiled row matches still emits no header and still fails, which
+// is the defect arm 1 was written to catch. What stops failing is the false positive.
 function dispatch(method, pathname, request, response) {
   for (const route of compiled) {
     if (route.method !== method) continue;
     const m = route.re.exec(pathname);
     if (m !== null) {
+      // Set BEFORE the handler runs: a handler that answers immediately has already written the head by the
+      // time it returns, and a setHeader after that throws ERR_HTTP_HEADERS_SENT.
+      response.setHeader("x-fixture-dispatched", route.pattern);
       route.handle(request, response, m.groups ?? {});
       return true;
     }
@@ -3176,13 +3381,16 @@ const server = createServer((request, response) => {
     for (const row of structuredClone(SESSIONS_PRISTINE)) SESSIONS.push(row);
     const fresh = structuredClone(ADMIN_PRISTINE);
     for (const key of Object.keys(ADMIN)) ADMIN[key] = fresh[key];
-    // AND THE DESIRED DOCUMENTS, because PUT /v1/deployment/desired is a write a spec makes and every read
-    // of a pool's or a machine's configuration is made against what it left. A reset that silently missed
-    // this collection is worse than no reset: the file that calls it then believes it is isolated.
+    // TWO COLLECTIONS THE LOOP ABOVE CANNOT REACH, and the same rule covers both: a reset that silently
+    // misses a collection is worse than no reset, because the file that calls it then believes it is
+    // isolated. ROUTE_REVISIONS is a flat array the publish handler mutates across a route's whole set;
+    // DESIRED holds what PUT /v1/deployment/desired left, which every read of a pool's or a machine's
+    // configuration is made against.
+    ROUTE_REVISIONS.length = 0;
     DESIRED.clear();
     for (const [key, doc] of structuredClone(DESIRED_PRISTINE)) DESIRED.set(key, doc);
     desiredSeq = 1;
-    return sendJSON(response, 200, { reset: ["sessions", "desired", ...Object.keys(ADMIN)], sessions: SESSIONS.length });
+    return sendJSON(response, 200, { reset: ["sessions", "desired", ...Object.keys(ADMIN), "model-route-revisions"], sessions: SESSIONS.length });
   }
   // The route table as this server dispatches from it — the runtime half of the conformance sweep's
   // "the table IS the surface" claim (the sweep also imports ROUTES directly, and asserts the two agree).

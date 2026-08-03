@@ -238,6 +238,10 @@ func Bootstrap(envFile string, native bool) error {
 	// HOW MANY RUNS AT ONCE (§3.6 D11). Unconditional for the same reason: a second machine that nothing
 	// can reach is the shape of a fleet that was bought and is not being used.
 	slackWarns = appendWarn(slackWarns, dispatchWorkerFleetWarning(api, get))
+	// WHICH OF THE TWO MODEL-CREDENTIAL AUTHORITIES ACTUALLY SERVED THIS RUN. Unconditional, and placed
+	// AFTER the round trip on purpose: by here the proof has happened, so the operator is being told which
+	// credential produced the `PROVEN LIVE` line they are about to read.
+	slackWarns = appendWarn(slackWarns, modelAuthorityWarning(api, get))
 	// WHAT THE FLEET IS DOING (E24 T6). Unconditional and NOT a warning: a machine held in a strict pool's
 	// waiting room is a machine an operator will otherwise read as broken, and it is the report — not a
 	// conditional line — that they look at after a bring-up.
@@ -280,9 +284,19 @@ func resolveProvider(get func(string) string, storedSecret bool) (providerChoice
 	// (`grep -r ANTROPHIC`). Both spellings are read HERE — and only here, to make the refusal below
 	// accurate — but nothing is renamed in the tree: the mis-spelling is consistent, so a rename is a
 	// cross-cutting change with no bearing on whether this command can prove a live round-trip.
+	//
+	// AND IT IS NOT CARRIED ANYWHERE NEW. The console's provider screen (app/registry) takes an Anthropic
+	// credential under a name the OPERATOR chooses and binds it to the `provider-two` family, so the
+	// mis-spelling cannot propagate: there is no environment variable on that path to spell wrongly. Both
+	// spellings keep being read here, and DELIBERATELY — an operator whose .env.local carries the
+	// mis-spelled name has a working file today, and silently ceasing to read it would be exactly the
+	// quiet-behaviour-change this branch exists to argue against. The name is reported, never corrected in
+	// place: rewriting somebody's dotenv is not this command's business.
 	anthropic := firstNonEmpty(get("ANTHROPIC_API_KEY"), get("ANTROPHIC_API_KEY"))
 	if get("ANTROPHIC_API_KEY") != "" && get("ANTHROPIC_API_KEY") == "" {
-		c.warnings = append(c.warnings, "ANTROPHIC_API_KEY is spelled the way this repo spells it, but it is a mis-spelling of ANTHROPIC_API_KEY (accepted here, nothing else in the tree reads either)")
+		c.warnings = append(c.warnings, "ANTROPHIC_API_KEY is spelled the way this repo spells it, but it is a mis-spelling of ANTHROPIC_API_KEY. "+
+			"Both are accepted here and NOTHING ELSE in the tree reads either, so renaming it changes nothing and leaving it costs nothing — "+
+			"the durable home for an Anthropic key is a connection on the console's /registry screen, where you name it yourself")
 	}
 
 	if cred := strings.TrimSpace(get(credentialEnv)); cred != "" {
@@ -295,9 +309,17 @@ func resolveProvider(get func(string) string, storedSecret bool) (providerChoice
 		return c, nil
 	}
 	if anthropic != "" {
+		// THE SECOND FIX IS NEW AND IT IS THE BETTER ONE. This message used to offer exactly one remedy —
+		// "set OPENAI_API_KEY in .env.local" — because a per-project model route could only be published by
+		// the provisioning API or `palai model route`, and this command cannot ask an operator to run a CLI
+		// verb mid-bring-up. The console publishes that route now (/registry, "Point runs at a connection"),
+		// so an Anthropic key has a real home and the sentence names it. The ORDER is deliberate: the file
+		// remedy is second because it is the bootstrap seed, not the durable place for a credential.
 		return c, fmt.Errorf("an Anthropic credential is set but the compose deployment default cannot use it: the entrypoint bridges only "+
 			"provider_one_key and modelBrokerFromEnv's env route is %s (OpenAI). The Anthropic adapter (provider-two) is reachable only through a "+
-			"published per-project model route — fix: set %s in .env.local for this bring-up", liveSelector, credentialEnv)
+			"published per-project model route — fix: bring the stack up with an OpenAI key, then seal the Anthropic one on the console's "+
+			"/registry screen and publish a route with \"Point runs at a connection\" (the route overrides the deployment default, with no "+
+			"restart); or, to stay on the file for now, set %s in .env.local for this bring-up", liveSelector, credentialEnv)
 	}
 	return c, fmt.Errorf("no provider credential: %s is unset and $PALAI_HOME/secrets/provider-one is empty, so the stack would come up on the "+
 		"deterministic FAKE adapter — fix: put %s=<key> in .env.local, or pipe it once with "+
@@ -391,6 +413,12 @@ var slackSecretSlots = []struct{ field, prefix, env, purpose string }{
 // slackAppTokenSlot is the row Socket Mode's only authentication lives on — named once so
 // slackSocketTeam cannot drift from the table.
 const slackAppTokenSlot = "app_token_ref"
+
+// defaultModelRouteAlias is the ONLY route alias a run resolves through — coordinator.DefaultModelRouteAlias,
+// which internal/store/model_routes.go enforces by refusing every other name. It is spelled here rather than
+// imported because this package is the CLI and does not depend on the control plane's internals; the store's
+// own 400 is what stops a stale spelling from writing an alias dispatch ignores.
+const defaultModelRouteAlias = "default"
 
 // containerMasterKeyPath is where compose mounts the master-key file secret. A PATH, never a value,
 // so it rides the compose environment like every other knob.
@@ -1395,6 +1423,124 @@ func fleetLine(summary fleetSummary) string {
 }
 
 // projectApprovers reads a project's configured approver principals off the running stack.
+// publishedModelRoute reports the credential THIS PROJECT's runs actually resolve through, or found=false
+// when it has none and the deployment default therefore serves.
+//
+// It reads the three things in the order the resolver does, because there is no single route that answers
+// the question: the `default` alias (the ONLY one dispatch consults — coordinator.DefaultModelRouteAlias),
+// its revision carrying `resolved_by_dispatch`, and that revision's connection for the secret REF name. A
+// value never travels on any of them; `ref` is a handle.
+func (c *apiClient) publishedModelRoute() (model, ref, connection string, found bool, err error) {
+	var routes struct {
+		Data []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+	status, err := c.do(http.MethodGet, "/v1/model-routes?limit=100", nil, &routes)
+	switch {
+	case err != nil:
+		return "", "", "", false, err
+	case status == http.StatusNotFound:
+		// A tier that wires no model-route store leaves the routes unmounted. Not a failure: that deployment
+		// has exactly one authority, which is the case this warning exists to distinguish.
+		return "", "", "", false, nil
+	case status != http.StatusOK:
+		return "", "", "", false, fmt.Errorf("GET /v1/model-routes = %d", status)
+	}
+	routeID := ""
+	for _, r := range routes.Data {
+		if r.Name == defaultModelRouteAlias {
+			routeID = r.ID
+			break
+		}
+	}
+	if routeID == "" {
+		return "", "", "", false, nil
+	}
+
+	var revisions struct {
+		Data []struct {
+			Model        string `json:"model"`
+			ConnectionID string `json:"connection_id"`
+			Resolved     bool   `json:"resolved_by_dispatch"`
+		} `json:"data"`
+	}
+	if status, err := c.do(http.MethodGet, "/v1/model-routes/"+url.PathEscape(routeID)+"/revisions?limit=100", nil, &revisions); err != nil {
+		return "", "", "", false, err
+	} else if status != http.StatusOK {
+		return "", "", "", false, fmt.Errorf("GET /v1/model-routes/%s/revisions = %d", routeID, status)
+	}
+	// `resolved_by_dispatch` IS THE FIELD, and picking the newest published revision by hand instead would be
+	// a second opinion about which one steers. The store computes it; a bring-up that recomputed it could
+	// disagree with the resolver and report the wrong credential as live.
+	for _, rev := range revisions.Data {
+		if !rev.Resolved {
+			continue
+		}
+		model, connection = rev.Model, rev.ConnectionID
+		var conn struct {
+			SecretRef string `json:"secret_ref"`
+		}
+		// The ref is a nicety on top of the finding, so a failure here loses the NAME and keeps the fact.
+		if status, err := c.do(http.MethodGet, "/v1/model-connections/"+url.PathEscape(connection), nil, &conn); err == nil && status == http.StatusOK {
+			ref = conn.SecretRef
+		}
+		return model, ref, connection, true, nil
+	}
+	return "", "", "", false, nil
+}
+
+// modelAuthorityWarning is THE SECOND AUTHORITY FOR THIS STACK'S MODEL CREDENTIAL, said out loud.
+//
+// THERE ARE TWO, AND UNTIL NOW THE PRECEDENCE BETWEEN THEM WAS SILENT — which is the defect this tree keeps
+// finding, and the reason this function exists rather than a comment:
+//
+//	the FILE      OPENAI_API_KEY in .env.local -> the 0600 $PALAI_HOME/secrets/provider-one file secret ->
+//	              PALAI_SECRET_PROVIDER_ONE -> main.modelBrokerFromEnv's DEPLOYMENT-DEFAULT route.
+//	the PLATFORM  a secret ref + a model connection + a PUBLISHED `default` route revision, all of which the
+//	              console now writes.
+//
+// coordinator.ProjectModelRoute resolves the platform's answer and returns found=false when the project has
+// none, at which point the caller falls back to the deployment default. So the platform WINS where it has an
+// answer — correctly — and a bring-up that re-seals the file's key and prints PROVEN LIVE tells the operator
+// nothing about which of the two just served their run.
+//
+// THE FILE READ IS KEPT AND THAT IS THE DECISION. Removing it was the other option and it is wrong on the
+// only day that matters: on a fresh machine there is no platform to hold a credential — the database is
+// empty, the control plane is not up, and the console cannot be reached — so something must seed the first
+// one or `palai up`'s whole purpose, proving a LIVE round-trip, is unreachable on day one. What was not
+// acceptable is the silence, so the file stays a BOOTSTRAP SEED and stops being an unannounced authority.
+//
+// It warns only when BOTH exist, because only then is there something an operator can be wrong about: a
+// stack with a route and no file has one authority, and a stack with a file and no route has one authority.
+func modelAuthorityWarning(api *apiClient, get func(string) string) string {
+	// The file's key is the only half this command controls; if the operator supplied none, there is no
+	// second authority to announce even when a route is published.
+	if strings.TrimSpace(get(credentialEnv)) == "" {
+		return ""
+	}
+	model, ref, connection, found, err := api.publishedModelRoute()
+	if err != nil {
+		// "I could not tell" and "there is no route" are different facts, and only one of them is about the
+		// credential. A warning that silently becomes no-warning on a read failure is worse than none.
+		return fmt.Sprintf("could not read this project's model route, so nothing here can tell you whether %s in .env.local is "+
+			"what your runs actually use: %v", credentialEnv, err)
+	}
+	if !found {
+		return ""
+	}
+	where := "connection " + connection
+	if ref != "" {
+		where += " (credential " + ref + ")"
+	}
+	return fmt.Sprintf("%s in .env.local is NOT what this project's runs use. %s has a PUBLISHED model route: runs resolve "+
+		"through %s on %s, which was configured in the console and overrides the deployment default this bring-up seeded from "+
+		"the file. The file's key still serves projects that have no route of their own. To change what %s runs, use the "+
+		"console's \"Point runs at a connection\" on /registry — editing .env.local will not move it",
+		credentialEnv, bootstrapProjectID, model, where, bootstrapProjectID)
+}
+
 func (c *apiClient) projectApprovers(projectID string) ([]string, error) {
 	var body struct {
 		ConfigPolicy struct {

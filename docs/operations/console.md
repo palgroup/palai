@@ -64,11 +64,32 @@ the console. Each step names the screen and the page that goes deeper.
 12. **Answer its gates** at `/approvals` (§4) — and, if you took a pool strict in step 9, **admit its
    machines** at `/fleet` (§3c). **Read what it did** at `/history`.
 
-**The two things this path does NOT include, on purpose.** There is no button that tests a model route or
-validates an environment: verifying that a handle has a value behind it means USING the value, which is a run,
-a credential spend and a budget decision. And there is no screen that writes a model connection or a
-model route — `palai up` produces a working deployment-default route, and a second provider is a CLI job
-today.
+**Steps 4a and 12a, which are why this page changed.**
+
+4a. **Point runs at your own provider credential**, at `/registry` (§3e). Adding a connection is only half:
+   until a published route NAMES it, every run keeps using the deployment default — the provider key in the
+   stack's own `.env.local`. *Add a provider connection* seals the key and names it; **Point runs at a
+   connection** publishes the route that makes it the credential runs actually use. Nothing restarts.
+
+12a. **Connect a Slack workspace**, if people should be able to start runs from chat, at `/integrations`.
+   The workspace ID, the signing secret, the bot token and the app-level token, plus the agent (step 8) and
+   the principal those runs are attributed to. All three credentials are sealed into the platform's secret
+   store under the same handle names `palai up` uses, so a workspace connected here and one connected by the
+   CLI resolve to the same secrets rather than two copies. **Approval is deny-by-default**: name approvers or
+   nobody in that workspace can answer a gate.
+
+**What this path does NOT include, on purpose.** There is no button that tests a model route, verifies a
+Slack credential or validates an environment: verifying that a handle has a value behind it means USING the
+value, which is a run, a credential spend and a budget decision. `/registry`'s *Verify* is the one exception
+and it is narrow — it asks the endpoint whether it accepts the key, and it does NOT check that the model id
+exists or that a quota remains.
+
+**And the sentence that used to be here was wrong in both halves, which is why it is quoted rather than
+deleted:** *"there is no screen that writes a model connection or a model route — `palai up` produces a
+working deployment-default route, and a second provider is a CLI job today."* The first half stopped being
+true at E29, when `/registry` grew its create form; the second half stopped being true with the publish
+control above. A doc that describes a missing screen is read as a decision, and an operator who believes it
+goes looking for the CLI.
 
 ---
 
@@ -489,17 +510,77 @@ fields `palai up` prints above the same table, plus the knob the reaper honours.
 
 ### `/registry` — model connections, routes, and knowledge bases
 
-Read-only projections of how a model is reached. **`/v1` mounts no console-reachable create for any of the
-three**, so the absence of a form is the API's shape rather than a simplification.
+Where this deployment's own provider credentials live, and where you choose which one runs.
 
 - **A model connection binds a provider to a secret REF — a NAME.** The value behind it is written
-  server-side and is readable through no route, this console included.
-- **A model route** is E16 T1's read-back of the E13 write-only route surface: a route is created by the
-  provisioning API, and this screen is where it becomes visible.
+  server-side and is readable through no route, this console included. *Add a provider connection* seals the
+  key (`POST /v1/secret-refs`, write-only, versioned if the name already exists) and then creates the
+  connection naming that ref. Two calls, and the status says which half ran: a refused seal is a name
+  problem, a refused connection is a family or endpoint problem. **If the connection is refused after the
+  seal succeeded, the key is already stored under that name** and the error says so — re-submit with the
+  same name, which rotates rather than duplicating.
+- **`Verify` is narrow, and the screen states its limit.** It asks the endpoint whether it accepts the
+  credential. It does **not** check that the route's model id exists, nor that a quota remains. `not_probed`
+  means nothing was checked and is rendered as its own state, never as a neutral-looking pass.
+- **A model route is what makes a connection the credential runs ACTUALLY use.** This is the half that is
+  easy to miss, and missing it is silent: `ProjectModelRoute` resolves the project's published route and,
+  when there is none, the run falls back to the **deployment default** — the key `palai up` sealed from
+  `.env.local`. A connection with no route steers nothing, and runs keep answering, so nothing looks wrong.
+  **Point runs at a connection** publishes the route: it opens the `default` alias, adds a revision naming
+  the model and the connection, and publishes it. The *Dispatch* column says which alias runs resolve
+  through, off the projection's own `consulted_by_dispatch`.
+- **There is no alias field, and that is the store's rule.** Dispatch resolves exactly one alias —
+  `default` — and `CreateModelRoute` refuses every other name, because "a route by any other name would be
+  created, published, and never consulted by a single run".
+- **Revisions are immutable; choosing again publishes a new one.** So the history of what a project routed
+  through stays readable, and rolling back means publishing again rather than editing.
+- **The model id is not validated.** It is the string sent on the provider wire; a wrong one surfaces as a
+  provider refusal inside the first run.
 - **A knowledge base** is what a retrieval tool searches, created and indexed outside this console. Its
   projection carries `name` and not `display_name` (`knowledge/views.go`), which the fixture got wrong until
   E25 T2 because a bootstrap stack's collection is empty and the conformance sweep skips an item comparison
   when either side has no row.
+
+**The sentence this section used to open with is quoted rather than deleted, because it was read as a
+decision:** *"Read-only projections of how a model is reached. `/v1` mounts no console-reachable create for
+any of the three, so the absence of a form is the API's shape rather than a simplification."* `POST
+/v1/model-connections`, `POST /v1/model-routes` and both revision routes were mounted the whole time. The
+claim was made about the CONSOLE's reach and then read as a claim about the API's shape — the same mistake
+`app/registry/page.tsx` records having made in its own header.
+
+---
+
+### `/integrations` — the Slack workspace, and the credentials behind it
+
+Connecting a workspace lets people start runs by mentioning the bot and answer the approvals those runs park
+on. Before this screen the only way to register one was `palai up` reading four values out of `.env.local`.
+
+- **Four credentials, three of them sealed.** The workspace ID (`T…`) is an identifier; the signing secret,
+  the bot token (`xoxb-…`) and the app-level token (`xapp-…`) are sealed into the platform's secret store
+  under `slack-signing-<team>`, `slack-bot-<team>` and `slack-app-<team>`. **Those are the same handle names
+  `palai up` uses** (`slackSecretSlots`), so a workspace connected here and one connected by the CLI resolve
+  to the same secrets rather than two copies of each.
+- **The registration API cannot be handed a raw credential.** Its accepted body declares no
+  `signing_secret`, `bot_token` or `app_token` field at all, so an inline value is a 400 at the boundary.
+  The console seals first and sends only the handles.
+- **The signing secret is the one the API requires**, because it is what verifies that a callback really
+  came from Slack. Without it a workspace cannot tell a real request from a forged one.
+- **The bot token and the app-level token are optional, and their absences differ.** No bot token: the
+  workspace is registered and the bot can say nothing. No app-level token: Socket Mode stays dormant, so
+  events arrive only if Slack can reach this deployment over HTTP.
+- **A workspace must be told what to run and as whom.** Both are pickers over what the deployment holds,
+  never free text. The agent pins to its newest **published** revision, resolved on submit — an agent whose
+  revisions are all drafts is **refused** rather than registered, because admission checks `published_at`
+  before starting a run and a draft would create a workspace that silently admits nothing.
+- **The two list fields have OPPOSITE defaults, which is the easiest thing to get wrong here.** *Approvers*
+  empty means **nobody** may approve (deny-by-default). *Allowed channels* empty means **no restriction** —
+  every channel the bot is in, which is the production default.
+- **A workspace is registered once.** A second registration of the same team is a 409, and the refusal
+  cannot say whether the other holder is you or another tenant — telling those apart would prove another
+  customer exists. If the registration is refused after the seals succeeded, the error names what is already
+  sealed, so you can fix the field and re-submit rather than leaving live credentials you did not know about.
+- **Nothing here is checked against Slack.** No credential is verified and no workspace is contacted; the
+  first thing that exercises the binding is a real message.
 
 ---
 
