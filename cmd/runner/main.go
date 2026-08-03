@@ -22,8 +22,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/palgroup/palai/adapters/sandboxes/host"
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
 	"github.com/palgroup/palai/packages/runner"
+	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 	"github.com/palgroup/palai/packages/version"
 )
 
@@ -136,6 +138,9 @@ func main() {
 		// Opt this runner into honouring a lease's §30.13 unsafe local bind (REP-012). Default off so a
 		// control plane alone cannot make the runner mount an arbitrary host path (§24 trust boundary).
 		AllowUnsafeBind: os.Getenv("PALAI_WORKSPACE_UNSAFE_BIND") == "1",
+		// The executor an exec.request runs on. nil on every deployment that has not declared a posture,
+		// which is all of them today — see shellRunnerFromEnv.
+		Shell: shellRunnerFromEnv(),
 	}.Serve(ctx)
 }
 
@@ -297,6 +302,54 @@ func envIntDefault(name string, def int) int {
 //
 // A value the plane sent that does not parse falls through to the environment rather than to the default,
 // so a typo in the panel is not silently indistinguishable from an unconfigured pool.
+// shellRunnerFromEnv builds the executor this machine runs an exec.request on, or nil when the
+// deployment has declared no posture — and nil is what EVERY shipped deployment gets today:
+//
+//	grep -rn "PALAI_SHELL_NATIVE\|PALAI_SANDBOX_IMAGE" deploy/    (2026-08-03)
+//	  compose.yaml:86            PALAI_SANDBOX_IMAGE -> the CONTROL-PLANE service
+//	  native-control-plane.yml:8 PALAI_SHELL_NATIVE  -> a comment
+//	  (no runner service in any file receives either variable)
+//
+// So this changes no deployment's behaviour: a runner keeps supervising engines and runs no command
+// until an operator declares a posture. That is deliberate for this task, which builds the wire —
+// nothing sends an exec.request yet. A nil executor is still not silence: the tool server answers
+// with a refusal (packages/runner/toolserver.go), so the control plane learns it will get no result
+// rather than blocking a tool call forever.
+//
+// ONLY THE HOST POSTURE IS WIRED HERE, AND THE OMISSION IS DELIBERATE RATHER THAN AN OVERSIGHT. The
+// OCI posture needs the sandbox's resource bounds as well as its image — image, wall time, max memory
+// and max process count, which the control plane's composition root derives in sandboxLimitsFromEnv
+// (apps/control-plane/cmd/palai-control-plane/main.go:1133). Copying those four here would put a
+// SECOND spelling of a sandbox's bounds in the tree, and a bound that disagrees between two
+// composition roots is a containment the operator cannot reason about. The consolidation belongs to
+// whichever task edits the control plane's root next; until then a Linux pool's commands still run
+// control-plane-side, which is the epic's remaining gap and not a silent one.
+func shellRunnerFromEnv() toolbroker.ShellRunner {
+	native := os.Getenv("PALAI_SHELL_NATIVE")
+	if native == "" {
+		return nil
+	}
+	// The same refusal the control plane makes (resolveShellPosture): the value states what the posture
+	// IS, because declaring it deletes the sandbox boundary. A misspelling must not silently leave the
+	// machine running commands in some other posture. The constant is the tool broker's, not a fifth
+	// copy of the literal — it is typed for the background seam but it is the same posture name the
+	// pool, the enrolment and the shell all compare against.
+	if native != string(toolbroker.PostureUnsandboxedHost) {
+		log.Fatalf("PALAI_SHELL_NATIVE must be exactly %q (got %q): the value states what the posture IS, "+
+			"because it deletes the sandbox boundary", toolbroker.PostureUnsandboxedHost, native)
+	}
+	if image := os.Getenv("PALAI_SANDBOX_IMAGE"); image != "" {
+		log.Fatalf("PALAI_SANDBOX_IMAGE and PALAI_SHELL_NATIVE are mutually exclusive: a machine runs its "+
+			"commands in the sandbox image or on the host, never both (image=%q, native=%q)", image, native)
+	}
+	// The default MUST match the control plane's defaultSandboxWallTime, and it is written here rather
+	// than left at zero because zero is not a neutral value on this seam — it is UNBOUNDED
+	// (adapters/sandboxes/host/exec.go:96). A machine that silently bounded a command less tightly than
+	// the control plane that asked for it would be the disagreement this function's header warns about,
+	// arriving through the one field it does wire.
+	return host.NewExecutor(envDurationDefault("PALAI_SANDBOX_WALL_TIME", 10*time.Minute))
+}
+
 func planeIntDefault(settings map[string]string, name string, def int) int {
 	if v, ok := settings[name]; ok {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

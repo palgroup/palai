@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/packages/contracts"
+	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
 // renewalFraction is the point in a certificate's lifetime at which the runner renews it —
@@ -55,6 +56,15 @@ type ServeConfig struct {
 	// path — the runner's OWN operator must opt in (PALAI_WORKSPACE_UNSAFE_BIND=1), preserving the §24
 	// trust boundary between control plane and runner.
 	AllowUnsafeBind bool
+	// Shell runs an exec.request on THIS machine (toolserver.go). It is what makes where a command
+	// runs a property of the machine that took the lease rather than of the control-plane process, and
+	// it is the reason this package now depends on the tool-broker seam at all.
+	//
+	// nil is a runner that serves engines but runs no commands, which is every runner built before
+	// this field existed. It is not silent: an exec.request still gets an exec.result carrying a
+	// refusal, because a control plane blocking a tool call on this machine's answer must be told it
+	// will not get one.
+	Shell toolbroker.ShellRunner
 	// Settings polls the control plane for this machine's current configuration, reporting in the same
 	// round trip what the machine did with the previous document. nil disables the poll entirely — a
 	// machine then receives its configuration once, at enrolment, which is the behaviour of every runner
@@ -243,7 +253,7 @@ func (cfg ServeConfig) parkLoop(ctx context.Context, state *serveState, leases *
 			}
 			continue
 		}
-		serveLease(ctx, cfg.Supervisor, leaseSession, cfg.WorkspaceRoot, cfg.AllowUnsafeBind, logf)
+		serveLease(ctx, cfg.Supervisor, leaseSession, NewToolServer(cfg.Shell), cfg.WorkspaceRoot, cfg.AllowUnsafeBind, logf)
 	}
 }
 
@@ -471,7 +481,7 @@ func sleep(ctx context.Context, d time.Duration) error {
 // into the engine and engine frames back to the control plane, then reports lease completion.
 // A lease-scoped context stops the inbound relay goroutine so it never outlives the lease. A
 // failed lease is logged, not fatal, so one bad engine does not end the runner's service.
-func serveLease(ctx context.Context, supervisor *StreamSupervisor, leaseSession *LeaseSession, allocationRoot string, allowUnsafeBind bool, logf func(string, ...any)) {
+func serveLease(ctx context.Context, supervisor *StreamSupervisor, leaseSession *LeaseSession, tools *ToolServer, allocationRoot string, allowUnsafeBind bool, logf func(string, ...any)) {
 	defer leaseSession.Close()
 	lease := leaseSession.Lease()
 	logf("received lease %s for run %s (fence %d)", lease.LeaseID, lease.RunID, lease.Fence)
@@ -490,22 +500,11 @@ func serveLease(ctx context.Context, supervisor *StreamSupervisor, leaseSession 
 	defer cancel()
 
 	// Controller frames relayed over the lease feed the supervisor's stdin injection; the
-	// supervisor's forwarded engine frames are relayed back to the controller by the sink.
+	// supervisor's forwarded engine frames are relayed back to the controller by the sink. Exec
+	// requests on the same connection are not relayed at all — they run on THIS machine's executor
+	// (toolserver.go), which is the whole of what a lease can now be asked to do beyond an engine.
 	inbound := make(chan contracts.EngineFrame)
-	go func() {
-		defer close(inbound)
-		for {
-			frame, err := leaseSession.ReceiveControllerFrame(leaseCtx)
-			if err != nil {
-				return
-			}
-			select {
-			case inbound <- frame:
-			case <-leaseCtx.Done():
-				return
-			}
-		}
-	}()
+	go relayInbound(leaseCtx, leaseSession, tools, inbound, logf)
 
 	sink := func(ctx context.Context, frame contracts.EngineFrame) error {
 		return leaseSession.SendEngineFrame(ctx, frame)
