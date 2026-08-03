@@ -40,6 +40,22 @@ import (
 	"github.com/palgroup/palai/storage"
 )
 
+// ErrRunPoolNotRecordable reports that a placement decision matched NO row: the pool is not one this
+// tenant can be served by, so nothing was written and the run still carries no pool.
+//
+// IT IS AN ERROR RATHER THAN AN EMPTY STRING BECAUSE A CALLER CAN IGNORE A STRING. `RecordRunPool` is
+// deliberately a no-op for a foreign or missing pool — a config_policy naming a pool that does not
+// exist is a typo, and a foreign-key abort would kill every run in that project — but until
+// 2026-08-02 it then returned `nil`, and the caller dialled into the pool it had not recorded, PARKED
+// the run there, and left `runs.pool_id` NULL. `OldestRunAwaitingCapacity` matches on exactly that
+// column, so two runs on a live stack sat `waiting` for thirty-one hours with no machine able to reach
+// them and no reaper covering them.
+//
+// A write that matched nothing must not report success. That sentence is the general form of the
+// defect, and fixing it here rather than at the one call site is what stops the next resolver bug from
+// producing the same silent NULL.
+var ErrRunPoolNotRecordable = errors.New("run pool is not one this tenant can be served by")
+
 // AttemptAwaitingCapacity is the attempts.state value that marks the one waiting reason a machine's
 // arrival may wake. Exported so a proof can assert on the durable marker rather than on a behaviour
 // that happens to follow from it.
@@ -81,21 +97,50 @@ func (s *Store) RunPlacement(ctx context.Context, tenant Tenant, runID string) (
 	return out, nil
 }
 
-// RecordRunPool writes the placement decision, ONCE. A run that already carries a pool is left alone,
-// so a resume can never be re-placed — and a pool that is not this tenant's records NOTHING rather than
-// claiming a decision, because a project policy naming a pool that does not exist is a typo and a
-// backfilled default would be a lie about where the run went. Such a run parks and stays parked, which
-// is the honest outcome for a pool that will never have a machine (the reaper is T5's).
-func (s *Store) RecordRunPool(ctx context.Context, tenant Tenant, runID, poolID string) error {
+// RecordRunPool writes the placement decision, ONCE, and REPORTS THE POOL THE RUN ENDS UP CARRYING —
+// "" when none was recorded. A run that already carries a pool is left alone, so a resume can never be
+// re-placed; and a pool that is not this tenant's records NOTHING rather than claiming a decision,
+// because a project policy naming a pool that does not exist is a typo and a backfilled default would
+// be a lie about where the run went.
+//
+// THE RETURN VALUE IS WHY THIS SIGNATURE CHANGED, and it is not defensive plumbing. Until 2026-08-02
+// this returned only an error, so "recorded nothing" was indistinguishable from "recorded" at the one
+// call site that decides whether to dial. A run whose tenant owns no pool resolves to the CONSTANT
+// `pool_default`, which belongs to the bootstrap tenant; the EXISTS below excludes it; `runs.pool_id`
+// stays NULL — and the dial then parked the run anyway. `OldestRunAwaitingCapacity` matches on
+// `r.pool_id = $3`, so NULL matched nothing and NO machine joining ANY pool could ever wake it. Two
+// runs sat that way for thirty-one hours on a live stack. The caller can only refuse to park a run it
+// cannot record if it is TOLD that it was not recorded.
+//
+// A no-row UPDATE is ambiguous — the pool may be unusable by this tenant, or a concurrent attempt may
+// have recorded it first — and the two answers decide opposite things, so the ambiguous case re-reads
+// rather than guessing. It costs one extra round trip on a path that runs at most once per run.
+func (s *Store) RecordRunPool(ctx context.Context, tenant Tenant, runID, poolID string) (string, error) {
 	if poolID == "" {
-		return nil
+		return "", nil
 	}
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	if _, err := s.pool.Exec(ctx, storage.Query("RecordRunPool"),
-		runID, tenant.Organization, tenant.Project, poolID); err != nil {
-		return fmt.Errorf("record run pool for %s: %w", runID, err)
+	var recorded string
+	switch err := s.pool.QueryRow(ctx, storage.Query("RecordRunPool"),
+		runID, tenant.Organization, tenant.Project, poolID).Scan(&recorded); {
+	case errors.Is(err, pgx.ErrNoRows):
+		// Nothing was written by THIS call, and the two reasons decide opposite things. Ask the row.
+		current, rerr := s.RunPlacement(ctx, tenant, runID)
+		if rerr != nil {
+			return "", rerr
+		}
+		if current.PoolID == "" {
+			// Nothing recorded and nothing already there: the pool is not one this tenant can be served
+			// by. REFUSE rather than report success — see ErrRunPoolNotRecordable.
+			return "", fmt.Errorf("%w: %s", ErrRunPoolNotRecordable, poolID)
+		}
+		// Write-once: a concurrent attempt (or this run's earlier one) already placed it. NOT an error —
+		// a resume returns to the SAME pool, and turning this into a failure would break every resume.
+		return current.PoolID, nil
+	case err != nil:
+		return "", fmt.Errorf("record run pool for %s: %w", runID, err)
 	}
-	return nil
+	return recorded, nil
 }
 
 // ParkRunForCapacity releases a run whose pool holds no machine: running->waiting plus the attempt's
@@ -271,8 +316,12 @@ func (s *Store) WakeRunAwaitingCapacity(ctx context.Context, tenant Tenant, pool
 	if err != nil {
 		return "", err
 	}
-	if _, err := tx.Exec(ctx, storage.Query("EnqueueJob"),
-		jobID, tenant.Organization, tenant.Project, "response.run", []byte(fmt.Sprintf(`{"run_id":%q}`, runID))); err != nil {
+	// The woken job carries the budget the run already spent (EnqueueWokenRunJob). A plain EnqueueJob
+	// starts at attempt_count 0, which made every park→wake cycle a fresh five-attempt ladder — so a run
+	// failing for a reason that has nothing to do with capacity was retried without bound and reached a
+	// terminal only by coincidence. A park is not progress.
+	if _, err := tx.Exec(ctx, storage.Query("EnqueueWokenRunJob"),
+		jobID, tenant.Organization, tenant.Project, []byte(fmt.Sprintf(`{"run_id":%q}`, runID)), runID); err != nil {
 		return "", fmt.Errorf("enqueue capacity wake job: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

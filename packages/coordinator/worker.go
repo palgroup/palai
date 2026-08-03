@@ -145,7 +145,10 @@ func (w *Worker) process(ctx context.Context, claim Claim, payload []byte) error
 			}
 			return nil
 		}
-		if _, err := w.store.Fail(ctx, claim, w.cfg.Retry); err != nil && !errors.Is(err, ErrStaleFence) {
+		// THE ERROR TRAVELS WITH THE FAILURE. Until 2026-08-02 handlerErr went out of scope here and the
+		// ledger recorded only the word 'failed', which is why four separate defects on a live stack could
+		// be explained only from a runner container's stdout.
+		if _, err := w.store.Fail(ctx, claim, w.cfg.Retry, handlerErr); err != nil && !errors.Is(err, ErrStaleFence) {
 			return err
 		}
 		return nil

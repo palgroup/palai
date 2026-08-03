@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -552,7 +553,14 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	// attempt by its RUN's queued-at. Placed immediately before the dial because the dial is what the
 	// decision is FOR: an attempt that stood down above never dialed and records no placement, which is
 	// right, because the attempt that does dial will record it.
+	// A pool this tenant cannot be served by is a configuration mistake, and it ends the run with a
+	// reason rather than parking it somewhere its own wake cannot look (see errPoolNotServable). It is
+	// checked HERE, before the dial, for the reason failProvisioning is: the fault is deterministic, so
+	// the retry ladder would spend five attempts reproducing it and hide it behind the generic terminal.
 	if err := o.place(ctx, tenant, &attempt); err != nil {
+		if errors.Is(err, errPoolNotServable) {
+			return o.failPlacement(ctx, tenant, attempt, responseID)
+		}
 		return err
 	}
 
@@ -1037,6 +1045,30 @@ func (o *Orchestrator) failProvisioning(ctx context.Context, tenant coordinator.
 		Detail: "the run's repository workspace could not be prepared: " + sanitizeProvisioningCause(cause) +
 			". Check the binding's clone_url and default branch, and whether a private repository needs a " +
 			"connection_ref naming a token in this deployment's secret store.",
+	}
+	problem.Type = problemTypePrefix + problem.Code
+	projection, _ := json.Marshal(map[string]any{"error": problem})
+	return o.spine.FinalizeResponse(ctx, tenant, responseID, "failed", projection)
+}
+
+// failPlacement ends a run whose resolved pool is not one its tenant can be served by, with a Response
+// body that says which pool and what to do about it. It is failProvisioning's shape for the same reason:
+// the fault is the deployment's own configuration, not a provider or an engine, so naming it carries no
+// untrusted text — and the person waiting gets an error instead of a run that is `waiting` forever.
+func (o *Orchestrator) failPlacement(ctx context.Context, tenant coordinator.Tenant, attempt AttemptDescriptor, responseID string) error {
+	switch _, err := o.spine.ApplyRunTransition(ctx, tenant, string(attempt.RunID), statemachines.RunCmdFail); {
+	case errors.Is(err, coordinator.ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):
+		return nil // another path already settled this run; its projection stands
+	case err != nil:
+		return err
+	}
+	problem := contracts.Problem{
+		Code:   "runner_pool_not_available",
+		Title:  "No runner pool serves this project",
+		Status: 503,
+		Detail: "the run resolved to runner pool " + strconv.Quote(attempt.PoolID) + ", which this project " +
+			"cannot be served by, so no machine of yours can ever take it. Create a pool named 'default' for " +
+			"this project, or name an existing one in the project's config_policy pool field.",
 	}
 	problem.Type = problemTypePrefix + problem.Code
 	projection, _ := json.Marshal(map[string]any{"error": problem})

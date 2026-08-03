@@ -17,6 +17,7 @@ import (
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/egress"
+	statemachines "github.com/palgroup/palai/packages/state-machines"
 )
 
 // RemoteAgents resolves a REGISTERED remote A2A agent row (a2a_remote_agents, §38.5, E19 T5).
@@ -592,8 +593,28 @@ func (o *Orchestrator) rebindChild(ctx context.Context, st *attemptState, spec c
 // parent (exactly-once across restores), and replies the typed child.result the engine folds (spec
 // §25.19). Shared by the inline dispatch and the detached rebind so the fold is one code path.
 func (o *Orchestrator) foldChildResult(ctx context.Context, st *attemptState, childRequestID, childRunID string, frame contracts.EngineFrame) error {
-	runState, output, err := o.spine.ChildRunOutcome(ctx, st.tenant, childRunID)
+	runState, output, childResponseID, err := o.spine.ChildRunOutcome(ctx, st.tenant, childRunID)
 	if err != nil {
+		return err
+	}
+	// SETTLE A CHILD NOTHING WILL EVER COME BACK TO (2026-08-02). An INLINE child is run with
+	// `_ = o.ExecuteAttempt(...)` — the error is discarded on purpose, because a child's dial or loop
+	// failure is not the parent's — and until now nothing then settled the child's OWN row. It has no
+	// durable job, so there is no lease to reclaim, no dead-letter ceiling and no bridge to a failed
+	// terminal; `DeadLetteredResponseRuns` joins THROUGH durable_jobs and structurally cannot see it.
+	// Measured: `run_e821e4fb4e0c0fc1` sat `running` with one `assigned` attempt and ZERO jobs for over a
+	// day, its response `in_progress`, while its parent had long since recorded child.completed status
+	// failed and failed itself.
+	//
+	// This function is the place because it is the ONE fold both the inline dispatch and the detached
+	// rebind reach, and it ALREADY reads this state to decide what to tell the parent — it knew the child
+	// was non-terminal and told the parent "failed" while leaving the child claiming to run.
+	//
+	// `waiting` IS DELIBERATELY NOT SETTLED, and that exclusion is the whole correctness of it: waiting is
+	// four conditions (a human's approval, a gated tool call, a live background task, a pool with no
+	// machine) and each has its own waker. Ending one would cut off a run somebody is about to answer.
+	// What is settled is the states nothing owns once the inline attempt has returned.
+	if err := o.settleAbandonedChild(ctx, st, childRunID, childResponseID, runState); err != nil {
 		return err
 	}
 	status := childStatus(runState)
@@ -605,6 +626,46 @@ func (o *Orchestrator) foldChildResult(ctx context.Context, st *attemptState, ch
 		"child_request_id": childRequestID, "status": status, "child_run_id": childRunID,
 		"output": outputText(output),
 	}, string(frame.ID)))
+}
+
+// settleAbandonedChild drives a child run that its inline attempt left mid-flight to a `failed`
+// terminal, with a Response body that says so. A terminal or `waiting` child is left exactly alone.
+//
+// It reads the child's own response id rather than taking one from the caller: the parent's is in
+// st.responseID and finalizing THAT would end the parent on its child's behalf.
+//
+// A failure to settle is returned rather than swallowed. The alternative — logging and folding anyway —
+// would reintroduce the defect one layer quieter, which is the shape this tree keeps finding.
+func (o *Orchestrator) settleAbandonedChild(ctx context.Context, st *attemptState, childRunID, responseID, runState string) error {
+	switch runState {
+	case "waiting":
+		return nil // parked on purpose; it has a waker of its own
+	default:
+		if childRunTerminal(runState) {
+			return nil
+		}
+	}
+	switch _, err := o.spine.ApplyRunTransition(ctx, st.tenant, childRunID, statemachines.RunCmdFail); {
+	case errors.Is(err, coordinator.ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):
+		return nil // it settled between the read and here; that terminal stands
+	case err != nil:
+		return err
+	}
+	if responseID == "" {
+		return nil // no response to finalize; the run terminal is the whole of the record
+	}
+	problem := contracts.Problem{
+		Code:   "child_run_abandoned",
+		Title:  "A delegated run did not finish",
+		Status: 500,
+		Detail: "this run was started as a delegated child and its attempt ended without reaching a " +
+			"terminal state. A child run holds no durable job, so nothing would have retried or ended it; " +
+			"its parent has been told the delegation failed. The attempt's own failure is in the parent " +
+			"run's journal and in the control-plane log.",
+	}
+	problem.Type = problemTypePrefix + problem.Code
+	projection, _ := json.Marshal(map[string]any{"error": problem})
+	return o.spine.FinalizeResponse(ctx, st.tenant, responseID, "failed", projection)
 }
 
 // childRunTerminal reports whether a run state is terminal, so a rebind folds a finished child rather

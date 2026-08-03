@@ -253,15 +253,15 @@ func (s *Store) JournalRunEvent(ctx context.Context, tenant Tenant, sessionID, r
 
 // ChildRunOutcome reads a finished ChildRun's terminal run state and response projection so the
 // parent folds its typed result (spec §25.19). Tenant-scoped by primary key.
-func (s *Store) ChildRunOutcome(ctx context.Context, tenant Tenant, childRunID string) (string, []byte, error) {
+func (s *Store) ChildRunOutcome(ctx context.Context, tenant Tenant, childRunID string) (string, []byte, string, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	var state string
+	var state, responseID string
 	var output []byte
-	err := s.pool.QueryRow(ctx, storage.Query("ChildRunOutcome"), childRunID, tenant.Organization, tenant.Project).Scan(&state, &output)
+	err := s.pool.QueryRow(ctx, storage.Query("ChildRunOutcome"), childRunID, tenant.Organization, tenant.Project).Scan(&state, &output, &responseID)
 	if err != nil {
-		return "", nil, fmt.Errorf("read child run outcome for %s: %w", childRunID, err)
+		return "", nil, "", fmt.Errorf("read child run outcome for %s: %w", childRunID, err)
 	}
-	return state, output, nil
+	return state, output, responseID, nil
 }
 
 // ChildRunRef identifies a non-terminal ChildRun for cancel propagation (spec §25.18, SUB-005).
