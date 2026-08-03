@@ -1337,6 +1337,19 @@ Run: `git rm apps/control-plane/api/slack*.go apps/control-plane/internal/extens
 DROP edilir. `usage_events`'i migration `000034` ile düşürmek bu ağaçta bir tabloyu **doğru**
 emekliye ayırmanın örneğidir — aynı biçim izlenir.
 
+**VE AYNI COMMIT'TE KANONİK LİSTEDEN ÇIKARILIR — ÖLÇÜLDÜ 2026-08-03.** Bu ağaçta tablolar **iki**
+otoriteye kayıtlıdır ve ikisi zıt yönde çalışır:
+- `tests/component/postgres/migration_test.go:29` **`allTables`** — elle yazılmış **kanonik liste**;
+  `slack_connections`, `slack_thread_sessions`, `slack_reply_deliveries` orada, satır 77'de.
+  Bir tabloyu DROP edip bu listede bırakmak migration testini **kırmızıya** çevirir.
+- `tests/security/tenancy/tenancy_test.go:682` **`tenantTables()`** — RLS altındaki tabloları
+  `pg_tables`'tan **keşfeder**. Buraya bir şey yazılmaz; yeni tablo `palai_apply_tenant_policy`
+  çağırdığı anda kapsama girer, çağırmazsa yakalanır.
+
+*(Yan bulgu, T4'ün işi değil ama kayda değer: `allTables`'ın kendi yorumu "every relation the **core
+migration** must create" diyor — oysa liste `slack_connections` (mig 035) ve `capability_workers`
+(mig 040) taşıyor. Yorum bayat; bu ağacın kayıtlı kusur ailesi. Final review'da triage edilsin.)*
+
 - [ ] **Step 6: Tam doğrulama**
 
 Run: `go build ./... && go vet -tags="component live" ./... && make verify`
