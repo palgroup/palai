@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -79,7 +80,10 @@ type fakePalai struct {
 	failNextResponseNotFound bool
 	failNextSteerNotFound    bool
 
-	stream func() EventStream
+	// stream is handed the CONTEXT SessionEvents was opened with, because that context is not incidental
+	// to the fake — *palai.SessionEventStream reads its connection under it, and a stream double that
+	// ignores it cannot reproduce (or refute) the 2026-08-03 defect. See ctxBoundStream.
+	stream func(ctx context.Context) EventStream
 	// sessionEventsParams records every EventsParams SessionEvents was called with, in call order —
 	// what proves (or disproves) AfterSequence resumption: an implementation that hardcoded
 	// AfterSequence: 0 would satisfy every OTHER assertion in this file identically, so a test that
@@ -142,7 +146,7 @@ func (f *fakePalai) SessionEvents(ctx context.Context, sessionID string, p palai
 	supplier := f.stream
 	f.mu.Unlock()
 	if supplier != nil {
-		return supplier(), nil
+		return supplier(ctx), nil
 	}
 	return staticStream(nil), nil // no events: Run's loop hits io.EOF on its first Next() and returns
 }
@@ -181,6 +185,37 @@ func (c *channelStream) Close() error {
 	return nil
 }
 
+// ctxBoundStream is an EventStream carrying *palai.SessionEventStream's REAL cancellation semantics, which
+// is the whole point of it: the SDK reads its connection under the context Sessions.Events was opened with
+// and closes its delivery channel when that context ends, and Next() turns a closed channel into io.EOF
+// (sdks/go/sessionevents.go). A stream double that ignored the context would render the events regardless
+// and report a green run for a bot that renders nothing.
+//
+// release gates when the relay may start reading, so the test can put the caller's cancellation strictly
+// BEFORE the first Next() — which is the real ordering (socket.dispatch's `defer cancel()` fires as
+// HandleEvent returns, before the goroutine is scheduled) and makes the outcome deterministic instead of a
+// race between the two.
+type ctxBoundStream struct {
+	ctx     context.Context
+	release chan struct{}
+	events  []palai.Event
+	i       int
+}
+
+func (c *ctxBoundStream) Next() (palai.Event, error) {
+	<-c.release
+	if c.ctx.Err() != nil {
+		return palai.Event{}, io.EOF // the SDK's own answer for a stream whose context has ended
+	}
+	if c.i >= len(c.events) {
+		return palai.Event{}, io.EOF
+	}
+	c.i++
+	return c.events[c.i-1], nil
+}
+
+func (c *ctxBoundStream) Close() error { return nil }
+
 // newTestDeps builds InboundDeps over fakes with a SYNCHRONOUS RunInBackground: a test that does not
 // care how a turn's stream plays out gets deterministic assertions immediately after HandleEvent
 // returns, with no goroutine left running past the test. Tests that DO care (steering into a still-open
@@ -194,6 +229,7 @@ func newTestDeps(t *testing.T) (InboundDeps, *fakePalai, *fakeStore) {
 		func(recipientUserID, recipientTeamID string) Slack { return &fakeSlack{} },
 		func(f func()) { f() },
 		func(context.Context, string, string, palai.Event) {},
+		func(error, string, string, string) {},
 		"bot_1", "U_BOT", "rev_1", "rbd_1",
 	)
 	return deps, fp, fs
@@ -330,7 +366,7 @@ func TestRepositoryIsOmittedWhenTheBotIsNotRepositoryBound(t *testing.T) {
 func TestASecondMessageWhileARunIsOpenSteersIntoIt(t *testing.T) {
 	deps, fp, _ := newTestDeps(t)
 	stream := newChannelStream()
-	fp.stream = func() EventStream { return stream }
+	fp.stream = func(context.Context) EventStream { return stream }
 
 	done := make(chan struct{})
 	deps.RunInBackground = func(f func()) {
@@ -390,7 +426,7 @@ func TestASecondMessageAfterTheRunFinishedStartsAFreshResponseOnTheSameSession(t
 		{Type: "run.completed.v1", Sequence: 6, Data: map[string]any{}},
 	}
 	streamCalls := 0
-	fp.stream = func() EventStream {
+	fp.stream = func(context.Context) EventStream {
 		streamCalls++
 		if streamCalls == 1 {
 			return staticStream(firstRunEvents)
@@ -530,6 +566,112 @@ func TestAnEditOrDeleteNeverBecomesATurn(t *testing.T) {
 	}
 	if fp.sessionsCreated != 0 || fp.responses != 0 {
 		t.Fatal("an edit or a deletion must never become a new turn (SLK-005)")
+	}
+}
+
+// TestTheEventStreamOutlivesTheEnvelopeThatOpenedIt is the regression for the defect that swallowed a real
+// answer on 2026-08-03: startRun detached the Run call from the caller's context but opened the EVENT
+// STREAM under it, and the caller is socket.dispatch, whose `defer cancel()` fires the instant HandleEvent
+// returns — before the relay goroutine has read anything.
+//
+// WHAT MAKES IT WORTH A TEST OF ITS OWN is that every OTHER signal stayed green. The turn was accepted, the
+// run completed server-side with its answer journalled, Run took its ordinary io.EOF exit and returned NIL,
+// and the Slack message was opened and closed correctly — just empty. Nothing failed; the relay simply
+// never saw an event. So neither HandleEvent's return value nor OnRunFailed can catch this, and the only
+// thing that can is asserting the events actually reached Slack after the caller's context ended.
+func TestTheEventStreamOutlivesTheEnvelopeThatOpenedIt(t *testing.T) {
+	deps, fp, _ := newTestDeps(t)
+	slackStub := &fakeSlack{}
+	deps.NewSlack = func(recipientUserID, recipientTeamID string) Slack { return slackStub }
+
+	release := make(chan struct{})
+	fp.stream = func(streamCtx context.Context) EventStream {
+		return &ctxBoundStream{ctx: streamCtx, release: release, events: []palai.Event{
+			{Type: "model_step.delta.v1", Sequence: 13, Data: map[string]any{"text": "Projede toplam 7 Swift dosyası var"}},
+			{Type: "run.completed.v1", Sequence: 21, Data: map[string]any{}},
+		}}
+	}
+
+	done := make(chan struct{})
+	deps.RunInBackground = func(f func()) { go func() { f(); close(done) }() }
+
+	// A context shaped like the one socket.dispatch hands the handler.
+	ctx, cancel := context.WithCancel(context.Background())
+	ev := slack.Event{Type: "app_mention", Kind: slack.KindMessage,
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001", UserID: "U2",
+		Text: "bu projede kaç tane Swift dosyası var?"}
+	if err := HandleEvent(ctx, deps, ev); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+	cancel()       // socket.dispatch's `defer cancel()`: the envelope is handled, its scope is over
+	close(release) // only now may the relay read — so the cancellation is strictly first
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the relay goroutine never finished")
+	}
+
+	if got := strings.Join(slackStub.appended, ""); got != "Projede toplam 7 Swift dosyası var" {
+		t.Fatalf("Slack received %q, want the run's own text — the relay read %d event(s) after the envelope's context ended",
+			got, len(slackStub.appended))
+	}
+	if slackStub.stopped != 1 {
+		t.Fatalf("the stream was closed %d time(s), want 1", slackStub.stopped)
+	}
+}
+
+// TestAFailedRunIsReportedAndNotDiscarded is the regression for the one defect this file has actually
+// shipped: startRun wrote `_ = Run(...)`, so every way a relay can fail AFTER the turn is accepted —
+// the Slack stream refusing, the event stream erroring, a panic unwinding through Run's defer — ended in
+// a discarded error. On 2026-08-03 that happened for real: a run completed on the control plane with its
+// answer journalled, the thread kept saying "Working…", and the bot's log said nothing at all for the
+// whole episode, so the failure had to be found by reading code rather than by reading output.
+//
+// The assertion is deliberately on the HOOK and not on the run's own success: HandleEvent's own return
+// value stays nil in this scenario (the turn WAS accepted — Palai has the run), which is exactly why
+// nothing else in this file can catch a regression here.
+func TestAFailedRunIsReportedAndNotDiscarded(t *testing.T) {
+	deps, _, _ := newTestDeps(t)
+	// A Slack whose closing stopStream refuses: Run absorbs a failed APPEND into pending and tries again,
+	// but a failed STOP is terminal — there is no later call to carry the text — so it becomes Run's
+	// returned error, the value under test here.
+	deps.NewSlack = func(recipientUserID, recipientTeamID string) Slack { return &fakeSlack{failStop: true} }
+
+	var (
+		reported                        []error
+		gotSession, gotChannel, gotThre string
+	)
+	deps.OnRunFailed = func(err error, sessionID, channel, threadTS string) {
+		reported = append(reported, err)
+		gotSession, gotChannel, gotThre = sessionID, channel, threadTS
+	}
+
+	ev := slack.Event{Type: "app_mention", Kind: slack.KindMessage,
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001", UserID: "U2", Text: "hi"}
+	// RunInBackground is synchronous here (newTestDeps), so the run has already finished and reported by
+	// the time this returns.
+	if err := HandleEvent(context.Background(), deps, ev); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+
+	if len(reported) != 1 {
+		t.Fatalf("OnRunFailed fired %d time(s), want 1 — the error relay.Run returned was discarded", len(reported))
+	}
+	if !strings.Contains(reported[0].Error(), "stop stream") {
+		t.Fatalf("reported error = %v, want the stopStream failure that ended the run", reported[0])
+	}
+	// The three ids are what makes the report actionable: an operator holding a thread that stopped needs
+	// to be able to go from it to the session, and from the session to the run.
+	if gotChannel != "C1" || gotThre != "1.1" {
+		t.Fatalf("reported channel/thread = %s/%s, want C1/1.1", gotChannel, gotThre)
+	}
+	bound, found, err := deps.Store.SessionForThread(context.Background(), "bot_1", "T1", "C1", "1.1")
+	if err != nil || !found {
+		t.Fatalf("thread not bound: found=%v err=%v", found, err)
+	}
+	if gotSession != bound {
+		t.Fatalf("reported session = %q, want the thread's own %q", gotSession, bound)
 	}
 }
 

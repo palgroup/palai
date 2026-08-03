@@ -56,6 +56,9 @@ type fakeSlack struct {
 	stoppedText      string
 
 	failAppends int
+	// failStop makes the closing chat.stopStream refuse — the ONE Slack failure Run reports rather than
+	// absorbs, since there is no later call to carry the text (see openStream.pending).
+	failStop bool
 }
 
 func (f *fakeSlack) StartStream(ctx context.Context, channel, threadTS, markdownText string) (string, error) {
@@ -75,6 +78,9 @@ func (f *fakeSlack) AppendStream(ctx context.Context, channel, ts, markdownText 
 func (f *fakeSlack) StopStream(ctx context.Context, channel, ts, markdownText string) error {
 	f.stopped++
 	f.stoppedText = markdownText
+	if f.failStop {
+		return errors.New("slack: stop failed")
+	}
 	return nil
 }
 

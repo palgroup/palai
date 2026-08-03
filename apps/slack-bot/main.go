@@ -158,6 +158,7 @@ func run(ctx context.Context) error {
 		relay.NewChannelSlackStreamer(http.DefaultClient, slackAPIBase, creds.botToken),
 		runInBackground,
 		d.onApprovalRequested,
+		d.onRunFailed,
 		bot.ID, slackCfg.BotUserID, bot.AgentRevisionID, bot.RepositoryBindingID,
 	)
 

@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -143,6 +144,9 @@ type fakeStreamSlack struct {
 	recipientUserID, recipientTeamID string
 	appended                         []string
 	stopped                          int
+	// failStop makes the closing chat.stopStream refuse. It is the cheapest way to make relay.Run return
+	// a non-nil error from inside the background goroutine — the value this bot once discarded.
+	failStop bool
 }
 
 func (f *fakeStreamSlack) StartStream(context.Context, string, string, string) (string, error) {
@@ -160,6 +164,9 @@ func (f *fakeStreamSlack) StopStream(context.Context, string, string, string) er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped++
+	if f.failStop {
+		return errors.New("slack: chat post failed: invalid_arguments")
+	}
 	return nil
 }
 
@@ -247,6 +254,7 @@ func testBot(t *testing.T, approvers []string, streamEvents []palai.Event) (*dis
 		},
 		func(f func()) { f() },
 		d.onApprovalRequested,
+		d.onRunFailed,
 		"bot_1", "U_BOT", "rev_1", "rbd_1",
 	)
 	return d, fp, streamSlack, ap, as
@@ -297,6 +305,49 @@ func TestAnInboundMessageBecomesATurn(t *testing.T) {
 	}
 	if streamSlack.stopped != 1 {
 		t.Fatalf("the Slack stream was closed %d time(s), want exactly 1 — an unclosed stream renders as permanently streaming", streamSlack.stopped)
+	}
+}
+
+// A RELAY THAT FAILS AFTER THE TURN WAS ACCEPTED IS THE ONE FAILURE THIS PROCESS CANNOT RETURN, so it has
+// to be the one it says loudest. OnEventsAPI already returned nil to the socket loop by the time the relay
+// goroutine dies; the envelope was acknowledged; the run may have completed on the control plane with its
+// answer journalled. Everything a monitor could look at is green and the thread is stuck.
+//
+// This measures the log line and not just the hook because the hook alone can be wired to a function that
+// writes nothing — which is precisely what `_ = Run(...)` was.
+func TestARelayThatFailsAfterTheTurnIsAcceptedIsLogged(t *testing.T) {
+	events := []palai.Event{
+		{Type: "model_step.delta.v1", Data: map[string]any{"text": "the answer"}},
+		{Type: "run.completed.v1", Data: map[string]any{}},
+	}
+	d, fp, streamSlack, _, _ := testBot(t, nil, events)
+	streamSlack.failStop = true
+
+	var logged []string
+	d.logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+
+	d.OnEventsAPI(context.Background(), mentionEnvelope("<@U_BOT> how many Swift files are there?"))
+
+	// The turn itself succeeded — that is the whole trap. Nothing about the Palai side of this episode
+	// looks wrong.
+	if n := len(fp.createdResponses()); n != 1 {
+		t.Fatalf("Responses.Create was called %d time(s), want 1", n)
+	}
+	if len(logged) != 1 {
+		t.Fatalf("the process logged %d line(s) for a relay that failed, want 1: %q", len(logged), logged)
+	}
+	line := logged[0]
+	sessionID := fp.createdResponses()[0].SessionID
+	if sessionID == nil {
+		t.Fatal("the run was created with no session id")
+	}
+	// Each of these is something the operator needs and cannot recover from the others: the session to
+	// read the run back, the channel and thread to find the message that stopped, and the error to know
+	// what to do about it.
+	for _, want := range []string{*sessionID, "channel=C1", "thread=100.001", "invalid_arguments"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("the log line does not carry %q, so an operator cannot act on it: %s", want, line)
+		}
 	}
 }
 

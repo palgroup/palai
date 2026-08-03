@@ -125,6 +125,24 @@ func (s *channelSlackStream) StopStream(ctx context.Context, channel, ts, markdo
 	return slack.StopStream(ctx, s.doer, s.apiBase, s.token, channel, ts, markdownText, nil)
 }
 
+// RunFailedHook is what happens to the error a background relay.Run returns.
+//
+// IT EXISTS BECAUSE THAT ERROR WAS ONCE DISCARDED — `_ = Run(...)` — and on 2026-08-03 that cost a real
+// answer: a run completed on the control plane with its text journalled, and the Slack thread kept saying
+// "Working…" forever while the bot's log stayed completely silent for the whole episode. There was nothing
+// to read, so there was nothing to fix.
+//
+// LIKE ApprovalHook IT RETURNS NOTHING, and for the same kind of reason: it fires on the goroutine startRun
+// handed to RunInBackground, long after HandleEvent returned to a caller that has already acknowledged the
+// Slack envelope. There is nobody left to return an error to and nothing left to retry into — the whole of
+// the available response is to say it out loud where an operator reads. Production (apps/slack-bot/dispatch.go)
+// does exactly that.
+//
+// The three ids ride alongside the error because the error itself cannot carry them: relay.Run wraps its
+// failures with the SESSION id only, and an operator looking at a thread that stopped needs the channel and
+// thread ts to find the session, not the other way round.
+type RunFailedHook func(err error, sessionID, channel, threadTS string)
+
 // InboundDeps is HandleEvent's whole seam: Task 8's store (thread<->session), the SDK calls a Slack
 // turn drives, a way to open a relay.Slack for one thread's recipient, the concurrency primitive
 // relay.Run's own drain runs under, the bot's own identity, and its configured agent/repository (from
@@ -147,6 +165,9 @@ type InboundDeps struct {
 	// forwarded rather than called here because an approval request arrives on the RUN's event stream,
 	// which only Run reads — HandleEvent has returned long before the first one lands.
 	OnApproval ApprovalHook
+	// OnRunFailed is what happens to the error relay.Run returns. Required, for the reason RunFailedHook's
+	// own doc gives.
+	OnRunFailed RunFailedHook
 
 	// BotID is this bot's own bots-registry row id (c.Bots.Get) — the key ThreadStore partitions by,
 	// so two bots in the same Slack thread never share a session (Task 8's own requirement).
@@ -172,12 +193,13 @@ func NewInboundDeps(
 	newSlack func(recipientUserID, recipientTeamID string) Slack,
 	runInBackground func(func()),
 	onApproval ApprovalHook,
+	onRunFailed RunFailedHook,
 	botID, botUserID, agentRevisionID, repositoryBindingID string,
 ) InboundDeps {
 	return InboundDeps{
 		Store: store, Palai: client, NewSlack: newSlack, RunInBackground: runInBackground,
-		OnApproval: onApproval,
-		BotID:      botID, BotUserID: botUserID,
+		OnApproval: onApproval, OnRunFailed: onRunFailed,
+		BotID: botID, BotUserID: botUserID,
 		AgentRevisionID: agentRevisionID, RepositoryBindingID: repositoryBindingID,
 		state: newInboundState(),
 	}
@@ -195,6 +217,8 @@ func (deps InboundDeps) validate() error {
 		return errors.New("relay: InboundDeps needs RunInBackground")
 	case deps.OnApproval == nil:
 		return errors.New("relay: InboundDeps needs OnApproval — a run that parks on a human nobody is asked is a hang")
+	case deps.OnRunFailed == nil:
+		return errors.New("relay: InboundDeps needs OnRunFailed — a run whose failure nobody reports is a thread that stops with no trace anywhere")
 	case deps.state == nil:
 		return errors.New("relay: InboundDeps needs state — build it with NewInboundDeps")
 	case deps.BotID == "":
@@ -473,7 +497,32 @@ func (deps InboundDeps) startRun(ctx context.Context, tk threadKey, sessionID st
 		return fmt.Errorf("relay: create response for session %s: %w", sessionID, err)
 	}
 
-	stream, err := deps.Palai.SessionEvents(ctx, sessionID, palai.EventsParams{AfterSequence: deps.state.lastSequence(tk)})
+	// ONE CONTEXT FOR THE WHOLE RELAY, and it is detached from the caller's — the event stream and the Run
+	// that drains it are two halves of one thing that outlives this call, so they cannot be opened under
+	// two different lifetimes.
+	//
+	// THE STREAM WAS THE HALF THAT GOT THIS WRONG, and it cost a whole answer on 2026-08-03. Only the Run
+	// call below was detached; the stream above it was opened with the caller's ctx, and the caller is
+	// socket.dispatch, whose `defer cancel()` fires the INSTANT HandleEvent returns — which is before the
+	// goroutine has read a single event. *palai.SessionEventStream reads its connection under the context
+	// it was opened with (sdks/go/sessionevents.go: streamCtx derives from that ctx), and a cancelled one
+	// closes its items channel, which Next() reports as io.EOF.
+	//
+	// io.EOF IS RUN'S CLEAN EXIT, which is what made this invisible rather than merely broken: Run stopped
+	// at its first Next(), closed the Slack message it had just opened with nothing appended, and returned
+	// NIL. The thread kept saying "Working…" while the run completed server-side with its answer
+	// journalled, and no error existed anywhere to be logged — the report below could not have caught this
+	// one, because there was nothing to report.
+	//
+	// Measured, against the live control plane on the very session that failed (21 events, 7 carrying
+	// text): opened with the caller's ctx and cancelled the way dispatch cancels it, the stream delivers 0
+	// events and ends in io.EOF; opened detached, it delivers all 21.
+	//
+	// Nothing leaks: Run closes the stream on every exit path (its own `defer deps.Events.Close()`), and
+	// Close cancels the stream's context, so the detached lifetime ends exactly when the run does.
+	relayCtx := context.WithoutCancel(ctx)
+
+	stream, err := deps.Palai.SessionEvents(relayCtx, sessionID, palai.EventsParams{AfterSequence: deps.state.lastSequence(tk)})
 	if err != nil {
 		return fmt.Errorf("relay: open session %s event stream: %w", sessionID, err)
 	}
@@ -490,10 +539,9 @@ func (deps InboundDeps) startRun(ctx context.Context, tk threadKey, sessionID st
 	deps.state.setActive(tk, true)
 	deps.RunInBackground(func() {
 		defer deps.state.setActive(tk, false)
-		// context.WithoutCancel: ctx may end (a socket dispatch loop's own request scope) the instant
-		// HandleEvent returns, but the run this starts outlives that scope by design — the same reason
-		// relay.go's own stop() detaches from ctx to close the Slack message it opened.
-		_ = Run(context.WithoutCancel(ctx), runDeps, sessionID, ev.ChannelID, ev.ThreadTS)
+		if runErr := Run(relayCtx, runDeps, sessionID, ev.ChannelID, ev.ThreadTS); runErr != nil {
+			deps.OnRunFailed(runErr, sessionID, ev.ChannelID, ev.ThreadTS)
+		}
 	})
 	return nil
 }

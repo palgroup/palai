@@ -108,3 +108,16 @@ func (d *dispatcher) onApprovalRequested(ctx context.Context, channel, threadTS 
 			ev.SessionID, channel, threadTS, err)
 	}
 }
+
+// onRunFailed is the RunFailedHook every relay.Run this process starts reports through.
+//
+// IT IS THE ONLY PLACE THIS FAILURE CAN BE SEEN. HandleEvent returned as soon as Palai accepted the turn, so
+// the run drains on a goroutine with no caller above it; the error relay.Run hands back has nowhere else to
+// go. Before this existed it went nowhere at all, and the resulting episode is the reason the line is worded
+// the way it is: the run itself SUCCEEDS on the control plane and its answer is journalled, so an operator
+// reading only the Palai side sees a healthy session and no reason to look further. What failed is the
+// rendering, and the thread is where the loss shows.
+func (d *dispatcher) onRunFailed(err error, sessionID, channel, threadTS string) {
+	d.log("slack-bot: THE ANSWER NEVER REACHED THE THREAD — session=%s channel=%s thread=%s. The turn was accepted and the run may well have completed on the control plane; what failed is relaying it into Slack, so the thread keeps whatever it last showed: %v",
+		sessionID, channel, threadTS, err)
+}
