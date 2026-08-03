@@ -453,20 +453,36 @@ func envValue(env []string, key string) string {
 	return ""
 }
 
-// nativeShellWarning is the line an operator would otherwise meet as a tool that simply is not
-// there. A control plane on a Mac with no declared shell posture has a nil shell runner, so every
-// `xcodebuild` call fails cleanly — correct behaviour, and completely opaque if nobody said why.
+// nativeShellWarning is the line an operator would otherwise meet as a tool that simply is not there,
+// or — worse since A.3 — as a tool that runs somewhere they did not expect.
+//
+// THE ADVICE THIS FUNCTION USED TO GIVE IS NO LONGER SUFFICIENT, AND SAYING SO IS THE POINT. It told an
+// operator that declaring PALAI_SHELL_NATIVE made `xcodebuild` reachable, which was true while the
+// CONTROL PLANE ran every shell command: `--native` put the control plane on the Mac and the Mac's
+// toolchain was one process away. A.3 moved execution to the machine holding the attempt's lease, and
+// on this posture that machine is the runner CONTAINER (`palai up --native` keeps postgres, the object
+// store and the runner in Docker). A command dispatched there lands in Linux, where there is no Xcode.
+//
+// So the third case below fires on a CORRECTLY configured stack. That is deliberate: a warning that
+// stayed silent because the value was right would leave the operator with a green bring-up and a
+// toolchain nothing can reach.
 func nativeShellWarning(get func(string) string) string {
 	switch posture := strings.TrimSpace(get("PALAI_SHELL_NATIVE")); {
 	case posture == "":
-		return "the control plane is running natively on this machine but declares NO shell posture, so palai.workspace.shell has " +
-			"no runner and every `xcodebuild`/`simctl`/`axe` call fails cleanly with no sandbox to run in. Fix: set " +
-			"PALAI_SHELL_NATIVE=" + nativeShellPosture + " in .env.local — and read what it deletes first " +
-			"(docs/operations/palai-on-a-mac.md §1: the boundary becomes the uid, and nothing else)"
+		return "no shell posture is declared, so palai.workspace.shell has no runner on either process and every " +
+			"`xcodebuild`/`simctl`/`axe` call fails cleanly. Set PALAI_SHELL_NATIVE=" + nativeShellPosture +
+			" in .env.local — and read what it deletes first (docs/operations/palai-on-a-mac.md §1: the boundary " +
+			"becomes the uid, and nothing else). Read the next warning too: on this posture it is not yet enough"
 	case posture != nativeShellPosture:
-		// The control plane refuses this at boot, so the stack never came up; the warning exists for
-		// the case where it somehow did.
-		return fmt.Sprintf("PALAI_SHELL_NATIVE=%q is not the string the control plane accepts (%q)", posture, nativeShellPosture)
+		// Both binaries refuse this at boot, so the stack never came up; the warning exists for the case
+		// where it somehow did.
+		return fmt.Sprintf("PALAI_SHELL_NATIVE=%q is not the string a Palai process accepts (%q)", posture, nativeShellPosture)
+	default:
+		return "PALAI_SHELL_NATIVE=" + nativeShellPosture + " is declared, but a run's shell command no longer runs " +
+			"in the control plane: since A.3 it runs on the machine holding the attempt's lease, and `--native` " +
+			"leaves that machine a Linux CONTAINER. So `xcodebuild`/`simctl`/`axe` are NOT reachable on this stack " +
+			"— the posture reaches the runner container's own filesystem. Reaching this Mac's toolchain needs the " +
+			"RUNNER running natively on it (docs/operations/palai-on-a-mac.md). The control plane's own copy of the " +
+			"posture now governs only detached background tasks"
 	}
-	return ""
 }

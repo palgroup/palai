@@ -8,6 +8,7 @@ package execution
 // invariant regressed.
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -18,32 +19,53 @@ func testPending() *pendingRunner {
 	return &pendingRunner{release: make(chan struct{}), disconnected: make(chan struct{})}
 }
 
-// TestReleaseUnblocksEmitWithoutClosedSend is the exact Dial-write-error interleaving: a frame is
-// mid-emit (blocked, no Receiver) when the handler tears down. Closing release must unblock emit as
-// false with no panic, and readLoop (the single closer) then closes frames safely.
-func TestReleaseUnblocksEmitWithoutClosedSend(t *testing.T) {
+// TestEmitNeverParksTheConnectionsSoleReader is the STRONGER form of the guard this file opened with,
+// and the reason it changed is A.3.
+//
+// The original reproduced the Dial-write-error interleaving directly: a frame mid-emit (blocked, no
+// Receiver) when the handler tore down, which must unblock as false rather than panic on a closed
+// channel. That interleaving can no longer arise, because emit no longer parks at all — since a shell
+// command's answer arrives through the same goroutine, a send that waited for a receiver could wait for
+// a receiver that is itself waiting on this reader. So the hazard is eliminated rather than handled,
+// and what is asserted here is the elimination: emit RETURNS with no Receiver, at every depth including
+// a full backlog, and the single-closer invariant still holds around it.
+func TestEmitNeverParksTheConnectionsSoleReader(t *testing.T) {
 	pr := testPending()
 	gc := newGatewayChannel(pr, AttemptDescriptor{})
 	pr.gc.Store(gc)
 
-	emitResult := make(chan bool, 1)
-	go func() { emitResult <- gc.emit(relayRead{frame: contracts.EngineFrame{ID: "frm_x"}}) }()
-
-	// Let emit reach its blocking send (no Receiver on frames). The assertion holds regardless of
-	// whether emit has blocked yet — either way the close must unblock/short-circuit it as false.
-	time.Sleep(20 * time.Millisecond)
-	close(pr.release) // the fix's path — NOT close(gc.frames)
-
-	select {
-	case delivered := <-emitResult:
-		if delivered {
-			t.Fatal("emit returned true, but release was closed before any Receiver arrived")
+	// Fill the backlog with nobody receiving — the state an orchestrator inside a tool call leaves.
+	emitted := make(chan bool, 1)
+	for i := 0; i < relayBacklog+2; i++ {
+		go func() { emitted <- gc.emit(relayRead{frame: contracts.EngineFrame{ID: "frm_x"}}) }()
+		select {
+		case <-emitted:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("emit parked at depth %d with no Receiver: the reader that would deliver a waiting "+
+				"command's answer is the one that is stuck", i)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("emit did not unblock after release closed — a stuck emit means a leaked readLoop")
+	}
+
+	// Past the backlog emit reports "stop" rather than growing, and the reason is IN the stream so the
+	// attempt learns why instead of seeing an engine that closed early.
+	var reasons int
+	for len(gc.frames) > 0 {
+		if read := <-gc.frames; errors.Is(read.err, errRelayBacklogFull) {
+			reasons++
+		}
+	}
+	if reasons != 1 {
+		t.Fatalf("the drained relay carried %d backlog-full reasons, want exactly 1", reasons)
+	}
+
+	// A command waiting on this lease was answered rather than left for the connection to outlive.
+	answers, _, err := gc.execs.register("exec_after_overflow")
+	if err == nil {
+		t.Fatalf("a command registered after the relay gave up and was accepted (answers=%v)", answers)
 	}
 
 	// readLoop is the sole frames-closer; closing here (and twice) must be panic-free and idempotent.
+	close(pr.release)
 	gc.closeFrames()
 	gc.closeFrames()
 }

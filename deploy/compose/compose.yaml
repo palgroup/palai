@@ -220,6 +220,31 @@ services:
       # The compose project this runner belongs to; it labels every engine sandbox it
       # launches so `palai local down` reaps exactly this stack's orphaned engines (H4).
       PALAI_COMPOSE_PROJECT: ${PALAI_COMPOSE_PROJECT}
+      # WHERE THIS MACHINE RUNS A SHELL COMMAND (A.3). The control plane no longer holds a
+      # process-wide executor: a run's shell tool call travels to the machine holding the attempt's
+      # lease and runs HERE, so THIS copy is what decides whether `palai.workspace.shell` can run
+      # anything at all. Unset on both leaves the tool refusing cleanly, which is what every compose
+      # deployment before A.3 did.
+      #
+      # THE `${VAR:-}` FORM MATCHES THE CONTROL-PLANE BLOCK ABOVE, and the tree's older reason for
+      # insisting on it does NOT hold on this Docker. Measured 2026-08-04, Docker 24.0.2, both forms
+      # in one file, read from INSIDE the started containers:
+      #
+      #   docker compose --env-file X -f probe.yaml up -d && docker exec <c> sh -c 'echo $VAR'
+      #     environment: {VAR: "${VAR:-}"}  -> the operator's value        VAR unset -> PRESENT, empty
+      #     environment: {VAR:}             -> the operator's value        VAR unset -> ABSENT
+      #
+      # So a bare key IS settable, from the shell and from --env-file alike; the only difference is
+      # whether an unconfigured deployment gets an empty variable or no variable. posture.RunnerFromEnv
+      # reads these with os.Getenv, which cannot tell those apart, so the choice here is consistency.
+      #
+      # PALAI_SHELL_NATIVE HERE MEANS THIS CONTAINER, NOT THE HOST, and that is the whole of the
+      # remaining Mac gap: `palai up --native` makes the CONTROL PLANE native and leaves the runner a
+      # Linux container, so an `xcodebuild` dispatched to it would not find a Mac. Reaching a Mac's own
+      # toolchain now needs the RUNNER on the Mac.
+      PALAI_SANDBOX_IMAGE: ${PALAI_SANDBOX_IMAGE:-}
+      PALAI_SHELL_NATIVE: ${PALAI_SHELL_NATIVE:-}
+      PALAI_SANDBOX_WALL_TIME: ${PALAI_SANDBOX_WALL_TIME:-}
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
       - "${PALAI_HOME}/ca/ca.crt:/palai/ca/ca.crt:ro"

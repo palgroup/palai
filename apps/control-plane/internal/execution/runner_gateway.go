@@ -1820,6 +1820,9 @@ type gatewayChannel struct {
 	// active is the gateway's in-flight-lease counter (nil in the white-box channel tests). Close
 	// decrements it exactly once so a drain sees the lease finish.
 	active *atomic.Int64
+	// gaveUp records that the relay backlog overflowed and its one reserved slot is spent. It is owned by
+	// readLoop, the only goroutine that ever calls emit, so it needs no lock.
+	gaveUp bool
 	// execs is the set of commands this lease asked the MACHINE to run and has not yet heard back
 	// about (A.3). It lives here because readLoop below is the connection's sole reader: the answer
 	// arrives on the goroutine that reads every other message, so this is where that goroutine hands
@@ -1832,8 +1835,27 @@ type relayRead struct {
 	err   error
 }
 
+// relayBacklog is how many engine frames may sit un-received before the relay gives up, and it exists
+// because A.3 made a PARKED READER a deadlock rather than backpressure.
+//
+// The reader is this connection's only one, and since A.3 it also carries the answer to a shell
+// command. An orchestrator waiting inside a tool call is not receiving, so a reader parked on an
+// un-received frame would be parked against a caller parked on an answer only that reader can deliver
+// — and the engine reaches that state on an ORDINARY turn: engines/reference emits one frame per
+// tool_call and answers none until all are back, so a turn with two tool calls (or a tool call and a
+// delegation, tests/test_loop.py test_mixed_turn_answers_both_ordinary_tool_and_agent_delegation)
+// leaves a second frame behind the first. Before A.3 that park was harmless; the dispatch it waited on
+// did not need this goroutine.
+//
+// SIXTY-FOUR IS AN ARITHMETIC, NOT A FEELING. While a dispatch runs the engine is blocked reading its
+// tool results, so the backlog cannot exceed the batch it had already written — one frame per parallel
+// tool_call, and no model emits sixty-four. The cost of being wrong is bounded the same way: at the
+// per-frame ceiling a lease negotiates (64 KiB in the gateway fixtures) a full backlog is about 4 MiB
+// for one in-flight lease, and the overflow ENDS that lease with a named error rather than growing.
+const relayBacklog = 64
+
 func newGatewayChannel(pr *pendingRunner, attempt AttemptDescriptor) *gatewayChannel {
-	return &gatewayChannel{pr: pr, attempt: attempt, leaseID: leaseID(attempt), frames: make(chan relayRead)}
+	return &gatewayChannel{pr: pr, attempt: attempt, leaseID: leaseID(attempt), frames: make(chan relayRead, relayBacklog)}
 }
 
 // closeFrames closes the frames channel exactly once (readLoop reaches it from several paths), so
@@ -1913,15 +1935,43 @@ func (c *gatewayChannel) failRelay(err error) {
 	c.closeFrames()
 }
 
-// emit delivers one read to Receive, or stops if the channel was closed.
+// emit hands one read to Receive and NEVER PARKS THIS GOROUTINE (A.3 — see relayBacklog). readLoop is
+// the connection's sole reader and also the path a waiting shell command's answer takes, so a send that
+// waited for a receiver could wait for a receiver that is itself waiting on this reader.
+//
+// It is safe to decide on len() here because there is exactly ONE producer — readLoop — so the depth
+// this observes can only fall before the send below, never rise. The last slot is left free
+// deliberately: an overflow must be able to say WHY the relay ended, and a reason that could not be
+// delivered would surface to the attempt as "the engine closed the channel", which names the wrong
+// thing entirely.
 func (c *gatewayChannel) emit(read relayRead) bool {
 	select {
-	case c.frames <- read:
-		return true
 	case <-c.pr.release:
 		return false
+	default:
 	}
+	if c.gaveUp || len(c.frames) >= relayBacklog-1 {
+		if !c.gaveUp {
+			c.gaveUp = true
+			// Answer every waiting command first, for the same reason failRelay does: releasing them is
+			// what lets the orchestrator move, and it is the only party that could still drain this
+			// backlog.
+			c.execs.closeAll(errRelayBacklogFull)
+			c.frames <- relayRead{err: errRelayBacklogFull} // the reserved slot; cannot block
+		}
+		// The reserved slot is spent, so a SECOND overflow must return without sending. readLoop returns
+		// on false and never asks again, but "never parks" is a property of this function rather than a
+		// promise about its caller.
+		return false
+	}
+	c.frames <- read // room was observed above and only this goroutine fills it
+	return true
 }
+
+// errRelayBacklogFull ends a lease whose attempt stopped receiving for long enough to fill the relay.
+// It is a failed attempt — which retries — rather than a wedged one, and it names the cause so the
+// failure is not read as an engine that closed early.
+var errRelayBacklogFull = fmt.Errorf("the attempt stopped receiving engine frames and the relay backlog of %d filled", relayBacklog)
 
 // leaseOffer builds the runner.v1 lease.offer for an attempt: the fenced identity, the
 // immutable engine image digest, and the execution bounds the runner enforces.

@@ -308,46 +308,68 @@ func TestRemoteShellAnswersWhenTheRelayEndsWhileNobodyIsReceiving(t *testing.T) 
 	}
 }
 
-// TestRemoteShellStallsBehindAnUnconsumedEngineFrame RECORDS A CEILING THIS TASK DOES NOT LIFT, and
-// it is written as an assertion rather than a comment because a comment cannot fail.
+// TestRemoteShellAnswersBehindAnUnconsumedEngineFrame WAS TestRemoteShellStallsBehindAnUnconsumedEngineFrame,
+// and the inversion is the point rather than an edit — the ceiling it recorded has been lifted, so the
+// assertion turned over instead of being deleted.
 //
-// readLoop is the connection's sole reader and it relays engine frames over an UNBUFFERED channel
-// (runner_gateway.go, gatewayChannel.frames). Nothing here can change that: a second reader would
-// consume frames the orchestrator's own sequence discipline expects, which fails the attempt with a
-// protocol violation. So while a frame sits un-received, the reader is blocked in emit and has not
-// even read the exec.result behind it.
+// WHAT IT RECORDED (A.3 T2): readLoop is the connection's sole reader and relayed engine frames over an
+// UNBUFFERED channel, so while one frame sat un-received the reader was parked in emit and had not even
+// read the exec.result behind it. A second reader was never an option — it would consume frames the
+// orchestrator's sequence discipline expects and fail the attempt with a protocol violation — so the
+// fix had to be the relay's or the dispatch loop's.
 //
-// Today no attempt reaches this state — dispatchTool runs on the goroutine that has just received a
-// frame, so the relay is drained up to the tool.request. It becomes reachable the moment the engine
-// emits anything (progress, warning, heartbeat: orchestrator.go's default arm names all three) while
-// its tool call is outstanding. The fix belongs to the relay or to the dispatch loop, not here.
+// WHY IT COULD NOT STAY A CEILING (A.3 T3): the stall stopped being theoretical the moment a shell
+// command's answer began travelling this connection. T2 reasoned it was unreachable because
+// dispatchTool runs on the goroutine that just received a frame; engines/reference disagrees. It emits
+// one frame per tool_call and answers none until all are back, so an ordinary two-tool-call turn — or a
+// tool call beside a delegation (engines/reference/tests/test_loop.py,
+// test_mixed_turn_answers_both_ordinary_tool_and_agent_delegation, asserting
+// ["child.request", "tool.request"] from ONE model result) — leaves a second frame behind the first and
+// wedges the run for good.
 //
-// WHEN THAT FIX LANDS THIS TEST MUST FAIL, and inverting it is the point: the answer will arrive.
-func TestRemoteShellStallsBehindAnUnconsumedEngineFrame(t *testing.T) {
+// So the relay now buffers and emit never parks (runner_gateway.go, relayBacklog). The answer arrives.
+func TestRemoteShellAnswersBehindAnUnconsumedEngineFrame(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	machineExec := &recordingExecutor{result: toolbroker.ShellResult{Stdout: "behind the frame\n"}}
 	ch := remoteShellFixture(t, ctx, "rs-token-stall", "run_rsstall", func(ctx context.Context, lease *runner.LeaseSession) {
 		message, err := lease.ReceiveMessage(ctx)
 		if err != nil {
 			return
 		}
-		// One engine frame ahead of the answer, and nobody on the control plane is receiving it.
+		// One engine frame ahead of the answer, and nobody on the control plane is receiving it — the
+		// state an orchestrator inside a tool call is always in.
 		_ = lease.SendEngineFrame(ctx, contracts.EngineFrame{
 			Protocol: "engine.v1", ID: "frm_rsstall", Type: "progress", Sequence: 1,
 			Time: time.Now().UTC().Format(time.RFC3339), RunID: lease.Lease().RunID,
 		})
-		_ = lease.SendExecResult(ctx, runner.NewToolServer(&recordingExecutor{}).Handle(ctx, message))
+		_ = lease.SendExecResult(ctx, runner.NewToolServer(machineExec).Handle(ctx, message))
 		<-ctx.Done()
 	})
 
-	runCtx, runCancel := context.WithTimeout(ctx, 750*time.Millisecond)
+	// A short deadline on purpose: the answer must arrive because it was DELIVERED, not because a
+	// generous timeout let something else happen first.
+	runCtx, runCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer runCancel()
-	_, err := remoteShellOn(t, ch).Run(runCtx, toolbroker.ShellCommand{
+	result, err := remoteShellOn(t, ch).Run(runCtx, toolbroker.ShellCommand{
 		Argv: []string{"true"}, WorkspaceRoot: "/tmp/palai-workspace",
 	})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Run error = %v, want the deadline — if the answer now arrives behind an unconsumed "+
-			"engine frame, the relay's head-of-line stall has been fixed and this test should assert the result", err)
+	if err != nil {
+		t.Fatalf("Run: %v — an answer behind an un-received engine frame is the shape of an ordinary "+
+			"multi-tool-call turn, and it must not wait for anything", err)
+	}
+	if result.Stdout != "behind the frame\n" {
+		t.Fatalf("result = %+v, want the machine's answer from behind the un-received frame", result)
+	}
+
+	// The frame that was ahead of it is still there, in order: buffering the relay must not drop what
+	// the orchestrator has not read yet.
+	relayed, err := ch.Receive(runCtx)
+	if err != nil {
+		t.Fatalf("Receive the engine frame that sat ahead of the answer: %v", err)
+	}
+	if relayed.ID != "frm_rsstall" {
+		t.Fatalf("relayed frame = %+v, want the progress frame that was buffered ahead of the answer", relayed)
 	}
 }
