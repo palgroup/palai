@@ -1747,8 +1747,7 @@ func (g *RunnerGateway) readLoop(pr *pendingRunner) {
 		// Since E24 T5 a revoke of THIS MACHINE does the same, which is what makes the hard stop targeted.
 		if _, revokedMachine, _ := pr.life.state(); g.revoked.Load() || revokedMachine {
 			if gc := pr.gc.Load(); gc != nil {
-				gc.emit(relayRead{err: ErrRunnerRevoked})
-				gc.closeFrames()
+				gc.failRelay(ErrRunnerRevoked)
 			}
 			pr.markDisconnected()
 			return
@@ -1758,26 +1757,29 @@ func (g *RunnerGateway) readLoop(pr *pendingRunner) {
 			continue // parked: a runner sends nothing before a lease; ignore any stray frame
 		}
 		if messageType != websocket.MessageText {
-			gc.emit(relayRead{err: errors.New("runner session frame must be a text message")})
-			gc.closeFrames()
+			gc.failRelay(errors.New("runner session frame must be a text message"))
 			return
 		}
 		var message contracts.RunnerMessage
 		if err := json.Unmarshal(payload, &message); err != nil {
-			gc.emit(relayRead{err: fmt.Errorf("decode runner session frame: %w", err)})
-			gc.closeFrames()
+			gc.failRelay(fmt.Errorf("decode runner session frame: %w", err))
 			return
 		}
 		switch message.Type {
 		case "engine.frame":
 			frame, err := decodeRelayFrame(message.Data)
-			if !gc.emit(relayRead{frame: frame, err: err}) || err != nil {
+			if err != nil {
+				gc.failRelay(err)
+				return
+			}
+			if !gc.emit(relayRead{frame: frame}) {
 				gc.closeFrames()
 				return
 			}
 		case "lease.complete":
 			if outcome, _ := message.Data["outcome"].(string); outcome != "succeeded" {
-				gc.emit(relayRead{err: fmt.Errorf("runner reported lease outcome %q", outcome)})
+				gc.failRelay(fmt.Errorf("runner reported lease outcome %q", outcome))
+				return
 			}
 			gc.closeFrames() // succeeded → close frames → Receive sees io.EOF
 			return
@@ -1837,10 +1839,11 @@ func newGatewayChannel(pr *pendingRunner, attempt AttemptDescriptor) *gatewayCha
 // closeFrames closes the frames channel exactly once (readLoop reaches it from several paths), so
 // Receive sees io.EOF and a repeated close never panics.
 //
-// It also answers every command still waiting on this machine (A.3). Every one of readLoop's teardown
-// paths funnels through here, so this is the single place that can promise a tool call an answer when
-// its machine goes away: the connection that would have carried the exec.result is the one that just
-// ended, and silence there is a run that never continues.
+// It also answers every command still waiting on this machine (A.3), which is what a tool call gets
+// instead of silence when the connection that would have carried its exec.result is the one that just
+// ended. This covers the path a dropped connection actually takes — readLoop's read error, which
+// reaches here directly. Every OTHER teardown answers earlier still, in failRelay, and that ordering
+// is load-bearing rather than incidental; the comment there says why.
 func (c *gatewayChannel) closeFrames() {
 	c.framesOnce.Do(func() {
 		close(c.frames)
@@ -1894,6 +1897,20 @@ func (c *gatewayChannel) Close() error {
 		c.execs.closeAll(errLeaseConnectionEnded)
 	})
 	return nil
+}
+
+// failRelay ends the relay with a reason: every command still waiting on this machine is answered,
+// the reason is reported to the attempt, and the stream closes.
+//
+// THE ORDER IS THE POINT AND IT IS NOT COSMETIC (A.3). emit blocks until the orchestrator receives,
+// and an orchestrator waiting inside a tool call is not receiving — so emitting first would park this
+// goroutine against a caller that is itself parked on an answer only this goroutine can deliver, and
+// neither would ever move. Answering the command first releases the orchestrator, which returns to
+// Receive, which is what lets the emit below complete and the attempt learn why its lease ended.
+func (c *gatewayChannel) failRelay(err error) {
+	c.execs.closeAll(err)
+	c.emit(relayRead{err: err})
+	c.closeFrames()
 }
 
 // emit delivers one read to Receive, or stops if the channel was closed.

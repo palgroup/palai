@@ -264,6 +264,50 @@ func TestRemoteShellAnswersWhenTheLeaseConnectionDies(t *testing.T) {
 	}
 }
 
+// TestRemoteShellAnswersWhenTheRelayEndsWhileNobodyIsReceiving pins the ORDER inside
+// gatewayChannel.failRelay, which is the difference between an attempt that ends and one that never
+// does.
+//
+// Every teardown but a read error reports its reason to the attempt before closing, and that report
+// blocks until the orchestrator receives it. An orchestrator waiting inside a tool call is not
+// receiving — so a teardown that reported first would park the reader against a caller parked on an
+// answer only that reader can deliver. Nothing here receives, which is exactly that state: the
+// command must still be answered.
+func TestRemoteShellAnswersWhenTheRelayEndsWhileNobodyIsReceiving(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	ch := remoteShellFixture(t, ctx, "rs-token-relayend", "run_rsrelayend", func(ctx context.Context, lease *runner.LeaseSession) {
+		if _, err := lease.ReceiveMessage(ctx); err != nil {
+			return
+		}
+		// A lease that ends badly rather than a socket that drops: readLoop reports the outcome to the
+		// attempt on its way out, and that report is the send this ordering is about.
+		_ = lease.Complete(ctx, "failed", "sha256:redacted")
+	})
+
+	answered := make(chan error, 1)
+	go func() {
+		_, err := remoteShellOn(t, ch).Run(ctx, toolbroker.ShellCommand{
+			Argv: []string{"sleep", "600"}, WorkspaceRoot: "/tmp/palai-workspace",
+		})
+		answered <- err
+	}()
+
+	select {
+	case err := <-answered:
+		if err == nil {
+			t.Fatal("Run succeeded, but the lease ended before the machine answered")
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Run error = %v, want the lease's end rather than a deadline", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return when the relay ended — the reader is parked on a receiver that is " +
+			"itself parked on this answer, which no attempt can recover from")
+	}
+}
+
 // TestRemoteShellStallsBehindAnUnconsumedEngineFrame RECORDS A CEILING THIS TASK DOES NOT LIFT, and
 // it is written as an assertion rather than a comment because a comment cannot fail.
 //
