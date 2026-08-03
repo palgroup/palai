@@ -7,3 +7,19 @@
 
 export { PalaiAdmin } from "./admin-client.ts";
 export type { PalaiOptions } from "./client.ts";
+
+// Task 3: the same provisioning classes the root entrypoint exports, reachable here too — an
+// admin-only consumer (who imports "@palai/sdk/admin" and never "@palai/sdk") can type a call
+// against admin.organizations/projects/apiKeys without a second import for the param/result shapes.
+export { ApiKeys, Organizations, Projects } from "./resources/provisioning.ts";
+export type {
+  ApiKey,
+  ApiKeyCreated,
+  ApiKeyCreateParams,
+  Organization,
+  OrganizationCreated,
+  OrganizationCreateParams,
+  Project,
+  ProjectCreateParams,
+  ProjectPolicyParams,
+} from "./resources/provisioning.ts";
