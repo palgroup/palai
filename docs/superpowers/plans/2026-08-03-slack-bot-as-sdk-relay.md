@@ -119,9 +119,22 @@ kaybolmadan önce yerine geçen çalışıyor olmalı.
 
 **Interfaces:**
 - Consumes: `sdks/go/palai.go` — mevcut `Client` ve istek yardımcıları
-- Produces: `func (c *Client) CreateSession(ctx, CreateSessionParams) (*Session, error)`,
-  `func (c *Client) SteerSession(ctx, sessionID string, p SteerParams) (*Command, error)`,
+- Produces: `c.Sessions.Create(ctx, CreateSessionParams) (*Session, error)`,
+  `c.Sessions.Steer(ctx, sessionID string, p SteerParams) (*Command, error)`,
   `type Session struct { ID, Object, Status string }`
+
+**NESTED, like every other resource in this SDK** — `responses.go:26` (`Responses struct{client}`),
+`modelroutes.go:13`, and the TS SDK's `Sessions` class all nest, and every method there carries a
+variadic `opts ...CallOption` tail for per-call timeout/retry. A flat, non-variadic resource would be
+the only one in the package and would permanently lack a per-call override. **CORRECTED 2026-08-03**:
+this line first read `func (c *Client) CreateSession(...)`, which was the plan's error, not the
+implementer's.
+
+**MEASURED, and it overrides the sketch below:** `CreateSessionParams` carries **`Name` only**.
+`packages/contracts/session-write.gen.go` types `SessionWrite{AutoApprovePublications,
+AutoApproveTools, Name *string}` and `api/commands.go:260` decodes it with `DisallowUnknownFields`,
+so `agent_revision_id` is a **400** — verified live on 2026-08-03. Steering is
+`{command_id, kind, delivery, message}` (`api/commands.go:349-367`), never `{text}`.
 
 - [ ] **Step 1: Mevcut kaynak desenini oku**
 
