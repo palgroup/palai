@@ -165,7 +165,12 @@ func TestRecoveryObjectsAppendOnlyToApplicationRole(t *testing.T) {
 		t.Fatalf("Persist() error = %v", err)
 	}
 
-	conn, err := pool.Acquire(ctx)
+	// WithSystemScope on the ACQUISITION, not just on the Execs below: the scope is applied when the
+	// connection is checked out (storage/embed.go's PrepareConn), so a bare context here is a scopeless
+	// acquisition and A.2 Task 1 refuses those outright with ErrProjectRequired. This test is a
+	// role-level assertion about palai_app's grants, not a tenant read — the system scope is what it
+	// always meant, and the Execs below already said so.
+	conn, err := pool.Acquire(storage.WithSystemScope(ctx))
 	if err != nil {
 		t.Fatalf("Acquire() error = %v", err)
 	}
