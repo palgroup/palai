@@ -11,14 +11,19 @@
 //     is stored without checking that it still resolves, because it cannot check. The caller (Task 9)
 //     is the one that learns a session is gone — a 404 from the SDK's Sessions.Get/Events — and it is
 //     the caller's job to open a new session and call RebindThread, not this package's job to guess.
+//     Two events on the SAME orphaned thread can make that discovery at once, both open a new Palai
+//     session, and both call RebindThread — so RebindThread is a compare-and-swap on the session id the
+//     caller read (not a blind overwrite): exactly one of them wins the row, and the loser's return
+//     value says so, so the loser can close the session it just opened instead of leaking it.
 //  2. The DATABASE no longer enforces that a session id is real; this package's DISCIPLINE does. The
 //     old table's `REFERENCES sessions(id)` made writing a wrong id impossible. Here the only thing
 //     that makes it impossible is that every session id BindThread/RebindThread ever see came out of
 //     Palai's own API response. This package must never invent one (no UUID/ULID generation for
 //     session_id anywhere below) and must never accept one sourced from Slack input — a message body,
-//     a user-supplied string. Both methods refuse an empty sessionID as the one check that IS
-//     mechanical; the rest of the invariant is enforced by never writing a code path that could
-//     produce a session id from anywhere but a Sessions.Create/Sessions.Get response.
+//     a user-supplied string. Both methods refuse an empty session id as the one check that IS
+//     mechanical (BindThread on its one, RebindThread on both the old and the new); the rest of the
+//     invariant is enforced by never writing a code path that could produce a session id from anywhere
+//     but a Sessions.Create/Sessions.Get response.
 //
 // What IS kept from 000035_slack.up.sql's slack_thread_sessions: a second event in the same thread
 // resolves the SAME session (BindThread), and a concurrent race collapses at the database rather than
@@ -196,28 +201,40 @@ func (s *Store) BindThread(ctx context.Context, botID, teamID, channelID, thread
 
 // RebindThread replaces an existing thread's session id — the orphan-recovery path the package doc
 // describes: a thread's previously bound session no longer exists on Palai's side (a 404 the caller
-// got back from Sessions), the caller opened a NEW one, and the stale mapping must move to it rather
-// than accumulate a second row (the PRIMARY KEY forbids that anyway) or keep pointing callers at a
-// session that no longer answers. Unlike BindThread, this DOES overwrite; it also creates the row if
-// none exists yet, which is harmless — RebindThread's real caller already resolved the thread via
-// SessionForThread first, so the row is expected to exist, but there is no reason to refuse creating
-// it if it somehow does not.
+// got back from Sessions), so the caller opened a NEW one and wants the stale mapping to move to it.
 //
-// sessionID carries the exact same restriction as BindThread's: it must be Palai's own answer, never
-// Slack input, never invented here.
-func (s *Store) RebindThread(ctx context.Context, botID, teamID, channelID, threadTS, sessionID string) error {
-	if sessionID == "" {
-		return errors.New("store: RebindThread: sessionID is required")
+// It is a compare-and-swap, not a blind overwrite: the write only lands if the row STILL carries
+// oldSessionID — the value the caller actually read before deciding it was dead. won=false means it
+// did not (something else changed the row first: another event on the same orphaned thread that ran
+// this exact same recovery concurrently, or a third call this process never sees). Two events landing
+// on one orphaned thread at once will BOTH open a new Palai session and both call RebindThread with the
+// same oldSessionID; without the WHERE session_id = oldSessionID guard the second write would silently
+// clobber the first, and the session the first write pointed at would be abandoned — live on Palai's
+// side, referenced nowhere. With it, exactly one call wins (won=true, the table now names its
+// newSessionID) and the other loses (won=false, the table is unchanged by this call) — the loser's job
+// is to close the session IT just opened rather than leave it orphaned, not to retry this write.
+//
+// It never creates a row: the WHERE clause requires an existing session_id to match against, so a
+// thread that was never bound cannot be "rebound" — RebindThread's caller already resolved the thread
+// via SessionForThread and is replacing what that call read, not guessing at a fresh key.
+//
+// Both session ids carry BindThread's restriction: they must be Palai's own answers, never Slack
+// input, never invented here.
+func (s *Store) RebindThread(ctx context.Context, botID, teamID, channelID, threadTS, oldSessionID, newSessionID string) (bool, error) {
+	if oldSessionID == "" {
+		return false, errors.New("store: RebindThread: oldSessionID is required")
 	}
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO thread_sessions (bot_id, team_id, channel_id, thread_ts, session_id)
-		 VALUES ($1, $2, $3, $4, $5)
-		 ON CONFLICT (bot_id, team_id, channel_id, thread_ts)
-		 DO UPDATE SET session_id = EXCLUDED.session_id`,
-		botID, teamID, channelID, threadTS, sessionID,
+	if newSessionID == "" {
+		return false, errors.New("store: RebindThread: newSessionID is required")
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE thread_sessions
+		 SET session_id = $6
+		 WHERE bot_id = $1 AND team_id = $2 AND channel_id = $3 AND thread_ts = $4 AND session_id = $5`,
+		botID, teamID, channelID, threadTS, oldSessionID, newSessionID,
 	)
 	if err != nil {
-		return fmt.Errorf("store: rebind thread: %w", err)
+		return false, fmt.Errorf("store: rebind thread: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() == 1, nil
 }
