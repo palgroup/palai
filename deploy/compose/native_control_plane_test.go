@@ -39,6 +39,33 @@ func TestNativeOverlayDoesNotStartTheContainerControlPlane(t *testing.T) {
 	}
 }
 
+// TestNativeOverlayDoesNotStartTheContainerRunner is the same shape as the control-plane profile above
+// and it arrived for a sharper reason (A.3 T4): a run's shell command executes on the machine holding
+// the attempt's lease, so a runner in Docker is a Linux box with no Xcode — which is the entire point of
+// this posture. `palai up --native` runs the runner as a process on this machine instead.
+//
+// A PROFILE RATHER THAN A REMOVAL, again: the definition stays for `--profile container-runner`, the A/B
+// an operator wants when the native one misbehaves. What must never happen is both at once — two
+// machines in one pool means a command lands on whichever the gateway hands out, and "where did this
+// run" stops having an answer.
+func TestNativeOverlayDoesNotStartTheContainerRunner(t *testing.T) {
+	overlay := readOverlay(t)
+	if !strings.Contains(overlay, `profiles: ["container-runner"]`) {
+		t.Fatalf("%s no longer moves the runner service into a profile — a native bring-up would put TWO machines "+
+			"in one pool and a shell command would land on whichever the gateway handed out", nativeOverlay)
+	}
+	// The bring-up's own list is the other direction of the same fact: this walk finds what the file
+	// says, and that list finds what the command does.
+	up, err := os.ReadFile("../../cmd/cli/internal/stack/native.go")
+	if err != nil {
+		t.Fatalf("read the native bring-up: %v", err)
+	}
+	if !strings.Contains(string(up), `func nativeComposeServices() []string { return []string{"postgres", "object-store"} }`) {
+		t.Fatal("the native bring-up's compose service list is not the one this guard knows: re-read it and check " +
+			"the runner is still absent from what `palai up --native` starts")
+	}
+}
+
 // TestNativeOverlayReachesTheControlPlaneByTheNameOnItsCertificate is the one that would cost an
 // afternoon to rediscover. The stack CA mints exactly one SAN (cmd/cli/internal/stack/certs.go) and
 // the runner pins exactly one (packages/runner/session.go), so a runner in a container cannot dial a

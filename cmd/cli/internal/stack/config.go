@@ -206,6 +206,12 @@ type paths struct {
 	// `palai local down` stops it by, and the log its boot refusals are written to.
 	nativePID string
 	nativeLog string
+	// The NATIVE runner's two files (A.3 T4), and it needs its OWN pair rather than sharing the control
+	// plane's: the two are separate processes with separate lifetimes — a drift repair restarts the
+	// control plane alone — and one pid file holding two pids would make the reuse guard unable to say
+	// which process it is refusing to kill.
+	nativeRunnerPID string
+	nativeRunnerLog string
 }
 
 func resolvePaths() (paths, error) {
@@ -228,9 +234,11 @@ func resolvePaths() (paths, error) {
 		// The production secret-store master key (production.env.example step). Present only in the
 		// production profile; the restore-verify secret canary reads it to prove restored secrets
 		// decrypt under the target's key.
-		masterKey: filepath.Join(h, "secrets", "master-key"),
-		nativePID: filepath.Join(h, "control-plane.pid"),
-		nativeLog: filepath.Join(h, "control-plane.log"),
+		masterKey:       filepath.Join(h, "secrets", "master-key"),
+		nativePID:       filepath.Join(h, "control-plane.pid"),
+		nativeLog:       filepath.Join(h, "control-plane.log"),
+		nativeRunnerPID: filepath.Join(h, "runner.pid"),
+		nativeRunnerLog: filepath.Join(h, "runner.log"),
 	}, nil
 }
 

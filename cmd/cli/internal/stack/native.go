@@ -84,8 +84,8 @@ func UpNative(get func(string) string) (string, error) {
 	}
 
 	files := []string{"compose", "-p", cfg.Project, "-f", p.compose, "-f", overlay}
-	if err := runVisible(env, "docker", append(append([]string{}, files...), "up", "-d", "--wait", "postgres", "object-store")...); err != nil {
-		return "", fmt.Errorf("compose up (postgres, object-store): %w", err)
+	if err := runVisible(env, "docker", append(append(append([]string{}, files...), "up", "-d", "--wait"), nativeComposeServices()...)...); err != nil {
+		return "", fmt.Errorf("compose up (%s): %w", strings.Join(nativeComposeServices(), ", "), err)
 	}
 
 	pid, err := startNative(cfg, p, bin, env, listen, root, get)
@@ -93,12 +93,34 @@ func UpNative(get func(string) string) (string, error) {
 		return "", err
 	}
 
-	if err := runVisible(env, "docker", append(append(append([]string{}, files...), "up", "-d", "--wait"), append(upArgs, "runner")...)...); err != nil {
-		return "", fmt.Errorf("compose up (runner): %w", err)
+	// THE RUNNER IS NATIVE TOO SINCE A.3, and this is where the epic's Mac case is won or lost. A run's
+	// shell command executes on the machine holding the attempt's lease, so a runner in Docker is a
+	// Linux box with no Xcode in it. It starts LAST for the reason the container one did — cmd/runner
+	// log.Fatalf's on a failed enroll with nothing behind it to retry — and the control plane above is
+	// already serving by the time this line runs.
+	runnerBin, err := nativeRunnerBinary(p)
+	if err != nil {
+		return "", err
 	}
-	fmt.Fprintf(os.Stderr, "stack up: api %s (native control plane, pid %d), runner :%d\n", cfg.BaseURL, pid, cfg.RunnerPort)
-	return fmt.Sprintf("NATIVE control plane, pid %d, log %s — postgres/object-store/runner in Docker (%s)", pid, p.nativeLog, nativeOverlayFile), nil
+	runnerPID, err := startNativeRunner(cfg, p, runnerBin, nativeRunnerEnv(cfg, p, get, envValue(env, "PALAI_ENGINE_IMAGE"), root))
+	if err != nil {
+		return "", err
+	}
+	_ = upArgs // the runner is no longer a compose service on this posture; see nativeComposeServices
+	fmt.Fprintf(os.Stderr, "stack up: api %s (native control plane, pid %d), native runner pid %d\n", cfg.BaseURL, pid, runnerPID)
+	return fmt.Sprintf("NATIVE control plane, pid %d, log %s — NATIVE runner, pid %d, log %s — postgres/object-store in Docker (%s)",
+		pid, p.nativeLog, runnerPID, p.nativeRunnerLog, nativeOverlayFile), nil
 }
+
+// nativeComposeServices are the compose services a native bring-up starts, and THE RUNNER IS NOT AMONG
+// THEM since A.3 T4. It is a named list rather than an inline argument so a test can ask what the
+// bring-up actually starts: the property is not "the runner is native" on its own but that the two never
+// run TOGETHER — two machines in one pool means a command lands on whichever the gateway hands out, which
+// is precisely the "where did this run" ambiguity the epic exists to remove.
+//
+// The overlay profiles the service out as well, and the two are not redundant: this list is what this
+// command starts, the profile is what `docker compose up` started by hand would skip.
+func nativeComposeServices() []string { return []string{"postgres", "object-store"} }
 
 // nativeRunnerListen returns the address the native control plane binds its RUNNER gateway on, and
 // refuses the two ways an operator override makes the runner container unable to reach it.
@@ -453,36 +475,36 @@ func envValue(env []string, key string) string {
 	return ""
 }
 
-// nativeShellWarning is the line an operator would otherwise meet as a tool that simply is not there,
-// or — worse since A.3 — as a tool that runs somewhere they did not expect.
+// nativeShellWarning is the line an operator would otherwise meet as a tool that simply is not there.
 //
-// THE ADVICE THIS FUNCTION USED TO GIVE IS NO LONGER SUFFICIENT, AND SAYING SO IS THE POINT. It told an
-// operator that declaring PALAI_SHELL_NATIVE made `xcodebuild` reachable, which was true while the
-// CONTROL PLANE ran every shell command: `--native` put the control plane on the Mac and the Mac's
-// toolchain was one process away. A.3 moved execution to the machine holding the attempt's lease, and
-// on this posture that machine is the runner CONTAINER (`palai up --native` keeps postgres, the object
-// store and the runner in Docker). A command dispatched there lands in Linux, where there is no Xcode.
+// TWO OF ITS THREE ARMS ARE UNCHANGED SINCE A.3, AND THE THIRD HAS NOW BEEN RETIRED — counted rather
+// than summarised, because "the warning was fixed" would hide which fact moved.
 //
-// So the third case below fires on a CORRECTLY configured stack. That is deliberate: a warning that
-// stayed silent because the value was right would leave the operator with a green bring-up and a
-// toolchain nothing can reach.
+//   - posture UNSET: correct before A.3 and correct now. No process has an executor, every
+//     `xcodebuild`/`simctl`/`axe` call is refused cleanly, and the operator is told why.
+//   - posture MISSPELLED: correct before A.3 and correct now, and it covers MORE ground than it used
+//     to — both binaries refuse it at boot since the derivation became shared (adapters/sandboxes/
+//     posture), where once only the control plane did.
+//   - posture CORRECT: this arm existed for one task's width. T3 moved execution onto the machine
+//     holding the attempt's lease while `palai up --native` still left that machine a Linux container,
+//     so a correctly configured stack really did have an unreachable toolchain and the warning said so.
+//     T4 made the runner native too, so the condition it reported is gone and the arm is retired — a
+//     warning that outlived its defect is worse than none, because the next real one reads as noise.
+//
+// What is NOT claimed here is that the posture reaching this machine means Xcode will build. That
+// depends on the bootstrap namespace the bring-up inherited (native_runner.go's header measures what
+// does and does not take it away), and this function cannot see it.
 func nativeShellWarning(get func(string) string) string {
 	switch posture := strings.TrimSpace(get("PALAI_SHELL_NATIVE")); {
 	case posture == "":
 		return "no shell posture is declared, so palai.workspace.shell has no runner on either process and every " +
 			"`xcodebuild`/`simctl`/`axe` call fails cleanly. Set PALAI_SHELL_NATIVE=" + nativeShellPosture +
 			" in .env.local — and read what it deletes first (docs/operations/palai-on-a-mac.md §1: the boundary " +
-			"becomes the uid, and nothing else). Read the next warning too: on this posture it is not yet enough"
+			"becomes the uid, and nothing else)"
 	case posture != nativeShellPosture:
 		// Both binaries refuse this at boot, so the stack never came up; the warning exists for the case
 		// where it somehow did.
 		return fmt.Sprintf("PALAI_SHELL_NATIVE=%q is not the string a Palai process accepts (%q)", posture, nativeShellPosture)
-	default:
-		return "PALAI_SHELL_NATIVE=" + nativeShellPosture + " is declared, but a run's shell command no longer runs " +
-			"in the control plane: since A.3 it runs on the machine holding the attempt's lease, and `--native` " +
-			"leaves that machine a Linux CONTAINER. So `xcodebuild`/`simctl`/`axe` are NOT reachable on this stack " +
-			"— the posture reaches the runner container's own filesystem. Reaching this Mac's toolchain needs the " +
-			"RUNNER running natively on it (docs/operations/palai-on-a-mac.md). The control plane's own copy of the " +
-			"posture now governs only detached background tasks"
 	}
+	return ""
 }

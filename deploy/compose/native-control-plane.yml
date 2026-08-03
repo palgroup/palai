@@ -46,6 +46,22 @@ services:
     profiles: ["container-control-plane"]
 
   runner:
+    # THE CONTAINER RUNNER IS NOT STARTED ON THIS POSTURE SINCE A.3, and the profile is what says so.
+    #
+    # A run's shell command executes on the machine holding the attempt's lease. A runner in Docker is a
+    # Linux box, so on a Mac that command would find no `xcodebuild` — the whole reason this posture
+    # exists. `palai up --native` therefore runs the runner as a PROCESS on this machine
+    # (cmd/cli/internal/stack/native_runner.go) and starts only postgres + object-store here.
+    #
+    # IT IS A PROFILE RATHER THAN A REMOVAL for the same reason the control plane above is one: the
+    # definition stays available for `--profile container-runner`, which is the A/B an operator wants
+    # when the native one misbehaves. What must never happen is BOTH — two machines in one pool means a
+    # command lands on whichever the gateway hands out, and "where did this run" becomes unanswerable
+    # again. Compose will not start a profiled service without being asked, and the bring-up does not
+    # name it (nativeComposeServices).
+    #
+    # Everything below still describes that A/B path and is unchanged.
+    profiles: ["container-runner"]
     # The native control plane is not a compose service, so there is no health condition to wait on.
     depends_on: !reset {}
     environment:

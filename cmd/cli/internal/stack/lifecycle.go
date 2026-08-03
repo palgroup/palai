@@ -207,8 +207,24 @@ func Down() error {
 	return sweepEngineContainers(cfg.Project)
 }
 
-// downNative stops a native control plane and says so, or does nothing at all.
+// downNative stops a native control plane and a native runner and says so, or does nothing at all.
+//
+// THE RUNNER GOES FIRST, which is the reverse of the bring-up and is the order that leaves nothing
+// running: since A.3 the runner is the process an `xcodebuild` hangs off, and it dials the control plane
+// rather than the other way round. Stopping the control plane first would leave that compiler running
+// under a machine whose controller has gone, for as long as it takes to reach the next line.
+//
+// Each is reported separately because a stack can have one without the other — a bring-up that failed
+// after the control plane started leaves exactly that — and "stopped the native stack" would be a
+// sentence that is true of two different states.
 func downNative(p paths) error {
+	stoppedRunner, err := stopNativeRunner(p)
+	if err != nil {
+		return err
+	}
+	if stoppedRunner {
+		fmt.Fprintln(os.Stderr, "stopped the native runner")
+	}
 	stopped, err := stopNative(p)
 	if err != nil {
 		return err
