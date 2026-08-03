@@ -28,7 +28,7 @@ INSERT INTO durable_jobs (id, organization_id, project_id, kind, payload, attemp
 SELECT $1, $2, $3, 'response.run', $4,
        coalesce((SELECT j.attempt_count
                    FROM durable_jobs j
-                  WHERE j.organization_id = $2 AND j.project_id = $3
+                  WHERE j.project_id = $3
                     AND j.kind = 'response.run'
                     AND j.payload->>'run_id' = $5
                   ORDER BY j.created_at DESC, j.id DESC
@@ -39,8 +39,7 @@ WITH claimable AS (
     SELECT id
     FROM durable_jobs
     WHERE id = $1
-      AND organization_id = $2
-      AND project_id = $3
+      AND project_id = $2
       AND ready_at <= clock_timestamp()
       AND (
         status = 'queued'
@@ -50,8 +49,8 @@ WITH claimable AS (
 )
 UPDATE durable_jobs AS job
 SET status = 'running',
-    lease_owner = $4,
-    lease_expires_at = clock_timestamp() + ($5::bigint * interval '1 millisecond'),
+    lease_owner = $3,
+    lease_expires_at = clock_timestamp() + ($4::bigint * interval '1 millisecond'),
     fence = job.fence + 1,
     attempt_count = job.attempt_count + 1,
     updated_at = clock_timestamp()
@@ -66,26 +65,25 @@ VALUES ($1, $2, $3);
 -- name: JobLeaseExpired
 SELECT lease_expires_at IS NOT NULL AND clock_timestamp() >= lease_expires_at
 FROM durable_jobs
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- name: CompleteJob
 UPDATE durable_jobs
 SET status = 'completed',
     lease_owner = NULL,
     lease_expires_at = NULL,
-    result_hash = $5,
+    result_hash = $4,
     updated_at = clock_timestamp()
 WHERE id = $1
-  AND organization_id = $2
-  AND project_id = $3
-  AND fence = $4
+  AND project_id = $2
+  AND fence = $3
   AND lease_owner IS NOT NULL
   AND status = 'running';
 
 -- name: JobSnapshot
 SELECT status, fence, attempt_count, result_hash
 FROM durable_jobs
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- name: ClaimNextJob
 -- The worker loop leases the oldest ready job across the queue. The job queue is
@@ -175,7 +173,6 @@ SELECT j.organization_id, j.project_id, j.payload->>'run_id' AS run_id, r.respon
 FROM durable_jobs j
 JOIN runs r
   ON r.id = j.payload->>'run_id'
- AND r.organization_id = j.organization_id
  AND r.project_id = j.project_id
 WHERE j.status = 'dead'
   AND j.kind = 'response.run'
@@ -214,9 +211,8 @@ WHERE job.id = abandoned.id;
 SELECT EXISTS (
     SELECT 1 FROM durable_jobs
     WHERE kind = 'response.run'
-      AND payload->>'run_id' = $1
-      AND organization_id = $2 AND project_id = $3
-      AND id <> $4
+      AND payload->>'run_id' = $1 AND project_id = $2
+      AND id <> $3
       AND status = 'running'
       AND lease_expires_at IS NOT NULL
       AND lease_expires_at > clock_timestamp()

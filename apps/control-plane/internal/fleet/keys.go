@@ -175,7 +175,7 @@ func (k *PoolEnrollmentKeys) Mint(ctx context.Context, org, project, poolID stri
 	out := MintedKey{Value: value}
 	ctx = storage.WithTenant(ctx, org, project)
 	err = k.pool.QueryRow(ctx, storage.Query("InsertRunnerPoolKey"),
-		k.mintID("rpk"), org, project, poolID, hashKey(value), value[:keyPrefixLength], expiresAt,
+		k.mintID("rpk"), project, poolID, hashKey(value), value[:keyPrefixLength], expiresAt,
 	).Scan(&out.ID, &out.PoolID, &out.Prefix, &out.CreatedAt, &out.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MintedKey{}, ErrUnknownPool
@@ -193,7 +193,7 @@ func (k *PoolEnrollmentKeys) Mint(ctx context.Context, org, project, poolID stri
 // a cursor nobody needs is a cursor to keep in step with nothing.
 func (k *PoolEnrollmentKeys) List(ctx context.Context, org, project, poolID string) ([]PoolKey, error) {
 	ctx = storage.WithTenant(ctx, org, project)
-	rows, err := k.pool.Query(ctx, storage.Query("ListRunnerPoolKeys"), org, project, poolID)
+	rows, err := k.pool.Query(ctx, storage.Query("ListRunnerPoolKeys"), project, poolID)
 	if err != nil {
 		return nil, fmt.Errorf("list runner pool keys: %w", err)
 	}
@@ -229,7 +229,7 @@ func (k *PoolEnrollmentKeys) Revoke(ctx context.Context, org, project, keyID str
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	var out Revocation
-	err = tx.QueryRow(ctx, storage.Query("RevokeRunnerPoolKey"), keyID, org, project, k.now()).
+	err = tx.QueryRow(ctx, storage.Query("RevokeRunnerPoolKey"), keyID, project, k.now()).
 		Scan(&out.Key.ID, &out.Key.PoolID, &out.Key.Prefix, &out.Key.CreatedAt, &out.Key.ExpiresAt,
 			&out.Key.RevokedAt, &out.Key.LastUsedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -238,7 +238,7 @@ func (k *PoolEnrollmentKeys) Revoke(ctx context.Context, org, project, keyID str
 	if err != nil {
 		return Revocation{}, fmt.Errorf("revoke runner pool key: %w", err)
 	}
-	rows, err := tx.Query(ctx, storage.Query("ListRunnersEnrolledViaKey"), keyID, org, project)
+	rows, err := tx.Query(ctx, storage.Query("ListRunnersEnrolledViaKey"), keyID, project)
 	if err != nil {
 		return Revocation{}, fmt.Errorf("list machines enrolled via key: %w", err)
 	}

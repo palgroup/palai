@@ -17,17 +17,17 @@ SELECT id, name, trigger_id, kind, cron_expr, timezone, misfire_policy, misfire_
        max_catch_up, jitter_seconds, status, status_reason, revision, next_fire_at, one_time_at,
        starts_at, ends_at, created_at, updated_at
 FROM schedules
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND deleted_at IS NULL;
+WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL;
 
 -- ReviseSchedule applies a firing-relevant edit in place, bumping revision and recomputing next_fire_at
 -- (the no-schedule_revisions-table decision — occurrences pin the revision they fired under). Tenant-scoped.
 -- name: ReviseSchedule
 UPDATE schedules
-SET cron_expr = $4, timezone = $5, one_time_at = $6, misfire_policy = $7, misfire_grace_seconds = $8,
-    max_catch_up = $9, jitter_seconds = $10, starts_at = $11, ends_at = $12,
-    revision = revision + 1, next_fire_at = $13, status = 'active', status_reason = '',
+SET cron_expr = $3, timezone = $4, one_time_at = $5, misfire_policy = $6, misfire_grace_seconds = $7,
+    max_catch_up = $8, jitter_seconds = $9, starts_at = $10, ends_at = $11,
+    revision = revision + 1, next_fire_at = $12, status = 'active', status_reason = '',
     updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND deleted_at IS NULL
+WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL
 RETURNING revision;
 
 -- PauseSchedule stops the due-scan from admitting new occurrences (status='paused'); an in-flight run is
@@ -35,7 +35,7 @@ RETURNING revision;
 -- name: PauseSchedule
 UPDATE schedules
 SET status = 'paused', status_reason = 'paused by operator', updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND deleted_at IS NULL
+WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL
 RETURNING id;
 
 -- ResumeSchedule reactivates a paused OR failed schedule and RECOMPUTES next_fire_at from now ($4), so a
@@ -44,8 +44,8 @@ RETURNING id;
 -- the schedule is exhausted (a one_time already past). Tenant-scoped.
 -- name: ResumeSchedule
 UPDATE schedules
-SET status = 'active', status_reason = '', next_fire_at = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND deleted_at IS NULL
+SET status = 'active', status_reason = '', next_fire_at = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL
 RETURNING id;
 
 -- SoftDeleteSchedule tombstones a schedule (deleted_at set) so the due-scan skips it while its occurrence
@@ -53,7 +53,7 @@ RETURNING id;
 -- name: SoftDeleteSchedule
 UPDATE schedules
 SET deleted_at = clock_timestamp(), updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND deleted_at IS NULL
+WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL
 RETURNING id;
 
 -- ListSchedules pages a project's schedules newest-first (GET /v1/schedules, E29 T1). Tenant-scoped by
@@ -74,13 +74,13 @@ SELECT id, name, trigger_id, kind, cron_expr, timezone, misfire_policy, misfire_
        max_catch_up, jitter_seconds, status, status_reason, revision, next_fire_at, one_time_at,
        starts_at, ends_at, created_at, updated_at
 FROM schedules
-WHERE organization_id = $1 AND project_id = $2 AND deleted_at IS NULL
-  AND ($3::timestamptz IS NULL OR created_at >= $3)
-  AND ($4::timestamptz IS NULL OR created_at <= $4)
-  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
-  AND ($7::text IS NULL OR status = $7)
+WHERE project_id = $1 AND deleted_at IS NULL
+  AND ($2::timestamptz IS NULL OR created_at >= $2)
+  AND ($3::timestamptz IS NULL OR created_at <= $3)
+  AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5))
+  AND ($6::text IS NULL OR status = $6)
 ORDER BY created_at DESC, id DESC
-LIMIT $8;
+LIMIT $7;
 
 -- ListScheduleOccurrences pages a schedule's occurrences newest-first (GET /v1/schedules/{id}/occurrences).
 -- Tenant-scoped through the parent schedule.
@@ -105,12 +105,12 @@ SELECT o.occurrence_id, o.schedule_revision, o.planned_at, o.admitted_at, o.stat
        o.created_at
 FROM schedule_occurrences o
 JOIN schedules s ON s.id = o.schedule_id
-WHERE o.schedule_id = $1 AND s.organization_id = $2 AND s.project_id = $3
-  AND ($4::timestamptz IS NULL OR o.created_at >= $4)
-  AND ($5::timestamptz IS NULL OR o.created_at <= $5)
-  AND ($6::timestamptz IS NULL OR (o.planned_at, o.occurrence_id) < ($6, $7))
+WHERE o.schedule_id = $1 AND s.project_id = $2
+  AND ($3::timestamptz IS NULL OR o.created_at >= $3)
+  AND ($4::timestamptz IS NULL OR o.created_at <= $4)
+  AND ($5::timestamptz IS NULL OR (o.planned_at, o.occurrence_id) < ($5, $6))
 ORDER BY o.planned_at DESC, o.occurrence_id DESC
-LIMIT $8;
+LIMIT $7;
 
 -- DueSchedules lists active, non-deleted schedules whose next_fire_at is due (<= now) — the ticker's
 -- due-scan sweep unit. System-wide (not tenant-scoped: the ticker is a system loop, like the webhook
@@ -150,16 +150,16 @@ ON CONFLICT (schedule_id, schedule_revision, planned_at) DO NOTHING;
 -- fired, or a cron past ends_at).
 -- name: AdvanceNextFireAt
 UPDATE schedules
-SET next_fire_at = $6, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND revision = $4 AND next_fire_at = $5;
+SET next_fire_at = $5, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2 AND revision = $3 AND next_fire_at = $4;
 
 -- FailSchedule freezes a schedule on the `fail` misfire policy: status='failed' + a reason, nothing fires,
 -- admission stops until an operator resumes it. Guarded on the read next_fire_at so only one replica fails
 -- it once.
 -- name: FailSchedule
 UPDATE schedules
-SET status = 'failed', status_reason = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND next_fire_at = $5;
+SET status = 'failed', status_reason = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2 AND next_fire_at = $4;
 
 -- PendingOccurrences lists occurrences durably committed 'pending' but not yet handed to the delivery
 -- pipeline, joined to their schedule for the fire coordinates (trigger, tenant, principal, jitter, ends).

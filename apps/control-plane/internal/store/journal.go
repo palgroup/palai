@@ -33,7 +33,7 @@ func NewJournal(pool *pgxpool.Pool) *Journal { return &Journal{pool: pool} }
 func (j *Journal) SessionExists(ctx context.Context, org, project, sessionID string) (bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var exists bool
-	err := j.pool.QueryRow(ctx, storage.Query("SessionExistsInScope"), sessionID, org, project).Scan(&exists)
+	err := j.pool.QueryRow(ctx, storage.Query("SessionExistsInScope"), sessionID, project).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check session scope: %w", err)
 	}
@@ -47,7 +47,7 @@ func (j *Journal) SessionExists(ctx context.Context, org, project, sessionID str
 func (j *Journal) ResolveCursor(ctx context.Context, org, project, sessionID, eventID string) (int64, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var seq int64
-	err := j.pool.QueryRow(ctx, storage.Query("EventSequenceInScope"), eventID, sessionID, org, project).Scan(&seq)
+	err := j.pool.QueryRow(ctx, storage.Query("EventSequenceInScope"), eventID, sessionID, project).Scan(&seq)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -75,7 +75,7 @@ func (j *Journal) RecordAttachDenied(ctx context.Context, org, project, principa
 // sequence tails the journal without gaps or duplicates.
 func (j *Journal) After(ctx context.Context, org, project, sessionID string, afterSeq int64, limit int) ([]contracts.Event, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	rows, err := j.pool.Query(ctx, storage.Query("ReadEventsAfter"), sessionID, org, project, afterSeq, limit)
+	rows, err := j.pool.Query(ctx, storage.Query("ReadEventsAfter"), sessionID, project, afterSeq, limit)
 	if err != nil {
 		return nil, fmt.Errorf("read events: %w", err)
 	}

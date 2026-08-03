@@ -69,7 +69,7 @@ func (s *Store) LookupTool(ctx context.Context, org, project, runID, name string
 	// the other not, so the planner's choice would decide WHETHER A HUMAN IS ASKED before an irreversible
 	// call. Refusing loudly is the only answer that is not a guess about the operator's intent — the fix is
 	// theirs (drop a pin, or re-pin the set on one revision), and a silent miss would hide the need for it.
-	rows, err := s.pool.Query(ctx, storage.Query("LookupRunTool"), runID, org, project, name)
+	rows, err := s.pool.Query(ctx, storage.Query("LookupRunTool"), runID, project, name)
 	if err != nil {
 		return toolbroker.Tool{}, false, fmt.Errorf("lookup registry tool %q: %w", name, err)
 	}
@@ -236,7 +236,7 @@ func (s *Store) mcpConnectionForRun(ctx context.Context, org, project, runID, co
 	c := Connection{}
 	var configJSON []byte
 	var secretRef *string
-	switch err := s.pool.QueryRow(ctx, storage.Query("MCPConnectionForRun"), runID, org, project, connID).
+	switch err := s.pool.QueryRow(ctx, storage.Query("MCPConnectionForRun"), runID, project, connID).
 		Scan(&c.ID, &c.Name, &c.Transport, &configJSON, &secretRef, &c.TrustLevel); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return Connection{}, false, nil

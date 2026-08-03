@@ -11,7 +11,7 @@ RETURNING created_at;
 -- name: GetBot
 SELECT id, name, kind, agent_revision_id, repository_binding_id, principal_id, config, disabled, created_at
 FROM integration_bots
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- ListBots pages a project's bots newest-first (the shared keyset envelope). Tenant-scoped by RLS; the
 -- org/project predicate is defence-in-depth. ORDER BY is not optional here — this tree has twice decided
@@ -19,12 +19,12 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- name: ListBots
 SELECT id, name, kind, agent_revision_id, repository_binding_id, principal_id, config, disabled, created_at
 FROM integration_bots
-WHERE organization_id = $1 AND project_id = $2
-  AND ($3::timestamptz IS NULL OR created_at >= $3)
-  AND ($4::timestamptz IS NULL OR created_at <= $4)
-  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+WHERE project_id = $1
+  AND ($2::timestamptz IS NULL OR created_at >= $2)
+  AND ($3::timestamptz IS NULL OR created_at <= $3)
+  AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5))
 ORDER BY created_at DESC, id DESC
-LIMIT $7;
+LIMIT $6;
 
 -- UpdateBot applies a partial revision: a NULL parameter COALESCEs to the stored value, so a field the
 -- caller did not mention is left exactly as it was rather than overwritten with a zero value. `kind` is
@@ -33,16 +33,16 @@ LIMIT $7;
 -- revision of this one.
 -- name: UpdateBot
 UPDATE integration_bots
-SET name = COALESCE($4, name),
-    agent_revision_id = COALESCE($5, agent_revision_id),
-    repository_binding_id = COALESCE($6, repository_binding_id),
-    principal_id = COALESCE($7, principal_id),
-    config = COALESCE($8, config),
-    disabled = COALESCE($9, disabled)
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
+SET name = COALESCE($3, name),
+    agent_revision_id = COALESCE($4, agent_revision_id),
+    repository_binding_id = COALESCE($5, repository_binding_id),
+    principal_id = COALESCE($6, principal_id),
+    config = COALESCE($7, config),
+    disabled = COALESCE($8, disabled)
+WHERE id = $1 AND project_id = $2
 RETURNING id;
 
 -- name: DeleteBot
 DELETE FROM integration_bots
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
+WHERE id = $1 AND project_id = $2
 RETURNING id;

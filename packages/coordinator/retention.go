@@ -59,7 +59,7 @@ func (s *Store) GetResponse(ctx context.Context, tenant Tenant, id string) (Resp
 		output   []byte
 		purgedAt *time.Time
 	)
-	err := s.pool.QueryRow(ctx, storage.Query("GetResponse"), id, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetResponse"), id, tenant.Project).
 		Scan(&view.State, &output, &purgedAt, &view.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ResponseView{}, nil

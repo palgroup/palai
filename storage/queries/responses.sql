@@ -5,7 +5,7 @@
 -- name: LockRun
 SELECT session_id, response_id, state
 FROM runs
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
+WHERE id = $1 AND project_id = $2
 FOR UPDATE;
 
 -- CountProjectRootRuns returns a project's live ROOT-run counters for §20.12 admission caps:
@@ -21,20 +21,20 @@ SELECT
     count(*) FILTER (WHERE state IN ('provisioning', 'running', 'waiting')) AS concurrent,
     count(*) FILTER (WHERE state = 'queued') AS queued
 FROM runs
-WHERE organization_id = $1 AND project_id = $2 AND parent_run_id IS NULL;
+WHERE project_id = $1 AND parent_run_id IS NULL;
 
 -- name: UpdateRunState
 UPDATE runs
-SET state = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SET state = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2;
 
 -- RunQueueState locks a run and reports its state plus whether it has waited in the queue past the
 -- deadline ($4 seconds since created_at) — the §20.12 queue-deadline check. FOR UPDATE so the timeout
 -- transition that follows in the same transaction serialises against a worker's concurrent dispatch.
 -- name: RunQueueState
-SELECT state, (clock_timestamp() - created_at) > ($4 * interval '1 second') AS expired
+SELECT state, (clock_timestamp() - created_at) > ($3 * interval '1 second') AS expired
 FROM runs
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
+WHERE id = $1 AND project_id = $2
 FOR UPDATE;
 
 -- GetResponse reads a response's terminal projection for retrieval. purged_at is
@@ -42,7 +42,7 @@ FOR UPDATE;
 -- name: GetResponse
 SELECT state, output, purged_at, created_at
 FROM responses
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- ListResponses pages a project's run history newest-first (spec §22.3, E13 T4). It is tenant-scoped
 -- by RLS; the organization/project predicate is defence-in-depth (the same belt-and-braces every
@@ -55,13 +55,13 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- name: ListResponses
 SELECT id, state, session_id, created_at
 FROM responses
-WHERE organization_id = $1 AND project_id = $2
-  AND ($3 = '' OR state = $3)
-  AND ($4::timestamptz IS NULL OR created_at >= $4)
-  AND ($5::timestamptz IS NULL OR created_at <= $5)
-  AND ($6::timestamptz IS NULL OR (created_at, id) < ($6, $7))
+WHERE project_id = $1
+  AND ($2 = '' OR state = $2)
+  AND ($3::timestamptz IS NULL OR created_at >= $3)
+  AND ($4::timestamptz IS NULL OR created_at <= $4)
+  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
 ORDER BY created_at DESC, id DESC
-LIMIT $8;
+LIMIT $7;
 
 -- RunContext resolves a run's durable context (tenant, session, response, input) by
 -- its primary key. The run id is coordinator-supplied from the claimed job, so this
@@ -79,7 +79,7 @@ WHERE r.id = $1;
 -- name: RunIDForResponse
 SELECT id
 FROM runs
-WHERE response_id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE response_id = $1 AND project_id = $2;
 
 -- RunDelegation reads a run's per-run execution context: its depth, its delegation JSON —
 -- {"emit":[...]} on a root run configured to delegate, {"spec":{...}} on a child run, NULL on a
@@ -110,7 +110,7 @@ VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8);
 SELECT r.state, resp.output, r.response_id
 FROM runs r
 JOIN responses resp ON resp.id = r.response_id
-WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3;
+WHERE r.id = $1 AND r.project_id = $2;
 
 -- NonTerminalDescendantRuns walks the parent_run_id tree from a run and returns every
 -- non-terminal descendant (spec §25.18 cancel propagation, SUB-005). Recursive so a cancel
@@ -120,12 +120,12 @@ WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3;
 WITH RECURSIVE subtree AS (
     SELECT id, response_id, state
     FROM runs
-    WHERE parent_run_id = $1 AND organization_id = $2 AND project_id = $3
+    WHERE parent_run_id = $1 AND project_id = $2
     UNION ALL
     SELECT c.id, c.response_id, c.state
     FROM runs c
     JOIN subtree s ON c.parent_run_id = s.id
-    WHERE c.organization_id = $2 AND c.project_id = $3
+    WHERE c.project_id = $2
 )
 SELECT id, response_id
 FROM subtree
@@ -140,8 +140,8 @@ SELECT id, state,
        coalesce((delegation->'spec'->>'detached')::boolean, false),
        coalesce((delegation->'spec'->>'budget')::int, 0)
 FROM runs
-WHERE parent_run_id = $1 AND organization_id = $2 AND project_id = $3
-  AND delegation->'spec'->>'child_request_id' = $4
+WHERE parent_run_id = $1 AND project_id = $2
+  AND delegation->'spec'->>'child_request_id' = $3
 LIMIT 1;
 
 -- RunParentRun reads a run's parent_run_id (NULL for a root run) so the child-terminal wake can find
@@ -149,7 +149,7 @@ LIMIT 1;
 -- name: RunParentRun
 SELECT parent_run_id
 FROM runs
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- HasNonTerminalChildRun reports whether a parent still has any non-terminal child (E10 T8): the
 -- detached-parent wake only re-enters the parent once EVERY child is terminal, so its resume re-emits
@@ -158,7 +158,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- name: HasNonTerminalChildRun
 SELECT EXISTS (
     SELECT 1 FROM runs
-    WHERE parent_run_id = $1 AND organization_id = $2 AND project_id = $3
+    WHERE parent_run_id = $1 AND project_id = $2
       AND state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
 );
 
@@ -169,8 +169,8 @@ SELECT EXISTS (
 -- permanent, kill-safe class-fix for the 2-tx cancel window the e08a898 app-guard patched.
 -- name: UpdateResponse
 UPDATE responses
-SET state = $4, output = $5, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
+SET state = $3, output = $4, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2
   AND state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded', 'failed_with_uncertain_side_effect');
 
 -- AdvanceResponseState writes ONE NON-TERMINAL Response lifecycle state (spec §8.3, E26 T3). It is the
@@ -187,8 +187,8 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3
 -- unlikely.
 -- name: AdvanceResponseState
 UPDATE responses
-SET state = $5, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = $4;
+SET state = $4, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2 AND state = $3;
 
 -- HasUncertainSideEffect reports whether a run has an UNRESOLVED uncertain side effect — an
 -- irreversible/interactive tool_call still `uncertain` or in `manual_resolution` (spec §26.10, SES-010,
@@ -197,7 +197,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = $4;
 -- name: HasUncertainSideEffect
 SELECT EXISTS (
     SELECT 1 FROM tool_calls
-    WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+    WHERE run_id = $1 AND project_id = $2
       AND state IN ('uncertain', 'manual_resolution')
       AND replay_class IN ('irreversible', 'interactive')
 );
@@ -229,7 +229,7 @@ ON CONFLICT (id) DO UPDATE
 -- name: LookupToolCall
 SELECT state, coalesce(result::text, ''), replay_class, fence, request_hash
 FROM tool_calls
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- BeginToolCall records the durable PRE-EXECUTE marker for a side-effecting tool (spec §26.6-26.7, E10
 -- T7): the row goes to 'executing' BEFORE the external effect, so a kill between execute and commit is
@@ -258,7 +258,7 @@ ON CONFLICT (id) DO UPDATE
 -- name: MarkToolCallUncertain
 UPDATE tool_calls
 SET state = 'uncertain', reconciliation_state = 'reconciling', updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state IN ('executing', 'leased');
+WHERE id = $1 AND project_id = $2 AND state IN ('executing', 'leased');
 
 -- ReconcileToolCall resolves an `uncertain` tool_call to one of the §26.7 exits (E10 T7):
 -- reconciled_completed (the destination applied it), reconciled_not_applied (it did not), or
@@ -267,8 +267,8 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state IN ('execut
 -- existing bytes otherwise). $4 the new state, $5 the reconciliation_state mirror, $6 the optional result.
 -- name: ReconcileToolCall
 UPDATE tool_calls
-SET state = $4, reconciliation_state = $5, result = COALESCE($6, result), updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'uncertain';
+SET state = $3, reconciliation_state = $4, result = COALESCE($5, result), updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2 AND state = 'uncertain';
 
 -- SelectUncertainToolCalls returns the uncertain tool_calls awaiting reconciliation, oldest first — the
 -- reconcile loop's read (spec §26.7, E10 T7). It joins the run for the session/response the resolution
@@ -289,7 +289,7 @@ LIMIT $1;
 -- name: RunResolvedToolCalls
 SELECT id, replay_class
 FROM tool_calls
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE run_id = $1 AND project_id = $2
   AND state IN ('completed', 'reconciled_completed', 'reconciled_not_applied')
 ORDER BY created_at, id;
 
@@ -301,7 +301,7 @@ ORDER BY created_at, id;
 -- name: PendingToolOperationsForRun
 SELECT id, name, replay_class, reconciliation_state
 FROM tool_calls
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE run_id = $1 AND project_id = $2
   AND state IN ('uncertain', 'manual_resolution')
 ORDER BY created_at, id;
 
@@ -318,7 +318,7 @@ RETURNING id;
 -- name: GetModelResult
 SELECT state, result
 FROM model_requests
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- CommittedModelStepCount is the recovery replay watermark (spec §26.9, E10 T4): how many model
 -- steps this run has already committed. On a run.start reconstruction the engine re-walks steps
@@ -340,7 +340,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- have left the marker on the row forever, so every later machine arriving in that pool would try to
 -- wake a run that is already running.
 UPDATE attempts SET state = 'preempted', updated_at = clock_timestamp()
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND id <> $4
+WHERE run_id = $1 AND project_id = $2 AND id <> $3
   AND state IN ('assigned', 'starting', 'active', 'draining', 'awaiting_capacity');
 
 -- name: UpsertAttempt
@@ -354,18 +354,18 @@ WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND id <> $4
 INSERT INTO attempts (id, organization_id, project_id, run_id, fence)
 SELECT $1, $2, $3, $4, COALESCE(MAX(a.fence), 0) + 1
 FROM attempts a
-WHERE a.run_id = $4 AND a.organization_id = $2 AND a.project_id = $3
+WHERE a.run_id = $4 AND a.project_id = $3
 ON CONFLICT (id) DO NOTHING;
 
 -- name: CommittedModelStepCount
 SELECT count(*) FROM model_requests
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'completed';
+WHERE run_id = $1 AND project_id = $2 AND state = 'completed';
 
 -- CompleteModelRequest stores the model result so a later attempt replays it.
 -- name: CompleteModelRequest
 UPDATE model_requests
-SET state = 'completed', result = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SET state = 'completed', result = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2;
 
 -- Idempotent admission (spec §20.9, §8.3). The reservation is atomic with the
 -- resource creation; the response_body is the exact resource a replay returns.
@@ -383,8 +383,8 @@ RETURNING id;
 -- name: GetIdempotency
 SELECT request_hash, response_body, result_purged_at, resource_tombstone
 FROM idempotency_records
-WHERE organization_id = $1 AND project_id = $2 AND principal_id = $3
-  AND method = $4 AND route = $5 AND idempotency_key = $6;
+WHERE project_id = $1 AND principal_id = $2
+  AND method = $3 AND route = $4 AND idempotency_key = $5;
 
 -- $4 is the operator's label (E29, migration 000048) and is '' for every implicit creation: admission
 -- and fork_session both open a session on the caller's behalf, and neither has a name to give it. The
@@ -414,7 +414,7 @@ VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8, $9, $10);
 -- those bytes from the object store after this transaction commits (LP §7.2).
 -- name: PurgeExpiredStoreFalse
 WITH victims AS (
-    SELECT id, organization_id, project_id, state, output
+    SELECT responses.id, responses.organization_id, responses.project_id, responses.state, responses.output
     FROM responses
     WHERE store = false
       AND purged_at IS NULL
@@ -434,8 +434,7 @@ doomed_artifacts AS (
     FROM artifacts a
     JOIN runs r ON a.run_id = r.id
     JOIN victims v ON r.response_id = v.id
-    WHERE a.organization_id = v.organization_id
-      AND a.project_id = v.project_id
+    WHERE a.project_id = v.project_id
       AND a.object_key <> ''
 ),
 tombstone AS (
@@ -446,7 +445,6 @@ tombstone AS (
         outcome_fingerprint = encode(sha256(convert_to(coalesce(v.state, '') || coalesce(v.output::text, ''), 'UTF8')), 'hex')
     FROM victims v
     WHERE i.response_body->>'id' = v.id
-      AND i.organization_id = v.organization_id
       AND i.project_id = v.project_id
 ),
 -- Per-response scrub (spec §22.2): only the victim response's own run-scoped events are
@@ -458,7 +456,6 @@ scrub_events AS (
     SET payload = '{"purged": true}'::jsonb
     FROM victims v
     WHERE e.response_id = v.id
-      AND e.organization_id = v.organization_id
       AND e.project_id = v.project_id
 ),
 -- The row is scrubbed to an empty object_key (the DB index of the bytes is cleared); the
@@ -469,7 +466,6 @@ purge_artifacts AS (
     FROM runs r, victims v
     WHERE a.run_id = r.id
       AND r.response_id = v.id
-      AND a.organization_id = v.organization_id
       AND a.project_id = v.project_id
 ),
 -- input is NOT NULL, so its customer content is scrubbed to an empty object rather than

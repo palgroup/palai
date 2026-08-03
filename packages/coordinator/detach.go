@@ -32,7 +32,7 @@ func (s *Store) LookupChildByRequest(ctx context.Context, tenant Tenant, parentR
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var out ChildRunLookup
 	err := s.pool.QueryRow(ctx, storage.Query("LookupChildByRequest"),
-		parentRunID, tenant.Organization, tenant.Project, childRequestID).
+		parentRunID, tenant.Project, childRequestID).
 		Scan(&out.RunID, &out.State, &out.Detached, &out.Budget)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ChildRunLookup{}, false, nil
@@ -68,7 +68,7 @@ func (s *Store) EnqueueRunJob(ctx context.Context, tenant Tenant, runID string) 
 func (s *Store) WakeParentOfChild(ctx context.Context, tenant Tenant, childRunID string) (bool, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var parentRunID *string
-	if err := s.pool.QueryRow(ctx, storage.Query("RunParentRun"), childRunID, tenant.Organization, tenant.Project).
+	if err := s.pool.QueryRow(ctx, storage.Query("RunParentRun"), childRunID, tenant.Project).
 		Scan(&parentRunID); err != nil {
 		return false, fmt.Errorf("read parent of %s: %w", childRunID, err)
 	}
@@ -97,7 +97,7 @@ func (s *Store) WakeDetachedParent(ctx context.Context, tenant Tenant, parentRun
 
 	var sessionID, state string
 	var responseID *string
-	if err := tx.QueryRow(ctx, storage.Query("LockRun"), parentRunID, tenant.Organization, tenant.Project).
+	if err := tx.QueryRow(ctx, storage.Query("LockRun"), parentRunID, tenant.Project).
 		Scan(&sessionID, &responseID, &state); err != nil {
 		return false, fmt.Errorf("lock parent for wake: %w", err)
 	}
@@ -118,7 +118,7 @@ func (s *Store) WakeDetachedParent(ctx context.Context, tenant Tenant, parentRun
 		return false, nil
 	}
 	var hasLive bool
-	if err := tx.QueryRow(ctx, storage.Query("HasNonTerminalChildRun"), parentRunID, tenant.Organization, tenant.Project).
+	if err := tx.QueryRow(ctx, storage.Query("HasNonTerminalChildRun"), parentRunID, tenant.Project).
 		Scan(&hasLive); err != nil {
 		return false, fmt.Errorf("check live children: %w", err)
 	}
@@ -160,7 +160,7 @@ func (s *Store) JournalChildCompletionOnce(ctx context.Context, tenant Tenant, s
 	}
 	var exists bool
 	if err := tx.QueryRow(ctx, storage.Query("ChildLifecycleEventExists"),
-		parentResponseID, tenant.Organization, tenant.Project, eventType, childRunID).Scan(&exists); err != nil {
+		parentResponseID, tenant.Project, eventType, childRunID).Scan(&exists); err != nil {
 		return fmt.Errorf("check child completion event: %w", err)
 	}
 	if exists {

@@ -64,7 +64,7 @@ func (r *SlackRegistry) ListSlackConnections(ctx context.Context, project string
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := r.store.pool.Query(ctx, storage.Query("ListSlackConnections"),
-		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list slack connections: %w", err)
 	}
@@ -124,7 +124,7 @@ func (r *SlackRegistry) UpdateSlackConnection(ctx context.Context, project, id s
 	}
 	var updated string
 	switch err := r.store.pool.QueryRow(storage.ScopeToTenant(ctx, org, project),
-		storage.Query("UpdateSlackConnection"), id, org, project,
+		storage.Query("UpdateSlackConnection"), id, project,
 		patch.BotUserID, patch.SigningSecretRef, patch.BotTokenRef, patch.AppTokenRef, patch.Scopes,
 		channels, users, policy, patch.Disabled).Scan(&updated); {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -150,11 +150,11 @@ func (r *SlackRegistry) DeleteSlackConnection(ctx context.Context, project, id s
 		return false, fmt.Errorf("begin slack connection delete: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, storage.Query("DeleteSlackConnectionThreads"), id, org, project); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("DeleteSlackConnectionThreads"), id, project); err != nil {
 		return false, fmt.Errorf("delete slack connection threads: %w", err)
 	}
 	var deleted string
-	switch err := tx.QueryRow(ctx, storage.Query("DeleteSlackConnection"), id, org, project).Scan(&deleted); {
+	switch err := tx.QueryRow(ctx, storage.Query("DeleteSlackConnection"), id, project).Scan(&deleted); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil // nothing committed: the rollback above undoes the thread delete too
 	case err != nil:

@@ -92,7 +92,7 @@ type SessionWorkspace struct {
 func (s *Store) WorkspaceForSession(ctx context.Context, tenant Tenant, sessionID string) (SessionWorkspace, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var ws SessionWorkspace
-	err := s.pool.QueryRow(ctx, storage.Query("WorkspaceForSession"), sessionID, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(ctx, storage.Query("WorkspaceForSession"), sessionID, tenant.Project).
 		Scan(&ws.WorkspaceID, &ws.BindingID, &ws.RequestedRef, &ws.State)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SessionWorkspace{}, false, nil
@@ -117,7 +117,7 @@ func (s *Store) AdvanceWorkspace(ctx context.Context, tenant Tenant, workspaceID
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	var current string
-	err = tx.QueryRow(ctx, storage.Query("WorkspaceState"), workspaceID, tenant.Organization, tenant.Project).Scan(&current)
+	err = tx.QueryRow(ctx, storage.Query("WorkspaceState"), workspaceID, tenant.Project).Scan(&current)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("advance workspace: %s not found in tenant scope", workspaceID)
 	}
@@ -128,7 +128,7 @@ func (s *Store) AdvanceWorkspace(ctx context.Context, tenant Tenant, workspaceID
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, storage.Query("UpdateWorkspaceState"), workspaceID, tenant.Organization, tenant.Project, string(next)); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("UpdateWorkspaceState"), workspaceID, tenant.Project, string(next)); err != nil {
 		return fmt.Errorf("update workspace state: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -143,7 +143,7 @@ func (s *Store) AdvanceWorkspace(ctx context.Context, tenant Tenant, workspaceID
 func (s *Store) WorkspaceLifecycleState(ctx context.Context, tenant Tenant, workspaceID string) (string, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var state string
-	err := s.pool.QueryRow(ctx, storage.Query("WorkspaceLifecycleState"), workspaceID, tenant.Organization, tenant.Project).Scan(&state)
+	err := s.pool.QueryRow(ctx, storage.Query("WorkspaceLifecycleState"), workspaceID, tenant.Project).Scan(&state)
 	if err != nil {
 		return "", fmt.Errorf("workspace lifecycle state: %w", err)
 	}
@@ -321,7 +321,7 @@ func (s *Store) ListQuarantinedHosts(ctx context.Context) ([]QuarantinedHost, er
 func (s *Store) LatestRestorableWorkspaceSnapshot(ctx context.Context, tenant Tenant, workspaceID string) (string, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var id string
-	err := s.pool.QueryRow(ctx, storage.Query("LatestRestorableWorkspaceSnapshot"), workspaceID, tenant.Organization, tenant.Project).Scan(&id)
+	err := s.pool.QueryRow(ctx, storage.Query("LatestRestorableWorkspaceSnapshot"), workspaceID, tenant.Project).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
@@ -336,7 +336,7 @@ func (s *Store) LatestRestorableWorkspaceSnapshot(ctx context.Context, tenant Te
 func (s *Store) LoadWorkspaceSnapshot(ctx context.Context, tenant Tenant, snapshotID string) (WorkspaceSnapshotRecord, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var rec WorkspaceSnapshotRecord
-	err := s.pool.QueryRow(ctx, storage.Query("LoadWorkspaceSnapshot"), snapshotID, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(ctx, storage.Query("LoadWorkspaceSnapshot"), snapshotID, tenant.Project).
 		Scan(&rec.WorkspaceID, &rec.ObjectKey, &rec.ArchiveChecksum, &rec.SizeBytes,
 			&rec.TreeChecksum, &rec.IndexChecksum, &rec.FileChecksums, &rec.Exclusions)
 	if errors.Is(err, pgx.ErrNoRows) {

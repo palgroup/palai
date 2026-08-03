@@ -10,7 +10,7 @@ VALUES ($1, $2, $3, $4);
 
 -- AgentProfileExists verifies a profile is in scope before a revision is attached to it.
 -- name: AgentProfileExists
-SELECT 1 FROM agent_profiles WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SELECT 1 FROM agent_profiles WHERE id = $1 AND project_id = $2;
 
 -- InsertAgentRevision creates a DRAFT revision (published_at NULL). revision_number is the profile's
 -- next monotonic number, computed in-statement so a revise never has to read-then-write. Returns it.
@@ -20,18 +20,18 @@ SELECT 1 FROM agent_profiles WHERE id = $1 AND organization_id = $2 AND project_
 -- name: GetAgentProfile
 SELECT id, name, created_at
 FROM agent_profiles
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- ListAgentProfiles pages a project's agent-profile lineages newest-first (spec §10, E13 T4).
 -- name: ListAgentProfiles
 SELECT id, name, created_at
 FROM agent_profiles
-WHERE organization_id = $1 AND project_id = $2
-  AND ($3::timestamptz IS NULL OR created_at >= $3)
-  AND ($4::timestamptz IS NULL OR created_at <= $4)
-  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+WHERE project_id = $1
+  AND ($2::timestamptz IS NULL OR created_at >= $2)
+  AND ($3::timestamptz IS NULL OR created_at <= $3)
+  AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5))
 ORDER BY created_at DESC, id DESC
-LIMIT $7;
+LIMIT $6;
 
 -- ListAgentRevisions pages one profile's revisions newest-first (spec §10, E13 T4). Scoped by profile_id
 -- ($3) on top of the tenant scope, so an unknown/foreign profile simply yields an empty page.
@@ -44,12 +44,12 @@ LIMIT $7;
 -- name: ListAgentRevisions
 SELECT id, revision_number, model, tools, tool_sets, mcp_connections, instructions, environment, published_at IS NOT NULL, created_at
 FROM agent_revisions
-WHERE organization_id = $1 AND project_id = $2 AND profile_id = $3
-  AND ($4::timestamptz IS NULL OR created_at >= $4)
-  AND ($5::timestamptz IS NULL OR created_at <= $5)
-  AND ($6::timestamptz IS NULL OR (created_at, id) < ($6, $7))
+WHERE project_id = $1 AND profile_id = $2
+  AND ($3::timestamptz IS NULL OR created_at >= $3)
+  AND ($4::timestamptz IS NULL OR created_at <= $4)
+  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
 ORDER BY created_at DESC, id DESC
-LIMIT $8;
+LIMIT $7;
 
 -- name: InsertAgentRevision
 INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, instructions,
@@ -63,7 +63,7 @@ RETURNING revision_number;
 -- none. The publish path re-checks the reference through it, because publish is the last moment at which
 -- "this agent has the production credentials" can be refused rather than discovered by a run that had none.
 -- name: AgentRevisionEnvironment
-SELECT environment FROM agent_revisions WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SELECT environment FROM agent_revisions WHERE id = $1 AND project_id = $2;
 
 -- PublishAgentRevision is the ONE legitimate mutation: it flips published_at exactly once. The
 -- WHERE published_at IS NULL guard makes a re-publish a zero-row no-op, so a published revision's
@@ -72,21 +72,21 @@ SELECT environment FROM agent_revisions WHERE id = $1 AND organization_id = $2 A
 -- name: PublishAgentRevision
 UPDATE agent_revisions
 SET published_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND published_at IS NULL
+WHERE id = $1 AND project_id = $2 AND published_at IS NULL
 RETURNING id;
 
 -- GetAgentRevision reads a revision's full config + publish state (management GET + immutability check).
 -- name: GetAgentRevision
 SELECT profile_id, revision_number, model, tools, instructions, published_at, created_at
 FROM agent_revisions
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- AgentRevisionPublished returns whether a revision exists in scope and is published (admission
 -- validation): no rows = unknown (404), false = draft (409, cannot be pinned or run), true = pinnable.
 -- name: AgentRevisionPublished
 SELECT published_at IS NOT NULL
 FROM agent_revisions
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- InsertRunTemplateRevision creates a DRAFT template revision — the same executable config MINUS
 -- identity/delegation (a template must not impersonate an agent). revision_number is the template
@@ -96,7 +96,7 @@ INSERT INTO run_template_revisions (id, organization_id, project_id, template_na
         tool_sets, mcp_connections, skills, hooks)
 VALUES ($1, $2, $3, $4,
         (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM run_template_revisions
-         WHERE organization_id = $2 AND project_id = $3 AND template_name = $4),
+         WHERE project_id = $3 AND template_name = $4),
         $5, $6, $7, $8, $9, $10, $11)
 RETURNING revision_number;
 
@@ -104,14 +104,14 @@ RETURNING revision_number;
 -- name: PublishRunTemplateRevision
 UPDATE run_template_revisions
 SET published_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND published_at IS NULL
+WHERE id = $1 AND project_id = $2 AND published_at IS NULL
 RETURNING id;
 
 -- RunTemplateRevisionPublished is the template admission-validation read (see AgentRevisionPublished).
 -- name: RunTemplateRevisionPublished
 SELECT published_at IS NOT NULL
 FROM run_template_revisions
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- PinnedRunConfig resolves a run's pinned executable config for the resolver (spec §14): the model
 -- and tool ceiling of whichever revision the run pinned. A run pins at most one source, so COALESCE
@@ -145,10 +145,9 @@ SELECT COALESCE(ar.id, rtr.id)              AS revision_id,
            SELECT array_agg(DISTINCT t.model_visible_name ORDER BY t.model_visible_name)
            FROM tool_set_revisions tsr
            CROSS JOIN LATERAL jsonb_array_elements(tsr.tool_pins) AS pin
-           JOIN tool_revisions trv ON trv.id = (pin->>'tool_revision_id')
-               AND trv.organization_id = r.organization_id AND trv.project_id = r.project_id
+           JOIN tool_revisions trv ON trv.id = (pin->>'tool_revision_id') AND trv.project_id = r.project_id
            JOIN tools t ON t.id = trv.tool_id
-           WHERE tsr.organization_id = r.organization_id AND tsr.project_id = r.project_id
+           WHERE tsr.project_id = r.project_id
                AND tsr.published_at IS NOT NULL
                AND tsr.id IN (SELECT jsonb_array_elements_text(COALESCE(ar.tool_sets, rtr.tool_sets, '[]'::jsonb)))
        ), ARRAY[]::text[])                   AS tool_set_tools,
@@ -156,7 +155,7 @@ SELECT COALESCE(ar.id, rtr.id)              AS revision_id,
 FROM runs r
 LEFT JOIN agent_revisions ar ON ar.id = r.agent_revision_id
 LEFT JOIN run_template_revisions rtr ON rtr.id = r.run_template_revision_id
-WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3;
+WHERE r.id = $1 AND r.project_id = $2;
 
 -- RunSkillPinInputs resolves the inputs the run-start pin write needs (E12 Task 7, spec §28.16): the
 -- pinned revision's REQUESTED skill names (the opaque JSONB rider T2 stored unvalidated) and whether the
@@ -169,15 +168,15 @@ SELECT COALESCE(ar.skills, rtr.skills, '[]'::jsonb) AS requested_skills,
 FROM runs r
 LEFT JOIN agent_revisions ar ON ar.id = r.agent_revision_id
 LEFT JOIN run_template_revisions rtr ON rtr.id = r.run_template_revision_id
-WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3;
+WHERE r.id = $1 AND r.project_id = $2;
 
 -- PinRunSkills freezes a run's resolved skill pins ONCE (E12 Task 7, spec §28.16). The skill_pins IS NULL
 -- guard makes it a no-op on a run already pinned (a resumed attempt), so the frozen digest set is
 -- immutable for the life of the run — a later enable never re-pins. RETURNING id reports whether it wrote.
 -- name: PinRunSkills
 UPDATE runs
-SET skill_pins = $4
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND skill_pins IS NULL
+SET skill_pins = $3
+WHERE id = $1 AND project_id = $2 AND skill_pins IS NULL
 RETURNING id;
 
 -- LatestPublishedAgentRevision resolves an AGENT to the revision a run pinning `agent_id` executes:
@@ -194,6 +193,6 @@ RETURNING id;
 -- name: LatestPublishedAgentRevision
 SELECT id
 FROM agent_revisions
-WHERE profile_id = $1 AND organization_id = $2 AND project_id = $3 AND published_at IS NOT NULL
+WHERE profile_id = $1 AND project_id = $2 AND published_at IS NOT NULL
 ORDER BY revision_number DESC
 LIMIT 1;

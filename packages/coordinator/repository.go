@@ -67,7 +67,7 @@ func (s *Store) GetRepositoryBinding(ctx context.Context, tenant Tenant, id stri
 		createdAt  time.Time
 		archivedAt *time.Time
 	)
-	err := s.pool.QueryRow(ctx, storage.Query("GetRepositoryBinding"), id, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetRepositoryBinding"), id, tenant.Project).
 		Scan(&binding.ID, &binding.Provider, &binding.RepositoryIdentity, &binding.CloneUrl, &binding.DefaultBranch,
 			&binding.ConnectionRef, &allowedRaw, &policyRaw, &binding.DataClassification, &binding.RegionConstraint,
 			&createdAt, &archivedAt)
@@ -110,7 +110,7 @@ func (s *Store) SetRepositoryBindingConnection(ctx context.Context, tenant Tenan
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var updated string
 	err := s.pool.QueryRow(ctx, storage.Query("SetRepositoryBindingConnection"),
-		id, tenant.Organization, tenant.Project, ref).Scan(&updated)
+		id, tenant.Project, ref).Scan(&updated)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

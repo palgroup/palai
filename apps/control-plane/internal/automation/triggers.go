@@ -165,7 +165,7 @@ func (s *TriggerStore) SetInboundSecretRefs(ctx context.Context, project, trigge
 		return err
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	tag, err := s.pool.Exec(ctx, storage.Query("SetInboundSecretRefs"), triggerID, org, project, ref, refNext)
+	tag, err := s.pool.Exec(ctx, storage.Query("SetInboundSecretRefs"), triggerID, project, ref, refNext)
 	if err != nil {
 		return fmt.Errorf("set inbound secret refs: %w", err)
 	}
@@ -215,7 +215,7 @@ func (s *TriggerStore) ReviseTrigger(ctx context.Context, project, triggerID str
 func (s *TriggerStore) GetActiveRevision(ctx context.Context, org, project, triggerID string) (TriggerRevision, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var rev TriggerRevision
-	switch err := s.pool.QueryRow(ctx, storage.Query("ActiveTriggerRevision"), triggerID, org, project).
+	switch err := s.pool.QueryRow(ctx, storage.Query("ActiveTriggerRevision"), triggerID, project).
 		Scan(&rev.ID, &rev.RevisionNumber); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return TriggerRevision{}, false, nil
@@ -247,7 +247,7 @@ func (s *TriggerStore) GetTrigger(ctx context.Context, project, triggerID string
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	v := TriggerView{ID: triggerID}
-	switch err := s.pool.QueryRow(ctx, storage.Query("GetTrigger"), triggerID, org, project).
+	switch err := s.pool.QueryRow(ctx, storage.Query("GetTrigger"), triggerID, project).
 		Scan(&v.Name, &v.Type, &v.Enabled, &v.ActiveRevision, &v.CreatedBy, &v.InboundSecretRef, &v.InboundSecretRefNext); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return TriggerView{}, false, nil
@@ -283,7 +283,7 @@ func (s *TriggerStore) GetDelivery(ctx context.Context, project, deliveryID stri
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	v := TriggerDeliveryView{ID: deliveryID}
-	switch err := s.pool.QueryRow(ctx, storage.Query("GetTriggerDelivery"), deliveryID, org, project).
+	switch err := s.pool.QueryRow(ctx, storage.Query("GetTriggerDelivery"), deliveryID, project).
 		Scan(&v.TriggerID, &v.RevisionID, &v.State, &v.ResponseID, &v.RunID, &v.SessionID, &v.DuplicateOf, &v.Reason, &v.CallbackState, &v.ReceivedAt, &v.UpdatedAt); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return TriggerDeliveryView{}, false, nil
@@ -298,7 +298,7 @@ func (s *TriggerStore) GetDelivery(ctx context.Context, project, deliveryID stri
 func (s *TriggerStore) triggerEnabled(ctx context.Context, org, project, triggerID string) (bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var enabled bool
-	switch err := s.pool.QueryRow(ctx, storage.Query("TriggerForDelivery"), triggerID, org, project).Scan(&enabled); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("TriggerForDelivery"), triggerID, project).Scan(&enabled); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, ErrTriggerNotFound
 	case err != nil:
@@ -356,7 +356,7 @@ func (s *TriggerStore) verifyCallbackEndpointInScope(ctx context.Context, org, p
 	if endpointID == "" {
 		return nil
 	}
-	switch err := s.pool.QueryRow(ctx, storage.Query("WebhookEndpointInScope"), endpointID, org, project).Scan(new(string)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("WebhookEndpointInScope"), endpointID, project).Scan(new(string)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return ErrCallbackEndpointNotFound
 	case err != nil:

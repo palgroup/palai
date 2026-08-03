@@ -28,8 +28,8 @@ VALUES ($1, $2, $3, $4, $5);
 -- name: ChildLifecycleEventExists
 SELECT EXISTS (
     SELECT 1 FROM events
-    WHERE response_id = $1 AND organization_id = $2 AND project_id = $3
-      AND type = $4 AND payload->>'child_run_id' = $5
+    WHERE response_id = $1 AND project_id = $2
+      AND type = $3 AND payload->>'child_run_id' = $4
 );
 
 -- Journal reads for the resumable event stream (spec §21.1). Every read is
@@ -39,13 +39,13 @@ SELECT EXISTS (
 -- name: SessionExistsInScope
 SELECT EXISTS (
     SELECT 1 FROM sessions
-    WHERE id = $1 AND organization_id = $2 AND project_id = $3
+    WHERE id = $1 AND project_id = $2
 );
 
 -- name: EventSequenceInScope
 SELECT seq
 FROM events
-WHERE id = $1 AND session_id = $2 AND organization_id = $3 AND project_id = $4;
+WHERE id = $1 AND session_id = $2 AND project_id = $3;
 
 -- name: CurrentJournalSequence
 -- The current transcript boundary: the highest event seq in the session's journal, or 0 for an
@@ -53,11 +53,11 @@ WHERE id = $1 AND session_id = $2 AND organization_id = $3 AND project_id = $4;
 -- COALESCE so an empty session returns 0, not NULL.
 SELECT COALESCE(MAX(seq), 0)
 FROM events
-WHERE session_id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE session_id = $1 AND project_id = $2;
 
 -- name: ReadEventsAfter
 SELECT id, seq, type, payload, created_at
 FROM events
-WHERE session_id = $1 AND organization_id = $2 AND project_id = $3 AND seq > $4
+WHERE session_id = $1 AND project_id = $2 AND seq > $3
 ORDER BY seq
-LIMIT $5;
+LIMIT $4;

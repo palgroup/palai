@@ -10,7 +10,7 @@ VALUES ($1, $2, $3, $4);
 
 -- SkillExists verifies a skill lineage is in scope before a revision is attached to it.
 -- name: SkillExists
-SELECT 1 FROM skills WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SELECT 1 FROM skills WHERE id = $1 AND project_id = $2;
 
 -- InsertSkillRevision stores one installed revision. revision_number is the skill's next monotonic
 -- number, computed in-statement. state is 'approved' when the scan is clean, else 'quarantined'
@@ -30,7 +30,7 @@ RETURNING revision_number;
 -- name: GetSkillRevision
 SELECT skill_id, revision_number, digest, state, scan_findings, metadata, source_url, created_at
 FROM skill_revisions
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- EnableSkillRevision is the enable transition: approved→enabled, a once-only conditional flip. The
 -- WHERE state = 'approved' guard makes a findings-bearing (quarantined) revision unenablable and an
@@ -38,7 +38,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- name: EnableSkillRevision
 UPDATE skill_revisions
 SET state = 'enabled'
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'approved'
+WHERE id = $1 AND project_id = $2 AND state = 'approved'
 RETURNING id;
 
 -- ResolveEnabledSkill resolves a skill NAME to its ACTIVE enabled revision's digest + metadata (the
@@ -49,7 +49,7 @@ RETURNING id;
 SELECT sr.digest, sr.metadata
 FROM skill_revisions sr
 JOIN skills s ON s.id = sr.skill_id
-WHERE s.organization_id = $1 AND s.project_id = $2 AND s.name = $3 AND sr.state = 'enabled'
+WHERE s.project_id = $1 AND s.name = $2 AND sr.state = 'enabled'
 ORDER BY sr.revision_number DESC
 LIMIT 1;
 
@@ -57,11 +57,11 @@ LIMIT 1;
 -- content-addresses the sanitized tar, so any tenant-scoped revision carrying it is byte-equivalent.
 -- name: LoadSkillArchive
 SELECT archive FROM skill_revisions
-WHERE organization_id = $1 AND project_id = $2 AND digest = $3
+WHERE project_id = $1 AND digest = $2
 LIMIT 1;
 
 -- ListSkills lists a project's skill lineages (management GET).
 -- name: ListSkills
 SELECT id, name, created_at FROM skills
-WHERE organization_id = $1 AND project_id = $2
+WHERE project_id = $1
 ORDER BY created_at;

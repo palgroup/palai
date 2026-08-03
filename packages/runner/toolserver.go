@@ -35,7 +35,45 @@ const (
 	// controllerFrameType is the pre-existing relay message, named here so the branch that now
 	// chooses between the two reads as one decision instead of a literal against a constant.
 	controllerFrameType = "controller.frame"
+
+	// The BACKGROUND triple (A.3 T7). Siblings of exec.request, not subtypes of it, and the difference
+	// is lifetime: an exec.request is answered inside the tool call that made it, while these three are
+	// about a process that OUTLIVES its attempt — so they arrive on a connection that may be parked
+	// rather than serving a lease, and the control plane routes their answers by machine rather than by
+	// attempt.
+	//
+	// The names were measured free before they were chosen (2026-08-04):
+	//
+	//	grep -rhoE '"(bg|probe|kill)\.[a-z_]+"' --include='*.go' .   -> (nothing)
+	//
+	// which is the check `tool.*` failed in T1: that spelling already had sixteen hits on engine.v1, and
+	// a wire type that greps together with something else is one somebody eventually confuses.
+	BackgroundStartType = "bg.start"
+	BackgroundProbeType = "bg.probe"
+	BackgroundKillType  = "bg.kill"
+	// BackgroundResultType answers all three. ONE reply type rather than three, because the correlation
+	// id already says which question is being answered and a second discriminator would be a second
+	// thing to keep in step.
+	BackgroundResultType = "bg.result"
 )
+
+// BackgroundRequestData builds the data payload of a bg.* request. It is the sibling of
+// ExecRequestData and carries its correlation the same way — a caller-minted id, because the side that
+// must MATCH an answer to a question is the side that names the question.
+//
+// `bg_id` rather than `exec_id` so a message carrying both would be malformed rather than ambiguous:
+// the two pairs travel the same connection and a shared field name would let a stray exec.result
+// satisfy a background wait.
+func BackgroundRequestData(bgID string, payload map[string]any) map[string]any {
+	data := map[string]any{"bg_id": bgID}
+	for k, v := range payload {
+		if k == "bg_id" {
+			continue // the id is this function's to set; a payload cannot rename its own question
+		}
+		data[k] = v
+	}
+	return data
+}
 
 // ExecRequestData builds the data payload of an exec.request.
 //

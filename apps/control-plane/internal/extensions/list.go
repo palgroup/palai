@@ -43,7 +43,7 @@ type MCPConnectionListItem struct {
 func (s *Store) ListMCPConnections(ctx context.Context, org, project string, w ListWindow) ([]MCPConnectionListItem, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListMCPConnections"),
-		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list mcp connections: %w", err)
 	}
@@ -71,7 +71,7 @@ type ToolLineageItem struct {
 func (s *Store) GetTool(ctx context.Context, org, project, id string) (ToolLineageItem, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var it ToolLineageItem
-	err := s.pool.QueryRow(ctx, storage.Query("GetTool"), id, org, project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetTool"), id, project).
 		Scan(&it.ID, &it.CanonicalName, &it.ModelVisibleName, &it.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ToolLineageItem{}, false, nil
@@ -86,7 +86,7 @@ func (s *Store) GetTool(ctx context.Context, org, project, id string) (ToolLinea
 func (s *Store) ListTools(ctx context.Context, org, project string, w ListWindow) ([]ToolLineageItem, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListTools"),
-		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list tools: %w", err)
 	}
@@ -128,7 +128,7 @@ type ToolRevisionItem struct {
 func (s *Store) ListToolRevisions(ctx context.Context, org, project, toolID string, w ListWindow) ([]ToolRevisionItem, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListToolRevisions"),
-		toolID, org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+		toolID, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list tool revisions: %w", err)
 	}
@@ -152,7 +152,7 @@ func (s *Store) ListToolRevisions(ctx context.Context, org, project, toolID stri
 func (s *Store) GetToolRevisionOfTool(ctx context.Context, org, project, toolID, revisionID string) (ToolRevisionItem, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var it ToolRevisionItem
-	err := s.pool.QueryRow(ctx, storage.Query("GetToolRevisionOfTool"), revisionID, toolID, org, project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetToolRevisionOfTool"), revisionID, toolID, project).
 		Scan(&it.ID, &it.ToolID, &it.RevisionNumber, &it.Executor, &it.Description, &it.InputSchema,
 			&it.Digest, &it.Published, &it.ApprovalRequired, &it.ApprovalLabel, &it.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -177,7 +177,7 @@ type ToolSetRevisionDetail struct {
 func (s *Store) GetToolSetRevision(ctx context.Context, org, project, setName, revisionID string) (ToolSetRevisionDetail, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var it ToolSetRevisionDetail
-	err := s.pool.QueryRow(ctx, storage.Query("GetToolSetRevision"), revisionID, setName, org, project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetToolSetRevision"), revisionID, setName, project).
 		Scan(&it.ID, &it.Set, &it.RevisionNumber, &it.Digest, &it.Pins, &it.Published, &it.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ToolSetRevisionDetail{}, false, nil
@@ -202,7 +202,7 @@ type ToolSetRevisionItem struct {
 func (s *Store) ListToolSetRevisions(ctx context.Context, org, project string, w ListWindow) ([]ToolSetRevisionItem, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListToolSetRevisions"),
-		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list tool-set revisions: %w", err)
 	}

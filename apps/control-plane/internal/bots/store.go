@@ -114,7 +114,7 @@ func (s *Store) Get(ctx context.Context, org, project, id string) (Bot, bool, er
 	ctx = storage.WithTenant(ctx, org, project)
 	row := Bot{Organization: org, Project: project}
 	var config []byte
-	err := s.pool.QueryRow(ctx, storage.Query("GetBot"), id, org, project).Scan(
+	err := s.pool.QueryRow(ctx, storage.Query("GetBot"), id, project).Scan(
 		&row.ID, &row.Name, &row.Kind, &row.AgentRevisionID, &row.RepositoryBindingID, &row.PrincipalID,
 		&config, &row.Disabled, &row.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -132,7 +132,7 @@ func (s *Store) Get(ctx context.Context, org, project, id string) (Bot, bool, er
 func (s *Store) List(ctx context.Context, org, project string, w ListWindow) ([]Bot, error) {
 	ctx = storage.WithTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListBots"),
-		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list bots: %w", err)
 	}
@@ -166,7 +166,7 @@ func (s *Store) Update(ctx context.Context, org, project, id string, patch Patch
 	}
 	var updated string
 	err := s.pool.QueryRow(ctx, storage.Query("UpdateBot"),
-		id, org, project, patch.Name, patch.AgentRevisionID, patch.RepositoryBindingID, patch.PrincipalID,
+		id, project, patch.Name, patch.AgentRevisionID, patch.RepositoryBindingID, patch.PrincipalID,
 		config, patch.Disabled).Scan(&updated)
 	var pgErr *pgconn.PgError
 	switch {
@@ -189,7 +189,7 @@ func (s *Store) Delete(ctx context.Context, org, project, id string) (bool, erro
 	}
 	ctx = storage.WithTenant(ctx, org, project)
 	var deleted string
-	err := s.pool.QueryRow(ctx, storage.Query("DeleteBot"), id, org, project).Scan(&deleted)
+	err := s.pool.QueryRow(ctx, storage.Query("DeleteBot"), id, project).Scan(&deleted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

@@ -10,7 +10,7 @@ VALUES ($1, $2, $3, $4, $5);
 
 -- ToolExists verifies a tool is in scope before a revision is attached to it.
 -- name: ToolExists
-SELECT 1 FROM tools WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SELECT 1 FROM tools WHERE id = $1 AND project_id = $2;
 
 -- ListToolRevisions pages ONE lineage's revisions newest-first (E25 T7). It is the read that makes
 -- docs/operations/jira-mcp-connection.md §3c executable: that runbook has shipped since E22 telling an
@@ -30,12 +30,12 @@ SELECT 1 FROM tools WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 SELECT id, tool_id, revision_number, executor, description, input_schema, digest,
        published_at IS NOT NULL, approval_required, approval_label, created_at
 FROM tool_revisions
-WHERE tool_id = $1 AND organization_id = $2 AND project_id = $3
-  AND ($4::timestamptz IS NULL OR created_at >= $4)
-  AND ($5::timestamptz IS NULL OR created_at <= $5)
-  AND ($6::timestamptz IS NULL OR (created_at, id) < ($6, $7))
+WHERE tool_id = $1 AND project_id = $2
+  AND ($3::timestamptz IS NULL OR created_at >= $3)
+  AND ($4::timestamptz IS NULL OR created_at <= $4)
+  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
 ORDER BY created_at DESC, id DESC
-LIMIT $8;
+LIMIT $7;
 
 -- GetToolRevision reads ONE revision of ONE lineage, with the same projection the list carries. It is what
 -- makes the Location header of POST /v1/tools/{tool_id}/revisions resolvable: that create has advertised
@@ -50,7 +50,7 @@ LIMIT $8;
 SELECT id, tool_id, revision_number, executor, description, input_schema, digest,
        published_at IS NOT NULL, approval_required, approval_label, created_at
 FROM tool_revisions
-WHERE id = $1 AND tool_id = $2 AND organization_id = $3 AND project_id = $4;
+WHERE id = $1 AND tool_id = $2 AND project_id = $3;
 
 -- GetToolSetRevision reads ONE set revision INCLUDING ITS PINS (E25 T7). The list projection carries a
 -- digest and a revision number but not tool_pins, so "which tools did I actually grant?" had no answer on
@@ -64,7 +64,7 @@ WHERE id = $1 AND tool_id = $2 AND organization_id = $3 AND project_id = $4;
 -- name: GetToolSetRevision
 SELECT id, set_name, revision_number, digest, tool_pins, published_at IS NOT NULL, created_at
 FROM tool_set_revisions
-WHERE id = $1 AND set_name = $2 AND organization_id = $3 AND project_id = $4;
+WHERE id = $1 AND set_name = $2 AND project_id = $3;
 
 -- InsertToolRevision creates a DRAFT revision (published_at NULL). revision_number is the tool's next
 -- monotonic number, computed in-statement so a revise never has to read-then-write. Returns it.
@@ -74,31 +74,31 @@ WHERE id = $1 AND set_name = $2 AND organization_id = $3 AND project_id = $4;
 -- name: GetTool
 SELECT id, canonical_name, model_visible_name, created_at
 FROM tools
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- ListTools pages a project's tool lineages newest-first (spec §28.2, E13 T4). Tenant-scoped by RLS;
 -- cursor + created_at bounds only.
 -- name: ListTools
 SELECT id, canonical_name, model_visible_name, created_at
 FROM tools
-WHERE organization_id = $1 AND project_id = $2
-  AND ($3::timestamptz IS NULL OR created_at >= $3)
-  AND ($4::timestamptz IS NULL OR created_at <= $4)
-  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+WHERE project_id = $1
+  AND ($2::timestamptz IS NULL OR created_at >= $2)
+  AND ($3::timestamptz IS NULL OR created_at <= $3)
+  AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5))
 ORDER BY created_at DESC, id DESC
-LIMIT $7;
+LIMIT $6;
 
 -- ListToolSetRevisions pages a project's tool-set revisions newest-first (spec §28.4, E13 T4). A set has
 -- no lineage table (it is named directly), so the list is its revisions; published names the flip.
 -- name: ListToolSetRevisions
 SELECT id, set_name, revision_number, digest, published_at IS NOT NULL, created_at
 FROM tool_set_revisions
-WHERE organization_id = $1 AND project_id = $2
-  AND ($3::timestamptz IS NULL OR created_at >= $3)
-  AND ($4::timestamptz IS NULL OR created_at <= $4)
-  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+WHERE project_id = $1
+  AND ($2::timestamptz IS NULL OR created_at >= $2)
+  AND ($3::timestamptz IS NULL OR created_at <= $3)
+  AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5))
 ORDER BY created_at DESC, id DESC
-LIMIT $7;
+LIMIT $6;
 
 -- name: InsertToolRevision
 INSERT INTO tool_revisions (id, organization_id, project_id, tool_id, revision_number, executor,
@@ -121,9 +121,9 @@ RETURNING revision_number;
 -- name: PublishToolRevision
 UPDATE tool_revisions
 SET published_at = clock_timestamp(),
-    approval_required = $4,
-    approval_label = $5
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND published_at IS NULL
+    approval_required = $3,
+    approval_label = $4
+WHERE id = $1 AND project_id = $2 AND published_at IS NULL
 RETURNING id;
 
 -- ToolRevisionPublished returns whether a revision exists in scope and is published (publish
@@ -131,20 +131,20 @@ RETURNING id;
 -- name: ToolRevisionPublished
 SELECT published_at IS NOT NULL
 FROM tool_revisions
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- GetToolRevision reads a revision's identity + digest + publish state (management + immutability check).
 -- name: GetToolRevision
 SELECT tool_id, revision_number, executor, digest, published_at
 FROM tool_revisions
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- ToolRevisionForPin reads a pinned revision's publish state + declared timeout so a set create can
 -- reject a draft pin and an override that widens the declared limit.
 -- name: ToolRevisionForPin
 SELECT published_at IS NOT NULL, timeout_ms
 FROM tool_revisions
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- InsertToolSetRevision creates a DRAFT set revision. revision_number is the set name's next monotonic
 -- number. Returns it.
@@ -152,7 +152,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 INSERT INTO tool_set_revisions (id, organization_id, project_id, set_name, revision_number, tool_pins, digest)
 VALUES ($1, $2, $3, $4,
         (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM tool_set_revisions
-         WHERE organization_id = $2 AND project_id = $3 AND set_name = $4),
+         WHERE project_id = $3 AND set_name = $4),
         $5, $6)
 RETURNING revision_number;
 
@@ -160,14 +160,14 @@ RETURNING revision_number;
 -- name: PublishToolSetRevision
 UPDATE tool_set_revisions
 SET published_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND published_at IS NULL
+WHERE id = $1 AND project_id = $2 AND published_at IS NULL
 RETURNING id;
 
 -- ToolSetRevisionPublished is the set-revision publish-state read (see ToolRevisionPublished).
 -- name: ToolSetRevisionPublished
 SELECT published_at IS NOT NULL
 FROM tool_set_revisions
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- LookupRunTool resolves a registered tool the broker must execute by its model-visible short name ($4),
 -- through the run's ($1) pinned revision's tool_sets → PUBLISHED tool_set_revisions → tool_pins →
@@ -196,14 +196,13 @@ SELECT trv.executor, trv.description, trv.input_schema, trv.output_schema, trv.r
 FROM runs r
 LEFT JOIN agent_revisions ar ON ar.id = r.agent_revision_id
 LEFT JOIN run_template_revisions rtr ON rtr.id = r.run_template_revision_id
-JOIN tool_set_revisions tsr ON tsr.organization_id = r.organization_id AND tsr.project_id = r.project_id
+JOIN tool_set_revisions tsr ON tsr.project_id = r.project_id
     AND tsr.published_at IS NOT NULL
     AND tsr.id IN (SELECT jsonb_array_elements_text(COALESCE(ar.tool_sets, rtr.tool_sets, '[]'::jsonb)))
 CROSS JOIN LATERAL jsonb_array_elements(tsr.tool_pins) AS pin
-JOIN tool_revisions trv ON trv.id = (pin->>'tool_revision_id')
-    AND trv.organization_id = r.organization_id AND trv.project_id = r.project_id
-JOIN tools t ON t.id = trv.tool_id AND t.model_visible_name = $4
-WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3
+JOIN tool_revisions trv ON trv.id = (pin->>'tool_revision_id') AND trv.project_id = r.project_id
+JOIN tools t ON t.id = trv.tool_id AND t.model_visible_name = $3
+WHERE r.id = $1 AND r.project_id = $2
 ORDER BY trv.revision_number DESC, trv.id
 LIMIT 2;
 
@@ -229,5 +228,5 @@ LIMIT 2;
 SELECT tc.id, tc.name, tc.state, tc.arguments, tc.result, tc.replay_class, tc.created_at, tc.updated_at
 FROM tool_calls tc
 JOIN runs r ON r.id = tc.run_id
-WHERE r.response_id = $1 AND tc.organization_id = $2 AND tc.project_id = $3
+WHERE r.response_id = $1 AND tc.project_id = $2
 ORDER BY tc.created_at, tc.id;

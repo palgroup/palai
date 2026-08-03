@@ -99,7 +99,7 @@ func (s *Store) ProjectModelRoute(ctx context.Context, tenant Tenant) (ModelRout
 	// resolves in this tenant returns a row with NULLs rather than no row, which is what makes the failure
 	// below FAIL CLOSED instead of falling through to the deployment credential (§27.7).
 	var provider, secretRef, baseURL *string
-	err := s.pool.QueryRow(ctx, storage.Query("ResolveProjectModelRoute"), tenant.Organization, tenant.Project, DefaultModelRouteAlias).
+	err := s.pool.QueryRow(ctx, storage.Query("ResolveProjectModelRoute"), tenant.Project, DefaultModelRouteAlias).
 		Scan(&target.RevisionID, &target.Revision, &target.Model, &provider, &secretRef, &baseURL)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ModelRouteTarget{}, false, nil
@@ -125,7 +125,7 @@ func (s *Store) ProjectModelRoute(ctx context.Context, tenant Tenant) (ModelRout
 // ListModelConnections returns the caller's project connections, secret REF names only.
 func (s *Store) ListModelConnections(ctx context.Context, tenant Tenant) ([]ModelConnectionRecord, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	rows, err := s.pool.Query(ctx, storage.Query("ListModelConnections"), tenant.Organization, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("ListModelConnections"), tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("list model connections: %w", err)
 	}
@@ -147,7 +147,7 @@ func (s *Store) ListModelConnections(ctx context.Context, tenant Tenant) ([]Mode
 // GetModelConnection reads one connection in scope; an absent/foreign id is ErrModelConnectionNotFound.
 func (s *Store) GetModelConnection(ctx context.Context, tenant Tenant, connectionID string) (ModelConnectionRecord, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	rec, err := scanModelConnection(s.pool.QueryRow(ctx, storage.Query("GetModelConnection"), connectionID, tenant.Organization, tenant.Project))
+	rec, err := scanModelConnection(s.pool.QueryRow(ctx, storage.Query("GetModelConnection"), connectionID, tenant.Project))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ModelConnectionRecord{}, ErrModelConnectionNotFound
 	}
@@ -180,7 +180,7 @@ func scanModelConnection(row pgx.Row) (ModelConnectionRecord, error) {
 // ListModelRoutes returns the caller's project route aliases.
 func (s *Store) ListModelRoutes(ctx context.Context, tenant Tenant) ([]ModelRouteRecord, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	rows, err := s.pool.Query(ctx, storage.Query("ListModelRoutes"), tenant.Organization, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("ListModelRoutes"), tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("list model routes: %w", err)
 	}
@@ -203,7 +203,7 @@ func (s *Store) ListModelRoutes(ctx context.Context, tenant Tenant) ([]ModelRout
 func (s *Store) GetModelRoute(ctx context.Context, tenant Tenant, routeID string) (ModelRouteRecord, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var rec ModelRouteRecord
-	err := s.pool.QueryRow(ctx, storage.Query("GetModelRoute"), routeID, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetModelRoute"), routeID, tenant.Project).
 		Scan(&rec.ID, &rec.Name, &rec.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ModelRouteRecord{}, ErrModelRouteNotFound
@@ -301,7 +301,7 @@ func (s *Store) CreateModelConnection(ctx context.Context, tenant Tenant, provid
 // costs an operator a display and never a run. An absent/foreign id is ErrModelConnectionNotFound.
 func (s *Store) RecordModelConnectionVerification(ctx context.Context, tenant Tenant, connectionID, outcome string) error {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	tag, err := s.pool.Exec(ctx, storage.Query("RecordModelConnectionVerification"), connectionID, tenant.Organization, tenant.Project, outcome)
+	tag, err := s.pool.Exec(ctx, storage.Query("RecordModelConnectionVerification"), connectionID, tenant.Project, outcome)
 	if err != nil {
 		return fmt.Errorf("record model connection verification: %w", err)
 	}
@@ -318,7 +318,7 @@ func (s *Store) RecordModelConnectionVerification(ctx context.Context, tenant Te
 func (s *Store) CreateModelRoute(ctx context.Context, tenant Tenant, name string) (string, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var existing string
-	switch err := s.pool.QueryRow(ctx, storage.Query("GetModelRouteByName"), tenant.Organization, tenant.Project, name).Scan(&existing); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("GetModelRouteByName"), tenant.Project, name).Scan(&existing); {
 	case err == nil:
 		return existing, nil
 	case !errors.Is(err, pgx.ErrNoRows):
@@ -339,7 +339,7 @@ func (s *Store) CreateModelRouteRevision(ctx context.Context, tenant Tenant, rou
 	if err := s.requireModelRoute(ctx, tenant, routeID); err != nil {
 		return ModelRouteRevision{}, err
 	}
-	switch err := s.pool.QueryRow(ctx, storage.Query("ModelConnectionExists"), connectionID, tenant.Organization, tenant.Project).Scan(new(int)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("ModelConnectionExists"), connectionID, tenant.Project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return ModelRouteRevision{}, ErrModelConnectionNotFound
 	case err != nil:
@@ -386,7 +386,7 @@ func (s *Store) PublishModelRouteRevision(ctx context.Context, tenant Tenant, ro
 // requireModelRoute fails with ErrModelRouteNotFound unless the route is in the caller's scope. An absent
 // route and another tenant's route are the same answer by design.
 func (s *Store) requireModelRoute(ctx context.Context, tenant Tenant, routeID string) error {
-	switch err := s.pool.QueryRow(ctx, storage.Query("ModelRouteExists"), routeID, tenant.Organization, tenant.Project).Scan(new(int)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("ModelRouteExists"), routeID, tenant.Project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return ErrModelRouteNotFound
 	case err != nil:

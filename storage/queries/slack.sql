@@ -17,7 +17,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13);
 -- name: GetSlackConnection
 SELECT id, team_id, enterprise_id, bot_user_id, signing_secret_ref, bot_token_ref, app_token_ref, scopes, disabled
 FROM slack_connections
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- GetSlackAuthorizationPolicy is the AUTHORIZATION read (SLK-004, E17 T11): the allow-lists a decision is
 -- checked against before any approve/deny command is enqueued. It is deliberately SEPARATE from
@@ -26,19 +26,19 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- name: GetSlackAuthorizationPolicy
 SELECT allowed_channels, allowed_users
 FROM slack_connections
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- ListSlackConnections pages a project's connections newest-first (the admin ListView envelope). Tenant
 -- scoped by RLS; the org/project predicate is defence-in-depth. The secret refs are omitted from a list.
 -- name: ListSlackConnections
 SELECT id, team_id, enterprise_id, bot_user_id, disabled, created_at
 FROM slack_connections
-WHERE organization_id = $1 AND project_id = $2
-  AND ($3::timestamptz IS NULL OR created_at >= $3)
-  AND ($4::timestamptz IS NULL OR created_at <= $4)
-  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+WHERE project_id = $1
+  AND ($2::timestamptz IS NULL OR created_at >= $2)
+  AND ($3::timestamptz IS NULL OR created_at <= $3)
+  AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5))
 ORDER BY created_at DESC, id DESC
-LIMIT $7;
+LIMIT $6;
 
 -- SlackWorkspaceBoundElsewhere reports whether a (team_id, enterprise_id) is already bound in a DIFFERENT
 -- org/project. It exists because this table's uniqueness is (organization_id, project_id, team_id,
@@ -53,7 +53,7 @@ LIMIT $7;
 -- name: SlackWorkspaceBoundElsewhere
 SELECT id
 FROM slack_connections
-WHERE team_id = $1 AND enterprise_id = $2 AND (organization_id <> $3 OR project_id <> $4)
+WHERE team_id = $1 AND enterprise_id = $2 AND project_id <> $3
 ORDER BY id
 LIMIT 1;
 
@@ -103,7 +103,7 @@ RETURNING id;
 -- name: GetThreadSession
 SELECT session_id, last_bot_message_ts
 FROM slack_thread_sessions
-WHERE organization_id = $1 AND project_id = $2 AND team_id = $3 AND channel_id = $4 AND thread_ts = $5;
+WHERE project_id = $1 AND team_id = $2 AND channel_id = $3 AND thread_ts = $4;
 
 -- DeleteThreadSession drops a correlation whose session is no longer usable (closed/reaped), so the thread
 -- can open a fresh one on the next event. session_id is in the predicate on purpose: by the time the repair
@@ -112,15 +112,15 @@ WHERE organization_id = $1 AND project_id = $2 AND team_id = $3 AND channel_id =
 -- every time, and nothing else in the tree ever clears the row.
 -- name: DeleteThreadSession
 DELETE FROM slack_thread_sessions
-WHERE organization_id = $1 AND project_id = $2 AND team_id = $3 AND channel_id = $4 AND thread_ts = $5
-  AND session_id = $6;
+WHERE project_id = $1 AND team_id = $2 AND channel_id = $3 AND thread_ts = $4
+  AND session_id = $5;
 
 -- UpdateThreadMessageTS records the visible bot message ts the rate-limited live-output repair edits
 -- (message-ts reconciliation, SLK-006). Idempotent — it just overwrites the handle.
 -- name: UpdateThreadMessageTS
 UPDATE slack_thread_sessions
-SET last_bot_message_ts = $6
-WHERE organization_id = $1 AND project_id = $2 AND team_id = $3 AND channel_id = $4 AND thread_ts = $5;
+SET last_bot_message_ts = $5
+WHERE project_id = $1 AND team_id = $2 AND channel_id = $3 AND thread_ts = $4;
 
 -- ============================================================================
 -- The RETURN LEG (000041): a terminal run's answer, posted back into the thread the mention came from.
@@ -158,15 +158,15 @@ INSERT INTO slack_reply_deliveries
     (id, organization_id, project_id, connection_id, run_id, response_id, channel_id, thread_ts, run_state,
      requester_user_id)
 SELECT 'sdel_' || replace(gen_random_uuid()::text, '-', ''),
-       t.organization_id, t.project_id, t.connection_id, $3, $4, t.channel_id, t.thread_ts, $6,
+       t.organization_id, t.project_id, t.connection_id, $2, $3, t.channel_id, t.thread_ts, $5,
        COALESCE((SELECT m.requester_user_id
                    FROM slack_message_turns m
-                  WHERE m.organization_id = $1 AND m.project_id = $2 AND m.response_id = $4
+                  WHERE m.project_id = $1 AND m.response_id = $3
                   ORDER BY m.created_at, m.id
                   LIMIT 1), '')
   FROM slack_thread_sessions t
   JOIN slack_connections c ON c.id = t.connection_id AND NOT c.disabled
- WHERE t.organization_id = $1 AND t.project_id = $2 AND t.session_id = $5
+ WHERE t.project_id = $1 AND t.session_id = $4
 ON CONFLICT (run_id) DO NOTHING;
 
 -- ClaimDueSlackReplies takes the next due replies AND schedules their retry in ONE statement. That is
@@ -233,16 +233,16 @@ UPDATE slack_reply_deliveries
 -- run it.
 -- name: UpdateSlackConnection
 UPDATE slack_connections
-   SET bot_user_id = COALESCE($4::text, bot_user_id),
-       signing_secret_ref = COALESCE($5::text, signing_secret_ref),
-       bot_token_ref = COALESCE($6::text, bot_token_ref),
-       app_token_ref = COALESCE($7::text, app_token_ref),
-       scopes = COALESCE($8::text, scopes),
-       allowed_channels = COALESCE($9::jsonb, allowed_channels),
-       allowed_users = COALESCE($10::jsonb, allowed_users),
-       default_policy = COALESCE($11::jsonb, default_policy),
-       disabled = COALESCE($12::boolean, disabled)
- WHERE id = $1 AND organization_id = $2 AND project_id = $3
+   SET bot_user_id = COALESCE($3::text, bot_user_id),
+       signing_secret_ref = COALESCE($4::text, signing_secret_ref),
+       bot_token_ref = COALESCE($5::text, bot_token_ref),
+       app_token_ref = COALESCE($6::text, app_token_ref),
+       scopes = COALESCE($7::text, scopes),
+       allowed_channels = COALESCE($8::jsonb, allowed_channels),
+       allowed_users = COALESCE($9::jsonb, allowed_users),
+       default_policy = COALESCE($10::jsonb, default_policy),
+       disabled = COALESCE($11::boolean, disabled)
+ WHERE id = $1 AND project_id = $2
 RETURNING id;
 
 -- DeleteSlackConnectionThreads drops the thread↔session correlations a binding owns. It runs FIRST in the
@@ -252,7 +252,7 @@ RETURNING id;
 -- have arrived over Slack, and unbinding a workspace does not un-happen them.
 -- name: DeleteSlackConnectionThreads
 DELETE FROM slack_thread_sessions
-WHERE connection_id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE connection_id = $1 AND project_id = $2;
 
 -- DeleteSlackConnection removes the binding within the caller's tenant. RETURNING id separates "deleted" from
 -- "no such connection HERE" — a foreign id must answer 404 rather than 204, or the response tells an outsider
@@ -260,7 +260,7 @@ WHERE connection_id = $1 AND organization_id = $2 AND project_id = $3;
 -- longer bound to is one we must not post into.
 -- name: DeleteSlackConnection
 DELETE FROM slack_connections
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
+WHERE id = $1 AND project_id = $2
 RETURNING id;
 
 -- ============================================================================
@@ -298,9 +298,9 @@ ON CONFLICT (organization_id, project_id, team_id, channel_id, message_ts) DO NO
 UPDATE responses r
 SET retracted_at = clock_timestamp(), updated_at = clock_timestamp()
 FROM slack_message_turns t
-WHERE t.organization_id = $1 AND t.project_id = $2
-  AND t.team_id = $3 AND t.channel_id = $4 AND t.message_ts = $5
-  AND r.id = t.response_id AND r.organization_id = $1 AND r.project_id = $2
+WHERE t.project_id = $1
+  AND t.team_id = $2 AND t.channel_id = $3 AND t.message_ts = $4
+  AND r.id = t.response_id AND r.project_id = $1
   AND r.retracted_at IS NULL
 RETURNING r.id;
 
@@ -325,14 +325,14 @@ RETURNING r.id;
 -- name: SupersedeSlackMessageTurn
 UPDATE responses r
 SET input = CASE jsonb_typeof(r.input)
-                WHEN 'array' THEN jsonb_set(r.input, '{0,text}', to_jsonb($6::text))
-                ELSE to_jsonb($6::text)
+                WHEN 'array' THEN jsonb_set(r.input, '{0,text}', to_jsonb($5::text))
+                ELSE to_jsonb($5::text)
             END,
     updated_at = clock_timestamp()
 FROM slack_message_turns t
-WHERE t.organization_id = $1 AND t.project_id = $2
-  AND t.team_id = $3 AND t.channel_id = $4 AND t.message_ts = $5
-  AND r.id = t.response_id AND r.organization_id = $1 AND r.project_id = $2
+WHERE t.project_id = $1
+  AND t.team_id = $2 AND t.channel_id = $3 AND t.message_ts = $4
+  AND r.id = t.response_id AND r.project_id = $1
   AND r.retracted_at IS NULL
 RETURNING r.id;
 
@@ -366,10 +366,10 @@ RETURNING r.id;
 INSERT INTO slack_approval_deliveries
     (id, organization_id, project_id, connection_id, approval_id, run_id, response_id, channel_id, thread_ts)
 SELECT 'sapr_' || replace(gen_random_uuid()::text, '-', ''),
-       t.organization_id, t.project_id, t.connection_id, $3, $4, $5, t.channel_id, t.thread_ts
+       t.organization_id, t.project_id, t.connection_id, $2, $3, $4, t.channel_id, t.thread_ts
   FROM slack_thread_sessions t
   JOIN slack_connections c ON c.id = t.connection_id AND NOT c.disabled
- WHERE t.organization_id = $1 AND t.project_id = $2 AND t.session_id = $6
+ WHERE t.project_id = $1 AND t.session_id = $5
 ON CONFLICT (approval_id) DO NOTHING;
 
 -- ClaimDueApprovalMessages claims the next due questions AND schedules their retry in ONE statement, so two

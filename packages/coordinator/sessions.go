@@ -90,7 +90,7 @@ func (s *Store) CreateSession(ctx context.Context, tenant Tenant, sessionID, nam
 func (s *Store) RenameSession(ctx context.Context, tenant Tenant, sessionID, name string) (SessionView, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var updated string
-	err := s.pool.QueryRow(ctx, storage.Query("RenameSession"), sessionID, tenant.Organization, tenant.Project, name).Scan(&updated)
+	err := s.pool.QueryRow(ctx, storage.Query("RenameSession"), sessionID, tenant.Project, name).Scan(&updated)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SessionView{}, nil
 	}

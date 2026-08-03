@@ -372,7 +372,7 @@ func TestTheAutomationListQueriesAreConfinedAndFilterTheirTombstones(t *testing.
 		// ListSchedules bound to org A: exactly the ONE live schedule. The tombstone is seeded and must not
 		// appear, and it is the only thing distinguishing this assertion from the canary above.
 		names := scanNames(t, ctx, tx, storage.Query("ListSchedules"),
-			s.orgA, projectA, nil, nil, nil, "", nil, 100)
+			projectA, nil, nil, nil, "", nil, 100)
 		if len(names) != 1 || names[0] != "nightly-close-the-books" {
 			t.Fatalf("ListSchedules(org A) = %v, want exactly [nightly-close-the-books].\n"+
 				"A second name here is the soft-deleted row: `deleted_at IS NULL` is an APPLICATION predicate "+
@@ -383,16 +383,16 @@ func TestTheAutomationListQueriesAreConfinedAndFilterTheirTombstones(t *testing.
 		// The same statement, parameters naming the FOREIGN tenant, connection still declaring org A. The
 		// query's own predicate says orgB; the policy says orgA; the intersection must be empty.
 		foreign := scanNames(t, ctx, tx, storage.Query("ListSchedules"),
-			s.orgB, projectB, nil, nil, nil, "", nil, 100)
+			projectB, nil, nil, nil, "", nil, 100)
 		if len(foreign) != 0 {
 			t.Fatalf("ListSchedules asked for the FOREIGN tenant returned %v; RLS did not confine the shipped statement", foreign)
 		}
 
-		hooks := scanNames(t, ctx, tx, storage.Query("ListHooks"), s.orgA, projectA, nil, nil, nil, "", 100)
+		hooks := scanNames(t, ctx, tx, storage.Query("ListHooks"), projectA, nil, nil, nil, "", 100)
 		if len(hooks) != 1 || hooks[0] != "deny-external-writes" {
 			t.Fatalf("ListHooks(org A) = %v, want exactly [deny-external-writes]", hooks)
 		}
-		foreignHooks := scanNames(t, ctx, tx, storage.Query("ListHooks"), s.orgB, projectB, nil, nil, nil, "", 100)
+		foreignHooks := scanNames(t, ctx, tx, storage.Query("ListHooks"), projectB, nil, nil, nil, "", 100)
 		if len(foreignHooks) != 0 {
 			t.Fatalf("ListHooks asked for the FOREIGN tenant returned %v; RLS did not confine the shipped statement", foreignHooks)
 		}
@@ -402,11 +402,11 @@ func TestTheAutomationListQueriesAreConfinedAndFilterTheirTombstones(t *testing.
 		// is the EXISTS sub-select 000029 wrote for exactly this shape. Own tenant: the one seeded row.
 		// Foreign tenant, with the foreign schedule's real id bound in: nothing.
 		if n := countRows(t, ctx, tx, storage.Query("ListScheduleOccurrences"),
-			s.scheduleOf(t, s.orgA), s.orgA, projectA, nil, nil, nil, "", 100); n != 1 {
+			s.scheduleOf(t, s.orgA), projectA, nil, nil, nil, "", 100); n != 1 {
 			t.Fatalf("ListScheduleOccurrences(org A) returned %d row(s), want the 1 seeded", n)
 		}
 		if n := countRows(t, ctx, tx, storage.Query("ListScheduleOccurrences"),
-			s.scheduleOf(t, s.orgB), s.orgB, projectB, nil, nil, nil, "", 100); n != 0 {
+			s.scheduleOf(t, s.orgB), projectB, nil, nil, nil, "", 100); n != 0 {
 			t.Fatalf("ListScheduleOccurrences on the FOREIGN tenant's schedule returned %d row(s); the parent join did not confine it", n)
 		}
 	})
@@ -776,7 +776,7 @@ func TestTheRepositoryBindingLifecycleStatementsAreConfinedAndRefuseArchivedRows
 	s.asOrg(t, s.orgA, func(tx pgx.Tx) {
 		// 1. THE LIST HIDES THE ARCHIVED ROW. $8=false is the default every caller takes.
 		if n := countRows(t, ctx, tx, storage.Query("ListRepositoryBindings"),
-			s.orgA, projectA, nil, nil, nil, "", 100, false); n != 1 {
+			projectA, nil, nil, nil, "", 100, false); n != 1 {
 			t.Fatalf("ListRepositoryBindings(org A, include_archived=false) returned %d row(s), want exactly the 1 live one.\n"+
 				"A second row here is the ARCHIVED binding: `archived_at IS NULL` is an APPLICATION predicate and no "+
 				"policy, constraint or role re-states it — if the clause goes, this is what notices.", n)
@@ -784,55 +784,55 @@ func TestTheRepositoryBindingLifecycleStatementsAreConfinedAndRefuseArchivedRows
 		// 2. AND SHOWS IT WHEN ASKED. Without this the arm above would also pass if the statement returned
 		// nothing at all, which is the shape of green this corpus keeps having to re-measure.
 		if n := countRows(t, ctx, tx, storage.Query("ListRepositoryBindings"),
-			s.orgA, projectA, nil, nil, nil, "", 100, true); n != 2 {
+			projectA, nil, nil, nil, "", 100, true); n != 2 {
 			t.Fatalf("ListRepositoryBindings(org A, include_archived=true) returned %d row(s), want both seeded", n)
 		}
 		// 3. THE SAME STATEMENT, FOREIGN PARAMETERS, connection still declaring org A.
 		if n := countRows(t, ctx, tx, storage.Query("ListRepositoryBindings"),
-			s.orgB, projectB, nil, nil, nil, "", 100, true); n != 0 {
+			projectB, nil, nil, nil, "", 100, true); n != 0 {
 			t.Fatalf("ListRepositoryBindings asked for the FOREIGN tenant returned %d row(s); RLS did not confine the shipped statement", n)
 		}
 
 		// 4. THE ADMISSION GUARD. This is the clause that makes archiving mean anything: a run's
 		// `repository` attachment is verified through RepositoryBindingExists, so a retired binding must
 		// look exactly as absent there as a foreign one.
-		if n := countRows(t, ctx, tx, storage.Query("RepositoryBindingExists"), liveA, s.orgA, projectA); n != 1 {
+		if n := countRows(t, ctx, tx, storage.Query("RepositoryBindingExists"), liveA, projectA); n != 1 {
 			t.Fatalf("RepositoryBindingExists(live binding) returned %d row(s), want 1 — admission would refuse a healthy binding", n)
 		}
-		if n := countRows(t, ctx, tx, storage.Query("RepositoryBindingExists"), archivedA, s.orgA, projectA); n != 0 {
+		if n := countRows(t, ctx, tx, storage.Query("RepositoryBindingExists"), archivedA, projectA); n != 0 {
 			t.Fatalf("RepositoryBindingExists(ARCHIVED binding) returned %d row(s), want 0.\n"+
 				"An archived binding still admits runs, which makes archived_at a display flag: the retired row "+
 				"keeps cloning and the operator who retired it is not told.", n)
 		}
-		if n := countRows(t, ctx, tx, storage.Query("RepositoryBindingExists"), liveB, s.orgB, projectB); n != 0 {
+		if n := countRows(t, ctx, tx, storage.Query("RepositoryBindingExists"), liveB, projectB); n != 0 {
 			t.Fatalf("RepositoryBindingExists asked for the FOREIGN tenant's live binding returned %d row(s), want 0", n)
 		}
 
 		// 5. THE CREDENTIAL WRITE, AIMED AT THE FOREIGN TENANT'S REAL BINDING ID. Every parameter names
 		// org B; the policy says org A. Nothing may be returned, and nothing may move.
 		if n := countRows(t, ctx, tx, storage.Query("SetRepositoryBindingConnection"),
-			liveB, s.orgB, projectB, "hijacked-by-org-a"); n != 0 {
+			liveB, projectB, "hijacked-by-org-a"); n != 0 {
 			t.Fatalf("SetRepositoryBindingConnection updated %d foreign row(s); one tenant re-credited another's binding", n)
 		}
 		// 6. AND IT REFUSES AN ARCHIVED ROW OF THE CALLER'S OWN TENANT — the application clause again,
 		// asserted separately from the tenancy one so a failure names which layer broke.
 		if n := countRows(t, ctx, tx, storage.Query("SetRepositoryBindingConnection"),
-			archivedA, s.orgA, projectA, "re-credit-a-retired-binding"); n != 0 {
+			archivedA, projectA, "re-credit-a-retired-binding"); n != 0 {
 			t.Fatalf("SetRepositoryBindingConnection updated an ARCHIVED binding (%d row(s)); nothing can run against it, so the write is a no-op the caller would read as success", n)
 		}
 		// 7. AND IT WORKS AT ALL. Without this, arms 5 and 6 would both pass against a statement that
 		// updates nothing ever — the perturbation that is invisible to a pure-absence proof.
 		if n := countRows(t, ctx, tx, storage.Query("SetRepositoryBindingConnection"),
-			liveA, s.orgA, projectA, "rotated-by-org-a"); n != 1 {
+			liveA, projectA, "rotated-by-org-a"); n != 1 {
 			t.Fatalf("SetRepositoryBindingConnection updated %d row(s) of the caller's OWN live binding, want 1", n)
 		}
 
 		// 8. ARCHIVE, AIMED AT THE FOREIGN TENANT. A tenant that could retire another's binding could stop
 		// their runs, which is a denial of service with no audit trail on the victim's side.
-		if n := countRows(t, ctx, tx, storage.Query("ArchiveRepositoryBinding"), liveB, s.orgB, projectB); n != 0 {
+		if n := countRows(t, ctx, tx, storage.Query("ArchiveRepositoryBinding"), liveB, projectB); n != 0 {
 			t.Fatalf("ArchiveRepositoryBinding retired %d foreign row(s); one tenant disabled another's repository", n)
 		}
-		if n := countRows(t, ctx, tx, storage.Query("UnarchiveRepositoryBinding"), archivedA, s.orgA, projectA); n != 1 {
+		if n := countRows(t, ctx, tx, storage.Query("UnarchiveRepositoryBinding"), archivedA, projectA); n != 1 {
 			t.Fatalf("UnarchiveRepositoryBinding restored %d row(s) of the caller's own archived binding, want 1", n)
 		}
 	})

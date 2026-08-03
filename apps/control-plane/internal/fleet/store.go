@@ -215,7 +215,7 @@ func (s *Store) SetState(ctx context.Context, org, project, id, action string) (
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	row, err := scanRunner(tx.QueryRow(ctx, storage.Query("SetRunnerState"), id, org, project, state), true)
+	row, err := scanRunner(tx.QueryRow(ctx, storage.Query("SetRunnerState"), id, project, state), true)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Not this tenant's, not there, or already decommissioned and being asked to move — all of which
 		// the caller renders as a 404 that discloses nothing about which.
@@ -256,7 +256,7 @@ var runnerStateFor = map[string]string{
 // Get resolves one runner inside the caller's verified scope.
 func (s *Store) Get(ctx context.Context, org, project, id string) (Runner, bool, error) {
 	ctx = storage.WithTenant(ctx, org, project)
-	row, err := scanRunner(s.pool.QueryRow(ctx, storage.Query("GetRunner"), id, org, project), true)
+	row, err := scanRunner(s.pool.QueryRow(ctx, storage.Query("GetRunner"), id, project), true)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Runner{}, false, nil
 	}
@@ -273,7 +273,7 @@ func (s *Store) List(ctx context.Context, org, project string, window ListWindow
 	}
 	ctx = storage.WithTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListRunners"),
-		org, project, window.CreatedGTE, window.CreatedLTE, window.AfterCreatedAt, window.AfterID, window.Limit)
+		project, window.CreatedGTE, window.CreatedLTE, window.AfterCreatedAt, window.AfterID, window.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list runners: %w", err)
 	}

@@ -352,7 +352,7 @@ func (s *Store) ListUsageLedger(ctx context.Context, scope middleware.Scope, q a
 }
 
 func (s *Store) readBudgets(ctx context.Context, org, project string) ([]budgetView, error) {
-	rows, err := s.pool.Query(ctx, storage.Query("ListBudgets"), org, project)
+	rows, err := s.pool.Query(ctx, storage.Query("ListBudgets"), project)
 	if err != nil {
 		return nil, fmt.Errorf("list budgets: %w", err)
 	}
@@ -372,7 +372,7 @@ func (s *Store) readBudgets(ctx context.Context, org, project string) ([]budgetV
 }
 
 func (s *Store) readQuotas(ctx context.Context, org, project string) ([]quotaView, error) {
-	rows, err := s.pool.Query(ctx, storage.Query("ListQuotas"), org, project)
+	rows, err := s.pool.Query(ctx, storage.Query("ListQuotas"), project)
 	if err != nil {
 		return nil, fmt.Errorf("list quotas: %w", err)
 	}

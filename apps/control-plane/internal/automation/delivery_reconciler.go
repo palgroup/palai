@@ -117,7 +117,7 @@ func (s *TriggerStore) admitDeferredGroup(ctx context.Context, triggerID, org, p
 	// The FIFO head names the group's revision + policy (which gate + which survivor to admit).
 	var headID, headPrincipal, headRevision string
 	var headInput []byte
-	if err := s.pool.QueryRow(ctx, storage.Query("OldestDeferredForKey"), triggerID, org, project, hash).
+	if err := s.pool.QueryRow(ctx, storage.Query("OldestDeferredForKey"), triggerID, project, hash).
 		Scan(&headID, &headPrincipal, &headRevision, &headInput); err != nil {
 		return fmt.Errorf("resolve FIFO head: %w", err)
 	}
@@ -145,11 +145,11 @@ func (s *TriggerStore) admitDeferredGroup(ctx context.Context, triggerID, org, p
 		// coalesce collapses a burst into the LATEST (the survivor); the rest are skipped, linked to it.
 		admitID, admitPrincipal, admitRevision, admitInput := headID, headPrincipal, headRevision, headInput
 		if cfg.ConcurrencyPolicy == "coalesce" {
-			if err := s.pool.QueryRow(ctx, storage.Query("LatestDeferredForKey"), triggerID, org, project, hash).
+			if err := s.pool.QueryRow(ctx, storage.Query("LatestDeferredForKey"), triggerID, project, hash).
 				Scan(&admitID, &admitPrincipal, &admitRevision, &admitInput); err != nil {
 				return DeliveryResult{}, fmt.Errorf("resolve coalesce survivor: %w", err)
 			}
-			if _, err := s.pool.Exec(ctx, storage.Query("SkipCoalescedDeferred"), triggerID, org, project, hash, admitID); err != nil {
+			if _, err := s.pool.Exec(ctx, storage.Query("SkipCoalescedDeferred"), triggerID, project, hash, admitID); err != nil {
 				return DeliveryResult{}, fmt.Errorf("skip coalesced deferred: %w", err)
 			}
 		}

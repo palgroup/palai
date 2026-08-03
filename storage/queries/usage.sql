@@ -62,11 +62,10 @@ ON CONFLICT (organization_id, project_id, dedupe_key) DO NOTHING;
 SELECT b.meter_prefix, b.limit_quantity, coalesce(sum(l.quantity), 0), b.period_start
 FROM budgets b
 LEFT JOIN usage_ledger l
-       ON l.organization_id = b.organization_id
-      AND (b.project_id = '' OR l.project_id = b.project_id)
+       ON (b.project_id = '' OR l.project_id = b.project_id)
       AND l.meter LIKE b.meter_prefix || '%'
       AND l.occurred_at >= b.period_start
-WHERE b.organization_id = $1 AND b.project_id IN ('', $2)
+WHERE b.project_id IN ('', $1)
 GROUP BY b.id, b.meter_prefix, b.limit_quantity, b.period_start
 HAVING coalesce(sum(l.quantity), 0) >= b.limit_quantity
 ORDER BY (b.project_id = '') ASC, b.meter_prefix, b.id
@@ -85,11 +84,10 @@ LIMIT 1;
 SELECT q.meter_prefix, q.limit_quantity, coalesce(sum(l.quantity), 0), q.window_seconds, min(l.occurred_at)
 FROM quotas q
 LEFT JOIN usage_ledger l
-       ON l.organization_id = q.organization_id
-      AND (q.project_id = '' OR l.project_id = q.project_id)
+       ON (q.project_id = '' OR l.project_id = q.project_id)
       AND l.meter LIKE q.meter_prefix || '%'
       AND l.occurred_at >= now() - make_interval(secs => q.window_seconds)
-WHERE q.organization_id = $1 AND q.project_id IN ('', $2)
+WHERE q.project_id IN ('', $1)
 GROUP BY q.id, q.meter_prefix, q.limit_quantity, q.window_seconds
 HAVING coalesce(sum(l.quantity), 0) >= q.limit_quantity
 ORDER BY (q.project_id = '') ASC, q.meter_prefix, q.id
@@ -113,7 +111,7 @@ RETURNING id, project_id, meter_prefix, limit_quantity, period_start, updated_at
 -- name: ListBudgets
 SELECT id, project_id, meter_prefix, limit_quantity, period_start, updated_at
 FROM budgets
-WHERE organization_id = $1 AND ($2 = '' OR project_id IN ('', $2))
+WHERE ($1 = '' OR project_id IN ('', $1))
 ORDER BY project_id, meter_prefix;
 
 -- UpsertQuota is UpsertBudget for the rolling-window limit; the window itself is restated too, since a
@@ -128,7 +126,7 @@ RETURNING id, project_id, meter_prefix, limit_quantity, window_seconds, updated_
 -- name: ListQuotas
 SELECT id, project_id, meter_prefix, limit_quantity, window_seconds, updated_at
 FROM quotas
-WHERE organization_id = $1 AND ($2 = '' OR project_id IN ('', $2))
+WHERE ($1 = '' OR project_id IN ('', $1))
 ORDER BY project_id, meter_prefix;
 
 -- UsageTotals is the metering-visibility summary: one line per meter for the caller's scope. $2 is the

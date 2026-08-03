@@ -239,7 +239,7 @@ func (s *Store) settleBackgroundTask(ctx context.Context, task BackgroundTask, o
 	// The run id is read off the TASK row rather than the claim's RETURNING for the same reason: the lock
 	// has to be acquirable before anything is written.
 	var runState string
-	if err := tx.QueryRow(ctx, storage.Query("LockRun"), task.RunID, task.Tenant.Organization, task.Tenant.Project).
+	if err := tx.QueryRow(ctx, storage.Query("LockRun"), task.RunID, task.Tenant.Project).
 		Scan(new(string), new(*string), &runState); err != nil {
 		return false, fmt.Errorf("lock run for background notice: %w", err)
 	}
@@ -247,7 +247,7 @@ func (s *Store) settleBackgroundTask(ctx context.Context, task BackgroundTask, o
 	var runID, sessionID, responseID, state, outputPath string
 	var exitCode *int
 	switch err := tx.QueryRow(ctx, storage.Query("ClaimBackgroundNotice"),
-		task.ID, task.Tenant.Organization, task.Tenant.Project, outcome.State, outcome.ExitCode).
+		task.ID, task.Tenant.Project, outcome.State, outcome.ExitCode).
 		Scan(&runID, &sessionID, &responseID, &state, &exitCode, &outputPath); {
 	case errors.Is(err, pgx.ErrNoRows):
 		// Somebody else took this task's notification. That is the design working, not a failure.
@@ -429,7 +429,7 @@ func (s *Store) SetBackgroundKiller(kill BackgroundKiller) { s.background = kill
 // E24 opened `runners.capacity` with a CHECK constraint and no Go expression ever read it (§3.6 D12).
 func (s *Store) CountRunningBackgroundTasks(ctx context.Context, tenant Tenant, runID string) (perRun, perHost int, err error) {
 	if err := s.pool.QueryRow(storage.WithSystemScope(ctx), storage.Query("CountRunningBackgroundTasks"),
-		runID, tenant.Organization, tenant.Project).Scan(&perRun, &perHost); err != nil {
+		runID, tenant.Project).Scan(&perRun, &perHost); err != nil {
 		return 0, 0, fmt.Errorf("count running background tasks: %w", err)
 	}
 	return perRun, perHost, nil
@@ -445,7 +445,7 @@ func (s *Store) BackgroundTaskForRun(ctx context.Context, tenant Tenant, runID, 
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var t BackgroundTask
 	var state string
-	err := s.pool.QueryRow(ctx, storage.Query("BackgroundTaskForRun"), taskID, runID, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(ctx, storage.Query("BackgroundTaskForRun"), taskID, runID, tenant.Project).
 		Scan(&t.ID, &t.Posture, &t.Handle, &t.OutputPath, &state)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -463,7 +463,7 @@ func (s *Store) BackgroundTaskForRun(ctx context.Context, tenant Tenant, runID, 
 // parked did not, and a cancellation killed nothing.
 func (s *Store) RunningBackgroundTasksOfRun(ctx context.Context, tenant Tenant, runID string) ([]BackgroundTask, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	rows, err := s.pool.Query(ctx, storage.Query("RunningBackgroundTasksOfRun"), runID, tenant.Organization, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("RunningBackgroundTasksOfRun"), runID, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("select running background tasks of run: %w", err)
 	}
@@ -493,11 +493,11 @@ func (s *Store) SettleEndedBackgroundTask(ctx context.Context, tenant Tenant, ru
 		return fmt.Errorf("begin background task settle: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Organization, tenant.Project).
+	if err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Project).
 		Scan(new(string), new(*string), new(string)); err != nil {
 		return fmt.Errorf("lock run for background settle: %w", err)
 	}
-	if _, err := tx.Exec(ctx, storage.Query("SettleEndedBackgroundTask"), taskID, tenant.Organization, tenant.Project, state); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("SettleEndedBackgroundTask"), taskID, tenant.Project, state); err != nil {
 		return fmt.Errorf("settle ended background task: %w", err)
 	}
 	return tx.Commit(ctx)

@@ -129,7 +129,7 @@ func (s *WebhookStore) ReadJournalForEndpoint(ctx context.Context, org, project 
 	if filter == nil {
 		filter = []string{}
 	}
-	rows, err := s.pool.Query(ctx, storage.Query("ReadJournalForEndpoint"), org, project, cursor, filter, limit)
+	rows, err := s.pool.Query(ctx, storage.Query("ReadJournalForEndpoint"), project, cursor, filter, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +317,7 @@ func (s *WebhookStore) ListEndpoints(ctx context.Context, project string) ([]End
 		return nil, err
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	rows, err := s.pool.Query(ctx, storage.Query("ListWebhookEndpoints"), org, project)
+	rows, err := s.pool.Query(ctx, storage.Query("ListWebhookEndpoints"), project)
 	if err != nil {
 		return nil, err
 	}
@@ -359,7 +359,7 @@ func (s *WebhookStore) ListDeliveries(ctx context.Context, project, state string
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.pool.Query(ctx, storage.Query("ListWebhookDeliveries"), org, project, state, limit)
+	rows, err := s.pool.Query(ctx, storage.Query("ListWebhookDeliveries"), project, state, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -374,7 +374,7 @@ func (s *WebhookStore) GetDelivery(ctx context.Context, project, id string) (*De
 		return nil, false, err
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	rows, err := s.pool.Query(ctx, storage.Query("GetWebhookDelivery"), id, org, project)
+	rows, err := s.pool.Query(ctx, storage.Query("GetWebhookDelivery"), id, project)
 	if err != nil {
 		return nil, false, err
 	}
@@ -415,7 +415,7 @@ func (s *WebhookStore) ListAttempts(ctx context.Context, project, deliveryID str
 		return nil, err
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	rows, err := s.pool.Query(ctx, storage.Query("ListDeliveryAttempts"), deliveryID, org, project)
+	rows, err := s.pool.Query(ctx, storage.Query("ListDeliveryAttempts"), deliveryID, project)
 	if err != nil {
 		return nil, err
 	}
@@ -441,11 +441,11 @@ func (s *WebhookStore) Redeliver(ctx context.Context, project, id string) (bool,
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var out string
-	err = s.pool.QueryRow(ctx, storage.Query("RedeliverDelivery"), id, org, project).Scan(&out)
+	err = s.pool.QueryRow(ctx, storage.Query("RedeliverDelivery"), id, project).Scan(&out)
 	if err == pgx.ErrNoRows {
 		// The UPDATE matched nothing for one of two reasons and they deserve different answers. Ask which.
 		var exists int
-		switch probeErr := s.pool.QueryRow(ctx, storage.Query("DeliveryExists"), id, org, project).Scan(&exists); {
+		switch probeErr := s.pool.QueryRow(ctx, storage.Query("DeliveryExists"), id, project).Scan(&exists); {
 		case probeErr == pgx.ErrNoRows:
 			return false, nil
 		case probeErr != nil:
@@ -470,7 +470,7 @@ func (s *WebhookStore) GetEndpoint(ctx context.Context, project, id string) (*En
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var e EndpointView
-	err = s.pool.QueryRow(ctx, storage.Query("GetWebhookEndpoint"), id, org, project).Scan(
+	err = s.pool.QueryRow(ctx, storage.Query("GetWebhookEndpoint"), id, project).Scan(
 		&e.ID, &e.URL, &e.Enabled, &e.EventFilter, &e.APIRevision,
 		&e.SigningSecretRef, &e.SigningSecretRefNext,
 		&e.TimeoutMS, &e.MaxAttempts, &e.RetryWindowSeconds,
@@ -504,7 +504,7 @@ func (s *WebhookStore) DeleteEndpoint(ctx context.Context, project, id string) (
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var out string
-	err = s.pool.QueryRow(ctx, storage.Query("DeleteWebhookEndpoint"), id, org, project).Scan(&out)
+	err = s.pool.QueryRow(ctx, storage.Query("DeleteWebhookEndpoint"), id, project).Scan(&out)
 	if err == pgx.ErrNoRows {
 		return false, nil
 	}

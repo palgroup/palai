@@ -142,7 +142,7 @@ func (s *Store) CreateSkill(ctx context.Context, org, project, name string) (Ski
 // upload. An unsafe archive (traversal/symlink/special/bomb) is rejected here, before any row is written.
 func (s *Store) InstallSkillRevision(ctx context.Context, org, project, skillID string, archive []byte, sourceURL string) (SkillRevision, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	switch err := s.pool.QueryRow(ctx, storage.Query("SkillExists"), skillID, org, project).Scan(new(int)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("SkillExists"), skillID, project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return SkillRevision{}, ErrSkillNotFound
 	case err != nil:
@@ -207,7 +207,7 @@ func (s *Store) EnableSkillRevision(ctx context.Context, org, project, revisionI
 		return true, ErrScanFindingsBlockEnable
 	}
 	var id string
-	switch err := s.pool.QueryRow(ctx, storage.Query("EnableSkillRevision"), revisionID, org, project).Scan(&id); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("EnableSkillRevision"), revisionID, project).Scan(&id); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return true, ErrScanFindingsBlockEnable // not in 'approved' (raced/quarantined) — never silently enabled
 	case err != nil:
@@ -226,7 +226,7 @@ func (s *Store) GetSkillRevision(ctx context.Context, org, project, revisionID s
 		sourceURL              *string
 		createdAt              time.Time
 	)
-	err := s.pool.QueryRow(ctx, storage.Query("GetSkillRevision"), revisionID, org, project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetSkillRevision"), revisionID, project).
 		Scan(&skillID, &revNumber, &digest, &state, &findingsJSON, &metaJSON, &sourceURL, &createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SkillRevision{}, false, nil
@@ -250,7 +250,7 @@ func (s *Store) ResolveEnabledSkills(ctx context.Context, org, project string, n
 	for _, name := range names {
 		var digest string
 		var metaJSON []byte
-		err := s.pool.QueryRow(ctx, storage.Query("ResolveEnabledSkill"), org, project, name).Scan(&digest, &metaJSON)
+		err := s.pool.QueryRow(ctx, storage.Query("ResolveEnabledSkill"), project, name).Scan(&digest, &metaJSON)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("%w: %q is not an enabled skill", ErrSkillNotFound, name)
 		}
@@ -267,7 +267,7 @@ func (s *Store) ResolveEnabledSkills(ctx context.Context, org, project string, n
 // ListSkills lists a project's skill lineages (management GET).
 func (s *Store) ListSkills(ctx context.Context, org, project string) ([]Skill, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	rows, err := s.pool.Query(ctx, storage.Query("ListSkills"), org, project)
+	rows, err := s.pool.Query(ctx, storage.Query("ListSkills"), project)
 	if err != nil {
 		return nil, fmt.Errorf("list skills: %w", err)
 	}
@@ -288,7 +288,7 @@ func (s *Store) ListSkills(ctx context.Context, org, project string) ([]Skill, e
 func (s *Store) LoadSkillArchive(ctx context.Context, org, project, digest string) ([]byte, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var archive []byte
-	err := s.pool.QueryRow(ctx, storage.Query("LoadSkillArchive"), org, project, digest).Scan(&archive)
+	err := s.pool.QueryRow(ctx, storage.Query("LoadSkillArchive"), project, digest).Scan(&archive)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("%w: no archive for digest %s", ErrSkillNotFound, digest)
 	}

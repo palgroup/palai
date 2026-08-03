@@ -94,7 +94,7 @@ func (s *Store) ResolvePublic(ctx context.Context, interfaceID string) (Publishe
 // the full row including the provenance pins (never rendered onto a card, but read for tenant scoping).
 func (s *Store) Get(ctx context.Context, org, project, interfaceID string) (PublishedInterface, bool, error) {
 	ctx = storage.WithTenant(ctx, org, project)
-	row := s.pool.QueryRow(ctx, storage.Query("GetA2AInterface"), interfaceID, org, project)
+	row := s.pool.QueryRow(ctx, storage.Query("GetA2AInterface"), interfaceID, project)
 	var iface PublishedInterface
 	var skills []byte
 	err := row.Scan(&iface.ID, &iface.Organization, &iface.Project, &iface.Name, &iface.Description, &iface.Version,
@@ -130,7 +130,7 @@ func (s *Store) GetRef(ctx context.Context, org, project, interfaceID, a2aTaskID
 	var ref TaskRef
 	var push []byte
 	ref.InterfaceID = interfaceID
-	err := s.pool.QueryRow(ctx, storage.Query("GetA2ATaskRef"), interfaceID, a2aTaskID, org, project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetA2ATaskRef"), interfaceID, a2aTaskID, project).
 		Scan(new(string), &ref.A2ATaskID, &ref.A2AContextID, &ref.RunID, &ref.SessionID, &push)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return TaskRef{}, false, nil
@@ -151,7 +151,7 @@ func (s *Store) GetRefByRun(ctx context.Context, org, project, interfaceID, runI
 	ctx = storage.WithTenant(ctx, org, project)
 	ref := TaskRef{InterfaceID: interfaceID}
 	var push []byte
-	err := s.pool.QueryRow(ctx, storage.Query("GetA2ATaskRefByRun"), interfaceID, runID, org, project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetA2ATaskRefByRun"), interfaceID, runID, project).
 		Scan(new(string), &ref.A2ATaskID, &ref.A2AContextID, &ref.RunID, &ref.SessionID, &push)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return TaskRef{}, false, nil
@@ -171,7 +171,7 @@ func (s *Store) List(ctx context.Context, org, project, interfaceID string, limi
 		limit = 100
 	}
 	ctx = storage.WithTenant(ctx, org, project)
-	rows, err := s.pool.Query(ctx, storage.Query("ListA2ATaskRefs"), interfaceID, org, project, limit)
+	rows, err := s.pool.Query(ctx, storage.Query("ListA2ATaskRefs"), interfaceID, project, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list a2a task refs: %w", err)
 	}
@@ -198,7 +198,7 @@ func (s *Store) SetPushConfigs(ctx context.Context, org, project, interfaceID, a
 		return fmt.Errorf("marshal a2a push configs: %w", err)
 	}
 	ctx = storage.WithTenant(ctx, org, project)
-	_, err = s.pool.Exec(ctx, storage.Query("UpdateA2ATaskPushConfigs"), interfaceID, a2aTaskID, org, project, blob)
+	_, err = s.pool.Exec(ctx, storage.Query("UpdateA2ATaskPushConfigs"), interfaceID, a2aTaskID, project, blob)
 	if err != nil {
 		return fmt.Errorf("update a2a push configs: %w", err)
 	}
@@ -232,7 +232,7 @@ func (s *Store) RegisterRemoteAgent(ctx context.Context, agent RemoteAgent) (str
 // operator's kill-switch that no caller can read is not a kill-switch.
 func (s *Store) GetRemoteAgent(ctx context.Context, org, project, id string) (RemoteAgent, bool, error) {
 	ctx = storage.WithTenant(ctx, org, project)
-	row := s.pool.QueryRow(ctx, storage.Query("GetA2ARemoteAgent"), id, org, project)
+	row := s.pool.QueryRow(ctx, storage.Query("GetA2ARemoteAgent"), id, project)
 	var a RemoteAgent
 	err := row.Scan(&a.ID, &a.Organization, &a.Project, &a.Name, &a.CardURL, &a.Endpoint, &a.ProtocolVersion,
 		&a.AuthConnectionRef, &a.AllowedInputModes, &a.AllowedOutputModes, &a.AllowedExtensionURIs,

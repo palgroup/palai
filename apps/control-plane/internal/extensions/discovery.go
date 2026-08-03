@@ -148,7 +148,7 @@ func (s *Store) createDiscoveredTool(ctx context.Context, org, project, canonica
 func (s *Store) discoveredToolID(ctx context.Context, org, project, canonical string) (string, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var id string
-	switch err := s.pool.QueryRow(ctx, storage.Query("MCPToolIDByCanonical"), org, project, canonical).Scan(&id); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("MCPToolIDByCanonical"), project, canonical).Scan(&id); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", false, nil
 	case err != nil:

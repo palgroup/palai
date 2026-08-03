@@ -178,7 +178,7 @@ func (s *TriggerStore) recordedDelivery(ctx context.Context, org, project, princ
 		purgedAt   *time.Time
 		tombstone  *string
 	)
-	switch err := s.pool.QueryRow(ctx, storage.Query("GetIdempotency"), org, project, principal, "POST", route, key).
+	switch err := s.pool.QueryRow(ctx, storage.Query("GetIdempotency"), project, principal, "POST", route, key).
 		Scan(&storedHash, &respBody, &purgedAt, &tombstone); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return DeliveryResult{}, false, nil
@@ -320,7 +320,7 @@ func (s *TriggerStore) advance(ctx context.Context, sc deliveryScope, payload []
 	}
 	if dedupeKey != "" {
 		switch err := s.pool.QueryRow(ctx, storage.Query("ClaimCanonicalDelivery"),
-			sc.deliveryID, sc.org, sc.project, dedupeKey).Scan(new(string)); {
+			sc.deliveryID, sc.project, dedupeKey).Scan(new(string)); {
 		case isUniqueViolation(err):
 			return s.markDuplicate(ctx, sc, dedupeKey)
 		case err != nil:
@@ -353,7 +353,7 @@ func (s *TriggerStore) mapAndAdmit(ctx context.Context, sc deliveryScope, cfg re
 		return DeliveryResult{}, err
 	}
 	hash := computeCorrelationHash(sc, cfg.CorrelationKeyExpr, source)
-	if _, err := s.pool.Exec(ctx, storage.Query("RecordDeliveryMapped"), sc.deliveryID, sc.org, sc.project, mappedInput, hash); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("RecordDeliveryMapped"), sc.deliveryID, sc.project, mappedInput, hash); err != nil {
 		return DeliveryResult{}, fmt.Errorf("record mapped delivery: %w", err)
 	}
 	return s.applyPolicy(ctx, sc, cfg, source, mappedInput, hash)
@@ -423,7 +423,7 @@ func computeCorrelationHash(sc deliveryScope, expr string, source map[string]any
 func (s *TriggerStore) findCorrelatedSession(ctx context.Context, sc deliveryScope, hash string) (string, error) {
 	var session string
 	switch err := s.pool.QueryRow(ctx, storage.Query("FindCorrelatedSession"),
-		sc.triggerID, sc.org, sc.project, hash, sc.deliveryID).Scan(&session); {
+		sc.triggerID, sc.project, hash, sc.deliveryID).Scan(&session); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", nil
 	case err != nil:
@@ -434,7 +434,7 @@ func (s *TriggerStore) findCorrelatedSession(ctx context.Context, sc deliverySco
 
 // hasActiveRootRun reports whether a session holds a non-terminal root run (the reject_if_active gate).
 func (s *TriggerStore) hasActiveRootRun(ctx context.Context, sc deliveryScope, sessionID string) (bool, error) {
-	switch err := s.pool.QueryRow(ctx, storage.Query("ActiveRootRun"), sessionID, sc.org, sc.project).Scan(new(string), new(string)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("ActiveRootRun"), sessionID, sc.project).Scan(new(string), new(string)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
 	case err != nil:
@@ -456,7 +456,7 @@ func (s *TriggerStore) appendToNamedSession(ctx context.Context, sc deliveryScop
 	tenant := coordinator.Tenant{Organization: sc.org, Project: sc.project}
 	// Resolve the target run BEFORE the send, so the delivery records the run it joined.
 	var runID, responseID string
-	switch err := s.pool.QueryRow(ctx, storage.Query("ActiveRootRun"), sessionID, sc.org, sc.project).Scan(&runID, &responseID); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("ActiveRootRun"), sessionID, sc.project).Scan(&runID, &responseID); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return s.fail(ctx, sc, "named session has no active run to receive the message")
 	case err != nil:
@@ -482,7 +482,7 @@ func (s *TriggerStore) appendToNamedSession(ctx context.Context, sc deliveryScop
 		return s.fail(ctx, sc, "named session rejected the message (no live run)")
 	}
 	if _, err := s.pool.Exec(ctx, storage.Query("RecordDeliveryAdmitted"),
-		sc.deliveryID, sc.org, sc.project, responseID, runID, sessionID, mappedInput); err != nil {
+		sc.deliveryID, sc.project, responseID, runID, sessionID, mappedInput); err != nil {
 		return DeliveryResult{}, fmt.Errorf("record named-session delivery: %w", err)
 	}
 	if _, err := s.transition(ctx, sc, statemachines.TriggerDeliveryAdmitted, statemachines.TriggerDeliveryCmdCreateRun); err != nil {
@@ -632,7 +632,7 @@ func (s *TriggerStore) skip_(ctx context.Context, sc deliveryScope, survivor, re
 	if _, _, err := statemachines.Apply(from, statemachines.TriggerDeliveryCmdSkip, statemachines.TriggerDeliveryTable); err != nil {
 		return DeliveryResult{}, err
 	}
-	if _, err := s.pool.Exec(ctx, storage.Query("SkipDelivery"), sc.deliveryID, sc.org, sc.project, nullableText(survivor), reason); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("SkipDelivery"), sc.deliveryID, sc.project, nullableText(survivor), reason); err != nil {
 		return DeliveryResult{}, fmt.Errorf("skip delivery: %w", err)
 	}
 	return DeliveryResult{ID: sc.deliveryID, State: string(statemachines.TriggerDeliverySkipped), DuplicateOf: survivor, Reason: reason}, nil
@@ -640,7 +640,7 @@ func (s *TriggerStore) skip_(ctx context.Context, sc deliveryScope, survivor, re
 
 // triggerBusy reports whether ANY delivery of the trigger has a non-terminal run (the singleton gate).
 func (s *TriggerStore) triggerBusy(ctx context.Context, sc deliveryScope) (bool, error) {
-	switch err := s.pool.QueryRow(ctx, storage.Query("TriggerHasActiveRun"), sc.triggerID, sc.org, sc.project).Scan(new(int)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("TriggerHasActiveRun"), sc.triggerID, sc.project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
 	case err != nil:
@@ -655,7 +655,7 @@ func (s *TriggerStore) activeRunForKey(ctx context.Context, sc deliveryScope, ha
 	if hash == "" {
 		return "", "", false, nil
 	}
-	switch err := s.pool.QueryRow(ctx, storage.Query("ActiveDeliveryRunForKey"), sc.triggerID, sc.org, sc.project, hash).Scan(&responseID, &runID); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("ActiveDeliveryRunForKey"), sc.triggerID, sc.project, hash).Scan(&responseID, &runID); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", "", false, nil
 	case err != nil:
@@ -670,7 +670,7 @@ func (s *TriggerStore) runExecutedIrreversible(ctx context.Context, sc deliveryS
 	if runID == "" {
 		return false, nil
 	}
-	switch err := s.pool.QueryRow(ctx, storage.Query("RunHasIrreversibleExecuted"), runID, sc.org, sc.project).Scan(new(int)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("RunHasIrreversibleExecuted"), runID, sc.project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
 	case err != nil:
@@ -759,7 +759,7 @@ func (s *TriggerStore) keyBusy(ctx context.Context, sc deliveryScope, hash strin
 	if hash == "" {
 		return false, nil
 	}
-	switch err := s.pool.QueryRow(ctx, storage.Query("KeyHasActiveRun"), sc.triggerID, sc.org, sc.project, hash).Scan(new(int)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("KeyHasActiveRun"), sc.triggerID, sc.project, hash).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
 	case err != nil:
@@ -783,7 +783,7 @@ func (s *TriggerStore) defer_(ctx context.Context, sc deliveryScope, reason stri
 	if _, _, err := statemachines.Apply(from, statemachines.TriggerDeliveryCmdDefer, statemachines.TriggerDeliveryTable); err != nil {
 		return DeliveryResult{}, err
 	}
-	if _, err := s.pool.Exec(ctx, storage.Query("DeferDelivery"), sc.deliveryID, sc.org, sc.project, reason); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("DeferDelivery"), sc.deliveryID, sc.project, reason); err != nil {
 		return DeliveryResult{}, fmt.Errorf("defer delivery: %w", err)
 	}
 	return DeliveryResult{ID: sc.deliveryID, State: string(statemachines.TriggerDeliveryDeferred), Reason: reason}, nil
@@ -887,7 +887,7 @@ func (s *TriggerStore) admitChained(ctx context.Context, sc deliveryScope, cfg r
 		}
 	}
 	if _, err := s.pool.Exec(ctx, storage.Query("RecordDeliveryAdmitted"),
-		sc.deliveryID, sc.org, sc.project, responseID, runID, resolvedSession, mappedInput); err != nil {
+		sc.deliveryID, sc.project, responseID, runID, resolvedSession, mappedInput); err != nil {
 		return DeliveryResult{}, fmt.Errorf("record admitted delivery: %w", err)
 	}
 	if _, err := s.transition(ctx, sc, statemachines.TriggerDeliveryAdmitted, statemachines.TriggerDeliveryCmdCreateRun); err != nil {
@@ -967,7 +967,7 @@ func (s *TriggerStore) fail(ctx context.Context, sc deliveryScope, reason string
 	if err != nil {
 		return DeliveryResult{}, err
 	}
-	if _, err := s.pool.Exec(ctx, storage.Query("SetDeliveryReason"), sc.deliveryID, sc.org, sc.project, string(to), reason); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("SetDeliveryReason"), sc.deliveryID, sc.project, string(to), reason); err != nil {
 		return DeliveryResult{}, fmt.Errorf("fail delivery: %w", err)
 	}
 	return DeliveryResult{ID: sc.deliveryID, State: string(to), Reason: reason}, nil
@@ -977,11 +977,11 @@ func (s *TriggerStore) fail(ctx context.Context, sc deliveryScope, reason string
 func (s *TriggerStore) markDuplicate(ctx context.Context, sc deliveryScope, dedupeKey string) (DeliveryResult, error) {
 	var original string
 	if err := s.pool.QueryRow(ctx, storage.Query("FindCanonicalDelivery"),
-		sc.triggerID, sc.org, sc.project, dedupeKey).Scan(&original); err != nil {
+		sc.triggerID, sc.project, dedupeKey).Scan(&original); err != nil {
 		return DeliveryResult{}, fmt.Errorf("resolve canonical original: %w", err)
 	}
 	if _, err := s.pool.Exec(ctx, storage.Query("MarkDeliveryDuplicate"),
-		sc.deliveryID, sc.org, sc.project, original, dedupeKey, "duplicate of "+original); err != nil {
+		sc.deliveryID, sc.project, original, dedupeKey, "duplicate of "+original); err != nil {
 		return DeliveryResult{}, fmt.Errorf("mark delivery duplicate: %w", err)
 	}
 	return DeliveryResult{ID: sc.deliveryID, State: string(statemachines.TriggerDeliveryDuplicate), DuplicateOf: original}, nil
@@ -998,7 +998,7 @@ func (s *TriggerStore) reject(ctx context.Context, sc deliveryScope, reason stri
 	if err != nil {
 		return DeliveryResult{}, err
 	}
-	if _, err := s.pool.Exec(ctx, storage.Query("SetDeliveryReason"), sc.deliveryID, sc.org, sc.project, string(to), reason); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("SetDeliveryReason"), sc.deliveryID, sc.project, string(to), reason); err != nil {
 		return DeliveryResult{}, fmt.Errorf("reject delivery: %w", err)
 	}
 	return DeliveryResult{ID: sc.deliveryID, State: string(to), Reason: reason}, nil
@@ -1010,7 +1010,7 @@ func (s *TriggerStore) transition(ctx context.Context, sc deliveryScope, from st
 	if err != nil {
 		return "", fmt.Errorf("trigger delivery transition: %w", err)
 	}
-	if _, err := s.pool.Exec(ctx, storage.Query("SetDeliveryState"), sc.deliveryID, sc.org, sc.project, string(to)); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("SetDeliveryState"), sc.deliveryID, sc.project, string(to)); err != nil {
 		return "", fmt.Errorf("persist delivery state: %w", err)
 	}
 	return to, nil
@@ -1022,7 +1022,7 @@ func (s *TriggerStore) loadRevisionConfig(ctx context.Context, sc deliveryScope)
 		cfg                   revisionConfig
 		agentRev, templateRev *string
 	)
-	if err := s.pool.QueryRow(ctx, storage.Query("GetTriggerRevision"), sc.revisionID, sc.org, sc.project).
+	if err := s.pool.QueryRow(ctx, storage.Query("GetTriggerRevision"), sc.revisionID, sc.project).
 		Scan(&agentRev, &templateRev, &cfg.InputMapping, &cfg.DedupeKeyExpr, &cfg.CorrelationMode, &cfg.CorrelationKeyExpr, &cfg.ConcurrencyPolicy); err != nil {
 		return revisionConfig{}, fmt.Errorf("load revision config: %w", err)
 	}
@@ -1038,7 +1038,7 @@ func (s *TriggerStore) loadRevisionConfig(ctx context.Context, sc deliveryScope)
 // deliveryState reads a delivery's current state within scope.
 func (s *TriggerStore) deliveryState(ctx context.Context, sc deliveryScope) (string, error) {
 	var revisionID, state string
-	switch err := s.pool.QueryRow(ctx, storage.Query("GetDeliveryPin"), sc.deliveryID, sc.org, sc.project).
+	switch err := s.pool.QueryRow(ctx, storage.Query("GetDeliveryPin"), sc.deliveryID, sc.project).
 		Scan(&revisionID, &state); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", fmt.Errorf("delivery %s vanished after accept", sc.deliveryID)

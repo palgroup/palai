@@ -19,7 +19,7 @@ import (
 func (s *Store) RunIDForResponse(ctx context.Context, tenant Tenant, responseID string) (string, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var runID string
-	err := s.pool.QueryRow(ctx, storage.Query("RunIDForResponse"), responseID, tenant.Organization, tenant.Project).Scan(&runID)
+	err := s.pool.QueryRow(ctx, storage.Query("RunIDForResponse"), responseID, tenant.Project).Scan(&runID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
@@ -38,7 +38,7 @@ func (s *Store) RunIDForResponse(ctx context.Context, tenant Tenant, responseID 
 func guardRunActive(ctx context.Context, tx pgx.Tx, tenant Tenant, runID string) error {
 	var sessionID, state string
 	var responseID *string
-	err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Organization, tenant.Project).Scan(&sessionID, &responseID, &state)
+	err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Project).Scan(&sessionID, &responseID, &state)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("run %s not found in tenant scope", runID)
 	}
@@ -257,7 +257,7 @@ func (s *Store) ChildRunOutcome(ctx context.Context, tenant Tenant, childRunID s
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var state, responseID string
 	var output []byte
-	err := s.pool.QueryRow(ctx, storage.Query("ChildRunOutcome"), childRunID, tenant.Organization, tenant.Project).Scan(&state, &output, &responseID)
+	err := s.pool.QueryRow(ctx, storage.Query("ChildRunOutcome"), childRunID, tenant.Project).Scan(&state, &output, &responseID)
 	if err != nil {
 		return "", nil, "", fmt.Errorf("read child run outcome for %s: %w", childRunID, err)
 	}
@@ -275,7 +275,7 @@ type ChildRunRef struct {
 // yields no rows.
 func (s *Store) NonTerminalChildRuns(ctx context.Context, tenant Tenant, parentRunID string) ([]ChildRunRef, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	rows, err := s.pool.Query(ctx, storage.Query("NonTerminalDescendantRuns"), parentRunID, tenant.Organization, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("NonTerminalDescendantRuns"), parentRunID, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("read non-terminal child runs: %w", err)
 	}
@@ -395,7 +395,7 @@ func (s *Store) CancelRunReconciled(ctx context.Context, tenant Tenant, response
 func (s *Store) hasUncertainSideEffect(ctx context.Context, tenant Tenant, runID string) (bool, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var exists bool
-	if err := s.pool.QueryRow(ctx, storage.Query("HasUncertainSideEffect"), runID, tenant.Organization, tenant.Project).Scan(&exists); err != nil {
+	if err := s.pool.QueryRow(ctx, storage.Query("HasUncertainSideEffect"), runID, tenant.Project).Scan(&exists); err != nil {
 		return false, fmt.Errorf("check uncertain side effect: %w", err)
 	}
 	return exists, nil
@@ -420,7 +420,7 @@ type PriorResponse struct {
 // tenant-scoped; a foreign session or response yields no rows.
 func (s *Store) SessionHistory(ctx context.Context, tenant Tenant, sessionID, responseID string) ([]PriorResponse, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	rows, err := s.pool.Query(ctx, storage.Query("SessionHistory"), sessionID, tenant.Organization, tenant.Project, responseID)
+	rows, err := s.pool.Query(ctx, storage.Query("SessionHistory"), sessionID, tenant.Project, responseID)
 	if err != nil {
 		return nil, fmt.Errorf("read session history: %w", err)
 	}
@@ -495,7 +495,7 @@ func (s *Store) LookupModelResult(ctx context.Context, tenant Tenant, requestID 
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var state string
 	var result []byte
-	err := s.pool.QueryRow(ctx, storage.Query("GetModelResult"), requestID, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetModelResult"), requestID, tenant.Project).
 		Scan(&state, &result)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
@@ -525,7 +525,7 @@ func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID,
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, storage.Query("CompleteModelRequest"),
-		requestID, tenant.Organization, tenant.Project, result); err != nil {
+		requestID, tenant.Project, result); err != nil {
 		return 0, fmt.Errorf("complete model request: %w", err)
 	}
 	// A committed step folds every message delivered at a prior boundary into the request it just
@@ -590,7 +590,7 @@ func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, 
 		// engine (commit-before-deliver breach) and let it reason on a result the reclaimer blocked
 		// (§26.7 continuation-block, TOL-003). Reject it.
 		var state string
-		if err := tx.QueryRow(ctx, storage.Query("LookupToolCall"), callID, tenant.Organization, tenant.Project).
+		if err := tx.QueryRow(ctx, storage.Query("LookupToolCall"), callID, tenant.Project).
 			Scan(&state, new(string), new(string), new(int64), new(string)); err != nil {
 			return 0, fmt.Errorf("classify unchanged tool commit: %w", err)
 		}
@@ -619,7 +619,7 @@ func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, 
 // found is false for a fresh call.
 func (s *Store) LookupToolCall(ctx context.Context, tenant Tenant, callID string) (state, result, replayClass string, fence int64, requestHash string, found bool, err error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	switch e := s.pool.QueryRow(ctx, storage.Query("LookupToolCall"), callID, tenant.Organization, tenant.Project).
+	switch e := s.pool.QueryRow(ctx, storage.Query("LookupToolCall"), callID, tenant.Project).
 		Scan(&state, &result, &replayClass, &fence, &requestHash); {
 	case errors.Is(e, pgx.ErrNoRows):
 		return "", "", "", 0, "", false, nil
@@ -691,7 +691,7 @@ func (s *Store) MarkToolCallUncertain(ctx context.Context, tenant Tenant, sessio
 	if err := guardRunActive(ctx, tx, tenant, runID); err != nil {
 		return false, err
 	}
-	tag, err := tx.Exec(ctx, storage.Query("MarkToolCallUncertain"), callID, tenant.Organization, tenant.Project)
+	tag, err := tx.Exec(ctx, storage.Query("MarkToolCallUncertain"), callID, tenant.Project)
 	if err != nil {
 		return false, fmt.Errorf("mark tool call uncertain: %w", err)
 	}
@@ -714,7 +714,7 @@ func (s *Store) MarkToolCallUncertain(ctx context.Context, tenant Tenant, sessio
 // re-executed). Empty (a run with no tool calls, or a compatible restore) is honest evidence too.
 func (s *Store) RunResolvedToolCalls(ctx context.Context, tenant Tenant, runID string) ([]string, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	rows, err := s.pool.Query(ctx, storage.Query("RunResolvedToolCalls"), runID, tenant.Organization, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("RunResolvedToolCalls"), runID, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("read resolved tool calls: %w", err)
 	}
@@ -814,7 +814,7 @@ func (s *Store) ReconcileToolCall(ctx context.Context, tenant Tenant, sessionID,
 		resultArg = result
 	}
 	tag, err := tx.Exec(ctx, storage.Query("ReconcileToolCall"),
-		callID, tenant.Organization, tenant.Project, newState, newState, resultArg)
+		callID, tenant.Project, newState, newState, resultArg)
 	if err != nil {
 		return fmt.Errorf("reconcile tool call: %w", err)
 	}
@@ -839,7 +839,7 @@ func (s *Store) ReconcileToolCall(ctx context.Context, tenant Tenant, sessionID,
 // CP-resolved at persist time — the engine never sees the ledger (§24).
 func (s *Store) PendingToolOperations(ctx context.Context, tenant Tenant, runID string) ([]byte, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	rows, err := s.pool.Query(ctx, storage.Query("PendingToolOperationsForRun"), runID, tenant.Organization, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("PendingToolOperationsForRun"), runID, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("read pending tool operations: %w", err)
 	}
@@ -905,7 +905,7 @@ func (s *Store) AdvanceResponse(ctx context.Context, tenant Tenant, responseID s
 		return from, err
 	}
 	tag, err := s.pool.Exec(ctx, storage.Query("AdvanceResponseState"),
-		responseID, tenant.Organization, tenant.Project, string(from), string(to))
+		responseID, tenant.Project, string(from), string(to))
 	if err != nil {
 		return "", fmt.Errorf("advance response %s to %s: %w", responseID, to, err)
 	}
@@ -923,7 +923,7 @@ func (s *Store) AdvanceResponse(ctx context.Context, tenant Tenant, responseID s
 func (s *Store) FinalizeResponse(ctx context.Context, tenant Tenant, responseID, state string, projection []byte) error {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	if _, err := s.pool.Exec(ctx, storage.Query("UpdateResponse"),
-		responseID, tenant.Organization, tenant.Project, state, projection); err != nil {
+		responseID, tenant.Project, state, projection); err != nil {
 		return fmt.Errorf("finalize response %s: %w", responseID, err)
 	}
 	return nil

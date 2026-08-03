@@ -74,7 +74,7 @@ func (s *Store) Approve(ctx context.Context, org, project, id, principal string)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	current, err := scanRunner(tx.QueryRow(ctx, storage.Query("GetRunner"), id, org, project), true)
+	current, err := scanRunner(tx.QueryRow(ctx, storage.Query("GetRunner"), id, project), true)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Admission{}, nil
 	}
@@ -95,7 +95,7 @@ func (s *Store) Approve(ctx context.Context, org, project, id, principal string)
 		return Admission{}, coordinator.ErrApproverNotAuthorized
 	}
 
-	row, err := scanRunner(tx.QueryRow(ctx, storage.Query("ApproveRunner"), id, org, project), true)
+	row, err := scanRunner(tx.QueryRow(ctx, storage.Query("ApproveRunner"), id, project), true)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The machine is cordoned or revoked: `state IN ('pending','active')` is the statement's whole
 		// admission set, so an approval can neither resurrect a decommissioned identity nor un-cordon a Mac.

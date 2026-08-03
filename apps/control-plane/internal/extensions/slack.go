@@ -98,7 +98,7 @@ func (s *Store) CreateSlackConnection(ctx context.Context, org, project string, 
 	// and E19 takes none.
 	var otherID string
 	switch err := s.pool.QueryRow(storage.WithSystemScope(ctx),
-		storage.Query("SlackWorkspaceBoundElsewhere"), in.TeamID, in.EnterpriseID, org, project).
+		storage.Query("SlackWorkspaceBoundElsewhere"), in.TeamID, in.EnterpriseID, project).
 		Scan(&otherID); {
 	case err == nil:
 		// The detail names the workspace, never the tenant holding it: the caller must not learn that another
@@ -129,7 +129,7 @@ func (s *Store) CreateSlackConnection(ctx context.Context, org, project string, 
 func (s *Store) GetSlackConnection(ctx context.Context, org, project, id string) (SlackConnection, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	c := SlackConnection{ID: id}
-	err := s.pool.QueryRow(ctx, storage.Query("GetSlackConnection"), id, org, project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetSlackConnection"), id, project).
 		Scan(&c.ID, &c.TeamID, &c.EnterpriseID, &c.BotUserID, &c.SigningSecretRef, &c.BotTokenRef, &c.AppTokenRef, &c.Scopes, &c.Disabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SlackConnection{}, ErrSlackConnectionNotFound
@@ -227,7 +227,7 @@ func (p SlackAuthorizationPolicy) ChannelAllowed(channelID string, isDM bool) bo
 func (s *Store) SlackAuthorizationPolicyFor(ctx context.Context, org, project, id string) (SlackAuthorizationPolicy, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var channels, users []byte
-	err := s.pool.QueryRow(ctx, storage.Query("GetSlackAuthorizationPolicy"), id, org, project).Scan(&channels, &users)
+	err := s.pool.QueryRow(ctx, storage.Query("GetSlackAuthorizationPolicy"), id, project).Scan(&channels, &users)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SlackAuthorizationPolicy{}, ErrSlackConnectionNotFound
 	}
@@ -386,7 +386,7 @@ func (s *Store) reviseSlackTurn(ctx context.Context, query, org, project, team, 
 // threadSession reads the canonical session (and its last visible bot message ts) a thread resolved to.
 func (s *Store) threadSession(ctx context.Context, org, project, team, channel, thread string) (string, string, error) {
 	var sessionID, lastTS string
-	err := s.pool.QueryRow(ctx, storage.Query("GetThreadSession"), org, project, team, channel, thread).Scan(&sessionID, &lastTS)
+	err := s.pool.QueryRow(ctx, storage.Query("GetThreadSession"), project, team, channel, thread).Scan(&sessionID, &lastTS)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", ErrSlackThreadSessionNotFound
 	}

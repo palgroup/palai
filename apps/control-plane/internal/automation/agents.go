@@ -151,7 +151,7 @@ func (s *Store) CreateRevision(ctx context.Context, org, project, profileID stri
 	if err != nil {
 		return Revision{}, err
 	}
-	switch err := s.pool.QueryRow(ctx, storage.Query("AgentProfileExists"), profileID, org, project).Scan(new(int)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("AgentProfileExists"), profileID, project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return Revision{}, ErrProfileNotFound
 	case err != nil:
@@ -187,7 +187,7 @@ func (s *Store) PublishRevision(ctx context.Context, org, project, revisionID st
 	// that quietly had none. It is also the moment that survives a future create path (the console's, a
 	// CLI's, an import) forgetting to validate: publish is the single throat every revision passes through.
 	var environment string
-	switch e := s.pool.QueryRow(ctx, storage.Query("AgentRevisionEnvironment"), revisionID, org, project).Scan(&environment); {
+	switch e := s.pool.QueryRow(ctx, storage.Query("AgentRevisionEnvironment"), revisionID, project).Scan(&environment); {
 	case errors.Is(e, pgx.ErrNoRows):
 		return false, false, nil // unknown revision: the caller renders a 404, unchanged
 	case e != nil:
@@ -235,7 +235,7 @@ func (s *Store) GetRevision(ctx context.Context, org, project, revisionID string
 		published *any
 	)
 	rev.ID = revisionID
-	err := s.pool.QueryRow(ctx, storage.Query("GetAgentRevision"), revisionID, org, project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetAgentRevision"), revisionID, project).
 		Scan(new(string), &rev.RevisionNumber, &rev.Model, &toolsJSON, &rev.Instructions, &published, new(any))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Revision{}, false, nil

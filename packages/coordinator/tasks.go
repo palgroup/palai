@@ -75,7 +75,7 @@ func (s *Store) UpsertTask(ctx context.Context, tenant Tenant, in TaskUpsert) ([
 	// Read the existing row so an unset field keeps its stored value.
 	kind, title, status, detail := "task", "", "open", json.RawMessage("{}")
 	var existingID string
-	err = tx.QueryRow(ctx, storage.Query("GetTaskByKey"), in.SessionID, in.Key, tenant.Organization, tenant.Project).
+	err = tx.QueryRow(ctx, storage.Query("GetTaskByKey"), in.SessionID, in.Key, tenant.Project).
 		Scan(&existingID, &kind, &title, &status, &detail)
 	exists := true
 	switch {
@@ -136,7 +136,7 @@ func (s *Store) ListTasks(ctx context.Context, tenant Tenant, sessionID string) 
 }
 
 func listTasks(ctx context.Context, q rowQuerier, tenant Tenant, sessionID string) ([]Task, error) {
-	rows, err := q.Query(ctx, storage.Query("ListTasksBySession"), sessionID, tenant.Organization, tenant.Project)
+	rows, err := q.Query(ctx, storage.Query("ListTasksBySession"), sessionID, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}

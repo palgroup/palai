@@ -83,7 +83,7 @@ func (s *Store) GetWorker(ctx context.Context, tenant Tenant, workerID string) (
 	var w Worker
 	var digests []byte
 	w.Tenant = tenant
-	err := s.pool.QueryRow(ctx, storage.Query("GetCapabilityWorker"), workerID, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetCapabilityWorker"), workerID, tenant.Project).
 		Scan(&w.ID, &w.Tenant.Organization, &w.Tenant.Project, &w.Spec.Capability, &w.Spec.CapabilityVersion,
 			&w.Spec.OS, &w.Spec.Arch, &digests, &w.Spec.Capacity, &w.Spec.PoolLabel, &w.Spec.TrustLabel, &w.Health, &w.Fence)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -106,7 +106,7 @@ func (s *Store) SetWorkerHealth(ctx context.Context, tenant Tenant, workerID, he
 	}
 	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
 	var fence int64
-	err := s.pool.QueryRow(ctx, storage.Query("SetCapabilityWorkerHealth"), workerID, tenant.Organization, tenant.Project, health).Scan(&fence)
+	err := s.pool.QueryRow(ctx, storage.Query("SetCapabilityWorkerHealth"), workerID, tenant.Project, health).Scan(&fence)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, errors.New("workers: no such worker")
 	}
@@ -127,7 +127,7 @@ func (s *Store) DispatchJob(ctx context.Context, tenant Tenant, spec JobSpec) (s
 
 	if spec.IdempotencyKey != "" {
 		var existing string
-		err := s.pool.QueryRow(ctx, storage.Query("JobByIdempotencyKey"), tenant.Organization, tenant.Project, spec.IdempotencyKey).Scan(&existing)
+		err := s.pool.QueryRow(ctx, storage.Query("JobByIdempotencyKey"), tenant.Project, spec.IdempotencyKey).Scan(&existing)
 		if err == nil {
 			return existing, nil
 		}
@@ -143,7 +143,7 @@ func (s *Store) DispatchJob(ctx context.Context, tenant Tenant, spec JobSpec) (s
 		// MINOR 4: never re-open an existing job with a fresh 'dispatched' at fence 1 — that wedges it (latest
 		// fence 1 != MAX ⇒ every submit is ErrStaleFence). A re-dispatch is RedispatchForRetry (fence+1).
 		var exists bool
-		if err := s.pool.QueryRow(ctx, storage.Query("JobHasEntries"), jobID, tenant.Organization, tenant.Project).Scan(&exists); err != nil {
+		if err := s.pool.QueryRow(ctx, storage.Query("JobHasEntries"), jobID, tenant.Project).Scan(&exists); err != nil {
 			return "", fmt.Errorf("check job exists: %w", err)
 		}
 		if exists {
@@ -160,7 +160,7 @@ func (s *Store) DispatchJob(ctx context.Context, tenant Tenant, spec JobSpec) (s
 		// A racing duplicate dispatch trips the idempotency partial-unique index; resolve to the winner.
 		if isUniqueViolation(err) && spec.IdempotencyKey != "" {
 			var existing string
-			if e := s.pool.QueryRow(ctx, storage.Query("JobByIdempotencyKey"), tenant.Organization, tenant.Project, spec.IdempotencyKey).Scan(&existing); e == nil {
+			if e := s.pool.QueryRow(ctx, storage.Query("JobByIdempotencyKey"), tenant.Project, spec.IdempotencyKey).Scan(&existing); e == nil {
 				return existing, nil
 			}
 		}
@@ -185,7 +185,7 @@ func (s *Store) ClaimNext(ctx context.Context, tenant Tenant, workerID string) (
 	var deadline *time.Time
 	var jobFence int64
 	var inputRefs, secretRefs, resourceLimits, outputSchema, networkPolicy []byte
-	err = s.pool.QueryRow(sctx, storage.Query("ReadyCapabilityJob"), tenant.Organization, tenant.Project, worker.Spec.Capability).
+	err = s.pool.QueryRow(sctx, storage.Query("ReadyCapabilityJob"), tenant.Project, worker.Spec.Capability).
 		Scan(&jobID, &operation, &deadline, &jobFence, &inputRefs, &secretRefs, &resourceLimits, &outputSchema, &networkPolicy, &sideEffectKey, &runID, &attemptID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Claim{}, false, nil
@@ -402,7 +402,7 @@ func (s *Store) currentJob(ctx context.Context, tenant Tenant, jobID string) (cu
 	sctx := storage.WithTenant(ctx, tenant.Organization, tenant.Project)
 	var cur currentState
 	var refs []byte
-	err := s.pool.QueryRow(sctx, storage.Query("CurrentCapabilityJob"), jobID, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(sctx, storage.Query("CurrentCapabilityJob"), jobID, tenant.Project).
 		Scan(&cur.fence, &cur.kind, &cur.workerID, &cur.deadline, &refs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return currentState{}, ErrNoSuchJob
@@ -418,7 +418,7 @@ func (s *Store) currentJob(ctx context.Context, tenant Tenant, jobID string) (cu
 	var inputRefs, secretRefs []byte
 	// ReadyCapabilityJob only returns dispatched-latest jobs; for a re-dispatch we need the dispatch spec
 	// regardless of current kind, so read entry_seq = 1 directly.
-	err = s.pool.QueryRow(sctx, storage.Query("JobDispatchSpec"), jobID, tenant.Organization, tenant.Project).
+	err = s.pool.QueryRow(sctx, storage.Query("JobDispatchSpec"), jobID, tenant.Project).
 		Scan(&idem, &runID, &attemptID, &cur.capability, &operation, &inputRefs, &secretRefs, &deadline, &sideEffectKey, &jobFence)
 	if err == nil {
 		cur.idempotencyKey, cur.runID, cur.attemptID = idem, runID, attemptID

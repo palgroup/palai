@@ -135,7 +135,7 @@ func (s *TriggerStore) armCallback(ctx context.Context, d callbackDue) error {
 		newID("whd"), d.org, d.project, d.endpointID, d.sessionID, "cb:"+d.deliveryID, "trigger.callback.v1", envelope); err != nil {
 		return fmt.Errorf("enqueue callback delivery: %w", err)
 	}
-	if _, err := tx.Exec(ctx, storage.Query("ArmDeliveryCallback"), d.deliveryID, d.org, d.project); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("ArmDeliveryCallback"), d.deliveryID, d.project); err != nil {
 		return fmt.Errorf("arm callback: %w", err)
 	}
 	return tx.Commit(ctx)
@@ -144,7 +144,7 @@ func (s *TriggerStore) armCallback(ctx context.Context, d callbackDue) error {
 // deadCallback marks a callback dead (its own terminal) without enqueuing, recording why. The run result is
 // untouched — the delivery state stays run_created.
 func (s *TriggerStore) deadCallback(ctx context.Context, d callbackDue, reason string) error {
-	if _, err := s.pool.Exec(ctx, storage.Query("DeadDeliveryCallback"), d.deliveryID, d.org, d.project, "callback: "+reason); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("DeadDeliveryCallback"), d.deliveryID, d.project, "callback: "+reason); err != nil {
 		return fmt.Errorf("dead-letter callback: %w", err)
 	}
 	return nil

@@ -25,12 +25,12 @@ VALUES ($1, $2, $3, $4, $5, $6);
 -- ModelConnectionExists verifies a connection is in the caller's scope before a revision binds it, so a
 -- revision can never name a foreign/unknown connection.
 -- name: ModelConnectionExists
-SELECT 1 FROM model_connections WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SELECT 1 FROM model_connections WHERE id = $1 AND project_id = $2;
 
 -- GetModelRouteByName resolves an alias to its route id. Create is get-or-create on this lookup: an alias
 -- names one lineage per project.
 -- name: GetModelRouteByName
-SELECT id FROM model_routes WHERE organization_id = $1 AND project_id = $2 AND name = $3
+SELECT id FROM model_routes WHERE project_id = $1 AND name = $2
 ORDER BY id LIMIT 1;
 
 -- name: InsertModelRoute
@@ -39,7 +39,7 @@ INSERT INTO model_routes (id, organization_id, project_id, name) VALUES ($1, $2,
 -- ModelRouteExists verifies the route named in a path is in the caller's scope. A foreign route is
 -- indistinguishable from an absent one — the store renders both as NotFound.
 -- name: ModelRouteExists
-SELECT 1 FROM model_routes WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SELECT 1 FROM model_routes WHERE id = $1 AND project_id = $2;
 
 -- name: NextModelRouteRevision
 SELECT coalesce(max(revision), 0) + 1 FROM model_route_revisions WHERE route_id = $1;
@@ -69,30 +69,30 @@ SELECT 1 FROM model_route_revisions WHERE id = $1 AND route_id = $2;
 -- name: ListModelConnections
 SELECT id, provider, secret_ref, base_url, created_at, verified_at, verification_outcome
 FROM model_connections
-WHERE organization_id = $1 AND project_id = $2
+WHERE project_id = $1
 ORDER BY id;
 
 -- name: GetModelConnection
 SELECT id, provider, secret_ref, base_url, created_at, verified_at, verification_outcome
 FROM model_connections
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- RecordModelConnectionVerification stamps the last credential probe. It is a CACHE OF AN OBSERVATION and
 -- gates nothing: no dispatch path reads these columns, and a connection that was never probed routes
 -- exactly like one that was. The tenant predicate is carried here as well as by RLS, for the reason the
 -- header gives — a system-scoped or BYPASSRLS caller would otherwise stamp a foreign row.
 -- name: RecordModelConnectionVerification
-UPDATE model_connections SET verified_at = clock_timestamp(), verification_outcome = $4
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+UPDATE model_connections SET verified_at = clock_timestamp(), verification_outcome = $3
+WHERE id = $1 AND project_id = $2;
 
 -- name: ListModelRoutes
 SELECT id, name, created_at FROM model_routes
-WHERE organization_id = $1 AND project_id = $2
+WHERE project_id = $1
 ORDER BY id;
 
 -- name: GetModelRoute
 SELECT id, name, created_at FROM model_routes
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- name: ListModelRouteRevisions
 SELECT id, revision, config, created_at FROM model_route_revisions
@@ -120,9 +120,8 @@ FROM model_routes r
 JOIN model_route_revisions rev ON rev.route_id = r.id
 LEFT JOIN model_connections conn
        ON conn.id = rev.config->>'connection_id'
-      AND conn.organization_id = r.organization_id
       AND conn.project_id = r.project_id
-WHERE r.organization_id = $1 AND r.project_id = $2 AND r.name = $3
+WHERE r.project_id = $1 AND r.name = $2
   AND rev.config->>'published_at' IS NOT NULL
 ORDER BY rev.revision DESC, rev.id DESC
 LIMIT 1;

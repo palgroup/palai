@@ -30,7 +30,7 @@ SELECT p.id, p.session_id, p.run_id, coalesce(p.response_id, ''), p.operation, p
        coalesce(a.request_hash, ''), coalesce(p.args::text, '{}')
 FROM publications p
 LEFT JOIN approvals a ON a.publication_id = p.id
-WHERE p.organization_id = $1 AND p.project_id = $2 AND p.idempotency_key = $3;
+WHERE p.project_id = $1 AND p.idempotency_key = $2;
 
 -- RunPublishedPullRequest is E23 T6's destination resolver: the pull request THIS RUN opened and the head
 -- it was opened at, read back off its own published receipt. It is the whole reason the merge tool takes no
@@ -43,7 +43,7 @@ WHERE p.organization_id = $1 AND p.project_id = $2 AND p.idempotency_key = $3;
 -- name: RunPublishedPullRequest
 SELECT coalesce((p.receipt->>'number')::int, 0), p.head_sha
 FROM publications p
-WHERE p.run_id = $1 AND p.organization_id = $2 AND p.project_id = $3
+WHERE p.run_id = $1 AND p.project_id = $2
   AND p.operation = 'open_pull_request' AND p.state = 'published'
 ORDER BY p.created_at DESC, p.id DESC
 LIMIT 1;
@@ -54,7 +54,7 @@ LIMIT 1;
 -- name: SessionHasPendingApproval
 SELECT EXISTS (
     SELECT 1 FROM publications
-    WHERE session_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'pending_approval'
+    WHERE session_id = $1 AND project_id = $2 AND state = 'pending_approval'
 );
 
 -- PendingApprovalForSession returns the session's oldest publication still awaiting approval, so the
@@ -66,7 +66,7 @@ SELECT p.id, p.session_id, p.run_id, coalesce(p.response_id, ''), p.operation, p
        coalesce(a.request_hash, ''), coalesce(p.args::text, '{}')
 FROM publications p
 LEFT JOIN approvals a ON a.publication_id = p.id
-WHERE p.session_id = $1 AND p.organization_id = $2 AND p.project_id = $3 AND p.state = 'pending_approval'
+WHERE p.session_id = $1 AND p.project_id = $2 AND p.state = 'pending_approval'
 ORDER BY p.created_at, p.id
 LIMIT 1;
 
@@ -76,7 +76,7 @@ LIMIT 1;
 -- nothing was decided — and only this state separates the two.
 -- name: PublicationState
 SELECT state FROM publications
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- LockPendingApprovalForSession locks the session's oldest pending publication + its approval so an
 -- approve/deny transition sees a stable state (the single-winner gate). It projects the approval's
@@ -86,7 +86,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 SELECT p.id, coalesce(a.request_hash, ''), a.expires_at
 FROM publications p
 LEFT JOIN approvals a ON a.publication_id = p.id
-WHERE p.session_id = $1 AND p.organization_id = $2 AND p.project_id = $3 AND p.state = 'pending_approval'
+WHERE p.session_id = $1 AND p.project_id = $2 AND p.state = 'pending_approval'
 ORDER BY p.created_at, p.id
 LIMIT 1
 FOR UPDATE OF p;
@@ -99,7 +99,7 @@ FOR UPDATE OF p;
 SELECT p.state, a.expires_at
 FROM publications p
 LEFT JOIN approvals a ON a.publication_id = p.id
-WHERE p.id = $1 AND p.organization_id = $2 AND p.project_id = $3
+WHERE p.id = $1 AND p.project_id = $2
 FOR UPDATE OF p;
 
 -- SelectExpiredApprovals returns the still-open publications (pending_approval or approved) whose
@@ -120,8 +120,8 @@ ORDER BY p.created_at, p.id;
 -- in fromState advances it, so a redelivered boundary is a no-op.
 -- name: SetPublicationState
 UPDATE publications
-SET state = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = $5;
+SET state = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2 AND state = $4;
 
 -- SetApprovalDecision records who decided an approval (audit), leaving the lifecycle state on the
 -- publication.
@@ -138,7 +138,7 @@ SELECT p.id, p.session_id, p.run_id, coalesce(p.response_id, ''), p.operation, p
        coalesce(a.request_hash, ''), coalesce(p.args::text, '{}')
 FROM publications p
 LEFT JOIN approvals a ON a.publication_id = p.id
-WHERE p.run_id = $1 AND p.organization_id = $2 AND p.project_id = $3 AND p.state = 'approved'
+WHERE p.run_id = $1 AND p.project_id = $2 AND p.state = 'approved'
 ORDER BY p.created_at, p.id;
 
 -- MarkPublicationPublished records the external receipt and drives approved -> published single-winner
@@ -146,8 +146,8 @@ ORDER BY p.created_at, p.id;
 -- lost-ack re-drive that re-reconciled the remote does not double-journal.
 -- name: MarkPublicationPublished
 UPDATE publications
-SET state = 'published', receipt = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'approved';
+SET state = 'published', receipt = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2 AND state = 'approved';
 
 -- ===================================================================================================
 -- E23 T1 — THE GENERIC HALF. Everything above gates a PUBLICATION; everything below gates any TOOL
@@ -184,7 +184,7 @@ ON CONFLICT (tool_call_id) DO NOTHING;
 -- name: LockToolCallForDecision
 SELECT state, run_id, name, coalesce(arguments::text, '{}'), coalesce(request_hash, '')
 FROM tool_calls
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
+WHERE id = $1 AND project_id = $2
 FOR UPDATE;
 
 -- ToolApprovalForCall reads the whole parked-call projection: the ledger row's own facts joined to the
@@ -197,14 +197,14 @@ SELECT a.id, t.id, t.run_id, r.session_id, coalesce(r.response_id, ''), t.name,
 FROM approvals a
 JOIN tool_calls t ON t.id = a.tool_call_id
 JOIN runs r ON r.id = t.run_id
-WHERE a.tool_call_id = $1 AND a.organization_id = $2 AND a.project_id = $3;
+WHERE a.tool_call_id = $1 AND a.project_id = $2;
 
 -- ApproveToolCall advances approval_pending -> ready (§26.7's own transition, unused until now). Single
 -- winner on the source state, so a doubled click approves once.
 -- name: ApproveToolCall
 UPDATE tool_calls
 SET state = 'ready', updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'approval_pending';
+WHERE id = $1 AND project_id = $2 AND state = 'approval_pending';
 
 -- CancelToolCall drives a gated call to `canceled` and RECORDS THE ANSWER in the result column. It is
 -- the shared exit for the three ways a call can fail to be authorized — a human denied it, its deadline
@@ -212,8 +212,8 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'approval
 -- same shape and all three survive a kill: the answer is durable before it is spoken.
 -- name: CancelToolCall
 UPDATE tool_calls
-SET state = 'canceled', result = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state IN ('approval_pending', 'ready');
+SET state = 'canceled', result = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2 AND state IN ('approval_pending', 'ready');
 
 -- SetToolApprovalDecision records WHO decided (audit). The lifecycle stays on the tool_calls row.
 -- name: SetToolApprovalDecision
@@ -252,8 +252,7 @@ SELECT a.id, t.id, t.run_id, r.session_id, coalesce(r.response_id, ''), t.name,
 FROM approvals a
 JOIN tool_calls t ON t.id = a.tool_call_id
 JOIN runs r ON r.id = t.run_id
-WHERE r.session_id = $1 AND a.request_hash = $2 AND t.state = 'approval_pending'
-  AND a.organization_id = $3 AND a.project_id = $4
+WHERE r.session_id = $1 AND a.request_hash = $2 AND t.state = 'approval_pending' AND a.project_id = $3
 ORDER BY a.created_at
 LIMIT 1;
 
@@ -281,12 +280,12 @@ SELECT a.id, t.id, t.run_id, r.session_id, coalesce(r.response_id, ''), t.name,
 FROM approvals a
 JOIN tool_calls t ON t.id = a.tool_call_id
 JOIN runs r ON r.id = t.run_id
-WHERE t.state = 'approval_pending' AND a.organization_id = $1 AND a.project_id = $2
-  AND ($3::timestamptz IS NULL OR a.created_at >= $3)
-  AND ($4::timestamptz IS NULL OR a.created_at <= $4)
-  AND ($5::timestamptz IS NULL OR (a.created_at, a.id) > ($5, $6))
+WHERE t.state = 'approval_pending' AND a.project_id = $1
+  AND ($2::timestamptz IS NULL OR a.created_at >= $2)
+  AND ($3::timestamptz IS NULL OR a.created_at <= $3)
+  AND ($4::timestamptz IS NULL OR (a.created_at, a.id) > ($4, $5))
 ORDER BY a.created_at, a.id
-LIMIT $7;
+LIMIT $6;
 
 -- ToolApprovalByID resolves ONE approval from the id the list surface handed out (E23 T9), so the HTTP
 -- decision route can key on /v1/approvals/{approval_id} while the throat it calls keys on the tool call.
@@ -305,7 +304,7 @@ SELECT a.id, t.id, t.run_id, r.session_id, coalesce(r.response_id, ''), t.name,
 FROM approvals a
 JOIN tool_calls t ON t.id = a.tool_call_id
 JOIN runs r ON r.id = t.run_id
-WHERE a.id = $1 AND a.organization_id = $2 AND a.project_id = $3;
+WHERE a.id = $1 AND a.project_id = $2;
 
 -- PendingPublicationApprovalsForTenant is the PUBLICATION half of the Slack-less read, and it exists
 -- because PendingToolApprovalsForTenant above JOINs tool_calls — so a publication approval, whose
@@ -341,16 +340,16 @@ LEFT JOIN LATERAL (
     SELECT rb.connection_ref, rb.repository_identity
     FROM preparation_receipts pr
     JOIN repository_bindings rb ON rb.id = pr.repository_binding_id
-    WHERE pr.run_id = p.run_id AND pr.organization_id = p.organization_id AND pr.project_id = p.project_id
+    WHERE pr.run_id = p.run_id AND pr.project_id = p.project_id
     ORDER BY pr.prepared_at DESC, pr.id DESC
     LIMIT 1
 ) bind ON TRUE
-WHERE p.state = 'pending_approval' AND a.organization_id = $1 AND a.project_id = $2
-  AND ($3::timestamptz IS NULL OR a.created_at >= $3)
-  AND ($4::timestamptz IS NULL OR a.created_at <= $4)
-  AND ($5::timestamptz IS NULL OR (a.created_at, a.id) > ($5, $6))
+WHERE p.state = 'pending_approval' AND a.project_id = $1
+  AND ($2::timestamptz IS NULL OR a.created_at >= $2)
+  AND ($3::timestamptz IS NULL OR a.created_at <= $3)
+  AND ($4::timestamptz IS NULL OR (a.created_at, a.id) > ($4, $5))
 ORDER BY a.created_at, a.id
-LIMIT $7;
+LIMIT $6;
 
 -- PublicationApprovalByID resolves ONE pending publication approval from the id the list above handed
 -- out, so POST /v1/approvals/{approval_id}/approve can reach the publication family. Its sibling
@@ -381,8 +380,8 @@ LEFT JOIN LATERAL (
     SELECT rb.connection_ref, rb.repository_identity
     FROM preparation_receipts pr
     JOIN repository_bindings rb ON rb.id = pr.repository_binding_id
-    WHERE pr.run_id = p.run_id AND pr.organization_id = p.organization_id AND pr.project_id = p.project_id
+    WHERE pr.run_id = p.run_id AND pr.project_id = p.project_id
     ORDER BY pr.prepared_at DESC, pr.id DESC
     LIMIT 1
 ) bind ON TRUE
-WHERE a.id = $1 AND a.organization_id = $2 AND a.project_id = $3 AND p.state = 'pending_approval';
+WHERE a.id = $1 AND a.project_id = $2 AND p.state = 'pending_approval';

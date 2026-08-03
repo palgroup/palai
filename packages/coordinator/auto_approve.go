@@ -91,7 +91,7 @@ type AutoApproveView struct {
 func (s *Store) SessionAutoApprove(ctx context.Context, tenant Tenant, sessionID string) (AutoApprove, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var a AutoApprove
-	err := s.pool.QueryRow(ctx, storage.Query("SessionAutoApprove"), sessionID, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(ctx, storage.Query("SessionAutoApprove"), sessionID, tenant.Project).
 		Scan(&a.Tools, &a.Publications, &a.SetBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AutoApprove{}, nil
@@ -107,7 +107,7 @@ func (s *Store) SessionAutoApprove(ctx context.Context, tenant Tenant, sessionID
 // read as armed after it committed.
 func autoApproveTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID string) (AutoApprove, error) {
 	var a AutoApprove
-	err := tx.QueryRow(ctx, storage.Query("SessionAutoApprove"), sessionID, tenant.Organization, tenant.Project).
+	err := tx.QueryRow(ctx, storage.Query("SessionAutoApprove"), sessionID, tenant.Project).
 		Scan(&a.Tools, &a.Publications, &a.SetBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AutoApprove{}, nil
@@ -130,7 +130,7 @@ func (s *Store) SetSessionAutoApprove(ctx context.Context, tenant Tenant, sessio
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var v AutoApproveView
 	err := s.pool.QueryRow(ctx, storage.Query("SetSessionAutoApprove"),
-		sessionID, tenant.Organization, tenant.Project, tools, publications, principal).
+		sessionID, tenant.Project, tools, publications, principal).
 		Scan(&v.Tools, &v.Publications, &v.SetBy, &v.SetAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AutoApproveView{}, nil

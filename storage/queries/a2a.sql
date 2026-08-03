@@ -34,15 +34,15 @@ WHERE id = $1 AND published = true;
 SELECT id, organization_id, project_id, name, description, version, agent_profile_id, agent_revision_id,
        streaming, push_notifications, extended_card, input_modes, output_modes, skills, auth_scheme, etag
 FROM a2a_interfaces
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- ListA2AInterfaces pages a project's published interfaces newest-first (admin ListView envelope).
 -- name: ListA2AInterfaces
 SELECT id, name, version, agent_profile_id, agent_revision_id, created_at
 FROM a2a_interfaces
-WHERE organization_id = $1 AND project_id = $2
+WHERE project_id = $1
 ORDER BY created_at DESC, id DESC
-LIMIT $3;
+LIMIT $2;
 
 -- InsertA2ATaskRef records the external->canonical bridge for a newly-admitted A2A task. run_id/session_id
 -- are the platform-minted canonical ids; a2a_task_id/a2a_context_id are the external ids the client sees.
@@ -57,7 +57,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 -- name: GetA2ATaskRef
 SELECT id, a2a_task_id, a2a_context_id, run_id, session_id, push_configs
 FROM a2a_task_refs
-WHERE interface_id = $1 AND a2a_task_id = $2 AND organization_id = $3 AND project_id = $4;
+WHERE interface_id = $1 AND a2a_task_id = $2 AND project_id = $3;
 
 -- GetA2ATaskRefByRun resolves an existing task ref within scope by its canonical run reference under an
 -- interface (the A2A-retry dedupe seam — a replayed messageId re-admits to the SAME canonical response, so
@@ -66,16 +66,16 @@ WHERE interface_id = $1 AND a2a_task_id = $2 AND organization_id = $3 AND projec
 -- name: GetA2ATaskRefByRun
 SELECT id, a2a_task_id, a2a_context_id, run_id, session_id, push_configs
 FROM a2a_task_refs
-WHERE interface_id = $1 AND run_id = $2 AND organization_id = $3 AND project_id = $4
+WHERE interface_id = $1 AND run_id = $2 AND project_id = $3
 LIMIT 1;
 
 -- ListA2ATaskRefs pages an interface's tasks newest-first (the tasks list endpoint).
 -- name: ListA2ATaskRefs
 SELECT id, a2a_task_id, a2a_context_id, run_id, session_id, push_configs
 FROM a2a_task_refs
-WHERE interface_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE interface_id = $1 AND project_id = $2
 ORDER BY created_at DESC, id DESC
-LIMIT $4;
+LIMIT $3;
 
 -- UpdateA2ATaskPushConfigs replaces a task's push-config array (set/delete both write the whole array). The
 -- ACTUAL secret posture (M-3): each entry's bearer token is stored in the JSONB and REDACTED on every read
@@ -83,8 +83,8 @@ LIMIT $4;
 -- webhook store's secret_ref indirection for push tokens is later hardening (§6). updated_at bumps for audit.
 -- name: UpdateA2ATaskPushConfigs
 UPDATE a2a_task_refs
-SET push_configs = $5, updated_at = clock_timestamp()
-WHERE interface_id = $1 AND a2a_task_id = $2 AND organization_id = $3 AND project_id = $4;
+SET push_configs = $4, updated_at = clock_timestamp()
+WHERE interface_id = $1 AND a2a_task_id = $2 AND project_id = $3;
 
 -- A2A 1.0 CLIENT registration (migration 000039, E17 Task 3, spec §38.5). a2a_remote_agents is the registered
 -- OUTBOUND remote agent: the trust envelope the client enforces on every dial. auth_connection_ref is a
@@ -107,12 +107,12 @@ SELECT id, organization_id, project_id, name, card_url, endpoint_url, protocol_v
        auth_connection_ref, allowed_input_modes, allowed_output_modes, allowed_extension_uris,
        data_policy, max_cost_cents, timeout_ms, max_output_bytes, enabled
 FROM a2a_remote_agents
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- ListA2ARemoteAgents pages a project's registered remote agents newest-first (admin ListView envelope).
 -- name: ListA2ARemoteAgents
 SELECT id, name, card_url, endpoint_url, protocol_version, enabled, created_at
 FROM a2a_remote_agents
-WHERE organization_id = $1 AND project_id = $2
+WHERE project_id = $1
 ORDER BY created_at DESC, id DESC
-LIMIT $3;
+LIMIT $2;

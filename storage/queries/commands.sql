@@ -59,9 +59,9 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- content); add a redacted_content copy if fork fidelity to §22.2 markers ever matters.
 -- name: ForkCopyResponses
 INSERT INTO responses (id, organization_id, project_id, session_id, state, input, output, store, created_at)
-SELECT 'resp_' || replace(gen_random_uuid()::text, '-', ''), organization_id, project_id, $4, state, input, output, store, created_at
+SELECT 'resp_' || replace(gen_random_uuid()::text, '-', ''), organization_id, project_id, $3, state, input, output, store, created_at
 FROM responses
-WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE session_id = $1 AND project_id = $2
   AND state IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
   AND purged_at IS NULL;
 
@@ -80,7 +80,7 @@ WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
 -- name: ClearSessionHistory
 UPDATE responses
 SET retracted_at = clock_timestamp(), updated_at = clock_timestamp()
-WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE session_id = $1 AND project_id = $2
   AND state IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
   AND retracted_at IS NULL;
 
@@ -95,7 +95,7 @@ WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
 -- name: ActiveRootRun
 SELECT id, response_id
 FROM runs
-WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE session_id = $1 AND project_id = $2
   AND state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
 ORDER BY created_at DESC
 LIMIT 1;

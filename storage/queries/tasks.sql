@@ -4,7 +4,7 @@
 -- create locks nothing here; the UNIQUE (session_id, task_key) index serializes concurrent creates.
 SELECT id, kind, title, status, detail
 FROM tasks
-WHERE session_id = $1 AND task_key = $2 AND organization_id = $3 AND project_id = $4
+WHERE session_id = $1 AND task_key = $2 AND project_id = $3
 FOR UPDATE;
 
 -- name: InsertTask
@@ -19,5 +19,5 @@ WHERE session_id = $1 AND task_key = $2;
 -- name: ListTasksBySession
 SELECT task_key, kind, title, status, detail
 FROM tasks
-WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE session_id = $1 AND project_id = $2
 ORDER BY created_at, task_key;

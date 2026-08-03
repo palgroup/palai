@@ -42,7 +42,7 @@ type ResponseListItem struct {
 func (s *Store) ListResponses(ctx context.Context, tenant Tenant, p ListParams) ([]ResponseListItem, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListResponses"),
-		tenant.Organization, tenant.Project, p.Status, p.CreatedGTE, p.CreatedLTE, p.AfterCreatedAt, p.AfterID, p.Limit)
+		tenant.Project, p.Status, p.CreatedGTE, p.CreatedLTE, p.AfterCreatedAt, p.AfterID, p.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list responses: %w", err)
 	}
@@ -115,7 +115,7 @@ type RepositoryBindingListItem struct {
 func (s *Store) ListRepositoryBindings(ctx context.Context, tenant Tenant, p ListParams, includeArchived bool) ([]RepositoryBindingListItem, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListRepositoryBindings"),
-		tenant.Organization, tenant.Project, p.CreatedGTE, p.CreatedLTE, p.AfterCreatedAt, p.AfterID, p.Limit,
+		tenant.Project, p.CreatedGTE, p.CreatedLTE, p.AfterCreatedAt, p.AfterID, p.Limit,
 		includeArchived)
 	if err != nil {
 		return nil, fmt.Errorf("list repository bindings: %w", err)

@@ -84,10 +84,10 @@ RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_ke
 -- and the resume after it would then be legitimate. A REVOKE is deliberately still allowed, because
 -- refusing an enrolment is exactly what an operator does with a machine they did not order.
 UPDATE runners
-   SET state = $4
- WHERE id = $1 AND organization_id = $2 AND ($3 = '' OR project_id = $3)
-   AND (state <> 'revoked' OR $4 = 'revoked')
-   AND (state <> 'pending' OR $4 = 'revoked')
+   SET state = $3
+ WHERE id = $1 AND ($2 = '' OR project_id = $2)
+   AND (state <> 'revoked' OR $3 = 'revoked')
+   AND (state <> 'pending' OR $3 = 'revoked')
 RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
           state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
        config_revision, config_applied, config_reported_at, created_at;
@@ -110,7 +110,7 @@ RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_ke
 -- out of service.
 UPDATE runners
    SET state = 'active'
- WHERE id = $1 AND organization_id = $2 AND ($3 = '' OR project_id = $3)
+ WHERE id = $1 AND ($2 = '' OR project_id = $2)
    AND state IN ('pending', 'active')
 RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
           state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
@@ -154,7 +154,7 @@ SELECT id, organization_id, project_id, pool_id, label, runner_dns, public_key_s
        state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
        config_revision, config_applied, config_reported_at, created_at
   FROM runners
- WHERE id = $1 AND organization_id = $2 AND ($3 = '' OR project_id = $3);
+ WHERE id = $1 AND ($2 = '' OR project_id = $2);
 
 -- name: ListRunners
 -- The tenant-scoped keyset page: (created_at, id) DESC, the ordering api/pagination.go mints its
@@ -164,13 +164,12 @@ SELECT id, organization_id, project_id, pool_id, label, runner_dns, public_key_s
        state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
        config_revision, config_applied, config_reported_at, created_at
   FROM runners
- WHERE organization_id = $1
-   AND ($2 = '' OR project_id = $2)
-   AND ($3::timestamptz IS NULL OR created_at >= $3)
-   AND ($4::timestamptz IS NULL OR created_at <= $4)
-   AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+ WHERE ($1 = '' OR project_id = $1)
+   AND ($2::timestamptz IS NULL OR created_at >= $2)
+   AND ($3::timestamptz IS NULL OR created_at <= $3)
+   AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5))
  ORDER BY created_at DESC, id DESC
- LIMIT $7;
+ LIMIT $6;
 
 -- name: InsertDefaultRunnerPool
 -- The tenant's default pool, seeded in the SAME transaction as the four identity rows a tenant is
@@ -207,10 +206,9 @@ RETURNING created_at;
 -- The predicate carries the tenant as well as the id, so a pool that is not the caller's returns no row and
 -- the handler answers 404 without learning whether it exists elsewhere.
 UPDATE runner_pools
-   SET strict_enrollment = $4
- WHERE organization_id = $1
-   AND ($2 = '' OR project_id = $2)
-   AND id = $3
+   SET strict_enrollment = $3
+ WHERE ($1 = '' OR project_id = $1)
+   AND id = $2
 RETURNING id, organization_id, project_id, name, posture, os, arch, strict_enrollment, created_at;
 
 -- name: ListRunnerPools
@@ -227,13 +225,12 @@ RETURNING id, organization_id, project_id, name, posture, os, arch, strict_enrol
 -- asked for. This comment names no future owner, because a comment cannot schedule work.
 SELECT id, organization_id, project_id, name, posture, os, arch, strict_enrollment, created_at
   FROM runner_pools
- WHERE organization_id = $1
-   AND ($2 = '' OR project_id = $2)
-   AND ($3::timestamptz IS NULL OR created_at >= $3)
-   AND ($4::timestamptz IS NULL OR created_at <= $4)
-   AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+ WHERE ($1 = '' OR project_id = $1)
+   AND ($2::timestamptz IS NULL OR created_at >= $2)
+   AND ($3::timestamptz IS NULL OR created_at <= $3)
+   AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5))
  ORDER BY created_at DESC, id DESC
- LIMIT $7;
+ LIMIT $6;
 
 -- ---------------------------------------------------------------------------------------------------
 -- POOL ENROLMENT KEYS (E24 T3). The credential a machine presents to enrol into ONE pool.
@@ -253,9 +250,9 @@ SELECT id, organization_id, project_id, name, posture, os, arch, strict_enrollme
 -- would be a credential that admits a machine into a fleet its owner never opened. No row means the
 -- pool is not this tenant's (or does not exist), which the caller renders as a 404.
 INSERT INTO runner_pool_keys (id, organization_id, project_id, pool_id, key_sha256, key_prefix, expires_at)
-SELECT $1, p.organization_id, p.project_id, p.id, $5, $6, $7
+SELECT $1, p.organization_id, p.project_id, p.id, $4, $5, $6
   FROM runner_pools p
- WHERE p.id = $4 AND p.organization_id = $2 AND ($3 = '' OR p.project_id = $3)
+ WHERE p.id = $3 AND ($2 = '' OR p.project_id = $2)
 RETURNING id, pool_id, key_prefix, created_at, expires_at;
 
 -- name: ResolveRunnerPoolKey
@@ -294,9 +291,8 @@ UPDATE runner_pool_keys SET last_used_at = $2 WHERE id = $1;
 -- one — the same bargain `palai apikey list` already makes.
 SELECT k.id, k.pool_id, k.key_prefix, k.created_at, k.expires_at, k.revoked_at, k.last_used_at
   FROM runner_pool_keys k
- WHERE k.organization_id = $1
-   AND ($2 = '' OR k.project_id = $2)
-   AND ($3 = '' OR k.pool_id = $3)
+ WHERE ($1 = '' OR k.project_id = $1)
+   AND ($2 = '' OR k.pool_id = $2)
  ORDER BY k.created_at DESC, k.id DESC;
 
 -- name: RevokeRunnerPoolKey
@@ -305,8 +301,8 @@ SELECT k.id, k.pool_id, k.key_prefix, k.created_at, k.expires_at, k.revoked_at, 
 -- already admitted: that is the property the whole task rests on, and it is a property of what this
 -- statement does not say.
 UPDATE runner_pool_keys
-   SET revoked_at = coalesce(revoked_at, $4)
- WHERE id = $1 AND organization_id = $2 AND ($3 = '' OR project_id = $3)
+   SET revoked_at = coalesce(revoked_at, $3)
+ WHERE id = $1 AND ($2 = '' OR project_id = $2)
 RETURNING id, pool_id, key_prefix, created_at, expires_at, revoked_at, last_used_at;
 
 -- name: ListRunnersEnrolledViaKey
@@ -314,7 +310,7 @@ RETURNING id, pool_id, key_prefix, created_at, expires_at, revoked_at, last_used
 -- "revoked" reads as "removed" and they believe one call decommissioned a fleet.
 SELECT id, label, runner_dns, state, pool_id, enrolled_at, last_seen_at
   FROM runners
- WHERE enrolled_via_key_id = $1 AND organization_id = $2 AND ($3 = '' OR project_id = $3)
+ WHERE enrolled_via_key_id = $1 AND ($2 = '' OR project_id = $2)
  ORDER BY enrolled_at DESC, id DESC;
 
 -- ---------------------------------------------------------------------------------------------------
@@ -340,9 +336,9 @@ SELECT id, label, runner_dns, state, pool_id, enrolled_at, last_seen_at
 SELECT r.pool_id, r.created_at,
        coalesce((SELECT p.id
                    FROM runner_pools p
-                  WHERE p.organization_id = $2 AND p.project_id = $3 AND p.name = 'default'), '')
+                  WHERE p.project_id = $2 AND p.name = 'default'), '')
   FROM runs r
- WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3;
+ WHERE r.id = $1 AND r.project_id = $2;
 
 -- name: RecordRunPool
 -- Write the placement decision ONCE (000045 R5). `pool_id IS NULL` is what makes it write-once, so a
@@ -358,13 +354,13 @@ SELECT r.pool_id, r.created_at,
 -- one answer at the site that decides whether to dial, and a run whose tenant owns no pool parked with
 -- pool_id NULL — unreachable by OldestRunAwaitingCapacity, which matches on that exact column.
 UPDATE runs
-   SET pool_id = $4, updated_at = clock_timestamp()
- WHERE id = $1 AND organization_id = $2 AND project_id = $3
+   SET pool_id = $3, updated_at = clock_timestamp()
+ WHERE id = $1 AND project_id = $2
    AND pool_id IS NULL
    AND EXISTS (SELECT 1
                  FROM runner_pools p
-                WHERE p.id = $4 AND p.organization_id = $2
-                  AND (p.project_id IS NULL OR p.project_id = $3))
+                WHERE p.id = $3
+                  AND (p.project_id IS NULL OR p.project_id = $2))
 RETURNING pool_id;
 
 -- name: ExpiredCapacityParks
@@ -390,7 +386,6 @@ RETURNING pool_id;
 SELECT r.organization_id, r.project_id, r.id, r.response_id
   FROM runs r
   JOIN attempts a ON a.run_id = r.id
-                 AND a.organization_id = r.organization_id
                  AND a.project_id = r.project_id
  WHERE r.state = 'waiting'
    AND a.state = 'awaiting_capacity'
@@ -411,7 +406,7 @@ SELECT r.organization_id, r.project_id, r.id, r.response_id
 -- is no second write to forget.
 UPDATE attempts
    SET state = 'awaiting_capacity', updated_at = clock_timestamp()
- WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+ WHERE id = $1 AND project_id = $2;
 
 -- name: OldestRunAwaitingCapacity
 -- The pool's oldest run parked for want of a machine, locked for the wake.
@@ -429,10 +424,10 @@ UPDATE attempts
 -- index, because the rows this asks about are a vanishing fraction of the table.
 SELECT r.id
   FROM runs r
- WHERE r.organization_id = $1 AND r.project_id = $2 AND r.pool_id = $3 AND r.state = 'waiting'
+ WHERE r.project_id = $1 AND r.pool_id = $2 AND r.state = 'waiting'
    AND EXISTS (SELECT 1
                  FROM attempts a
-                WHERE a.run_id = r.id AND a.organization_id = $1 AND a.project_id = $2
+                WHERE a.run_id = r.id AND a.project_id = $1
                   AND a.state = 'awaiting_capacity')
  ORDER BY r.created_at, r.id
  LIMIT 1

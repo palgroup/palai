@@ -210,6 +210,54 @@ func TestTextThatNeverRecoversIsFlushedAtStop(t *testing.T) {
 	}
 }
 
+// TestTheShapeARealRunActuallyProduces is the fixture that matches PRODUCTION, and it exists because every
+// other card test in this file feeds a tool_call.progress.v1 that a real run never sends.
+//
+// MEASURED 2026-08-04, whole journal, all time:
+//
+//	SELECT count(*) FROM events WHERE type='tool_call.progress.v1'  ->  0
+//
+// and that zero is STRUCTURAL, not a quiet week: the event's only writer is the MCP progress sink
+// (apps/control-plane/internal/execution/mcp_progress.go, journalling a remote server's tools/call
+// notifications), while palai.workspace.* are dispatched by the control plane itself and emit none. So a
+// real run's card is executing -> completed with NOTHING in between, and this test is what that looks like.
+//
+// Confirmed end to end by the live leg (realrun_live_test.go, run 2026-08-04): one real tool call, two
+// updates sharing tcall_15621b7abb4be6ab84654e78, and the workspace kept
+// `status=complete title="Running a command" details=<nil>`.
+func TestTheShapeARealRunActuallyProduces(t *testing.T) {
+	const answer = "Bu projede toplam 151 adet Swift dosyası var."
+	events := []palai.Event{
+		{Type: "tool_call.executing.v1", Data: map[string]any{"tool_call_id": "tcall_1", "tool_name": "palai.workspace.shell"}},
+		{Type: "tool_call.completed.v1", Data: map[string]any{"tool_call_id": "tcall_1", "tool_name": "palai.workspace.shell"}},
+		{Type: "model_step.delta.v1", Data: map[string]any{"text": answer}},
+		{Type: "run.completed.v1", Data: map[string]any{}},
+	}
+	fake := &fakeSlack{}
+	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals},
+		"sess_1", "C1", "1.1"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(fake.tasks) != 2 {
+		t.Fatalf("drew %d card update(s), want 2 (executing, completed) — got %+v", len(fake.tasks), fake.tasks)
+	}
+	// ONE card, resolved, and its whole content is a human phrase. No detail line at all: nothing in a real
+	// run has anything to put there, and the raw name that used to fill it was the owner's complaint.
+	for i, task := range fake.tasks {
+		if task.ID != "tcall_1" || task.Title != "Running a command" || task.Detail != "" {
+			t.Fatalf("update %d = %+v, want one card titled `Running a command` with no detail", i, task)
+		}
+	}
+	if fake.tasks[1].Status != "done" {
+		t.Fatalf("the card ended %q, want done — a step left mid-flight in a finished message is the SLK-P2 "+
+			"shape on a card", fake.tasks[1].Status)
+	}
+	body := fake.startedText + strings.Join(fake.appended, "") + fake.stoppedText
+	if !strings.Contains(body, answer) || strings.Contains(body, "palai.workspace.shell") {
+		t.Fatalf("body = %q, want the answer and nothing about the tool", body)
+	}
+}
+
 // TestToolProgressLeavesTheAnswerAlone is SLK-P6 closed, stated as the property the gap row states:
 // "progress lines still ride the message body" — chat.appendStream's markdown_text IS the body, so a tool
 // line the relay streamed sat ABOVE the model's answer in the finished message.
@@ -217,6 +265,12 @@ func TestTextThatNeverRecoversIsFlushedAtStop(t *testing.T) {
 // The assertion has two halves and BOTH are needed. That the cards exist is not enough (the old prose could
 // still be there beside them), and that the body is clean is not enough either (a relay that dropped tool
 // events entirely would pass it). So: the steps are drawn as cards, AND nothing about them is in the body.
+//
+// THE FIXTURE IS RICHER THAN PRODUCTION AND THAT IS DELIBERATE HERE, but it must not be read as a picture of
+// a real run: the tool_call.progress.v1 below is journalled ZERO times in this deployment and cannot be
+// journalled for a built-in tool at all (see TestTheShapeARealRunActuallyProduces for the measurement and
+// for the shape production really produces). It is included because SLK-P6 is about progress lines
+// specifically, so the strongest form of "progress does not ride the body" needs a progress event to exist.
 func TestToolProgressLeavesTheAnswerAlone(t *testing.T) {
 	const answer = "Projede toplam 7 Swift dosyası var"
 	events := []palai.Event{
@@ -329,6 +383,12 @@ func TestOneToolCallIsOneCardThroughout(t *testing.T) {
 //
 // Without the separator the live workspace returned `palai.workspace.fileSwiftUIListApp.swift (3/7)` — the
 // `doneProjede` defect, on the card instead of in the body.
+//
+// REACHABLE ONLY BY AN MCP TOOL, and that ceiling belongs on the test rather than in a report nobody reads:
+// tool_call.progress.v1 has one writer (the MCP progress sink) and is journalled zero times in this
+// deployment, so no built-in palai.workspace.* tool can ever reach this code. The rule is still real — an
+// MCP server that reports progress twice would hit it — but this test is NOT evidence about what a Slack
+// answer looks like today. TestTheShapeARealRunActuallyProduces is.
 func TestConsecutiveProgressLinesAreSeparated(t *testing.T) {
 	events := []palai.Event{
 		{Type: "tool_call.executing.v1", Data: map[string]any{"tool_call_id": "tc_1", "tool_name": "palai.workspace.file"}},

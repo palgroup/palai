@@ -37,7 +37,7 @@ type AgentProfileItem struct {
 func (s *Store) GetProfile(ctx context.Context, org, project, id string) (AgentProfileItem, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var it AgentProfileItem
-	err := s.pool.QueryRow(ctx, storage.Query("GetAgentProfile"), id, org, project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetAgentProfile"), id, project).
 		Scan(&it.ID, &it.Name, &it.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AgentProfileItem{}, false, nil
@@ -52,7 +52,7 @@ func (s *Store) GetProfile(ctx context.Context, org, project, id string) (AgentP
 func (s *Store) ListProfiles(ctx context.Context, org, project string, w ListWindow) ([]AgentProfileItem, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListAgentProfiles"),
-		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list agent profiles: %w", err)
 	}
@@ -104,7 +104,7 @@ type AgentRevisionItem struct {
 func (s *Store) ListRevisions(ctx context.Context, org, project, profileID string, w ListWindow) ([]AgentRevisionItem, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListAgentRevisions"),
-		org, project, profileID, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+		project, profileID, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list agent revisions: %w", err)
 	}
@@ -138,7 +138,7 @@ func (s *TriggerStore) ListTriggers(ctx context.Context, project string, w ListW
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListTriggers"),
-		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list triggers: %w", err)
 	}

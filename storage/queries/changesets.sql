@@ -9,7 +9,7 @@
 -- name: RunToolCalls
 SELECT id, name, arguments::text, coalesce(result::text, '')
 FROM tool_calls
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE run_id = $1 AND project_id = $2
 ORDER BY created_at, id;
 
 -- RunBaseCommit reads the run's latest preparation receipt base commit (spec §30.3, the
@@ -18,7 +18,7 @@ ORDER BY created_at, id;
 -- name: RunBaseCommit
 SELECT base_commit
 FROM preparation_receipts
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE run_id = $1 AND project_id = $2
 ORDER BY prepared_at DESC, id DESC
 LIMIT 1;
 

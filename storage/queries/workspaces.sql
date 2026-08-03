@@ -84,7 +84,7 @@ WHERE a.id = $2
 SELECT workspace_id, object_key, archive_checksum, size_bytes,
        tree_checksum, index_checksum, file_checksums, exclusions
 FROM workspace_snapshots
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- name: LatestRestorableWorkspaceSnapshot
 -- The newest snapshot of a workspace that carries archived BYTES (object_key <> ''), so a host-lost
@@ -92,7 +92,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- manifest-only (E09) snapshot is skipped — it has no bytes to restore. No row -> the recovery has no
 -- boundary to restore from and fails EXPLICITLY (recovering→failed), never a silent empty tree.
 SELECT id FROM workspace_snapshots
-WHERE workspace_id = $1 AND organization_id = $2 AND project_id = $3 AND object_key <> ''
+WHERE workspace_id = $1 AND project_id = $2 AND object_key <> ''
 ORDER BY created_at DESC
 LIMIT 1;
 
@@ -118,7 +118,7 @@ INSERT INTO workspaces
 SELECT $1, $2, $3, $4, 'requested', $5, $6
 WHERE NOT EXISTS (
     SELECT 1 FROM workspaces
-    WHERE session_id = $4 AND organization_id = $2 AND project_id = $3 AND repository_binding_id <> ''
+    WHERE session_id = $4 AND project_id = $3 AND repository_binding_id <> ''
 );
 
 -- name: WorkspaceForSession
@@ -127,7 +127,7 @@ WHERE NOT EXISTS (
 -- with no attached binding returns no row — the run then provisions nothing (pre-E09 behaviour).
 SELECT id, repository_binding_id, requested_ref, state
 FROM workspaces
-WHERE session_id = $1 AND organization_id = $2 AND project_id = $3 AND repository_binding_id <> ''
+WHERE session_id = $1 AND project_id = $2 AND repository_binding_id <> ''
 ORDER BY created_at
 LIMIT 1;
 
@@ -152,7 +152,7 @@ SELECT host_id, reason, quarantined_at FROM host_quarantine ORDER BY quarantined
 -- The workspace's current lifecycle state within tenant scope, LOCKED for a transition (spec §29.7),
 -- exactly as LockRun locks a run before a RunTable transition.
 SELECT state FROM workspaces
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
+WHERE id = $1 AND project_id = $2
 FOR UPDATE;
 
 -- name: WorkspaceLifecycleState
@@ -160,11 +160,11 @@ FOR UPDATE;
 -- takes FOR UPDATE for a transition). The destroy path reads it to tell an idempotent retry (already
 -- destroying/destroyed) from a live workspace whose teardown must be refused, not a check-then-act race.
 SELECT state FROM workspaces
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- name: UpdateWorkspaceState
 -- Advance the workspace's lifecycle state projection (spec §29.7). The legal transition is checked by
 -- the pure WorkspaceTable in Go before this write, exactly as UpdateRunState follows RunTable — the DB
 -- stores the current state, the state machine owns legality.
-UPDATE workspaces SET state = $4
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+UPDATE workspaces SET state = $3
+WHERE id = $1 AND project_id = $2;

@@ -210,7 +210,7 @@ func (s *TriggerStore) advanceInbound(ctx context.Context, sc deliveryScope, dat
 func (s *TriggerStore) linkInboundDuplicate(ctx context.Context, tr inboundTrigger, triggerID, revID string, ev webhook.InboundEvent, rawBody []byte) (InboundResult, error) {
 	var original string
 	if err := s.pool.QueryRow(ctx, storage.Query("FindCanonicalInboundDelivery"),
-		triggerID, tr.org, tr.project, ev.Source, ev.SourceTenant, ev.SourceEventID).Scan(&original); err != nil {
+		triggerID, tr.project, ev.Source, ev.SourceTenant, ev.SourceEventID).Scan(&original); err != nil {
 		return InboundResult{}, fmt.Errorf("resolve canonical inbound original: %w", err)
 	}
 	dupID := newID("tdel")

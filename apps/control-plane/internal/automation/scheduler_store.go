@@ -160,7 +160,7 @@ func (s *ScheduleStore) ReviseSchedule(ctx context.Context, project, id string, 
 	}
 	var revision int
 	switch err := s.pool.QueryRow(ctx, storage.Query("ReviseSchedule"),
-		id, org, project, in.CronExpr, in.Timezone, nullableTime(in.OneTimeAt), policyOrDefault(in.MisfirePolicy),
+		id, project, in.CronExpr, in.Timezone, nullableTime(in.OneTimeAt), policyOrDefault(in.MisfirePolicy),
 		graceOrDefault(in.MisfireGraceSeconds), in.MaxCatchUp, in.JitterSeconds,
 		nullableTime(in.StartsAt), nullableTime(in.EndsAt), next).Scan(&revision); {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -183,7 +183,7 @@ func (s *ScheduleStore) SetPaused(ctx context.Context, project, id string, pause
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	if paused {
-		switch err := s.pool.QueryRow(ctx, storage.Query("PauseSchedule"), id, org, project).Scan(new(string)); {
+		switch err := s.pool.QueryRow(ctx, storage.Query("PauseSchedule"), id, project).Scan(new(string)); {
 		case errors.Is(err, pgx.ErrNoRows):
 			return false, nil
 		case err != nil:
@@ -202,7 +202,7 @@ func (s *ScheduleStore) SetPaused(ctx context.Context, project, id string, pause
 		return false, err // a stored schedule is always valid; defensive
 	}
 	next, _ := spec.firstFireAt(createBase(scheduleInputFromView(view), time.Now()))
-	switch err := s.pool.QueryRow(ctx, storage.Query("ResumeSchedule"), id, org, project, nullableTime(next)).Scan(new(string)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("ResumeSchedule"), id, project, nullableTime(next)).Scan(new(string)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
 	case err != nil:
@@ -238,7 +238,7 @@ func (s *ScheduleStore) DeleteSchedule(ctx context.Context, project, id string) 
 		return false, err
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	switch err := s.pool.QueryRow(ctx, storage.Query("SoftDeleteSchedule"), id, org, project).Scan(new(string)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("SoftDeleteSchedule"), id, project).Scan(new(string)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
 	case err != nil:
@@ -255,7 +255,7 @@ func (s *ScheduleStore) GetSchedule(ctx context.Context, project, id string) (Sc
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	var v ScheduleView
-	switch err := s.pool.QueryRow(ctx, storage.Query("GetSchedule"), id, org, project).Scan(
+	switch err := s.pool.QueryRow(ctx, storage.Query("GetSchedule"), id, project).Scan(
 		&v.ID, &v.Name, &v.TriggerID, &v.Kind, &v.CronExpr, &v.Timezone, &v.MisfirePolicy, &v.MisfireGraceSeconds,
 		&v.MaxCatchUp, &v.JitterSeconds, &v.Status, &v.StatusReason, &v.Revision, &v.NextFireAt, &v.OneTimeAt,
 		&v.StartsAt, &v.EndsAt, &v.CreatedAt, &v.UpdatedAt); {
@@ -281,7 +281,7 @@ func (s *ScheduleStore) ListSchedules(ctx context.Context, project string, w Lis
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListSchedules"),
-		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, nullableText(status), w.Limit)
+		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, nullableText(status), w.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list schedules: %w", err)
 	}
@@ -319,7 +319,7 @@ func (s *ScheduleStore) ListOccurrences(ctx context.Context, project, id string,
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, storage.Query("ListScheduleOccurrences"),
-		id, org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, limit)
+		id, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list occurrences: %w", err)
 	}
@@ -502,11 +502,11 @@ func (s *ScheduleStore) fireOne(ctx context.Context, d dueSchedule, now time.Tim
 		}
 	}
 	if plan.fail {
-		if _, err := tx.Exec(ctx, storage.Query("FailSchedule"), d.id, d.org, d.project, plan.failReason, d.nextFireAt); err != nil {
+		if _, err := tx.Exec(ctx, storage.Query("FailSchedule"), d.id, d.project, plan.failReason, d.nextFireAt); err != nil {
 			return fmt.Errorf("fail schedule: %w", err)
 		}
 	} else {
-		if _, err := tx.Exec(ctx, storage.Query("AdvanceNextFireAt"), d.id, d.org, d.project, d.revision, d.nextFireAt, nullableTime(plan.nextFireAt)); err != nil {
+		if _, err := tx.Exec(ctx, storage.Query("AdvanceNextFireAt"), d.id, d.project, d.revision, d.nextFireAt, nullableTime(plan.nextFireAt)); err != nil {
 			return fmt.Errorf("advance next_fire_at: %w", err)
 		}
 	}

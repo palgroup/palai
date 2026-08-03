@@ -97,7 +97,7 @@ func (s *Store) AcceptCommand(ctx context.Context, tenant Tenant, sessionID stri
 	// SessionStateInScope, not the rendering read: this path wants one word, inside a transaction, and
 	// the session projection now carries three lateral aggregates it would compute and discard.
 	var sessionState string
-	if err := tx.QueryRow(ctx, storage.Query("SessionStateInScope"), sessionID, tenant.Organization, tenant.Project).
+	if err := tx.QueryRow(ctx, storage.Query("SessionStateInScope"), sessionID, tenant.Project).
 		Scan(new(string), &sessionState); errors.Is(err, pgx.ErrNoRows) {
 		return Command{SessionNotFound: true}, nil
 	} else if err != nil {
@@ -107,7 +107,7 @@ func (s *Store) AcceptCommand(ctx context.Context, tenant Tenant, sessionID stri
 	// Resolve the session's live root run: the loop a steer/queue delivers to and the response
 	// its journal events belong to. Absent (all terminal) means no loop to steer.
 	var runID, responseID string
-	switch err := tx.QueryRow(ctx, storage.Query("ActiveRootRun"), sessionID, tenant.Organization, tenant.Project).
+	switch err := tx.QueryRow(ctx, storage.Query("ActiveRootRun"), sessionID, tenant.Project).
 		Scan(&runID, &responseID); {
 	case errors.Is(err, pgx.ErrNoRows):
 		// no live run — runID stays ""
@@ -269,7 +269,7 @@ func changeConfigRejection(ctx context.Context, tx pgx.Tx, tenant Tenant, payloa
 // TestApproveWithoutPendingApprovalRejected.
 func approvalRejection(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID string) (map[string]any, error) {
 	var pending bool
-	if err := tx.QueryRow(ctx, storage.Query("SessionHasPendingApproval"), sessionID, tenant.Organization, tenant.Project).Scan(&pending); err != nil {
+	if err := tx.QueryRow(ctx, storage.Query("SessionHasPendingApproval"), sessionID, tenant.Project).Scan(&pending); err != nil {
 		return nil, fmt.Errorf("check pending approval: %w", err)
 	}
 	if !pending {
@@ -296,7 +296,7 @@ func sessionStateRejection(kind, state string) map[string]any {
 // already-closed session is an idempotent no-op that still applies the command.
 func applyCloseSessionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, activeRunID, commandID string) error {
 	var state string
-	if err := tx.QueryRow(ctx, storage.Query("LockSession"), sessionID, tenant.Organization, tenant.Project).Scan(&state); err != nil {
+	if err := tx.QueryRow(ctx, storage.Query("LockSession"), sessionID, tenant.Project).Scan(&state); err != nil {
 		return fmt.Errorf("lock session %s: %w", sessionID, err)
 	}
 	if s := statemachines.SessionState(state); s == statemachines.SessionActive || s == statemachines.SessionPaused {
@@ -339,7 +339,7 @@ func applyForkSessionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, parentSes
 	if _, err := tx.Exec(ctx, storage.Query("InsertSession"), childSessionID, tenant.Organization, tenant.Project, ""); err != nil {
 		return fmt.Errorf("insert fork child session: %w", err)
 	}
-	if _, err := tx.Exec(ctx, storage.Query("ForkCopyResponses"), parentSessionID, tenant.Organization, tenant.Project, childSessionID); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("ForkCopyResponses"), parentSessionID, tenant.Project, childSessionID); err != nil {
 		return fmt.Errorf("copy fork history: %w", err)
 	}
 	if _, err := applyCommandInTx(ctx, tx, tenant, parentSessionID, "", commandID); err != nil {
@@ -367,7 +367,7 @@ func applyForkSessionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, parentSes
 // drops it in place. And it is NOT close_session — the session stays active, which is the entire
 // point. Nothing is deleted (see ClearSessionHistory), so an operator's record is intact.
 func applyClearSessionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, commandID string) error {
-	if _, err := tx.Exec(ctx, storage.Query("ClearSessionHistory"), sessionID, tenant.Organization, tenant.Project); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("ClearSessionHistory"), sessionID, tenant.Project); err != nil {
 		return fmt.Errorf("clear session history: %w", err)
 	}
 	// Session-scoped (no response), like close_session: the clear is a fact about the thread, not
@@ -392,7 +392,7 @@ func applyResumeTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, res
 	}
 	var lockedSession, lockedState string
 	var lockedResponse *string
-	if err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Organization, tenant.Project).
+	if err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Project).
 		Scan(&lockedSession, &lockedResponse, &lockedState); err != nil {
 		return fmt.Errorf("lock run for resume: %w", err)
 	}
@@ -429,7 +429,7 @@ func applySessionTransitionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, ses
 	if err != nil {
 		return fmt.Errorf("session %s transition %s: %w", sessionID, cmd, err)
 	}
-	if _, err := tx.Exec(ctx, storage.Query("UpdateSessionState"), sessionID, tenant.Organization, tenant.Project, string(next)); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("UpdateSessionState"), sessionID, tenant.Project, string(next)); err != nil {
 		return fmt.Errorf("update session state: %w", err)
 	}
 	payload := mustMarshal(map[string]any{"session_id": sessionID, "state": next})

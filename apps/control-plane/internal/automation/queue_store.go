@@ -112,7 +112,7 @@ func (s *QueueStore) ListQueueConnections(ctx context.Context, project string, w
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListQueueConnections"),
-		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list queue connections: %w", err)
 	}
@@ -138,7 +138,7 @@ func (s *QueueStore) GetQueueConnectionItem(ctx context.Context, project, connID
 		return QueueConnectionItem{}, false, fmt.Errorf("resolve organization for project: %w", err)
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	rows, err := s.pool.Query(ctx, storage.Query("GetQueueConnectionItem"), connID, org, project)
+	rows, err := s.pool.Query(ctx, storage.Query("GetQueueConnectionItem"), connID, project)
 	if err != nil {
 		return QueueConnectionItem{}, false, fmt.Errorf("get queue connection: %w", err)
 	}
@@ -184,7 +184,7 @@ func (s *QueueStore) loadConn(ctx context.Context, org, project, connID string) 
 	var name, kind, direction string
 	var enabled bool
 	var visSecs int
-	if err := s.pool.QueryRow(ctx, storage.Query("GetQueueConnection"), connID, org, project).Scan(
+	if err := s.pool.QueryRow(ctx, storage.Query("GetQueueConnection"), connID, project).Scan(
 		&c.id, &c.org, &c.project, &name, &kind, &direction, &c.capacity, &visSecs, &c.maxDeliveries, &enabled, &c.config,
 	); err != nil {
 		return queueConn{}, fmt.Errorf("load queue connection %s: %w", connID, err)

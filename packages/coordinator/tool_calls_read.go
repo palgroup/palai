@@ -47,7 +47,7 @@ type ToolCallView struct {
 // the same answer an id that never existed gives — no cross-tenant existence disclosure (§39.2).
 func (s *Store) ToolCallsForResponse(ctx context.Context, tenant Tenant, responseID string) ([]ToolCallView, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	rows, err := s.pool.Query(ctx, storage.Query("ToolCallsForResponse"), responseID, tenant.Organization, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("ToolCallsForResponse"), responseID, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("read tool calls for response %s: %w", responseID, err)
 	}

@@ -40,7 +40,7 @@ SELECT id, url, enabled, event_filter, api_revision,
        timeout_ms, max_attempts, retry_window_seconds,
        allow_private_destination, created_at
 FROM webhook_endpoints
-WHERE organization_id = $1 AND project_id = $2
+WHERE project_id = $1
 ORDER BY created_at DESC, id DESC;
 
 -- GetWebhookEndpoint is the singular read, and its column list is character-for-character the list's above.
@@ -50,7 +50,7 @@ SELECT id, url, enabled, event_filter, api_revision,
        timeout_ms, max_attempts, retry_window_seconds,
        allow_private_destination, created_at
 FROM webhook_endpoints
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- DeleteWebhookEndpoint unregisters an endpoint (spec §21.4). Tenant-scoped by the verified identity, so an
 -- id belonging to another project matches nothing and is reported as absent rather than as forbidden — one
@@ -69,7 +69,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- next time it fires, not a record of the past.
 -- name: DeleteWebhookEndpoint
 DELETE FROM webhook_endpoints
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
+WHERE id = $1 AND project_id = $2
 RETURNING id;
 
 -- FanOutEndpoints returns the enabled endpoints and their current durable cursor, so the pump can
@@ -89,12 +89,12 @@ WHERE enabled;
 -- name: ReadJournalForEndpoint
 SELECT journal_id, id, session_id, type, payload
 FROM events
-WHERE organization_id = $1 AND project_id = $2
-  AND journal_id > $3
+WHERE project_id = $1
+  AND journal_id > $2
   AND type NOT LIKE 'webhook.%'
-  AND (cardinality($4::text[]) = 0 OR type = ANY ($4::text[]))
+  AND (cardinality($3::text[]) = 0 OR type = ANY ($3::text[]))
 ORDER BY journal_id
-LIMIT $5;
+LIMIT $4;
 
 -- name: AdvanceEndpointCursor
 UPDATE webhook_endpoints SET cursor_journal_id = $2 WHERE id = $1 AND cursor_journal_id < $2;
@@ -162,7 +162,7 @@ WHERE id = $1;
 -- name: RedeliverDelivery
 UPDATE webhook_deliveries d
 SET state = 'pending', attempt_count = 0, first_attempt_at = NULL, next_attempt_at = clock_timestamp(), updated_at = clock_timestamp()
-WHERE d.id = $1 AND d.organization_id = $2 AND d.project_id = $3
+WHERE d.id = $1 AND d.project_id = $2
   AND EXISTS (SELECT 1 FROM webhook_endpoints e WHERE e.id = d.endpoint_id)
 RETURNING d.id;
 
@@ -171,7 +171,7 @@ RETURNING d.id;
 -- the second would be reported as the first, which would tell an operator their delivery record had
 -- vanished when it is still readable.
 -- name: DeliveryExists
-SELECT 1 FROM webhook_deliveries WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SELECT 1 FROM webhook_deliveries WHERE id = $1 AND project_id = $2;
 
 -- ListWebhookDeliveries. `, id DESC` is the tiebreaker, and the LIMIT below is why it matters MORE here than
 -- on the endpoint list: under a partial order the page BOUNDARY moves. Two rows sharing a created_at can
@@ -185,15 +185,15 @@ SELECT 1 FROM webhook_deliveries WHERE id = $1 AND organization_id = $2 AND proj
 -- name: ListWebhookDeliveries
 SELECT id, endpoint_id, event_id, event_type, state, attempt_count, next_attempt_at, created_at, updated_at
 FROM webhook_deliveries
-WHERE organization_id = $1 AND project_id = $2
-  AND ($3 = '' OR state = $3)
+WHERE project_id = $1
+  AND ($2 = '' OR state = $2)
 ORDER BY created_at DESC, id DESC
-LIMIT $4;
+LIMIT $3;
 
 -- name: GetWebhookDelivery
 SELECT id, endpoint_id, event_id, event_type, state, attempt_count, next_attempt_at, created_at, updated_at
 FROM webhook_deliveries
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- ListDeliveryAttempts is the sanitized attempt view (spec §21.6): status, duration, and the bounded
 -- excerpt — the signing secret and secret-ref header values are structurally absent (they are never
@@ -202,5 +202,5 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 SELECT a.attempt_number, a.status_code, a.duration_ms, a.response_excerpt, a.error, a.created_at
 FROM delivery_attempts a
 JOIN webhook_deliveries d ON d.id = a.delivery_id
-WHERE a.delivery_id = $1 AND d.organization_id = $2 AND d.project_id = $3
+WHERE a.delivery_id = $1 AND d.project_id = $2
 ORDER BY a.attempt_number;

@@ -167,7 +167,7 @@ type PublicationTarget struct {
 func (s *Store) RunPublicationTarget(ctx context.Context, tenant Tenant, runID string) (PublicationTarget, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var t PublicationTarget
-	err := s.pool.QueryRow(ctx, storage.Query("RunPublicationTarget"), runID, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(ctx, storage.Query("RunPublicationTarget"), runID, tenant.Project).
 		Scan(&t.Remote, &t.Branch, &t.Base, &t.MergeMethod, &t.ConnectionRef, &t.Identity)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PublicationTarget{}, false, nil
@@ -187,7 +187,7 @@ func (s *Store) RunPublicationTarget(ctx context.Context, tenant Tenant, runID s
 // publication carried. A model that wants a different pull request merged has no field to say so in.
 func (s *Store) RunPublishedPullRequest(ctx context.Context, tenant Tenant, runID string) (number int, headSHA string, found bool, err error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	switch err := s.pool.QueryRow(ctx, storage.Query("RunPublishedPullRequest"), runID, tenant.Organization, tenant.Project).
+	switch err := s.pool.QueryRow(ctx, storage.Query("RunPublishedPullRequest"), runID, tenant.Project).
 		Scan(&number, &headSHA); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return 0, "", false, nil
@@ -263,7 +263,7 @@ func (s *Store) RequestPublication(ctx context.Context, tenant Tenant, in Public
 	//
 	// A session with no Slack thread inserts ZERO rows, which is every non-Slack run in the deployment.
 	if _, err := tx.Exec(ctx, storage.Query("EnqueueApprovalMessage"),
-		tenant.Organization, tenant.Project, in.ApprovalID, in.RunID, in.ResponseID, in.SessionID); err != nil {
+		tenant.Project, in.ApprovalID, in.RunID, in.ResponseID, in.SessionID); err != nil {
 		return Publication{}, fmt.Errorf("enqueue approval message: %w", err)
 	}
 	payload := mustMarshal(map[string]any{
@@ -288,7 +288,7 @@ func (s *Store) RequestPublication(ctx context.Context, tenant Tenant, in Public
 // E08 no_pending_approval rejection is preserved (TestApproveWithoutPendingApprovalRejected).
 func (s *Store) PendingApprovalForSession(ctx context.Context, tenant Tenant, sessionID string) (Publication, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	row := s.pool.QueryRow(ctx, storage.Query("PendingApprovalForSession"), sessionID, tenant.Organization, tenant.Project)
+	row := s.pool.QueryRow(ctx, storage.Query("PendingApprovalForSession"), sessionID, tenant.Project)
 	pub, err := scanPublication(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Publication{}, false, nil
@@ -307,7 +307,7 @@ func (s *Store) PendingApprovalForSession(ctx context.Context, tenant Tenant, se
 func (s *Store) PublicationState(ctx context.Context, tenant Tenant, publicationID string) (string, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var state string
-	switch err := s.pool.QueryRow(ctx, storage.Query("PublicationState"), publicationID, tenant.Organization, tenant.Project).
+	switch err := s.pool.QueryRow(ctx, storage.Query("PublicationState"), publicationID, tenant.Project).
 		Scan(&state); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", false, nil
@@ -357,7 +357,7 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 	// Lock the session's pending publication so the transition is single-winner.
 	var pubID, pendingHash string
 	var expiresAt *time.Time
-	switch err := tx.QueryRow(ctx, storage.Query("LockPendingApprovalForSession"), sessionID, tenant.Organization, tenant.Project).
+	switch err := tx.QueryRow(ctx, storage.Query("LockPendingApprovalForSession"), sessionID, tenant.Project).
 		Scan(&pubID, &pendingHash, &expiresAt); {
 	case errors.Is(err, pgx.ErrNoRows):
 		// No pending approval (already resolved by a racing path): settle the command, transition nothing.
@@ -415,7 +415,7 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 		newState, event = "denied", approvalDeniedEvent
 	}
 	if _, err := tx.Exec(ctx, storage.Query("SetPublicationState"),
-		pubID, tenant.Organization, tenant.Project, newState, "pending_approval"); err != nil {
+		pubID, tenant.Project, newState, "pending_approval"); err != nil {
 		return 0, fmt.Errorf("transition publication: %w", err)
 	}
 	// WHO DECIDED, AND THIS COLUMN USED TO HOLD THE WRONG THING. It was passed `commandID`, so every
@@ -501,7 +501,7 @@ func settleApprovalCommandTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sess
 // the ones it moved (not a no-op a concurrent consume already handled).
 func expirePublicationTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, responseID, pubID, fromState string) (bool, error) {
 	tag, err := tx.Exec(ctx, storage.Query("SetPublicationState"),
-		pubID, tenant.Organization, tenant.Project, "expired", fromState)
+		pubID, tenant.Project, "expired", fromState)
 	if err != nil {
 		return false, fmt.Errorf("expire publication: %w", err)
 	}
@@ -532,7 +532,7 @@ func (s *Store) ExpireApprovalIfElapsed(ctx context.Context, tenant Tenant, sess
 
 	var state string
 	var expiresAt *time.Time
-	switch err := tx.QueryRow(ctx, storage.Query("LockPublicationApprovalExpiry"), publicationID, tenant.Organization, tenant.Project).
+	switch err := tx.QueryRow(ctx, storage.Query("LockPublicationApprovalExpiry"), publicationID, tenant.Project).
 		Scan(&state, &expiresAt); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
@@ -622,7 +622,7 @@ func (s *Store) SweepExpiredApprovals(ctx context.Context) (int, error) {
 // ceiling — E09 publishes at a live-run boundary).
 func (s *Store) ApprovedPublicationsForRun(ctx context.Context, tenant Tenant, runID string) ([]Publication, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	rows, err := s.pool.Query(ctx, storage.Query("ApprovedPublicationsForRun"), runID, tenant.Organization, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("ApprovedPublicationsForRun"), runID, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("read approved publications: %w", err)
 	}
@@ -656,7 +656,7 @@ func (s *Store) MarkPublicationPublished(ctx context.Context, tenant Tenant, ses
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	tag, err := tx.Exec(ctx, storage.Query("MarkPublicationPublished"),
-		publicationID, tenant.Organization, tenant.Project, receiptJSON)
+		publicationID, tenant.Project, receiptJSON)
 	if err != nil {
 		return fmt.Errorf("mark publication published: %w", err)
 	}
@@ -704,7 +704,7 @@ func (s *Store) RecordPublicationWarning(ctx context.Context, tenant Tenant, ses
 
 // publicationByKey reads a publication projection by idempotency key within tx.
 func publicationByKey(ctx context.Context, tx pgx.Tx, tenant Tenant, idempotencyKey string) (Publication, error) {
-	row := tx.QueryRow(ctx, storage.Query("GetPublicationByKey"), tenant.Organization, tenant.Project, idempotencyKey)
+	row := tx.QueryRow(ctx, storage.Query("GetPublicationByKey"), tenant.Project, idempotencyKey)
 	pub, err := scanPublication(row)
 	if err != nil {
 		return Publication{}, fmt.Errorf("read publication: %w", err)

@@ -16,7 +16,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
 SELECT id, provider, repository_identity, clone_url, default_branch, connection_ref,
        allowed_operations, policy, data_classification, region_constraint, created_at, archived_at
 FROM repository_bindings
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- ListRepositoryBindings pages a project's bindings newest-first (spec §30.1, E13 T4). Tenant-scoped
 -- by RLS; the org/project predicate is defence-in-depth. Bindings carry no lifecycle state, so there
@@ -25,18 +25,18 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 SELECT id, provider, repository_identity, clone_url, default_branch, connection_ref,
        allowed_operations, policy, data_classification, region_constraint, created_at, archived_at
 FROM repository_bindings
-WHERE organization_id = $1 AND project_id = $2
+WHERE project_id = $1
   -- ARCHIVED ROWS ARE HIDDEN BY DEFAULT AND THE SWITCH IS A PARAMETER, NOT A SECOND STATEMENT ($8). A
   -- forked "list archived too" query is a second place for the tenant predicate to be got wrong, which is
   -- the class of defect this corpus keeps finding. `deleted_at IS NULL`-style filtering is an APPLICATION
   -- decision and nothing beneath it enforces it — no policy, no constraint — so it is asserted directly
   -- in tests/security/tenancy.
-  AND ($8::boolean OR archived_at IS NULL)
-  AND ($3::timestamptz IS NULL OR created_at >= $3)
-  AND ($4::timestamptz IS NULL OR created_at <= $4)
-  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+  AND ($7::boolean OR archived_at IS NULL)
+  AND ($2::timestamptz IS NULL OR created_at >= $2)
+  AND ($3::timestamptz IS NULL OR created_at <= $3)
+  AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5))
 ORDER BY created_at DESC, id DESC
-LIMIT $7;
+LIMIT $6;
 
 -- name: RecordPreparationReceipt
 -- Record the model-independent preparation provenance (spec §30.3 step 10, REP-001): base commit,
@@ -73,7 +73,7 @@ SELECT rb.clone_url, pr.branch, rb.default_branch, coalesce(rb.policy->>'merge_m
        coalesce(rb.connection_ref, ''), coalesce(rb.repository_identity, '')
 FROM preparation_receipts pr
 JOIN repository_bindings rb ON rb.id = pr.repository_binding_id
-WHERE pr.run_id = $1 AND pr.organization_id = $2 AND pr.project_id = $3
+WHERE pr.run_id = $1 AND pr.project_id = $2
 ORDER BY pr.prepared_at DESC, pr.id DESC
 LIMIT 1;
 
@@ -93,7 +93,7 @@ LIMIT 1;
 -- admission path would have to carry, and the operator-facing distinction already exists on the READ
 -- route, which returns the row with its archived_at set.
 SELECT 1 FROM repository_bindings
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND archived_at IS NULL;
+WHERE id = $1 AND project_id = $2 AND archived_at IS NULL;
 
 -- name: SetRepositoryBindingConnection
 -- Point a binding at a different credential, or at none (E30, migration 000057). This is the ONLY column
@@ -110,8 +110,8 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND archived_at IS NU
 -- Tenant-scoped by RLS; the org/project predicate is defence-in-depth, and the RETURNING drives the
 -- handler's 404 for an unknown, foreign, or archived id without a second round trip.
 UPDATE repository_bindings
-SET connection_ref = $4
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND archived_at IS NULL
+SET connection_ref = $3
+WHERE id = $1 AND project_id = $2 AND archived_at IS NULL
 RETURNING id;
 
 -- name: ArchiveRepositoryBinding
@@ -125,7 +125,7 @@ RETURNING id;
 -- was already retired" — and a second call can never rewrite when it happened.
 UPDATE repository_bindings
 SET archived_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND archived_at IS NULL
+WHERE id = $1 AND project_id = $2 AND archived_at IS NULL
 RETURNING id;
 
 -- name: UnarchiveRepositoryBinding
@@ -138,5 +138,5 @@ RETURNING id;
 -- a restore from a no-op.
 UPDATE repository_bindings
 SET archived_at = NULL
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND archived_at IS NOT NULL
+WHERE id = $1 AND project_id = $2 AND archived_at IS NOT NULL
 RETURNING id;

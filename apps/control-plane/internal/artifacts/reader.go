@@ -106,14 +106,14 @@ func (rd *Reader) ListRunArtifacts(ctx context.Context, scope middleware.Scope, 
 	}
 	ctx = storage.ScopeToTenant(ctx, org, scope.Project)
 	var runID string
-	err = rd.pool.QueryRow(ctx, storage.Query("RunIDForResponse"), responseID, org, scope.Project).Scan(&runID)
+	err = rd.pool.QueryRow(ctx, storage.Query("RunIDForResponse"), responseID, scope.Project).Scan(&runID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.ArtifactResult{NotFound: true}, nil
 	}
 	if err != nil {
 		return api.ArtifactResult{}, fmt.Errorf("resolve response run: %w", err)
 	}
-	rows, err := rd.pool.Query(ctx, storage.Query("ListArtifactsByRun"), runID, org, scope.Project)
+	rows, err := rd.pool.Query(ctx, storage.Query("ListArtifactsByRun"), runID, scope.Project)
 	if err != nil {
 		return api.ArtifactResult{}, fmt.Errorf("list run artifacts: %w", err)
 	}
@@ -154,7 +154,7 @@ type metadataRow struct {
 // absent or owned by another tenant — no cross-tenant existence leaks.
 func (rd *Reader) metadata(ctx context.Context, org, project, id string) (metadataRow, bool, error) {
 	m := metadataRow{id: id}
-	err := rd.pool.QueryRow(ctx, storage.Query("ArtifactByID"), id, org, project).
+	err := rd.pool.QueryRow(ctx, storage.Query("ArtifactByID"), id, project).
 		Scan(&m.runID, &m.objectKey, &m.sizeBytes, &m.checksum, &m.mediaType, &m.logicalType, &m.scanStatus, &m.createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return metadataRow{}, false, nil

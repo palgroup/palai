@@ -248,7 +248,7 @@ func (s *Store) GetHook(ctx context.Context, org, project, id string) (Hook, err
 	h := Hook{ID: id}
 	var configJSON []byte
 	var secretRef *string
-	err := s.pool.QueryRow(ctx, storage.Query("GetHook"), id, org, project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetHook"), id, project).
 		Scan(&h.ID, &h.Name, &h.HookPoint, &h.Category, &h.Executor, &configJSON, &secretRef, &h.TimeoutMS, &h.DisabledAt, &h.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Hook{}, ErrHookNotFound
@@ -272,7 +272,7 @@ func (s *Store) GetHook(ctx context.Context, org, project, id string) (Hook, err
 func (s *Store) ListHooks(ctx context.Context, org, project string, w HookWindow) ([]Hook, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListHooks"),
-		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list hooks: %w", err)
 	}
@@ -325,7 +325,7 @@ type loadedHook struct {
 // returns an empty slice (Fire is then a no-op).
 func (s *Store) loadHooks(ctx context.Context, org, project, point string) ([]loadedHook, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	rows, err := s.pool.Query(ctx, storage.Query("HooksForPoint"), org, project, point)
+	rows, err := s.pool.Query(ctx, storage.Query("HooksForPoint"), project, point)
 	if err != nil {
 		return nil, fmt.Errorf("load hooks for %q: %w", point, err)
 	}
@@ -358,14 +358,14 @@ func (s *Store) loadHooks(ctx context.Context, org, project, point string) ([]lo
 // DisableHook flips the admin kill-switch once. Reports whether the hook existed in scope.
 func (s *Store) DisableHook(ctx context.Context, org, project, id string) (bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	switch err := s.pool.QueryRow(ctx, storage.Query("DisableHook"), id, org, project).Scan(new(string)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("DisableHook"), id, project).Scan(new(string)); {
 	case err == nil:
 		return true, nil
 	case !errors.Is(err, pgx.ErrNoRows):
 		return false, fmt.Errorf("disable hook: %w", err)
 	}
 	// No flip: either already-disabled or unknown. Existence disambiguates.
-	switch err := s.pool.QueryRow(ctx, storage.Query("HookExists"), id, org, project).Scan(new(int)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("HookExists"), id, project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
 	case err != nil:

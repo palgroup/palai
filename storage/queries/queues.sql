@@ -11,7 +11,7 @@ RETURNING id;
 -- name: GetQueueConnection
 SELECT id, organization_id, project_id, name, kind, direction, capacity, visibility_seconds, max_deliveries, enabled, config
   FROM queue_connections
- WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+ WHERE id = $1 AND project_id = $2;
 
 -- SweepQueueConnections is the BRIDGE's catalogue scan (E19 T6): every ENABLED connection of one direction,
 -- across tenants, so the supervised consumer / outbox pump can tick them all. It runs under the SYSTEM scope
@@ -31,12 +31,12 @@ SELECT id, organization_id, project_id, capacity, visibility_seconds, max_delive
 -- name: ListQueueConnections
 SELECT id, name, kind, direction, capacity, visibility_seconds, max_deliveries, enabled, config, created_at
   FROM queue_connections
- WHERE organization_id = $1 AND project_id = $2
-   AND ($3::timestamptz IS NULL OR created_at >= $3)
-   AND ($4::timestamptz IS NULL OR created_at <= $4)
-   AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+ WHERE project_id = $1
+   AND ($2::timestamptz IS NULL OR created_at >= $2)
+   AND ($3::timestamptz IS NULL OR created_at <= $3)
+   AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5))
  ORDER BY created_at DESC, id DESC
- LIMIT $7;
+ LIMIT $6;
 
 -- GetQueueConnectionItem is the SINGULAR read of the same admin projection ListQueueConnections returns —
 -- the address POST /v1/queue-connections has named in its 201 Location since the family shipped, and which
@@ -54,7 +54,7 @@ SELECT id, name, kind, direction, capacity, visibility_seconds, max_deliveries, 
 -- name: GetQueueConnectionItem
 SELECT id, name, kind, direction, capacity, visibility_seconds, max_deliveries, enabled, config, created_at
   FROM queue_connections
- WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+ WHERE id = $1 AND project_id = $2;
 
 -- QueueRunPrincipalInScope confirms the principal named by an inbound connection's config belongs to the
 -- connection's OWN org/project (the SlackRunPrincipalInScope twin, kept as its own name so the queue bridge
@@ -187,16 +187,16 @@ ON CONFLICT (queue_connection_id, destination_key) DO NOTHING;
 INSERT INTO queue_deliveries
     (id, organization_id, project_id, queue_connection_id, destination_key, payload, max_attempts)
 SELECT 'qdel_' || replace(gen_random_uuid()::text, '-', ''),
-       c.organization_id, c.project_id, c.id, $3,
+       c.organization_id, c.project_id, c.id, $2,
        convert_to(jsonb_build_object(
            'type', 'run.terminal',
-           'run_id', $3::text,
-           'response_id', $4::text,
-           'session_id', $5::text,
-           'state', $6::text)::text, 'UTF8'),
+           'run_id', $2::text,
+           'response_id', $3::text,
+           'session_id', $4::text,
+           'state', $5::text)::text, 'UTF8'),
        c.max_deliveries
   FROM queue_connections c
- WHERE c.organization_id = $1 AND c.project_id = $2 AND c.direction = 'outbound' AND c.enabled
+ WHERE c.project_id = $1 AND c.direction = 'outbound' AND c.enabled
 ON CONFLICT (queue_connection_id, destination_key) DO NOTHING;
 
 -- DueQueueDeliveries returns pending outbound deliveries whose backoff clock has elapsed. DeliverDue runs
@@ -232,4 +232,4 @@ UPDATE queue_deliveries
 
 -- name: GetQueueDelivery
 SELECT id, state, attempt_count FROM queue_deliveries
- WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+ WHERE id = $1 AND project_id = $2;

@@ -15,20 +15,20 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'healthy', 1);
 SELECT id, organization_id, project_id, capability, capability_version, os, arch,
        toolchain_digests, capacity, pool_label, trust_label, health, lease_fence
 FROM capability_workers
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- SetCapabilityWorkerHealth records a health/capability change and BUMPS lease_fence, so any lease the worker
 -- still holds is fenced out (§31.6: a health/capability change cuts the new lease). Returns the new fence.
 -- name: SetCapabilityWorkerHealth
 UPDATE capability_workers
-SET health = $4, lease_fence = lease_fence + 1, last_heartbeat_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
+SET health = $3, lease_fence = lease_fence + 1, last_heartbeat_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2
 RETURNING lease_fence;
 
 -- name: HeartbeatCapabilityWorker
 UPDATE capability_workers
 SET last_heartbeat_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND health = 'healthy'
+WHERE id = $1 AND project_id = $2 AND health = 'healthy'
 RETURNING lease_fence;
 
 -- AppendCapabilityJobEntry inserts one IMMUTABLE journal entry, computing entry_seq atomically as the job's
@@ -41,7 +41,7 @@ INSERT INTO capability_jobs (
     worker_id, capability, operation, input_refs, secret_handle_refs, deadline_at, resource_limits,
     output_schema, network_policy, side_effect_key, fence_token, receipt)
 SELECT $1, $2, $3, $4,
-       COALESCE((SELECT max(entry_seq) FROM capability_jobs WHERE job_id = $4 AND organization_id = $2 AND project_id = $3), 0) + 1,
+       COALESCE((SELECT max(entry_seq) FROM capability_jobs WHERE job_id = $4 AND project_id = $3), 0) + 1,
        $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14, $15::jsonb, $16::jsonb, $17::jsonb, $18, $19, $20::jsonb
 RETURNING entry_seq, fence_token;
 
@@ -60,10 +60,10 @@ INSERT INTO capability_jobs (
     worker_id, capability, operation, input_refs, secret_handle_refs, deadline_at, resource_limits,
     output_schema, network_policy, side_effect_key, fence_token, receipt)
 SELECT $1, $2, $3, $4,
-       COALESCE((SELECT max(entry_seq) FROM capability_jobs WHERE job_id = $4 AND organization_id = $2 AND project_id = $3), 0) + 1,
+       COALESCE((SELECT max(entry_seq) FROM capability_jobs WHERE job_id = $4 AND project_id = $3), 0) + 1,
        $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14, $15::jsonb, $16::jsonb, $17::jsonb, $18, $19, $20::jsonb
-WHERE $19 = (SELECT max(fence_token) FROM capability_jobs WHERE job_id = $4 AND organization_id = $2 AND project_id = $3)
-  AND $21 = (SELECT lease_fence FROM capability_workers WHERE id = $9 AND organization_id = $2 AND project_id = $3)
+WHERE $19 = (SELECT max(fence_token) FROM capability_jobs WHERE job_id = $4 AND project_id = $3)
+  AND $21 = (SELECT lease_fence FROM capability_workers WHERE id = $9 AND project_id = $3)
 RETURNING entry_seq, fence_token;
 
 -- JobHasEntries reports whether a job_id already has ANY journal entry in this tenant — the guard that a
@@ -71,7 +71,7 @@ RETURNING entry_seq, fence_token;
 -- dispatch). RLS confines the count; the org/project predicate is defence in depth.
 -- name: JobHasEntries
 SELECT EXISTS (
-    SELECT 1 FROM capability_jobs WHERE job_id = $1 AND organization_id = $2 AND project_id = $3
+    SELECT 1 FROM capability_jobs WHERE job_id = $1 AND project_id = $2
 );
 
 -- CurrentCapabilityJob resolves a job's CURRENT state for the §31.6 fence guard. current_fence is
@@ -82,15 +82,15 @@ SELECT EXISTS (
 -- job yields no rows (ErrNoSuchJob).
 -- name: CurrentCapabilityJob
 SELECT
-    (SELECT max(fence_token) FROM capability_jobs f WHERE f.job_id = $1 AND f.organization_id = $2 AND f.project_id = $3) AS current_fence,
+    (SELECT max(fence_token) FROM capability_jobs f WHERE f.job_id = $1 AND f.project_id = $2) AS current_fence,
     latest.entry_kind,
     latest.worker_id,
-    (SELECT d.deadline_at FROM capability_jobs d WHERE d.job_id = $1 AND d.organization_id = $2 AND d.project_id = $3 AND d.entry_seq = 1) AS deadline_at,
-    (SELECT s.secret_handle_refs FROM capability_jobs s WHERE s.job_id = $1 AND s.organization_id = $2 AND s.project_id = $3 AND s.entry_seq = 1) AS secret_handle_refs
+    (SELECT d.deadline_at FROM capability_jobs d WHERE d.job_id = $1 AND d.project_id = $2 AND d.entry_seq = 1) AS deadline_at,
+    (SELECT s.secret_handle_refs FROM capability_jobs s WHERE s.job_id = $1 AND s.project_id = $2 AND s.entry_seq = 1) AS secret_handle_refs
 FROM (
     SELECT entry_kind, worker_id
     FROM capability_jobs
-    WHERE job_id = $1 AND organization_id = $2 AND project_id = $3
+    WHERE job_id = $1 AND project_id = $2
     ORDER BY entry_seq DESC
     LIMIT 1
 ) latest;
@@ -108,7 +108,7 @@ FROM (
     SELECT DISTINCT ON (job_id) job_id, entry_kind, operation, deadline_at, fence_token, input_refs,
            secret_handle_refs, resource_limits, output_schema, network_policy, side_effect_key, run_id, attempt_id
     FROM capability_jobs
-    WHERE organization_id = $1 AND project_id = $2 AND capability = $3
+    WHERE project_id = $1 AND capability = $2
     ORDER BY job_id, entry_seq DESC
 ) latest
 WHERE latest.entry_kind = 'dispatched'
@@ -121,7 +121,7 @@ LIMIT 1;
 -- name: JobByIdempotencyKey
 SELECT job_id
 FROM capability_jobs
-WHERE organization_id = $1 AND project_id = $2 AND idempotency_key = $3 AND entry_seq = 1
+WHERE project_id = $1 AND idempotency_key = $2 AND entry_seq = 1
 LIMIT 1;
 
 -- JobDispatchSpec reads a job's immutable DISPATCH entry (entry_seq = 1) — the spec a re-dispatch reuses. It
@@ -131,4 +131,4 @@ LIMIT 1;
 SELECT idempotency_key, run_id, attempt_id, capability, operation, input_refs, secret_handle_refs,
        deadline_at, side_effect_key, fence_token
 FROM capability_jobs
-WHERE job_id = $1 AND organization_id = $2 AND project_id = $3 AND entry_seq = 1;
+WHERE job_id = $1 AND project_id = $2 AND entry_seq = 1;

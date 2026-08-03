@@ -223,7 +223,7 @@ func (s *Store) CreateToolRevision(ctx context.Context, org, project, toolID str
 	if err != nil {
 		return ToolRevision{}, err
 	}
-	switch err := s.pool.QueryRow(ctx, storage.Query("ToolExists"), toolID, org, project).Scan(new(int)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("ToolExists"), toolID, project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return ToolRevision{}, ErrToolNotFound
 	case err != nil:
@@ -305,7 +305,7 @@ func (s *Store) GetToolRevision(ctx context.Context, org, project, revisionID st
 		published *any
 	)
 	rev.ID = revisionID
-	err := s.pool.QueryRow(ctx, storage.Query("GetToolRevision"), revisionID, org, project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetToolRevision"), revisionID, project).
 		Scan(new(string), &rev.RevisionNumber, &rev.Executor, &rev.Digest, &published)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ToolRevision{}, false, nil
@@ -358,7 +358,7 @@ func (s *Store) PublishToolSetRevision(ctx context.Context, org, project, revisi
 // revision (ErrUnknownToolRevision) from a known one.
 func (s *Store) pinTarget(ctx context.Context, org, project, revisionID string) (published bool, timeoutMS *int, err error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	err = s.pool.QueryRow(ctx, storage.Query("ToolRevisionForPin"), revisionID, org, project).Scan(&published, &timeoutMS)
+	err = s.pool.QueryRow(ctx, storage.Query("ToolRevisionForPin"), revisionID, project).Scan(&published, &timeoutMS)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil, ErrUnknownToolRevision
 	}

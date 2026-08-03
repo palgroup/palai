@@ -10,7 +10,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 -- name: GetMCPConnection
 SELECT id, name, transport, config, secret_ref, trust_level, disabled_at IS NOT NULL
 FROM mcp_connections
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- MCPConnectionExists verifies a connection id is in scope (an AgentRevision rider names only real
 -- connections — the revision-create validation gate).
@@ -20,27 +20,27 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- name: ListMCPConnections
 SELECT id, name, transport, trust_level, disabled_at IS NOT NULL, created_at
 FROM mcp_connections
-WHERE organization_id = $1 AND project_id = $2
-  AND ($3::timestamptz IS NULL OR created_at >= $3)
-  AND ($4::timestamptz IS NULL OR created_at <= $4)
-  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+WHERE project_id = $1
+  AND ($2::timestamptz IS NULL OR created_at >= $2)
+  AND ($3::timestamptz IS NULL OR created_at <= $3)
+  AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5))
 ORDER BY created_at DESC, id DESC
-LIMIT $7;
+LIMIT $6;
 
 -- name: MCPConnectionExists
-SELECT 1 FROM mcp_connections WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SELECT 1 FROM mcp_connections WHERE id = $1 AND project_id = $2;
 
 -- DisableMCPConnection flips the admin kill-switch once (a re-disable is a zero-row no-op).
 -- name: DisableMCPConnection
 UPDATE mcp_connections
 SET disabled_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND disabled_at IS NULL
+WHERE id = $1 AND project_id = $2 AND disabled_at IS NULL
 RETURNING id;
 
 -- MCPToolIDByCanonical resolves a discovered tool's lineage id by its canonical name, so re-discovery
 -- reuses the existing lineage (a new revision, never a duplicate tool).
 -- name: MCPToolIDByCanonical
-SELECT id FROM tools WHERE organization_id = $1 AND project_id = $2 AND canonical_name = $3;
+SELECT id FROM tools WHERE project_id = $1 AND canonical_name = $2;
 
 -- MCPLatestToolRevisionDigest reads a tool's newest revision digest, so re-discovery skips writing an
 -- identical revision (no manifest churn) and only inserts a NEW draft when the digest actually changed.
@@ -57,9 +57,8 @@ SELECT c.id, c.name, c.transport, c.config, c.secret_ref, c.trust_level
 FROM runs r
 LEFT JOIN agent_revisions ar ON ar.id = r.agent_revision_id
 LEFT JOIN run_template_revisions rtr ON rtr.id = r.run_template_revision_id
-JOIN mcp_connections c ON c.id = $4
-    AND c.organization_id = r.organization_id AND c.project_id = r.project_id
+JOIN mcp_connections c ON c.id = $3 AND c.project_id = r.project_id
     AND c.disabled_at IS NULL
     AND c.id IN (SELECT jsonb_array_elements_text(COALESCE(ar.mcp_connections, rtr.mcp_connections, '[]'::jsonb)))
-WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3
+WHERE r.id = $1 AND r.project_id = $2
 LIMIT 1;

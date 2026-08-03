@@ -11,7 +11,7 @@ VALUES ($1, $2, $3, $4, $5, $6);
 -- TriggerForDelivery verifies a trigger is in scope and returns whether it is enabled (a disabled
 -- trigger rejects new deliveries).
 -- name: TriggerForDelivery
-SELECT enabled FROM triggers WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SELECT enabled FROM triggers WHERE id = $1 AND project_id = $2;
 
 -- InsertTriggerRevision creates a NEW immutable revision (revise = new INSERT, the 000019 discipline).
 -- revision_number is the trigger's next monotonic number, computed in-statement. At most one run target
@@ -37,14 +37,14 @@ RETURNING revision_number;
 -- revise could name another tenant's endpoint and leak the run result to a foreign URL. Returns the id
 -- when in scope; no row otherwise.
 -- name: WebhookEndpointInScope
-SELECT id FROM webhook_endpoints WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SELECT id FROM webhook_endpoints WHERE id = $1 AND project_id = $2;
 
 -- ActiveTriggerRevision resolves the trigger's ACTIVE revision (highest revision_number) — the revision
 -- a new delivery pins at accept. Returns the revision id + number.
 -- name: ActiveTriggerRevision
 SELECT id, revision_number
 FROM trigger_revisions
-WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE trigger_id = $1 AND project_id = $2
 ORDER BY revision_number DESC
 LIMIT 1;
 
@@ -54,7 +54,7 @@ LIMIT 1;
 SELECT agent_revision_id, run_template_revision_id, input_mapping,
        dedupe_key_expr, correlation_mode, correlation_key_expr, concurrency_policy
 FROM trigger_revisions
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- InsertDelivery accepts a delivery, PINNING trigger_revision_id at accept (AGT-002) and recording the
 -- accepting principal (so a deferred resume admits under the same principal). Born 'received' (the
@@ -68,8 +68,8 @@ VALUES ($1, $2, $3, $4, $5, $6);
 -- run_created transition (SetDeliveryState) rides the run's own journal.
 -- name: RecordDeliveryAdmitted
 UPDATE trigger_deliveries
-SET state = 'admitted', response_id = $4, run_id = $5, session_id = $6, mapped_input = $7, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SET state = 'admitted', response_id = $3, run_id = $4, session_id = $5, mapped_input = $6, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2;
 
 -- RecordDeliveryMapped advances a delivery to 'mapped' and stores BOTH the mapped canonical input and the
 -- correlation-key hash. Storing them here (not only at admit/defer) makes a delivery that crashes after
@@ -77,15 +77,15 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- without the (now gone) source payload.
 -- name: RecordDeliveryMapped
 UPDATE trigger_deliveries
-SET state = 'mapped', mapped_input = $4, correlation_key_hash = $5, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SET state = 'mapped', mapped_input = $3, correlation_key_hash = $4, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2;
 
 -- DeferDelivery gates a mapped delivery behind a busy key: state → 'deferred' (its mapped_input + hash are
 -- already stored, so the reconciler can admit it FIFO once the gate opens). A reason records why.
 -- name: DeferDelivery
 UPDATE trigger_deliveries
-SET state = 'deferred', reason = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SET state = 'deferred', reason = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2;
 
 -- KeyHasActiveRun reports whether a (trigger, correlation-key) group already has a delivery whose run is
 -- non-terminal — the queue/singleton "busy" gate. A trigger-wide gate (singleton) passes '' for the hash
@@ -93,9 +93,9 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- name: KeyHasActiveRun
 SELECT 1
 FROM trigger_deliveries d
-JOIN runs r ON r.id = d.run_id AND r.organization_id = d.organization_id AND r.project_id = d.project_id
-WHERE d.trigger_id = $1 AND d.organization_id = $2 AND d.project_id = $3
-  AND d.correlation_key_hash = $4 AND d.run_id <> ''
+JOIN runs r ON r.id = d.run_id AND r.project_id = d.project_id
+WHERE d.trigger_id = $1 AND d.project_id = $2
+  AND d.correlation_key_hash = $3 AND d.run_id <> ''
   AND r.state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
 LIMIT 1;
 
@@ -104,8 +104,8 @@ LIMIT 1;
 -- name: TriggerHasActiveRun
 SELECT 1
 FROM trigger_deliveries d
-JOIN runs r ON r.id = d.run_id AND r.organization_id = d.organization_id AND r.project_id = d.project_id
-WHERE d.trigger_id = $1 AND d.organization_id = $2 AND d.project_id = $3
+JOIN runs r ON r.id = d.run_id AND r.project_id = d.project_id
+WHERE d.trigger_id = $1 AND d.project_id = $2
   AND d.run_id <> ''
   AND r.state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
 LIMIT 1;
@@ -124,8 +124,8 @@ WHERE state = 'deferred';
 -- name: OldestDeferredForKey
 SELECT id, principal_id, trigger_revision_id, mapped_input
 FROM trigger_deliveries
-WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
-  AND correlation_key_hash = $4 AND state = 'deferred'
+WHERE trigger_id = $1 AND project_id = $2
+  AND correlation_key_hash = $3 AND state = 'deferred'
 ORDER BY received_at, id
 LIMIT 1;
 
@@ -143,9 +143,9 @@ LIMIT $2;
 -- name: ActiveDeliveryRunForKey
 SELECT d.response_id, d.run_id
 FROM trigger_deliveries d
-JOIN runs r ON r.id = d.run_id AND r.organization_id = d.organization_id AND r.project_id = d.project_id
-WHERE d.trigger_id = $1 AND d.organization_id = $2 AND d.project_id = $3
-  AND d.correlation_key_hash = $4 AND d.run_id <> ''
+JOIN runs r ON r.id = d.run_id AND r.project_id = d.project_id
+WHERE d.trigger_id = $1 AND d.project_id = $2
+  AND d.correlation_key_hash = $3 AND d.run_id <> ''
   AND r.state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
 ORDER BY d.received_at DESC
 LIMIT 1;
@@ -157,7 +157,7 @@ LIMIT 1;
 -- name: RunHasIrreversibleExecuted
 SELECT 1
 FROM tool_calls
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE run_id = $1 AND project_id = $2
   AND replay_class = 'irreversible' AND state IN ('completed', 'uncertain')
 LIMIT 1;
 
@@ -166,8 +166,8 @@ LIMIT 1;
 -- name: LatestDeferredForKey
 SELECT id, principal_id, trigger_revision_id, mapped_input
 FROM trigger_deliveries
-WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
-  AND correlation_key_hash = $4 AND state = 'deferred'
+WHERE trigger_id = $1 AND project_id = $2
+  AND correlation_key_hash = $3 AND state = 'deferred'
 ORDER BY received_at DESC, id DESC
 LIMIT 1;
 
@@ -175,9 +175,9 @@ LIMIT 1;
 -- to the surviving delivery (duplicate_of) — the subsumed rows are recorded, not lost (AUT-005).
 -- name: SkipCoalescedDeferred
 UPDATE trigger_deliveries
-SET state = 'skipped', duplicate_of = $5, reason = 'coalesced into ' || $5, updated_at = clock_timestamp()
-WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
-  AND correlation_key_hash = $4 AND state = 'deferred' AND id <> $5;
+SET state = 'skipped', duplicate_of = $4, reason = 'coalesced into ' || $4, updated_at = clock_timestamp()
+WHERE trigger_id = $1 AND project_id = $2
+  AND correlation_key_hash = $3 AND state = 'deferred' AND id <> $4;
 
 -- FindCorrelatedSession resolves the session a bounded_key_reuse / reject_if_active delivery correlates
 -- onto: the most recent OTHER delivery (of this trigger, in scope) that carries the same correlation hash
@@ -185,8 +185,8 @@ WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
 -- foreign session (authz is not bypassed).
 -- name: FindCorrelatedSession
 SELECT session_id FROM trigger_deliveries
-WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
-  AND correlation_key_hash = $4 AND session_id <> '' AND id <> $5
+WHERE trigger_id = $1 AND project_id = $2
+  AND correlation_key_hash = $3 AND session_id <> '' AND id <> $4
 ORDER BY received_at DESC, id DESC
 LIMIT 1;
 
@@ -194,7 +194,7 @@ LIMIT 1;
 -- name: GetDeliveryPin
 SELECT trigger_revision_id, state
 FROM trigger_deliveries
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- GetTrigger reads a trigger + its active revision number for the management GET, plus the inbound-auth
 -- surface (created_by + the two source-secret ref HANDLES — never bytes; the resolver redeems them).
@@ -205,19 +205,19 @@ SELECT t.id, t.name, t.type, t.enabled,
        COALESCE((SELECT MAX(revision_number) FROM trigger_revisions WHERE trigger_id = t.id), 0),
        t.created_at
 FROM triggers t
-WHERE t.organization_id = $1 AND t.project_id = $2
-  AND ($3::timestamptz IS NULL OR t.created_at >= $3)
-  AND ($4::timestamptz IS NULL OR t.created_at <= $4)
-  AND ($5::timestamptz IS NULL OR (t.created_at, t.id) < ($5, $6))
+WHERE t.project_id = $1
+  AND ($2::timestamptz IS NULL OR t.created_at >= $2)
+  AND ($3::timestamptz IS NULL OR t.created_at <= $3)
+  AND ($4::timestamptz IS NULL OR (t.created_at, t.id) < ($4, $5))
 ORDER BY t.created_at DESC, t.id DESC
-LIMIT $7;
+LIMIT $6;
 
 -- name: GetTrigger
 SELECT t.name, t.type, t.enabled,
        COALESCE((SELECT MAX(revision_number) FROM trigger_revisions WHERE trigger_id = t.id), 0),
        t.created_by, t.inbound_secret_ref, t.inbound_secret_ref_next
 FROM triggers t
-WHERE t.id = $1 AND t.organization_id = $2 AND t.project_id = $3;
+WHERE t.id = $1 AND t.project_id = $2;
 
 -- ResolveInboundTrigger resolves a trigger GLOBALLY by its server-minted id (the unauthenticated inbound
 -- route carries no tenant scope — the source signature is the auth). Returns the tenant scope + the fields
@@ -231,8 +231,8 @@ FROM triggers WHERE id = $1;
 -- WITHOUT minting a pipeline revision (rotation is a mutable-endpoint-column write, not a config edit).
 -- name: SetInboundSecretRefs
 UPDATE triggers
-SET inbound_secret_ref = $4, inbound_secret_ref_next = $5
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SET inbound_secret_ref = $3, inbound_secret_ref_next = $4
+WHERE id = $1 AND project_id = $2;
 
 -- InsertInboundDelivery durably records a signed inbound event as the CANONICAL delivery: the source
 -- envelope (source/source_tenant/source_event_id) + the raw payload + the run principal (trigger.created_by)
@@ -258,8 +258,8 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'duplicate', $11, $12);
 -- earliest live canonical row for the (trigger, source, source_tenant, source_event_id).
 -- name: FindCanonicalInboundDelivery
 SELECT id FROM trigger_deliveries
-WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
-  AND source = $4 AND source_tenant = $5 AND source_event_id = $6 AND duplicate_of IS NULL
+WHERE trigger_id = $1 AND project_id = $2
+  AND source = $3 AND source_tenant = $4 AND source_event_id = $5 AND duplicate_of IS NULL
 ORDER BY received_at, id
 LIMIT 1;
 
@@ -302,7 +302,7 @@ WHERE source_event_id <> '' AND raw_payload IS NOT NULL
 SELECT trigger_id, trigger_revision_id, state, response_id, run_id, session_id,
        COALESCE(duplicate_of, ''), reason, callback_state, received_at, updated_at
 FROM trigger_deliveries
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- CallbackDueDeliveries lists run_created deliveries whose revision names a callback endpoint, whose
 -- response has reached a terminal state, and whose callback has not yet been armed (callback_state = '').
@@ -313,7 +313,7 @@ SELECT d.id, d.organization_id, d.project_id, d.session_id, d.response_id, d.run
        rev.callback_endpoint_id, rev.output_mapping, r.state, r.output
 FROM trigger_deliveries d
 JOIN trigger_revisions rev ON rev.id = d.trigger_revision_id
-JOIN responses r ON r.id = d.response_id AND r.organization_id = d.organization_id AND r.project_id = d.project_id
+JOIN responses r ON r.id = d.response_id AND r.project_id = d.project_id
 WHERE d.callback_state = ''
   AND d.state = 'run_created'
   AND rev.callback_endpoint_id IS NOT NULL
@@ -326,13 +326,13 @@ LIMIT $1;
 -- re-sweep idempotent (an armed delivery is excluded from CallbackDueDeliveries).
 -- name: ArmDeliveryCallback
 UPDATE trigger_deliveries SET callback_state = 'pending', updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- DeadDeliveryCallback marks a callback dead WITHOUT enqueuing — the output-mapping failed at callback
 -- time (a schema-invalid shape). The run result stays intact; only the callback has its own dead terminal.
 -- name: DeadDeliveryCallback
-UPDATE trigger_deliveries SET callback_state = 'dead', reason = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+UPDATE trigger_deliveries SET callback_state = 'dead', reason = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2;
 
 -- MirrorCallbackState mirrors the pump's terminal webhook_deliveries.state onto the delivery's
 -- callback_state (pending → delivered/dead). It is a set-based sweep over armed callbacks — callback_state
@@ -341,8 +341,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 UPDATE trigger_deliveries d
 SET callback_state = whd.state, updated_at = clock_timestamp()
 FROM webhook_deliveries whd
-WHERE whd.event_id = 'cb:' || d.id
-  AND whd.organization_id = d.organization_id AND whd.project_id = d.project_id
+WHERE whd.event_id = 'cb:' || d.id AND whd.project_id = d.project_id
   AND d.callback_state = 'pending'
   AND whd.state IN ('delivered', 'dead');
 
@@ -350,21 +349,21 @@ WHERE whd.event_id = 'cb:' || d.id
 -- legal transition via the TriggerDelivery table, this only writes it). Bumps updated_at.
 -- name: SetDeliveryState
 UPDATE trigger_deliveries
-SET state = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SET state = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2;
 
 -- SetDeliveryReason advances a delivery's state AND records a human reason (a reject/skip/fail).
 -- name: SetDeliveryReason
 UPDATE trigger_deliveries
-SET state = $4, reason = $5, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SET state = $3, reason = $4, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2;
 
 -- SkipDelivery terminalizes a delivery `skipped` with a reason and an optional survivor link (a
 -- drop_if_running skip, or a coalesce-subsumed row) — a policy skip, distinct from a rejection (AUT-005).
 -- name: SkipDelivery
 UPDATE trigger_deliveries
-SET state = 'skipped', duplicate_of = $4, reason = $5, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SET state = 'skipped', duplicate_of = $3, reason = $4, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2;
 
 -- ClaimCanonicalDelivery makes a delivery the LIVE canonical row for its (trigger, dedupe_key): it sets
 -- the dedupe_key + advances to 'deduplicated'. The partial UNIQUE index
@@ -372,16 +371,16 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- 23505, so a duplicate loses HERE (at the DB, race-free) rather than in an app-code check-then-set.
 -- name: ClaimCanonicalDelivery
 UPDATE trigger_deliveries
-SET dedupe_key = $4, state = 'deduplicated', updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
+SET dedupe_key = $3, state = 'deduplicated', updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2
 RETURNING id;
 
 -- FindCanonicalDelivery resolves the surviving canonical original a duplicate links to (AUT-001
 -- original-linkage): the earliest live canonical row for the (trigger, dedupe_key).
 -- name: FindCanonicalDelivery
 SELECT id FROM trigger_deliveries
-WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
-  AND dedupe_key = $4 AND duplicate_of IS NULL
+WHERE trigger_id = $1 AND project_id = $2
+  AND dedupe_key = $3 AND duplicate_of IS NULL
 ORDER BY received_at, id
 LIMIT 1;
 
@@ -390,5 +389,5 @@ LIMIT 1;
 -- index (WHERE duplicate_of IS NULL).
 -- name: MarkDeliveryDuplicate
 UPDATE trigger_deliveries
-SET state = 'duplicate', duplicate_of = $4, dedupe_key = $5, reason = $6, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SET state = 'duplicate', duplicate_of = $3, dedupe_key = $4, reason = $5, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2;

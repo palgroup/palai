@@ -148,7 +148,7 @@ func (s *Store) SetStrictEnrollment(ctx context.Context, org, project, poolID st
 	}
 	ctx = storage.WithTenant(ctx, org, project)
 	var p Pool
-	err := s.pool.QueryRow(ctx, storage.Query("SetRunnerPoolStrictEnrollment"), org, project, poolID, strict).
+	err := s.pool.QueryRow(ctx, storage.Query("SetRunnerPoolStrictEnrollment"), project, poolID, strict).
 		Scan(&p.ID, &p.Organization, &p.Project, &p.Name, &p.Posture, &p.OS, &p.Arch, &p.StrictEnrollment, &p.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Pool{}, false, nil
@@ -167,7 +167,7 @@ func (s *Store) ListPools(ctx context.Context, org, project string, window ListW
 	}
 	ctx = storage.WithTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListRunnerPools"),
-		org, project, window.CreatedGTE, window.CreatedLTE, window.AfterCreatedAt, window.AfterID, window.Limit)
+		project, window.CreatedGTE, window.CreatedLTE, window.AfterCreatedAt, window.AfterID, window.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list runner pools: %w", err)
 	}

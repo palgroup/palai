@@ -29,7 +29,7 @@ SELECT id, boundary_id, attempt_id, format, format_version, config_snapshot_hash
        protocol_version, transcript_sequence, workspace_snapshot_id, content_checksum,
        object_key, size_bytes, pending_operations
 FROM checkpoints
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE run_id = $1 AND project_id = $2
 ORDER BY created_at DESC
 LIMIT 1;
 

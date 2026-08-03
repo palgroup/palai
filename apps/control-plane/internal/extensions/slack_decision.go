@@ -356,7 +356,7 @@ func (a *SlackAdmitter) repairToolDecisionMessage(scoped context.Context, conn a
 		return false
 	}
 	if _, err := a.store.pool.Exec(scoped, storage.Query("UpdateThreadMessageTS"),
-		conn.Org, conn.Project, intent.TeamID, intent.ChannelID, intent.ThreadTS, target); err != nil {
+		conn.Project, intent.TeamID, intent.ChannelID, intent.ThreadTS, target); err != nil {
 		log.Printf("slack: repaired the visible tool-decision message on connection %s but could not record its ts: %v", conn.ID, err)
 	}
 	return true
@@ -430,7 +430,7 @@ func (a *SlackAdmitter) repairDecisionMessage(scoped context.Context, conn api.S
 	// Record the repaired message as the thread's single visible handle (SLK-006). A failure to record is
 	// logged, not fatal: the edit already landed.
 	if _, err := a.store.pool.Exec(scoped, storage.Query("UpdateThreadMessageTS"),
-		conn.Org, conn.Project, intent.TeamID, intent.ChannelID, intent.ThreadTS, target); err != nil {
+		conn.Project, intent.TeamID, intent.ChannelID, intent.ThreadTS, target); err != nil {
 		log.Printf("slack: repaired the visible message on connection %s but could not record its ts: %v", conn.ID, err)
 	}
 	return true

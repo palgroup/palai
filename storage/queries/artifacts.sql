@@ -41,8 +41,8 @@ ON CONFLICT (id) DO NOTHING;
 -- cannot see. Only ever widens NULL -> a run: the guard makes it idempotent under a redelivery and
 -- makes re-pointing an existing artifact at another run impossible.
 -- name: AttachArtifactRun
-UPDATE artifacts SET run_id = $4
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND run_id IS NULL;
+UPDATE artifacts SET run_id = $3
+WHERE id = $1 AND project_id = $2 AND run_id IS NULL;
 
 -- GetArtifact reads an artifact's row within the tenant scope. An unknown or foreign id
 -- returns no row, which the caller renders as a miss (404) — a foreign tenant cannot tell
@@ -50,7 +50,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND run_id IS NULL;
 -- name: GetArtifact
 SELECT run_id, object_key, size_bytes, checksum
 FROM artifacts
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- ArtifactByID reads one artifact's full retrieval metadata within the tenant scope (E13 T5). Like
 -- GetArtifact it returns no row for an unknown or foreign id, which the retrieval API renders as a 404
@@ -61,7 +61,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- name: ArtifactByID
 SELECT run_id, object_key, size_bytes, checksum, media_type, logical_type, malware_scan_status, created_at
 FROM artifacts
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- ListArtifactsByRun lists a run's artifacts within the tenant scope (E13 T5, the run-scoped retrieval
 -- list). Tenant-scoped like every artifact read; a run with no artifacts returns zero rows (an empty
@@ -71,7 +71,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- name: ListArtifactsByRun
 SELECT id, run_id, size_bytes, checksum, media_type, logical_type, malware_scan_status, created_at
 FROM artifacts
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE run_id = $1 AND project_id = $2
 ORDER BY created_at, id;
 
 -- ReferencedArtifactObjectKeys lists every object key a live artifacts row still points at

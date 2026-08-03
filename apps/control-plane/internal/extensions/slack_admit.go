@@ -604,7 +604,7 @@ func (a *SlackAdmitter) threadSessionOrNil(ctx context.Context, conn api.SlackCo
 		return nil, false, nil
 	}
 	var id, state string
-	switch err := a.store.pool.QueryRow(ctx, storage.Query("SessionForCreate"), existing, conn.Org, conn.Project).
+	switch err := a.store.pool.QueryRow(ctx, storage.Query("SessionForCreate"), existing, conn.Project).
 		Scan(&id, &state); {
 	case err != nil && !errors.Is(err, pgx.ErrNoRows):
 		return nil, false, fmt.Errorf("read correlated session state: %w", err)
@@ -612,7 +612,7 @@ func (a *SlackAdmitter) threadSessionOrNil(ctx context.Context, conn api.SlackCo
 		return &existing, true, nil
 	}
 	if _, err := a.store.pool.Exec(ctx, storage.Query("DeleteThreadSession"),
-		conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.ThreadTS, existing); err != nil {
+		conn.Project, ev.TeamID, ev.ChannelID, ev.ThreadTS, existing); err != nil {
 		return nil, false, fmt.Errorf("clear dead slack thread correlation: %w", err)
 	}
 	log.Printf("slack: cleared a thread correlation pointing at unusable session %s (connection %s); this event opens a new one",
@@ -634,7 +634,7 @@ func (a *SlackAdmitter) threadSessionOrNil(ctx context.Context, conn api.SlackCo
 // be tenant-scoped.
 func (a *SlackAdmitter) repairDeadCorrelation(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event, session, rejected string) (api.SlackAdmitOutcome, error) {
 	var id, state string
-	switch err := a.store.pool.QueryRow(ctx, storage.Query("SessionForCreate"), session, conn.Org, conn.Project).
+	switch err := a.store.pool.QueryRow(ctx, storage.Query("SessionForCreate"), session, conn.Project).
 		Scan(&id, &state); {
 	case err == nil && state == string(statemachines.SessionPaused):
 		return api.SlackAdmitOutcome{Rejected: rejected + " (paused; the thread keeps its session)", Retryable: true}, nil
@@ -642,7 +642,7 @@ func (a *SlackAdmitter) repairDeadCorrelation(ctx context.Context, conn api.Slac
 		return api.SlackAdmitOutcome{}, fmt.Errorf("read correlated session state: %w", err)
 	}
 	if _, err := a.store.pool.Exec(ctx, storage.Query("DeleteThreadSession"),
-		conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.ThreadTS, session); err != nil {
+		conn.Project, ev.TeamID, ev.ChannelID, ev.ThreadTS, session); err != nil {
 		return api.SlackAdmitOutcome{}, fmt.Errorf("clear dead slack thread correlation: %w", err)
 	}
 	log.Printf("slack: cleared a thread correlation pointing at unusable session %s (connection %s); the next event opens a new one",

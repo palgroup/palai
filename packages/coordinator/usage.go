@@ -222,7 +222,7 @@ type LimitExceeded struct {
 func checkDurableLimits(ctx context.Context, tx pgx.Tx, tenant Tenant) (*LimitExceeded, error) {
 	out := LimitExceeded{Kind: "budget"}
 	var periodStart time.Time
-	switch err := tx.QueryRow(ctx, storage.Query("ExhaustedBudget"), tenant.Organization, tenant.Project).
+	switch err := tx.QueryRow(ctx, storage.Query("ExhaustedBudget"), tenant.Project).
 		Scan(&out.MeterPrefix, &out.Limit, &out.Used, &periodStart); {
 	case err == nil:
 		return &out, nil
@@ -233,7 +233,7 @@ func checkDurableLimits(ctx context.Context, tx pgx.Tx, tenant Tenant) (*LimitEx
 	out = LimitExceeded{Kind: "quota"}
 	var windowSeconds int64
 	var oldest *time.Time
-	switch err := tx.QueryRow(ctx, storage.Query("ExhaustedQuota"), tenant.Organization, tenant.Project).
+	switch err := tx.QueryRow(ctx, storage.Query("ExhaustedQuota"), tenant.Project).
 		Scan(&out.MeterPrefix, &out.Limit, &out.Used, &windowSeconds, &oldest); {
 	case err == nil:
 		// The oldest in-window row is the first to age out, so that is when capacity next releases. It

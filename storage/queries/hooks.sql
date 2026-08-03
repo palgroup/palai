@@ -17,7 +17,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
 -- name: GetHook
 SELECT id, name, hook_point, category, executor, config, secret_ref, timeout_ms, disabled_at, created_at
 FROM hooks
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- ListHooks pages a project's hooks newest-first (GET /v1/hooks, E29 T1). Tenant-scoped by
 -- (organization_id, project_id) AND by RLS; cursor + created_at bounds.
@@ -33,12 +33,12 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- name: ListHooks
 SELECT id, name, hook_point, category, executor, config, secret_ref, timeout_ms, disabled_at, created_at
 FROM hooks
-WHERE organization_id = $1 AND project_id = $2
-  AND ($3::timestamptz IS NULL OR created_at >= $3)
-  AND ($4::timestamptz IS NULL OR created_at <= $4)
-  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+WHERE project_id = $1
+  AND ($2::timestamptz IS NULL OR created_at >= $2)
+  AND ($3::timestamptz IS NULL OR created_at <= $3)
+  AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5))
 ORDER BY created_at DESC, id DESC
-LIMIT $7;
+LIMIT $6;
 
 -- HooksForPoint loads a project's ENABLED hooks for one point in registration order (created_at, id) — the
 -- documented deterministic firing sequence. A disabled hook (disabled_at set) is skipped. This is the ONLY
@@ -46,16 +46,16 @@ LIMIT $7;
 -- name: HooksForPoint
 SELECT id, hook_point, category, executor, config, secret_ref, timeout_ms
 FROM hooks
-WHERE organization_id = $1 AND project_id = $2 AND hook_point = $3 AND disabled_at IS NULL
+WHERE project_id = $1 AND hook_point = $2 AND disabled_at IS NULL
 ORDER BY created_at, id;
 
 -- DisableHook flips the admin kill-switch once (a re-disable is a zero-row no-op).
 -- name: DisableHook
 UPDATE hooks
 SET disabled_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND disabled_at IS NULL
+WHERE id = $1 AND project_id = $2 AND disabled_at IS NULL
 RETURNING id;
 
 -- HookExists verifies a hook id is in scope (disambiguates an unknown hook from an already-disabled one).
 -- name: HookExists
-SELECT 1 FROM hooks WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SELECT 1 FROM hooks WHERE id = $1 AND project_id = $2;

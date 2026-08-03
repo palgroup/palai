@@ -7,7 +7,7 @@
 -- name: SessionForCreate
 SELECT id, state
 FROM sessions
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- SessionForPreviousResponse resolves the session a previous_response_id continues, joined so
 -- one round-trip yields both the session id and its lifecycle state. An unknown/foreign
@@ -16,7 +16,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 SELECT s.id, s.state
 FROM responses r
 JOIN sessions s ON s.id = r.session_id
-WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3;
+WHERE r.id = $1 AND r.project_id = $2;
 
 -- ---------------------------------------------------------------------------------------------------
 -- THE SESSION ROW (E29, migration 000048). Read this before editing either statement below.
@@ -62,7 +62,7 @@ WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3;
 -- name: SessionStateInScope
 SELECT id, state
 FROM sessions
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- GetSessionInScope reads a session's projection for GET /v1/sessions/{id}. An unknown or
 -- foreign id matches no row (404, no existence disclosure). It renders the SAME enriched shape
@@ -90,7 +90,7 @@ LEFT JOIN LATERAL (
                     )
                 END, 400) AS derived_name
     FROM responses r
-    WHERE r.session_id = s.id AND r.organization_id = $2 AND r.project_id = $3
+    WHERE r.session_id = s.id AND r.project_id = $3
       AND r.retracted_at IS NULL
     ORDER BY r.created_at, r.id
     LIMIT 1
@@ -103,7 +103,7 @@ LEFT JOIN LATERAL (
     FROM runs rn
     LEFT JOIN agent_revisions ar ON ar.id = rn.agent_revision_id
     LEFT JOIN agent_profiles ap ON ap.id = ar.profile_id
-    WHERE rn.session_id = s.id AND rn.organization_id = $2 AND rn.project_id = $3
+    WHERE rn.session_id = s.id AND rn.project_id = $3
 ) agg ON TRUE
 LEFT JOIN LATERAL (
     SELECT COALESCE(sum(l.quantity) FILTER (WHERE l.meter = 'model.input_tokens'), 0)  AS input_tokens,
@@ -111,7 +111,7 @@ LEFT JOIN LATERAL (
     FROM usage_ledger l
     WHERE l.session_id = s.id AND l.organization_id = $2 AND l.project_id = $3
 ) tok ON TRUE
-WHERE s.id = $1 AND s.organization_id = $2 AND s.project_id = $3;
+WHERE s.id = $1 AND s.project_id = $3;
 
 -- ListSessions pages a project's sessions newest-first (spec §9.1, E13 T4). Tenant-scoped by RLS;
 -- the org/project predicate is defence-in-depth. Same keyset/filter shape as ListResponses: $3
@@ -144,7 +144,7 @@ WITH page AS (
     SELECT id, state, created_at, name,
            auto_approve_tools, auto_approve_publications, auto_approve_set_by, auto_approve_set_at
     FROM sessions
-    WHERE organization_id = $1 AND project_id = $2
+    WHERE project_id = $2
       AND ($3 = '' OR state = $3)
       AND ($4::timestamptz IS NULL OR created_at >= $4)
       AND ($5::timestamptz IS NULL OR created_at <= $5)
@@ -173,7 +173,7 @@ LEFT JOIN LATERAL (
                     )
                 END, 400) AS derived_name
     FROM responses r
-    WHERE r.session_id = p.id AND r.organization_id = $1 AND r.project_id = $2
+    WHERE r.session_id = p.id AND r.project_id = $2
       AND r.retracted_at IS NULL
     ORDER BY r.created_at, r.id
     LIMIT 1
@@ -186,7 +186,7 @@ LEFT JOIN LATERAL (
     FROM runs rn
     LEFT JOIN agent_revisions ar ON ar.id = rn.agent_revision_id
     LEFT JOIN agent_profiles ap ON ap.id = ar.profile_id
-    WHERE rn.session_id = p.id AND rn.organization_id = $1 AND rn.project_id = $2
+    WHERE rn.session_id = p.id AND rn.project_id = $2
 ) agg ON TRUE
 LEFT JOIN LATERAL (
     SELECT COALESCE(sum(l.quantity) FILTER (WHERE l.meter = 'model.input_tokens'), 0)  AS input_tokens,
@@ -201,8 +201,8 @@ ORDER BY p.created_at DESC, p.id DESC;
 -- foreign id a no-op that RETURNS no row, which the caller renders as the same 404 GetSession does.
 -- name: RenameSession
 UPDATE sessions
-SET name = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
+SET name = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2
 RETURNING id;
 
 -- LockSession reads and locks a session so a lifecycle transition (close) sees a stable state
@@ -210,14 +210,14 @@ RETURNING id;
 -- name: LockSession
 SELECT state
 FROM sessions
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
+WHERE id = $1 AND project_id = $2
 FOR UPDATE;
 
 -- UpdateSessionState advances a session's lifecycle state (spec §22.1).
 -- name: UpdateSessionState
 UPDATE sessions
-SET state = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SET state = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2;
 
 -- SessionHistory returns the prior responses of a session in creation order so run.start can
 -- carry them as conversation history (spec §22.2). A retained response yields the question it
@@ -235,9 +235,9 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- name: SessionHistory
 SELECT input, output, purged_at IS NOT NULL AS purged
 FROM responses
-WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE session_id = $1 AND project_id = $2
   AND retracted_at IS NULL
-  AND created_at < (SELECT created_at FROM responses WHERE id = $4)
+  AND created_at < (SELECT created_at FROM responses WHERE id = $3)
 ORDER BY created_at, id;
 
 -- ---------------------------------------------------------------------------------------------------
@@ -254,12 +254,12 @@ ORDER BY created_at, id;
 -- row that forgets is a row that cannot be audited.
 -- name: SetSessionAutoApprove
 UPDATE sessions
-SET auto_approve_tools = $4,
-    auto_approve_publications = $5,
-    auto_approve_set_by = $6,
-    auto_approve_set_at = CASE WHEN $4 OR $5 THEN clock_timestamp() ELSE NULL END,
+SET auto_approve_tools = $3,
+    auto_approve_publications = $4,
+    auto_approve_set_by = $5,
+    auto_approve_set_at = CASE WHEN $3 OR $4 THEN clock_timestamp() ELSE NULL END,
     updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
+WHERE id = $1 AND project_id = $2
 RETURNING auto_approve_tools, auto_approve_publications, auto_approve_set_by, auto_approve_set_at;
 
 -- SessionAutoApprove reads the standing authorization the two gates consult. A session that never
@@ -268,4 +268,4 @@ RETURNING auto_approve_tools, auto_approve_publications, auto_approve_set_by, au
 -- name: SessionAutoApprove
 SELECT auto_approve_tools, auto_approve_publications, auto_approve_set_by
 FROM sessions
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;

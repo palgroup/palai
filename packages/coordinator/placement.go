@@ -87,7 +87,7 @@ func (s *Store) RunPlacement(ctx context.Context, tenant Tenant, runID string) (
 		out      Placement
 		recorded *string
 	)
-	if err := s.pool.QueryRow(ctx, storage.Query("RunPlacementInputs"), runID, tenant.Organization, tenant.Project).
+	if err := s.pool.QueryRow(ctx, storage.Query("RunPlacementInputs"), runID, tenant.Project).
 		Scan(&recorded, &out.QueuedAt, &out.DefaultPoolID); err != nil {
 		return Placement{}, fmt.Errorf("read run placement for %s: %w", runID, err)
 	}
@@ -122,7 +122,7 @@ func (s *Store) RecordRunPool(ctx context.Context, tenant Tenant, runID, poolID 
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var recorded string
 	switch err := s.pool.QueryRow(ctx, storage.Query("RecordRunPool"),
-		runID, tenant.Organization, tenant.Project, poolID).Scan(&recorded); {
+		runID, tenant.Project, poolID).Scan(&recorded); {
 	case errors.Is(err, pgx.ErrNoRows):
 		// Nothing was written by THIS call, and the two reasons decide opposite things. Ask the row.
 		current, rerr := s.RunPlacement(ctx, tenant, runID)
@@ -166,7 +166,7 @@ func (s *Store) ParkRunForCapacity(ctx context.Context, tenant Tenant, runID, at
 		return err
 	}
 	if _, err := tx.Exec(ctx, storage.Query("MarkAttemptAwaitingCapacity"),
-		attemptID, tenant.Organization, tenant.Project); err != nil {
+		attemptID, tenant.Project); err != nil {
 		return fmt.Errorf("mark attempt awaiting capacity: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -261,7 +261,7 @@ func (s *Store) timeOutOneCapacityPark(ctx context.Context, tenant Tenant, runID
 	}
 	// UpdateResponse excludes terminal states in its WHERE, so a racing terminal write still wins once.
 	if _, err := tx.Exec(ctx, storage.Query("UpdateResponse"),
-		responseID, tenant.Organization, tenant.Project, string(statemachines.RunTimedOut), projection); err != nil {
+		responseID, tenant.Project, string(statemachines.RunTimedOut), projection); err != nil {
 		return false, fmt.Errorf("finalize timed-out capacity park: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -300,7 +300,7 @@ func (s *Store) WakeRunAwaitingCapacity(ctx context.Context, tenant Tenant, pool
 
 	var runID string
 	switch err := tx.QueryRow(ctx, storage.Query("OldestRunAwaitingCapacity"),
-		tenant.Organization, tenant.Project, poolID).Scan(&runID); {
+		tenant.Project, poolID).Scan(&runID); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", nil // the pool gained a machine and nothing was waiting on it
 	case err != nil:

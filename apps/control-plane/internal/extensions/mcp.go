@@ -104,7 +104,7 @@ func (s *Store) GetMCPConnection(ctx context.Context, org, project, id string) (
 	c := Connection{ID: id}
 	var configJSON []byte
 	var secretRef *string
-	err := s.pool.QueryRow(ctx, storage.Query("GetMCPConnection"), id, org, project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetMCPConnection"), id, project).
 		Scan(&c.ID, &c.Name, &c.Transport, &configJSON, &secretRef, &c.TrustLevel, &c.Disabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Connection{}, ErrConnectionNotFound
@@ -123,7 +123,7 @@ func (s *Store) GetMCPConnection(ctx context.Context, org, project, id string) (
 // (a revision may only name connections that really exist in the project).
 func (s *Store) MCPConnectionExists(ctx context.Context, org, project, id string) (bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	switch err := s.pool.QueryRow(ctx, storage.Query("MCPConnectionExists"), id, org, project).Scan(new(int)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("MCPConnectionExists"), id, project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
 	case err != nil:
@@ -135,7 +135,7 @@ func (s *Store) MCPConnectionExists(ctx context.Context, org, project, id string
 // DisableMCPConnection flips the admin kill-switch once. Reports whether the connection existed in scope.
 func (s *Store) DisableMCPConnection(ctx context.Context, org, project, id string) (bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	switch err := s.pool.QueryRow(ctx, storage.Query("DisableMCPConnection"), id, org, project).Scan(new(string)); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("DisableMCPConnection"), id, project).Scan(new(string)); {
 	case err == nil:
 		return true, nil
 	case !errors.Is(err, pgx.ErrNoRows):

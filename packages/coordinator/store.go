@@ -127,7 +127,7 @@ func (s *Store) asOwner(ctx context.Context, statements string) error {
 func (s *Store) CurrentJournalSequence(ctx context.Context, tenant Tenant, sessionID string) (int64, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var seq int64
-	if err := s.pool.QueryRow(ctx, storage.Query("CurrentJournalSequence"), sessionID, tenant.Organization, tenant.Project).Scan(&seq); err != nil {
+	if err := s.pool.QueryRow(ctx, storage.Query("CurrentJournalSequence"), sessionID, tenant.Project).Scan(&seq); err != nil {
 		return 0, fmt.Errorf("read current journal sequence: %w", err)
 	}
 	return seq, nil
@@ -168,7 +168,7 @@ func (s *Store) LatestRunCheckpoint(ctx context.Context, tenant Tenant, runID st
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var cp RunCheckpoint
 	var workspaceSnapshot *string
-	err := s.pool.QueryRow(ctx, storage.Query("LatestRunCheckpoint"), runID, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(ctx, storage.Query("LatestRunCheckpoint"), runID, tenant.Project).
 		Scan(&cp.CheckpointID, &cp.BoundaryID, &cp.AttemptID, &cp.Format, &cp.FormatVersion,
 			&cp.ConfigSnapshotHash, &cp.ProtocolVersion, &cp.TranscriptSequence, &workspaceSnapshot,
 			&cp.ContentChecksum, &cp.ObjectKey, &cp.SizeBytes, &cp.PendingOperations)
@@ -198,7 +198,7 @@ func (s *Store) RecordAttempt(ctx context.Context, tenant Tenant, runID, attempt
 	// newer attempt, not falsely 'lost') so the one-active-per-run index admits this attempt. The
 	// exact rung already ruled out a live original, so this only reconciles a stale predecessor's row.
 	if _, err := tx.Exec(ctx, storage.Query("SupersedeActiveAttempts"),
-		runID, tenant.Organization, tenant.Project, attemptID); err != nil {
+		runID, tenant.Project, attemptID); err != nil {
 		return fmt.Errorf("supersede prior attempts: %w", err)
 	}
 	// Fence is computed RUN-monotonic inside the query (not the job claim fence, which restarts per
@@ -220,7 +220,7 @@ func (s *Store) RecordAttempt(ctx context.Context, tenant Tenant, runID, attempt
 func (s *Store) RunHasLiveResponseJob(ctx context.Context, tenant Tenant, runID, excludeJobID string) (bool, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var live bool
-	if err := s.pool.QueryRow(ctx, storage.Query("RunHasLiveResponseJob"), runID, tenant.Organization, tenant.Project, excludeJobID).Scan(&live); err != nil {
+	if err := s.pool.QueryRow(ctx, storage.Query("RunHasLiveResponseJob"), runID, tenant.Project, excludeJobID).Scan(&live); err != nil {
 		return false, fmt.Errorf("read run live response job: %w", err)
 	}
 	return live, nil
@@ -233,7 +233,7 @@ func (s *Store) RunHasLiveResponseJob(ctx context.Context, tenant Tenant, runID,
 func (s *Store) CommittedModelStepCount(ctx context.Context, tenant Tenant, runID string) (int, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var n int
-	if err := s.pool.QueryRow(ctx, storage.Query("CommittedModelStepCount"), runID, tenant.Organization, tenant.Project).Scan(&n); err != nil {
+	if err := s.pool.QueryRow(ctx, storage.Query("CommittedModelStepCount"), runID, tenant.Project).Scan(&n); err != nil {
 		return 0, fmt.Errorf("read committed model step count: %w", err)
 	}
 	return n, nil
@@ -290,7 +290,7 @@ func (s *Store) Claim(ctx context.Context, tenant Tenant, jobID, owner string, l
 
 	claim := Claim{Tenant: tenant}
 	err = tx.QueryRow(ctx, storage.Query("ClaimJob"),
-		jobID, tenant.Organization, tenant.Project, owner, lease.Milliseconds()).
+		jobID, tenant.Project, owner, lease.Milliseconds()).
 		Scan(&claim.JobID, &claim.Owner, &claim.Fence, &claim.AttemptCount, &claim.LeaseExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Claim{}, ErrNoClaimableJob
@@ -311,7 +311,7 @@ func (s *Store) Claim(ctx context.Context, tenant Tenant, jobID, owner string, l
 func (s *Store) LeaseExpired(ctx context.Context, tenant Tenant, jobID string) (bool, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var expired bool
-	err := s.pool.QueryRow(ctx, storage.Query("JobLeaseExpired"), jobID, tenant.Organization, tenant.Project).Scan(&expired)
+	err := s.pool.QueryRow(ctx, storage.Query("JobLeaseExpired"), jobID, tenant.Project).Scan(&expired)
 	if err != nil {
 		return false, fmt.Errorf("read lease expiry: %w", err)
 	}
@@ -335,7 +335,7 @@ func (s *Store) Complete(ctx context.Context, claim Claim, resultHash string) er
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	tag, err := tx.Exec(ctx, storage.Query("CompleteJob"),
-		claim.JobID, claim.Tenant.Organization, claim.Tenant.Project, claim.Fence, resultHash)
+		claim.JobID, claim.Tenant.Project, claim.Fence, resultHash)
 	if err != nil {
 		return fmt.Errorf("update completed job: %w", err)
 	}
@@ -358,7 +358,7 @@ func (s *Store) Complete(ctx context.Context, claim Claim, resultHash string) er
 func (s *Store) Snapshot(ctx context.Context, tenant Tenant, jobID string) (Snapshot, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var snap Snapshot
-	err := s.pool.QueryRow(ctx, storage.Query("JobSnapshot"), jobID, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(ctx, storage.Query("JobSnapshot"), jobID, tenant.Project).
 		Scan(&snap.Status, &snap.Fence, &snap.AttemptCount, &snap.ResultHash)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read job snapshot: %w", err)
@@ -419,7 +419,7 @@ func (s *Store) TimeoutQueuedIfExpired(ctx context.Context, tenant Tenant, runID
 	var state string
 	var expired bool
 	switch err := tx.QueryRow(ctx, storage.Query("RunQueueState"),
-		runID, tenant.Organization, tenant.Project, deadline.Seconds()).Scan(&state, &expired); {
+		runID, tenant.Project, deadline.Seconds()).Scan(&state, &expired); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil // gone or foreign
 	case err != nil:
@@ -442,7 +442,7 @@ func (s *Store) TimeoutQueuedIfExpired(ctx context.Context, tenant Tenant, runID
 	// coherent terminal — the run.timed_out.v1 event and the timed_out response body land together.
 	// UpdateResponse excludes terminal states in its WHERE, so a racing terminal write still wins once.
 	if _, err := tx.Exec(ctx, storage.Query("UpdateResponse"),
-		responseID, tenant.Organization, tenant.Project, string(statemachines.RunTimedOut), projection); err != nil {
+		responseID, tenant.Project, string(statemachines.RunTimedOut), projection); err != nil {
 		return false, fmt.Errorf("finalize timed-out response: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -460,7 +460,7 @@ func (s *Store) TimeoutQueuedIfExpired(ctx context.Context, tenant Tenant, runID
 func applyRunTransitionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, runID string, command statemachines.RunCommand) (Transition, error) {
 	var sessionID, current string
 	var responseID *string
-	err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Organization, tenant.Project).Scan(&sessionID, &responseID, &current)
+	err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Project).Scan(&sessionID, &responseID, &current)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Transition{}, fmt.Errorf("run %s not found in tenant scope", runID)
 	}
@@ -476,7 +476,7 @@ func applyRunTransitionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, runID s
 		return Transition{}, err
 	}
 
-	if _, err := tx.Exec(ctx, storage.Query("UpdateRunState"), runID, tenant.Organization, tenant.Project, string(next)); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("UpdateRunState"), runID, tenant.Project, string(next)); err != nil {
 		return Transition{}, fmt.Errorf("update run state: %w", err)
 	}
 
@@ -520,7 +520,7 @@ func applyRunTransitionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, runID s
 			resp = *responseID
 		}
 		if _, err := tx.Exec(ctx, storage.Query("EnqueueTerminalQueueDeliveries"),
-			tenant.Organization, tenant.Project, runID, resp, sessionID, string(next)); err != nil {
+			tenant.Project, runID, resp, sessionID, string(next)); err != nil {
 			return Transition{}, fmt.Errorf("enqueue terminal queue deliveries: %w", err)
 		}
 		// The SLACK RETURN LEG (E19, 000041), and it is here rather than in finalize for one concrete reason:
@@ -532,7 +532,7 @@ func applyRunTransitionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, runID s
 		// A run whose session has no Slack thread inserts zero rows, which is every non-Slack run. Idempotent
 		// on the run id, so a retried transition is one message.
 		if _, err := tx.Exec(ctx, storage.Query("EnqueueTerminalSlackReply"),
-			tenant.Organization, tenant.Project, runID, resp, sessionID, string(next)); err != nil {
+			tenant.Project, runID, resp, sessionID, string(next)); err != nil {
 			return Transition{}, fmt.Errorf("enqueue terminal slack reply: %w", err)
 		}
 	}
@@ -771,7 +771,7 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	// fails when the clone cannot resolve the binding (spec §30.1, E09 Task 10).
 	if in.RepositoryBindingID != "" {
 		switch err := tx.QueryRow(ctx, storage.Query("RepositoryBindingExists"),
-			in.RepositoryBindingID, tenant.Organization, tenant.Project).Scan(new(int)); {
+			in.RepositoryBindingID, tenant.Project).Scan(new(int)); {
 		case errors.Is(err, pgx.ErrNoRows):
 			return Admission{RepositoryBindingNotFound: true}, nil
 		case err != nil:
@@ -842,7 +842,7 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 		var resultPurgedAt *time.Time
 		var resourceTombstone *string
 		if err := tx.QueryRow(ctx, storage.Query("GetIdempotency"),
-			tenant.Organization, tenant.Project, in.Principal, in.Method, in.Route, in.IdempotencyKey).
+			tenant.Project, in.Principal, in.Method, in.Route, in.IdempotencyKey).
 			Scan(&storedHash, &storedBody, &resultPurgedAt, &resourceTombstone); err != nil {
 			return Admission{}, fmt.Errorf("read idempotency record: %w", err)
 		}
@@ -890,7 +890,7 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	if in.MaxConcurrentRuns > 0 || in.MaxQueuedRuns > 0 {
 		var concurrent, queued int
 		if err := tx.QueryRow(ctx, storage.Query("CountProjectRootRuns"),
-			tenant.Organization, tenant.Project).Scan(&concurrent, &queued); err != nil {
+			tenant.Project).Scan(&concurrent, &queued); err != nil {
 			return Admission{}, fmt.Errorf("count project root runs: %w", err)
 		}
 		if in.MaxConcurrentRuns > 0 && concurrent >= in.MaxConcurrentRuns {
@@ -1034,12 +1034,12 @@ func withSessionID(body []byte, sessionID string) ([]byte, error) {
 func resolvePublishedAgent(ctx context.Context, tx pgx.Tx, agentID string, tenant Tenant) (string, Admission, bool, error) {
 	var revisionID string
 	switch err := tx.QueryRow(ctx, storage.Query("LatestPublishedAgentRevision"),
-		agentID, tenant.Organization, tenant.Project).Scan(&revisionID); {
+		agentID, tenant.Project).Scan(&revisionID); {
 	case errors.Is(err, pgx.ErrNoRows):
 		// No published revision. Distinguish "no such agent" from "nothing published yet".
 		var exists int
 		switch err := tx.QueryRow(ctx, storage.Query("AgentProfileExists"),
-			agentID, tenant.Organization, tenant.Project).Scan(&exists); {
+			agentID, tenant.Project).Scan(&exists); {
 		case errors.Is(err, pgx.ErrNoRows):
 			return "", Admission{PinnedRevisionNotFound: true}, false, nil
 		case err != nil:
@@ -1111,7 +1111,7 @@ func (s *Store) PinnedExecConfig(ctx context.Context, tenant Tenant, runID strin
 		revID     *string
 		toolsJSON []byte
 	)
-	err := s.pool.QueryRow(ctx, storage.Query("PinnedRunConfig"), runID, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(ctx, storage.Query("PinnedRunConfig"), runID, tenant.Project).
 		Scan(&revID, &out.Model, &out.Instructions, &toolsJSON, &out.ToolSetTools, &out.SkillPins)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PinnedConfig{}, nil // unknown run: treat as no pin (the caller's run existence is already established)
@@ -1174,7 +1174,7 @@ func (s *Store) RunEnvironmentKeys(ctx context.Context, tenant Tenant, runID str
 func (s *Store) RunSkillPinInputs(ctx context.Context, tenant Tenant, runID string) (requested []string, alreadyPinned bool, err error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var requestedJSON []byte
-	err = s.pool.QueryRow(ctx, storage.Query("RunSkillPinInputs"), runID, tenant.Organization, tenant.Project).
+	err = s.pool.QueryRow(ctx, storage.Query("RunSkillPinInputs"), runID, tenant.Project).
 		Scan(&requestedJSON, &alreadyPinned)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
@@ -1198,7 +1198,7 @@ func (s *Store) PinRunSkills(ctx context.Context, tenant Tenant, runID string, p
 		return false, nil
 	}
 	var id string
-	switch err := s.pool.QueryRow(ctx, storage.Query("PinRunSkills"), runID, tenant.Organization, tenant.Project, pinsJSON).Scan(&id); {
+	switch err := s.pool.QueryRow(ctx, storage.Query("PinRunSkills"), runID, tenant.Project, pinsJSON).Scan(&id); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil // already pinned by an earlier attempt: a no-op, the frozen set stands
 	case err != nil:

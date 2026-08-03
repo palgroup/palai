@@ -261,7 +261,7 @@ func (p *SlackReplyPump) deliver(ctx context.Context, o slackReplyOrder) bool {
 	// The answer is now the newest visible bot message in the thread, so it becomes the SLK-006 repair
 	// handle. Best-effort: the message landed either way.
 	if _, err := a.store.pool.Exec(scoped, storage.Query("UpdateThreadMessageTS"),
-		o.org, o.project, slackTeamOf(ctx, a, o.org, o.project, o.connectionID), o.channelID, o.threadTS, res.MessageTS); err != nil {
+		o.project, slackTeamOf(ctx, a, o.org, o.project, o.connectionID), o.channelID, o.threadTS, res.MessageTS); err != nil {
 		log.Printf("slack: reply for run %s landed but its ts could not be recorded on the thread: %v", o.runID, err)
 	}
 	return true

@@ -300,7 +300,7 @@ func (p *SlackApprovalPump) deliver(ctx context.Context, o slackApprovalOrder) b
 	// handle: a decision that arrives without a message ts still edits THIS message in place. Best-effort —
 	// the message landed either way, and the click itself carries the ts in the ordinary case.
 	if _, err := a.store.pool.Exec(scoped, storage.Query("UpdateThreadMessageTS"),
-		o.org, o.project, slackTeamOf(ctx, a, o.org, o.project, o.connectionID), o.channelID, o.threadTS, res.MessageTS); err != nil {
+		o.project, slackTeamOf(ctx, a, o.org, o.project, o.connectionID), o.channelID, o.threadTS, res.MessageTS); err != nil {
 		log.Printf("slack: the approval question for run %s landed but its ts could not be recorded on the thread: %v", o.runID, err)
 	}
 	return true

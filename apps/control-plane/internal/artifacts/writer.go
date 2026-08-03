@@ -136,7 +136,7 @@ func provenanceOrEmpty(p map[string]any) map[string]any {
 func (w *Writer) Read(ctx context.Context, org, project, artifactID string) (Artifact, []byte, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	art := Artifact{ID: artifactID}
-	err := w.pool.QueryRow(ctx, storage.Query("GetArtifact"), artifactID, org, project).
+	err := w.pool.QueryRow(ctx, storage.Query("GetArtifact"), artifactID, project).
 		Scan(&art.RunID, &art.ObjectKey, &art.SizeBytes, &art.Checksum)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Artifact{}, nil, false, nil
@@ -209,7 +209,7 @@ func (w *Writer) WriteInboundArtifact(ctx context.Context, org, project, artifac
 // different run.
 func (w *Writer) AttachArtifactRun(ctx context.Context, org, project, artifactID, runID string) error {
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	if _, err := w.pool.Exec(ctx, storage.Query("AttachArtifactRun"), artifactID, org, project, runID); err != nil {
+	if _, err := w.pool.Exec(ctx, storage.Query("AttachArtifactRun"), artifactID, project, runID); err != nil {
 		return fmt.Errorf("attach artifact %s to run: %w", artifactID, err)
 	}
 	return nil
@@ -232,7 +232,7 @@ func (w *Writer) ReadImageArtifact(ctx context.Context, org, project, artifactID
 	var objectKey, checksum, mediaType, logicalType, scanStatus string
 	var size int64
 	var createdAt time.Time
-	err := w.pool.QueryRow(ctx, storage.Query("ArtifactByID"), artifactID, org, project).
+	err := w.pool.QueryRow(ctx, storage.Query("ArtifactByID"), artifactID, project).
 		Scan(&runID, &objectKey, &size, &checksum, &mediaType, &logicalType, &scanStatus, &createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil, false, nil
@@ -286,7 +286,7 @@ func (w *Writer) ReadRunArtifact(ctx context.Context, org, project, runID, artif
 	var owner *string
 	var key, checksum string
 	var size int64
-	err := w.pool.QueryRow(ctx, storage.Query("GetArtifact"), artifactID, org, project).
+	err := w.pool.QueryRow(ctx, storage.Query("GetArtifact"), artifactID, project).
 		Scan(&owner, &key, &size, &checksum)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, false, nil

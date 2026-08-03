@@ -155,7 +155,7 @@ func (s *Store) RequestToolApproval(ctx context.Context, tenant Tenant, in ToolA
 	//
 	// A session with no Slack thread inserts ZERO rows, which is every non-Slack run in the deployment.
 	if _, err := tx.Exec(ctx, storage.Query("EnqueueApprovalMessage"),
-		tenant.Organization, tenant.Project, in.ApprovalID, in.RunID, in.ResponseID, in.SessionID); err != nil {
+		tenant.Project, in.ApprovalID, in.RunID, in.ResponseID, in.SessionID); err != nil {
 		return fmt.Errorf("enqueue tool approval message: %w", err)
 	}
 	// The genesis event carries the BINDING, never a rendered screen: an event stream that repeated the
@@ -185,7 +185,7 @@ func (s *Store) ToolApprovalForCall(ctx context.Context, tenant Tenant, toolCall
 		a    ToolApproval
 		args string
 	)
-	switch err := s.pool.QueryRow(ctx, storage.Query("ToolApprovalForCall"), toolCallID, tenant.Organization, tenant.Project).
+	switch err := s.pool.QueryRow(ctx, storage.Query("ToolApprovalForCall"), toolCallID, tenant.Project).
 		Scan(&a.ApprovalID, &a.ToolCallID, &a.RunID, &a.SessionID, &a.ResponseID, &a.ToolName, &args,
 			&a.RequestHash, &a.State, &a.ExpiresAt, &a.DecidedBy); {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -233,7 +233,7 @@ func (s *Store) PendingToolApprovals(ctx context.Context, tenant Tenant, w ToolA
 	}
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("PendingToolApprovalsForTenant"),
-		tenant.Organization, tenant.Project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+		tenant.Project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list pending tool approvals: %w", err)
 	}
@@ -262,7 +262,7 @@ func (s *Store) ToolApprovalByID(ctx context.Context, tenant Tenant, approvalID 
 	}
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	a, err := scanPendingToolApproval(s.pool.QueryRow(ctx, storage.Query("ToolApprovalByID"),
-		approvalID, tenant.Organization, tenant.Project))
+		approvalID, tenant.Project))
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return PendingToolApproval{}, false, nil
@@ -328,7 +328,7 @@ func (s *Store) DecideToolApproval(ctx context.Context, tenant Tenant, d ToolApp
 	}
 
 	var state, runID, name, storedHash string
-	switch err := tx.QueryRow(ctx, storage.Query("LockToolCallForDecision"), d.ToolCallID, tenant.Organization, tenant.Project).
+	switch err := tx.QueryRow(ctx, storage.Query("LockToolCallForDecision"), d.ToolCallID, tenant.Project).
 		Scan(&state, &runID, &name, new(string), &storedHash); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil // no such call in this tenant — decides nothing, leaks nothing
@@ -341,7 +341,7 @@ func (s *Store) DecideToolApproval(ctx context.Context, tenant Tenant, d ToolApp
 
 	var expiresAt *time.Time
 	var approvalID string
-	if err := tx.QueryRow(ctx, storage.Query("ToolApprovalForCall"), d.ToolCallID, tenant.Organization, tenant.Project).
+	if err := tx.QueryRow(ctx, storage.Query("ToolApprovalForCall"), d.ToolCallID, tenant.Project).
 		Scan(&approvalID, new(string), new(string), new(string), new(string), new(string), new(string),
 			new(string), new(string), &expiresAt, new(string)); err != nil {
 		return false, fmt.Errorf("read tool approval for decision: %w", err)
@@ -372,7 +372,7 @@ func (s *Store) DecideToolApproval(ctx context.Context, tenant Tenant, d ToolApp
 	}
 
 	if d.Approve {
-		if _, err := tx.Exec(ctx, storage.Query("ApproveToolCall"), d.ToolCallID, tenant.Organization, tenant.Project); err != nil {
+		if _, err := tx.Exec(ctx, storage.Query("ApproveToolCall"), d.ToolCallID, tenant.Project); err != nil {
 			return false, fmt.Errorf("approve tool call: %w", err)
 		}
 		if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, "tool_call.ready.v1",
@@ -388,7 +388,7 @@ func (s *Store) DecideToolApproval(ctx context.Context, tenant Tenant, d ToolApp
 		// shape a before_tool hook deny already produces, so it continues on a fact rather than stalling on
 		// an absence. The answer is written to the ledger row here — durable before it is spoken — so a
 		// kill between the decision and its delivery cannot lose it.
-		if _, err := tx.Exec(ctx, storage.Query("CancelToolCall"), d.ToolCallID, tenant.Organization, tenant.Project,
+		if _, err := tx.Exec(ctx, storage.Query("CancelToolCall"), d.ToolCallID, tenant.Project,
 			mustMarshal(map[string]any{"status": "denied", "reason": d.Reason, "decided_by": d.DecidedBy})); err != nil {
 			return false, fmt.Errorf("deny tool call: %w", err)
 		}
@@ -468,7 +468,7 @@ func (s *Store) expireOneToolApproval(ctx context.Context, tenant Tenant, sessio
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	var state string
-	switch err := tx.QueryRow(ctx, storage.Query("LockToolCallForDecision"), callID, tenant.Organization, tenant.Project).
+	switch err := tx.QueryRow(ctx, storage.Query("LockToolCallForDecision"), callID, tenant.Project).
 		Scan(&state, new(string), new(string), new(string), new(string)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
@@ -495,7 +495,7 @@ func (s *Store) expireOneToolApproval(ctx context.Context, tenant Tenant, sessio
 // (a click that arrived too late) and the idle sweep both route here, so an expiry looks identical in the
 // journal no matter which path observed the elapsed deadline.
 func expireToolCallTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, responseID, runID, callID string) error {
-	if _, err := tx.Exec(ctx, storage.Query("CancelToolCall"), callID, tenant.Organization, tenant.Project,
+	if _, err := tx.Exec(ctx, storage.Query("CancelToolCall"), callID, tenant.Project,
 		mustMarshal(map[string]any{
 			"status": "denied",
 			"reason": "this call's approval expired before anyone decided; nothing ran. Ask again if it is still wanted.",
@@ -519,7 +519,7 @@ func expireToolCallTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, 
 func lockRunForWake(ctx context.Context, tx pgx.Tx, tenant Tenant, runID string) (string, string, error) {
 	var sessionID, state string
 	var responseID *string
-	if err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Organization, tenant.Project).
+	if err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Project).
 		Scan(&sessionID, &responseID, &state); err != nil {
 		return "", "", fmt.Errorf("lock parked run: %w", err)
 	}
@@ -544,7 +544,7 @@ func lockRunForWake(ctx context.Context, tx pgx.Tx, tenant Tenant, runID string)
 func wakeParkedRunTx(ctx context.Context, tx pgx.Tx, tenant Tenant, runID string) error {
 	var sessionID, state string
 	var responseID *string
-	if err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Organization, tenant.Project).
+	if err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Project).
 		Scan(&sessionID, &responseID, &state); err != nil {
 		return fmt.Errorf("lock run for approval wake: %w", err)
 	}
@@ -588,7 +588,7 @@ func (s *Store) PendingToolApprovalForSession(ctx context.Context, tenant Tenant
 		args string
 	)
 	switch err := s.pool.QueryRow(ctx, storage.Query("PendingToolApprovalForSession"),
-		sessionID, requestHash, tenant.Organization, tenant.Project).
+		sessionID, requestHash, tenant.Project).
 		Scan(&a.ApprovalID, &a.ToolCallID, &a.RunID, &a.SessionID, &a.ResponseID, &a.ToolName, &args,
 			&a.RequestHash, &a.State, &a.ExpiresAt, &a.DecidedBy); {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -658,7 +658,7 @@ func (s *Store) PendingPublicationApprovals(ctx context.Context, tenant Tenant, 
 	}
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("PendingPublicationApprovalsForTenant"),
-		tenant.Organization, tenant.Project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+		tenant.Project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list pending publication approvals: %w", err)
 	}
@@ -687,7 +687,7 @@ func (s *Store) PublicationApprovalByID(ctx context.Context, tenant Tenant, appr
 	}
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	a, err := scanPendingPublicationApproval(s.pool.QueryRow(ctx, storage.Query("PublicationApprovalByID"),
-		approvalID, tenant.Organization, tenant.Project))
+		approvalID, tenant.Project))
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return PendingPublicationApproval{}, false, nil
