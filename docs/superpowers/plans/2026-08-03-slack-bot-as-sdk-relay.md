@@ -377,36 +377,63 @@ hayatta kalmasının tek sebebi budur.
 
 - [ ] **Step 2: Başarısız testi yaz**
 
+**TEL FORMATI ÖLÇÜLDÜ — 2026-08-03, canlı stack'e karşı `curl -N`.** Aşağısı tahmin değil, kayıt:
+
+```
+id: evt_0ff183615862e86dad87cdfe7a4563f8
+event: command.accepted.v1
+data: {"data":{"command_id":"cmd_828a...","delivery":"steer","kind":"send_message"},
+       "id":"evt_0ff1...","project_id":"prj_local","sequence":1,
+       "session_id":"ses_ac64...","source":"/v1/sessions/ses_ac64...",
+       "specversion":"1.0","time":"2026-08-03T09:23:04.023708Z","type":"command.accepted.v1"}
+```
+
+Üç şey buradan okunur ve planın önceki sketch'i üçünde de yanlıştı:
+- **Zarf CloudEvents 1.0'dır.** Sıra alanının adı **`sequence`**, `seq` değil. Olay tipi hem SSE
+  `event:` satırında hem zarfın `type` alanındadır.
+- **Resume'un adı `after_sequence`** (`api/events.go:112`), ve sunucu ayrıca standart
+  **`Last-Event-ID` header'ını** okur (`events.go:118`). `id:` satırı bir **event id**'sidir
+  (`evt_…`), sıra numarası değil — ikisini karıştıran bir istemci yanlış yerden devam eder.
+- **İlk bağlantı replay getirir.** Yukarıdaki iki olay, hiçbir şey olmazken bağlanan bir istemciye
+  journal'dan geldi (sequence 1 ve 2).
+
 ```go
-func TestSessionEventsResumesFromTheLastSeq(t *testing.T) {
-	var gotQuery string
+func TestSessionEventsResumesFromTheRecordedSequence(t *testing.T) {
+	var gotQuery, gotLastEventID string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
+		gotLastEventID = r.Header.Get("Last-Event-ID")
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "event: model_step.delta.v1\ndata: {\"seq\":7,\"text\":\"hi\"}\n\n")
+		_, _ = io.WriteString(w, "id: evt_a\nevent: model_step.delta.v1\n"+
+			`data: {"id":"evt_a","sequence":7,"type":"model_step.delta.v1","data":{"text":"hi"}}`+"\n\n")
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "ak_test")
-	st, err := c.SessionEvents(context.Background(), "sess_1", Cursor{Seq: 6})
+	c := mustClient(t, srv.URL)
+	st, err := c.Sessions.Events(context.Background(), "sess_1", EventsParams{AfterSequence: 6})
 	if err != nil {
-		t.Fatalf("SessionEvents: %v", err)
+		t.Fatalf("Events: %v", err)
 	}
 	defer st.Close()
-	if !strings.Contains(gotQuery, "6") {
-		t.Fatalf("query %q does not carry the resume cursor", gotQuery)
+	if !strings.Contains(gotQuery, "after_sequence=6") {
+		t.Fatalf("query %q does not carry after_sequence", gotQuery)
 	}
 	ev, err := st.Next()
 	if err != nil {
 		t.Fatalf("Next: %v", err)
 	}
-	if ev.Type != "model_step.delta.v1" {
-		t.Fatalf("type = %q", ev.Type)
+	if ev.Type != "model_step.delta.v1" || ev.Sequence != 7 {
+		t.Fatalf("got type=%q sequence=%d", ev.Type, ev.Sequence)
 	}
+	_ = gotLastEventID
 }
 ```
 
-Cursor parametresinin **adı** `events.go`'nun okuduğu addır — implementer onu oradan alır.
+**Ve bir ikinci test, çünkü resume'un DEĞERİ tek bir sayıdadır:** akış koptuktan sonra yeniden
+bağlanan istemci, en son GÖRDÜĞÜ sequence'ten devam etmeli — sıfırdan değil, ve gördüğünden bir
+fazlasından değil. Fake sunucu ilk bağlantıda iki olay verip bağlantıyı kapatsın, ikinci bağlantıda
+`after_sequence`'i kaydetsin; test o değerin **2** olduğunu iddia etsin. Bir açık-kapa döngüsünde
+olay tekrarlayan ya da atlayan bir istemci, Slack'te tekrar eden ya da eksik mesaj demektir.
 
 - [ ] **Step 3: Testin başarısız olduğunu gör**
 
