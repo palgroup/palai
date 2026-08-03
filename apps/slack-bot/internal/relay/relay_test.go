@@ -220,6 +220,56 @@ func TestToolCallEventsRenderReadableProgress(t *testing.T) {
 	}
 }
 
+// TestAStatusLineIsNeverGluedToTheTextAfterIt is the 2026-08-03 defect, stated as the property rather
+// than as the one line that was reported.
+//
+// chat.appendStream APPENDS, so whatever a status line ends with is immediately followed by the model's
+// next delta. The owner's first real answer came back reading `✅ \`palai.workspace.file\` doneProjede
+// toplam 7 Swift dosyası var` — `done` and `Projede` fused. The reported line was the tool-completed one,
+// but ALL FOUR status lines were missing the separator, so a test pinning only the completed line would
+// have gone green over three live instances of the same bug.
+//
+// The assertion is structural — the rune before the answer's first character must be a newline — rather
+// than `!strings.Contains(body, "doneProjede")`, which would pass the moment either half is reworded and
+// says nothing about the other three lines.
+func TestAStatusLineIsNeverGluedToTheTextAfterIt(t *testing.T) {
+	const answer = "Projede toplam 7 Swift dosyası var"
+	for _, status := range []palai.Event{
+		{Type: "tool_call.executing.v1", Data: map[string]any{"tool_call_id": "tc_1", "tool_name": "palai.workspace.file"}},
+		{Type: "tool_call.progress.v1", Data: map[string]any{"tool_call_id": "tc_1", "message": "reading SwiftUIListApp.swift"}},
+		{Type: "tool_call.completed.v1", Data: map[string]any{"tool_call_id": "tc_1", "tool_name": "palai.workspace.file"}},
+		{Type: ApprovalRequestedEventType, Data: map[string]any{"request_hash": "rh_1", "tool_name": "palai.workspace.shell"}},
+	} {
+		// A SUBTEST PER LINE, not one loop body: with a shared t.Fatalf the first failing line ends the
+		// whole test, so a sweep meant to prove four lines would only ever report one of them.
+		t.Run(status.Type, func(t *testing.T) {
+			fake := &fakeSlack{}
+			events := []palai.Event{status,
+				{Type: "model_step.delta.v1", Data: map[string]any{"text": answer}},
+				{Type: "run.completed.v1", Data: map[string]any{}},
+			}
+			if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals},
+				"sess_1", "C1", "1.1"); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			body := strings.Join(fake.appended, "") + fake.stoppedText
+
+			// Guard the measurement itself: if the status line rendered nothing the answer sits at index 0
+			// and the check below would read out of range, and if the answer never arrived the whole
+			// assertion is about an empty body. Either way the fixture — not the property — is what broke.
+			idx := strings.Index(body, answer)
+			if idx <= 0 {
+				t.Fatalf("the body is %q — want the status line THEN the answer, so this test measures a "+
+					"separator that actually has two sides", body)
+			}
+			if body[idx-1] != '\n' {
+				t.Fatalf("the answer begins %q — a status line and the model's next word fused into one, "+
+					"which is exactly what `doneProjede` was in the owner's channel", body[max(0, idx-24):idx+12])
+			}
+		})
+	}
+}
+
 // TestToolCallProgressWithNoMessageIsSkipped: an MCP progress notification is advisory and often carries
 // no human-readable message (packages/coordinator/mcp_progress.go AppendToolProgress) — that must not
 // render a bare, content-free line into the thread.

@@ -169,11 +169,11 @@ func (o *openStream) handle(ctx context.Context, event palai.Event) {
 	case "model_step.delta.v1":
 		o.emit(ctx, dataString(event.Data, "text"))
 	case "tool_call.executing.v1":
-		o.emit(ctx, fmt.Sprintf("\n\n▶️ Running `%s`…", toolLabel(event.Data)))
+		o.emitStatus(ctx, fmt.Sprintf("\n\n▶️ Running `%s`…", toolLabel(event.Data)))
 	case "tool_call.progress.v1":
-		o.emit(ctx, toolProgressLine(event.Data))
+		o.emitStatus(ctx, toolProgressLine(event.Data))
 	case "tool_call.completed.v1":
-		o.emit(ctx, fmt.Sprintf("\n✅ `%s` done", toolLabel(event.Data)))
+		o.emitStatus(ctx, fmt.Sprintf("\n✅ `%s` done", toolLabel(event.Data)))
 	case ApprovalRequestedEventType:
 		// A GATED CALL PARKED THE RUN, and this is the only place the bot learns of it: the approval
 		// bridge (approvals.go) posts the message a human decides from, and until this case existed
@@ -182,9 +182,32 @@ func (o *openStream) handle(ctx context.Context, event palai.Event) {
 		//
 		// It is announced in the stream FIRST so the open message says why it went quiet: the run is now
 		// waiting on a person, and a stream that simply stops reads as a hang.
-		o.emit(ctx, "\n\n⏸️ Waiting for an approval — see the message below.")
+		o.emitStatus(ctx, "\n\n⏸️ Waiting for an approval — see the message below.")
 		o.deps.OnApproval(ctx, o.channel, o.threadTS, event)
 	}
+}
+
+// emitStatus writes one STATUS line — a line this package composed, never the model's own words — and
+// guarantees it ends with a newline.
+//
+// THE TRAILING NEWLINE IS NOT COSMETIC. chat.appendStream APPENDS ("This text is what will be appended to
+// the message received so far"), so the next model_step.delta.v1 lands against the last byte written here
+// with nothing between them. Every status line in this file was missing it, and on 2026-08-03 the owner's
+// first real answer came back reading `✅ \`palai.workspace.file\` doneProjede toplam 7 Swift dosyası var`
+// — the status line and the answer's first word fused into one word.
+//
+// It is a HELPER rather than a newline typed onto each literal above because the property is "no status
+// line can abut what follows it", and a property spread across four string literals is one edit away from
+// being three-quarters true. A line that renders to nothing (a messageless progress notification) still
+// emits nothing.
+func (o *openStream) emitStatus(ctx context.Context, text string) {
+	if text == "" {
+		return
+	}
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	o.emit(ctx, text)
 }
 
 // emit appends text to the open stream, with anything still pending from an earlier failed send (see
