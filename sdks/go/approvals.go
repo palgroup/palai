@@ -104,11 +104,21 @@ func approvalsListPath(p ListApprovalsParams) string {
 	return "/v1/approvals?" + strings.Join(parts, "&")
 }
 
-// DecisionParams is one HTTP caller's answer to a pending approval. RequestHash is REQUIRED — the
-// server's decide handler (apps/control-plane/api/approvals.go) refuses an empty one with 400
-// invalid_request before the decision ever reaches the approval throat: an approval id alone
-// authorizes nothing, the decision must be bound to the exact tool-call arguments it was raised
-// for. Reason rides a deny back to the model verbatim; it is optional and unused on an approve.
+// DecisionParams is one HTTP caller's answer to a pending approval — a gated tool call or a gated
+// publication (Approval.Kind). RequestHash is REQUIRED on both: the server's decide handler
+// (apps/control-plane/api/approvals.go) refuses an empty one with 400 invalid_request before the
+// decision ever reaches either throat — an approval id alone authorizes nothing, the decision must
+// be bound to the exact call it was raised for.
+//
+// Reason only reaches the model on a TOOL denial: coordinator.DecideToolApproval writes it into the
+// tool call's cancellation payload verbatim (packages/coordinator/approvals.go), so the model reads
+// {"status":"denied","reason":...}. On a PUBLICATION denial it is dropped server-side —
+// decidePublicationApproval's command payload carries only request_hash and approver
+// (apps/control-plane/internal/store/approvals.go), and ApplyApprovalDecision takes no reason
+// parameter at all (packages/coordinator/publication.go) — so a Reason set here is accepted by this
+// SDK and by the server's strict decode, but never logged or delivered anywhere on that path. That
+// is a pre-existing server gap, not this SDK's to paper over.
+//
 // There is deliberately no approver field — the body decode is strict (DisallowUnknownFields), and
 // the deciding principal is stamped server-side from the verified API key.
 type DecisionParams struct {
@@ -154,18 +164,28 @@ func (a *Approvals) List(ctx context.Context, params ListApprovalsParams, opts .
 	return &page, nil
 }
 
-// Approve decides a pending approval yes (POST /v1/approvals/{id}/approve). A 404 (unknown or
-// foreign id), 403 not_an_approver, and 409 approval_not_decidable (already answered, the deadline
-// passed, or the request hash no longer matches the queued call) all surface as a typed *APIError.
-// It is marked idempotent for transport retry: the server's decision throat treats a repeat
-// decision as VOID (409), never as a second apply, so a resend after a torn connection cannot
-// double-apply — it can only turn into a conflict if the first attempt actually landed.
+// Approve decides a pending approval yes (POST /v1/approvals/{id}/approve). 403 not_an_approver
+// surfaces the same way for both kinds (Approval.Kind). The other two codes DIFFER by kind, because
+// the server dispatches on two different lookups (store.DecideApproval tries the tool lookup first,
+// falls back to the publication one): ToolApprovalByID carries no state filter, so a TOOL approval
+// that was already decided still resolves and this answers 409 approval_not_decidable (already
+// answered, the deadline passed, or the request hash no longer matches). PublicationApprovalByID
+// filters `p.state = 'pending_approval'` (storage/queries/publications.sql), so once a PUBLICATION
+// is decided its row falls out of that lookup entirely and a repeat decide answers 404 "no such
+// approval" instead — indistinguishable from an id that never existed.
+//
+// It is still marked idempotent for transport retry on both kinds: 409 and 404 are not retryable
+// statuses (isRetryableStatus) and the request body is marshaled once, outside the retry loop, so a
+// resend after a torn connection can never double-apply — worst case it surfaces as that kind's
+// non-retried status if the first attempt actually landed, never a second decision.
 func (a *Approvals) Approve(ctx context.Context, id string, p DecisionParams, opts ...CallOption) (*ApprovalDecisionResult, error) {
 	return a.decide(ctx, id, "approve", p, opts)
 }
 
-// Deny decides a pending approval no (POST /v1/approvals/{id}/deny). Reason rides back to the model
-// verbatim, so a denial with one is an instruction the agent can act on rather than a wall.
+// Deny decides a pending approval no (POST /v1/approvals/{id}/deny) — see Approve's doc comment for
+// the 404-vs-409 split between a tool and a publication decided a second time. Reason only reaches
+// the model on a TOOL denial; on a PUBLICATION denial it rides in this request but is dropped
+// server-side (see DecisionParams).
 func (a *Approvals) Deny(ctx context.Context, id string, p DecisionParams, opts ...CallOption) (*ApprovalDecisionResult, error) {
 	return a.decide(ctx, id, "deny", p, opts)
 }
