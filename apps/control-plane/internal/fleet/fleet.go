@@ -100,6 +100,18 @@ type Runner struct {
 	CertNotAfter    time.Time
 	EnrolledAt      time.Time
 	LastSeenAt      time.Time
+	// THE MACHINE'S OWN ANSWER about the configuration it holds (migration 000060). These three are the
+	// only fields on this struct the CONTROL PLANE does not decide: they are written by the settings poll
+	// from what the machine reported, and they exist so a panel can distinguish "the operator saved this"
+	// from "the machine is running it".
+	//
+	// ConfigRevision is the desired revision this machine resolved, 0 when it has never reported — every
+	// runner enrolled before 000060, and every runner too old to poll. ConfigApplied is its verdict per
+	// setting (`applied` / `not_read`), nil when it has never reported and possibly EMPTY when it has, which
+	// is a different fact: the machine polled and the plane had no document for it.
+	ConfigRevision   int64
+	ConfigApplied    map[string]string
+	ConfigReportedAt time.Time
 	// CreatedAt is the keyset coordinate the list cursor is minted from (api/pagination.go orders on
 	// (created_at, id) DESC). It is the 000001 column; EnrolledAt is 000045's and records the same
 	// instant for every row this code writes, but the page orders on the former.

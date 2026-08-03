@@ -55,7 +55,8 @@ UPDATE runners
        cert_not_after = coalesce($3, cert_not_after)
  WHERE runner_dns = $1
 RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
-          state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at;
+          state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
+       config_revision, config_applied, config_reported_at;
 
 -- name: SetRunnerState
 -- Cordon, resume or revoke ONE machine, durably (E24 T5). Before this the three were in-memory
@@ -88,7 +89,8 @@ UPDATE runners
    AND (state <> 'revoked' OR $4 = 'revoked')
    AND (state <> 'pending' OR $4 = 'revoked')
 RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
-          state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at, created_at;
+          state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
+       config_revision, config_applied, config_reported_at, created_at;
 
 -- name: ApproveRunner
 -- Admit ONE machine that is waiting in a strict pool's waiting room (E24 T6). It is a SEPARATE statement
@@ -111,7 +113,8 @@ UPDATE runners
  WHERE id = $1 AND organization_id = $2 AND ($3 = '' OR project_id = $3)
    AND state IN ('pending', 'active')
 RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
-          state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at, created_at;
+          state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
+       config_revision, config_applied, config_reported_at, created_at;
 
 -- name: AppendRunnerDecision
 -- The journal entry for a decision about ONE MACHINE — a decommission (E24 T5, `revoked`) or an
@@ -148,7 +151,8 @@ SELECT $1, $2, $3, $4, $5, '', $6,
 -- One runner inside the caller's tenant. A row belonging to another tenant returns NO row, so the
 -- handler answers 404 without ever learning whether the id exists elsewhere.
 SELECT id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
-       state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at, created_at
+       state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
+       config_revision, config_applied, config_reported_at, created_at
   FROM runners
  WHERE id = $1 AND organization_id = $2 AND ($3 = '' OR project_id = $3);
 
@@ -157,7 +161,8 @@ SELECT id, organization_id, project_id, pool_id, label, runner_dns, public_key_s
 -- cursor from. $6 is the over-fetch (page size + 1) so the handler detects a further page without a
 -- second round trip.
 SELECT id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
-       state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at, created_at
+       state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
+       config_revision, config_applied, config_reported_at, created_at
   FROM runners
  WHERE organization_id = $1
    AND ($2 = '' OR project_id = $2)

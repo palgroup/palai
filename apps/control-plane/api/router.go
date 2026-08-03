@@ -447,7 +447,7 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	// a caller sees its own tenant's machines and nothing else. The write routes below it are T3's key
 	// surface and T5's machine lifecycle — see api/runners.go for why each exists.
 	if cfg.runners != nil {
-		rh := &runnerHandler{runners: cfg.runners}
+		rh := &runnerHandler{runners: cfg.runners, desired: cfg.desired}
 		mux.HandleFunc("GET /v1/runners", rh.listRunners)
 		mux.HandleFunc("GET /v1/runners/{runner_id}", rh.getRunner)
 		// The pools those machines are in (E24 T2), and THE BIRTH PATH THAT WAS MISSING (E28 T1).
@@ -477,6 +477,14 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		// route anywhere takes a key value as input.
 		mux.HandleFunc("POST /v1/runner-pools/{pool_id}/keys", rh.mintPoolKey)
 		mux.HandleFunc("GET /v1/runner-pools/{pool_id}/keys", rh.listPoolKeys)
+		// THE CONFIGURATION OF A POOL AND OF ONE MACHINE. They are reads only: the write is
+		// PUT /v1/deployment/desired carrying `plane` and `scope_id`, so all three scopes go through one
+		// validator. Registered only when this deployment has somewhere to keep a document — see
+		// runnerHandler.desired for why an absent route beats one that always answers "none".
+		if cfg.desired != nil {
+			mux.HandleFunc("GET /v1/runner-pools/{pool_id}/desired", rh.desiredForScope(planeRunnerPool, "pool_id"))
+			mux.HandleFunc("GET /v1/runners/{runner_id}/desired", rh.desiredForScope(planeRunnerMachine, "runner_id"))
+		}
 		mux.HandleFunc("POST /v1/runner-pool-keys/{key_id}/revoke", rh.revokePoolKey)
 		// THE MACHINE LIFECYCLE (E24 T5), and the reason it is here is §3.6 D15: `Revoke()` was SAN-011's
 		// hard stop for a compromised runner, implemented, tested, registered in the UAT catalogue, and
