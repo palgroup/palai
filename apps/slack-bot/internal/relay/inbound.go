@@ -143,6 +143,10 @@ type InboundDeps struct {
 	Palai           Palai
 	NewSlack        func(recipientUserID, recipientTeamID string) Slack
 	RunInBackground func(func())
+	// OnApproval is handed straight to every relay.Run this file starts (see Deps.ApprovalHook). It is
+	// forwarded rather than called here because an approval request arrives on the RUN's event stream,
+	// which only Run reads — HandleEvent has returned long before the first one lands.
+	OnApproval ApprovalHook
 
 	// BotID is this bot's own bots-registry row id (c.Bots.Get) — the key ThreadStore partitions by,
 	// so two bots in the same Slack thread never share a session (Task 8's own requirement).
@@ -167,11 +171,13 @@ func NewInboundDeps(
 	client Palai,
 	newSlack func(recipientUserID, recipientTeamID string) Slack,
 	runInBackground func(func()),
+	onApproval ApprovalHook,
 	botID, botUserID, agentRevisionID, repositoryBindingID string,
 ) InboundDeps {
 	return InboundDeps{
 		Store: store, Palai: client, NewSlack: newSlack, RunInBackground: runInBackground,
-		BotID: botID, BotUserID: botUserID,
+		OnApproval: onApproval,
+		BotID:      botID, BotUserID: botUserID,
 		AgentRevisionID: agentRevisionID, RepositoryBindingID: repositoryBindingID,
 		state: newInboundState(),
 	}
@@ -187,6 +193,8 @@ func (deps InboundDeps) validate() error {
 		return errors.New("relay: InboundDeps needs NewSlack")
 	case deps.RunInBackground == nil:
 		return errors.New("relay: InboundDeps needs RunInBackground")
+	case deps.OnApproval == nil:
+		return errors.New("relay: InboundDeps needs OnApproval — a run that parks on a human nobody is asked is a hang")
 	case deps.state == nil:
 		return errors.New("relay: InboundDeps needs state — build it with NewInboundDeps")
 	case deps.BotID == "":
@@ -471,8 +479,9 @@ func (deps InboundDeps) startRun(ctx context.Context, tk threadKey, sessionID st
 	}
 
 	runDeps := Deps{
-		Events: &sequenceTrackingStream{EventStream: stream, record: func(seq int64) { deps.state.setLastSequence(tk, seq) }},
-		Slack:  deps.NewSlack(ev.UserID, ev.TeamID),
+		Events:     &sequenceTrackingStream{EventStream: stream, record: func(seq int64) { deps.state.setLastSequence(tk, seq) }},
+		Slack:      deps.NewSlack(ev.UserID, ev.TeamID),
+		OnApproval: deps.OnApproval,
 	}
 	// Set BEFORE handing off to RunInBackground, not inside the deferred goroutine: a caller that
 	// supplies a SYNCHRONOUS RunInBackground (a test not exercising the steer path) would otherwise

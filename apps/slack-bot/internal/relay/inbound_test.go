@@ -193,6 +193,7 @@ func newTestDeps(t *testing.T) (InboundDeps, *fakePalai, *fakeStore) {
 		fs, fp,
 		func(recipientUserID, recipientTeamID string) Slack { return &fakeSlack{} },
 		func(f func()) { f() },
+		func(context.Context, string, string, palai.Event) {},
 		"bot_1", "U_BOT", "rev_1", "rbd_1",
 	)
 	return deps, fp, fs

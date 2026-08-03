@@ -43,6 +43,11 @@ type panicOnFirstNext struct{}
 func (panicOnFirstNext) Next() (palai.Event, error) { panic("boom: simulated decode failure") }
 func (panicOnFirstNext) Close() error               { return nil }
 
+// noApprovals is the ApprovalHook for a test whose events never park a run. It is a named function
+// rather than an inline literal so that a test which DOES care (TestAnApprovalRequestReachesTheBridge)
+// stands out as the one place the hook is watched.
+func noApprovals(context.Context, string, string, palai.Event) {}
+
 // fakeSlack is the Slack seam's test double: it counts calls and records what text arrived, and can be
 // told to fail the leading N AppendStream calls to exercise the pending-text recovery path.
 type fakeSlack struct {
@@ -80,7 +85,7 @@ func TestDeltasBecomeOneAppendPerWindow(t *testing.T) {
 		{Type: "run.completed.v1", Data: map[string]any{}},
 	}
 	fake := &fakeSlack{}
-	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake},
+	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals},
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -111,7 +116,7 @@ func TestATerminalEventAlwaysStopsTheStream(t *testing.T) {
 			{Type: term, Data: map[string]any{}},
 			{Type: "model_step.delta.v1", Data: map[string]any{"text": "SHOULD-NOT-BE-READ"}},
 		}}
-		if err := Run(context.Background(), Deps{Events: stream, Slack: fake}, "sess_1", "C1", "1.1"); err != nil {
+		if err := Run(context.Background(), Deps{Events: stream, Slack: fake, OnApproval: noApprovals}, "sess_1", "C1", "1.1"); err != nil {
 			t.Fatalf("Run(%s): %v", term, err)
 		}
 		if fake.stopped != 1 {
@@ -130,7 +135,7 @@ func TestATerminalEventAlwaysStopsTheStream(t *testing.T) {
 // whole bot's worth of OTHER sessions shares.
 func TestAPanicStillClosesTheSlackStream(t *testing.T) {
 	fake := &fakeSlack{}
-	err := Run(context.Background(), Deps{Events: panicOnFirstNext{}, Slack: fake}, "sess_1", "C1", "1.1")
+	err := Run(context.Background(), Deps{Events: panicOnFirstNext{}, Slack: fake, OnApproval: noApprovals}, "sess_1", "C1", "1.1")
 	if err == nil {
 		t.Fatal("Run returned nil after a panic; want the panic converted to an error")
 	}
@@ -150,7 +155,7 @@ func TestAFailedAppendIsRecoveredByTheNextOne(t *testing.T) {
 		{Type: "run.completed.v1", Data: map[string]any{}},
 	}
 	fake := &fakeSlack{failAppends: 1}
-	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake},
+	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals},
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -171,7 +176,7 @@ func TestTextThatNeverRecoversIsFlushedAtStop(t *testing.T) {
 		{Type: "run.completed.v1", Data: map[string]any{}},
 	}
 	fake := &fakeSlack{failAppends: 1}
-	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake},
+	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals},
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -197,7 +202,7 @@ func TestToolCallEventsRenderReadableProgress(t *testing.T) {
 		{Type: "run.completed.v1", Data: map[string]any{}},
 	}
 	fake := &fakeSlack{}
-	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake},
+	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals},
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -218,7 +223,7 @@ func TestToolCallProgressWithNoMessageIsSkipped(t *testing.T) {
 		{Type: "run.completed.v1", Data: map[string]any{}},
 	}
 	fake := &fakeSlack{}
-	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake},
+	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals},
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -227,12 +232,55 @@ func TestToolCallProgressWithNoMessageIsSkipped(t *testing.T) {
 	}
 }
 
+// TestAnApprovalRequestReachesTheBridge is the wiring Task 12.5 found missing: approvals.go's
+// OnApprovalRequested — the only thing that mints an approve/deny button — had NO caller anywhere in
+// this process, so a gated tool call parked the run and nobody was ever asked. Run sees the event on the
+// session stream and is the one place that also holds the thread it must be posted into.
+func TestAnApprovalRequestReachesTheBridge(t *testing.T) {
+	requested := palai.Event{Type: ApprovalRequestedEventType, SessionID: "sess_1",
+		Data: map[string]any{"request_hash": "rh_1", "tool_name": "xcodebuild"}}
+	events := []palai.Event{requested, {Type: "run.completed.v1", Data: map[string]any{}}}
+
+	var gotChannel, gotThread string
+	var gotEvents []palai.Event
+	fake := &fakeSlack{}
+	deps := Deps{Events: staticStream(events), Slack: fake,
+		OnApproval: func(_ context.Context, channel, threadTS string, ev palai.Event) {
+			gotChannel, gotThread = channel, threadTS
+			gotEvents = append(gotEvents, ev)
+		}}
+	if err := Run(context.Background(), deps, "sess_1", "C1", "1.1"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(gotEvents) != 1 {
+		t.Fatalf("the approval hook fired %d time(s), want exactly 1 — a parked run nobody is asked about is a hang", len(gotEvents))
+	}
+	if gotEvents[0].Data["request_hash"] != "rh_1" {
+		t.Fatalf("the hook received %v, want the event carrying request_hash rh_1 (the ONE field both approval kinds share)", gotEvents[0].Data)
+	}
+	// The thread, not the stream's own ts: the approval message is a separate chat.postMessage into the
+	// same thread, and posting it against the stream's ts would put it in the wrong place.
+	if gotChannel != "C1" || gotThread != "1.1" {
+		t.Fatalf("the hook was given channel=%q thread=%q, want C1/1.1 — nothing in a Palai event names a Slack thread", gotChannel, gotThread)
+	}
+	// The stream says why it went quiet. A run that parks with no word in the open message reads as a hang.
+	if got := strings.Join(fake.appended, ""); !strings.Contains(got, "approval") {
+		t.Fatalf("the open stream said %q; a parked run must say it is waiting on a person", got)
+	}
+}
+
 func TestRunRefusesIncompleteDeps(t *testing.T) {
 	fake := &fakeSlack{}
-	if err := Run(context.Background(), Deps{Slack: fake}, "sess_1", "C1", "1.1"); err == nil {
+	if err := Run(context.Background(), Deps{Slack: fake, OnApproval: noApprovals}, "sess_1", "C1", "1.1"); err == nil {
 		t.Fatal("Run with a nil Events succeeded")
 	}
+	// A nil hook is refused for the same reason, and it is the newer half: a relay that renders a run
+	// but drops its approval requests looks entirely healthy right up to the first gated call.
+	if err := Run(context.Background(), Deps{Events: staticStream(nil), Slack: fake}, "sess_1", "C1", "1.1"); err == nil {
+		t.Fatal("Run with a nil OnApproval succeeded")
+	}
 	if fake.started != 0 {
-		t.Fatalf("StartStream was called %d time(s) with no event source", fake.started)
+		t.Fatalf("StartStream was called %d time(s) with incomplete Deps", fake.started)
 	}
 }

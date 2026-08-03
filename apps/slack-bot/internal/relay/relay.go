@@ -44,11 +44,25 @@ type Slack interface {
 	StopStream(ctx context.Context, channel, ts, markdownText string) error
 }
 
-// Deps is Run's whole seam: a session's events and the Slack stream to render them into. Both fields
-// are required — Run refuses rather than doing half a job with a nil one.
+// ApprovalHook is what Run does with an approval.requested.v1 event: hand it to the approval bridge
+// (approvals.go's OnApprovalRequested) for the thread this relay is rendering into. It exists because
+// the bridge takes a channel and a thread ts that "nothing in a Palai event names" (OnApprovalRequested's
+// own doc) — and Run is the one place that holds both alongside the event.
+//
+// IT RETURNS NOTHING, and the reason is not that failures do not matter — it is that Run cannot act on
+// one. By the time this fires the run is already PARKED server-side waiting for a human, so there is
+// nothing to abort and nothing to retry into; a failed post means a question nobody can see, which the
+// caller's implementation is the right place to say out loud. Production (apps/slack-bot/main.go) logs it
+// as exactly that.
+type ApprovalHook func(ctx context.Context, channel, threadTS string, ev palai.Event)
+
+// Deps is Run's whole seam: a session's events, the Slack stream to render them into, and where an
+// approval request goes. Every field is required — Run refuses rather than doing half a job with a nil
+// one, and a nil OnApproval in particular would be a run that parks on a human who is never asked.
 type Deps struct {
-	Events EventStream
-	Slack  Slack
+	Events     EventStream
+	Slack      Slack
+	OnApproval ApprovalHook
 }
 
 // startingStatus is what the Slack message shows the instant a relay begins, before anything has
@@ -75,8 +89,8 @@ var runTerminalEvents = map[string]bool{
 // one deferred function covering the whole loop rather than at each terminal branch: a branch this
 // package forgets to list can still never leak an open stream.
 func Run(ctx context.Context, deps Deps, sessionID, channel, threadTS string) (err error) {
-	if deps.Events == nil || deps.Slack == nil {
-		return fmt.Errorf("relay: Deps needs both Events and Slack (session %s)", sessionID)
+	if deps.Events == nil || deps.Slack == nil || deps.OnApproval == nil {
+		return fmt.Errorf("relay: Deps needs Events, Slack and OnApproval (session %s)", sessionID)
 	}
 	defer deps.Events.Close()
 
@@ -85,7 +99,7 @@ func Run(ctx context.Context, deps Deps, sessionID, channel, threadTS string) (e
 		return fmt.Errorf("relay: start stream for session %s: %w", sessionID, startErr)
 	}
 
-	st := &openStream{deps: deps, channel: channel, ts: ts}
+	st := &openStream{deps: deps, channel: channel, threadTS: threadTS, ts: ts}
 	defer st.stop(ctx, sessionID, &err)
 
 	for {
@@ -108,7 +122,11 @@ func Run(ctx context.Context, deps Deps, sessionID, channel, threadTS string) (e
 type openStream struct {
 	deps    Deps
 	channel string
-	ts      string
+	// threadTS is the thread this relay renders into. The stream itself is addressed by ts (Slack's
+	// answer to chat.startStream), so this is carried only for the approval message, which is a separate
+	// chat.postMessage into the same thread rather than an append to the open stream.
+	threadTS string
+	ts       string
 
 	// pending is text that has not been CONFIRMED delivered: either nothing has been sent for it yet,
 	// or the last AppendStream carrying it failed. It rides along on every later send (see emit), and
@@ -156,6 +174,16 @@ func (o *openStream) handle(ctx context.Context, event palai.Event) {
 		o.emit(ctx, toolProgressLine(event.Data))
 	case "tool_call.completed.v1":
 		o.emit(ctx, fmt.Sprintf("\n✅ `%s` done", toolLabel(event.Data)))
+	case ApprovalRequestedEventType:
+		// A GATED CALL PARKED THE RUN, and this is the only place the bot learns of it: the approval
+		// bridge (approvals.go) posts the message a human decides from, and until this case existed
+		// nothing in this process ever called it — so no approve/deny button was ever minted and
+		// OnButton could not fire in production however correct it was.
+		//
+		// It is announced in the stream FIRST so the open message says why it went quiet: the run is now
+		// waiting on a person, and a stream that simply stops reads as a hang.
+		o.emit(ctx, "\n\n⏸️ Waiting for an approval — see the message below.")
+		o.deps.OnApproval(ctx, o.channel, o.threadTS, event)
 	}
 }
 
