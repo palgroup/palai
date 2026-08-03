@@ -185,6 +185,12 @@ const AGENTS = Array.from({ length: 21 }, (_, i) => ({
 let agentSeq = 0;
 // The E29 connection sequence, so a console-minted id is distinguishable from the seed's.
 let connectionSeq = 0;
+// The route write path (panel-credentials). ROUTE_REVISIONS is flat and carries `route_id` rather than being
+// keyed by it, because the publish handler has to clear `resolved_by_dispatch` across a route's whole set —
+// only the newest published revision steers, which is the property that makes publishing MEAN something.
+let routeSeq = 0;
+let routeRevisionSeq = 0;
+const ROUTE_REVISIONS = [];
 
 // --- THE AGENT LINEAGE (E25 T6) --------------------------------------------------------------------------
 //
@@ -804,7 +810,10 @@ const ADMIN = {
   // `base_url` is absent here for the same reason: provider-one has an endpoint of its own and the store
   // REFUSES one on it (000049 / vetConnectionEndpoint).
   "model-connections": listView([{ id: "mc_1", object: "model_connection", provider: "provider-one", secret_ref: "provider-key" }]),
-  "model-routes": listView([{ id: "mr_1", object: "model_route", name: "default" }]),
+  // `consulted_by_dispatch` is on the REAL projection (store/model_routes.go:493 writes it from
+  // `rec.Name == coordinator.DefaultModelRouteAlias`), so the fixture carries it too: a console column that
+  // renders it must be driven against a row that HAS it, or the cell is proven by nothing.
+  "model-routes": listView([{ id: "mr_1", object: "model_route", name: "default", consulted_by_dispatch: true }]),
   // `updated_at` was ABSENT here until E25 T4 and nothing could catch it, for exactly the reason T2's seed
   // exists: a bootstrap stack's secret_refs collection is EMPTY, so the sweep's item arm had no real row to
   // compare against and skipped. T4's environment write is the first thing in this tree that PUTS a row
@@ -1748,6 +1757,102 @@ export const ROUTES = [
   },
 
   { method: "GET", pattern: "/v1/model-routes", handle: adminList("model-routes") },
+
+  // --- THE ROUTE WRITE PATH: what makes a connection the credential runs actually use. ---
+  //
+  // Three routes because the revision lifecycle is three operations, and the fixture mirrors
+  // internal/store/model_routes.go's refusals rather than accepting whatever arrives — a fixture more
+  // generous than production makes the console code against a shape that does not exist.
+  //
+  // THE TWO PROPERTIES THAT MATTER MOST HERE ARE BOTH REAL-STORE BEHAVIOUR, and getting either wrong would
+  // make a console defect invisible:
+  //   1. CREATE IS GET-OR-CREATE. coordinator.CreateModelRoute:318-332 looks the alias up by name and
+  //      returns the existing id before inserting. A fixture that minted a new id per call would let a
+  //      console that piles up aliases pass.
+  //   2. EVERY NAME BUT `default` IS REFUSED, with the store's own reason. A fixture that accepted any name
+  //      would let a console ship a name field whose every other value silently steers nothing.
+  {
+    method: "POST",
+    pattern: "/v1/model-routes",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const name = typeof body.name === "string" ? body.name : "";
+        if (name === "") return sendProblem(response, 400, "invalid_request", "name is required");
+        if (name !== "default") {
+          return sendProblem(
+            response,
+            400,
+            "invalid_request",
+            'name "default" (the only alias a run resolves through — a route by any other name would be created, published, and never consulted by a single run) is required',
+          );
+        }
+        const rows = ADMIN["model-routes"].data;
+        const existing = rows.find((r) => r.name === name);
+        if (existing !== undefined) return sendJSON(response, 201, { id: existing.id, object: "model_route", name });
+        routeSeq += 1;
+        const row = { id: `mroute_console_${String(routeSeq).padStart(4, "0")}`, object: "model_route", name, consulted_by_dispatch: true };
+        rows.unshift(row);
+        sendJSON(response, 201, row);
+      }),
+  },
+  {
+    method: "POST",
+    pattern: "/v1/model-routes/{route_id}/revisions",
+    handle: (request, response, groups) =>
+      drainBody(request, (raw) => {
+        const routeID = groups.route_id ?? "";
+        const body = parseBody(raw);
+        const model = typeof body.model === "string" ? body.model : "";
+        const connectionID = typeof body.connection_id === "string" ? body.connection_id : "";
+        // A route the caller cannot see is a 404 — the same answer as one that never existed.
+        if (!ADMIN["model-routes"].data.some((r) => r.id === routeID)) {
+          return sendProblem(response, 404, "not_found", "model route not found");
+        }
+        if (model === "") return sendProblem(response, 400, "invalid_request", "model is required");
+        if (connectionID === "") return sendProblem(response, 400, "invalid_request", "connection_id is required");
+        // THE CONNECTION IS VERIFIED IN SCOPE, exactly as CreateModelRouteRevision does before inserting.
+        // Without this the console could publish a revision naming a connection that does not exist, which
+        // on the real stack is a 404 and here would have been a green.
+        if (!ADMIN["model-connections"].data.some((c) => c.id === connectionID)) {
+          return sendProblem(response, 404, "not_found", "model connection not found");
+        }
+        routeRevisionSeq += 1;
+        const row = {
+          id: `mrev_console_${String(routeRevisionSeq).padStart(4, "0")}`,
+          object: "model_route_revision",
+          route_id: routeID,
+          revision: routeRevisionSeq,
+          model,
+          connection_id: connectionID,
+          // A DRAFT. The whole point of the third call is that this is false until it is published.
+          published: false,
+        };
+        ROUTE_REVISIONS.push(row);
+        sendJSON(response, 201, row);
+      }),
+  },
+  {
+    method: "POST",
+    pattern: "/v1/model-routes/{route_id}/revisions/{revision_id}/publish",
+    handle: (request, response, groups) => {
+      const row = ROUTE_REVISIONS.find((r) => r.id === groups.revision_id && r.route_id === groups.route_id);
+      if (row === undefined) return sendProblem(response, 404, "not_found", "model route revision not found");
+      // Publishing is idempotent, and only the newest published revision steers (the real resolver reads one
+      // row, ordered) — so publishing this one un-steers the rest.
+      for (const other of ROUTE_REVISIONS) if (other.route_id === row.route_id) other.resolved_by_dispatch = false;
+      row.published = true;
+      row.resolved_by_dispatch = true;
+      sendJSON(response, 200, row);
+    },
+  },
+  {
+    method: "GET",
+    pattern: "/v1/model-routes/{route_id}/revisions",
+    handle: (request, response, groups) =>
+      sendJSON(response, 200, { object: "list", data: ROUTE_REVISIONS.filter((r) => r.route_id === groups.route_id) }),
+  },
+
   { method: "GET", pattern: "/v1/secret-refs", handle: adminList("secret-refs") },
   {
     // WRITING THE CREDENTIAL — the first half of the console's two-call connection flow (E29). The
@@ -2950,7 +3055,11 @@ const server = createServer((request, response) => {
     for (const row of structuredClone(SESSIONS_PRISTINE)) SESSIONS.push(row);
     const fresh = structuredClone(ADMIN_PRISTINE);
     for (const key of Object.keys(ADMIN)) ADMIN[key] = fresh[key];
-    return sendJSON(response, 200, { reset: ["sessions", ...Object.keys(ADMIN)], sessions: SESSIONS.length });
+    // ROUTE_REVISIONS is NOT in ADMIN — it is a flat array the publish handler mutates across a route's
+    // whole set — so the loop above cannot reach it. Reset it by name, and say so in the response: this
+    // block's own comment is that a reset which silently misses a collection is worse than none.
+    ROUTE_REVISIONS.length = 0;
+    return sendJSON(response, 200, { reset: ["sessions", ...Object.keys(ADMIN), "model-route-revisions"], sessions: SESSIONS.length });
   }
   // The route table as this server dispatches from it — the runtime half of the conformance sweep's
   // "the table IS the surface" claim (the sweep also imports ROUTES directly, and asserts the two agree).

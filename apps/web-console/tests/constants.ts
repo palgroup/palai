@@ -120,6 +120,10 @@ export const FORM_DIALOGS: { route: string; open: string; dialog: string; label:
   { route: "/fleet", open: "pool-create-open", dialog: "pool-create-dialog", label: "Create a runner pool" },
   { route: "/fleet", open: "poolkey-mint-open", dialog: "poolkey-mint-dialog", label: "Mint an enrolment key" },
   { route: "/deployment", open: "desired-config-edit", dialog: "desired-config-dialog", label: "Edit desired configuration" },
+  // The route publish (panel-credentials): the control that turns a stored connection into the credential
+  // runs actually use. Its picker and model field do not exist until the dialog is open, which is exactly
+  // the shape that walked out of the contrast sweep once already.
+  { route: "/registry", open: "route-publish-open", dialog: "route-publish-dialog", label: "Point runs at a connection" },
   // THE FIRST TWO ROWS ON A DYNAMIC ROUTE (E30), and `dynamic` is what makes that expressible. Every row
   // above names a path the loop can `goto` directly; a binding's own page is keyed by an id, so this names
   // the DYNAMIC_CONSOLE_ROUTES pattern instead and the loop resolves it through concreteDynamicPath —
