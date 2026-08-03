@@ -52,11 +52,12 @@ type slackCredentials struct {
 // would have to be written against is being rewritten in this tree right now.
 func redeemSlackCredentials(_ context.Context, _ *palai.Client, cfg slackConfig) (slackCredentials, error) {
 	return slackCredentials{}, fmt.Errorf(
-		"this bot's Slack tokens are sealed under %s and %s, and the platform has no way to hand them back: "+
-			"POST /v1/secret-refs is write-only and GET /v1/secret-refs/{name} answers metadata only "+
+		"this bot's row carries secret HANDLES and not tokens — config.app_token_ref=%q, config.bot_token_ref=%q — "+
+			"and the control plane has no route that resolves a handle back to its value: POST /v1/secret-refs is write-only, "+
+			"and GET /v1/secret-refs/{name} answers {name,object,version,updated_at} with no value and no parameter that adds one "+
 			"(measured 2026-08-03; apps/control-plane/api/secret_refs.go: \"the value is envelope-encrypted at rest and has NO read-back path\"). "+
-			"A relay process outside the control plane therefore cannot redeem its own credentials. "+
-			"What is missing is a bot-scoped resolution route — GET /v1/bots/{bot_id}/credentials, resolving only the handles that bot's own config names — and the SDK method for it. "+
+			"So a relay process running outside the control plane cannot redeem its own credentials today, and this bot stops here rather than start half-configured. "+
+			"WHAT IS MISSING is one route — GET /v1/bots/{bot_id}/credentials, gated on the caller's own key and resolving ONLY the *_ref names in that bot's own config row — plus the SDK method for it. "+
 			"Setting SLACK_BOT_TOKEN in this process's environment is NOT the workaround: it is the arrangement the bot registry exists to end",
 		cfg.AppTokenRef, cfg.BotTokenRef)
 }
