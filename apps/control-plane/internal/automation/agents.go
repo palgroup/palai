@@ -208,11 +208,15 @@ func (s *Store) PublishRevision(ctx context.Context, org, project, revisionID st
 // The read is org-scoped (environments carries no project_id — the secret_refs posture, 000031:16), so a
 // foreign environment id is invisible under RLS and refused as absent. That is the intended answer: an
 // operator must not learn from an error message that an id exists in another tenant.
+//
+// storage.WithOrgScope, not storage.WithTenant with an empty project (A.2 Task 1): this is one of the
+// named, narrow exceptions to WithTenant's now project-required rule, for the same reason as the comment
+// above — environments has no project_id to require.
 func (s *Store) verifyEnvironment(ctx context.Context, org, environment string) error {
 	if environment == "" {
 		return nil
 	}
-	ctx = storage.WithTenant(ctx, org, "")
+	ctx = storage.WithOrgScope(ctx, org)
 	switch err := s.pool.QueryRow(ctx, storage.Query("EnvironmentExists"), environment).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return fmt.Errorf("%w: %q", ErrEnvironmentNotFound, environment)

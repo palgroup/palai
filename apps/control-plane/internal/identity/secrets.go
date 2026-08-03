@@ -209,11 +209,15 @@ func (s *SecretStore) GetSecretRef(ctx context.Context, scope middleware.Scope, 
 // org. It is the DB-backed hook main.go puts in FRONT of the env-file bridge: ok=false means "fall back to
 // the env bridge". The org is server-minted (from the connection/run, never a tenant-forgeable body), so the
 // read is scoped to that org and RLS denies any foreign row — a shared ref name never crosses tenants.
+//
+// storage.WithOrgScope, not storage.WithTenant with an empty project (A.2 Task 1): secret_refs carries no
+// project_id column at all (storage/migrations/000031_secret_refs.up.sql), so this call is one of the
+// named, narrow exceptions to WithTenant's now project-required rule — see WithOrgScope's doc comment.
 func (s *SecretStore) Resolve(ctx context.Context, org, name string) ([]byte, bool, error) {
 	if org == "" || name == "" {
 		return nil, false, nil
 	}
-	ctx = storage.WithTenant(ctx, org, "")
+	ctx = storage.WithOrgScope(ctx, org)
 	var ciphertext []byte
 	err := s.pool.QueryRow(ctx, storage.Query("ResolveSecretRef"), name).Scan(&ciphertext)
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -151,8 +151,13 @@ func (s *Store) ProvisionFirstOrg(ctx context.Context, bootstrapKey string) erro
 // orgScope widens the request to its whole organization for a provisioning read/write. The organization
 // comes from the verified key (never a body field), so this can only ever reach the caller's own tenant;
 // it relaxes ONLY the intra-org project narrowing, because identity resources are managed org-wide.
+//
+// storage.WithOrgScope, not storage.WithTenant with an empty project (A.2 Task 1): WithTenant now REFUSES
+// to acquire a connection with no project, because once organizations are gone an empty project would mean
+// every project rather than a boundary. WithOrgScope is the named, narrow exception for exactly this
+// surface — see its doc comment for why identity/provisioning keeps it for now.
 func orgScope(ctx context.Context, scope middleware.Scope) context.Context {
-	return storage.WithTenant(ctx, scope.Organization, "")
+	return storage.WithOrgScope(ctx, scope.Organization)
 }
 
 // CreateOrganization opens a NEW tenant: an organization, its default project, a service principal, and a

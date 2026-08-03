@@ -968,9 +968,10 @@ func parseNamedQueries(files ...string) map[string]string {
 //     rather than named literally so a pool opened against a database whose chain has not run yet —
 //     the very first boot, before 000001 creates it — still connects and can migrate.
 //   - Publishes the acquiring context's tenant into palai.org_id / palai.project_id / palai.system,
-//     which is what the policies read. An unmarked context publishes empty strings, and the policies
-//     then match nothing: a query that forgot to declare its tenant returns zero rows instead of
-//     the whole installation.
+//     which is what the policies read. A non-system, non-org-only scope with no project (an unmarked
+//     context included) never reaches this statement at all — PrepareConn below refuses the
+//     acquisition first (A.2 Task 1, ErrProjectRequired) rather than publishing an empty project_id
+//     that the RLS policy would read as "every project in the organization".
 const applyScope = `SELECT set_config('palai.org_id', $1, false),
        set_config('palai.project_id', $2, false),
        set_config('palai.system', $3, false),
@@ -999,6 +1000,14 @@ func OpenPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 		system := ""
 		if s.system {
 			system = "on"
+		} else if s.project == "" && !s.orgOnly {
+			// A.2 Task 1: a non-system tenant scope with no project is not a boundary, it is the
+			// absence of one — the RLS policy's own empty-project fallback reads it as "every project
+			// in the organization" (000029), and once organizations are gone that means every project,
+			// full stop. Refuse the acquisition rather than publish a project_id that admits everything;
+			// WithOrgScope is the one deliberate, narrow exception (orgOnly), for the identity/secret
+			// surfaces that still span a whole organization.
+			return false, fmt.Errorf("apply tenant scope: %w", ErrProjectRequired)
 		}
 		if _, err := conn.Exec(ctx, applyScope, s.organization, s.project, system, RuntimeRole); err != nil {
 			// Destroy the connection and fail the instigating query: a connection whose scope could
@@ -1011,7 +1020,12 @@ func OpenPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open database pool: %w", err)
 	}
-	if err := pool.Ping(ctx); err != nil {
+	// System-scoped, not the caller's bare ctx (A.2 Task 1): this Ping is OpenPool's own liveness check,
+	// issued before any tenant is known — the same reason VerifyAPIKey and the migration boot path
+	// (packages/coordinator/migrate.go) run under WithSystemScope. Every OTHER caller of OpenPool passes
+	// a boot-time context with no tenant scope at all, so without this the very first acquisition —
+	// OpenPool's own — would trip the project-required refusal below and no pool could ever open.
+	if err := pool.Ping(WithSystemScope(ctx)); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
