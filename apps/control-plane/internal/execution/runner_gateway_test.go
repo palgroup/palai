@@ -967,7 +967,11 @@ func runnerSide(ctx context.Context, session runner.Session) error {
 	select {
 	case controllerFrame = <-inbound:
 	case <-ctx.Done():
-		return ctx.Err()
+		// Named rather than a bare ctx.Err(), so this reads as the relay failing to deliver instead of
+		// as a generic deadline. The caller's own io.EOF assertion still times out first when this
+		// stalls — it waits on the lease.complete this function never reaches — so that is the message
+		// a broken relay shows first, and it predates the router.
+		return errors.New("the relayed run.start never reached the engine's inbound channel")
 	}
 	if controllerFrame.Type != "run.start" {
 		return errors.New("runner did not receive the relayed run.start")
