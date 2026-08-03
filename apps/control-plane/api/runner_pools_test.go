@@ -128,7 +128,9 @@ func TestRunnerPoolsRenderThePostureForTheCallersTenant(t *testing.T) {
 		ID: "pool_mac", Name: "mac-pool", Posture: "unsandboxed-host", OS: "darwin", Arch: "arm64",
 		StrictEnrollment: true, CreatedAt: time.Unix(1_700_000_000, 0).UTC(),
 	}}}
-	status, body := getRunnerPools(t, runnerPoolsRouter(t, registry))
+	// scopedRouter, not runnerPoolsRouter's fakeVerifier: this route is inside the fleet's systemOnly gate
+	// (Faz A.1 Task 3) and fakeVerifier's key carries no `system`.
+	status, body := getRunnerPools(t, scopedRouter(t, registry, nil))
 	if status != http.StatusOK {
 		t.Fatalf("GET /v1/runner-pools = %d, want 200: %s", status, body)
 	}
@@ -240,14 +242,30 @@ func (f *fakeRunnerRegistry) ApproveRunner(_ context.Context, scope middleware.S
 	}, ApprovalOutcome{Found: true, Applied: true}, nil
 }
 
-// scopedRouter serves the router with a verifier whose key carries `scopes`. An empty slice is the
-// unrestricted admin key (Scope.HasScope's documented rule); a non-empty one without `provision` is what
-// the gate must refuse.
+// scopedRouter serves the router with a verifier whose key carries `scopes`, PLUS `system` (Faz A.1 Task
+// 3): every route this helper's callers exercise is now inside the fleet's systemOnly gate, so a fixture
+// that did not carry it would be refused before ever reaching the `provision`/`approve` axis these tests
+// are actually about — see router.go's systemOnly.
+//
+// `nil` is the caller's way of asking for "the unrestricted admin key", and that idiom cannot be modelled
+// literally any more: Scope.HasSystem() is DELIBERATELY excluded from the empty-set-is-unrestricted rule
+// (middleware/auth_test.go pins this — a tenant admin key must never inherit the platform capability), so
+// there is no single Scopes value that is both empty (unrestricted under HasScope) and carries `system`.
+// What `nil` meant in every caller here was "grant every ordinary capability the routes below check", and
+// the fleet checks exactly two — `provision` and `approve` — so that is what nil is translated to,
+// alongside `system`. A non-nil `scopes` is a caller testing ONE specific capability in isolation; `system`
+// is appended so the only question left is the one the test names.
 func scopedRouter(t *testing.T, registry RunnerRegistryAPI, scopes []string) *httptest.Server {
 	t.Helper()
+	var granted []string
+	if scopes == nil {
+		granted = []string{middleware.ScopeSystem, "provision", "approve"}
+	} else {
+		granted = append([]string{middleware.ScopeSystem}, scopes...)
+	}
 	// scopedVerifier is model_routes_test.go's — reused rather than re-declared, which is the whole point
 	// of a package-level test helper.
-	verifier := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1", Scopes: scopes}}
+	verifier := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1", Scopes: granted}}
 	ts := httptest.NewServer(NewRouter(verifier, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil, WithRunners(registry)))
 	t.Cleanup(ts.Close)
 	return ts

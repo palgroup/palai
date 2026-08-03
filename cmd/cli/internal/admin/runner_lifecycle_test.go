@@ -117,12 +117,28 @@ func (f *fakeFleet) ApproveRunner(_ context.Context, scope middleware.Scope, id 
 		capi.ApprovalOutcome{Found: true, Applied: true}, nil
 }
 
+// grantSystemAlongside translates a test's ordinary-capability intent into a Scopes value that ALSO
+// carries `system` (Faz A.1 Task 3): every fleet route this package's tests drive now sits behind
+// router.go's systemOnly gate, on top of whichever `provision`/`approve` check the route already had. nil
+// meant "the unrestricted admin key", and that idiom cannot survive literally — Scope.HasSystem() is
+// deliberately excluded from the empty-set-is-unrestricted rule (middleware/auth_test.go pins it) — so nil
+// is translated to the two ordinary capabilities this package's fleet routes check, `provision` and
+// `approve`, alongside `system`. A non-nil list is a caller testing ONE capability in isolation, and
+// `system` is appended so the only question left is the one the test names.
+func grantSystemAlongside(scopes []string) []string {
+	if scopes == nil {
+		return []string{middleware.ScopeSystem, "provision", "approve"}
+	}
+	return append([]string{middleware.ScopeSystem}, scopes...)
+}
+
 // TestRunnerLifecycleCLIReachesTheRealRouter is RED (3), REACHABILITY. It demands a surface that does
 // not exist today — `palai admin runner cordon|resume|revoke|list` and the routes behind them — which
 // is the point: the test is what turns "implemented" into "reachable".
 func TestRunnerLifecycleCLIReachesTheRealRouter(t *testing.T) {
 	fleet := &fakeFleet{}
-	h := capi.NewRouter(staticVerifier{scope: middleware.Scope{Organization: "org_1", Project: "prj_1"}},
+	h := capi.NewRouter(staticVerifier{scope: middleware.Scope{Organization: "org_1", Project: "prj_1",
+		Scopes: grantSystemAlongside(nil)}},
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fakeProv{}, nil, capi.SSEConfig{}, nil, nil,
 		capi.WithRunners(fleet))
 	srv := httptest.NewServer(h)
@@ -180,7 +196,8 @@ func TestRunnerLifecycleRejectsASecondPositional(t *testing.T) {
 // `provision` must be refused by the real gate — and `list`, a read, must not be.
 func TestRunnerLifecycleNeedsTheProvisionCapability(t *testing.T) {
 	fleet := &fakeFleet{}
-	h := capi.NewRouter(staticVerifier{scope: middleware.Scope{Organization: "org_1", Project: "prj_1", Scopes: []string{"run"}}},
+	h := capi.NewRouter(staticVerifier{scope: middleware.Scope{Organization: "org_1", Project: "prj_1",
+		Scopes: grantSystemAlongside([]string{"run"})}},
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fakeProv{}, nil, capi.SSEConfig{}, nil, nil,
 		capi.WithRunners(fleet))
 	srv := httptest.NewServer(h)
@@ -206,7 +223,8 @@ func TestRunnerLifecycleNeedsTheProvisionCapability(t *testing.T) {
 // response carries the decommissioned state rather than a bare 200 an operator has to interpret.
 func TestRunnerLifecycleRevokeIsRenderedAsIrreversible(t *testing.T) {
 	fleet := &fakeFleet{}
-	h := capi.NewRouter(staticVerifier{scope: middleware.Scope{Organization: "org_1", Project: "prj_1"}},
+	h := capi.NewRouter(staticVerifier{scope: middleware.Scope{Organization: "org_1", Project: "prj_1",
+		Scopes: grantSystemAlongside(nil)}},
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fakeProv{}, nil, capi.SSEConfig{}, nil, nil,
 		capi.WithRunners(fleet))
 	srv := httptest.NewServer(h)

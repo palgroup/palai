@@ -54,7 +54,13 @@ func TestTheScopedDesiredRoutesAnswerTheShapeAConsoleReads(t *testing.T) {
 			WrittenAt: time.Unix(1_780_000_000, 0).UTC(), WrittenBy: "prin_local",
 		},
 	}}
-	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+	// A scopedVerifier carrying `system` AND `provision`, not fakeVerifier: these two routes are inside the
+	// fleet's systemOnly gate (Faz A.1 Task 3) on top of the pre-existing `provision` check
+	// (desiredForScope), and fakeVerifier's key carries neither scope explicitly (its empty Scopes is
+	// unrestricted only for the ordinary axis, never for `system` — see middleware/auth_test.go).
+	verifier := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1",
+		Scopes: []string{middleware.ScopeSystem, "provision"}}}
+	srv := httptest.NewServer(NewRouter(verifier, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		SSEConfig{}, nil, nil, WithRunners(&fakeRunnerRegistry{}), WithDesiredConfig(docs)))
 	defer srv.Close()
 

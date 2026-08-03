@@ -460,10 +460,22 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	// The runner registry (E24 T1): the read surface for the fleet. Bearer-scoped and RLS-confined, so
 	// a caller sees its own tenant's machines and nothing else. The write routes below it are T3's key
 	// surface and T5's machine lifecycle — see api/runners.go for why each exists.
+	//
+	// THE WHOLE BLOCK ADDITIONALLY REQUIRES `system` (Faz A.1 Task 3). The fleet is not a customer
+	// surface at all — in a hosted deployment no tenant key may even learn which machines exist, and in
+	// a self-hosted one the operator's own key carries the platform capability. That is a DIFFERENT axis
+	// from `provision`/`approve` above (RLS + those capabilities still decide what a system-scoped call
+	// may do to ITS OWN tenant's fleet); systemOnly is the gate that decides whether a call reaches this
+	// block's handlers at all. It wraps at REGISTRATION rather than adding a line inside each handler —
+	// a per-handler check misses the route someone adds tomorrow, whereas
+	// TestEveryFleetRouteRefusesATenantKey (apps/control-plane/internal/store) derives its route list
+	// from THIS file and drives every one of them with a tenant key, so a route added below without
+	// going through systemOnly is one that test catches rather than one a reviewer has to remember to
+	// check by eye.
 	if cfg.runners != nil {
 		rh := &runnerHandler{runners: cfg.runners, desired: cfg.desired}
-		mux.HandleFunc("GET /v1/runners", rh.listRunners)
-		mux.HandleFunc("GET /v1/runners/{runner_id}", rh.getRunner)
+		mux.HandleFunc("GET /v1/runners", systemOnly(rh.listRunners))
+		mux.HandleFunc("GET /v1/runners/{runner_id}", systemOnly(rh.getRunner))
 		// The pools those machines are in (E24 T2), and THE BIRTH PATH THAT WAS MISSING (E28 T1).
 		//
 		// THE COMMENT THAT STOOD HERE SAID "Read-only: creating and deleting a pool is T5/T6's", and the same
@@ -480,26 +492,26 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		// keys, and what becomes of the machines whose `pool_id` names it is a separate decision nobody has
 		// asked for. PATCH takes ONE field — `strict_enrollment` — and api/runners.go says why `posture` is
 		// not among them.
-		mux.HandleFunc("GET /v1/runner-pools", rh.listRunnerPools)
-		mux.HandleFunc("POST /v1/runner-pools", rh.createRunnerPool)
-		mux.HandleFunc("PATCH /v1/runner-pools/{pool_id}", rh.patchRunnerPool)
+		mux.HandleFunc("GET /v1/runner-pools", systemOnly(rh.listRunnerPools))
+		mux.HandleFunc("POST /v1/runner-pools", systemOnly(rh.createRunnerPool))
+		mux.HandleFunc("PATCH /v1/runner-pools/{pool_id}", systemOnly(rh.patchRunnerPool))
 		// The pool's ENROLMENT KEYS (E24 T3) — the one write half of this surface, and the reason it
 		// exists is that a fleet credential has no other home: the runner plane authenticates machines,
 		// not people, so minting and revoking a key is an operator action over the public API or it is
 		// raw SQL. Gated on the `provision` capability like every other org-admin surface. The value is
 		// returned by the create route ONCE and by nothing else; a revoke names the key by id, so no
 		// route anywhere takes a key value as input.
-		mux.HandleFunc("POST /v1/runner-pools/{pool_id}/keys", rh.mintPoolKey)
-		mux.HandleFunc("GET /v1/runner-pools/{pool_id}/keys", rh.listPoolKeys)
+		mux.HandleFunc("POST /v1/runner-pools/{pool_id}/keys", systemOnly(rh.mintPoolKey))
+		mux.HandleFunc("GET /v1/runner-pools/{pool_id}/keys", systemOnly(rh.listPoolKeys))
 		// THE CONFIGURATION OF A POOL AND OF ONE MACHINE. They are reads only: the write is
 		// PUT /v1/deployment/desired carrying `plane` and `scope_id`, so all three scopes go through one
 		// validator. Registered only when this deployment has somewhere to keep a document — see
 		// runnerHandler.desired for why an absent route beats one that always answers "none".
 		if cfg.desired != nil {
-			mux.HandleFunc("GET /v1/runner-pools/{pool_id}/desired", rh.desiredForScope(planeRunnerPool, "pool_id"))
-			mux.HandleFunc("GET /v1/runners/{runner_id}/desired", rh.desiredForScope(planeRunnerMachine, "runner_id"))
+			mux.HandleFunc("GET /v1/runner-pools/{pool_id}/desired", systemOnly(rh.desiredForScope(planeRunnerPool, "pool_id")))
+			mux.HandleFunc("GET /v1/runners/{runner_id}/desired", systemOnly(rh.desiredForScope(planeRunnerMachine, "runner_id")))
 		}
-		mux.HandleFunc("POST /v1/runner-pool-keys/{key_id}/revoke", rh.revokePoolKey)
+		mux.HandleFunc("POST /v1/runner-pool-keys/{key_id}/revoke", systemOnly(rh.revokePoolKey))
 		// THE MACHINE LIFECYCLE (E24 T5), and the reason it is here is §3.6 D15: `Revoke()` was SAN-011's
 		// hard stop for a compromised runner, implemented, tested, registered in the UAT catalogue, and
 		// reachable from nothing at all — the same shape as E19 T9's CreateSlackConnection and E23's
@@ -509,15 +521,15 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		// is a 404 from the mux rather than a string somebody has to remember to validate. Gated on
 		// `provision` like every other org-admin surface, because taking a Mac out of service and
 		// decommissioning one are org administration.
-		mux.HandleFunc("POST /v1/runners/{runner_id}/cordon", rh.setRunnerState("cordon"))
-		mux.HandleFunc("POST /v1/runners/{runner_id}/resume", rh.setRunnerState("resume"))
-		mux.HandleFunc("POST /v1/runners/{runner_id}/revoke", rh.setRunnerState("revoke"))
+		mux.HandleFunc("POST /v1/runners/{runner_id}/cordon", systemOnly(rh.setRunnerState("cordon")))
+		mux.HandleFunc("POST /v1/runners/{runner_id}/resume", systemOnly(rh.setRunnerState("resume")))
+		mux.HandleFunc("POST /v1/runners/{runner_id}/revoke", systemOnly(rh.setRunnerState("revoke")))
 		// THE WAITING ROOM'S DOOR (E24 T6): the human who admits a machine that enrolled into a pool with
 		// `strict_enrollment`. It is a route of its own rather than a fourth verb on setRunnerState because it
 		// carries a different gate — `approve`, not `provision`, since a provision key can rewrite the approver
 		// list it would be checked against — and because a decision carries the deciding PRINCIPAL, which the
 		// three verbs above do not. api/runners.go's approveRunner says why it is not E23's throat.
-		mux.HandleFunc("POST /v1/runners/{runner_id}/approve", rh.approveRunner)
+		mux.HandleFunc("POST /v1/runners/{runner_id}/approve", systemOnly(rh.approveRunner))
 	}
 
 	var root http.Handler = mux
@@ -595,4 +607,24 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	}
 	top.Handle("/", root)
 	return top
+}
+
+// systemOnly wraps a handler so the platform capability is required before it runs (Faz A.1 Task 3). The
+// fleet is operator surface: in a hosted deployment no customer key may read which machines exist, and in
+// a self-hosted one the operator's own key carries `system`. Registering the gate as a wrapper rather than
+// a line inside each handler is deliberate — a new fleet route added below inherits it by being registered
+// through the same helper, and TestEveryFleetRouteRefusesATenantKey fails if one is not.
+func systemOnly(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		scope, ok := middleware.ScopeFrom(r.Context())
+		if !ok {
+			middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+			return
+		}
+		if !scope.HasSystem() {
+			middleware.WriteProblem(w, r, http.StatusForbidden, "insufficient_scope", "this API key lacks the system capability")
+			return
+		}
+		h(w, r)
+	}
 }

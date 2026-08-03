@@ -114,6 +114,25 @@ func (s *Store) provision(ctx context.Context, seed tenantSeed) error {
 // ProvisionFirstOrg seeds the single bootstrap organization and its admin key from bootstrapKey, reusing
 // the same tenant-creation path the API uses for every later organization. Only the key's hash is stored.
 // The caller (store.Bootstrap) guards this with an api_keys-empty check, so it runs once per fresh stack.
+//
+// THE SCOPES ARE NO LONGER EMPTY (Faz A.1 Task 3). Before this task an empty set was the whole story: this
+// key is the ONLY key on a fresh self-hosted install, HasScope's empty-set rule made it unrestricted for
+// every ordinary capability, and that was correct because there was only one tenant and one operator, the
+// same person. Task 3 puts the runner-fleet routes behind `system` (router.go's systemOnly), and
+// Scope.HasSystem() is DELIBERATELY excluded from the empty-set-is-unrestricted rule —
+// middleware/auth_test.go's TestEmptyScopeIsUnrestrictedButNeverSystem pins that a tenant admin key must
+// never inherit the platform capability — so an empty scope set can no longer reach the fleet at all, and
+// `palai admin runner list` against a fresh bootstrap would 403.
+//
+// self-hosting is exactly the case Scope.HasSystem's own doc comment carves out as safe: "whoever runs
+// their own installation is the operator" (this task's brief). So the fix is not to special-case empty
+// scopes back into meaning `system` too — that would reopen the boundary Task 1/2 built, handing a HOSTED
+// tenant admin key the platform capability along with it — it is to seed this ONE key with an EXPLICIT
+// scope list instead of relying on the empty-set idiom, so it keeps exactly the access it had before
+// (`provision`, `approve` — the only two ordinary capabilities anything in this tree gates on; see
+// api/provisioning.go's provisionScope and api/approvals.go's approveScope) and gains `system` alongside
+// them. Every OTHER tenant's admin key (CreateOrganization, below) keeps the empty set: only the operator's
+// own key needs to be both a tenant admin AND the platform.
 func (s *Store) ProvisionFirstOrg(ctx context.Context, bootstrapKey string) error {
 	return s.provision(ctx, tenantSeed{
 		orgID:       firstOrg,
@@ -121,7 +140,7 @@ func (s *Store) ProvisionFirstOrg(ctx context.Context, bootstrapKey string) erro
 		principalID: firstPrincipal,
 		keyID:       firstKey,
 		keyHash:     coordinator.HashAPIKey(bootstrapKey),
-		scopes:      []string{},
+		scopes:      []string{middleware.ScopeSystem, "provision", "approve"},
 		// The fixed bootstrap pool id, in the same spirit as the four ids above: stable so a re-boot
 		// against a retained volume is a no-op, and identical to the id migration 000045 R6 seeds for
 		// an upgrading install — the two populations must not end up with two different default pools.

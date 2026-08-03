@@ -244,8 +244,14 @@ func TestPoolCreateNeedsAProjectScope(t *testing.T) {
 
 // poolCLIServer serves the shipped router with the fleet registry mounted and the given verified scope, so
 // every command above meets the real mux, the real capability gate and the real RFC9457 problem shape.
+//
+// grantSystemAlongside augments scope.Scopes with `system` (Faz A.1 Task 3): every route this file drives
+// is now behind router.go's systemOnly gate on top of whatever this file already asserted, and a fixture
+// caller's Organization/Project (or its deliberate absence, in TestPoolCreateNeedsAProjectScope) is left
+// untouched.
 func poolCLIServer(t *testing.T, fleet capi.RunnerRegistryAPI, scope middleware.Scope) *httptest.Server {
 	t.Helper()
+	scope.Scopes = grantSystemAlongside(scope.Scopes)
 	srv := httptest.NewServer(capi.NewRouter(staticVerifier{scope: scope},
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fakeProv{}, nil, capi.SSEConfig{}, nil, nil,
 		capi.WithRunners(fleet)))
