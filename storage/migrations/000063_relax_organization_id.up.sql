@@ -25,6 +25,46 @@
 --
 -- IDEMPOTENT. A second run finds no NOT NULL left to drop and no constraint left to remove, and does
 -- nothing; DROP CONSTRAINT IF EXISTS carries the rest.
+--
+-- WHAT THIS MIGRATION DOES NOT MAKE OPTIONAL, and it is the part Task 5 has to read. A column being
+-- nullable is only ONE of the two things that can reject an absent organization. The other is
+-- ROW-LEVEL SECURITY: a policy whose expression reads palai.org_id compares it to the row's own
+-- organization_id, and NULL never satisfies that comparison — so the write is refused by the POLICY
+-- long after the NOT NULL is gone, and an existing row whose organization_id is set to NULL becomes
+-- INVISIBLE to the connection that owns it. 000062 rekeyed most tables to project_id, but not all of
+-- them, and it is the remainder that still bites:
+--
+--   SELECT count(*) FROM pg_policies WHERE schemaname='public'
+--     AND (coalesce(qual,'') LIKE '%palai.org_id%' OR coalesce(with_check,'') LIKE '%palai.org_id%');
+--   -- 12, both before and after this migration (2026-08-04, chain applied through 000063)
+--
+--   api_keys, delivery_attempts, environment_values, environments, job_attempts, model_route_revisions,
+--   organizations, principals, projects, schedule_occurrences, secret_refs, usage_ledger
+--
+-- Three of those are 000062's own named exclusions (api_keys, principals, usage_ledger); environments
+-- and secret_refs carry no project_id column at all, so 000062's project_id-driven sweep never had them
+-- as candidates; and four (delivery_attempts, job_attempts, model_route_revisions, schedule_occurrences)
+-- resolve their parent's organization_id through EXISTS, so they fall when the parent's is nulled.
+--
+-- Measured rather than reasoned, as palai_app with both GUCs set (2026-08-04). Every probe ran TWICE —
+-- once with a real organization_id, which must succeed, and once with NULL — so a refusal is the policy
+-- rather than a malformed statement, and `responses` is the cross-table control because 000062 DID rekey
+-- it to project_id:
+--
+--   responses     org=OK   null=OK                                            <- control
+--   environments  org=OK   null=new row violates row-level security policy
+--   secret_refs   org=OK   null=new row violates row-level security policy
+--   api_keys      org=OK   null=new row violates row-level security policy
+--   principals    org=OK   null=new row violates row-level security policy
+--
+-- And on the read side, same connection, same GUCs: a seeded environments row counted 1 before its
+-- organization_id was set to NULL and 0 after.
+--
+-- So the exceptions to "organization_id is now optional" are TWO classes, not one: the three
+-- primary-key members named at step 2, AND the tables above. Rekeying those policies is not this
+-- migration's job — 000062 owns that boundary and left the exclusions deliberately — but a reader who
+-- takes "nullable" for "optional" will find out from a refused INSERT, which is precisely the failure
+-- step 2's own note warns about.
 
 -- 1. Every foreign key referencing organizations. They are dropped rather than left in place because
 -- Task 6 removes the organizations table itself, and a constraint pointing at a table that is going away
@@ -56,7 +96,9 @@ END
 $$;
 
 -- 2. NOT NULL comes off every organization_id column, EXCEPT where the column is part of a primary key.
--- Postgres refuses that outright — `ALTER TABLE ... ALTER COLUMN organization_id DROP NOT NULL` on a
+-- That is the exception to THIS LOOP; it is not the whole list of things that still require an
+-- organization — see the row-level-security class in the header above, which no ALTER TABLE here can
+-- lift. Postgres refuses that outright — `ALTER TABLE ... ALTER COLUMN organization_id DROP NOT NULL` on a
 -- primary-key member raises `column "organization_id" is in a primary key` — so a sweep that did not skip
 -- them would abort the whole chain on the first one rather than relax the other columns. Three tables are
 -- in that position today, each declaring a composite primary key led by organization_id:
@@ -71,7 +113,9 @@ $$;
 -- means rebuilding a primary key, which rewrites the index every read of those tables uses; that belongs
 -- with Task 6's column removal, which has to rebuild those keys anyway. The skip is announced rather than
 -- silent — the NOTICE names each one — because a constraint this migration was expected to lift and did
--- not is exactly the kind of gap that is discovered by an INSERT in production.
+-- not is exactly the kind of gap that is discovered by an INSERT in production. The NOTICE can only name
+-- what this loop skipped, though: the row-level-security refusals in the header are invisible to it,
+-- because they are not constraints on the column and nothing in this file examines them.
 DO $$
 DECLARE entry RECORD;
 DECLARE relaxed INT := 0;

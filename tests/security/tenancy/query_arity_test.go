@@ -45,6 +45,13 @@ const arityRepoRoot = "../../.."
 // it here.
 var arityDBVerbs = map[string]bool{"Exec": true, "Query": true, "QueryRow": true, "Queue": true}
 
+// arityKnownUses is how many storage.Query uses this sweep reached when the floor below was last set:
+// 583 audited + 27 reported unauditable, 2026-08-04. Cross-checked against a reader that knows no Go,
+// `grep -rn 'storage\.Query(' --include='*.go' . | wc -l` -> 614, and the four that are not calls are
+// named rather than rounded away: three in this file (two in prose above, one inside the t.Errorf string
+// below) and cmd/cli/internal/stack/doctor_v2_test.go:19, also inside a format string. 614 - 4 = 610.
+const arityKnownUses = 610
+
 // aritySkip is a report line for a storage.Query use this test does not audit. Every one of them is
 // logged: the guard's VALUE to Task 5 is its coverage, and a hole nobody can see is a false assurance.
 type aritySkip struct {
@@ -54,6 +61,17 @@ type aritySkip struct {
 
 // TestEveryQueryCallSiteBindsItsStatementsParameters compares, for each storage.Query("X") passed as a
 // bind-carrying argument, the number of arguments after it against the highest $N in X's SQL.
+//
+// ARITY IS NOT IDENTITY, and Task 5's most likely mistake is on the identity side. This test counts HOW
+// MANY bind arguments a call site passes and never checks WHICH. Drop `AND organization_id = $2` from a
+// statement and leave `tenant.Organization` behind INSTEAD of `tenant.Project` — two parameters, two
+// arguments — and the statement now filters `project_id = <an organization id>` while every count still
+// agrees. That was measured on GetResponse/retention.go: the compiler, `go vet` and this test are all
+// three silent on it. At least 115 call sites carry both values on one line
+// (`grep -rn 'storage\.Query(' --include='*.go' . | grep -c 'Organization.*Project\|Project.*Organization'`),
+// and choosing between two adjacent string arguments is precisely the edit Task 5 makes 372 times. This
+// test narrows that work; it does not check it. An identity guard would be a different test — one that
+// asserts tenant.Organization is no longer passed to any storage.Query call at all.
 func TestEveryQueryCallSiteBindsItsStatementsParameters(t *testing.T) {
 	params := arityStatementParams(t, filepath.Join(arityRepoRoot, "storage", "queries"))
 	if len(params) == 0 {
@@ -80,7 +98,7 @@ func TestEveryQueryCallSiteBindsItsStatementsParameters(t *testing.T) {
 			}
 			for i, arg := range outer.Args {
 				inner, ok := arg.(*ast.CallExpr)
-				if !ok || !arityIsStorageQuery(inner) {
+				if !ok || !arityIsStorageQuery(inner, pf.imports) {
 					continue
 				}
 				bound[inner.Pos()] = true
@@ -123,7 +141,7 @@ func TestEveryQueryCallSiteBindsItsStatementsParameters(t *testing.T) {
 
 		ast.Inspect(pf.file, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
-			if !ok || !arityIsStorageQuery(call) || bound[call.Pos()] {
+			if !ok || !arityIsStorageQuery(call, pf.imports) || bound[call.Pos()] {
 				return true
 			}
 			name, _ := arityQueryName(call)
@@ -134,6 +152,20 @@ func TestEveryQueryCallSiteBindsItsStatementsParameters(t *testing.T) {
 
 	if checked == 0 {
 		t.Fatal("no query call site was audited — the pattern is broken, this test is VACUOUS")
+	}
+	// The zero check above is one floor with 610 silent steps beneath it. This is the second, and it
+	// guards the direction that hides: a sweep that stops REACHING part of the tree reports a smaller
+	// audited count AND a shorter unauditable list, so both numbers move the way a healthier sweep would
+	// move them and the log reads better than before. Their SUM is what cannot improve by accident.
+	//
+	// A floor, not an equality: query call sites are added and removed legitimately, and only the
+	// downward direction is the failure this test exists to notice. Lowering it is a decision — take it
+	// once the missing uses are confirmed deleted rather than merely no longer matched.
+	if total := checked + len(skips); total < arityKnownUses {
+		t.Errorf("this sweep reached %d storage.Query use(s), fewer than the %d it reached when this floor was last set: "+
+			"it now covers LESS of the tree, and that is the failure that arrives looking like an improvement "+
+			"(an import alias in one file measured 583 -> 542 audited with the unauditable list SHRINKING 27 -> 25). "+
+			"Find what stopped matching before lowering this number", total, arityKnownUses)
 	}
 	t.Logf("denetlenen sorgu çağrısı: %d (%d of them in _test.go files); statements: %d; go files parsed: %d",
 		checked, inTests, len(params), len(files))
@@ -170,7 +202,12 @@ func arityBindCount(outer *ast.CallExpr, queryArg int, callee string, pkg map[st
 		case decl.ambiguous:
 			return 0, false, "package declares more than one " + callee + " with differing shapes"
 		case decl.variadic < 0:
-			return 0, false, callee + " binds nothing (its declaration is not variadic)"
+			// NOT "binds nothing" — that would claim something this code never checks. A non-variadic
+			// helper can perfectly well bind a fixed parameter; a helper taking (query string, id string)
+			// and executing both was written and this branch skipped it, correctly reporting it and
+			// wrongly describing it. What the declaration actually tells us is only that no variadic
+			// parameter absorbs the trailing arguments, so their bind arity is not readable here.
+			return 0, false, callee + " is not variadic — its bind arity cannot be read from the declaration"
 		case decl.variadic != queryArg+1:
 			return 0, false, "the statement is not the parameter before " + callee + "'s variadic"
 		}
@@ -189,11 +226,13 @@ type arityDecl struct {
 	ambiguous bool
 }
 
-// arityFile pairs a parsed file with the package key its unqualified identifiers resolve in.
+// arityFile pairs a parsed file with the package key its unqualified identifiers resolve in and the
+// import paths its qualified ones resolve through.
 type arityFile struct {
-	file   *ast.File
-	pkg    string
-	isTest bool
+	file    *ast.File
+	pkg     string
+	imports map[string]string
+	isTest  bool
 }
 
 // arityPackageDecls indexes every func and method by name, PER PACKAGE, because that is the scope Go
@@ -213,8 +252,13 @@ func arityPackageDecls(files []arityFile) map[string]map[string]arityDecl {
 				continue
 			}
 			this := arityDecl{variadic: arityVariadicIndex(fn.Type)}
-			if prior, seen := pkg[fn.Name.Name]; seen && prior.variadic != this.variadic {
-				this.ambiguous = true
+			// Ambiguity, once seen, STAYS seen. Comparing only against the previous entry lets three
+			// declarations shaped 3, 2, 2 clear the flag on the last step — and a cleared flag makes the
+			// sweep answer with an arity instead of declining to. No package key reaches that today
+			// (three duplicate names differ in shape tree-wide, all three keep the flag, none is a query
+			// callee), which is exactly when it is cheap to fix.
+			if prior, seen := pkg[fn.Name.Name]; seen {
+				this.ambiguous = prior.ambiguous || prior.variadic != this.variadic
 			}
 			pkg[fn.Name.Name] = this
 		}
@@ -239,13 +283,40 @@ func arityVariadicIndex(fn *ast.FuncType) int {
 	return -1
 }
 
-func arityIsStorageQuery(call *ast.CallExpr) bool {
+// arityStoragePkg is the import path Query must resolve to. Matching the PATH rather than the spelling
+// in front of the dot is what keeps the sweep's scope stable: keyed on the literal identifier `storage`,
+// a single `st "github.com/palgroup/palai/storage"` — an ordinary refactor, and Task 5 touches 372 call
+// sites — drops every call in that file. It does so SILENTLY and in the REASSURING direction: measured
+// on packages/coordinator/store.go, the audited count fell 583 -> 542 while the unauditable list also
+// SHRANK, 27 -> 25. Both numbers moved the way a healthier sweep would move them.
+const arityStoragePkg = "github.com/palgroup/palai/storage"
+
+func arityIsStorageQuery(call *ast.CallExpr, imports map[string]string) bool {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok || sel.Sel.Name != "Query" {
 		return false
 	}
 	pkg, ok := sel.X.(*ast.Ident)
-	return ok && pkg.Name == "storage"
+	return ok && imports[pkg.Name] == arityStoragePkg
+}
+
+// arityImports maps a file's local package names to their import paths. An import with no explicit name
+// is addressed by the last element of its path, which is the package's own name for every import in
+// this module; a renamed import overrides that with the name it declares.
+func arityImports(f *ast.File) map[string]string {
+	out := make(map[string]string, len(f.Imports))
+	for _, spec := range f.Imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			continue
+		}
+		name := path[strings.LastIndexByte(path, '/')+1:]
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		out[name] = path
+	}
+	return out
 }
 
 func arityQueryName(call *ast.CallExpr) (string, bool) {
@@ -300,9 +371,10 @@ func arityParseTree(t *testing.T, root string, fset *token.FileSet) []arityFile 
 			return nil
 		}
 		out = append(out, arityFile{
-			file:   file,
-			pkg:    filepath.Dir(path) + "\x00" + file.Name.Name,
-			isTest: strings.HasSuffix(path, "_test.go"),
+			file:    file,
+			pkg:     filepath.Dir(path) + "\x00" + file.Name.Name,
+			imports: arityImports(file),
+			isTest:  strings.HasSuffix(path, "_test.go"),
 		})
 		return nil
 	})
