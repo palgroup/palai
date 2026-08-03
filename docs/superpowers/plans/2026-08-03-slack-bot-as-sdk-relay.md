@@ -28,9 +28,13 @@ yüzden yeniden yazılmaz — `git mv` ile taşınır.
 - **Bot yalnız public `/v1` API'yi kullanır.** CP'nin internal paketlerine import yok. Guard: T14.
 - **`palai up` Slack'i bilmez.** Bitişte `grep -ci slack cmd/cli/internal/stack/up.go` → `0`.
 - **Bot kendi şemasını taşır** (`slack_bot` Postgres şeması). Palai'ın tablolarına yazmaz.
-- **Migration numaraları bitişiktir.** Yeni numara için: `ls storage/migrations/*.up.sql | tail -1`
-  → bugün `000059_repository_binding_lifecycle` (2026-08-03), yani sıradaki **000060**. Merge
-  sırasında çakışırsa integrator yeniden numaralar (files + `VALUES` marker + embed var).
+- **Migration numaraları bitişiktir, ve numara DISPATCH'te değil LANDING'de belirlenir.**
+  `ls storage/migrations/*.up.sql | tail -1` ile ölçülür. **Bu planda bir kez yaşandı:** T4 dispatch
+  edildiğinde son numara `000059` idi, ama commit ineceği sırada başka bir ajanın
+  `000060_machine_desired_config`'i araya girmişti, `integration_bots` **000061** oldu. Renumber
+  **dört yeri birden** taşır ve biri eksik kalırsa zincir kırılır: dosya çifti, SQL içindeki
+  `VALUES (n)` işareti, `storage/embed.go`'daki embed değişkenleri, ve `storage/migrations_test.go`
+  ile `tests/component/postgres/migration_test.go`'daki pin'ler.
 - **Her yeni tenant tablosu `allTables`'a kaydedilir** ve `palai_apply_tenant_policy` çağırır.
 - **`git stash` yok** — RED kanıtı commit olarak bırakılır (CLAUDE.md).
 - **CUTOVER, paralel çalışma değil.** Taşınan kod taşındığı yerde **silinir**; eski yol bir bayrak
@@ -65,7 +69,7 @@ anında görünür.
 | Go SDK'da SSE var | `ls sdks/go/stream.go` | var |
 | Go SDK'da sessions/approvals **yok** | `ls sdks/go/*.go` | `webhook responses palai modelroutes stream types errors` — **sessions ve approvals YOK** |
 | Sessions API'de metadata/filtre **yok** | `grep -n 'metadata\|r.URL.Query()' apps/control-plane/api/sessions.go` | **boş** — bot korelasyonu Palai'da tutulamaz, kendi store'u şart |
-| Sıradaki migration | `ls storage/migrations/*.up.sql \| tail -1` | `000059` → sıradaki **000060** |
+| Sıradaki migration | `ls storage/migrations/*.up.sql \| tail -1` | dispatch: `000059` → LANDED as **000061** (000060 araya girdi) |
 
 ### Ağacın kendi yanlış inançları — bu plan tarafından düzeltilenler
 
@@ -90,7 +94,7 @@ anında görünür.
 - `apps/slack-bot/internal/slack/` — **taşınan** `adapters/integrations/slack` (git mv)
 - `apps/slack-bot/migrations/` — bot'un kendi şeması
 - `sdks/go/sessions.go`, `sdks/go/approvals.go`, `sdks/go/sessionevents.go`
-- `storage/migrations/000060_integration_bots.up.sql` / `.down.sql`
+- `storage/migrations/000061_integration_bots.up.sql` / `.down.sql`
 - `apps/control-plane/api/bots.go` — generic bot kaydı (kind-agnostik)
 - `apps/web-console/app/bots/page.tsx`, `apps/web-console/app/bots/[id]/page.tsx`
 - `apps/web-console/lib/botManifest.ts` — manifest üretici
@@ -463,7 +467,7 @@ git commit -m "feat(sdk-go): resumable session event stream"
 ### Task 4: Generic bot kaydı — migration + API (CP'de, Slack'e ait sıfır sembol)
 
 **Files:**
-- Create: `storage/migrations/000060_integration_bots.up.sql`, `.down.sql`
+- Create: `storage/migrations/000061_integration_bots.up.sql`, `.down.sql`
 - Create: `apps/control-plane/api/bots.go`
 - Modify: `apps/control-plane/api/router.go`
 - Test: `apps/control-plane/api/bots_test.go`
@@ -475,8 +479,9 @@ git commit -m "feat(sdk-go): resumable session event stream"
 - [ ] **Step 1: Migration numarasını yeniden ölç**
 
 Run: `ls storage/migrations/*.up.sql | tail -1`
-Beklenen: `000059_repository_binding_lifecycle.up.sql` → yeni dosya **000060**. Farklıysa
-en yüksek + 1 kullanılır.
+**LANDED 2026-08-03 as `000061`**: dispatch anında son numara `000059` idi, commit inerken araya
+başka bir ajanın `000060_machine_desired_config`'i girdi. En yüksek + 1 kuralı bu yüzden dispatch'te
+değil **landing'de** uygulanır.
 
 - [ ] **Step 2: Migration'ı yaz**
 
@@ -572,7 +577,7 @@ yazıp exit 0 döner.)
 - [ ] **Step 9: Commit**
 
 ```bash
-git add storage/migrations/000060_integration_bots.*.sql apps/control-plane/api/bots.go \
+git add storage/migrations/000061_integration_bots.*.sql apps/control-plane/api/bots.go \
         apps/control-plane/api/bots_test.go apps/control-plane/api/router.go
 git commit -m "feat(control-plane): kind-agnostic integration_bots registry"
 ```
