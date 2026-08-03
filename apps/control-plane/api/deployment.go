@@ -784,10 +784,41 @@ var nonDesiredReason = map[string]string{
 		"with the workspace mounted. Choosing it is a supply-chain decision made at install time, not a setting.",
 
 	// --- a security boundary -------------------------------------------------------------------------
+	// THE REFUSAL STANDS, AND WHAT IS NEW IS THE PRICE OF LIFTING IT, measured 2026-08-03 and written here
+	// so the next person to ask does not re-derive it. The question is live: the owner's requirement is that
+	// a Mac added as a runner takes its whole configuration from the panel, and this is the one setting that
+	// makes Xcode reachable.
+	//
+	// THREE THINGS WERE ESTABLISHED AND THEY ALL FAVOUR LIFTING IT.
+	//   1. It cannot go on either RUNNER plane, ever, and that is structural rather than policy:
+	//      `grep -rn PALAI_SHELL_NATIVE --include='*.go' cmd/runner/ packages/runner/` finds NOTHING. A
+	//      runner does not run the shell tool. So "configure this Mac's posture" is a control-plane
+	//      question wearing machine clothes.
+	//   2. On a Mac it IS that machine's own control plane. `palai up --native`
+	//      (cmd/cli/internal/stack/native.go:15) runs the control-plane binary natively on the Mac and
+	//      leaves the runner in Docker, precisely so it can reach xcodebuild and xcrun simctl.
+	//   3. The delivery chain already works end to end and was traced: up.go:121 applyDesiredEnv exports the
+	//      document into os.Environ, up.go:148 then starts the native plane, native.go:213 merges os.Environ
+	//      wholesale, and native.go:252 forwards this variable by name. Nothing is missing between a panel
+	//      write and a native Mac reading it.
+	// The refusal's own argument — that a form hands back "the reflex that switches a feature on" — is
+	// answerable: an `exact` grammar accepting ONLY the literal `unsandboxed-host` keeps the friction the
+	// environment variable had, and deployment_desired.written_by already records WHO armed it from the
+	// verified credential, which the environment variable never did.
+	//
+	// WHAT STOPPED IT, and it is one decision rather than a difficulty. Making it writable turns five guards
+	// red, four of them trivially (a compose passthrough, a refusal test that asserts today's behaviour, an
+	// accept fixture, a reader round-trip). The fifth is not trivial and is not this file's to settle:
+	// TestEveryWritableSettingIsPassedByTheShippedComposeFile requires the variable be passed to the
+	// CONTAINERISED control plane too, which widens the posture to every compose deployment — where the
+	// container IS the boundary being removed. That is a different risk from a Mac deliberately brought up
+	// native, and whoever lifts this must decide it deliberately rather than inherit it from a guard.
 	"PALAI_SHELL_NATIVE": "it DELETES a security boundary — the exact words `unsandboxed-host` run every shell command on this " +
 		"machine as this uid with no container, no network denial and no resource bound. deployment.go's own entry says the value is a " +
 		"sentence rather than a `1` so that removing the boundary is not reachable by the reflex that switches a feature on; putting it " +
-		"behind a form would hand that reflex back.",
+		"behind a form would hand that reflex back. On a Mac brought up with `palai up --native` this is that MACHINE's own control " +
+		"plane and the panel serving it is that machine's own, so lifting this is a live question — see the comment above this entry " +
+		"for the three facts that favour it and the one decision that has not been made.",
 
 	// --- destinations a credential is sent to --------------------------------------------------------
 	"PALAI_S3_ENDPOINT": "a destination this process sends its OBJECT-STORE CREDENTIAL to. PALAI_S3_ACCESS_KEY/SECRET_KEY are " +
