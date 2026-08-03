@@ -982,7 +982,25 @@ Expected: FAIL
 - [ ] **Step 3: Implementasyon**
 
 `approval.requested.v1` → `slack.BuildApprovalBlocks` (T6'da taşınan `approval_display.go`) →
-`chat.postMessage`. Buton → allow-list → `ApproveApproval`/`DenyApproval` → `chat.update`.
+`chat.postMessage`. Buton → allow-list → `c.Approvals.Approve`/`.Deny` → `chat.update`.
+
+**İKİ SUNUCU GERÇEĞİ, T2'nin review'ında ölçüldü (2026-08-03) — ve ikisi de bu ekranda bir insana
+YALAN söyleme riskidir:**
+
+1. **Bir deny'ın gerekçesi, publication yolunda HİÇBİR YERE ulaşmaz.** Tool onayında `d.Reason`
+   ledger'a yazılır (`coordinator/approvals.go:391-392`); publication'da komut yükü yalnız
+   `request_hash` + `approver` taşır (`store/approvals.go:209`) ve `ApplyApprovalDecision`
+   (`coordinator/publication.go:345`) bir reason parametresi **hiç almaz**. Bu bilinen bir sunucu
+   boşluğudur (`HIL-P10`). **Sonuç: bir publication reddinde bota gerekçe kutusu koyulacaksa, o
+   kutunun gerekçeyi hiçbir yere göndermediği kullanıcıya söylenmelidir** — ya da kutu hiç
+   koyulmamalıdır. Sessizce yutulan bir gerekçe, en kötü UX'tir: insan bir şey söylediğini sanır.
+2. **Kararı verilmiş bir approval'ın cevabı KİNDE GÖRE değişir.** Tool onayı 409
+   (`ToolApprovalByID`'nin state filtresi yok); publication onayı **404**, çünkü
+   `PublicationApprovalByID` `WHERE p.state='pending_approval'` filtreler ve karar verilince satır o
+   aramadan çıkar. **Bota "404 = böyle bir onay yok" dedirtmek, aslında "bu onay zaten sonuçlandı"
+   demektir.** İki kod da "artık senin kararını bekleyen bir şey yok" olarak sunulmalı, ve mesaj
+   `chat.update` ile mevcut karara göre tazelenmelidir — çünkü çoğu zaman sebep, başka birinin aynı
+   butona önce basmış olmasıdır.
 
 - [ ] **Step 4: Testin geçtiğini gör**
 
