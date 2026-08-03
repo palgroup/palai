@@ -710,16 +710,24 @@ test("the operator's bubble holds ONLY what the operator typed — and the hint 
   // AND THE STEERING STILL REACHED THE MODEL — by a different road than it used to. The create
   // carries `agent_id`, and the agent's published revision carries the text. Reading BOTH is what
   // makes this test survive the move: `input` is exactly what was typed, and the steering exists.
-  const seen = await page.request.get(`http://127.0.0.1:${UPSTREAM_PORT}/__introspect-coding`, {
-    headers: { Authorization: `Bearer ${API_KEY}` },
-  });
-  const body = (await seen.json()) as {
-    codingInputs: string[];
-    codingAgentIds: string[];
-    agentProfiles: { id: string; name: string }[];
-    agentRevisions: Record<string, { status: string; instructions: string }[]>;
+  // THE ASSERTION IS ABOUT THE WIRE, SO IT WAITS ON THE WIRE. The bubble above renders optimistically
+  // from client state, so `toHaveText("selam")` proves the client STARTED the create, not that the
+  // fake upstream received it — and this read is of the upstream's own memory. Reading it once, right
+  // after a UI condition, loses that race: MEASURED 2026-08-03, one full-suite run in three reported
+  // `codingInputs[0]` as undefined while the same test passed alone and on re-run.
+  const introspect = async () => {
+    const seen = await page.request.get(`http://127.0.0.1:${UPSTREAM_PORT}/__introspect-coding`, {
+      headers: { Authorization: `Bearer ${API_KEY}` },
+    });
+    return (await seen.json()) as {
+      codingInputs: string[];
+      codingAgentIds: string[];
+      agentProfiles: { id: string; name: string }[];
+      agentRevisions: Record<string, { status: string; instructions: string }[]>;
+    };
   };
-  expect(body.codingInputs[0]).toBe("selam");
+  await expect.poll(async () => (await introspect()).codingInputs[0]).toBe("selam");
+  const body = await introspect();
 
   const profile = body.agentProfiles.find((p) => p.name === "ios-coder")!;
   expect(body.codingAgentIds[0]).toBe(profile.id);
@@ -859,4 +867,48 @@ test("no Palai credential reaches the browser on any /chat surface", async ({ pa
   await expect(page.locator("body")).not.toContainText(API_KEY);
   const html = await page.content();
   expect(html).not.toContain(API_KEY);
+});
+
+// =============================================================================================
+// THE OWNER'S ORIGINAL COMPLAINT, DRIVEN THROUGH THE SCREEN.
+//
+// A run whose single `swift build` wrote 1284 files under repo/.build/ was told "This run changed no
+// file inside the clone." Three fixes went in behind that sentence — the changed set now sees what the
+// shell wrote, measures from the run's base rather than HEAD, and counts the ignored output — and
+// after all three the sentence was STILL unchanged, because `changesets` has no SELECT, no route and
+// no reader. The count was correct in the database and invisible to every human.
+//
+// So this test drives the PANEL, not the compiler. A unit test on changeset.go passes whether or not
+// anything ever reads what it wrote; only the screen can answer the question the owner asked.
+// =============================================================================================
+test("a run that wrote only ignored build output says so, with the count AND why those files are not in the tree", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "build only, change nothing");
+
+  const empty = page.getByTestId("tree-empty");
+  await expect(empty).toBeVisible({ timeout: 30_000 });
+
+  // BOTH HALVES, because either alone is one of the two lies this sentence sits between. Without the
+  // count it is the original complaint; without the reason, "1284 files" reads like work on files that
+  // are not in the repository and never will be.
+  await expect(empty).toContainText("1284");
+  await expect(empty).toContainText("ignores");
+  await expect(empty).toContainText(".gitignore");
+  // And it must no longer claim nothing happened.
+  await expect(empty).not.toContainText("changed no file inside the clone");
+});
+
+// The other two of the three sentences, so this is a THREE-way distinction rather than a flag. A run
+// that really changed nothing must not borrow the ignored-output sentence, and a screen with no
+// changeset at all must not claim a measurement nobody took.
+test("a run that changed nothing keeps its own sentence, distinct from the ignored-output one", async ({ page }) => {
+  await page.goto(CHAT);
+  await pickFirstRepo(page);
+  await send(page, "add a contributing guide");
+
+  // This scenario HAS a patch, so the tree fills — which is the non-vacuity guard for the test above:
+  // it proves the panel is reading artifacts at all rather than showing an empty tree unconditionally.
+  await expect(page.getByTestId("file-tree")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("tree-empty")).toHaveCount(0);
 });

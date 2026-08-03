@@ -71,11 +71,17 @@ export async function GET(request: Request): Promise<Response> {
 
     const patchMeta = artifacts.find((a) => a.logical_type === "patch");
     const transcriptMeta = artifacts.find((a) => a.logical_type === "test-result");
+    // The changeset's own summary (execution/changeset.go, logical_type "changeset-summary"). It rides
+    // this same artifact list because the `changesets` table has no SELECT and no route, so it is the
+    // only path by which anything outside the control plane learns what the changeset says.
+    const summaryMeta = artifacts.find((a) => a.logical_type === "changeset-summary");
 
-    const [patch, transcript] = await Promise.all([
+    const [patch, transcript, summaryBody] = await Promise.all([
       patchMeta ? fetchContent(patchMeta.id) : Promise.resolve(""),
       transcriptMeta ? fetchContent(transcriptMeta.id) : Promise.resolve(""),
+      summaryMeta ? fetchContent(summaryMeta.id) : Promise.resolve(""),
     ]);
+    const summary = parseSummary(summaryBody);
 
     return Response.json(
       {
@@ -83,6 +89,13 @@ export async function GET(request: Request): Promise<Response> {
         commands: parseTranscript(transcript),
         files: parsePatch(patch),
         patch,
+        // How many .gitignore'd files the run wrote and the changeset deliberately did NOT list.
+        // null means no summary artifact travelled, which is not the same as zero and must not be
+        // rendered as one — a run whose changeset never compiled knows nothing about ignored files.
+        ignoredFileCount: summary.ignoredFileCount,
+        // Whether a changeset was compiled at all. Without it, "this run changed nothing" and "nothing
+        // ever measured this run" are the same empty file list on screen.
+        changesetCompiled: summaryMeta !== undefined,
         // The artifact ids are returned so the screen can name its own evidence. A panel that says
         // "the repository changed" without being able to say WHICH bytes said so is a decoration.
         artifacts: artifacts.map((a) => ({
@@ -104,6 +117,20 @@ export async function GET(request: Request): Promise<Response> {
     );
   } catch (error) {
     return problem(502, "connection_error", error instanceof Error ? error.message : "the control plane is unreachable");
+  }
+}
+
+// parseSummary reads the changeset summary artifact. It is deliberately total: a body that is absent,
+// truncated or not JSON yields null rather than throwing, because the panel must still render the diff
+// it already has. A malformed summary costs one sentence, not the screen.
+export function parseSummary(body: string): { ignoredFileCount: number | null } {
+  if (body.trim() === "") return { ignoredFileCount: null };
+  try {
+    const parsed = JSON.parse(body) as { ignored_file_count?: unknown };
+    const count = parsed.ignored_file_count;
+    return { ignoredFileCount: typeof count === "number" && Number.isFinite(count) ? count : null };
+  } catch {
+    return { ignoredFileCount: null };
   }
 }
 
