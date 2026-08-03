@@ -349,6 +349,9 @@ SELECT r.pool_id, r.created_at,
 -- honest answer for a pool nobody created, and the run then parks (a pool with no machine) rather than
 -- dying. The tenant predicate is the other half: recording another tenant's pool would claim a
 -- placement into a fleet this tenant does not own.
+-- RETURNING is what lets the caller tell "recorded" from "recorded nothing". Without it the two were
+-- one answer at the site that decides whether to dial, and a run whose tenant owns no pool parked with
+-- pool_id NULL — unreachable by OldestRunAwaitingCapacity, which matches on that exact column.
 UPDATE runs
    SET pool_id = $4, updated_at = clock_timestamp()
  WHERE id = $1 AND organization_id = $2 AND project_id = $3
@@ -356,7 +359,8 @@ UPDATE runs
    AND EXISTS (SELECT 1
                  FROM runner_pools p
                 WHERE p.id = $4 AND p.organization_id = $2
-                  AND (p.project_id IS NULL OR p.project_id = $3));
+                  AND (p.project_id IS NULL OR p.project_id = $3))
+RETURNING pool_id;
 
 -- name: ExpiredCapacityParks
 -- The runs that have been parked for want of a machine longer than the operator's park TTL (E24 T5).

@@ -45,7 +45,7 @@ func TestStaleFenceCallbacksCannotMutateJob(t *testing.T) {
 	if _, err := store.Heartbeat(ctx, stale, lease); !errors.Is(err, coordinator.ErrStaleFence) {
 		t.Fatalf("stale Heartbeat() error = %v, want ErrStaleFence", err)
 	}
-	if _, err := store.Fail(ctx, stale, policy); !errors.Is(err, coordinator.ErrStaleFence) {
+	if _, err := store.Fail(ctx, stale, policy, errors.New("stale holder")); !errors.Is(err, coordinator.ErrStaleFence) {
 		t.Fatalf("stale Fail() error = %v, want ErrStaleFence", err)
 	}
 
@@ -121,7 +121,7 @@ func TestExhaustedAttemptsDeadLetter(t *testing.T) {
 		if claim.JobID != jobID || claim.AttemptCount != attempt {
 			t.Fatalf("attempt %d claim = %+v, want job %s attempt %d", attempt, claim, jobID, attempt)
 		}
-		dead, err := store.Fail(ctx, claim, policy)
+		dead, err := store.Fail(ctx, claim, policy, errors.New("fault-injected handler failure"))
 		if err != nil {
 			t.Fatalf("Fail() at attempt %d error = %v", attempt, err)
 		}

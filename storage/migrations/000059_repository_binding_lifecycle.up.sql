@@ -56,4 +56,4 @@ ALTER TABLE repository_bindings
 CREATE INDEX IF NOT EXISTS repository_bindings_live_idx
     ON repository_bindings (organization_id, project_id, archived_at);
 
-INSERT INTO schema_migrations (version) VALUES (58) ON CONFLICT DO NOTHING;
+INSERT INTO schema_migrations (version) VALUES (59) ON CONFLICT DO NOTHING;

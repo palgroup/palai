@@ -23,6 +23,16 @@ const (
 	shellToolName = "palai.workspace.shell"
 )
 
+// changesetSummaryType is the §22.6 logical type of the changeset's machine-readable summary — the
+// ONLY path by which anything outside this package learns what a changeset says. `changesets` has no
+// SELECT, no route and no reader, so a field written there and nowhere else is invisible: the ignored
+// file count shipped exactly that way, correct in the database and absent from every screen.
+//
+// The summary rides the artifact list a reader already fetches (the workspace panel finds the patch by
+// logical_type today), which is why this is not a new route. ponytail: when a changeset READ route
+// exists, this artifact becomes a convenience rather than the only door, and the panel can move.
+const changesetSummaryType = "changeset-summary"
+
 // maxPatchBytes bounds the stored patch artifact so a huge diff cannot exhaust memory or the object
 // store; a diff over the bound is truncated with the marker set (spec §30.6). ponytail: 1 MiB fits a
 // coding changeset; streaming a larger diff is future work.
@@ -113,11 +123,52 @@ func CompileChangeset(ctx context.Context, ledger ChangesetLedger, aw ArtifactWr
 	if rec.TestLogArtifactID, err = writeArtifact(ctx, aw, in, checksTranscript(rows), "text/plain", "test-result", provenance); err != nil {
 		return coordinator.ChangesetRecord{}, false, err
 	}
+	// The summary is written UNCONDITIONALLY, unlike the patch and the transcript, which are omitted
+	// when empty. A reader that only ever sees an absent file cannot tell "this run changed nothing"
+	// from "no changeset was compiled for this run", and those are different facts about a run.
+	if _, err = writeArtifact(ctx, aw, in, changesetSummaryJSON(rec), "application/json", changesetSummaryType, provenance); err != nil {
+		return coordinator.ChangesetRecord{}, false, err
+	}
 
 	if err := ledger.RecordChangeset(ctx, in.Tenant, in.SessionID, in.ResponseID, rec); err != nil {
 		return coordinator.ChangesetRecord{}, false, err
 	}
 	return rec, true, nil
+}
+
+// changesetSummaryJSON renders the changeset as the small machine-readable document a reader gets.
+//
+// It carries the changed set AND the ignored count together on purpose, because either number alone
+// is a lie in one direction: a screen that sees only the empty changed set says "this run changed no
+// file" about a run that wrote 1284 build outputs, and a screen that sees only the count says "1284
+// files changed" about files that are not in the tree and never will be. The pair is the only honest
+// sentence, so the pair is what travels.
+func changesetSummaryJSON(rec coordinator.ChangesetRecord) string {
+	body, err := json.Marshal(map[string]any{
+		"changeset_id":       rec.ID,
+		"run_id":             rec.RunID,
+		"base_commit":        rec.BaseCommit,
+		"final_commit":       rec.FinalCommit,
+		"files":              nonNilChangesetFiles(rec.Files),
+		"ignored_file_count": rec.IgnoredFileCount,
+		"patch_truncated":    rec.PatchTruncated,
+	})
+	if err != nil {
+		// The document is built from strings, ints and a bool, so this cannot fail; returning the empty
+		// string rather than panicking keeps a marshal bug from taking down a finalizing run, and
+		// writeArtifact then records no summary — visible as a missing artifact rather than a wrong one.
+		return ""
+	}
+	return string(body)
+}
+
+// nonNilChangesetFiles renders an empty changed set as [] rather than null, so a reader can tell the
+// list apart from a missing field without a special case.
+func nonNilChangesetFiles(files []coordinator.ChangesetFile) []coordinator.ChangesetFile {
+	if files == nil {
+		return []coordinator.ChangesetFile{}
+	}
+	return files
 }
 
 // changesetID derives a content-addressed changeset id from the content hash, so an equal ledger

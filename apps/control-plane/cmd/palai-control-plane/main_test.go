@@ -736,3 +736,43 @@ func TestEveryDesiredValueThisBinaryAcceptsIsParsedByItsOwnReader(t *testing.T) 
 		})
 	}
 }
+
+// TestDispatchRefusesTheAssignmentOnlyHandlerAndNamesTheMissingWire is the composition-root half of the
+// stranded-run defect measured on a live stack on 2026-08-02.
+//
+// `startDispatch` built `execution.AdvanceRun(spine)` and replaced it with the real exec-path handler
+// only INSIDE `if gateway != nil`. AdvanceRun drives a run queued -> provisioning -> running and returns
+// SUCCESS; it opens no attempt and dials nothing. So a control plane whose PALAI_RUNNER_LISTEN_ADDR was
+// unset, with dispatch on, answered every response.run job by marking its run `running` and completing
+// the job. The durable record names the exact run it happened to: of 240 jobs on that stack, 227 carried
+// result_hash `run:<id>:executed` and exactly ONE carried `run:<id>:assigned` — and that run had been
+// `running` with no attempt row, no engine and no terminal for over an hour.
+//
+// THE COMMENT ABOVE startDispatch CLAIMED A DRIVER THAT DOES NOT EXIST. It said the assignment-only
+// behaviour is what "the read-path SSE e2e drives". Measured: scripts/test/e2e sets
+// PALAI_DISPATCH_WORKERS=0, and its own comment says it runs "without a dispatcher so no background
+// worker races those manual transitions" — so dispatchWorkerCount()'s early return fires and AdvanceRun
+// is never constructed. No shipped tier drives it. That is what makes refusing safe rather than a
+// trade: the branch had no user, only a victim.
+//
+// The posture is now a DECISION with a name. A stack that cannot execute a run leaves it `queued` —
+// recoverable the moment a properly-wired control plane starts — instead of claiming an assignment that
+// never happened.
+func TestDispatchRefusesTheAssignmentOnlyHandlerAndNamesTheMissingWire(t *testing.T) {
+	// Wired: the gateway is bound, so dispatch starts and drives the real exec path.
+	if start, refusal := dispatchPosture(1, true); !start || refusal != "" {
+		t.Fatalf("dispatchPosture(1, bound) = (%v, %q), want (true, \"\") — a wired stack must dispatch", start, refusal)
+	}
+	// Off: zero workers is zero, and that is not a refusal to explain.
+	if start, refusal := dispatchPosture(0, false); start || refusal != "" {
+		t.Fatalf("dispatchPosture(0, unbound) = (%v, %q), want (false, \"\") — dispatch is simply off", start, refusal)
+	}
+	// THE DEFECT: workers asked for, no runner listener bound.
+	start, refusal := dispatchPosture(1, false)
+	if start {
+		t.Fatal("dispatchPosture(1, unbound) starts dispatch: the assignment-only handler marks each run `running` and completes its job, so the run has no attempt, no engine and no terminal, and nothing in the tree will ever move it")
+	}
+	if !strings.Contains(refusal, "PALAI_RUNNER_LISTEN_ADDR") {
+		t.Fatalf("the refusal is %q and does not name the missing wire: an operator who reads it must learn which variable to set", refusal)
+	}
+}
