@@ -193,6 +193,60 @@ export async function resetFakeFixture(): Promise<void> {
   if (!res.ok) throw new Error(`the fake fixture refused to reset (${res.status}) — a spec that believes it is isolated and is not will fail somewhere else entirely`);
 }
 
+/**
+ * openDeclaredDialog opens one FORM_DIALOGS / PRIMITIVE_DIALOGS row the way an operator does, and it is
+ * SHARED because two sweeps open the same list (tests/a11y.spec.ts scans each with axe, tests/contrast.spec.ts
+ * measures the controls inside it). Playwright refuses a spec-to-spec import, which is why the rows live in
+ * tests/constants.ts; this is the other half of that split, and it lives here rather than there because
+ * constants.ts may not import `@playwright/test` (it is loaded by playwright.config.ts at config time).
+ *
+ * TWO SHAPES OF OPENER, and the second is the reason this function exists. A panel-head control (`+ Create
+ * pool`) is in the document as soon as the route settles, so `getByTestId(open)` finds it. A ROW action is
+ * not: components/ui/Menu.tsx portals its popup to <body> on click, so the item does not exist until the
+ * row's `⋯` is opened — and both testids are prefixes there, because a row's controls are keyed by an id the
+ * fake seeds and a compose stack mints fresh. `rowMenu` selects that path and the FIRST row offering the
+ * control is used, which is exactly what tests/fleet.spec.ts's firstMachineWith does and why it runs on both
+ * profiles.
+ *
+ * IT SETTLES THE DIALOG BEFORE RETURNING. Both callers measure what is INSIDE — axe judges the markup, the
+ * contrast sweep judges every control's boundary — and a dialog whose fields arrive from a fetch is a dialog
+ * that answers to its name before it has anything to judge. That is the reveal-once shape this suite was
+ * caught by: the container is visible, the scan finds nothing, and the number looks fine.
+ */
+export async function openDeclaredDialog(
+  page: Page,
+  d: { open: string; dialog: string; rowMenu?: string },
+): Promise<void> {
+  if (d.rowMenu === undefined) {
+    await expect(page.getByTestId(d.open)).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId(d.open).click();
+  } else {
+    const toggles = page.locator(`[data-testid^="${d.rowMenu}"]`);
+    await expect(toggles.first(), `no row on this page carries a "${d.rowMenu}…" menu, so ${d.dialog} cannot be opened`).toBeVisible({
+      timeout: 15_000,
+    });
+    const count = await toggles.count();
+    let opened = false;
+    for (let i = 0; i < count && !opened; i++) {
+      await toggles.nth(i).click();
+      // The popup is portalled and positioned a frame later, so `count()` — which does not auto-wait —
+      // reads zero on an immediate probe. tests/fleet.spec.ts measured exactly that, on all seven rows.
+      await expect(page.getByRole("menu"), "the row menu did not open").toBeVisible();
+      const item = page.locator(`[data-testid^="${d.open}"]`);
+      if ((await item.count()) > 0) {
+        await item.first().click();
+        opened = true;
+      } else {
+        await page.keyboard.press("Escape");
+        await expect(page.getByRole("menu")).toHaveCount(0);
+      }
+    }
+    expect(opened, `${String(count)} row menu(s) were opened and none offered a "${d.open}…" item`).toBe(true);
+  }
+  await expect(page.getByTestId(d.dialog)).toBeVisible();
+  await page.waitForLoadState("networkidle");
+}
+
 // --- DRIVING components/ui/Select (E29 component layer) --------------------------------------------------
 //
 // The seven native `<select>`s became a Base UI listbox, and Playwright's `selectOption` only speaks to a

@@ -12,7 +12,7 @@ import {
   primitiveDialogMountCount,
   WCAG_TAGS,
 } from "./constants";
-import { announceProfile, concreteDynamicPath, runToTerminal, signIn } from "./profile";
+import { announceProfile, concreteDynamicPath, openDeclaredDialog, runToTerminal, signIn } from "./profile";
 
 // tabToTestId genuinely presses Tab until the element carrying data-testid=id holds focus — proving KEYBOARD
 // REACHABILITY. This is stronger than `.focus()`, which succeeds even on a tabindex=-1 element that Tab can
@@ -160,11 +160,12 @@ for (const d of [...FORM_DIALOGS, ...PRIMITIVE_DIALOGS]) {
     } else {
       await page.goto(d.route);
     }
-    // The opener is inside a PANEL's head, so it does not exist until that panel has settled — the same
-    // readiness rule the route loop follows, applied one interaction later.
-    await expect(page.getByTestId(d.open)).toBeVisible({ timeout: 15_000 });
-    await page.getByTestId(d.open).click();
-    await expect(page.getByTestId(d.dialog)).toBeVisible();
+    // The opener is inside a PANEL's head — or, since machine-config, inside a ROW's `⋯` menu, which does
+    // not exist in the document until that menu is opened. Either way it does not exist until the panel has
+    // settled: the same readiness rule the route loop follows, applied one interaction later.
+    // profile.ts's openDeclaredDialog owns both shapes, so this sweep and the contrast sweep drive the
+    // declared rows identically rather than each keeping its own copy of how to reach one.
+    await openDeclaredDialog(page, d);
     // The ACCESSIBLE NAME, asserted rather than assumed: components/FormDialog.tsx names itself with
     // `aria-label` precisely because an aria-labelledby into ResourceForm's derived heading id would produce
     // an EMPTY name if the wording changed — and an empty name is not something axe reports as a violation.

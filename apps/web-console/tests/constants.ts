@@ -113,13 +113,38 @@ export const API_KEY = IS_REAL ? realEnv("PALAI_API_KEY") : FAKE_API_KEY;
 // coverage test at the bottom of tests/a11y.spec.ts walks app/**/page.tsx for `<FormDialog` mounts and fails if the
 // count does not match the rows here — the same shape as the route coverage assertion, and for the same
 // reason: a surface nobody scans must be a red test rather than a thing somebody remembers.
-export const FORM_DIALOGS: { route: string; open: string; dialog: string; label: string; dynamic?: string }[] = [
+export const FORM_DIALOGS: { route: string; open: string; dialog: string; label: string; dynamic?: string; rowMenu?: string }[] = [
   { route: "/agents", open: "agent-create-open", dialog: "agent-create-dialog", label: "Create an agent" },
   { route: "/repositories", open: "binding-create-open", dialog: "binding-create-dialog", label: "Register a repository binding" },
   { route: "/policy", open: "key-mint-open", dialog: "key-mint-dialog", label: "Mint an API key" },
   { route: "/fleet", open: "pool-create-open", dialog: "pool-create-dialog", label: "Create a runner pool" },
   { route: "/fleet", open: "poolkey-mint-open", dialog: "poolkey-mint-dialog", label: "Mint an enrolment key" },
   { route: "/deployment", open: "desired-config-edit", dialog: "desired-config-dialog", label: "Edit desired configuration" },
+  // THE TWO ROW-MENU DIALOGS (machine-config), AND `rowMenu` IS WHAT MAKES THEM DECLARABLE AT ALL.
+  //
+  // Every row above names a control that is VISIBLE when its route loads — a panel head's `+ Create X`. A
+  // per-row action is not: components/ui/Menu.tsx portals its popup to <body> on click, so `pool-config-…`
+  // does not exist in the document until the row's `⋯` has been opened, and a loop that went straight to
+  // `getByTestId(open)` would time out on a control that is not missing but unrendered.
+  //
+  // BOTH TESTIDS ARE PREFIXES BECAUSE A ROW'S CONTROLS ARE KEYED BY ITS ID, and the ids are not constants:
+  // the fake seeds `pool_default` / `pool_mac` while a compose stack mints a fresh hash per pool and per
+  // machine. profile.ts's openDeclaredDialog takes the FIRST row offering the control, which is the same
+  // claim tests/fleet.spec.ts's firstMachineWith already makes and the reason it runs on both profiles.
+  {
+    route: "/fleet",
+    rowMenu: "pool-menu-",
+    open: "pool-config-",
+    dialog: "pool-config-dialog",
+    label: "Configure this runner pool",
+  },
+  {
+    route: "/fleet",
+    rowMenu: "runner-menu-",
+    open: "machine-config-",
+    dialog: "machine-config-dialog",
+    label: "Configure this machine",
+  },
   // THE FIRST TWO ROWS ON A DYNAMIC ROUTE (E30), and `dynamic` is what makes that expressible. Every row
   // above names a path the loop can `goto` directly; a binding's own page is keyed by an id, so this names
   // the DYNAMIC_CONSOLE_ROUTES pattern instead and the loop resolves it through concreteDynamicPath —

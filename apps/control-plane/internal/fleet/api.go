@@ -297,5 +297,9 @@ func runnerItem(r Runner) api.RunnerItem {
 		State: r.State, OS: r.OS, Arch: r.Arch, Posture: r.Posture, Capacity: r.Capacity,
 		CertNotAfter: r.CertNotAfter, EnrolledAt: r.EnrolledAt, LastSeenAt: r.LastSeenAt,
 		CreatedAt: r.CreatedAt,
+		// The machine's own configuration report travels the whole way to the screen unaltered. This
+		// projection is the one place the two shapes meet, so a field dropped here is a field that exists in
+		// the database and on the API type and appears on no response — the shape this tree keeps finding.
+		ConfigRevision: r.ConfigRevision, ConfigApplied: r.ConfigApplied, ConfigReportedAt: r.ConfigReportedAt,
 	}
 }

@@ -307,10 +307,13 @@ type scanRow interface{ Scan(dest ...any) error }
 // page carry created_at (the keyset coordinate); the UPDATE ... RETURNING does not.
 func scanRunner(row scanRow, withCreatedAt bool) (Runner, error) {
 	var r Runner
-	var certNotAfter, lastSeen *time.Time
+	var certNotAfter, lastSeen, configReportedAt *time.Time
+	var configRevision *int64
+	var configApplied []byte
 	dest := []any{
 		&r.ID, &r.Organization, &r.Project, &r.PoolID, &r.Label, &r.DNS, &r.PublicKeySHA256,
 		&r.State, &r.OS, &r.Arch, &r.Posture, &r.Capacity, &certNotAfter, &r.EnrolledAt, &lastSeen,
+		&configRevision, &configApplied, &configReportedAt,
 	}
 	if withCreatedAt {
 		dest = append(dest, &r.CreatedAt)
@@ -323,6 +326,24 @@ func scanRunner(row scanRow, withCreatedAt bool) (Runner, error) {
 	}
 	if lastSeen != nil {
 		r.LastSeenAt = *lastSeen
+	}
+	if configRevision != nil {
+		r.ConfigRevision = *configRevision
+	}
+	if configReportedAt != nil {
+		r.ConfigReportedAt = *configReportedAt
+	}
+	// A NULL column stays a nil map, and an empty JSON object becomes an empty non-nil one. The two are
+	// different answers — never reported, versus reported that the plane had no document — and collapsing
+	// them here would make a machine that has never been heard from indistinguishable from one that is
+	// polling happily with nothing to apply.
+	if len(configApplied) > 0 {
+		if err := json.Unmarshal(configApplied, &r.ConfigApplied); err != nil {
+			return Runner{}, fmt.Errorf("decode runner %s configuration report: %w", r.ID, err)
+		}
+		if r.ConfigApplied == nil {
+			r.ConfigApplied = map[string]string{}
+		}
 	}
 	return r, nil
 }

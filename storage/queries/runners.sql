@@ -55,7 +55,8 @@ UPDATE runners
        cert_not_after = coalesce($3, cert_not_after)
  WHERE runner_dns = $1
 RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
-          state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at;
+          state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
+       config_revision, config_applied, config_reported_at;
 
 -- name: SetRunnerState
 -- Cordon, resume or revoke ONE machine, durably (E24 T5). Before this the three were in-memory
@@ -88,7 +89,8 @@ UPDATE runners
    AND (state <> 'revoked' OR $4 = 'revoked')
    AND (state <> 'pending' OR $4 = 'revoked')
 RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
-          state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at, created_at;
+          state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
+       config_revision, config_applied, config_reported_at, created_at;
 
 -- name: ApproveRunner
 -- Admit ONE machine that is waiting in a strict pool's waiting room (E24 T6). It is a SEPARATE statement
@@ -111,7 +113,8 @@ UPDATE runners
  WHERE id = $1 AND organization_id = $2 AND ($3 = '' OR project_id = $3)
    AND state IN ('pending', 'active')
 RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
-          state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at, created_at;
+          state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
+       config_revision, config_applied, config_reported_at, created_at;
 
 -- name: AppendRunnerDecision
 -- The journal entry for a decision about ONE MACHINE — a decommission (E24 T5, `revoked`) or an
@@ -148,7 +151,8 @@ SELECT $1, $2, $3, $4, $5, '', $6,
 -- One runner inside the caller's tenant. A row belonging to another tenant returns NO row, so the
 -- handler answers 404 without ever learning whether the id exists elsewhere.
 SELECT id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
-       state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at, created_at
+       state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
+       config_revision, config_applied, config_reported_at, created_at
   FROM runners
  WHERE id = $1 AND organization_id = $2 AND ($3 = '' OR project_id = $3);
 
@@ -157,7 +161,8 @@ SELECT id, organization_id, project_id, pool_id, label, runner_dns, public_key_s
 -- cursor from. $6 is the over-fetch (page size + 1) so the handler detects a further page without a
 -- second round trip.
 SELECT id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
-       state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at, created_at
+       state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
+       config_revision, config_applied, config_reported_at, created_at
   FROM runners
  WHERE organization_id = $1
    AND ($2 = '' OR project_id = $2)
@@ -432,3 +437,41 @@ SELECT r.id
  ORDER BY r.created_at, r.id
  LIMIT 1
  FOR UPDATE SKIP LOCKED;
+
+-- name: RunnerExistsForConfig
+-- Does ANY machine carry this id? The existence check behind a `runner_machine` desired document, so a
+-- write naming a machine that has never enrolled is refused with the id in the sentence rather than
+-- landing in an append-only journal nothing will ever resolve.
+--
+-- IT IS SYSTEM-SCOPED AND CROSSES TENANTS ON PURPOSE, which is the one thing about it worth arguing.
+-- deployment_desired carries no organization_id — that absence IS its security property (000052) — so a
+-- per-tenant existence check would be asking a question the document it guards cannot express. The
+-- authority is the same one the rest of this surface runs under: the `provision` capability, checked in the
+-- handler before the store is reached. The leak is bounded to one bit about an id the caller already typed,
+-- and the caller is a deployment operator rather than a tenant.
+--
+-- A FOREIGN KEY WOULD HAVE BEEN THE OTHER PLACE TO PUT THIS and 000060's header records why it is not:
+-- an operator configures a machine they are ABOUT to enrol as readily as one already enrolled, and a
+-- constraint can only refuse — it cannot offer.
+SELECT EXISTS (SELECT 1 FROM runners WHERE id = $1);
+
+-- name: RecordRunnerConfigReport
+-- The machine's own answer about the configuration it holds: which revision it resolved, and its verdict
+-- per setting (`applied` / `pending_restart`).
+--
+-- KEYED ON runner_dns, not on id, for the reason RecordRunnerSeen is: the machine authenticates this write
+-- with a CERTIFICATE and the wire carries no id — the DNS is the identity the certificate proves. A body
+-- field naming the runner would be a machine telling the control plane which row to write, which is the
+-- one thing this key makes unnecessary.
+--
+-- IT RETURNS THE ROW IT WROTE so a caller can tell "recorded" from "matched nothing". A silent zero-row
+-- UPDATE is the defect RecordRunPool was fixed for: the write reports success, the panel reports the
+-- machine has taken the value, and the row that would have said otherwise was never touched. The one
+-- legitimate no-match — a runner enrolled before the registry existed, which has no row at all — is
+-- distinguished by the CALLER rather than swallowed here.
+UPDATE runners
+   SET config_revision = $2,
+       config_applied = $3::jsonb,
+       config_reported_at = $4
+ WHERE runner_dns = $1
+RETURNING id, pool_id;

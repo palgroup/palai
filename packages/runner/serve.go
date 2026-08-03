@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,7 +55,28 @@ type ServeConfig struct {
 	// path — the runner's OWN operator must opt in (PALAI_WORKSPACE_UNSAFE_BIND=1), preserving the §24
 	// trust boundary between control plane and runner.
 	AllowUnsafeBind bool
+	// Settings polls the control plane for this machine's current configuration, reporting in the same
+	// round trip what the machine did with the previous document. nil disables the poll entirely — a
+	// machine then receives its configuration once, at enrolment, which is the behaviour of every runner
+	// built before this field existed and the posture of every Docker-free wire proof.
+	//
+	// It takes the report and returns the document, so the two can never be wired to different endpoints.
+	Settings func(ctx context.Context, current Identity, report Settings) (Settings, error)
+	// SettingsInterval is how long the runner waits between polls, and it is therefore the WORST-CASE
+	// LATENCY from an operator pressing save to this machine acting on it. Zero uses
+	// defaultSettingsInterval.
+	//
+	// It is a configuration-freshness knob and NOT a security parameter, which is the reason it is its own
+	// field rather than derived from the renewal cadence: renewal fires at 80% of certificate lifetime, so
+	// tying the two would mean an operator who wanted faster configuration had to shorten certificate
+	// lifetimes to get it.
+	SettingsInterval time.Duration
 }
+
+// defaultSettingsInterval is the poll period when SettingsInterval is unset: fast enough that an operator
+// pressing save in the panel sees the machine act within a coffee-sip, slow enough that a thousand-machine
+// fleet is ~33 requests a second against an endpoint that does two indexed reads and one keyed update.
+const defaultSettingsInterval = 30 * time.Second
 
 // Serve runs the runner's lease loop until ctx is cancelled: it parks for a lease, supervises
 // the leased engine, and repeats, while a background renewer rolls the client certificate
@@ -91,14 +113,78 @@ func (cfg ServeConfig) Serve(ctx context.Context) {
 	// Park N leases concurrently on the shared identity (default 1 = the sequential LP-0
 	// behaviour). >1 lets a delegating run hold its parent engine while an inline child dials
 	// its own on the same runner (spec §25.18), rather than deadlocking on one lease slot.
-	loops := cfg.Concurrency
-	if loops < 1 {
-		loops = 1
-	}
-	for range loops {
-		wg.Go(func() { cfg.parkLoop(ctx, state, logf, backoff) })
+	//
+	// N IS NO LONGER FIXED FOR THE PROCESS'S LIFETIME. It used to be read once here, which meant a machine
+	// could only learn a new concurrency by being restarted — so the one genuinely per-machine setting this
+	// product has was also the one an operator could not change from the panel without walking to the box.
+	// The pool below grows and shrinks on the settings poll's instruction instead.
+	leases := &leasePool{}
+	leases.resize(ctx, &wg, cfg, state, logf, backoff, cfg.Concurrency)
+
+	if cfg.Settings != nil {
+		wg.Go(func() { cfg.settingsLoop(ctx, state, leases, &wg, logf, backoff) })
 	}
 	wg.Wait()
+}
+
+// leasePool is the LIVE size of the park-loop set: how many leases this machine wants to hold at once, and
+// how many loops are actually running.
+//
+// GROWING IS IMMEDIATE AND SHRINKING IS COOPERATIVE, and the asymmetry is deliberate rather than a
+// simplification. A new loop can be started at any moment because it starts by parking, which is idle. A
+// loop cannot be stopped at any moment because it may be SUPERVISING AN ENGINE — killing it there would
+// abandon somebody's run to make a configuration number true faster. So a shrink marks the intent and each
+// loop retires itself at the only safe point it has: after finishing a lease, before parking for the next.
+//
+// The observable consequence is worth stating because an operator will see it: lowering concurrency on a
+// busy machine takes effect as its in-flight leases finish, not at once. Raising it takes effect
+// immediately. Both are reported as `applied` — the machine HAS accepted the number and is acting on it;
+// what remains is work it had already taken on, which is not a pending restart.
+type leasePool struct {
+	mu      sync.Mutex
+	want    int
+	running int
+}
+
+// resize sets the wanted loop count and starts any loops needed to reach it. It is safe to call from the
+// settings loop while park loops are running.
+func (p *leasePool) resize(ctx context.Context, wg *sync.WaitGroup, cfg ServeConfig, state *serveState,
+	logf func(string, ...any), backoff time.Duration, want int,
+) {
+	if want < 1 {
+		// Zero is not "park nothing", it is the unset default — the same clamp Serve applied before this
+		// pool existed. A machine that genuinely should take no work is CORDONED, which is a fleet decision
+		// with its own durable state, not a concurrency of zero that would look identical to a misconfigured
+		// one.
+		want = 1
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.want = want
+	for p.running < p.want {
+		p.running++
+		wg.Go(func() { cfg.parkLoop(ctx, state, p, logf, backoff) })
+	}
+}
+
+// current reports the wanted size, for the log line that tells an operator what the machine decided.
+func (p *leasePool) current() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.want
+}
+
+// retire reports whether the calling loop should exit because the pool has been shrunk below the number of
+// loops running. It decrements the running count as it says yes, so exactly as many loops retire as were
+// asked to.
+func (p *leasePool) retire() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.running > p.want {
+		p.running--
+		return true
+	}
+	return false
 }
 
 // serveState is the identity the lease loops and the renewer share, plus the say-it-once gates
@@ -108,6 +194,7 @@ type serveState struct {
 	mu       sync.Mutex
 	identity Identity
 	stale    sync.Once // a dial rejected the client certificate
+	settings sync.Once // the settings poll failed
 	expired  sync.Once // the identity is past NotAfter, so recovery (not renewal) is running
 	cure     sync.Once // recovery itself failed — the operator has to act
 }
@@ -127,9 +214,15 @@ func (s *serveState) replace(identity Identity) {
 // parkLoop parks for one lease at a time and supervises the leased engine until ctx is
 // cancelled, re-reading the shared (renewable) identity for each dial. N of these run
 // concurrently per Serve's Concurrency, each an independent lease slot on one runner identity.
-func (cfg ServeConfig) parkLoop(ctx context.Context, state *serveState, logf func(string, ...any), backoff time.Duration) {
+func (cfg ServeConfig) parkLoop(ctx context.Context, state *serveState, leases *leasePool, logf func(string, ...any), backoff time.Duration) {
 	for {
 		if ctx.Err() != nil {
+			return
+		}
+		// THE ONLY SAFE RETIREMENT POINT, and it is here rather than anywhere else in the loop for one
+		// reason: below this line the loop may be holding a lease and supervising somebody's engine. A
+		// concurrency reduction that took effect there would abandon a run to make a number true sooner.
+		if leases.retire() {
 			return
 		}
 		session := cfg.Session
@@ -159,6 +252,101 @@ func (cfg ServeConfig) parkLoop(ctx context.Context, state *serveState, logf fun
 // forward over the current identity; when that window was MISSED and the identity is already
 // past NotAfter, it recovers with Reenroll instead, because renewal authenticates with the very
 // certificate that expired and so cannot serve the one case that needs it most.
+// settingsLoop keeps this machine's configuration current: every interval it reports what it did with the
+// document it holds and receives the one it should hold now, applying the difference.
+//
+// IT REPORTS BEFORE IT APPLIES, ON THE NEXT POLL RATHER THAN THIS ONE, and that ordering is what makes the
+// report honest. The verdicts sent up describe the document this machine has ALREADY acted on, so a panel
+// showing "applied" is reading a machine's account of something it did, not its intention to do it. The
+// first poll of a process's life therefore reports revision 0 and nothing applied, which is true: it has
+// been sent nothing yet.
+//
+// A FAILED POLL CHANGES NOTHING. The machine keeps running what it has and asks again after the backoff —
+// the same position every other loop in this file takes, and the only safe one: a control plane that
+// becomes unreachable must not be able to reconfigure a fleet by silence.
+func (cfg ServeConfig) settingsLoop(ctx context.Context, state *serveState, leases *leasePool, wg *sync.WaitGroup,
+	logf func(string, ...any), backoff time.Duration,
+) {
+	interval := cfg.SettingsInterval
+	if interval <= 0 {
+		interval = defaultSettingsInterval
+	}
+	// What this machine will report next time: the revision it acted on and its verdict per setting. It
+	// starts empty, which is the true statement that nothing has been applied yet.
+	report := Settings{}
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		document, err := cfg.Settings(ctx, state.current(), report)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			// Said once per runner lifetime, like the other operator-facing notices in this file: a 30s loop
+			// that repeats the same sentence forever buries the one thing an operator needs to read.
+			state.settings.Do(func() {
+				logf("settings poll: %v; the machine keeps the configuration it holds and will retry each interval", err)
+			})
+			if sleep(ctx, backoff) != nil {
+				return
+			}
+			continue
+		}
+		if document.Revision != report.Revision {
+			report = Settings{
+				Revision: document.Revision,
+				Settings: cfg.applySettings(ctx, leases, wg, state, logf, backoff, document.Settings),
+			}
+		}
+		if sleep(ctx, interval) != nil {
+			return
+		}
+	}
+}
+
+// applySettings acts on one document and returns this machine's verdict for every setting in it.
+//
+// THE SWITCH IS THE SINGLE SOURCE OF TRUTH FOR WHAT THIS BINARY CAN BE TOLD, and that is the whole design.
+// A setting with a case here is one cmd/runner acts on; everything else reports VerdictNotRead. There is
+// no second list to keep in step, so a panel can never show a machine "holding" a value this build has no
+// code to read — which is the same defect as a form that saves and does nothing, one hop further from the
+// operator and correspondingly harder to see.
+//
+// IT IS DELIBERATELY NOT DRIVEN BY THE CONTROL PLANE'S CATALOGUE. The catalogue says which settings are
+// WRITABLE; this says which are READ by this binary at this version, and a fleet is heterogeneous — an
+// older machine that cannot act on a newly-catalogued setting must say so about itself rather than inherit
+// a claim from the server that is describing a different build.
+func (cfg ServeConfig) applySettings(ctx context.Context, leases *leasePool, wg *sync.WaitGroup, state *serveState,
+	logf func(string, ...any), backoff time.Duration, settings map[string]string,
+) map[string]string {
+	verdict := make(map[string]string, len(settings))
+	for name, value := range settings {
+		switch name {
+		case "PALAI_RUNNER_CONCURRENCY":
+			n, err := strconv.Atoi(value)
+			if err != nil || n < 1 {
+				// A value this binary's own reader would not parse is REFUSED rather than coerced, and the
+				// machine says so by name. The control plane's write path applies the same grammar before
+				// storing, so reaching this arm means the two disagree — which is exactly the state an
+				// operator needs to see rather than have silently rounded to a default.
+				verdict[name] = "refused: not a positive integer"
+				continue
+			}
+			if was := leases.current(); n != was {
+				// `was` is read BEFORE the resize. Reading it after would print the number just set as the
+				// previous one, which is the kind of log line that makes an operator believe nothing changed.
+				leases.resize(ctx, wg, cfg, state, logf, backoff, n)
+				logf("settings: serving %d leases at once (was %d)", n, was)
+			}
+			verdict[name] = VerdictApplied
+		default:
+			verdict[name] = VerdictNotRead
+		}
+	}
+	return verdict
+}
+
 func (cfg ServeConfig) renewLoop(ctx context.Context, state *serveState, now func() time.Time, logf func(string, ...any), backoff time.Duration) {
 	for {
 		current := state.current()

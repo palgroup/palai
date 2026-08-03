@@ -8,7 +8,7 @@ import {
   PRIMITIVE_DIALOGS,
   primitiveDialogMountCount,
 } from "./constants";
-import { announceProfile, concreteDynamicPath, signIn } from "./profile";
+import { announceProfile, concreteDynamicPath, openDeclaredDialog, signIn } from "./profile";
 
 // WHAT AXE CANNOT SEE, MEASURED ON THE RENDERED PAGE (console design pass, spec §2.1 / §4.4 / §7).
 //
@@ -220,10 +220,10 @@ test("every interactive control carries a 3:1 boundary against the surface behin
   const beforeDialogs = measured.length;
   for (const d of [...FORM_DIALOGS, ...PRIMITIVE_DIALOGS]) {
     await page.goto(d.route);
-    // The opener lives in a PANEL's head, so it does not exist until that panel has settled.
-    await expect(page.getByTestId(d.open)).toBeVisible({ timeout: 15_000 });
-    await page.getByTestId(d.open).click();
-    await expect(page.getByTestId(d.dialog)).toBeVisible();
+    // The opener lives in a PANEL's head, or inside a ROW's `⋯` menu — profile.ts's openDeclaredDialog owns
+    // both shapes and settles the dialog before returning, which is what keeps this a measurement of the
+    // controls rather than of a shell that has not fetched its fields yet.
+    await openDeclaredDialog(page, d);
     const inside = await measureBoundaries(page, `${d.route} (${d.dialog})`);
     // THE POSITIVE CONTROL, PER DIALOG. A dialog that rendered nothing measurable would otherwise contribute
     // zero rows and pass — the same empty-haystack shape reveal-once.spec.ts was caught by this morning.

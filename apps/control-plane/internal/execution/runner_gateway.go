@@ -243,8 +243,19 @@ func (g *RunnerGateway) SetPoolKeys(k PoolEnrollment) { g.poolKeys = k }
 //
 // The poolID it is asked about comes from the RESOLVED GRANT and never from the enrolment request, so a
 // machine cannot read another pool's document by declaring that pool.
+// THREE METHODS, TWO MOMENTS. DesiredSettingsForPool serves ENROLMENT, where the machine has no identity
+// yet and the pool comes from the resolved grant. The other two serve the SETTINGS POLL, where the machine
+// has a certificate and is therefore addressable individually — so the poll can overlay a machine document
+// on the pool's, and can record what the machine says it did with the result.
 type PoolSettings interface {
 	DesiredSettingsForPool(ctx context.Context, poolID string) (map[string]string, error)
+	// DesiredSettingsForMachine is the pool's document with this machine's own laid over it, plus the
+	// revision that produced the pair — a CHANGE DETECTOR the machine compares against what it is running.
+	DesiredSettingsForMachine(ctx context.Context, poolID, runnerID string) (map[string]string, int64, error)
+	// RecordRunnerConfigReport stores the machine's verdict per setting. matched=false with a nil error is a
+	// real state rather than a fault — a machine that enrolled before the registry existed has no row and
+	// never will — so it is a return value rather than an error the caller has to pick apart.
+	RecordRunnerConfigReport(ctx context.Context, dns string, revision int64, applied map[string]string, at time.Time) (matched bool, err error)
 }
 
 // SetPoolSettings wires the desired-configuration read into enrolment. Unset, every enrolment answers with
@@ -641,6 +652,7 @@ func (g *RunnerGateway) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/runner/enroll", g.handleEnroll)
 	mux.HandleFunc("/v1/runner/renew", g.handleRenew)
+	mux.HandleFunc("/v1/runner/settings", g.handleSettings)
 	mux.HandleFunc("/v1/runner/connect", g.handleConnect)
 	return mux
 }
@@ -898,6 +910,126 @@ func (g *RunnerGateway) handleRenew(w http.ResponseWriter, r *http.Request) {
 		Certificate: base64.StdEncoding.EncodeToString(certDER),
 		RunnerID:    runnerIDFromDNS(dns),
 	})
+}
+
+// settingsRequest is what a machine SAYS about the configuration it is currently holding. It is the report
+// half of the poll, sent on the same round trip that asks for the current document.
+type settingsRequest struct {
+	// Revision is the document revision this machine resolved and acted on, 0 when it has never been sent
+	// one. It is the machine's claim about itself and it decides nothing on this side — the answer below is
+	// computed from the journal regardless — so a machine that lies about it only misreports its own row.
+	Revision int64 `json:"revision"`
+	// Applied is the machine's verdict per setting: `applied` (this process changed behaviour) or
+	// `pending_restart` (it holds the value and is still running the old one). The control plane does not
+	// and cannot derive these — whether a setting takes effect without a restart is a fact about the
+	// RUNNER's code — which is exactly why the machine is asked instead of guessed at.
+	Applied map[string]string `json:"applied,omitempty"`
+}
+
+// settingsResponse is the machine's effective configuration: its pool's document with its own overlaid.
+type settingsResponse struct {
+	Revision int64             `json:"revision"`
+	Settings map[string]string `json:"settings,omitempty"`
+}
+
+// maxSettingsReport bounds the report body. A document is capped at 64 settings on the way in
+// (api.maxDesiredSettings), so a report far larger than that is not a machine describing one.
+const maxSettingsReport = 64 * 1024
+
+// handleSettings is THE CHANGE-PROPAGATION SEAM: a machine that is already running asks what its
+// configuration is now, and says what it did with the last one.
+//
+// WHY A POLL AND NOT A PUSH, since "push it from the panel" is what was asked for. cmd/runner's own header
+// states the property that decides it: "It opens no inbound port and writes no credential to disk." A push
+// needs a listener on every machine — a rented Mac behind NAT, a laptop, a box in somebody's office — and
+// adding one would be a far larger change to the trust boundary than anything this file otherwise does.
+// The runner-initiated poll gives the operator the same thing: an edit in the panel reaches the machine
+// within one interval, with no inbound port and no new credential. What is traded is latency, and it is
+// bounded and stated rather than hidden.
+//
+// THE ALTERNATIVE THAT LOOKS FREE AND IS NOT: riding the existing lease connection. The runner does hold a
+// long-lived session to this gateway, so a control frame could be pushed down it — but that connection
+// exists only while the machine is PARKED FOR WORK, and it is torn down and re-dialled around every lease.
+// A configuration that arrived only between leases would reach a busy machine last, which is the machine an
+// operator is most likely to be reconfiguring. Renewal was the third candidate and is worse still: it fires
+// at ~80% of certificate lifetime, so its period is a security parameter and tying configuration latency to
+// it would mean one cannot be tuned without moving the other.
+//
+// IT IS AUTHENTICATED AS THE MACHINE IT NAMES, which is the property that makes a machine-scoped document
+// safe to serve. The identity comes from the CERTIFICATE's DNS and never from a body field, so a machine
+// cannot ask for another machine's configuration by naming it — the same rule handleEnroll follows when it
+// takes the pool from the resolved grant rather than from the request.
+//
+// A REVOKED MACHINE IS REFUSED. handleConnect already refuses one a session; a decommissioned machine that
+// could still pull configuration would be a fleet member in every sense that matters. Cordon does NOT
+// refuse: a cordoned machine finishes its in-flight work and is still a machine an operator may be fixing.
+func (g *RunnerGateway) handleSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		http.Error(w, "runner client certificate required", http.StatusUnauthorized)
+		return
+	}
+	dns := renewDNS(r.TLS.PeerCertificates[0])
+	if dns == "" {
+		http.Error(w, "runner certificate carries no identity", http.StatusUnauthorized)
+		return
+	}
+	var request settingsRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxSettingsReport)).Decode(&request); err != nil {
+		http.Error(w, "invalid settings report", http.StatusBadRequest)
+		return
+	}
+
+	// The poll is also a LIVENESS BEAT, and deliberately so: it is the only thing a machine with no work
+	// does on a schedule, so a fleet that is idle but healthy stops looking like a fleet that is gone.
+	poolID, _, durable := g.recordSeen(r.Context(), dns, time.Time{})
+	runnerID := runnerIDFromDNS(dns)
+	life := g.lifecycle(runnerID)
+	if durable == "revoked" {
+		life.set(true, true)
+	}
+	if _, revoked, _ := life.state(); g.revoked.Load() || revoked {
+		http.Error(w, ErrRunnerRevoked.Error(), http.StatusForbidden)
+		return
+	}
+
+	if g.poolSettings == nil {
+		// No desired-configuration store wired. The machine is answered with an empty document rather than an
+		// error, because "nobody has configured you" is the posture every deployment built before this had and
+		// a runner receiving it keeps running on what it was started with.
+		writeSettings(w, settingsResponse{})
+		return
+	}
+	// THE REPORT IS RECORDED BEFORE THE ANSWER IS COMPUTED, so a machine's verdict about revision N is
+	// durable even if resolving N+1 fails. The other order loses the report on exactly the request that was
+	// about to hand out a new document.
+	// Both branches serve the machine anyway — this is bookkeeping on the side of a request whose real work
+	// is answering the configuration, and failing that for a row that could not be written trades a working
+	// fleet for a tidy table. They are distinguished in the LOG because one is expected and one is not.
+	switch matched, err := g.poolSettings.RecordRunnerConfigReport(r.Context(), dns, request.Revision, request.Applied, g.now()); {
+	case err != nil:
+		log.Printf("runner settings: recording %s's report failed, answering it anyway: %v", runnerID, err)
+	case !matched:
+		log.Printf("runner settings: %s reported revision %d and the registry has no row for it (a machine enrolled before the registry existed)", runnerID, request.Revision)
+	}
+	settings, revision, err := g.poolSettings.DesiredSettingsForMachine(r.Context(), poolID, runnerID)
+	if err != nil {
+		// The same position settingsFor takes at enrolment, for the same reason: a machine's configuration
+		// must not be able to turn a database blip into a machine that stops working. It keeps running what it
+		// has and asks again next interval.
+		log.Printf("runner settings: %s's desired configuration unreadable, answering with none: %v", runnerID, err)
+		writeSettings(w, settingsResponse{})
+		return
+	}
+	writeSettings(w, settingsResponse{Revision: revision, Settings: settings})
+}
+
+func writeSettings(w http.ResponseWriter, response settingsResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // recordSeen advances the registry's liveness stamp and reports the POOL and the TENANT the machine
