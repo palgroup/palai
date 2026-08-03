@@ -12,6 +12,34 @@ source "$root/scripts/test/runner-engine.sh"
 
 suite="${TEST:-postgres}"
 
+# THE TWO LONG LEGS CARRY AN EXPLICIT -timeout, AND THE NUMBER IS MEASURED (2026-08-03).
+#
+# Go's default is 10 minutes PER PACKAGE and it is not a ceiling anyone here chose. Measured on this
+# tier, same tree, same database image, at three machine loads:
+#
+#   ./apps/control-plane/internal/execution   142.892s @ idle   470.758s @ load 20.8   >600s @ load 23.4
+#   ./tests/component/postgres                178.301s @ idle   (~590s at the same 3.3x, EXTRAPOLATED)
+#
+# The >600s run is not hypothetical: it happened, and it failed as a bare `panic: test timed out` with
+# NO `--- FAIL` line, naming whichever test happened to be running at second 600. A gate that reports a
+# slow machine as a broken test sends the next person to read an innocent test, which is the same family
+# of defect as everything else this tier exists to catch.
+#
+# 30m (1800s) is 3.8x the slowest MEASURED honest pass, so a loaded box does not go red for being loaded — and
+# a genuine deadlock (an unreleased lease, a channel nobody closes) is still cut and stack-dumped inside
+# half an hour rather than hanging a run forever.
+#
+# THE PALAI_SUITE_RUN SELECTOR CARRIES IT TOO, and that is not symmetry — it is the path that produced
+# the 470.758s measurement above. An agent debugging a leg re-runs it through the selector with the
+# leg's whole allow-list, which is the same work as the full leg with none of the shorter packages in
+# front of it, so it reaches the ceiling FIRST and on the machine least likely to be idle.
+#
+# SCOPE IS THE TWO LEGS WITH EVIDENCE. Every other leg in this suite measured under 75s idle, so at the
+# same 3.3x load multiplier none of them comes within 4x of the default. The number to watch is 180s
+# idle: a leg that crosses it belongs on this line, and the honest way to find out is to read the
+# `ok <pkg> <seconds>` lines of a full green run rather than to guess.
+COMPONENT_LONG_LEG_TIMEOUT=30m
+
 # The runner suite proves a real workspace allocation is bind-mounted into a real, digest-pinned
 # engine container (spec §29.9, E09 Task 1). It reuses the fault/security fixture-engine harness,
 # which cross-builds the fixture, exports PALAI_RUNNER_ENGINE_IMAGE_ID, and verifies no sandbox
@@ -79,7 +107,7 @@ run_postgres() {
   # inherits each tier's container accounting, and an early return that skipped it made that false.
   if test -n "${PALAI_SUITE_RUN:-}"; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
-      go test -tags=component -count=1 -run "$PALAI_SUITE_RUN" -v "${PALAI_SUITE_PKG:-./tests/component/postgres}"
+      go test -tags=component -count=1 -timeout "$COMPONENT_LONG_LEG_TIMEOUT" -run "$PALAI_SUITE_RUN" -v "${PALAI_SUITE_PKG:-./tests/component/postgres}"
     local status=$?
     set -e
     if test "$status" -ne 0; then
@@ -99,7 +127,7 @@ run_postgres() {
     return 0
   fi
   PALAI_COMPONENT_POSTGRES_URL="$url" \
-    go test -tags=component -count=1 -v ./tests/component/postgres
+    go test -tags=component -count=1 -timeout "$COMPONENT_LONG_LEG_TIMEOUT" -v ./tests/component/postgres
   local status=$?
   # The E10 Task 2 redelivery-wiring tests drive the boundary pump against this same real spine
   # (unexported pumpCommands ⇒ package execution). -run selects only the component-tagged behavior
@@ -398,7 +426,7 @@ run_postgres() {
   # same call with the gate off resolves exactly one.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
-      go test -tags=component -count=1 -v \
+      go test -tags=component -count=1 -timeout "$COMPONENT_LONG_LEG_TIMEOUT" -v \
         -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestSlackToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestToolWithoutApprovalDeclared|TestHTTPToolApproval|TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool|TestPoolKey|TestPoolBirth|TestPlacement|TestLifecycle|TestStrict|TestAnUnsandboxedHostAttempt|TestASingleRunnerDeployment|TestAPoolServesItsWaitingRuns|TestDialRefusesAPool|TestAMachineDeclaringAPosture|TestAnEnvironmentReachesARunsShellAndItsValueEntersNoDurableRow|TestARunWhoseRevisionNamesAnEnvironmentFailsClosedWithNoResolver|TestARunsEnvironmentIsPinnedToItsRevisionNotToTheLatest|TestAConsoleWrittenEnvironment|TestTheJiraRunbookRunsOnThePublicAPIAlone|TestAForeignTenantsToolRevisionIsNotFound|TestTheToolRevisionReadRoutesRequireTheProvisionCapability|TestAToolRevisionTimeoutAboveTheCeilingIsRefusedAsBadInput|TestEveryToolRegistryCreateAdvertisesAnAddressThatResolves|TestABackgroundShellCallReturnsAHandleWhileTheProcessIsStillRunning|TestABackgroundTasksOutputIsReadableMidFlight|TestTheModelCallsAnotherToolWhileTheBackgroundProcessIsStillRunning|TestThreeBackgroundTasksRunConcurrentlyWithoutInterleavingTheirOutput|TestAGatedToolCalledWithBackgroundSpawnsNothingUntilAHumanDecides|TestABackgroundedDirectoryChangeDoesNotCarryOverToTheNextCommand|TestBackgroundIsRefusedRatherThanDowngradedWhenTheFeatureIsDisabled|TestBackgroundKillStopsTheProcessGroupAndKillingTwiceIsKillingOnce|TestAShellCallWithoutBackgroundIsFieldForFieldUnchanged|TestARunWithALiveBackgroundTaskParksInsteadOfCompleting|TestARunWithNoLiveBackgroundTaskStillCompletes|TestAFailedTerminalDoesNotParkOnALiveBackgroundTask|TestALostOrUnprobeableBackgroundTaskDoesNotParkTheRun|TestAParkedRunsResponseReadsWaitingForTool|TestALiveResponseReachesInProgressBeforeItParks|TestWaitingForToolNeverOverwritesATerminalResponse|TestTheParkWritesNoRunTerminalIntoTheSessionJournal|TestAParkedRunReentersExactlyOnceWhenItsBackgroundTaskFinishes|TestTwoTicksTwoPlanesAndARestartProduceOneBackgroundNotice|TestARunningRunIsNotInterruptedAndTheNoticeFoldsAtTheNextBoundary|TestATerminalRunsBackgroundNoticeIsStampedRatherThanDropped|TestWithoutTheReconcilerSweepNoBackgroundNoticeEverLands|TestATaskPastItsDeadlineIsKilledMarkedExpiredAndTheModelIsTold|TestUnsetMeansSixtyMinutesAndUnboundedMustBeWrittenExplicitly|TestCancellingARunKillsEveryLiveBackgroundTaskOfIt|TestARestartedControlPlaneAdoptsItsRunningTasksFromTheRowRatherThanFromMemory|TestADeadTaskNoWatcherEverSawGetsNoInventedExitCode|TestAnUnprovableHandleBecomesLostAndReceivesNoSignal|TestTheSixthBackgroundTaskOfARunIsRefusedRatherThanQueued|TestTheMachineCeilingIsCountedAcrossTenantsFromTheDatabase|TestAFinishedTasksLogIsDeletedAfterItsTTLAndARunningTasksIsNot|TestKillingATaskThatAlreadyFinishedClaimsNothing|TestBothTheFileReadAndTheExitNoticeAreRedactedFromOnePlace|TestNoDecodedFieldOfATaskRowItsEventsOrItsCommandsCarriesAnEnvironmentValue|TestACredentialCarryingTaskCannotBeCreatedWithoutADeadline|TestARunParkedForApprovalOnABackgroundCallResolvedNoEnvironmentValue|TestAMissingFileIsAnsweredToTheModelInsteadOfWedgingTheRun|TestARefusedTraversalIsAnsweredAndTheOutsideFileIsNeverRead|TestAToolFaultStillAbortsTheAttemptAndLeavesItsRowUncommitted|TestTheToolErrorBudgetEndsARunThatKeepsBeingRefused|TestAnExplicitlyUnboundedBudgetIsHonoured|TestAReplayedRefusalCountsAgainstTheSameBudget|TestAutoApprove|TestToolFrame|TestToolCallLedgerRead|TestPublicationRefusedBeforeAHumanIsAsked|TestAnApprovedPushPublishesOnARunWhoseNextStepIsItsLast|TestPublicationAcceptedWhenTheBindingCarriesItsOwnCredential|TestDispatchJournalsStreamedTextAsDeltasBetweenCreatedAndCompleted|TestPlacementNeverParksARunWhereItsOwnWakeCannotFindIt|TestPlacementAWokenRunDoesNotGetAFreshRetryBudget|TestAnInlineChildThatNeverFinishedReachesATerminal|TestAParkedInlineChildIsLeftAlone' \
         ./apps/control-plane/internal/execution
     status=$?
