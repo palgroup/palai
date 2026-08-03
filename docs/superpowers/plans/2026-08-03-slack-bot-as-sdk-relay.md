@@ -1259,6 +1259,42 @@ git commit -m "feat(console): manifest wizard and sealed token entry"
 
 ---
 
+### Task 12.5: BOTU ÇALIŞTIR — bu planın bulunmayan görevi
+
+**BU GÖREV PLANDA YOKTU VE OLMAMASI BİR KUSURDU. Ölçüldü 2026-08-03, T12 bittikten sonra:**
+
+```
+$ grep -rln 'websocket\|SocketMode\|apps.connections' apps/slack-bot/     → BOŞ
+```
+
+T5'ten T10'a kadar her parça yapıldı — config, adapter seam, relay çekirdeği, store, inbound handler,
+approval köprüsü — ve **her dispatch'te "Socket Mode dial loop'u yapma, o başka bir görev" dendi.**
+Ama öyle bir görev hiç yazılmamıştı. `main.go`'nun kendi yorumu bunu ele veriyor: *"The Socket Mode
+connection, the relay and the durable store are later tasks (6-10)"* — 6-10 bitti, bağlantı yok.
+
+**Bugün bot Slack'e hiç bağlanmıyor.** Parçaların hepsi var ve hiçbiri birbirine bağlı değil. Bu,
+planın kendi kaydettiği kusur ailesinin ta kendisi: *shipped ama hiçbir şeyin çağırmadığı yüzey.*
+
+**Kapsam:** `apps/slack-bot/main.go` artık gerçekten bir bot koşar:
+1. Bot satırını okur (T5), `config`'ten Slack handle'larını çözer, sırları `secret-refs`'ten alır.
+2. **Socket Mode bağlantısını açar.** Referans `apps/control-plane/internal/extensions/slack_socket.go`
+   (485 satır) — ama **doğrudan taşınamaz**: `api.SlackConnectionRef` ile CP'ye bağlıdır ve
+   `SlackAdmitter`'ın metodudur. Çekirdek (`dial`, `serve`, `dispatch`, yeniden bağlanma) alınır,
+   bağı bot'un kendi config'iyle değiştirilir. `adapters/integrations/slack/socket.go` zaten
+   `UnwrapSocketFrame` ve `SocketAck` sunar — onlar yeniden yazılmaz.
+3. Gelen olayı `relay.HandleEvent`'e (T9), buton tıklamasını `relay.OnButton`'a (T10) verir.
+4. Store'u açar ve migration'ı koşar (T8'in `Migrate`'i, T8'de bilerek bağlanmamıştı).
+
+**Bu görev bitene kadar T13'ün self-test'i yazılamaz** — çalışmayan bir botu test eden bir düğme,
+bu ağacın kaydettiği en pahalı yalandır.
+
+**Ve wiring, bu planın SESSİZ uyumsuzluklarının ortaya çıkacağı yerdir.** T9'un `ThreadStore`'u
+gerçek store'la ancak T9'un derleme zamanı iddiası sayesinde uyumlu; `relay.Deps` ile
+`InboundDeps` ilk kez aynı süreçte buluşacak; ve `StartStream`'in alıcı alanları ilk kez gerçek bir
+olaydan doldurulacak. Her biri bugüne kadar yalnız bir fake tarafından karşılandı.
+
+---
+
 ### Task 13: Canlı test düğmesi
 
 **Files:**
