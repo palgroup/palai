@@ -28,8 +28,8 @@ LIMIT 1;
 -- name: InsertChangeset
 INSERT INTO changesets
     (id, organization_id, project_id, run_id, base_commit, final_commit, final_tree, files,
-     patch_artifact_id, test_log_artifact_id, patch_truncated, content_hash)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     patch_artifact_id, test_log_artifact_id, patch_truncated, content_hash, ignored_file_count)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 ON CONFLICT (id) DO NOTHING;
 
 -- InsertChangesetFinding records one likely-committed-secret (or license) finding over a file entering

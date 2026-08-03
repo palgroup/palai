@@ -60,16 +60,35 @@ func (s *Store) RunBaseCommit(ctx context.Context, tenant Tenant, runID string) 
 	return base, true, nil
 }
 
-// ChangesetFile is one changed file in a changeset, compiled from a file-tool write (spec §30.6):
-// its path, the change kind (added/modified), the content hash before and after, and the tool call
-// that made it — the authoring lineage that ties the summary back to the ledger.
+// ChangesetFile is one changed file in a changeset (spec §30.6): its path, the change kind
+// (added/modified/deleted), the content hash before and after, and the tool call that made it.
+//
+// A changeset has TWO writers and only one of them signs its work. The file tool records a row per
+// write, so its entries carry the authoring lineage that ties the summary back to the ledger. The
+// shell tool writes wherever the process can reach — a heredoc, `git apply`, a compiler — and appears
+// in no write ledger at all, so its entries can only be OBSERVED in the clone afterwards. Provenance
+// says which one an entry is, because an observation that claims to be an attributed tool call is a
+// worse record than no entry: it names a tool_call_id that never wrote the file.
 type ChangesetFile struct {
 	Path       string `json:"path"`
 	Change     string `json:"change"`
 	BeforeHash string `json:"before_hash,omitempty"`
 	AfterHash  string `json:"after_hash,omitempty"`
 	ToolCallID string `json:"tool_call_id,omitempty"`
+	// Provenance is FileProvenanceToolCall for a file-tool write (ToolCallID + hashes are real) or
+	// FileProvenanceWorkspaceScan for a path git found changed in the clone with no ledger row behind
+	// it (ToolCallID and the hashes are empty, and that emptiness is the honest answer, not a gap).
+	Provenance string `json:"provenance,omitempty"`
 }
+
+// The two provenances a ChangesetFile entry can carry. They are persisted inside the `files` jsonb,
+// so they are part of the changeset's content address: a run whose file arrived by shell hashes
+// differently from one whose identical file arrived by the file tool, which is correct — the two are
+// not the same event.
+const (
+	FileProvenanceToolCall      = "tool_call"
+	FileProvenanceWorkspaceScan = "workspace_scan"
+)
 
 // ChangesetFinding is one likely-committed-secret finding over a file entering the changeset (spec
 // §30.4/§30.6). Kind is "secret"; Rule names the matched shape; Path is the file it hit.
@@ -94,6 +113,13 @@ type ChangesetRecord struct {
 	PatchTruncated    bool
 	ContentHash       string
 	Findings          []ChangesetFinding
+	// IgnoredFileCount is how many .gitignore'd files the clone's workspace scan found changed and
+	// DELIBERATELY left out of Files. Build output (`.build/`, `node_modules/`) is noise in a changed-set
+	// and is excluded for the same reason a commit excludes it — but "the run changed nothing" and "the
+	// run changed 1284 ignored build outputs" are different sentences, and dropping the second silently
+	// would rebuild the very lie this field exists to prevent. Zero means the scan found none, not that
+	// nobody looked.
+	IgnoredFileCount int
 }
 
 // RecordChangeset persists an immutable changeset, its findings, and a changeset.compiled event in one
@@ -116,7 +142,7 @@ func (s *Store) RecordChangeset(ctx context.Context, tenant Tenant, sessionID, r
 	tag, err := tx.Exec(ctx, storage.Query("InsertChangeset"),
 		rec.ID, tenant.Organization, tenant.Project, rec.RunID, rec.BaseCommit, rec.FinalCommit,
 		rec.FinalTree, files, nullableText(rec.PatchArtifactID), nullableText(rec.TestLogArtifactID),
-		rec.PatchTruncated, rec.ContentHash)
+		rec.PatchTruncated, rec.ContentHash, rec.IgnoredFileCount)
 	if err != nil {
 		return fmt.Errorf("insert changeset: %w", err)
 	}
