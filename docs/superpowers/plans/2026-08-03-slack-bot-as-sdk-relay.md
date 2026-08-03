@@ -925,6 +925,15 @@ SDK'ya eklenir, sunucunun kendi şemasındaki adlarla. Diğer üçü (`Workspace
 
 `Metadata map[string]any` SDK'da **zaten var** — ve T16'nın bot atfı için muhtemel yeri odur.
 
+**T9 AYRICA AKIŞIN ALICISINI SAĞLAMAK ZORUNDADIR — ölçüldü 2026-08-03.** T7'nin `Deps`'i
+`StreamStart`'ın `RecipientUserID`/`RecipientTeamID` alanlarını bilerek dışarıda bıraktı ve bu
+**doğru sınırdır**: `StartStream` bu ikisi (ve `ThreadTS`) boşken **Slack'i hiç çağırmadan**
+`ErrNoStreamRecipient` ile reddeder (`adapters/integrations/slack/stream.go:79`), çünkü Slack'in
+kendi dokümanı ikisini de *"Required when streaming to channels"* diye şart koşar. Bu değerler
+inbound olaydan gelir — `slack.Event` zaten `UserID` ve `TeamID` taşır — yani relay'in
+uydurabileceği bir şey değildir. **T9 bunları taşımazsa bot hiçbir zaman tek bir akış açamaz**, ve
+başarısızlık Slack'te değil, çağrı yapılmadan önce görünür.
+
 - [ ] **Step 1: Başarısız testi yaz**
 
 ```go
