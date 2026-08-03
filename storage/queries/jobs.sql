@@ -150,9 +150,18 @@ RETURNING status;
 
 -- name: RecordJobOutcome
 -- Close the attempt ledger row so the durable history records how each fenced
--- attempt ended, not merely that it started.
+-- attempt ended, not merely that it started — and, for an attempt that FAILED, WHY.
+--
+-- $4 IS THE REASON AND IT IS NULL FOR A SUCCESS, which is the whole distinction the column carries. A
+-- writer that stamped every row would make "which attempts failed and what did they say" unanswerable
+-- again, one column later. NULL on a 'failed' row means the attempt failed before migration 000058
+-- existed, which is every historical row in every deployment.
+--
+-- Until 2026-08-02 this statement wrote only the word. `Worker.process` had the handler's error in
+-- hand and passed it to nothing, so 11 dead jobs and 208 preempted attempts on a live stack recorded
+-- THAT they failed and nowhere why — the cause was legible only in a runner container's stdout.
 UPDATE job_attempts
-SET outcome = $3
+SET outcome = $3, error = $4
 WHERE job_id = $1 AND fence = $2;
 
 -- name: DeadLetteredResponseRuns

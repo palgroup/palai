@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -62,14 +63,48 @@ func (s *Store) Heartbeat(ctx context.Context, claim Claim, extend time.Duration
 	return expiresAt, nil
 }
 
+// jobAttemptErrorLimit bounds the reason written to the attempt ledger. A handler error is one
+// sentence plus a wrap chain; anything longer is a surprise (a provider body, a shell transcript) and
+// is truncated rather than stored whole. The bound is HERE and not a CHECK constraint on purpose: a
+// constraint would abort the failure path itself, turning one failing job into a failing worker.
+const jobAttemptErrorLimit = 1000
+
+// failureReason flattens a handler error to one bounded line for the ledger, and returns nil for no
+// error so the column keeps meaning "this attempt did not fail".
+//
+// HONEST CEILING, because this is durable text and the tree is careful about that. It is written for
+// an OPERATOR — the same audience and the same class of text as the control-plane log, which already
+// prints a workspace-provisioning cause verbatim (orchestrator.go's failProvisioning call site). It is
+// NOT projected into a Response body: terminalProblems stays the fixed line, so no provider or engine
+// text reaches a caller or a model through this change. A handler that puts a secret in its error
+// string was already putting it in a log line.
+func failureReason(cause error) *string {
+	if cause == nil {
+		return nil
+	}
+	msg := strings.Join(strings.Fields(cause.Error()), " ")
+	if msg == "" {
+		msg = "(the handler returned an error with an empty message)"
+	}
+	if len(msg) > jobAttemptErrorLimit {
+		msg = msg[:jobAttemptErrorLimit] + "…"
+	}
+	return &msg
+}
+
 // Fail records a failed attempt and either requeues the job behind a full-jitter
 // backoff deadline or dead-letters it once its attempts are exhausted. The attempt
 // count is canonical in the row, so the worker never hidden-retries: the ceiling is
 // enforced by the row, not by worker memory. It is fenced — a superseded holder
-// mutates nothing and returns ErrStaleFence — and it records the attempt's outcome in
+// mutates nothing and returns ErrStaleFence — and it records the attempt's outcome AND ITS REASON in
 // the ledger in the same transaction. The bool reports whether the job was
 // dead-lettered.
-func (s *Store) Fail(ctx context.Context, claim Claim, policy RetryPolicy) (bool, error) {
+//
+// `cause` IS WHY THIS SIGNATURE CHANGED (2026-08-02). It was the handler's error, and until now the
+// only caller — Worker.process — had it in hand and passed it nowhere: the ledger recorded that every
+// attempt failed and never why, so a live stack's 11 dead jobs and 208 preempted attempts could be
+// explained only from a runner container's stdout. A nil cause writes no reason.
+func (s *Store) Fail(ctx context.Context, claim Claim, policy RetryPolicy, cause error) (bool, error) {
 	// Scoped by the CLAIM's own tenant: the claim is the verified job identity, so this lease
 	// operation is tenant-scoped even though the loop that issued it spans tenants.
 	ctx = storage.WithTenant(ctx, claim.Tenant.Organization, claim.Tenant.Project)
@@ -100,7 +135,7 @@ func (s *Store) Fail(ctx context.Context, claim Claim, policy RetryPolicy) (bool
 	if status == "dead" {
 		outcome = "dead"
 	}
-	if _, err := tx.Exec(ctx, storage.Query("RecordJobOutcome"), claim.JobID, claim.Fence, outcome); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("RecordJobOutcome"), claim.JobID, claim.Fence, outcome, failureReason(cause)); err != nil {
 		return false, fmt.Errorf("record job outcome: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
