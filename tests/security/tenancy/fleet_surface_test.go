@@ -11,10 +11,20 @@ import (
 )
 
 // Task 3's behaviour test (TestEveryFleetRouteRefusesATenantKey, internal/store) DRIVES the routes; this
-// test inspects their REGISTERED SHAPE. The two catch different things: the behaviour test catches a
-// route that has no gate, this test catches a route registered WITHOUT one at compile time and names the
-// file:line — the failure a human-triggered security scan already flagged once while Task 3 was
-// mid-flight.
+// test inspects their REGISTERED SHAPE. Two differences make the pair worth keeping, and both are
+// checkable by reading the two files rather than by trusting this sentence:
+//
+//  1. THE BEHAVIOUR TEST CAN DECLINE TO RUN. It t.Skips when PALAI_COMPONENT_POSTGRES_URL is unset
+//     (fleet_gate_component_test.go), so on any invocation that does not stand up the component tier it
+//     asserts nothing at all — neither pass nor fail. This one has no skip condition and rides
+//     `TEST=tenancy scripts/test/security`, whose run_tenancy carries no -run allow-list. So of the two,
+//     only this one is guaranteed to fire.
+//  2. IT NAMES THE LINE. A refused HTTP status says a route is ungated; a file:line says which
+//     registration to fix.
+//
+// What it cannot do is check what systemOnly MEANS — that a wrapped route actually refuses a tenant key
+// is the behaviour test's claim, not this one's. This test only asserts the identifier is called at the
+// registration site.
 func TestEveryFleetHandleFuncIsSystemOnly(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "../../../apps/control-plane/api/router.go", nil, 0)
