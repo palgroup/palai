@@ -4410,7 +4410,7 @@
           {
             "ciphertext_statements": [],
             "file": "storage/queries/repository_bindings.sql",
-            "statements": 7
+            "statements": 10
           },
           {
             "ciphertext_statements": [],
