@@ -209,15 +209,23 @@ func (o *openStream) handle(ctx context.Context, event palai.Event) {
 		o.deps.OnApproval(ctx, o.channel, o.threadTS, event)
 	default:
 		if status, ok := toolCallStatus[event.Type]; ok {
-			// NO DETAIL ON A TERMINAL, and it is not an omission: a card's `details` APPENDS across updates
-			// of the same id (measured — slack.TaskUpdateChunk records it), so repeating the tool's name
-			// when the step finishes renders `palai.workspace.filepalai.workspace.file`. The name was
-			// already attached when the step began; the terminal changes only the status.
-			detail := ""
-			if status == "in_progress" {
-				detail = toolName(event.Data)
-			}
-			o.updateTask(ctx, event.Data, status, detail)
+			// NO DETAIL, EVER, FROM A tool_call LIFECYCLE EVENT — the card gets a status and a title and
+			// nothing else. This started as the raw tool name and the owner read it twice as noise: a card
+			// saying "Reading files" with `palai.workspace.file` under it repeats itself in machine words,
+			// and on a tool that reports no progress (shell) that was the card's ONLY line — so the one
+			// thing a reader wants (which command) was absent and its internal name was there instead.
+			//
+			// THE NAME IS NOT LOST, because toolTitle falls back to it for a tool this tree has no phrase
+			// for: an unmapped name still shows, as the title, exactly where it is the most informative
+			// thing available. What is gone is repeating it when a human phrase already said it.
+			//
+			// AND THE ARGUMENT CANNOT REPLACE IT. Measured 2026-08-04 against the live journal
+			// (`SELECT type, payload FROM events WHERE type LIKE 'tool_call.%'`), a frame is exactly
+			// {run_id, tool_name, tool_call_id[, replay_class]} — the command, the path and the query are
+			// NOT in it. They sit behind GET /v1/responses/{id}/tool-calls, and a per-call fetch to
+			// decorate a card would buy latency and a failure surface for a caption. So the honest card
+			// carries what the events actually know, and progress fills the line when a tool sends any.
+			o.updateTask(ctx, event.Data, status, "")
 		}
 	}
 }
@@ -324,9 +332,13 @@ var toolTitles = map[string]string{
 	"palai.fs.write":                   "Writing a file",
 }
 
-// toolTitle is the card's headline: what the step IS, in words. The raw name stays available underneath it
-// (updateTask passes it as the card's detail), so nothing is hidden — it is just not the first thing a
-// reader is shown.
+// toolTitle is the card's headline, and for a mapped tool it is the ONLY thing the card says — nothing
+// repeats it in machine words underneath (see updateTask's caller).
+//
+// THE FALLBACK IS WHERE A RAW NAME STILL APPEARS, and that is the whole reason dropping it elsewhere loses
+// nothing: a tool with no phrase in toolTitles is titled with its own name. So the name is shown exactly
+// when it is the most informative thing available, and omitted exactly when a human sentence already said
+// the same thing.
 func toolTitle(data map[string]any) string {
 	name := toolName(data)
 	if title, ok := toolTitles[name]; ok {

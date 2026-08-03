@@ -240,18 +240,32 @@ func TestToolProgressLeavesTheAnswerAlone(t *testing.T) {
 		t.Fatalf("drew %d task card update(s), want 3 (executing, progress, completed) — got %+v", len(fake.tasks), fake.tasks)
 	}
 	body := fake.startedText + strings.Join(fake.appended, "") + fake.stoppedText
-	// The body is the opening status and the answer, and NOTHING about the tool. Each token below rode the
-	// message body before this change; `palai.workspace.file` is checked because it is the raw name the card
-	// still carries in its detail — proving the card's content did not simply get copied into the prose too.
-	for _, leaked := range []string{"palai.workspace.file", "Reading files", "reading SwiftUIListApp.swift", "1/4", "▶️", "✅"} {
-		if strings.Contains(body, leaked) {
+	// SCOPE, because the name of this list once over-claimed: these tokens must be absent FROM THE MESSAGE
+	// BODY. That is not the same as absent from the reader's screen — a card is on screen too, and this
+	// loop says nothing about it. The card's own content is asserted separately below, which is the
+	// distinction the owner's "is the raw tool name supposed to be there?" question turned on: this test was
+	// green the whole time the name was visible, and it was right to be, because it is a test about prose.
+	for _, inBody := range []string{"palai.workspace.file", "Reading files", "reading SwiftUIListApp.swift", "1/4", "▶️", "✅"} {
+		if strings.Contains(body, inBody) {
 			t.Fatalf("the message body still carries %q — progress must ride the task timeline, not the "+
-				"answer (SLK-P6). Body was %q", leaked, body)
+				"answer (SLK-P6). Body was %q", inBody, body)
 		}
 	}
 	if !strings.Contains(body, answer) {
 		t.Fatalf("the body is %q and no longer contains the answer — the model's own words must be the one "+
 			"thing that DOES stay in it", body)
+	}
+	// AND THE CARD ITSELF says the step in human words, with nothing repeating it in machine words. A tool
+	// this tree has a phrase for must not ALSO show its registered name: the owner read that as noise, and
+	// no assertion above this one can see it.
+	if fake.tasks[0].Title != "Reading files" {
+		t.Fatalf("card title = %q, want the human phrase", fake.tasks[0].Title)
+	}
+	for _, task := range fake.tasks {
+		if strings.Contains(task.Title+task.Detail, "palai.workspace.file") {
+			t.Fatalf("a card carried the raw tool name (%+v) though `Reading files` already said it — the "+
+				"name belongs on a card only as toolTitle's fallback for a tool with no phrase", task)
+		}
 	}
 }
 
@@ -293,16 +307,50 @@ func TestOneToolCallIsOneCardThroughout(t *testing.T) {
 	if fake.tasks[0].Title != "Running a command" {
 		t.Fatalf("card title = %q, want a human phrase — `palai.workspace.shell` is jargon", fake.tasks[0].Title)
 	}
-	if fake.tasks[0].Detail != "palai.workspace.shell" {
-		t.Fatalf("the opening card's detail = %q, want the raw tool name kept available", fake.tasks[0].Detail)
+	// NO LIFECYCLE EVENT PUTS A DETAIL ON THE CARD. The opening update once wrote the raw tool name there
+	// and the owner read it as noise twice: `Running a command` with `palai.workspace.shell` under it says
+	// the same thing in machine words, and on a tool that reports no progress that was the card's only
+	// line. Only progress writes a detail now — see fake.tasks[1] below.
+	if fake.tasks[0].Detail != "" || fake.tasks[2].Detail != "" {
+		t.Fatalf("a lifecycle update carried a detail (open %q, terminal %q); the title already says what "+
+			"the step is, and the raw name survives as toolTitle's fallback for unmapped tools",
+			fake.tasks[0].Detail, fake.tasks[2].Detail)
 	}
-	// AND THE TERMINAL CARRIES NO DETAIL, which is not an omission but the measured semantics: a card's
-	// `details` APPENDS across updates of one id, so repeating the name here renders
-	// `palai.workspace.shellpalai.workspace.shell` — which is exactly what the live workspace returned
-	// before this was understood. The name is already on the card from the update above.
-	if fake.tasks[2].Detail != "" {
-		t.Fatalf("the completed card re-sent detail %q; `details` appends, so the name would be doubled",
-			fake.tasks[2].Detail)
+	if fake.tasks[1].Detail != "xcodebuild" {
+		t.Fatalf("the progress update's detail = %q, want the notification's message — progress is the one "+
+			"thing that has something to say under the title", fake.tasks[1].Detail)
+	}
+}
+
+// TestConsecutiveProgressLinesAreSeparated is the LAST reachable home for the appending-details rule, and it
+// is written as its own test because the fixtures that used to cover it no longer can: a card's `details`
+// APPENDS (measured against the live workspace), and now that no lifecycle event writes one, the only way
+// two details ever meet on one card is two progress notifications.
+//
+// Without the separator the live workspace returned `palai.workspace.fileSwiftUIListApp.swift (3/7)` — the
+// `doneProjede` defect, on the card instead of in the body.
+func TestConsecutiveProgressLinesAreSeparated(t *testing.T) {
+	events := []palai.Event{
+		{Type: "tool_call.executing.v1", Data: map[string]any{"tool_call_id": "tc_1", "tool_name": "palai.workspace.file"}},
+		{Type: "tool_call.progress.v1", Data: map[string]any{"tool_call_id": "tc_1", "message": "SwiftUIListApp.swift"}},
+		{Type: "tool_call.progress.v1", Data: map[string]any{"tool_call_id": "tc_1", "message": "ContentView.swift"}},
+		{Type: "run.completed.v1", Data: map[string]any{}},
+	}
+	fake := &fakeSlack{}
+	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals},
+		"sess_1", "C1", "1.1"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(fake.tasks) != 3 {
+		t.Fatalf("drew %d card update(s), want 3", len(fake.tasks))
+	}
+	// The FIRST detail has nothing in front of it, so it takes no separator; the second does.
+	if fake.tasks[1].Detail != "SwiftUIListApp.swift" {
+		t.Fatalf("first progress detail = %q, want no leading separator", fake.tasks[1].Detail)
+	}
+	if fake.tasks[2].Detail != "\nContentView.swift" {
+		t.Fatalf("second progress detail = %q, want a leading separator — `details` appends, so without one "+
+			"the two fuse into `SwiftUIListApp.swiftContentView.swift`", fake.tasks[2].Detail)
 	}
 }
 
@@ -334,6 +382,27 @@ func TestEveryToolTerminalResolvesItsCard(t *testing.T) {
 					"render as not-yet-started", tr.Event, status)
 			}
 		})
+	}
+}
+
+// TestAnUnmappedToolStillShowsItsName is the half that makes dropping the raw name from the detail LOSSLESS
+// rather than merely quieter, and it is the reason that change was safe: a tool this tree has no phrase for
+// — every MCP server contributes them — is titled with its own registered name. So the name disappears
+// exactly where a human sentence already said the same thing, and stays exactly where it is the most
+// informative thing the card can show.
+func TestAnUnmappedToolStillShowsItsName(t *testing.T) {
+	events := []palai.Event{
+		{Type: "tool_call.executing.v1", Data: map[string]any{"tool_call_id": "tc_1", "tool_name": "acme.jira.create_ticket"}},
+		{Type: "run.completed.v1", Data: map[string]any{}},
+	}
+	fake := &fakeSlack{}
+	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals},
+		"sess_1", "C1", "1.1"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(fake.tasks) != 1 || fake.tasks[0].Title != "acme.jira.create_ticket" {
+		t.Fatalf("cards = %+v, want one titled with the unmapped tool's own name — a card that showed "+
+			"neither a phrase nor the name would say nothing at all", fake.tasks)
 	}
 }
 
@@ -470,16 +539,10 @@ func TestAProgressNotificationDoesNotRenameItsStep(t *testing.T) {
 		t.Fatalf("the progress update retitled the step to %q — a card must keep the title it was drawn "+
 			"with when the event carries no tool_name", fake.tasks[1].Title)
 	}
-	// The detail is separated from the one already on the card. `details` APPENDS (measured against the live
-	// workspace), so without this the card reads `palai.workspace.shellxcodebuild -scheme App` — the
-	// `doneProjede` defect again, on the card instead of in the body.
-	if fake.tasks[1].Detail != "\nxcodebuild -scheme App" {
-		t.Fatalf("progress detail = %q, want the message with a leading separator — a card's details field "+
-			"appends, so a second detail fuses with the first without one", fake.tasks[1].Detail)
-	}
-	// The FIRST detail takes no separator: it has nothing in front of it to be separated from.
-	if fake.tasks[0].Detail != "palai.workspace.shell" {
-		t.Fatalf("the first detail = %q, want no leading separator", fake.tasks[0].Detail)
+	// This progress line is the card's FIRST detail (the opening update writes none), so it takes no
+	// separator. Two progress lines meeting on one card is TestConsecutiveProgressLinesAreSeparated.
+	if fake.tasks[1].Detail != "xcodebuild -scheme App" {
+		t.Fatalf("progress detail = %q, want the notification's message", fake.tasks[1].Detail)
 	}
 }
 
