@@ -132,7 +132,7 @@ func (p *investigationKillProvider) offeredTools() []string {
 func TestScheduledInvestigationJourneyDeterministic(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
-	org, proj := h.tenant.Organization, h.tenant.Project
+	proj := h.tenant.Project
 
 	// --- Step 1: publish an AgentRevision pinning the model + the {file, shell} tool ceiling. The strict
 	// InvestigationReport schema is a HARNESS concern (output_schema is not an E11 revision field). ---
