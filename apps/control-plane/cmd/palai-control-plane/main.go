@@ -587,10 +587,19 @@ func dispatchPosture(workers int, gatewayBound bool) (start bool, refusal string
 	case workers <= 0:
 		return false, "" // dispatch is off by choice; nothing to explain
 	case !gatewayBound:
-		return false, "dispatch is configured (PALAI_DISPATCH_WORKERS>0) but no runner listener is bound: " +
-			"set PALAI_RUNNER_LISTEN_ADDR so runs can reach an engine. Refusing to dispatch — an " +
-			"assignment-only worker marks each run `running` and completes its job, leaving a run with no " +
-			"attempt, no engine and no terminal. Runs stay `queued` and are picked up once the listener is set."
+		// BOTH EXITS ARE NAMED, because the refusal has two legitimate resolutions and an operator told
+		// only one of them will assume the other is unsupported. Set the listener if this control plane is
+		// meant to execute runs; set PALAI_DISPATCH_WORKERS=0 if it is deliberately API-only — a real
+		// posture the tree already ships (scripts/test/e2e drives the read path that way, and
+		// deploy/compose/compose.env.example's default is 0). Naming only the listener would read as "you
+		// must run a runner plane", which is false, and would send an operator to configure certificates
+		// for a stack that has no runs to execute.
+		return false, "dispatch is configured (PALAI_DISPATCH_WORKERS>0) but no runner listener is bound. " +
+			"Refusing to dispatch: an assignment-only worker marks each run `running` and completes its job, " +
+			"leaving a run with no attempt, no engine and no terminal. Two ways out — set " +
+			"PALAI_RUNNER_LISTEN_ADDR if this control plane is meant to execute runs, or set " +
+			"PALAI_DISPATCH_WORKERS=0 if it is deliberately API-only. Runs stay `queued` either way and are " +
+			"picked up by the next control plane that can execute them."
 	default:
 		return true, ""
 	}

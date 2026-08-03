@@ -772,7 +772,53 @@ func TestDispatchRefusesTheAssignmentOnlyHandlerAndNamesTheMissingWire(t *testin
 	if start {
 		t.Fatal("dispatchPosture(1, unbound) starts dispatch: the assignment-only handler marks each run `running` and completes its job, so the run has no attempt, no engine and no terminal, and nothing in the tree will ever move it")
 	}
-	if !strings.Contains(refusal, "PALAI_RUNNER_LISTEN_ADDR") {
-		t.Fatalf("the refusal is %q and does not name the missing wire: an operator who reads it must learn which variable to set", refusal)
+	// BOTH EXITS, and the second is not decoration. An API-only control plane is a posture this tree
+	// already ships — scripts/test/e2e drives the read path with PALAI_DISPATCH_WORKERS=0, and
+	// deploy/compose/compose.env.example defaults to 0 — so a refusal that named only the listener would
+	// read as "you must run a runner plane", which is false, and would send an operator to configure
+	// certificates for a stack that has no runs to execute.
+	for _, wanted := range []string{"PALAI_RUNNER_LISTEN_ADDR", "PALAI_DISPATCH_WORKERS=0"} {
+		if !strings.Contains(refusal, wanted) {
+			t.Fatalf("the refusal is %q and does not name %s: it must give an operator BOTH resolutions — bind a listener, or say this control plane is deliberately API-only", refusal, wanted)
+		}
+	}
+}
+
+// TestEveryShippedControlPlaneBringUpBindsARunnerListener is the reachability half of the refusal
+// above, and it is what makes that refusal safe to ship rather than merely strict.
+//
+// Measured 2026-08-03 across every shipped way to start a control plane:
+//
+//   - deploy/compose/compose.yaml sets PALAI_RUNNER_LISTEN_ADDR unconditionally, which covers
+//     scripts/test/upgrade-drill.sh and scripts/package/runner/splitvm-proof.sh — both set
+//     PALAI_DISPATCH_WORKERS>0 and both launch through `docker compose` with that file.
+//   - deploy/helm/palai/templates/deployment.yaml sets it.
+//   - `palai local up` sets it for every native stack: cmd/cli/internal/stack/native.go's
+//     nativeRunnerListen treats UNSET as the normal case and returns ":<PALAI_RUNNER_PORT>", and the
+//     child environment always carries the result. That covers scripts/ops/record-runbook-transcripts.sh
+//     and the scripts/uat/* flows.
+//
+// So no shipped posture reaches the refusal. The only way to reach it is to run the binary directly
+// with the variable unset — which is exactly what stranded six runs on a live stack.
+//
+// This test guards the ONE file that could silently change that: a compose file that stopped setting the
+// listener would turn every `docker compose` bring-up with workers into a refusing control plane, and the
+// first symptom would be runs that never leave `queued`.
+func TestEveryShippedControlPlaneBringUpBindsARunnerListener(t *testing.T) {
+	root := filepath.Join("..", "..", "..", "..")
+	for _, f := range []struct{ path, want string }{
+		{filepath.Join(root, "deploy", "compose", "compose.yaml"), "PALAI_RUNNER_LISTEN_ADDR"},
+		{filepath.Join(root, "deploy", "helm", "palai", "templates", "deployment.yaml"), "PALAI_RUNNER_LISTEN_ADDR"},
+		// The CLI's own sentence that unset is normal and yields a bound address. Asserted on the
+		// comment-free code line so a reworded comment does not satisfy it.
+		{filepath.Join(root, "cmd", "cli", "internal", "stack", "native.go"), `"PALAI_RUNNER_LISTEN_ADDR": listen,`},
+	} {
+		body, err := os.ReadFile(f.path)
+		if err != nil {
+			t.Fatalf("read %s: %v", f.path, err)
+		}
+		if !strings.Contains(string(body), f.want) {
+			t.Fatalf("%s no longer carries %q: a shipped bring-up that stops binding a runner listener now REFUSES to dispatch, and its runs sit in `queued` with the reason only in the log", f.path, f.want)
+		}
 	}
 }
