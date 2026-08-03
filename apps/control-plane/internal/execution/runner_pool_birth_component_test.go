@@ -39,6 +39,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/apps/control-plane/internal/fleet"
 	"github.com/palgroup/palai/packages/contracts"
@@ -69,15 +70,21 @@ func newBirthFixture(t *testing.T) *birthFixture {
 		{`INSERT INTO organizations (id) VALUES ($1)`, org},
 		{`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, prj, org},
 		{`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`, principal, org, prj},
-		// The operator's key carries BOTH capabilities and neither is the empty set: an empty `scopes` means
-		// every capability (api/middleware/auth.go:30), and a fixture that used one would make every gate
-		// assertion below vacuous.
+		// The operator's key carries every capability the routes below check and neither is the empty
+		// set: an empty `scopes` means every ordinary capability (api/middleware/auth.go:30), but
+		// `system` is deliberately excluded from that rule (Faz A.1 Task 3 — HasSystem never treats an
+		// empty set as unrestricted), so it must be named explicitly alongside `provision`/`approve` or
+		// the fleet's systemOnly gate refuses this key before any of the assertions below are reached.
 		{`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, scopes)
 		  VALUES ($1,$2,$3,$4,$5,$6)`, "key_birth_adm_" + org, org, prj, principal,
-			coordinator.HashAPIKey(admin), []string{"provision", "approve"}},
+			coordinator.HashAPIKey(admin), []string{middleware.ScopeSystem, "provision", "approve"}},
+		// This key still carries `system` — it must clear the fleet's systemOnly gate to REACH the
+		// `provision` check TestPoolBirthIsProvisionGatedAndTenantScoped is actually about. Without
+		// `system` it would be refused at the outer gate for the wrong reason and the test would pass
+		// without ever exercising the capability it names.
 		{`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, scopes)
 		  VALUES ($1,$2,$3,$4,$5,$6)`, "key_birth_run_" + org, org, prj, principal,
-			coordinator.HashAPIKey(runOnly), []string{"run"}},
+			coordinator.HashAPIKey(runOnly), []string{middleware.ScopeSystem, "run"}},
 	}
 	for _, stmt := range stmts {
 		if _, err := f.pool.Exec(sys, stmt[0].(string), stmt[1:]...); err != nil {

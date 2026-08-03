@@ -410,13 +410,16 @@ func TestPoolKeyIsNotAnAPIKey(t *testing.T) {
 	org, project, pools := poolKeyTenant(t, f.pool, "sandboxed-linux")
 	_, key := mintPoolKey(t, f.keys, org, project, pools[0], nil)
 
-	// A real API key for the same tenant, minted the way the tenancy surface mints one.
+	// A real API key for the same tenant, minted the way the tenancy surface mints one. It carries
+	// `system` because GET /v1/runners now sits behind the fleet's systemOnly gate (Faz A.1 Task 3),
+	// which — unlike HasScope — never treats an empty `scopes` set as unrestricted; without it this key
+	// would 403 at that gate and the pairing below would prove nothing about the pool key at all.
 	apiKey := "sk_poolkeyfence_" + hex.EncodeToString([]byte(poolKeyID("x")))
 	sys := storage.WithSystemScope(ctx)
 	for _, stmt := range [][]any{
 		{`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`, "prin_pkf_" + org, org, project},
 		{`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, scopes)
-		  VALUES ($1,$2,$3,$4,$5,$6)`, "key_pkf_" + org, org, project, "prin_pkf_" + org, coordinator.HashAPIKey(apiKey), []string{}},
+		  VALUES ($1,$2,$3,$4,$5,$6)`, "key_pkf_" + org, org, project, "prin_pkf_" + org, coordinator.HashAPIKey(apiKey), []string{middleware.ScopeSystem}},
 	} {
 		if _, err := f.pool.Exec(sys, stmt[0].(string), stmt[1:]...); err != nil {
 			t.Fatalf("seed the API key: %v", err)
