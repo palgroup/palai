@@ -234,7 +234,7 @@ export default function DeploymentPage() {
                 <span className="remedy-way" key={remedy.index}>
                   <span className="name">Way {remedy.index}</span>{" "}
                   <span className="muted">
-                    ({remedy.count} {remedy.count === 1 ? "setting" : "settings"})
+                    ({remedy.count} {remedy.count === 1 ? "setting" : "settings"}):
                   </span>{" "}
                   {remedy.sentence}
                 </span>
