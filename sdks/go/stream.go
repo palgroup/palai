@@ -159,6 +159,92 @@ func sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// streamTransport is the seam a shared reconnect/backoff/terminal engine (runStream) is built on.
+// Only the connect strategy and per-frame cursor bookkeeping differ between ResponseStream
+// (Last-Event-ID header + a dedupe check on the resume boundary, see responseStreamTransport in this
+// file) and SessionEventStream (?after_sequence, no dedupe needed — the server's read is
+// strictly-greater-than, see sessionStreamTransport in sessionevents.go). Everything else — backoff,
+// terminal handling, non-2xx and exhausted-reconnect errors — is identical and lives once in
+// runStream.
+type streamTransport interface {
+	// open connects (or reconnects), resuming from whatever cursor state the transport holds.
+	open(ctx context.Context) (*http.Response, error)
+	// processFrame turns one raw SSE frame into a decoded Event ready to deliver (ok=false for a
+	// non-JSON/heartbeat frame or a dedup boundary), updating the transport's own resume cursor as a
+	// side effect. It is called for EVERY dispatched frame, decoded or not, so an id-only frame still
+	// advances an id-keyed cursor.
+	processFrame(f SSEFrame) (Event, bool)
+}
+
+// runStream is the reconnect/backoff/terminal engine shared by ResponseStream.Events and
+// SessionEventStream.run: open a connection (or reuse first, an already-open one a caller needing a
+// synchronous connect error opened itself — nil for a caller with no such requirement), scan it with
+// scanSSE, deliver each decoded event, stop cleanly on a terminal event or a deliver-requested stop,
+// and otherwise reconnect with full-jitter backoff (bounded by maxReconnects) — on an open failure, a
+// non-2xx open (immediate, no retry), or the connection simply ending (a clean EOF or a read error;
+// scanSSE's returned error is not distinguished between the two, matching both streams' original
+// behavior pre-extraction).
+func runStream(ctx context.Context, t streamTransport, first *http.Response, maxReconnects, backoffBaseMs, backoffMaxMs int, deliver func(Event, error) bool) {
+	reconnects := 0
+	resp := first
+	for {
+		if resp == nil {
+			opened, err := t.open(ctx)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				if reconnects >= maxReconnects {
+					deliver(Event{}, &ConnectionError{Message: "event stream could not be (re)opened", Cause: err})
+					return
+				}
+				if sleep(ctx, fullJitterBackoff(reconnects, backoffBaseMs, backoffMaxMs)) != nil {
+					return
+				}
+				reconnects++
+				continue
+			}
+			if opened.StatusCode/100 != 2 {
+				body, _ := io.ReadAll(io.LimitReader(opened.Body, maxSSELineBytes))
+				opened.Body.Close()
+				deliver(Event{}, errorForResponse(opened.StatusCode, string(body), opened.Header.Get("Request-Id")))
+				return
+			}
+			resp = opened
+		}
+
+		terminal, stopped := false, false
+		_ = scanSSE(resp.Body, func(f SSEFrame) bool {
+			e, ok := t.processFrame(f)
+			if !ok {
+				return true
+			}
+			if !deliver(e, nil) {
+				stopped = true
+				return false
+			}
+			if IsTerminalEvent(e) {
+				terminal = true
+				return false
+			}
+			return true
+		})
+		resp.Body.Close()
+		resp = nil // this connection is spent either way; a next iteration (re)opens
+		if terminal || stopped || ctx.Err() != nil {
+			return
+		}
+		if reconnects >= maxReconnects {
+			deliver(Event{}, &ConnectionError{Message: "event stream dropped before a terminal event and exhausted reconnects"})
+			return
+		}
+		if sleep(ctx, fullJitterBackoff(reconnects, backoffBaseMs, backoffMaxMs)) != nil {
+			return
+		}
+		reconnects++
+	}
+}
+
 // ResponseStream is a resumable, typed consumer of a run's event stream. Iterating it via Events
 // yields each canonical Event (unknown event types are delivered, not dropped: API-009). A
 // transport drop before a terminal event reconnects from the last seen id via Last-Event-ID with
@@ -180,79 +266,47 @@ func (s *ResponseStream) LastEventID() string { return s.lastEventID }
 func (s *ResponseStream) ResponseID() string { return s.responseID }
 func (s *ResponseStream) SessionID() string  { return s.sessionID }
 
+// responseStreamTransport adapts ResponseStream to streamTransport: resume is the Last-Event-ID
+// header (an evt_* id). A resumed connection's first decoded event is suppressed if its frame id
+// equals the resume boundary, in case the server ever redelivers it.
+type responseStreamTransport struct {
+	stream        *ResponseStream
+	resumedFrom   string
+	dedupePending bool
+}
+
+func (t *responseStreamTransport) open(ctx context.Context) (*http.Response, error) {
+	t.resumedFrom = t.stream.lastEventID
+	t.dedupePending = t.resumedFrom != ""
+	return t.stream.client.openEventStream(ctx, t.stream.sessionID, t.resumedFrom)
+}
+
+func (t *responseStreamTransport) processFrame(f SSEFrame) (Event, bool) {
+	if f.ID != "" {
+		t.stream.lastEventID = f.ID
+	}
+	if f.Data == "" {
+		return Event{}, false
+	}
+	e, ok := decodeEvent(f.Data)
+	if !ok {
+		return Event{}, false
+	}
+	if t.dedupePending {
+		t.dedupePending = false
+		if f.ID != "" && f.ID == t.resumedFrom {
+			return Event{}, false // duplicate of the resume boundary
+		}
+	}
+	return e, true
+}
+
 // Events returns a range-over-func iterator over the run's events. A non-nil error is yielded once,
 // last, when the stream fails terminally (a typed APIError on a status error, a ConnectionError on
 // an exhausted reconnect). Breaking out of the range closes the transport.
 func (s *ResponseStream) Events(ctx context.Context) func(yield func(Event, error) bool) {
 	return func(yield func(Event, error) bool) {
-		reconnects := 0
-		for {
-			resumedFrom := s.lastEventID
-			resp, err := s.client.openEventStream(ctx, s.sessionID, resumedFrom)
-			if err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				if reconnects >= s.maxReconnects {
-					yield(Event{}, &ConnectionError{Message: "event stream could not be (re)opened", Cause: err})
-					return
-				}
-				if sleep(ctx, fullJitterBackoff(reconnects, s.backoffBaseMs, s.backoffMaxMs)) != nil {
-					return
-				}
-				reconnects++
-				continue
-			}
-			if resp.StatusCode/100 != 2 {
-				body, _ := io.ReadAll(io.LimitReader(resp.Body, maxSSELineBytes))
-				resp.Body.Close()
-				yield(Event{}, errorForResponse(resp.StatusCode, string(body), resp.Header.Get("Request-Id")))
-				return
-			}
-			dedupePending := resumedFrom != ""
-			terminal := false
-			stopped := false
-			scanErr := scanSSE(resp.Body, func(f SSEFrame) bool {
-				if f.ID != "" {
-					s.lastEventID = f.ID
-				}
-				if f.Data == "" {
-					return true
-				}
-				e, ok := decodeEvent(f.Data)
-				if !ok {
-					return true
-				}
-				if dedupePending {
-					dedupePending = false
-					if f.ID != "" && f.ID == resumedFrom {
-						return true // duplicate of the resume boundary
-					}
-				}
-				if !yield(e, nil) {
-					stopped = true
-					return false
-				}
-				if IsTerminalEvent(e) {
-					terminal = true
-					return false
-				}
-				return true
-			})
-			resp.Body.Close()
-			if terminal || stopped || ctx.Err() != nil {
-				return
-			}
-			_ = scanErr // a mid-stream read error falls through to a bounded reconnect
-			if reconnects >= s.maxReconnects {
-				yield(Event{}, &ConnectionError{Message: "event stream dropped before a terminal event and exhausted reconnects"})
-				return
-			}
-			if sleep(ctx, fullJitterBackoff(reconnects, s.backoffBaseMs, s.backoffMaxMs)) != nil {
-				return
-			}
-			reconnects++
-		}
+		runStream(ctx, &responseStreamTransport{stream: s}, nil, s.maxReconnects, s.backoffBaseMs, s.backoffMaxMs, yield)
 	}
 }
 

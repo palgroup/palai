@@ -233,13 +233,13 @@ type deploymentSetting struct {
 	ReaderFile string `json:"reader_file"`
 	ReaderFunc string `json:"reader_func"`
 	// Writable reports whether the panel may write a DESIRED value for this setting. It is served rather
-	// than derived by each client, so a console and a CLI cannot disagree about which of thirty-five
+	// than derived by each client, so a console and a CLI cannot disagree about which
 	// controls exist — and a client written against an older deployment gets `false` and renders nothing,
 	// which is the safe direction.
 	Writable bool `json:"writable"`
 	// NotWritableBecause is the sentence from nonDesiredReason, empty when Writable. It is served for the
 	// same reason the effect prose is: an operator who cannot change something on this screen is entitled
-	// to the reason without reading Go source, and twenty-four of the thirty-five are in that position.
+	// to the reason without reading Go source, and most of the catalogue is in that position.
 	NotWritableBecause string `json:"not_writable_because,omitempty"`
 	// Desired is what the desired document asks for, and DesiredSet distinguishes "the operator decided
 	// this" from "no opinion" — an empty Desired with DesiredSet false is the second, and the two are
@@ -319,8 +319,8 @@ type catalogueEntry struct {
 }
 
 // planeOf reads an entry's plane, defaulting to the control plane. A default rather than a required field
-// on all thirty-five, because every one of them IS a control-plane setting and a field repeated
-// thirty-five times identically is a field nobody reads — the guard below is what keeps it honest.
+// on every entry, because every one of them IS a control-plane setting and a field repeated identically
+// on each of them is a field nobody reads — the guard below is what keeps it honest.
 func planeOf(entry catalogueEntry) string {
 	if entry.Plane == "" {
 		return planeControlPlane
@@ -492,6 +492,23 @@ var deploymentCatalogue = []catalogueEntry{
 	{
 		Name: "PALAI_QUEUE_DEADLINE", Group: "execution", Kind: kindValue, Default: "disabled — a run never expires on queue age",
 		Effect:     "How long an admitted run may wait in the queue before dispatch times it out, ahead of any billable compute (§20.12).",
+		Mutability: mutabilityBringUp, ChangeWith: changeDesired,
+		ReaderFile: cpMain, ReaderFunc: "startDispatch",
+		DesiredValue: desiredDuration,
+	},
+	{
+		Name: "PALAI_FLEET_PARK_TTL", Group: "execution", Kind: kindValue,
+		Default: "disabled — a run parked for want of a machine waits forever",
+		// THE SECOND SENTENCE IS THE ROW'S REAL WORK. Unlike every other setting in this group, this one
+		// does nothing at all on a stack that dispatches nothing: the reconciler that runs the sweep is
+		// constructed BELOW startDispatch's early return, so PALAI_DISPATCH_WORKERS=0 builds no reconciler,
+		// and a control plane that refuses to dispatch (no runner listener bound) takes the same exit. A
+		// panel that accepted a TTL there, reported success and expired nothing would be a form that lies.
+		Effect: "How long a run parked for want of a MACHINE may wait before it ends as a `timed_out` " +
+			"response naming the reason, instead of waiting forever (E24 T5, FLT-P7). Unset means never, " +
+			"deliberately — a rented Mac takes six to twenty minutes to start, so any default would be a " +
+			"guess about somebody else's fleet. Read only where dispatch runs: with PALAI_DISPATCH_WORKERS=0, " +
+			"or on a control plane with no runner listener bound, no reconciler is built and this expires nothing.",
 		Mutability: mutabilityBringUp, ChangeWith: changeDesired,
 		ReaderFile: cpMain, ReaderFunc: "startDispatch",
 		DesiredValue: desiredDuration,

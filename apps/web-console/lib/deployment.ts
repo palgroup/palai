@@ -27,20 +27,35 @@ export interface DeploymentSetting extends Record<string, unknown> {
   reader_file: string;
   reader_func: string;
   /**
-   * DERIVED IN THE BROWSER, never sent by the API: true when this row's `change_with` is the sentence MOST
-   * rows carry, so /deployment can print that one above the table instead of twenty-nine times inside it.
-   * Set by markSharedRemedy in app/deployment/page.tsx, which is the only reader.
+   * DERIVED IN THE BROWSER, never sent by the API: which DISTINCT remedy this row carries, 1-based, so the
+   * column can point at a sentence printed once below the table instead of repeating it per row.
+   *
+   * IT REPLACED A SINGLE `change_with_is_shared` FLAG, and the reason is a measurement. That flag suppressed
+   * only the STRICT MAJORITY sentence, which existed when 29 of 35 rows shared one; measured 2026-08-03 the
+   * catalogue is 20 / 12 / 2 / 6-with-none across FOUR remedies, so no majority exists and the flag
+   * suppressed nothing — every one of the 20 identical sentences printed. The premise ended, not the intent:
+   * say each sentence once, and keep the rows that say something ELSE visible. Numbering generalises that to
+   * any number of groups of any size, and unlike a majority it gets STRONGER as the catalogue grows.
+   *
+   * 0 means the row states no remedy at all, which is a fact rather than a shared sentence and is printed as
+   * nothing. Set by numberRemedies in app/deployment/page.tsx, which is the only writer.
    */
-  change_with_is_shared?: boolean;
+  change_with_index?: number;
   /**
-   * Whether the panel may write a DESIRED value for this setting. SERVED, never derived here: which of the
-   * thirty-five are writable is a decision the control plane's own catalogue makes (an allow-list that
+   * DERIVED IN THE BROWSER: how many loaded rows carry this row's `change_with`. It decides WHERE the
+   * sentence is stated — a group of ONE states it on its own row (a group of one is its row, and those are
+   * the rows worth reading), a group of more points at the footnote. Both satisfy "each sentence once".
+   */
+  change_with_count?: number;
+  /**
+   * Whether the panel may write a DESIRED value for this setting. SERVED, never derived here: which settings
+   * are writable is a decision the control plane's own catalogue makes (an allow-list that
    * drops every filesystem path structurally), and a console with its own copy of that list would be a
    * second opinion about a security boundary. A deployment older than this console sends nothing, which
    * reads as `false` and renders no control — the safe direction.
    */
   writable?: boolean;
-  /** The catalogue's sentence for why this setting is NOT writable. Twenty-four of thirty-five carry one. */
+  /** The catalogue's sentence for why this setting is NOT writable. Most rows carry one. */
   not_writable_because?: string;
   /** The shape a written value must have — "integer" | "rate" | "duration" | "token". See DESIRED_HELP. */
   value_grammar?: string;

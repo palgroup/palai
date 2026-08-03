@@ -612,6 +612,20 @@ func TestEveryDesiredValueThisBinaryAcceptsIsParsedByItsOwnReader(t *testing.T) 
 			refused: map[string]string{"15 minutes": "0s", "15": "0s", "10min": "0s"},
 		},
 		{
+			setting: "PALAI_FLEET_PARK_TTL",
+			read:    func() string { return envDuration("PALAI_FLEET_PARK_TTL").String() },
+			// `1h` is the value this deployment sets: three times the six-to-twenty minutes AWS documents for a
+			// Mac host to start, so a fleet that is genuinely booting is never cut off, and far under the
+			// forty-one hours two runs sat parked on a live stack for want of one.
+			accepted: map[string]string{"1h": "1h0m0s", "30m": "30m0s", "6h": "6h0m0s"},
+			// `3600` IS THE ONE THAT MATTERS AND IT IS WHY THIS ROW IS HERE. envDuration coerces every parse
+			// error to 0, and 0 for this variable means NEVER EXPIRE — so a stored "3600", which is what a
+			// person writes for one hour, would silently disable the reaper while the panel reported an hour
+			// and two runs waited forever. The grammar refuses it at the write path; this is the other end of
+			// the same fact, measured through the reader the binary actually uses.
+			refused: map[string]string{"3600": "0s", "1 hour": "0s", "60min": "0s"},
+		},
+		{
 			setting:  "PALAI_RETENTION_STORE_FALSE_TTL",
 			read:     func() string { return envDuration("PALAI_RETENTION_STORE_FALSE_TTL").String() },
 			accepted: map[string]string{"720h": "720h0m0s", "24h": "24h0m0s"},

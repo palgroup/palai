@@ -20,7 +20,7 @@ var interpolationPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)[^}]*
 // THE DESIRED CONFIGURATION — the WRITE half, and the four properties it has to have before a form is
 // worth putting in front of an operator.
 //
-// The read half (deployment_test.go) exists because thirty-five settings decided what this deployment does
+// The read half (deployment_test.go) exists because the catalogue of settings decided what this deployment does
 // and no client could see one of them. The write half exists because seeing them is not the whole of the
 // requirement: "no config should live locally, it must be pushed from the panel to the machine". The
 // measurement that decides the shape is in the catalogue's own header and re-run here on the live stack
@@ -30,7 +30,7 @@ var interpolationPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)[^}]*
 //	  32 bring_up
 //	   3 bring_up_default_only
 //
-// Thirty-two of thirty-five are read from the process environment, fixed at exec. So the panel cannot edit
+// Nearly all of them are read from the process environment, fixed at exec. So the panel cannot edit
 // a running process and a control that claimed to would be the defect this tree keeps finding. It writes a
 // DESIRED document instead; the bring-up reads it and turns it into the process's environment.
 //
@@ -302,6 +302,13 @@ func TestDesiredWriteRefusesEveryHostileBody(t *testing.T) {
 		{"no settings field at all", `{}`, "`settings` is required"},
 		{"a duration a human reads and Go does not", `{"settings":{"PALAI_SANDBOX_WALL_TIME":"10min"}}`,
 			"write `10m`"},
+		// THE UNITLESS ONE IS A DIFFERENT FOOTGUN FROM `10min` AND IS THE ONE AN OPERATOR TYPES. `10min` is
+		// a misspelt unit; `3600` is a plausible number of SECONDS with no unit at all, which is what
+		// somebody writes for "one hour". envDuration is time.ParseDuration and returns 0 on ANY error —
+		// identical to unset — so accepting it would store a value that silently means `never` while the
+		// screen reported the write succeeded. The grammar refuses it at the boundary instead.
+		{"a duration in bare seconds, which means `never` to the reader", `{"settings":{"PALAI_FLEET_PARK_TTL":"3600"}}`,
+			"missing unit"},
 		{"an integer that is a word", `{"settings":{"PALAI_DISPATCH_WORKERS":"four"}}`, "strconv.Atoi"},
 		{"an integer with a sign the reader normalises away", `{"settings":{"PALAI_DISPATCH_WORKERS":"+4"}}`,
 			"does not survive a round trip"},
@@ -339,6 +346,7 @@ func TestDesiredWriteAcceptsTheValuesAnOperatorActuallyTypes(t *testing.T) {
 	const body = `{"settings":{
 		"PALAI_DISPATCH_WORKERS":"4",
 		"PALAI_QUEUE_DEADLINE":"15m",
+		"PALAI_FLEET_PARK_TTL":"1h",
 		"PALAI_RETENTION_STORE_FALSE_TTL":"720h",
 		"PALAI_SANDBOX_WALL_TIME":"1h30m",
 		"PALAI_REQUEST_RATE_PER_SEC":"12.5",
@@ -546,7 +554,7 @@ func TestARunnerPlaneRowNeverReportsThisProcessesCopyOfIt(t *testing.T) {
 
 // TestThePlaneGuardCanTellTheTwoPlanesApart is the anti-vacuity leg, and it is not decoration.
 //
-// The guard above asserts that thirty-five entries all sit on one plane. With only one list of prefixes
+// The guard above asserts that every entry sits on one plane. With only one list of prefixes
 // that assertion is unfalsifiable — it would be checking that everything is what everything is, and it
 // would pass on a catalogue whose runner-plane entries had simply been mislabelled. So this drives the
 // SHIPPED function with a citation into the runner binary and requires it to come back with the other
@@ -701,5 +709,52 @@ func TestTurningWorkspacesOnWarnsAboutTheOtherPlanesCopy(t *testing.T) {
 	if _, ok := warningCoded(body, warnWorkspaceRootPlane); ok {
 		t.Error("the warning still fires with workspaces off; no lease can carry a workspace path, so there is " +
 			"nothing for a runner to place or refuse")
+	}
+}
+
+// TestTheCapacityParkTTLIsSettableFromThePanel is the row this catalogue was missing, and the reason it
+// matters is not coverage — it is that PALAI_FLEET_PARK_TTL was settable ONLY by editing a machine's
+// environment, which is the thing the desired-config surface exists to abolish.
+//
+// It is the reaper for E24 T4's FLT-P7: a run parked for want of a machine waits FOREVER, because the
+// only wake fires when a machine connects. Two runs on a live stack sat that way for forty-one hours on
+// 2026-08-02, and the supported way to end them is this TTL — through a panel, not through a file.
+//
+// THE MUTABILITY IS MEASURED, NOT ASSUMED. main.go's startDispatch calls
+// `WithCapacityParkTTL(envDuration("PALAI_FLEET_PARK_TTL"))` ONCE, at reconciler construction; the
+// reconciler stores it in a field and Sweep reads the FIELD every tick, never the environment again. So a
+// new value needs the process replaced — `bring_up`, and not `bring_up_default_only`, because there is no
+// runtime write-path for a park TTL that the environment value would merely be the fallback for. A row
+// claiming a restart is unnecessary would be the same class of lie as one claiming it is.
+func TestTheCapacityParkTTLIsSettableFromThePanel(t *testing.T) {
+	const name = "PALAI_FLEET_PARK_TTL"
+	var entry catalogueEntry
+	for _, e := range deploymentCatalogue {
+		if e.Name == name {
+			entry = e
+			break
+		}
+	}
+	if entry.Name == "" {
+		t.Fatalf("%s is not in the catalogue, so the ONLY way to set it is on the machine — which is exactly what this surface exists to replace. It is the reaper that ends a run parked for want of a machine (E24 T5); without a row, a capacity policy stays a file edit", name)
+	}
+	if _, writable := desiredWritable()[name]; !writable {
+		t.Fatalf("%s is catalogued but NOT writable: a read-only row reports the machine's value and still leaves the operator editing a file to change it", name)
+	}
+	if entry.Mutability != mutabilityBringUp {
+		t.Fatalf("%s declares mutability %q, want %q — measured: startDispatch reads it once at reconciler construction and Sweep then reads the FIELD, never the environment", name, entry.Mutability, mutabilityBringUp)
+	}
+	if entry.DesiredValue != desiredDuration {
+		t.Fatalf("%s declares the grammar %q, want %q — the duration grammar is what REFUSES a unitless value, and a unitless value here silently means `never`", name, entry.DesiredValue, desiredDuration)
+	}
+
+	// THE TWO CONDITIONS THAT MAKE IT A NO-OP MUST BE IN THE ROW AN OPERATOR READS. Unlike every other
+	// execution setting, this one does nothing at all on a stack that dispatches nothing: the reconciler is
+	// constructed BELOW startDispatch's early return, so PALAI_DISPATCH_WORKERS=0 builds no reconciler and
+	// runs no sweep — and since the dispatch refusal landed, a control plane with no runner listener takes
+	// that same early exit. A panel that accepts a TTL on such a stack, reports success, and expires
+	// nothing is a form that lies about what it did.
+	if !strings.Contains(entry.Effect, "PALAI_DISPATCH_WORKERS") {
+		t.Fatalf("%s's effect text does not name PALAI_DISPATCH_WORKERS: on a stack with no dispatch workers the reconciler is never built, so this setting is accepted and expires nothing — the row must say so where it is read, not leave it to be discovered.\ngot: %s", name, entry.Effect)
 	}
 }

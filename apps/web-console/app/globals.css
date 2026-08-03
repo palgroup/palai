@@ -3175,3 +3175,14 @@ tbody tr[data-selected="true"] td {
   width: min(var(--section-w), 100%);
   margin: 0 0 var(--space-6);
 }
+
+/* One remedy per line under the deployment table. A BLOCK-DISPLAYED SPAN rather than a list item because
+   Panel renders `footnote` inside a <p> (components/Panel.tsx:522): an <ol> or a nested <p> there is
+   invalid nesting, which the browser repairs by closing the paragraph early and leaving the rest orphaned.
+   The element is chosen by what the container permits, not by what the content resembles. */
+.remedy-way {
+  display: block;
+}
+.remedy-way + .remedy-way {
+  margin-top: var(--space-2);
+}
