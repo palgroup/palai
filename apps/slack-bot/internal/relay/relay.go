@@ -112,8 +112,14 @@ type openStream struct {
 
 	// pending is text that has not been CONFIRMED delivered: either nothing has been sent for it yet,
 	// or the last AppendStream carrying it failed. It rides along on every later send (see emit), and
-	// is flushed as the final chat.stopStream call's markdown_text — so text Slack never confirmed
-	// still reaches the message once, at the end, rather than being silently dropped.
+	// is flushed as the final chat.stopStream call's markdown_text.
+	//
+	// THAT FINAL FLUSH IS ONE MORE ATTEMPT, NOT A GUARANTEE, and the two branches are not the same
+	// outcome: if the closing StopStream call succeeds, pending's text reaches the message; if
+	// StopStream ALSO fails, that text is genuinely lost from Slack's side — there is no retry after
+	// this one and nothing durable behind it. The loss is not silent at the Go level (stop() still
+	// turns a StopStream failure into Run's returned error via *outErr, so a caller can act on it), but
+	// the Slack message itself will be missing the text either way.
 	pending strings.Builder
 }
 
