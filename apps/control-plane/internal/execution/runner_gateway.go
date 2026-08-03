@@ -1781,6 +1781,14 @@ func (g *RunnerGateway) readLoop(pr *pendingRunner) {
 			}
 			gc.closeFrames() // succeeded → close frames → Receive sees io.EOF
 			return
+		case runner.ExecResultType:
+			// The machine's answer to a command this control plane asked it to run (A.3). Without this
+			// arm the message would fall through to the heartbeat default below and be counted as
+			// liveness, and every RemoteShell would wait for an answer that had already arrived.
+			//
+			// The hand-off cannot block — see execPending.deliver — because this goroutine is the
+			// connection's sole reader and a reader parked here strands every later message on it.
+			gc.deliverExecResult(message.Data)
 		default:
 			// A heartbeat carries nothing to RELAY and it does carry one fact: this machine is alive. Since
 			// E24 T5 that fact advances `runners.last_seen_at`, which is the stamp an operator reads.
@@ -1810,6 +1818,11 @@ type gatewayChannel struct {
 	// active is the gateway's in-flight-lease counter (nil in the white-box channel tests). Close
 	// decrements it exactly once so a drain sees the lease finish.
 	active *atomic.Int64
+	// execs is the set of commands this lease asked the MACHINE to run and has not yet heard back
+	// about (A.3). It lives here because readLoop below is the connection's sole reader: the answer
+	// arrives on the goroutine that reads every other message, so this is where that goroutine hands
+	// it over. Every method that touches it is in remote_shell.go, beside the client that waits on it.
+	execs execPending
 }
 
 type relayRead struct {
@@ -1823,7 +1836,17 @@ func newGatewayChannel(pr *pendingRunner, attempt AttemptDescriptor) *gatewayCha
 
 // closeFrames closes the frames channel exactly once (readLoop reaches it from several paths), so
 // Receive sees io.EOF and a repeated close never panics.
-func (c *gatewayChannel) closeFrames() { c.framesOnce.Do(func() { close(c.frames) }) }
+//
+// It also answers every command still waiting on this machine (A.3). Every one of readLoop's teardown
+// paths funnels through here, so this is the single place that can promise a tool call an answer when
+// its machine goes away: the connection that would have carried the exec.result is the one that just
+// ended, and silence there is a run that never continues.
+func (c *gatewayChannel) closeFrames() {
+	c.framesOnce.Do(func() {
+		close(c.frames)
+		c.execs.closeAll(errLeaseConnectionEnded)
+	})
+}
 
 // Send relays one controller->engine frame to the runner inside a controller.frame.
 func (c *gatewayChannel) Send(ctx context.Context, frame contracts.EngineFrame) error {
@@ -1866,6 +1889,9 @@ func (c *gatewayChannel) Close() error {
 		if c.active != nil {
 			c.active.Add(-1)
 		}
+		// The other teardown door (A.3). An attempt that releases its lease while a command is still
+		// out gets its answer here rather than waiting for readLoop to notice the torn-down socket.
+		c.execs.closeAll(errLeaseConnectionEnded)
 	})
 	return nil
 }
