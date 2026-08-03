@@ -35,6 +35,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	providerone "github.com/palgroup/palai/adapters/models/provider_one"
+	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
@@ -176,6 +177,31 @@ func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, label string) (token st
 	do(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4, $5)`,
 		keyID, tenant.Organization, tenant.Project, principal, coordinator.HashAPIKey(token))
 	return token, tenant
+}
+
+// seedSystemKey creates a bearer key that carries ONLY middleware.ScopeSystem — the platform capability
+// Task 2 gates organization creation on. It is deliberately NOT a variant of seedTenantWithKey: a system
+// key is not a tenant admin key with extra privileges, it answers a different question (see
+// provisioning.go's authorizeSystem), and every OTHER seedTenantWithKey caller in this package must keep
+// getting an ordinary tenant key with no platform capability. It still needs a throwaway tenant to satisfy
+// api_keys' foreign keys, but that tenant is never the caller's.
+func seedSystemKey(t *testing.T, pool *pgxpool.Pool) (token string) {
+	t.Helper()
+	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	principal, keyID := newID("prin"), newID("key")
+	token = newID("sk")
+	do := func(sql string, args ...any) {
+		if _, err := pool.Exec(storage.WithSystemScope(context.Background()), sql, args...); err != nil {
+			t.Fatalf("seed exec %q: %v", sql, err)
+		}
+	}
+	do(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
+	do(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
+	do(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`,
+		principal, tenant.Organization, tenant.Project)
+	do(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, scopes) VALUES ($1, $2, $3, $4, $5, $6)`,
+		keyID, tenant.Organization, tenant.Project, principal, coordinator.HashAPIKey(token), []string{middleware.ScopeSystem})
+	return token
 }
 
 // countUnderTenant runs query inside ONE transaction scoped to the given tenant via the same

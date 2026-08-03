@@ -85,9 +85,10 @@ func TestManagedCloudJourney(t *testing.T) {
 	srv := httptest.NewServer(api.NewRouter(repo, repo, repo, repo, repo, repo, nil, nil, nil, nil, nil, nil, nil, idstore, nil, api.SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 
-	// A bootstrap admin key (empty scope = unrestricted) authenticates the first cross-tenant POST. Its
-	// plaintext exists only here; only its hash reaches the database.
-	bootstrapToken, _ := seedTenantWithKey(t, pool, "bootstrap")
+	// A bootstrap key carrying middleware.ScopeSystem authenticates the first cross-tenant POST — Task 2
+	// gates organization creation on that capability, not on an ordinary tenant admin key. Its plaintext
+	// exists only here; only its hash reaches the database.
+	bootstrapToken := seedSystemKey(t, pool)
 
 	// Step (provision-org): POST /v1/organizations mints a brand-new tenant — org + default project + admin
 	// key — through the public API on THIS running process (no restart). The admin key plaintext is in the

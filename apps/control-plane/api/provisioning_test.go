@@ -83,7 +83,9 @@ func provisioningTestServer(t *testing.T, verifier middleware.Verifier, prov Pro
 
 // TestProvisioningSurface pins the routing + rendering contract for every provisioning route: creates are
 // 201 with the resource-typed Location, reads are 200, a strict-decode reject is a 400, and an
-// absent/foreign resource is a 404. An admin key (empty scopes) passes the capability gate.
+// absent/foreign resource is a 404. An admin key (empty scopes) passes the capability gate on every route
+// EXCEPT organization creation, which Task 2 gates separately on middleware.ScopeSystem — that route is
+// asserted below against its own system-scoped key instead of the shared admin one.
 func TestProvisioningSurface(t *testing.T) {
 	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1"}}
 	fake := &fakeProvisioning{
@@ -96,7 +98,6 @@ func TestProvisioningSurface(t *testing.T) {
 		method, path, body, wantLoc string
 		wantStatus                  int
 	}{
-		{"POST", "/v1/organizations", `{"display_name":"acme"}`, "/v1/organizations/x_1", http.StatusCreated},
 		{"GET", "/v1/organizations", ``, "", http.StatusOK},
 		{"GET", "/v1/organizations/org_9", ``, "", http.StatusOK},
 		{"POST", "/v1/projects", `{"display_name":"p"}`, "/v1/projects/x_1", http.StatusCreated},
@@ -116,6 +117,19 @@ func TestProvisioningSurface(t *testing.T) {
 		if c.wantLoc != "" && resp.Header.Get("Location") != c.wantLoc {
 			t.Fatalf("%s %s Location = %q, want %q", c.method, c.path, resp.Header.Get("Location"), c.wantLoc)
 		}
+	}
+
+	// Organization creation is gated on middleware.ScopeSystem, not on the ordinary admin key above — its
+	// own server, backed by its own system-scoped key, so the shared `admin` verifier stays exactly what
+	// its name says: a tenant admin, which is no longer enough to open a tenant.
+	platform := scopedVerifier{middleware.Scope{Scopes: []string{middleware.ScopeSystem}}}
+	platformBase := provisioningTestServer(t, platform, fake)
+	orgResp := do(t, "POST", platformBase+"/v1/organizations", `{"display_name":"acme"}`, nil)
+	if orgResp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /v1/organizations with a system-scoped key status = %d, want %d", orgResp.StatusCode, http.StatusCreated)
+	}
+	if got := orgResp.Header.Get("Location"); got != "/v1/organizations/x_1" {
+		t.Fatalf("POST /v1/organizations Location = %q, want %q", got, "/v1/organizations/x_1")
 	}
 
 	// A strict-decode reject renders 400, an absent resource renders 404 — the typed store outcomes.

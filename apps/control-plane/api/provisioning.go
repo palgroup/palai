@@ -57,8 +57,13 @@ type provisioningHandler struct {
 }
 
 func (h *provisioningHandler) createOrganization(w http.ResponseWriter, r *http.Request) {
-	scope, raw, ok := h.begin(w, r)
+	scope, ok := h.authorizeSystem(w, r)
 	if !ok {
+		return
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body could not be read")
 		return
 	}
 	out, err := h.provisioning.CreateOrganization(r.Context(), scope, raw)
@@ -156,6 +161,23 @@ func (h *provisioningHandler) revokeAPIKey(w http.ResponseWriter, r *http.Reques
 	}
 	out, err := h.provisioning.RevokeAPIKey(r.Context(), scope, r.PathValue("key_id"))
 	h.write(w, r, out, err, http.StatusOK, "")
+}
+
+// authorizeSystem is the platform gate. It is a SEPARATE function from authorize rather than a flag on
+// it, because the two answer different questions: authorize asks "may this tenant do this to itself",
+// this asks "is this the platform". Opening a tenant is the second question — a new organization is not
+// an operation ON the caller's tenant, it is the creation of another one.
+func (h *provisioningHandler) authorizeSystem(w http.ResponseWriter, r *http.Request) (middleware.Scope, bool) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return middleware.Scope{}, false
+	}
+	if !scope.HasSystem() {
+		middleware.WriteProblem(w, r, http.StatusForbidden, "insufficient_scope", "this API key lacks the system capability")
+		return middleware.Scope{}, false
+	}
+	return scope, true
 }
 
 // authorize resolves the verified scope and enforces the provision capability. It backs the routes that

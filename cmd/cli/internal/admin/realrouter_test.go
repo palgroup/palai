@@ -95,7 +95,26 @@ func realRouterServer(t *testing.T, v middleware.Verifier, sec capi.SecretRefAPI
 // TestAdminCLIAgainstRealRouter drives every subcommand through the real router + admin key (empty scopes),
 // proving the CLI hits routes the real mux actually serves, that the one-time key is disclosed on create,
 // and that the write-only secret value reaches the store but never the response.
+//
+// Organization creation is the one exception, run first against its OWN server and its OWN
+// middleware.ScopeSystem-scoped key: Task 2 gates opening a tenant on the platform capability, not on the
+// ordinary admin key every other step below is proven against — so the shared admin key stays exactly
+// what this comment says it is, empty scopes and no platform capability.
 func TestAdminCLIAgainstRealRouter(t *testing.T) {
+	platformBase := realRouterServer(t, staticVerifier{scope: middleware.Scope{Scopes: []string{middleware.ScopeSystem}}}, &fakeSec{})
+	t.Setenv("PALAI_BASE_URL", platformBase)
+	t.Setenv("PALAI_API_KEY", "platform-key")
+	var orgOut bytes.Buffer
+	if err := Run("org", []string{"create", "--display-name", "Acme"}, &orgOut, strings.NewReader("")); err != nil {
+		t.Fatalf("Run([org create --display-name Acme]): %v", err)
+	}
+	if !strings.Contains(orgOut.String(), `"sk_oneTimeOrgKey"`) {
+		t.Errorf("output %q missing %q", orgOut.String(), `"sk_oneTimeOrgKey"`)
+	}
+	if strings.Contains(orgOut.String(), "platform-key") {
+		t.Errorf("output %q leaked the bearer key", orgOut.String())
+	}
+
 	sec := &fakeSec{}
 	base := realRouterServer(t, staticVerifier{scope: middleware.Scope{Organization: "org_1", Project: "prj_1"}}, sec)
 	t.Setenv("PALAI_BASE_URL", base)
@@ -108,7 +127,6 @@ func TestAdminCLIAgainstRealRouter(t *testing.T) {
 		wantNotOut string // substring the output must NOT contain (empty = skip)
 	}
 	steps := []step{
-		{args: []string{"org", "create", "--display-name", "Acme"}, wantOut: `"sk_oneTimeOrgKey"`, wantNotOut: "bootstrap-admin-key"},
 		{args: []string{"org", "list"}, wantOut: `"org_1"`},
 		{args: []string{"org", "get", "org_1"}, wantOut: `"organization"`},
 		{args: []string{"project", "create", "--display-name", "P"}, wantOut: `"prj_new"`},

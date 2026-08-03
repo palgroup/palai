@@ -134,7 +134,9 @@ func TestSDKParityJourney(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	// --- Provision tenant A over the API + a provider-one route; execute the SHARED run ---
-	bootstrapToken, _ := seedTenantWithKey(t, pool, "bootstrap")
+	// The bootstrap key carries middleware.ScopeSystem: Task 2 gates organization creation on that
+	// capability, not on an ordinary tenant admin key.
+	bootstrapToken := seedSystemKey(t, pool)
 	tenantA, tokenA := provisionAPITenant(t, srv.URL, bootstrapToken, "sdk-parity-A")
 	publishRoute(t, ctx, repo, secretStore, tenantA, "provider-one", liveModel(), openaiKey)
 
