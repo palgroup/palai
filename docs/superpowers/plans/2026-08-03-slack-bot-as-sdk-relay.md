@@ -1078,6 +1078,21 @@ git commit -m "feat(slack-bot): approval bridge with an allow-list gate"
 `apps/web-console/app/repositories/page.tsx` (538 satır) bu konsolun desenidir: `/api/palai/v1`
 relay'i, `Panel`/`Status` bileşenleri, `FormDialog`.
 
+**HAZIR BİLEŞENLER — ÖLÇÜLDÜ 2026-08-03. Hiçbiri yeniden yazılmaz:**
+`FormDialog`, `Panel` (+`Column`), `ResourceForm`, `SecretField` (+`takeSecret`), `Picker`,
+`RevealOnce`, `ConfirmDestructive`, `Status`, `Stat`, `Timeline`, `Chrome`, `ui/{Button,Menu,Field,Select}`.
+
+İki tanesinin **yazılı sözleşmesi** vardır ve bu ekran ikisine de uyar:
+
+- **`Picker`:** *"A SELECT WITH NO OPTIONS IS NOT RENDERED AT ALL, and the caller says what stands in
+  its place."* Boş bir dropdown, tatmin edilemeyen bir kontroldür; serbest metne düşürmek ise
+  operatöre var olmayan bir id yazdırır ve hata birkaç adım sonra bambaşka bir şey hakkında gelir.
+  Ayrıca boş etiket bir axe ihlali ve ekran okuyucuya söylenmiş bir yalandır.
+- **`SecretField` + `takeSecret`:** değer **yalnız DOM düğümünde** yaşar — React state'e, durum
+  mesajına, URL'e asla girmez. `takeSecret()` okur **ve aynı çağrıda alanı sıfırlar**, submit başarılı
+  olsa da olmasa da. `onPaste` handler'ı yoktur ve **olmamalıdır**. Slack bot token'ı, app token'ı ve
+  signing secret'ı bu alandan geçer — başka hiçbir yerden.
+
 - [ ] **Step 2: Başarısız testi yaz**
 
 ```ts
