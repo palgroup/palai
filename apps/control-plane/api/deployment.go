@@ -405,6 +405,23 @@ var deploymentCatalogue = []catalogueEntry{
 		DesiredValue: desiredDuration,
 	},
 	{
+		Name: "PALAI_FLEET_PARK_TTL", Group: "execution", Kind: kindValue,
+		Default: "disabled — a run parked for want of a machine waits forever",
+		// THE SECOND SENTENCE IS THE ROW'S REAL WORK. Unlike every other setting in this group, this one
+		// does nothing at all on a stack that dispatches nothing: the reconciler that runs the sweep is
+		// constructed BELOW startDispatch's early return, so PALAI_DISPATCH_WORKERS=0 builds no reconciler,
+		// and a control plane that refuses to dispatch (no runner listener bound) takes the same exit. A
+		// panel that accepted a TTL there, reported success and expired nothing would be a form that lies.
+		Effect: "How long a run parked for want of a MACHINE may wait before it ends as a `timed_out` " +
+			"response naming the reason, instead of waiting forever (E24 T5, FLT-P7). Unset means never, " +
+			"deliberately — a rented Mac takes six to twenty minutes to start, so any default would be a " +
+			"guess about somebody else's fleet. Read only where dispatch runs: with PALAI_DISPATCH_WORKERS=0, " +
+			"or on a control plane with no runner listener bound, no reconciler is built and this expires nothing.",
+		Mutability: mutabilityBringUp, ChangeWith: changeDesired,
+		ReaderFile: cpMain, ReaderFunc: "startDispatch",
+		DesiredValue: desiredDuration,
+	},
+	{
 		Name: "PALAI_TOOL_ERROR_BUDGET", Group: "execution", Kind: kindValue, Default: "16",
 		Effect: "How many tool REFUSALS one attempt may hand a model before the run ends with a named " +
 			"terminal failure (`tool_error_budget_exhausted`). A tool error is delivered to the model AS A " +

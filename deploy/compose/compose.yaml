@@ -124,6 +124,7 @@ services:
       # envFloat and envDuration all read that as their zero, which is what an absent variable already
       # gave them. What changes is that a value can now arrive.
       PALAI_QUEUE_DEADLINE: ${PALAI_QUEUE_DEADLINE:-}
+      PALAI_FLEET_PARK_TTL: ${PALAI_FLEET_PARK_TTL:-}
       PALAI_REQUEST_RATE_PER_SEC: ${PALAI_REQUEST_RATE_PER_SEC:-}
       PALAI_REQUEST_BURST: ${PALAI_REQUEST_BURST:-}
       PALAI_MAX_CONCURRENT_RUNS: ${PALAI_MAX_CONCURRENT_RUNS:-}

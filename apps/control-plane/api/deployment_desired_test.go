@@ -346,6 +346,7 @@ func TestDesiredWriteAcceptsTheValuesAnOperatorActuallyTypes(t *testing.T) {
 	const body = `{"settings":{
 		"PALAI_DISPATCH_WORKERS":"4",
 		"PALAI_QUEUE_DEADLINE":"15m",
+		"PALAI_FLEET_PARK_TTL":"1h",
 		"PALAI_RETENTION_STORE_FALSE_TTL":"720h",
 		"PALAI_SANDBOX_WALL_TIME":"1h30m",
 		"PALAI_REQUEST_RATE_PER_SEC":"12.5",
