@@ -96,19 +96,30 @@ func TestDeltasBecomeOneAppendPerWindow(t *testing.T) {
 // as permanently "streaming" in Slack (SLK-P2), and forgetting one branch is the shape of bug this tree
 // has shipped repeatedly. run.budget_exceeded.v1 is included alongside the three the plan named because
 // it is measured to be in the SAME closed set the SSE endpoint itself closes on
-// (apps/control-plane/api/events.go's terminalEventTypes) — leaving it out here would leave exactly the
-// budget-exceeded run streaming forever.
+// (apps/control-plane/api/events.go's terminalEventTypes).
+//
+// Each fixture carries a SECOND event after the terminal one, and the test asserts the stream never read
+// it (sliceStream.i == 1): Run's defer-based stop also fires when a stream ends on its own (io.EOF), so
+// a version of this test that only checked fake.stopped stayed green even with an entry deleted from
+// runTerminalEvents — that fallback is real defense in depth, but it made the assertion vacuous for the
+// one thing this test exists to pin, namely that the TYPE ITSELF is recognized as terminal and stops the
+// loop immediately, not just that the loop stops eventually once its fixture runs out.
 func TestATerminalEventAlwaysStopsTheStream(t *testing.T) {
-	for _, term := range []string{"run.failed.v1", "run.canceled.v1", "run.timed_out.v1", "run.budget_exceeded.v1"} {
+	for _, term := range []string{"run.completed.v1", "run.failed.v1", "run.canceled.v1", "run.timed_out.v1", "run.budget_exceeded.v1"} {
 		fake := &fakeSlack{}
-		if err := Run(context.Background(), Deps{
-			Events: staticStream([]palai.Event{{Type: term, Data: map[string]any{}}}),
-			Slack:  fake,
-		}, "sess_1", "C1", "1.1"); err != nil {
+		stream := &sliceStream{events: []palai.Event{
+			{Type: term, Data: map[string]any{}},
+			{Type: "model_step.delta.v1", Data: map[string]any{"text": "SHOULD-NOT-BE-READ"}},
+		}}
+		if err := Run(context.Background(), Deps{Events: stream, Slack: fake}, "sess_1", "C1", "1.1"); err != nil {
 			t.Fatalf("Run(%s): %v", term, err)
 		}
 		if fake.stopped != 1 {
 			t.Fatalf("%s left the stream open (stopped=%d)", term, fake.stopped)
+		}
+		if stream.i != 1 {
+			t.Fatalf("%s: the loop read %d event(s) past the terminal one — it must stop AT the terminal, "+
+				"not merely eventually", term, stream.i)
 		}
 	}
 }
