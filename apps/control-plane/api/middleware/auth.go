@@ -40,6 +40,23 @@ func (s Scope) HasScope(capability string) bool {
 	return false
 }
 
+// ScopeSystem is the PLATFORM's own capability. It is deliberately outside the empty-set rule above:
+// an empty scope set means "every tenant capability", and a tenant admin key is exactly that. Handing
+// it the platform capability too would make every customer's admin key able to open new tenants and
+// read the fleet, which is what this constant exists to prevent.
+const ScopeSystem = "system"
+
+// HasSystem reports whether this key carries the platform capability. Unlike HasScope, an empty set is
+// NOT unrestricted here — system must be granted explicitly, never inherited.
+func (s Scope) HasSystem() bool {
+	for _, c := range s.Scopes {
+		if c == ScopeSystem {
+			return true
+		}
+	}
+	return false
+}
+
 // Verifier resolves a bearer token to its tenant scope. The stored verifier is a
 // hash; the full key is never persisted (spec §20 security).
 type Verifier interface {
