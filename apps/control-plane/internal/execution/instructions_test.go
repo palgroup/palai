@@ -1,6 +1,65 @@
 package execution
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	modelbroker "github.com/palgroup/palai/packages/model-broker"
+)
+
+// TestThePlatformTextReachesTheModelRequest is the end this layer exists for. Every other test here
+// proves the layer RESOLVES; only this one proves the bytes land in the messages a provider is
+// called with. The distinction is the one this tree keeps paying for — a route existing is not a
+// field being accepted — and the seam it drives is the whole production chain from
+// model_dispatch.go:178: resolveInstructionLayers feeding applyInstructionLayers.
+//
+// IT ALSO PINS THE ORDER ON THE WIRE. The engine's kernel turn stays first because
+// applyInstructionLayers inserts after any leading system messages; platform comes next; tenant text
+// after that. A revision string arriving ahead of the platform text would be a caller-supplied
+// instruction sitting where platform guidance should be.
+func TestThePlatformTextReachesTheModelRequest(t *testing.T) {
+	const revisionFixture = "the pinned revision's own instruction"
+	engineAssembled := []modelbroker.Message{
+		{Role: "system", Content: "the engine's kernel turn"},
+		{Role: "user", Content: "do the thing"},
+	}
+
+	out := applyInstructionLayers(engineAssembled, resolveInstructionLayers(revisionFixture, ""))
+
+	var systemTurns []string
+	for _, m := range out {
+		if m.Role == "system" {
+			systemTurns = append(systemTurns, m.Content)
+		}
+	}
+	if len(systemTurns) < 3 {
+		t.Fatalf("got %d system turns, want the kernel turn + platform + revision", len(systemTurns))
+	}
+
+	platformAt, revisionAt := -1, -1
+	for i, turn := range systemTurns {
+		switch {
+		case turn == platformInstructions:
+			platformAt = i
+		case strings.Contains(turn, revisionFixture):
+			revisionAt = i
+		}
+	}
+	if platformAt < 0 {
+		t.Fatal("the platform text is in no system turn: the layer resolves but nothing sends it")
+	}
+	if systemTurns[0] != "the engine's kernel turn" {
+		t.Errorf("system turn 0 is %q, want the engine's own turn to stay first", systemTurns[0])
+	}
+	if revisionAt >= 0 && revisionAt < platformAt {
+		t.Errorf("the revision's instruction is at %d and platform at %d: tenant text must not lead",
+			revisionAt, platformAt)
+	}
+	// The user turn must survive, and stay after every system turn.
+	if last := out[len(out)-1]; last.Role != "user" || last.Content != "do the thing" {
+		t.Errorf("the user turn was displaced: last message is %+v", last)
+	}
+}
 
 // TestThePlatformLayerLeadsAndTenantTextFollows pins the ONE ordering property that matters for
 // authority: platform discipline is stated first, and a revision or run may narrow it by speaking
