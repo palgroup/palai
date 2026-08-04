@@ -7,18 +7,54 @@ import (
 
 // ErrProjectRequired is returned by a connection acquisition when the acquiring context carries a
 // non-system tenant scope with no project (A.2 Task 1). Before this task an empty project silently
-// widened a query to "every project in the organization" (the RLS policy's own coalesce-to-empty
-// fallback, storage/migrations/000029_row_level_security.up.sql); with organizations gone that
-// widening would mean "every project, full stop" — the absence of a boundary, not one.
+// widened a query to "every project in the organization" (the tenant policy's own coalesce-to-empty
+// fallback, installed by the row-level-security sweep); with organizations gone that widening would
+// mean "every project, full stop" — the absence of a boundary, not one.
 // WithInstallationScope is the one deliberate, narrow exception: it is not this error's target, and
 // PrepareConn skips the check for it on purpose.
 var ErrProjectRequired = errors.New("storage: tenant scope requires a project")
 
-// RuntimeRole is the non-owner database role every application connection runs as (declared in
-// migration 000001, made load-bearing by 000029). It owns no table and is not superuser, which is
-// exactly what makes the row-level-security policies apply to it — RLS is inert for an owner or a
-// superuser.
+// RuntimeRole is the non-owner database role every application connection runs as (declared by the
+// baseline schema, made load-bearing by the row-level-security sweep). It owns no table and is not
+// superuser, which is exactly what makes the row-level-security policies apply to it — RLS is inert for
+// an owner or a superuser.
 const RuntimeRole = "palai_app"
+
+// THE RULE FOR A NEW TENANT-SCOPED TABLE, and it lives here rather than beside the migrations on
+// purpose: it survived one deletion already and this file cannot be deleted by a chain rewrite.
+//
+// A migration that CREATES a table carrying project_id MUST, in its own up.sql:
+//
+//	CALL palai_apply_tenant_policy('<table>', 'project_id', false);
+//	GRANT ... ON TABLE <table> TO palai_app;
+//
+// The catalogue sweep re-applies policies for the whole chain on every boot, so an omission is repaired
+// on the NEXT restart — which is exactly why no runtime test can see it. What it leaves is a window on
+// the FIRST boot of a fresh install, between the table being created and the next restart, in which the
+// table exists with row-level security not enabled at all and every row in it is visible to every scope.
+// Without the GRANT the runtime role fails closed instead ("permission denied"), which is louder but
+// still wrong.
+//
+// A table with NO project_id is not exempt, it is a different decision: palai_apply_installation_policy,
+// which admits any connection that declared a scope — read WithInstallationScope below for what that
+// costs before choosing it.
+//
+// THE DISCRIMINATOR IS project_id, AND IT USED TO BE organization_id. That is the whole reason this
+// paragraph is written the way it is: when the organization column was dropped from every table, the
+// rule kept its old wording and therefore selected NOTHING. It did not look broken — an emptied selector
+// never does, it looks satisfied. Whoever wrote the next tenant table would have checked for a column no
+// table has, concluded the rule did not apply, and shipped unpoliced.
+//
+// TWO THINGS ENFORCE THIS, and they are named here because a rule whose enforcer is anonymous is a rule
+// backed only by the reader's attention:
+//
+//   - storage.TestEveryLateTenantTableCarriesItsOwnPolicyAndGrant (storage/migrations_test.go) is the
+//     static one and the one that actually fires. It is UNTAGGED, so it rides `make verify`:
+//     `go test ./storage/`.
+//   - tests/security/tenancy is the runtime corpus. Run it with `TEST=tenancy scripts/test/security`.
+//     NOT with `go test ./tests/security/...` — that corpus is behind `//go:build security`, so the
+//     plain form prints `ok` for extensions, repository and secrets, exits 0, and never builds tenancy
+//     at all (measured on go1.26.5, 2026-08-04). Three green lines and the suite you wanted did not run.
 
 type scopeKey struct{}
 
@@ -55,8 +91,8 @@ func WithTenant(ctx context.Context, project string) context.Context {
 // narrow exception to WithTenant's project-required rule. It is what A.2 Task 6 left of WithOrgScope.
 //
 // ITS LIST OF PRODUCTION CALLERS IS TWO, and both read a table with no project_id at all:
-// identity.SecretStore.Resolve over secret_refs (000031) and automation's verifyEnvironment over
-// environments (000046). Migration 000066 keys BOTH on the installation, so what this supplies for them
+// identity.SecretStore.Resolve over secret_refs and automation's verifyEnvironment over environments.
+// The tenant-policy rekey keyed BOTH on the installation, so what this supplies for them
 // is no longer a boundary — it is only a scope declaration, which those policies still require (they
 // admit `palai.project_id IS NOT NULL`, and set_config with an empty string satisfies that while a
 // context that declared nothing does not).
@@ -77,7 +113,8 @@ func WithInstallationScope(ctx context.Context) context.Context {
 // bootstrap steps, and API-key verification (which must read a credential before any tenant is known).
 // Connections acquired under it set palai.system=on and every tenant policy admits them.
 //
-// This is the deliberate escape hatch from the isolation 000029 installs. It is greppable on purpose:
+// This is the deliberate escape hatch from the isolation the row-level-security sweep installs. It is
+// greppable on purpose:
 // every call site is a place where the tenant boundary is NOT protecting the query, so each one should
 // be as narrow as it can be — the run worker, for example, claims under a system scope but hands the
 // handler a WithTenant context built from the claimed job's own tenant.
