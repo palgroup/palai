@@ -23,9 +23,10 @@
 This plan's claims were measured on 2026-08-04. Re-run these before Task 1; a changed number means re-read the plan, not re-run it blindly.
 
 ```bash
-# The RED this plan turns green — expect 2 FAILs
-go test ./apps/control-plane/internal/execution/tools/ \
-  -run 'TestEverySlackDefaultToolResolves|TestTheSearchToolIsInTheDefaultSet' -v
+# The RED this plan turns green — expect 4 FAILs (CORRECTED 2026-08-04: an earlier
+# draft of this plan said 2. All FOUR tests in the file reach the regex helper, so
+# all four fail on the same missing symbol.)
+go test ./apps/control-plane/internal/execution/tools/ -v
 
 # The lists the guard looks for — expect ZERO hits in up.go
 grep -n 'var slackDefaultTools\|var slackRepositoryTools\|var slackPublishTools' \
@@ -755,7 +756,9 @@ git commit -m "test(execution): the bring-up baseline survives the revision ceil
 ## §5 — Definition of done
 
 - [ ] `go test ./packages/toolset/...` PASSES (4 tests)
-- [ ] The two tests that were RED in §1 now PASS under their new names (`TestEveryDefaultToolResolves`, `TestTheSearchToolIsInTheDefaultSet`)
+- [ ] `TestEveryDefaultToolResolves` and `TestThePublishToolsAreTheirOwnListAndNeitherPublishes` PASS
+- [ ] `TestTheSearchToolIsInTheDefaultSet` is **deleted** — decided 2026-08-04. Its premise was a Slack default list, and `1e5fc63e` removed that world. Its report was TRUE and is preserved in §7: nothing grants `palai.slack.search` today.
+- [ ] `TestNoDefaultToolHasSideEffects` keeps its `publish.` clause and **drops** its file/shell clause — decided 2026-08-04. The file/shell prohibition contradicts this plan's purpose, and its stated remedy (`SLACK_AGENT_TOOLS`) has exactly one occurrence in the tree: that test's own error string.
 - [ ] `TestTheGrantPreservesEveryOtherPolicyKey` PASSES — the re-run does not clear `approvers`
 - [ ] `TestAnEmptyProjectBaselineEmptiesTheEffectiveSet` PASSES — the outage's own shape is pinned
 - [ ] `TestEveryCanonicalToolHasAHumanTitle` PASSES — Slack carries no name the grant list does not
@@ -776,6 +779,21 @@ Named so a later reader does not mistake absence for oversight:
 ---
 
 ## §7 — The next plan (not this one)
+
+**0. `palai.slack.search` is defined and granted by nothing — found by this plan's own Task 2, 2026-08-04.**
+
+The deleted `TestTheSearchToolIsInTheDefaultSet` was reporting a true fact, and deleting the test does not repair it. Measured:
+
+```bash
+grep -rn "palai\.slack\.search" --include="*.go" . | grep -v _test
+# tools/slack_search.go:31        — the definition
+# slack-bot/.../relay.go:444      — a card title
+# tests/uat/evidence_tools_memory.go:275 — a released bundle's recorded JSON
+```
+
+No grant path. This is E21 T5's defect returning: a tool mounted, tested, and dead. It belongs to whoever restores Slack's own tool grant — **not** to `palai up`'s generic baseline, which is why the test could not stay. Do not close this by adding the name to `toolset.Default()`: a Slack-less stack would carry a name the broker's static set cannot resolve.
+
+---
 
 The research that produced this plan measured six gaps. This plan closes the first because nothing else is observable until it is closed. The rest are a second plan, in dependency order:
 
