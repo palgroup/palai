@@ -197,10 +197,33 @@ const thinkingHeadline = "Thinking…"
 // from that instant and nothing else says so for several seconds (8.5 of them in the run above).
 const openingHeadline = "Working…"
 
+// awaitingApprovalHeadline is what the container says while the run is PARKED on a human.
+//
+// IT IS THE STATE THE HEADLINE COULD NOT REACH, and the gap was measured on this deployment's first real
+// gated call (session ses_3c2c5226…, 2026-08-04). The journal around it:
+//
+//	seq 52  model_step.created.v1     <- headline := "Thinking…"
+//	seq 53  model_step.completed.v1   <- writes no headline, by design
+//	seq 54  approval.requested.v1     <- wrote body text and called the hook, and NOTHING ELSE
+//
+// So the card sat there saying "Thinking…" while the model was not thinking at all: it was waiting for a
+// person, and the person it was waiting for was reading that card. Every other state resolves itself
+// because something later overwrites it — a tool card, the run's terminal — but a parked run produces no
+// later event at all until somebody clicks, which is precisely why this one has to be written explicitly.
+//
+// It says "your" because the message carrying the buttons is posted into the same thread, to the people who
+// can decide: the sentence is an instruction to a reader, not a status for a log.
+const awaitingApprovalHeadline = "Waiting for your approval"
+
 // modelStepHeadline maps the model's own step events onto the container headline. `created` opens the
-// interval; `completed` and `interrupted` are deliberately absent, because the event that follows one is
-// always either the tool the step decided on or the run's own terminal — both of which write the headline
-// themselves. Writing "idle" in between would spend a call to show a state that lasts milliseconds.
+// interval; `completed` and `interrupted` are deliberately absent, because the event that follows one
+// writes the headline itself. That was stated here as "always either the tool the step decided on or the
+// run's own terminal", and IT WAS NOT TRUE: a step can also decide on a GATED call, whose next event is
+// `approval.requested.v1` — which wrote no headline at all until awaitingApprovalHeadline existed, so the
+// container reported "Thinking…" for as long as a human took to decide. The claim holds now because that
+// third successor writes one too; it did not hold when it was written.
+// Writing "idle" between a step and its successor would still spend a call to show a state that lasts
+// milliseconds, which is the part of this that was always right.
 //
 // `model_step.interrupted.v1` therefore needs no entry, and that is not the same omission that leaves a CARD
 // spinning: a headline is REPLACED by whatever comes next, so nothing here can be left unresolved. The run
@@ -539,6 +562,13 @@ func (o *openStream) handle(ctx context.Context, event palai.Event) {
 		//
 		// It is announced in the stream FIRST so the open message says why it went quiet: the run is now
 		// waiting on a person, and a stream that simply stops reads as a hang.
+		//
+		// THE HEADLINE IS THE OTHER HALF OF THAT SENTENCE, and it is the half a reader sees without
+		// expanding anything: the body line lives inside the container, the headline is what shows while it
+		// is collapsed. Without it the two disagreed — the body said "waiting for an approval" and the title
+		// above it said "Thinking…" — and the title is the one that gets read (see awaitingApprovalHeadline
+		// for the journal this was measured from).
+		o.setHeadline(ctx, awaitingApprovalHeadline)
 		o.emitStatus(ctx, "\n\n⏸️ Waiting for an approval — see the message below.")
 		o.deps.OnApproval(ctx, o.channel, o.threadTS, event)
 	default:

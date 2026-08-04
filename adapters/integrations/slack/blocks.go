@@ -1018,16 +1018,28 @@ func encodeArgumentValue(v any) string {
 
 // approvalArgumentTable renders the rows as the vendor's table block, reusing tableBlock so the argument
 // screen inherits E20's limits rather than restating them: 100 rows, 20 columns, 10,000 characters, each
-// one a TRUNCATION POINT with a visible marker row (§3.5 P13). The header names the two columns.
+// one a TRUNCATION POINT with a visible marker row (§3.5 P13). left/right name the two columns.
+//
+// THE HEADER IS A PARAMETER because this now draws two different tables and they are not the same claim:
+// `argument | value` is what the model asked to send, `what | value` is where a publication lands (see
+// ApprovalRequest.Destination). Giving the second one the first one's header would put a run's chosen
+// branch under the word "argument" on a screen whose whole job is to be exact about provenance.
+//
+// It refuses an EMPTY set rather than drawing a header over nothing — the defect this parameter arrived
+// with. Callers decide what to say instead (ToolApprovalMessage says NoArguments); what they cannot do is
+// get a table that claims to list something and lists nothing.
 //
 // The cells go through cell(), which means a value that is a bare JSON number lands in `raw_number` — the
 // vendor's other non-interactive cell type — rather than `raw_text`. That is E20's decision and it is not
 // re-made here: forking a helper that decides how a model's bytes are typed would be two copies of a
 // security-relevant rule, and the second copy is the one that never gets fixed.
-func approvalArgumentTable(args []ApprovalArgument) any {
+func approvalArgumentTable(left, right string, args []ApprovalArgument) any {
+	if len(args) == 0 {
+		return nil
+	}
 	rows := make([][]string, 0, len(args))
 	for _, arg := range args {
 		rows = append(rows, []string{arg.Name, arg.Value})
 	}
-	return tableBlock(Result{Type: ResultTable, Columns: []string{"argument", "value"}, Rows: rows})
+	return tableBlock(Result{Type: ResultTable, Columns: []string{left, right}, Rows: rows})
 }

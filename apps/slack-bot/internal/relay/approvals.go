@@ -424,13 +424,74 @@ func findPendingApproval(ctx context.Context, deps ApprovalDeps, requestHash str
 // OnButton's doc for why this bridge packs both ids into the one string a button carries, and why
 // that is safe as a private convention between this function and OnButton alone.
 func buildApprovalMessage(channel, threadTS string, approval palai.Approval) []byte {
-	return slack.ToolApprovalMessage(channel, threadTS, slack.ApprovalRequest{
+	req := slack.ApprovalRequest{
 		ApprovalID:    approval.ID,
 		RequestHash:   approvalActionValue(approval.ID, approval.RequestHash),
 		Identity:      approval.Identity,
 		OperatorLabel: approval.OperatorLabel,
 		Arguments:     []byte(approval.Arguments),
-	})
+	}
+	if approval.Kind == "publication" {
+		req.OperatorLabel, req.Destination = publicationScreen(approval)
+	}
+	return slack.ToolApprovalMessage(channel, threadTS, req)
+}
+
+// publicationOperations phrases the operations a publication approval can name. The set is CLOSED and
+// server-side (adapters/repositories' OpPushBranch/OpOpenPullRequest/OpMergePullRequest, rendered into the
+// row by execution/publication_registry.go publicationDisplay), so this is a translation of a value this
+// bot did not choose, never a description of one.
+//
+// AN UNLISTED OPERATION FALLS BACK TO ITS OWN NAME, exactly as relay.go's toolTitle does and for the same
+// reason: inventing a sentence for an identifier nobody has seen is how a screen ends up confidently
+// describing the wrong action — and this is the screen where that costs the most.
+var publicationOperations = map[string]string{
+	"push_branch":        "Push a branch to a repository",
+	"open_pull_request":  "Open a draft pull request",
+	"merge_pull_request": "Merge a pull request",
+}
+
+// publicationScreen turns a publication approval's OWN COLUMNS into the label and the labelled facts a
+// human decides from, replacing the one run-on sentence the row arrives with.
+//
+// WHAT THE OPERATOR ACTUALLY SAW, and the reason this function exists (2026-08-04, the first real approval
+// this deployment ever showed anybody):
+//
+//	push agent/ws_986c86ee5a07915f75cd99ebf33d422a/run_e4036140a36cba72b245b7f04201cc66
+//	     @ 8126e83cc544d6777b0c93d4543e26cb1c7cebdb -> github.com/palgroup/centauri-ios.git
+//
+// Two opaque ids, a forty-character SHA and a URL, on one unlabelled line, with the thing an approver is
+// deciding about — which repository — last and least visible. Every one of those facts is a SEPARATE
+// COLUMN on the row (`GET /v1/approvals` answers remote/branch/base/head_sha/credential individually), so
+// nothing here is parsed out of that sentence: the sentence is dropped and the columns are laid out.
+//
+// NOTHING IS SHORTENED. The branch really is that long and the SHA really is that SHA — a screen that
+// abbreviated either would be describing something other than what the button authorizes, which is the one
+// thing an approval screen may never do. What changes is that each fact gets its own row and its own name,
+// so the length of one stops hiding the others.
+//
+// A ROW IS OMITTED WHEN THE COLUMN IS EMPTY rather than rendered blank: `base` is meaningless for a bare
+// push, and a labelled empty cell reads as "this is nothing" instead of "this does not apply here".
+func publicationScreen(approval palai.Approval) (label string, destination []slack.ApprovalArgument) {
+	label = publicationOperations[approval.Operation]
+	if label == "" {
+		label = approval.Operation
+	}
+	add := func(name, value string) {
+		if value != "" {
+			destination = append(destination, slack.ApprovalArgument{Name: name, Value: value})
+		}
+	}
+	// Ordered as a human reads the decision: WHERE it lands first, then WHAT lands, then with WHOSE
+	// authority. The credential is named rather than shown — GET /v1/approvals answers a description
+	// ("this repository binding's own credential"), never a value, and this screen must not become the
+	// first place one appears.
+	add("repository", approval.Remote)
+	add("branch", approval.Branch)
+	add("base", approval.Base)
+	add("commit", approval.HeadSHA)
+	add("credential", approval.Credential)
+	return label, destination
 }
 
 // approvalActionValue packs the two ids a decision needs into the one string a Block Kit button

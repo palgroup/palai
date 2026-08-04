@@ -302,51 +302,107 @@ type ApprovalRequest struct {
 	Arguments []byte
 	// ExpiresAt is the approval's deadline; zero means the modal carries no expiry alert.
 	ExpiresAt time.Time
+
+	// Destination is the labelled facts a call carries OUTSIDE its arguments, one row per fact, in the
+	// order the caller wants them read. Empty is the ordinary case and renders nothing.
+	//
+	// IT EXISTS BECAUSE A WHOLE FAMILY OF GATED CALLS HAS NO ARGUMENTS AT ALL. Measured live 2026-08-04:
+	//
+	//	select name, arguments from tool_calls where name like '%push%' -> palai.publish.push | {}
+	//
+	// A publication's schema is `"properties": {}` — the destination comes from the repository binding, not
+	// from the model — so everything a human is actually authorizing (which remote, which branch, which
+	// commit) sits in the publication's OWN columns and never reaches the argument table. What the operator
+	// saw was the result: a table headed `argument | value` with no rows, beside a sentence reading
+	// `push agent/ws_986c86ee…/run_e4036140… @ 8126e83cc544… -> …centauri-ios.git` — two hashes, a SHA and
+	// a URL run together on one line, with nothing labelled.
+	//
+	// The rows are DATA, not layout: the caller supplies the facts it already holds and this file decides
+	// how they are drawn, so there is still one renderer and no second copy to drift. Every cell goes
+	// through tableBlock, which neutralizes broadcasts on all of them — which matters here more than for a
+	// tool row, because a publication's columns reach GET /v1/approvals RAW (see the relay's own note) and
+	// a branch name is a string a run chose.
+	Destination []ApprovalArgument
 }
 
-// ToolApprovalMessage builds the chat.postMessage body for a gated tool call: who is being authorized to
-// do what, every argument in a table, and the three buttons.
+// NoArguments is what a call that carries no arguments SAYS, out loud, where the argument table would
+// otherwise have been.
+//
+// SAYING IT IS THE WHOLE POINT, and choosing to say it rather than to hide the block is the same decision
+// NoOperatorLabel already made one file over: "A blank line reads as 'there is nothing more to say'; the
+// honest reading is 'nobody wrote one', and the human deciding is entitled to know which of the two they
+// are looking at." An approval screen is the one surface in this system whose job is to be read exactly,
+// and on it "this call sends nothing" and "the arguments did not render" are different facts. A hidden
+// block reports neither; this sentence reports the first.
+const NoArguments = "_This call carries no arguments — everything it acts on is shown above._"
+
+// ToolApprovalMessage builds the chat.postMessage body for a gated call: who is being authorized to do
+// what, where it lands, every argument in a table, and the buttons.
 //
 // The buttons all carry the request hash for the reason ApprovalMessage's two already did — the decision
 // is bound to the BYTES (tool_calls.request_hash is toolbroker.RequestHash(name, args)), so an argument
 // edited after the click authorizes nothing.
+//
+// THREE RULES DECIDE WHAT IS DRAWN, and each of them is a no-op for every caller that existed before them,
+// which is why none of this reddens a published bundle: the six released manifests that pin this renderer
+// all reach it through tests/uat/evidence_tool_approval.go, and every fixture there passes NON-EMPTY
+// arguments and no destination (measured 2026-08-04), so their bytes are unchanged.
+//
+//  1. A destination is drawn when the caller has one. See ApprovalRequest.Destination.
+//  2. The argument table is drawn only when it HAS rows. A table headed `argument | value` with nothing
+//     under it tells a human nothing, and this deployment produced one on the first real approval it ever
+//     showed anybody.
+//  3. The "Show arguments" button appears only when there are arguments to show. It opens a modal listing
+//     the argument leaves (ToolApprovalModal); offering it over an empty document invites the one click
+//     guaranteed to answer nothing, at the exact moment its reader is trying to find out more.
 func ToolApprovalMessage(channel, threadTS string, req ApprovalRequest) []byte {
 	display := DeriveApprovalDisplay(req.Identity, req.OperatorLabel, req.Arguments)
 	budget := MaxMarkdownText
+	blocks := []any{
+		markdownBlock("**Approval requested**\n`"+display.Identity+"`\n"+display.OperatorLabel, &budget),
+	}
+	if len(req.Destination) > 0 {
+		blocks = append(blocks, approvalArgumentTable("what", "value", req.Destination))
+	}
+	arguments := ApprovalArgumentRows(req.Arguments)
+	if len(arguments) > 0 {
+		blocks = append(blocks, approvalArgumentTable("argument", "value", arguments))
+	} else {
+		blocks = append(blocks, markdownBlock(NoArguments, &budget))
+	}
+
+	actions := []any{
+		map[string]any{
+			"type":      "button",
+			"action_id": ActionApprove,
+			"text":      map[string]any{"type": "plain_text", "text": "Approve"},
+			"style":     "primary",
+			"value":     req.RequestHash,
+		},
+		map[string]any{
+			"type":      "button",
+			"action_id": ActionDeny,
+			"text":      map[string]any{"type": "plain_text", "text": "Deny"},
+			"style":     "danger",
+			"value":     req.RequestHash,
+		},
+	}
+	if len(arguments) > 0 {
+		actions = append(actions, map[string]any{
+			"type":      "button",
+			"action_id": ActionShowArguments,
+			"text":      map[string]any{"type": "plain_text", "text": "Show arguments"},
+			"value":     req.RequestHash,
+		})
+	}
+	blocks = append(blocks, map[string]any{"type": "actions", "elements": actions})
+
 	body := map[string]any{
 		"channel": channel,
 		// The fallback/notification string. The identity and the operator's label only — never an argument,
 		// because a notification preview is rendered in places Block Kit is not.
-		"text": "Approval requested: " + NeutralizeBroadcasts(req.Identity),
-		"blocks": []any{
-			markdownBlock("**Approval requested**\n`"+display.Identity+"`\n"+display.OperatorLabel, &budget),
-			approvalArgumentTable(ApprovalArgumentRows(req.Arguments)),
-			map[string]any{
-				"type": "actions",
-				"elements": []any{
-					map[string]any{
-						"type":      "button",
-						"action_id": ActionApprove,
-						"text":      map[string]any{"type": "plain_text", "text": "Approve"},
-						"style":     "primary",
-						"value":     req.RequestHash,
-					},
-					map[string]any{
-						"type":      "button",
-						"action_id": ActionDeny,
-						"text":      map[string]any{"type": "plain_text", "text": "Deny"},
-						"style":     "danger",
-						"value":     req.RequestHash,
-					},
-					map[string]any{
-						"type":      "button",
-						"action_id": ActionShowArguments,
-						"text":      map[string]any{"type": "plain_text", "text": "Show arguments"},
-						"value":     req.RequestHash,
-					},
-				},
-			},
-		},
+		"text":   "Approval requested: " + NeutralizeBroadcasts(req.Identity),
+		"blocks": blocks,
 	}
 	if threadTS != "" {
 		body["thread_ts"] = threadTS
@@ -386,7 +442,14 @@ func ToolApprovalModal(triggerID string, req ApprovalRequest) []byte {
 		blocks = append(blocks, alertBlock("info",
 			"This approval expires at "+req.ExpiresAt.UTC().Format(time.RFC3339)+". After that the call is canceled and the run is released."))
 	}
-	blocks = append(blocks, approvalArgumentTable(ApprovalArgumentLeaves(req.Arguments)))
+	// ApprovalArgumentLeaves never answers an empty set for any input — an empty object IS a leaf there
+	// ("`{}` says something different from a key that is not there at all") and unparsable bytes become one
+	// verbatim row — so this table is always drawn. The nil check is still here rather than assumed: a table
+	// helper that can return nothing must not be able to put a nil into a blocks array, and the day that
+	// invariant changes on the other side, this reads as a missing table rather than as a rejected message.
+	if table := approvalArgumentTable("argument", "value", ApprovalArgumentLeaves(req.Arguments)); table != nil {
+		blocks = append(blocks, table)
+	}
 
 	// The deny reason (P11). `dispatch_action` is never set, so it defaults to false and this element
 	// dispatches nothing — which is what keeps it out of the actionable family E21 refused.
