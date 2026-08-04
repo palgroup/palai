@@ -4,11 +4,11 @@
 // are committed (packages/coordinator), not here — a metering package that could also write the ledger
 // would be a second, unsynchronized path into a table whose whole value is being the single record.
 //
-// SCOPING: every method is bound to the identity the caller was verified as. Migration 000032 secures
-// these tables at the ORGANIZATION level on purpose (so an org-wide limit can be summed from the
-// project-narrowed connection that admits a run), so the intra-organization project narrowing is done
-// explicitly in SQL here — an org-scoped key sees its whole organization, a project-scoped key sees the
-// organization-wide limits plus its own project's.
+// SCOPING: every method is bound to the identity the caller was verified as. Migration 000032 secured
+// these tables at the ORGANIZATION level on purpose (so a wide limit could be summed from the
+// project-narrowed connection that admits a run) and 000066 rekeyed them to the INSTALLATION, so the
+// project narrowing is done explicitly in SQL here rather than by RLS — a `system` key sees the whole
+// installation, a project-scoped key sees the installation-wide limits plus its own project's.
 //
 // HONEST CEILING — METERING ONLY: no price revision, no invoice, no compensating adjustment, no
 // BYOK platform/provider split, and no billing exporter (BIL-004/005/006 → E13-H/SaaS). What is here is
@@ -134,8 +134,8 @@ type seriesView struct {
 	Points    []seriesPoint `json:"points"`
 }
 
-// SetBudget upserts a cumulative spend cap for the caller's own scope. The scope is NOT a body field: an
-// org-scoped key sets an organization-wide limit and a project-scoped key sets one for its project, so a
+// SetBudget upserts a cumulative spend cap for the caller's own scope. The scope is NOT a body field: a
+// `system` key sets an installation-wide limit and a project-scoped key sets one for its project, so a
 // request can never cap someone else's tenant.
 func (s *Store) SetBudget(ctx context.Context, scope middleware.Scope, body []byte) (api.ProvisionResult, error) {
 	var in struct {

@@ -1,8 +1,11 @@
 -- Usage metering: the append-only settlement ledger and the two durable admission limits read against
 -- it (spec §43, E13 Task 6, migration 000032). Metering ONLY — no price, no invoice, no adjustment
--- (E13-H/SaaS). Every statement here filters project_id explicitly: 000032 secures these three tables
--- at the ORGANIZATION level on purpose (so an org-wide limit can be summed from a project-narrowed
--- admission connection), which means the intra-organization narrowing is this file's job, not RLS's.
+-- (E13-H/SaaS). Every statement here filters project_id explicitly, and that has outlived its original
+-- reason: 000032 secured these three tables at the ORGANIZATION level on purpose (so an org-wide limit
+-- could be summed from a project-narrowed admission connection), and 000066 rekeyed them to the
+-- INSTALLATION, which is wider still. Either way RLS does not narrow to a project, so the narrowing is
+-- this file's job — a statement here that forgot its project_id predicate would read every project's
+-- rows, not be denied.
 
 -- SettleUsage records one settled meter fact. Both $1 (the row id) and $8 (the dedupe key) are derived
 -- by the caller from the settling operation's own identity, so a redelivered model step re-derives the
@@ -26,7 +29,7 @@ ON CONFLICT (project_id, dedupe_key) DO NOTHING;
 -- wildcard rather than a literal (documented, not escaped: it can only widen or narrow that tenant's own
 -- limit, never reach another tenant's rows, and `_` only ever makes a limit match MORE meters — it fails
 -- closed). Escape it if meter prefixes ever become anything but the fixed vocabulary this phase writes. A budget row with project_id=''
--- covers the whole organization (it sums every project's rows); a concrete project narrows both the
+-- covers the whole installation (it sums every project's rows); a concrete project narrows both the
 -- budget and the sum to that project. meter_prefix matches by prefix, so 'model.' caps every model
 -- meter and '' caps everything.
 --
@@ -45,11 +48,11 @@ ON CONFLICT (project_id, dedupe_key) DO NOTHING;
 -- (middleware.NewID). Which limit an operator's 429 named was a coin flip fixed when they POSTed it.
 --
 -- THE NARROWEST LIMIT WINS. `(b.project_id = '') ASC` sorts false before true, so the PROJECT row comes
--- first and the organization-wide row is reported only when it is the only one exhausted. The reason is
+-- first and the installation-wide row is reported only when it is the only one exhausted. The reason is
 -- the 429 itself: its remediation body must name a limit the CALLER CAN ACT ON. A project operator
--- cannot raise their organization's budget, so naming it answers "you are blocked" with something the
--- reader cannot turn into an action — and it is the wrong number twice over, since the org row's `used`
--- sums every sibling project's spend as well.
+-- cannot raise the installation's budget, so naming it answers "you are blocked" with something the
+-- reader cannot turn into an action — and it is the wrong number twice over, since the installation
+-- row's `used` sums every sibling project's spend as well.
 --
 -- b.id is the LAST key and it is the PRIMARY KEY (000032), so the ordering is now TOTAL: two budgets
 -- that tie on scope and prefix cannot exist (the UNIQUE key forbids it), but the tiebreaker is written
@@ -106,8 +109,9 @@ ON CONFLICT (project_id, meter_prefix)
 DO UPDATE SET limit_quantity = EXCLUDED.limit_quantity, updated_at = clock_timestamp()
 RETURNING id, project_id, meter_prefix, limit_quantity, period_start, updated_at;
 
--- ListBudgets shows the caller everything that binds it: the organization-wide limits plus its own
--- project's. An org-scoped caller ($1 = '') sees every project's limits, since that is its whole scope.
+-- ListBudgets shows the caller everything that binds it: the installation-wide limits plus its own
+-- project's. A caller passing $1 = '' sees every project's limits, which since A.2 Task 6 is the
+-- `system` key rather than an org-scoped one — there is no org-granular key left to be.
 -- name: ListBudgets
 SELECT id, project_id, meter_prefix, limit_quantity, period_start, updated_at
 FROM budgets
@@ -130,7 +134,7 @@ WHERE ($1 = '' OR project_id IN ('', $1))
 ORDER BY project_id, meter_prefix;
 
 -- UsageTotals is the metering-visibility summary: one line per meter for the caller's scope. $2 is the
--- caller's project ('' widens to the whole organization, which is what an org-scoped key sees).
+-- caller's project ('' widens to the whole installation, which is what a `system` key sees).
 -- name: UsageTotals
 SELECT meter, unit, sum(quantity), count(*)
 FROM usage_ledger

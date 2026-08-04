@@ -95,9 +95,13 @@ func (s *Store) Pool(ctx context.Context, poolID string) (Pool, bool, error) {
 	return p, true, nil
 }
 
-// ErrPoolNameTaken is returned by CreatePool when this project already has a pool by that name — 000045
-// R1's UNIQUE (organization_id, project_id, name) surfacing as an answer rather than as a 500. It is a
+// ErrPoolNameTaken is returned by CreatePool when this project already has a pool by that name — the
+// runner_pools UNIQUE (project_id, name) index surfacing as an answer rather than as a 500. It is a
 // typed value rather than a raw pgx error so the handler renders a 409 without parsing a SQLSTATE.
+//
+// 000045 R1 DECLARED that index as (organization_id, project_id, name); 000065 rebuilt it without the
+// organization, and `runner_pools_name_key ON runner_pools USING btree (project_id, name)` is what a
+// reader finds in pg_indexes today. Its api-layer twin (api.ErrRunnerPoolNameTaken) already said so.
 var ErrPoolNameTaken = errors.New("fleet: a runner pool with that name already exists in this project")
 
 // CreatePool writes ONE operator-created pool and returns it (E28 T1).

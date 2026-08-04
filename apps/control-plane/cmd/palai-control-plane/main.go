@@ -102,9 +102,10 @@ func main() {
 		log.Fatalf("seed bootstrap identity: %v", err)
 	}
 
-	// The tenancy provisioning store backs the /v1/organizations, /v1/projects, and /v1/api-keys surface
-	// (E13 Task 2). It rides the durable spine's pool; organization creation opens a new tenant with no
-	// restart, and the config_policy PATCH makes the §14 resolver's project layer API-reachable.
+	// The tenancy provisioning store backs the /v1/projects and /v1/api-keys surface (E13 Task 2; the three
+	// /v1/organizations routes were unmounted by A.2 Task 6). It rides the durable spine's pool; POST
+	// /v1/projects is what opens a new tenant now, with no restart, and the config_policy PATCH makes the
+	// §14 resolver's project layer API-reachable.
 	identityStore := identity.New(repo.Spine().Pool())
 
 	// The DB-backed secret store (E13 Task 3, SEC-002/MCI-002) fronts the env-file secret bridge: a secret
@@ -1242,7 +1243,12 @@ func dbSecret(ref string) ([]byte, bool, error) {
 // there is no pre-T3 env-file bridge to stay compatible with — a binding-scoped Git credential is
 // provisioned over POST /v1/secret-refs and rotated there with no restart. A MISS is an error: a binding
 // that deliberately names its own credential must never silently clone under the deployment-global App.
-// The org is server-minted from the run, so the store scopes the read to it and RLS denies any foreign row.
+//
+// THERE IS NO TENANT SCOPING ON THIS READ, and saying so is the point: this line claimed "the org is
+// server-minted from the run, so the store scopes the read to it and RLS denies any foreign row". dbSecret
+// resolves under WithInstallationScope (000066 keys secret_refs on the installation), so a connection_ref
+// names the same row for every project. What still holds is that the ref comes from the BINDING row and
+// never from tenant request input — a caller cannot ask for an arbitrary name here.
 //
 // HONEST CEILING: there is no per-tenant GitHub App ONBOARDING surface (installing an App per tenant and
 // capturing its installation credential is product/SaaS work). This resolves whatever token the tenant
@@ -1274,8 +1280,11 @@ func repositoryConnectionSecret(ref string) ([]byte, error) {
 // alternative — an empty string — would run the agent's command anonymously and report success, which is
 // the failure this resolver exists to prevent.
 //
-// The org is server-minted from the RUN, never from anything the model or the engine said, so the store
-// scopes the read to it and RLS denies any foreign row. The error names the ref and never the value.
+// The derived name is server-minted from the RUN, never from anything the model or the engine said — that
+// is the property, and it is the one this resolver actually has. It used to add "so the store scopes the
+// read to it and RLS denies any foreign row"; dbSecret runs under WithInstallationScope, so there is no
+// per-tenant scoping to lean on and the minting is doing all the work. The error names the ref, never the
+// value.
 func environmentValueSecret(ref string) ([]byte, error) {
 	if ref == "" {
 		return nil, errors.New("empty environment ref")

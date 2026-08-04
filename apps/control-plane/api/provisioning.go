@@ -45,8 +45,9 @@ type ProvisionResult struct {
 
 // provisionScope is the capability a key must hold to administer tenancy. A key with an empty scope set
 // (an admin/bootstrap key) holds it implicitly (Scope.HasScope). HONEST CEILING: this is the whole
-// authorization model for T2 — any key that can provision can provision the whole organization; named
-// roles/relationships are E13-H/E17.
+// authorization model for T2 — a key that can provision can provision everything its scope reaches, which
+// since A.2 Task 6 is its own PROJECT for a tenant key and the whole INSTALLATION for a `system` key
+// (identity.provisioningScope draws exactly that split); named roles/relationships are E13-H/E17.
 const provisionScope = "provision"
 
 type provisioningHandler struct {
@@ -138,8 +139,9 @@ func (h *provisioningHandler) revokeAPIKey(w http.ResponseWriter, r *http.Reques
 // authorizeSystem is the platform gate. It is a SEPARATE function from authorize rather than a flag on
 // it, because the two answer different questions: authorize asks "may this tenant do this to itself",
 // this asks "is this the platform". Opening a tenant is the second question — a new tenant is not an
-// operation ON the caller's tenant, it is the creation of another one. Two routes ask it:
-// POST /v1/organizations, and POST /v1/projects since A.2 Task 6 gave it the tenant-opening job.
+// operation ON the caller's tenant, it is the creation of another one. ONE route asks it: POST
+// /v1/projects, since A.2 Task 6 gave it the tenant-opening job and unmounted POST /v1/organizations,
+// which had been the other. createProject is this function's only call site.
 func (h *provisioningHandler) authorizeSystem(w http.ResponseWriter, r *http.Request) (middleware.Scope, bool) {
 	scope, ok := middleware.ScopeFrom(r.Context())
 	if !ok {

@@ -58,8 +58,10 @@ type ListWindow struct {
 	Limit          int
 }
 
-// ErrNameTaken is returned by Create when this project already has a bot by that name — migration
-// 000061's UNIQUE (organization_id, project_id, name) surfacing as an answer rather than as a 500.
+// ErrNameTaken is returned by Create when this project already has a bot by that name — the
+// integration_bots UNIQUE (project_id, name) index surfacing as an answer rather than as a 500.
+// Migration 000061 declared it as (organization_id, project_id, name) and 000065 rebuilt it without the
+// organization; its api-layer twin (api.ErrBotNameTaken) already said so.
 var ErrNameTaken = errors.New("bots: a bot with that name already exists in this project")
 
 // Store is the Postgres-backed registry.

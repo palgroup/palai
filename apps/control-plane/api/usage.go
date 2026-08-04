@@ -15,7 +15,7 @@ import (
 // Postgres-backed internal/metering Store implements it; production wires it via WithUsage.
 //
 // Every method is scoped by the verified identity, never a body field — a limit is created for the
-// caller's OWN scope, so an org-scoped key sets an organization-wide limit and a project-scoped key sets
+// caller's OWN scope, so a `system` key sets an installation-wide limit and a project-scoped key sets
 // one for its project, and no request can name someone else's tenant.
 //
 // HONEST CEILING — METERING ONLY: no invoice, no price, no adjustment entry, no BYOK platform/provider

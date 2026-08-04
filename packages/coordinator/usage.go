@@ -209,9 +209,9 @@ type LimitExceeded struct {
 // queries return no row against empty tables).
 //
 // WHEN SEVERAL ARE EXHAUSTED AT ONCE, THE NARROWEST ONE IS NAMED — the project limit ahead of the
-// organization-wide one. That is the queries' ORDER BY, not this function's, and the reasoning lives
+// installation-wide one. That is the queries' ORDER BY, not this function's, and the reasoning lives
 // beside it in storage/queries/usage.sql; the short of it is that a 429's remediation body must name a
-// limit its reader can act on, and a project operator cannot raise their organization's budget. Before
+// limit its reader can act on, and a project operator cannot raise the installation's budget. Before
 // E29 T7 the ordering was not total and the reported row was whichever drew the smaller random id.
 //
 // It is a REPORTING guarantee, not an enforcement one. Every configured limit is enforced either way:
