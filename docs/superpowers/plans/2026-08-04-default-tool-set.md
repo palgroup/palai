@@ -293,6 +293,8 @@ git commit -m "feat(toolset): one canonical tool list, named for the platform no
 
 ## Task 2: Point the control-plane guard at the canonical package
 
+> **COMPLETE (2026-08-04, commits `e19f1ddc`..`bb5b8e67`). The step text below is partly superseded** — it still names `TestTheSearchToolIsInTheDefaultSet` and `TestNoDefaultToolHasSideEffects`. Executing this task surfaced three contradictions between these steps and the plan's own Global Constraints; the human ruled, and §5 carries the outcome. The guard file now holds three tests: `TestEveryDefaultToolResolves`, `TestThePublishToolsAreTheirOwnListAndNeitherPublishes`, and `TestNoDefaultToolPublishes`.
+
 The guard currently reads `cmd/cli/internal/stack/up.go` as **text** and regex-matches `var slackDefaultTools = []string{...}`. That is why it is RED: the variable is gone. Replacing the regex with an import both fixes the RED and removes a whole failure mode — a guard that can be defeated by moving a file or reformatting a declaration.
 
 **Files:**
