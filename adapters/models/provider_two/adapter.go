@@ -434,6 +434,23 @@ func (a Adapter) buildBody(req modelbroker.Request) ([]byte, map[string]string, 
 // which is exactly the "unproven shape" this family refused to guess at before it could see anything.
 // Images on those turns are counted and reported once in the system text (unplaceableImageNote); the
 // user turn — the one the operator's screenshot actually arrives on — carries the real blocks.
+// isToolResultTurn reports whether an already-built wire message is a user turn carrying tool results,
+// and is therefore one more result may be appended to.
+//
+// IT CHECKS THE FIRST BLOCK'S TYPE rather than only the role, because a user turn is also how an
+// operator's own text and images reach the model. Appending a tool_result onto one of those would put
+// a machine answer inside a human's message.
+func isToolResultTurn(m map[string]any) bool {
+	if m["role"] != "user" {
+		return false
+	}
+	blocks, ok := m["content"].([]map[string]any)
+	if !ok || len(blocks) == 0 {
+		return false
+	}
+	return blocks[0]["type"] == "tool_result"
+}
+
 func (a Adapter) wireMessages(messages []modelbroker.Message) (string, []map[string]any) {
 	var system strings.Builder
 	out := make([]map[string]any, 0, len(messages))
@@ -448,14 +465,28 @@ func (a Adapter) wireMessages(messages []modelbroker.Message) (string, []map[str
 			system.WriteString(m.Content)
 		case "tool":
 			unplaceable += len(m.Images)
-			out = append(out, map[string]any{
-				"role": "user",
-				"content": []map[string]any{{
-					"type":        "tool_result",
-					"tool_use_id": m.ToolCallID,
-					"content":     m.Content,
-				}},
-			})
+			block := map[string]any{
+				"type":        "tool_result",
+				"tool_use_id": m.ToolCallID,
+				"content":     m.Content,
+			}
+			// ADJACENT TOOL RESULTS SHARE ONE USER TURN, AND THAT IS A PROVIDER CONTRACT RATHER THAN A
+			// TIDINESS PREFERENCE. Anthropic's parallel-tool-use documentation requires every result for a
+			// turn to come back in a single user message, and names the price of splitting them: it
+			// "silently trains Claude to stop making parallel calls". One message per result — which is
+			// what this arm did — teaches the model, one turn at a time, to stop asking for several tools
+			// at once, so the platform never sees the batching it would need in order to run them
+			// concurrently.
+			//
+			// ONLY ADJACENT ONES MERGE. A user turn between two results means they answered different
+			// model turns; folding those together would rewrite the conversation's shape rather than
+			// repair its packaging.
+			if n := len(out); n > 0 && isToolResultTurn(out[n-1]) {
+				blocks, _ := out[n-1]["content"].([]map[string]any)
+				out[n-1]["content"] = append(blocks, block)
+				continue
+			}
+			out = append(out, map[string]any{"role": "user", "content": []map[string]any{block}})
 		case "assistant":
 			unplaceable += len(m.Images)
 			var content []map[string]any
