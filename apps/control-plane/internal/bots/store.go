@@ -60,8 +60,9 @@ type ListWindow struct {
 
 // ErrNameTaken is returned by Create when this project already has a bot by that name — the
 // integration_bots UNIQUE (project_id, name) index surfacing as an answer rather than as a 500.
-// Migration 000061 declared it as (organization_id, project_id, name) and 000065 rebuilt it without the
-// organization; its api-layer twin (api.ErrBotNameTaken) already said so.
+// It was declared as (organization_id, project_id, name) and rebuilt without the organization during the
+// A.2 organization removal. Verify by NAME, which survives a chain rewrite as a migration number does
+// not: `SELECT indexdef FROM pg_indexes WHERE indexname = 'integration_bots_project_id_name_key';`.
 var ErrNameTaken = errors.New("bots: a bot with that name already exists in this project")
 
 // Store is the Postgres-backed registry.

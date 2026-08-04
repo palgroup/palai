@@ -34,9 +34,9 @@ type BotRegistry interface {
 }
 
 // ErrBotNameTaken is returned when this project already has a bot by that name (the registry's
-// UNIQUE (project_id, name) on integration_bots — declared by migration 000061 as
-// (organization_id, project_id, name) and rebuilt without the organization by 000065) — a typed value
-// rather than a raw SQL error so this package renders a 409 without parsing a SQLSTATE.
+// UNIQUE (project_id, name) on integration_bots — declared as (organization_id, project_id, name) and
+// rebuilt without the organization during the A.2 organization removal) — a typed value rather than a raw
+// SQL error so this package renders a 409 without parsing a SQLSTATE.
 var ErrBotNameTaken = errors.New("api: a bot with that name already exists in this project")
 
 // BotCreate is the resolved create body. The id is minted by the store, matching RepositoryBindingCreate.
