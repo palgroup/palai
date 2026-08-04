@@ -2,12 +2,12 @@
 -- (create trigger / revise / create+advance delivery); reads resolve the ACTIVE revision (highest
 -- revision_number — there is no publish flag, AGT-002 pin-at-accept) and drive dedupe / correlation /
 -- concurrency. A revise always INSERTs a new immutable revision — no statement here rewrites a revision's
--- config columns. Every statement is tenant-scoped by project_id (000062 rekeyed the policy). The
--- INSERTs still WRITE organization_id: triggers carries a UNIQUE index over it.
+-- config columns. Every statement is tenant-scoped by project_id (000062 rekeyed the policy, 000065
+-- rebuilt triggers' uniqueness as (project_id, name)).
 
 -- name: InsertTrigger
-INSERT INTO triggers (id, organization_id, project_id, name, type, created_by)
-VALUES ($1, $2, $3, $4, $5, $6);
+INSERT INTO triggers (id, project_id, name, type, created_by)
+VALUES ($1, $2, $3, $4, $5);
 
 -- TriggerForDelivery verifies a trigger is in scope and returns whether it is enabled (a disabled
 -- trigger rejects new deliveries).
@@ -24,13 +24,13 @@ SELECT enabled FROM triggers WHERE id = $1 AND project_id = $2;
 -- output_mapping + callback_endpoint_id (T6, callback output shaping + delivery) ride the SAME immutable
 -- INSERT — the columns are pre-provisioned in 000021, so T6 adds behavior with no migration.
 INSERT INTO trigger_revisions (
-    id, organization_id, project_id, trigger_id, revision_number,
+    id, project_id, trigger_id, revision_number,
     agent_revision_id, run_template_revision_id, input_mapping,
     dedupe_key_expr, correlation_mode, correlation_key_expr, concurrency_policy,
     output_mapping, callback_endpoint_id)
-VALUES ($1, $2, $3, $4,
-        (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM trigger_revisions WHERE trigger_id = $4),
-        $5, $6, $7, $8, $9, $10, $11, $12, $13)
+VALUES ($1, $2, $3,
+        (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM trigger_revisions WHERE trigger_id = $3),
+        $4, $5, $6, $7, $8, $9, $10, $11, $12)
 RETURNING revision_number;
 
 -- WebhookEndpointInScope verifies a callback endpoint belongs to the revising tenant (spec §39.2). The
@@ -61,8 +61,8 @@ WHERE id = $1 AND project_id = $2;
 -- accepting principal (so a deferred resume admits under the same principal). Born 'received' (the
 -- state-machine genesis); the pipeline advances it from here.
 -- name: InsertTriggerDelivery
-INSERT INTO trigger_deliveries (id, organization_id, project_id, trigger_id, trigger_revision_id, principal_id)
-VALUES ($1, $2, $3, $4, $5, $6);
+INSERT INTO trigger_deliveries (id, project_id, trigger_id, trigger_revision_id, principal_id)
+VALUES ($1, $2, $3, $4, $5);
 
 -- RecordDeliveryAdmitted records the born run's coordinates (response/run/session) + the mapped canonical
 -- input on the delivery and advances it to 'admitted'. The delivery is now tied to a session, so the
@@ -115,7 +115,7 @@ LIMIT 1;
 -- deferred delivery — the reconciler's per-key FIFO sweep unit (system-wide, not tenant-scoped: the
 -- reconciler is a system loop, like the webhook pump's fan-out).
 -- name: DeferredDeliveryGroups
-SELECT DISTINCT trigger_id, organization_id, project_id, correlation_key_hash
+SELECT DISTINCT trigger_id, project_id, correlation_key_hash
 FROM trigger_deliveries
 WHERE state = 'deferred';
 
@@ -133,7 +133,7 @@ LIMIT 1;
 -- StuckMappedDeliveries lists deliveries stranded in 'mapped' past a grace window — crash remnants that
 -- reached mapping but never took the concurrency decision. The reconciler re-decides them.
 -- name: StuckMappedDeliveries
-SELECT id, organization_id, project_id, principal_id, trigger_id, trigger_revision_id, correlation_key_hash, mapped_input
+SELECT id, project_id, principal_id, trigger_id, trigger_revision_id, correlation_key_hash, mapped_input
 FROM trigger_deliveries
 WHERE state = 'mapped' AND updated_at < clock_timestamp() - make_interval(secs => $1)
 ORDER BY updated_at
@@ -225,7 +225,7 @@ WHERE t.id = $1 AND t.project_id = $2;
 -- the receiver gates on: enabled, type (must be 'webhook'), created_by (the run principal), and the two
 -- source-secret refs. An unresolvable/non-webhook/disabled/secret-less trigger is a generic 404 upstream.
 -- name: ResolveInboundTrigger
-SELECT organization_id, project_id, enabled, type, created_by, inbound_secret_ref, inbound_secret_ref_next
+SELECT project_id, enabled, type, created_by, inbound_secret_ref, inbound_secret_ref_next
 FROM triggers WHERE id = $1;
 
 -- SetInboundSecretRefs rotates a trigger's inbound source-secret HANDLES in place (ref + overlap ref),
@@ -242,18 +242,18 @@ WHERE id = $1 AND project_id = $2;
 -- caller falls through to InsertInboundDuplicate. This INSERT committing is the durable-ack point (2xx).
 -- name: InsertInboundDelivery
 INSERT INTO trigger_deliveries
-    (id, organization_id, project_id, trigger_id, trigger_revision_id, principal_id,
+    (id, project_id, trigger_id, trigger_revision_id, principal_id,
      source, source_tenant, source_event_id, raw_payload)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
 -- InsertInboundDuplicate records a redelivered/duplicate source event linked to its canonical original and
 -- terminalized 'duplicate'. duplicate_of is set, so this row is exempt from the source-dedupe index (WHERE
 -- duplicate_of IS NULL) and never self-conflicts. It stores raw_payload + source cols for the delivery view.
 -- name: InsertInboundDuplicate
 INSERT INTO trigger_deliveries
-    (id, organization_id, project_id, trigger_id, trigger_revision_id, principal_id,
+    (id, project_id, trigger_id, trigger_revision_id, principal_id,
      source, source_tenant, source_event_id, raw_payload, state, duplicate_of, reason)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'duplicate', $11, $12);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'duplicate', $10, $11);
 
 -- FindCanonicalInboundDelivery resolves the surviving canonical original a duplicate links to: the
 -- earliest live canonical row for the (trigger, source, source_tenant, source_event_id).
@@ -278,7 +278,7 @@ WHERE trigger_id = $1 AND source_event_id <> ''
 -- deduplicated) past a grace window with a durable raw_payload — crash remnants the inbound sweep re-drives
 -- from the raw envelope (the T2 zombie ceiling closes for inbound: the payload IS durable here).
 -- name: StuckInboundDeliveries
-SELECT id, organization_id, project_id, principal_id, trigger_id, trigger_revision_id, source_tenant, raw_payload, state
+SELECT id, project_id, principal_id, trigger_id, trigger_revision_id, source_tenant, raw_payload, state
 FROM trigger_deliveries
 WHERE state IN ('received', 'authenticated', 'deduplicated')
   AND source_event_id <> '' AND raw_payload IS NOT NULL
@@ -310,7 +310,7 @@ WHERE id = $1 AND project_id = $2;
 -- It is a system-wide sweep (like the reconciler's other sweeps — each row carries its own scope). The
 -- response's terminal state + output are the callback source projection. (spec §20.2.2, §32.1)
 -- name: CallbackDueDeliveries
-SELECT d.id, d.organization_id, d.project_id, d.session_id, d.response_id, d.run_id, d.trigger_id,
+SELECT d.id, d.project_id, d.session_id, d.response_id, d.run_id, d.trigger_id,
        rev.callback_endpoint_id, rev.output_mapping, r.state, r.output
 FROM trigger_deliveries d
 JOIN trigger_revisions rev ON rev.id = d.trigger_revision_id

@@ -23,7 +23,7 @@ type RepositoryStore interface {
 // the same shape the webhook / inbound / remote-tool / MCP resolvers already take in their packages. The
 // composition root satisfies it from the DB-backed secret-ref store (E13 Task 3). The org is never
 // tenant-supplied, so a ref can only ever name a secret provisioned under the caller's OWN organization.
-type SecretResolver func(org, ref string) ([]byte, error)
+type SecretResolver func(ref string) ([]byte, error)
 
 // PrepareRepositoryInput is the infrastructure-owned input to a run's repository-preparation step
 // (spec §30.3). It comes from the resolved binding and the run, never from model output, so the
@@ -87,7 +87,6 @@ func PrepareRepository(ctx context.Context, store RepositoryStore, broker reposi
 		WorkBranch:    in.WorkBranch,
 		Policy:        policyFromBinding(binding.Policy),
 		Audience: repositories.Audience{
-			Organization: tenant.Organization,
 			Project:      tenant.Project,
 			Run:          in.RunID,
 			AttemptFence: in.AttemptFence,
@@ -135,7 +134,7 @@ func bindingBroker(global repositories.Broker, tenant coordinator.Tenant, bindin
 	if secrets == nil {
 		return nil, fmt.Errorf("prepare repository: binding names connection ref %q but no secret resolver is wired", binding.ConnectionRef)
 	}
-	token, err := secrets(tenant.Organization, binding.ConnectionRef)
+	token, err := secrets(binding.ConnectionRef)
 	if err != nil {
 		return nil, fmt.Errorf("prepare repository: resolve connection ref %q: %w", binding.ConnectionRef, err)
 	}

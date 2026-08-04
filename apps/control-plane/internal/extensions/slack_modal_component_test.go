@@ -84,7 +84,7 @@ func TestSlackApprovalModalReadsTheLedgerAndWritesNothing(t *testing.T) {
 	)
 
 	org, project := seedOrgProject(t, store)
-	tenant := coordinator.Tenant{Organization: org, Project: project}
+	tenant := coordinator.Tenant{Project: project}
 	sessionID := seedSession(t, store, org, project)
 	respID, runID := testID("resp"), testID("run")
 	mustSystemExec(t, pool, `UPDATE sessions SET state='active' WHERE id=$1`, sessionID)

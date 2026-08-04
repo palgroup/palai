@@ -72,7 +72,7 @@ func TestLifecycleRevocationSurvivesAControlPlaneRestart(t *testing.T) {
 
 	// The operator's decision, through the surface an operator reaches: the store write the API route
 	// performs. It has to be DURABLE before it is applied in memory, because the process is about to die.
-	if _, found, err := f.registry.SetState(ctx, tenant.Organization, tenant.Project, doomedID, "revoke"); err != nil || !found {
+	if _, found, err := f.registry.SetState(ctx, tenant.Project, doomedID, "revoke"); err != nil || !found {
 		t.Fatalf("revoke %s: found=%v err=%v", doomedID, found, err)
 	}
 	if got := runnerState(t, f, doomedID); got != "revoked" {
@@ -122,7 +122,7 @@ func TestLifecycleCordonSurvivesAControlPlaneRestartAndResumeClearsIt(t *testing
 		t.Fatalf("enrol: %v", err)
 	}
 	id := runnerIDOf(t, identity)
-	if _, found, err := f.registry.SetState(ctx, tenant.Organization, tenant.Project, id, "cordon"); err != nil || !found {
+	if _, found, err := f.registry.SetState(ctx, tenant.Project, id, "cordon"); err != nil || !found {
 		t.Fatalf("cordon %s: found=%v err=%v", id, found, err)
 	}
 	if got := runnerState(t, f, id); got != "cordoned" {
@@ -151,7 +151,7 @@ func TestLifecycleCordonSurvivesAControlPlaneRestartAndResumeClearsIt(t *testing
 	}
 
 	// The resume is a row too, so it reaches the machine through the same seam the API uses.
-	if _, found, err := f.registry.SetState(ctx, tenant.Organization, tenant.Project, id, "resume"); err != nil || !found {
+	if _, found, err := f.registry.SetState(ctx, tenant.Project, id, "resume"); err != nil || !found {
 		t.Fatalf("resume %s: found=%v err=%v", id, found, err)
 	}
 	restarted.gateway.ResumeRunner(id)
@@ -188,14 +188,14 @@ func TestLifecycleRevokeIsIrreversibleAndJournalled(t *testing.T) {
 		t.Fatalf("enrol: %v", err)
 	}
 	id := runnerIDOf(t, identity)
-	if _, found, err := f.registry.SetState(ctx, tenant.Organization, tenant.Project, id, "revoke"); err != nil || !found {
+	if _, found, err := f.registry.SetState(ctx, tenant.Project, id, "revoke"); err != nil || !found {
 		t.Fatalf("revoke: found=%v err=%v", found, err)
 	}
 	// Idempotent: a second revoke is not an error and not a 404.
-	if _, found, err := f.registry.SetState(ctx, tenant.Organization, tenant.Project, id, "revoke"); err != nil || !found {
+	if _, found, err := f.registry.SetState(ctx, tenant.Project, id, "revoke"); err != nil || !found {
 		t.Fatalf("a second revoke: found=%v err=%v — a revoke an operator cannot repeat is a revoke they cannot confirm", found, err)
 	}
-	if _, _, err := f.registry.SetState(ctx, tenant.Organization, tenant.Project, id, "resume"); err != nil {
+	if _, _, err := f.registry.SetState(ctx, tenant.Project, id, "resume"); err != nil {
 		t.Fatalf("resume against a revoked machine returned an error: %v", err)
 	}
 	if got := runnerState(t, f, id); got != "revoked" {
@@ -213,7 +213,7 @@ func TestLifecycleRevokeIsIrreversibleAndJournalled(t *testing.T) {
 
 	// Another tenant cannot revoke this machine, and the answer is a non-disclosing not-found.
 	other, _, _ := placementTenant(t, f)
-	if _, found, err := f.registry.SetState(ctx, other.Organization, other.Project, id, "revoke"); err != nil || found {
+	if _, found, err := f.registry.SetState(ctx, other.Project, id, "revoke"); err != nil || found {
 		t.Fatalf("another tenant revoked machine %s: found=%v err=%v", id, found, err)
 	}
 }

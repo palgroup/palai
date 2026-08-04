@@ -148,14 +148,14 @@ func newRemoteChildFixture(t *testing.T, peer *fakeRemotePeer, authRef string) *
 	ctx := context.Background()
 
 	sessionID, responseID, runID := pinnedID("ses"), pinnedID("resp"), pinnedID("run")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
 	// The parent's own input carries the sentinel: a wiring that shipped "the parent's context" instead of
 	// the child's objective would leak it to the remote.
 	exec(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'in_progress',$5)`,
-		responseID, tenant.Organization, tenant.Project, sessionID,
+		responseID, tenant.Project, sessionID,
 		[]byte(fmt.Sprintf("%q", "the parent's private plan, keyed with "+parentSentinel)))
 	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'running')`,
-		runID, tenant.Organization, tenant.Project, sessionID, responseID)
+		runID, tenant.Project, sessionID, responseID)
 
 	store := a2a.NewStore(cs.Pool(), func(prefix string) string { return pinnedID(prefix) })
 	agentID, err := store.RegisterRemoteAgent(ctx, a2a.RemoteAgent{
@@ -172,7 +172,7 @@ func newRemoteChildFixture(t *testing.T, peer *fakeRemotePeer, authRef string) *
 	// The resolver is the SOLE bearer source and is scoped to (org, ref): it refuses any other tenant and
 	// any ref the agent does not name. It has no way to reach the parent's credential — there is no
 	// parameter for one.
-	secrets := func(org, ref string) ([]byte, error) {
+	secrets := func(ref string) ([]byte, error) {
 		if org != tenant.Organization {
 			return nil, fmt.Errorf("cross-tenant secret resolution denied")
 		}

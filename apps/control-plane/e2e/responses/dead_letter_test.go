@@ -165,7 +165,7 @@ func (h *harness) runState(runID string) string {
 	var state string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT state FROM runs WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		runID, h.tenant.Organization, h.tenant.Project).Scan(&state); err != nil {
+		runID, h.tenant.Project).Scan(&state); err != nil {
 		h.t.Fatalf("read run state error = %v", err)
 	}
 	return state
@@ -179,7 +179,7 @@ func (h *harness) awaitJobStatus(runID, want string, within time.Duration) {
 	for time.Now().Before(deadline) {
 		if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 			`SELECT status FROM durable_jobs WHERE payload->>'run_id'=$1 AND organization_id=$2 AND project_id=$3`,
-			runID, h.tenant.Organization, h.tenant.Project).Scan(&last); err == nil && last == want {
+			runID, h.tenant.Project).Scan(&last); err == nil && last == want {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)

@@ -9,17 +9,17 @@
 -- push / PR). state defaults to pending_approval.
 -- name: InsertPublication
 INSERT INTO publications
-    (id, organization_id, project_id, session_id, run_id, response_id, operation, remote, branch, base,
+    (id, project_id, session_id, run_id, response_id, operation, remote, branch, base,
      head_sha, idempotency_key, display, args)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 ON CONFLICT (project_id, idempotency_key) DO NOTHING
 RETURNING id;
 
 -- InsertApproval records the one-shot approval binding for a publication (spec §22.4). It rides the
 -- publication's first insert only (the caller skips it on a replay).
 -- name: InsertApproval
-INSERT INTO approvals (id, publication_id, organization_id, project_id, request_hash, allowed_approver, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO approvals (id, publication_id, project_id, request_hash, allowed_approver, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (publication_id) DO NOTHING;
 
 -- GetPublicationByKey reads a publication by its idempotency key — the replay read after an ON CONFLICT
@@ -109,7 +109,7 @@ FOR UPDATE OF p;
 -- name: SelectExpiredApprovals
 -- run_id rides the projection since E23 T3: a run PARKS on its own pending approval, so the sweep that
 -- closes the question is also the sweep that has to release the run waiting on it.
-SELECT p.id, p.organization_id, p.project_id, p.session_id, coalesce(p.response_id, ''), p.run_id, p.state
+SELECT p.id, p.project_id, p.session_id, coalesce(p.response_id, ''), p.run_id, p.state
 FROM publications p
 JOIN approvals a ON a.publication_id = p.id
 WHERE p.state IN ('pending_approval', 'approved')
@@ -166,8 +166,8 @@ WHERE id = $1 AND project_id = $2 AND state = 'approved';
 -- FIRST park is authoritative, so a redelivered dispatch re-reads the row it already wrote rather than
 -- re-asking a human a question they may have already answered.
 -- name: BeginToolCallApproval
-INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, request_hash, commit_boundary)
-VALUES ($1, $2, $3, $4, $5, 'approval_pending', $6, $7, $8, $9, $10)
+INSERT INTO tool_calls (id, project_id, run_id, fence, state, name, arguments, replay_class, request_hash, commit_boundary)
+VALUES ($1, $2, $3, $4, 'approval_pending', $5, $6, $7, $8, $9)
 ON CONFLICT (id) DO NOTHING;
 
 -- InsertToolApproval opens the one-shot binding for a parked call (000044 R1). request_hash is
@@ -175,8 +175,8 @@ ON CONFLICT (id) DO NOTHING;
 -- call with no approval (REP-009, inherited for free). expires_at is finally set by somebody — 000013
 -- forward-declared it and until this epic nothing ever wrote a value into it.
 -- name: InsertToolApproval
-INSERT INTO approvals (id, tool_call_id, organization_id, project_id, request_hash, allowed_approver, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO approvals (id, tool_call_id, project_id, request_hash, allowed_approver, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (tool_call_id) DO NOTHING;
 
 -- LockToolCallForDecision locks the gated call so a decision is single-winner: two clicks on the same
@@ -225,7 +225,7 @@ WHERE tool_call_id = $1;
 -- scoped by construction (a sweep spans tenants), and it carries the run's session/response so the
 -- expiry can be journaled onto the right stream and the parked run woken.
 -- name: SelectExpiredToolApprovals
-SELECT a.tool_call_id, t.organization_id, t.project_id, t.run_id, r.session_id, coalesce(r.response_id, '')
+SELECT a.tool_call_id, t.project_id, t.run_id, r.session_id, coalesce(r.response_id, '')
 FROM approvals a
 JOIN tool_calls t ON t.id = a.tool_call_id
 JOIN runs r ON r.id = t.run_id

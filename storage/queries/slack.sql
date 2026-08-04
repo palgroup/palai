@@ -1,6 +1,6 @@
 -- Slack connection management + inbound resolution + thread↔session correlation (spec §36, E17 Task 1,
 -- SLK-001..008). Create/read/list are the admin management surface (tenant-scoped by project_id since
--- 000062; the rows still CARRY organization_id because three UNIQUE indexes here include it). ResolveSlackConnectionByTeam is the UNAUTHENTICATED inbound path's tenant establisher (the
+-- 000062, and 000065 rebuilt this file's three UNIQUE indexes on project_id). ResolveSlackConnectionByTeam is the UNAUTHENTICATED inbound path's tenant establisher (the
 -- resolveInboundTrigger idiom): it is keyed by the Slack team id the callback carries and runs system-scoped
 -- because there is no tenant yet — the caller still has to present a valid v0 signature over the resolved
 -- connection's signing secret before anything is written. The thread queries collapse a (team, channel,
@@ -8,9 +8,9 @@
 
 -- name: InsertSlackConnection
 INSERT INTO slack_connections (
-    id, organization_id, project_id, team_id, enterprise_id, bot_user_id,
+    id, project_id, team_id, enterprise_id, bot_user_id,
     signing_secret_ref, bot_token_ref, app_token_ref, scopes, allowed_channels, allowed_users, default_policy)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
 
 -- GetSlackConnection reads a connection's metadata within scope. The secret refs are HANDLES, not values,
 -- so they are safe to return to an admin read; the resolved bytes never live in this table.
@@ -41,9 +41,9 @@ ORDER BY created_at DESC, id DESC
 LIMIT $6;
 
 -- SlackWorkspaceBoundElsewhere reports whether a (team_id, enterprise_id) is already bound in a DIFFERENT
--- org/project. It exists because this table's uniqueness is (organization_id, project_id, team_id,
--- enterprise_id) — PER TENANT, not global — while ResolveSlackConnectionByTeam below is keyed by team_id
--- ALONE and runs system-scoped. Without this check any project admin in any org could register another
+-- project. It exists because this table's uniqueness is (project_id, team_id, enterprise_id) — PER
+-- TENANT, not global — while ResolveSlackConnectionByTeam below is keyed by team_id
+-- ALONE and runs system-scoped. Without this check any project admin could register another
 -- tenant's team_id with a secret it controls, and the resolve would then pick one of the two rows: the
 -- victim's own signed events start failing verification and (carrying x-slack-no-retry) are dropped for good.
 -- Slack posts to ONE Request URL per app, so two tenants legitimately sharing a workspace does not exist.
@@ -72,7 +72,7 @@ LIMIT 1;
 -- flip between requests. The caller reads BOTH rows and refuses the ambiguity outright — deciding which of
 -- two tenants an event belongs to is not a decision this query is allowed to make by accident.
 -- name: ResolveSlackConnectionByTeam
-SELECT id, organization_id, project_id, signing_secret_ref, bot_token_ref, app_token_ref, bot_user_id, disabled,
+SELECT id, project_id, signing_secret_ref, bot_token_ref, app_token_ref, bot_user_id, disabled,
        default_policy
 FROM slack_connections
 WHERE team_id = $1 AND enterprise_id = $2
@@ -85,7 +85,7 @@ LIMIT 2;
 -- database would accept it. System-scoped like the resolve above (the caller has no tenant yet) and therefore
 -- explicit about org AND project in the predicate.
 -- name: SlackRunPrincipalInScope
-SELECT 1 FROM principals WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SELECT 1 FROM principals WHERE id = $1 AND project_id = $2;
 
 -- CorrelateThreadSession claims the (team, channel, thread) -> session mapping single-winner. A first event
 -- inserts its session; a later event in the SAME thread hits the unique index (23505) and inserts nothing,
@@ -93,8 +93,8 @@ SELECT 1 FROM principals WHERE id = $1 AND organization_id = $2 AND project_id =
 -- included. RETURNING id lets the caller tell a fresh claim from a reuse.
 -- name: CorrelateThreadSession
 INSERT INTO slack_thread_sessions (
-    id, organization_id, project_id, connection_id, team_id, channel_id, thread_ts, session_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    id, project_id, connection_id, team_id, channel_id, thread_ts, session_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (project_id, team_id, channel_id, thread_ts) DO NOTHING
 RETURNING id;
 
@@ -155,10 +155,9 @@ WHERE project_id = $1 AND team_id = $2 AND channel_id = $3 AND thread_ts = $4;
 -- yields '', which the renderer treats as "send the words, mention nobody".
 -- name: EnqueueTerminalSlackReply
 INSERT INTO slack_reply_deliveries
-    (id, organization_id, project_id, connection_id, run_id, response_id, channel_id, thread_ts, run_state,
+    (id, project_id, connection_id, run_id, response_id, channel_id, thread_ts, run_state,
      requester_user_id)
-SELECT 'sdel_' || replace(gen_random_uuid()::text, '-', ''),
-       t.organization_id, t.project_id, t.connection_id, $2, $3, t.channel_id, t.thread_ts, $5,
+SELECT 'sdel_' || replace(gen_random_uuid()::text, '-', ''), t.project_id, t.connection_id, $2, $3, t.channel_id, t.thread_ts, $5,
        COALESCE((SELECT m.requester_user_id
                    FROM slack_message_turns m
                   WHERE m.project_id = $1 AND m.response_id = $3
@@ -198,7 +197,7 @@ UPDATE slack_reply_deliveries d
             FOR UPDATE SKIP LOCKED
             LIMIT $1)
    AND c.id = d.connection_id AND NOT c.disabled
-RETURNING d.id, d.organization_id, d.project_id, d.connection_id, d.run_id, d.response_id,
+RETURNING d.id, d.project_id, d.connection_id, d.run_id, d.response_id,
           d.channel_id, d.thread_ts, d.run_state, d.attempt_count, d.max_attempts, c.bot_token_ref,
           d.requester_user_id;
 
@@ -281,9 +280,9 @@ RETURNING id;
 -- is its requester, exactly as the first response is its turn.
 -- name: RecordSlackMessageTurn
 INSERT INTO slack_message_turns (
-    id, organization_id, project_id, connection_id, team_id, channel_id, message_ts, response_id, session_id,
+    id, project_id, connection_id, team_id, channel_id, message_ts, response_id, session_id,
     requester_user_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (project_id, team_id, channel_id, message_ts) DO NOTHING;
 
 -- RetractSlackMessageTurn withdraws the turn a deleted message opened: the response stays (what was said and
@@ -364,9 +363,8 @@ RETURNING r.id;
 -- every non-Slack run in the deployment, and why this is one indexed lookup rather than a scan.
 -- name: EnqueueApprovalMessage
 INSERT INTO slack_approval_deliveries
-    (id, organization_id, project_id, connection_id, approval_id, run_id, response_id, channel_id, thread_ts)
-SELECT 'sapr_' || replace(gen_random_uuid()::text, '-', ''),
-       t.organization_id, t.project_id, t.connection_id, $2, $3, $4, t.channel_id, t.thread_ts
+    (id, project_id, connection_id, approval_id, run_id, response_id, channel_id, thread_ts)
+SELECT 'sapr_' || replace(gen_random_uuid()::text, '-', ''), t.project_id, t.connection_id, $2, $3, $4, t.channel_id, t.thread_ts
   FROM slack_thread_sessions t
   JOIN slack_connections c ON c.id = t.connection_id AND NOT c.disabled
  WHERE t.project_id = $1 AND t.session_id = $5
@@ -409,7 +407,7 @@ UPDATE slack_approval_deliveries d
    AND c.id = d.connection_id AND NOT c.disabled
    AND a.id = d.approval_id
    AND p.id = a.publication_id
-RETURNING d.id, d.organization_id, d.project_id, d.connection_id, d.run_id,
+RETURNING d.id, d.project_id, d.connection_id, d.run_id,
           d.channel_id, d.thread_ts, d.attempt_count, d.max_attempts, c.bot_token_ref,
           a.request_hash, p.display, p.state, 'publication';
 
@@ -448,7 +446,7 @@ UPDATE slack_approval_deliveries d
    AND c.id = d.connection_id AND NOT c.disabled
    AND a.id = d.approval_id
    AND t.id = a.tool_call_id
-RETURNING d.id, d.organization_id, d.project_id, d.connection_id, d.run_id,
+RETURNING d.id, d.project_id, d.connection_id, d.run_id,
           d.channel_id, d.thread_ts, d.attempt_count, d.max_attempts, c.bot_token_ref,
           a.request_hash, a.id, coalesce(t.arguments::text, '{}'), t.name, t.state, 'tool_call';
 

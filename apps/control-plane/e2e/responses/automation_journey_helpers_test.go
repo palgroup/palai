@@ -352,7 +352,7 @@ func (h *harness) assertSeparateCodingFork(t *testing.T, ctx context.Context) st
 	var st string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
 		`SELECT state FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		responseID, tenant2.Organization, tenant2.Project).Scan(&st); err != nil {
+		responseID, tenant2.Project).Scan(&st); err != nil {
 		t.Fatalf("fork: read response state: %v", err)
 	}
 	if st != "completed" {

@@ -6,19 +6,19 @@
 -- ResolveA2AInterfacePublic is the ONLY system-scoped read: it serves the UNAUTHENTICATED public Agent Card,
 -- keyed by the server-minted interface id. It returns only card-visible SAFE columns, so a public read
 -- leaks nothing internal; the interface was explicitly published for discovery. Every other query is
--- tenant-scoped (RLS + the org/project predicate as defence in depth): the authenticated bearer scope
+-- tenant-scoped (RLS + the project predicate as defence in depth): the authenticated bearer scope
 -- governs (§38.6), never anything a client supplies.
 
 -- name: InsertA2AInterface
 INSERT INTO a2a_interfaces (
-    id, organization_id, project_id, name, description, version,
+    id, project_id, name, description, version,
     agent_profile_id, agent_revision_id, streaming, push_notifications, extended_card,
     input_modes, output_modes, skills, auth_scheme, published, etag)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16);
 
 -- ResolveA2AInterfacePublic serves the UNAUTHENTICATED public card, keyed by the server-minted interface id.
 -- System-scoped: there is no bearer scope on the public card route. It returns ONLY the card-visible SAFE
--- columns the public card actually renders — NOT the owning org/project or the agent_profile/agent_revision
+-- columns the public card actually renders — NOT the owning project or the agent_profile/agent_revision
 -- provenance pins (the public card path does no follow-on tenant work and never renders provenance), so a
 -- public read reaches nothing beyond what the card shows (M-5).
 -- name: ResolveA2AInterfacePublic
@@ -28,10 +28,10 @@ FROM a2a_interfaces
 WHERE id = $1 AND published = true;
 
 -- GetA2AInterface reads an interface within the authenticated scope (the extended card + all authed ops).
--- RLS confines the row; the org/project predicate is defence in depth. A foreign scope finds nothing (404,
+-- RLS confines the row; the project predicate is defence in depth. A foreign scope finds nothing (404,
 -- no existence oracle).
 -- name: GetA2AInterface
-SELECT id, organization_id, project_id, name, description, version, agent_profile_id, agent_revision_id,
+SELECT id, project_id, name, description, version, agent_profile_id, agent_revision_id,
        streaming, push_notifications, extended_card, input_modes, output_modes, skills, auth_scheme, etag
 FROM a2a_interfaces
 WHERE id = $1 AND project_id = $2;
@@ -48,8 +48,8 @@ LIMIT $2;
 -- are the platform-minted canonical ids; a2a_task_id/a2a_context_id are the external ids the client sees.
 -- name: InsertA2ATaskRef
 INSERT INTO a2a_task_refs (
-    id, organization_id, project_id, interface_id, a2a_task_id, a2a_context_id, run_id, session_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+    id, project_id, interface_id, a2a_task_id, a2a_context_id, run_id, session_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7);
 
 -- GetA2ATaskRef resolves a task within scope by its external a2a_task_id under an interface. It returns the
 -- canonical run_id/session_id so the caller can project the live run state — the canonical id is READ here,
@@ -95,15 +95,15 @@ WHERE interface_id = $1 AND a2a_task_id = $2 AND project_id = $3;
 
 -- name: InsertA2ARemoteAgent
 INSERT INTO a2a_remote_agents (
-    id, organization_id, project_id, name, card_url, endpoint_url, protocol_version,
+    id, project_id, name, card_url, endpoint_url, protocol_version,
     auth_connection_ref, allowed_input_modes, allowed_output_modes, allowed_extension_uris,
     data_policy, max_cost_cents, timeout_ms, max_output_bytes, enabled)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15);
 
 -- GetA2ARemoteAgent resolves a registered remote agent within the authenticated scope. RLS confines the row;
--- the org/project predicate is defence in depth. A foreign scope finds nothing (404, no existence oracle).
+-- the project predicate is defence in depth. A foreign scope finds nothing (404, no existence oracle).
 -- name: GetA2ARemoteAgent
-SELECT id, organization_id, project_id, name, card_url, endpoint_url, protocol_version,
+SELECT id, project_id, name, card_url, endpoint_url, protocol_version,
        auth_connection_ref, allowed_input_modes, allowed_output_modes, allowed_extension_uris,
        data_policy, max_cost_cents, timeout_ms, max_output_bytes, enabled
 FROM a2a_remote_agents

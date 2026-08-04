@@ -59,7 +59,7 @@ const (
 // answers a (org, ref) pair with the value stored under it, which is the half the last mile added.
 func dbSecretResolver(t *testing.T, secrets *identity.SecretStore) SecretResolver {
 	t.Helper()
-	return func(org, ref string) ([]byte, error) {
+	return func(ref string) ([]byte, error) {
 		v, ok, err := secrets.Resolve(context.Background(), org, ref)
 		switch {
 		case err != nil:

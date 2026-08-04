@@ -9,7 +9,6 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
-	"github.com/palgroup/palai/storage"
 )
 
 // Compile-time proof Store satisfies the router's seam.
@@ -50,11 +49,7 @@ func (s *Store) CreateBot(ctx context.Context, scope middleware.Scope, req api.B
 	if req.Name == "" || req.Kind == "" {
 		return api.BotResult{Invalid: true}, nil
 	}
-	org, err := storage.OrganizationForProject(ctx, s.pool, scope.Project)
-	if err != nil {
-		return api.BotResult{}, err
-	}
-	row, err := s.Create(ctx, org, scope.Project, Bot{
+	row, err := s.Create(ctx, scope.Project, Bot{
 		Name: req.Name, Kind: req.Kind, AgentRevisionID: req.AgentRevisionID,
 		RepositoryBindingID: req.RepositoryBindingID, PrincipalID: req.PrincipalID, Config: req.Config,
 	})
@@ -73,11 +68,7 @@ func (s *Store) CreateBot(ctx context.Context, scope middleware.Scope, req api.B
 
 // GetBot implements api.BotRegistry.
 func (s *Store) GetBot(ctx context.Context, scope middleware.Scope, id string) (api.BotResult, error) {
-	org, err := storage.OrganizationForProject(ctx, s.pool, scope.Project)
-	if err != nil {
-		return api.BotResult{}, err
-	}
-	row, found, err := s.Get(ctx, org, scope.Project, id)
+	row, found, err := s.Get(ctx, scope.Project, id)
 	if err != nil {
 		return api.BotResult{}, err
 	}
@@ -97,11 +88,7 @@ func (s *Store) ListBots(ctx context.Context, scope middleware.Scope, q api.List
 	if q.After != nil {
 		window.AfterCreatedAt, window.AfterID = &q.After.CreatedAt, q.After.ID
 	}
-	org, err := storage.OrganizationForProject(ctx, s.pool, scope.Project)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.List(ctx, org, scope.Project, window)
+	rows, err := s.List(ctx, scope.Project, window)
 	if err != nil {
 		return nil, err
 	}
@@ -118,11 +105,7 @@ func (s *Store) ListBots(ctx context.Context, scope middleware.Scope, q api.List
 
 // PatchBot implements api.BotRegistry.
 func (s *Store) PatchBot(ctx context.Context, scope middleware.Scope, id string, patch api.BotPatch) (api.BotResult, error) {
-	org, err := storage.OrganizationForProject(ctx, s.pool, scope.Project)
-	if err != nil {
-		return api.BotResult{}, err
-	}
-	row, found, err := s.Update(ctx, org, scope.Project, id, Patch{
+	row, found, err := s.Update(ctx, scope.Project, id, Patch{
 		Name: patch.Name, AgentRevisionID: patch.AgentRevisionID, RepositoryBindingID: patch.RepositoryBindingID,
 		PrincipalID: patch.PrincipalID, Config: patch.Config, Disabled: patch.Disabled,
 	})
@@ -144,9 +127,5 @@ func (s *Store) PatchBot(ctx context.Context, scope middleware.Scope, id string,
 
 // DeleteBot implements api.BotRegistry.
 func (s *Store) DeleteBot(ctx context.Context, scope middleware.Scope, id string) (bool, error) {
-	org, err := storage.OrganizationForProject(ctx, s.pool, scope.Project)
-	if err != nil {
-		return false, err
-	}
-	return s.Delete(ctx, org, scope.Project, id)
+	return s.Delete(ctx, scope.Project, id)
 }

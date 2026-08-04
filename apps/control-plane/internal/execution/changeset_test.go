@@ -70,7 +70,7 @@ func TestChangesetCompleteIndependentOfModelSummary(t *testing.T) {
 		},
 	}
 	aw := &fakeArtifactWriter{}
-	in := ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root}
+	in := ChangesetInput{Tenant: coordinator.Tenant{Project: "prj"}, RunID: "run_1", AllocationRoot: root}
 
 	rec, compiled, err := CompileChangeset(context.Background(), ledger, aw, in)
 	if err != nil || !compiled {
@@ -150,7 +150,7 @@ func TestChangesetFlagsSecretFinding(t *testing.T) {
 		rows: []coordinator.ToolCallRow{fileWriteRow("tc_1", "repo/config.txt", secretContent, "", "sha256:aa", true)},
 	}
 	rec, compiled, err := CompileChangeset(context.Background(), ledger, &fakeArtifactWriter{},
-		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+		ChangesetInput{Tenant: coordinator.Tenant{Project: "prj"}, RunID: "run_1", AllocationRoot: root})
 	if err != nil || !compiled {
 		t.Fatalf("CompileChangeset() = compiled %v err %v", compiled, err)
 	}
@@ -180,7 +180,7 @@ func TestChangesetFlagsShellWrittenSecret(t *testing.T) {
 		rows: []coordinator.ToolCallRow{shellRow("tc_1", []string{"sh", "-c", "echo secret > secret.env"}, 0, "")},
 	}
 	rec, compiled, err := CompileChangeset(context.Background(), ledger, &fakeArtifactWriter{},
-		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+		ChangesetInput{Tenant: coordinator.Tenant{Project: "prj"}, RunID: "run_1", AllocationRoot: root})
 	if err != nil || !compiled {
 		t.Fatalf("CompileChangeset() = compiled %v err %v", compiled, err)
 	}
@@ -236,7 +236,7 @@ func TestChangesetNamesAFileOnlyTheShellToolWrote(t *testing.T) {
 		},
 	}
 	rec, compiled, err := CompileChangeset(context.Background(), ledger, &fakeArtifactWriter{},
-		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+		ChangesetInput{Tenant: coordinator.Tenant{Project: "prj"}, RunID: "run_1", AllocationRoot: root})
 	if err != nil || !compiled {
 		t.Fatalf("CompileChangeset() = compiled %v err %v, want compiled", compiled, err)
 	}
@@ -293,7 +293,7 @@ func TestChangesetKeepsToolCallProvenanceWhereTheFileToolWroteIt(t *testing.T) {
 		},
 	}
 	rec, compiled, err := CompileChangeset(context.Background(), ledger, &fakeArtifactWriter{},
-		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+		ChangesetInput{Tenant: coordinator.Tenant{Project: "prj"}, RunID: "run_1", AllocationRoot: root})
 	if err != nil || !compiled {
 		t.Fatalf("CompileChangeset() = compiled %v err %v, want compiled", compiled, err)
 	}
@@ -338,7 +338,7 @@ func TestChangesetCountsIgnoredOutputRatherThanListingIt(t *testing.T) {
 		rows: []coordinator.ToolCallRow{shellRow("tc_1", []string{"swift", "build"}, 0, "")},
 	}
 	rec, compiled, err := CompileChangeset(context.Background(), ledger, &fakeArtifactWriter{},
-		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+		ChangesetInput{Tenant: coordinator.Tenant{Project: "prj"}, RunID: "run_1", AllocationRoot: root})
 	if err != nil || !compiled {
 		t.Fatalf("CompileChangeset() = compiled %v err %v, want compiled", compiled, err)
 	}
@@ -388,7 +388,7 @@ func TestChangesetSurvivesTheCommitTool(t *testing.T) {
 		rows: []coordinator.ToolCallRow{shellRow("tc_1", []string{"bash", "-lc", "cat > FromShell.swift"}, 0, "")},
 	}
 	rec, compiled, err := CompileChangeset(context.Background(), ledger, &fakeArtifactWriter{},
-		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+		ChangesetInput{Tenant: coordinator.Tenant{Project: "prj"}, RunID: "run_1", AllocationRoot: root})
 	if err != nil || !compiled {
 		t.Fatalf("CompileChangeset() = compiled %v err %v, want compiled", compiled, err)
 	}
@@ -455,7 +455,7 @@ func TestChangesetSummaryArtifactCarriesTheIgnoredCountToAReader(t *testing.T) {
 		rows: []coordinator.ToolCallRow{shellRow("tc_1", []string{"swift", "build"}, 0, "")},
 	}
 	rec, compiled, err := CompileChangeset(context.Background(), ledger, aw,
-		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+		ChangesetInput{Tenant: coordinator.Tenant{Project: "prj"}, RunID: "run_1", AllocationRoot: root})
 	if err != nil || !compiled {
 		t.Fatalf("CompileChangeset() = compiled %v err %v, want compiled", compiled, err)
 	}
@@ -505,7 +505,7 @@ func TestChangesetSummaryIsWrittenEvenWhenNothingChanged(t *testing.T) {
 	root, base := newAllocRepo(t)
 	aw := &fakeArtifactWriter{}
 	_, compiled, err := CompileChangeset(context.Background(), &fakeChangesetLedger{base: base, baseOK: true}, aw,
-		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+		ChangesetInput{Tenant: coordinator.Tenant{Project: "prj"}, RunID: "run_1", AllocationRoot: root})
 	if err != nil || !compiled {
 		t.Fatalf("CompileChangeset() = compiled %v err %v", compiled, err)
 	}
@@ -538,7 +538,7 @@ func TestTwoRunsOnTheSameBaseCompileToDistinctChangesetIDs(t *testing.T) {
 		t.Helper()
 		ledger := &fakeChangesetLedger{base: base, baseOK: true}
 		rec, compiled, err := CompileChangeset(context.Background(), ledger, &fakeArtifactWriter{},
-			ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: runID, AllocationRoot: root})
+			ChangesetInput{Tenant: coordinator.Tenant{Project: "prj"}, RunID: runID, AllocationRoot: root})
 		if err != nil || !compiled {
 			t.Fatalf("CompileChangeset(%s) = compiled %v err %v", runID, compiled, err)
 		}
@@ -639,7 +639,7 @@ func TestARefusedWriteIsNotCompiledIntoTheChangeset(t *testing.T) {
 		},
 	}
 	rec, compiled, err := CompileChangeset(context.Background(), ledger, &fakeArtifactWriter{},
-		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+		ChangesetInput{Tenant: coordinator.Tenant{Project: "prj"}, RunID: "run_1", AllocationRoot: root})
 	if err != nil || !compiled {
 		t.Fatalf("CompileChangeset() = compiled %v err %v, want compiled", compiled, err)
 	}

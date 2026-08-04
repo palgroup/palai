@@ -3,8 +3,8 @@
 -- a live lease.
 
 -- name: EnqueueJob
-INSERT INTO durable_jobs (id, organization_id, project_id, kind, payload)
-VALUES ($1, $2, $3, $4, $5);
+INSERT INTO durable_jobs (id, project_id, kind, payload)
+VALUES ($1, $2, $3, $4);
 
 -- name: EnqueueWokenRunJob
 -- The response.run job a CAPACITY WAKE opens, seeded with the budget the run has already spent.
@@ -24,13 +24,13 @@ VALUES ($1, $2, $3, $4, $5);
 --
 -- A run parked on its FIRST attempt — the case the whole feature exists for, a Mac taking six to twenty
 -- minutes to boot — seeds 1 and keeps four, which is the behaviour before this statement existed.
-INSERT INTO durable_jobs (id, organization_id, project_id, kind, payload, attempt_count)
-SELECT $1, $2, $3, 'response.run', $4,
+INSERT INTO durable_jobs (id, project_id, kind, payload, attempt_count)
+SELECT $1, $2, 'response.run', $3,
        coalesce((SELECT j.attempt_count
                    FROM durable_jobs j
-                  WHERE j.project_id = $3
+                  WHERE j.project_id = $2
                     AND j.kind = 'response.run'
-                    AND j.payload->>'run_id' = $5
+                    AND j.payload->>'run_id' = $4
                   ORDER BY j.created_at DESC, j.id DESC
                   LIMIT 1), 0);
 
@@ -112,7 +112,7 @@ SET status = 'running',
     updated_at = clock_timestamp()
 FROM claimable
 WHERE job.id = claimable.id
-RETURNING job.id, job.organization_id, job.project_id, job.lease_owner,
+RETURNING job.id, job.project_id, job.lease_owner,
           job.fence, job.attempt_count, job.lease_expires_at, job.payload;
 
 -- name: HeartbeatJob
@@ -169,7 +169,7 @@ WHERE job_id = $1 AND fence = $2;
 -- run and its response, tenant-scoped and bounded per sweep. Runs already terminal are
 -- excluded (only the states RunCmdFail is legal from), so a run failed by an earlier sweep
 -- is never reprocessed and terminal monotonicity holds.
-SELECT j.organization_id, j.project_id, j.payload->>'run_id' AS run_id, r.response_id
+SELECT j.project_id, j.payload->>'run_id' AS run_id, r.response_id
 FROM durable_jobs j
 JOIN runs r
   ON r.id = j.payload->>'run_id'

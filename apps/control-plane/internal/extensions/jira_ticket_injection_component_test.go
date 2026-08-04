@@ -203,7 +203,7 @@ func TestJiraTicketBodyCannotInstructTheAgent(t *testing.T) {
 	//
 	// (a) the destination the shipped resolver answers is still the BINDING's, not the ticket's.
 	pubs := openPublicationStore(t)
-	target, found, err := pubs.RunPublicationTarget(ctx, coordinator.Tenant{Organization: org, Project: project}, runID)
+	target, found, err := pubs.RunPublicationTarget(ctx, coordinator.Tenant{Project: project}, runID)
 	if err != nil || !found {
 		t.Fatalf("R5: RunPublicationTarget found=%v err=%v — with no destination to move, this refusal would be vacuous", found, err)
 	}

@@ -233,7 +233,7 @@ func TestUnauthorizedAttachIsTenantScoped404WithAuditDenial(t *testing.T) {
 		t.Fatalf("read audit denial error = %v", err)
 	}
 	if org != tenantB.Organization || project != tenantB.Project {
-		t.Fatalf("denial keyed to %s/%s, want the actor's tenant %s/%s", org, project, tenantB.Organization, tenantB.Project)
+		t.Fatalf("denial keyed to %s/%s, want the actor's tenant %s/%s", org, project, tenantB.Project)
 	}
 	if action != "session.attach" || outcome != "denied" {
 		t.Fatalf("denial action/outcome = %s/%s, want session.attach/denied", action, outcome)

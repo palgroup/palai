@@ -136,8 +136,13 @@ type usageEntry struct {
 // ledgerID derives a ledger row's stable identity from the tenant and the dedupe key, so the SAME fact
 // re-settled produces the SAME primary key. The tenant is folded in because dedupe keys are only unique
 // within a tenant, and the id must be unique across the installation.
+//
+// A.2 Task 6 dropped the organization from the hash, which changes the id a given fact derives. That is
+// not a double-count risk: re-settlement is refused by SettleUsage's `ON CONFLICT (project_id,
+// dedupe_key) DO NOTHING`, not by this id — the id only has to be unique, and rows written before the
+// change keep the id they were written with.
 func ledgerID(tenant Tenant, dedupeKey string) string {
-	sum := sha256.Sum256([]byte(tenant.Organization + "\x00" + tenant.Project + "\x00" + dedupeKey))
+	sum := sha256.Sum256([]byte(tenant.Project + "\x00" + dedupeKey))
 	return "use_" + hex.EncodeToString(sum[:12])
 }
 
@@ -150,7 +155,7 @@ func settleUsage(ctx context.Context, tx pgx.Tx, tenant Tenant, entries ...usage
 			continue
 		}
 		if _, err := tx.Exec(ctx, storage.Query("SettleUsage"),
-			ledgerID(tenant, e.dedupeKey), tenant.Organization, tenant.Project,
+			ledgerID(tenant, e.dedupeKey), tenant.Project,
 			e.sessionID, e.runID, e.meter, e.quantity, e.dedupeKey, e.unit, e.modelRequestID); err != nil {
 			return fmt.Errorf("settle usage %s: %w", e.meter, err)
 		}

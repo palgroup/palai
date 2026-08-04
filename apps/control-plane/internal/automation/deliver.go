@@ -56,9 +56,9 @@ type DeliveryResult struct {
 // pinned delivery), then advances the delivery through authenticate → dedupe → map → admit → run_created
 // (or a rejected/duplicate/failed/deferred/skipped branch). A disabled or unknown trigger is a typed
 // error; a trigger with no revision cannot accept a delivery.
-func (s *TriggerStore) CreateDelivery(ctx context.Context, org, project, principal, triggerID string, payload []byte) (DeliveryResult, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
-	return s.createDelivery(ctx, org, project, principal, triggerID, payload, "")
+func (s *TriggerStore) CreateDelivery(ctx context.Context, project, principal, triggerID string, payload []byte) (DeliveryResult, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
+	return s.createDelivery(ctx, project, principal, triggerID, payload, "")
 }
 
 // CreateScheduledDelivery is the schedule ticker's admission handoff (E11 Task 3): it fires the schedule's
@@ -69,9 +69,9 @@ func (s *TriggerStore) CreateDelivery(ctx context.Context, org, project, princip
 // occurrence unique index and durable-before-run (§5). The occurrence's own trigger-configured
 // dedupe_key_expr is intentionally overridden: a scheduled firing dedupes on its occurrence identity, not
 // on payload content.
-func (s *TriggerStore) CreateScheduledDelivery(ctx context.Context, org, project, principal, triggerID, occurrenceID string, payload []byte) (DeliveryResult, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
-	return s.createDelivery(ctx, org, project, principal, triggerID, payload, occurrenceID)
+func (s *TriggerStore) CreateScheduledDelivery(ctx context.Context, project, principal, triggerID, occurrenceID string, payload []byte) (DeliveryResult, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
+	return s.createDelivery(ctx, project, principal, triggerID, payload, occurrenceID)
 }
 
 // CreateDeliveryIdempotent is the HTTP-facing delivery accept with AUT-013 per-key idempotency (spec
@@ -82,11 +82,7 @@ func (s *TriggerStore) CreateScheduledDelivery(ctx context.Context, org, project
 // route embeds the trigger id, so "same key + SAME trigger = same delivery" is the scope; the record stays
 // principal-scoped (§20.9). A key reused with a different body is ErrIdempotencyMismatch.
 func (s *TriggerStore) CreateDeliveryIdempotent(ctx context.Context, project, principal, triggerID, idempotencyKey string, payload []byte) (DeliveryResult, error) {
-	org, err := storage.OrganizationForProject(ctx, s.pool, project)
-	if err != nil {
-		return DeliveryResult{}, err
-	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
+	ctx = storage.ScopeToTenant(ctx, project)
 	if idempotencyKey == "" {
 		return DeliveryResult{}, errors.New("automation: delivery idempotency key is required")
 	}
@@ -99,18 +95,18 @@ func (s *TriggerStore) CreateDeliveryIdempotent(ctx context.Context, project, pr
 	// (an accepted delivery is idempotent regardless of later config — an honest replay, not ErrTriggerDisabled).
 	// A hash mismatch is also surfaced here, before the preconditions. found=false falls through to the
 	// preconditions + claim, so a genuinely-new delivery on a disabled trigger still errors.
-	if res, found, err := s.recordedDelivery(ctx, org, project, principal, route, idempotencyKey, reqHash); found || err != nil {
+	if res, found, err := s.recordedDelivery(ctx, project, principal, route, idempotencyKey, reqHash); found || err != nil {
 		return res, err
 	}
 
-	enabled, err := s.triggerEnabled(ctx, org, project, triggerID)
+	enabled, err := s.triggerEnabled(ctx, project, triggerID)
 	if err != nil {
 		return DeliveryResult{}, err
 	}
 	if !enabled {
 		return DeliveryResult{}, ErrTriggerDisabled
 	}
-	rev, ok, err := s.GetActiveRevision(ctx, org, project, triggerID)
+	rev, ok, err := s.GetActiveRevision(ctx, project, triggerID)
 	if err != nil {
 		return DeliveryResult{}, err
 	}
@@ -133,11 +129,11 @@ func (s *TriggerStore) CreateDeliveryIdempotent(ctx context.Context, project, pr
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	switch err := tx.QueryRow(ctx, storage.Query("ReserveIdempotency"),
-		org, project, principal, "POST", route, idempotencyKey, reqHash, respBody).Scan(new(int64)); {
+		project, principal, "POST", route, idempotencyKey, reqHash, respBody).Scan(new(int64)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		// A concurrent request won the claim between our recordedDelivery read and now; replay its row.
 		_ = tx.Rollback(ctx)
-		res, found, err := s.recordedDelivery(ctx, org, project, principal, route, idempotencyKey, reqHash)
+		res, found, err := s.recordedDelivery(ctx, project, principal, route, idempotencyKey, reqHash)
 		if err != nil {
 			return DeliveryResult{}, err
 		}
@@ -148,7 +144,7 @@ func (s *TriggerStore) CreateDeliveryIdempotent(ctx context.Context, project, pr
 	case err != nil:
 		return DeliveryResult{}, fmt.Errorf("claim delivery idempotency: %w", err)
 	}
-	if _, err := tx.Exec(ctx, storage.Query("InsertTriggerDelivery"), deliveryID, org, project, triggerID, rev.ID, principal); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("InsertTriggerDelivery"), deliveryID, project, triggerID, rev.ID, principal); err != nil {
 		return DeliveryResult{}, fmt.Errorf("insert delivery: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -160,7 +156,7 @@ func (s *TriggerStore) CreateDeliveryIdempotent(ctx context.Context, project, pr
 	// ponytail: a winner that crashes BEFORE map leaves a 'received' zombie; an idempotent retry returns
 	// that SAME row and does NOT re-drive it (the extension of T2's m9 zombie ceiling — closed when T5's
 	// durable raw_payload lets the reconciler re-decide a pre-map delivery).
-	scope := deliveryScope{org: org, project: project, principal: principal, triggerID: triggerID, revisionID: rev.ID, deliveryID: deliveryID}
+	scope := deliveryScope{project: project, principal: principal, triggerID: triggerID, revisionID: rev.ID, deliveryID: deliveryID}
 	return s.advance(ctx, scope, payload)
 }
 
@@ -170,8 +166,8 @@ func (s *TriggerStore) CreateDeliveryIdempotent(ctx context.Context, project, pr
 // state); a different hash returns (found=true, ErrIdempotencyMismatch). It is called both before the
 // trigger-state preconditions (so a recorded delivery replays regardless of a later disable) and on a lost
 // claim race.
-func (s *TriggerStore) recordedDelivery(ctx context.Context, org, project, principal, route, key, reqHash string) (DeliveryResult, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *TriggerStore) recordedDelivery(ctx context.Context, project, principal, route, key, reqHash string) (DeliveryResult, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	var (
 		storedHash string
 		respBody   []byte
@@ -212,16 +208,16 @@ func deliveryRoute(triggerID string) string { return "/v1/triggers/" + triggerID
 // createDelivery accepts a delivery for a trigger and drives it through the pipeline. dedupeOverride, when
 // non-empty, forces the canonical dedupe_key (the scheduled-firing occurrence_id); "" leaves the trigger's
 // configured dedupe_key_expr to decide (the manual/API path).
-func (s *TriggerStore) createDelivery(ctx context.Context, org, project, principal, triggerID string, payload []byte, dedupeOverride string) (DeliveryResult, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
-	enabled, err := s.triggerEnabled(ctx, org, project, triggerID)
+func (s *TriggerStore) createDelivery(ctx context.Context, project, principal, triggerID string, payload []byte, dedupeOverride string) (DeliveryResult, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
+	enabled, err := s.triggerEnabled(ctx, project, triggerID)
 	if err != nil {
 		return DeliveryResult{}, err
 	}
 	if !enabled {
 		return DeliveryResult{}, ErrTriggerDisabled
 	}
-	rev, ok, err := s.GetActiveRevision(ctx, org, project, triggerID)
+	rev, ok, err := s.GetActiveRevision(ctx, project, triggerID)
 	if err != nil {
 		return DeliveryResult{}, err
 	}
@@ -230,19 +226,19 @@ func (s *TriggerStore) createDelivery(ctx context.Context, org, project, princip
 	}
 
 	deliveryID := newID("tdel")
-	if _, err := s.pool.Exec(ctx, storage.Query("InsertTriggerDelivery"), deliveryID, org, project, triggerID, rev.ID, principal); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("InsertTriggerDelivery"), deliveryID, project, triggerID, rev.ID, principal); err != nil {
 		return DeliveryResult{}, fmt.Errorf("insert delivery: %w", err)
 	}
 
-	scope := deliveryScope{org: org, project: project, principal: principal, triggerID: triggerID, revisionID: rev.ID, deliveryID: deliveryID, dedupeOverride: dedupeOverride}
+	scope := deliveryScope{project: project, principal: principal, triggerID: triggerID, revisionID: rev.ID, deliveryID: deliveryID, dedupeOverride: dedupeOverride}
 	return s.advance(ctx, scope, payload)
 }
 
 // deliveryScope carries the tenant + pinned-revision coordinates a delivery advances within. dedupeOverride
 // forces the canonical dedupe_key for a scheduled firing (the occurrence_id); "" for the manual/API path.
 type deliveryScope struct {
-	org, project, principal, triggerID, revisionID, deliveryID string
-	dedupeOverride                                             string
+	project, principal, triggerID, revisionID, deliveryID string
+	dedupeOverride                                        string
 	// sourceTenant scopes the correlation hash for a signed inbound source (the sender's sub-tenant).
 	// Empty for manual/API and scheduled firings (no signed source envelope).
 	sourceTenant string
@@ -284,7 +280,7 @@ type revisionConfig struct {
 // background reconciler holding the cross-tenant system scope (narrowed to strictly less authority).
 // Under migration 000029 that scope is what makes the pipeline's rows visible at all.
 func scoped(ctx context.Context, sc deliveryScope) context.Context {
-	return storage.WithTenant(ctx, sc.org, sc.project)
+	return storage.WithTenant(ctx, sc.project)
 }
 
 func (s *TriggerStore) advance(ctx context.Context, sc deliveryScope, payload []byte) (DeliveryResult, error) {
@@ -453,7 +449,7 @@ func (s *TriggerStore) appendToNamedSession(ctx context.Context, sc deliveryScop
 	if sessionID == "" {
 		return s.fail(ctx, sc, "named_session correlation produced no session id")
 	}
-	tenant := coordinator.Tenant{Organization: sc.org, Project: sc.project}
+	tenant := coordinator.Tenant{Project: sc.project}
 	// Resolve the target run BEFORE the send, so the delivery records the run it joined.
 	var runID, responseID string
 	switch err := s.pool.QueryRow(ctx, storage.Query("ActiveRootRun"), sessionID, sc.project).Scan(&runID, &responseID); {
@@ -686,7 +682,7 @@ func (s *TriggerStore) cancelResolvedRun(ctx context.Context, sc deliveryScope, 
 	if err != nil {
 		return err
 	}
-	if _, err := s.admitter.CancelRunReconciled(ctx, coordinator.Tenant{Organization: sc.org, Project: sc.project}, responseID, runID, canceled, uncertain); err != nil {
+	if _, err := s.admitter.CancelRunReconciled(ctx, coordinator.Tenant{Project: sc.project}, responseID, runID, canceled, uncertain); err != nil {
 		return fmt.Errorf("replace: cancel active run: %w", err)
 	}
 	return nil
@@ -819,23 +815,22 @@ func (s *TriggerStore) admit(ctx context.Context, sc deliveryScope, cfg revision
 func (s *TriggerStore) admitChained(ctx context.Context, sc deliveryScope, cfg revisionConfig, mappedInput []byte, requestedSession *string) (DeliveryResult, error) {
 	responseID, runID, sessionID := newID("resp"), newID("run"), newID("ses")
 	projection := contracts.Response{
-		ID:             contracts.ResponseID(responseID),
-		Object:         "response",
-		Status:         "queued",
-		CreatedAt:      time.Now().UTC().Format(time.RFC3339Nano),
-		Output:         []contracts.ContentItem{},
-		Usage:          contracts.Usage{},
-		SessionID:      contracts.SessionID(sessionID),
-		RunID:          contracts.RunID(runID),
-		OrganizationID: contracts.OrganizationID(sc.org),
-		ProjectID:      contracts.ProjectID(sc.project),
+		ID:        contracts.ResponseID(responseID),
+		Object:    "response",
+		Status:    "queued",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Output:    []contracts.ContentItem{},
+		Usage:     contracts.Usage{},
+		SessionID: contracts.SessionID(sessionID),
+		RunID:     contracts.RunID(runID),
+		ProjectID: contracts.ProjectID(sc.project),
 	}
 	body, err := json.Marshal(projection)
 	if err != nil {
 		return DeliveryResult{}, err
 	}
 	sum := sha256.Sum256(mappedInput)
-	adm, err := s.admitter.AdmitResponse(ctx, coordinator.Tenant{Organization: sc.org, Project: sc.project}, coordinator.AdmissionInput{
+	adm, err := s.admitter.AdmitResponse(ctx, coordinator.Tenant{Project: sc.project}, coordinator.AdmissionInput{
 		Principal:             sc.principal,
 		IdempotencyKey:        "trigger-delivery:" + sc.deliveryID,
 		Method:                "POST",
@@ -918,7 +913,7 @@ func (s *TriggerStore) emitRunCreated(ctx context.Context, sc deliveryScope, ses
 		return err
 	}
 	if _, err := tx.Exec(ctx, storage.Query("AppendEvent"),
-		newID("evt"), sc.org, sc.project, sessionID, responseID, seq, "trigger.delivery.run_created.v1", []byte(payload)); err != nil {
+		newID("evt"), sc.project, sessionID, responseID, seq, "trigger.delivery.run_created.v1", []byte(payload)); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

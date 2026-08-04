@@ -60,7 +60,7 @@ func TestSkillBodyMaterializedAndReadableViaFileTool(t *testing.T) {
 		t.Fatalf("Migrate: %v", err)
 	}
 	pool := st.Spine().Pool()
-	tenant := coordinator.Tenant{Organization: pinnedID("org"), Project: pinnedID("prj")}
+	tenant := coordinator.Tenant{Project: pinnedID("prj")}
 	exec := func(sql string, args ...any) {
 		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("exec %q: %v", sql, err)
@@ -78,19 +78,19 @@ func TestSkillBodyMaterializedAndReadableViaFileTool(t *testing.T) {
 
 	sessionID, profileID, revID, runID := pinnedID("ses"), pinnedID("aprof"), pinnedID("arev"), pinnedID("run")
 	skillID, skillRevID := pinnedID("skill"), pinnedID("skillrev")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
 	exec(`INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'commit-convention')`,
-		skillID, tenant.Organization, tenant.Project)
+		skillID, tenant.Project)
 	exec(`INSERT INTO skill_revisions (id, organization_id, project_id, skill_id, revision_number, digest, state, metadata, archive)
 	      VALUES ($1,$2,$3,$4,1,$5,'enabled','{"name":"commit-convention","description":"write commits"}',$6)`,
-		skillRevID, tenant.Organization, tenant.Project, skillID, q.Digest, q.Sanitized)
+		skillRevID, tenant.Project, skillID, q.Digest, q.Sanitized)
 	exec(`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`,
-		profileID, tenant.Organization, tenant.Project)
+		profileID, tenant.Project)
 	exec(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, skills, published_at)
 	      VALUES ($1,$2,$3,$4,1,'m','["file"]','["commit-convention"]', clock_timestamp())`,
-		revID, tenant.Organization, tenant.Project, profileID)
+		revID, tenant.Project, profileID)
 	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,'running',$5)`,
-		runID, tenant.Organization, tenant.Project, sessionID, revID)
+		runID, tenant.Project, sessionID, revID)
 
 	if err := st.PinRunSkills(ctx, tenant, runID); err != nil {
 		t.Fatalf("PinRunSkills: %v", err)
@@ -140,7 +140,7 @@ func TestSkillMaterializationRefusesEscapingName(t *testing.T) {
 		t.Fatalf("Migrate: %v", err)
 	}
 	pool := st.Spine().Pool()
-	tenant := coordinator.Tenant{Organization: pinnedID("org"), Project: pinnedID("prj")}
+	tenant := coordinator.Tenant{Project: pinnedID("prj")}
 	exec := func(sql string, args ...any) {
 		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("exec %q: %v", sql, err)
@@ -155,13 +155,13 @@ func TestSkillMaterializationRefusesEscapingName(t *testing.T) {
 		t.Fatalf("Quarantine: %v", err)
 	}
 	sessionID, skillID, skillRevID, runID := pinnedID("ses"), pinnedID("skill"), pinnedID("skillrev"), pinnedID("run")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project)
-	exec(`INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'ok')`, skillID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
+	exec(`INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'ok')`, skillID, tenant.Project)
 	exec(`INSERT INTO skill_revisions (id, organization_id, project_id, skill_id, revision_number, digest, state, metadata, archive)
 	      VALUES ($1,$2,$3,$4,1,$5,'enabled','{"name":"ok"}',$6)`,
-		skillRevID, tenant.Organization, tenant.Project, skillID, q.Digest, q.Sanitized)
+		skillRevID, tenant.Project, skillID, q.Digest, q.Sanitized)
 	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'running')`,
-		runID, tenant.Organization, tenant.Project, sessionID)
+		runID, tenant.Project, sessionID)
 
 	// Inject a pin whose name escapes the skills root (bypassing CreateSkill validation via a raw write).
 	// "../escaped/pwned" stays under <alloc> for the test's safety but Rel() still flags the `..` escape.

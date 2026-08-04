@@ -9,7 +9,6 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
-	"github.com/palgroup/palai/storage"
 )
 
 // The automation-agent management surface (spec §20.2.1, §10). These methods adapt the tenant-scoped
@@ -21,11 +20,7 @@ func (s *Store) CreateAgentProfile(ctx context.Context, scope middleware.Scope, 
 	if strings.TrimSpace(name) == "" {
 		return api.AgentResult{MissingName: true}, nil
 	}
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return api.AgentResult{}, err
-	}
-	id, err := s.agents.CreateProfile(ctx, org, scope.Project, name)
+	id, err := s.agents.CreateProfile(ctx, scope.Project, name)
 	if errors.Is(err, automation.ErrProfileNameTaken) {
 		return api.AgentResult{NameTaken: true}, nil
 	}
@@ -39,11 +34,7 @@ func (s *Store) CreateAgentProfile(ctx context.Context, scope middleware.Scope, 
 // CreateAgentRevision creates a draft revision under a profile. An unsupported field is a BadField
 // (400), an unknown profile a NotFound (404).
 func (s *Store) CreateAgentRevision(ctx context.Context, scope middleware.Scope, profileID string, body []byte) (api.AgentResult, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return api.AgentResult{}, err
-	}
-	rev, err := s.agents.CreateRevision(ctx, org, scope.Project, profileID, body)
+	rev, err := s.agents.CreateRevision(ctx, scope.Project, profileID, body)
 	switch {
 	case errors.Is(err, automation.ErrUnknownField):
 		return api.AgentResult{BadField: true}, nil
@@ -62,11 +53,7 @@ func (s *Store) CreateAgentRevision(ctx context.Context, scope middleware.Scope,
 // PublishAgentRevision publishes a draft revision; an unknown id is a NotFound (404), a re-publish an
 // idempotent success (200).
 func (s *Store) PublishAgentRevision(ctx context.Context, scope middleware.Scope, revisionID string) (api.AgentResult, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return api.AgentResult{}, err
-	}
-	_, exists, err := s.agents.PublishRevision(ctx, org, scope.Project, revisionID)
+	_, exists, err := s.agents.PublishRevision(ctx, scope.Project, revisionID)
 	// A revision naming an environment this organization does not have is REFUSED at publish (E25 T3), and
 	// as a 400 rather than a 404: the revision id in the path is real, so pointing the caller at a missing
 	// revision would send them looking for the wrong thing. publishResult would otherwise turn this into a
@@ -80,11 +67,7 @@ func (s *Store) PublishAgentRevision(ctx context.Context, scope middleware.Scope
 // CreateRunTemplateRevision creates a draft profile-free template revision (identity/delegation rejected
 // by the strict decode).
 func (s *Store) CreateRunTemplateRevision(ctx context.Context, scope middleware.Scope, templateName string, body []byte) (api.AgentResult, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return api.AgentResult{}, err
-	}
-	rev, err := s.agents.CreateTemplateRevision(ctx, org, scope.Project, templateName, body)
+	rev, err := s.agents.CreateTemplateRevision(ctx, scope.Project, templateName, body)
 	switch {
 	case errors.Is(err, automation.ErrUnknownField):
 		return api.AgentResult{BadField: true}, nil
@@ -96,22 +79,14 @@ func (s *Store) CreateRunTemplateRevision(ctx context.Context, scope middleware.
 
 // PublishRunTemplateRevision publishes a draft template revision (see PublishAgentRevision).
 func (s *Store) PublishRunTemplateRevision(ctx context.Context, scope middleware.Scope, revisionID string) (api.AgentResult, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return api.AgentResult{}, err
-	}
-	_, exists, err := s.agents.PublishTemplateRevision(ctx, org, scope.Project, revisionID)
+	_, exists, err := s.agents.PublishTemplateRevision(ctx, scope.Project, revisionID)
 	return publishResult(revisionID, exists, err)
 }
 
 // GetAgentProfile reads a profile lineage within scope (spec §10, E13 T4). A missing/foreign id is
 // NotFound (404).
 func (s *Store) GetAgentProfile(ctx context.Context, scope middleware.Scope, id string) (api.AgentResult, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return api.AgentResult{}, err
-	}
-	it, found, err := s.agents.GetProfile(ctx, org, scope.Project, id)
+	it, found, err := s.agents.GetProfile(ctx, scope.Project, id)
 	if err != nil {
 		return api.AgentResult{}, err
 	}
@@ -123,11 +98,7 @@ func (s *Store) GetAgentProfile(ctx context.Context, scope middleware.Scope, id 
 
 // ListAgentProfiles returns a tenant-scoped page of agent-profile lineages (spec §10, E13 T4).
 func (s *Store) ListAgentProfiles(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return nil, err
-	}
-	items, err := s.agents.ListProfiles(ctx, org, scope.Project, toAutomationWindow(q))
+	items, err := s.agents.ListProfiles(ctx, scope.Project, toAutomationWindow(q))
 	if err != nil {
 		return nil, err
 	}
@@ -141,11 +112,7 @@ func (s *Store) ListAgentProfiles(ctx context.Context, scope middleware.Scope, q
 // ListAgentRevisions returns a tenant-scoped page of one profile's revisions (spec §10, E13 T4). An
 // unknown or foreign profile yields an empty page (no existence oracle beyond emptiness).
 func (s *Store) ListAgentRevisions(ctx context.Context, scope middleware.Scope, profileID string, q api.ListQuery) ([]api.ListRow, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return nil, err
-	}
-	items, err := s.agents.ListRevisions(ctx, org, scope.Project, profileID, toAutomationWindow(q))
+	items, err := s.agents.ListRevisions(ctx, scope.Project, profileID, toAutomationWindow(q))
 	if err != nil {
 		return nil, err
 	}

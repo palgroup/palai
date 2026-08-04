@@ -61,7 +61,7 @@ func (s *Store) ListPendingApprovals(ctx context.Context, scope middleware.Scope
 	out := make([]api.PendingApproval, 0, len(parked))
 	for _, p := range parked {
 		label := ""
-		if tool, ok, lerr := s.tools.LookupTool(ctx, tenant.Organization, tenant.Project, p.RunID, p.ToolName); lerr == nil && ok {
+		if tool, ok, lerr := s.tools.LookupTool(ctx, tenant.Project, p.RunID, p.ToolName); lerr == nil && ok {
 			label = tool.ApprovalLabel
 		}
 		display := approvalDisplayFor(p.ToolName, label, p.Arguments)

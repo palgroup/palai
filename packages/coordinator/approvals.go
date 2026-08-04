@@ -113,7 +113,7 @@ type ToolApprovalDecision struct {
 //
 // It runs under guardRunActive, so a canceled run never opens a question that will outlive it.
 func (s *Store) RequestToolApproval(ctx context.Context, tenant Tenant, in ToolApprovalRequest) error {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin request tool approval: %w", err)
@@ -124,7 +124,7 @@ func (s *Store) RequestToolApproval(ctx context.Context, tenant Tenant, in ToolA
 		return err
 	}
 	tag, err := tx.Exec(ctx, storage.Query("BeginToolCallApproval"),
-		in.ToolCallID, tenant.Organization, tenant.Project, in.RunID, int64(in.Fence),
+		in.ToolCallID, tenant.Project, in.RunID, int64(in.Fence),
 		in.ToolName, in.Arguments, in.ReplayClass, in.RequestHash, in.Boundary)
 	if err != nil {
 		return fmt.Errorf("park tool call for approval: %w", err)
@@ -137,7 +137,7 @@ func (s *Store) RequestToolApproval(ctx context.Context, tenant Tenant, in ToolA
 		expires = in.ExpiresAt
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertToolApproval"),
-		in.ApprovalID, in.ToolCallID, tenant.Organization, tenant.Project, in.RequestHash, "", expires); err != nil {
+		in.ApprovalID, in.ToolCallID, tenant.Project, in.RequestHash, "", expires); err != nil {
 		return fmt.Errorf("open tool approval: %w", err)
 	}
 	// THE ORDER TO ASK (E23 T8), committed in the SAME transaction as the approval that parks the run —
@@ -180,7 +180,7 @@ func (s *Store) RequestToolApproval(ctx context.Context, tenant Tenant, in ToolA
 // ToolApprovalForCall reads a gated call's projection. found is false for an unknown or foreign call, so
 // a cross-tenant id leaks nothing.
 func (s *Store) ToolApprovalForCall(ctx context.Context, tenant Tenant, toolCallID string) (ToolApproval, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var (
 		a    ToolApproval
 		args string
@@ -231,7 +231,7 @@ func (s *Store) PendingToolApprovals(ctx context.Context, tenant Tenant, w ToolA
 	if w.Limit <= 0 {
 		return nil, nil
 	}
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("PendingToolApprovalsForTenant"),
 		tenant.Project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
@@ -260,7 +260,7 @@ func (s *Store) ToolApprovalByID(ctx context.Context, tenant Tenant, approvalID 
 	if approvalID == "" {
 		return PendingToolApproval{}, false, nil
 	}
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	a, err := scanPendingToolApproval(s.pool.QueryRow(ctx, storage.Query("ToolApprovalByID"),
 		approvalID, tenant.Project))
 	switch {
@@ -306,7 +306,7 @@ func scanPendingToolApproval(row pgx.Row) (PendingToolApproval, error) {
 // and "this is no longer decidable" are different facts for the operator reading the log, and collapsing
 // them would hide a misconfigured approver list behind what looks like an expired button.
 func (s *Store) DecideToolApproval(ctx context.Context, tenant Tenant, d ToolApprovalDecision) (bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return false, fmt.Errorf("begin decide tool approval: %w", err)
@@ -433,7 +433,7 @@ func (s *Store) SweepExpiredToolApprovals(ctx context.Context) (int, error) {
 	var candidates []candidate
 	for rows.Next() {
 		var c candidate
-		if err := rows.Scan(&c.callID, &c.tenant.Organization, &c.tenant.Project, &c.runID, &c.sessionID, &c.responseID); err != nil {
+		if err := rows.Scan(&c.callID, &c.tenant.Project, &c.runID, &c.sessionID, &c.responseID); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("scan expired tool approval: %w", err)
 		}
@@ -460,7 +460,7 @@ func (s *Store) SweepExpiredToolApprovals(ctx context.Context) (int, error) {
 // expireOneToolApproval cancels one elapsed call and wakes its run, single-winner. A row a racing click
 // already decided updates nothing and is not counted — the sweep reports what it MOVED, not what it read.
 func (s *Store) expireOneToolApproval(ctx context.Context, tenant Tenant, sessionID, responseID, runID, callID string) (bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return false, fmt.Errorf("begin expire tool approval: %w", err)
@@ -564,7 +564,7 @@ func wakeParkedRunTx(ctx context.Context, tx pgx.Tx, tenant Tenant, runID string
 		return err
 	}
 	if _, err := tx.Exec(ctx, storage.Query("EnqueueJob"),
-		jobID, tenant.Organization, tenant.Project, "response.run", []byte(fmt.Sprintf(`{"run_id":%q}`, runID))); err != nil {
+		jobID, tenant.Project, "response.run", []byte(fmt.Sprintf(`{"run_id":%q}`, runID))); err != nil {
 		return fmt.Errorf("enqueue approval wake job: %w", err)
 	}
 	return nil
@@ -582,7 +582,7 @@ func (s *Store) PendingToolApprovalForSession(ctx context.Context, tenant Tenant
 	if sessionID == "" || requestHash == "" {
 		return ToolApproval{}, false, nil
 	}
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var (
 		a    ToolApproval
 		args string
@@ -656,7 +656,7 @@ func (s *Store) PendingPublicationApprovals(ctx context.Context, tenant Tenant, 
 	if w.Limit <= 0 {
 		return nil, nil
 	}
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("PendingPublicationApprovalsForTenant"),
 		tenant.Project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
@@ -685,7 +685,7 @@ func (s *Store) PublicationApprovalByID(ctx context.Context, tenant Tenant, appr
 	if approvalID == "" {
 		return PendingPublicationApproval{}, false, nil
 	}
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	a, err := scanPendingPublicationApproval(s.pool.QueryRow(ctx, storage.Query("PublicationApprovalByID"),
 		approvalID, tenant.Project))
 	switch {

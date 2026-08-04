@@ -151,7 +151,7 @@ func requireSandbox(t *testing.T) *sandbox {
 	})
 
 	sb := &sandbox{spine: spine, digest: digest, driver: driver,
-		tenant: coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}}
+		tenant: coordinator.Tenant{Project: newID("prj")}}
 	sb.exec(t, `INSERT INTO organizations (id) VALUES ($1)`, sb.tenant.Organization)
 	sb.exec(t, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, sb.tenant.Project, sb.tenant.Organization)
 	return sb
@@ -169,13 +169,13 @@ func (sb *sandbox) exec(t *testing.T, sql string, args ...any) {
 // engine.ready is the worst possible latency, not a missing data point.
 func (sb *sandbox) measureAssignment(t *testing.T, run *Run, phase, mode string, extraEnv map[string]string) {
 	t.Helper()
-	ctx := storage.WithTenant(context.Background(), sb.tenant.Organization, sb.tenant.Project)
+	ctx := storage.WithTenant(context.Background(), sb.tenant.Project)
 
 	sessionID, runID := newID("ses"), newID("run")
 	sb.exec(t, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`,
-		sessionID, sb.tenant.Organization, sb.tenant.Project)
+		sessionID, sb.tenant.Project)
 	sb.exec(t, `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`,
-		runID, sb.tenant.Organization, sb.tenant.Project, sessionID)
+		runID, sb.tenant.Project, sessionID)
 
 	hostPath := t.TempDir()
 	total := time.Now()

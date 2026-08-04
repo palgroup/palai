@@ -106,7 +106,7 @@ func (o *Orchestrator) provisionRootWorkspace(ctx context.Context, tenant coordi
 		// Release under the run's tenant scope, not a bare background context: migration 000029's
 		// policies gate this write too, so an unscoped release would affect zero rows and LEAK the
 		// lease it means to reclaim.
-		_ = o.spine.ReleaseWriterLease(storage.WithTenant(context.Background(), tenant.Organization, tenant.Project), leaseID)
+		_ = o.spine.ReleaseWriterLease(storage.WithTenant(context.Background(), tenant.Project), leaseID)
 		return "", "", "", err
 	}
 	return alloc.HostPath, leaseID, ws.WorkspaceID, nil
@@ -257,7 +257,7 @@ func (o *Orchestrator) releaseWorkspace(tenant coordinator.Tenant, workspaceID, 
 	// A fresh context so a canceled/teardown ctx cannot skip the release, but still tenant-scoped: the
 	// release + workspace transition are gated by migration 000029's policies, so an unscoped write
 	// would silently no-op and leak the lease.
-	ctx := storage.WithTenant(context.Background(), tenant.Organization, tenant.Project)
+	ctx := storage.WithTenant(context.Background(), tenant.Project)
 	if err := o.spine.ReleaseWriterLease(ctx, leaseID); err != nil {
 		log.Printf("release writer lease %s: %v", leaseID, err)
 	}

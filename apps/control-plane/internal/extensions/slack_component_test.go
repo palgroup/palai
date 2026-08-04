@@ -74,7 +74,7 @@ func TestSlackConnectionCreateReadRLS(t *testing.T) {
 		t.Fatalf("cross-tenant get = %+v err = %v, want ErrSlackConnectionNotFound", foreign, err)
 	}
 	var visibleToB int
-	if err := s.pool.QueryRow(storage.ScopeToTenant(ctx, orgB, projectB),
+	if err := s.pool.QueryRow(storage.ScopeToTenant(ctx, projectB),
 		`SELECT count(*) FROM slack_connections WHERE id = $1`, conn.ID).Scan(&visibleToB); err != nil {
 		t.Fatalf("cross-tenant count: %v", err)
 	}

@@ -1,12 +1,11 @@
 -- Hooks registry management + dispatch-load resolution (spec §28.17, E12 Task 8, TOL-012). Create + disable
 -- are the admin management surface; HooksForPoint is the per-run dispatch load that walks a project's enabled
 -- hooks for one point in deterministic (created_at, id) registration order. Every statement is tenant-scoped
--- by project_id (000062 rekeyed the policy). Rows still CARRY organization_id: hooks has a UNIQUE
--- index over it, and a unique index treats NULL as distinct from NULL.
+-- by project_id (000062 rekeyed the policy, 000065 rebuilt hooks' uniqueness as (project_id, name)).
 
 -- name: InsertHook
-INSERT INTO hooks (id, organization_id, project_id, name, hook_point, category, executor, config, secret_ref, timeout_ms)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+INSERT INTO hooks (id, project_id, name, hook_point, category, executor, config, secret_ref, timeout_ms)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
 -- GetHook reads a hook's committed shape (admin read-back + the CRUD roundtrip), disabled or not. It backs
 -- GET /v1/hooks/{id} (E29 T1) and the store's own roundtrip.

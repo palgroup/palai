@@ -167,10 +167,10 @@ func TestVerifyModelConnectionMakesARealRequest(t *testing.T) {
 	}
 	s := (&Store{}).WithModelConnectionInspectors(
 		map[string]ConnectionInspector{"openai-compatible": providerone.Adapter{}},
-		func(org, ref string) ([]byte, bool, error) { return []byte("sk-the-operators-key"), true, nil },
+		func(ref string) ([]byte, bool, error) { return []byte("sk-the-operators-key"), true, nil },
 	)
 
-	probe := s.probeConnection(context.Background(), coordinator.Tenant{Organization: "org_1", Project: "prj_1"}, rec)
+	probe := s.probeConnection(context.Background(), coordinator.Tenant{Project: "prj_1"}, rec)
 
 	// (a) A real request, carrying the real credential, at the endpoint's models list.
 	if gotAuth != "Bearer sk-the-operators-key" {
@@ -193,16 +193,16 @@ func TestVerifyModelConnectionMakesARealRequest(t *testing.T) {
 // Every refusal that reached NO verdict answers `not_probed`, never a pass. Three of them, and the third —
 // an endpoint whose shape yields no models list — is the one most likely to be quietly rendered as OK.
 func TestVerifyModelConnectionNeverInventsAGreen(t *testing.T) {
-	tenant := coordinator.Tenant{Organization: "org_1", Project: "prj_1"}
+	tenant := coordinator.Tenant{Project: "prj_1"}
 	rec := coordinator.ModelConnectionRecord{ID: "mconn_1", Provider: "provider-one", SecretRef: "k"}
-	resolves := func(org, ref string) ([]byte, bool, error) { return []byte("sk-x"), true, nil }
+	resolves := func(ref string) ([]byte, bool, error) { return []byte("sk-x"), true, nil }
 
 	cases := map[string]*Store{
 		"no prober wired for the family": (&Store{}).WithModelConnectionInspectors(map[string]ConnectionInspector{}, resolves),
 		"no secret store wired":          (&Store{}).WithModelConnectionInspectors(map[string]ConnectionInspector{"provider-one": providerone.Adapter{}}, nil),
 		"the secret ref does not resolve": (&Store{}).WithModelConnectionInspectors(
 			map[string]ConnectionInspector{"provider-one": providerone.Adapter{}},
-			func(org, ref string) ([]byte, bool, error) { return nil, false, nil }),
+			func(ref string) ([]byte, bool, error) { return nil, false, nil }),
 	}
 	for name, s := range cases {
 		probe := s.probeConnection(context.Background(), tenant, rec)

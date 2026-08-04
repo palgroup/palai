@@ -96,11 +96,11 @@ func (a *SlackAdmitter) Decide(ctx context.Context, conn api.SlackConnectionRef,
 	}
 	// slack_thread_sessions is FORCE-RLS and threadSession does not scope its own context: an unscoped read
 	// sees NO rows, which here would silently report every click as coming from an uncorrelated thread.
-	scoped := storage.ScopeToTenant(ctx, conn.Org, conn.Project)
+	scoped := storage.ScopeToTenant(ctx, conn.Project)
 
 	// 1. The conversation the click belongs to. No correlation ⇒ this deployment never opened a session in
 	// that thread, so there is nothing for the click to decide.
-	session, lastBotTS, err := a.store.threadSession(scoped, conn.Org, conn.Project, intent.TeamID, intent.ChannelID, intent.ThreadTS)
+	session, lastBotTS, err := a.store.threadSession(scoped, conn.Project, intent.TeamID, intent.ChannelID, intent.ThreadTS)
 	switch {
 	case errors.Is(err, ErrSlackThreadSessionNotFound):
 		return api.SlackDecisionOutcome{Rejected: "the click's thread has no correlated session"}, nil
@@ -110,7 +110,7 @@ func (a *SlackAdmitter) Decide(ctx context.Context, conn api.SlackConnectionRef,
 
 	// 2. AUTHORIZATION — SLK-004, deny by default. Nothing below this line runs for an unmapped clicker, so
 	// the guarantee is "no command was enqueued", not "a command was enqueued and then rejected".
-	policy, err := a.store.SlackAuthorizationPolicyFor(ctx, conn.Org, conn.Project, conn.ID)
+	policy, err := a.store.SlackAuthorizationPolicyFor(ctx, conn.Project, conn.ID)
 	if err != nil {
 		return api.SlackDecisionOutcome{}, fmt.Errorf("read slack authorization policy: %w", err)
 	}
@@ -133,7 +133,7 @@ func (a *SlackAdmitter) Decide(ctx context.Context, conn api.SlackConnectionRef,
 		return api.SlackDecisionOutcome{SessionID: session, Rejected: "the clicking user is not an authorized approver"}, nil
 	}
 
-	tenant := coordinator.Tenant{Organization: conn.Org, Project: conn.Project}
+	tenant := coordinator.Tenant{Project: conn.Project}
 
 	// 3. WHICH KIND OF APPROVAL THIS CLICK DECIDES (E23 T8). The two live in one table and 000044's
 	// CHECK ((publication_id IS NULL) <> (tool_call_id IS NULL)) makes each row say which it is, so the
@@ -273,7 +273,7 @@ const slackDenyReason = "a human denied this call in Slack. No reason was given 
 func (a *SlackAdmitter) decideToolApproval(scoped context.Context, conn api.SlackConnectionRef, intent slack.ApprovalIntent,
 	session, lastBotTS string, parked coordinator.ToolApproval) (api.SlackDecisionOutcome, error) {
 
-	tenant := coordinator.Tenant{Organization: conn.Org, Project: conn.Project}
+	tenant := coordinator.Tenant{Project: conn.Project}
 	// The canonical principal, in the one string form config_policy.approvers ever names. The team id is
 	// part of it because a Slack user id is unique only within its workspace — and both halves come from
 	// the payload Slack SIGNED, which is the only reason a payload field is trusted here at all.
@@ -332,7 +332,7 @@ func (a *SlackAdmitter) repairToolDecisionMessage(scoped context.Context, conn a
 	if a.doer == nil || target == "" || conn.BotTokenRef == "" {
 		return false
 	}
-	token, err := a.secrets(conn.Org, conn.BotTokenRef)
+	token, err := a.secrets(conn.BotTokenRef)
 	if err != nil || len(token) == 0 {
 		log.Printf("slack: could not resolve the bot token for connection %s; the tool decision stands but its message is stale", conn.ID)
 		return false
@@ -395,7 +395,7 @@ func (a *SlackAdmitter) repairDecisionMessage(scoped context.Context, conn api.S
 	if a.doer == nil || target == "" || conn.BotTokenRef == "" {
 		return false
 	}
-	token, err := a.secrets(conn.Org, conn.BotTokenRef)
+	token, err := a.secrets(conn.BotTokenRef)
 	if err != nil || len(token) == 0 {
 		// The ref name is not echoed anywhere; an operator sees WHICH connection could not reply.
 		log.Printf("slack: could not resolve the bot token for connection %s; the decision stands but its message is stale", conn.ID)

@@ -24,7 +24,7 @@ type RemoteInvoker interface {
 // SecretResolver bridges a tool_revision.secret_ref handle to the signing-secret bytes at invoke time
 // (the org-scoped file-secret bridge, spec §28.4). It mirrors main.go's webhook/inbound resolvers; the
 // bytes are resolved fresh per invoke and never held in the binder closure.
-type SecretResolver func(org, ref string) ([]byte, error)
+type SecretResolver func(ref string) ([]byte, error)
 
 // SetRemoteInvoker wires the remote_http executor + its secret resolver (E12 T4). A nil invoker keeps the
 // binder-less behaviour: a remote_http revision is creatable but not resolvable/advertised (the T2
@@ -43,8 +43,8 @@ func (s *Store) SetRemoteInvoker(inv RemoteInvoker, resolver SecretResolver) {
 // A control_plane row binds the pure echo (T2). A remote_http row binds the signed HTTP executor (T4)
 // WHEN an invoker is wired; without one it stays binder-less (returns _, false). An mcp row resolves through
 // the mcp branch to a per-call sandboxed Exec closure gated on the run's connection rider (T5).
-func (s *Store) LookupTool(ctx context.Context, org, project, runID, name string) (toolbroker.Tool, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) LookupTool(ctx context.Context, project, runID, name string) (toolbroker.Tool, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	var (
 		executor       string
 		description    string
@@ -98,7 +98,7 @@ func (s *Store) LookupTool(ctx context.Context, org, project, runID, name string
 	rows.Close()
 
 	if executor == "mcp" {
-		tool, ok, err := s.mcpTool(ctx, org, project, runID, name, description, inputJSON, outputJSON, replayClass, configJSON, timeoutMS)
+		tool, ok, err := s.mcpTool(ctx, project, runID, name, description, inputJSON, outputJSON, replayClass, configJSON, timeoutMS)
 		if ok {
 			tool.Description = describeExternal(executor, tool.Description)
 			// The gate rides the REVISION, not the discovered tool: an MCP server cannot mark itself
@@ -151,7 +151,7 @@ func (s *Store) remoteExec(name, canonical string, revisionNumber int, configJSO
 		if ref == "" {
 			return nil, fmt.Errorf("remote_http tool %q has no secret_ref (a signed transport needs a secret)", name)
 		}
-		secret, err := s.remoteSecret(env.Scope.Org, ref)
+		secret, err := s.remoteSecret(ref)
 		if err != nil {
 			return nil, fmt.Errorf("resolve remote tool secret for %q: %w", name, err)
 		}
@@ -186,8 +186,8 @@ func (s *Store) remoteExec(name, canonical string, revisionNumber int, configJSO
 // disabled, or out of tenant, yields (_, false) so the broker returns ErrUnknownTool. The Exec closure calls
 // the injected MCP client, which sandboxes the untrusted server per call; the result is output-schema-
 // validated data. No MCP client wired ⇒ (_, false) (binder-less posture, never a nil-call).
-func (s *Store) mcpTool(ctx context.Context, org, project, runID, name, description string, inputJSON, outputJSON []byte, replayClass string, configJSON []byte, timeoutMS *int) (toolbroker.Tool, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) mcpTool(ctx context.Context, project, runID, name, description string, inputJSON, outputJSON []byte, replayClass string, configJSON []byte, timeoutMS *int) (toolbroker.Tool, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	if s.mcp == nil {
 		return toolbroker.Tool{}, false, nil
 	}
@@ -199,7 +199,7 @@ func (s *Store) mcpTool(ctx context.Context, org, project, runID, name, descript
 		return toolbroker.Tool{}, false, nil // a malformed mcp revision is not resolvable (never a panic)
 	}
 
-	conn, found, err := s.mcpConnectionForRun(ctx, org, project, runID, execCfg.ConnectionID)
+	conn, found, err := s.mcpConnectionForRun(ctx, project, runID, execCfg.ConnectionID)
 	if err != nil {
 		return toolbroker.Tool{}, false, err
 	}
@@ -207,7 +207,7 @@ func (s *Store) mcpTool(ctx context.Context, org, project, runID, name, descript
 		// The connection is not in the run's rider (or is disabled / out of tenant) — capability ceiling.
 		return toolbroker.Tool{}, false, nil
 	}
-	cc := connConfig(org, conn)
+	cc := connConfig(conn)
 	if timeoutMS != nil {
 		cc.TimeoutMS = *timeoutMS
 	}
@@ -231,8 +231,8 @@ func (s *Store) mcpTool(ctx context.Context, org, project, runID, name, descript
 
 // mcpConnectionForRun loads an enabled connection ONLY when the run's rider names it (the capability-ceiling
 // join). A miss is (_, false, nil) — the tool is not resolvable.
-func (s *Store) mcpConnectionForRun(ctx context.Context, org, project, runID, connID string) (Connection, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) mcpConnectionForRun(ctx context.Context, project, runID, connID string) (Connection, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	c := Connection{}
 	var configJSON []byte
 	var secretRef *string

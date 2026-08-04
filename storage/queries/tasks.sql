@@ -8,8 +8,8 @@ WHERE session_id = $1 AND task_key = $2 AND project_id = $3
 FOR UPDATE;
 
 -- name: InsertTask
-INSERT INTO tasks (id, organization_id, project_id, session_id, task_key, kind, title, status, detail)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
+INSERT INTO tasks (id, project_id, session_id, task_key, kind, title, status, detail)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: UpdateTaskByKey
 UPDATE tasks

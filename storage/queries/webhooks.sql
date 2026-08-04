@@ -8,11 +8,11 @@
 -- (cursor - lag) at or above the current max, so no pre-creation event is re-scanned into a delivery.
 -- name: CreateWebhookEndpoint
 INSERT INTO webhook_endpoints (
-    id, organization_id, project_id, url, enabled, event_filter, api_revision,
+    id, project_id, url, enabled, event_filter, api_revision,
     signing_secret_ref, signing_secret_ref_next, fixed_headers,
     timeout_ms, max_attempts, retry_window_seconds, allow_private_destination, cursor_journal_id
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-    (SELECT COALESCE(max(journal_id), 0) FROM events) + $15)
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+    (SELECT COALESCE(max(journal_id), 0) FROM events) + $14)
 RETURNING id;
 
 -- ListWebhookEndpoints and GetWebhookEndpoint share ONE projection, and they are written next to each other
@@ -76,7 +76,7 @@ RETURNING id;
 -- scan the journal past each endpoint's high-water mark. Not tenant-scoped: the pump is a system loop
 -- that serves every project (each endpoint carries its own scope forward onto the delivery rows).
 -- name: FanOutEndpoints
-SELECT id, organization_id, project_id, event_filter, api_revision, cursor_journal_id
+SELECT id, project_id, event_filter, api_revision, cursor_journal_id
 FROM webhook_endpoints
 WHERE enabled;
 
@@ -104,8 +104,8 @@ UPDATE webhook_endpoints SET cursor_journal_id = $2 WHERE id = $1 AND cursor_jou
 -- double-emits (spec §21.6 dedupe).
 -- name: InsertDelivery
 INSERT INTO webhook_deliveries (
-    id, organization_id, project_id, endpoint_id, session_id, event_id, event_type, payload
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    id, project_id, endpoint_id, session_id, event_id, event_type, payload
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (endpoint_id, event_id) DO NOTHING;
 
 -- DueDeliveries returns pending deliveries whose backoff clock has elapsed, joined to their endpoint's
@@ -114,7 +114,7 @@ ON CONFLICT (endpoint_id, event_id) DO NOTHING;
 -- (AUT — no head-of-line). ponytail: no FOR UPDATE — a single supervised pump owns the loop; the
 -- attempt UNIQUE(delivery_id, attempt_number) is the backstop if two ever race.
 -- name: DueDeliveries
-SELECT d.id, d.organization_id, d.project_id, d.session_id, d.endpoint_id, d.event_id, d.event_type,
+SELECT d.id, d.project_id, d.session_id, d.endpoint_id, d.event_id, d.event_type,
        d.payload, d.attempt_count, d.first_attempt_at,
        e.url, e.allow_private_destination, e.timeout_ms, e.max_attempts, e.retry_window_seconds,
        e.signing_secret_ref, e.signing_secret_ref_next, e.fixed_headers, e.api_revision

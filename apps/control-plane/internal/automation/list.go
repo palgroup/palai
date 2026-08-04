@@ -34,8 +34,8 @@ type AgentProfileItem struct {
 }
 
 // GetProfile reads an agent-profile lineage within scope. found=false for a foreign/unknown id (404).
-func (s *Store) GetProfile(ctx context.Context, org, project, id string) (AgentProfileItem, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) GetProfile(ctx context.Context, project, id string) (AgentProfileItem, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	var it AgentProfileItem
 	err := s.pool.QueryRow(ctx, storage.Query("GetAgentProfile"), id, project).
 		Scan(&it.ID, &it.Name, &it.CreatedAt)
@@ -49,8 +49,8 @@ func (s *Store) GetProfile(ctx context.Context, org, project, id string) (AgentP
 }
 
 // ListProfiles returns a tenant-scoped page of agent-profile lineages newest-first (spec §10).
-func (s *Store) ListProfiles(ctx context.Context, org, project string, w ListWindow) ([]AgentProfileItem, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) ListProfiles(ctx context.Context, project string, w ListWindow) ([]AgentProfileItem, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListAgentProfiles"),
 		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
@@ -101,8 +101,8 @@ type AgentRevisionItem struct {
 
 // ListRevisions returns a tenant-scoped page of one profile's revisions newest-first (spec §10). An
 // unknown or foreign profile simply yields an empty page (the profile_id predicate under RLS).
-func (s *Store) ListRevisions(ctx context.Context, org, project, profileID string, w ListWindow) ([]AgentRevisionItem, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) ListRevisions(ctx context.Context, project, profileID string, w ListWindow) ([]AgentRevisionItem, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListAgentRevisions"),
 		project, profileID, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
@@ -132,11 +132,7 @@ type TriggerListItem struct {
 
 // ListTriggers returns a tenant-scoped page of triggers newest-first (spec §20.2.2).
 func (s *TriggerStore) ListTriggers(ctx context.Context, project string, w ListWindow) ([]TriggerListItem, error) {
-	org, err := storage.OrganizationForProject(ctx, s.pool, project)
-	if err != nil {
-		return nil, fmt.Errorf("resolve organization for project: %w", err)
-	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
+	ctx = storage.ScopeToTenant(ctx, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListTriggers"),
 		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {

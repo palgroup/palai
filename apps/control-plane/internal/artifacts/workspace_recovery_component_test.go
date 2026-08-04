@@ -28,7 +28,7 @@ func TestHostMoveKeepsLogicalIdNewFencedAllocation(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
 	org, project, workspaceID, oldAllocID, hostPath := h.seedAllocationOnDisk(t)
-	tenant := coordinator.Tenant{Organization: org, Project: project}
+	tenant := coordinator.Tenant{Project: project}
 	sink := execution.NewSnapshotSink(h.s3, h.repo.Spine())
 
 	// Capture the boundary snapshot on the current (old) allocation, then simulate the host loss.
@@ -112,7 +112,7 @@ func TestOldHostAuthoritativeFramesDeniedDiagnosticsAllowed(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
 	org, project, workspaceID, oldAllocID, hostPath := h.seedAllocationOnDisk(t)
-	tenant := coordinator.Tenant{Organization: org, Project: project}
+	tenant := coordinator.Tenant{Project: project}
 	sink := execution.NewSnapshotSink(h.s3, h.repo.Spine())
 	session := sessionOf(t, h, workspaceID)
 
@@ -166,7 +166,7 @@ func TestRecoveringFailsExplicitlyWhenRestoreImpossible(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
 	org, project, workspaceID, _, _ := h.seedAllocationOnDisk(t)
-	tenant := coordinator.Tenant{Organization: org, Project: project}
+	tenant := coordinator.Tenant{Project: project}
 	sink := execution.NewSnapshotSink(h.s3, h.repo.Spine())
 
 	// No byte-archived snapshot exists (Capture never ran) — the recovery cannot restore.
@@ -195,7 +195,7 @@ func TestAllocationReuseLeavesNoTenantResidue(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
 	org, project, workspaceID, _, hostPath := h.seedAllocationOnDisk(t)
-	tenant := coordinator.Tenant{Organization: org, Project: project}
+	tenant := coordinator.Tenant{Project: project}
 	// The prior tenant left a credential in the allocation's secrets staging area.
 	credential := filepath.Join(hostPath, "secrets", "token")
 	if _, err := os.Stat(credential); err != nil {
@@ -238,7 +238,7 @@ func TestFailedDestroyQuarantinesHost(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
 	org, project, workspaceID, _, hostPath := h.seedAllocationOnDisk(t)
-	tenant := coordinator.Tenant{Organization: org, Project: project}
+	tenant := coordinator.Tenant{Project: project}
 	if err := h.repo.Spine().AdvanceWorkspace(ctx, tenant, workspaceID, "release"); err != nil {
 		t.Fatalf("release workspace: %v", err)
 	}

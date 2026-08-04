@@ -74,16 +74,12 @@ func (s *QueueStore) CreateQueueConnection(ctx context.Context, project string, 
 // CreateConnection registers a queue binding in the verified scope and returns its server-minted id.
 // Organization is resolved fresh from project (A.2 Task 3): the request scope no longer carries one.
 func (s *QueueStore) CreateConnection(ctx context.Context, project string, in QueueConnectionInput) (string, error) {
-	org, err := storage.OrganizationForProject(ctx, s.pool, project)
-	if err != nil {
-		return "", fmt.Errorf("resolve organization for project: %w", err)
-	}
 	in = in.withDefaults()
-	ctx = storage.ScopeToTenant(ctx, org, project)
+	ctx = storage.ScopeToTenant(ctx, project)
 	id := newID("qconn")
 	var out string
-	err = s.pool.QueryRow(ctx, storage.Query("CreateQueueConnection"),
-		id, org, project, in.Name, in.Kind, in.Direction,
+	err := s.pool.QueryRow(ctx, storage.Query("CreateQueueConnection"),
+		id, project, in.Name, in.Kind, in.Direction,
 		in.Capacity, int(in.Visibility.Seconds()), in.MaxDeliveries, string(in.Config)).Scan(&out)
 	return out, err
 }
@@ -106,11 +102,7 @@ type QueueConnectionItem struct {
 
 // ListQueueConnections returns a tenant-scoped page of queue bindings, newest-first.
 func (s *QueueStore) ListQueueConnections(ctx context.Context, project string, w ListWindow) ([]QueueConnectionItem, error) {
-	org, err := storage.OrganizationForProject(ctx, s.pool, project)
-	if err != nil {
-		return nil, fmt.Errorf("resolve organization for project: %w", err)
-	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
+	ctx = storage.ScopeToTenant(ctx, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListQueueConnections"),
 		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
@@ -133,11 +125,7 @@ func (s *QueueStore) ListQueueConnections(ctx context.Context, project string, w
 // the read to the caller's tenant, and the query's own org/project predicate is defence in depth behind it;
 // a foreign id is therefore indistinguishable from an absent one, which is the intended answer.
 func (s *QueueStore) GetQueueConnectionItem(ctx context.Context, project, connID string) (QueueConnectionItem, bool, error) {
-	org, err := storage.OrganizationForProject(ctx, s.pool, project)
-	if err != nil {
-		return QueueConnectionItem{}, false, fmt.Errorf("resolve organization for project: %w", err)
-	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
+	ctx = storage.ScopeToTenant(ctx, project)
 	rows, err := s.pool.Query(ctx, storage.Query("GetQueueConnectionItem"), connID, project)
 	if err != nil {
 		return QueueConnectionItem{}, false, fmt.Errorf("get queue connection: %w", err)
@@ -178,8 +166,8 @@ type queueConn struct {
 	config []byte
 }
 
-func (s *QueueStore) loadConn(ctx context.Context, org, project, connID string) (queueConn, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *QueueStore) loadConn(ctx context.Context, project, connID string) (queueConn, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	var c queueConn
 	var name, kind, direction string
 	var enabled bool
@@ -235,8 +223,8 @@ type PGQueue struct {
 }
 
 // InboundQueue opens the durable consumer queue for a connection.
-func (s *QueueStore) InboundQueue(ctx context.Context, org, project, connID string) (*PGQueue, error) {
-	c, err := s.loadConn(ctx, org, project, connID)
+func (s *QueueStore) InboundQueue(ctx context.Context, project, connID string) (*PGQueue, error) {
+	c, err := s.loadConn(ctx, project, connID)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +237,7 @@ func (s *QueueStore) InboundQueue(ctx context.Context, org, project, connID stri
 // concurrent publishers can each pass the check and overshoot capacity by a bounded amount — a real broker
 // enforces the ceiling exactly; a SELECT ... FOR UPDATE on a per-connection gauge row removes the race.
 func (q *PGQueue) Publish(ctx context.Context, idempotencyKey string, body []byte) error {
-	ctx = storage.ScopeToTenant(ctx, q.conn.org, q.conn.project)
+	ctx = storage.ScopeToTenant(ctx, q.conn.project)
 	var load int
 	if err := q.store.pool.QueryRow(ctx, storage.Query("QueueLoad"), q.conn.id).Scan(&load); err != nil {
 		return fmt.Errorf("queue load: %w", err)
@@ -269,7 +257,7 @@ func (q *PGQueue) Publish(ctx context.Context, idempotencyKey string, body []byt
 // The ack is a SEPARATE statement AFTER the Handler returns Ack, so a crash between the effect and the ack
 // redelivers the message — the Handler's idempotency (RecordEffect) makes that redelivery a single effect.
 func (q *PGQueue) Consume(ctx context.Context, max int, h queue.Handler) (int, error) {
-	ctx = storage.ScopeToTenant(ctx, q.conn.org, q.conn.project)
+	ctx = storage.ScopeToTenant(ctx, q.conn.project)
 	if _, err := q.store.pool.Exec(ctx, storage.Query("QueueDeadLetterExhausted"), q.conn.id, q.conn.maxDeliveries); err != nil {
 		return 0, fmt.Errorf("dead-letter exhausted: %w", err)
 	}
@@ -315,7 +303,7 @@ func (q *PGQueue) Consume(ctx context.Context, max int, h queue.Handler) (int, e
 
 // Depth reports the backlog gauge (§34.4): ready, in-flight, dead, and the oldest ready age.
 func (q *PGQueue) Depth(ctx context.Context) (queue.Depth, error) {
-	ctx = storage.ScopeToTenant(ctx, q.conn.org, q.conn.project)
+	ctx = storage.ScopeToTenant(ctx, q.conn.project)
 	var d queue.Depth
 	var oldestSecs int64
 	if err := q.store.pool.QueryRow(ctx, storage.Query("QueueDepth"), q.conn.id).Scan(
@@ -331,8 +319,8 @@ func (q *PGQueue) Depth(ctx context.Context) (queue.Depth, error) {
 // (a lost-ack redelivery), so the Handler skips the effect and Acks. Pass the caller's effect transaction
 // as db so the receipt commits ATOMICALLY with the side effect; a redelivery then cannot observe a
 // committed effect without its receipt.
-func (s *QueueStore) RecordEffect(ctx context.Context, db execer, org, project, connID, idempotencyKey string) (bool, error) {
-	tag, err := db.Exec(ctx, storage.Query("RecordQueueEffect"), newID("qrcpt"), org, project, connID, idempotencyKey)
+func (s *QueueStore) RecordEffect(ctx context.Context, db execer, project, connID, idempotencyKey string) (bool, error) {
+	tag, err := db.Exec(ctx, storage.Query("RecordQueueEffect"), newID("qrcpt"), project, connID, idempotencyKey)
 	if err != nil {
 		return false, fmt.Errorf("record queue effect: %w", err)
 	}
@@ -350,8 +338,8 @@ type PGOutbox struct {
 }
 
 // Outbox opens the outbound outbox for a connection.
-func (s *QueueStore) Outbox(ctx context.Context, org, project, connID string) (*PGOutbox, error) {
-	c, err := s.loadConn(ctx, org, project, connID)
+func (s *QueueStore) Outbox(ctx context.Context, project, connID string) (*PGOutbox, error) {
+	c, err := s.loadConn(ctx, project, connID)
 	if err != nil {
 		return nil, err
 	}
@@ -365,7 +353,7 @@ func (o *PGOutbox) Enqueue(ctx context.Context, destinationKey string, payload [
 	if maxAttempts <= 0 {
 		maxAttempts = 20
 	}
-	ctx = storage.ScopeToTenant(ctx, o.conn.org, o.conn.project)
+	ctx = storage.ScopeToTenant(ctx, o.conn.project)
 	tag, err := o.store.pool.Exec(ctx, storage.Query("EnqueueQueueDelivery"),
 		newID("qdel"), o.conn.org, o.conn.project, o.conn.id, destinationKey, payload, maxAttempts)
 	if err != nil {
@@ -381,7 +369,7 @@ func (o *PGOutbox) Enqueue(ctx context.Context, destinationKey string, payload [
 // LOCKED holds its lock only for the SELECT (the UPDATEs run in separate statements), so this is safe for
 // a SINGLE pump; a concurrent-pump deployment wraps lease+process in one transaction.
 func (o *PGOutbox) DeliverDue(ctx context.Context, sink queue.Sink, max int, backoff time.Duration) (int, error) {
-	ctx = storage.ScopeToTenant(ctx, o.conn.org, o.conn.project)
+	ctx = storage.ScopeToTenant(ctx, o.conn.project)
 	rows, err := o.store.pool.Query(ctx, storage.Query("DueQueueDeliveries"), o.conn.id, max)
 	if err != nil {
 		return 0, fmt.Errorf("due queue deliveries: %w", err)

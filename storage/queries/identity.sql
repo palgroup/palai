@@ -10,7 +10,7 @@
 -- principal.
 
 -- name: VerifyAPIKey
-SELECT id, organization_id, project_id, principal_id, scopes
+SELECT id, project_id, principal_id, scopes
 FROM api_keys
 WHERE key_hash = $1 AND revoked_at IS NULL
   AND (expires_at IS NULL OR expires_at > now());

@@ -195,7 +195,7 @@ func (b *QueueBridge) handler(c queueConn, target queueRunTarget) queue.Handler 
 		// with the run, so a redelivery whose receipt was lost REPLAYS onto the same response instead of
 		// creating a second. The receipt is the auditable ledger of "this message's effect committed",
 		// not the thing that makes the effect single.
-		if _, err := b.store.RecordEffect(ctx, b.store.pool, c.org, c.project, c.id, m.IdempotencyKey); err != nil {
+		if _, err := b.store.RecordEffect(ctx, b.store.pool, c.project, c.id, m.IdempotencyKey); err != nil {
 			// The run is already durable. Refusing to ack earns a redelivery, which replays onto the same
 			// response and re-attempts the receipt — never a second run.
 			return queue.Retry, err
@@ -212,16 +212,15 @@ func (b *QueueBridge) admit(ctx context.Context, c queueConn, target queueRunTar
 	}
 	responseID, runID, sessionID := newID("resp"), newID("run"), newID("ses")
 	body, err := json.Marshal(contracts.Response{
-		ID:             contracts.ResponseID(responseID),
-		Object:         "response",
-		Status:         "queued",
-		CreatedAt:      time.Now().UTC().Format(time.RFC3339Nano),
-		Output:         []contracts.ContentItem{},
-		Usage:          contracts.Usage{},
-		SessionID:      contracts.SessionID(sessionID),
-		RunID:          contracts.RunID(runID),
-		OrganizationID: contracts.OrganizationID(c.org),
-		ProjectID:      contracts.ProjectID(c.project),
+		ID:        contracts.ResponseID(responseID),
+		Object:    "response",
+		Status:    "queued",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Output:    []contracts.ContentItem{},
+		Usage:     contracts.Usage{},
+		SessionID: contracts.SessionID(sessionID),
+		RunID:     contracts.RunID(runID),
+		ProjectID: contracts.ProjectID(c.project),
 	})
 	if err != nil {
 		return queue.Retry, fmt.Errorf("marshal queue projection: %w", err)
@@ -230,7 +229,7 @@ func (b *QueueBridge) admit(ctx context.Context, c queueConn, target queueRunTar
 	adm, err := b.admitter.AdmitResponse(ctx,
 		// The tenant. It is the swept connection row's own org/project and nothing else has ever been
 		// consulted — see the file header, invariant 1.
-		coordinator.Tenant{Organization: c.org, Project: c.project},
+		coordinator.Tenant{Project: c.project},
 		coordinator.AdmissionInput{
 			Principal:      target.principal,
 			IdempotencyKey: m.IdempotencyKey,
@@ -311,7 +310,7 @@ func (b *QueueBridge) runTarget(ctx context.Context, c queueConn) (queueRunTarge
 	}
 	// The principal must live in the connection's OWN tenant. Without this a connection could name any
 	// principal id in the deployment and run as it — the confused deputy the Slack path closes the same way.
-	switch err := b.store.pool.QueryRow(storage.ScopeToTenant(ctx, c.org, c.project),
+	switch err := b.store.pool.QueryRow(storage.ScopeToTenant(ctx, c.project),
 		storage.Query("QueueRunPrincipalInScope"), cfg.PrincipalID, c.org, c.project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return queueRunTarget{}, ErrQueueForeignPrincipal

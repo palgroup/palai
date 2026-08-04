@@ -104,7 +104,7 @@ func newRedeliveryHarness(t *testing.T, delivery string) *redeliveryHarness {
 
 	h := &redeliveryHarness{
 		orch:      &Orchestrator{spine: cs},
-		tenant:    coordinator.Tenant{Organization: redeliveryID("org"), Project: redeliveryID("prj")},
+		tenant:    coordinator.Tenant{Project: redeliveryID("prj")},
 		sessionID: redeliveryID("ses"),
 		runID:     redeliveryID("run"),
 		commandID: redeliveryID("cmd"),
@@ -113,8 +113,8 @@ func newRedeliveryHarness(t *testing.T, delivery string) *redeliveryHarness {
 	pool := cs.Pool()
 	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, h.tenant.Organization)
 	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, h.tenant.Project, h.tenant.Organization)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, h.sessionID, h.tenant.Organization, h.tenant.Project)
-	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, h.runID, h.tenant.Organization, h.tenant.Project, h.sessionID)
+	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, h.sessionID, h.tenant.Project)
+	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, h.runID, h.tenant.Project, h.sessionID)
 	h.commandID = h.enqueue(t, delivery, h.message)
 	return h
 }
@@ -127,7 +127,7 @@ func (h *redeliveryHarness) enqueue(t *testing.T, delivery, message string) stri
 	execSQL(t, h.orch.spine.Pool(),
 		`INSERT INTO commands (id, organization_id, project_id, session_id, run_id, kind, delivery, payload, state)
 		 VALUES ($1, $2, $3, $4, $5, 'send_message', $6, jsonb_build_object('message', $7::text), 'queued')`,
-		id, h.tenant.Organization, h.tenant.Project, h.sessionID, h.runID, delivery, message)
+		id, h.tenant.Project, h.sessionID, h.runID, delivery, message)
 	return id
 }
 

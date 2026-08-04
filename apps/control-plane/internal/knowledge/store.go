@@ -49,16 +49,11 @@ func New(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool, vector: DisabledVectorAdapter()}
 }
 
-// tenantScope binds the caller's verified org+project to ctx (project-aware — unlike the org-wide identity
-// resources, a knowledge base belongs to one project). Project comes from the verified key, never a body;
-// organization is resolved fresh from it (A.2 Task 3: middleware.Scope no longer carries one), and returned
-// alongside ctx because several callers still bind it as an explicit column value.
-func tenantScope(ctx context.Context, pool *pgxpool.Pool, project string) (context.Context, string, error) {
-	org, err := storage.OrganizationForProject(ctx, pool, project)
-	if err != nil {
-		return ctx, "", fmt.Errorf("resolve organization for project: %w", err)
-	}
-	return storage.WithTenant(ctx, org, project), org, nil
+// tenantScope binds the caller's verified project to ctx. Project comes from the verified key, never a
+// body. It used to also resolve and return the project's organization for callers that bound it as an
+// explicit column value; A.2 Task 6 dropped that column, so the second return went with it.
+func tenantScope(ctx context.Context, project string) (context.Context, error) {
+	return storage.WithTenant(ctx, project), nil
 }
 
 // --- knowledge bases -------------------------------------------------------------------------------------
@@ -76,7 +71,7 @@ func (s *Store) CreateKnowledgeBase(ctx context.Context, scope middleware.Scope,
 	if in.Name == "" {
 		return api.ProvisionResult{MissingField: "name"}, nil
 	}
-	scopedCtx, org, err := tenantScope(ctx, s.pool, scope.Project)
+	scopedCtx, err := tenantScope(ctx, scope.Project)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -84,7 +79,7 @@ func (s *Store) CreateKnowledgeBase(ctx context.Context, scope middleware.Scope,
 	id := middleware.NewID("kb")
 	var createdAt time.Time
 	if err := s.pool.QueryRow(ctx, storage.Query("InsertKnowledgeBase"),
-		id, org, scope.Project, in.Name, in.EmbeddingRoute).Scan(&createdAt); err != nil {
+		id, scope.Project, in.Name, in.EmbeddingRoute).Scan(&createdAt); err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("insert knowledge base: %w", err)
 	}
 	return api.ProvisionResult{Body: mustJSON(knowledgeBaseView{
@@ -94,7 +89,7 @@ func (s *Store) CreateKnowledgeBase(ctx context.Context, scope middleware.Scope,
 
 // ListKnowledgeBases lists the caller's project's knowledge bases (newest first).
 func (s *Store) ListKnowledgeBases(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	scopedCtx, _, err := tenantScope(ctx, s.pool, scope.Project)
+	scopedCtx, err := tenantScope(ctx, scope.Project)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -142,7 +137,7 @@ func (s *Store) CreateSource(ctx context.Context, scope middleware.Scope, kbID s
 	if in.Parser == "" {
 		in.Parser = "text"
 	}
-	scopedCtx, org, err := tenantScope(ctx, s.pool, scope.Project)
+	scopedCtx, err := tenantScope(ctx, scope.Project)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -155,7 +150,7 @@ func (s *Store) CreateSource(ctx context.Context, scope middleware.Scope, kbID s
 	id := middleware.NewID("ksrc")
 	var createdAt time.Time
 	if err := s.pool.QueryRow(ctx, storage.Query("InsertSource"),
-		id, org, scope.Project, kbID, in.Kind, in.URI, in.ACL, in.Classification, in.Parser).Scan(&createdAt); err != nil {
+		id, scope.Project, kbID, in.Kind, in.URI, in.ACL, in.Classification, in.Parser).Scan(&createdAt); err != nil {
 		return api.ProvisionResult{BadField: true}, nil // a bad kind/parser trips the CHECK constraint
 	}
 	return api.ProvisionResult{Body: mustJSON(sourceView{
@@ -166,7 +161,7 @@ func (s *Store) CreateSource(ctx context.Context, scope middleware.Scope, kbID s
 
 // ListSources lists a knowledge base's sources (newest first).
 func (s *Store) ListSources(ctx context.Context, scope middleware.Scope, kbID string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := tenantScope(ctx, s.pool, scope.Project)
+	scopedCtx, err := tenantScope(ctx, scope.Project)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -197,7 +192,7 @@ func (s *Store) ListSources(ctx context.Context, scope middleware.Scope, kbID st
 // deleted content drops out of the active index (KNO-004). Callers should re-ingest a remaining source (or
 // the KB is left with its prior active index until the next build) — deletion alone does not rebuild.
 func (s *Store) DeleteSource(ctx context.Context, scope middleware.Scope, sourceID string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := tenantScope(ctx, s.pool, scope.Project)
+	scopedCtx, err := tenantScope(ctx, scope.Project)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -231,7 +226,7 @@ func (s *Store) Ingest(ctx context.Context, scope middleware.Scope, kbID, source
 	if in.Content == "" {
 		return api.ProvisionResult{MissingField: "content"}, nil
 	}
-	scopedCtx, org, err := tenantScope(ctx, s.pool, scope.Project)
+	scopedCtx, err := tenantScope(ctx, scope.Project)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -255,11 +250,11 @@ func (s *Store) Ingest(ctx context.Context, scope middleware.Scope, kbID, source
 	// Step 0: record the running attempt durably (own statement — survives a build rollback).
 	jobID := middleware.NewID("kjob")
 	if _, err := s.pool.Exec(ctx, storage.Query("InsertIngestionJob"),
-		jobID, org, scope.Project, kbID, sourceID); err != nil {
+		jobID, scope.Project, kbID, sourceID); err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("insert ingestion job: %w", err)
 	}
 
-	result, buildErr := s.runBuild(ctx, org, scope.Project, kb, src, in.Content)
+	result, buildErr := s.runBuild(ctx, scope.Project, kb, src, in.Content)
 	if buildErr != nil {
 		// KNO-002: the build rolled back (corpus + active pointer untouched); record the failure durably.
 		if _, err := s.pool.Exec(ctx, storage.Query("FinishIngestionJob"),
@@ -293,7 +288,7 @@ type buildResult struct {
 // snapshot the KB's active document revisions into a new index_revision, and flip the KB's active pointer.
 // Any error rolls the whole thing back, so a failed refresh never leaves a half-built or wrongly-activated
 // index (KNO-002). It returns an error the caller records on the ingestion_job.
-func (s *Store) runBuild(ctx context.Context, org, project string, kb knowledgeBaseRow, src sourceRow, content string) (buildResult, error) {
+func (s *Store) runBuild(ctx context.Context, project string, kb knowledgeBaseRow, src sourceRow, content string) (buildResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return buildResult{}, fmt.Errorf("begin build: %w", err)
@@ -322,9 +317,9 @@ func (s *Store) runBuild(ctx context.Context, org, project string, kb knowledgeB
 		return buildResult{}, fmt.Errorf("next document version: %w", err)
 	}
 	docRevID := middleware.NewID("kdoc")
-	objectKey := fmt.Sprintf("%s/%s/%s/%s/%d", org, project, kb.id, src.id, docVersion)
+	objectKey := fmt.Sprintf("%s/%s/%s/%s/%d", project, kb.id, src.id, docVersion)
 	if _, err := tx.Exec(ctx, storage.Query("InsertDocumentRevision"),
-		docRevID, org, project, kb.id, src.id, docVersion, checksum,
+		docRevID, project, kb.id, src.id, docVersion, checksum,
 		len(content), objectKey, content, src.parser, provenanceJSON(src, docVersion)); err != nil {
 		return buildResult{}, fmt.Errorf("insert document revision: %w", err)
 	}
@@ -333,7 +328,7 @@ func (s *Store) runBuild(ctx context.Context, org, project string, kb knowledgeB
 	for _, c := range chunks {
 		chunkSum := sha256.Sum256([]byte(c.Content))
 		if _, err := tx.Exec(ctx, storage.Query("InsertChunkRevision"),
-			middleware.NewID("kchk"), org, project, kb.id, src.id, docRevID,
+			middleware.NewID("kchk"), project, kb.id, src.id, docRevID,
 			c.Ordinal, c.ByteStart, c.ByteEnd, "sha256:"+hex.EncodeToString(chunkSum[:]), src.acl, c.Content); err != nil {
 			return buildResult{}, fmt.Errorf("insert chunk revision: %w", err)
 		}
@@ -370,7 +365,7 @@ func (s *Store) runBuild(ctx context.Context, org, project string, kb knowledgeB
 	}
 	indexRevID := middleware.NewID("kidx")
 	if _, err := tx.Exec(ctx, storage.Query("InsertIndexRevision"),
-		indexRevID, org, project, kb.id, indexVersion, "active", membership, chunkCount); err != nil {
+		indexRevID, project, kb.id, indexVersion, "active", membership, chunkCount); err != nil {
 		return buildResult{}, fmt.Errorf("insert index revision: %w", err)
 	}
 
@@ -388,7 +383,7 @@ func (s *Store) runBuild(ctx context.Context, org, project string, kb knowledgeB
 
 // ListIndexRevisions lists a KB's index revisions (newest version first) — the append-only build history.
 func (s *Store) ListIndexRevisions(ctx context.Context, scope middleware.Scope, kbID string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := tenantScope(ctx, s.pool, scope.Project)
+	scopedCtx, err := tenantScope(ctx, scope.Project)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -419,7 +414,7 @@ func (s *Store) ListIndexRevisions(ctx context.Context, scope middleware.Scope, 
 // DocumentContent returns a document revision's stored content (org/project RLS-scoped). It is the anchor
 // the citation-offset proof recomputes chunk bytes against: content[byte_start:byte_end] == the chunk.
 func (s *Store) DocumentContent(ctx context.Context, scope middleware.Scope, docRevID string) (string, error) {
-	scopedCtx, _, err := tenantScope(ctx, s.pool, scope.Project)
+	scopedCtx, err := tenantScope(ctx, scope.Project)
 	if err != nil {
 		return "", err
 	}

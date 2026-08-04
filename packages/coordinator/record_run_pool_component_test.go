@@ -49,7 +49,7 @@ func runPoolFixtureRun(t *testing.T, cs *Store, withOwnPool bool) (tenant Tenant
 	                     VALUES ($1,$2,$3,$4,'queued','"hi"'::jsonb)`, response, org, project, session)
 	mustExecPin(t, cs, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state)
 	                     VALUES ($1,$2,$3,$4,$5,'queued')`, runID, org, project, session, response)
-	return Tenant{Organization: org, Project: project}, ownPool, runID
+	return Tenant{Project: project}, ownPool, runID
 }
 
 // TestRecordRunPoolRefusesToBeASilentNoOp is RED for the first case and green for the other two.
@@ -59,12 +59,12 @@ func TestRecordRunPoolRefusesToBeASilentNoOp(t *testing.T) {
 
 	// (1) A POOL THIS TENANT CANNOT BE SERVED BY. Another tenant owns it, which is exactly what
 	// fleet.ResolvePool's constant fallback hands every project that has configured nothing.
-	foreign := Tenant{Organization: pinTestID("org"), Project: pinTestID("prj")}
+	foreign := Tenant{Project: pinTestID("prj")}
 	foreignPool := pinTestID("pool")
 	mustExecPin(t, cs, `INSERT INTO organizations (id) VALUES ($1)`, foreign.Organization)
 	mustExecPin(t, cs, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, foreign.Project, foreign.Organization)
 	mustExecPin(t, cs, `INSERT INTO runner_pools (id, organization_id, project_id, name, posture)
-	                     VALUES ($1,$2,$3,'default','sandboxed-linux')`, foreignPool, foreign.Organization, foreign.Project)
+	                     VALUES ($1,$2,$3,'default','sandboxed-linux')`, foreignPool, foreign.Project)
 
 	tenant, _, runID := runPoolFixtureRun(t, cs, false)
 	switch got, err := cs.RecordRunPool(ctx, tenant, runID, foreignPool); {
@@ -99,7 +99,7 @@ func TestRecordRunPoolRefusesToBeASilentNoOp(t *testing.T) {
 	// report the pool the run already carries, because a resume returns to the SAME pool.
 	second := pinTestID("pool")
 	mustExecPin(t, cs, `INSERT INTO runner_pools (id, organization_id, project_id, name, posture)
-	                     VALUES ($1,$2,$3,'second','sandboxed-linux')`, second, owner.Organization, owner.Project)
+	                     VALUES ($1,$2,$3,'second','sandboxed-linux')`, second, owner.Project)
 	again, err := cs.RecordRunPool(ctx, owner, ownRun, second)
 	if err != nil {
 		t.Fatalf("a second RecordRunPool on an already-placed run returned %v, want nil — write-once is a requirement, not a failure", err)

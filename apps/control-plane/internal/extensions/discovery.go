@@ -42,12 +42,12 @@ type DiscoverResult struct {
 // tools never collide). The untrusted description lands in a DRAFT revision — NEVER auto-published, so an
 // admin must approve it before it is advertised (EXT-006). Re-discovery with a changed description/schema is
 // a NEW draft (the published revision stays, re-approval required); an unchanged tool writes nothing.
-func (s *Store) DiscoverConnection(ctx context.Context, org, project, connID string) (DiscoverResult, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) DiscoverConnection(ctx context.Context, project, connID string) (DiscoverResult, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	if s.mcp == nil {
 		return DiscoverResult{}, errors.New("extensions: no MCP client wired for discovery")
 	}
-	conn, err := s.GetMCPConnection(ctx, org, project, connID)
+	conn, err := s.GetMCPConnection(ctx, project, connID)
 	if err != nil {
 		return DiscoverResult{}, err
 	}
@@ -55,16 +55,16 @@ func (s *Store) DiscoverConnection(ctx context.Context, org, project, connID str
 	// name that rebound since registration), or whose bearer audience no longer matches its origin, is
 	// rejected here rather than dialed (the pinned dialer would still deny at connect — this is the early,
 	// cheaper reject on the admin path).
-	if err := s.mcp.VetConnection(ctx, connConfig(org, conn)); err != nil {
+	if err := s.mcp.VetConnection(ctx, connConfig(conn)); err != nil {
 		return DiscoverResult{}, fmt.Errorf("vet connection %s: %w", connID, err)
 	}
-	tools, err := s.mcp.Discover(ctx, connConfig(org, conn))
+	tools, err := s.mcp.Discover(ctx, connConfig(conn))
 	if err != nil {
 		return DiscoverResult{}, fmt.Errorf("discover connection %s: %w", connID, err)
 	}
 	var out DiscoverResult
 	for _, rt := range tools {
-		status, err := s.materialiseDiscoveredTool(ctx, org, project, conn.Name, connID, rt)
+		status, err := s.materialiseDiscoveredTool(ctx, project, conn.Name, connID, rt)
 		if err != nil {
 			return out, err
 		}
@@ -82,17 +82,17 @@ func (s *Store) DiscoverConnection(ctx context.Context, org, project, connID str
 
 // materialiseDiscoveredTool creates-or-reuses the tool lineage and inserts a new DRAFT revision only when
 // the config digest changed. Returns "new" | "unchanged" | "rejected" (a model-visible collision).
-func (s *Store) materialiseDiscoveredTool(ctx context.Context, org, project, connName, connID string, rt mcp.RemoteTool) (string, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) materialiseDiscoveredTool(ctx context.Context, project, connName, connID string, rt mcp.RemoteTool) (string, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	canonical := "mcp." + connName + "." + rt.Name
 	modelVisible := connName + "__" + rt.Name
 
-	toolID, found, err := s.discoveredToolID(ctx, org, project, canonical)
+	toolID, found, err := s.discoveredToolID(ctx, project, canonical)
 	if err != nil {
 		return "", err
 	}
 	if !found {
-		toolID, err = s.createDiscoveredTool(ctx, org, project, canonical, modelVisible)
+		toolID, err = s.createDiscoveredTool(ctx, project, canonical, modelVisible)
 		if errors.Is(err, ErrNameCollision) || errors.Is(err, ErrModelNameReserved) {
 			return "rejected", nil // a colliding single tool is a visible reject; discovery continues
 		}
@@ -117,7 +117,7 @@ func (s *Store) materialiseDiscoveredTool(ctx context.Context, org, project, con
 		return "unchanged", nil // identical config — no churn, no new revision
 	}
 	body, _ := json.Marshal(in)
-	if _, err := s.CreateToolRevision(ctx, org, project, toolID, body); err != nil {
+	if _, err := s.CreateToolRevision(ctx, project, toolID, body); err != nil {
 		return "", err
 	}
 	return "new", nil
@@ -126,8 +126,8 @@ func (s *Store) materialiseDiscoveredTool(ctx context.Context, org, project, con
 // createDiscoveredTool inserts a tool lineage with an EXPLICIT model-visible name (connName__tool) rather
 // than the canonical last segment, so two connections' identically-named tools stay distinct to the model.
 // The 000024 UNIQUE(model_visible) constraint still catches a genuine collision as a typed reject.
-func (s *Store) createDiscoveredTool(ctx context.Context, org, project, canonical, modelVisible string) (string, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) createDiscoveredTool(ctx context.Context, project, canonical, modelVisible string) (string, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	if _, err := validateCanonicalName(canonical); err != nil {
 		return "", err
 	}
@@ -135,7 +135,7 @@ func (s *Store) createDiscoveredTool(ctx context.Context, org, project, canonica
 		return "", ErrModelNameReserved
 	}
 	id := newID("tool")
-	if _, err := s.pool.Exec(ctx, storage.Query("InsertTool"), id, org, project, canonical, modelVisible); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("InsertTool"), id, project, canonical, modelVisible); err != nil {
 		if isUniqueViolation(err) {
 			return "", ErrNameCollision
 		}
@@ -145,8 +145,8 @@ func (s *Store) createDiscoveredTool(ctx context.Context, org, project, canonica
 }
 
 // discoveredToolID resolves an existing lineage id by canonical name.
-func (s *Store) discoveredToolID(ctx context.Context, org, project, canonical string) (string, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) discoveredToolID(ctx context.Context, project, canonical string) (string, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	var id string
 	switch err := s.pool.QueryRow(ctx, storage.Query("MCPToolIDByCanonical"), project, canonical).Scan(&id); {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -171,12 +171,11 @@ func (s *Store) latestRevisionDigest(ctx context.Context, toolID string) (string
 
 // connConfig maps a stored connection to the adapter's dial config (the secret stays a HANDLE — the manager
 // resolves it at request time).
-func connConfig(org string, conn Connection) mcp.ConnConfig {
+func connConfig(conn Connection) mcp.ConnConfig {
 	cc := mcp.ConnConfig{
 		ID:        conn.ID,
 		Name:      conn.Name,
 		Transport: conn.Transport,
-		Org:       org,
 		SecretRef: conn.SecretRef,
 	}
 	if digest, ok := conn.Config["image_digest"].(string); ok {

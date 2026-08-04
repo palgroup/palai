@@ -97,7 +97,7 @@ func newHarness(t *testing.T) *harness {
 func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) coordinator.Tenant {
 	t.Helper()
 	ctx := context.Background()
-	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	tenant := coordinator.Tenant{Project: newID("prj")}
 	principalID := newID("prin")
 	exec := func(sql string, args ...any) {
 		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
@@ -107,9 +107,9 @@ func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) coordinat
 	exec(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
 	exec(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`,
-		principalID, tenant.Organization, tenant.Project)
+		principalID, tenant.Project)
 	exec(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4, $5)`,
-		newID("key"), tenant.Organization, tenant.Project, principalID, coordinator.HashAPIKey(token))
+		newID("key"), tenant.Project, principalID, coordinator.HashAPIKey(token))
 	return tenant
 }
 
@@ -120,7 +120,7 @@ func (h *harness) seedSession() string {
 	sessionID := newID("ses")
 	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(context.Background()),
 		`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`,
-		sessionID, h.tenant.Organization, h.tenant.Project); err != nil {
+		sessionID, h.tenant.Project); err != nil {
 		h.t.Fatalf("seed session error = %v", err)
 	}
 	return sessionID
@@ -135,7 +135,7 @@ func (h *harness) seedEvent(sessionID string, seq int, typ, payloadJSON string) 
 	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
-		id, h.tenant.Organization, h.tenant.Project, sessionID, seq, typ, payloadJSON); err != nil {
+		id, h.tenant.Project, sessionID, seq, typ, payloadJSON); err != nil {
 		h.t.Fatalf("seed event error = %v", err)
 	}
 	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx),
@@ -160,13 +160,13 @@ func (h *harness) seedBulkEvents(sessionID string, count, payloadBytes int) {
 		SELECT 'evt_' || $6 || '_' || lpad(g::text, 9, '0'), $1, $2, $3, g, 'run.running.v1',
 		       jsonb_build_object('pad', repeat('x', $5))
 		FROM generate_series(1, $4) AS g`,
-		h.tenant.Organization, h.tenant.Project, sessionID, count, payloadBytes, tag); err != nil {
+		h.tenant.Project, sessionID, count, payloadBytes, tag); err != nil {
 		h.t.Fatalf("seed bulk events error = %v", err)
 	}
 	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx), `
 		INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
 		VALUES ('evt_' || $5 || '_terminal', $1, $2, $3, $4, 'run.completed.v1', '{}'::jsonb)`,
-		h.tenant.Organization, h.tenant.Project, sessionID, count+1, tag); err != nil {
+		h.tenant.Project, sessionID, count+1, tag); err != nil {
 		h.t.Fatalf("seed terminal event error = %v", err)
 	}
 	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx),
@@ -241,7 +241,7 @@ func (h *harness) runState(runID string) string {
 	var state string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT state FROM runs WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		runID, h.tenant.Organization, h.tenant.Project).Scan(&state); err != nil {
+		runID, h.tenant.Project).Scan(&state); err != nil {
 		h.t.Fatalf("read run state error = %v", err)
 	}
 	return state

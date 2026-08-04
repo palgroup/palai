@@ -397,7 +397,7 @@ func decodeMessages(raw any, resolve imageResolver) ([]modelbroker.Message, erro
 // one-method seam from ArtifactWriter on purpose: the write side has its own implementors (including test
 // doubles), and widening it would have made every one of them carry a read they do not do.
 type ImageReader interface {
-	ReadImageArtifact(ctx context.Context, org, project, artifactID string) (mediaType string, content []byte, found bool, err error)
+	ReadImageArtifact(ctx context.Context, project, artifactID string) (mediaType string, content []byte, found bool, err error)
 }
 
 // imageResolver binds this run's TENANT to the object-store read, and that binding is the whole access
@@ -413,7 +413,7 @@ func (o *Orchestrator) imageResolver(ctx context.Context, st *attemptState) imag
 		if o.images == nil {
 			return modelbroker.Image{}, false, nil // no object store wired: honestly unavailable
 		}
-		mediaType, content, found, err := o.images.ReadImageArtifact(ctx, st.tenant.Organization, st.tenant.Project, artifactID)
+		mediaType, content, found, err := o.images.ReadImageArtifact(ctx, st.tenant.Project, artifactID)
 		if err != nil || !found {
 			return modelbroker.Image{}, false, err
 		}

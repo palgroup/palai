@@ -40,7 +40,7 @@ type ResponseListItem struct {
 
 // ListResponses returns a tenant-scoped page of run history newest-first (spec §22.3, E13 T4).
 func (s *Store) ListResponses(ctx context.Context, tenant Tenant, p ListParams) ([]ResponseListItem, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListResponses"),
 		tenant.Project, p.Status, p.CreatedGTE, p.CreatedLTE, p.AfterCreatedAt, p.AfterID, p.Limit)
 	if err != nil {
@@ -71,9 +71,9 @@ func (s *Store) ListResponses(ctx context.Context, tenant Tenant, p ListParams) 
 // populated, so a caller has nothing to fan out over. TestListSessionsIssuesExactlyOneQuery holds the
 // body to it.
 func (s *Store) ListSessions(ctx context.Context, tenant Tenant, p ListParams) ([]SessionView, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListSessions"),
-		tenant.Organization, tenant.Project, p.Status, p.CreatedGTE, p.CreatedLTE, p.AfterCreatedAt, p.AfterID, p.Limit)
+		tenant.Project, p.Status, p.CreatedGTE, p.CreatedLTE, p.AfterCreatedAt, p.AfterID, p.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
@@ -113,7 +113,7 @@ type RepositoryBindingListItem struct {
 // "Status filter is ignored — bindings have no lifecycle state", which was true when it was written and
 // is the exact sentence a reader would now trust while adding a retired row to a picker.
 func (s *Store) ListRepositoryBindings(ctx context.Context, tenant Tenant, p ListParams, includeArchived bool) ([]RepositoryBindingListItem, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListRepositoryBindings"),
 		tenant.Project, p.CreatedGTE, p.CreatedLTE, p.AfterCreatedAt, p.AfterID, p.Limit,
 		includeArchived)
@@ -139,7 +139,6 @@ func (s *Store) ListRepositoryBindings(ctx context.Context, tenant Tenant, p Lis
 			b.ArchivedAt = archivedAt.UTC().Format(time.RFC3339)
 		}
 		b.Object = "repository_binding"
-		b.OrganizationID = contracts.OrganizationID(tenant.Organization)
 		b.ProjectID = contracts.ProjectID(tenant.Project)
 		b.CreatedAt = createdAt.UTC().Format(time.RFC3339)
 		_ = json.Unmarshal(allowedRaw, &b.AllowedOperations)

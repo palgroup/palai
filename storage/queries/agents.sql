@@ -2,13 +2,13 @@
 -- management surface (create/revise/publish); reads are admission validation and execution pin
 -- resolution. A revise always INSERTs a new draft — no statement here ever rewrites a revision's
 -- config columns, so a published revision is immutable by discipline (the only UPDATE is the publish
--- flip). Every statement is tenant-scoped by project_id (000062 rekeyed the policy). The INSERTs still
--- WRITE organization_id: agent_profiles and run_template_revisions carry a UNIQUE index over it, and a
--- unique index treats NULL as distinct from NULL, so leaving it unset would retire the constraint.
+-- flip). Every statement is tenant-scoped by project_id (000062 rekeyed the policy, 000065 rebuilt the
+-- uniqueness: agent_profiles is UNIQUE (project_id, name), run_template_revisions
+-- (project_id, template_name, revision_number)).
 
 -- name: InsertAgentProfile
-INSERT INTO agent_profiles (id, organization_id, project_id, name)
-VALUES ($1, $2, $3, $4);
+INSERT INTO agent_profiles (id, project_id, name)
+VALUES ($1, $2, $3);
 
 -- AgentProfileExists verifies a profile is in scope before a revision is attached to it.
 -- name: AgentProfileExists
@@ -54,11 +54,11 @@ ORDER BY created_at DESC, id DESC
 LIMIT $7;
 
 -- name: InsertAgentRevision
-INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, instructions,
+INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, tools, instructions,
         tool_sets, mcp_connections, skills, hooks, environment)
-VALUES ($1, $2, $3, $4,
-        (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM agent_revisions WHERE profile_id = $4),
-        $5, $6, $7, $8, $9, $10, $11, $12)
+VALUES ($1, $2, $3,
+        (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM agent_revisions WHERE profile_id = $3),
+        $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING revision_number;
 
 -- AgentRevisionEnvironment reads the environment a revision names (E25 T3), '' for a revision that names
@@ -94,12 +94,12 @@ WHERE id = $1 AND project_id = $2;
 -- identity/delegation (a template must not impersonate an agent). revision_number is the template
 -- name's next monotonic number. Returns it.
 -- name: InsertRunTemplateRevision
-INSERT INTO run_template_revisions (id, organization_id, project_id, template_name, revision_number, model, tools, instructions,
+INSERT INTO run_template_revisions (id, project_id, template_name, revision_number, model, tools, instructions,
         tool_sets, mcp_connections, skills, hooks)
-VALUES ($1, $2, $3, $4,
+VALUES ($1, $2, $3,
         (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM run_template_revisions
-         WHERE project_id = $3 AND template_name = $4),
-        $5, $6, $7, $8, $9, $10, $11)
+         WHERE project_id = $2 AND template_name = $3),
+        $4, $5, $6, $7, $8, $9, $10)
 RETURNING revision_number;
 
 -- PublishRunTemplateRevision mirrors PublishAgentRevision: a once-only conditional flip.

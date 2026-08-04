@@ -76,9 +76,9 @@ func (w *Writer) Write(ctx context.Context, req WriteRequest) (Artifact, error) 
 	// context, so the production path (a request, or WriteArtifact, which scopes before calling Write) is
 	// unchanged; a direct caller with an unscoped context — the write-path's own tests — is scoped to the
 	// tenant it is writing for, exactly as Read and WriteArtifact already do.
-	ctx = storage.ScopeToTenant(ctx, req.Organization, req.Project)
+	ctx = storage.ScopeToTenant(ctx, req.Project)
 	id := newArtifactID()
-	key := objectKey(req.Organization, req.Project, req.RunID, id)
+	key := objectKey(req.Project, req.RunID, id)
 	// ponytail: the object PUT lands before the RLS-checked INSERT, so an internal caller whose ctx scope (A)
 	// differed from req's tenant (B) would write bytes under B's prefix that the INSERT then rejects — orphan
 	// bytes, rowless (unreadable via the API, reclaimed by the orphan-GC), never a cross-tenant read. No
@@ -94,7 +94,7 @@ func (w *Writer) Write(ctx context.Context, req WriteRequest) (Artifact, error) 
 		return Artifact{}, fmt.Errorf("marshal artifact provenance: %w", err)
 	}
 	if _, err := w.pool.Exec(ctx, storage.Query("InsertArtifact"),
-		id, req.Organization, req.Project, req.RunID, key, size, checksum,
+		id, req.Project, req.RunID, key, size, checksum,
 		req.MediaType, req.LogicalType, notScanned, provenance); err != nil {
 		return Artifact{}, fmt.Errorf("record artifact row: %w", err)
 	}
@@ -108,10 +108,10 @@ func (w *Writer) Write(ctx context.Context, req WriteRequest) (Artifact, error) 
 // execution.ArtifactWriter seam): it persists content with its §22.6 classification and returns the
 // artifact id. Keeping the params primitive lets execution depend on this without importing the
 // artifacts package (the same decoupling retention's ArtifactDeleter uses).
-func (w *Writer) WriteArtifact(ctx context.Context, org, project, runID string, content []byte, mediaType, logicalType string, provenance map[string]any) (string, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (w *Writer) WriteArtifact(ctx context.Context, project, runID string, content []byte, mediaType, logicalType string, provenance map[string]any) (string, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	art, err := w.Write(ctx, WriteRequest{
-		Organization: org, Project: project, RunID: runID, Content: content,
+		Project: project, RunID: runID, Content: content,
 		MediaType: mediaType, LogicalType: logicalType, Provenance: provenance,
 	})
 	if err != nil {
@@ -133,8 +133,8 @@ func provenanceOrEmpty(p map[string]any) map[string]any {
 // is false for an unknown or foreign id (the tenant-scoped GetArtifact returns no row),
 // so a caller renders the same miss whether the artifact is absent or owned by another
 // tenant — no cross-tenant existence leaks (spec §22.6, the retrieval non-disclosure rule).
-func (w *Writer) Read(ctx context.Context, org, project, artifactID string) (Artifact, []byte, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (w *Writer) Read(ctx context.Context, project, artifactID string) (Artifact, []byte, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	art := Artifact{ID: artifactID}
 	err := w.pool.QueryRow(ctx, storage.Query("GetArtifact"), artifactID, project).
 		Scan(&art.RunID, &art.ObjectKey, &art.SizeBytes, &art.Checksum)
@@ -181,12 +181,12 @@ const inboundObjectKeyPrefix = "inbound"
 //
 // provenance MUST carry no credential. It is stored, read back by operators, and served over the
 // retrieval API; a fetch token that reached it would be a token in the database.
-func (w *Writer) WriteInboundArtifact(ctx context.Context, org, project, artifactID string, content []byte, mediaType string, provenance map[string]any) error {
-	if org == "" || project == "" || artifactID == "" {
-		return errors.New("artifacts: an inbound artifact write requires organization, project, and an id")
+func (w *Writer) WriteInboundArtifact(ctx context.Context, project, artifactID string, content []byte, mediaType string, provenance map[string]any) error {
+	if project == "" || artifactID == "" {
+		return errors.New("artifacts: an inbound artifact write requires a project and an id")
 	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
-	key := objectKey(org, project, inboundObjectKeyPrefix, artifactID)
+	ctx = storage.ScopeToTenant(ctx, project)
+	key := objectKey(project, inboundObjectKeyPrefix, artifactID)
 	checksum, size, err := w.store.Put(ctx, key, content)
 	if err != nil {
 		return err
@@ -196,7 +196,7 @@ func (w *Writer) WriteInboundArtifact(ctx context.Context, org, project, artifac
 		return fmt.Errorf("marshal artifact provenance: %w", err)
 	}
 	if _, err := w.pool.Exec(ctx, storage.Query("InsertInboundArtifact"),
-		artifactID, org, project, key, size, checksum,
+		artifactID, project, key, size, checksum,
 		mediaType, InboundImageLogicalType, notScanned, encoded); err != nil {
 		return fmt.Errorf("record inbound artifact row: %w", err)
 	}
@@ -207,8 +207,8 @@ func (w *Writer) WriteInboundArtifact(ctx context.Context, org, project, artifac
 // row inside retention's reach (§22.2 purges an artifact through its run). Idempotent and one-way:
 // only a NULL run_id is filled, so a redelivery is a no-op and no artifact can be re-pointed at a
 // different run.
-func (w *Writer) AttachArtifactRun(ctx context.Context, org, project, artifactID, runID string) error {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (w *Writer) AttachArtifactRun(ctx context.Context, project, artifactID, runID string) error {
+	ctx = storage.ScopeToTenant(ctx, project)
 	if _, err := w.pool.Exec(ctx, storage.Query("AttachArtifactRun"), artifactID, project, runID); err != nil {
 		return fmt.Errorf("attach artifact %s to run: %w", artifactID, err)
 	}
@@ -226,8 +226,8 @@ func (w *Writer) AttachArtifactRun(ctx context.Context, org, project, artifactID
 //
 // The media type is returned as RECORDED, and its caller is what enforces that it is an image — the
 // row is the only claim about these bytes that a producer, not a sender, made.
-func (w *Writer) ReadImageArtifact(ctx context.Context, org, project, artifactID string) (string, []byte, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (w *Writer) ReadImageArtifact(ctx context.Context, project, artifactID string) (string, []byte, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	var runID *string
 	var objectKey, checksum, mediaType, logicalType, scanStatus string
 	var size int64
@@ -278,8 +278,8 @@ func (w *Writer) ReadImageArtifact(ctx context.Context, org, project, artifactID
 //     an artifact too big to publish earns an honest sentence, never a silent drop), which is why size comes
 //     back rather than being swallowed.
 //   - found=true, size<=maxBytes: the bytes.
-func (w *Writer) ReadRunArtifact(ctx context.Context, org, project, runID, artifactID string, maxBytes int64) ([]byte, int64, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (w *Writer) ReadRunArtifact(ctx context.Context, project, runID, artifactID string, maxBytes int64) ([]byte, int64, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	// run_id is NULLABLE — an inbound artifact is written before the run it belongs to exists
 	// (WriteInboundArtifact) — so it is scanned as a pointer. A NULL owner matches no run, which is the
 	// fail-closed answer: an artifact attached to nothing is not this run's to publish.
@@ -314,8 +314,8 @@ func (w *Writer) ReadRunArtifact(ctx context.Context, org, project, runID, artif
 // objectKey lays out the S3 key tenant-first so keys never collide across tenants and a
 // bucket listing groups an org's objects together. The DB read is the authoritative
 // tenant gate; this layout is defense in depth.
-func objectKey(org, project, runID, artifactID string) string {
-	return fmt.Sprintf("%s/%s/%s/%s", org, project, runID, artifactID)
+func objectKey(project, runID, artifactID string) string {
+	return fmt.Sprintf("%s/%s/%s/%s", project, runID, artifactID)
 }
 
 // newArtifactID mints a random, unguessable artifact id. TEXT primary key, no format

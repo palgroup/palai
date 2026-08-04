@@ -32,7 +32,7 @@ type RepositoryBindingInput struct {
 
 // CreateRepositoryBinding stores a binding within the tenant scope (spec §30.1).
 func (s *Store) CreateRepositoryBinding(ctx context.Context, tenant Tenant, in RepositoryBindingInput) error {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	allowed, err := json.Marshal(nonNilSlice(in.AllowedOperations))
 	if err != nil {
 		return fmt.Errorf("marshal allowed operations: %w", err)
@@ -48,7 +48,7 @@ func (s *Store) CreateRepositoryBinding(ctx context.Context, tenant Tenant, in R
 		branch = "main"
 	}
 	_, err = s.pool.Exec(ctx, storage.Query("CreateRepositoryBinding"),
-		in.BindingID, tenant.Organization, tenant.Project, in.Provider, in.RepositoryIdentity,
+		in.BindingID, tenant.Project, in.Provider, in.RepositoryIdentity,
 		in.CloneURL, branch, in.ConnectionRef, allowed, policy, in.DataClassification, in.RegionConstraint)
 	if err != nil {
 		return fmt.Errorf("create repository binding: %w", err)
@@ -59,7 +59,7 @@ func (s *Store) CreateRepositoryBinding(ctx context.Context, tenant Tenant, in R
 // GetRepositoryBinding resolves a binding within tenant scope (spec §30.3 step 1). found is false
 // for an unknown OR foreign id — existence is not disclosed across tenants.
 func (s *Store) GetRepositoryBinding(ctx context.Context, tenant Tenant, id string) (contracts.RepositoryBinding, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var (
 		binding    contracts.RepositoryBinding
 		allowedRaw []byte
@@ -78,7 +78,6 @@ func (s *Store) GetRepositoryBinding(ctx context.Context, tenant Tenant, id stri
 		return contracts.RepositoryBinding{}, false, fmt.Errorf("get repository binding: %w", err)
 	}
 	binding.Object = "repository_binding"
-	binding.OrganizationID = contracts.OrganizationID(tenant.Organization)
 	binding.ProjectID = contracts.ProjectID(tenant.Project)
 	binding.CreatedAt = createdAt.UTC().Format(time.RFC3339)
 	// AN ARCHIVED BINDING IS STILL READABLE, and that is the point of the read route keeping it: the
@@ -107,7 +106,7 @@ func (s *Store) GetRepositoryBinding(ctx context.Context, tenant Tenant, id stri
 // pointer, which is why it can be an ordinary tenant-scoped UPDATE with nothing sensitive in its
 // parameters, its error text, or any log line that records it.
 func (s *Store) SetRepositoryBindingConnection(ctx context.Context, tenant Tenant, id, ref string) (bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var updated string
 	err := s.pool.QueryRow(ctx, storage.Query("SetRepositoryBindingConnection"),
 		id, tenant.Project, ref).Scan(&updated)
@@ -142,7 +141,7 @@ func (s *Store) UnarchiveRepositoryBinding(ctx context.Context, tenant Tenant, i
 // are tenant-scoped, both are idempotent by predicate, and both report "did this call change anything"
 // the same way — so one implementation is one place for the scope declaration to be right.
 func (s *Store) flipArchive(ctx context.Context, tenant Tenant, id, query string) (bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var updated string
 	err := s.pool.QueryRow(ctx, storage.Query(query), id, tenant.Project).Scan(&updated)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -168,9 +167,9 @@ type PreparationReceiptInput struct {
 
 // RecordPreparationReceipt persists a preparation receipt (append-only per attempt, spec §30.3).
 func (s *Store) RecordPreparationReceipt(ctx context.Context, tenant Tenant, in PreparationReceiptInput) error {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	_, err := s.pool.Exec(ctx, storage.Query("RecordPreparationReceipt"),
-		in.ReceiptID, in.BindingID, tenant.Organization, tenant.Project, nullableText(in.RunID),
+		in.ReceiptID, in.BindingID, tenant.Project, nullableText(in.RunID),
 		in.RequestedRef, in.BaseCommit, in.TreeHash, in.Branch)
 	if err != nil {
 		return fmt.Errorf("record preparation receipt: %w", err)

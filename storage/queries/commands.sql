@@ -6,8 +6,8 @@
 -- InsertCommand reserves a command atomically. ON CONFLICT DO NOTHING makes a duplicate
 -- command_id a no-op that RETURNs no row, so the caller reads and replays the original.
 -- name: InsertCommand
-INSERT INTO commands (id, organization_id, project_id, session_id, run_id, kind, delivery, payload, state)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'queued')
+INSERT INTO commands (id, project_id, session_id, run_id, kind, delivery, payload, state)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued')
 ON CONFLICT (project_id, id) DO NOTHING
 RETURNING id;
 
@@ -15,41 +15,41 @@ RETURNING id;
 -- name: GetCommand
 SELECT session_id, kind, delivery, state, applied_sequence, result, created_at
 FROM commands
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND project_id = $2;
 
 -- LockCommand reads and locks a command so an apply/reject transition sees a stable state
 -- (the single-winner gate: only the tx that finds it 'queued' advances it).
 -- name: LockCommand
 SELECT run_id, kind, state
 FROM commands
-WHERE id = $1 AND organization_id = $2 AND project_id = $3
+WHERE id = $1 AND project_id = $2
 FOR UPDATE;
 
 -- SetCommandState advances a command to an intermediate state (queued -> applying).
 -- name: SetCommandState
 UPDATE commands
-SET state = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SET state = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2;
 
 -- CompleteCommandApplied records the terminal applied state and the journal sequence where
 -- the command took effect (spec §22.4 applied_sequence).
 -- name: CompleteCommandApplied
 UPDATE commands
-SET state = 'applied', applied_sequence = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SET state = 'applied', applied_sequence = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2;
 
 -- CompleteCommandRejected records the terminal rejected state and the caller-facing result.
 -- name: CompleteCommandRejected
 UPDATE commands
-SET state = 'rejected', result = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SET state = 'rejected', result = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2;
 
 -- SetCommandResult stores a command's caller-facing result without changing its state — the
 -- fork_session apply uses it to carry the new child session id back to the caller.
 -- name: SetCommandResult
 UPDATE commands
-SET result = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SET result = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND project_id = $2;
 
 -- ForkCopyResponses reference-copies a parent session's immutable (terminal, unpurged) response
 -- history into the fork child up to the fork boundary — every response that exists at fork time
@@ -58,8 +58,8 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- copied — the fork's future is isolated. ponytail: purged tombstones are skipped (they carry no
 -- content); add a redacted_content copy if fork fidelity to §22.2 markers ever matters.
 -- name: ForkCopyResponses
-INSERT INTO responses (id, organization_id, project_id, session_id, state, input, output, store, created_at)
-SELECT 'resp_' || replace(gen_random_uuid()::text, '-', ''), organization_id, project_id, $3, state, input, output, store, created_at
+INSERT INTO responses (id, project_id, session_id, state, input, output, store, created_at)
+SELECT 'resp_' || replace(gen_random_uuid()::text, '-', ''), project_id, $3, state, input, output, store, created_at
 FROM responses
 WHERE session_id = $1 AND project_id = $2
   AND state IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
@@ -121,7 +121,7 @@ LIMIT 1;
 -- name: PendingBoundaryCommands
 SELECT id, kind, delivery, payload
 FROM commands
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE run_id = $1 AND project_id = $2
   AND state = 'queued' AND kind IN ('send_message', 'change_config', 'approve', 'deny', 'background_notice')
 ORDER BY created_at;
 
@@ -141,9 +141,9 @@ ORDER BY created_at;
 -- name: ExpireQueuedCommandsForRun
 UPDATE commands
 SET state = 'expired', updated_at = clock_timestamp()
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'queued'
+WHERE run_id = $1 AND project_id = $2 AND state = 'queued'
   AND kind <> 'change_config'
-  AND (kind <> 'send_message' OR $4)
+  AND (kind <> 'send_message' OR $3)
 RETURNING id;
 
 -- SurvivingQueuedSendMessagesForRun returns the send_message commands that survive a run's terminal
@@ -151,7 +151,7 @@ RETURNING id;
 -- for each — the user SEES that a mid-run message did not fold into this response and will carry.
 -- name: SurvivingQueuedSendMessagesForRun
 SELECT id FROM commands
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'queued' AND kind = 'send_message'
+WHERE run_id = $1 AND project_id = $2 AND state = 'queued' AND kind = 'send_message'
 ORDER BY created_at, id;
 
 -- CarrySessionSendMessages re-scopes a session's still-queued send_message commands to a fresh run at
@@ -162,9 +162,9 @@ ORDER BY created_at, id;
 -- Only carry a message from a genuinely TERMINAL prior run — never steal a queued send_message from a
 -- live sibling (e.g. a running ChildRun in the same session) that will deliver it at its own boundary.
 UPDATE commands c
-SET run_id = $4, updated_at = clock_timestamp()
-WHERE c.session_id = $1 AND c.organization_id = $2 AND c.project_id = $3
-  AND c.state = 'queued' AND c.kind = 'send_message' AND c.run_id <> $4
+SET run_id = $3, updated_at = clock_timestamp()
+WHERE c.session_id = $1 AND c.project_id = $2
+  AND c.state = 'queued' AND c.kind = 'send_message' AND c.run_id <> $3
   AND EXISTS (
       SELECT 1 FROM runs r
       WHERE r.id = c.run_id
@@ -180,7 +180,7 @@ WHERE c.session_id = $1 AND c.organization_id = $2 AND c.project_id = $3
 -- name: ExpireQueuedSessionCommands
 UPDATE commands
 SET state = 'expired', updated_at = clock_timestamp()
-WHERE session_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'queued' AND id <> $4
+WHERE session_id = $1 AND project_id = $2 AND state = 'queued' AND id <> $3
 RETURNING id;
 
 -- PendingSessionConfigCommands is the run-start drain's read: the session's still-queued
@@ -192,7 +192,7 @@ RETURNING id;
 -- name: PendingSessionConfigCommands
 SELECT id, kind, delivery, payload
 FROM commands
-WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE session_id = $1 AND project_id = $2
   AND state = 'queued' AND kind = 'change_config'
 ORDER BY created_at;
 
@@ -203,7 +203,7 @@ ORDER BY created_at;
 -- name: PendingPauseCommand
 SELECT id
 FROM commands
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE run_id = $1 AND project_id = $2
   AND state = 'queued' AND kind = 'pause'
 ORDER BY created_at
 LIMIT 1;
@@ -216,7 +216,7 @@ LIMIT 1;
 -- name: PendingInterruptCommand
 SELECT id, kind, payload
 FROM commands
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE run_id = $1 AND project_id = $2
   AND state = 'queued' AND delivery = 'interrupt' AND kind IN ('send_message', 'change_config')
 ORDER BY created_at
 LIMIT 1;
@@ -226,8 +226,8 @@ LIMIT 1;
 -- delivered-message row (variant-1's "applied lie" is closed). ON CONFLICT DO NOTHING makes it
 -- idempotent: a command applies once (single-winner), so this writes at most one row per command.
 -- name: InsertDeliveredMessage
-INSERT INTO delivered_messages (command_id, organization_id, project_id, run_id, boundary_request_id, applied_sequence)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO delivered_messages (command_id, project_id, run_id, boundary_request_id, applied_sequence)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (project_id, command_id) DO NOTHING;
 
 -- MarkDeliveredMessagesFolded advances a run's still-'delivered' rows to 'folded' when a model step
@@ -237,7 +237,7 @@ ON CONFLICT (project_id, command_id) DO NOTHING;
 -- name: MarkDeliveredMessagesFolded
 UPDATE delivered_messages
 SET fold_state = 'folded', updated_at = clock_timestamp()
-WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND fold_state = 'delivered';
+WHERE run_id = $1 AND project_id = $2 AND fold_state = 'delivered';
 
 -- RedeliverBoundaryMessages reads the messages a run recorded at one input boundary, so a fresh
 -- attempt redelivers them at that SAME boundary during reconstruction (spec §26.9). It joins the
@@ -249,6 +249,6 @@ WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND fold_state = 
 SELECT d.command_id, c.delivery, c.payload, d.applied_sequence, d.fold_state
 FROM delivered_messages d
 JOIN commands c
-  ON c.organization_id = d.organization_id AND c.project_id = d.project_id AND c.id = d.command_id
-WHERE d.run_id = $1 AND d.organization_id = $2 AND d.project_id = $3 AND d.boundary_request_id = $4
+  ON c.project_id = d.project_id AND c.id = d.command_id
+WHERE d.run_id = $1 AND d.project_id = $2 AND d.boundary_request_id = $3
 ORDER BY d.applied_sequence;

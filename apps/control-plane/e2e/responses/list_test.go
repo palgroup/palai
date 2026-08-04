@@ -31,13 +31,13 @@ func (h *harness) seedCompletedResponses(n int) {
 	pool := h.spine.Pool()
 	sessionID := newID("ses")
 	if _, err := pool.Exec(ctx, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`,
-		sessionID, h.tenant.Organization, h.tenant.Project); err != nil {
+		sessionID, h.tenant.Project); err != nil {
 		h.t.Fatalf("seed session error = %v", err)
 	}
 	for i := 0; i < n; i++ {
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO responses (id, organization_id, project_id, session_id, state, input, output) VALUES ($1,$2,$3,$4,'completed','{}'::jsonb,$5)`,
-			newID("resp"), h.tenant.Organization, h.tenant.Project, sessionID,
+			newID("resp"), h.tenant.Project, sessionID,
 			[]byte(`{"output":[],"usage":{},"model":"fake"}`)); err != nil {
 			h.t.Fatalf("seed completed response error = %v", err)
 		}

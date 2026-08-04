@@ -11,12 +11,14 @@
 -- route below returns names, versions and times; the value has no read-back path at all, exactly as
 -- secret_refs has none (storage/queries/secrets.sql).
 --
--- Every statement runs under the caller's ORG scope (org-scoped, no project — the secret_refs posture,
--- migration 000031:16), so RLS isolates one tenant's environments from another's and no statement here
--- carries an organization_id predicate of its own.
+-- environments HAS NO TENANT COLUMN AT ALL, and since migration 000066 no tenant boundary either: its
+-- policy admits any connection that declared a scope, so an environment is INSTALLATION-WIDE. That is
+-- the same reach it had before (one installation held one organization), but it is now the absence of a
+-- boundary rather than one — an installation meant to hold two customers must give this table a
+-- project_id first. No statement here carries a tenant predicate, because there is no column to name.
 
 -- name: InsertEnvironment
-INSERT INTO environments (id, organization_id, name, description) VALUES ($1, $2, $3, $4)
+INSERT INTO environments (id, name, description) VALUES ($1, $2, $3)
 RETURNING created_at;
 
 -- ListEnvironments returns one row per environment with its KEY COUNT — the count rather than the keys,
@@ -60,7 +62,7 @@ ORDER BY v.key;
 -- created_at records when the key first joined the environment. A rotation is a new secret_refs
 -- version, so the version history lives where the versions do, not here.
 -- name: UpsertEnvironmentValue
-INSERT INTO environment_values (environment_id, organization_id, key) VALUES ($1, $2, $3)
+INSERT INTO environment_values (environment_id, key) VALUES ($1, $2)
 ON CONFLICT (environment_id, key) DO NOTHING;
 
 -- DeleteEnvironmentValue removes the BINDING and nothing else. The sealed versions stay in secret_refs,

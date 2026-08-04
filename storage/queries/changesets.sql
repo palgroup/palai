@@ -27,14 +27,14 @@ LIMIT 1;
 -- once. patch/test-log artifact ids are nullable (a changeset with no diff or no checks has none).
 -- name: InsertChangeset
 INSERT INTO changesets
-    (id, organization_id, project_id, run_id, base_commit, final_commit, final_tree, files,
+    (id, project_id, run_id, base_commit, final_commit, final_tree, files,
      patch_artifact_id, test_log_artifact_id, patch_truncated, content_hash, ignored_file_count)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (id) DO NOTHING;
 
 -- InsertChangesetFinding records one likely-committed-secret (or license) finding over a file entering
 -- the changeset (spec §30.4 committed-secret detection, §30.6 findings).
 -- name: InsertChangesetFinding
-INSERT INTO changeset_findings (id, changeset_id, organization_id, project_id, kind, path, rule)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO changeset_findings (id, changeset_id, project_id, kind, path, rule)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (id) DO NOTHING;

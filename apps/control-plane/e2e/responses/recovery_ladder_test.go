@@ -130,7 +130,7 @@ func (h *harness) eventLevels(sessionID, typ string) []string {
 	h.t.Helper()
 	rows, err := h.spine.Pool().Query(storage.WithSystemScope(context.Background()),
 		`SELECT payload FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type=$4 ORDER BY seq`,
-		sessionID, h.tenant.Organization, h.tenant.Project, typ)
+		sessionID, h.tenant.Project, typ)
 	if err != nil {
 		h.t.Fatalf("read %s events error = %v", typ, err)
 	}
@@ -156,7 +156,7 @@ func (h *harness) recoveryProof(sessionID string) (recovery.RecoveryProof, bool)
 	var payload []byte
 	err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT payload FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type='recovery.proof.v1' ORDER BY seq DESC LIMIT 1`,
-		sessionID, h.tenant.Organization, h.tenant.Project).Scan(&payload)
+		sessionID, h.tenant.Project).Scan(&payload)
 	if err != nil {
 		return recovery.RecoveryProof{}, false
 	}
@@ -366,7 +366,7 @@ func (h *harness) deliveredBoundary(runID, commandID string) string {
 	var b string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT boundary_request_id FROM delivered_messages WHERE run_id=$1 AND command_id=$2 AND organization_id=$3 AND project_id=$4`,
-		runID, commandID, h.tenant.Organization, h.tenant.Project).Scan(&b); err != nil {
+		runID, commandID, h.tenant.Project).Scan(&b); err != nil {
 		h.t.Fatalf("read delivered boundary for %s: %v", commandID, err)
 	}
 	return b
@@ -474,7 +474,7 @@ func TestFreshCommandsNotDrainedAtReplayedBoundary(t *testing.T) {
 
 func (h *harness) committedModelSteps(runID string) int {
 	return h.count(`SELECT count(*) FROM model_requests WHERE run_id=$1 AND organization_id=$2 AND project_id=$3 AND state='completed'`,
-		runID, h.tenant.Organization, h.tenant.Project)
+		runID, h.tenant.Project)
 }
 
 // TestLadderPrefersExactWhenLeaseAlive proves the exact rung (ENG-008, spec §26.3 rung 1): while the
@@ -542,7 +542,7 @@ func TestMutualExactStandDownRequeuesInsteadOfHanging(t *testing.T) {
 		if _, err := h.spine.Pool().Exec(storage.WithSystemScope(context.Background()),
 			`INSERT INTO durable_jobs (id, organization_id, project_id, kind, status, lease_owner, lease_expires_at, fence, attempt_count, payload)
 			 VALUES ($1, $2, $3, 'response.run', 'running', 'owner', clock_timestamp() + interval '1 minute', 1, 1, $4)`,
-			j, h.tenant.Organization, h.tenant.Project, []byte(`{"run_id":"`+runID+`"}`)); err != nil {
+			j, h.tenant.Project, []byte(`{"run_id":"`+runID+`"}`)); err != nil {
 			t.Fatalf("seed live job %s: %v", j, err)
 		}
 	}
@@ -570,7 +570,7 @@ func runID2resp(t *testing.T, h *harness, runID string) string {
 	var respID string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT response_id FROM runs WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		runID, h.tenant.Organization, h.tenant.Project).Scan(&respID); err != nil {
+		runID, h.tenant.Project).Scan(&respID); err != nil {
 		t.Fatalf("resolve response for run: %v", err)
 	}
 	return respID

@@ -61,8 +61,8 @@ type MCPConnectionInput struct {
 
 // CreateMCPConnection registers a connection after validating its name, transport, and transport-specific
 // config. It is an admin action — never reachable from a tool the model can call.
-func (s *Store) CreateMCPConnection(ctx context.Context, org, project string, raw []byte) (Connection, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) CreateMCPConnection(ctx context.Context, project string, raw []byte) (Connection, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	in, err := decodeMCPConnectionInput(raw)
 	if err != nil {
 		return Connection{}, err
@@ -78,7 +78,7 @@ func (s *Store) CreateMCPConnection(ctx context.Context, org, project string, ra
 	// not only at the first dial. A binderless store (no client wired) skips it, symmetric with the current
 	// creatable-but-not-discoverable posture; the static egress.VetURL in validateConnectionConfig still ran.
 	if s.mcp != nil {
-		vetConn := connConfig(org, Connection{Name: in.Name, Transport: in.Transport, Config: in.Config})
+		vetConn := connConfig(Connection{Name: in.Name, Transport: in.Transport, Config: in.Config})
 		if err := s.mcp.VetConnection(ctx, vetConn); err != nil {
 			return Connection{}, fmt.Errorf("%w: %v", ErrInvalidConnectionConfig, err)
 		}
@@ -89,7 +89,7 @@ func (s *Store) CreateMCPConnection(ctx context.Context, org, project string, ra
 	}
 	id := newID("mcpc")
 	if _, err := s.pool.Exec(ctx, storage.Query("InsertMCPConnection"),
-		id, org, project, in.Name, in.Transport, marshalJSON(in.Config), nullableText(in.SecretRef), trust); err != nil {
+		id, project, in.Name, in.Transport, marshalJSON(in.Config), nullableText(in.SecretRef), trust); err != nil {
 		if isUniqueViolation(err) {
 			return Connection{}, ErrConnectionNameCollision
 		}
@@ -99,8 +99,8 @@ func (s *Store) CreateMCPConnection(ctx context.Context, org, project string, ra
 }
 
 // GetMCPConnection reads a connection for a discover action (tenant-scoped, disabled or not).
-func (s *Store) GetMCPConnection(ctx context.Context, org, project, id string) (Connection, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) GetMCPConnection(ctx context.Context, project, id string) (Connection, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	c := Connection{ID: id}
 	var configJSON []byte
 	var secretRef *string
@@ -121,8 +121,8 @@ func (s *Store) GetMCPConnection(ctx context.Context, org, project, id string) (
 
 // MCPConnectionExists reports whether a connection id is in scope — the AgentRevision-rider validation gate
 // (a revision may only name connections that really exist in the project).
-func (s *Store) MCPConnectionExists(ctx context.Context, org, project, id string) (bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) MCPConnectionExists(ctx context.Context, project, id string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	switch err := s.pool.QueryRow(ctx, storage.Query("MCPConnectionExists"), id, project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
@@ -133,8 +133,8 @@ func (s *Store) MCPConnectionExists(ctx context.Context, org, project, id string
 }
 
 // DisableMCPConnection flips the admin kill-switch once. Reports whether the connection existed in scope.
-func (s *Store) DisableMCPConnection(ctx context.Context, org, project, id string) (bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) DisableMCPConnection(ctx context.Context, project, id string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	switch err := s.pool.QueryRow(ctx, storage.Query("DisableMCPConnection"), id, project).Scan(new(string)); {
 	case err == nil:
 		return true, nil
@@ -142,7 +142,7 @@ func (s *Store) DisableMCPConnection(ctx context.Context, org, project, id strin
 		return false, fmt.Errorf("disable mcp connection: %w", err)
 	}
 	// No flip: either already-disabled or unknown. Existence disambiguates.
-	return s.MCPConnectionExists(ctx, org, project, id)
+	return s.MCPConnectionExists(ctx, project, id)
 }
 
 // decodeMCPConnectionInput strictly decodes the create body, rejecting unknown fields (no inline secret).

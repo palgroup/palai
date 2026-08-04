@@ -85,7 +85,7 @@ type PendingCommand struct {
 // a live run is left queued for the command pump. Everything commits in one transaction, so a
 // rejection leaves the command durably rejected and an unknown session leaves nothing behind.
 func (s *Store) AcceptCommand(ctx context.Context, tenant Tenant, sessionID string, in CommandInput) (Command, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Command{}, fmt.Errorf("begin accept command: %w", err)
@@ -118,7 +118,7 @@ func (s *Store) AcceptCommand(ctx context.Context, tenant Tenant, sessionID stri
 	// Reserve the command. ON CONFLICT DO NOTHING makes a duplicate command_id return no row,
 	// so we read and replay the original resource unchanged.
 	err = tx.QueryRow(ctx, storage.Query("InsertCommand"),
-		in.CommandID, tenant.Organization, tenant.Project, sessionID, nullableText(runID), in.Kind, nullableText(in.Delivery), in.Payload).
+		in.CommandID, tenant.Project, sessionID, nullableText(runID), in.Kind, nullableText(in.Delivery), in.Payload).
 		Scan(new(string))
 	if errors.Is(err, pgx.ErrNoRows) {
 		cmd, err := readCommand(ctx, tx, tenant, in.CommandID)
@@ -336,7 +336,7 @@ func applyForkSessionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, parentSes
 	// The fork opens its child unlabelled rather than copying the parent's name (E29): a fork is a new
 	// line of work, and inheriting a label would put two rows on the Sessions screen claiming to be the
 	// same thing. It derives one from the copied history, or the operator renames it.
-	if _, err := tx.Exec(ctx, storage.Query("InsertSession"), childSessionID, tenant.Organization, tenant.Project, ""); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("InsertSession"), childSessionID, tenant.Project, ""); err != nil {
 		return fmt.Errorf("insert fork child session: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("ForkCopyResponses"), parentSessionID, tenant.Project, childSessionID); err != nil {
@@ -347,7 +347,7 @@ func applyForkSessionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, parentSes
 	}
 	// The result carries the child session id so the caller can address the fork.
 	if _, err := tx.Exec(ctx, storage.Query("SetCommandResult"),
-		commandID, tenant.Organization, tenant.Project, mustMarshal(map[string]any{"session_id": childSessionID})); err != nil {
+		commandID, tenant.Project, mustMarshal(map[string]any{"session_id": childSessionID})); err != nil {
 		return fmt.Errorf("set fork command result: %w", err)
 	}
 	return nil
@@ -408,7 +408,7 @@ func applyResumeTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, res
 		return err
 	}
 	if _, err := tx.Exec(ctx, storage.Query("EnqueueJob"),
-		jobID, tenant.Organization, tenant.Project, "response.run", []byte(fmt.Sprintf(`{"run_id":%q}`, runID))); err != nil {
+		jobID, tenant.Project, "response.run", []byte(fmt.Sprintf(`{"run_id":%q}`, runID))); err != nil {
 		return fmt.Errorf("enqueue resume job: %w", err)
 	}
 	resumeResponse := ""
@@ -443,7 +443,7 @@ func applySessionTransitionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, ses
 // close command being applied) and journals command.expired.v1 per swept command (spec §22.4
 // lifecycle — the F1 close-sweep). Mirrors sweepQueuedCommands for runs.
 func sweepQueuedSessionCommands(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, exceptID string) error {
-	rows, err := tx.Query(ctx, storage.Query("ExpireQueuedSessionCommands"), sessionID, tenant.Organization, tenant.Project, exceptID)
+	rows, err := tx.Query(ctx, storage.Query("ExpireQueuedSessionCommands"), sessionID, tenant.Project, exceptID)
 	if err != nil {
 		return fmt.Errorf("expire queued session commands: %w", err)
 	}
@@ -474,7 +474,7 @@ func sweepQueuedSessionCommands(ctx context.Context, tx pgx.Tx, tenant Tenant, s
 func rejectCommandTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, responseID, commandID string, reason map[string]any) error {
 	result, _ := json.Marshal(reason)
 	if _, err := tx.Exec(ctx, storage.Query("CompleteCommandRejected"),
-		commandID, tenant.Organization, tenant.Project, result); err != nil {
+		commandID, tenant.Project, result); err != nil {
 		return fmt.Errorf("reject command: %w", err)
 	}
 	payload, _ := json.Marshal(map[string]any{"command_id": commandID, "reason": reason})
@@ -489,8 +489,8 @@ func rejectCommandTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, r
 // pump branch. A command that has left 'queued' never reappears — the deliver-once guarantee
 // (spec §9.2, §9.3).
 func (s *Store) PendingBoundaryCommands(ctx context.Context, tenant Tenant, runID string) ([]PendingCommand, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	rows, err := s.pool.Query(ctx, storage.Query("PendingBoundaryCommands"), runID, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("PendingBoundaryCommands"), runID, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("read pending commands: %w", err)
 	}
@@ -516,8 +516,8 @@ func (s *Store) PendingBoundaryCommands(ctx context.Context, tenant Tenant, runI
 // the next run (spec §9.3). Single-winner apply skips any already settled at a boundary or by the
 // interrupt watcher, so re-draining on a reclaimed attempt is a no-op.
 func (s *Store) PendingSessionConfigCommands(ctx context.Context, tenant Tenant, sessionID string) ([]PendingCommand, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	rows, err := s.pool.Query(ctx, storage.Query("PendingSessionConfigCommands"), sessionID, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("PendingSessionConfigCommands"), sessionID, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("read pending session config commands: %w", err)
 	}
@@ -553,7 +553,7 @@ func (s *Store) PendingSessionConfigCommands(ctx context.Context, tenant Tenant,
 // The interrupt-path fold (InterruptModelStep) writes the SAME durable row keyed by the aborted step's
 // boundary (E10 Task 7, ENG-012), so both delivery paths redeliver at the input boundary.
 func (s *Store) ApplyCommand(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID, boundaryRequestID string) (int64, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin apply command: %w", err)
@@ -568,7 +568,7 @@ func (s *Store) ApplyCommand(ctx context.Context, tenant Tenant, sessionID, resp
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertDeliveredMessage"),
-		commandID, tenant.Organization, tenant.Project, runID, nullableText(boundaryRequestID), seq); err != nil {
+		commandID, tenant.Project, runID, nullableText(boundaryRequestID), seq); err != nil {
 		return 0, fmt.Errorf("record delivered message: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -595,9 +595,9 @@ type RedeliveredMessage struct {
 // original boundary either way. The read is tenant-scoped; a boundary with no recorded message
 // returns no rows.
 func (s *Store) RedeliverBoundaryMessages(ctx context.Context, tenant Tenant, runID, boundaryRequestID string) ([]RedeliveredMessage, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("RedeliverBoundaryMessages"),
-		runID, tenant.Organization, tenant.Project, boundaryRequestID)
+		runID, tenant.Project, boundaryRequestID)
 	if err != nil {
 		return nil, fmt.Errorf("read boundary messages: %w", err)
 	}
@@ -622,7 +622,7 @@ func (s *Store) RedeliverBoundaryMessages(ctx context.Context, tenant Tenant, ru
 func applyCommandInTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, responseID, commandID string) (int64, error) {
 	var runIDCol *string
 	var kind, state string
-	if err := tx.QueryRow(ctx, storage.Query("LockCommand"), commandID, tenant.Organization, tenant.Project).
+	if err := tx.QueryRow(ctx, storage.Query("LockCommand"), commandID, tenant.Project).
 		Scan(&runIDCol, &kind, &state); errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrCommandNotPending
 	} else if err != nil {
@@ -643,11 +643,11 @@ func applyCommandInTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, 
 	}
 	appliedPayload := mustMarshal(map[string]any{"command_id": commandID, "applied_sequence": seq})
 	if _, err := tx.Exec(ctx, storage.Query("AppendEvent"),
-		eventID, tenant.Organization, tenant.Project, sessionID, nullableText(responseID), seq, commandAppliedEvent, appliedPayload); err != nil {
+		eventID, tenant.Project, sessionID, nullableText(responseID), seq, commandAppliedEvent, appliedPayload); err != nil {
 		return 0, fmt.Errorf("append command applied event: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("CompleteCommandApplied"),
-		commandID, tenant.Organization, tenant.Project, seq); err != nil {
+		commandID, tenant.Project, seq); err != nil {
 		return 0, fmt.Errorf("apply command: %w", err)
 	}
 	return seq, nil
@@ -658,8 +658,8 @@ func applyCommandInTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, 
 // driving the loop, so it is read before the boundary delivery set, not mixed into it. found is
 // false when none is pending.
 func (s *Store) PendingPauseCommand(ctx context.Context, tenant Tenant, runID string) (commandID string, found bool, err error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	switch err := s.pool.QueryRow(ctx, storage.Query("PendingPauseCommand"), runID, tenant.Organization, tenant.Project).
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
+	switch err := s.pool.QueryRow(ctx, storage.Query("PendingPauseCommand"), runID, tenant.Project).
 		Scan(&commandID); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", false, nil
@@ -676,7 +676,7 @@ func (s *Store) PendingPauseCommand(ctx context.Context, tenant Tenant, runID st
 // Returns the pause's applied_sequence. A run already terminal (it finished on this step) rejects
 // with ErrRunTerminal, which the caller treats as "nothing to pause".
 func (s *Store) PauseRun(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID string) (int64, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin pause: %w", err)
@@ -709,8 +709,8 @@ type PendingInterrupt struct {
 // model step, for the in-flight-abort watcher (spec §9.2, §9.3, §25.11) — a send_message
 // interrupt or a change_config immediate switch. found is false when none is pending.
 func (s *Store) PendingInterruptCommand(ctx context.Context, tenant Tenant, runID string) (hit PendingInterrupt, found bool, err error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	switch err := s.pool.QueryRow(ctx, storage.Query("PendingInterruptCommand"), runID, tenant.Organization, tenant.Project).
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
+	switch err := s.pool.QueryRow(ctx, storage.Query("PendingInterruptCommand"), runID, tenant.Project).
 		Scan(&hit.CommandID, &hit.Kind, &hit.Payload); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return PendingInterrupt{}, false, nil
@@ -736,7 +736,7 @@ func (s *Store) PendingInterruptCommand(ctx context.Context, tenant Tenant, runI
 // so interrupt-delivered and boundary-delivered messages at the same step interleave by applied_sequence
 // (§26.9). Empty boundaryRequestID (a change_config interrupt has no message) writes no row.
 func (s *Store) InterruptModelStep(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID, boundaryRequestID, partialEventType string, partialPayload []byte) (int64, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin interrupt: %w", err)
@@ -764,7 +764,7 @@ func (s *Store) InterruptModelStep(ctx context.Context, tenant Tenant, sessionID
 	// CONFLICT DO NOTHING (InsertDeliveredMessage) keeps a redelivered interrupt idempotent.
 	if boundaryRequestID != "" {
 		if _, err := tx.Exec(ctx, storage.Query("InsertDeliveredMessage"),
-			commandID, tenant.Organization, tenant.Project, runID, nullableText(boundaryRequestID), seq); err != nil {
+			commandID, tenant.Project, runID, nullableText(boundaryRequestID), seq); err != nil {
 			return 0, fmt.Errorf("record interrupt delivered message: %w", err)
 		}
 	}
@@ -788,7 +788,7 @@ func sweepQueuedCommands(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionI
 	// send_message survives (carries) ONLY on a clean completion; a canceled/failed terminal expires it
 	// like the rest (an aborted run has no clean next response to carry into, E10 T7 fork 3).
 	expireSendMessages := terminal != statemachines.RunCompleted
-	rows, err := tx.Query(ctx, storage.Query("ExpireQueuedCommandsForRun"), runID, tenant.Organization, tenant.Project, expireSendMessages)
+	rows, err := tx.Query(ctx, storage.Query("ExpireQueuedCommandsForRun"), runID, tenant.Project, expireSendMessages)
 	if err != nil {
 		return fmt.Errorf("expire queued commands: %w", err)
 	}
@@ -826,7 +826,7 @@ func sweepQueuedCommands(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionI
 // sees it, not a silent drop. The commands stay queued; CarrySessionSendMessages re-scopes them at the
 // next run.start so the ordinary boundary pump delivers them there.
 func warnSurvivingSendMessages(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, responseID, runID string) error {
-	rows, err := tx.Query(ctx, storage.Query("SurvivingQueuedSendMessagesForRun"), runID, tenant.Organization, tenant.Project)
+	rows, err := tx.Query(ctx, storage.Query("SurvivingQueuedSendMessagesForRun"), runID, tenant.Project)
 	if err != nil {
 		return fmt.Errorf("read surviving send messages: %w", err)
 	}
@@ -860,8 +860,8 @@ func warnSurvivingSendMessages(ctx context.Context, tx pgx.Tx, tenant Tenant, se
 // change_config carry (PendingSessionConfigCommands) and reuses the entire delivery path — no new frame.
 // Run at run.start (never on a restore, which resumes past the boundary). Returns how many carried.
 func (s *Store) CarrySessionSendMessages(ctx context.Context, tenant Tenant, sessionID, runID string) (int64, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	tag, err := s.pool.Exec(ctx, storage.Query("CarrySessionSendMessages"), sessionID, tenant.Organization, tenant.Project, runID)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
+	tag, err := s.pool.Exec(ctx, storage.Query("CarrySessionSendMessages"), sessionID, tenant.Project, runID)
 	if err != nil {
 		return 0, fmt.Errorf("carry session send messages: %w", err)
 	}
@@ -877,7 +877,7 @@ func readCommand(ctx context.Context, tx pgx.Tx, tenant Tenant, commandID string
 		appliedS *int64
 	)
 	cmd.ID = commandID
-	if err := tx.QueryRow(ctx, storage.Query("GetCommand"), commandID, tenant.Organization, tenant.Project).
+	if err := tx.QueryRow(ctx, storage.Query("GetCommand"), commandID, tenant.Project).
 		Scan(&cmd.SessionID, &cmd.Kind, &delivery, &cmd.State, &appliedS, &result, &cmd.CreatedAt); err != nil {
 		return Command{}, fmt.Errorf("read command: %w", err)
 	}

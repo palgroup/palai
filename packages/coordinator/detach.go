@@ -29,7 +29,7 @@ type ChildRunLookup struct {
 // detached flag) — no separate column, no migration (the child row already carries delegation). found
 // is false when no child was spawned for this request yet (the fresh-spawn path).
 func (s *Store) LookupChildByRequest(ctx context.Context, tenant Tenant, parentRunID, childRequestID string) (ChildRunLookup, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var out ChildRunLookup
 	err := s.pool.QueryRow(ctx, storage.Query("LookupChildByRequest"),
 		parentRunID, tenant.Project, childRequestID).
@@ -48,13 +48,13 @@ func (s *Store) LookupChildByRequest(ctx context.Context, tenant Tenant, parentR
 // single-worker stack runs the child (the E08 T5 inline-deadlock is dissolved because the parent no
 // longer holds the engine while the child dials). It mirrors the resume enqueue (commands.go).
 func (s *Store) EnqueueRunJob(ctx context.Context, tenant Tenant, runID string) error {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	jobID, err := newJobID()
 	if err != nil {
 		return err
 	}
 	if _, err := s.pool.Exec(ctx, storage.Query("EnqueueJob"),
-		jobID, tenant.Organization, tenant.Project, "response.run", []byte(fmt.Sprintf(`{"run_id":%q}`, runID))); err != nil {
+		jobID, tenant.Project, "response.run", []byte(fmt.Sprintf(`{"run_id":%q}`, runID))); err != nil {
 		return fmt.Errorf("enqueue run job for %s: %w", runID, err)
 	}
 	return nil
@@ -66,7 +66,7 @@ func (s *Store) EnqueueRunJob(ctx context.Context, tenant Tenant, runID string) 
 // parent not waiting is a no-op. Called from the child's finalize; the single-winner discipline lives
 // in wakeDetachedParentTx.
 func (s *Store) WakeParentOfChild(ctx context.Context, tenant Tenant, childRunID string) (bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var parentRunID *string
 	if err := s.pool.QueryRow(ctx, storage.Query("RunParentRun"), childRunID, tenant.Project).
 		Scan(&parentRunID); err != nil {
@@ -88,7 +88,7 @@ func (s *Store) WakeParentOfChild(ctx context.Context, tenant Tenant, childRunID
 //   - A parent not yet waiting (its child finished before it reached the release), or one with a
 //     still-running sibling, is left for the last finisher (or the parent's self-wake) to pick up.
 func (s *Store) WakeDetachedParent(ctx context.Context, tenant Tenant, parentRunID string) (bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return false, fmt.Errorf("begin wake parent: %w", err)
@@ -108,7 +108,7 @@ func (s *Store) WakeDetachedParent(ctx context.Context, tenant Tenant, parentRun
 	// landed (m-7). If a pause is still pending for this run, the user wants it paused — do NOT wake it
 	// against intent; the durable child result survives and the user's own resume re-drives the fold.
 	var pausePending bool
-	if err := tx.QueryRow(ctx, storage.Query("PendingPauseCommand"), parentRunID, tenant.Organization, tenant.Project).
+	if err := tx.QueryRow(ctx, storage.Query("PendingPauseCommand"), parentRunID, tenant.Project).
 		Scan(new(string)); err == nil {
 		pausePending = true
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -133,7 +133,7 @@ func (s *Store) WakeDetachedParent(ctx context.Context, tenant Tenant, parentRun
 		return false, err
 	}
 	if _, err := tx.Exec(ctx, storage.Query("EnqueueJob"),
-		jobID, tenant.Organization, tenant.Project, "response.run", []byte(fmt.Sprintf(`{"run_id":%q}`, parentRunID))); err != nil {
+		jobID, tenant.Project, "response.run", []byte(fmt.Sprintf(`{"run_id":%q}`, parentRunID))); err != nil {
 		return false, fmt.Errorf("enqueue parent wake job: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -148,7 +148,7 @@ func (s *Store) WakeDetachedParent(ctx context.Context, tenant Tenant, parentRun
 // the detached rebind may, so the existence check keeps the parent's stream honest. Guarded by the
 // parent being active (a canceled parent appends nothing after its terminal, §22.3).
 func (s *Store) JournalChildCompletionOnce(ctx context.Context, tenant Tenant, sessionID, parentResponseID, parentRunID, eventType, childRunID string, payload []byte) error {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin child completion: %w", err)

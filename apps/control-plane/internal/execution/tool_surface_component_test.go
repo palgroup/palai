@@ -41,7 +41,7 @@ import (
 func seedToolSurfaceRun(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant, executor, modelName, description, riders string) string {
 	t.Helper()
 	pool := cs.Pool()
-	org, project := tenant.Organization, tenant.Project
+	org, project := tenant.Project
 	toolID, trevID := redeliveryID("tool"), redeliveryID("trev")
 	setID, profileID, arevID := redeliveryID("tsrev"), redeliveryID("aprof"), redeliveryID("arev")
 	sessionID, runID := redeliveryID("ses"), redeliveryID("run")

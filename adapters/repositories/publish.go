@@ -59,13 +59,13 @@ var ErrRemoteDiverged = errors.New("remote_diverged")
 // ONE commit. Excluding the head would let a re-proposed merge dedupe onto an approval a human gave for
 // different content — so the head is part of the identity, and a branch that moved needs a new approval
 // to be merged.
-func IdempotencyKey(org, project, runID string, op PublishOperation, remote, branch, base, headSHA string) string {
+func IdempotencyKey(project, runID string, op PublishOperation, remote, branch, base, headSHA string) string {
 	var parts []string
 	switch op {
 	case OpOpenPullRequest:
-		parts = []string{org, project, runID, string(op), remote, branch, base}
+		parts = []string{project, runID, string(op), remote, branch, base}
 	default: // push_branch: the exact head is part of the operation identity
-		parts = []string{org, project, runID, string(op), remote, branch, base, headSHA}
+		parts = []string{project, runID, string(op), remote, branch, base, headSHA}
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return "pub_" + hex.EncodeToString(sum[:16])
@@ -77,8 +77,8 @@ func IdempotencyKey(org, project, runID string, op PublishOperation, remote, bra
 // matches: a changed head needs a fresh approval, and an edited argument set is a new tool call with a
 // new request hash. The approve command carries this hash; the store admits it only against a pending
 // approval whose hash equals it.
-func RequestHash(org, project, runID string, op PublishOperation, remote, branch, base, headSHA string) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{org, project, runID, string(op), remote, branch, base, headSHA}, "\x00")))
+func RequestHash(project, runID string, op PublishOperation, remote, branch, base, headSHA string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{project, runID, string(op), remote, branch, base, headSHA}, "\x00")))
 	return "req_" + hex.EncodeToString(sum[:16])
 }
 

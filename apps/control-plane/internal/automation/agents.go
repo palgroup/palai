@@ -123,10 +123,10 @@ func DecodeRevisionInput(raw []byte) (RevisionInput, error) {
 }
 
 // CreateProfile inserts a named agent-profile lineage and returns its id.
-func (s *Store) CreateProfile(ctx context.Context, org, project, name string) (string, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) CreateProfile(ctx context.Context, project, name string) (string, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	id := newID("aprof")
-	if _, err := s.pool.Exec(ctx, storage.Query("InsertAgentProfile"), id, org, project, name); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("InsertAgentProfile"), id, project, name); err != nil {
 		// A NAME ALREADY IN USE IS THE CALLER'S ANSWER, NOT THE SERVER'S FAULT. Measured 2026-08-02 against
 		// the live control plane: re-registering an existing profile name served
 		// `500 internal_error retryable:true` with NO log line — so the request_id in the body led
@@ -145,8 +145,8 @@ func (s *Store) CreateProfile(ctx context.Context, org, project, name string) (s
 // CreateRevision inserts a DRAFT revision under a profile from a raw body (strictly decoded). It verifies
 // the profile is in scope first, so a revision never attaches to a foreign/unknown profile. A revise is
 // just another CreateRevision — the config columns of earlier revisions are never touched.
-func (s *Store) CreateRevision(ctx context.Context, org, project, profileID string, raw []byte) (Revision, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) CreateRevision(ctx context.Context, project, profileID string, raw []byte) (Revision, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	in, err := DecodeRevisionInput(raw)
 	if err != nil {
 		return Revision{}, err
@@ -157,7 +157,7 @@ func (s *Store) CreateRevision(ctx context.Context, org, project, profileID stri
 	case err != nil:
 		return Revision{}, fmt.Errorf("verify agent profile: %w", err)
 	}
-	if err := s.verifyEnvironment(ctx, org, in.Environment); err != nil {
+	if err := s.verifyEnvironment(ctx, in.Environment); err != nil {
 		return Revision{}, err
 	}
 	id := newID("arev")
@@ -167,7 +167,7 @@ func (s *Store) CreateRevision(ctx context.Context, org, project, profileID stri
 	// Benign at the expected authoring cadence (a human editing a profile); add a retry-on-23505 loop
 	// if concurrent revise throughput ever matters.
 	if err := s.pool.QueryRow(ctx, storage.Query("InsertAgentRevision"),
-		id, org, project, profileID, in.Model, marshalTools(in.Tools), in.Instructions,
+		id, project, profileID, in.Model, marshalTools(in.Tools), in.Instructions,
 		marshalTools(in.ToolSets), marshalTools(in.MCPConnections), marshalTools(in.Skills), marshalTools(in.Hooks),
 		in.Environment).Scan(&number); err != nil {
 		return Revision{}, fmt.Errorf("insert agent revision: %w", err)
@@ -179,8 +179,8 @@ func (s *Store) CreateRevision(ctx context.Context, org, project, profileID stri
 // PublishRevision flips a draft revision to published exactly once. published is true only when THIS
 // call did the flip; exists distinguishes an unknown revision (false) from one already published
 // (true) — so the caller can 404 an unknown id while treating a re-publish as an idempotent success.
-func (s *Store) PublishRevision(ctx context.Context, org, project, revisionID string) (published, exists bool, err error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) PublishRevision(ctx context.Context, project, revisionID string) (published, exists bool, err error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	// THE ENVIRONMENT IS RE-CHECKED AT PUBLISH, and this is not belt-and-braces about the create check —
 	// it is the check that matters. Publish is what makes a revision runnable, so it is the last moment at
 	// which "this agent has the production credentials" can still be refused instead of discovered by a run
@@ -193,7 +193,7 @@ func (s *Store) PublishRevision(ctx context.Context, org, project, revisionID st
 	case e != nil:
 		return false, false, fmt.Errorf("read revision environment: %w", e)
 	}
-	if err := s.verifyEnvironment(ctx, org, environment); err != nil {
+	if err := s.verifyEnvironment(ctx, environment); err != nil {
 		// exists=true so the caller does not report this as an unknown revision: the revision is real and
 		// its environment is not.
 		return false, true, err
@@ -213,11 +213,11 @@ func (s *Store) PublishRevision(ctx context.Context, org, project, revisionID st
 // check answers "does it exist" rather than "does it exist in your tenant". Within one installation those
 // are the same question; across two customers sharing one, they are not — which is why 000066's header
 // names this table as needing a project_id BEFORE such an installation exists.
-func (s *Store) verifyEnvironment(ctx context.Context, org, environment string) error {
+func (s *Store) verifyEnvironment(ctx context.Context, environment string) error {
 	if environment == "" {
 		return nil
 	}
-	ctx = storage.WithOrgScope(ctx, org)
+	ctx = storage.WithInstallationScope(ctx)
 	switch err := s.pool.QueryRow(ctx, storage.Query("EnvironmentExists"), environment).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return fmt.Errorf("%w: %q", ErrEnvironmentNotFound, environment)
@@ -228,8 +228,8 @@ func (s *Store) verifyEnvironment(ctx context.Context, org, environment string) 
 }
 
 // GetRevision reads a revision's committed shape, or found=false when it is absent from the scope.
-func (s *Store) GetRevision(ctx context.Context, org, project, revisionID string) (Revision, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) GetRevision(ctx context.Context, project, revisionID string) (Revision, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	var (
 		rev       Revision
 		toolsJSON []byte
@@ -251,8 +251,8 @@ func (s *Store) GetRevision(ctx context.Context, org, project, revisionID string
 
 // CreateTemplateRevision inserts a DRAFT run-template revision (profile-free, identity/delegation
 // rejected by the strict decode) under a template name and returns it.
-func (s *Store) CreateTemplateRevision(ctx context.Context, org, project, templateName string, raw []byte) (Revision, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) CreateTemplateRevision(ctx context.Context, project, templateName string, raw []byte) (Revision, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	in, err := DecodeRevisionInput(raw)
 	if err != nil {
 		return Revision{}, err
@@ -260,7 +260,7 @@ func (s *Store) CreateTemplateRevision(ctx context.Context, org, project, templa
 	id := newID("rtr")
 	var number int
 	if err := s.pool.QueryRow(ctx, storage.Query("InsertRunTemplateRevision"),
-		id, org, project, templateName, in.Model, marshalTools(in.Tools), in.Instructions,
+		id, project, templateName, in.Model, marshalTools(in.Tools), in.Instructions,
 		marshalTools(in.ToolSets), marshalTools(in.MCPConnections), marshalTools(in.Skills), marshalTools(in.Hooks)).Scan(&number); err != nil {
 		return Revision{}, fmt.Errorf("insert run template revision: %w", err)
 	}
@@ -268,8 +268,8 @@ func (s *Store) CreateTemplateRevision(ctx context.Context, org, project, templa
 }
 
 // PublishTemplateRevision flips a draft template revision to published exactly once (see PublishRevision).
-func (s *Store) PublishTemplateRevision(ctx context.Context, org, project, revisionID string) (published, exists bool, err error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) PublishTemplateRevision(ctx context.Context, project, revisionID string) (published, exists bool, err error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	return s.publish(ctx, "PublishRunTemplateRevision", "RunTemplateRevisionPublished", revisionID, project)
 }
 

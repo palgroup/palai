@@ -90,7 +90,7 @@ func seedTenant(t *testing.T, cs *coordinator.Store) workers.Tenant {
 	if _, err := cs.Pool().Exec(ctx, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	return workers.Tenant{Organization: org, Project: project}
+	return workers.Tenant{Project: project}
 }
 
 // buildWorker compiles the fixture worker binary once for the test.

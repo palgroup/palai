@@ -93,7 +93,7 @@ type ModelRouteRecord struct {
 // connection no longer resolves in this tenant is an ERROR, never a fall-through: silently running a
 // tenant on the deployment credential is exactly the "route cannot silently select" failure of §27.7.
 func (s *Store) ProjectModelRoute(ctx context.Context, tenant Tenant) (ModelRouteTarget, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var target ModelRouteTarget
 	// All three are LEFT-JOIN columns and therefore NULLable: a revision naming a connection that no longer
 	// resolves in this tenant returns a row with NULLs rather than no row, which is what makes the failure
@@ -124,7 +124,7 @@ func (s *Store) ProjectModelRoute(ctx context.Context, tenant Tenant) (ModelRout
 
 // ListModelConnections returns the caller's project connections, secret REF names only.
 func (s *Store) ListModelConnections(ctx context.Context, tenant Tenant) ([]ModelConnectionRecord, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListModelConnections"), tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("list model connections: %w", err)
@@ -146,7 +146,7 @@ func (s *Store) ListModelConnections(ctx context.Context, tenant Tenant) ([]Mode
 
 // GetModelConnection reads one connection in scope; an absent/foreign id is ErrModelConnectionNotFound.
 func (s *Store) GetModelConnection(ctx context.Context, tenant Tenant, connectionID string) (ModelConnectionRecord, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	rec, err := scanModelConnection(s.pool.QueryRow(ctx, storage.Query("GetModelConnection"), connectionID, tenant.Project))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ModelConnectionRecord{}, ErrModelConnectionNotFound
@@ -179,7 +179,7 @@ func scanModelConnection(row pgx.Row) (ModelConnectionRecord, error) {
 
 // ListModelRoutes returns the caller's project route aliases.
 func (s *Store) ListModelRoutes(ctx context.Context, tenant Tenant) ([]ModelRouteRecord, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListModelRoutes"), tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("list model routes: %w", err)
@@ -201,7 +201,7 @@ func (s *Store) ListModelRoutes(ctx context.Context, tenant Tenant) ([]ModelRout
 
 // GetModelRoute reads one route in scope; an absent/foreign id is ErrModelRouteNotFound.
 func (s *Store) GetModelRoute(ctx context.Context, tenant Tenant, routeID string) (ModelRouteRecord, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var rec ModelRouteRecord
 	err := s.pool.QueryRow(ctx, storage.Query("GetModelRoute"), routeID, tenant.Project).
 		Scan(&rec.ID, &rec.Name, &rec.CreatedAt)
@@ -217,7 +217,7 @@ func (s *Store) GetModelRoute(ctx context.Context, tenant Tenant, routeID string
 // ListModelRouteRevisions returns a route's revisions in ascending order. The route is verified in scope
 // first, so a foreign/unknown route id is ErrModelRouteNotFound — never another tenant's revision list.
 func (s *Store) ListModelRouteRevisions(ctx context.Context, tenant Tenant, routeID string) ([]ModelRouteRevision, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	if err := s.requireModelRoute(ctx, tenant, routeID); err != nil {
 		return nil, err
 	}
@@ -243,7 +243,7 @@ func (s *Store) ListModelRouteRevisions(ctx context.Context, tenant Tenant, rout
 // GetModelRouteRevision reads one revision of a route the caller owns. A foreign/unknown route is
 // ErrModelRouteNotFound; a revision id absent from that route is ErrModelRouteRevisionNotFound.
 func (s *Store) GetModelRouteRevision(ctx context.Context, tenant Tenant, routeID, revisionID string) (ModelRouteRevision, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	if err := s.requireModelRoute(ctx, tenant, routeID); err != nil {
 		return ModelRouteRevision{}, err
 	}
@@ -288,9 +288,9 @@ func scanModelRouteRevision(row pgx.Row) (ModelRouteRevision, error) {
 // 000029's policy compares project_id to the scoped project, so a NULL-project row is invisible to a
 // project-scoped read — an org-wide connection would need a policy change, not a code change.
 func (s *Store) CreateModelConnection(ctx context.Context, tenant Tenant, provider, secretRef, baseURL string) (string, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	id := newModelRoutingID("mconn")
-	if _, err := s.pool.Exec(ctx, storage.Query("InsertModelConnection"), id, tenant.Organization, tenant.Project, provider, secretRef, baseURL); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("InsertModelConnection"), id, tenant.Project, provider, secretRef, baseURL); err != nil {
 		return "", fmt.Errorf("insert model connection: %w", err)
 	}
 	return id, nil
@@ -300,7 +300,7 @@ func (s *Store) CreateModelConnection(ctx context.Context, tenant Tenant, provid
 // owns. It writes a CACHE, not a gate: nothing on the dispatch path reads these columns, so a failed stamp
 // costs an operator a display and never a run. An absent/foreign id is ErrModelConnectionNotFound.
 func (s *Store) RecordModelConnectionVerification(ctx context.Context, tenant Tenant, connectionID, outcome string) error {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tag, err := s.pool.Exec(ctx, storage.Query("RecordModelConnectionVerification"), connectionID, tenant.Project, outcome)
 	if err != nil {
 		return fmt.Errorf("record model connection verification: %w", err)
@@ -316,7 +316,7 @@ func (s *Store) RecordModelConnectionVerification(ctx context.Context, tenant Te
 // ponytail: 000001 declares no UNIQUE(organization_id, project_id, name), so two concurrent creates could
 // still both insert; resolution stays deterministic regardless (ResolveProjectModelRoute's total ordering).
 func (s *Store) CreateModelRoute(ctx context.Context, tenant Tenant, name string) (string, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var existing string
 	switch err := s.pool.QueryRow(ctx, storage.Query("GetModelRouteByName"), tenant.Project, name).Scan(&existing); {
 	case err == nil:
@@ -325,7 +325,7 @@ func (s *Store) CreateModelRoute(ctx context.Context, tenant Tenant, name string
 		return "", fmt.Errorf("look up model route: %w", err)
 	}
 	id := newModelRoutingID("mroute")
-	if _, err := s.pool.Exec(ctx, storage.Query("InsertModelRoute"), id, tenant.Organization, tenant.Project, name); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("InsertModelRoute"), id, tenant.Project, name); err != nil {
 		return "", fmt.Errorf("insert model route: %w", err)
 	}
 	return id, nil
@@ -335,7 +335,7 @@ func (s *Store) CreateModelRoute(ctx context.Context, tenant Tenant, name string
 // always a NEW revision, never an edit of a published one. The route and the connection are both verified
 // in scope first, so a revision can neither attach to a foreign route nor bind a foreign credential.
 func (s *Store) CreateModelRouteRevision(ctx context.Context, tenant Tenant, routeID, model, connectionID string) (ModelRouteRevision, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	if err := s.requireModelRoute(ctx, tenant, routeID); err != nil {
 		return ModelRouteRevision{}, err
 	}
@@ -362,7 +362,7 @@ func (s *Store) CreateModelRouteRevision(ctx context.Context, tenant Tenant, rou
 // revision (the routing fields are never rewritten), and it is irreversible: rolling back means publishing
 // a new revision. Re-publishing an already-published revision is an idempotent success.
 func (s *Store) PublishModelRouteRevision(ctx context.Context, tenant Tenant, routeID, revisionID string) error {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	if err := s.requireModelRoute(ctx, tenant, routeID); err != nil {
 		return err
 	}

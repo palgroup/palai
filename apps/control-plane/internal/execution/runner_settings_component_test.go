@@ -115,7 +115,7 @@ func TestAPanelEditReachesAMachineThatIsAlreadyRunning(t *testing.T) {
 	// read from its REGISTRY ROW, and a Dial with an empty tenant parks on a different key and blocks
 	// forever. That is E24's §3.6 D8 fix working — before it, any enrolled machine could take any
 	// tenant's attempt — so a test that dialled tenant-less would be measuring a hole rather than a lease.
-	tenant := coordinator.Tenant{Organization: "org_local", Project: "prj_local"}
+	tenant := coordinator.Tenant{Project: "prj_local"}
 
 	// The machine serves leases for its lifetime with the settings poll running, exactly as cmd/runner
 	// wires it. Backoff and interval are short so the test does not sleep for thirty seconds.

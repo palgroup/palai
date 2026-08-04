@@ -293,7 +293,7 @@ func seedResponseForRun(t *testing.T, h *approvalHarness) string {
 	t.Helper()
 	respID := redeliveryID("resp")
 	execSQL(t, h.spine.Pool(), `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
-		respID, h.tenant.Organization, h.tenant.Project, h.sessionID)
+		respID, h.tenant.Project, h.sessionID)
 	execSQL(t, h.spine.Pool(), `UPDATE runs SET response_id = $1 WHERE id = $2`, respID, h.runID)
 	return respID
 }
@@ -305,8 +305,8 @@ func pendingPublication(t *testing.T, h *approvalHarness, responseID string) coo
 		PublicationID: redeliveryID("pub"), ApprovalID: redeliveryID("apr"), SessionID: h.sessionID,
 		RunID: h.runID, ResponseID: responseID, Operation: "push_branch",
 		Remote: remote, Branch: branch, Base: base, HeadSHA: head,
-		IdempotencyKey: repositories.IdempotencyKey(h.tenant.Organization, h.tenant.Project, h.runID, repositories.OpPushBranch, remote, branch, base, head),
-		RequestHash:    repositories.RequestHash(h.tenant.Organization, h.tenant.Project, h.runID, repositories.OpPushBranch, remote, branch, base, head),
+		IdempotencyKey: repositories.IdempotencyKey(h.tenant.Project, h.runID, repositories.OpPushBranch, remote, branch, base, head),
+		RequestHash:    repositories.RequestHash(h.tenant.Project, h.runID, repositories.OpPushBranch, remote, branch, base, head),
 		Display:        "push " + branch,
 	})
 	if err != nil {

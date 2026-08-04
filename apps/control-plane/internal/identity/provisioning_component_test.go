@@ -230,7 +230,7 @@ func TestConfigPolicyResolverReachable(t *testing.T) {
 		t.Fatalf("UpdateProjectPolicy error = %v", err)
 	}
 
-	policy, err := cs.ProjectConfig(ctx, coordinator.Tenant{Organization: org, Project: proj})
+	policy, err := cs.ProjectConfig(ctx, coordinator.Tenant{Project: proj})
 	if err != nil {
 		t.Fatalf("ProjectConfig error = %v", err)
 	}

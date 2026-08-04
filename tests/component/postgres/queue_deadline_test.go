@@ -68,7 +68,7 @@ func TestTimeoutQueuedIfExpiredTimesOutBeforeCompute(t *testing.T) {
 	}
 	// The Response projection is finalized terminal, and the run.timed_out.v1 event was written.
 	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM responses WHERE id=$1 AND state='timed_out'`, expired.ResponseID)
-	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM events WHERE type='run.timed_out.v1' AND organization_id=$1 AND project_id=$2`, tenant.Organization, tenant.Project)
+	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM events WHERE type='run.timed_out.v1' AND organization_id=$1 AND project_id=$2`, tenant.Project)
 	// No billable compute started: no attempt was ever recorded for the timed-out run.
 	assertCount(t, cs.Pool(), 0, `SELECT count(*) FROM attempts WHERE run_id=$1`, expired.RunID)
 

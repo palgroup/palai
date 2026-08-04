@@ -83,7 +83,7 @@ func newID(prefix string) string {
 func seedTenant(t *testing.T, pool *pgxpool.Pool) coordinator.Tenant {
 	t.Helper()
 	ctx := context.Background()
-	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	tenant := coordinator.Tenant{Project: newID("prj")}
 	exec := func(sql string, args ...any) {
 		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)

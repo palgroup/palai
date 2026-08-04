@@ -200,7 +200,7 @@ func (o *researchOptions) exec(ctx context.Context, env toolbroker.ExecEnv, args
 	// empty; the tool still returns cleanly (a workspace-less run is not a failure).
 	artifactID := ""
 	if env.Artifacts != nil {
-		id, err := env.Artifacts.WriteArtifact(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, raw,
+		id, err := env.Artifacts.WriteArtifact(ctx, env.Scope.Project, env.Scope.RunID, raw,
 			researchMediaType(contentType), researchLogicalType,
 			map[string]any{"tool": researchToolName, "url": finalURL, "retrieved_at": retrievedAt})
 		if err != nil {

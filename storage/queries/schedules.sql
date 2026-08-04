@@ -6,10 +6,10 @@
 
 -- name: InsertSchedule
 INSERT INTO schedules (
-    id, organization_id, project_id, name, trigger_id, created_by, kind, cron_expr, timezone,
+    id, project_id, name, trigger_id, created_by, kind, cron_expr, timezone,
     one_time_at, misfire_policy, misfire_grace_seconds, max_catch_up, jitter_seconds,
     starts_at, ends_at, next_fire_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16);
 
 -- GetSchedule reads a schedule's management projection (GET /v1/schedules/{id}), tenant-scoped.
 -- name: GetSchedule
@@ -57,7 +57,7 @@ WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL
 RETURNING id;
 
 -- ListSchedules pages a project's schedules newest-first (GET /v1/schedules, E29 T1). Tenant-scoped by
--- (organization_id, project_id) AND by RLS; cursor + created_at bounds + the ?status= lifecycle filter.
+-- project_id AND by RLS; cursor + created_at bounds + the ?status= lifecycle filter.
 --
 -- `deleted_at IS NULL` IS THE LOAD-BEARING PREDICATE HERE. DeleteSchedule is a SOFT delete
 -- (SoftDeleteSchedule above) so an occurrence log and its deliveries survive retention, and GetSchedule
@@ -117,7 +117,7 @@ LIMIT $7;
 -- pump's fan-out). No FOR UPDATE SKIP LOCKED — correctness is the occurrence unique index, not a row
 -- lock; see the ponytail note in scheduler.go.
 -- name: DueSchedules
-SELECT id, organization_id, project_id, trigger_id, created_by, kind, cron_expr, timezone,
+SELECT id, project_id, trigger_id, created_by, kind, cron_expr, timezone,
        misfire_policy, misfire_grace_seconds, max_catch_up, jitter_seconds, ends_at, revision, next_fire_at
 FROM schedules
 WHERE status = 'active' AND deleted_at IS NULL AND next_fire_at IS NOT NULL
@@ -167,7 +167,7 @@ WHERE id = $1 AND project_id = $2 AND next_fire_at = $4;
 -- occurrence rows + deliveries are preserved under retention), so this does NOT filter deleted_at.
 -- name: PendingOccurrences
 SELECT o.occurrence_id, o.schedule_id, o.schedule_revision, o.planned_at,
-       s.organization_id, s.project_id, s.trigger_id, s.created_by, s.jitter_seconds, s.ends_at
+       s.project_id, s.trigger_id, s.created_by, s.jitter_seconds, s.ends_at
 FROM schedule_occurrences o
 JOIN schedules s ON s.id = o.schedule_id
 WHERE o.state = 'pending'

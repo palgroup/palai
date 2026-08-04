@@ -35,10 +35,10 @@ func TestListConnectionModelsMakesARealRequestWithTheConnectionsOwnCredential(t 
 	}
 	s := (&Store{}).WithModelConnectionInspectors(
 		map[string]ConnectionInspector{"openai-compatible": providerone.Adapter{}},
-		func(org, ref string) ([]byte, bool, error) { return []byte("sk-the-operators-key"), true, nil },
+		func(ref string) ([]byte, bool, error) { return []byte("sk-the-operators-key"), true, nil },
 	)
 
-	got := s.listConnectionModels(context.Background(), coordinator.Tenant{Organization: "org_1", Project: "prj_1"}, rec)
+	got := s.listConnectionModels(context.Background(), coordinator.Tenant{Project: "prj_1"}, rec)
 
 	if gotPath != "/v1/models" {
 		t.Fatalf("the lister hit %q, want the connection endpoint's models list", gotPath)
@@ -56,9 +56,9 @@ func TestListConnectionModelsMakesARealRequestWithTheConnectionsOwnCredential(t 
 // `data` array reads as a measurement — "your credential can see no models" — which is a sentence nobody
 // measured.
 func TestListConnectionModelsNeverAnswersAnEmptyListForAQuestionItDidNotAsk(t *testing.T) {
-	tenant := coordinator.Tenant{Organization: "org_1", Project: "prj_1"}
+	tenant := coordinator.Tenant{Project: "prj_1"}
 	rec := coordinator.ModelConnectionRecord{ID: "mconn_1", Provider: "provider-one", SecretRef: "k"}
-	resolves := func(org, ref string) ([]byte, bool, error) { return []byte("sk-x"), true, nil }
+	resolves := func(ref string) ([]byte, bool, error) { return []byte("sk-x"), true, nil }
 
 	cases := map[string]*Store{
 		"no inspector wired for the family": (&Store{}).WithModelConnectionInspectors(map[string]ConnectionInspector{}, resolves),
@@ -66,7 +66,7 @@ func TestListConnectionModelsNeverAnswersAnEmptyListForAQuestionItDidNotAsk(t *t
 			map[string]ConnectionInspector{"provider-one": providerone.Adapter{}}, nil),
 		"the secret ref does not resolve": (&Store{}).WithModelConnectionInspectors(
 			map[string]ConnectionInspector{"provider-one": providerone.Adapter{}},
-			func(org, ref string) ([]byte, bool, error) { return nil, false, nil }),
+			func(ref string) ([]byte, bool, error) { return nil, false, nil }),
 	}
 	for name, s := range cases {
 		got := s.listConnectionModels(context.Background(), tenant, rec)

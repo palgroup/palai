@@ -23,7 +23,6 @@ func (o *Orchestrator) fireHook(ctx context.Context, st *attemptState, point str
 		return extensions.HookOutcome{Payload: payload}, nil
 	}
 	return o.hooks.Fire(ctx, extensions.HookEvent{
-		Org:        st.tenant.Organization,
 		Project:    st.tenant.Project,
 		SessionID:  st.sessionID,
 		ResponseID: st.responseID,

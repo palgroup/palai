@@ -70,7 +70,7 @@ func (c PumpConfig) withDefaults() PumpConfig {
 // ORG because SigningSecretRef is tenant input: without the org, tenant A could name tenant B's ref and
 // sign its own deliveries with B's secret (a cross-tenant HMAC-forgery oracle). The bytes never touch a
 // log or the delivery row. A func type, not an interface — the two callers are a closure each.
-type SecretResolver func(org, ref string) ([]byte, error)
+type SecretResolver func(ref string) ([]byte, error)
 
 // WebhookPump is the supervised delivery loop.
 type WebhookPump struct {
@@ -130,7 +130,7 @@ func (p *WebhookPump) fanOut(ctx context.Context) error {
 		if from < 0 {
 			from = 0
 		}
-		events, err := p.store.ReadJournalForEndpoint(ctx, ep.Org, ep.Project, from, ep.Filter, p.cfg.BatchSize)
+		events, err := p.store.ReadJournalForEndpoint(ctx, ep.Project, from, ep.Filter, p.cfg.BatchSize)
 		if err != nil {
 			return fmt.Errorf("read journal for endpoint %s: %w", ep.ID, err)
 		}
@@ -255,7 +255,7 @@ func (p *WebhookPump) sign(d dueDelivery, ts time.Time, attempt int) (signed, er
 		if ref == "" {
 			continue
 		}
-		s, err := p.secrets(d.Org, ref) // org-scoped: a tenant cannot resolve another tenant's ref (F2)
+		s, err := p.secrets(ref) // org-scoped: a tenant cannot resolve another tenant's ref (F2)
 		if err != nil {
 			return signed{}, fmt.Errorf("resolve signing secret: %w", err)
 		}
@@ -295,7 +295,7 @@ func (p *WebhookPump) emit(ctx context.Context, d dueDelivery, eventType string,
 		"delivery_id": d.ID, "endpoint_id": d.EndpointID, "event_id": d.EventID,
 		"attempt": attempt, "status_code": status,
 	})
-	if err := p.store.EmitDeliveryEvent(ctx, d.Org, d.Project, d.SessionID, eventType, payload); err != nil && p.log != nil {
+	if err := p.store.EmitDeliveryEvent(ctx, d.Project, d.SessionID, eventType, payload); err != nil && p.log != nil {
 		p.log("webhook delivery %s: journal emit failed: %v", d.ID, err)
 	}
 }

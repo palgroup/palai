@@ -6,8 +6,8 @@
 -- the ACL-first hook T5 hardens against the cross-ACL ranking/existence leak (KNO-003).
 
 -- name: InsertKnowledgeBase
-INSERT INTO knowledge_bases (id, organization_id, project_id, name, embedding_route)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO knowledge_bases (id, project_id, name, embedding_route)
+VALUES ($1, $2, $3, $4)
 RETURNING created_at;
 
 -- name: ListKnowledgeBases
@@ -23,8 +23,8 @@ WHERE id = $1;
 -- InsertSource records an ingest input. acl/classification/parser are the source's authorization + parsing
 -- pins; acl is denormalized onto every chunk this source produces for the ACL-first retrieval predicate.
 -- name: InsertSource
-INSERT INTO knowledge_sources (id, organization_id, project_id, knowledge_base_id, kind, uri, acl, classification, parser)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO knowledge_sources (id, project_id, knowledge_base_id, kind, uri, acl, classification, parser)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING created_at;
 
 -- name: ListSources
@@ -45,8 +45,8 @@ WHERE id = $1;
 DELETE FROM knowledge_sources WHERE id = $1;
 
 -- name: InsertIngestionJob
-INSERT INTO ingestion_jobs (id, organization_id, project_id, knowledge_base_id, source_id, state)
-VALUES ($1, $2, $3, $4, $5, 'running')
+INSERT INTO ingestion_jobs (id, project_id, knowledge_base_id, source_id, state)
+VALUES ($1, $2, $3, $4, 'running')
 RETURNING created_at;
 
 -- name: FinishIngestionJob
@@ -67,8 +67,8 @@ SELECT id FROM knowledge_bases WHERE id = $1 FOR UPDATE;
 SELECT coalesce(max(version), 0) + 1 FROM document_revisions WHERE source_id = $1;
 
 -- name: InsertDocumentRevision
-INSERT INTO document_revisions (id, organization_id, project_id, knowledge_base_id, source_id, version, checksum, byte_size, object_key, content, parser, provenance)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+INSERT INTO document_revisions (id, project_id, knowledge_base_id, source_id, version, checksum, byte_size, object_key, content, parser, provenance)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING created_at;
 
 -- name: GetDocumentRevision
@@ -77,8 +77,8 @@ FROM document_revisions
 WHERE id = $1;
 
 -- name: InsertChunkRevision
-INSERT INTO chunk_revisions (id, organization_id, project_id, knowledge_base_id, source_id, document_revision_id, ordinal, byte_start, byte_end, checksum, acl, content)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+INSERT INTO chunk_revisions (id, project_id, knowledge_base_id, source_id, document_revision_id, ordinal, byte_start, byte_end, checksum, acl, content)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 
 -- CountChunksInRevisions counts the chunks belonging to a set of document revisions — the index revision's
 -- chunk_count over its member set (the just-ingested doc plus the unchanged sibling sources' latest docs).
@@ -89,8 +89,8 @@ SELECT count(*) FROM chunk_revisions WHERE document_revision_id = ANY ($1);
 SELECT coalesce(max(version), 0) + 1 FROM index_revisions WHERE knowledge_base_id = $1;
 
 -- name: InsertIndexRevision
-INSERT INTO index_revisions (id, organization_id, project_id, knowledge_base_id, version, state, document_revision_ids, chunk_count)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO index_revisions (id, project_id, knowledge_base_id, version, state, document_revision_ids, chunk_count)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING created_at;
 
 -- name: ListIndexRevisions

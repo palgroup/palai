@@ -281,7 +281,7 @@ func TestPatchArtifactWrittenToObjectStore(t *testing.T) {
 	org, project, session, runID, root := h.seedChangesetScenario(t)
 
 	rec, compiled, err := execution.CompileChangeset(ctx, h.repo.Spine(), h.writer, execution.ChangesetInput{
-		Tenant: coordinator.Tenant{Organization: org, Project: project}, SessionID: session, RunID: runID, AllocationRoot: root,
+		Tenant: coordinator.Tenant{Project: project}, SessionID: session, RunID: runID, AllocationRoot: root,
 	})
 	if err != nil || !compiled {
 		t.Fatalf("CompileChangeset() = compiled %v err %v, want compiled", compiled, err)
@@ -403,7 +403,7 @@ func TestChangesetRecompileIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	org, project, session, runID, root := h.seedChangesetScenario(t)
 	in := execution.ChangesetInput{
-		Tenant: coordinator.Tenant{Organization: org, Project: project}, SessionID: session, RunID: runID, AllocationRoot: root,
+		Tenant: coordinator.Tenant{Project: project}, SessionID: session, RunID: runID, AllocationRoot: root,
 	}
 
 	rec1, _, err := execution.CompileChangeset(ctx, h.repo.Spine(), h.writer, in)

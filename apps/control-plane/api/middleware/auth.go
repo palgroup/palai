@@ -94,11 +94,11 @@ func Auth(v Verifier) func(http.Handler) http.Handler {
 			// request issues runs under palai.project_id and migration 000062's policies enforce the
 			// same boundary the handlers' WHERE clauses claim. This is the ONLY place a request's
 			// tenant enters the DB scope — it comes from the credential, never from a body field
-			// (spec §39.2). No organization to publish anymore (A.2 Task 3): palai.org_id is set empty,
-			// which is harmless for every project_id-keyed policy (000062) — the three tables still
-			// keyed on organization_id (api_keys, principals, usage_ledger) are never reached through
-			// this top-level scope, only through storage.WithOrgScope's own, separately-resolved org.
-			ctx := storage.WithTenant(r.Context(), "", scope.Project)
+			// (spec §39.2). There is no organization to publish (A.2 Task 3) and no palai.org_id left
+			// to publish it into (A.2 Task 6): every tenant policy reads palai.project_id, and the
+			// three tables that carry no project column at all (environments, environment_values,
+			// secret_refs) are reached only through storage.WithInstallationScope.
+			ctx := storage.WithTenant(r.Context(), scope.Project)
 			ctx = context.WithValue(ctx, scopeKey{}, scope)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

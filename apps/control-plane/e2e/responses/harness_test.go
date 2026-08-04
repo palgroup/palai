@@ -120,7 +120,7 @@ func newHarness(t *testing.T) *harness {
 func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) coordinator.Tenant {
 	t.Helper()
 	ctx := context.Background()
-	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	tenant := coordinator.Tenant{Project: newID("prj")}
 	principalID := newID("prin")
 	exec := func(sql string, args ...any) {
 		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
@@ -130,9 +130,9 @@ func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) coordinat
 	exec(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
 	exec(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`,
-		principalID, tenant.Organization, tenant.Project)
+		principalID, tenant.Project)
 	exec(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4, $5)`,
-		newID("key"), tenant.Organization, tenant.Project, principalID, coordinator.HashAPIKey(token))
+		newID("key"), tenant.Project, principalID, coordinator.HashAPIKey(token))
 	return tenant
 }
 
@@ -199,7 +199,7 @@ func (h *harness) purgedAt(responseID string) *time.Time {
 	var purged *time.Time
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT purged_at FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		responseID, h.tenant.Organization, h.tenant.Project).Scan(&purged); err != nil {
+		responseID, h.tenant.Project).Scan(&purged); err != nil {
 		h.t.Fatalf("read purged_at error = %v", err)
 	}
 	return purged
@@ -555,7 +555,7 @@ func (h *harness) events(sessionID string) []event {
 	h.t.Helper()
 	rows, err := h.spine.Pool().Query(storage.WithSystemScope(context.Background()),
 		`SELECT seq, type FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 ORDER BY seq`,
-		sessionID, h.tenant.Organization, h.tenant.Project)
+		sessionID, h.tenant.Project)
 	if err != nil {
 		h.t.Fatalf("read events error = %v", err)
 	}
@@ -582,7 +582,7 @@ func (h *harness) response(responseID string) (state string, projection response
 	var output []byte
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT state, output FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		responseID, h.tenant.Organization, h.tenant.Project).Scan(&state, &output); err != nil {
+		responseID, h.tenant.Project).Scan(&state, &output); err != nil {
 		h.t.Fatalf("read response error = %v", err)
 	}
 	if len(output) > 0 {

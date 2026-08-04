@@ -47,7 +47,7 @@ type RetryPolicy struct {
 func (s *Store) Heartbeat(ctx context.Context, claim Claim, extend time.Duration) (time.Time, error) {
 	// Scoped by the CLAIM's own tenant: the claim is the verified job identity, so this lease
 	// operation is tenant-scoped even though the loop that issued it spans tenants.
-	ctx = storage.WithTenant(ctx, claim.Tenant.Organization, claim.Tenant.Project)
+	ctx = storage.WithTenant(ctx, claim.Tenant.Project)
 	if claim.JobID == "" || claim.Fence < 1 || claim.Owner == "" || extend <= 0 {
 		return time.Time{}, errors.New("valid claim and positive extension are required")
 	}
@@ -107,7 +107,7 @@ func failureReason(cause error) *string {
 func (s *Store) Fail(ctx context.Context, claim Claim, policy RetryPolicy, cause error) (bool, error) {
 	// Scoped by the CLAIM's own tenant: the claim is the verified job identity, so this lease
 	// operation is tenant-scoped even though the loop that issued it spans tenants.
-	ctx = storage.WithTenant(ctx, claim.Tenant.Organization, claim.Tenant.Project)
+	ctx = storage.WithTenant(ctx, claim.Tenant.Project)
 	if claim.JobID == "" || claim.Fence < 1 || claim.Owner == "" {
 		return false, errors.New("valid claim is required")
 	}
@@ -157,7 +157,7 @@ var ErrSoftRequeue = errors.New("soft_requeue")
 func (s *Store) RequeueSoft(ctx context.Context, claim Claim) error {
 	// Scoped by the CLAIM's own tenant: the claim is the verified job identity, so this lease
 	// operation is tenant-scoped even though the loop that issued it spans tenants.
-	ctx = storage.WithTenant(ctx, claim.Tenant.Organization, claim.Tenant.Project)
+	ctx = storage.WithTenant(ctx, claim.Tenant.Project)
 	if claim.JobID == "" || claim.Fence < 1 || claim.Owner == "" {
 		return errors.New("valid claim is required")
 	}
@@ -218,7 +218,7 @@ func (s *Store) SweepDeadLetteredRuns(ctx context.Context) (int, error) {
 	var dead []deadLetteredRun
 	for rows.Next() {
 		var d deadLetteredRun
-		if err := rows.Scan(&d.tenant.Organization, &d.tenant.Project, &d.runID, &d.responseID); err != nil {
+		if err := rows.Scan(&d.tenant.Project, &d.runID, &d.responseID); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("scan dead-lettered run: %w", err)
 		}
@@ -236,7 +236,7 @@ func (s *Store) SweepDeadLetteredRuns(ctx context.Context) (int, error) {
 	// applies to it exactly as it would to a request — the same idiom Worker.process / deliver.go use.
 	driven := 0
 	for _, d := range dead {
-		rowCtx := storage.WithTenant(ctx, d.tenant.Organization, d.tenant.Project)
+		rowCtx := storage.WithTenant(ctx, d.tenant.Project)
 		switch _, err := s.ApplyRunTransition(rowCtx, d.tenant, d.runID, statemachines.RunCmdFail); {
 		case errors.Is(err, ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):
 			continue // already terminal or past a failable state — idempotent

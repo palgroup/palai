@@ -37,7 +37,7 @@ func newPublicationRegistry(store *coordinator.Store, canPublish func(connection
 // the operation-specific idempotency key + head-bound request hash, and records the row idempotently — a
 // duplicate request resolves to the existing pending approval (Replayed), never a second.
 func (r *publicationRegistry) RequestPublication(ctx context.Context, scope toolbroker.TaskScope, op map[string]any) (map[string]any, error) {
-	tenant := coordinator.Tenant{Organization: scope.Org, Project: scope.Project}
+	tenant := coordinator.Tenant{Project: scope.Project}
 	operation, _ := op["operation"].(string)
 	switch operation {
 	case string(repositories.OpPushBranch), string(repositories.OpOpenPullRequest), string(repositories.OpMergePullRequest):
@@ -130,8 +130,8 @@ func (r *publicationRegistry) RequestPublication(ctx context.Context, scope tool
 	}
 
 	pubOp := repositories.PublishOperation(operation)
-	idemKey := repositories.IdempotencyKey(scope.Org, scope.Project, scope.RunID, pubOp, target.Remote, target.Branch, target.Base, headSHA)
-	reqHash := repositories.RequestHash(scope.Org, scope.Project, scope.RunID, pubOp, target.Remote, target.Branch, target.Base, headSHA)
+	idemKey := repositories.IdempotencyKey(scope.Project, scope.RunID, pubOp, target.Remote, target.Branch, target.Base, headSHA)
+	reqHash := repositories.RequestHash(scope.Project, scope.RunID, pubOp, target.Remote, target.Branch, target.Base, headSHA)
 
 	args := map[string]any{}
 	if title, ok := op["title"].(string); ok {

@@ -44,7 +44,7 @@ func TestSignTrimsSecretWhitespace(t *testing.T) {
 // must FAIL, never sign with B's secret (an HMAC-forgery oracle to an attacker-chosen receiver).
 func TestSignResolvesSecretScopedToEndpointOrg(t *testing.T) {
 	// The resolver serves the ref "shared" only under org "org_b".
-	resolver := func(org, ref string) ([]byte, error) {
+	resolver := func(ref string) ([]byte, error) {
 		if org == "org_b" && ref == "shared" {
 			return []byte("whsec_org_b_secret"), nil
 		}

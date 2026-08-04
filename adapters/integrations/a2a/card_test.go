@@ -38,7 +38,7 @@ func TestAgentCardNeverLeaksInternalDetail(t *testing.T) {
 	forbidden := []string{
 		src.Model, "internal_shell_TOOL", "db_admin_TOOL",
 		src.Instructions, "toolset_CONFIDENTIAL",
-		src.Organization, src.Project,
+		src.Project,
 	}
 
 	for _, name := range []string{"public", "extended"} {

@@ -164,8 +164,8 @@ func newKeyValue() (string, error) {
 // pool is re-asserted against the tenant in SQL, so a caller cannot mint a credential into another
 // tenant's fleet by naming its pool id. A pool that is not the caller's (or does not exist) returns
 // found=false as ErrUnknownPool, which the surface renders as a 404.
-func (k *PoolEnrollmentKeys) Mint(ctx context.Context, org, project, poolID string, expiresAt *time.Time) (MintedKey, error) {
-	if org == "" || poolID == "" {
+func (k *PoolEnrollmentKeys) Mint(ctx context.Context, project, poolID string, expiresAt *time.Time) (MintedKey, error) {
+	if project == "" || poolID == "" {
 		return MintedKey{}, ErrUnknownPool
 	}
 	value, err := newKeyValue()
@@ -173,7 +173,7 @@ func (k *PoolEnrollmentKeys) Mint(ctx context.Context, org, project, poolID stri
 		return MintedKey{}, err
 	}
 	out := MintedKey{Value: value}
-	ctx = storage.WithTenant(ctx, org, project)
+	ctx = storage.WithTenant(ctx, project)
 	err = k.pool.QueryRow(ctx, storage.Query("InsertRunnerPoolKey"),
 		k.mintID("rpk"), project, poolID, hashKey(value), value[:keyPrefixLength], expiresAt,
 	).Scan(&out.ID, &out.PoolID, &out.Prefix, &out.CreatedAt, &out.ExpiresAt)
@@ -191,8 +191,8 @@ func (k *PoolEnrollmentKeys) Mint(ctx context.Context, org, project, poolID stri
 // List returns this tenant's keys, newest first, as metadata. poolID narrows to one pool; empty lists
 // every pool's. There is no page window: an operator has a handful of pools and a handful of keys, and
 // a cursor nobody needs is a cursor to keep in step with nothing.
-func (k *PoolEnrollmentKeys) List(ctx context.Context, org, project, poolID string) ([]PoolKey, error) {
-	ctx = storage.WithTenant(ctx, org, project)
+func (k *PoolEnrollmentKeys) List(ctx context.Context, project, poolID string) ([]PoolKey, error) {
+	ctx = storage.WithTenant(ctx, project)
 	rows, err := k.pool.Query(ctx, storage.Query("ListRunnerPoolKeys"), project, poolID)
 	if err != nil {
 		return nil, fmt.Errorf("list runner pool keys: %w", err)
@@ -220,8 +220,8 @@ func (k *PoolEnrollmentKeys) List(ctx context.Context, org, project, poolID stri
 //
 // Idempotent: the first revoked_at is kept (the api_keys precedent). An unknown or foreign key id is
 // ErrUnknownPoolKey, so a caller learns nothing about another tenant's ids.
-func (k *PoolEnrollmentKeys) Revoke(ctx context.Context, org, project, keyID string) (Revocation, error) {
-	ctx = storage.WithTenant(ctx, org, project)
+func (k *PoolEnrollmentKeys) Revoke(ctx context.Context, project, keyID string) (Revocation, error) {
+	ctx = storage.WithTenant(ctx, project)
 	tx, err := k.pool.Begin(ctx)
 	if err != nil {
 		return Revocation{}, fmt.Errorf("begin revoke runner pool key: %w", err)
@@ -307,7 +307,7 @@ func (k *PoolEnrollmentKeys) RedeemPoolKey(ctx context.Context, presented, runne
 	}
 
 	refuse := func(reason string, detail map[string]string, sentinel error) (PoolGrant, error) {
-		if err := k.journalRefusal(ctx, tx, row.org, row.project, runnerID, row.poolID, row.id, reason, detail); err != nil {
+		if err := k.journalRefusal(ctx, tx, row.project, runnerID, row.poolID, row.id, reason, detail); err != nil {
 			return PoolGrant{}, err
 		}
 		// Commit the refusal: it is the only thing this transaction produced, and rolling it back would
@@ -339,7 +339,7 @@ func (k *PoolEnrollmentKeys) RedeemPoolKey(ctx context.Context, presented, runne
 // journalRefusal appends the `refused` entry for a key that WAS recognised. It is skipped when there is
 // no runner id to attribute it to (runner_enrollments is keyed by runner), which is the Consume path
 // below — a journal row about no machine is not a record of anything.
-func (k *PoolEnrollmentKeys) journalRefusal(ctx context.Context, tx pgx.Tx, org, project, runnerID, poolID, keyID, reason string, extra map[string]string) error {
+func (k *PoolEnrollmentKeys) journalRefusal(ctx context.Context, tx pgx.Tx, project, runnerID, poolID, keyID, reason string, extra map[string]string) error {
 	if runnerID == "" {
 		return nil
 	}
@@ -355,7 +355,7 @@ func (k *PoolEnrollmentKeys) journalRefusal(ctx context.Context, tx pgx.Tx, org,
 		return fmt.Errorf("encode pool key refusal detail: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("AppendRunnerEnrollment"),
-		k.mintID("renr"), org, project, runnerID, poolID, keyID, "refused", encoded); err != nil {
+		k.mintID("renr"), project, runnerID, poolID, keyID, "refused", encoded); err != nil {
 		return fmt.Errorf("append pool key refusal: %w", err)
 	}
 	return nil

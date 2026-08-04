@@ -318,7 +318,7 @@ func (f *slackFixture) seedApproval(t *testing.T, channel, root string) seededAp
 
 	branch := "agent/" + newID("b")
 	hash := repositories.RequestHash(f.org, f.project, runID, repositories.OpPushBranch, "git@fake:o/r", branch, "main", "c0ffee")
-	pub, err := f.spine.RequestPublication(ctx, coordinator.Tenant{Organization: f.org, Project: f.project},
+	pub, err := f.spine.RequestPublication(ctx, coordinator.Tenant{Project: f.project},
 		coordinator.PublicationRequest{
 			PublicationID: newID("pub"), ApprovalID: newID("apr"), SessionID: sessionID, RunID: runID,
 			ResponseID: responseID, Operation: "push_branch", Remote: "git@fake:o/r", Branch: branch,

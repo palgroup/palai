@@ -40,7 +40,7 @@ func (h *harness) childRunOf(parentRunID string) (runID, responseID string) {
 	h.t.Helper()
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT id, response_id FROM runs WHERE parent_run_id=$1 AND organization_id=$2 AND project_id=$3`,
-		parentRunID, h.tenant.Organization, h.tenant.Project).Scan(&runID, &responseID); err != nil {
+		parentRunID, h.tenant.Project).Scan(&runID, &responseID); err != nil {
 		h.t.Fatalf("read child run of %s error = %v", parentRunID, err)
 	}
 	return runID, responseID
@@ -52,7 +52,7 @@ func (h *harness) modelOfRun(responseID string) string {
 	var model *string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT output->>'model' FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		responseID, h.tenant.Organization, h.tenant.Project).Scan(&model); err != nil {
+		responseID, h.tenant.Project).Scan(&model); err != nil {
 		h.t.Fatalf("read model of %s error = %v", responseID, err)
 	}
 	if model == nil {
@@ -67,7 +67,7 @@ func (h *harness) childRunsLink(responseID string) []string {
 	var raw []byte
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT output->'child_runs' FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		responseID, h.tenant.Organization, h.tenant.Project).Scan(&raw); err != nil {
+		responseID, h.tenant.Project).Scan(&raw); err != nil {
 		h.t.Fatalf("read child_runs of %s error = %v", responseID, err)
 	}
 	if len(raw) == 0 {
@@ -86,7 +86,7 @@ func (h *harness) childEffectiveBudget(childRunID string) int {
 	var budget *int
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT (delegation->'spec'->>'budget')::int FROM runs WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		childRunID, h.tenant.Organization, h.tenant.Project).Scan(&budget); err != nil {
+		childRunID, h.tenant.Project).Scan(&budget); err != nil {
 		h.t.Fatalf("read child budget %s error = %v", childRunID, err)
 	}
 	if budget == nil {

@@ -505,7 +505,7 @@ type recordingArtifactWriter struct {
 	byType map[string]string
 }
 
-func (w *recordingArtifactWriter) WriteArtifact(ctx context.Context, org, project, runID string, content []byte, _, logicalType string, _ map[string]any) (string, error) {
+func (w *recordingArtifactWriter) WriteArtifact(ctx context.Context, project, runID string, content []byte, _, logicalType string, _ map[string]any) (string, error) {
 	if w.byType == nil {
 		w.byType = map[string]string{}
 	}

@@ -209,7 +209,7 @@ func TestAConsoleWrittenEnvironmentReachesTheShellOfARunItPinned(t *testing.T) {
 	// the sealed values behind it.
 	orch := &Orchestrator{
 		spine: cs,
-		envSecrets: func(org, ref string) ([]byte, error) {
+		envSecrets: func(ref string) ([]byte, error) {
 			v, ok, err := secrets.Resolve(ctx, org, ref)
 			if err != nil {
 				return nil, err

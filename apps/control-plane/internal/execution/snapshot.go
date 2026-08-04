@@ -74,7 +74,7 @@ func (s *SnapshotSink) Capture(ctx context.Context, in SnapshotCaptureInput) (st
 	if int64(buf.Len()) > MaxSnapshotArchiveBytes {
 		return "", fmt.Errorf("workspace snapshot archive %d bytes exceeds the %d bound", buf.Len(), MaxSnapshotArchiveBytes)
 	}
-	key := snapshotObjectKey(in.Organization, in.Project, in.WorkspaceID, in.SnapshotID)
+	key := snapshotObjectKey(in.Project, in.WorkspaceID, in.SnapshotID)
 	archiveChecksum, size, err := s.store.Put(ctx, key, buf.Bytes())
 	if err != nil {
 		return "", fmt.Errorf("store snapshot archive: %w", err)
@@ -142,7 +142,6 @@ func (o *Orchestrator) captureBoundarySnapshot(ctx context.Context, st *attemptS
 	}
 	return o.snapshots.Capture(ctx, SnapshotCaptureInput{
 		SnapshotID:   "snap_" + randHex16(),
-		Organization: st.tenant.Organization,
 		Project:      st.tenant.Project,
 		WorkspaceID:  st.workspaceID,
 		AllocationID: alloc.ID,
@@ -169,6 +168,6 @@ func (o *Orchestrator) workspaceRestorable(ctx context.Context, tenant coordinat
 
 // snapshotObjectKey lays out the S3 key tenant-first (defense in depth, the artifacts + checkpoints
 // layout) with a snapshots/ segment so snapshot bytes never collide with artifact or checkpoint bytes.
-func snapshotObjectKey(org, project, workspaceID, snapshotID string) string {
-	return fmt.Sprintf("%s/%s/%s/snapshots/%s", org, project, workspaceID, snapshotID)
+func snapshotObjectKey(project, workspaceID, snapshotID string) string {
+	return fmt.Sprintf("%s/%s/snapshots/%s", project, workspaceID, snapshotID)
 }

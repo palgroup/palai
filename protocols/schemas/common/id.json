@@ -4,7 +4,6 @@
   "title": "CanonicalIdentifiers",
   "$defs": {
     "opaque_id": {"type": "string", "pattern": "^[a-z][a-z0-9]{1,11}_[A-Za-z0-9_-]+$"},
-    "organization_id": {"type": "string", "pattern": "^org_[A-Za-z0-9_-]+$"},
     "project_id": {"type": "string", "pattern": "^prj_[A-Za-z0-9_-]+$"},
     "session_id": {"type": "string", "pattern": "^ses_[A-Za-z0-9_-]+$"},
     "response_id": {"type": "string", "pattern": "^resp_[A-Za-z0-9_-]+$"},

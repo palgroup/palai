@@ -7,12 +7,12 @@
 
 -- name: InsertCapabilityWorker
 INSERT INTO capability_workers (
-    id, organization_id, project_id, capability, capability_version, os, arch,
+    id, project_id, capability, capability_version, os, arch,
     toolchain_digests, capacity, pool_label, trust_label, health, lease_fence)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'healthy', 1);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'healthy', 1);
 
 -- name: GetCapabilityWorker
-SELECT id, organization_id, project_id, capability, capability_version, os, arch,
+SELECT id, project_id, capability, capability_version, os, arch,
        toolchain_digests, capacity, pool_label, trust_label, health, lease_fence
 FROM capability_workers
 WHERE id = $1 AND project_id = $2;
@@ -37,12 +37,12 @@ RETURNING lease_fence;
 -- (max is 0 -> seq 1) additionally trips the idempotency partial-unique index on a duplicate key.
 -- name: AppendCapabilityJobEntry
 INSERT INTO capability_jobs (
-    id, organization_id, project_id, job_id, entry_seq, entry_kind, idempotency_key, run_id, attempt_id,
+    id, project_id, job_id, entry_seq, entry_kind, idempotency_key, run_id, attempt_id,
     worker_id, capability, operation, input_refs, secret_handle_refs, deadline_at, resource_limits,
     output_schema, network_policy, side_effect_key, fence_token, receipt)
-SELECT $1, $2, $3, $4,
-       COALESCE((SELECT max(entry_seq) FROM capability_jobs WHERE job_id = $4 AND project_id = $3), 0) + 1,
-       $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14, $15::jsonb, $16::jsonb, $17::jsonb, $18, $19, $20::jsonb
+SELECT $1, $2, $3,
+       COALESCE((SELECT max(entry_seq) FROM capability_jobs WHERE job_id = $3 AND project_id = $2), 0) + 1,
+       $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14::jsonb, $15::jsonb, $16::jsonb, $17, $18, $19::jsonb
 RETURNING entry_seq, fence_token;
 
 -- AppendGuardedJobEntry is AppendCapabilityJobEntry with the §31.6 fence guard MOVED INTO the statement, for
@@ -56,14 +56,14 @@ RETURNING entry_seq, fence_token;
 -- neither bury a re-dispatch (leased leg) nor land a terminal under a superseded fence (submit leg).
 -- name: AppendGuardedJobEntry
 INSERT INTO capability_jobs (
-    id, organization_id, project_id, job_id, entry_seq, entry_kind, idempotency_key, run_id, attempt_id,
+    id, project_id, job_id, entry_seq, entry_kind, idempotency_key, run_id, attempt_id,
     worker_id, capability, operation, input_refs, secret_handle_refs, deadline_at, resource_limits,
     output_schema, network_policy, side_effect_key, fence_token, receipt)
-SELECT $1, $2, $3, $4,
-       COALESCE((SELECT max(entry_seq) FROM capability_jobs WHERE job_id = $4 AND project_id = $3), 0) + 1,
-       $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14, $15::jsonb, $16::jsonb, $17::jsonb, $18, $19, $20::jsonb
-WHERE $19 = (SELECT max(fence_token) FROM capability_jobs WHERE job_id = $4 AND project_id = $3)
-  AND $21 = (SELECT lease_fence FROM capability_workers WHERE id = $9 AND project_id = $3)
+SELECT $1, $2, $3,
+       COALESCE((SELECT max(entry_seq) FROM capability_jobs WHERE job_id = $3 AND project_id = $2), 0) + 1,
+       $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14::jsonb, $15::jsonb, $16::jsonb, $17, $18, $19::jsonb
+WHERE $18 = (SELECT max(fence_token) FROM capability_jobs WHERE job_id = $3 AND project_id = $2)
+  AND $20 = (SELECT lease_fence FROM capability_workers WHERE id = $8 AND project_id = $2)
 RETURNING entry_seq, fence_token;
 
 -- JobHasEntries reports whether a job_id already has ANY journal entry in this tenant — the guard that a

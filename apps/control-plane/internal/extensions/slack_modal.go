@@ -59,10 +59,10 @@ func (a *SlackAdmitter) OpenApprovalArguments(ctx context.Context, conn api.Slac
 	}
 	// slack_thread_sessions is FORCE-RLS; an unscoped read sees no rows and would report every click as
 	// uncorrelated.
-	scoped := storage.ScopeToTenant(ctx, conn.Org, conn.Project)
+	scoped := storage.ScopeToTenant(ctx, conn.Project)
 
 	// 1. The conversation the click belongs to.
-	session, _, err := a.store.threadSession(scoped, conn.Org, conn.Project, intent.TeamID, intent.ChannelID, intent.ThreadTS)
+	session, _, err := a.store.threadSession(scoped, conn.Project, intent.TeamID, intent.ChannelID, intent.ThreadTS)
 	switch {
 	case errors.Is(err, ErrSlackThreadSessionNotFound):
 		return "the click's thread has no correlated session", nil
@@ -73,7 +73,7 @@ func (a *SlackAdmitter) OpenApprovalArguments(ctx context.Context, conn api.Slac
 	// 2. AUTHORIZATION, deny by default and identical to the decision path's. The channel gate is not
 	// redundant with the correlation above: an operator NARROWING allowed_channels is what containing an
 	// incident looks like, and a narrowing has to take the already-posted buttons in those channels with it.
-	policy, err := a.store.SlackAuthorizationPolicyFor(ctx, conn.Org, conn.Project, conn.ID)
+	policy, err := a.store.SlackAuthorizationPolicyFor(ctx, conn.Project, conn.ID)
 	if err != nil {
 		return "", fmt.Errorf("read slack authorization policy: %w", err)
 	}
@@ -90,7 +90,7 @@ func (a *SlackAdmitter) OpenApprovalArguments(ctx context.Context, conn api.Slac
 	// 3. The exact call, pinned by the hash the button carried. A hash that opens nothing shows nothing —
 	// including to someone who is authorized, because "there is no such pending approval" and "you may not
 	// see it" have to look the same to a clicker.
-	tenant := coordinator.Tenant{Organization: conn.Org, Project: conn.Project}
+	tenant := coordinator.Tenant{Project: conn.Project}
 	parked, found, err := a.spine.PendingToolApprovalForSession(ctx, tenant, session, intent.RequestHash)
 	if err != nil {
 		return "", fmt.Errorf("read the session's pending tool approval: %w", err)
@@ -104,7 +104,7 @@ func (a *SlackAdmitter) OpenApprovalArguments(ctx context.Context, conn api.Slac
 	// — deleted revision, unpublished set — renders as "(no operator label)" rather than blocking the view:
 	// the arguments are the authority on this screen and they came off the ledger row.
 	label := ""
-	if tool, ok, lerr := a.store.LookupTool(ctx, conn.Org, conn.Project, parked.RunID, parked.ToolName); lerr == nil && ok {
+	if tool, ok, lerr := a.store.LookupTool(ctx, conn.Project, parked.RunID, parked.ToolName); lerr == nil && ok {
 		label = tool.ApprovalLabel
 	}
 
@@ -120,7 +120,7 @@ func (a *SlackAdmitter) OpenApprovalArguments(ctx context.Context, conn api.Slac
 		req.ExpiresAt = *expires
 	}
 
-	token, err := a.secrets(conn.Org, conn.BotTokenRef)
+	token, err := a.secrets(conn.BotTokenRef)
 	if err != nil || len(token) == 0 {
 		// The ref name is never echoed; an operator sees WHICH connection could not answer.
 		return "the connection's bot token could not be resolved", nil

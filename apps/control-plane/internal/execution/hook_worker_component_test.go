@@ -57,7 +57,7 @@ func TestHookWorkerBeforeToolDenyAndAllow(t *testing.T) {
 	execSQL(t, pool,
 		`INSERT INTO hooks (id, organization_id, project_id, name, hook_point, category, executor, config, secret_ref)
 		 VALUES ($1,$2,$3,'guard','before_tool','policy','remote_http', jsonb_build_object('url',$4::text,'allow_private',true), 'sref_hook')`,
-		redeliveryID("hook"), tenant.Organization, tenant.Project, worker.URL)
+		redeliveryID("hook"), tenant.Project, worker.URL)
 
 	ext := extensions.New(pool)
 	ext.SetRemoteInvoker(

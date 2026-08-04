@@ -73,7 +73,7 @@ func TestApprovalPumpSkipsExpiredApproval(t *testing.T) {
 	pump.expired["pub_stale"] = true // its approval elapsed between approval and this boundary
 	publisher := &RepositoryPublisher{Broker: repositories.NewAnonymousBroker()}
 
-	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Organization: "org", Project: "prj"}, "run_1", "ses_1", "resp_1", root, 7, publicationCredential{}); err != nil {
+	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Project: "prj"}, "run_1", "ses_1", "resp_1", root, 7, publicationCredential{}); err != nil {
 		t.Fatalf("publishApproved() error = %v", err)
 	}
 	// The expired one was checked but never published, and its branch never reached the remote.
@@ -118,7 +118,7 @@ func TestApprovalPumpPublishesApprovedPushToRemote(t *testing.T) {
 	pump := newFakePump(pub)
 	publisher := &RepositoryPublisher{Broker: repositories.NewAnonymousBroker()}
 
-	tenant := coordinator.Tenant{Organization: "org", Project: "prj"}
+	tenant := coordinator.Tenant{Project: "prj"}
 	if err := publishApproved(ctx, pump, publisher, tenant, "run_1", "ses_1", "resp_1", root, 7, publicationCredential{}); err != nil {
 		t.Fatalf("publishApproved() error = %v", err)
 	}
@@ -147,7 +147,7 @@ func TestApprovalPumpOpensApprovedPullRequest(t *testing.T) {
 	pump := newFakePump(pub)
 	publisher := &RepositoryPublisher{Broker: repositories.NewAnonymousBroker(), PRClient: &stubPRClient{}}
 
-	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Organization: "org", Project: "prj"}, "run_1", "ses_1", "resp_1", "", 1, publicationCredential{}); err != nil {
+	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Project: "prj"}, "run_1", "ses_1", "resp_1", "", 1, publicationCredential{}); err != nil {
 		t.Fatalf("publishApproved(PR) error = %v", err)
 	}
 	receipt, ok := pump.published["pub_pr"]
@@ -174,7 +174,7 @@ func TestApprovalPumpWarnsOnPublishFailure(t *testing.T) {
 	pump := newFakePump(pub)
 	publisher := &RepositoryPublisher{Broker: repositories.NewAnonymousBroker()}
 
-	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Organization: "org", Project: "prj"}, "run_1", "ses_1", "resp_1", root, 1, publicationCredential{}); err != nil {
+	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Project: "prj"}, "run_1", "ses_1", "resp_1", root, 1, publicationCredential{}); err != nil {
 		t.Fatalf("publishApproved() error = %v, want a warning not a fatal error", err)
 	}
 	if _, published := pump.published["pub_bad"]; published {
@@ -291,13 +291,13 @@ func TestPublishUnderABindingCredentialNeverFallsBackToTheDeploymentApp(t *testi
 	var askedOrg, askedRef string
 	publisher := &RepositoryPublisher{
 		Broker: repositories.NewAnonymousBroker(), // the deployment-global broker, which MUST NOT be used
-		ConnectionSecrets: func(org, ref string) ([]byte, error) {
+		ConnectionSecrets: func(ref string) ([]byte, error) {
 			askedOrg, askedRef = org, ref
 			return nil, errors.New("no such secret ref")
 		},
 	}
 
-	tenant := coordinator.Tenant{Organization: "org", Project: "prj"}
+	tenant := coordinator.Tenant{Project: "prj"}
 	err := publishApproved(ctx, pump, publisher, tenant, "run_1", "ses_1", "resp_1", root, 7,
 		publicationCredential{ConnectionRef: "rcon_tenant_pat", Identity: "acme/widgets"})
 

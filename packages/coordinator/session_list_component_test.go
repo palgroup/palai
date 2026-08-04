@@ -80,7 +80,7 @@ func TestSessionListRowCarriesLabelAgentTokensAndSpan(t *testing.T) {
 	// bare: created and never used — no name, no response, no run, no meter.
 	bare := seedSession(t, cs, org, project, base.Add(3*time.Minute), "")
 
-	rows, err := cs.ListSessions(ctx, Tenant{Organization: org, Project: project}, ListParams{Limit: 10})
+	rows, err := cs.ListSessions(ctx, Tenant{Project: project}, ListParams{Limit: 10})
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestSessionListPagesTotallyOrderedAcrossAClockTie(t *testing.T) {
 		want[seedSession(t, cs, org, project, tie, "")] = false
 	}
 
-	tenant := Tenant{Organization: org, Project: project}
+	tenant := Tenant{Project: project}
 	first, err := cs.ListSessions(ctx, tenant, ListParams{Limit: 2})
 	if err != nil {
 		t.Fatalf("ListSessions page 1: %v", err)
@@ -204,7 +204,7 @@ func TestSessionRenameIsALabelNotAnIdentity(t *testing.T) {
 	now := time.Now().UTC()
 	one := seedSession(t, cs, org, project, now, "")
 	two := seedSession(t, cs, org, project, now.Add(time.Second), "")
-	tenant := Tenant{Organization: org, Project: project}
+	tenant := Tenant{Project: project}
 
 	for _, id := range []string{one, two} {
 		view, err := cs.RenameSession(ctx, tenant, id, "Gece Doğrulama")

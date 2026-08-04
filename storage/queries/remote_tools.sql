@@ -17,8 +17,8 @@ WHERE tool_call_id = $1 AND state = 'pending' AND deadline < clock_timestamp();
 -- cannot open a second pending row, and the executor polls the existing one instead of re-POSTing.
 -- name: OpenRemoteOperation
 INSERT INTO remote_tool_operations
-    (id, organization_id, project_id, tool_call_id, secret_ref, callback_token_hash, deadline, fence)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    (id, project_id, tool_call_id, secret_ref, callback_token_hash, deadline, fence)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT DO NOTHING;
 
 -- FailRemoteOperation closes a pending operation the invoke got a DEFINITE negative answer for (a signed
@@ -57,7 +57,7 @@ WHERE id = $1 AND state = 'pending';
 -- (to resolve the signing secret), the token hash (constant-time compared in Go), and the current
 -- state + result_hash (to decide idempotent-200 vs 409 on a second callback). No row = generic 404.
 -- name: RemoteOperationForCallback
-SELECT organization_id, secret_ref, callback_token_hash, state, result_hash
+SELECT secret_ref, callback_token_hash, state, result_hash
 FROM remote_tool_operations WHERE id = $1;
 
 -- ConsumeRemoteCallback is the atomic one-use token consume: it flips a pending/timed_out row to

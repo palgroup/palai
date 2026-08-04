@@ -111,7 +111,7 @@ func TestRegistryRecordsEachMachineOnceWithItsOwnJournalEntry(t *testing.T) {
 	}
 	// The tenant came off the POOL, not off anything the machine sent — the machine sends no tenant.
 	if first.Organization != org || first.Project != project {
-		t.Fatalf("runner tenant = (%q,%q), want the pool's (%q,%q)", first.Organization, first.Project, org, project)
+		t.Fatalf("runner tenant = (%q,%q), want the pool's (%q,%q)", first.Project, org, project)
 	}
 	// A pool IS a posture, so its members inherit it. A runner that could declare its own would be a
 	// runner that could ask to be placed somewhere it is not.

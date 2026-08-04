@@ -120,7 +120,7 @@ func TestLiveSkillNoAuthority(t *testing.T) {
 func seedSkillRun(t *testing.T, repo *store.Store, pool *pgxpool.Pool) (coordinator.Tenant, string, string, string) {
 	t.Helper()
 	ctx := context.Background()
-	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	tenant := coordinator.Tenant{Project: newID("prj")}
 	session, response, runID := newID("ses"), newID("resp"), newID("run")
 	profileID, revID := newID("aprof"), newID("arev")
 	skillID, skillRevID := newID("skill"), newID("skillrev")
@@ -139,23 +139,23 @@ func seedSkillRun(t *testing.T, repo *store.Store, pool *pgxpool.Pool) (coordina
 	do(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	do(`INSERT INTO projects (id, organization_id, config_policy) VALUES ($1, $2, $3)`,
 		tenant.Project, tenant.Organization, []byte(`{"default_tools":["palai.workspace.file"]}`))
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, tenant.Organization, tenant.Project)
+	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, tenant.Project)
 	do(`INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'publisher')`,
-		skillID, tenant.Organization, tenant.Project)
+		skillID, tenant.Project)
 	do(`INSERT INTO skill_revisions (id, organization_id, project_id, skill_id, revision_number, digest, state, metadata, archive)
 	    VALUES ($1,$2,$3,$4,1,$5,'enabled','{"name":"publisher","description":"publishes changes"}',$6)`,
-		skillRevID, tenant.Organization, tenant.Project, skillID, q.Digest, q.Sanitized)
+		skillRevID, tenant.Project, skillID, q.Digest, q.Sanitized)
 	do(`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`,
-		profileID, tenant.Organization, tenant.Project)
+		profileID, tenant.Project)
 	// The ceiling is [palai.workspace.file]: push is NOT declared, so it can never reach the effective set.
 	do(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, skills, published_at)
 	    VALUES ($1,$2,$3,$4,1,'',$5,$6, clock_timestamp())`,
-		revID, tenant.Organization, tenant.Project, profileID, []byte(`["palai.workspace.file"]`), []byte(`["publisher"]`))
+		revID, tenant.Project, profileID, []byte(`["palai.workspace.file"]`), []byte(`["publisher"]`))
 	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
-		response, tenant.Organization, tenant.Project, session,
+		response, tenant.Project, session,
 		[]byte(`"A skill named publisher is available. Read its instructions from .palai/skills/publisher/SKILL.md with the file tool, then follow them, then confirm you are done."`))
 	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,$5,'queued',$6)`,
-		runID, tenant.Organization, tenant.Project, session, response, revID)
+		runID, tenant.Project, session, response, revID)
 	return tenant, session, response, runID
 }
 

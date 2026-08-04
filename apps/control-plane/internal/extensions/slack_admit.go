@@ -136,7 +136,7 @@ func (a *SlackAdmitter) VerifySignature(_ context.Context, conn api.SlackConnect
 	if a.secrets == nil || conn.SigningSecretRef == "" {
 		return slack.ErrBadSignature
 	}
-	secret, err := a.secrets(conn.Org, conn.SigningSecretRef)
+	secret, err := a.secrets(conn.SigningSecretRef)
 	if err != nil || len(secret) == 0 {
 		// Logged by the caller as a typed reject; the ref name is NOT echoed to the sender (no config oracle).
 		return slack.ErrBadSignature
@@ -160,7 +160,7 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	//
 	// It sits HERE rather than on the route because both transports pass through this function: the Events API
 	// callback and the Socket Mode envelope reach it byte for byte the same way (slack_socket.go).
-	policy, err := a.store.SlackAuthorizationPolicyFor(ctx, conn.Org, conn.Project, conn.ID)
+	policy, err := a.store.SlackAuthorizationPolicyFor(ctx, conn.Project, conn.ID)
 	if err != nil {
 		return api.SlackAdmitOutcome{}, fmt.Errorf("read slack channel scope: %w", err)
 	}
@@ -195,7 +195,7 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	// other caller, CorrelateThreadSession, scopes before calling), and slack_thread_sessions is FORCE-RLS.
 	// An unscoped connection sees NO rows — which would not error, it would silently report every thread as
 	// new and mint a second session for every reply in a thread.
-	scoped := storage.ScopeToTenant(ctx, conn.Org, conn.Project)
+	scoped := storage.ScopeToTenant(ctx, conn.Project)
 	requested, ours, err := a.threadSessionOrNil(scoped, conn, ev)
 	if err != nil {
 		return api.SlackAdmitOutcome{}, err
@@ -292,16 +292,15 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 		return api.SlackAdmitOutcome{}, err
 	}
 	body, err := json.Marshal(contracts.Response{
-		ID:             contracts.ResponseID(responseID),
-		Object:         "response",
-		Status:         "queued",
-		CreatedAt:      time.Now().UTC().Format(time.RFC3339Nano),
-		Output:         []contracts.ContentItem{},
-		Usage:          contracts.Usage{},
-		SessionID:      contracts.SessionID(sessionID),
-		RunID:          contracts.RunID(runID),
-		OrganizationID: contracts.OrganizationID(conn.Org),
-		ProjectID:      contracts.ProjectID(conn.Project),
+		ID:        contracts.ResponseID(responseID),
+		Object:    "response",
+		Status:    "queued",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Output:    []contracts.ContentItem{},
+		Usage:     contracts.Usage{},
+		SessionID: contracts.SessionID(sessionID),
+		RunID:     contracts.RunID(runID),
+		ProjectID: contracts.ProjectID(conn.Project),
 	})
 	if err != nil {
 		return api.SlackAdmitOutcome{}, fmt.Errorf("marshal slack projection: %w", err)
@@ -405,7 +404,7 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 		// First event in this thread, and we still hold the thread lock, so this claim cannot lose. The winner
 		// is READ rather than discarded: if it were ever not ours, the run we just admitted would be sitting in
 		// a session the thread does not point at, and that is a fact an operator has to be able to see.
-		canonical, created, err := a.store.CorrelateThreadSession(ctx, conn.Org, conn.Project, conn.ID,
+		canonical, created, err := a.store.CorrelateThreadSession(ctx, conn.Project, conn.ID,
 			ev.TeamID, ev.ChannelID, ev.ThreadTS, session)
 		if err != nil {
 			// The run is already durable and the reservation is committed; failing the ack here would earn a
@@ -431,7 +430,7 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	// the ack here would earn a redelivery that can only replay onto the same response. The cost of the lost
 	// row is that a later deletion of THIS message retracts nothing — bad, and still much less bad than
 	// refusing a message that was already answered.
-	if err := a.store.RecordSlackMessageTurn(ctx, conn.Org, conn.Project, conn.ID,
+	if err := a.store.RecordSlackMessageTurn(ctx, conn.Project, conn.ID,
 		ev.TeamID, ev.ChannelID, ev.MessageTS, out.ResponseID, session, ev.UserID); err != nil {
 		log.Printf("slack: could not record the turn message %s opened on connection %s; a later edit or deletion of it will not reach the conversation: %v",
 			ev.MessageTS, conn.ID, err)
@@ -501,10 +500,10 @@ func (a *SlackAdmitter) reviseTurn(ctx context.Context, conn api.SlackConnection
 	)
 	if ev.Kind == slack.KindTombstone {
 		verb = "retracted"
-		response, err = a.store.RetractSlackMessageTurn(ctx, conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.MessageTS)
+		response, err = a.store.RetractSlackMessageTurn(ctx, conn.Project, ev.TeamID, ev.ChannelID, ev.MessageTS)
 	} else {
 		verb = "superseded"
-		response, err = a.store.SupersedeSlackMessageTurn(ctx, conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.MessageTS,
+		response, err = a.store.SupersedeSlackMessageTurn(ctx, conn.Project, ev.TeamID, ev.ChannelID, ev.MessageTS,
 			slackTurnText(ev, nil, 0))
 	}
 	if err != nil {
@@ -596,7 +595,7 @@ func slackBirthsRun(ev slack.Event, correlated bool) bool {
 // correct, and dropping it would fork the conversation the moment someone resumes. It travels on to the
 // admission and is refused retryably there, exactly as before.
 func (a *SlackAdmitter) threadSessionOrNil(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event) (requested *string, ours bool, err error) {
-	existing, _, err := a.store.threadSession(ctx, conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.ThreadTS)
+	existing, _, err := a.store.threadSession(ctx, conn.Project, ev.TeamID, ev.ChannelID, ev.ThreadTS)
 	switch {
 	case err != nil && !errors.Is(err, ErrSlackThreadSessionNotFound):
 		return nil, false, err
@@ -732,7 +731,7 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 		return slackRunTarget{}, fmt.Errorf("%w: default_policy.agent_revision_id is required", ErrSlackNoRunTarget)
 	}
 	// The principal must live in the connection's OWN tenant — see SlackRunPrincipalInScope.
-	switch err := a.store.pool.QueryRow(storage.ScopeToTenant(ctx, conn.Org, conn.Project),
+	switch err := a.store.pool.QueryRow(storage.ScopeToTenant(ctx, conn.Project),
 		storage.Query("SlackRunPrincipalInScope"), policy.PrincipalID, conn.Org, conn.Project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return slackRunTarget{}, ErrSlackForeignPrincipal
@@ -1052,7 +1051,7 @@ func (a *SlackAdmitter) grantSearch(conn api.SlackConnectionRef, ev slack.Event,
 	if a.searchAuthorities == nil || ev.ActionToken == "" || a.secrets == nil || conn.BotTokenRef == "" {
 		return
 	}
-	token, err := a.secrets(conn.Org, conn.BotTokenRef)
+	token, err := a.secrets(conn.BotTokenRef)
 	if err != nil || len(token) == 0 {
 		// A bot token we cannot redeem is a search we cannot make. The reply path resolves the same handle
 		// and reports its own failure loudly; a second alarm here would be noise about the same fact.

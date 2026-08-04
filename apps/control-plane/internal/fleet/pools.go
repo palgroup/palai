@@ -86,7 +86,7 @@ func (s *Store) Pool(ctx context.Context, poolID string) (Pool, bool, error) {
 	ctx = storage.WithSystemScope(ctx)
 	var p Pool
 	err := s.pool.QueryRow(ctx, storage.Query("ResolveRunnerPool"), poolID).
-		Scan(&p.ID, &p.Organization, &p.Project, &p.Posture, &p.OS, &p.Arch, &p.StrictEnrollment)
+		Scan(&p.ID, &p.Project, &p.Posture, &p.OS, &p.Arch, &p.StrictEnrollment)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Pool{}, false, nil
 	}
@@ -112,19 +112,19 @@ var ErrPoolNameTaken = errors.New("fleet: a runner pool with that name already e
 // TENANT-SCOPED, unlike Register: this is reached through the public API, where the verified bearer scope
 // is the only tenant authority, so it publishes it and RLS confines it. Register runs system-scoped because
 // the enrolment wire genuinely carries no tenant; an operator's request does.
-func (s *Store) CreatePool(ctx context.Context, org, project string, in Pool) (Pool, error) {
-	if org == "" || project == "" {
+func (s *Store) CreatePool(ctx context.Context, project string, in Pool) (Pool, error) {
+	if project == "" {
 		// A project-less pool is one nothing can enrol into (Register refuses it), so refusing here keeps a
 		// created pool USABLE rather than merely written.
 		return Pool{}, ErrUnknownPool
 	}
 	row := Pool{
-		ID: s.mintID("pool"), Organization: org, Project: project, Name: in.Name,
+		ID: s.mintID("pool"), Project: project, Name: in.Name,
 		Posture: in.Posture, OS: in.OS, Arch: in.Arch, StrictEnrollment: in.StrictEnrollment,
 	}
-	ctx = storage.WithTenant(ctx, org, project)
+	ctx = storage.WithTenant(ctx, project)
 	err := s.pool.QueryRow(ctx, storage.Query("InsertRunnerPool"),
-		row.ID, row.Organization, row.Project, row.Name, row.Posture, row.OS, row.Arch, row.StrictEnrollment).
+		row.ID, row.Project, row.Name, row.Posture, row.OS, row.Arch, row.StrictEnrollment).
 		Scan(&row.CreatedAt)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -142,14 +142,14 @@ func (s *Store) CreatePool(ctx context.Context, org, project string, in Pool) (P
 //
 // THE ONLY MUTABLE FIELD, and that is a correctness requirement: Register makes a machine inherit the
 // pool's posture, so changing a populated pool's posture would retroactively change what its machines ARE.
-func (s *Store) SetStrictEnrollment(ctx context.Context, org, project, poolID string, strict bool) (Pool, bool, error) {
+func (s *Store) SetStrictEnrollment(ctx context.Context, project, poolID string, strict bool) (Pool, bool, error) {
 	if poolID == "" {
 		return Pool{}, false, nil
 	}
-	ctx = storage.WithTenant(ctx, org, project)
+	ctx = storage.WithTenant(ctx, project)
 	var p Pool
 	err := s.pool.QueryRow(ctx, storage.Query("SetRunnerPoolStrictEnrollment"), project, poolID, strict).
-		Scan(&p.ID, &p.Organization, &p.Project, &p.Name, &p.Posture, &p.OS, &p.Arch, &p.StrictEnrollment, &p.CreatedAt)
+		Scan(&p.ID, &p.Project, &p.Name, &p.Posture, &p.OS, &p.Arch, &p.StrictEnrollment, &p.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Pool{}, false, nil
 	}
@@ -161,11 +161,11 @@ func (s *Store) SetStrictEnrollment(ctx context.Context, org, project, poolID st
 
 // ListPools returns the tenant-scoped keyset page of pools, newest first — the read behind
 // GET /v1/runner-pools.
-func (s *Store) ListPools(ctx context.Context, org, project string, window ListWindow) ([]Pool, error) {
+func (s *Store) ListPools(ctx context.Context, project string, window ListWindow) ([]Pool, error) {
 	if window.Limit <= 0 {
 		window.Limit = 21
 	}
-	ctx = storage.WithTenant(ctx, org, project)
+	ctx = storage.WithTenant(ctx, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListRunnerPools"),
 		project, window.CreatedGTE, window.CreatedLTE, window.AfterCreatedAt, window.AfterID, window.Limit)
 	if err != nil {
@@ -175,7 +175,7 @@ func (s *Store) ListPools(ctx context.Context, org, project string, window ListW
 	out := []Pool{}
 	for rows.Next() {
 		var p Pool
-		if err := rows.Scan(&p.ID, &p.Organization, &p.Project, &p.Name, &p.Posture, &p.OS, &p.Arch,
+		if err := rows.Scan(&p.ID, &p.Project, &p.Name, &p.Posture, &p.OS, &p.Arch,
 			&p.StrictEnrollment, &p.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan runner pool: %w", err)
 		}

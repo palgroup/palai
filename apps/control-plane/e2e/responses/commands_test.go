@@ -206,7 +206,7 @@ func (h *harness) commandRow(commandID string) (state string, appliedSeq *int64)
 	h.t.Helper()
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT state, applied_sequence FROM commands WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		commandID, h.tenant.Organization, h.tenant.Project).Scan(&state, &appliedSeq); err != nil {
+		commandID, h.tenant.Project).Scan(&state, &appliedSeq); err != nil {
 		h.t.Fatalf("read command %s error = %v", commandID, err)
 	}
 	return state, appliedSeq
@@ -403,7 +403,7 @@ func TestDuplicateCommandIDReturnsOriginalResult(t *testing.T) {
 	}
 	// Exactly one durable row — the table's own unique deduped, not a second insert.
 	if n := h.count(`SELECT count(*) FROM commands WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		commandID, h.tenant.Organization, h.tenant.Project); n != 1 {
+		commandID, h.tenant.Project); n != 1 {
 		t.Fatalf("commands rows for %s = %d, want 1", commandID, n)
 	}
 	close(gp.release)
@@ -446,13 +446,13 @@ func TestCancelWithUncertainSideEffectTerminalizesUncertain(t *testing.T) {
 	// An irreversible tool_call left uncertain by a kill mid-effect (its outcome unknown).
 	mustExec(`INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
 		VALUES ($1,$2,$3,$4,1,'uncertain','charge','{}','irreversible','reconciling')`,
-		newID("tc"), h.tenant.Organization, h.tenant.Project, runID)
+		newID("tc"), h.tenant.Project, runID)
 	// A child run of this run, to prove cancel-propagation still fires on the reconciled path.
 	childRun, childResp := newID("run"), newID("resp")
 	mustExec(`INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
-		childResp, h.tenant.Organization, h.tenant.Project, sessionID)
+		childResp, h.tenant.Project, sessionID)
 	mustExec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, parent_run_id, depth, response_id) VALUES ($1,$2,$3,$4,'running',$5,1,$6)`,
-		childRun, h.tenant.Organization, h.tenant.Project, sessionID, runID, childResp)
+		childRun, h.tenant.Project, sessionID, runID, childResp)
 
 	h.cancelResponse(respID, h.token).Body.Close()
 	close(gp.release)

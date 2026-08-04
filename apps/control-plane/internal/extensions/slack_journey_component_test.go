@@ -171,7 +171,7 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 	// The tenant + the canonical session and its ACTIVE root run. The run's birth is not what this journey
 	// proves (the Slack mapping is), so it is seeded directly — the seedRun idiom.
 	org, project := seedOrgProject(t, store)
-	tenant := coordinator.Tenant{Organization: org, Project: project}
+	tenant := coordinator.Tenant{Project: project}
 	sessionID, otherSessionID := seedSession(t, store, org, project), seedSession(t, store, org, project)
 	respID, runID := testID("resp"), testID("run")
 	mustSystemExec(t, pool, `UPDATE sessions SET state='active' WHERE id=$1`, sessionID)

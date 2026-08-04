@@ -19,7 +19,7 @@ import (
 // model route bound to its own connection (its own credential ref).
 func seedRoutedProject(t *testing.T, cs *coordinator.Store, exec func(string, ...any), model, secretRef string) coordinator.Tenant {
 	t.Helper()
-	tenant := coordinator.Tenant{Organization: pinnedID("org"), Project: pinnedID("prj")}
+	tenant := coordinator.Tenant{Project: pinnedID("prj")}
 	exec(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
 	if model == "" {
@@ -66,9 +66,9 @@ func TestProjectModelRouteRoutesPerProject(t *testing.T) {
 
 	state := func(tenant coordinator.Tenant) *attemptState {
 		sessionID, runID := pinnedID("ses"), pinnedID("run")
-		exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project)
+		exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
 		exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'running')`,
-			runID, tenant.Organization, tenant.Project, sessionID)
+			runID, tenant.Project, sessionID)
 		return &attemptState{
 			attempt:   AttemptDescriptor{RunID: contracts.RunID(runID), AttemptID: contracts.AttemptID(pinnedID("att"))},
 			tenant:    tenant,
@@ -139,11 +139,11 @@ func TestProviderErrorFailsTheModelStep(t *testing.T) {
 	cs, tenant, exec := openPinnedSpine(t)
 	ctx := context.Background()
 	sessionID, responseID, runID := pinnedID("ses"), pinnedID("resp"), pinnedID("run")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
 	exec(`INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'queued')`,
-		responseID, tenant.Organization, tenant.Project, sessionID)
+		responseID, tenant.Project, sessionID)
 	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'running')`,
-		runID, tenant.Organization, tenant.Project, sessionID, responseID)
+		runID, tenant.Project, sessionID, responseID)
 
 	broker := modelbroker.New(modelbroker.Config{
 		Adapters: map[string]modelbroker.ModelAdapter{"fake": fake.Adapter{Script: fake.Script{

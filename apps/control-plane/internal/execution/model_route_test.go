@@ -67,7 +67,7 @@ func TestTenantSecretRefIsTenantQualified(t *testing.T) {
 func TestRouteSecretResolverScopesAndFailsClosed(t *testing.T) {
 	var askedOrg, askedName string
 	resolver := RouteSecretResolver{
-		Lookup: func(org, name string) ([]byte, bool, error) {
+		Lookup: func(name string) ([]byte, bool, error) {
 			askedOrg, askedName = org, name
 			if org == "org_a" && name == "openai" {
 				return []byte("tenant-credential"), true, nil

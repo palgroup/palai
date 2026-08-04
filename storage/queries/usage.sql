@@ -15,8 +15,8 @@
 -- failure mode worse than an error. Naming the dedupe unique keeps the replay a no-op while a genuine id
 -- collision (or any unique constraint added later) raises 23505 loudly instead of dropping revenue.
 -- name: SettleUsage
-INSERT INTO usage_ledger (id, organization_id, project_id, session_id, run_id, meter, quantity, unit, dedupe_key, model_request_id)
-VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), $6, $7, $9, $8, nullif($10, ''))
+INSERT INTO usage_ledger (id, project_id, session_id, run_id, meter, quantity, unit, dedupe_key, model_request_id)
+VALUES ($1, $2, nullif($3, ''), nullif($4, ''), $5, $6, $8, $7, nullif($9, ''))
 ON CONFLICT (project_id, dedupe_key) DO NOTHING;
 
 -- ExhaustedBudget returns the caller's first budget whose cumulative settled usage since period_start
@@ -36,8 +36,8 @@ ON CONFLICT (project_id, dedupe_key) DO NOTHING;
 -- and the reason the first ORDER BY key is a boolean.
 --
 -- `ORDER BY meter_prefix` alone was NOT a total ordering, and the tie was not an accident: the schema's
--- own scope model guarantees it. budgets is UNIQUE on (organization_id, project_id, meter_prefix)
--- (000032), so an organization-wide row (project_id = '') and a project row on the SAME meter_prefix are
+-- own scope model guarantees it. budgets is UNIQUE on (project_id, meter_prefix)
+-- (000032, rebuilt by 000065), so an installation-wide row (project_id = '') and a project row on the SAME meter_prefix are
 -- both legal and both live; the WHERE above takes BOTH; the HAVING can exhaust BOTH; and meter_prefix is
 -- EQUAL for the two. `LIMIT 1` then picked one, and nothing here said which. Measured 2026-08-01 on the
 -- pinned postgres 16.14: the plan is Limit -> Sort(meter_prefix) -> GroupAggregate(Group Key: b.id), so
@@ -77,7 +77,7 @@ LIMIT 1;
 --
 -- The ordering is ExhaustedBudget's, for ExhaustedBudget's reasons, and it is restated here rather than
 -- cross-referenced because the two queries had the same defect and a fix applied to one of them leaves
--- half of it shipped: quotas carries the SAME UNIQUE (organization_id, project_id, meter_prefix), the
+-- half of it shipped: quotas carries the SAME UNIQUE (project_id, meter_prefix), the
 -- same WHERE takes both scopes, and `ORDER BY q.meter_prefix` was equally non-total. Narrowest first
 -- (`q.project_id = ''` sorts last), q.id last so the ordering is TOTAL.
 -- name: ExhaustedQuota
@@ -100,8 +100,8 @@ LIMIT 1;
 -- retroactively charge yesterday's. Nothing advances it afterwards, so a budget is a LIFETIME cap in this
 -- phase whose only remediation is a higher limit_quantity (billing-period rollover is E13-H).
 -- name: UpsertBudget
-INSERT INTO budgets (id, organization_id, project_id, meter_prefix, limit_quantity)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO budgets (id, project_id, meter_prefix, limit_quantity)
+VALUES ($1, $2, $3, $4)
 ON CONFLICT (project_id, meter_prefix)
 DO UPDATE SET limit_quantity = EXCLUDED.limit_quantity, updated_at = clock_timestamp()
 RETURNING id, project_id, meter_prefix, limit_quantity, period_start, updated_at;
@@ -117,8 +117,8 @@ ORDER BY project_id, meter_prefix;
 -- UpsertQuota is UpsertBudget for the rolling-window limit; the window itself is restated too, since a
 -- quota's window is part of the limit a caller is setting.
 -- name: UpsertQuota
-INSERT INTO quotas (id, organization_id, project_id, meter_prefix, limit_quantity, window_seconds)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO quotas (id, project_id, meter_prefix, limit_quantity, window_seconds)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (project_id, meter_prefix)
 DO UPDATE SET limit_quantity = EXCLUDED.limit_quantity, window_seconds = EXCLUDED.window_seconds, updated_at = clock_timestamp()
 RETURNING id, project_id, meter_prefix, limit_quantity, window_seconds, updated_at;
@@ -134,7 +134,7 @@ ORDER BY project_id, meter_prefix;
 -- name: UsageTotals
 SELECT meter, unit, sum(quantity), count(*)
 FROM usage_ledger
-WHERE organization_id = $1 AND ($2 = '' OR project_id = $2)
+WHERE ($1 = '' OR project_id = $1)
 GROUP BY meter, unit
 -- ORDER BY (meter, unit), which is the GROUP BY's own key and therefore TOTAL. `ORDER BY meter` alone
 -- was not: nothing constrains a meter to a single unit, so two rows sharing a meter would come back in
@@ -186,16 +186,16 @@ ORDER BY meter, unit;
 -- to emit — a chart drawn from an arbitrary interleaving of meters.
 -- name: UsageSeries
 WITH bounds AS (
-    SELECT date_trunc($3::text, $4::timestamptz, 'UTC') AS series_start,
-           $5::timestamptz                              AS series_end
+    SELECT date_trunc($2::text, $3::timestamptz, 'UTC') AS series_start,
+           $4::timestamptz                              AS series_end
 ),
 agg AS (
-    SELECT date_trunc($3::text, l.occurred_at, 'UTC') AS bucket_start,
+    SELECT date_trunc($2::text, l.occurred_at, 'UTC') AS bucket_start,
            l.meter, l.unit, sum(l.quantity) AS quantity, count(*) AS entries
     FROM usage_ledger l, bounds b
-    WHERE l.organization_id = $1 AND ($2 = '' OR l.project_id = $2)
+    WHERE ($1 = '' OR l.project_id = $1)
       AND l.occurred_at >= b.series_start AND l.occurred_at <= b.series_end
-      AND ($6 = '' OR l.meter = $6)
+      AND ($5 = '' OR l.meter = $5)
     GROUP BY 1, 2, 3
 ),
 present AS (
@@ -204,7 +204,7 @@ present AS (
 SELECT g.bucket_start, p.meter, p.unit,
        coalesce(a.quantity, 0), coalesce(a.entries, 0)
 FROM bounds b
-CROSS JOIN generate_series(b.series_start, b.series_end, ('1 ' || $3::text)::interval) AS g(bucket_start)
+CROSS JOIN generate_series(b.series_start, b.series_end, ('1 ' || $2::text)::interval) AS g(bucket_start)
 CROSS JOIN present p
 LEFT JOIN agg a ON a.bucket_start = g.bucket_start AND a.meter = p.meter AND a.unit = p.unit
 ORDER BY g.bucket_start, p.meter, p.unit;
@@ -220,11 +220,11 @@ ORDER BY g.bucket_start, p.meter, p.unit;
 -- name: ListUsageLedger
 SELECT id, schema_version, project_id, session_id, run_id, meter, quantity, unit, occurred_at, model_request_id
 FROM usage_ledger
-WHERE organization_id = $1 AND ($2 = '' OR project_id = $2)
-  AND ($3::timestamptz IS NULL OR occurred_at >= $3)
-  AND ($4::timestamptz IS NULL OR occurred_at <= $4)
-  AND ($5::timestamptz IS NULL OR (occurred_at, id) < ($5, $6))
-  AND ($8 = '' OR session_id = $8)
-  AND ($9 = '' OR meter = $9)
+WHERE ($1 = '' OR project_id = $1)
+  AND ($2::timestamptz IS NULL OR occurred_at >= $2)
+  AND ($3::timestamptz IS NULL OR occurred_at <= $3)
+  AND ($4::timestamptz IS NULL OR (occurred_at, id) < ($4, $5))
+  AND ($7 = '' OR session_id = $7)
+  AND ($8 = '' OR meter = $8)
 ORDER BY occurred_at DESC, id DESC
-LIMIT $7;
+LIMIT $6;

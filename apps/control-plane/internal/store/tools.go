@@ -9,7 +9,6 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
-	"github.com/palgroup/palai/storage"
 )
 
 // The E12 extensibility management surface (spec §20.2, §28.2-28.4). These methods adapt the tenant-scoped
@@ -29,11 +28,7 @@ func (s *Store) CreateTool(ctx context.Context, scope middleware.Scope, body []b
 	if err := dec.Decode(&req); err != nil {
 		return api.ToolResult{BadField: true}, nil
 	}
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return api.ToolResult{}, err
-	}
-	tool, err := s.tools.CreateTool(ctx, org, scope.Project, req.CanonicalName)
+	tool, err := s.tools.CreateTool(ctx, scope.Project, req.CanonicalName)
 	if res, mapped := toolReject(err); mapped {
 		return res, nil
 	}
@@ -48,11 +43,7 @@ func (s *Store) CreateTool(ctx context.Context, scope middleware.Scope, body []b
 
 // CreateToolRevision creates a draft revision under a tool.
 func (s *Store) CreateToolRevision(ctx context.Context, scope middleware.Scope, toolID string, body []byte) (api.ToolResult, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return api.ToolResult{}, err
-	}
-	rev, err := s.tools.CreateToolRevision(ctx, org, scope.Project, toolID, body)
+	rev, err := s.tools.CreateToolRevision(ctx, scope.Project, toolID, body)
 	if res, mapped := toolReject(err); mapped {
 		return res, nil
 	}
@@ -71,11 +62,7 @@ func (s *Store) CreateToolRevision(ctx context.Context, scope middleware.Scope, 
 // absent body is the shipped bodyless publish and stays bit-unchanged; a malformed one is a 400 rather
 // than a silently ungated publish.
 func (s *Store) PublishToolRevision(ctx context.Context, scope middleware.Scope, revisionID string, body []byte) (api.ToolResult, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return api.ToolResult{}, err
-	}
-	_, exists, err := s.tools.PublishToolRevision(ctx, org, scope.Project, revisionID, body)
+	_, exists, err := s.tools.PublishToolRevision(ctx, scope.Project, revisionID, body)
 	if res, mapped := toolReject(err); mapped {
 		return res, nil
 	}
@@ -84,11 +71,7 @@ func (s *Store) PublishToolRevision(ctx context.Context, scope middleware.Scope,
 
 // CreateToolSetRevision creates a draft set revision pinning exact published revisions.
 func (s *Store) CreateToolSetRevision(ctx context.Context, scope middleware.Scope, setName string, body []byte) (api.ToolResult, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return api.ToolResult{}, err
-	}
-	set, err := s.tools.CreateToolSetRevision(ctx, org, scope.Project, setName, body)
+	set, err := s.tools.CreateToolSetRevision(ctx, scope.Project, setName, body)
 	if res, mapped := toolReject(err); mapped {
 		return res, nil
 	}
@@ -104,21 +87,13 @@ func (s *Store) CreateToolSetRevision(ctx context.Context, scope middleware.Scop
 
 // PublishToolSetRevision publishes a draft set revision (see PublishToolRevision).
 func (s *Store) PublishToolSetRevision(ctx context.Context, scope middleware.Scope, revisionID string) (api.ToolResult, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return api.ToolResult{}, err
-	}
-	_, exists, err := s.tools.PublishToolSetRevision(ctx, org, scope.Project, revisionID)
+	_, exists, err := s.tools.PublishToolSetRevision(ctx, scope.Project, revisionID)
 	return publishToolResult(revisionID, exists, err)
 }
 
 // GetTool reads a tool lineage within scope (spec §28.2, E13 T4). A missing/foreign id is NotFound (404).
 func (s *Store) GetTool(ctx context.Context, scope middleware.Scope, id string) (api.ToolResult, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return api.ToolResult{}, err
-	}
-	it, found, err := s.tools.GetTool(ctx, org, scope.Project, id)
+	it, found, err := s.tools.GetTool(ctx, scope.Project, id)
 	if err != nil {
 		return api.ToolResult{}, err
 	}
@@ -130,11 +105,7 @@ func (s *Store) GetTool(ctx context.Context, scope middleware.Scope, id string) 
 
 // ListTools returns a tenant-scoped page of tool lineages (spec §28.2, E13 T4).
 func (s *Store) ListTools(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return nil, err
-	}
-	items, err := s.tools.ListTools(ctx, org, scope.Project, toExtensionsWindow(q))
+	items, err := s.tools.ListTools(ctx, scope.Project, toExtensionsWindow(q))
 	if err != nil {
 		return nil, err
 	}
@@ -153,14 +124,10 @@ func (s *Store) ListTools(ctx context.Context, scope middleware.Scope, q api.Lis
 // find ids with GET /v1/tools and publish each revision, and no response in this tree carried a revision
 // id — so three of the runbook's five calls rested on one nobody could make.
 func (s *Store) ListToolRevisions(ctx context.Context, scope middleware.Scope, toolID string, q api.ListQuery) ([]api.ListRow, bool, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return nil, false, err
-	}
-	if _, found, err := s.tools.GetTool(ctx, org, scope.Project, toolID); err != nil || !found {
+	if _, found, err := s.tools.GetTool(ctx, scope.Project, toolID); err != nil || !found {
 		return nil, found, err
 	}
-	items, err := s.tools.ListToolRevisions(ctx, org, scope.Project, toolID, toExtensionsWindow(q))
+	items, err := s.tools.ListToolRevisions(ctx, scope.Project, toolID, toExtensionsWindow(q))
 	if err != nil {
 		return nil, false, err
 	}
@@ -198,11 +165,7 @@ func toolRevisionProjection(it extensions.ToolRevisionItem) map[string]any {
 // `/v1/tool-revisions/` prefix until this route existed. A missing/foreign id, or an id belonging to a
 // different lineage, is NotFound (404).
 func (s *Store) GetToolRevision(ctx context.Context, scope middleware.Scope, toolID, revisionID string) (api.ToolResult, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return api.ToolResult{}, err
-	}
-	it, found, err := s.tools.GetToolRevisionOfTool(ctx, org, scope.Project, toolID, revisionID)
+	it, found, err := s.tools.GetToolRevisionOfTool(ctx, scope.Project, toolID, revisionID)
 	if err != nil {
 		return api.ToolResult{}, err
 	}
@@ -215,11 +178,7 @@ func (s *Store) GetToolRevision(ctx context.Context, scope middleware.Scope, too
 // GetToolSetRevision reads one set revision AND ITS PINS (spec §28.4, E25 T7). A missing/foreign id, or an
 // id belonging to a different set, is NotFound (404).
 func (s *Store) GetToolSetRevision(ctx context.Context, scope middleware.Scope, setName, revisionID string) (api.ToolResult, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return api.ToolResult{}, err
-	}
-	it, found, err := s.tools.GetToolSetRevision(ctx, org, scope.Project, setName, revisionID)
+	it, found, err := s.tools.GetToolSetRevision(ctx, scope.Project, setName, revisionID)
 	if err != nil {
 		return api.ToolResult{}, err
 	}
@@ -245,11 +204,7 @@ func (s *Store) GetToolSetRevision(ctx context.Context, scope middleware.Scope, 
 // here used to defer ("add one if a console needs it") is GetToolSetRevision above — E25 T7's console
 // needed it, and the list projection stays as it was: identity and digest, without the pins.
 func (s *Store) ListToolSets(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return nil, err
-	}
-	items, err := s.tools.ListToolSetRevisions(ctx, org, scope.Project, toExtensionsWindow(q))
+	items, err := s.tools.ListToolSetRevisions(ctx, scope.Project, toExtensionsWindow(q))
 	if err != nil {
 		return nil, err
 	}

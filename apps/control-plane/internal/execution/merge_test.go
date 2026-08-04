@@ -44,7 +44,7 @@ func TestMergeChildBranchRecordsConflictOutcome(t *testing.T) {
 	run("commit", "-q", "-m", "parent")
 
 	store := &fakeMergeStore{}
-	tenant := coordinator.Tenant{Organization: "org_x", Project: "prj_x"}
+	tenant := coordinator.Tenant{Project: "prj_x"}
 	res, err := MergeChildBranch(ctx, store, tenant, MergeChildBranchInput{
 		MergeID: "mrg_1", ParentRunID: "run_parent", SourceChildRunID: "run_child",
 		RepoDir: repo, ChildBranch: "agent/ses1/run1",

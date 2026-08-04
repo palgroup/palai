@@ -120,14 +120,14 @@ func WithSkillTLSConfig(c *tls.Config) SkillFetchOption {
 }
 
 // CreateSkill registers a named skill lineage. A name collision is a REJECT (ErrSkillNameCollision).
-func (s *Store) CreateSkill(ctx context.Context, org, project, name string) (Skill, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) CreateSkill(ctx context.Context, project, name string) (Skill, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	name = strings.TrimSpace(name)
 	if err := validateSkillName(name); err != nil {
 		return Skill{}, err
 	}
 	id := newID("skill")
-	if _, err := s.pool.Exec(ctx, storage.Query("InsertSkill"), id, org, project, name); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("InsertSkill"), id, project, name); err != nil {
 		if isUniqueViolation(err) {
 			return Skill{}, ErrSkillNameCollision
 		}
@@ -140,8 +140,8 @@ func (s *Store) CreateSkill(ctx context.Context, org, project, name string) (Ski
 // revision (spec §28.15-28.16). A clean scan lands in 'approved' (cleared to enable); any finding keeps
 // it 'quarantined' (unenablable). It stores the SANITIZED archive + the digest over it, never the raw
 // upload. An unsafe archive (traversal/symlink/special/bomb) is rejected here, before any row is written.
-func (s *Store) InstallSkillRevision(ctx context.Context, org, project, skillID string, archive []byte, sourceURL string) (SkillRevision, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) InstallSkillRevision(ctx context.Context, project, skillID string, archive []byte, sourceURL string) (SkillRevision, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	switch err := s.pool.QueryRow(ctx, storage.Query("SkillExists"), skillID, project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return SkillRevision{}, ErrSkillNotFound
@@ -168,7 +168,7 @@ func (s *Store) InstallSkillRevision(ctx context.Context, org, project, skillID 
 	id := newID("skillrev")
 	var revNumber int
 	if err := s.pool.QueryRow(ctx, storage.Query("InsertSkillRevision"),
-		id, org, project, skillID, q.Digest, state, findingsJSON, metaJSON, q.Sanitized, nullableSource(sourceURL),
+		id, project, skillID, q.Digest, state, findingsJSON, metaJSON, q.Sanitized, nullableSource(sourceURL),
 	).Scan(&revNumber); err != nil {
 		return SkillRevision{}, fmt.Errorf("insert skill revision: %w", err)
 	}
@@ -179,21 +179,21 @@ func (s *Store) InstallSkillRevision(ctx context.Context, org, project, skillID 
 // every redirect re-vetted, NO credential of any kind on the wire) and installs it (spec §28.15). It is
 // an ADMIN action — there is no model-facing install surface. allowPrivate is hard-false: a skill source
 // is a fully-untrusted SSRF primitive, so a private/loopback/metadata target is never reachable.
-func (s *Store) InstallSkillRevisionFromURL(ctx context.Context, org, project, skillID, rawURL string, opts ...SkillFetchOption) (SkillRevision, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) InstallSkillRevisionFromURL(ctx context.Context, project, skillID, rawURL string, opts ...SkillFetchOption) (SkillRevision, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	archive, err := fetchSkillArchive(ctx, rawURL, opts...)
 	if err != nil {
 		return SkillRevision{}, err
 	}
-	return s.InstallSkillRevision(ctx, org, project, skillID, archive, rawURL)
+	return s.InstallSkillRevision(ctx, project, skillID, archive, rawURL)
 }
 
 // EnableSkillRevision transitions an approved revision to enabled. A revision with scan findings is
 // stuck at quarantined and returns ErrScanFindingsBlockEnable; an unknown revision returns exists=false;
 // an already-enabled revision is an idempotent success.
-func (s *Store) EnableSkillRevision(ctx context.Context, org, project, revisionID string) (exists bool, err error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
-	rev, found, err := s.GetSkillRevision(ctx, org, project, revisionID)
+func (s *Store) EnableSkillRevision(ctx context.Context, project, revisionID string) (exists bool, err error) {
+	ctx = storage.ScopeToTenant(ctx, project)
+	rev, found, err := s.GetSkillRevision(ctx, project, revisionID)
 	if err != nil {
 		return false, err
 	}
@@ -217,8 +217,8 @@ func (s *Store) EnableSkillRevision(ctx context.Context, org, project, revisionI
 }
 
 // GetSkillRevision reads a revision's state/digest/findings/metadata.
-func (s *Store) GetSkillRevision(ctx context.Context, org, project, revisionID string) (SkillRevision, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) GetSkillRevision(ctx context.Context, project, revisionID string) (SkillRevision, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	var (
 		skillID, digest, state string
 		revNumber              int
@@ -244,8 +244,8 @@ func (s *Store) GetSkillRevision(ctx context.Context, org, project, revisionID s
 // (spec §28.16): the frozen {name, description, digest, path} a run records at start. An unknown or
 // not-enabled name is a VISIBLE error — the run fails at start rather than silently dropping a skill the
 // agent revision requested. path is the workspace-relative body location the file tool reads on-demand.
-func (s *Store) ResolveEnabledSkills(ctx context.Context, org, project string, names []string) ([]SkillPin, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) ResolveEnabledSkills(ctx context.Context, project string, names []string) ([]SkillPin, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	pins := make([]SkillPin, 0, len(names))
 	for _, name := range names {
 		var digest string
@@ -265,8 +265,8 @@ func (s *Store) ResolveEnabledSkills(ctx context.Context, org, project string, n
 }
 
 // ListSkills lists a project's skill lineages (management GET).
-func (s *Store) ListSkills(ctx context.Context, org, project string) ([]Skill, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) ListSkills(ctx context.Context, project string) ([]Skill, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListSkills"), project)
 	if err != nil {
 		return nil, fmt.Errorf("list skills: %w", err)
@@ -285,8 +285,8 @@ func (s *Store) ListSkills(ctx context.Context, org, project string) ([]Skill, e
 }
 
 // LoadSkillArchive loads the sanitized archive bytes for a digest (workspace materialization).
-func (s *Store) LoadSkillArchive(ctx context.Context, org, project, digest string) ([]byte, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) LoadSkillArchive(ctx context.Context, project, digest string) ([]byte, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	var archive []byte
 	err := s.pool.QueryRow(ctx, storage.Query("LoadSkillArchive"), project, digest).Scan(&archive)
 	if errors.Is(err, pgx.ErrNoRows) {

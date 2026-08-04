@@ -90,7 +90,7 @@ type SessionWorkspace struct {
 // false for a session with no attached binding — the root run then provisions nothing (pre-E09
 // behaviour). It is a by-session read the root run makes at start to learn what to provision.
 func (s *Store) WorkspaceForSession(ctx context.Context, tenant Tenant, sessionID string) (SessionWorkspace, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var ws SessionWorkspace
 	err := s.pool.QueryRow(ctx, storage.Query("WorkspaceForSession"), sessionID, tenant.Project).
 		Scan(&ws.WorkspaceID, &ws.BindingID, &ws.RequestedRef, &ws.State)
@@ -109,7 +109,7 @@ func (s *Store) WorkspaceForSession(ctx context.Context, tenant Tenant, sessionI
 // rejected before any write. It journals no session event (the workspace lifecycle is a projection, not
 // part of the session journal in E09) and takes no outbox row.
 func (s *Store) AdvanceWorkspace(ctx context.Context, tenant Tenant, workspaceID string, command statemachines.WorkspaceCommand) error {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin workspace transition: %w", err)
@@ -141,7 +141,7 @@ func (s *Store) AdvanceWorkspace(ctx context.Context, tenant Tenant, workspaceID
 // The destroy path uses it to distinguish an idempotent retry (already destroying/destroyed) from a live
 // workspace whose physical teardown must be refused.
 func (s *Store) WorkspaceLifecycleState(ctx context.Context, tenant Tenant, workspaceID string) (string, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var state string
 	err := s.pool.QueryRow(ctx, storage.Query("WorkspaceLifecycleState"), workspaceID, tenant.Project).Scan(&state)
 	if err != nil {
@@ -152,13 +152,13 @@ func (s *Store) WorkspaceLifecycleState(ctx context.Context, tenant Tenant, work
 
 // CreateWorkspace opens a logical workspace in the requested binding state (spec §29.7).
 func (s *Store) CreateWorkspace(ctx context.Context, tenant Tenant, in WorkspaceInput) error {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	state := in.State
 	if state == "" {
 		state = "requested"
 	}
 	_, err := s.pool.Exec(ctx, storage.Query("CreateWorkspace"),
-		in.WorkspaceID, tenant.Organization, tenant.Project, in.SessionID, nullableText(in.RunID),
+		in.WorkspaceID, tenant.Project, in.SessionID, nullableText(in.RunID),
 		state, in.UnsafeBind, in.UnsafeHostPath, in.PublicationDisabled)
 	if err != nil {
 		return fmt.Errorf("create workspace: %w", err)
@@ -319,7 +319,7 @@ func (s *Store) ListQuarantinedHosts(ctx context.Context) ([]QuarantinedHost, er
 // false when the workspace has no byte-archived snapshot: the recovery then has no boundary to restore
 // and must fail explicitly rather than resume on an empty tree.
 func (s *Store) LatestRestorableWorkspaceSnapshot(ctx context.Context, tenant Tenant, workspaceID string) (string, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var id string
 	err := s.pool.QueryRow(ctx, storage.Query("LatestRestorableWorkspaceSnapshot"), workspaceID, tenant.Project).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -334,7 +334,7 @@ func (s *Store) LatestRestorableWorkspaceSnapshot(ctx context.Context, tenant Te
 // LoadWorkspaceSnapshot reads a snapshot's byte-archive location + create-side manifest within tenant
 // scope, so a restore fetches the archived bytes and verifies the restored tree (spec §29.10, SAN-005).
 func (s *Store) LoadWorkspaceSnapshot(ctx context.Context, tenant Tenant, snapshotID string) (WorkspaceSnapshotRecord, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var rec WorkspaceSnapshotRecord
 	err := s.pool.QueryRow(ctx, storage.Query("LoadWorkspaceSnapshot"), snapshotID, tenant.Project).
 		Scan(&rec.WorkspaceID, &rec.ObjectKey, &rec.ArchiveChecksum, &rec.SizeBytes,

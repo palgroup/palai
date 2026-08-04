@@ -297,7 +297,7 @@ type ConnectionInspector interface {
 // broker's own resolver has and it is given the same value in production (the T3 secret store, org-scoped),
 // so the probe checks the bytes a run would actually send — a probe that read the credential by any other
 // path would be verifying something other than what ships.
-type ConnectionSecretResolver func(org, ref string) ([]byte, bool, error)
+type ConnectionSecretResolver func(ref string) ([]byte, bool, error)
 
 // WithModelConnectionInspectors wires the verify action and the models list. A store built WITHOUT it
 // still serves every other model-routing route and answers both honestly — "nothing is wired on this
@@ -371,7 +371,7 @@ func (s *Store) inspectorFor(tenant coordinator.Tenant, rec coordinator.ModelCon
 	if !ok || s.connectionSecrets == nil {
 		return nil, nil, "this deployment wires no " + what + " for the " + rec.Provider + " family, so NOTHING was " + verb
 	}
-	value, found, err := s.connectionSecrets(tenant.Organization, rec.SecretRef)
+	value, found, err := s.connectionSecrets(rec.SecretRef)
 	if err != nil || !found {
 		// The two causes are named together for the reason the broker's own resolver names them: an operator
 		// hunting a missing ref during a store outage looks in the wrong place for a long time.

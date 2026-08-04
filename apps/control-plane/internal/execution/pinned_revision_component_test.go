@@ -40,7 +40,7 @@ func openPinnedSpine(t *testing.T) (*coordinator.Store, coordinator.Tenant, func
 	if err := cs.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
-	tenant := coordinator.Tenant{Organization: pinnedID("org"), Project: pinnedID("prj")}
+	tenant := coordinator.Tenant{Project: pinnedID("prj")}
 	pool := cs.Pool()
 	exec := func(sql string, args ...any) {
 		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
@@ -64,16 +64,16 @@ func TestPinnedRevisionFlowsIntoConfigChangeSnapshot(t *testing.T) {
 	// A pinned run whose revision declares a tool ceiling of {file}; the project baseline also offers
 	// {web}. The session never overrode tools, so only the revision layer can cap them.
 	sessionID := pinnedID("ses")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
 	exec(`UPDATE projects SET config_policy = '{"default_tools":["file","web"]}' WHERE id=$1 AND organization_id=$2`, tenant.Project, tenant.Organization)
 	profileID, revID, runID := pinnedID("aprof"), pinnedID("arev"), pinnedID("run")
 	exec(`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`,
-		profileID, tenant.Organization, tenant.Project)
+		profileID, tenant.Project)
 	exec(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, published_at)
 	      VALUES ($1,$2,$3,$4,1,'model-pinned','["file"]', clock_timestamp())`,
-		revID, tenant.Organization, tenant.Project, profileID)
+		revID, tenant.Project, profileID)
 	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,'running',$5)`,
-		runID, tenant.Organization, tenant.Project, sessionID, revID)
+		runID, tenant.Project, sessionID, revID)
 
 	orch := &Orchestrator{spine: cs, route: ModelRoute{Model: "deployment-default", Secret: "model"}}
 	st := &attemptState{
@@ -124,16 +124,16 @@ func TestPinnedRevisionCeilingBoundsChildDelegation(t *testing.T) {
 	ctx := context.Background()
 
 	sessionID := pinnedID("ses")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
 	exec(`UPDATE projects SET config_policy = '{"default_tools":["file","shell"]}' WHERE id=$1 AND organization_id=$2`, tenant.Project, tenant.Organization)
 	profileID, revID, runID := pinnedID("aprof"), pinnedID("arev"), pinnedID("run")
 	exec(`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`,
-		profileID, tenant.Organization, tenant.Project)
+		profileID, tenant.Project)
 	exec(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, published_at)
 	      VALUES ($1,$2,$3,$4,1,'model-pinned','["file"]', clock_timestamp())`,
-		revID, tenant.Organization, tenant.Project, profileID)
+		revID, tenant.Project, profileID)
 	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,'running',$5)`,
-		runID, tenant.Organization, tenant.Project, sessionID, revID)
+		runID, tenant.Project, sessionID, revID)
 
 	orch := &Orchestrator{spine: cs, route: ModelRoute{Model: "deployment-default", Secret: "model"}}
 	st := &attemptState{
@@ -181,7 +181,7 @@ func TestPinnedRevisionConfigHashReflectsRevision(t *testing.T) {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 	pool := cs.Pool()
-	tenant := coordinator.Tenant{Organization: pinnedID("org"), Project: pinnedID("prj")}
+	tenant := coordinator.Tenant{Project: pinnedID("prj")}
 	sessionID := pinnedID("ses")
 	exec := func(sql string, args ...any) {
 		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
@@ -190,23 +190,23 @@ func TestPinnedRevisionConfigHashReflectsRevision(t *testing.T) {
 	}
 	exec(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Project)
 
 	// A published revision that pins a distinctive model, and a run pinned to it.
 	profileID, revID, pinnedRun := pinnedID("aprof"), pinnedID("arev"), pinnedID("run")
 	exec(`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`,
-		profileID, tenant.Organization, tenant.Project)
+		profileID, tenant.Project)
 	exec(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, published_at)
 	      VALUES ($1,$2,$3,$4,1,'model-pinned-v1', clock_timestamp())`,
-		revID, tenant.Organization, tenant.Project, profileID)
+		revID, tenant.Project, profileID)
 	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,'running',$5)`,
-		pinnedRun, tenant.Organization, tenant.Project, sessionID, revID)
+		pinnedRun, tenant.Project, sessionID, revID)
 
 	// A profile-free run in a separate session (one-active-root is per session).
 	freeSession, freeRun := pinnedID("ses"), pinnedID("run")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, freeSession, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, freeSession, tenant.Project)
 	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'running')`,
-		freeRun, tenant.Organization, tenant.Project, freeSession)
+		freeRun, tenant.Project, freeSession)
 
 	// The orchestrator with a deployment route whose model differs from the revision's, so a change in
 	// the hash can only come from the pinned revision layer.
@@ -235,7 +235,7 @@ func TestPinnedRevisionConfigHashReflectsRevision(t *testing.T) {
 	newRevID := pinnedID("arev")
 	exec(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, published_at)
 	      VALUES ($1,$2,$3,$4,2,'model-pinned-v2', clock_timestamp())`,
-		newRevID, tenant.Organization, tenant.Project, profileID)
+		newRevID, tenant.Project, profileID)
 	if again := hashFor(pinnedRun, sessionID); again != pinnedHash {
 		t.Fatalf("old run's config hash changed after a later revision was published: %q -> %q (pin must be immutable)", pinnedHash, again)
 	}

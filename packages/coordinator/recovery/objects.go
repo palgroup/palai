@@ -77,7 +77,7 @@ type PersistInput struct {
 // invariants the control plane relies on: a checksum is present, the size is bounded, and the id is
 // written at most once (immutability).
 func (o *Objects) Persist(ctx context.Context, in PersistInput) error {
-	ctx = storage.ScopeToTenant(ctx, in.Organization, in.Project)
+	ctx = storage.ScopeToTenant(ctx, in.Project)
 	if in.ContentChecksum == "" {
 		return ErrChecksumRequired
 	}
@@ -92,7 +92,7 @@ func (o *Objects) Persist(ctx context.Context, in PersistInput) error {
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	if _, err := tx.Exec(ctx, storage.Query("InsertTranscriptBoundary"),
-		in.BoundaryID, in.RunID, in.AttemptID, in.Organization, in.Project, in.TranscriptSequence); err != nil {
+		in.BoundaryID, in.RunID, in.AttemptID, in.Project, in.TranscriptSequence); err != nil {
 		return fmt.Errorf("insert transcript boundary: %w", err)
 	}
 
@@ -101,7 +101,7 @@ func (o *Objects) Persist(ctx context.Context, in PersistInput) error {
 		pendingOps = []byte("[]") // never null: a RESTORE reads a well-formed array
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertCheckpoint"),
-		in.CheckpointID, in.RunID, in.AttemptID, in.BoundaryID, in.Organization, in.Project,
+		in.CheckpointID, in.RunID, in.AttemptID, in.BoundaryID, in.Project,
 		in.EngineDigest, in.EngineVersion, in.ProtocolVersion, in.Format, in.FormatVersion,
 		in.ConfigSnapshotHash, in.TranscriptSequence, nullableText(in.WorkspaceSnapshotID),
 		in.ContentChecksum, in.ObjectKey, in.SizeBytes, pendingOps); err != nil {

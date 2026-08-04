@@ -29,7 +29,7 @@ import (
 // (a raw UPDATE), because a raw UPDATE never runs the transaction this whole feature hangs off.
 func (f *slackFixture) terminate(t *testing.T, runID string, commands ...statemachines.RunCommand) {
 	t.Helper()
-	tenant := coordinator.Tenant{Organization: f.org, Project: f.project}
+	tenant := coordinator.Tenant{Project: f.project}
 	for _, cmd := range commands {
 		if _, err := f.spine.ApplyRunTransition(context.Background(), tenant, runID, cmd); err != nil {
 			t.Fatalf("apply %s to run %s: %v", cmd, runID, err)
@@ -53,7 +53,7 @@ func (f *slackFixture) finalizeWith(t *testing.T, responseID, state string, proj
 	t.Helper()
 	raw, _ := json.Marshal(projection)
 	if err := f.spine.FinalizeResponse(context.Background(),
-		coordinator.Tenant{Organization: f.org, Project: f.project}, responseID, state, raw); err != nil {
+		coordinator.Tenant{Project: f.project}, responseID, state, raw); err != nil {
 		t.Fatalf("finalize response: %v", err)
 	}
 }
@@ -146,7 +146,7 @@ func TestSlackTerminalRunAnswersInItsThreadExactlyOnce(t *testing.T) {
 	}
 	// A re-driven terminal transition (a reconciled cancel arriving on an already-terminal run) must not
 	// enqueue a second order. ErrRunTerminal is the expected refusal; what matters is the row count.
-	_, _ = f.spine.ApplyRunTransition(ctx, coordinator.Tenant{Organization: f.org, Project: f.project},
+	_, _ = f.spine.ApplyRunTransition(ctx, coordinator.Tenant{Project: f.project},
 		runID, statemachines.RunCmdCancel)
 	if _, err := pump.Tick(ctx); err != nil {
 		t.Fatalf("tick after a re-driven terminal: %v", err)

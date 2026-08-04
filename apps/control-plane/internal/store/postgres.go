@@ -89,13 +89,6 @@ func (s *Store) VerifyAPIKey(ctx context.Context, token string) (middleware.Scop
 	}, nil
 }
 
-// ResolveOrganization resolves the organization a project belongs to (A.2 Task 3): the api.Admitter seam
-// the create handler uses to render organization_id on the synchronous "queued" projection it persists as
-// a new response's initial body, now that middleware.Scope no longer carries one itself.
-func (s *Store) ResolveOrganization(ctx context.Context, project string) (string, error) {
-	return storage.OrganizationForProject(ctx, s.spine.Pool(), project)
-}
-
 // AdmitResponse runs the idempotent admission transaction within the request's
 // verified scope. The Location id is read back from the returned body so a replay
 // points at the original resource, not a freshly minted one.
@@ -243,15 +236,14 @@ func (s *Store) ListResponses(ctx context.Context, scope middleware.Scope, q api
 	rows := make([]api.ListRow, 0, len(items))
 	for _, it := range items {
 		body, err := json.Marshal(contracts.Response{
-			ID:             contracts.ResponseID(it.ID),
-			Object:         "response",
-			Status:         it.State,
-			CreatedAt:      it.CreatedAt.UTC().Format(time.RFC3339Nano),
-			Output:         []contracts.ContentItem{},
-			Usage:          contracts.Usage{},
-			SessionID:      contracts.SessionID(it.SessionID),
-			OrganizationID: contracts.OrganizationID(tenant.Organization),
-			ProjectID:      contracts.ProjectID(tenant.Project),
+			ID:        contracts.ResponseID(it.ID),
+			Object:    "response",
+			Status:    it.State,
+			CreatedAt: it.CreatedAt.UTC().Format(time.RFC3339Nano),
+			Output:    []contracts.ContentItem{},
+			Usage:     contracts.Usage{},
+			SessionID: contracts.SessionID(it.SessionID),
+			ProjectID: contracts.ProjectID(tenant.Project),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("marshal response list row: %w", err)
@@ -632,17 +624,16 @@ func (s *Store) AcceptCommand(ctx context.Context, scope middleware.Scope, sessi
 // with them.
 func marshalSession(tenant coordinator.Tenant, view coordinator.SessionView) ([]byte, error) {
 	out := contracts.Session{
-		ID:             contracts.SessionID(view.ID),
-		Object:         "session",
-		Status:         view.State,
-		CreatedAt:      view.CreatedAt.UTC().Format(time.RFC3339Nano),
-		OrganizationID: contracts.OrganizationID(tenant.Organization),
-		ProjectID:      contracts.ProjectID(tenant.Project),
-		Name:           view.Name,
-		NameSource:     view.NameSource,
-		Agents:         view.Agents,
-		InputTokens:    int(view.InputTokens),
-		OutputTokens:   int(view.OutputTokens),
+		ID:           contracts.SessionID(view.ID),
+		Object:       "session",
+		Status:       view.State,
+		CreatedAt:    view.CreatedAt.UTC().Format(time.RFC3339Nano),
+		ProjectID:    contracts.ProjectID(tenant.Project),
+		Name:         view.Name,
+		NameSource:   view.NameSource,
+		Agents:       view.Agents,
+		InputTokens:  int(view.InputTokens),
+		OutputTokens: int(view.OutputTokens),
 		// THE STANDING AUTHORIZATION ON THE WIRE (E30 T1). Both halves, separately, because they are
 		// separate decisions — a screen that folded them into one badge would be telling an operator
 		// something false about the publication half. SetBy rides along because "auto-approved" and
@@ -697,16 +688,11 @@ func marshalCommand(cmd coordinator.Command) ([]byte, error) {
 }
 
 // tenantOf projects a verified scope onto the coordinator tenant key. Organization is resolved fresh from
-// Project (A.2 Task 3): middleware.Scope no longer carries one, but coordinator.Tenant still does (Task 3b
-// removes that field) and the durable spine's own tables still hold a NOT NULL organization_id column
-// (Task 4 drops it) — so this is the one place Store still needs a real value, looked up the same way
-// storage.OrganizationForProject documents.
-func (s *Store) tenantOf(ctx context.Context, scope middleware.Scope) (coordinator.Tenant, error) {
-	organization, err := storage.OrganizationForProject(ctx, s.spine.Pool(), scope.Project)
-	if err != nil {
-		return coordinator.Tenant{}, fmt.Errorf("resolve organization for project: %w", err)
-	}
-	return coordinator.Tenant{Organization: organization, Project: scope.Project}, nil
+// A.2 Task 6 emptied it: coordinator.Tenant is now the project alone, so this is a rename of one field
+// and cannot fail. It is kept as a function rather than inlined because every caller checks its error and
+// a coordinator.Tenant is what the spine's signatures take — a later tenant key would land here.
+func (s *Store) tenantOf(_ context.Context, scope middleware.Scope) (coordinator.Tenant, error) {
+	return coordinator.Tenant{Project: scope.Project}, nil
 }
 
 // PurgeExpiredStoreFalse runs one retention sweep over the durable spine, reaping the
@@ -722,43 +708,27 @@ func (s *Store) PurgeExpiredStoreFalse(ctx context.Context, ttl time.Duration) (
 //
 // No organization parameter (A.2 Task 3): resolved fresh from project, same as tenantOf.
 func (s *Store) SessionExists(ctx context.Context, project, sessionID string) (bool, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), project)
-	if err != nil {
-		return false, fmt.Errorf("resolve organization for project: %w", err)
-	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
-	return s.journal.SessionExists(ctx, org, project, sessionID)
+	ctx = storage.ScopeToTenant(ctx, project)
+	return s.journal.SessionExists(ctx, project, sessionID)
 }
 
 // ResolveCursor maps a Last-Event-ID to its per-session sequence within scope.
 func (s *Store) ResolveCursor(ctx context.Context, project, sessionID, eventID string) (int64, bool, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), project)
-	if err != nil {
-		return 0, false, fmt.Errorf("resolve organization for project: %w", err)
-	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
-	return s.journal.ResolveCursor(ctx, org, project, sessionID, eventID)
+	ctx = storage.ScopeToTenant(ctx, project)
+	return s.journal.ResolveCursor(ctx, project, sessionID, eventID)
 }
 
 // After returns up to limit tenant-scoped events with sequence greater than
 // afterSeq, in ascending order, as CloudEvents envelopes.
 func (s *Store) After(ctx context.Context, project, sessionID string, afterSeq int64, limit int) ([]contracts.Event, error) {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), project)
-	if err != nil {
-		return nil, fmt.Errorf("resolve organization for project: %w", err)
-	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
-	return s.journal.After(ctx, org, project, sessionID, afterSeq, limit)
+	ctx = storage.ScopeToTenant(ctx, project)
+	return s.journal.After(ctx, project, sessionID, afterSeq, limit)
 }
 
 // RecordAttachDenied records a content-free audit denial for an out-of-scope attach.
 func (s *Store) RecordAttachDenied(ctx context.Context, project, principal, sessionID string) error {
-	org, err := storage.OrganizationForProject(ctx, s.spine.Pool(), project)
-	if err != nil {
-		return fmt.Errorf("resolve organization for project: %w", err)
-	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
-	return s.journal.RecordAttachDenied(ctx, org, project, principal, sessionID)
+	ctx = storage.ScopeToTenant(ctx, project)
+	return s.journal.RecordAttachDenied(ctx, project, principal, sessionID)
 }
 
 // responseID reads the response id from a stored/created response body so both the

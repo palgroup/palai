@@ -8,7 +8,6 @@ export type FrameId = string;
 export type MessageId = string;
 export type ModelRequestId = string;
 export type OpaqueId = string;
-export type OrganizationId = string;
 export type ProjectId = string;
 export type RepositoryBindingId = string;
 export type RequestId = string;
@@ -26,7 +25,6 @@ export const frameIdPattern = /^frm_[A-Za-z0-9_-]+$/;
 export const messageIdPattern = /^msg_[A-Za-z0-9_-]+$/;
 export const modelRequestIdPattern = /^mreq_[A-Za-z0-9_-]+$/;
 export const opaqueIdPattern = /^[a-z][a-z0-9]{1,11}_[A-Za-z0-9_-]+$/;
-export const organizationIdPattern = /^org_[A-Za-z0-9_-]+$/;
 export const projectIdPattern = /^prj_[A-Za-z0-9_-]+$/;
 export const repositoryBindingIdPattern = /^repo_[A-Za-z0-9_-]+$/;
 export const requestIdPattern = /^req_[A-Za-z0-9_-]+$/;
@@ -59,9 +57,6 @@ export function isModelRequestId(value: string): boolean {
 }
 export function isOpaqueId(value: string): boolean {
   return opaqueIdPattern.test(value);
-}
-export function isOrganizationId(value: string): boolean {
-  return organizationIdPattern.test(value);
 }
 export function isProjectId(value: string): boolean {
   return projectIdPattern.test(value);

@@ -90,7 +90,7 @@ LEFT JOIN LATERAL (
                     )
                 END, 400) AS derived_name
     FROM responses r
-    WHERE r.session_id = s.id AND r.project_id = $3
+    WHERE r.session_id = s.id AND r.project_id = $2
       AND r.retracted_at IS NULL
     ORDER BY r.created_at, r.id
     LIMIT 1
@@ -103,15 +103,15 @@ LEFT JOIN LATERAL (
     FROM runs rn
     LEFT JOIN agent_revisions ar ON ar.id = rn.agent_revision_id
     LEFT JOIN agent_profiles ap ON ap.id = ar.profile_id
-    WHERE rn.session_id = s.id AND rn.project_id = $3
+    WHERE rn.session_id = s.id AND rn.project_id = $2
 ) agg ON TRUE
 LEFT JOIN LATERAL (
     SELECT COALESCE(sum(l.quantity) FILTER (WHERE l.meter = 'model.input_tokens'), 0)  AS input_tokens,
            COALESCE(sum(l.quantity) FILTER (WHERE l.meter = 'model.output_tokens'), 0) AS output_tokens
     FROM usage_ledger l
-    WHERE l.session_id = s.id AND l.organization_id = $2 AND l.project_id = $3
+    WHERE l.session_id = s.id AND l.project_id = $2
 ) tok ON TRUE
-WHERE s.id = $1 AND s.project_id = $3;
+WHERE s.id = $1 AND s.project_id = $2;
 
 -- ListSessions pages a project's sessions newest-first (spec §9.1, E13 T4). Tenant-scoped by RLS;
 -- the org/project predicate is defence-in-depth. Same keyset/filter shape as ListResponses: $3
@@ -144,13 +144,13 @@ WITH page AS (
     SELECT id, state, created_at, name,
            auto_approve_tools, auto_approve_publications, auto_approve_set_by, auto_approve_set_at
     FROM sessions
-    WHERE project_id = $2
-      AND ($3 = '' OR state = $3)
-      AND ($4::timestamptz IS NULL OR created_at >= $4)
-      AND ($5::timestamptz IS NULL OR created_at <= $5)
-      AND ($6::timestamptz IS NULL OR (created_at, id) < ($6, $7))
+    WHERE project_id = $1
+      AND ($2 = '' OR state = $2)
+      AND ($3::timestamptz IS NULL OR created_at >= $3)
+      AND ($4::timestamptz IS NULL OR created_at <= $4)
+      AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
     ORDER BY created_at DESC, id DESC
-    LIMIT $8
+    LIMIT $7
 )
 SELECT p.id, p.state, p.created_at, p.name,
        p.auto_approve_tools, p.auto_approve_publications, p.auto_approve_set_by, p.auto_approve_set_at,
@@ -173,7 +173,7 @@ LEFT JOIN LATERAL (
                     )
                 END, 400) AS derived_name
     FROM responses r
-    WHERE r.session_id = p.id AND r.project_id = $2
+    WHERE r.session_id = p.id AND r.project_id = $1
       AND r.retracted_at IS NULL
     ORDER BY r.created_at, r.id
     LIMIT 1
@@ -186,13 +186,13 @@ LEFT JOIN LATERAL (
     FROM runs rn
     LEFT JOIN agent_revisions ar ON ar.id = rn.agent_revision_id
     LEFT JOIN agent_profiles ap ON ap.id = ar.profile_id
-    WHERE rn.session_id = p.id AND rn.project_id = $2
+    WHERE rn.session_id = p.id AND rn.project_id = $1
 ) agg ON TRUE
 LEFT JOIN LATERAL (
     SELECT COALESCE(sum(l.quantity) FILTER (WHERE l.meter = 'model.input_tokens'), 0)  AS input_tokens,
            COALESCE(sum(l.quantity) FILTER (WHERE l.meter = 'model.output_tokens'), 0) AS output_tokens
     FROM usage_ledger l
-    WHERE l.session_id = p.id AND l.organization_id = $1 AND l.project_id = $2
+    WHERE l.session_id = p.id AND l.project_id = $1
 ) tok ON TRUE
 ORDER BY p.created_at DESC, p.id DESC;
 

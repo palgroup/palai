@@ -18,7 +18,7 @@ func (h *harness) sessionState(sessionID string) string {
 	var state string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT state FROM sessions WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		sessionID, h.tenant.Organization, h.tenant.Project).Scan(&state); err != nil {
+		sessionID, h.tenant.Project).Scan(&state); err != nil {
 		h.t.Fatalf("read session state %s error = %v", sessionID, err)
 	}
 	return state
@@ -28,7 +28,7 @@ func (h *harness) sessionState(sessionID string) string {
 func (h *harness) responseCount(sessionID string) int {
 	h.t.Helper()
 	return h.count(`SELECT count(*) FROM responses WHERE session_id=$1 AND organization_id=$2 AND project_id=$3`,
-		sessionID, h.tenant.Organization, h.tenant.Project)
+		sessionID, h.tenant.Project)
 }
 
 // TestClosedSessionRejectsNewWork proves the close_session lifecycle exit (spec §22.1, SES-012):
@@ -109,7 +109,7 @@ func (h *harness) awaitRunState(runID, want string, within time.Duration) {
 func (h *harness) responseRunJobCount(runID string) int {
 	h.t.Helper()
 	return h.count(`SELECT count(*) FROM durable_jobs WHERE payload->>'run_id'=$1 AND kind='response.run' AND organization_id=$2 AND project_id=$3`,
-		runID, h.tenant.Organization, h.tenant.Project)
+		runID, h.tenant.Project)
 }
 
 // TestPauseReleasesComputeResumeSameRunNewAttempt proves the pause/resume lifecycle (SES-009,

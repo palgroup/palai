@@ -37,7 +37,7 @@ import (
 )
 
 // Store provisions tenants over one shared pool. Each method scopes itself by the verified identity passed
-// in (org creation under the system scope), so no tenant state leaks between requests.
+// in (tenant creation under the system scope), so no tenant state leaks between requests.
 type Store struct {
 	pool *pgxpool.Pool
 }
@@ -45,21 +45,19 @@ type Store struct {
 // New builds a provisioning store over the durable spine's pool.
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
-// The fixed identity bootstrap seeds as the first organization. Stable so a re-boot against a retained
-// volume is a no-op (ProvisionFirstOrg is guarded by the caller's api_keys count and every insert is
+// The fixed identity bootstrap seeds as the first tenant. Stable so a re-boot against a retained
+// volume is a no-op (ProvisionFirstTenant is guarded by the caller's api_keys count and every insert is
 // ON CONFLICT DO NOTHING). A SECOND tenant never reuses these — it is minted with fresh ids over the API.
 const (
-	firstOrg       = "org_local"
 	firstProject   = "prj_local"
 	firstPrincipal = "prin_local"
 	firstKey       = "key_local"
 )
 
-// tenantSeed is the five rows a provisioned organization is born with: the organization, its default
-// project, a service principal, an admin API key (stored as a hash — the bearer value never persists),
-// and its default runner pool.
+// tenantSeed is the four rows a provisioned tenant is born with: its project, a service principal, an
+// admin API key (stored as a hash — the bearer value never persists), and its default runner pool. It
+// carried an organization above those four until A.2 Task 6 dropped the table.
 type tenantSeed struct {
-	orgID, orgName         string
 	projectID, projectName string
 	principalID            string
 	keyID, keyHash         string
@@ -69,13 +67,13 @@ type tenantSeed struct {
 	// a pool, so a tenant with none is a tenant whose runner cannot enroll — which is why this is
 	// seeded here, in the transaction that makes the tenant exist, rather than lazily on first
 	// enrollment. Migration 000045 seeds the same row for an installation UPGRADING from 000044; it
-	// cannot serve a FRESH stack, because migrations run before this bootstrap and there is no
-	// organization to reference yet. Two populations, two statements, one ON CONFLICT DO NOTHING each.
+	// cannot serve a FRESH stack, because migrations run before this bootstrap and there is no project
+	// to reference yet. Two populations, two statements, one ON CONFLICT DO NOTHING each.
 	poolID string
 }
 
 // systemTx runs body in one system-scoped transaction and commits it. Tenant creation must run under the
-// system scope: no palai.org_id/palai.project_id exists yet for the tenant being born, so the RLS policies
+// system scope: no palai.project_id exists yet for the tenant being born, so the RLS policies
 // would otherwise deny every insert. The commit is HERE rather than in each caller because a helper that
 // returns before committing discards the write while every error check still reads as success.
 func (s *Store) systemTx(ctx context.Context, body func(context.Context, pgx.Tx) error) error {
@@ -97,48 +95,38 @@ func (s *Store) systemTx(ctx context.Context, body func(context.Context, pgx.Tx)
 // seedTenant inserts the four rows a tenant is born with: its project, a service principal, an admin API
 // key (hash only — the bearer value never persists), and its default runner pool. Every statement is
 // ON CONFLICT DO NOTHING, so a re-run against an already-seeded id is a clean no-op (the bootstrap re-boot
-// path). The two creation paths differ in exactly one row above these four — the organization — so they
-// share this body rather than each carrying its own copy of the four.
+// path). Both creation paths — the bootstrap and POST /v1/projects — are now exactly these four rows.
 func seedTenant(ctx context.Context, tx pgx.Tx, seed tenantSeed) error {
-	if _, err := tx.Exec(ctx, storage.Query("InsertProject"), seed.projectID, seed.orgID, seed.projectName); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("InsertProject"), seed.projectID, seed.projectName); err != nil {
 		return fmt.Errorf("insert project: %w", err)
 	}
-	if _, err := tx.Exec(ctx, storage.Query("InsertPrincipal"), seed.principalID, seed.orgID, seed.projectID, "service"); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("InsertPrincipal"), seed.principalID, seed.projectID, "service"); err != nil {
 		return fmt.Errorf("insert principal: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertAPIKey"),
-		seed.keyID, seed.orgID, seed.projectID, seed.principalID, seed.keyHash, seed.scopes, seed.expiresAt); err != nil {
+		seed.keyID, seed.projectID, seed.principalID, seed.keyHash, seed.scopes, seed.expiresAt); err != nil {
 		return fmt.Errorf("insert api key: %w", err)
 	}
 	// The default runner pool. posture 'sandboxed-linux' and strict_enrollment false are today's
 	// deployment stated as data: a new tenant behaves exactly as every tenant does now.
 	if _, err := tx.Exec(ctx, storage.Query("InsertDefaultRunnerPool"),
-		seed.poolID, seed.orgID, seed.projectID); err != nil {
+		seed.poolID, seed.projectID); err != nil {
 		return fmt.Errorf("insert default runner pool: %w", err)
 	}
 	return nil
 }
 
-// provision opens an organization and the tenant seeded beneath it, in one system-scoped transaction.
-func (s *Store) provision(ctx context.Context, seed tenantSeed) error {
-	return s.systemTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, storage.Query("InsertOrganization"), seed.orgID, seed.orgName); err != nil {
-			return fmt.Errorf("insert organization: %w", err)
-		}
-		return seedTenant(ctx, tx, seed)
-	})
-}
-
-// provisionProject opens a tenant inside an organization that already exists — the same four rows, without
-// the organization above them. It is what POST /v1/projects runs.
-func (s *Store) provisionProject(ctx context.Context, seed tenantSeed) error {
+// provisionTenant opens a tenant in one system-scoped transaction. It is what both the bootstrap and
+// POST /v1/projects run; until A.2 Task 6 the bootstrap ran a longer path that also inserted an
+// organization above these four rows.
+func (s *Store) provisionTenant(ctx context.Context, seed tenantSeed) error {
 	return s.systemTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		return seedTenant(ctx, tx, seed)
 	})
 }
 
-// ProvisionFirstOrg seeds the single bootstrap organization and its admin key from bootstrapKey, reusing
-// the same tenant-creation path the API uses for every later organization. Only the key's hash is stored.
+// ProvisionFirstTenant seeds the single bootstrap tenant and its admin key from bootstrapKey, reusing
+// the same tenant-creation path the API uses for every later tenant. Only the key's hash is stored.
 // The caller (store.Bootstrap) guards this with an api_keys-empty check, so it runs once per fresh stack.
 //
 // THE SCOPES ARE NO LONGER EMPTY (Faz A.1 Task 3). Before this task an empty set was the whole story: this
@@ -157,11 +145,10 @@ func (s *Store) provisionProject(ctx context.Context, seed tenantSeed) error {
 // scope list instead of relying on the empty-set idiom, so it keeps exactly the access it had before
 // (`provision`, `approve` — the only two ordinary capabilities anything in this tree gates on; see
 // api/provisioning.go's provisionScope and api/approvals.go's approveScope) and gains `system` alongside
-// them. Every OTHER tenant's admin key (CreateOrganization, below) keeps the empty set: only the operator's
+// them. Every OTHER tenant's admin key (CreateProject, below) keeps the empty set: only the operator's
 // own key needs to be both a tenant admin AND the platform.
-func (s *Store) ProvisionFirstOrg(ctx context.Context, bootstrapKey string) error {
-	return s.provision(ctx, tenantSeed{
-		orgID:       firstOrg,
+func (s *Store) ProvisionFirstTenant(ctx context.Context, bootstrapKey string) error {
+	return s.provisionTenant(ctx, tenantSeed{
 		projectID:   firstProject,
 		principalID: firstPrincipal,
 		keyID:       firstKey,
@@ -179,7 +166,7 @@ func (s *Store) ProvisionFirstOrg(ctx context.Context, bootstrapKey string) erro
 // and the split is the same one authorizeSystem already draws at the route.
 //
 // It replaces orgScope, and the replacement is forced rather than chosen. Until A.2 Task 6 this widened to
-// storage.WithOrgScope — organization set, project empty — which worked because api_keys, principals and
+// an organization-only scope — organization set, project empty — which worked because api_keys, principals and
 // projects were the three tables 000062 deliberately left keyed on organization_id. Migration 000066 rekeys
 // all three to project, and under that rule an empty project GUC matches only rows whose own project_id is
 // ” — which no api_keys row ever has. Widening by leaving the project blank stops meaning "the whole
@@ -190,98 +177,11 @@ func (s *Store) ProvisionFirstOrg(ctx context.Context, bootstrapKey string) erro
 // what opens them. A key WITHOUT it is a tenant admin, and after this task a tenant IS a project — it
 // lists, mints and revokes within its own, and another project's key is invisible rather than forbidden,
 // which is the answer that discloses nothing.
-//
-// The organization is still resolved, and only for as long as the `organizations` table outlives this
-// call: its own policy compares palai.org_id, and ListOrganizations/GetOrganization still read it.
-func provisioningScope(ctx context.Context, pool *pgxpool.Pool, scope middleware.Scope) (context.Context, string, error) {
-	organization, err := storage.OrganizationForProject(ctx, pool, scope.Project)
-	if err != nil {
-		return ctx, "", fmt.Errorf("resolve organization for project: %w", err)
-	}
+func provisioningScope(ctx context.Context, scope middleware.Scope) context.Context {
 	if scope.HasSystem() {
-		return storage.WithSystemScope(ctx), organization, nil
+		return storage.WithSystemScope(ctx)
 	}
-	return storage.WithTenant(ctx, organization, scope.Project), organization, nil
-}
-
-// CreateOrganization opens a NEW tenant: an organization, its default project, a service principal, and a
-// full-capability admin API key whose plaintext is returned exactly once. This is the sole cross-tenant
-// provisioning operation (system-scoped) — the API path bootstrap generalizes.
-func (s *Store) CreateOrganization(ctx context.Context, _ middleware.Scope, body []byte) (api.ProvisionResult, error) {
-	var in struct {
-		DisplayName string `json:"display_name"`
-	}
-	if err := strictDecode(body, &in); err != nil {
-		return api.ProvisionResult{BadField: true}, nil
-	}
-	seed := tenantSeed{
-		orgID:       middleware.NewID("org"),
-		orgName:     in.DisplayName,
-		projectID:   middleware.NewID("prj"),
-		projectName: "default",
-		principalID: middleware.NewID("prin"),
-		keyID:       middleware.NewID("key"),
-		scopes:      []string{},
-		poolID:      middleware.NewID("pool"),
-	}
-	secret := newSecret()
-	seed.keyHash = coordinator.HashAPIKey(secret)
-	if err := s.provision(ctx, seed); err != nil {
-		return api.ProvisionResult{}, err
-	}
-	out := organizationCreated{
-		organizationView: organizationView{ID: seed.orgID, Object: "organization", DisplayName: seed.orgName},
-		DefaultProjectID: seed.projectID,
-		AdminAPIKey: apiKeyView{
-			ID: seed.keyID, Object: "api_key", OrganizationID: seed.orgID,
-			ProjectID: seed.projectID, PrincipalID: seed.principalID, Scopes: seed.scopes, Key: secret,
-		},
-	}
-	return api.ProvisionResult{Body: mustJSON(out)}, nil
-}
-
-// ListOrganizations lists the organizations visible in the caller's scope — under RLS, the caller's own
-// organization (no cross-tenant listing).
-func (s *Store) ListOrganizations(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
-	rows, err := s.pool.Query(ctx, storage.Query("ListOrganizations"))
-	if err != nil {
-		return api.ProvisionResult{}, fmt.Errorf("list organizations: %w", err)
-	}
-	defer rows.Close()
-	data := []organizationView{}
-	for rows.Next() {
-		v, err := scanOrganization(rows)
-		if err != nil {
-			return api.ProvisionResult{}, err
-		}
-		data = append(data, v)
-	}
-	if err := rows.Err(); err != nil {
-		return api.ProvisionResult{}, fmt.Errorf("iterate organizations: %w", err)
-	}
-	return api.ProvisionResult{Body: mustJSON(listView{Object: "list", Data: data})}, nil
-}
-
-// GetOrganization reads one organization within the caller's scope; a foreign/unknown id is a miss (404).
-func (s *Store) GetOrganization(ctx context.Context, scope middleware.Scope, id string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
-	v, err := scanOrganization(s.pool.QueryRow(ctx, storage.Query("GetOrganization"), id))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return api.ProvisionResult{NotFound: true}, nil
-	}
-	if err != nil {
-		return api.ProvisionResult{}, fmt.Errorf("get organization: %w", err)
-	}
-	return api.ProvisionResult{Body: mustJSON(v)}, nil
+	return storage.WithTenant(ctx, scope.Project)
 }
 
 // CreateProject OPENS A TENANT. Until A.2 Task 6 it inserted one projects row and nothing else — no
@@ -304,17 +204,7 @@ func (s *Store) CreateProject(ctx context.Context, scope middleware.Scope, body 
 	if err := strictDecode(body, &in); err != nil {
 		return api.ProvisionResult{BadField: true}, nil
 	}
-	// SCAFFOLDING WITH A NAMED END, in this same task: projects still carry organization_id until the
-	// column drop below this commit, and a row whose organization_id is NULL is invisible to the
-	// organization-keyed RLS policy still on `projects`. So the new tenant is filed under the caller's
-	// own organization — the only one a single installation has — and this lookup disappears with the
-	// column, not before it.
-	organization, err := storage.OrganizationForProject(ctx, s.pool, scope.Project)
-	if err != nil {
-		return api.ProvisionResult{}, fmt.Errorf("resolve organization for project: %w", err)
-	}
 	seed := tenantSeed{
-		orgID:       organization,
 		projectID:   middleware.NewID("prj"),
 		projectName: in.DisplayName,
 		principalID: middleware.NewID("prin"),
@@ -324,29 +214,26 @@ func (s *Store) CreateProject(ctx context.Context, scope middleware.Scope, body 
 	}
 	secret := newSecret()
 	seed.keyHash = coordinator.HashAPIKey(secret)
-	if err := s.provisionProject(ctx, seed); err != nil {
+	if err := s.provisionTenant(ctx, seed); err != nil {
 		return api.ProvisionResult{}, err
 	}
 	out := projectCreated{
 		projectView: projectView{
-			ID: seed.projectID, Object: "project", OrganizationID: organization,
+			ID: seed.projectID, Object: "project",
 			DisplayName: in.DisplayName, ConfigPolicy: json.RawMessage("null"),
 		},
 		AdminAPIKey: apiKeyView{
-			ID: seed.keyID, Object: "api_key", OrganizationID: organization,
+			ID: seed.keyID, Object: "api_key",
 			ProjectID: seed.projectID, PrincipalID: seed.principalID, Scopes: seed.scopes, Key: secret,
 		},
 	}
 	return api.ProvisionResult{Body: mustJSON(out)}, nil
 }
 
-// ListProjects lists every project in the caller's organization.
+// ListProjects lists every project the caller may administer: the installation's, for a `system` key;
+// the caller's own, for a tenant admin (provisioningScope draws that line).
 func (s *Store) ListProjects(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
+	ctx = provisioningScope(ctx, scope)
 	rows, err := s.pool.Query(ctx, storage.Query("ListProjects"))
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("list projects: %w", err)
@@ -366,13 +253,9 @@ func (s *Store) ListProjects(ctx context.Context, scope middleware.Scope) (api.P
 	return api.ProvisionResult{Body: mustJSON(listView{Object: "list", Data: data})}, nil
 }
 
-// GetProject reads one project within the caller's organization; a foreign/unknown id is a miss (404).
+// GetProject reads one project within the caller's scope; a foreign/unknown id is a miss (404).
 func (s *Store) GetProject(ctx context.Context, scope middleware.Scope, id string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
+	ctx = provisioningScope(ctx, scope)
 	return s.readProject(ctx, id)
 }
 
@@ -393,11 +276,7 @@ func (s *Store) UpdateProjectPolicy(ctx context.Context, scope middleware.Scope,
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("marshal config policy: %w", err)
 	}
-	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
+	ctx = provisioningScope(ctx, scope)
 	var updated string
 	err = s.pool.QueryRow(ctx, storage.Query("UpdateProjectConfigPolicy"), id, policyJSON).Scan(&updated)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -409,9 +288,9 @@ func (s *Store) UpdateProjectPolicy(ctx context.Context, scope middleware.Scope,
 	return s.readProject(ctx, id)
 }
 
-// CreateAPIKey mints a key (and its service principal) for a project in the caller's organization. The
+// CreateAPIKey mints a key (and its service principal) for a project within the caller's scope. The
 // plaintext is returned exactly once; only its hash is stored. An absent project_id is a 400; a
-// project outside the caller's organization is invisible under RLS and rendered a 404.
+// project outside the caller's scope is invisible under RLS and rendered a 404.
 func (s *Store) CreateAPIKey(ctx context.Context, scope middleware.Scope, body []byte) (api.ProvisionResult, error) {
 	var in struct {
 		ProjectID string     `json:"project_id"`
@@ -424,11 +303,7 @@ func (s *Store) CreateAPIKey(ctx context.Context, scope middleware.Scope, body [
 	if in.ProjectID == "" {
 		return api.ProvisionResult{MissingField: "project_id"}, nil
 	}
-	scopedCtx, org, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
+	ctx = provisioningScope(ctx, scope)
 	if err := s.pool.QueryRow(ctx, storage.Query("ProjectExists"), in.ProjectID).Scan(new(int)); errors.Is(err, pgx.ErrNoRows) {
 		return api.ProvisionResult{NotFound: true}, nil
 	} else if err != nil {
@@ -446,30 +321,26 @@ func (s *Store) CreateAPIKey(ctx context.Context, scope middleware.Scope, body [
 		return api.ProvisionResult{}, fmt.Errorf("begin create api key: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, storage.Query("InsertPrincipal"), principalID, org, in.ProjectID, "service"); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("InsertPrincipal"), principalID, in.ProjectID, "service"); err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("insert principal: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertAPIKey"),
-		keyID, org, in.ProjectID, principalID, coordinator.HashAPIKey(secret), scopes, in.ExpiresAt); err != nil {
+		keyID, in.ProjectID, principalID, coordinator.HashAPIKey(secret), scopes, in.ExpiresAt); err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("insert api key: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("commit create api key: %w", err)
 	}
 	v := apiKeyView{
-		ID: keyID, Object: "api_key", OrganizationID: org, ProjectID: in.ProjectID,
+		ID: keyID, Object: "api_key", ProjectID: in.ProjectID,
 		PrincipalID: principalID, Scopes: scopes, ExpiresAt: in.ExpiresAt, Key: secret,
 	}
 	return api.ProvisionResult{Body: mustJSON(v)}, nil
 }
 
-// ListAPIKeys lists key METADATA (never the hash or plaintext) for every key in the caller's organization.
+// ListAPIKeys lists key METADATA (never the hash or plaintext) for every key within the caller's scope.
 func (s *Store) ListAPIKeys(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
+	ctx = provisioningScope(ctx, scope)
 	rows, err := s.pool.Query(ctx, storage.Query("ListAPIKeys"))
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("list api keys: %w", err)
@@ -489,13 +360,9 @@ func (s *Store) ListAPIKeys(ctx context.Context, scope middleware.Scope) (api.Pr
 	return api.ProvisionResult{Body: mustJSON(listView{Object: "list", Data: data})}, nil
 }
 
-// GetAPIKey reads one key's metadata within the caller's organization; a foreign/unknown id is a miss (404).
+// GetAPIKey reads one key's metadata within the caller's scope; a foreign/unknown id is a miss (404).
 func (s *Store) GetAPIKey(ctx context.Context, scope middleware.Scope, id string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
+	ctx = provisioningScope(ctx, scope)
 	v, err := scanAPIKey(s.pool.QueryRow(ctx, storage.Query("GetAPIKey"), id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.ProvisionResult{NotFound: true}, nil
@@ -506,16 +373,12 @@ func (s *Store) GetAPIKey(ctx context.Context, scope middleware.Scope, id string
 	return api.ProvisionResult{Body: mustJSON(v)}, nil
 }
 
-// RevokeAPIKey revokes a key in the caller's organization (idempotent — the first revoked_at is kept). A
+// RevokeAPIKey revokes a key within the caller's scope (idempotent — the first revoked_at is kept). A
 // foreign/unknown id is a miss (404). The response renders the key's current metadata.
 func (s *Store) RevokeAPIKey(ctx context.Context, scope middleware.Scope, id string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
+	ctx = provisioningScope(ctx, scope)
 	var revoked string
-	err = s.pool.QueryRow(ctx, storage.Query("RevokeAPIKey"), id).Scan(&revoked)
+	err := s.pool.QueryRow(ctx, storage.Query("RevokeAPIKey"), id).Scan(&revoked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.ProvisionResult{NotFound: true}, nil
 	}
@@ -563,19 +426,6 @@ type configPolicyInput struct {
 	Pool          string   `json:"pool,omitempty"`
 }
 
-type organizationView struct {
-	ID          string     `json:"id"`
-	Object      string     `json:"object"`
-	DisplayName string     `json:"display_name"`
-	CreatedAt   *time.Time `json:"created_at,omitempty"`
-}
-
-type organizationCreated struct {
-	organizationView
-	DefaultProjectID string     `json:"default_project_id"`
-	AdminAPIKey      apiKeyView `json:"admin_api_key"`
-}
-
 // projectCreated is the create-only projection: the project plus the admin key whose plaintext this
 // response is the sole place to read. Reads render projectView, which has no key field at all.
 type projectCreated struct {
@@ -584,28 +434,26 @@ type projectCreated struct {
 }
 
 type projectView struct {
-	ID             string          `json:"id"`
-	Object         string          `json:"object"`
-	OrganizationID string          `json:"organization_id"`
-	DisplayName    string          `json:"display_name"`
-	ConfigPolicy   json.RawMessage `json:"config_policy"`
-	CreatedAt      *time.Time      `json:"created_at,omitempty"`
+	ID           string          `json:"id"`
+	Object       string          `json:"object"`
+	DisplayName  string          `json:"display_name"`
+	ConfigPolicy json.RawMessage `json:"config_policy"`
+	CreatedAt    *time.Time      `json:"created_at,omitempty"`
 }
 
 // apiKeyView renders a key. Key (the plaintext) carries omitempty and is set ONLY on a create response —
 // every read leaves it empty, so a listing or retrieval can never disclose a secret. key_hash is never a
 // field at all.
 type apiKeyView struct {
-	ID             string     `json:"id"`
-	Object         string     `json:"object"`
-	OrganizationID string     `json:"organization_id"`
-	ProjectID      string     `json:"project_id"`
-	PrincipalID    string     `json:"principal_id"`
-	Scopes         []string   `json:"scopes"`
-	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
-	CreatedAt      *time.Time `json:"created_at,omitempty"`
-	RevokedAt      *time.Time `json:"revoked_at,omitempty"`
-	Key            string     `json:"key,omitempty"`
+	ID          string     `json:"id"`
+	Object      string     `json:"object"`
+	ProjectID   string     `json:"project_id"`
+	PrincipalID string     `json:"principal_id"`
+	Scopes      []string   `json:"scopes"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	CreatedAt   *time.Time `json:"created_at,omitempty"`
+	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
+	Key         string     `json:"key,omitempty"`
 }
 
 type listView struct {
@@ -618,21 +466,11 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-func scanOrganization(row scanner) (organizationView, error) {
-	v := organizationView{Object: "organization"}
-	var createdAt time.Time
-	if err := row.Scan(&v.ID, &v.DisplayName, &createdAt); err != nil {
-		return organizationView{}, err
-	}
-	v.CreatedAt = &createdAt
-	return v, nil
-}
-
 func scanProject(row scanner) (projectView, error) {
 	v := projectView{Object: "project"}
 	var policy []byte
 	var createdAt time.Time
-	if err := row.Scan(&v.ID, &v.OrganizationID, &v.DisplayName, &policy, &createdAt); err != nil {
+	if err := row.Scan(&v.ID, &v.DisplayName, &policy, &createdAt); err != nil {
 		return projectView{}, err
 	}
 	if policy == nil {
@@ -647,7 +485,7 @@ func scanProject(row scanner) (projectView, error) {
 func scanAPIKey(row scanner) (apiKeyView, error) {
 	v := apiKeyView{Object: "api_key"}
 	var createdAt time.Time
-	if err := row.Scan(&v.ID, &v.OrganizationID, &v.ProjectID, &v.PrincipalID, &v.Scopes, &v.ExpiresAt, &createdAt, &v.RevokedAt); err != nil {
+	if err := row.Scan(&v.ID, &v.ProjectID, &v.PrincipalID, &v.Scopes, &v.ExpiresAt, &createdAt, &v.RevokedAt); err != nil {
 		return apiKeyView{}, err
 	}
 	v.CreatedAt = &createdAt

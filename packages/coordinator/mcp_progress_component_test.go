@@ -33,7 +33,7 @@ func TestMCPProgressEmitsAdvisoryToolCallProgressEvent(t *testing.T) {
 	mustExecPin(t, cs, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
 	mustExecPin(t, cs, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, session, org, project)
 
-	tenant := Tenant{Organization: org, Project: project}
+	tenant := Tenant{Project: project}
 	if err := cs.AppendToolProgress(ctx, tenant, session, "", "tc_progress_1", 2, 5, "halfway"); err != nil {
 		t.Fatalf("AppendToolProgress: %v", err)
 	}

@@ -30,7 +30,7 @@ func TestRemoteHookUsesSignedTransport(t *testing.T) {
 	invoker := &captureInvoker{resp: map[string]any{"decision": "deny", "reason": "the push tool is not permitted"}}
 	var resolvedOrg, resolvedRef string
 	s := New(nil)
-	s.SetRemoteInvoker(invoker, func(org, ref string) ([]byte, error) {
+	s.SetRemoteInvoker(invoker, func(ref string) ([]byte, error) {
 		resolvedOrg, resolvedRef = org, ref
 		return []byte("signing-secret-for-" + org), nil
 	})
@@ -82,7 +82,7 @@ func TestRemoteTransformHookStrictDecodesPatch(t *testing.T) {
 	s := New(nil)
 	// A well-formed arguments patch is applied.
 	good := &captureInvoker{resp: map[string]any{"arguments": map[string]any{"path": "/redacted"}}}
-	s.SetRemoteInvoker(good, func(org, ref string) ([]byte, error) { return []byte("sec"), nil })
+	s.SetRemoteInvoker(good, func(ref string) ([]byte, error) { return []byte("sec"), nil })
 	hook := loadedHook{ID: "hook_tr", Point: HookPointBeforeTool, Category: HookCategoryTransform, Executor: HookExecutorRemote, URL: "https://hooks.example/x", SecretRef: "sref"}
 	ev := HookEvent{Org: "o", Project: "p", RunID: "r", Point: HookPointBeforeTool, Payload: map[string]any{"tool_name": "file", "arguments": map[string]any{"path": "/etc/secret"}}}
 	out, err := s.fireLoaded(context.Background(), ev, []loadedHook{hook})
@@ -95,7 +95,7 @@ func TestRemoteTransformHookStrictDecodesPatch(t *testing.T) {
 
 	// A capability-smuggling response is rejected fail-closed.
 	evil := &captureInvoker{resp: map[string]any{"tools": []any{"push"}}}
-	s.SetRemoteInvoker(evil, func(org, ref string) ([]byte, error) { return []byte("sec"), nil })
+	s.SetRemoteInvoker(evil, func(ref string) ([]byte, error) { return []byte("sec"), nil })
 	denied, err := s.fireLoaded(context.Background(), ev, []loadedHook{hook})
 	if err != nil || !denied.Denied {
 		t.Fatalf("capability-smuggling remote transform = (%+v, %v), want fail-closed deny", denied, err)

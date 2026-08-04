@@ -30,8 +30,8 @@ func NewJournal(pool *pgxpool.Pool) *Journal { return &Journal{pool: pool} }
 // SessionExists reports whether the session is visible in the given tenant scope.
 // A false result is the 404 gate for a foreign or unknown session id: without it
 // a foreign session would be indistinguishable from an empty one.
-func (j *Journal) SessionExists(ctx context.Context, org, project, sessionID string) (bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (j *Journal) SessionExists(ctx context.Context, project, sessionID string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	var exists bool
 	err := j.pool.QueryRow(ctx, storage.Query("SessionExistsInScope"), sessionID, project).Scan(&exists)
 	if err != nil {
@@ -44,8 +44,8 @@ func (j *Journal) SessionExists(ctx context.Context, org, project, sessionID str
 // the stream can replay from the next sequence (asyncapi x-sse-binding). The
 // second result is false when the id is unknown in this session/scope, which the
 // caller treats as "resume from the beginning".
-func (j *Journal) ResolveCursor(ctx context.Context, org, project, sessionID, eventID string) (int64, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (j *Journal) ResolveCursor(ctx context.Context, project, sessionID, eventID string) (int64, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	var seq int64
 	err := j.pool.QueryRow(ctx, storage.Query("EventSequenceInScope"), eventID, sessionID, project).Scan(&seq)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -62,9 +62,9 @@ func (j *Journal) ResolveCursor(ctx context.Context, org, project, sessionID, ev
 // is keyed to the ACTOR's tenant and names only the requested id, so a cross-tenant session
 // and an unknown one produce the identical denial — no existence is disclosed (spec §39.2,
 // §50.3).
-func (j *Journal) RecordAttachDenied(ctx context.Context, org, project, principal, sessionID string) error {
-	ctx = storage.ScopeToTenant(ctx, org, project)
-	if _, err := j.pool.Exec(ctx, storage.Query("InsertAttachDenial"), org, project, principal, sessionID); err != nil {
+func (j *Journal) RecordAttachDenied(ctx context.Context, project, principal, sessionID string) error {
+	ctx = storage.ScopeToTenant(ctx, project)
+	if _, err := j.pool.Exec(ctx, storage.Query("InsertAttachDenial"), project, principal, sessionID); err != nil {
 		return fmt.Errorf("record attach denial: %w", err)
 	}
 	return nil
@@ -73,8 +73,8 @@ func (j *Journal) RecordAttachDenied(ctx context.Context, org, project, principa
 // After returns up to limit events with sequence greater than afterSeq, in
 // ascending sequence order, as CloudEvents envelopes. Passing the last delivered
 // sequence tails the journal without gaps or duplicates.
-func (j *Journal) After(ctx context.Context, org, project, sessionID string, afterSeq int64, limit int) ([]contracts.Event, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (j *Journal) After(ctx context.Context, project, sessionID string, afterSeq int64, limit int) ([]contracts.Event, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	rows, err := j.pool.Query(ctx, storage.Query("ReadEventsAfter"), sessionID, project, afterSeq, limit)
 	if err != nil {
 		return nil, fmt.Errorf("read events: %w", err)

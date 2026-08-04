@@ -55,9 +55,9 @@ func (s *Store) PublishInterface(ctx context.Context, iface PublishedInterface) 
 	if err != nil {
 		return "", fmt.Errorf("marshal a2a skills: %w", err)
 	}
-	ctx = storage.WithTenant(ctx, iface.Organization, iface.Project)
+	ctx = storage.WithTenant(ctx, iface.Project)
 	_, err = s.pool.Exec(ctx, storage.Query("InsertA2AInterface"),
-		id, iface.Organization, iface.Project, iface.Name, iface.Description, iface.Version,
+		id, iface.Project, iface.Name, iface.Description, iface.Version,
 		iface.AgentProfileID, iface.AgentRevisionID, iface.Streaming, iface.PushNotifications, iface.ExtendedCard,
 		iface.InputModes, iface.OutputModes, skills, iface.AuthScheme, true, iface.ETag)
 	if err != nil {
@@ -92,12 +92,12 @@ func (s *Store) ResolvePublic(ctx context.Context, interfaceID string) (Publishe
 
 // Get resolves an interface within the authenticated scope (the extended card + all authed ops). It reads
 // the full row including the provenance pins (never rendered onto a card, but read for tenant scoping).
-func (s *Store) Get(ctx context.Context, org, project, interfaceID string) (PublishedInterface, bool, error) {
-	ctx = storage.WithTenant(ctx, org, project)
+func (s *Store) Get(ctx context.Context, project, interfaceID string) (PublishedInterface, bool, error) {
+	ctx = storage.WithTenant(ctx, project)
 	row := s.pool.QueryRow(ctx, storage.Query("GetA2AInterface"), interfaceID, project)
 	var iface PublishedInterface
 	var skills []byte
-	err := row.Scan(&iface.ID, &iface.Organization, &iface.Project, &iface.Name, &iface.Description, &iface.Version,
+	err := row.Scan(&iface.ID, &iface.Project, &iface.Name, &iface.Description, &iface.Version,
 		&iface.AgentProfileID, &iface.AgentRevisionID, &iface.Streaming, &iface.PushNotifications, &iface.ExtendedCard,
 		&iface.InputModes, &iface.OutputModes, &skills, &iface.AuthScheme, &iface.ETag)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -114,10 +114,10 @@ func (s *Store) Get(ctx context.Context, org, project, interfaceID string) (Publ
 
 // Put records the external->canonical task bridge (§38.2). run_id/session_id are the platform-minted
 // canonical ids; they are stored, never replaced by anything the client supplies.
-func (s *Store) Put(ctx context.Context, org, project string, ref TaskRef) error {
-	ctx = storage.WithTenant(ctx, org, project)
+func (s *Store) Put(ctx context.Context, project string, ref TaskRef) error {
+	ctx = storage.WithTenant(ctx, project)
 	_, err := s.pool.Exec(ctx, storage.Query("InsertA2ATaskRef"),
-		s.mintID("a2aref"), org, project, ref.InterfaceID, ref.A2ATaskID, ref.A2AContextID, ref.RunID, ref.SessionID)
+		s.mintID("a2aref"), project, ref.InterfaceID, ref.A2ATaskID, ref.A2AContextID, ref.RunID, ref.SessionID)
 	if err != nil {
 		return fmt.Errorf("insert a2a task ref: %w", err)
 	}
@@ -125,8 +125,8 @@ func (s *Store) Put(ctx context.Context, org, project string, ref TaskRef) error
 }
 
 // GetRef resolves a task ref within scope by its external a2a_task_id under an interface.
-func (s *Store) GetRef(ctx context.Context, org, project, interfaceID, a2aTaskID string) (TaskRef, bool, error) {
-	ctx = storage.WithTenant(ctx, org, project)
+func (s *Store) GetRef(ctx context.Context, project, interfaceID, a2aTaskID string) (TaskRef, bool, error) {
+	ctx = storage.WithTenant(ctx, project)
 	var ref TaskRef
 	var push []byte
 	ref.InterfaceID = interfaceID
@@ -147,8 +147,8 @@ func (s *Store) GetRef(ctx context.Context, org, project, interfaceID, a2aTaskID
 // GetRefByRun resolves an existing task ref within scope by its canonical run reference under an interface —
 // the A2A-retry dedupe seam (M-2). A replayed messageId re-admits to the same canonical response, so the
 // external task minted the first time is reused rather than duplicated.
-func (s *Store) GetRefByRun(ctx context.Context, org, project, interfaceID, runID string) (TaskRef, bool, error) {
-	ctx = storage.WithTenant(ctx, org, project)
+func (s *Store) GetRefByRun(ctx context.Context, project, interfaceID, runID string) (TaskRef, bool, error) {
+	ctx = storage.WithTenant(ctx, project)
 	ref := TaskRef{InterfaceID: interfaceID}
 	var push []byte
 	err := s.pool.QueryRow(ctx, storage.Query("GetA2ATaskRefByRun"), interfaceID, runID, project).
@@ -166,11 +166,11 @@ func (s *Store) GetRefByRun(ctx context.Context, org, project, interfaceID, runI
 }
 
 // List pages an interface's task refs newest-first (the tasks list endpoint).
-func (s *Store) List(ctx context.Context, org, project, interfaceID string, limit int) ([]TaskRef, error) {
+func (s *Store) List(ctx context.Context, project, interfaceID string, limit int) ([]TaskRef, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	ctx = storage.WithTenant(ctx, org, project)
+	ctx = storage.WithTenant(ctx, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListA2ATaskRefs"), interfaceID, project, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list a2a task refs: %w", err)
@@ -192,12 +192,12 @@ func (s *Store) List(ctx context.Context, org, project, interfaceID string, limi
 }
 
 // SetPushConfigs replaces a task's push-config array (set/delete both write the whole array).
-func (s *Store) SetPushConfigs(ctx context.Context, org, project, interfaceID, a2aTaskID string, cfgs []PushNotificationConfig) error {
+func (s *Store) SetPushConfigs(ctx context.Context, project, interfaceID, a2aTaskID string, cfgs []PushNotificationConfig) error {
 	blob, err := json.Marshal(cfgs)
 	if err != nil {
 		return fmt.Errorf("marshal a2a push configs: %w", err)
 	}
-	ctx = storage.WithTenant(ctx, org, project)
+	ctx = storage.WithTenant(ctx, project)
 	_, err = s.pool.Exec(ctx, storage.Query("UpdateA2ATaskPushConfigs"), interfaceID, a2aTaskID, project, blob)
 	if err != nil {
 		return fmt.Errorf("update a2a push configs: %w", err)
@@ -215,9 +215,9 @@ func (s *Store) RegisterRemoteAgent(ctx context.Context, agent RemoteAgent) (str
 	if id == "" {
 		id = s.mintID("a2arem")
 	}
-	ctx = storage.WithTenant(ctx, agent.Organization, agent.Project)
+	ctx = storage.WithTenant(ctx, agent.Project)
 	_, err := s.pool.Exec(ctx, storage.Query("InsertA2ARemoteAgent"),
-		id, agent.Organization, agent.Project, agent.Name, agent.CardURL, agent.Endpoint, protocolOrDefault(agent.ProtocolVersion),
+		id, agent.Project, agent.Name, agent.CardURL, agent.Endpoint, protocolOrDefault(agent.ProtocolVersion),
 		agent.AuthConnectionRef, agent.AllowedInputModes, agent.AllowedOutputModes, agent.AllowedExtensionURIs,
 		agent.DataPolicy, agent.MaxCostCents, agent.TimeoutMS, agent.MaxOutputBytes, true)
 	if err != nil {
@@ -230,11 +230,11 @@ func (s *Store) RegisterRemoteAgent(ctx context.Context, agent RemoteAgent) (str
 // org/project predicate is defence in depth. A foreign scope finds nothing (no existence oracle). The row's
 // `enabled` flag is RETURNED on the agent (E19 T5) rather than dropped: once something dials these rows, an
 // operator's kill-switch that no caller can read is not a kill-switch.
-func (s *Store) GetRemoteAgent(ctx context.Context, org, project, id string) (RemoteAgent, bool, error) {
-	ctx = storage.WithTenant(ctx, org, project)
+func (s *Store) GetRemoteAgent(ctx context.Context, project, id string) (RemoteAgent, bool, error) {
+	ctx = storage.WithTenant(ctx, project)
 	row := s.pool.QueryRow(ctx, storage.Query("GetA2ARemoteAgent"), id, project)
 	var a RemoteAgent
-	err := row.Scan(&a.ID, &a.Organization, &a.Project, &a.Name, &a.CardURL, &a.Endpoint, &a.ProtocolVersion,
+	err := row.Scan(&a.ID, &a.Project, &a.Name, &a.CardURL, &a.Endpoint, &a.ProtocolVersion,
 		&a.AuthConnectionRef, &a.AllowedInputModes, &a.AllowedOutputModes, &a.AllowedExtensionURIs,
 		&a.DataPolicy, &a.MaxCostCents, &a.TimeoutMS, &a.MaxOutputBytes, &a.Enabled)
 	if errors.Is(err, pgx.ErrNoRows) {

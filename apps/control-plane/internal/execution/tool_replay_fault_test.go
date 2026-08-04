@@ -73,7 +73,7 @@ func faultID(prefix string) string {
 func seedFaultRun(t *testing.T, cs *coordinator.Store) (coordinator.Tenant, string, string) {
 	t.Helper()
 	ctx := context.Background()
-	tenant := coordinator.Tenant{Organization: faultID("org"), Project: faultID("prj")}
+	tenant := coordinator.Tenant{Project: faultID("prj")}
 	sessionID, runID := faultID("ses"), faultID("run")
 	for _, q := range []struct {
 		sql  string
@@ -81,8 +81,8 @@ func seedFaultRun(t *testing.T, cs *coordinator.Store) (coordinator.Tenant, stri
 	}{
 		{`INSERT INTO organizations (id) VALUES ($1)`, []any{tenant.Organization}},
 		{`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, []any{tenant.Project, tenant.Organization}},
-		{`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, []any{sessionID, tenant.Organization, tenant.Project}},
-		{`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, []any{runID, tenant.Organization, tenant.Project, sessionID}},
+		{`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, []any{sessionID, tenant.Project}},
+		{`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, []any{runID, tenant.Project, sessionID}},
 	} {
 		if _, err := cs.Pool().Exec(storage.WithSystemScope(ctx), q.sql, q.args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", q.sql, err)

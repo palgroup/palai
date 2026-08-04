@@ -59,7 +59,7 @@ func TestLiveHookDenyVisibleRealProvider(t *testing.T) {
 	// is the fixture: deterministic, network-less — the LIVE bond is the real model seeing its deny.
 	ext := extensions.New(pool)
 	ext.SetHookHandlers(extensions.PlatformHookHandlers())
-	if _, err := ext.CreateHook(ctx, tenant.Organization, tenant.Project,
+	if _, err := ext.CreateHook(ctx, tenant.Project,
 		[]byte(`{"name":"deny-tools","hook_point":"before_tool","category":"policy","executor":"platform_inline","config":{"handler":"deny_all"}}`)); err != nil {
 		t.Fatalf("register before_tool deny hook: %v", err)
 	}
@@ -117,7 +117,7 @@ func hookPolicyDeniedCount(t *testing.T, pool *pgxpool.Pool, tenant coordinator.
 	var n int
 	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(*) FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type='policy.denied.v1'`,
-		sessionID, tenant.Organization, tenant.Project).Scan(&n); err != nil {
+		sessionID, tenant.Project).Scan(&n); err != nil {
 		t.Fatalf("count policy.denied.v1 events: %v", err)
 	}
 	return n

@@ -44,11 +44,11 @@ func TestA2ARemoteAgentStoreRLS(t *testing.T) {
 	}
 
 	// (1) RLS: tenant A reads it; tenant B does not.
-	got, ok, err := store.GetRemoteAgent(ctx, tenantA.Organization, tenantA.Project, id)
+	got, ok, err := store.GetRemoteAgent(ctx, tenantA.Project, id)
 	if err != nil || !ok {
 		t.Fatalf("owning tenant cannot read its remote agent: ok=%v err=%v", ok, err)
 	}
-	if _, ok, err := store.GetRemoteAgent(ctx, tenantB.Organization, tenantB.Project, id); err != nil || ok {
+	if _, ok, err := store.GetRemoteAgent(ctx, tenantB.Project, id); err != nil || ok {
 		t.Fatalf("foreign tenant read a cross-tenant remote agent (RLS breach): ok=%v err=%v", ok, err)
 	}
 

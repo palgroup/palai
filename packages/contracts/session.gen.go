@@ -17,7 +17,6 @@ type Session struct {
 	Name                    string         `json:"name"`
 	NameSource              string         `json:"name_source"`
 	Object                  string         `json:"object"`
-	OrganizationID          OrganizationID `json:"organization_id,omitempty"`
 	OutputTokens            int            `json:"output_tokens"`
 	ProjectID               ProjectID      `json:"project_id,omitempty"`
 	Status                  string         `json:"status"`

@@ -87,7 +87,7 @@ func newID(prefix string) string {
 func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) coordinator.Tenant {
 	t.Helper()
 	ctx := context.Background()
-	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	tenant := coordinator.Tenant{Project: newID("prj")}
 	principalID := newID("prin")
 	exec := func(sql string, args ...any) {
 		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
@@ -97,9 +97,9 @@ func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) coordinat
 	exec(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
 	exec(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`,
-		principalID, tenant.Organization, tenant.Project)
+		principalID, tenant.Project)
 	exec(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4, $5)`,
-		newID("key"), tenant.Organization, tenant.Project, principalID, coordinator.HashAPIKey(token))
+		newID("key"), tenant.Project, principalID, coordinator.HashAPIKey(token))
 	return tenant
 }
 

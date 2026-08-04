@@ -255,7 +255,7 @@ func TestRedeliveredTerminalStaysSingleByMonotonicity(t *testing.T) {
 	}
 	_, projectionBefore := h.response(respID)
 	terminalsBefore := h.count(`SELECT count(*) FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type='run.completed.v1'`,
-		sessionID, h.tenant.Organization, h.tenant.Project)
+		sessionID, h.tenant.Project)
 	if terminalsBefore != 1 {
 		t.Fatalf("run.terminal events after attempt-1 = %d, want 1", terminalsBefore)
 	}
@@ -268,7 +268,7 @@ func TestRedeliveredTerminalStaysSingleByMonotonicity(t *testing.T) {
 	}
 
 	terminalsAfter := h.count(`SELECT count(*) FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type='run.completed.v1'`,
-		sessionID, h.tenant.Organization, h.tenant.Project)
+		sessionID, h.tenant.Project)
 	if terminalsAfter != 1 {
 		t.Fatalf("run.terminal events after redelivery = %d, want 1 (a redelivered terminal must not double under the fence)", terminalsAfter)
 	}

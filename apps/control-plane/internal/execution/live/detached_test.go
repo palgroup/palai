@@ -69,7 +69,7 @@ import (
 func seedDetachParent(t *testing.T, pool *pgxpool.Pool, childModel string) (coordinator.Tenant, string, string, string) {
 	t.Helper()
 	ctx := context.Background()
-	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	tenant := coordinator.Tenant{Project: newID("prj")}
 	session, response, runID := newID("ses"), newID("resp"), newID("run")
 	deleg, _ := json.Marshal(map[string]any{"emit": []map[string]any{{
 		"role": "researcher", "objective": "summarize the topic in one sentence",
@@ -82,11 +82,11 @@ func seedDetachParent(t *testing.T, pool *pgxpool.Pool, childModel string) (coor
 	}
 	do(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	do(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, tenant.Organization, tenant.Project)
+	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, tenant.Project)
 	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
-		response, tenant.Organization, tenant.Project, session, []byte(`"Delegate the research, then summarize the result."`))
+		response, tenant.Project, session, []byte(`"Delegate the research, then summarize the result."`))
 	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, delegation) VALUES ($1,$2,$3,$4,$5,'queued',$6)`,
-		runID, tenant.Organization, tenant.Project, session, response, deleg)
+		runID, tenant.Project, session, response, deleg)
 	return tenant, session, response, runID
 }
 
@@ -167,7 +167,7 @@ func TestLiveDetachedChildConversationRealProvider(t *testing.T) {
 	// Exactly one child (rebind, not clone), and it ran on the real provider with its own chatcmpl id.
 	var childRun string
 	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT id FROM runs WHERE parent_run_id=$1 AND organization_id=$2 AND project_id=$3`,
-		runID, tenant.Organization, tenant.Project).Scan(&childRun); err != nil {
+		runID, tenant.Project).Scan(&childRun); err != nil {
 		t.Fatalf("read child run: %v", err)
 	}
 	if n := countRows(t, pool, `SELECT count(*) FROM runs WHERE parent_run_id=$1`, runID); n != 1 {
@@ -188,7 +188,7 @@ func awaitState(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, res
 	for time.Now().Before(deadline) {
 		if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 			`SELECT state FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-			responseID, tenant.Organization, tenant.Project).Scan(&last); err == nil && last == want {
+			responseID, tenant.Project).Scan(&last); err == nil && last == want {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)

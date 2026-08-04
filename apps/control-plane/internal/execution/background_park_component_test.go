@@ -84,7 +84,7 @@ func newParkFixture(t *testing.T) *parkFixture {
 
 	f := &parkFixture{
 		spine: cs, repo: repo, root: t.TempDir(),
-		tenant:    coordinator.Tenant{Organization: redeliveryID("org"), Project: redeliveryID("prj")},
+		tenant:    coordinator.Tenant{Project: redeliveryID("prj")},
 		sessionID: redeliveryID("ses"), responseID: redeliveryID("resp"), runID: redeliveryID("run"),
 	}
 	sys := storage.WithSystemScope(ctx)
@@ -95,12 +95,12 @@ func newParkFixture(t *testing.T) *parkFixture {
 		{`INSERT INTO organizations (id) VALUES ($1)`, f.tenant.Organization},
 		{`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, f.tenant.Project, f.tenant.Organization},
 		{`INSERT INTO runner_pools (id, organization_id, project_id, name, posture)
-		  VALUES ($1,$2,$3,'default','unsandboxed-host')`, redeliveryID("pool"), f.tenant.Organization, f.tenant.Project},
-		{`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, f.sessionID, f.tenant.Organization, f.tenant.Project},
+		  VALUES ($1,$2,$3,'default','unsandboxed-host')`, redeliveryID("pool"), f.tenant.Project},
+		{`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, f.sessionID, f.tenant.Project},
 		{`INSERT INTO responses (id, organization_id, project_id, session_id, state, input)
-		  VALUES ($1,$2,$3,$4,'queued','"build it"'::jsonb)`, f.responseID, f.tenant.Organization, f.tenant.Project, f.sessionID},
+		  VALUES ($1,$2,$3,$4,'queued','"build it"'::jsonb)`, f.responseID, f.tenant.Project, f.sessionID},
 		{`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state)
-		  VALUES ($1,$2,$3,$4,$5,'queued')`, f.runID, f.tenant.Organization, f.tenant.Project, f.sessionID, f.responseID},
+		  VALUES ($1,$2,$3,$4,$5,'queued')`, f.runID, f.tenant.Project, f.sessionID, f.responseID},
 	}
 	for _, stmt := range stmts {
 		if _, err := cs.Pool().Exec(sys, stmt[0].(string), stmt[1:]...); err != nil {

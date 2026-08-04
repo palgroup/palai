@@ -30,7 +30,7 @@ import (
 // E24 T4: the rendezvous is keyed by (tenant, pool), so an attempt that names no tenant meets only a
 // machine whose tenant is equally unknown — which is a registry-less stack, not this one.
 func registryTenant() coordinator.Tenant {
-	return coordinator.Tenant{Organization: fakeRegistryOrg, Project: fakeRegistryProject}
+	return coordinator.Tenant{Project: fakeRegistryProject}
 }
 
 // hostPoolID is a pool whose posture is 'unsandboxed-host' — a rented Mac. The gateway never reads a

@@ -69,7 +69,7 @@ const (
 // package, and this package importing artifacts back would close a cycle. So the contract is carried by the
 // return values, and it is stated on both sides (see artifacts.Writer.ReadRunArtifact).
 type RunArtifactStore interface {
-	ReadRunArtifact(ctx context.Context, org, project, runID, artifactID string, maxBytes int64) ([]byte, int64, bool, error)
+	ReadRunArtifact(ctx context.Context, project, runID, artifactID string, maxBytes int64) ([]byte, int64, bool, error)
 }
 
 // WithArtifactUpload mounts the upload leg. Without it a run's answer is posted exactly as it was before and
@@ -114,7 +114,7 @@ func (p *SlackReplyPump) resolveUploads(ctx context.Context, o slackReplyOrder, 
 	var ready []pendingUpload
 	oversize, unreadable := 0, 0
 	for _, ref := range refs {
-		body, size, found, err := a.runArtifacts.ReadRunArtifact(ctx, o.org, o.project, o.runID, ref.id, slack.MaxUploadBytes)
+		body, size, found, err := a.runArtifacts.ReadRunArtifact(ctx, o.project, o.runID, ref.id, slack.MaxUploadBytes)
 		switch {
 		case err != nil:
 			log.Printf("slack: could not read artifact %s for run %s: %v", ref.id, o.runID, err)

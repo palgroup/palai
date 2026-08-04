@@ -59,12 +59,8 @@ func NewReader(store *Store, pool *pgxpool.Pool) *Reader {
 // read back by operators and served over the retrieval API, so a field a client could write would be
 // untrusted text on an operator's screen (the E17 T10 "relay renders untrusted bytes" finding).
 func (rd *Reader) CreateInboundArtifact(ctx context.Context, scope middleware.Scope, content []byte, mediaType string) (api.ArtifactIngestResult, error) {
-	org, err := storage.OrganizationForProject(ctx, rd.pool, scope.Project)
-	if err != nil {
-		return api.ArtifactIngestResult{}, err
-	}
 	id := newArtifactID()
-	if err := rd.writer.WriteInboundArtifact(ctx, org, scope.Project, id, content, mediaType, map[string]any{
+	if err := rd.writer.WriteInboundArtifact(ctx, scope.Project, id, content, mediaType, map[string]any{
 		"source":     "api_ingest",
 		"principal":  scope.Principal,
 		"media_type": mediaType,
@@ -78,12 +74,8 @@ func (rd *Reader) CreateInboundArtifact(ctx context.Context, scope middleware.Sc
 // GetArtifact reads one artifact's metadata within the tenant scope. An unknown or foreign id returns no
 // row, which renders as the non-disclosing 404.
 func (rd *Reader) GetArtifact(ctx context.Context, scope middleware.Scope, id string) (api.ArtifactResult, error) {
-	org, err := storage.OrganizationForProject(ctx, rd.pool, scope.Project)
-	if err != nil {
-		return api.ArtifactResult{}, err
-	}
-	ctx = storage.ScopeToTenant(ctx, org, scope.Project)
-	m, found, err := rd.metadata(ctx, org, scope.Project, id)
+	ctx = storage.ScopeToTenant(ctx, scope.Project)
+	m, found, err := rd.metadata(ctx, scope.Project, id)
 	if err != nil {
 		return api.ArtifactResult{}, err
 	}
@@ -103,12 +95,8 @@ func (rd *Reader) GetArtifact(ctx context.Context, scope middleware.Scope, id st
 // retention delete racing the read) is surfaced as the same miss, not a half-open stream. The returned
 // Reader streams from S3 — the whole object is never buffered in control-plane memory.
 func (rd *Reader) OpenArtifactContent(ctx context.Context, scope middleware.Scope, id string) (api.ArtifactContent, error) {
-	org, err := storage.OrganizationForProject(ctx, rd.pool, scope.Project)
-	if err != nil {
-		return api.ArtifactContent{}, err
-	}
-	ctx = storage.ScopeToTenant(ctx, org, scope.Project)
-	m, found, err := rd.metadata(ctx, org, scope.Project, id)
+	ctx = storage.ScopeToTenant(ctx, scope.Project)
+	m, found, err := rd.metadata(ctx, scope.Project, id)
 	if err != nil {
 		return api.ArtifactContent{}, err
 	}
@@ -141,13 +129,9 @@ func (rd *Reader) OpenArtifactContent(ctx context.Context, scope middleware.Scop
 // or foreign response id reads no row and is the non-disclosing 404. A known response whose run produced no
 // artifacts is an empty list, not a miss.
 func (rd *Reader) ListRunArtifacts(ctx context.Context, scope middleware.Scope, responseID string) (api.ArtifactResult, error) {
-	org, err := storage.OrganizationForProject(ctx, rd.pool, scope.Project)
-	if err != nil {
-		return api.ArtifactResult{}, err
-	}
-	ctx = storage.ScopeToTenant(ctx, org, scope.Project)
+	ctx = storage.ScopeToTenant(ctx, scope.Project)
 	var runID string
-	err = rd.pool.QueryRow(ctx, storage.Query("RunIDForResponse"), responseID, scope.Project).Scan(&runID)
+	err := rd.pool.QueryRow(ctx, storage.Query("RunIDForResponse"), responseID, scope.Project).Scan(&runID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.ArtifactResult{NotFound: true}, nil
 	}
@@ -204,7 +188,7 @@ type metadataRow struct {
 // metadata reads one artifact's row within the tenant scope. found is false for an unknown or foreign id
 // (the tenant-scoped query returns no row), so a caller renders the same miss whether the artifact is
 // absent or owned by another tenant — no cross-tenant existence leaks.
-func (rd *Reader) metadata(ctx context.Context, org, project, id string) (metadataRow, bool, error) {
+func (rd *Reader) metadata(ctx context.Context, project, id string) (metadataRow, bool, error) {
 	m := metadataRow{id: id}
 	err := rd.pool.QueryRow(ctx, storage.Query("ArtifactByID"), id, project).
 		Scan(&m.runID, &m.objectKey, &m.sizeBytes, &m.checksum, &m.mediaType, &m.logicalType, &m.scanStatus, &m.createdAt)

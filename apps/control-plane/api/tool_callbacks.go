@@ -32,14 +32,14 @@ type ToolCallbackStore interface {
 // ONLY through the waiting executor under a live fence — this handler NEVER touches the ledger.
 type toolCallbackHandler struct {
 	ops       ToolCallbackStore
-	resolver  func(org, ref string) ([]byte, error)
+	resolver  func(ref string) ([]byte, error)
 	tolerance time.Duration
 	now       func() time.Time
 }
 
 // NewToolCallbackHandler builds the callback endpoint over the operation ledger + the org-scoped secret
 // resolver (the same handle bridge the outbound invoke signs with). nil in tiers that never touch it.
-func NewToolCallbackHandler(ops ToolCallbackStore, resolver func(org, ref string) ([]byte, error)) http.Handler {
+func NewToolCallbackHandler(ops ToolCallbackStore, resolver func(ref string) ([]byte, error)) http.Handler {
 	h := &toolCallbackHandler{ops: ops, resolver: resolver, tolerance: callbackTolerance, now: time.Now}
 	return http.HandlerFunc(h.receive)
 }
@@ -66,7 +66,7 @@ func (h *toolCallbackHandler) receive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secret, serr := h.resolver(row.Org, row.SecretRef)
+	secret, serr := h.resolver(row.SecretRef)
 	if serr != nil || len(secret) == 0 {
 		// An unresolvable secret is indistinguishable from an unknown operation — a generic 404, never an
 		// oracle for "this operation exists but its secret bridge is missing".

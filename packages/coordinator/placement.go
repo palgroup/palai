@@ -82,7 +82,7 @@ type Placement struct {
 // is not the read that ESTABLISHES the tenant — ExecuteAttempt has already resolved one and re-scoped
 // the context to it — so it publishes it and RLS confines the read.
 func (s *Store) RunPlacement(ctx context.Context, tenant Tenant, runID string) (Placement, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var (
 		out      Placement
 		recorded *string
@@ -119,7 +119,7 @@ func (s *Store) RecordRunPool(ctx context.Context, tenant Tenant, runID, poolID 
 	if poolID == "" {
 		return "", nil
 	}
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var recorded string
 	switch err := s.pool.QueryRow(ctx, storage.Query("RecordRunPool"),
 		runID, tenant.Project, poolID).Scan(&recorded); {
@@ -155,7 +155,7 @@ func (s *Store) RecordRunPool(ctx context.Context, tenant Tenant, runID, poolID 
 // to capture and nothing that could offer one. Recovery is rung 2 — the woken attempt replays the
 // committed transcript — which is always available.
 func (s *Store) ParkRunForCapacity(ctx context.Context, tenant Tenant, runID, attemptID string) error {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin capacity park: %w", err)
@@ -217,7 +217,7 @@ func (s *Store) SweepExpiredCapacityParks(ctx context.Context, ttl time.Duration
 	var expired []parked
 	for rows.Next() {
 		var p parked
-		if err := rows.Scan(&p.tenant.Organization, &p.tenant.Project, &p.runID, &p.responseID); err != nil {
+		if err := rows.Scan(&p.tenant.Project, &p.runID, &p.responseID); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("scan expired capacity park: %w", err)
 		}
@@ -246,7 +246,7 @@ func (s *Store) SweepExpiredCapacityParks(ctx context.Context, ttl time.Duration
 // machine's arrival woke between the scan and this line is not `waiting` any more and is left alone, which
 // is what makes the sweep single-winner against the wake: the pass reports what it MOVED, not what it read.
 func (s *Store) timeOutOneCapacityPark(ctx context.Context, tenant Tenant, runID, responseID string, projection []byte) (bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return false, fmt.Errorf("begin capacity-park timeout: %w", err)
@@ -291,7 +291,7 @@ func (s *Store) WakeRunAwaitingCapacity(ctx context.Context, tenant Tenant, pool
 	if poolID == "" {
 		return "", nil
 	}
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return "", fmt.Errorf("begin capacity wake: %w", err)
@@ -321,7 +321,7 @@ func (s *Store) WakeRunAwaitingCapacity(ctx context.Context, tenant Tenant, pool
 	// failing for a reason that has nothing to do with capacity was retried without bound and reached a
 	// terminal only by coincidence. A park is not progress.
 	if _, err := tx.Exec(ctx, storage.Query("EnqueueWokenRunJob"),
-		jobID, tenant.Organization, tenant.Project, []byte(fmt.Sprintf(`{"run_id":%q}`, runID)), runID); err != nil {
+		jobID, tenant.Project, []byte(fmt.Sprintf(`{"run_id":%q}`, runID)), runID); err != nil {
 		return "", fmt.Errorf("enqueue capacity wake job: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -124,7 +124,7 @@ func wireSlackForSession(t *testing.T, spine *coordinator.Store, tenant coordina
 	ext := extensions.New(spine.Pool())
 	const signingRef, botRef = "slack/e23t8/signing", "slack/e23t8/bot"
 	botToken := []byte("xoxb-e23t8-component-fake-not-a-credential")
-	conn, err := ext.CreateSlackConnection(ctx, tenant.Organization, tenant.Project, []byte(fmt.Sprintf(
+	conn, err := ext.CreateSlackConnection(ctx, tenant.Project, []byte(fmt.Sprintf(
 		`{"team_id":%q,"bot_user_id":"Ubot","signing_secret_ref":%q,"bot_token_ref":%q,"allowed_users":["Uapprover"]}`,
 		team, signingRef, botRef)))
 	if err != nil {
@@ -135,7 +135,7 @@ func wireSlackForSession(t *testing.T, spine *coordinator.Store, tenant coordina
 	execSQL(t, spine.Pool(), `INSERT INTO slack_thread_sessions
 	                            (id, organization_id, project_id, connection_id, team_id, channel_id, thread_ts, session_id)
 	                          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		redeliveryID("sts"), tenant.Organization, tenant.Project, conn.ID, team, channel, thread, sessionID)
+		redeliveryID("sts"), tenant.Project, conn.ID, team, channel, thread, sessionID)
 
 	var calls []slackCall
 	slackAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +146,7 @@ func wireSlackForSession(t *testing.T, spine *coordinator.Store, tenant coordina
 	}))
 	t.Cleanup(slackAPI.Close)
 
-	secrets := func(org, ref string) ([]byte, error) {
+	secrets := func(ref string) ([]byte, error) {
 		if org != tenant.Organization {
 			return nil, fmt.Errorf("no secret bridge for %q/%q", org, ref)
 		}
@@ -472,7 +472,7 @@ func TestSlackToolApprovalRefusesAnUnauthorizedClicker(t *testing.T) {
 	// allowed_users, so this refusal can only come from config_policy.approvers — the T2 list, applied to a
 	// tool call and not only to a publication.
 	execSQL(t, h.spine.Pool(), `UPDATE projects SET config_policy = $3::jsonb WHERE organization_id = $1 AND id = $2`,
-		h.tenant.Organization, h.tenant.Project, `{"approvers":["slack:OTHERTEAM:Usomebodyelse"]}`)
+		h.tenant.Project, `{"approvers":["slack:OTHERTEAM:Usomebodyelse"]}`)
 	if got := h.click("Uapprover", "approve", hash); got.Rejected == "" {
 		t.Fatalf("a clicker outside the PROJECT's approver list decided a gated tool call: %+v", got)
 	}
@@ -486,7 +486,7 @@ func TestSlackToolApprovalRefusesAnUnauthorizedClicker(t *testing.T) {
 	// 3. And the same principal, once the list names them, decides. Without this leg the two refusals above
 	// would also pass on a build where NOTHING can ever decide — which is precisely the bug being fixed.
 	execSQL(t, h.spine.Pool(), `UPDATE projects SET config_policy = $3::jsonb WHERE organization_id = $1 AND id = $2`,
-		h.tenant.Organization, h.tenant.Project,
+		h.tenant.Project,
 		fmt.Sprintf(`{"approvers":["slack:%s:Uapprover"]}`, h.team))
 	if got := h.click("Uapprover", "approve", hash); got.Rejected != "" {
 		t.Fatalf("the named approver's click was refused: %q", got.Rejected)
@@ -508,7 +508,7 @@ const registeredGatedToolLabel = "the shared service account may move tickets, a
 func seedRegisteredGatedRun(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant, modelName string) (sessionID, runID string) {
 	t.Helper()
 	pool := cs.Pool()
-	org, project := tenant.Organization, tenant.Project
+	org, project := tenant.Project
 	toolID, trevID := redeliveryID("tool"), redeliveryID("trev")
 	setID, profileID, arevID := redeliveryID("tsrev"), redeliveryID("aprof"), redeliveryID("arev")
 	sessionID, runID = redeliveryID("ses"), redeliveryID("run")

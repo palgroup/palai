@@ -137,7 +137,7 @@ func newPublishHarness(t *testing.T) *publishHarness {
 
 	h := &publishHarness{
 		t: t, spine: cs, publisher: &recordingPublisher{},
-		tenant:    coordinator.Tenant{Organization: redeliveryID("org"), Project: redeliveryID("prj")},
+		tenant:    coordinator.Tenant{Project: redeliveryID("prj")},
 		sessionID: redeliveryID("ses"), runID: redeliveryID("run"), respID: redeliveryID("resp"),
 		bindingID: redeliveryID("bnd"), remote: "https://github.test/acme/widgets.git",
 		team: strings.ToUpper(redeliveryID("T")), channel: "C" + redeliveryID("chan"),
@@ -150,11 +150,11 @@ func newPublishHarness(t *testing.T) *publishHarness {
 	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, h.tenant.Organization)
 	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, h.tenant.Project, h.tenant.Organization)
 	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id, state) VALUES ($1,$2,$3,'active')`,
-		h.sessionID, h.tenant.Organization, h.tenant.Project)
+		h.sessionID, h.tenant.Project)
 	execSQL(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
-		h.respID, h.tenant.Organization, h.tenant.Project, h.sessionID)
+		h.respID, h.tenant.Project, h.sessionID)
 	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'running')`,
-		h.runID, h.tenant.Organization, h.tenant.Project, h.sessionID, h.respID)
+		h.runID, h.tenant.Project, h.sessionID, h.respID)
 
 	// The binding. default_branch is what a pull request will target, and NOTHING else decides it.
 	if err := cs.CreateRepositoryBinding(ctx, h.tenant, coordinator.RepositoryBindingInput{
@@ -222,7 +222,7 @@ func (h *publishHarness) wireSlack(t *testing.T, cs *coordinator.Store) (*extens
 	ext := extensions.New(cs.Pool())
 	const signingRef, botRef = "slack/e22t4/signing", "slack/e22t4/bot"
 	botToken := []byte("xoxb-e22t4-component-fake-not-a-credential")
-	conn, err := ext.CreateSlackConnection(ctx, h.tenant.Organization, h.tenant.Project, []byte(fmt.Sprintf(
+	conn, err := ext.CreateSlackConnection(ctx, h.tenant.Project, []byte(fmt.Sprintf(
 		`{"team_id":%q,"bot_user_id":"Ubot","signing_secret_ref":%q,"bot_token_ref":%q,"allowed_users":["Uapprover"]}`,
 		h.team, signingRef, botRef)))
 	if err != nil {
@@ -234,7 +234,7 @@ func (h *publishHarness) wireSlack(t *testing.T, cs *coordinator.Store) (*extens
 	execSQL(t, cs.Pool(), `INSERT INTO slack_thread_sessions
 	                         (id, organization_id, project_id, connection_id, team_id, channel_id, thread_ts, session_id)
 	                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		redeliveryID("sts"), h.tenant.Organization, h.tenant.Project, conn.ID, h.team, h.channel, h.thread, h.sessionID)
+		redeliveryID("sts"), h.tenant.Project, conn.ID, h.team, h.channel, h.thread, h.sessionID)
 
 	var calls []slackCall
 	slackAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -252,7 +252,7 @@ func (h *publishHarness) wireSlack(t *testing.T, cs *coordinator.Store) (*extens
 	}))
 	t.Cleanup(slackAPI.Close)
 
-	secrets := func(org, ref string) ([]byte, error) {
+	secrets := func(ref string) ([]byte, error) {
 		if org != h.tenant.Organization {
 			return nil, fmt.Errorf("no secret bridge for %q/%q", org, ref)
 		}

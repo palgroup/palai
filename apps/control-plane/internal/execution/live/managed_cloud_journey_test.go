@@ -140,7 +140,7 @@ func TestManagedCloudJourney(t *testing.T) {
 		t.Fatal("provisioned api key has no plaintext")
 	}
 	tokenA := apiKey.Key
-	tenantA := coordinator.Tenant{Organization: org.ID, Project: project.ID}
+	tenantA := coordinator.Tenant{Project: project.ID}
 
 	// Seed a queued run + a second bare response for the provisioned tenant (the run itself is orchestrator-
 	// driven, not an HTTP claim; the 2nd response gives A a paginable history for the cross-tenant cursor step).
@@ -150,14 +150,14 @@ func TestManagedCloudJourney(t *testing.T) {
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionA, tenantA.Organization, tenantA.Project)
+	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionA, tenantA.Project)
 	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
-		respA, tenantA.Organization, tenantA.Project, sessionA, encodeJSONString("managed-cloud journey: reply with the single word done."))
+		respA, tenantA.Project, sessionA, encodeJSONString("managed-cloud journey: reply with the single word done."))
 	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'queued')`,
-		runA, tenantA.Organization, tenantA.Project, sessionA, respA)
+		runA, tenantA.Project, sessionA, respA)
 	respA2 := newID("resp")
 	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued','{}'::jsonb)`,
-		respA2, tenantA.Organization, tenantA.Project, sessionA)
+		respA2, tenantA.Project, sessionA)
 
 	// A second seeded tenant with its own key — the outsider whose key must be denied A's resources.
 	tokenB, _ := seedTenantWithKey(t, pool, "org-B")

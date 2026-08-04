@@ -10,9 +10,9 @@
 -- outcome ('not_scanned' until a scanner is wired). The row is the durable index; the bytes
 -- live in the control-plane-only object store (spec §24 — the engine/runner never see either).
 -- name: InsertArtifact
-INSERT INTO artifacts (id, organization_id, project_id, run_id, object_key, size_bytes, checksum,
+INSERT INTO artifacts (id, project_id, run_id, object_key, size_bytes, checksum,
     media_type, logical_type, malware_scan_status, provenance)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
 
 -- InsertInboundArtifact records an artifact whose id the CALLER chose, run_id still unset, and
 -- does nothing if that id already exists. Both halves are for one caller shape: an integration
@@ -30,9 +30,9 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 -- step that reads it. But runs.id does not exist yet either, and artifacts.run_id references it. So
 -- the row lands unattached and AttachArtifactRun binds it the moment the run is real.
 -- name: InsertInboundArtifact
-INSERT INTO artifacts (id, organization_id, project_id, object_key, size_bytes, checksum,
+INSERT INTO artifacts (id, project_id, object_key, size_bytes, checksum,
     media_type, logical_type, malware_scan_status, provenance)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (id) DO NOTHING;
 
 -- AttachArtifactRun binds an inbound artifact to the run that was admitted for it, tenant-scoped.

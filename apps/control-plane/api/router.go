@@ -210,18 +210,15 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("POST /v1/hooks/{id}/disable", hh.disableHook)
 	}
 
-	// The tenancy provisioning surface (spec §39.2, E13 Task 2, TEN-003/MCI-001): organizations, projects
-	// (+ the §14 config_policy PATCH write-path), and API keys. Durable identity, not idempotent operations,
-	// so no Idempotency-Key. Every route is scoped by the verified key and gated on the `provision`
-	// capability, EXCEPT the two that open a tenant — POST /v1/organizations and, since A.2 Task 6,
-	// POST /v1/projects — which are gated on `system` and each return a tenant admin key's plaintext once,
-	// so a new tenant is provisioned with NO restart. nil in tiers that never provision (the Docker-free
-	// conformance tiers).
+	// The tenancy provisioning surface (spec §39.2, E13 Task 2, TEN-003/MCI-001): projects (+ the §14
+	// config_policy PATCH write-path) and API keys. Durable identity, not idempotent operations, so no
+	// Idempotency-Key. Every route is scoped by the verified key and gated on the `provision` capability,
+	// EXCEPT the one that opens a tenant — POST /v1/projects, since A.2 Task 6 — which is gated on
+	// `system` and returns a tenant admin key's plaintext once, so a new tenant is provisioned with NO
+	// restart. The three /v1/organizations routes left with that task. nil in tiers that never provision
+	// (the Docker-free conformance tiers).
 	if provisioning != nil {
 		ph := &provisioningHandler{provisioning: provisioning}
-		mux.HandleFunc("POST /v1/organizations", ph.createOrganization)
-		mux.HandleFunc("GET /v1/organizations", ph.listOrganizations)
-		mux.HandleFunc("GET /v1/organizations/{organization_id}", ph.getOrganization)
 		mux.HandleFunc("POST /v1/projects", ph.createProject)
 		mux.HandleFunc("GET /v1/projects", ph.listProjects)
 		mux.HandleFunc("GET /v1/projects/{project_id}", ph.getProject)

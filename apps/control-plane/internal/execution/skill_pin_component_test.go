@@ -40,7 +40,7 @@ func TestSkillDigestPinnedRunRecordsExactDigest(t *testing.T) {
 		t.Fatalf("Migrate: %v", err)
 	}
 	pool := st.Spine().Pool()
-	tenant := coordinator.Tenant{Organization: pinnedID("org"), Project: pinnedID("prj")}
+	tenant := coordinator.Tenant{Project: pinnedID("prj")}
 	exec := func(sql string, args ...any) {
 		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("exec %q: %v", sql, err)
@@ -53,21 +53,21 @@ func TestSkillDigestPinnedRunRecordsExactDigest(t *testing.T) {
 	sessionID, profileID, revID, runID := pinnedID("ses"), pinnedID("aprof"), pinnedID("arev"), pinnedID("run")
 	skillID, rev1ID := pinnedID("skill"), pinnedID("skillrev")
 	const d1 = "sha256:d1d1d1"
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
 	exec(`INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'commit-convention')`,
-		skillID, tenant.Organization, tenant.Project)
+		skillID, tenant.Project)
 	exec(`INSERT INTO skill_revisions (id, organization_id, project_id, skill_id, revision_number, digest, state, metadata, archive)
 	      VALUES ($1,$2,$3,$4,1,$5,'enabled','{"name":"commit-convention","description":"write commits"}','\x00')`,
-		rev1ID, tenant.Organization, tenant.Project, skillID, d1)
+		rev1ID, tenant.Project, skillID, d1)
 
 	// A run pinning an agent revision that REQUESTS the skill.
 	exec(`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`,
-		profileID, tenant.Organization, tenant.Project)
+		profileID, tenant.Project)
 	exec(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, skills, published_at)
 	      VALUES ($1,$2,$3,$4,1,'model-pinned','["file"]','["commit-convention"]', clock_timestamp())`,
-		revID, tenant.Organization, tenant.Project, profileID)
+		revID, tenant.Project, profileID)
 	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,'running',$5)`,
-		runID, tenant.Organization, tenant.Project, sessionID, revID)
+		runID, tenant.Project, sessionID, revID)
 
 	// Freeze the pins at run-start.
 	if err := st.PinRunSkills(ctx, tenant, runID); err != nil {
@@ -83,7 +83,7 @@ func TestSkillDigestPinnedRunRecordsExactDigest(t *testing.T) {
 	rev2ID := pinnedID("skillrev")
 	exec(`INSERT INTO skill_revisions (id, organization_id, project_id, skill_id, revision_number, digest, state, metadata, archive)
 	      VALUES ($1,$2,$3,$4,2,$5,'enabled','{"name":"commit-convention","description":"v2"}','\x00')`,
-		rev2ID, tenant.Organization, tenant.Project, skillID, d2)
+		rev2ID, tenant.Project, skillID, d2)
 
 	// A resumed attempt re-runs the pin path — it must be a no-op (already frozen).
 	if err := st.PinRunSkills(ctx, tenant, runID); err != nil {

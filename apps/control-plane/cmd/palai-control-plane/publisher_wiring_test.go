@@ -95,7 +95,7 @@ func TestABindingsOwnCredentialPublishesWithNoGitHubApp(t *testing.T) {
 	// DB-only by design). Everything else below is what production built.
 	const token = "demo-local-token-value"
 	var askedOrg, askedRef string
-	repo.ConnectionSecrets = func(org, ref string) ([]byte, error) {
+	repo.ConnectionSecrets = func(ref string) ([]byte, error) {
 		askedOrg, askedRef = org, ref
 		return []byte(token), nil
 	}

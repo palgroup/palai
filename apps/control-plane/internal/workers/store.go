@@ -67,9 +67,9 @@ func (s *Store) Enroll(ctx context.Context, tenant Tenant, spec WorkerSpec) (Wor
 	if err != nil {
 		return Worker{}, fmt.Errorf("marshal toolchain digests: %w", err)
 	}
-	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.WithTenant(ctx, tenant.Project)
 	_, err = s.pool.Exec(ctx, storage.Query("InsertCapabilityWorker"),
-		id, tenant.Organization, tenant.Project, spec.Capability, orDefault(spec.CapabilityVersion, "0.1.0"),
+		id, tenant.Project, spec.Capability, orDefault(spec.CapabilityVersion, "0.1.0"),
 		spec.OS, spec.Arch, digests, spec.Capacity, spec.PoolLabel, spec.TrustLabel)
 	if err != nil {
 		return Worker{}, fmt.Errorf("insert capability worker: %w", err)
@@ -79,12 +79,12 @@ func (s *Store) Enroll(ctx context.Context, tenant Tenant, spec WorkerSpec) (Wor
 
 // GetWorker resolves an enrolled worker within its tenant.
 func (s *Store) GetWorker(ctx context.Context, tenant Tenant, workerID string) (Worker, bool, error) {
-	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.WithTenant(ctx, tenant.Project)
 	var w Worker
 	var digests []byte
 	w.Tenant = tenant
 	err := s.pool.QueryRow(ctx, storage.Query("GetCapabilityWorker"), workerID, tenant.Project).
-		Scan(&w.ID, &w.Tenant.Organization, &w.Tenant.Project, &w.Spec.Capability, &w.Spec.CapabilityVersion,
+		Scan(&w.ID, &w.Tenant.Project, &w.Spec.Capability, &w.Spec.CapabilityVersion,
 			&w.Spec.OS, &w.Spec.Arch, &digests, &w.Spec.Capacity, &w.Spec.PoolLabel, &w.Spec.TrustLabel, &w.Health, &w.Fence)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Worker{}, false, nil
@@ -104,7 +104,7 @@ func (s *Store) SetWorkerHealth(ctx context.Context, tenant Tenant, workerID, he
 	if health != "healthy" && health != "draining" && health != "unhealthy" {
 		return 0, fmt.Errorf("workers: invalid health %q", health)
 	}
-	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.WithTenant(ctx, tenant.Project)
 	var fence int64
 	err := s.pool.QueryRow(ctx, storage.Query("SetCapabilityWorkerHealth"), workerID, tenant.Project, health).Scan(&fence)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -123,7 +123,7 @@ func (s *Store) DispatchJob(ctx context.Context, tenant Tenant, spec JobSpec) (s
 	if _, ok := LookupOperation(spec.Capability, spec.Operation); !ok {
 		return "", ErrUntypedOperation
 	}
-	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.WithTenant(ctx, tenant.Project)
 
 	if spec.IdempotencyKey != "" {
 		var existing string
@@ -180,7 +180,7 @@ func (s *Store) ClaimNext(ctx context.Context, tenant Tenant, workerID string) (
 	if !ok || worker.Health != "healthy" {
 		return Claim{}, false, nil
 	}
-	sctx := storage.WithTenant(ctx, tenant.Organization, tenant.Project)
+	sctx := storage.WithTenant(ctx, tenant.Project)
 	var jobID, operation, sideEffectKey, runID, attemptID string
 	var deadline *time.Time
 	var jobFence int64
@@ -256,7 +256,7 @@ func (s *Store) SubmitResult(ctx context.Context, claim Claim, outcome Outcome) 
 		return fmt.Errorf("workers: invalid outcome class %q", outcome.Class)
 	}
 	fireAfterFenceGuard()
-	sctx := storage.WithTenant(ctx, claim.Tenant.Organization, claim.Tenant.Project)
+	sctx := storage.WithTenant(ctx, claim.Tenant.Project)
 	if err := s.appendEntry(sctx, claim.Tenant, entry{
 		jobID: claim.JobID, kind: kind, workerID: claim.WorkerID, capability: claim.Capability,
 		operation: claim.Operation, fence: claim.JobFence, receipt: orEmptyMap(outcome.Receipt),
@@ -280,7 +280,7 @@ func (s *Store) SubmitResult(ctx context.Context, claim Claim, outcome Outcome) 
 // fence+1, which fences out the old worker (§31.6). It refuses a side-effecting operation (only a read-only
 // op retries blindly; a side-effecting one relies on destination idempotency). Returns the new fence.
 func (s *Store) RedispatchForRetry(ctx context.Context, tenant Tenant, jobID string) (int64, error) {
-	sctx := storage.WithTenant(ctx, tenant.Organization, tenant.Project)
+	sctx := storage.WithTenant(ctx, tenant.Project)
 	cur, err := s.currentJob(sctx, tenant, jobID)
 	if err != nil {
 		return 0, err
@@ -324,7 +324,7 @@ func (s *Store) RedeemSecretHandle(ctx context.Context, claim Claim, handleName 
 	if err := s.guardFences(ctx, claim); err != nil {
 		return nil, err
 	}
-	sctx := storage.WithTenant(ctx, claim.Tenant.Organization, claim.Tenant.Project)
+	sctx := storage.WithTenant(ctx, claim.Tenant.Project)
 	cur, err := s.currentJob(sctx, claim.Tenant, claim.JobID)
 	if err != nil {
 		return nil, err
@@ -336,7 +336,7 @@ func (s *Store) RedeemSecretHandle(ctx context.Context, claim Claim, handleName 
 	if cur.deadline == nil || !s.now().Before(*cur.deadline) {
 		return nil, ErrHandleExpired
 	}
-	value, ok, err := s.secrets.Resolve(sctx, claim.Tenant.Organization, handleName)
+	value, ok, err := s.secrets.Resolve(sctx, handleName)
 	if err != nil {
 		return nil, fmt.Errorf("resolve secret handle: %w", err)
 	}
@@ -369,7 +369,7 @@ type currentState struct {
 // or whose WORKER enrollment fence is no longer current (a health/capability change bumped it —
 // ErrWorkerFenced). Both are the §31.6 lease cuts.
 func (s *Store) guardFences(ctx context.Context, claim Claim) error {
-	sctx := storage.WithTenant(ctx, claim.Tenant.Organization, claim.Tenant.Project)
+	sctx := storage.WithTenant(ctx, claim.Tenant.Project)
 	cur, err := s.currentJob(sctx, claim.Tenant, claim.JobID)
 	if err != nil {
 		return err
@@ -399,7 +399,7 @@ func (s *Store) guardFences(ctx context.Context, claim Claim) error {
 // journal), the latest-seq entry's kind/worker, the dispatch deadline + secret refs, and the dispatch spec
 // (for a re-dispatch). A missing job is ErrNoSuchJob.
 func (s *Store) currentJob(ctx context.Context, tenant Tenant, jobID string) (currentState, error) {
-	sctx := storage.WithTenant(ctx, tenant.Organization, tenant.Project)
+	sctx := storage.WithTenant(ctx, tenant.Project)
 	var cur currentState
 	var refs []byte
 	err := s.pool.QueryRow(sctx, storage.Query("CurrentCapabilityJob"), jobID, tenant.Project).
@@ -477,7 +477,7 @@ func fireAfterFenceGuard() {
 }
 
 func (s *Store) appendEntry(ctx context.Context, tenant Tenant, e entry) error {
-	sctx := storage.WithTenant(ctx, tenant.Organization, tenant.Project)
+	sctx := storage.WithTenant(ctx, tenant.Project)
 	inputRefs, _ := json.Marshal(orEmptySlice(e.inputRefs))
 	secretRefs, _ := json.Marshal(orEmptySlice(e.secretHandleRefs))
 	resourceLimits, _ := json.Marshal(orEmptyMap(e.resourceLimits))
@@ -494,7 +494,7 @@ func (s *Store) appendEntry(ctx context.Context, tenant Tenant, e entry) error {
 	}
 	query := "AppendCapabilityJobEntry"
 	args := []any{
-		s.mintID("cje"), tenant.Organization, tenant.Project, e.jobID, e.kind, e.idempotencyKey, e.runID,
+		s.mintID("cje"), tenant.Project, e.jobID, e.kind, e.idempotencyKey, e.runID,
 		e.attemptID, e.workerID, e.capability, e.operation, inputRefs, secretRefs, deadline, resourceLimits,
 		outputSchema, networkPolicy, e.sideEffectKey, e.fence, receiptJSON,
 	}

@@ -79,8 +79,8 @@ func (s *Store) Fire(ctx context.Context, ev HookEvent) (HookOutcome, error) {
 	// The event names the tenant the hooks belong to; scope the dispatch to it so a remote hook's own
 	// ledger writes (the operation row the signed invoke opens) run under migration 000029's policies.
 	// The observer path forks a fresh background context, so it captures the tenant explicitly below.
-	ctx = storage.ScopeToTenant(ctx, ev.Org, ev.Project)
-	hooks, err := s.loadHooks(ctx, ev.Org, ev.Project, ev.Point)
+	ctx = storage.ScopeToTenant(ctx, ev.Project)
+	hooks, err := s.loadHooks(ctx, ev.Project, ev.Point)
 	if err != nil {
 		return HookOutcome{}, err
 	}
@@ -166,7 +166,7 @@ func (s *Store) fireObserver(h loadedHook, ev HookEvent) {
 		defer func() { _ = recover() }() // fail-OPEN: an observer panic never propagates
 		// A fresh context (the run's may already be canceling), but scoped to the event's tenant so an
 		// observer hook that touches the DB is gated by migration 000029's policies like any other write.
-		octx, cancel := context.WithTimeout(storage.WithTenant(context.Background(), ev.Org, ev.Project), hookTimeout(h.Category, h.TimeoutMS))
+		octx, cancel := context.WithTimeout(storage.WithTenant(context.Background(), ev.Project), hookTimeout(h.Category, h.TimeoutMS))
 		defer cancel()
 		_, _ = s.runHook(octx, h, ev) // result intentionally discarded — an observer cannot affect the run
 	}()

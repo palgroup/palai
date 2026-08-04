@@ -23,13 +23,13 @@ type MergeRecordInput struct {
 
 // RecordMerge persists a merge outcome, naming the source child run (spec §30.5, REP-011).
 func (s *Store) RecordMerge(ctx context.Context, tenant Tenant, in MergeRecordInput) error {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	conflicts, err := json.Marshal(nonNilSlice(in.ConflictPaths))
 	if err != nil {
 		return fmt.Errorf("marshal conflict paths: %w", err)
 	}
 	_, err = s.pool.Exec(ctx, storage.Query("RecordMerge"),
-		in.MergeID, tenant.Organization, tenant.Project, in.ParentRunID, in.SourceChildRunID,
+		in.MergeID, tenant.Project, in.ParentRunID, in.SourceChildRunID,
 		in.ChildBranch, in.Merged, in.MergeCommit, conflicts)
 	if err != nil {
 		return fmt.Errorf("record merge: %w", err)

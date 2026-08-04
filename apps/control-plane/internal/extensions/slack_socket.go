@@ -266,7 +266,7 @@ func (s *SlackSocket) dial(ctx context.Context, conn api.SlackConnectionRef) (*w
 	ctx, cancel := context.WithTimeout(ctx, slackSocketDialTimeout)
 	defer cancel()
 
-	token, err := s.secrets(conn.Org, conn.AppTokenRef)
+	token, err := s.secrets(conn.AppTokenRef)
 	if err != nil || len(token) == 0 {
 		// The ref NAME is not echoed and neither is the resolver's error — a resolver error can carry the
 		// backend's own detail.

@@ -8,7 +8,6 @@
   "properties": {
     "id": {"$ref": "../common/id.json#/$defs/opaque_id"},
     "object": {"type": "string", "const": "mcp_connection"},
-    "organization_id": {"$ref": "../common/id.json#/$defs/organization_id"},
     "project_id": {"$ref": "../common/id.json#/$defs/project_id"},
     "name": {"type": "string", "description": "The discovery namespace segment (mcp.<name>.<tool>); a single ASCII segment, unique per project."},
     "transport": {"type": "string", "enum": ["stdio", "http"]},

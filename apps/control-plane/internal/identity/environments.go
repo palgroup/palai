@@ -74,14 +74,10 @@ func (s *SecretStore) CreateEnvironment(ctx context.Context, scope middleware.Sc
 	if strings.TrimSpace(in.Name) == "" {
 		return api.ProvisionResult{MissingField: "name"}, nil
 	}
-	scopedCtx, org, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
+	ctx = provisioningScope(ctx, scope)
 	id := middleware.NewID("env")
 	var createdAt time.Time
-	err = s.pool.QueryRow(ctx, storage.Query("InsertEnvironment"), id, org, in.Name, in.Description).Scan(&createdAt)
+	err := s.pool.QueryRow(ctx, storage.Query("InsertEnvironment"), id, in.Name, in.Description).Scan(&createdAt)
 	if isUniqueViolation(err) {
 		// A duplicate NAME, not a duplicate id. Reported as a conflict rather than silently returning the
 		// existing row: "create production" answered with someone else's production environment is how an
@@ -96,13 +92,10 @@ func (s *SecretStore) CreateEnvironment(ctx context.Context, scope middleware.Sc
 	})}, nil
 }
 
-// ListEnvironments lists the caller's organization's environments with their key COUNTS.
+// ListEnvironments lists the installation's environments with their key COUNTS (000066: the table has
+// no tenant column, so there is nothing narrower to list).
 func (s *SecretStore) ListEnvironments(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
+	ctx = provisioningScope(ctx, scope)
 	rows, err := s.pool.Query(ctx, storage.Query("ListEnvironments"))
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("list environments: %w", err)
@@ -130,14 +123,10 @@ func (s *SecretStore) ListEnvironments(ctx context.Context, scope middleware.Sco
 //
 // THE VALUES ARE NOT HERE AND THERE IS NO PARAMETER THAT WOULD ADD THEM.
 func (s *SecretStore) GetEnvironment(ctx context.Context, scope middleware.Scope, id string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
+	ctx = provisioningScope(ctx, scope)
 	v := environmentView{Object: "environment"}
 	var createdAt time.Time
-	err = s.pool.QueryRow(ctx, storage.Query("GetEnvironment"), id).Scan(&v.ID, &v.Name, &v.Description, &createdAt)
+	err := s.pool.QueryRow(ctx, storage.Query("GetEnvironment"), id).Scan(&v.ID, &v.Name, &v.Description, &createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.ProvisionResult{NotFound: true}, nil
 	}
@@ -210,11 +199,7 @@ func (s *SecretStore) PutEnvironmentValue(ctx context.Context, scope middleware.
 		return api.ProvisionResult{BadField: true}, nil
 	}
 
-	scopedCtx, org, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
+	ctx = provisioningScope(ctx, scope)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("begin put environment value: %w", err)
@@ -229,12 +214,12 @@ func (s *SecretStore) PutEnvironmentValue(ctx context.Context, scope middleware.
 	} else if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("verify environment: %w", err)
 	}
-	if _, err := tx.Exec(ctx, storage.Query("UpsertEnvironmentValue"), id, org, in.Key); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("UpsertEnvironmentValue"), id, in.Key); err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("record environment key: %w", err)
 	}
 	// requireExisting=false: a first write and a rotation are the same call, so there is no name for
 	// which this should 404.
-	version, createdAt, err := s.insertVersion(ctx, tx, org, environmentSecretName(id, in.Key), in.Value, false)
+	version, createdAt, err := s.insertVersion(ctx, tx, environmentSecretName(id, in.Key), in.Value, false)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -257,13 +242,9 @@ func (s *SecretStore) PutEnvironmentValue(ctx context.Context, scope middleware.
 // and worth stating precisely: nothing names those versions afterwards (the derived name is only ever
 // built from a membership row), and no run receives the key.
 func (s *SecretStore) DeleteEnvironmentValue(ctx context.Context, scope middleware.Scope, id, key string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
+	ctx = provisioningScope(ctx, scope)
 	var removed string
-	err = s.pool.QueryRow(ctx, storage.Query("DeleteEnvironmentValue"), id, key).Scan(&removed)
+	err := s.pool.QueryRow(ctx, storage.Query("DeleteEnvironmentValue"), id, key).Scan(&removed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.ProvisionResult{NotFound: true}, nil
 	}

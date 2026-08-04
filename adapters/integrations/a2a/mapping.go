@@ -37,11 +37,11 @@ func DecideDirectMessage(state TaskState, durable bool) bool {
 
 // GovernIdentity resolves the tenant identity that governs an inbound A2A message (§38.6). The authenticated
 // bearer scope is the ONLY authority: the message argument is accepted so the contract is explicit that its
-// metadata is examined and DISCARDED — any organization/project inside it is IGNORED. This closes the
+// metadata is examined and DISCARDED — any project inside it is IGNORED. This closes the
 // forged-identity attack: an A2A client cannot make its run execute in another tenant by putting that
 // tenant's ids in metadata.
-func GovernIdentity(authOrg, authProject string, _ Message) (org, project string) {
-	return authOrg, authProject
+func GovernIdentity(authProject string, _ Message) (project string) {
+	return authProject
 }
 
 // MessageText concatenates the text parts of an inbound message into the run input prompt. File/data parts

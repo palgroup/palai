@@ -124,7 +124,7 @@ func TestLiveTenancyIsolationCrossOrgDeny(t *testing.T) {
 		`SELECT count(*) FROM responses WHERE id=$1`, respA); n != 0 {
 		t.Fatalf("org-B-scoped DB read saw %d of org-A's response rows, want 0 (migration 000062 RLS deny)", n)
 	}
-	if n := countUnderTenant(t, pool, tenantA.Organization, tenantA.Project,
+	if n := countUnderTenant(t, pool, tenantA.Project,
 		`SELECT count(*) FROM responses WHERE id=$1`, respA); n != 1 {
 		t.Fatalf("org-A-scoped DB read saw %d of its own response rows, want exactly 1", n)
 	}
@@ -137,7 +137,7 @@ func TestLiveTenancyIsolationCrossOrgDeny(t *testing.T) {
 // starts queued so the orchestrator drives it; prompt is the input the model answers.
 func seedTenantWithRun(t *testing.T, pool *pgxpool.Pool, prompt string) (token string, tenant coordinator.Tenant, session, response, runID string) {
 	t.Helper()
-	tenant = coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	tenant = coordinator.Tenant{Project: newID("prj")}
 	session, response, runID = newID("ses"), newID("resp"), newID("run")
 	principal, keyID := newID("prin"), newID("key")
 	token = newID("sk")
@@ -149,14 +149,14 @@ func seedTenantWithRun(t *testing.T, pool *pgxpool.Pool, prompt string) (token s
 	do(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	do(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
 	do(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`,
-		principal, tenant.Organization, tenant.Project)
+		principal, tenant.Project)
 	do(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4, $5)`,
-		keyID, tenant.Organization, tenant.Project, principal, coordinator.HashAPIKey(token))
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, tenant.Organization, tenant.Project)
+		keyID, tenant.Project, principal, coordinator.HashAPIKey(token))
+	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, tenant.Project)
 	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
-		response, tenant.Organization, tenant.Project, session, encodeJSONString(prompt))
+		response, tenant.Project, session, encodeJSONString(prompt))
 	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'queued')`,
-		runID, tenant.Organization, tenant.Project, session, response)
+		runID, tenant.Project, session, response)
 	return token, tenant, session, response, runID
 }
 
@@ -165,7 +165,7 @@ func seedTenantWithRun(t *testing.T, pool *pgxpool.Pool, prompt string) (token s
 func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, label string) (token string, tenant coordinator.Tenant) {
 	t.Helper()
 	_ = label
-	tenant = coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	tenant = coordinator.Tenant{Project: newID("prj")}
 	principal, keyID := newID("prin"), newID("key")
 	token = newID("sk")
 	do := func(sql string, args ...any) {
@@ -176,9 +176,9 @@ func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, label string) (token st
 	do(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	do(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
 	do(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`,
-		principal, tenant.Organization, tenant.Project)
+		principal, tenant.Project)
 	do(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4, $5)`,
-		keyID, tenant.Organization, tenant.Project, principal, coordinator.HashAPIKey(token))
+		keyID, tenant.Project, principal, coordinator.HashAPIKey(token))
 	return token, tenant
 }
 
@@ -190,7 +190,7 @@ func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, label string) (token st
 // api_keys' foreign keys, but that tenant is never the caller's.
 func seedSystemKey(t *testing.T, pool *pgxpool.Pool) (token string) {
 	t.Helper()
-	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	tenant := coordinator.Tenant{Project: newID("prj")}
 	principal, keyID := newID("prin"), newID("key")
 	token = newID("sk")
 	do := func(sql string, args ...any) {
@@ -201,9 +201,9 @@ func seedSystemKey(t *testing.T, pool *pgxpool.Pool) (token string) {
 	do(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	do(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
 	do(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`,
-		principal, tenant.Organization, tenant.Project)
+		principal, tenant.Project)
 	do(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, scopes) VALUES ($1, $2, $3, $4, $5, $6)`,
-		keyID, tenant.Organization, tenant.Project, principal, coordinator.HashAPIKey(token), []string{middleware.ScopeSystem})
+		keyID, tenant.Project, principal, coordinator.HashAPIKey(token), []string{middleware.ScopeSystem})
 	return token
 }
 

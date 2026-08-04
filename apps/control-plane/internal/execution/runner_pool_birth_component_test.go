@@ -240,7 +240,7 @@ func TestPoolBirthReachesTheWaitingRoomAndTheApproveRoute(t *testing.T) {
 		}
 	}()
 	waitConnected(t, b.gateway, 1)
-	tenant := coordinator.Tenant{Organization: b.org, Project: b.prj}
+	tenant := coordinator.Tenant{Project: b.prj}
 	starved, cancelStarved := context.WithTimeout(ctx, 3*time.Second)
 	defer cancelStarved()
 	if _, err := b.gateway.Dial(starved, b.tenantAttempt(tenant, poolID, "run_birth", "att_birth")); !errors.Is(err, execution.ErrPoolHasNoRunner) {

@@ -46,7 +46,7 @@ func TestVerifyPublishedRevisionPropagatesQueryError(t *testing.T) {
 	// A canceled context makes the pin-state query fail with a real DB error (not pgx.ErrNoRows).
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	tenant := Tenant{Organization: pinTestID("org"), Project: pinTestID("prj")}
+	tenant := Tenant{Project: pinTestID("prj")}
 	_, ok, qErr := verifyPublishedRevision(canceled, tx, "AgentRevisionPublished", pinTestID("arev"), tenant)
 	if qErr == nil {
 		t.Fatal("verifyPublishedRevision swallowed a query error (returned nil); want it propagated so admission fails closed")

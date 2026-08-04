@@ -9,7 +9,6 @@ export type CommandId = string;
 export type EventId = string;
 export type MessageId = string;
 export type OpaqueId = string;
-export type OrganizationId = string;
 export type ProjectId = string;
 export type RepositoryBindingId = string;
 export type RequestId = string;
@@ -84,7 +83,6 @@ export interface Hook {
   id: OpaqueId;
   name: string;
   object: string;
-  organization_id?: OrganizationId;
   project_id?: ProjectId;
 }
 
@@ -113,7 +111,6 @@ export interface MCPConnection {
   id: OpaqueId;
   name: string;
   object: string;
-  organization_id?: OrganizationId;
   project_id?: ProjectId;
   sampling?: boolean;
   transport: string;
@@ -135,7 +132,6 @@ export interface ModelConnection {
   created_at?: string;
   id: OpaqueId;
   object: string;
-  organization_id?: OrganizationId;
   project_id?: ProjectId;
   provider: string;
   secret_ref: string;
@@ -164,7 +160,6 @@ export interface ModelRoute {
   id: OpaqueId;
   name: string;
   object: string;
-  organization_id?: OrganizationId;
   project_id?: ProjectId;
 }
 
@@ -224,7 +219,6 @@ export interface RepositoryBinding {
   default_branch: string;
   id: RepositoryBindingId;
   object: string;
-  organization_id?: OrganizationId;
   policy?: Record<string, unknown>;
   project_id?: ProjectId;
   provider: string;
@@ -238,7 +232,6 @@ export interface ResourceEnvelope {
   labels?: Record<string, string>;
   metadata?: Record<string, unknown>;
   object: string;
-  organization_id?: OrganizationId;
   project_id?: ProjectId;
   revision?: number;
   updated_at?: string;
@@ -252,7 +245,6 @@ export interface Response {
   metadata?: Record<string, unknown>;
   model: string;
   object: string;
-  organization_id?: OrganizationId;
   output: ContentItem[];
   project_id?: ProjectId;
   revision?: number;
@@ -310,7 +302,6 @@ export interface Session {
   name: string;
   name_source: string;
   object: string;
-  organization_id?: OrganizationId;
   output_tokens: number;
   project_id?: ProjectId;
   status: string;
@@ -328,7 +319,6 @@ export interface Skill {
   id: OpaqueId;
   name?: string;
   object: string;
-  organization_id?: OrganizationId;
   project_id?: ProjectId;
   revision_number?: number;
   scan_findings?: Record<string, unknown>[];
@@ -343,7 +333,6 @@ export interface Tool {
   id: OpaqueId;
   model_visible_name: string;
   object: string;
-  organization_id?: OrganizationId;
   project_id?: ProjectId;
 }
 
@@ -372,7 +361,6 @@ export interface ToolSet {
   digest?: string;
   id: OpaqueId;
   object: string;
-  organization_id?: OrganizationId;
   project_id?: ProjectId;
   revision_number: number;
   set: string;

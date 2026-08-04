@@ -17,14 +17,14 @@ func seedAgentRevision(t *testing.T, tenant coordinator.Tenant, cs *coordinator.
 	pool := cs.Pool()
 	profileID, revID := newID("aprof"), newID("arev")
 	exec(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,$4)`,
-		profileID, tenant.Organization, tenant.Project, newID("name"))
+		profileID, tenant.Project, newID("name"))
 	pubExpr := "NULL"
 	if publish {
 		pubExpr = "clock_timestamp()"
 	}
 	exec(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, published_at)
 	               VALUES ($1,$2,$3,$4,1,'model-pinned','["file"]', `+pubExpr+`)`,
-		revID, tenant.Organization, tenant.Project, profileID)
+		revID, tenant.Project, profileID)
 	return revID
 }
 
@@ -93,7 +93,7 @@ func TestRunTemplateRevisionStartsProfileFreeRun(t *testing.T) {
 	templateRev := newID("rtr")
 	exec(t, pool, `INSERT INTO run_template_revisions (id, organization_id, project_id, template_name, revision_number, model, tools, published_at)
 	               VALUES ($1,$2,$3,'nightly',1,'template-model','["shell"]', clock_timestamp())`,
-		templateRev, tenant.Organization, tenant.Project)
+		templateRev, tenant.Project)
 
 	in := admissionInput(principalID, newID("key"), "hash-tmpl", `{"id":"r","object":"response","status":"queued"}`)
 	in.RunTemplateRevisionID = templateRev
@@ -116,7 +116,7 @@ func TestRunTemplateRevisionStartsProfileFreeRun(t *testing.T) {
 	}
 	var profiles int
 	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM agent_profiles WHERE organization_id=$1 AND project_id=$2`,
-		tenant.Organization, tenant.Project).Scan(&profiles); err != nil {
+		tenant.Project).Scan(&profiles); err != nil {
 		t.Fatalf("count agent_profiles: %v", err)
 	}
 	if profiles != 0 {

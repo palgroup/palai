@@ -191,6 +191,6 @@ type Registry interface {
 	// is what RESOLVES a tenant, so asking for one would be asking the caller to already know the
 	// answer. It is a by-primary-key read of a row an operator created, not caller input.
 	Pool(ctx context.Context, poolID string) (Pool, bool, error)
-	Get(ctx context.Context, org, project, id string) (Runner, bool, error)
-	List(ctx context.Context, org, project string, window ListWindow) ([]Runner, error)
+	Get(ctx context.Context, project, id string) (Runner, bool, error)
+	List(ctx context.Context, project string, window ListWindow) ([]Runner, error)
 }

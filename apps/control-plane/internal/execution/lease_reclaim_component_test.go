@@ -35,19 +35,19 @@ func openLeaseHarness(t *testing.T) (*coordinator.Store, coordinator.Tenant, str
 	if err := cs.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
-	tenant := coordinator.Tenant{Organization: redeliveryID("org"), Project: redeliveryID("prj")}
+	tenant := coordinator.Tenant{Project: redeliveryID("prj")}
 	sessionID := redeliveryID("ses")
 	pool := cs.Pool()
 	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Organization, tenant.Project)
+	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Project)
 	wsID := redeliveryID("wsp")
 	if err := cs.CreateWorkspace(ctx, tenant, coordinator.WorkspaceInput{WorkspaceID: wsID, SessionID: sessionID, State: "leased"}); err != nil {
 		t.Fatalf("CreateWorkspace() error = %v", err)
 	}
 	// AllocateWorkspace is keyed by the opaque workspace id, not by a tenant, so the CONTEXT carries
 	// the scope — the same way the run worker scopes a claimed job (migration 000029).
-	alloc, err := cs.AllocateWorkspace(storage.WithTenant(ctx, tenant.Organization, tenant.Project), redeliveryID("wal"), wsID, t.TempDir())
+	alloc, err := cs.AllocateWorkspace(storage.WithTenant(ctx, tenant.Project), redeliveryID("wal"), wsID, t.TempDir())
 	if err != nil {
 		t.Fatalf("AllocateWorkspace() error = %v", err)
 	}
@@ -60,11 +60,11 @@ func seedRunHoldingLease(t *testing.T, cs *coordinator.Store, tenant coordinator
 	t.Helper()
 	// Workspace/lease reads are keyed by opaque ids rather than a tenant, so the CONTEXT carries
 	// the scope — the same way the run worker scopes a claimed job (migration 000029).
-	ctx := storage.WithTenant(context.Background(), tenant.Organization, tenant.Project)
+	ctx := storage.WithTenant(context.Background(), tenant.Project)
 	runID := redeliveryID("run")
 	execSQL(t, cs.Pool(), `INSERT INTO runs (id, organization_id, project_id, session_id, state)
 		SELECT $1, $2, $3, w.session_id, 'running' FROM workspaces w WHERE w.id = (SELECT workspace_id FROM workspace_allocations WHERE id=$4)`,
-		runID, tenant.Organization, tenant.Project, alloc.ID)
+		runID, tenant.Project, alloc.ID)
 	if err := cs.AcquireWriterLease(ctx, redeliveryID("lease"), alloc.ID, runID); err != nil {
 		t.Fatalf("seed lease acquire error = %v", err)
 	}
@@ -76,7 +76,7 @@ func seedRunHoldingLease(t *testing.T, cs *coordinator.Store, tenant coordinator
 // LIVE (a claimed response.run job), the lease is NEVER stolen — the single-writer invariant holds.
 func TestStuckWriterLeaseReclaimedAfterCrash(t *testing.T) {
 	cs, tenant, _, alloc := openLeaseHarness(t)
-	ctx := storage.WithTenant(context.Background(), tenant.Organization, tenant.Project)
+	ctx := storage.WithTenant(context.Background(), tenant.Project)
 	o := &Orchestrator{spine: cs}
 
 	seedRunHoldingLease(t, cs, tenant, alloc)
@@ -105,7 +105,7 @@ func TestStuckWriterLeaseReclaimedAfterCrash(t *testing.T) {
 	// the first tenant here read as harmless before migration 000029; the policies now reject it, which
 	// is the point.)
 	_, tenant2, _, alloc2 := openLeaseHarness(t)
-	ctx2 := storage.WithTenant(context.Background(), tenant2.Organization, tenant2.Project)
+	ctx2 := storage.WithTenant(context.Background(), tenant2.Project)
 	seedRunWithLiveJob(t, cs, tenant2, alloc2)
 	competitor := freshRun(t, cs, tenant2)
 	if _, err := o.acquireWriterLease(ctx2, tenant2, alloc2.ID, competitor, ""); err != coordinator.ErrWriterLeaseHeld {
@@ -118,8 +118,8 @@ func TestStuckWriterLeaseReclaimedAfterCrash(t *testing.T) {
 func freshRun(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant) string {
 	t.Helper()
 	sessionID, runID := redeliveryID("ses"), redeliveryID("run")
-	execSQL(t, cs.Pool(), `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Organization, tenant.Project)
-	execSQL(t, cs.Pool(), `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, runID, tenant.Organization, tenant.Project, sessionID)
+	execSQL(t, cs.Pool(), `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Project)
+	execSQL(t, cs.Pool(), `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, runID, tenant.Project, sessionID)
 	return runID
 }
 
@@ -131,7 +131,7 @@ func seedRunWithLiveJob(t *testing.T, cs *coordinator.Store, tenant coordinator.
 	runID := seedRunHoldingLease(t, cs, tenant, alloc)
 	execSQL(t, cs.Pool(), `INSERT INTO durable_jobs (id, organization_id, project_id, kind, status, lease_owner, lease_expires_at, payload)
 		VALUES ($1, $2, $3, 'response.run', 'running', $4, clock_timestamp() + interval '10 minutes', jsonb_build_object('run_id', $5::text))`,
-		redeliveryID("job"), tenant.Organization, tenant.Project, redeliveryID("owner"), runID)
+		redeliveryID("job"), tenant.Project, redeliveryID("owner"), runID)
 	return runID
 }
 
@@ -145,7 +145,7 @@ func TestProvisioningInterruptedMidStateRecovers(t *testing.T) {
 
 	for _, stuck := range []string{"requested", "provisioning", "preparing"} {
 		sessionID := redeliveryID("ses")
-		execSQL(t, cs.Pool(), `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Organization, tenant.Project)
+		execSQL(t, cs.Pool(), `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Project)
 		wsID := redeliveryID("wsp")
 		if err := cs.CreateWorkspace(ctx, tenant, coordinator.WorkspaceInput{WorkspaceID: wsID, SessionID: sessionID, State: stuck}); err != nil {
 			t.Fatalf("CreateWorkspace(%s) error = %v", stuck, err)

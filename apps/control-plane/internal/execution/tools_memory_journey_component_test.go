@@ -81,7 +81,7 @@ func TestToolsMemoryJourney(t *testing.T) {
 	// SQL has no LIMIT, which is exactly why the budget has to live above it.
 	historySession := redeliveryID("ses")
 	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`,
-		historySession, tenant.Organization, tenant.Project)
+		historySession, tenant.Project)
 	const turns, turnChars = 200, 1000
 	for i := range turns {
 		question, _ := json.Marshal(fmt.Sprintf("turn %d: %s", i, strings.Repeat("q", turnChars)))
@@ -89,11 +89,11 @@ func TestToolsMemoryJourney(t *testing.T) {
 			{"type": "message", "content": fmt.Sprintf("answer %d: %s", i, strings.Repeat("a", turnChars))}}})
 		execSQL(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state, input, output)
 		                  VALUES ($1,$2,$3,$4,'completed',$5,$6)`,
-			fmt.Sprintf("%s_%04d", historySession, i), tenant.Organization, tenant.Project, historySession, question, answer)
+			fmt.Sprintf("%s_%04d", historySession, i), tenant.Project, historySession, question, answer)
 	}
 	// The CURRENT turn, whose run.start the fold is assembled for.
 	execSQL(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'queued')`,
-		historySession+"_now", tenant.Organization, tenant.Project, historySession)
+		historySession+"_now", tenant.Project, historySession)
 
 	prior, err := cs.SessionHistory(ctx, tenant, historySession, historySession+"_now")
 	if err != nil {
@@ -258,7 +258,7 @@ func TestToolsMemoryJourney(t *testing.T) {
 	var approvals int
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT count(*) FROM commands WHERE organization_id=$1 AND project_id=$2`,
-		tenant.Organization, tenant.Project).Scan(&approvals); err != nil {
+		tenant.Project).Scan(&approvals); err != nil {
 		t.Fatalf("count commands after the external result: %v", err)
 	}
 	authorityGained += approvals // the result triggered an approval
@@ -429,7 +429,7 @@ func (toolsMemoryRemote) Invoke(context.Context, remotehttp.Invocation) (map[str
 func addExternalToolToRun(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant, runID, name, description string) {
 	t.Helper()
 	pool := cs.Pool()
-	org, project := tenant.Organization, tenant.Project
+	org, project := tenant.Project
 	toolID, trevID := redeliveryID("tool"), redeliveryID("trev")
 	execSQL(t, pool, `INSERT INTO tools (id, organization_id, project_id, canonical_name, model_visible_name)
 	                  VALUES ($1,$2,$3,$4,$5)`, toolID, org, project, "ext."+name, name)

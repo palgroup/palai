@@ -134,7 +134,7 @@ func TestLiveSpontaneousToolRoundTripRealProvider(t *testing.T) {
 func seedSpontaneousRun(t *testing.T, pool *pgxpool.Pool) (coordinator.Tenant, string, string, string) {
 	t.Helper()
 	ctx := context.Background()
-	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	tenant := coordinator.Tenant{Project: newID("prj")}
 	session, response, runID := newID("ses"), newID("resp"), newID("run")
 	do := func(sql string, args ...any) {
 		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
@@ -144,12 +144,12 @@ func seedSpontaneousRun(t *testing.T, pool *pgxpool.Pool) (coordinator.Tenant, s
 	do(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	do(`INSERT INTO projects (id, organization_id, config_policy) VALUES ($1, $2, $3)`,
 		tenant.Project, tenant.Organization, []byte(`{"default_tools":["palai.workspace.file"]}`))
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, tenant.Organization, tenant.Project)
+	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, tenant.Project)
 	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
-		response, tenant.Organization, tenant.Project, session,
+		response, tenant.Project, session,
 		[]byte(`"Use the file tool to write a file named hello.txt with the content hello, then confirm you are done."`))
 	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'queued')`,
-		runID, tenant.Organization, tenant.Project, session, response)
+		runID, tenant.Project, session, response)
 	return tenant, session, response, runID
 }
 
@@ -159,7 +159,7 @@ func responseState(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, 
 	var state string
 	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT state FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		respID, tenant.Organization, tenant.Project).Scan(&state); err != nil {
+		respID, tenant.Project).Scan(&state); err != nil {
 		t.Fatalf("read response state: %v", err)
 	}
 	return state
@@ -170,7 +170,7 @@ func distinctProviderIDs(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Te
 	t.Helper()
 	rows, err := pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT result FROM model_requests WHERE run_id=$1 AND organization_id=$2 AND project_id=$3 AND state='completed'`,
-		runID, tenant.Organization, tenant.Project)
+		runID, tenant.Project)
 	if err != nil {
 		t.Fatalf("read model results: %v", err)
 	}
@@ -202,7 +202,7 @@ func firstResultHasToolCalls(t *testing.T, pool *pgxpool.Pool, tenant coordinato
 	t.Helper()
 	rows, err := pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT result FROM model_requests WHERE run_id=$1 AND organization_id=$2 AND project_id=$3 AND state='completed' ORDER BY updated_at ASC`,
-		runID, tenant.Organization, tenant.Project)
+		runID, tenant.Project)
 	if err != nil {
 		t.Fatalf("read model results: %v", err)
 	}
@@ -230,11 +230,11 @@ func dumpRunDiagnostics(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Ten
 	var output []byte
 	_ = pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT output FROM responses WHERE id IN (SELECT response_id FROM runs WHERE id=$1) AND organization_id=$2 AND project_id=$3`,
-		runID, tenant.Organization, tenant.Project).Scan(&output)
+		runID, tenant.Project).Scan(&output)
 	t.Logf("diagnostic: response output = %s", string(output))
 	rows, err := pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT type, payload FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 ORDER BY seq DESC LIMIT 12`,
-		sessionID, tenant.Organization, tenant.Project)
+		sessionID, tenant.Project)
 	if err != nil {
 		return
 	}
@@ -248,7 +248,7 @@ func dumpRunDiagnostics(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Ten
 	}
 	mrows, err := pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT state, result FROM model_requests WHERE run_id=$1 AND organization_id=$2 AND project_id=$3 ORDER BY updated_at ASC`,
-		runID, tenant.Organization, tenant.Project)
+		runID, tenant.Project)
 	if err == nil {
 		defer mrows.Close()
 		for mrows.Next() {
@@ -261,7 +261,7 @@ func dumpRunDiagnostics(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Ten
 	}
 	trows, err := pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT name, state, request_hash FROM tool_calls WHERE run_id=$1 AND organization_id=$2 AND project_id=$3`,
-		runID, tenant.Organization, tenant.Project)
+		runID, tenant.Project)
 	if err == nil {
 		defer trows.Close()
 		for trows.Next() {

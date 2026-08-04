@@ -283,7 +283,7 @@ func newJiraWriteFixture(t *testing.T, ticket map[string]any) *jiraWriteFixture 
 		DefaultTimeout: 15 * time.Second,
 	}))
 
-	org, project := tenant.Organization, tenant.Project
+	org, project := tenant.Project
 	body, _ := json.Marshal(map[string]any{
 		"name": "jira", "transport": "http",
 		"config": map[string]any{"url": jiraWritePeerURL(srv)}, "secret_ref": secretRef,
@@ -362,7 +362,7 @@ func draftRevisionOf(t *testing.T, cs *coordinator.Store, org, project, canonica
 func seedMCPGrantedRun(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant, setID, riders string) (sessionID, runID string) {
 	t.Helper()
 	pool := cs.Pool()
-	org, project := tenant.Organization, tenant.Project
+	org, project := tenant.Project
 	profileID, arevID := redeliveryID("aprof"), redeliveryID("arev")
 	sessionID, runID = redeliveryID("ses"), redeliveryID("run")
 	execSQL(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,$4)`,
@@ -411,7 +411,7 @@ func (fx *jiraWriteFixture) approvalGates(t *testing.T) map[string]string {
 	rows, err := fx.spine.Pool().Query(storage.WithSystemScope(context.Background()),
 		`SELECT t.canonical_name, tr.approval_required, tr.approval_label
 		 FROM tools t JOIN tool_revisions tr ON tr.tool_id = t.id
-		 WHERE t.organization_id=$1 AND t.project_id=$2`, fx.tenant.Organization, fx.tenant.Project)
+		 WHERE t.organization_id=$1 AND t.project_id=$2`, fx.tenant.Project)
 	if err != nil {
 		t.Fatalf("read the tenant's approval declarations: %v", err)
 	}
@@ -663,7 +663,7 @@ func TestApprovedMCPArgumentsReachThePeerByteForByte(t *testing.T) {
 func TestAToolPinnedTwiceRefusesRatherThanCoinFlippingTheGate(t *testing.T) {
 	ctx := context.Background()
 	fx := newJiraWriteFixture(t, nil)
-	org, project := fx.tenant.Organization, fx.tenant.Project
+	org, project := fx.tenant.Project
 
 	// A SECOND published revision of the same discovered tool — UNGATED — pinned by a second published set
 	// the run's revision also names. SQL, because the point is a state the shipped API can reach and this

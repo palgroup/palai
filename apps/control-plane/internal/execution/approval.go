@@ -255,7 +255,7 @@ func publishApproved(ctx context.Context, spine PublicationPump, publisher Publi
 		pubCtx, cancel := context.WithTimeout(ctx, publishTimeout)
 		receipt, perr := publisher.Publish(pubCtx, PublishTarget{
 			Publication: pub, WorkspaceRoot: workspaceRoot,
-			Org: tenant.Organization, Project: tenant.Project, AttemptFence: fence,
+			Project: tenant.Project, AttemptFence: fence,
 			ConnectionRef: cred.ConnectionRef, Identity: cred.Identity,
 		})
 		cancel()
@@ -296,7 +296,7 @@ type RepositoryPublisher struct {
 	// never reads this field, so the deployment-global path is untouched by its absence. A target that
 	// DOES carry one and finds this nil is REFUSED — a binding that deliberately named its own credential
 	// must not publish under the deployment App because the resolver went missing.
-	ConnectionSecrets func(org, ref string) ([]byte, error)
+	ConnectionSecrets func(ref string) ([]byte, error)
 	// PRClientFor builds a pull-request client over an ALREADY-RESOLVED token, for one owner/repo. It is a
 	// factory rather than a client because after this change both the credential and the repository are
 	// per-binding: one stack serves many bindings, and PRClient above can only ever serve one.
@@ -448,7 +448,7 @@ func (p *RepositoryPublisher) credentialFor(target PublishTarget) (repositories.
 	if target.ConnectionRef == "" {
 		return p.Broker, p.PRClient, nil
 	}
-	tokenBytes, err := p.ConnectionSecrets(target.Org, target.ConnectionRef)
+	tokenBytes, err := p.ConnectionSecrets(target.ConnectionRef)
 	if err != nil {
 		return nil, nil, fmt.Errorf("publish %s: resolve binding credential %q: %w (refusing to fall back to "+
 			"the deployment App)", pub.ID, target.ConnectionRef, err)

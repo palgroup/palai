@@ -263,7 +263,7 @@ func (p *SlackApprovalPump) deliver(ctx context.Context, o slackApprovalOrder) b
 		return false
 	}
 
-	token, err := a.secrets(o.org, o.botTokenRef)
+	token, err := a.secrets(o.botTokenRef)
 	if err != nil || len(token) == 0 {
 		// The ref name is NOT echoed — an operator sees which connection cannot write, not the handle.
 		log.Printf("slack: connection %s cannot redeem its bot token; run %s is parked on an approval nobody can be shown",
@@ -290,7 +290,7 @@ func (p *SlackApprovalPump) deliver(ctx context.Context, o slackApprovalOrder) b
 		return false
 	}
 
-	scoped := storage.ScopeToTenant(ctx, o.org, o.project)
+	scoped := storage.ScopeToTenant(ctx, o.project)
 	if _, err := a.store.pool.Exec(scoped, storage.Query("MarkApprovalMessageDelivered"), o.id, res.MessageTS); err != nil {
 		// The message is VISIBLE. Failing to record that is a duplicate-question risk on the next tick, so it
 		// is logged loudly — but there is nothing to undo, and un-posting is not a thing Slack offers.
@@ -320,7 +320,7 @@ func (p *SlackApprovalPump) screen(ctx context.Context, o slackApprovalOrder) ([
 		// that no longer resolves renders as "(no operator label)" rather than blocking the question: the
 		// arguments are the authority on this screen and they came off the ledger row.
 		label := ""
-		if tool, ok, err := p.bridge.store.LookupTool(ctx, o.org, o.project, o.runID, o.toolName); err == nil && ok {
+		if tool, ok, err := p.bridge.store.LookupTool(ctx, o.project, o.runID, o.toolName); err == nil && ok {
 			label = tool.ApprovalLabel
 		}
 		return slack.ToolApprovalMessage(o.channelID, o.threadTS, slack.ApprovalRequest{
@@ -343,7 +343,7 @@ func (p *SlackApprovalPump) retire(ctx context.Context, o slackApprovalOrder, wh
 	if o.state == o.openState() && o.attempt < o.maxAttempts {
 		return
 	}
-	if _, err := p.bridge.store.pool.Exec(storage.ScopeToTenant(ctx, o.org, o.project),
+	if _, err := p.bridge.store.pool.Exec(storage.ScopeToTenant(ctx, o.project),
 		storage.Query("MarkApprovalMessageDead"), o.id); err != nil {
 		log.Printf("slack: could not retire the undeliverable approval question for run %s: %v", o.runID, err)
 		return

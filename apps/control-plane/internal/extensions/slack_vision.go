@@ -59,8 +59,8 @@ const slackMaxImageBytes = 5 << 20 // 5 MiB
 // artifact seam, reused rather than a second download-and-store path. Two methods, in the order they are
 // called; see the ordering argument above for why they are separate.
 type InboundArtifactStore interface {
-	WriteInboundArtifact(ctx context.Context, org, project, artifactID string, content []byte, mediaType string, provenance map[string]any) error
-	AttachArtifactRun(ctx context.Context, org, project, artifactID, runID string) error
+	WriteInboundArtifact(ctx context.Context, project, artifactID string, content []byte, mediaType string, provenance map[string]any) error
+	AttachArtifactRun(ctx context.Context, project, artifactID, runID string) error
 }
 
 // WithFileFetch mounts the image leg: an HTTP client for Slack's file hosts and the artifact store the bytes
@@ -135,7 +135,7 @@ func (a *SlackAdmitter) admitImages(ctx context.Context, conn api.SlackConnectio
 		log.Printf("slack: not fetching %d shared file(s) for connection %s — the connection carries no bot token reference, so the run cannot see the image", len(candidates), conn.ID)
 		return nil, skipped + len(candidates)
 	}
-	token, err := a.secrets(conn.Org, conn.BotTokenRef)
+	token, err := a.secrets(conn.BotTokenRef)
 	if err != nil || len(token) == 0 {
 		// The ref NAME is not logged and never echoed: an unresolvable handle must not become a config oracle,
 		// the same rule VerifySignature follows.
@@ -154,7 +154,7 @@ func (a *SlackAdmitter) admitImages(ctx context.Context, conn api.SlackConnectio
 			continue
 		}
 		artifactID := slackImageArtifactID(conn.ID, ev.TeamID, file.ID)
-		if err := a.inboundArtifacts.WriteInboundArtifact(ctx, conn.Org, conn.Project, artifactID, image.Content, image.MediaType,
+		if err := a.inboundArtifacts.WriteInboundArtifact(ctx, conn.Project, artifactID, image.Content, image.MediaType,
 			slackImageProvenance(conn, ev, file, image)); err != nil {
 			log.Printf("slack: not attaching file %s from connection %s: persist failed: %v", file.ID, conn.ID, err)
 			skipped++
@@ -173,7 +173,7 @@ func (a *SlackAdmitter) attachImagesToRun(ctx context.Context, conn api.SlackCon
 		return
 	}
 	for _, img := range images {
-		if err := a.inboundArtifacts.AttachArtifactRun(ctx, conn.Org, conn.Project, img.artifactID, runID); err != nil {
+		if err := a.inboundArtifacts.AttachArtifactRun(ctx, conn.Project, img.artifactID, runID); err != nil {
 			log.Printf("slack: artifact %s stayed unattached to run %s — data retention will not reach it: %v", img.artifactID, runID, err)
 		}
 	}

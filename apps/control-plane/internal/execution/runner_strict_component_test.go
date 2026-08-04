@@ -120,7 +120,7 @@ func TestStrictEnrolmentHoldsTheMachineOutOfTheRendezvousUntilAHumanApproves(t *
 
 	// THE HUMAN. Through the surface an operator reaches: the store write the route performs, with a
 	// principal the project's (absent) approver list admits.
-	admission, err := f.registry.Approve(ctx, tenant.Organization, tenant.Project, id, "key:ak_operator")
+	admission, err := f.registry.Approve(ctx, tenant.Project, id, "key:ak_operator")
 	if err != nil || !admission.Found || !admission.Admitted {
 		t.Fatalf("approve %s: %+v err=%v", id, admission, err)
 	}

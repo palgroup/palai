@@ -7,7 +7,6 @@
   "properties": {
     "id": {"$ref": "../common/id.json#/$defs/repository_binding_id"},
     "object": {"type": "string", "const": "repository_binding"},
-    "organization_id": {"$ref": "../common/id.json#/$defs/organization_id"},
     "project_id": {"$ref": "../common/id.json#/$defs/project_id"},
     "provider": {"type": "string"},
     "repository_identity": {"type": "string"},

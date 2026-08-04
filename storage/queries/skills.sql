@@ -2,11 +2,11 @@
 -- the admin management surface (create/install/enable) — there is NO model-facing install path. A skill
 -- is UNTRUSTED content: install stores the QUARANTINE-sanitized archive + digest + findings + metadata;
 -- the ONLY UPDATE is the state transition (approve/enable). Every statement is tenant-scoped by
--- (organization_id, project_id). Reads serve the run-start pin resolver and workspace materialization.
+-- project_id. Reads serve the run-start pin resolver and workspace materialization.
 
 -- name: InsertSkill
-INSERT INTO skills (id, organization_id, project_id, name)
-VALUES ($1, $2, $3, $4);
+INSERT INTO skills (id, project_id, name)
+VALUES ($1, $2, $3);
 
 -- SkillExists verifies a skill lineage is in scope before a revision is attached to it.
 -- name: SkillExists
@@ -18,11 +18,11 @@ SELECT 1 FROM skills WHERE id = $1 AND project_id = $2;
 -- ponytail: the MAX+1 subselect can race two concurrent installs; UNIQUE(skill_id, revision_number)
 -- then rejects the loser (retry on 23505 if it ever matters).
 -- name: InsertSkillRevision
-INSERT INTO skill_revisions (id, organization_id, project_id, skill_id, revision_number,
+INSERT INTO skill_revisions (id, project_id, skill_id, revision_number,
         digest, state, scan_findings, metadata, archive, source_url)
-VALUES ($1, $2, $3, $4,
-        (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM skill_revisions WHERE skill_id = $4),
-        $5, $6, $7, $8, $9, $10)
+VALUES ($1, $2, $3,
+        (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM skill_revisions WHERE skill_id = $3),
+        $4, $5, $6, $7, $8, $9)
 RETURNING revision_number;
 
 -- GetSkillRevision reads a revision's state + digest + findings + metadata (management GET + the enable

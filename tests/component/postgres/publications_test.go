@@ -54,7 +54,7 @@ func TestRequestPublicationIdempotent(t *testing.T) {
 	pool := cs.Pool()
 	tenant, sessionID, runID := seedRun(t, pool)
 
-	key := repositories.IdempotencyKey(tenant.Organization, tenant.Project, runID, repositories.OpPushBranch, "git@h:o/r", "agent/s/r", "main", "abc123")
+	key := repositories.IdempotencyKey(tenant.Project, runID, repositories.OpPushBranch, "git@h:o/r", "agent/s/r", "main", "abc123")
 	in := coordinator.PublicationRequest{
 		PublicationID: newID("pub"), ApprovalID: newID("apr"), SessionID: sessionID, RunID: runID,
 		Operation: "push_branch", Remote: "git@h:o/r", Branch: "agent/s/r", Base: "main", HeadSHA: "abc123",
@@ -99,7 +99,7 @@ func TestPendingApprovalApproveProceedsDenyBlocks(t *testing.T) {
 	exec(t, pool, `UPDATE sessions SET state='active' WHERE id=$1`, sessionID)
 	respID := newID("resp")
 	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
-		respID, tenant.Organization, tenant.Project, sessionID)
+		respID, tenant.Project, sessionID)
 	exec(t, pool, `UPDATE runs SET state='running', response_id=$2 WHERE id=$1`, runID, respID)
 
 	// 1. No pending approval: an approve is accepted-but-rejected (E08 preserved).
@@ -170,7 +170,7 @@ func TestMarkPublicationPublishedIdempotent(t *testing.T) {
 	tenant, sessionID, runID := seedRun(t, pool)
 	respID := newID("resp")
 	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
-		respID, tenant.Organization, tenant.Project, sessionID)
+		respID, tenant.Project, sessionID)
 
 	pub := requestPushPublication(t, cs, tenant, sessionID, runID, "abc123")
 	exec(t, pool, `UPDATE publications SET state='approved' WHERE id=$1`, pub.ID)
@@ -217,7 +217,7 @@ func TestStaleApprovalHashLeavesPublicationPending(t *testing.T) {
 	exec(t, pool, `UPDATE sessions SET state='active' WHERE id=$1`, sessionID)
 	respID := newID("resp")
 	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
-		respID, tenant.Organization, tenant.Project, sessionID)
+		respID, tenant.Project, sessionID)
 	exec(t, pool, `UPDATE runs SET state='running', response_id=$2 WHERE id=$1`, runID, respID)
 
 	pub := requestPushPublication(t, cs, tenant, sessionID, runID, "abc123")
@@ -257,7 +257,7 @@ func TestExpiredApprovalNeverPublishesAndEmitsExpiredEvent(t *testing.T) {
 	tenant, sessionID, runID := seedRun(t, pool)
 	respID := newID("resp")
 	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
-		respID, tenant.Organization, tenant.Project, sessionID)
+		respID, tenant.Project, sessionID)
 
 	// Two approved publications; only the first's approval has elapsed.
 	stale := requestPushPublication(t, cs, tenant, sessionID, runID, "aaa111")
@@ -335,7 +335,7 @@ func TestExpiredApprovalSweepAndConsumeGuard(t *testing.T) {
 	exec(t, pool, `UPDATE sessions SET state='active' WHERE id=$1`, sessionID)
 	respID := newID("resp")
 	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
-		respID, tenant.Organization, tenant.Project, sessionID)
+		respID, tenant.Project, sessionID)
 	exec(t, pool, `UPDATE runs SET state='running', response_id=$2 WHERE id=$1`, runID, respID)
 
 	// (a) Idle sweep: a pending approval elapses with no approve/publish observing it.
@@ -398,8 +398,8 @@ func requestPushPublication(t *testing.T, cs *coordinator.Store, tenant coordina
 	pub, err := cs.RequestPublication(context.Background(), tenant, coordinator.PublicationRequest{
 		PublicationID: newID("pub"), ApprovalID: newID("apr"), SessionID: sessionID, RunID: runID,
 		Operation: "push_branch", Remote: remote, Branch: branch, Base: base, HeadSHA: head,
-		IdempotencyKey: repositories.IdempotencyKey(tenant.Organization, tenant.Project, runID, repositories.OpPushBranch, remote, branch, base, head),
-		RequestHash:    repositories.RequestHash(tenant.Organization, tenant.Project, runID, repositories.OpPushBranch, remote, branch, base, head),
+		IdempotencyKey: repositories.IdempotencyKey(tenant.Project, runID, repositories.OpPushBranch, remote, branch, base, head),
+		RequestHash:    repositories.RequestHash(tenant.Project, runID, repositories.OpPushBranch, remote, branch, base, head),
 		Display:        "push " + branch,
 	})
 	if err != nil {

@@ -334,7 +334,7 @@ func TestWiringJourney(t *testing.T) {
 
 	// The approval's own run is still live; terminating the JOURNEY's run is what fires the terminal hook.
 	if _, err := f.spine.ApplyRunTransition(ctx,
-		coordinator.Tenant{Organization: f.org, Project: f.project}, runID, statemachines.RunCmdCancel); err != nil {
+		coordinator.Tenant{Project: f.project}, runID, statemachines.RunCmdCancel); err != nil {
 		t.Fatalf("drive the run to its terminal: %v", err)
 	}
 	// DURABILITY IS THE TERMINAL TRANSACTION'S, not the pump's: the row exists before any tick.

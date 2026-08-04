@@ -180,14 +180,11 @@ func previewRoute(path string) string {
 // callerTenant reads the tenant the gateway asserted for this connection after authenticating it.
 // A grant's request is authorized against this on every connection (spec §29.16).
 func callerTenant(r *http.Request) coordinator.Tenant {
-	return coordinator.Tenant{
-		Organization: r.Header.Get("X-Palai-Org"),
-		Project:      r.Header.Get("X-Palai-Project"),
-	}
+	return coordinator.Tenant{Project: r.Header.Get("X-Palai-Project")}
 }
 
 func sameTenant(a, b coordinator.Tenant) bool {
-	return a.Organization != "" && a.Organization == b.Organization && a.Project == b.Project
+	return a.Project != "" && a.Project == b.Project
 }
 
 // protocolAllowed reports whether the request's protocol is in the grant's allowlist. A WebSocket

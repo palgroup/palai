@@ -8,14 +8,14 @@
 INSERT INTO organizations (id, display_name) VALUES ($1, $2) ON CONFLICT DO NOTHING;
 
 -- name: InsertPrincipal
-INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING;
+INSERT INTO principals (id, project_id, kind) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING;
 
 -- name: InsertProject
-INSERT INTO projects (id, organization_id, display_name) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING;
+INSERT INTO projects (id, display_name) VALUES ($1, $2) ON CONFLICT DO NOTHING;
 
 -- name: InsertAPIKey
-INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, scopes, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING;
+INSERT INTO api_keys (id, project_id, principal_id, key_hash, scopes, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING;
 
 -- ListOrganizations returns the organizations visible in the caller's scope. Under RLS this is the
 -- caller's own organization (the organizations policy is id = palai.org_id); no cross-tenant listing.
@@ -31,12 +31,12 @@ WHERE id = $1;
 
 -- ListProjects returns every project in the caller's organization (the projects policy is org-only).
 -- name: ListProjects
-SELECT id, organization_id, display_name, config_policy, created_at
+SELECT id, display_name, config_policy, created_at
 FROM projects
 ORDER BY created_at, id;
 
 -- name: GetProject
-SELECT id, organization_id, display_name, config_policy, created_at
+SELECT id, display_name, config_policy, created_at
 FROM projects
 WHERE id = $1;
 
@@ -50,12 +50,12 @@ RETURNING id;
 -- ListAPIKeys returns key METADATA only — never key_hash. Under the org-wide provisioning scope this
 -- lists every key in the caller's organization.
 -- name: ListAPIKeys
-SELECT id, organization_id, project_id, principal_id, scopes, expires_at, created_at, revoked_at
+SELECT id, project_id, principal_id, scopes, expires_at, created_at, revoked_at
 FROM api_keys
 ORDER BY created_at, id;
 
 -- name: GetAPIKey
-SELECT id, organization_id, project_id, principal_id, scopes, expires_at, created_at, revoked_at
+SELECT id, project_id, principal_id, scopes, expires_at, created_at, revoked_at
 FROM api_keys
 WHERE id = $1;
 

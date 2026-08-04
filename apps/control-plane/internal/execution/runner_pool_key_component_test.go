@@ -360,7 +360,7 @@ func TestPoolKeyRevocationDoesNotCutAnInFlightLease(t *testing.T) {
 	// that named no tenant, because the rendezvous is keyed by both. Neither is this test's subject.
 	attempt := f.attempt("run_poolkeylease", "att_poolkeylease", 4)
 	attempt.PoolID = pools[0]
-	attempt.Tenant = coordinator.Tenant{Organization: org, Project: project}
+	attempt.Tenant = coordinator.Tenant{Project: project}
 	ch, err := f.gateway.Dial(ctx, attempt)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)

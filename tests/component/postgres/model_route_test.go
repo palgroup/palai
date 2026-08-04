@@ -16,7 +16,7 @@ import (
 // for: one stack, two projects, different model + different credential).
 func seedProject(t *testing.T, cs *coordinator.Store) coordinator.Tenant {
 	t.Helper()
-	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	tenant := coordinator.Tenant{Project: newID("prj")}
 	exec(t, cs.Pool(), `INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	exec(t, cs.Pool(), `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
 	return tenant

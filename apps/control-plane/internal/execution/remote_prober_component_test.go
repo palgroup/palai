@@ -31,7 +31,7 @@ func TestLateCallbackAfterDeadlineEntersReconciliationNotSilentCommit(t *testing
 	ops := remotehttp.NewOperations(pool)
 	secret := []byte("remote-tool-late-secret")
 
-	resolver := func(org, ref string) ([]byte, error) {
+	resolver := func(ref string) ([]byte, error) {
 		if org == tenant.Organization && ref == "sig-ref" {
 			return secret, nil
 		}
@@ -49,7 +49,7 @@ func TestLateCallbackAfterDeadlineEntersReconciliationNotSilentCommit(t *testing
 	execSQL(t, pool,
 		`INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
 		 VALUES ($1,$2,$3,$4,5,'uncertain','remote.lookup','{}','reversible','reconciling')`,
-		callID, tenant.Organization, tenant.Project, runID)
+		callID, tenant.Project, runID)
 	_ = sessionID
 	operationID := redeliveryID("rop")
 	token := redeliveryID("tok")

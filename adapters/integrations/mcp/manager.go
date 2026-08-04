@@ -63,7 +63,7 @@ type ProgressSink interface {
 
 // SecretResolver bridges a connection's secret_ref handle to the bearer bytes at request time (the
 // webhookSecretResolver pattern: an org-scoped env-file bridge, never inline, never logged). Nil ⇒ no auth.
-type SecretResolver func(org, ref string) ([]byte, error)
+type SecretResolver func(ref string) ([]byte, error)
 
 // Config wires the manager. Driver nil ⇒ stdio unsupported (a stdio call fails cleanly, never escapes).
 // The http egress knobs mirror the webhook sender; AllowPrivate is the test-harness-only self-host flag.
@@ -302,7 +302,7 @@ func (m *Manager) resolveBearer(conn ConnConfig) (string, error) {
 	if m.cfg.Secrets == nil {
 		return "", fmt.Errorf("%w: connection needs a secret_ref but no resolver is wired", ErrProtocol)
 	}
-	b, err := m.cfg.Secrets(conn.Org, conn.SecretRef)
+	b, err := m.cfg.Secrets(conn.SecretRef)
 	if err != nil {
 		return "", fmt.Errorf("%w: resolve connection secret: %v", ErrProtocol, err)
 	}

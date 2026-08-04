@@ -89,7 +89,7 @@ type AutoApproveView struct {
 // foreign session reads the zero value — both halves off — which is the fail-closed answer: a gate that
 // cannot find the session it is asked about asks a human.
 func (s *Store) SessionAutoApprove(ctx context.Context, tenant Tenant, sessionID string) (AutoApprove, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var a AutoApprove
 	err := s.pool.QueryRow(ctx, storage.Query("SessionAutoApprove"), sessionID, tenant.Project).
 		Scan(&a.Tools, &a.Publications, &a.SetBy)
@@ -127,7 +127,7 @@ func autoApproveTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID stri
 // Found is false for an unknown or foreign session, so the caller renders a 404 that discloses no
 // cross-tenant existence.
 func (s *Store) SetSessionAutoApprove(ctx context.Context, tenant Tenant, sessionID, principal string, tools, publications bool) (AutoApproveView, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var v AutoApproveView
 	err := s.pool.QueryRow(ctx, storage.Query("SetSessionAutoApprove"),
 		sessionID, tenant.Project, tools, publications, principal).

@@ -13,12 +13,12 @@ RETURNING last_seq;
 -- events so the retention purge is per-response (spec §22.2); session-scoped events pass
 -- NULL and are left untouched by the purge (they carry no customer content).
 -- name: AppendEvent
-INSERT INTO events (id, organization_id, project_id, session_id, response_id, seq, type, payload)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+INSERT INTO events (id, project_id, session_id, response_id, seq, type, payload)
+VALUES ($1, $2, $3, $4, $5, $6, $7);
 
 -- name: EnqueueOutbox
-INSERT INTO outbox (organization_id, project_id, topic, dedupe_key, payload)
-VALUES ($1, $2, $3, $4, $5);
+INSERT INTO outbox (project_id, topic, dedupe_key, payload)
+VALUES ($1, $2, $3, $4);
 
 -- ChildLifecycleEventExists reports whether a child-lifecycle event of a given type was already
 -- journaled for a specific child_run_id under a response (E10 T8, DET-001 exactly-once fold): a

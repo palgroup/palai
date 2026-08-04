@@ -47,7 +47,7 @@ func TestPrepareRepositoryResolvesRunsRecords(t *testing.T) {
 	store := &fakeRepoStore{found: true, binding: contracts.RepositoryBinding{
 		ID: "repo_abc", CloneUrl: remote.url, DefaultBranch: "main",
 	}}
-	tenant := coordinator.Tenant{Organization: "org_x", Project: "prj_x"}
+	tenant := coordinator.Tenant{Project: "prj_x"}
 
 	prep, err := PrepareRepository(ctx, store, repositories.NewAnonymousBroker(), tenant, PrepareRepositoryInput{
 		BindingID:    "repo_abc",
@@ -93,7 +93,7 @@ func TestPrepareRepositoryResolvesBindingConnectionRef(t *testing.T) {
 	}
 	ctx := context.Background()
 	remote := newGitRemote(t)
-	tenant := coordinator.Tenant{Organization: "org_x", Project: "prj_x"}
+	tenant := coordinator.Tenant{Project: "prj_x"}
 
 	prepare := func(t *testing.T, ref string, resolver SecretResolver) error {
 		t.Helper()
@@ -115,7 +115,7 @@ func TestPrepareRepositoryResolvesBindingConnectionRef(t *testing.T) {
 	// A named ref is resolved under the run's organization and the binding's ref.
 	var gotOrg, gotRef string
 	calls := 0
-	if err := prepare(t, "git-conn", func(org, ref string) ([]byte, error) {
+	if err := prepare(t, "git-conn", func(ref string) ([]byte, error) {
 		calls, gotOrg, gotRef = calls+1, org, ref
 		return []byte("palai-REPMARK-binding-token"), nil
 	}); err != nil {
@@ -126,7 +126,7 @@ func TestPrepareRepositoryResolvesBindingConnectionRef(t *testing.T) {
 	}
 
 	// A ref-less binding takes the global broker unchanged: the resolver is never consulted.
-	if err := prepare(t, "", func(org, ref string) ([]byte, error) {
+	if err := prepare(t, "", func(ref string) ([]byte, error) {
 		t.Fatalf("ref-less binding consulted the secret resolver for (%q, %q)", org, ref)
 		return nil, nil
 	}); err != nil {

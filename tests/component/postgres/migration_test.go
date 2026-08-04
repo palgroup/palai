@@ -139,15 +139,15 @@ func newID(prefix string) string {
 // seedRun creates org -> project -> session -> run and returns the scope and IDs.
 func seedRun(t *testing.T, pool *pgxpool.Pool) (coordinator.Tenant, string, string) {
 	t.Helper()
-	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	tenant := coordinator.Tenant{Project: newID("prj")}
 	sessionID := newID("ses")
 	runID := newID("run")
 	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
 	exec(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`,
-		sessionID, tenant.Organization, tenant.Project)
+		sessionID, tenant.Project)
 	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id) VALUES ($1, $2, $3, $4)`,
-		runID, tenant.Organization, tenant.Project, sessionID)
+		runID, tenant.Project, sessionID)
 	return tenant, sessionID, runID
 }
 
@@ -261,7 +261,7 @@ func TestSessionChainingMigrationBackfillsPreexistingEvents(t *testing.T) {
 		exec(t, pool,
 			`INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
 			 VALUES ($1, $2, $3, $4, $5, 'output.item.v1', '{"content":"legacy"}')`,
-			newID("evt"), tenant.Organization, tenant.Project, sessionID, seq)
+			newID("evt"), tenant.Project, sessionID, seq)
 	}
 
 	// Clear the version marker so the one-shot backfill runs again on the next Migrate. Written as the
@@ -441,15 +441,15 @@ func TestDeliveredMessagesMigration(t *testing.T) {
 	exec(t, pool,
 		`INSERT INTO commands (id, organization_id, project_id, session_id, run_id, kind, delivery, payload, state, applied_sequence)
 		 VALUES ($1, $2, $3, $4, $5, 'send_message', 'steer', '{"message":"also do Y"}', 'applied', 7)`,
-		cmdID, tenant.Organization, tenant.Project, sessionID, runID)
+		cmdID, tenant.Project, sessionID, runID)
 	exec(t, pool,
 		`INSERT INTO delivered_messages (command_id, organization_id, project_id, run_id, boundary_request_id, applied_sequence)
 		 VALUES ($1, $2, $3, $4, 'mr_step2', 7)`,
-		cmdID, tenant.Organization, tenant.Project, runID)
+		cmdID, tenant.Project, runID)
 	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO delivered_messages (command_id, organization_id, project_id, run_id, applied_sequence)
 		 VALUES ('cmd_missing', $1, $2, $3, 1)`,
-		tenant.Organization, tenant.Project, runID))); got != "23503" {
+		tenant.Project, runID))); got != "23503" {
 		t.Fatalf("delivered_messages for a missing command code = %q, want 23503 foreign_key_violation", got)
 	}
 
@@ -485,14 +485,14 @@ func TestChildRunDoesNotConsumeRootSlot(t *testing.T) {
 	if _, err := pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO runs (id, organization_id, project_id, session_id, state, parent_run_id, depth)
 		 VALUES ($1, $2, $3, $4, 'running', $5, 1)`,
-		newID("run"), tenant.Organization, tenant.Project, sessionID, rootRunID); err != nil {
+		newID("run"), tenant.Project, sessionID, rootRunID); err != nil {
 		t.Fatalf("child run in the parent's session error = %v, want admitted (excluded from one-active-root)", err)
 	}
 	// A second concurrent ROOT run (parent_run_id NULL) for the same session is still the
 	// one-active-root violation — the child did not free or fill the root slot.
 	_, err := pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`,
-		newID("run"), tenant.Organization, tenant.Project, sessionID)
+		newID("run"), tenant.Project, sessionID)
 	if got := pgCode(err); got != "23505" {
 		t.Fatalf("second concurrent root run code = %q, want 23505 unique_violation", got)
 	}
@@ -511,7 +511,7 @@ func TestSecondConcurrentRootRunConflicts(t *testing.T) {
 	insertRun := func(session, state string) error {
 		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, $5)`,
-			newID("run"), tenant.Organization, tenant.Project, session, state)
+			newID("run"), tenant.Project, session, state)
 		return err
 	}
 
@@ -528,7 +528,7 @@ func TestSecondConcurrentRootRunConflicts(t *testing.T) {
 	// The slot is per session: a distinct session's root run is unaffected by the first's.
 	otherSession := newID("ses")
 	exec(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`,
-		otherSession, tenant.Organization, tenant.Project)
+		otherSession, tenant.Project)
 	if err := insertRun(otherSession, "running"); err != nil {
 		t.Fatalf("root run in a distinct session error = %v", err)
 	}
@@ -551,7 +551,7 @@ func TestLateTerminalCannotOverwriteTerminalRow(t *testing.T) {
 	// cancel finalized to canceled — the first, winning terminal write.
 	respID := newID("resp")
 	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'queued')`,
-		respID, tenant.Organization, tenant.Project, sessionID)
+		respID, tenant.Project, sessionID)
 	exec(t, pool, `UPDATE runs SET state='canceled' WHERE id=$1`, runID)
 	canceled, _ := json.Marshal(map[string]any{"output": []any{}, "model": ""})
 	if err := cs.FinalizeResponse(ctx, tenant, respID, "canceled", canceled); err != nil {
@@ -662,7 +662,7 @@ func TestRecordMergeRoundTrip(t *testing.T) {
 	tenant, sessionID, parentRun := seedRun(t, pool)
 	childRun := newID("run")
 	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state, parent_run_id, depth) VALUES ($1,$2,$3,$4,'completed',$5,1)`,
-		childRun, tenant.Organization, tenant.Project, sessionID, parentRun)
+		childRun, tenant.Project, sessionID, parentRun)
 
 	if err := cs.RecordMerge(ctx, tenant, coordinator.MergeRecordInput{
 		MergeID: newID("mrg"), ParentRunID: parentRun, SourceChildRunID: childRun,
@@ -796,7 +796,7 @@ func TestToolCallLedgerMigration(t *testing.T) {
 	exec(t, pool,
 		`INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, result)
 		 VALUES ($1, $2, $3, $4, 3, 'completed', 'add', '{"a":1}', '{"sum":1}')`,
-		legacyID, tenant.Organization, tenant.Project, runID)
+		legacyID, tenant.Project, runID)
 	var replayClass string
 	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT replay_class FROM tool_calls WHERE id=$1`, legacyID).Scan(&replayClass); err != nil {
 		t.Fatalf("read replay_class error = %v", err)
@@ -810,7 +810,7 @@ func TestToolCallLedgerMigration(t *testing.T) {
 		`INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments,
 		 replay_class, request_hash, external_idempotency_key, lease_owner, reconciliation_state, commit_boundary)
 		 VALUES ($1, $2, $3, $4, 4, 'uncertain', 'push', '{}', 'irreversible', 'sha256:abc', 'push:main', '4', 'reconciling', 'mr_step2')`,
-		uncertainID, tenant.Organization, tenant.Project, runID)
+		uncertainID, tenant.Project, runID)
 	var state, reconState, boundary string
 	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state, reconciliation_state, commit_boundary FROM tool_calls WHERE id=$1`, uncertainID).
 		Scan(&state, &reconState, &boundary); err != nil {
@@ -869,10 +869,10 @@ func TestAgentsMigration(t *testing.T) {
 	tenant, sessionID, runID := seedRun(t, pool)
 	profileID, revID := newID("aprof"), newID("arev")
 	exec(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`,
-		profileID, tenant.Organization, tenant.Project)
+		profileID, tenant.Project)
 	exec(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, instructions)
 	               VALUES ($1,$2,$3,$4,1,'model-x','["file"]','be careful')`,
-		revID, tenant.Organization, tenant.Project, profileID)
+		revID, tenant.Project, profileID)
 
 	// The conditional publish flip sets published_at once; a re-run against the now-published row
 	// affects zero rows, so a published revision never re-stamps (immutable publish boundary).
@@ -945,12 +945,12 @@ func TestWebhooksMigration(t *testing.T) {
 	tenant, sessionID, _ := seedRun(t, pool)
 	var j1, j2 int64
 	exec(t, pool, `INSERT INTO events (id, organization_id, project_id, session_id, seq, type) VALUES ($1,$2,$3,$4,1,'run.completed.v1')`,
-		newID("evt"), tenant.Organization, tenant.Project, sessionID)
+		newID("evt"), tenant.Project, sessionID)
 	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT max(journal_id) FROM events WHERE session_id=$1`, sessionID).Scan(&j1); err != nil {
 		t.Fatalf("read first journal_id error = %v", err)
 	}
 	exec(t, pool, `INSERT INTO events (id, organization_id, project_id, session_id, seq, type) VALUES ($1,$2,$3,$4,2,'run.failed.v1')`,
-		newID("evt"), tenant.Organization, tenant.Project, sessionID)
+		newID("evt"), tenant.Project, sessionID)
 	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT max(journal_id) FROM events WHERE session_id=$1`, sessionID).Scan(&j2); err != nil {
 		t.Fatalf("read second journal_id error = %v", err)
 	}
@@ -961,13 +961,13 @@ func TestWebhooksMigration(t *testing.T) {
 	// A delivery keyed to a real endpoint inserts; a duplicate (endpoint, event) is the fan-out dedupe.
 	endpointID := newID("whe")
 	exec(t, pool, `INSERT INTO webhook_endpoints (id, organization_id, project_id, url) VALUES ($1,$2,$3,'https://hooks.example.com/x')`,
-		endpointID, tenant.Organization, tenant.Project)
+		endpointID, tenant.Project)
 	deliveryID := newID("whd")
 	exec(t, pool, `INSERT INTO webhook_deliveries (id, organization_id, project_id, endpoint_id, session_id, event_id, event_type) VALUES ($1,$2,$3,$4,$5,'evt_x','run.completed.v1')`,
-		deliveryID, tenant.Organization, tenant.Project, endpointID, sessionID)
+		deliveryID, tenant.Project, endpointID, sessionID)
 	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO webhook_deliveries (id, organization_id, project_id, endpoint_id, session_id, event_id, event_type) VALUES ($1,$2,$3,$4,$5,'evt_x','run.completed.v1')`,
-		newID("whd"), tenant.Organization, tenant.Project, endpointID, sessionID))); got != "23505" {
+		newID("whd"), tenant.Project, endpointID, sessionID))); got != "23505" {
 		t.Fatalf("duplicate (endpoint, event) delivery code = %q, want 23505 unique_violation", got)
 	}
 
@@ -1028,13 +1028,13 @@ func TestTriggersMigration(t *testing.T) {
 	// monotonic revision_number that is UNIQUE per trigger.
 	triggerID := newID("trg")
 	exec(t, pool, `INSERT INTO triggers (id, organization_id, project_id, name, type) VALUES ($1,$2,$3,'nightly','manual_api')`,
-		triggerID, tenant.Organization, tenant.Project)
+		triggerID, tenant.Project)
 	rev1 := newID("trev")
 	exec(t, pool, `INSERT INTO trigger_revisions (id, organization_id, project_id, trigger_id, revision_number) VALUES ($1,$2,$3,$4,1)`,
-		rev1, tenant.Organization, tenant.Project, triggerID)
+		rev1, tenant.Project, triggerID)
 	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO trigger_revisions (id, organization_id, project_id, trigger_id, revision_number) VALUES ($1,$2,$3,$4,1)`,
-		newID("trev"), tenant.Organization, tenant.Project, triggerID))); got != "23505" {
+		newID("trev"), tenant.Project, triggerID))); got != "23505" {
 		t.Fatalf("duplicate revision_number code = %q, want 23505 unique_violation", got)
 	}
 
@@ -1042,10 +1042,10 @@ func TestTriggersMigration(t *testing.T) {
 	// is unique per trigger; a second canonical insert with the same key is rejected, while a duplicate
 	// row (duplicate_of set) is exempt.
 	exec(t, pool, `INSERT INTO trigger_deliveries (id, organization_id, project_id, trigger_id, trigger_revision_id, dedupe_key) VALUES ($1,$2,$3,$4,$5,'k1')`,
-		newID("tdel"), tenant.Organization, tenant.Project, triggerID, rev1)
+		newID("tdel"), tenant.Project, triggerID, rev1)
 	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO trigger_deliveries (id, organization_id, project_id, trigger_id, trigger_revision_id, dedupe_key) VALUES ($1,$2,$3,$4,$5,'k1')`,
-		newID("tdel"), tenant.Organization, tenant.Project, triggerID, rev1))); got != "23505" {
+		newID("tdel"), tenant.Project, triggerID, rev1))); got != "23505" {
 		t.Fatalf("second live canonical dedupe row code = %q, want 23505 unique_violation", got)
 	}
 
@@ -1100,10 +1100,10 @@ func TestMigration22Schedules(t *testing.T) {
 	// A trigger the schedule fires, then a schedule pinned to it.
 	triggerID := newID("trg")
 	exec(t, pool, `INSERT INTO triggers (id, organization_id, project_id, name, type) VALUES ($1,$2,$3,'nightly','cron')`,
-		triggerID, tenant.Organization, tenant.Project)
+		triggerID, tenant.Project)
 	scheduleID := newID("sch")
 	exec(t, pool, `INSERT INTO schedules (id, organization_id, project_id, name, trigger_id, timezone, cron_expr) VALUES ($1,$2,$3,'nightly-cron',$4,'America/New_York','30 2 * * *')`,
-		scheduleID, tenant.Organization, tenant.Project, triggerID)
+		scheduleID, tenant.Project, triggerID)
 
 	// The max_catch_up ceiling is a DB CHECK — a value above 100 is rejected (catch_up can never be
 	// unbounded, §33.3).
@@ -1252,7 +1252,7 @@ func TestActiveAttemptFenceIsUniquePerRun(t *testing.T) {
 	insertAttempt := func(fence int, state string) error {
 		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO attempts (id, organization_id, project_id, run_id, fence, state) VALUES ($1, $2, $3, $4, $5, $6)`,
-			newID("att"), tenant.Organization, tenant.Project, runID, fence, state)
+			newID("att"), tenant.Project, runID, fence, state)
 		return err
 	}
 
@@ -1281,14 +1281,14 @@ func TestIdempotencyScopeKeyUnique(t *testing.T) {
 	tenant, _, _ := seedRun(t, pool)
 	principal := newID("prin")
 	exec(t, pool, `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'api_key')`,
-		principal, tenant.Organization, tenant.Project)
+		principal, tenant.Project)
 
 	insert := func(key string) error {
 		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO idempotency_records
 			 (organization_id, project_id, principal_id, method, route, idempotency_key, request_hash, status)
 			 VALUES ($1, $2, $3, 'POST', '/v1/responses', $4, 'hash', 'completed')`,
-			tenant.Organization, tenant.Project, principal, key)
+			tenant.Project, principal, key)
 		return err
 	}
 	if err := insert("key-1"); err != nil {
@@ -1377,7 +1377,7 @@ func TestMigration25RemoteTools(t *testing.T) {
 		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO remote_tool_operations (id, organization_id, project_id, tool_call_id, secret_ref, callback_token_hash, deadline, state, fence)
 			 VALUES ($1, $2, $3, $4, 'sig-ref', 'tokenhash', clock_timestamp() + interval '30 seconds', $5, 5)`,
-			id, tenant.Organization, tenant.Project, call, state)
+			id, tenant.Project, call, state)
 		return err
 	}
 	if err := openOp(newID("rop"), callID, "pending"); err != nil {
@@ -1446,7 +1446,7 @@ func TestMigration28Hooks(t *testing.T) {
 		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO hooks (id, organization_id, project_id, name, hook_point, category, executor, config)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,'{}'::jsonb)`,
-			id, tenant.Organization, tenant.Project, name, point, category, executor)
+			id, tenant.Project, name, point, category, executor)
 		return err
 	}
 	if err := insertHook(newID("hook"), "guard", "before_tool", "policy", "platform_inline"); err != nil {
@@ -1534,14 +1534,14 @@ func TestMigration30APIKeyScope(t *testing.T) {
 	tenant, _, _ := seedRun(t, pool)
 	prin := newID("prin")
 	exec(t, pool, `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`,
-		prin, tenant.Organization, tenant.Project)
+		prin, tenant.Project)
 	liveTok, expTok := newID("sk"), newID("sk")
 	exec(t, pool, `INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, expires_at)
 		VALUES ($1,$2,$3,$4,$5, now() + interval '1 hour')`,
-		newID("key"), tenant.Organization, tenant.Project, prin, coordinator.HashAPIKey(liveTok))
+		newID("key"), tenant.Project, prin, coordinator.HashAPIKey(liveTok))
 	exec(t, pool, `INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, expires_at)
 		VALUES ($1,$2,$3,$4,$5, now() - interval '1 hour')`,
-		newID("key"), tenant.Organization, tenant.Project, prin, coordinator.HashAPIKey(expTok))
+		newID("key"), tenant.Project, prin, coordinator.HashAPIKey(expTok))
 	if _, err := cs.VerifyAPIKey(ctx, liveTok); err != nil {
 		t.Fatalf("VerifyAPIKey(live key) error = %v, want it to resolve", err)
 	}
@@ -1661,14 +1661,14 @@ func TestMigration37Queues(t *testing.T) {
 	connID := newID("qconn")
 	exec(t, pool,
 		`INSERT INTO queue_connections (id, organization_id, project_id, name) VALUES ($1,$2,$3,'q')`,
-		connID, tenant.Organization, tenant.Project)
+		connID, tenant.Project)
 
 	// Enqueue-dedupe: a second message with the same (connection, idempotency_key) is rejected.
 	insertMsg := func(key string) error {
 		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO queue_messages (id, organization_id, project_id, queue_connection_id, idempotency_key, body)
 			 VALUES ($1,$2,$3,$4,$5,$6)`,
-			newID("qmsg"), tenant.Organization, tenant.Project, connID, key, []byte("x"))
+			newID("qmsg"), tenant.Project, connID, key, []byte("x"))
 		return err
 	}
 	if err := insertMsg("k1"); err != nil {
@@ -1748,12 +1748,12 @@ func TestMigration27Skills(t *testing.T) {
 	tenant, _, _ := seedRun(t, pool)
 	skillID := newID("skill")
 	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'commit')`,
-		skillID, tenant.Organization, tenant.Project); err != nil {
+		skillID, tenant.Project); err != nil {
 		t.Fatalf("insert skill error = %v", err)
 	}
 	// A duplicate skill name in the same project is rejected (tenant-scoped unique).
 	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'commit')`,
-		newID("skill"), tenant.Organization, tenant.Project))); got != "23505" {
+		newID("skill"), tenant.Project))); got != "23505" {
 		t.Fatalf("duplicate skill name code = %q, want 23505 unique_violation", got)
 	}
 
@@ -1761,7 +1761,7 @@ func TestMigration27Skills(t *testing.T) {
 		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO skill_revisions (id, organization_id, project_id, skill_id, revision_number, digest, state, archive)
 			 VALUES ($1,$2,$3,$4,$5,'sha256:x',$6,'\x00')`,
-			id, tenant.Organization, tenant.Project, skillID, revNo, state)
+			id, tenant.Project, skillID, revNo, state)
 		return err
 	}
 	if err := insertRev(newID("skillrev"), 1, "quarantined"); err != nil {
@@ -1828,14 +1828,14 @@ func TestMigration41SlackReplies(t *testing.T) {
 	exec(t, pool,
 		`INSERT INTO slack_connections (id, organization_id, project_id, team_id, signing_secret_ref)
 		 VALUES ($1,$2,$3,$4,'slack/signing')`,
-		connID, tenant.Organization, tenant.Project, strings.ToUpper(newID("T")))
+		connID, tenant.Project, strings.ToUpper(newID("T")))
 
 	insert := func() error {
 		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO slack_reply_deliveries
 			   (id, organization_id, project_id, connection_id, run_id, channel_id, thread_ts, run_state)
 			 VALUES ($1,$2,$3,$4,$5,'C1','100.0','completed')`,
-			newID("sdel"), tenant.Organization, tenant.Project, connID, runID)
+			newID("sdel"), tenant.Project, connID, runID)
 		return err
 	}
 	if err := insert(); err != nil {
@@ -1891,17 +1891,17 @@ func TestMigration42SlackMessageTurns(t *testing.T) {
 	exec(t, pool,
 		`INSERT INTO slack_connections (id, organization_id, project_id, team_id, signing_secret_ref)
 		 VALUES ($1,$2,$3,$4,'slack/signing')`,
-		connID, tenant.Organization, tenant.Project, strings.ToUpper(newID("T")))
+		connID, tenant.Project, strings.ToUpper(newID("T")))
 	responseID := newID("resp")
 	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id) VALUES ($1,$2,$3,$4)`,
-		responseID, tenant.Organization, tenant.Project, sessionID)
+		responseID, tenant.Project, sessionID)
 
 	insert := func() error {
 		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO slack_message_turns
 			   (id, organization_id, project_id, connection_id, team_id, channel_id, message_ts, response_id, session_id)
 			 VALUES ($1,$2,$3,$4,'T1','C1','100.0',$5,$6)`,
-			newID("slkmt"), tenant.Organization, tenant.Project, connID, responseID, sessionID)
+			newID("slkmt"), tenant.Project, connID, responseID, sessionID)
 		return err
 	}
 	if err := insert(); err != nil {
@@ -1961,10 +1961,10 @@ func TestMigration43SlackRequester(t *testing.T) {
 	exec(t, pool,
 		`INSERT INTO slack_connections (id, organization_id, project_id, team_id, signing_secret_ref)
 		 VALUES ($1,$2,$3,$4,'slack/signing')`,
-		connID, tenant.Organization, tenant.Project, strings.ToUpper(newID("T")))
+		connID, tenant.Project, strings.ToUpper(newID("T")))
 	responseID := newID("resp")
 	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id) VALUES ($1,$2,$3,$4)`,
-		responseID, tenant.Organization, tenant.Project, sessionID)
+		responseID, tenant.Project, sessionID)
 
 	// FAIL-CLOSED BACKFILL: the shape of every row that existed before this migration. An insert that names
 	// no requester must be accepted and must read back as the empty string — not NULL, which would make every
@@ -1973,7 +1973,7 @@ func TestMigration43SlackRequester(t *testing.T) {
 		`INSERT INTO slack_reply_deliveries
 		   (id, organization_id, project_id, connection_id, run_id, channel_id, thread_ts, run_state)
 		 VALUES ($1,$2,$3,$4,$5,'C1','100.0','completed')`,
-		newID("sdel"), tenant.Organization, tenant.Project, connID, runID)
+		newID("sdel"), tenant.Project, connID, runID)
 	var legacy string
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT requester_user_id FROM slack_reply_deliveries WHERE run_id = $1`, runID).Scan(&legacy); err != nil {
@@ -1988,7 +1988,7 @@ func TestMigration43SlackRequester(t *testing.T) {
 		   (id, organization_id, project_id, connection_id, team_id, channel_id, message_ts, response_id,
 		    session_id, requester_user_id)
 		 VALUES ($1,$2,$3,$4,'T1','C1','100.0',$5,$6,'U0ASKER')`,
-		newID("slkmt"), tenant.Organization, tenant.Project, connID, responseID, sessionID)
+		newID("slkmt"), tenant.Project, connID, responseID, sessionID)
 
 	// The identity cannot outlive what it describes: reaping the response takes the turn handle AND the id
 	// with it, so a purge cannot leave a person's id attached to a conversation nobody can read.
@@ -2003,7 +2003,7 @@ func TestMigration43SlackRequester(t *testing.T) {
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT count(*) FROM slack_message_turns
 		  WHERE organization_id = $1 AND project_id = $2 AND requester_user_id = 'U0ASKER'`,
-		tenant.Organization, tenant.Project).Scan(&left); err != nil {
+		tenant.Project).Scan(&left); err != nil {
 		t.Fatalf("count orphaned requesters: %v", err)
 	}
 	if left != 0 {
@@ -2097,19 +2097,19 @@ func TestMigration45RunnerFleet(t *testing.T) {
 	poolID := newID("pool")
 	exec(t, pool,
 		`INSERT INTO runner_pools (id, organization_id, project_id, name, posture) VALUES ($1,$2,$3,'macs','unsandboxed-host')`,
-		poolID, tenant.Organization, tenant.Project)
+		poolID, tenant.Project)
 
 	// A posture nothing implements is refused by the database, not by a switch statement somebody
 	// remembers to update.
 	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO runner_pools (id, organization_id, project_id, name, posture) VALUES ($1,$2,$3,'weird','windows-vm')`,
-		newID("pool"), tenant.Organization, tenant.Project))); got != "23514" {
+		newID("pool"), tenant.Project))); got != "23514" {
 		t.Fatalf("an unknown posture was accepted (code %q, want 23514)", got)
 	}
 	// One pool per name per project.
 	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO runner_pools (id, organization_id, project_id, name) VALUES ($1,$2,$3,'macs')`,
-		newID("pool"), tenant.Organization, tenant.Project))); got != "23505" {
+		newID("pool"), tenant.Project))); got != "23505" {
 		t.Fatalf("a second pool named `macs` was accepted in one project (code %q, want 23505)", got)
 	}
 
@@ -2117,7 +2117,7 @@ func TestMigration45RunnerFleet(t *testing.T) {
 		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO runners (id, organization_id, project_id, pool_id, label, runner_dns, state)
 			 VALUES ($1,$2,$3,$4,'runner-local',$5,'active')`,
-			id, tenant.Organization, tenant.Project, poolID, dns)
+			id, tenant.Project, poolID, dns)
 		return err
 	}
 	firstID, secondID := newID("rnr"), newID("rnr")
@@ -2135,12 +2135,12 @@ func TestMigration45RunnerFleet(t *testing.T) {
 	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO runners (id, organization_id, project_id, pool_id, runner_dns, state)
 		 VALUES ($1,$2,$3,$4,$5,'active')`,
-		newID("rnr"), tenant.Organization, tenant.Project, poolID, firstID+".runners.palai.internal"))); got != "23505" {
+		newID("rnr"), tenant.Project, poolID, firstID+".runners.palai.internal"))); got != "23505" {
 		t.Fatalf("two runners were accepted for one certificate DNS (code %q, want 23505)", got)
 	}
 	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO runners (id, organization_id, project_id, pool_id, state) VALUES ($1,$2,$3,$4,'zombie')`,
-		newID("rnr"), tenant.Organization, tenant.Project, poolID))); got != "23514" {
+		newID("rnr"), tenant.Project, poolID))); got != "23514" {
 		t.Fatalf("an unknown runner state was accepted (code %q, want 23514)", got)
 	}
 
@@ -2186,11 +2186,11 @@ func TestMigration45RunnerFleet(t *testing.T) {
 	exec(t, pool,
 		`INSERT INTO runner_enrollments (id, organization_id, project_id, runner_id, pool_id, entry_kind, entry_seq)
 		 VALUES ($1,$2,$3,$4,$5,'issued',1)`,
-		entryID, tenant.Organization, tenant.Project, firstID, poolID)
+		entryID, tenant.Project, firstID, poolID)
 	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO runner_enrollments (id, organization_id, project_id, runner_id, pool_id, entry_kind, entry_seq)
 		 VALUES ($1,$2,$3,$4,$5,'revoked',1)`,
-		newID("renr"), tenant.Organization, tenant.Project, firstID, poolID))); got != "23505" {
+		newID("renr"), tenant.Project, firstID, poolID))); got != "23505" {
 		t.Fatalf("two entries were accepted at seq 1 for one runner (code %q, want 23505)", got)
 	}
 

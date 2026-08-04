@@ -17,7 +17,7 @@ import (
 // nosniff on EVERY proxied response, so hostile HTML/JS cannot script the API origin), and it bounds
 // the UNTRUSTED direction — the sandbox response streamed back to the client — not the request.
 func TestPreviewProxyIsolatesUntrustedContentAndBoundsResponse(t *testing.T) {
-	tenant := coordinator.Tenant{Organization: "org_a", Project: "proj_a"}
+	tenant := coordinator.Tenant{Project: "proj_a"}
 	hdr := http.Header{"X-Palai-Org": {tenant.Organization}, "X-Palai-Project": {tenant.Project}}
 	now := time.Now()
 
@@ -88,7 +88,7 @@ func TestPreviewProxyIsolatesUntrustedContentAndBoundsResponse(t *testing.T) {
 // emits, so sandbox output cannot plant a cookie on the first-party control-plane origin (spec §29.16
 // — a preview must not become a cookie-injection vector; CSP does not stop a response header cookie).
 func TestPreviewProxyStripsSandboxSetCookie(t *testing.T) {
-	tenant := coordinator.Tenant{Organization: "org_a", Project: "proj_a"}
+	tenant := coordinator.Tenant{Project: "proj_a"}
 	hdr := http.Header{"X-Palai-Org": {tenant.Organization}, "X-Palai-Project": {tenant.Project}}
 	now := time.Now()
 	hostile := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -130,8 +130,8 @@ func TestPreviewRouteDeniesExpiredAndWrongTenant(t *testing.T) {
 	defer backend.Close()
 	sandboxAddress := strings.TrimPrefix(backend.URL, "http://") // host:port the caller must never see
 
-	tenantA := coordinator.Tenant{Organization: "org_a", Project: "proj_a"}
-	tenantB := coordinator.Tenant{Organization: "org_b", Project: "proj_b"}
+	tenantA := coordinator.Tenant{Project: "proj_a"}
+	tenantB := coordinator.Tenant{Project: "proj_b"}
 
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	clock := now

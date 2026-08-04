@@ -110,7 +110,7 @@ func newBackgroundHarness(t *testing.T) *backgroundHarness {
 	if _, err := cs.Pool().Exec(storage.WithSystemScope(context.Background()),
 		`INSERT INTO responses (id, organization_id, project_id, session_id, state, input)
 		 VALUES ($1,$2,$3,$4,'in_progress','"go"'::jsonb)`,
-		responseID, tenant.Organization, tenant.Project, sessionID); err != nil {
+		responseID, tenant.Project, sessionID); err != nil {
 		t.Fatalf("seed the response: %v", err)
 	}
 	return &backgroundHarness{

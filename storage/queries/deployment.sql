@@ -6,7 +6,7 @@
 -- dressed as a feature. "Change a setting" and "stop deciding a setting" are both a new revision holding
 -- the whole document, which is what makes removal expressible as absence.
 --
--- BOTH RUN UNDER storage.WithSystemScope. deployment_desired carries no organization_id, so there is no
+-- BOTH RUN UNDER storage.WithSystemScope. deployment_desired carries no tenant column, so there is no
 -- tenant predicate to write and no RLS policy to run under; the authority is the `provision` capability on
 -- the API key, checked before either statement is reached.
 

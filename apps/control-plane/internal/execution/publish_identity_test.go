@@ -100,7 +100,7 @@ func TestAnAppLessPublishAuthenticatesAsTheBindingsOwnCredential(t *testing.T) {
 	publisher := &RepositoryPublisher{
 		// NO DEPLOYMENT-GLOBAL BROKER. This is the state that used to make the whole publisher nil.
 		Broker: nil,
-		ConnectionSecrets: func(org, ref string) ([]byte, error) {
+		ConnectionSecrets: func(ref string) ([]byte, error) {
 			if org != "org" || ref != "rcon_tenant_pat" {
 				t.Errorf("resolver asked for (org=%q ref=%q), want the binding's own", org, ref)
 			}
@@ -108,7 +108,7 @@ func TestAnAppLessPublishAuthenticatesAsTheBindingsOwnCredential(t *testing.T) {
 		},
 	}
 
-	tenant := coordinator.Tenant{Organization: "org", Project: "prj"}
+	tenant := coordinator.Tenant{Project: "prj"}
 	if err := publishApproved(ctx, pump, publisher, tenant, "run_1", "ses_1", "resp_1", root, 7,
 		publicationCredential{ConnectionRef: "rcon_tenant_pat", Identity: "local/demo-target"}); err != nil {
 		t.Fatalf("publishApproved() error = %v", err)
@@ -147,7 +147,7 @@ func TestAPublishUnderABindingCredentialNeverAuthenticatesAsTheApp(t *testing.T)
 	remote := newPushTargetRemote(t, tenantToken)
 	root := t.TempDir()
 	head := seedWorkspaceRepo(t, root)
-	tenant := coordinator.Tenant{Organization: "org", Project: "prj"}
+	tenant := coordinator.Tenant{Project: "prj"}
 
 	publisher := &RepositoryPublisher{
 		Broker:            repositories.NewTokenBroker(deploymentToken),
@@ -241,7 +241,7 @@ func TestAnAppLessDeploymentWarnsARefLessPublicationRatherThanSkippingIt(t *test
 		},
 	}
 
-	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Organization: "org", Project: "prj"},
+	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Project: "prj"},
 		"run_1", "ses_1", "resp_1", root, 1, publicationCredential{}); err != nil {
 		t.Fatalf("publishApproved() error = %v, want a warning not a fatal error", err)
 	}

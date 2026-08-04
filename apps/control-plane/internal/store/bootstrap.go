@@ -30,5 +30,5 @@ func (s *Store) Bootstrap(ctx context.Context, bootstrapKey string) error {
 	if count > 0 {
 		return nil
 	}
-	return identity.New(s.spine.Pool()).ProvisionFirstOrg(ctx, bootstrapKey)
+	return identity.New(s.spine.Pool()).ProvisionFirstTenant(ctx, bootstrapKey)
 }

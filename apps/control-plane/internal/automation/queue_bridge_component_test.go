@@ -464,14 +464,14 @@ func TestQueueTerminalEnqueuesOutboundLosslessExactlyOnce(t *testing.T) {
 
 	// A real run through the real admission path, then a real terminal transition.
 	responseID, runID, sessionID := newID("resp"), newID("run"), newID("ses")
-	if _, err := spine.AdmitResponse(ctx, coordinator.Tenant{Organization: org, Project: project}, coordinator.AdmissionInput{
+	if _, err := spine.AdmitResponse(ctx, coordinator.Tenant{Project: project}, coordinator.AdmissionInput{
 		Principal: principal, IdempotencyKey: "outbound-1", Method: "POST", Route: queueAdmitRoute,
 		RequestHash: "hash-outbound-1", ResponseID: responseID, RunID: runID, SessionID: sessionID,
 		Input: []byte(`{}`), Body: []byte(`{"id":"` + responseID + `"}`), Store: true,
 	}); err != nil {
 		t.Fatalf("AdmitResponse error = %v", err)
 	}
-	if _, err := spine.ApplyRunTransition(ctx, coordinator.Tenant{Organization: org, Project: project},
+	if _, err := spine.ApplyRunTransition(ctx, coordinator.Tenant{Project: project},
 		runID, statemachines.RunCmdCancel); err != nil {
 		t.Fatalf("ApplyRunTransition error = %v", err)
 	}
@@ -516,7 +516,7 @@ func TestQueueTerminalEnqueuesOutboundLosslessExactlyOnce(t *testing.T) {
 	// The payload names the run's canonical coordinates and nothing else — a queue subscriber learns what
 	// to fetch, not the run's content.
 	var payload []byte
-	if err := pool.QueryRow(storage.ScopeToTenant(ctx, org, project),
+	if err := pool.QueryRow(storage.ScopeToTenant(ctx, project),
 		`SELECT payload FROM queue_deliveries WHERE queue_connection_id = $1 AND destination_key = $2`,
 		connID, runID).Scan(&payload); err != nil {
 		t.Fatalf("read delivery payload error = %v", err)
@@ -545,20 +545,20 @@ func TestQueueTerminalEnqueuesNothingWithoutAnOutboundConnection(t *testing.T) {
 		Name: "consumer-only", Direction: "inbound", Config: inboundConnConfig(revision, principal)})
 
 	responseID, runID, sessionID := newID("resp"), newID("run"), newID("ses")
-	if _, err := spine.AdmitResponse(ctx, coordinator.Tenant{Organization: org, Project: project}, coordinator.AdmissionInput{
+	if _, err := spine.AdmitResponse(ctx, coordinator.Tenant{Project: project}, coordinator.AdmissionInput{
 		Principal: principal, IdempotencyKey: "no-outbound-1", Method: "POST", Route: queueAdmitRoute,
 		RequestHash: "hash-no-outbound", ResponseID: responseID, RunID: runID, SessionID: sessionID,
 		Input: []byte(`{}`), Body: []byte(`{"id":"` + responseID + `"}`), Store: true,
 	}); err != nil {
 		t.Fatalf("AdmitResponse error = %v", err)
 	}
-	if _, err := spine.ApplyRunTransition(ctx, coordinator.Tenant{Organization: org, Project: project},
+	if _, err := spine.ApplyRunTransition(ctx, coordinator.Tenant{Project: project},
 		runID, statemachines.RunCmdCancel); err != nil {
 		t.Fatalf("ApplyRunTransition error = %v", err)
 	}
 
 	var n int
-	if err := pool.QueryRow(storage.ScopeToTenant(ctx, org, project),
+	if err := pool.QueryRow(storage.ScopeToTenant(ctx, project),
 		`SELECT count(*) FROM queue_deliveries WHERE organization_id = $1 AND project_id = $2`, org, project).Scan(&n); err != nil {
 		t.Fatalf("count deliveries error = %v", err)
 	}

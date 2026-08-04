@@ -54,7 +54,7 @@ func newApprovalPumpHarness(t *testing.T) *approvalPumpHarness {
 
 	h := &approvalPumpHarness{
 		orch:      &Orchestrator{spine: cs},
-		tenant:    coordinator.Tenant{Organization: redeliveryID("org"), Project: redeliveryID("prj")},
+		tenant:    coordinator.Tenant{Project: redeliveryID("prj")},
 		sessionID: redeliveryID("ses"),
 		runID:     redeliveryID("run"),
 		respID:    redeliveryID("resp"),
@@ -63,11 +63,11 @@ func newApprovalPumpHarness(t *testing.T) *approvalPumpHarness {
 	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, h.tenant.Organization)
 	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, h.tenant.Project, h.tenant.Organization)
 	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id, state) VALUES ($1, $2, $3, 'active')`,
-		h.sessionID, h.tenant.Organization, h.tenant.Project)
+		h.sessionID, h.tenant.Project)
 	execSQL(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
-		h.respID, h.tenant.Organization, h.tenant.Project, h.sessionID)
+		h.respID, h.tenant.Project, h.sessionID)
 	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'running')`,
-		h.runID, h.tenant.Organization, h.tenant.Project, h.sessionID, h.respID)
+		h.runID, h.tenant.Project, h.sessionID, h.respID)
 	h.pub = h.requestPush(t, "abc123")
 	return h
 }
@@ -80,8 +80,8 @@ func (h *approvalPumpHarness) requestPush(t *testing.T, head string) coordinator
 	pub, err := h.orch.spine.RequestPublication(context.Background(), h.tenant, coordinator.PublicationRequest{
 		PublicationID: redeliveryID("pub"), ApprovalID: redeliveryID("apr"), SessionID: h.sessionID, RunID: h.runID,
 		ResponseID: h.respID, Operation: "push_branch", Remote: remote, Branch: branch, Base: base, HeadSHA: head,
-		IdempotencyKey: repositories.IdempotencyKey(h.tenant.Organization, h.tenant.Project, h.runID, repositories.OpPushBranch, remote, branch, base, head),
-		RequestHash:    repositories.RequestHash(h.tenant.Organization, h.tenant.Project, h.runID, repositories.OpPushBranch, remote, branch, base, head),
+		IdempotencyKey: repositories.IdempotencyKey(h.tenant.Project, h.runID, repositories.OpPushBranch, remote, branch, base, head),
+		RequestHash:    repositories.RequestHash(h.tenant.Project, h.runID, repositories.OpPushBranch, remote, branch, base, head),
 		Display:        "push " + branch,
 	})
 	if err != nil {

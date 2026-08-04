@@ -25,7 +25,7 @@ func newTaskRegistry(store *coordinator.Store) *taskRegistry { return &taskRegis
 // upserts the task keyed by "key" within the session — idempotent, so a redelivered tool call is a
 // no-op change. The tool injects "kind" (task vs todo); the model provides key/title/status/detail.
 func (r *taskRegistry) ApplyTask(ctx context.Context, scope toolbroker.TaskScope, op map[string]any) (map[string]any, error) {
-	tenant := coordinator.Tenant{Organization: scope.Org, Project: scope.Project}
+	tenant := coordinator.Tenant{Project: scope.Project}
 
 	if action, _ := op["action"].(string); action == "list" {
 		tasks, err := r.store.ListTasks(ctx, tenant, scope.SessionID)

@@ -106,7 +106,7 @@ type RemoteAgent struct {
 // (the MCP SecretResolver pattern). It is scoped to (org, ref): it can resolve ONLY a secret the tenant owns,
 // and it is the SOLE source of the outbound Authorization. There is no path to hand the client any other
 // credential — that is the structural no-credential-inheritance guarantee (A2A-005/SUB-007).
-type RemoteSecretResolver func(org, ref string) ([]byte, error)
+type RemoteSecretResolver func(ref string) ([]byte, error)
 
 // ClientConfig wires the client. Resolver/Dial/AllowPrivate mirror the MCP HTTP transport egress knobs;
 // AllowPrivate is the test-harness-only self-host flag (production leaves it false, so loopback/RFC1918 are
@@ -338,7 +338,7 @@ func (c *Client) ingestPushedFiles(ctx context.Context, agent RemoteAgent, req R
 			if c.cfg.Files == nil {
 				return nil, ErrFileDropWouldOccur
 			}
-			id, err := c.cfg.Files.Ingest(ctx, agent.Organization, agent.Project, req.RunID, *p.File)
+			id, err := c.cfg.Files.Ingest(ctx, agent.Project, req.RunID, *p.File)
 			if err != nil {
 				return nil, fmt.Errorf("%w: scan/ingest pushed file: %v", ErrRemoteProtocol, err)
 			}
@@ -430,7 +430,7 @@ func (c *Client) resolveBearer(agent RemoteAgent) (string, error) {
 	if c.cfg.Secrets == nil {
 		return "", ErrNoSecretResolver
 	}
-	b, err := c.cfg.Secrets(agent.Organization, agent.AuthConnectionRef)
+	b, err := c.cfg.Secrets(agent.AuthConnectionRef)
 	if err != nil {
 		return "", fmt.Errorf("a2a client: resolve auth connection: %w", err)
 	}

@@ -116,12 +116,8 @@ func KnownScheduleStatus(s string) bool {
 // the tenant's scope (a schedule can never fire a foreign trigger). created_by records the principal the
 // firing admits AS.
 func (s *ScheduleStore) CreateSchedule(ctx context.Context, project, principal string, in ScheduleInput) (string, error) {
-	org, err := storage.OrganizationForProject(ctx, s.pool, project)
-	if err != nil {
-		return "", err
-	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
-	spec, err := s.validate(ctx, org, project, in)
+	ctx = storage.ScopeToTenant(ctx, project)
+	spec, err := s.validate(ctx, project, in)
 	if err != nil {
 		return "", err
 	}
@@ -131,7 +127,7 @@ func (s *ScheduleStore) CreateSchedule(ctx context.Context, project, principal s
 	}
 	id := newID("sch")
 	if _, err := s.pool.Exec(ctx, storage.Query("InsertSchedule"),
-		id, org, project, in.Name, in.TriggerID, principal, kindOrDefault(in.Kind), in.CronExpr, in.Timezone,
+		id, project, in.Name, in.TriggerID, principal, kindOrDefault(in.Kind), in.CronExpr, in.Timezone,
 		nullableTime(in.OneTimeAt), policyOrDefault(in.MisfirePolicy), graceOrDefault(in.MisfireGraceSeconds),
 		in.MaxCatchUp, in.JitterSeconds, nullableTime(in.StartsAt), nullableTime(in.EndsAt), next); err != nil {
 		return "", fmt.Errorf("insert schedule: %w", err)
@@ -143,11 +139,7 @@ func (s *ScheduleStore) CreateSchedule(ctx context.Context, project, principal s
 // (the no-schedule_revisions-table decision — occurrences pin the revision they fired under). A revise
 // re-activates a paused/failed schedule. Returns found=false when the schedule is absent from scope.
 func (s *ScheduleStore) ReviseSchedule(ctx context.Context, project, id string, in ScheduleInput) (int, bool, error) {
-	org, err := storage.OrganizationForProject(ctx, s.pool, project)
-	if err != nil {
-		return 0, false, err
-	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
+	ctx = storage.ScopeToTenant(ctx, project)
 	// A revise edits only the firing config — name/trigger are immutable and the schedule already exists in
 	// scope, so only the firing shape (cron/tz/kind) is re-validated (not name/trigger/scope).
 	spec, err := validateFiring(in)
@@ -177,11 +169,7 @@ func (s *ScheduleStore) ReviseSchedule(ctx context.Context, project, id string, 
 // window (which for policy=fail would re-enter the misfire machine and re-fail — review #4). Returns
 // found=false when absent from scope.
 func (s *ScheduleStore) SetPaused(ctx context.Context, project, id string, paused bool) (bool, error) {
-	org, err := storage.OrganizationForProject(ctx, s.pool, project)
-	if err != nil {
-		return false, err
-	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
+	ctx = storage.ScopeToTenant(ctx, project)
 	if paused {
 		switch err := s.pool.QueryRow(ctx, storage.Query("PauseSchedule"), id, project).Scan(new(string)); {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -233,11 +221,7 @@ func scheduleInputFromView(v ScheduleView) ScheduleInput {
 // DeleteSchedule soft-deletes a schedule (deleted_at set): the due-scan skips it while its occurrence rows
 // + linked deliveries stay queryable under retention (B9). Returns found=false when absent.
 func (s *ScheduleStore) DeleteSchedule(ctx context.Context, project, id string) (bool, error) {
-	org, err := storage.OrganizationForProject(ctx, s.pool, project)
-	if err != nil {
-		return false, err
-	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
+	ctx = storage.ScopeToTenant(ctx, project)
 	switch err := s.pool.QueryRow(ctx, storage.Query("SoftDeleteSchedule"), id, project).Scan(new(string)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
@@ -249,11 +233,7 @@ func (s *ScheduleStore) DeleteSchedule(ctx context.Context, project, id string) 
 
 // GetSchedule reads a schedule's management projection, or found=false when absent (or soft-deleted).
 func (s *ScheduleStore) GetSchedule(ctx context.Context, project, id string) (ScheduleView, bool, error) {
-	org, err := storage.OrganizationForProject(ctx, s.pool, project)
-	if err != nil {
-		return ScheduleView{}, false, err
-	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
+	ctx = storage.ScopeToTenant(ctx, project)
 	var v ScheduleView
 	switch err := s.pool.QueryRow(ctx, storage.Query("GetSchedule"), id, project).Scan(
 		&v.ID, &v.Name, &v.TriggerID, &v.Kind, &v.CronExpr, &v.Timezone, &v.MisfirePolicy, &v.MisfireGraceSeconds,
@@ -275,11 +255,7 @@ func (s *ScheduleStore) GetSchedule(ctx context.Context, project, id string) (Sc
 // The caller over-fetches by asking for Limit+1 (the shared renderPage contract); this method neither
 // clamps nor pads, so "how many rows fit on a page" stays one decision, made in the API's parse.
 func (s *ScheduleStore) ListSchedules(ctx context.Context, project string, w ListWindow, status string) ([]ScheduleView, error) {
-	org, err := storage.OrganizationForProject(ctx, s.pool, project)
-	if err != nil {
-		return nil, err
-	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
+	ctx = storage.ScopeToTenant(ctx, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListSchedules"),
 		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, nullableText(status), w.Limit)
 	if err != nil {
@@ -309,11 +285,7 @@ func (s *ScheduleStore) ListSchedules(ctx context.Context, project string, w Lis
 // here (1..100). It stays for the store's own callers and its own tests: a store read that silently
 // returned every row of an unbounded table would be a worse default than 100.
 func (s *ScheduleStore) ListOccurrences(ctx context.Context, project, id string, w ListWindow) ([]OccurrenceView, error) {
-	org, err := storage.OrganizationForProject(ctx, s.pool, project)
-	if err != nil {
-		return nil, err
-	}
-	ctx = storage.ScopeToTenant(ctx, org, project)
+	ctx = storage.ScopeToTenant(ctx, project)
 	limit := w.Limit
 	if limit <= 0 || limit > 500 {
 		limit = 100
@@ -338,12 +310,12 @@ func (s *ScheduleStore) ListOccurrences(ctx context.Context, project, id string,
 // validate is the create gate: it verifies the name/trigger are present and the trigger is in the tenant's
 // scope (a schedule can never fire a foreign trigger), then the firing shape (validateFiring). It is
 // fail-closed.
-func (s *ScheduleStore) validate(ctx context.Context, org, project string, in ScheduleInput) (scheduleSpec, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *ScheduleStore) validate(ctx context.Context, project string, in ScheduleInput) (scheduleSpec, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	if in.Name == "" || in.TriggerID == "" {
 		return scheduleSpec{}, fmt.Errorf("%w: name and trigger_id are required", ErrScheduleInvalid)
 	}
-	if _, err := s.triggers.triggerEnabled(ctx, org, project, in.TriggerID); err != nil {
+	if _, err := s.triggers.triggerEnabled(ctx, project, in.TriggerID); err != nil {
 		return scheduleSpec{}, err // ErrTriggerNotFound (foreign/unknown) — a schedule cannot fire it
 	}
 	return validateFiring(in)
@@ -423,10 +395,10 @@ func resolveSpec(kind, cronExpr, timezone, misfirePolicy string, graceSeconds, m
 
 // dueSchedule is one row of the ticker's due-scan.
 type dueSchedule struct {
-	id, org, project, triggerID, createdBy, kind, cronExpr, timezone, misfirePolicy string
-	graceSeconds, maxCatchUp, jitterSeconds, revision                               int
-	endsAt                                                                          *time.Time
-	nextFireAt                                                                      time.Time
+	id, project, triggerID, createdBy, kind, cronExpr, timezone, misfirePolicy string
+	graceSeconds, maxCatchUp, jitterSeconds, revision                          int
+	endsAt                                                                     *time.Time
+	nextFireAt                                                                 time.Time
 }
 
 // fireDueSchedules is the ticker's due-scan phase: it claims occurrences (durably committed 'pending')
@@ -452,7 +424,7 @@ func (s *ScheduleStore) fireDueSchedules(ctx context.Context, now time.Time, lim
 	var due []dueSchedule
 	for rows.Next() {
 		var d dueSchedule
-		if err := rows.Scan(&d.id, &d.org, &d.project, &d.triggerID, &d.createdBy, &d.kind, &d.cronExpr,
+		if err := rows.Scan(&d.id, &d.project, &d.triggerID, &d.createdBy, &d.kind, &d.cronExpr,
 			&d.timezone, &d.misfirePolicy, &d.graceSeconds, &d.maxCatchUp, &d.jitterSeconds, &d.endsAt,
 			&d.revision, &d.nextFireAt); err != nil {
 			rows.Close()
@@ -515,10 +487,10 @@ func (s *ScheduleStore) fireOne(ctx context.Context, d dueSchedule, now time.Tim
 
 // pendingOccurrence is one row of the handoff sweep.
 type pendingOccurrence struct {
-	occurrenceID, scheduleID, org, project, triggerID, createdBy string
-	revision, jitterSeconds                                      int
-	plannedAt                                                    time.Time
-	endsAt                                                       *time.Time
+	occurrenceID, scheduleID, project, triggerID, createdBy string
+	revision, jitterSeconds                                 int
+	plannedAt                                               time.Time
+	endsAt                                                  *time.Time
 }
 
 // sweepPendingOccurrences is the ticker's handoff phase: it admits every occurrence durably committed
@@ -539,7 +511,7 @@ func (s *ScheduleStore) sweepPendingOccurrences(ctx context.Context, now time.Ti
 	for rows.Next() {
 		var p pendingOccurrence
 		if err := rows.Scan(&p.occurrenceID, &p.scheduleID, &p.revision, &p.plannedAt,
-			&p.org, &p.project, &p.triggerID, &p.createdBy, &p.jitterSeconds, &p.endsAt); err != nil {
+			&p.project, &p.triggerID, &p.createdBy, &p.jitterSeconds, &p.endsAt); err != nil {
 			rows.Close()
 			return err
 		}
@@ -570,7 +542,7 @@ func (s *ScheduleStore) admitOccurrence(ctx context.Context, p pendingOccurrence
 		return nil // jitter window not yet open — leave pending for a later tick
 	}
 	payload := scheduledPayload(p)
-	del, err := s.triggers.CreateScheduledDelivery(ctx, p.org, p.project, p.createdBy, p.triggerID, p.occurrenceID, payload)
+	del, err := s.triggers.CreateScheduledDelivery(ctx, p.project, p.createdBy, p.triggerID, p.occurrenceID, payload)
 	switch {
 	case errors.Is(err, ErrTriggerDisabled), errors.Is(err, ErrNoActiveRevision), errors.Is(err, ErrTriggerNotFound):
 		_, e := s.pool.Exec(ctx, storage.Query("MarkOccurrenceFailed"), p.occurrenceID, err.Error())

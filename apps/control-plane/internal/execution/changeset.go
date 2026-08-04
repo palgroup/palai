@@ -53,7 +53,7 @@ type ChangesetLedger interface {
 // execution does not depend on the S3 write-path's types (the retention ArtifactDeleter decoupling,
 // and it breaks the artifacts↔execution test import cycle).
 type ArtifactWriter interface {
-	WriteArtifact(ctx context.Context, org, project, runID string, content []byte, mediaType, logicalType string, provenance map[string]any) (string, error)
+	WriteArtifact(ctx context.Context, project, runID string, content []byte, mediaType, logicalType string, provenance map[string]any) (string, error)
 }
 
 // ChangesetInput is the infrastructure-owned input to a changeset compile. AllocationRoot is the
@@ -347,7 +347,7 @@ func writeArtifact(ctx context.Context, aw ArtifactWriter, in ChangesetInput, co
 	if content == "" {
 		return "", nil
 	}
-	id, err := aw.WriteArtifact(ctx, in.Tenant.Organization, in.Tenant.Project, in.RunID, []byte(content), mediaType, logicalType, provenance)
+	id, err := aw.WriteArtifact(ctx, in.Tenant.Project, in.RunID, []byte(content), mediaType, logicalType, provenance)
 	if err != nil {
 		return "", fmt.Errorf("write %s artifact: %w", logicalType, err)
 	}

@@ -229,7 +229,7 @@ func TestAdmissionRejectsWhenTheDurableBudgetIsExhausted(t *testing.T) {
 	ctx := context.Background()
 	tenant, principalID := seedTenantWithKey(t, cs.Pool(), "tok-budget")
 	exec(t, cs.Pool(), `INSERT INTO budgets (id, organization_id, project_id, meter_prefix, limit_quantity) VALUES ($1, $2, $3, 'model.', 100)`,
-		newID("bdg"), tenant.Organization, tenant.Project)
+		newID("bdg"), tenant.Project)
 
 	// Under the limit: the run admits normally.
 	first := admissionInput(principalID, "key-b1", "hash-A", `{"id":"resp_b1"}`)
@@ -244,7 +244,7 @@ func TestAdmissionRejectsWhenTheDurableBudgetIsExhausted(t *testing.T) {
 	// The run settles past the budget, exactly as a real completion would.
 	exec(t, cs.Pool(), `INSERT INTO usage_ledger (id, organization_id, project_id, run_id, meter, quantity, unit, dedupe_key)
 	     VALUES ($1, $2, $3, $4, 'model.output_tokens', 140, 'token', $1)`,
-		newID("use"), tenant.Organization, tenant.Project, first.RunID)
+		newID("use"), tenant.Project, first.RunID)
 
 	second := admissionInput(principalID, "key-b2", "hash-A", `{"id":"resp_b2"}`)
 	adm, err = cs.AdmitResponse(ctx, tenant, second)
@@ -278,7 +278,7 @@ func TestAdmissionRejectsWhenTheRollingQuotaIsExhausted(t *testing.T) {
 	ctx := context.Background()
 	tenant, principalID := seedTenantWithKey(t, cs.Pool(), "tok-quota")
 	exec(t, cs.Pool(), `INSERT INTO quotas (id, organization_id, project_id, meter_prefix, limit_quantity, window_seconds)
-	     VALUES ($1, $2, $3, 'run.', 1, 3600)`, newID("quo"), tenant.Organization, tenant.Project)
+	     VALUES ($1, $2, $3, 'run.', 1, 3600)`, newID("quo"), tenant.Project)
 
 	if adm, err := cs.AdmitResponse(ctx, tenant, admissionInput(principalID, "key-q1", "hash-A", `{"id":"resp_q1"}`)); err != nil || adm.LimitExceeded != nil {
 		t.Fatalf("first admission = %+v err = %v, want an admit (the quota allows one run)", adm.LimitExceeded, err)
@@ -309,7 +309,7 @@ func TestExhaustedLimitStillReplaysAnAcceptedRequest(t *testing.T) {
 	ctx := context.Background()
 	tenant, principalID := seedTenantWithKey(t, cs.Pool(), "tok-replay")
 	exec(t, cs.Pool(), `INSERT INTO quotas (id, organization_id, project_id, meter_prefix, limit_quantity, window_seconds)
-	     VALUES ($1, $2, $3, 'run.', 1, 3600)`, newID("quo"), tenant.Organization, tenant.Project)
+	     VALUES ($1, $2, $3, 'run.', 1, 3600)`, newID("quo"), tenant.Project)
 
 	in := admissionInput(principalID, "key-replay", "hash-A", `{"id":"resp_replay"}`)
 	first, err := cs.AdmitResponse(ctx, tenant, in)

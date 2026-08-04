@@ -89,7 +89,7 @@ type ExecEnv struct {
 // orchestrator's writer drops straight into ExecEnv. Primitive params keep the broker free of the
 // artifacts package's types.
 type ArtifactWriter interface {
-	WriteArtifact(ctx context.Context, org, project, runID string, content []byte, mediaType, logicalType string, provenance map[string]any) (string, error)
+	WriteArtifact(ctx context.Context, project, runID string, content []byte, mediaType, logicalType string, provenance map[string]any) (string, error)
 }
 
 // ShellRunner runs one argv command inside the sandbox and returns its captured, bounded result. The

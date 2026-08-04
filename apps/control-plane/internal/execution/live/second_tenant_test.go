@@ -84,7 +84,7 @@ func TestLiveSecondTenantProvisionedViaAPI(t *testing.T) {
 		[]byte(`{"config_policy":{"default_tools":["file"]}}`)); err != nil {
 		t.Fatalf("UpdateProjectPolicy error = %v", err)
 	}
-	policy, err := repo.Spine().ProjectConfig(ctx, coordinator.Tenant{Organization: org.ID, Project: org.DefaultProjectID})
+	policy, err := repo.Spine().ProjectConfig(ctx, coordinator.Tenant{Project: org.DefaultProjectID})
 	if err != nil {
 		t.Fatalf("ProjectConfig error = %v", err)
 	}

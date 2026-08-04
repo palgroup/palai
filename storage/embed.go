@@ -1022,15 +1022,18 @@ func parseNamedQueries(files ...string) map[string]string {
 //     policies actually apply (they are inert for the owner or a superuser). The role is looked up
 //     rather than named literally so a pool opened against a database whose chain has not run yet —
 //     the very first boot, before 000001 creates it — still connects and can migrate.
-//   - Publishes the acquiring context's tenant into palai.org_id / palai.project_id / palai.system,
-//     which is what the policies read. A non-system, non-org-only scope with no project (an unmarked
-//     context included) never reaches this statement at all — PrepareConn below refuses the
-//     acquisition first (A.2 Task 1, ErrProjectRequired) rather than publishing an empty project_id
-//     that the RLS policy would read as "every project in the organization".
-const applyScope = `SELECT set_config('palai.org_id', $1, false),
-       set_config('palai.project_id', $2, false),
-       set_config('palai.system', $3, false),
-       set_config('role', coalesce((SELECT rolname FROM pg_roles WHERE rolname = $4), 'none'), false)`
+//   - Publishes the acquiring context's tenant into palai.project_id / palai.system, which is what the
+//     policies read. A non-system, non-installation scope with no project (an unmarked context
+//     included) never reaches this statement at all — PrepareConn below refuses the acquisition first
+//     (A.2 Task 1, ErrProjectRequired) rather than publishing an empty project_id that the policies
+//     would read as a row of their own.
+//
+// palai.org_id LEFT WITH A.2 TASK 6: migration 000066 rekeyed the last policy that read it, and this
+// statement was its only writer. A GUC that nothing writes and nothing reads is not harmless — it reads
+// as a boundary that is still there.
+const applyScope = `SELECT set_config('palai.project_id', $1, false),
+       set_config('palai.system', $2, false),
+       set_config('role', coalesce((SELECT rolname FROM pg_roles WHERE rolname = $3), 'none'), false)`
 
 // OpenPool opens a verified connection pool. The URL carries a local throwaway
 // credential supplied by the caller; it is never embedded here.
@@ -1055,16 +1058,16 @@ func OpenPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 		system := ""
 		if s.system {
 			system = "on"
-		} else if s.project == "" && !s.orgOnly {
+		} else if s.project == "" && !s.installation {
 			// A.2 Task 1: a non-system tenant scope with no project is not a boundary, it is the
-			// absence of one — the RLS policy's own empty-project fallback reads it as "every project
-			// in the organization" (000029), and once organizations are gone that means every project,
+			// absence of one — the RLS policy's own empty-project fallback read it as "every project
+			// in the organization" (000029), and with organizations gone that means every project,
 			// full stop. Refuse the acquisition rather than publish a project_id that admits everything;
-			// WithOrgScope is the one deliberate, narrow exception (orgOnly), for the identity/secret
-			// surfaces that still span a whole organization.
+			// WithInstallationScope is the one deliberate, narrow exception, for the two tables that
+			// carry no project column at all.
 			return false, fmt.Errorf("apply tenant scope: %w", ErrProjectRequired)
 		}
-		if _, err := conn.Exec(ctx, applyScope, s.organization, s.project, system, RuntimeRole); err != nil {
+		if _, err := conn.Exec(ctx, applyScope, s.project, system, RuntimeRole); err != nil {
 			// Destroy the connection and fail the instigating query: a connection whose scope could
 			// not be published must never serve a query, because it would serve it unscoped.
 			return false, fmt.Errorf("apply tenant scope: %w", err)

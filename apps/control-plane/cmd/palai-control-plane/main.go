@@ -262,10 +262,7 @@ func main() {
 		// reason: it opens sealed values, so with no master key there is nothing to open. It is the ONE
 		// route by which a relay process running outside this binary can turn the handles its own registry
 		// row names into tokens — without it a bot is configurable and unstartable.
-		routerOpts = append(routerOpts, api.WithBotCredentials(botcreds.New(
-			func(ctx context.Context, project string) (string, error) {
-				return storage.OrganizationForProject(ctx, repo.Spine().Pool(), project)
-			}, botStore, secretStore)))
+		routerOpts = append(routerOpts, api.WithBotCredentials(botcreds.New(botStore, secretStore)))
 	}
 	// The DESIRED configuration (E29, migration 000052): what this MACHINE should be running with, written
 	// by the admin panel and applied by the next bring-up.
@@ -694,7 +691,7 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		// the workspace holds no such information. The lookup can see the run; the static map cannot.
 		toolBroker.SetLookup(tools.SlackSearchLookup(http.DefaultClient, slackSearchAuthorities,
 			func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
-				return toolRegistry.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
+				return toolRegistry.LookupTool(ctx, env.Scope.Project, env.Scope.RunID, name)
 			}))
 		// Wire the MCP client (E12 T5): a discovered MCP tool resolves through its run's connection rider and
 		// runs in a per-call, network-less OCI sandbox (stdio) or a vetted HTTP transport. The SAME manager
@@ -1183,7 +1180,7 @@ func mcpManagerFromEnv(spine *coordinator.Store, broker *modelbroker.Broker, rou
 	sampling := execution.NewMCPSamplingRouter(broker, route,
 		func(ctx context.Context, scope mcpclient.CallScope, eventType string, payload []byte) error {
 			return spine.AppendModelStep(ctx,
-				coordinator.Tenant{Organization: scope.Org, Project: scope.Project},
+				coordinator.Tenant{Project: scope.Project},
 				scope.SessionID, scope.ResponseID, scope.RunID, eventType, payload)
 		})
 	return mcpclient.NewManager(mcpclient.Config{
@@ -1215,21 +1212,22 @@ const secretResolveTimeout = 2 * time.Second
 //   - a timeout / DB-unavailable error (bounded by secretResolveTimeout) or a genuine miss degrades to the
 //     env bridge (the allowed fallback), so a store hiccup does not fail an env-satisfiable lookup.
 //
-// The org is server-minted, so the store scopes the read to it and RLS denies any foreign row.
-func dbSecret(org, ref string) ([]byte, bool, error) {
+// A.2 Task 6 removed the org argument: secret_refs carries no tenant column and migration 000066 keys it
+// on the INSTALLATION, so the argument selected nothing — see identity.SecretStore.Resolve.
+func dbSecret(ref string) ([]byte, bool, error) {
 	if dbSecretStore == nil {
 		return nil, false, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), secretResolveTimeout)
 	defer cancel()
-	v, ok, err := dbSecretStore.Resolve(ctx, org, ref)
+	v, ok, err := dbSecretStore.Resolve(ctx, ref)
 	if err != nil {
 		if errors.Is(err, identity.ErrSecretDecrypt) {
 			return nil, false, err // fail closed: never fall back to a superseded env secret
 		}
 		// Not every consumer HAS an env bridge (the repository connection resolver is DB-only), so the log
 		// states what happened here rather than claiming a fallback the caller may not have.
-		log.Printf("secret store: resolve ref %q under org %q: %v (treated as a miss)", ref, org, err)
+		log.Printf("secret store: resolve ref %q: %v (treated as a miss)", ref, err)
 		return nil, false, nil
 	}
 	return v, ok, nil
@@ -1245,11 +1243,11 @@ func dbSecret(org, ref string) ([]byte, bool, error) {
 // HONEST CEILING: there is no per-tenant GitHub App ONBOARDING surface (installing an App per tenant and
 // capturing its installation credential is product/SaaS work). This resolves whatever token the tenant
 // already provisioned under the ref — a PAT or an installation token it manages itself.
-func repositoryConnectionSecret(org, ref string) ([]byte, error) {
-	if org == "" || ref == "" {
-		return nil, errors.New("empty repository connection org/ref")
+func repositoryConnectionSecret(ref string) ([]byte, error) {
+	if ref == "" {
+		return nil, errors.New("empty repository connection ref")
 	}
-	v, ok, err := dbSecret(org, ref)
+	v, ok, err := dbSecret(ref)
 	if err != nil {
 		return nil, err
 	}
@@ -1257,7 +1255,7 @@ func repositoryConnectionSecret(org, ref string) ([]byte, error) {
 		// dbSecret flattens a transient store failure into a miss (it is logged there), so this covers two
 		// causes and must not assert the wrong one: an operator reading "unprovisioned" during a Postgres
 		// blip would go hunting for a ref that is in fact present.
-		return nil, fmt.Errorf("repository connection %q did not resolve under org %q: no such secret ref, or the secret store was unreachable (see the secret-store log)", ref, org)
+		return nil, fmt.Errorf("repository connection %q did not resolve: no such secret ref, or the secret store was unreachable (see the secret-store log)", ref)
 	}
 	return v, nil
 }
@@ -1274,18 +1272,18 @@ func repositoryConnectionSecret(org, ref string) ([]byte, error) {
 //
 // The org is server-minted from the RUN, never from anything the model or the engine said, so the store
 // scopes the read to it and RLS denies any foreign row. The error names the ref and never the value.
-func environmentValueSecret(org, ref string) ([]byte, error) {
-	if org == "" || ref == "" {
-		return nil, errors.New("empty environment org/ref")
+func environmentValueSecret(ref string) ([]byte, error) {
+	if ref == "" {
+		return nil, errors.New("empty environment ref")
 	}
-	v, ok, err := dbSecret(org, ref)
+	v, ok, err := dbSecret(ref)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		// dbSecret flattens a transient store failure into a miss (logged there), so this covers two causes
 		// and must not assert the wrong one — the repositoryConnectionSecret precedent, verbatim.
-		return nil, fmt.Errorf("environment value %q did not resolve under org %q: no such secret ref, or the secret store was unreachable (see the secret-store log)", ref, org)
+		return nil, fmt.Errorf("environment value %q did not resolve: no such secret ref, or the secret store was unreachable (see the secret-store log)", ref)
 	}
 	return v, nil
 }
@@ -1295,21 +1293,18 @@ func environmentValueSecret(org, ref string) ([]byte, error) {
 // PALAI_MCP_SECRET_FILE_<ORG>__<REF> holds a FILE PATH, never the secret inline, read only here and never
 // logged. The org prefix is a server-minted hard tenant boundary, so a tenant's ref can only name a secret
 // provisioned under its OWN org.
-func mcpSecretResolver(org, ref string) ([]byte, error) {
-	if org == "" || ref == "" {
-		return nil, errors.New("empty mcp secret org/ref")
+func mcpSecretResolver(ref string) ([]byte, error) {
+	if ref == "" {
+		return nil, errors.New("empty mcp secret ref")
 	}
-	if v, ok, err := dbSecret(org, ref); err != nil {
+	if v, ok, err := dbSecret(ref); err != nil {
 		return nil, err
 	} else if ok {
 		return v, nil
 	}
-	if strings.Contains(secretEnvKey(org), "__") {
-		return nil, fmt.Errorf("ambiguous mcp secret org key %q", org)
-	}
-	path := os.Getenv("PALAI_MCP_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
+	path := os.Getenv("PALAI_MCP_SECRET_FILE_" + secretEnvKey(ref))
 	if path == "" {
-		return nil, fmt.Errorf("no secret bridge configured for mcp ref under org %q", org)
+		return nil, fmt.Errorf("no secret bridge configured for mcp ref %q", ref)
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -1546,24 +1541,18 @@ func startScheduleTicker(ctx context.Context, store *automation.ScheduleStore, s
 // name a secret provisioned under its OWN org — a foreign ref resolves to no env var (F2). The org is
 // server-minted (never tenant-forgeable), so the org prefix is a hard tenant boundary. An unresolved
 // ref fails the attempt (a retry), never an unsigned delivery.
-func webhookSecretResolver(org, ref string) ([]byte, error) {
-	if org == "" || ref == "" {
-		return nil, errors.New("empty webhook secret org/ref")
+func webhookSecretResolver(ref string) ([]byte, error) {
+	if ref == "" {
+		return nil, errors.New("empty webhook secret ref")
 	}
-	if v, ok, err := dbSecret(org, ref); err != nil {
+	if v, ok, err := dbSecret(ref); err != nil {
 		return nil, err
 	} else if ok {
 		return v, nil
 	}
-	// Belt-and-braces: "__" is the org/ref delimiter, so an org whose normalized key form already contains
-	// it would make the env key ambiguous with a different split. The org is server-minted (never
-	// tenant-forgeable), so this is defence-in-depth, not the primary tenant boundary.
-	if strings.Contains(secretEnvKey(org), "__") {
-		return nil, fmt.Errorf("ambiguous webhook secret org key %q", org)
-	}
-	path := os.Getenv("PALAI_WEBHOOK_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
+	path := os.Getenv("PALAI_WEBHOOK_SECRET_FILE_" + secretEnvKey(ref))
 	if path == "" {
-		return nil, fmt.Errorf("no secret bridge configured for webhook ref under org %q", org)
+		return nil, fmt.Errorf("no secret bridge configured for webhook ref %q", ref)
 	}
 	return os.ReadFile(path)
 }
@@ -1574,24 +1563,18 @@ func webhookSecretResolver(org, ref string) ([]byte, error) {
 // tenant's ref can only name a secret provisioned under its OWN org — and the inbound namespace is
 // DISTINCT from the outbound PALAI_WEBHOOK_SECRET_FILE_ one, so the two secret sets are non-interchangeable.
 // An unresolved ref fails verification (a generic 404 upstream — no config oracle), never an unsigned accept.
-func inboundSecretResolver(org, ref string) ([]byte, error) {
-	if org == "" || ref == "" {
-		return nil, errors.New("empty inbound secret org/ref")
+func inboundSecretResolver(ref string) ([]byte, error) {
+	if ref == "" {
+		return nil, errors.New("empty inbound secret ref")
 	}
-	if v, ok, err := dbSecret(org, ref); err != nil {
+	if v, ok, err := dbSecret(ref); err != nil {
 		return nil, err
 	} else if ok {
 		return v, nil
 	}
-	// Belt-and-braces, as in webhookSecretResolver: a normalized org key carrying the "__" delimiter is
-	// ambiguous; reject it rather than resolve a colliding key. The org is server-minted, so this is
-	// defence-in-depth on top of the org-scoped namespace.
-	if strings.Contains(secretEnvKey(org), "__") {
-		return nil, fmt.Errorf("ambiguous inbound secret org key %q", org)
-	}
-	path := os.Getenv("PALAI_INBOUND_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
+	path := os.Getenv("PALAI_INBOUND_SECRET_FILE_" + secretEnvKey(ref))
 	if path == "" {
-		return nil, fmt.Errorf("no secret bridge configured for inbound ref under org %q", org)
+		return nil, fmt.Errorf("no secret bridge configured for inbound ref %q", ref)
 	}
 	return os.ReadFile(path)
 }
@@ -1603,24 +1586,18 @@ func inboundSecretResolver(org, ref string) ([]byte, error) {
 // tenant's ref can only name a secret provisioned under its OWN org — and the remote-tool namespace is
 // DISTINCT from the webhook/inbound ones, so the three secret sets are non-interchangeable. An unresolved
 // ref fails the invoke (a retry) / a generic-404 callback, never an unsigned request or accept.
-func remoteToolSecretResolver(org, ref string) ([]byte, error) {
-	if org == "" || ref == "" {
-		return nil, errors.New("empty remote tool secret org/ref")
+func remoteToolSecretResolver(ref string) ([]byte, error) {
+	if ref == "" {
+		return nil, errors.New("empty remote tool secret ref")
 	}
-	if v, ok, err := dbSecret(org, ref); err != nil {
+	if v, ok, err := dbSecret(ref); err != nil {
 		return nil, err
 	} else if ok {
 		return v, nil
 	}
-	// Belt-and-braces, as in the sibling resolvers: a normalized org key carrying the "__" delimiter is
-	// ambiguous; reject it rather than resolve a colliding key. The org is server-minted, so this is
-	// defence-in-depth on top of the org-scoped namespace.
-	if strings.Contains(secretEnvKey(org), "__") {
-		return nil, fmt.Errorf("ambiguous remote tool secret org key %q", org)
-	}
-	path := os.Getenv("PALAI_REMOTE_TOOL_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
+	path := os.Getenv("PALAI_REMOTE_TOOL_SECRET_FILE_" + secretEnvKey(ref))
 	if path == "" {
-		return nil, fmt.Errorf("no secret bridge configured for remote tool ref under org %q", org)
+		return nil, fmt.Errorf("no secret bridge configured for remote tool ref %q", ref)
 	}
 	return os.ReadFile(path)
 }
@@ -1633,23 +1610,18 @@ func remoteToolSecretResolver(org, ref string) ([]byte, error) {
 // non-interchangeable. An unresolved ref fails VERIFICATION (a generic 401 upstream), never an unsigned
 // accept: a receiver that cannot check a signature refuses. The same bridge will resolve bot_token_ref /
 // app_token_ref when T2/T3 wire the outbound and Socket Mode legs.
-func slackSecretResolver(org, ref string) ([]byte, error) {
-	if org == "" || ref == "" {
-		return nil, errors.New("empty slack secret org/ref")
+func slackSecretResolver(ref string) ([]byte, error) {
+	if ref == "" {
+		return nil, errors.New("empty slack secret ref")
 	}
-	if v, ok, err := dbSecret(org, ref); err != nil {
+	if v, ok, err := dbSecret(ref); err != nil {
 		return nil, err
 	} else if ok {
 		return v, nil
 	}
-	// Belt-and-braces, as in the sibling resolvers: a normalized org key carrying the "__" delimiter is
-	// ambiguous; reject it rather than resolve a colliding key.
-	if strings.Contains(secretEnvKey(org), "__") {
-		return nil, fmt.Errorf("ambiguous slack secret org key %q", org)
-	}
-	path := os.Getenv("PALAI_SLACK_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
+	path := os.Getenv("PALAI_SLACK_SECRET_FILE_" + secretEnvKey(ref))
 	if path == "" {
-		return nil, fmt.Errorf("no secret bridge configured for slack ref under org %q", org)
+		return nil, fmt.Errorf("no secret bridge configured for slack ref %q", ref)
 	}
 	return os.ReadFile(path)
 }
@@ -1661,23 +1633,18 @@ func slackSecretResolver(org, ref string) ([]byte, error) {
 // A2A-remote namespace is DISTINCT from the webhook/inbound/remote-tool/Slack ones, so the five secret sets
 // are non-interchangeable. This is the ONLY bearer a remote child dial can carry: an unresolved ref FAILS
 // the dispatch (an honest child failure), it never falls back to the platform's or the parent's credential.
-func a2aRemoteSecretResolver(org, ref string) ([]byte, error) {
-	if org == "" || ref == "" {
-		return nil, errors.New("empty a2a remote secret org/ref")
+func a2aRemoteSecretResolver(ref string) ([]byte, error) {
+	if ref == "" {
+		return nil, errors.New("empty a2a remote secret ref")
 	}
-	if v, ok, err := dbSecret(org, ref); err != nil {
+	if v, ok, err := dbSecret(ref); err != nil {
 		return nil, err
 	} else if ok {
 		return v, nil
 	}
-	// Belt-and-braces, as in the sibling resolvers: a normalized org key carrying the "__" delimiter is
-	// ambiguous; reject it rather than resolve a colliding key.
-	if strings.Contains(secretEnvKey(org), "__") {
-		return nil, fmt.Errorf("ambiguous a2a remote secret org key %q", org)
-	}
-	path := os.Getenv("PALAI_A2A_REMOTE_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
+	path := os.Getenv("PALAI_A2A_REMOTE_SECRET_FILE_" + secretEnvKey(ref))
 	if path == "" {
-		return nil, fmt.Errorf("no secret bridge configured for a2a remote ref under org %q", org)
+		return nil, fmt.Errorf("no secret bridge configured for a2a remote ref %q", ref)
 	}
 	return os.ReadFile(path)
 }

@@ -41,10 +41,12 @@ var (
 // outgoing transition), derived once from the canonical table rather than hardcoded.
 var runTerminalStates = statemachines.TerminalStates(statemachines.RunTable)
 
-// Tenant is the organization/project scope every query is keyed by (spec §39.2).
+// Tenant is the project scope every query is keyed by (spec §39.2). It kept an Organization alongside
+// the project until A.2 Task 6 dropped the column the value was written to; a one-field struct is kept
+// rather than collapsed to a string because every signature in this package names it, and the tenant is
+// what those signatures are about.
 type Tenant struct {
-	Organization string
-	Project      string
+	Project string
 }
 
 // Store owns a connection pool against the durable spine schema.
@@ -125,7 +127,7 @@ func (s *Store) asOwner(ctx context.Context, statements string) error {
 // CurrentJournalSequence returns the highest event seq in the session's journal, or 0 for an empty
 // journal — the transcript boundary a checkpoint records (spec §26.1-26.2).
 func (s *Store) CurrentJournalSequence(ctx context.Context, tenant Tenant, sessionID string) (int64, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var seq int64
 	if err := s.pool.QueryRow(ctx, storage.Query("CurrentJournalSequence"), sessionID, tenant.Project).Scan(&seq); err != nil {
 		return 0, fmt.Errorf("read current journal sequence: %w", err)
@@ -165,7 +167,7 @@ type RunCheckpoint struct {
 // rolling back to v1. Harmless while production stays single-format v1; when a real format bump lands,
 // return an ordered candidate list here and let the ladder fall to the next on a rejected-newest.
 func (s *Store) LatestRunCheckpoint(ctx context.Context, tenant Tenant, runID string) (RunCheckpoint, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var cp RunCheckpoint
 	var workspaceSnapshot *string
 	err := s.pool.QueryRow(ctx, storage.Query("LatestRunCheckpoint"), runID, tenant.Project).
@@ -188,7 +190,7 @@ func (s *Store) LatestRunCheckpoint(ctx context.Context, tenant Tenant, runID st
 // transcript-boundary, and workspace-snapshot FKs reference. Idempotent on id (a reclaim re-recording
 // the same attempt is a no-op). Called at attempt start so a checkpoint offered mid-run can persist.
 func (s *Store) RecordAttempt(ctx context.Context, tenant Tenant, runID, attemptID string) error {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin record attempt: %w", err)
@@ -204,7 +206,7 @@ func (s *Store) RecordAttempt(ctx context.Context, tenant Tenant, runID, attempt
 	// Fence is computed RUN-monotonic inside the query (not the job claim fence, which restarts per
 	// job) so a resume's fresh-job attempt does not collide on (run_id, fence).
 	if _, err := tx.Exec(ctx, storage.Query("UpsertAttempt"),
-		attemptID, tenant.Organization, tenant.Project, runID); err != nil {
+		attemptID, tenant.Project, runID); err != nil {
 		return fmt.Errorf("record attempt: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -218,7 +220,7 @@ func (s *Store) RecordAttempt(ctx context.Context, tenant Tenant, runID, attempt
 // original attempt is still driving the run, so a new attempt takes the "exact" rung and stands
 // down. excludeJobID is the caller's own claimed job ("" for a direct-drive attempt with no job).
 func (s *Store) RunHasLiveResponseJob(ctx context.Context, tenant Tenant, runID, excludeJobID string) (bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var live bool
 	if err := s.pool.QueryRow(ctx, storage.Query("RunHasLiveResponseJob"), runID, tenant.Project, excludeJobID).Scan(&live); err != nil {
 		return false, fmt.Errorf("read run live response job: %w", err)
@@ -231,7 +233,7 @@ func (s *Store) RunHasLiveResponseJob(ctx context.Context, tenant Tenant, runID,
 // a fresh queued message folds at the boundary preceding step M+1 (the first live step), never into
 // a replayed step. Captured once at attempt start, before this attempt commits any new step.
 func (s *Store) CommittedModelStepCount(ctx context.Context, tenant Tenant, runID string) (int, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var n int
 	if err := s.pool.QueryRow(ctx, storage.Query("CommittedModelStepCount"), runID, tenant.Project).Scan(&n); err != nil {
 		return 0, fmt.Errorf("read committed model step count: %w", err)
@@ -244,7 +246,7 @@ func (s *Store) CommittedModelStepCount(ctx context.Context, tenant Tenant, runI
 // It is a plain diagnostic append with no run-active guard: the record must survive whatever the
 // recovery does next (a stand-down under a live sibling, a restore, or an imminent explicit failure).
 func (s *Store) RecordRecoveryEvent(ctx context.Context, tenant Tenant, sessionID, responseID, eventType string, payload []byte) (int64, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin recovery event: %w", err)
@@ -262,12 +264,12 @@ func (s *Store) RecordRecoveryEvent(ctx context.Context, tenant Tenant, sessionI
 
 // Enqueue inserts a queued job.
 func (s *Store) Enqueue(ctx context.Context, tenant Tenant, jobID, kind string) error {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	if strings.TrimSpace(jobID) == "" {
 		return errors.New("job ID is required")
 	}
 	_, err := s.pool.Exec(ctx, storage.Query("EnqueueJob"),
-		jobID, tenant.Organization, tenant.Project, kind, []byte("{}"))
+		jobID, tenant.Project, kind, []byte("{}"))
 	if err != nil {
 		return fmt.Errorf("enqueue job: %w", err)
 	}
@@ -278,7 +280,7 @@ func (s *Store) Enqueue(ctx context.Context, tenant Tenant, jobID, kind string) 
 // attempt in the same transaction. A reclaim after lease expiry always returns a
 // strictly higher fence than the previous holder (spec §53.5).
 func (s *Store) Claim(ctx context.Context, tenant Tenant, jobID, owner string, lease time.Duration) (Claim, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	if strings.TrimSpace(jobID) == "" || strings.TrimSpace(owner) == "" || lease <= 0 {
 		return Claim{}, errors.New("job ID, owner and positive lease are required")
 	}
@@ -309,7 +311,7 @@ func (s *Store) Claim(ctx context.Context, tenant Tenant, jobID, owner string, l
 
 // LeaseExpired reports whether the job's lease has lapsed by database time.
 func (s *Store) LeaseExpired(ctx context.Context, tenant Tenant, jobID string) (bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var expired bool
 	err := s.pool.QueryRow(ctx, storage.Query("JobLeaseExpired"), jobID, tenant.Project).Scan(&expired)
 	if err != nil {
@@ -324,7 +326,7 @@ func (s *Store) LeaseExpired(ctx context.Context, tenant Tenant, jobID string) (
 func (s *Store) Complete(ctx context.Context, claim Claim, resultHash string) error {
 	// Scoped by the CLAIM's own tenant: the claim is the verified job identity, so this lease
 	// operation is tenant-scoped even though the loop that issued it spans tenants.
-	ctx = storage.WithTenant(ctx, claim.Tenant.Organization, claim.Tenant.Project)
+	ctx = storage.WithTenant(ctx, claim.Tenant.Project)
 	if claim.JobID == "" || claim.Fence < 1 || resultHash == "" {
 		return errors.New("valid claim and result hash are required")
 	}
@@ -345,7 +347,7 @@ func (s *Store) Complete(ctx context.Context, claim Claim, resultHash string) er
 	dedupe := fmt.Sprintf("job:%s:fence:%d:completed", claim.JobID, claim.Fence)
 	payload := fmt.Sprintf(`{"job_id":%q,"result_hash":%q}`, claim.JobID, resultHash)
 	if _, err := tx.Exec(ctx, storage.Query("EnqueueOutbox"),
-		claim.Tenant.Organization, claim.Tenant.Project, "job.completed", dedupe, []byte(payload)); err != nil {
+		claim.Tenant.Project, "job.completed", dedupe, []byte(payload)); err != nil {
 		return fmt.Errorf("insert completion outbox: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -356,7 +358,7 @@ func (s *Store) Complete(ctx context.Context, claim Claim, resultHash string) er
 
 // Snapshot reads authoritative job state.
 func (s *Store) Snapshot(ctx context.Context, tenant Tenant, jobID string) (Snapshot, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var snap Snapshot
 	err := s.pool.QueryRow(ctx, storage.Query("JobSnapshot"), jobID, tenant.Project).
 		Scan(&snap.Status, &snap.Fence, &snap.AttemptCount, &snap.ResultHash)
@@ -379,7 +381,7 @@ type Transition struct {
 // The committed Transition is returned only after commit succeeds; a rejected
 // command or a failed commit leaves no state, event, or outbox row behind.
 func (s *Store) ApplyRunTransition(ctx context.Context, tenant Tenant, runID string, command statemachines.RunCommand) (Transition, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Transition{}, fmt.Errorf("begin transition: %w", err)
@@ -409,7 +411,7 @@ func (s *Store) TimeoutQueuedIfExpired(ctx context.Context, tenant Tenant, runID
 	if deadline <= 0 {
 		return false, nil
 	}
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return false, fmt.Errorf("begin queue-deadline timeout: %w", err)
@@ -491,13 +493,13 @@ func applyRunTransitionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, runID s
 	}
 	payload := fmt.Sprintf(`{"run_id":%q,"state":%q}`, runID, next)
 	if _, err := tx.Exec(ctx, storage.Query("AppendEvent"),
-		eventID, tenant.Organization, tenant.Project, sessionID, responseID, seq, event, []byte(payload)); err != nil {
+		eventID, tenant.Project, sessionID, responseID, seq, event, []byte(payload)); err != nil {
 		return Transition{}, fmt.Errorf("append event: %w", err)
 	}
 
 	dedupe := fmt.Sprintf("run:%s:seq:%d", runID, seq)
 	if _, err := tx.Exec(ctx, storage.Query("EnqueueOutbox"),
-		tenant.Organization, tenant.Project, event, dedupe, []byte(payload)); err != nil {
+		tenant.Project, event, dedupe, []byte(payload)); err != nil {
 		return Transition{}, fmt.Errorf("enqueue outbox: %w", err)
 	}
 
@@ -734,7 +736,7 @@ type Admission struct {
 // conflict — both without a second side effect. Nothing is dispatched here: the
 // outbox row is the post-commit handoff, so dispatch never begins before commit.
 func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionInput) (Admission, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Admission{}, fmt.Errorf("begin admission: %w", err)
@@ -836,7 +838,7 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	}
 
 	err = tx.QueryRow(ctx, storage.Query("ReserveIdempotency"),
-		tenant.Organization, tenant.Project, in.Principal, in.Method, in.Route, in.IdempotencyKey, in.RequestHash, body).
+		tenant.Project, in.Principal, in.Method, in.Route, in.IdempotencyKey, in.RequestHash, body).
 		Scan(new(int64))
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -911,16 +913,16 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 		// No label: an implicitly-opened session has none to give. The projection derives one from
 		// this very response's prompt, and PATCH /v1/sessions/{id} replaces it (E29).
 		if _, err := tx.Exec(ctx, storage.Query("InsertSession"),
-			sessionID, tenant.Organization, tenant.Project, ""); err != nil {
+			sessionID, tenant.Project, ""); err != nil {
 			return Admission{}, fmt.Errorf("insert session: %w", err)
 		}
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertResponse"),
-		in.ResponseID, tenant.Organization, tenant.Project, sessionID, in.Input, in.Store); err != nil {
+		in.ResponseID, tenant.Project, sessionID, in.Input, in.Store); err != nil {
 		return Admission{}, fmt.Errorf("insert response: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertRun"),
-		in.RunID, tenant.Organization, tenant.Project, sessionID, in.ResponseID, nullableJSON(in.Delegations),
+		in.RunID, tenant.Project, sessionID, in.ResponseID, nullableJSON(in.Delegations),
 		nullableText(agentRevisionID), nullableText(in.RunTemplateRevisionID), nullableJSON(in.OutputContract),
 		nullableText(in.Instructions)); err != nil {
 		// The session already holds a non-terminal root run: one-active-root (spec §22.3). The
@@ -981,7 +983,7 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 			return Admission{}, err
 		}
 		if _, err := tx.Exec(ctx, storage.Query("AttachSessionWorkspace"),
-			workspaceID, tenant.Organization, tenant.Project, sessionID, in.RepositoryBindingID, in.RepositoryRef); err != nil {
+			workspaceID, tenant.Project, sessionID, in.RepositoryBindingID, in.RepositoryRef); err != nil {
 			return Admission{}, fmt.Errorf("attach session workspace: %w", err)
 		}
 	}
@@ -996,12 +998,12 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	}
 	payload := fmt.Sprintf(`{"run_id":%q,"state":"queued"}`, in.RunID)
 	if _, err := tx.Exec(ctx, storage.Query("AppendEvent"),
-		eventID, tenant.Organization, tenant.Project, sessionID, in.ResponseID, seq, "run.queued.v1", []byte(payload)); err != nil {
+		eventID, tenant.Project, sessionID, in.ResponseID, seq, "run.queued.v1", []byte(payload)); err != nil {
 		return Admission{}, fmt.Errorf("append queued event: %w", err)
 	}
 	dedupe := fmt.Sprintf("run:%s:seq:%d", in.RunID, seq)
 	if _, err := tx.Exec(ctx, storage.Query("EnqueueOutbox"),
-		tenant.Organization, tenant.Project, "run.queued.v1", dedupe, []byte(payload)); err != nil {
+		tenant.Project, "run.queued.v1", dedupe, []byte(payload)); err != nil {
 		return Admission{}, fmt.Errorf("enqueue admission outbox: %w", err)
 	}
 
@@ -1014,7 +1016,7 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	}
 	jobPayload := fmt.Sprintf(`{"run_id":%q}`, in.RunID)
 	if _, err := tx.Exec(ctx, storage.Query("EnqueueJob"),
-		jobID, tenant.Organization, tenant.Project, "response.run", []byte(jobPayload)); err != nil {
+		jobID, tenant.Project, "response.run", []byte(jobPayload)); err != nil {
 		return Admission{}, fmt.Errorf("enqueue dispatch job: %w", err)
 	}
 
@@ -1131,7 +1133,7 @@ type PinnedConfig struct {
 // pinned. A profile-free run yields a zero PinnedConfig apart from SkillPins. The pin is fixed on the
 // run row, so a later revision of the same profile leaves this unchanged (old-run reproducibility).
 func (s *Store) PinnedExecConfig(ctx context.Context, tenant Tenant, runID string) (PinnedConfig, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var (
 		out       PinnedConfig
 		revID     *string
@@ -1174,7 +1176,7 @@ func (s *Store) PinnedExecConfig(ctx context.Context, tenant Tenant, runID strin
 // other durable read in internal/execution goes through a method here, and the one that did not was this
 // one.
 func (s *Store) RunEnvironmentKeys(ctx context.Context, tenant Tenant, runID string) (keys, secretNames []string, err error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("RunEnvironmentKeys"), runID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read run environment keys: %w", err)
@@ -1198,7 +1200,7 @@ func (s *Store) RunEnvironmentKeys(ctx context.Context, tenant Tenant, runID str
 // are already frozen (E12 Task 7, spec §28.16) — the inputs the run-start pin write consults. A run whose
 // pins are already frozen returns alreadyPinned=true so the resolver skips re-resolution on a resume.
 func (s *Store) RunSkillPinInputs(ctx context.Context, tenant Tenant, runID string) (requested []string, alreadyPinned bool, err error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var requestedJSON []byte
 	err = s.pool.QueryRow(ctx, storage.Query("RunSkillPinInputs"), runID, tenant.Project).
 		Scan(&requestedJSON, &alreadyPinned)
@@ -1219,7 +1221,7 @@ func (s *Store) RunSkillPinInputs(ctx context.Context, tenant Tenant, runID stri
 // life. pinsJSON is the JSON-encoded []{name,description,digest,path}; a nil/empty pin is not written
 // (the run stays skill-less, its config bit-identical to before). It reports whether it wrote the pin.
 func (s *Store) PinRunSkills(ctx context.Context, tenant Tenant, runID string, pinsJSON []byte) (pinned bool, err error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	if len(pinsJSON) == 0 {
 		return false, nil
 	}

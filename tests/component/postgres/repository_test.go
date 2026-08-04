@@ -37,7 +37,7 @@ func TestRepositoryBindingResolveIsTenantScoped(t *testing.T) {
 	}
 
 	// A different tenant (distinct org) sees nothing for the same id.
-	other := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	other := coordinator.Tenant{Project: newID("prj")}
 	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, other.Organization)
 	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, other.Project, other.Organization)
 	if _, found, err := cs.GetRepositoryBinding(ctx, other, bindingID); err != nil || found {
@@ -55,7 +55,7 @@ func TestPreparationReceiptRoundTrip(t *testing.T) {
 	// AllocateWorkspace / GetPreparationReceipt are keyed by an opaque id, not by a tenant, so under
 	// migration 000029 the CONTEXT is what scopes them — the same way the run worker scopes a claimed
 	// job. Declaring it here is what a production caller already does.
-	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.WithTenant(ctx, tenant.Project)
 
 	bindingID := newID("repo")
 	if err := cs.CreateRepositoryBinding(ctx, tenant, coordinator.RepositoryBindingInput{

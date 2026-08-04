@@ -13,7 +13,7 @@ import (
 // (a tunnel job would be accepted): that is the RED this pins.
 func TestNoTunnel_UntypedOperationIsRefusedAtDispatch(t *testing.T) {
 	s := NewStore(nil, nil, seqID(), nil)
-	tenant := Tenant{Organization: "org_x", Project: "prj_x"}
+	tenant := Tenant{Project: "prj_x"}
 	for _, op := range []string{"tunnel.connect", "net.connect", "shell.exec", "socks5", "http.proxy", ""} {
 		_, err := s.DispatchJob(context.Background(), tenant, JobSpec{Capability: "swift-toolchain", Operation: op})
 		if !errors.Is(err, ErrUntypedOperation) {
@@ -46,7 +46,7 @@ func TestAppleBuildCapabilityIsAbsentEverywhere(t *testing.T) {
 		t.Fatal("no apple-build operation may exist (no signing/build/store credential in the system)")
 	}
 	s := NewStore(nil, nil, seqID(), nil)
-	_, err := s.Enroll(context.Background(), Tenant{Organization: "org_x", Project: "prj_x"}, WorkerSpec{Capability: "apple-build"})
+	_, err := s.Enroll(context.Background(), Tenant{Project: "prj_x"}, WorkerSpec{Capability: "apple-build"})
 	if !errors.Is(err, ErrUnknownCapability) {
 		t.Fatalf("enroll for apple-build error = %v, want ErrUnknownCapability", err)
 	}

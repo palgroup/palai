@@ -25,7 +25,7 @@ import (
 // anything the child.request supplies — so a run can only reach an agent its OWN project registered, and a
 // frame naming another tenant's registration id resolves to nothing (no existence oracle).
 type RemoteAgents interface {
-	GetRemoteAgent(ctx context.Context, org, project, id string) (a2a.RemoteAgent, bool, error)
+	GetRemoteAgent(ctx context.Context, project, id string) (a2a.RemoteAgent, bool, error)
 }
 
 // RemoteChildRunner dispatches one delegated child objective to a resolved remote agent. *a2a.Client
@@ -480,7 +480,7 @@ func (o *Orchestrator) dispatchRemoteChild(ctx context.Context, st *attemptState
 	}
 	// Tenant-scoped: org/project come from the RUN, never from the frame — a delegation cannot name
 	// another tenant's registration (§38.6, the one-admission-identity rule applied to delegation).
-	agent, found, err := o.remoteAgents.GetRemoteAgent(ctx, st.tenant.Organization, st.tenant.Project, spec.RemoteAgent)
+	agent, found, err := o.remoteAgents.GetRemoteAgent(ctx, st.tenant.Project, spec.RemoteAgent)
 	if err != nil {
 		return err
 	}

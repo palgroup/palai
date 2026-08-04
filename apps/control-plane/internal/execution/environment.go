@@ -114,7 +114,7 @@ func (o *Orchestrator) resolveEnvValues(ctx context.Context, st *attemptState) (
 	}
 	values := make(map[string]string, len(st.envKeys))
 	for _, k := range st.envKeys {
-		value, err := o.envSecrets(st.tenant.Organization, k.SecretName)
+		value, err := o.envSecrets(k.SecretName)
 		if err != nil {
 			// The KEY is named; the value is not, and neither is the derived secret name (it embeds the
 			// environment id, which is fine, but the wrapped error from the resolver may not be).
@@ -201,7 +201,7 @@ func (o *Orchestrator) runEnvValuesByName(ctx context.Context, tenant coordinato
 	}
 	values := make(map[string]string, len(keys))
 	for _, k := range keys {
-		value, err := o.envSecrets(tenant.Organization, k.SecretName)
+		value, err := o.envSecrets(k.SecretName)
 		if err != nil {
 			// The KEY is named and the value never is, exactly as in resolveEnvValues.
 			return nil, fmt.Errorf("re-resolve environment key %q for run %s: %w", k.Key, runID, err)

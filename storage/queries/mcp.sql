@@ -1,11 +1,11 @@
 -- MCP connection management + broker-lookup resolution (spec §28.13-28.14, E12 Task 5). Create is the admin
 -- management surface; the reads back a connection for discovery and the per-tenant broker lookup's
 -- rider-intersected resolution. Every statement is tenant-scoped by project_id (000062 rekeyed the
--- policy; A.2 Task 5 dropped the organization_id half of the predicate that mirrored it).
+-- policy; A.2 Task 5 dropped the half of the predicate that mirrored the old organization key).
 
 -- name: InsertMCPConnection
-INSERT INTO mcp_connections (id, organization_id, project_id, name, transport, config, secret_ref, trust_level)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+INSERT INTO mcp_connections (id, project_id, name, transport, config, secret_ref, trust_level)
+VALUES ($1, $2, $3, $4, $5, $6, $7);
 
 -- GetMCPConnection reads a connection for a discover action (admin) — tenant-scoped, disabled or not.
 -- name: GetMCPConnection

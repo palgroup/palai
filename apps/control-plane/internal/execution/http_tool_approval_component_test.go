@@ -140,10 +140,10 @@ func mintScopedKey(t *testing.T, repo *store.Store, cs *coordinator.Store, tenan
 	principalID, keyID := redeliveryID("prin"), redeliveryID("key")
 	token := "palai_" + redeliveryID("tok")
 	execSQL(t, cs.Pool(), `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`,
-		principalID, tenant.Organization, tenant.Project)
+		principalID, tenant.Project)
 	execSQL(t, cs.Pool(), `INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, scopes)
 	                       VALUES ($1,$2,$3,$4,$5,$6)`,
-		keyID, tenant.Organization, tenant.Project, principalID, coordinator.HashAPIKey(token), scopes)
+		keyID, tenant.Project, principalID, coordinator.HashAPIKey(token), scopes)
 
 	scope, err := repo.VerifyAPIKey(context.Background(), token)
 	if err != nil {
@@ -163,7 +163,7 @@ func mintScopedKey(t *testing.T, repo *store.Store, cs *coordinator.Store, tenan
 // cross-tenant negative's other side.
 func seedForeignTenantKey(t *testing.T, repo *store.Store, cs *coordinator.Store) httpApprover {
 	t.Helper()
-	other := coordinator.Tenant{Organization: redeliveryID("org"), Project: redeliveryID("prj")}
+	other := coordinator.Tenant{Project: redeliveryID("prj")}
 	execSQL(t, cs.Pool(), `INSERT INTO organizations (id) VALUES ($1)`, other.Organization)
 	execSQL(t, cs.Pool(), `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, other.Project, other.Organization)
 	return mintScopedKey(t, repo, cs, other, nil)
@@ -235,7 +235,7 @@ func (f *httpApprovalFixture) runState(t *testing.T) string {
 func (f *httpApprovalFixture) setApprovers(t *testing.T, policy string) {
 	t.Helper()
 	execSQL(t, f.spine.Pool(), `UPDATE projects SET config_policy = $3::jsonb WHERE organization_id = $1 AND id = $2`,
-		f.tenant.Organization, f.tenant.Project, policy)
+		f.tenant.Project, policy)
 }
 
 // TestHTTPToolApprovalListShowsTheParkedCallWithItsArgumentsVerbatim is RED #1: a human cannot decide what

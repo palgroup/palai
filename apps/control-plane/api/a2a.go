@@ -23,9 +23,8 @@ const a2aAdmitRoute = "/v1/a2a/messages"
 // anything the A2A client supplies (§38.6). NewA2AServer wires exactly this, and the router mounts the
 // authed surface INSIDE middleware.Auth, so ScopeFrom is populated by the time a handler runs.
 //
-// It closes over admitter to resolve Organization (A.2 Task 3): middleware.Scope no longer carries one, but
-// a2a.Scope still does — adapters/integrations/a2a's own store writes organization_id on rows that predate
-// per-project structure — so it is resolved fresh from Project, the same seam responses.go's create uses.
+// It closed over admitter to resolve an organization until A.2 Task 6 removed the concept; the admitter
+// argument stays because the nil check below is a real refusal (see it), not because a lookup happens.
 func newA2AScopeFunc(admitter Admitter) func(r *http.Request) (a2a.Scope, bool) {
 	return func(r *http.Request) (a2a.Scope, bool) {
 		s, ok := middleware.ScopeFrom(r.Context())
@@ -39,11 +38,7 @@ func newA2AScopeFunc(admitter Admitter) func(r *http.Request) (a2a.Scope, bool) 
 		if admitter == nil {
 			return a2a.Scope{}, false
 		}
-		org, err := admitter.ResolveOrganization(r.Context(), s.Project)
-		if err != nil {
-			return a2a.Scope{}, false
-		}
-		return a2a.Scope{Organization: org, Project: s.Project, Principal: s.Principal}, true
+		return a2a.Scope{Project: s.Project, Principal: s.Principal}, true
 	}
 }
 
@@ -165,7 +160,7 @@ func (a a2aRuns) Admit(ctx context.Context, req a2a.RunRequest) (a2a.RunResult, 
 // Get resolves the canonical response the A2A task bridges to. A missing or reaped response reports
 // found=false, which the server projects to an honest terminal/unknown state rather than a forever-"working"
 // task (M-1).
-func (a a2aRuns) Get(ctx context.Context, org, project, responseID string) (a2a.RunResult, bool, error) {
+func (a a2aRuns) Get(ctx context.Context, project, responseID string) (a2a.RunResult, bool, error) {
 	res, err := a.admitter.GetResponse(ctx, middleware.Scope{Project: project}, responseID)
 	if err != nil {
 		return a2a.RunResult{}, false, err
@@ -179,7 +174,7 @@ func (a a2aRuns) Get(ctx context.Context, org, project, responseID string) (a2a.
 
 // Cancel issues the canonical cancel through the SAME reconcile the native cancel uses and reports any
 // non-cancelable uncertain side-effect honestly (§38.3) instead of claiming a clean cancel.
-func (a a2aRuns) Cancel(ctx context.Context, org, project, responseID string) (a2a.RunResult, a2a.CancelReport, error) {
+func (a a2aRuns) Cancel(ctx context.Context, project, responseID string) (a2a.RunResult, a2a.CancelReport, error) {
 	res, err := a.admitter.CancelResponse(ctx, middleware.Scope{Project: project}, responseID)
 	if err != nil {
 		return a2a.RunResult{}, a2a.CancelReport{}, err

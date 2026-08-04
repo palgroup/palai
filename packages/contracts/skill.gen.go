@@ -7,7 +7,6 @@ type Skill struct {
 	ID             OpaqueID         `json:"id"`
 	Name           string           `json:"name,omitempty"`
 	Object         string           `json:"object"`
-	OrganizationID OrganizationID   `json:"organization_id,omitempty"`
 	ProjectID      ProjectID        `json:"project_id,omitempty"`
 	RevisionNumber int              `json:"revision_number,omitempty"`
 	ScanFindings   []map[string]any `json:"scan_findings,omitempty"`

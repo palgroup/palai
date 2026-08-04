@@ -105,7 +105,7 @@ func TestLiveModelRoutePerProject(t *testing.T) {
 		Secrets: execution.RouteSecretResolver{
 			// main.go's dbSecret adds a bounded timeout around this same call; the smoke calls the store
 			// directly so a resolve failure surfaces as itself rather than as a timeout.
-			Lookup:   func(org, name string) ([]byte, bool, error) { return secretStore.Resolve(ctx, org, name) },
+			Lookup:   func(name string) ([]byte, bool, error) { return secretStore.Resolve(ctx, org, name) },
 			Fallback: modelbroker.EnvResolver{"provider-one": credentialEnv},
 		},
 	})
@@ -179,7 +179,7 @@ type liveRoutedProject struct {
 func routeLiveProject(t *testing.T, ctx context.Context, repo *store.Store, idstore *identity.Store, secrets *identity.SecretStore, name, model, credential string) liveRoutedProject {
 	t.Helper()
 	org := provisionLiveTenant(t, idstore, name)
-	tenant := coordinator.Tenant{Organization: org.ID, Project: org.DefaultProjectID}
+	tenant := coordinator.Tenant{Project: org.DefaultProjectID}
 	scope := middleware.Scope{Project: org.DefaultProjectID}
 
 	secretRef := name + "-credential"
@@ -234,11 +234,11 @@ func seedLiveRun(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant) st
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, session, tenant.Organization, tenant.Project)
+	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, session, tenant.Project)
 	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
-		response, tenant.Organization, tenant.Project, session, encodeJSONString("reply with the single word done."))
+		response, tenant.Project, session, encodeJSONString("reply with the single word done."))
 	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'queued')`,
-		runID, tenant.Organization, tenant.Project, session, response)
+		runID, tenant.Project, session, response)
 	return runID
 }
 

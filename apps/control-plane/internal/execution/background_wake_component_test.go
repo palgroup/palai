@@ -63,9 +63,9 @@ func newWakeFixture(t *testing.T) *wakeFixture {
 	wsID := redeliveryID("ws")
 	stmts := [][]any{
 		{`INSERT INTO workspaces (id, organization_id, project_id, session_id, state)
-		  VALUES ($1,$2,$3,$4,'ready')`, wsID, f.tenant.Organization, f.tenant.Project, f.sessionID},
+		  VALUES ($1,$2,$3,$4,'ready')`, wsID, f.tenant.Project, f.sessionID},
 		{`INSERT INTO workspace_allocations (id, workspace_id, organization_id, project_id, fence, host_path, state)
-		  VALUES ($1,$2,$3,$4,1,$5,'active')`, redeliveryID("alloc"), wsID, f.tenant.Organization, f.tenant.Project, f.root},
+		  VALUES ($1,$2,$3,$4,1,$5,'active')`, redeliveryID("alloc"), wsID, f.tenant.Project, f.root},
 	}
 	for _, stmt := range stmts {
 		if _, err := f.spine.Pool().Exec(sys, stmt[0].(string), stmt[1:]...); err != nil {

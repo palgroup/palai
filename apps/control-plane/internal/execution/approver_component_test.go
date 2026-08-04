@@ -58,9 +58,9 @@ func (h *approvalPumpHarness) mintKey(t *testing.T, repo *store.Store) keyedAppr
 	token := "palai_" + redeliveryID("tok")
 	pool := h.orch.spine.Pool()
 	execSQL(t, pool, `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`,
-		principalID, h.tenant.Organization, h.tenant.Project)
+		principalID, h.tenant.Project)
 	execSQL(t, pool, `INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash) VALUES ($1,$2,$3,$4,$5)`,
-		keyID, h.tenant.Organization, h.tenant.Project, principalID, coordinator.HashAPIKey(token))
+		keyID, h.tenant.Project, principalID, coordinator.HashAPIKey(token))
 
 	scope, err := repo.VerifyAPIKey(context.Background(), token)
 	if err != nil {

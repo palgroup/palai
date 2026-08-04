@@ -55,7 +55,7 @@ func (f *fleetOfOne) CallMachine(_ context.Context, machineID, verb string, _ ma
 func taskOn(machineID, handle string, deadline *time.Time) coordinator.BackgroundTask {
 	return coordinator.BackgroundTask{
 		ID:         "bgt_1",
-		Tenant:     coordinator.Tenant{Organization: "org_1", Project: "prj_1"},
+		Tenant:     coordinator.Tenant{Project: "prj_1"},
 		RunID:      "run_1",
 		SessionID:  "ses_1",
 		ResponseID: "resp_1",

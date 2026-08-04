@@ -11,7 +11,6 @@ type RepositoryBinding struct {
 	DefaultBranch      string              `json:"default_branch"`
 	ID                 RepositoryBindingID `json:"id"`
 	Object             string              `json:"object"`
-	OrganizationID     OrganizationID      `json:"organization_id,omitempty"`
 	Policy             map[string]any      `json:"policy,omitempty"`
 	ProjectID          ProjectID           `json:"project_id,omitempty"`
 	Provider           string              `json:"provider"`

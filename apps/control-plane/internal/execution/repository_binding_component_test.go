@@ -78,7 +78,7 @@ func newBindingSecretHarness(t *testing.T) *bindingSecretHarness {
 // first, a MISS is an error (a binding that names its own credential never falls back to the global one)
 // — exactly what main.go's repositoryConnectionSecret does.
 func (h *bindingSecretHarness) resolver(calls *int) SecretResolver {
-	return func(org, ref string) ([]byte, error) {
+	return func(ref string) ([]byte, error) {
 		*calls++
 		v, ok, err := h.secrets.Resolve(context.Background(), org, ref)
 		if err != nil {
@@ -95,13 +95,13 @@ func (h *bindingSecretHarness) resolver(calls *int) SecretResolver {
 // the tenant plus the run id.
 func (h *bindingSecretHarness) seedTenant(t *testing.T) (coordinator.Tenant, string) {
 	t.Helper()
-	tenant := coordinator.Tenant{Organization: redeliveryID("org"), Project: redeliveryID("prj")}
+	tenant := coordinator.Tenant{Project: redeliveryID("prj")}
 	sessionID, runID := redeliveryID("ses"), redeliveryID("run")
 	pool := h.spine.Pool()
 	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Organization, tenant.Project)
-	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, runID, tenant.Organization, tenant.Project, sessionID)
+	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Project)
+	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, runID, tenant.Project, sessionID)
 	return tenant, runID
 }
 
@@ -174,7 +174,7 @@ func TestBindingConnectionRefClonesUnderTenantCredential(t *testing.T) {
 		t.Fatalf("cloned tree = %q err=%v, want the remote's committed file", body, err)
 	}
 	stored, found, err := h.spine.GetPreparationReceipt(
-		storage.WithTenant(ctx, tenant.Organization, tenant.Project), bindingID, runID)
+		storage.WithTenant(ctx, tenant.Project), bindingID, runID)
 	if err != nil || !found {
 		t.Fatalf("GetPreparationReceipt() found=%v err=%v, want the recorded receipt", found, err)
 	}
@@ -254,7 +254,7 @@ func TestBindingConnectionRefFailsClosedWhenUnresolvable(t *testing.T) {
 		t.Fatal("the tree was materialized despite the unresolvable credential")
 	}
 	if _, found, err := h.spine.GetPreparationReceipt(
-		storage.WithTenant(ctx, tenant.Organization, tenant.Project), bindingID, runID); err != nil || found {
+		storage.WithTenant(ctx, tenant.Project), bindingID, runID); err != nil || found {
 		t.Fatalf("a receipt was recorded for a failed preparation (found=%v err=%v)", found, err)
 	}
 }

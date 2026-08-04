@@ -23,7 +23,7 @@ func seedResponse(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, s
 	id := newID("resp")
 	exec(t, pool,
 		`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1, $2, $3, $4, $5, '{}'::jsonb)`,
-		id, tenant.Organization, tenant.Project, sessionID, state)
+		id, tenant.Project, sessionID, state)
 	return id
 }
 

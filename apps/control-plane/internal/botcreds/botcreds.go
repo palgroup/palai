@@ -34,31 +34,23 @@ type Registry interface {
 }
 
 // Secrets is the redemption seam; *identity.SecretStore satisfies it. ok=false means no secret is sealed
-// under that name in that organization — a configuration fact, not an error.
+// under that name in this installation — a configuration fact, not an error.
 type Secrets interface {
-	Resolve(ctx context.Context, org, name string) ([]byte, bool, error)
+	Resolve(ctx context.Context, name string) ([]byte, bool, error)
 }
-
-// OrganizationFor resolves the organization a project belongs to. In production this is
-// storage.OrganizationForProject bound to the spine pool. It is a dependency rather than an inlined pool
-// call because SecretStore.Resolve is org-keyed while the request scope stopped carrying an organization
-// (middleware.Scope's own note), so somebody has to bridge the two and it should be visible that this
-// resolver is doing it.
-type OrganizationFor func(ctx context.Context, project string) (string, error)
 
 // Resolver implements api.BotCredentials.
 type Resolver struct {
-	organizationFor OrganizationFor
-	registry        Registry
-	secrets         Secrets
+	registry Registry
+	secrets  Secrets
 }
 
 // Compile-time proof Resolver satisfies the router's seam.
 var _ api.BotCredentials = (*Resolver)(nil)
 
 // New builds the resolver.
-func New(organizationFor OrganizationFor, registry Registry, secrets Secrets) *Resolver {
-	return &Resolver{organizationFor: organizationFor, registry: registry, secrets: secrets}
+func New(registry Registry, secrets Secrets) *Resolver {
+	return &Resolver{registry: registry, secrets: secrets}
 }
 
 // ResolveBotCredentials reads one bot row within the caller's verified scope and opens the secrets its own
@@ -88,16 +80,12 @@ func (r *Resolver) ResolveBotCredentials(ctx context.Context, scope middleware.S
 		return result, nil
 	}
 
-	organization, err := r.organizationFor(ctx, scope.Project)
-	if err != nil {
-		return api.BotCredentialsResult{}, fmt.Errorf("resolve organization for project: %w", err)
-	}
 	for _, h := range handles {
 		if h.name == "" {
 			result.Unresolved = append(result.Unresolved, h.key)
 			continue
 		}
-		value, ok, err := r.secrets.Resolve(ctx, organization, h.name)
+		value, ok, err := r.secrets.Resolve(ctx, h.name)
 		if err != nil {
 			// Named by CONFIG KEY. The wrapped error still carries the secret's name (the store puts it
 			// there) and that is fine internally — a name is not a value — but the key is what an operator

@@ -185,7 +185,7 @@ func TestA2AClientNeverInheritsParentCredential(t *testing.T) {
 	const parentPlatformToken = "PARENT-PLATFORM-TOKEN-NEVER-SENT" // exists here, never given to the client
 
 	var resolverOrg, resolverRef string
-	resolver := func(org, ref string) ([]byte, error) {
+	resolver := func(ref string) ([]byte, error) {
 		resolverOrg, resolverRef = org, ref
 		if org != "org_a" { // scoped: cannot resolve another tenant's secret
 			return nil, fmt.Errorf("cross-tenant secret resolution denied for org %q", org)
@@ -397,7 +397,7 @@ func TestA2AClientLoopbackInteropAgainstT2Server(t *testing.T) {
 		CardURL: base + "/agent-card.json", Endpoint: base, ProtocolVersion: ProtocolVersion,
 		AuthConnectionRef: "conn_lb", TimeoutMS: 5000, MaxOutputBytes: 1 << 20,
 	}
-	client := harnessClient(func(org, ref string) ([]byte, error) {
+	client := harnessClient(func(ref string) ([]byte, error) {
 		if org != testOrg || ref != "conn_lb" {
 			return nil, fmt.Errorf("unexpected secret resolution (%s,%s)", org, ref)
 		}
@@ -449,7 +449,7 @@ func TestA2AClientRemoteChildIsUntrustedAndNoCredentialInheritance(t *testing.T)
 	const parentToken = "PARENT-TOKEN-NEVER-FORWARDED"
 	fr := newFakeRemote(fakeRemoteConfig{replyText: "child did the subtask"})
 	defer fr.close()
-	client := harnessClient(func(org, ref string) ([]byte, error) {
+	client := harnessClient(func(ref string) ([]byte, error) {
 		if org != "org_a" {
 			return nil, fmt.Errorf("cross-tenant resolution denied")
 		}

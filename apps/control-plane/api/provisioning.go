@@ -9,17 +9,13 @@ import (
 )
 
 // ProvisioningAPI is the store seam for the tenancy provisioning surface (spec §39.2, E13 Task 2,
-// TEN-003/MCI-001): organizations, projects (+ the §14 config_policy write-path), and API keys. The
-// Postgres-backed internal/identity store implements it; production wires it, and tiers that never
-// provision pass nil so the routes stay unmounted. Every method is scoped by the verified identity,
-// never a request-body field. CreateOrganization and CreateProject are the genuinely cross-tenant
-// operations (each establishes a new tenant, like bootstrap, and each returns an admin key's plaintext
-// exactly once) — every other method acts within the caller's own tenant.
+// TEN-003/MCI-001): projects (+ the §14 config_policy write-path) and API keys. The Postgres-backed
+// internal/identity store implements it; production wires it, and tiers that never provision pass nil so
+// the routes stay unmounted. Every method is scoped by the verified identity, never a request-body field.
+// CreateProject is the genuinely cross-tenant operation (it establishes a new tenant, like bootstrap, and
+// returns an admin key's plaintext exactly once) — every other method acts within the caller's own tenant.
+// It took over that role from CreateOrganization, which A.2 Task 6 removed along with organizations.
 type ProvisioningAPI interface {
-	CreateOrganization(ctx context.Context, scope middleware.Scope, body []byte) (ProvisionResult, error)
-	ListOrganizations(ctx context.Context, scope middleware.Scope) (ProvisionResult, error)
-	GetOrganization(ctx context.Context, scope middleware.Scope, id string) (ProvisionResult, error)
-
 	CreateProject(ctx context.Context, scope middleware.Scope, body []byte) (ProvisionResult, error)
 	ListProjects(ctx context.Context, scope middleware.Scope) (ProvisionResult, error)
 	GetProject(ctx context.Context, scope middleware.Scope, id string) (ProvisionResult, error)
@@ -57,40 +53,9 @@ type provisioningHandler struct {
 	provisioning ProvisioningAPI
 }
 
-func (h *provisioningHandler) createOrganization(w http.ResponseWriter, r *http.Request) {
-	scope, ok := h.authorizeSystem(w, r)
-	if !ok {
-		return
-	}
-	raw, ok := h.readBody(w, r)
-	if !ok {
-		return
-	}
-	out, err := h.provisioning.CreateOrganization(r.Context(), scope, raw)
-	h.write(w, r, out, err, http.StatusCreated, "/v1/organizations/")
-}
-
-func (h *provisioningHandler) listOrganizations(w http.ResponseWriter, r *http.Request) {
-	scope, ok := h.authorize(w, r)
-	if !ok {
-		return
-	}
-	out, err := h.provisioning.ListOrganizations(r.Context(), scope)
-	h.write(w, r, out, err, http.StatusOK, "")
-}
-
-func (h *provisioningHandler) getOrganization(w http.ResponseWriter, r *http.Request) {
-	scope, ok := h.authorize(w, r)
-	if !ok {
-		return
-	}
-	out, err := h.provisioning.GetOrganization(r.Context(), scope, r.PathValue("organization_id"))
-	h.write(w, r, out, err, http.StatusOK, "")
-}
-
 // createProject OPENS A TENANT — project, service principal, and a one-time admin key — so it is gated on
-// middleware.ScopeSystem exactly as organization creation is, not on the `provision` capability the rest of
-// this surface carries. See authorizeSystem for why the two are different questions.
+// middleware.ScopeSystem, not on the `provision` capability the rest of this surface carries. See
+// authorizeSystem for why the two are different questions.
 func (h *provisioningHandler) createProject(w http.ResponseWriter, r *http.Request) {
 	scope, ok := h.authorizeSystem(w, r)
 	if !ok {

@@ -22,9 +22,6 @@
       "type": "string",
       "const": "session"
     },
-    "organization_id": {
-      "$ref": "../common/id.json#/$defs/organization_id"
-    },
     "project_id": {
       "$ref": "../common/id.json#/$defs/project_id"
     },

@@ -121,7 +121,7 @@ type Outcome struct {
 // identity.SecretStore.Resolve; the workers package depends on this narrow seam to avoid an import cycle. The
 // resolved value is handed to the worker for use and NEVER written to the journal, a log, or evidence.
 type SecretResolver interface {
-	Resolve(ctx context.Context, org, name string) ([]byte, bool, error)
+	Resolve(ctx context.Context, name string) ([]byte, bool, error)
 }
 
 var (

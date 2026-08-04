@@ -179,8 +179,8 @@ func describeLimit(l LimitExceeded) string {
 // a ReadCommitted transaction, and checkDurableLimits itself. Nothing here re-implements the query.
 func readDurableLimit(t *testing.T, cs *Store, org, project string) *LimitExceeded {
 	t.Helper()
-	tenant := Tenant{Organization: org, Project: project}
-	ctx := storage.ScopeToTenant(context.Background(), tenant.Organization, tenant.Project)
+	tenant := Tenant{Project: project}
+	ctx := storage.ScopeToTenant(context.Background(), tenant.Project)
 	tx, err := cs.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		t.Fatalf("begin: %v", err)

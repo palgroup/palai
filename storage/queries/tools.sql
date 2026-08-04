@@ -3,12 +3,12 @@
 -- broker lookup's pin-chain resolution. A revise always INSERTs a new revision — no statement here ever
 -- rewrites a revision's config columns, so a published revision is immutable by discipline (the only
 -- UPDATE is the publish flip). Every statement is tenant-scoped by project_id (000062 rekeyed the
--- policy). The INSERTs still WRITE organization_id: tools carries two UNIQUE indexes over it and
--- tool_set_revisions one, and a unique index treats NULL as distinct from NULL.
+-- policy, 000065 rebuilt the uniqueness: tools is UNIQUE on (project_id, canonical_name) and on
+-- (project_id, model_visible_name), tool_set_revisions on (project_id, set_name, revision_number)).
 
 -- name: InsertTool
-INSERT INTO tools (id, organization_id, project_id, canonical_name, model_visible_name)
-VALUES ($1, $2, $3, $4, $5);
+INSERT INTO tools (id, project_id, canonical_name, model_visible_name)
+VALUES ($1, $2, $3, $4);
 
 -- ToolExists verifies a tool is in scope before a revision is attached to it.
 -- name: ToolExists
@@ -103,11 +103,11 @@ ORDER BY created_at DESC, id DESC
 LIMIT $6;
 
 -- name: InsertToolRevision
-INSERT INTO tool_revisions (id, organization_id, project_id, tool_id, revision_number, executor,
+INSERT INTO tool_revisions (id, project_id, tool_id, revision_number, executor,
         description, input_schema, output_schema, replay_class, timeout_ms, limits, executor_config, secret_ref, digest)
-VALUES ($1, $2, $3, $4,
-        (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM tool_revisions WHERE tool_id = $4),
-        $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+VALUES ($1, $2, $3,
+        (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM tool_revisions WHERE tool_id = $3),
+        $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 RETURNING revision_number;
 
 -- PublishToolRevision is the ONE legitimate mutation: it flips published_at exactly once. The
@@ -151,11 +151,11 @@ WHERE id = $1 AND project_id = $2;
 -- InsertToolSetRevision creates a DRAFT set revision. revision_number is the set name's next monotonic
 -- number. Returns it.
 -- name: InsertToolSetRevision
-INSERT INTO tool_set_revisions (id, organization_id, project_id, set_name, revision_number, tool_pins, digest)
-VALUES ($1, $2, $3, $4,
+INSERT INTO tool_set_revisions (id, project_id, set_name, revision_number, tool_pins, digest)
+VALUES ($1, $2, $3,
         (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM tool_set_revisions
-         WHERE project_id = $3 AND set_name = $4),
-        $5, $6)
+         WHERE project_id = $2 AND set_name = $3),
+        $4, $5)
 RETURNING revision_number;
 
 -- PublishToolSetRevision mirrors PublishToolRevision: a once-only conditional flip.

@@ -292,7 +292,7 @@ func TestEnvironmentsAreInstallationWide(t *testing.T) {
 	// stay ENABLED and FORCED instead of having row-level security switched off.
 	var visible int
 	unscoped := cs.Pool()
-	if err := unscoped.QueryRow(storage.WithTenant(ctx, "", ""), `SELECT count(*) FROM environments`).Scan(&visible); err == nil {
+	if err := unscoped.QueryRow(storage.WithTenant(ctx, ""), `SELECT count(*) FROM environments`).Scan(&visible); err == nil {
 		t.Fatalf("a scope-less connection acquired and saw %d environment(s); it must be refused outright", visible)
 	}
 }

@@ -23,7 +23,7 @@ func seedTerminalResponse(t *testing.T, pool *pgxpool.Pool, tenant coordinator.T
 	exec(t, pool,
 		`INSERT INTO responses (id, organization_id, project_id, session_id, state, input, output, store, updated_at)
 		 VALUES ($1, $2, $3, $4, 'completed', $5, $6, $7, clock_timestamp() - $8::bigint * interval '1 millisecond')`,
-		respID, tenant.Organization, tenant.Project, sessionID,
+		respID, tenant.Project, sessionID,
 		[]byte(`{"prompt":"secret input"}`),
 		[]byte(`{"output":[{"type":"message","content":"secret output"}],"usage":{"total_tokens":9}}`),
 		store, age.Milliseconds())
@@ -96,7 +96,7 @@ func TestPurgeKeepsTombstoneRequestHashAndFingerprint(t *testing.T) {
 	tenant, sessionID, _ := seedRun(t, pool)
 	principal := newID("prin")
 	exec(t, pool, `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'api_key')`,
-		principal, tenant.Organization, tenant.Project)
+		principal, tenant.Project)
 
 	respID := seedTerminalResponse(t, pool, tenant, sessionID, false, time.Hour)
 	const requestHash = "req-hash-abc123"
@@ -104,7 +104,7 @@ func TestPurgeKeepsTombstoneRequestHashAndFingerprint(t *testing.T) {
 		`INSERT INTO idempotency_records
 		   (organization_id, project_id, principal_id, method, route, idempotency_key, request_hash, status, response_body)
 		 VALUES ($1, $2, $3, 'POST', '/v1/responses', $4, $5, 'completed', $6)`,
-		tenant.Organization, tenant.Project, principal, newID("idem"), requestHash,
+		tenant.Project, principal, newID("idem"), requestHash,
 		[]byte(`{"id":"`+respID+`","status":"completed","output":[{"type":"message","content":"secret output"}]}`))
 
 	if _, _, err := cs.PurgeExpiredStoreFalse(ctx, time.Minute); err != nil {
@@ -150,7 +150,7 @@ func seedEvent(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, sess
 	exec(t, pool,
 		`INSERT INTO events (id, organization_id, project_id, session_id, response_id, seq, type, payload)
 		 VALUES ($1, $2, $3, $4, $5, $6, 'output.item.v1', $7)`,
-		newID("evt"), tenant.Organization, tenant.Project, sessionID, responseID, seq, []byte(payload))
+		newID("evt"), tenant.Project, sessionID, responseID, seq, []byte(payload))
 }
 
 func eventPayload(t *testing.T, pool *pgxpool.Pool, responseID string, seq int) string {

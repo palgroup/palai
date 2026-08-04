@@ -44,7 +44,7 @@ func (s *Store) runRemoteHook(ctx context.Context, h loadedHook, ev HookEvent) (
 	}
 	// Resolve the signing secret FRESH per invoke (org-scoped), never captured in a closure (the remoteExec
 	// idiom): a hook binding holds only non-secret wiring (url, secret_ref handle).
-	secret, err := s.remoteSecret(ev.Org, h.SecretRef)
+	secret, err := s.remoteSecret(h.SecretRef)
 	if err != nil {
 		s.recordHookFailure(h.ID)
 		return HookDecision{}, fmt.Errorf("resolve remote hook secret for %s: %w", h.ID, err)

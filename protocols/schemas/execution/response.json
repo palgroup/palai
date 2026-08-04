@@ -7,7 +7,6 @@
   "properties": {
     "id": {"$ref": "../common/id.json#/$defs/response_id"},
     "object": {"type": "string", "const": "response"},
-    "organization_id": {"$ref": "../common/id.json#/$defs/organization_id"},
     "project_id": {"$ref": "../common/id.json#/$defs/project_id"},
     "created_at": {"type": "string", "format": "date-time"},
     "updated_at": {"type": "string", "format": "date-time"},

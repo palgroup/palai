@@ -79,9 +79,9 @@ func TestForeignSessionIsNotFound(t *testing.T) {
 	// harness credential, i.e. under the harness tenant's scope.
 	other := seedTenantWithKey(t, h.spine.Pool(), newID("other-tok"))
 	otherSession := newID("ses")
-	if _, err := h.spine.Pool().Exec(storage.WithTenant(t.Context(), other.Organization, other.Project),
+	if _, err := h.spine.Pool().Exec(storage.WithTenant(t.Context(), other.Project),
 		`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`,
-		otherSession, other.Organization, other.Project); err != nil {
+		otherSession, other.Project); err != nil {
 		t.Fatalf("seed foreign session error = %v", err)
 	}
 

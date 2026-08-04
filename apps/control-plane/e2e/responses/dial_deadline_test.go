@@ -50,7 +50,7 @@ func TestBlockedDialFailsAttemptWithinDeadlineAndRetries(t *testing.T) {
 	attempts := h.count(
 		`SELECT count(*) FROM job_attempts WHERE job_id = (
 			SELECT id FROM durable_jobs WHERE payload->>'run_id'=$1 AND organization_id=$2 AND project_id=$3)`,
-		runID, h.tenant.Organization, h.tenant.Project)
+		runID, h.tenant.Project)
 	if attempts < 3 {
 		t.Fatalf("recorded %d job attempts, want >= 3 (each blocked dial failed and retried)", attempts)
 	}

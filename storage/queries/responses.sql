@@ -1,6 +1,6 @@
 -- Response/run execution-state queries (spec §22.3). Every query is tenant-scoped:
 -- without a project it returns no row, so a caller cannot reach another tenant's
--- run by guessing an ID. The organization_id half of that predicate left in A.2
+-- run by guessing an ID. The organization half of that predicate left in A.2
 -- Task 5 — 000062 rekeyed the policy to project_id and the predicate only mirrored it.
 
 -- name: LockRun
@@ -69,7 +69,7 @@ LIMIT $7;
 -- by-PK read establishes the scope every later write is gated by — the same
 -- cross-tenant infrastructure read the job claim itself performs (spec §24.4).
 -- name: RunContext
-SELECT r.organization_id, r.project_id, r.session_id, r.response_id, r.state, resp.input
+SELECT r.project_id, r.session_id, r.response_id, r.state, resp.input
 FROM runs r
 JOIN responses resp ON resp.id = r.response_id
 WHERE r.id = $1;
@@ -99,8 +99,8 @@ WHERE id = $1;
 -- depth, and its own delegation spec, in the parent's session. It is excluded from
 -- one-active-root (parent_run_id IS NOT NULL), so it does not consume the session's root slot.
 -- name: InsertChildRun
-INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, parent_run_id, depth, delegation)
-VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8);
+INSERT INTO runs (id, project_id, session_id, response_id, state, parent_run_id, depth, delegation)
+VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7);
 
 -- ChildRunOutcome reads a finished ChildRun's terminal run state and its response projection,
 -- so the parent can fold the child.result and link the child run. Tenant-scoped by primary key.
@@ -216,8 +216,8 @@ SELECT EXISTS (
 -- fence, so 0 rows change and the caller reports a stale commit. A row already resolved
 -- (completed/reconciled_*) never reopens (WHERE excludes it). RETURNING xmax=0 distinguishes a fresh
 -- insert from an update, but the caller only needs RowsAffected, so no RETURNING.
-INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, result, replay_class, request_hash)
-VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8, $9, $10)
+INSERT INTO tool_calls (id, project_id, run_id, fence, state, name, arguments, result, replay_class, request_hash)
+VALUES ($1, $2, $3, $4, 'completed', $5, $6, $7, $8, $9)
 ON CONFLICT (id) DO UPDATE
    SET state = 'completed', result = EXCLUDED.result, updated_at = clock_timestamp()
    WHERE tool_calls.state IN ('executing', 'leased') AND tool_calls.fence <= EXCLUDED.fence;
@@ -244,8 +244,8 @@ WHERE id = $1 AND project_id = $2;
 -- undo a reclaiming attempt's decision to stop. Without this branch an approved call would execute and
 -- then lose its result: CommitToolResult only advances executing/leased, so the commit would change 0
 -- rows and be reported a stale commit.
-INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, request_hash, external_idempotency_key, lease_owner, commit_boundary)
-VALUES ($1, $2, $3, $4, $5, 'executing', $6, $7, $8, $9, $10, $11, $12)
+INSERT INTO tool_calls (id, project_id, run_id, fence, state, name, arguments, replay_class, request_hash, external_idempotency_key, lease_owner, commit_boundary)
+VALUES ($1, $2, $3, $4, 'executing', $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT (id) DO UPDATE
    SET fence = GREATEST(tool_calls.fence, EXCLUDED.fence), lease_owner = EXCLUDED.lease_owner,
        state = CASE WHEN tool_calls.state = 'ready' THEN 'executing' ELSE tool_calls.state END,
@@ -275,7 +275,7 @@ WHERE id = $1 AND project_id = $2 AND state = 'uncertain';
 -- reconcile loop's read (spec §26.7, E10 T7). It joins the run for the session/response the resolution
 -- event is journaled under and the re-enqueue needs.
 -- name: SelectUncertainToolCalls
-SELECT t.id, t.organization_id, t.project_id, t.run_id, r.session_id, coalesce(r.response_id, ''),
+SELECT t.id, t.project_id, t.run_id, r.session_id, coalesce(r.response_id, ''),
        t.name, t.replay_class, t.external_idempotency_key
 FROM tool_calls t
 JOIN runs r ON r.id = t.run_id
@@ -310,8 +310,8 @@ ORDER BY created_at, id;
 -- the id only on a fresh insert, so the caller journals the request event exactly once
 -- even if a reclaimed attempt re-derives the same stable id (spec §25.9, §53.4).
 -- name: InsertModelRequest
-INSERT INTO model_requests (id, organization_id, project_id, run_id, state)
-VALUES ($1, $2, $3, $4, 'requested')
+INSERT INTO model_requests (id, project_id, run_id, state)
+VALUES ($1, $2, $3, 'requested')
 ON CONFLICT (id) DO NOTHING
 RETURNING id;
 
@@ -352,10 +352,10 @@ WHERE run_id = $1 AND project_id = $2 AND id <> $3
 -- on the (run_id, fence) uniqueness — the run-scoped max keeps attempt fences strictly increasing
 -- per run (spec §53.5). Runs under the supersede in one tx, and live attempts are serialized by the
 -- exact rung, so the MAX read is race-free.
-INSERT INTO attempts (id, organization_id, project_id, run_id, fence)
-SELECT $1, $2, $3, $4, COALESCE(MAX(a.fence), 0) + 1
+INSERT INTO attempts (id, project_id, run_id, fence)
+SELECT $1, $2, $3, COALESCE(MAX(a.fence), 0) + 1
 FROM attempts a
-WHERE a.run_id = $4 AND a.project_id = $3
+WHERE a.run_id = $3 AND a.project_id = $2
 ON CONFLICT (id) DO NOTHING;
 
 -- name: CommittedModelStepCount
@@ -373,8 +373,8 @@ WHERE id = $1 AND project_id = $2;
 
 -- name: ReserveIdempotency
 INSERT INTO idempotency_records
-    (organization_id, project_id, principal_id, method, route, idempotency_key, request_hash, status, response_body)
-VALUES ($1, $2, $3, $4, $5, $6, $7, 'completed', $8)
+    (project_id, principal_id, method, route, idempotency_key, request_hash, status, response_body)
+VALUES ($1, $2, $3, $4, $5, $6, 'completed', $7)
 ON CONFLICT (project_id, principal_id, method, route, idempotency_key) DO NOTHING
 RETURNING id;
 
@@ -391,16 +391,16 @@ WHERE project_id = $1 AND principal_id = $2
 -- and fork_session both open a session on the caller's behalf, and neither has a name to give it. The
 -- projection derives one from the first prompt in that case, and PATCH /v1/sessions/{id} replaces it.
 -- name: InsertSession
-INSERT INTO sessions (id, organization_id, project_id, name)
-VALUES ($1, $2, $3, $4);
+INSERT INTO sessions (id, project_id, name)
+VALUES ($1, $2, $3);
 
 -- name: InsertResponse
-INSERT INTO responses (id, organization_id, project_id, session_id, state, input, store)
-VALUES ($1, $2, $3, $4, 'queued', $5, $6);
+INSERT INTO responses (id, project_id, session_id, state, input, store)
+VALUES ($1, $2, $3, 'queued', $4, $5);
 
 -- name: InsertRun
-INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, delegation, agent_revision_id, run_template_revision_id, output_contract, instructions)
-VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8, $9, $10);
+INSERT INTO runs (id, project_id, session_id, response_id, state, delegation, agent_revision_id, run_template_revision_id, output_contract, instructions)
+VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9);
 
 -- PurgeExpiredStoreFalse is the retention sweep (spec §8.3, §20.9): it purges the
 -- content of store=false responses whose terminal state has aged past the configured
@@ -415,7 +415,7 @@ VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8, $9, $10);
 -- those bytes from the object store after this transaction commits (LP §7.2).
 -- name: PurgeExpiredStoreFalse
 WITH victims AS (
-    SELECT responses.id, responses.organization_id, responses.project_id, responses.state, responses.output
+    SELECT responses.id, responses.project_id, responses.state, responses.output
     FROM responses
     WHERE store = false
       AND purged_at IS NULL

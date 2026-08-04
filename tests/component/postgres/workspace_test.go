@@ -18,7 +18,7 @@ func seedWorkspace(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenan
 	t.Helper()
 	// AllocateWorkspace is keyed by the opaque workspace id rather than a tenant, so the CONTEXT
 	// carries the scope — the same way the run worker scopes a claimed job (migration 000029).
-	ctx := storage.WithTenant(context.Background(), tenant.Organization, tenant.Project)
+	ctx := storage.WithTenant(context.Background(), tenant.Project)
 	wsID := newID("wsp")
 	if err := cs.CreateWorkspace(ctx, tenant, coordinator.WorkspaceInput{
 		WorkspaceID: wsID, SessionID: sessionID, RunID: runID, State: "ready",
@@ -90,7 +90,7 @@ func TestSingleWriterLeaseRejectsSecondWriter(t *testing.T) {
 	// AllocateWorkspace / GetPreparationReceipt are keyed by an opaque id, not by a tenant, so under
 	// migration 000029 the CONTEXT is what scopes them — the same way the run worker scopes a claimed
 	// job. Declaring it here is what a production caller already does.
-	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.WithTenant(ctx, tenant.Project)
 	wsID, alloc := seedWorkspace(t, cs, tenant, sessionID, rootRun)
 
 	// The root run normally owns the single writer lease (spec §29.8).
@@ -105,7 +105,7 @@ func TestSingleWriterLeaseRejectsSecondWriter(t *testing.T) {
 	exec(t, pool,
 		`INSERT INTO runs (id, organization_id, project_id, session_id, state, parent_run_id, depth)
 		 VALUES ($1, $2, $3, $4, 'running', $5, 1)`,
-		childRun, tenant.Organization, tenant.Project, sessionID, rootRun)
+		childRun, tenant.Project, sessionID, rootRun)
 	if err := cs.AcquireWriterLease(ctx, newID("wls"), alloc.ID, childRun); !errors.Is(err, coordinator.ErrWriterLeaseHeld) {
 		t.Fatalf("second writer lease = %v, want ErrWriterLeaseHeld", err)
 	}
@@ -115,7 +115,7 @@ func TestSingleWriterLeaseRejectsSecondWriter(t *testing.T) {
 	_, rawErr := pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO workspace_leases (id, workspace_id, allocation_id, organization_id, project_id, run_id, state, fence)
 		 VALUES ($1, $2, $3, $4, $5, $6, 'active', $7)`,
-		newID("wls"), wsID, alloc.ID, tenant.Organization, tenant.Project, childRun, alloc.Fence)
+		newID("wls"), wsID, alloc.ID, tenant.Project, childRun, alloc.Fence)
 	if got := pgCode(rawErr); got != "23505" {
 		t.Fatalf("raw second active lease code = %q, want 23505 unique_violation", got)
 	}
@@ -140,7 +140,7 @@ func TestAllocationCarriesFencingTokenStableLogicalID(t *testing.T) {
 	// AllocateWorkspace / GetPreparationReceipt are keyed by an opaque id, not by a tenant, so under
 	// migration 000029 the CONTEXT is what scopes them — the same way the run worker scopes a claimed
 	// job. Declaring it here is what a production caller already does.
-	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.WithTenant(ctx, tenant.Project)
 
 	wsID := newID("wsp")
 	if err := cs.CreateWorkspace(ctx, tenant, coordinator.WorkspaceInput{
@@ -198,7 +198,7 @@ func TestFencedStaleWriterSnapshotRejected(t *testing.T) {
 	// AllocateWorkspace / GetPreparationReceipt are keyed by an opaque id, not by a tenant, so under
 	// migration 000029 the CONTEXT is what scopes them — the same way the run worker scopes a claimed
 	// job. Declaring it here is what a production caller already does.
-	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.WithTenant(ctx, tenant.Project)
 	wsID := newID("wsp")
 	if err := cs.CreateWorkspace(ctx, tenant, coordinator.WorkspaceInput{
 		WorkspaceID: wsID, SessionID: sessionID, RunID: runID, State: "ready",
@@ -260,7 +260,7 @@ func TestAcquireWriterLeaseRejectsNonCurrentAllocation(t *testing.T) {
 	// AllocateWorkspace / GetPreparationReceipt are keyed by an opaque id, not by a tenant, so under
 	// migration 000029 the CONTEXT is what scopes them — the same way the run worker scopes a claimed
 	// job. Declaring it here is what a production caller already does.
-	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.WithTenant(ctx, tenant.Project)
 	wsID := newID("wsp")
 	if err := cs.CreateWorkspace(ctx, tenant, coordinator.WorkspaceInput{
 		WorkspaceID: wsID, SessionID: sessionID, RunID: runID, State: "ready",

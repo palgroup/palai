@@ -45,10 +45,10 @@ func TestA2AStoreRLSAndCanonicalRefInvariant(t *testing.T) {
 	}
 
 	// (1) RLS: tenant A reads it; tenant B does not.
-	if _, ok, err := store.Get(ctx, tenantA.Organization, tenantA.Project, interfaceID); err != nil || !ok {
+	if _, ok, err := store.Get(ctx, tenantA.Project, interfaceID); err != nil || !ok {
 		t.Fatalf("owning tenant cannot read its interface: ok=%v err=%v", ok, err)
 	}
-	if _, ok, err := store.Get(ctx, tenantB.Organization, tenantB.Project, interfaceID); err != nil || ok {
+	if _, ok, err := store.Get(ctx, tenantB.Project, interfaceID); err != nil || ok {
 		t.Fatalf("foreign tenant read a cross-tenant interface (RLS breach): ok=%v err=%v", ok, err)
 	}
 
@@ -68,13 +68,13 @@ func TestA2AStoreRLSAndCanonicalRefInvariant(t *testing.T) {
 	// (3) §38.2: external A2A ids are stored beside the canonical run/session, never replacing them.
 	const externalTaskID = "a2atask_ext_1"
 	const externalContextID = "a2actx_ext_1"
-	if err := store.Put(ctx, tenantA.Organization, tenantA.Project, a2a.TaskRef{
+	if err := store.Put(ctx, tenantA.Project, a2a.TaskRef{
 		InterfaceID: interfaceID, A2ATaskID: externalTaskID, A2AContextID: externalContextID,
 		RunID: canonicalRun, SessionID: "ses_canonical",
 	}); err != nil {
 		t.Fatalf("Put task ref: %v", err)
 	}
-	ref, ok, err := store.GetRef(ctx, tenantA.Organization, tenantA.Project, interfaceID, externalTaskID)
+	ref, ok, err := store.GetRef(ctx, tenantA.Project, interfaceID, externalTaskID)
 	if err != nil || !ok {
 		t.Fatalf("GetRef: ok=%v err=%v", ok, err)
 	}
@@ -86,16 +86,16 @@ func TestA2AStoreRLSAndCanonicalRefInvariant(t *testing.T) {
 	}
 
 	// (4) Task ref is tenant-isolated.
-	if _, ok, err := store.GetRef(ctx, tenantB.Organization, tenantB.Project, interfaceID, externalTaskID); err != nil || ok {
+	if _, ok, err := store.GetRef(ctx, tenantB.Project, interfaceID, externalTaskID); err != nil || ok {
 		t.Fatalf("foreign tenant read a cross-tenant task ref (RLS breach): ok=%v err=%v", ok, err)
 	}
 
 	// (5) Push configs round-trip through JSONB.
 	cfgs := []a2a.PushNotificationConfig{{ID: "pc1", URL: "https://sink.test/hook"}}
-	if err := store.SetPushConfigs(ctx, tenantA.Organization, tenantA.Project, interfaceID, externalTaskID, cfgs); err != nil {
+	if err := store.SetPushConfigs(ctx, tenantA.Project, interfaceID, externalTaskID, cfgs); err != nil {
 		t.Fatalf("SetPushConfigs: %v", err)
 	}
-	ref, _, err = store.GetRef(ctx, tenantA.Organization, tenantA.Project, interfaceID, externalTaskID)
+	ref, _, err = store.GetRef(ctx, tenantA.Project, interfaceID, externalTaskID)
 	if err != nil {
 		t.Fatalf("GetRef after push: %v", err)
 	}

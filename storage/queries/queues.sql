@@ -4,12 +4,12 @@
 
 -- name: CreateQueueConnection
 INSERT INTO queue_connections
-    (id, organization_id, project_id, name, kind, direction, capacity, visibility_seconds, max_deliveries, config)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+    (id, project_id, name, kind, direction, capacity, visibility_seconds, max_deliveries, config)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
 RETURNING id;
 
 -- name: GetQueueConnection
-SELECT id, organization_id, project_id, name, kind, direction, capacity, visibility_seconds, max_deliveries, enabled, config
+SELECT id, project_id, name, kind, direction, capacity, visibility_seconds, max_deliveries, enabled, config
   FROM queue_connections
  WHERE id = $1 AND project_id = $2;
 
@@ -20,7 +20,7 @@ SELECT id, organization_id, project_id, name, kind, direction, capacity, visibil
 -- is in the WHERE, not a returned column: a disabled connection is not "returned and then filtered", it is
 -- never selected, so no later code path can forget the check (§2, and the disabled-admits-nothing claim).
 -- name: SweepQueueConnections
-SELECT id, organization_id, project_id, capacity, visibility_seconds, max_deliveries, config
+SELECT id, project_id, capacity, visibility_seconds, max_deliveries, config
   FROM queue_connections
  WHERE direction = $1 AND enabled
  ORDER BY created_at;
@@ -68,14 +68,14 @@ SELECT id, name, kind, direction, capacity, visibility_seconds, max_deliveries, 
 -- the tenant scope is what admits the foreign principal. Both layers are load-bearing together, and the
 -- one that must never be dropped is the caller's scope.
 -- name: QueueRunPrincipalInScope
-SELECT 1 FROM principals WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+SELECT 1 FROM principals WHERE id = $1 AND project_id = $2;
 
 -- EnqueueQueueMessage inserts a message; the UNIQUE(queue_connection_id, idempotency_key) collapses a
 -- producer's at-least-once double-publish (ON CONFLICT DO NOTHING -> RowsAffected()==0 signals a dedupe).
 -- name: EnqueueQueueMessage
 INSERT INTO queue_messages
-    (id, organization_id, project_id, queue_connection_id, idempotency_key, body)
-VALUES ($1, $2, $3, $4, $5, $6)
+    (id, project_id, queue_connection_id, idempotency_key, body)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (queue_connection_id, idempotency_key) DO NOTHING;
 
 -- QueueLoad is the backpressure gauge input: ready + in-flight (leased) messages count against capacity.
@@ -149,8 +149,8 @@ UPDATE queue_messages
 -- redelivery), so the caller skips the effect and acks.
 -- name: RecordQueueEffect
 INSERT INTO queue_effect_receipts
-    (id, organization_id, project_id, queue_connection_id, idempotency_key)
-VALUES ($1, $2, $3, $4, $5)
+    (id, project_id, queue_connection_id, idempotency_key)
+VALUES ($1, $2, $3, $4)
 ON CONFLICT (queue_connection_id, idempotency_key) DO NOTHING;
 
 -- name: CountQueueEffects
@@ -161,8 +161,8 @@ SELECT count(*) FROM queue_effect_receipts
 -- UNIQUE(queue_connection_id, destination_key) collapses a double-enqueue of the same result.
 -- name: EnqueueQueueDelivery
 INSERT INTO queue_deliveries
-    (id, organization_id, project_id, queue_connection_id, destination_key, payload, max_attempts)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+    (id, project_id, queue_connection_id, destination_key, payload, max_attempts)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (queue_connection_id, destination_key) DO NOTHING;
 
 -- EnqueueTerminalQueueDeliveries is the OUTBOUND BRIDGE (E19 T6, §34.5): it runs INSIDE the run's terminal
@@ -181,13 +181,12 @@ ON CONFLICT (queue_connection_id, destination_key) DO NOTHING;
 -- zero rows.
 -- ponytail: an unindexed scan of queue_connections on every terminal transition. The table holds a handful
 -- of rows per deployment, and RLS confines it to the tenant's own; a deployment with many connections wants
--- a partial index on (organization_id, project_id) WHERE direction='outbound' AND enabled — which is a
+-- a partial index on (project_id) WHERE direction='outbound' AND enabled — which is a
 -- migration, and E19 takes none.
 -- name: EnqueueTerminalQueueDeliveries
 INSERT INTO queue_deliveries
-    (id, organization_id, project_id, queue_connection_id, destination_key, payload, max_attempts)
-SELECT 'qdel_' || replace(gen_random_uuid()::text, '-', ''),
-       c.organization_id, c.project_id, c.id, $2,
+    (id, project_id, queue_connection_id, destination_key, payload, max_attempts)
+SELECT 'qdel_' || replace(gen_random_uuid()::text, '-', ''), c.project_id, c.id, $2,
        convert_to(jsonb_build_object(
            'type', 'run.terminal',
            'run_id', $2::text,

@@ -315,7 +315,7 @@ func (g *RunnerGateway) Waiting(poolID string) int {
 // An empty tenant is the pre-E24 attempt and the machine no registry knows: they meet each other and
 // nothing else, which is §2's bit-unchanged rule and not a wildcard.
 func queueKey(tenant coordinator.Tenant, poolID string) string {
-	return tenant.Organization + "\x00" + tenant.Project + "\x00" + poolKey(poolID)
+	return tenant.Project + "\x00" + poolKey(poolID)
 }
 
 // queueFor resolves a (tenant, pool) rendezvous, creating it on first use. Double-checked under the
@@ -1071,13 +1071,13 @@ func (g *RunnerGateway) recordSeen(ctx context.Context, dns string, notAfter tim
 		return "", coordinator.Tenant{}, ""
 	}
 	if found {
-		return row.PoolID, coordinator.Tenant{Organization: row.Organization, Project: row.Project}, row.State
+		return row.PoolID, coordinator.Tenant{Project: row.Project}, row.State
 	}
 	pool, found, err := reg.Pool(ctx, fleet.DefaultPoolID)
 	if err != nil || !found {
 		return "", coordinator.Tenant{}, ""
 	}
-	return pool.ID, coordinator.Tenant{Organization: pool.Organization, Project: pool.Project}, ""
+	return pool.ID, coordinator.Tenant{Project: pool.Project}, ""
 }
 
 // certNotAfter reads the expiry out of a DER the CA just produced. A DER that will not parse leaves
@@ -1458,7 +1458,7 @@ func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (En
 // machine's NEXT connect (a runner re-dials after every lease) tries again. What it must never do is
 // wake the WRONG run, and that is not a matter of error handling — the predicate is in the query.
 func (g *RunnerGateway) wakeParkedRun(ctx context.Context, tenant coordinator.Tenant, poolID string) {
-	if g.wake == nil || tenant.Organization == "" || tenant.Project == "" {
+	if g.wake == nil || tenant.Project == "" {
 		return
 	}
 	_, _ = g.wake.WakeRunAwaitingCapacity(ctx, tenant, poolKey(poolID))

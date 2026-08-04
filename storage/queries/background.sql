@@ -12,9 +12,9 @@
 -- value, and the read path re-resolves them to redact the log (T6).
 -- name: InsertBackgroundTask
 INSERT INTO background_tasks
-    (id, organization_id, project_id, run_id, session_id, response_id, tool_call_id,
+    (id, project_id, run_id, session_id, response_id, tool_call_id,
      attempt_fence, posture, handle, machine_id, state, output_path, env_keys, deadline_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'running', $12, $13, $14);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'running', $11, $12, $13);
 
 -- RunningBackgroundTasks is the reaper's read: every task the DATABASE still believes is running,
 -- across every tenant, so it runs under WithSystemScope like the other sweeps. The partial index
@@ -44,7 +44,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'running', $12, $13, $14);
 -- whole point of a background task is to outlive that process. NULL means the operator asked for no
 -- ceiling and wrote a `0` to say so.
 -- name: RunningBackgroundTasks
-SELECT b.id, b.organization_id, b.project_id, b.run_id, b.session_id, b.response_id,
+SELECT b.id, b.project_id, b.run_id, b.session_id, b.response_id,
        b.posture, b.handle, b.machine_id, b.output_path, b.env_keys, b.deadline_at,
        COALESCE((
            SELECT a.host_path

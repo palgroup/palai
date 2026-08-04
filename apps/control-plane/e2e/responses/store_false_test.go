@@ -39,7 +39,7 @@ func (h *harness) eventPayloads(sessionID string) []string {
 	h.t.Helper()
 	rows, err := h.spine.Pool().Query(storage.WithSystemScope(context.Background()),
 		`SELECT payload::text FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 ORDER BY seq`,
-		sessionID, h.tenant.Organization, h.tenant.Project)
+		sessionID, h.tenant.Project)
 	if err != nil {
 		h.t.Fatalf("read event payloads error = %v", err)
 	}
@@ -72,7 +72,7 @@ func TestStoreFalseContentIsGoneAfterConfiguredTTL(t *testing.T) {
 	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(context.Background()),
 		`INSERT INTO artifacts (id, organization_id, project_id, run_id, object_key, size_bytes, checksum)
 		 VALUES ($1, $2, $3, $4, 'blob/output.bin', 4096, 'sha256:deadbeef')`,
-		artifactID, h.tenant.Organization, h.tenant.Project, runID); err != nil {
+		artifactID, h.tenant.Project, runID); err != nil {
 		t.Fatalf("seed artifact error = %v", err)
 	}
 
@@ -156,7 +156,7 @@ func TestDuplicateCreateAfterPurgeReturns410WithoutReexecution(t *testing.T) {
 	if calls := atomic.LoadInt32(&h.provider.calls); calls != callsAfterRun {
 		t.Fatalf("model provider calls = %d after replay, want unchanged %d", calls, callsAfterRun)
 	}
-	if n := h.count(`SELECT count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`, h.tenant.Organization, h.tenant.Project); n != 1 {
+	if n := h.count(`SELECT count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`, h.tenant.Project); n != 1 {
 		t.Fatalf("run count = %d after replay, want 1 (no new run dispatched)", n)
 	}
 }

@@ -83,15 +83,15 @@ func (s *TriggerStore) reconcileDeferred(ctx context.Context, log func(string, .
 	if err != nil {
 		return fmt.Errorf("scan deferred groups: %w", err)
 	}
-	type group struct{ triggerID, org, project, hash string }
+	type group struct{ triggerID, project, hash string }
 	var groups []group
 	for rows.Next() {
 		var g group
-		if err := rows.Scan(&g.triggerID, &g.org, &g.project, &g.hash); err != nil {
+		if err := rows.Scan(&g.triggerID, &g.project, &g.hash); err != nil {
 			rows.Close()
 			return err
 		}
-		groups = append(groups, group{g.triggerID, g.org, g.project, g.hash})
+		groups = append(groups, group{g.triggerID, g.project, g.hash})
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -101,7 +101,7 @@ func (s *TriggerStore) reconcileDeferred(ctx context.Context, log func(string, .
 	// M2: a poison group (its head's admission errors) is logged and SKIPPED, never returned — one bad
 	// delivery must not wedge the whole sweep behind a supervisor restart loop.
 	for _, g := range groups {
-		if err := s.admitDeferredGroup(ctx, g.triggerID, g.org, g.project, g.hash); err != nil {
+		if err := s.admitDeferredGroup(ctx, g.triggerID, g.project, g.hash); err != nil {
 			log("delivery-reconciler: deferred group %s/%s: %v", g.triggerID, g.hash, err)
 		}
 	}
@@ -111,8 +111,8 @@ func (s *TriggerStore) reconcileDeferred(ctx context.Context, log func(string, .
 // admitDeferredGroup admits (at most one) delivery from a single deferred (trigger, key) group: it checks
 // the group's policy gate and, if open, admits the FIFO head (or, for coalesce, the latest survivor while
 // skipping the rest). Errors are returned to the caller, which logs + skips the group.
-func (s *TriggerStore) admitDeferredGroup(ctx context.Context, triggerID, org, project, hash string) error {
-	sc := deliveryScope{org: org, project: project, triggerID: triggerID}
+func (s *TriggerStore) admitDeferredGroup(ctx context.Context, triggerID, project, hash string) error {
+	sc := deliveryScope{project: project, triggerID: triggerID}
 	ctx = scoped(ctx, sc)
 	// The FIFO head names the group's revision + policy (which gate + which survivor to admit).
 	var headID, headPrincipal, headRevision string
@@ -121,7 +121,7 @@ func (s *TriggerStore) admitDeferredGroup(ctx context.Context, triggerID, org, p
 		Scan(&headID, &headPrincipal, &headRevision, &headInput); err != nil {
 		return fmt.Errorf("resolve FIFO head: %w", err)
 	}
-	cfg, err := s.loadRevisionConfig(ctx, deliveryScope{org: org, project: project, revisionID: headRevision})
+	cfg, err := s.loadRevisionConfig(ctx, deliveryScope{project: project, revisionID: headRevision})
 	if err != nil {
 		return err
 	}
@@ -154,7 +154,7 @@ func (s *TriggerStore) admitDeferredGroup(ctx context.Context, triggerID, org, p
 			}
 		}
 		return s.resumeDelivery(ctx, deliveryScope{
-			org: org, project: project, principal: admitPrincipal, triggerID: triggerID, revisionID: admitRevision, deliveryID: admitID,
+			project: project, principal: admitPrincipal, triggerID: triggerID, revisionID: admitRevision, deliveryID: admitID,
 		}, hash, admitInput)
 	})
 	if errors.Is(err, errGateContended) {
@@ -176,13 +176,13 @@ func (s *TriggerStore) recoverStuckMapped(ctx context.Context, grace time.Durati
 		return fmt.Errorf("scan stuck-mapped deliveries: %w", err)
 	}
 	type remnant struct {
-		id, org, project, principal, triggerID, revisionID, hash string
-		mappedInput                                              []byte
+		id, project, principal, triggerID, revisionID, hash string
+		mappedInput                                         []byte
 	}
 	var remnants []remnant
 	for rows.Next() {
 		var m remnant
-		if err := rows.Scan(&m.id, &m.org, &m.project, &m.principal, &m.triggerID, &m.revisionID, &m.hash, &m.mappedInput); err != nil {
+		if err := rows.Scan(&m.id, &m.project, &m.principal, &m.triggerID, &m.revisionID, &m.hash, &m.mappedInput); err != nil {
 			rows.Close()
 			return err
 		}
@@ -195,7 +195,7 @@ func (s *TriggerStore) recoverStuckMapped(ctx context.Context, grace time.Durati
 
 	// M2: a poison remnant is logged and SKIPPED, never returned — one bad row must not wedge the sweep.
 	for _, m := range remnants {
-		sc := deliveryScope{org: m.org, project: m.project, principal: m.principal, triggerID: m.triggerID, revisionID: m.revisionID, deliveryID: m.id}
+		sc := deliveryScope{project: m.project, principal: m.principal, triggerID: m.triggerID, revisionID: m.revisionID, deliveryID: m.id}
 		cfg, err := s.loadRevisionConfig(ctx, sc)
 		if err != nil {
 			log("delivery-reconciler: recover stuck-mapped %s: %v", m.id, err)

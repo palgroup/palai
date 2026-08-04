@@ -39,17 +39,6 @@ type Admitter interface {
 	// foreign id), Purged is a 410, and a hit carries the canceled (or already-terminal)
 	// projection. It is a monotonic no-op on an already-terminal run — cancel is retry-safe.
 	CancelResponse(ctx context.Context, scope middleware.Scope, id string) (RetrieveResult, error)
-	// ResolveOrganization resolves the organization a project belongs to (A.2 Task 3): the one value the
-	// request scope no longer carries.
-	//
-	// THE CREATE PATH NO LONGER CALLS IT. It was called once per POST /v1/responses to fill the wire
-	// organization_id on the "queued" projection, and that projection is not only rendered — it is the
-	// body persisted on the idempotency record, so the field was durable. A.2 Task 5 removed it from
-	// both. The remaining caller is a2a.go's ScopeFunc, and it needs the value for a different reason
-	// that has not gone away: the scope it builds is published into palai.org_id, which twelve
-	// row-level-security policies still read (storage/embed.go, applyScope). Task 6 retires those and
-	// this seam with them.
-	ResolveOrganization(ctx context.Context, project string) (string, error)
 }
 
 // RetrieveResult is the outcome of a response retrieval. Found is false for an unknown

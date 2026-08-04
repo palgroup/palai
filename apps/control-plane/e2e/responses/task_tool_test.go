@@ -58,7 +58,7 @@ func TestDurableTaskToolWritesThroughModelCall(t *testing.T) {
 	var kind, title, status string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT kind, title, status FROM tasks WHERE session_id=$1 AND task_key='impl-x' AND organization_id=$2 AND project_id=$3`,
-		sessionID, h.tenant.Organization, h.tenant.Project).Scan(&kind, &title, &status); err != nil {
+		sessionID, h.tenant.Project).Scan(&kind, &title, &status); err != nil {
 		t.Fatalf("read durable task: %v", err)
 	}
 	if kind != "task" || title != "implement X" || status != "open" {

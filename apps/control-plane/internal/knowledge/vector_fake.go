@@ -95,7 +95,7 @@ func NewDeterministicVectorAdapter() *DeterministicVectorAdapter {
 }
 
 func recordKey(r VectorRecord) string {
-	return strings.Join([]string{r.Organization, r.Project, r.KnowledgeBaseID, r.IndexRevisionID, r.ChunkID}, "\x00")
+	return strings.Join([]string{r.Project, r.KnowledgeBaseID, r.IndexRevisionID, r.ChunkID}, "\x00")
 }
 
 func (a *DeterministicVectorAdapter) Upsert(_ context.Context, rec VectorRecord, embedding []float32) error {
@@ -160,7 +160,7 @@ func (s *Store) SetVectorAdapter(a VectorAdapter) { s.vector = a }
 // silently embedded. Non-restricted sources embed normally. This exists so the vector/hybrid strategy has an
 // index to search in a test without a real store.
 func (s *Store) IndexKBIntoVector(ctx context.Context, scope middleware.Scope, kbID string, route EmbeddingRoute, policy EmbeddingPolicy) error {
-	scopedCtx, org, err := tenantScope(ctx, s.pool, scope.Project)
+	scopedCtx, err := tenantScope(ctx, scope.Project)
 	if err != nil {
 		return err
 	}
@@ -201,7 +201,7 @@ func (s *Store) IndexKBIntoVector(ctx context.Context, scope middleware.Scope, k
 	}
 	for _, c := range chunks {
 		rec := VectorRecord{
-			Organization: org, Project: scope.Project, KnowledgeBaseID: kbID,
+			Project: scope.Project, KnowledgeBaseID: kbID,
 			DocumentRevision: c.docRev, ChunkID: c.chunkID, IndexRevisionID: idxID,
 		}
 		if err := s.vector.Upsert(ctx, rec, deterministicEmbed(c.content)); err != nil {
@@ -215,7 +215,7 @@ func (s *Store) IndexKBIntoVector(ctx context.Context, scope middleware.Scope, k
 // source of truth), asks the vector store for candidates, then RE-RESOLVES every candidate against that set
 // — a record whose scope does not match or whose chunk is not authorized is dropped (§25.15.3: the store is
 // never trusted). Hybrid additionally runs the keyword strategy and fuses the two rankings.
-func (s *Store) runVectorStrategy(ctx context.Context, org, project, strategy, kbID, idxID, query string, grants []string, limit int) ([]RetrievedChunk, RetrievalCost, error) {
+func (s *Store) runVectorStrategy(ctx context.Context, project, strategy, kbID, idxID, query string, grants []string, limit int) ([]RetrievedChunk, RetrievalCost, error) {
 	if !s.vector.Enabled() {
 		return nil, RetrievalCost{Strategy: strategy}, ErrVectorDisabled
 	}
@@ -231,13 +231,13 @@ func (s *Store) runVectorStrategy(ctx context.Context, org, project, strategy, k
 		admittedIDs[id] = struct{}{}
 	}
 	recs, err := s.vector.Search(ctx, VectorScope{
-		Organization: org, Project: project, KnowledgeBaseID: kbID, IndexRevisionID: idxID,
+		Project: project, KnowledgeBaseID: kbID, IndexRevisionID: idxID,
 		AdmittedChunkIDs: admittedIDs,
 	}, deterministicEmbed(query), limit)
 	if err != nil {
 		return nil, RetrievalCost{}, fmt.Errorf("vector search: %w", err)
 	}
-	vhits := resolveVectorHits(recs, org, project, kbID, idxID, admitted)
+	vhits := resolveVectorHits(recs, project, kbID, idxID, admitted)
 
 	cost := RetrievalCost{Strategy: strategy, VectorHits: len(vhits), EmbeddingTokens: len(strings.Fields(query))}
 	if strategy == strategyVector {
@@ -291,15 +291,15 @@ func (s *Store) admittedChunks(ctx context.Context, kbID, idxID string, grants [
 }
 
 // resolveVectorHits re-resolves vector-store candidates against the authorized chunk set (§25.15.3). It is
-// the guard that makes the vector store untrusted: a record whose org/project/kb/index-revision does not match
+// the guard that makes the vector store untrusted: a record whose project/kb/index-revision does not match
 // the query scope, or whose chunk is not in the ACL-first authorized set, is DROPPED — the store can never
 // widen a result. Every identity field the record carries is verified here (the "record IDs carry full
 // identity" invariant). Order is preserved (the store's post-filter rank), scores are the rank position
 // rendered as a descending pseudo-score so a hybrid fusion has a stable ordering signal.
-func resolveVectorHits(recs []VectorRecord, org, project, kbID, idxID string, admitted map[string]RetrievedChunk) []RetrievedChunk {
+func resolveVectorHits(recs []VectorRecord, project, kbID, idxID string, admitted map[string]RetrievedChunk) []RetrievedChunk {
 	out := make([]RetrievedChunk, 0, len(recs))
 	for i, rec := range recs {
-		if rec.Organization != org || rec.Project != project || rec.KnowledgeBaseID != kbID || rec.IndexRevisionID != idxID {
+		if rec.Project != project || rec.KnowledgeBaseID != kbID || rec.IndexRevisionID != idxID {
 			continue // scope mismatch: a leaky store cannot inject a foreign-tenant/project/kb/revision record
 		}
 		h, ok := admitted[rec.ChunkID]

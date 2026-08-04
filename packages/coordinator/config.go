@@ -95,7 +95,7 @@ func (p ConfigPolicy) ApproverAllowed(principal string) bool {
 // (the default for every existing project) yields the zero value — unrestricted, empty
 // baseline. The orchestrator reads the DefaultTools baseline here for the ConfigSnapshot.
 func (s *Store) ProjectConfig(ctx context.Context, tenant Tenant) (ConfigPolicy, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var raw []byte
 	err := s.pool.QueryRow(ctx, storage.Query("GetProjectConfig"), tenant.Project).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -141,7 +141,7 @@ type SessionOverride struct {
 // LatestSessionConfig reads a session's most recent config revision, the effective override the
 // orchestrator routes a model step under. found is false when the session has no revision.
 func (s *Store) LatestSessionConfig(ctx context.Context, tenant Tenant, sessionID string) (SessionOverride, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var override SessionOverride
 	var toolsJSON []byte
 	err := s.pool.QueryRow(ctx, storage.Query("LatestSessionConfig"), sessionID, tenant.Project).
@@ -178,7 +178,7 @@ type ConfigChangePlan struct {
 // §22.4). It runs under guardRunActive, so a canceled run rejects the write. A command another
 // path already applied returns ErrCommandNotPending. Returns the applied_sequence.
 func (s *Store) ApplyConfigChange(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID string, plan ConfigChangePlan) (int64, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin apply config change: %w", err)
@@ -206,7 +206,7 @@ func (s *Store) ApplyConfigChange(ctx context.Context, tenant Tenant, sessionID,
 // It runs under guardRunActive; a command a boundary already applied returns ErrCommandNotPending.
 // boundaryRequestID is the aborted step's model_request_id: it keys the interrupted-step meter (E13 T6).
 func (s *Store) InterruptForConfigChange(ctx context.Context, tenant Tenant, sessionID, responseID, runID string, plan ConfigChangePlan, commandID, boundaryRequestID, partialEventType string, partialPayload []byte, warningEventType string, warningPayload []byte) (int64, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin interrupt config change: %w", err)

@@ -132,7 +132,7 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 	}
 	var created time.Time
 	if err := tx.QueryRow(ctx, storage.Query("InsertRunner"),
-		row.ID, row.Organization, row.Project, row.PoolID, row.Label, row.DNS, row.PublicKeySHA256,
+		row.ID, row.Project, row.PoolID, row.Label, row.DNS, row.PublicKeySHA256,
 		row.State, row.OS, row.Arch, row.Posture, row.Capacity, nil, reg.KeyID,
 	).Scan(&created, &row.EnrolledAt, &row.LastSeenAt); err != nil {
 		return Runner{}, fmt.Errorf("insert runner: %w", err)
@@ -146,7 +146,7 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 		return Runner{}, fmt.Errorf("encode enrollment detail: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("AppendRunnerEnrollment"),
-		s.mintID("renr"), row.Organization, row.Project, row.ID, row.PoolID, reg.KeyID, "issued", detail); err != nil {
+		s.mintID("renr"), row.Project, row.ID, row.PoolID, reg.KeyID, "issued", detail); err != nil {
 		return Runner{}, fmt.Errorf("append enrollment entry: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -203,12 +203,12 @@ func (s *Store) RecordSeen(ctx context.Context, dns string, certNotAfter, at tim
 // rather than here — see SetRunnerState. A cordon or a resume against a machine still in the waiting room
 // returns found=false, which the caller renders as the same non-disclosing 404 it renders for a machine
 // that is not there; the operator's route for that machine is `approve` (Approve, strict.go) or `revoke`.
-func (s *Store) SetState(ctx context.Context, org, project, id, action string) (Runner, bool, error) {
+func (s *Store) SetState(ctx context.Context, project, id, action string) (Runner, bool, error) {
 	state, ok := runnerStateFor[action]
 	if !ok {
 		return Runner{}, false, fmt.Errorf("%w: %q", ErrUnknownLifecycleAction, action)
 	}
-	ctx = storage.WithTenant(ctx, org, project)
+	ctx = storage.WithTenant(ctx, project)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Runner{}, false, fmt.Errorf("begin runner lifecycle write: %w", err)
@@ -233,7 +233,7 @@ func (s *Store) SetState(ctx context.Context, org, project, id, action string) (
 			return Runner{}, false, fmt.Errorf("encode revocation detail: %w", err)
 		}
 		if _, err := tx.Exec(ctx, storage.Query("AppendRunnerDecision"),
-			s.mintID("renr"), row.Organization, row.Project, row.ID, row.PoolID, "revoked", detail); err != nil {
+			s.mintID("renr"), row.Project, row.ID, row.PoolID, "revoked", detail); err != nil {
 			return Runner{}, false, fmt.Errorf("append revocation entry: %w", err)
 		}
 	}
@@ -254,8 +254,8 @@ var runnerStateFor = map[string]string{
 }
 
 // Get resolves one runner inside the caller's verified scope.
-func (s *Store) Get(ctx context.Context, org, project, id string) (Runner, bool, error) {
-	ctx = storage.WithTenant(ctx, org, project)
+func (s *Store) Get(ctx context.Context, project, id string) (Runner, bool, error) {
+	ctx = storage.WithTenant(ctx, project)
 	row, err := scanRunner(s.pool.QueryRow(ctx, storage.Query("GetRunner"), id, project), true)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Runner{}, false, nil
@@ -267,11 +267,11 @@ func (s *Store) Get(ctx context.Context, org, project, id string) (Runner, bool,
 }
 
 // List returns the tenant-scoped keyset page, newest first.
-func (s *Store) List(ctx context.Context, org, project string, window ListWindow) ([]Runner, error) {
+func (s *Store) List(ctx context.Context, project string, window ListWindow) ([]Runner, error) {
 	if window.Limit <= 0 {
 		window.Limit = 21
 	}
-	ctx = storage.WithTenant(ctx, org, project)
+	ctx = storage.WithTenant(ctx, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListRunners"),
 		project, window.CreatedGTE, window.CreatedLTE, window.AfterCreatedAt, window.AfterID, window.Limit)
 	if err != nil {
@@ -311,7 +311,7 @@ func scanRunner(row scanRow, withCreatedAt bool) (Runner, error) {
 	var configRevision *int64
 	var configApplied []byte
 	dest := []any{
-		&r.ID, &r.Organization, &r.Project, &r.PoolID, &r.Label, &r.DNS, &r.PublicKeySHA256,
+		&r.ID, &r.Project, &r.PoolID, &r.Label, &r.DNS, &r.PublicKeySHA256,
 		&r.State, &r.OS, &r.Arch, &r.Posture, &r.Capacity, &certNotAfter, &r.EnrolledAt, &lastSeen,
 		&configRevision, &configApplied, &configReportedAt,
 	}

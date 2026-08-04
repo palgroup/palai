@@ -20,8 +20,8 @@
 -- which is every OpenAI and Anthropic row. It is vetted through packages/egress in the store BEFORE it
 -- reaches this statement; nothing downstream re-checks it, so that write path is the whole gate.
 -- name: InsertModelConnection
-INSERT INTO model_connections (id, organization_id, project_id, provider, secret_ref, base_url)
-VALUES ($1, $2, $3, $4, $5, $6);
+INSERT INTO model_connections (id, project_id, provider, secret_ref, base_url)
+VALUES ($1, $2, $3, $4, $5);
 
 -- ModelConnectionExists verifies a connection is in the caller's scope before a revision binds it, so a
 -- revision can never name a foreign/unknown connection.
@@ -35,7 +35,7 @@ SELECT id FROM model_routes WHERE project_id = $1 AND name = $2
 ORDER BY id LIMIT 1;
 
 -- name: InsertModelRoute
-INSERT INTO model_routes (id, organization_id, project_id, name) VALUES ($1, $2, $3, $4);
+INSERT INTO model_routes (id, project_id, name) VALUES ($1, $2, $3);
 
 -- ModelRouteExists verifies the route named in a path is in the caller's scope. A foreign route is
 -- indistinguishable from an absent one — the store renders both as NotFound.

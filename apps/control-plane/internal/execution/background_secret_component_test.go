@@ -103,12 +103,12 @@ func newSecretFixture(t *testing.T) *secretFixture {
 	profileID, revID := redeliveryID("aprof"), redeliveryID("arev")
 	stmts := [][]any{
 		{`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'deployer')`,
-			profileID, f.tenant.Organization, f.tenant.Project},
+			profileID, f.tenant.Project},
 		// tools stays NULL: a revision's tools column is a CEILING that INTERSECTS when it is non-nil
 		// (config.go), so a fixture that named one would silently take the shell tool away from the run.
 		{`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, environment, published_at)
 		  VALUES ($1,$2,$3,$4,1,$5, clock_timestamp())`,
-			revID, f.tenant.Organization, f.tenant.Project, profileID, f.envID},
+			revID, f.tenant.Project, profileID, f.envID},
 		{`UPDATE runs SET agent_revision_id = $2 WHERE id = $1`, f.runID, revID},
 	}
 	for _, stmt := range stmts {
@@ -117,7 +117,7 @@ func newSecretFixture(t *testing.T) *secretFixture {
 		}
 	}
 
-	f.orch.SetEnvironmentSecrets(func(org, ref string) ([]byte, error) {
+	f.orch.SetEnvironmentSecrets(func(ref string) ([]byte, error) {
 		atomic.AddInt32(&f.resolves, 1)
 		v, ok, err := secrets.Resolve(ctx, org, ref)
 		if err != nil {

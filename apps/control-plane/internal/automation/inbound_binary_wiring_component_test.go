@@ -26,7 +26,7 @@ import (
 // envFileInboundResolver mirrors main.go's inboundSecretResolver (the PALAI_INBOUND_SECRET_FILE_<ORG>__<REF>
 // bridge — a FILE PATH, never inline bytes), so the wiring test proves the SAME resolver shape the binary
 // wires, not a bespoke closure.
-func envFileInboundResolver(org, ref string) ([]byte, error) {
+func envFileInboundResolver(ref string) ([]byte, error) {
 	path := os.Getenv("PALAI_INBOUND_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
 	if path == "" {
 		return nil, os.ErrNotExist

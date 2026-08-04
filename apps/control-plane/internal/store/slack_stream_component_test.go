@@ -45,7 +45,7 @@ func (f *slackFixture) withStreaming(t *testing.T, maxConcurrent int) {
 }
 
 func (f *slackFixture) tenant() coordinator.Tenant {
-	return coordinator.Tenant{Organization: f.org, Project: f.project}
+	return coordinator.Tenant{Project: f.project}
 }
 
 // commitStep journals a model_step.completed.v1 through the PRODUCTION commit — the same call the real

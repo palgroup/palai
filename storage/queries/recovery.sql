@@ -3,8 +3,8 @@
 -- reuses the row rather than duplicating it, so the checkpoint's FK always resolves. transcript_sequence
 -- is the journal event seq (events.seq) where the canonical transcript stood at the cut.
 INSERT INTO transcript_boundaries
-    (id, run_id, attempt_id, organization_id, project_id, transcript_sequence)
-VALUES ($1, $2, $3, $4, $5, $6)
+    (id, run_id, attempt_id, project_id, transcript_sequence)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (id) DO NOTHING;
 
 -- name: InsertCheckpoint
@@ -15,11 +15,11 @@ ON CONFLICT (id) DO NOTHING;
 -- '[]' when none, never null, so a RESTORE reads a well-formed array. workspace_snapshot_id is NULL when
 -- the checkpoint declares no workspace dependency (§26.4).
 INSERT INTO checkpoints
-    (id, run_id, attempt_id, boundary_id, organization_id, project_id,
+    (id, run_id, attempt_id, boundary_id, project_id,
      engine_digest, engine_version, protocol_version, format, format_version,
      config_snapshot_hash, transcript_sequence, workspace_snapshot_id,
      content_checksum, object_key, size_bytes, pending_operations)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17);
 
 -- name: LatestRunCheckpoint
 -- The recovery ladder's read (spec §26.3-26.4, E10 T4): a run's NEWEST checkpoint with the §26.4

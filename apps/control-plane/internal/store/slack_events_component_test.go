@@ -340,7 +340,7 @@ func newSlackFixture(t *testing.T) *slackFixture {
 		f.org + "/" + botRef:     f.botToken,
 		f.org + "/" + appRef:     f.appToken,
 	}
-	secrets := func(org, ref string) ([]byte, error) {
+	secrets := func(ref string) ([]byte, error) {
 		secret, ok := f.secrets[org+"/"+ref]
 		if !ok {
 			return nil, fmt.Errorf("no secret bridge for %q/%q", org, ref)
@@ -523,7 +523,7 @@ func (f *slackFixture) responseIDs(t *testing.T) (ids, inputs []string) {
 func (f *slackFixture) modelHistory(t *testing.T, session, before string) []coordinator.PriorResponse {
 	t.Helper()
 	prior, err := f.spine.SessionHistory(context.Background(),
-		coordinator.Tenant{Organization: f.org, Project: f.project}, session, before)
+		coordinator.Tenant{Project: f.project}, session, before)
 	if err != nil {
 		t.Fatalf("read session history: %v", err)
 	}

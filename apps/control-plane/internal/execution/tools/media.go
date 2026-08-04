@@ -144,7 +144,7 @@ func mediaExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any)
 				"refused rather than cut; record a shorter clip or downscale it", mediaToolName, path, maxMediaBytes>>20))
 	}
 
-	artifactID, err := env.Artifacts.WriteArtifact(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID,
+	artifactID, err := env.Artifacts.WriteArtifact(ctx, env.Scope.Project, env.Scope.RunID,
 		data, mediaType, mediaLogicalType,
 		map[string]any{"tool": mediaToolName, "path": path, "caption": caption})
 	if err != nil {

@@ -119,7 +119,7 @@ func placementTenant(t *testing.T, f *poolKeyFixture) (coordinator.Tenant, strin
 		}
 	}
 	_, key := mintPoolKey(t, f.keys, org, project, poolID, nil)
-	return coordinator.Tenant{Organization: org, Project: project}, poolID, key
+	return coordinator.Tenant{Project: project}, poolID, key
 }
 
 // TestPlacementNeverOffersOneTenantsAttemptToAnothersRunner is RED (1), TENANT: tenant B's attempt must
@@ -202,11 +202,11 @@ func placementRun(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant) (
 	ctx := storage.WithSystemScope(context.Background())
 	sessionID, responseID, runID = poolKeyID("ses"), poolKeyID("resp"), poolKeyID("run")
 	stmts := [][]any{
-		{`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project},
+		{`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project},
 		{`INSERT INTO responses (id, organization_id, project_id, session_id, state, input)
-		  VALUES ($1,$2,$3,$4,'queued','"say hello"'::jsonb)`, responseID, tenant.Organization, tenant.Project, sessionID},
+		  VALUES ($1,$2,$3,$4,'queued','"say hello"'::jsonb)`, responseID, tenant.Project, sessionID},
 		{`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state)
-		  VALUES ($1,$2,$3,$4,$5,'queued')`, runID, tenant.Organization, tenant.Project, sessionID, responseID},
+		  VALUES ($1,$2,$3,$4,$5,'queued')`, runID, tenant.Project, sessionID, responseID},
 	}
 	for _, stmt := range stmts {
 		if _, err := pool.Exec(ctx, stmt[0].(string), stmt[1:]...); err != nil {
@@ -450,7 +450,7 @@ func TestPlacementWakeLeavesEveryOtherWaitingRunAlone(t *testing.T) {
 	for _, stmt := range [][]any{
 		{`UPDATE runs SET state = 'waiting', pool_id = $2 WHERE id = $1`, pausedRun, poolID},
 		{`INSERT INTO attempts (id, organization_id, project_id, run_id, fence, state)
-		  VALUES ($1,$2,$3,$4,1,'assigned')`, poolKeyID("att"), tenant.Organization, tenant.Project, pausedRun},
+		  VALUES ($1,$2,$3,$4,1,'assigned')`, poolKeyID("att"), tenant.Project, pausedRun},
 	} {
 		if _, err := f.pool.Exec(sys, stmt[0].(string), stmt[1:]...); err != nil {
 			t.Fatalf("seed the otherwise-waiting run: %v", err)

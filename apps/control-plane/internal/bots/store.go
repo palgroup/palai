@@ -82,18 +82,18 @@ func NewStore(pool *pgxpool.Pool, newID func(prefix string) string, now func() t
 // Create writes a bot within the tenant and returns it as written. An empty Config is stored as `{}`,
 // matching the column's default — a create that names no config is indistinguishable from one that
 // named an empty document, which is the honest reading: nothing has configured this bot's channel yet.
-func (s *Store) Create(ctx context.Context, org, project string, in Bot) (Bot, error) {
+func (s *Store) Create(ctx context.Context, project string, in Bot) (Bot, error) {
 	row := Bot{
-		ID: s.newID("bot"), Organization: org, Project: project, Name: in.Name, Kind: in.Kind,
+		ID: s.newID("bot"), Project: project, Name: in.Name, Kind: in.Kind,
 		AgentRevisionID: in.AgentRevisionID, RepositoryBindingID: in.RepositoryBindingID,
 		PrincipalID: in.PrincipalID, Config: in.Config,
 	}
 	if len(row.Config) == 0 {
 		row.Config = json.RawMessage(`{}`)
 	}
-	ctx = storage.WithTenant(ctx, org, project)
+	ctx = storage.WithTenant(ctx, project)
 	err := s.pool.QueryRow(ctx, storage.Query("InsertBot"),
-		row.ID, row.Organization, row.Project, row.Name, row.Kind, row.AgentRevisionID,
+		row.ID, row.Project, row.Name, row.Kind, row.AgentRevisionID,
 		row.RepositoryBindingID, row.PrincipalID, []byte(row.Config)).Scan(&row.CreatedAt)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -107,12 +107,12 @@ func (s *Store) Create(ctx context.Context, org, project string, in Bot) (Bot, e
 
 // Get resolves one bot within the tenant. found=false is a foreign or unknown id, indistinguishable so a
 // caller cannot learn which.
-func (s *Store) Get(ctx context.Context, org, project, id string) (Bot, bool, error) {
+func (s *Store) Get(ctx context.Context, project, id string) (Bot, bool, error) {
 	if id == "" {
 		return Bot{}, false, nil
 	}
-	ctx = storage.WithTenant(ctx, org, project)
-	row := Bot{Organization: org, Project: project}
+	ctx = storage.WithTenant(ctx, project)
+	row := Bot{Project: project}
 	var config []byte
 	err := s.pool.QueryRow(ctx, storage.Query("GetBot"), id, project).Scan(
 		&row.ID, &row.Name, &row.Kind, &row.AgentRevisionID, &row.RepositoryBindingID, &row.PrincipalID,
@@ -129,8 +129,8 @@ func (s *Store) Get(ctx context.Context, org, project, id string) (Bot, bool, er
 
 // List pages a project's bots newest-first, over-fetching Limit+1 so the caller can detect a further
 // page — the shared keyset idiom every list surface in this tree uses.
-func (s *Store) List(ctx context.Context, org, project string, w ListWindow) ([]Bot, error) {
-	ctx = storage.WithTenant(ctx, org, project)
+func (s *Store) List(ctx context.Context, project string, w ListWindow) ([]Bot, error) {
+	ctx = storage.WithTenant(ctx, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListBots"),
 		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
@@ -139,7 +139,7 @@ func (s *Store) List(ctx context.Context, org, project string, w ListWindow) ([]
 	defer rows.Close()
 	var out []Bot
 	for rows.Next() {
-		row := Bot{Organization: org, Project: project}
+		row := Bot{Project: project}
 		var config []byte
 		if err := rows.Scan(&row.ID, &row.Name, &row.Kind, &row.AgentRevisionID, &row.RepositoryBindingID,
 			&row.PrincipalID, &config, &row.Disabled, &row.CreatedAt); err != nil {
@@ -155,11 +155,11 @@ func (s *Store) List(ctx context.Context, org, project string, w ListWindow) ([]
 // unknown id. It does not read-modify-write: every unmentioned field is a SQL NULL parameter, and the
 // statement's own COALESCE resolves it against the stored value, so a concurrent revision can never be
 // silently reverted by a stale read.
-func (s *Store) Update(ctx context.Context, org, project, id string, patch Patch) (Bot, bool, error) {
+func (s *Store) Update(ctx context.Context, project, id string, patch Patch) (Bot, bool, error) {
 	if id == "" {
 		return Bot{}, false, nil
 	}
-	ctx = storage.WithTenant(ctx, org, project)
+	ctx = storage.WithTenant(ctx, project)
 	var config []byte
 	if len(patch.Config) > 0 {
 		config = []byte(patch.Config)
@@ -177,17 +177,17 @@ func (s *Store) Update(ctx context.Context, org, project, id string, patch Patch
 	case err != nil:
 		return Bot{}, false, fmt.Errorf("update bot: %w", err)
 	}
-	return s.Get(ctx, org, project, id)
+	return s.Get(ctx, project, id)
 }
 
 // Delete unregisters a bot. found=false is a foreign or unknown id. A hard delete — unlike repository
 // bindings' archive — because nothing in this schema holds a foreign key onto integration_bots (the
 // plan's own rule), so there is no provenance row a delete could falsify.
-func (s *Store) Delete(ctx context.Context, org, project, id string) (bool, error) {
+func (s *Store) Delete(ctx context.Context, project, id string) (bool, error) {
 	if id == "" {
 		return false, nil
 	}
-	ctx = storage.WithTenant(ctx, org, project)
+	ctx = storage.WithTenant(ctx, project)
 	var deleted string
 	err := s.pool.QueryRow(ctx, storage.Query("DeleteBot"), id, project).Scan(&deleted)
 	if errors.Is(err, pgx.ErrNoRows) {

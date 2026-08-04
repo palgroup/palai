@@ -24,9 +24,9 @@ func seedChildRun(t *testing.T, tenant coordinator.Tenant, cs *coordinator.Store
 	pool := cs.Pool()
 	childRun, childResp := newID("run"), newID("resp")
 	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
-		childResp, tenant.Organization, tenant.Project, sessionID)
+		childResp, tenant.Project, sessionID)
 	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state, parent_run_id, depth, response_id) VALUES ($1,$2,$3,$4,'running',$5,1,$6)`,
-		childRun, tenant.Organization, tenant.Project, sessionID, parentRunID, childResp)
+		childRun, tenant.Project, sessionID, parentRunID, childResp)
 	return childRun, childResp
 }
 
@@ -42,13 +42,13 @@ func TestCancelDuringKillReconcilesChildrenSingleTerminal(t *testing.T) {
 	tenant, sessionID, runID := seedRun(t, pool)
 	respID := newID("resp")
 	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
-		respID, tenant.Organization, tenant.Project, sessionID)
+		respID, tenant.Project, sessionID)
 	exec(t, pool, `UPDATE runs SET state='running', response_id=$2 WHERE id=$1`, runID, respID)
 	childRun, childResp := seedChildRun(t, tenant, cs, sessionID, runID)
 
 	// An irreversible tool_call left UNCERTAIN by the kill (its side effect may have landed).
 	exec(t, pool, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
-		VALUES ($1,$2,$3,$4,1,'uncertain','charge','{}','irreversible','reconciling')`, newID("tc"), tenant.Organization, tenant.Project, runID)
+		VALUES ($1,$2,$3,$4,1,'uncertain','charge','{}','irreversible','reconciling')`, newID("tc"), tenant.Project, runID)
 
 	terminal, err := cs.CancelRunReconciled(ctx, tenant, respID, runID, canceledProj(), uncertainProj())
 	if err != nil {
@@ -111,7 +111,7 @@ func TestCancelDuringCompletionGapDoesNotClobberOutput(t *testing.T) {
 	tenant, sessionID, runID := seedRun(t, pool)
 	respID := newID("resp")
 	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
-		respID, tenant.Organization, tenant.Project, sessionID)
+		respID, tenant.Project, sessionID)
 	// The completion gap: the run reached completed, but the response is still open (changeset compiling).
 	exec(t, pool, `UPDATE runs SET state='completed', response_id=$2 WHERE id=$1`, runID, respID)
 
@@ -169,11 +169,11 @@ func TestCancelDuringKillCleanTerminalIsCanceled(t *testing.T) {
 	tenant, sessionID, runID := seedRun(t, pool)
 	respID := newID("resp")
 	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
-		respID, tenant.Organization, tenant.Project, sessionID)
+		respID, tenant.Project, sessionID)
 	exec(t, pool, `UPDATE runs SET state='running', response_id=$2 WHERE id=$1`, runID, respID)
 	// A RESOLVED op (already reconciled) is not a pending uncertainty.
 	exec(t, pool, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
-		VALUES ($1,$2,$3,$4,1,'reconciled_completed','push','{}','idempotent','reconciled_completed')`, newID("tc"), tenant.Organization, tenant.Project, runID)
+		VALUES ($1,$2,$3,$4,1,'reconciled_completed','push','{}','idempotent','reconciled_completed')`, newID("tc"), tenant.Project, runID)
 
 	terminal, err := cs.CancelRunReconciled(ctx, tenant, respID, runID, canceledProj(), uncertainProj())
 	if err != nil {

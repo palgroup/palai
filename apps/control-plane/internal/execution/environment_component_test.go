@@ -72,19 +72,19 @@ func TestAnEnvironmentReachesARunsShellAndItsValueEntersNoDurableRow(t *testing.
 
 	// A published revision naming that environment, and a run pinned to it.
 	profileID, revID, sessionID, runID := pinnedID("aprof"), pinnedID("arev"), pinnedID("ses"), pinnedID("run")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
 	exec(`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'deployer')`,
-		profileID, tenant.Organization, tenant.Project)
+		profileID, tenant.Project)
 	exec(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, environment, published_at)
 	      VALUES ($1,$2,$3,$4,1,'model-pinned',$5, clock_timestamp())`,
-		revID, tenant.Organization, tenant.Project, profileID, envID)
+		revID, tenant.Project, profileID, envID)
 	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,'running',$5)`,
-		runID, tenant.Organization, tenant.Project, sessionID, revID)
+		runID, tenant.Project, sessionID, revID)
 
 	orch := &Orchestrator{
 		spine: cs,
 		// The resolver main.go wires, minus the env-file fallback this feature has no use for.
-		envSecrets: func(org, ref string) ([]byte, error) {
+		envSecrets: func(ref string) ([]byte, error) {
 			v, ok, err := secrets.Resolve(ctx, org, ref)
 			if err != nil {
 				return nil, err
@@ -215,14 +215,14 @@ func TestARunWhoseRevisionNamesAnEnvironmentFailsClosedWithNoResolver(t *testing
 	exec(`INSERT INTO environments (id, organization_id, name) VALUES ($1,$2,$3)`, envID, tenant.Organization, "production-"+envID)
 	exec(`INSERT INTO environment_values (environment_id, organization_id, key) VALUES ($1,$2,'JIRA_TOKEN')`, envID, tenant.Organization)
 	profileID, revID, sessionID, runID := pinnedID("aprof"), pinnedID("arev"), pinnedID("ses"), pinnedID("run")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
 	exec(`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'deployer')`,
-		profileID, tenant.Organization, tenant.Project)
+		profileID, tenant.Project)
 	exec(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, environment, published_at)
 	      VALUES ($1,$2,$3,$4,1,$5, clock_timestamp())`,
-		revID, tenant.Organization, tenant.Project, profileID, envID)
+		revID, tenant.Project, profileID, envID)
 	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,'running',$5)`,
-		runID, tenant.Organization, tenant.Project, sessionID, revID)
+		runID, tenant.Project, sessionID, revID)
 
 	orch := &Orchestrator{spine: cs} // no envSecrets
 	st := &attemptState{
@@ -244,11 +244,11 @@ func TestARunWhoseRevisionNamesAnEnvironmentFailsClosedWithNoResolver(t *testing
 	// because runs_one_active_root_per_session (000006) permits one active root per session — reusing the
 	// one above is a 23505, which is how this fixture failed the first time it ran.
 	bareRev, bareRun, bareSession := pinnedID("arev"), pinnedID("run"), pinnedID("ses")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, bareSession, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, bareSession, tenant.Project)
 	exec(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, published_at)
-	      VALUES ($1,$2,$3,$4,2, clock_timestamp())`, bareRev, tenant.Organization, tenant.Project, profileID)
+	      VALUES ($1,$2,$3,$4,2, clock_timestamp())`, bareRev, tenant.Project, profileID)
 	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,'running',$5)`,
-		bareRun, tenant.Organization, tenant.Project, bareSession, bareRev)
+		bareRun, tenant.Project, bareSession, bareRev)
 	bare := &attemptState{
 		attempt:   AttemptDescriptor{RunID: contracts.RunID(bareRun), AttemptID: contracts.AttemptID(pinnedID("att")), Fence: 1},
 		tenant:    tenant,
@@ -282,13 +282,13 @@ func TestARunsEnvironmentIsPinnedToItsRevisionNotToTheLatest(t *testing.T) {
 	exec(`INSERT INTO environment_values (environment_id, organization_id, key) VALUES ($1,$2,'B_ONLY')`, envB, tenant.Organization)
 
 	profileID, revA, sessionID, runID := pinnedID("aprof"), pinnedID("arev"), pinnedID("ses"), pinnedID("run")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
 	exec(`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'deployer')`,
-		profileID, tenant.Organization, tenant.Project)
+		profileID, tenant.Project)
 	exec(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, environment, published_at)
-	      VALUES ($1,$2,$3,$4,1,$5, clock_timestamp())`, revA, tenant.Organization, tenant.Project, profileID, envA)
+	      VALUES ($1,$2,$3,$4,1,$5, clock_timestamp())`, revA, tenant.Project, profileID, envA)
 	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,'running',$5)`,
-		runID, tenant.Organization, tenant.Project, sessionID, revA)
+		runID, tenant.Project, sessionID, revA)
 
 	orch := &Orchestrator{spine: cs}
 	st := &attemptState{
@@ -300,7 +300,7 @@ func TestARunsEnvironmentIsPinnedToItsRevisionNotToTheLatest(t *testing.T) {
 	// A LATER revision of the same profile points at a different environment. The run keeps A's.
 	revB := pinnedID("arev")
 	exec(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, environment, published_at)
-	      VALUES ($1,$2,$3,$4,2,$5, clock_timestamp())`, revB, tenant.Organization, tenant.Project, profileID, envB)
+	      VALUES ($1,$2,$3,$4,2,$5, clock_timestamp())`, revB, tenant.Project, profileID, envB)
 	keys, err := orch.resolveEnvKeys(ctx, st)
 	if err != nil {
 		t.Fatalf("resolveEnvKeys: %v", err)

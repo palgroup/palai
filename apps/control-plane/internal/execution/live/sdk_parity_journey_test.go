@@ -118,7 +118,7 @@ func TestSDKParityJourney(t *testing.T) {
 			"openai-compatible": openaicompatible.Adapter{Adapter: providerone.Adapter{BaseURL: standIn.URL}, Prober: openaicompatible.NewProber()},
 		},
 		Secrets: execution.RouteSecretResolver{
-			Lookup: func(org, name string) ([]byte, bool, error) { return secretStore.Resolve(ctx, org, name) },
+			Lookup: func(name string) ([]byte, bool, error) { return secretStore.Resolve(ctx, org, name) },
 			Fallback: modelbroker.EnvResolver{
 				"provider-one": credentialEnv,
 				"provider-two": anthropicCredentialEnv,
@@ -291,7 +291,7 @@ func provisionAPITenant(t *testing.T, base, bootstrapToken, name string) (coordi
 	if apiKey.Key == "" {
 		t.Fatalf("provisioned api key for %s has no plaintext", name)
 	}
-	return coordinator.Tenant{Organization: org.ID, Project: org.DefaultProjectID}, apiKey.Key
+	return coordinator.Tenant{Project: org.DefaultProjectID}, apiKey.Key
 }
 
 // publishRoute stores the credential under the tenant's own org and publishes a default-alias model route bound
@@ -329,11 +329,11 @@ func seedParityRun(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, 
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, session, tenant.Organization, tenant.Project)
+	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, session, tenant.Project)
 	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
-		response, tenant.Organization, tenant.Project, session, encodeJSONString(prompt))
+		response, tenant.Project, session, encodeJSONString(prompt))
 	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'queued')`,
-		run, tenant.Organization, tenant.Project, session, response)
+		run, tenant.Project, session, response)
 	return run, response
 }
 

@@ -148,7 +148,7 @@ type extSetup struct {
 func (h *harness) setupExtensions(t *testing.T, ctx context.Context) *extSetup {
 	t.Helper()
 	pool := h.spine.Pool()
-	org, proj := h.tenant.Organization, h.tenant.Project
+	org, proj := h.tenant.Project
 	reg := extensions.New(pool)
 
 	// The real MCP manager over the killable subprocess driver (no Docker). Breaker trips on the FIRST
@@ -291,7 +291,7 @@ func postSignedExtCallback(secret []byte, toolCallID, callbackURL, token string)
 // tool_sets/mcp_connections/skills are the E12 rider columns; an empty rider is left as the JSON [] literal.
 func (h *harness) seedExtRevision(t *testing.T, ctx context.Context, toolSets, mcpConns, skills string) string {
 	t.Helper()
-	org, proj := h.tenant.Organization, h.tenant.Project
+	org, proj := h.tenant.Project
 	profileID, revID := newID("aprof"), newID("arev")
 	must := func(sql string, args ...any) {
 		if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
@@ -309,7 +309,7 @@ func (h *harness) seedExtRevision(t *testing.T, ctx context.Context, toolSets, m
 // [palai.workspace.file] so the file tool advertises alongside the pinned set), and returns the ids.
 func (h *harness) seedExtRun(t *testing.T, ctx context.Context, revID, input string) (respID, sessionID, runID string) {
 	t.Helper()
-	org, proj := h.tenant.Organization, h.tenant.Project
+	org, proj := h.tenant.Project
 	sessionID, respID, runID = newID("ses"), newID("resp"), newID("run")
 	must := func(sql string, args ...any) {
 		if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
@@ -406,7 +406,7 @@ func (h *harness) extOrchestrator(dialer execution.EngineDialer, provider modelb
 // model to "use the push tool" — push is in NO grant layer, so no-authority must hold. Returns the digest.
 func (h *harness) installNoAuthoritySkill(t *testing.T, ctx context.Context) string {
 	t.Helper()
-	org, proj := h.tenant.Organization, h.tenant.Project
+	org, proj := h.tenant.Project
 	q, err := extensions.Quarantine(journeySkillArchive(t))
 	if err != nil {
 		t.Fatalf("quarantine skill: %v", err)

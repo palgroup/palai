@@ -54,7 +54,7 @@ func stuckRunTenantWithoutAPool(t *testing.T, pool *pgxpool.Pool) coordinator.Te
 			t.Fatalf("seed a tenant with no pool: %v", err)
 		}
 	}
-	return coordinator.Tenant{Organization: org, Project: project}
+	return coordinator.Tenant{Project: project}
 }
 
 // stuckRunPoolID reads runs.pool_id as it really is — NULL included, which is the entire point.
@@ -110,7 +110,7 @@ func TestPlacementNeverParksARunWhereItsOwnWakeCannotFindIt(t *testing.T) {
 		if err := f.pool.QueryRow(storage.WithSystemScope(ctx),
 			`SELECT count(*) FROM runner_pools
 			  WHERE id = $1 AND organization_id = $2 AND (project_id IS NULL OR project_id = $3)`,
-			*poolID, tenant.Organization, tenant.Project).Scan(&owned); err != nil {
+			*poolID, tenant.Project).Scan(&owned); err != nil {
 			t.Fatalf("check the parked pool belongs to the tenant: %v", err)
 		}
 		if owned != 1 {
@@ -170,7 +170,7 @@ func TestPlacementAWokenRunDoesNotGetAFreshRetryBudget(t *testing.T) {
 	if _, err := f.pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO durable_jobs (id, organization_id, project_id, kind, status, attempt_count, payload)
 		 VALUES ($1,$2,$3,'response.run','completed',$4, jsonb_build_object('run_id', $5::text))`,
-		spentJobID, tenant.Organization, tenant.Project, spent, runID); err != nil {
+		spentJobID, tenant.Project, spent, runID); err != nil {
 		t.Fatalf("seed the exhausted job the park completed: %v", err)
 	}
 

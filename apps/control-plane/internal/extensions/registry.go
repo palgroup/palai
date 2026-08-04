@@ -195,8 +195,8 @@ func DecodeToolRevisionInput(raw []byte) (ToolRevisionInput, error) {
 // CreateTool inserts a named tool lineage, deriving the deterministic model-visible short name from the
 // canonical name's last segment. A malformed canonical name, a built-in collision, or a duplicate name
 // in the project is a typed reject BEFORE any partial write.
-func (s *Store) CreateTool(ctx context.Context, org, project, canonicalName string) (Tool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) CreateTool(ctx context.Context, project, canonicalName string) (Tool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	short, err := validateCanonicalName(canonicalName)
 	if err != nil {
 		return Tool{}, err
@@ -205,7 +205,7 @@ func (s *Store) CreateTool(ctx context.Context, org, project, canonicalName stri
 		return Tool{}, ErrModelNameReserved
 	}
 	id := newID("tool")
-	if _, err := s.pool.Exec(ctx, storage.Query("InsertTool"), id, org, project, canonicalName, short); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("InsertTool"), id, project, canonicalName, short); err != nil {
 		if isUniqueViolation(err) {
 			return Tool{}, ErrNameCollision
 		}
@@ -217,8 +217,8 @@ func (s *Store) CreateTool(ctx context.Context, org, project, canonicalName stri
 // CreateToolRevision inserts a DRAFT revision under a tool from a raw body (strictly decoded). It verifies
 // the tool is in scope first, then digest-addresses the config. A revise is just another CreateToolRevision
 // — earlier revisions' config columns are never touched.
-func (s *Store) CreateToolRevision(ctx context.Context, org, project, toolID string, raw []byte) (ToolRevision, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) CreateToolRevision(ctx context.Context, project, toolID string, raw []byte) (ToolRevision, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	in, err := DecodeToolRevisionInput(raw)
 	if err != nil {
 		return ToolRevision{}, err
@@ -233,7 +233,7 @@ func (s *Store) CreateToolRevision(ctx context.Context, org, project, toolID str
 	id := newID("trev")
 	var number int
 	if err := s.pool.QueryRow(ctx, storage.Query("InsertToolRevision"),
-		id, org, project, toolID, in.Executor, in.Description, marshalJSON(in.InputSchema), marshalJSONOrNil(in.OutputSchema),
+		id, project, toolID, in.Executor, in.Description, marshalJSON(in.InputSchema), marshalJSONOrNil(in.OutputSchema),
 		replayClassOrDefault(in.ReplayClass), in.TimeoutMS, marshalJSONOrNil(in.Limits), marshalJSONOrNil(in.ExecutorConfig),
 		nullableText(in.SecretRef), digest).Scan(&number); err != nil {
 		return ToolRevision{}, fmt.Errorf("insert tool revision: %w", err)
@@ -287,8 +287,8 @@ func DecodeToolPublishInput(raw []byte) (ToolPublishInput, error) {
 // carrying the operator's approval declaration onto the row in the SAME guarded UPDATE. The guard's
 // consequence is deliberate: a re-publish is a no-op, so a gate cannot be quietly removed from an
 // already-published revision — un-gating means a new revision and a re-pinned set.
-func (s *Store) PublishToolRevision(ctx context.Context, org, project, revisionID string, raw []byte) (published, exists bool, err error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) PublishToolRevision(ctx context.Context, project, revisionID string, raw []byte) (published, exists bool, err error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	in, err := DecodeToolPublishInput(raw)
 	if err != nil {
 		return false, false, err
@@ -298,8 +298,8 @@ func (s *Store) PublishToolRevision(ctx context.Context, org, project, revisionI
 }
 
 // GetToolRevision reads a revision's committed shape (management + the immutability check).
-func (s *Store) GetToolRevision(ctx context.Context, org, project, revisionID string) (ToolRevision, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) GetToolRevision(ctx context.Context, project, revisionID string) (ToolRevision, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	var (
 		rev       ToolRevision
 		published *any
@@ -320,14 +320,14 @@ func (s *Store) GetToolRevision(ctx context.Context, org, project, revisionID st
 // CreateToolSetRevision inserts a DRAFT set revision naming exact pins. Each pin must reference a PUBLISHED
 // tool revision in scope (an unknown or draft revision is a typed reject), and any per-pin override may
 // only tighten a declared limit — so the whole set is validated BEFORE it is written.
-func (s *Store) CreateToolSetRevision(ctx context.Context, org, project, setName string, raw []byte) (ToolSetRevision, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) CreateToolSetRevision(ctx context.Context, project, setName string, raw []byte) (ToolSetRevision, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	in, err := decodeToolSetRevisionInput(raw)
 	if err != nil {
 		return ToolSetRevision{}, err
 	}
 	for _, pin := range in.Tools {
-		published, timeoutMS, err := s.pinTarget(ctx, org, project, pin.ToolRevisionID)
+		published, timeoutMS, err := s.pinTarget(ctx, project, pin.ToolRevisionID)
 		if err != nil {
 			return ToolSetRevision{}, err
 		}
@@ -342,22 +342,22 @@ func (s *Store) CreateToolSetRevision(ctx context.Context, org, project, setName
 	id := newID("tsrev")
 	var number int
 	if err := s.pool.QueryRow(ctx, storage.Query("InsertToolSetRevision"),
-		id, org, project, setName, marshalJSON(in.Tools), digest).Scan(&number); err != nil {
+		id, project, setName, marshalJSON(in.Tools), digest).Scan(&number); err != nil {
 		return ToolSetRevision{}, fmt.Errorf("insert tool set revision: %w", err)
 	}
 	return ToolSetRevision{ID: id, RevisionNumber: number, Digest: digest}, nil
 }
 
 // PublishToolSetRevision flips a draft set revision to published exactly once.
-func (s *Store) PublishToolSetRevision(ctx context.Context, org, project, revisionID string) (published, exists bool, err error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) PublishToolSetRevision(ctx context.Context, project, revisionID string) (published, exists bool, err error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	return s.publish(ctx, "PublishToolSetRevision", "ToolSetRevisionPublished", revisionID, project)
 }
 
 // pinTarget reads a pinned tool revision's publish state + declared timeout, distinguishing an unknown
 // revision (ErrUnknownToolRevision) from a known one.
-func (s *Store) pinTarget(ctx context.Context, org, project, revisionID string) (published bool, timeoutMS *int, err error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) pinTarget(ctx context.Context, project, revisionID string) (published bool, timeoutMS *int, err error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	err = s.pool.QueryRow(ctx, storage.Query("ToolRevisionForPin"), revisionID, project).Scan(&published, &timeoutMS)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil, ErrUnknownToolRevision

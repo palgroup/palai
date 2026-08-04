@@ -104,7 +104,7 @@ func TestExtensibilityJourneyDeterministic(t *testing.T) {
 	var remoteOpID, remoteCallID, remoteOpState string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
 		`SELECT id, tool_call_id, state FROM remote_tool_operations WHERE organization_id=$1 AND project_id=$2 ORDER BY created_at DESC LIMIT 1`,
-		h.tenant.Organization, h.tenant.Project).Scan(&remoteOpID, &remoteCallID, &remoteOpState); err != nil {
+		h.tenant.Project).Scan(&remoteOpID, &remoteCallID, &remoteOpState); err != nil {
 		t.Fatalf("read remote_tool_operations: %v", err)
 	}
 	if remoteOpState != "completed" {
@@ -155,7 +155,7 @@ func TestExtensibilityJourneyDeterministic(t *testing.T) {
 	// --- Step 5 (hook deny) + the crash-isolation "other run flowed" proof: register a before_tool policy
 	// hook, then run 3 (POST-crash). The control-plane processes it — proving it stayed up — and the hook
 	// DENIES the file tool visibly (policy.denied.v1, no executed effect). ---
-	if _, err := ext.reg.CreateHook(ctx, h.tenant.Organization, h.tenant.Project,
+	if _, err := ext.reg.CreateHook(ctx, h.tenant.Project,
 		[]byte(`{"name":"deny-tools","hook_point":"before_tool","category":"policy","executor":"platform_inline","config":{"handler":"deny_all"}}`)); err != nil {
 		t.Fatalf("register before_tool deny hook: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestExtensibilityJourneyDeterministic(t *testing.T) {
 	}
 	// The before_tool policy hook denied the file tool: a real control-plane deny fired, and the tool never ran.
 	if n := h.count(`SELECT count(*) FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type='policy.denied.v1'`,
-		session3, h.tenant.Organization, h.tenant.Project); n < 1 {
+		session3, h.tenant.Project); n < 1 {
 		t.Fatalf("run 3: no policy.denied.v1 journaled — the before_tool hook deny never fired")
 	}
 	if n := h.count(`SELECT count(*) FROM tool_calls WHERE run_id=$1 AND name='palai.workspace.file' AND state='completed'`, run3); n != 0 {

@@ -27,9 +27,6 @@ type ModelRequestID string
 // OpaqueID is an opaque, prefixed, URL-safe identifier (schema $def opaque_id).
 type OpaqueID string
 
-// OrganizationID is an opaque, prefixed, URL-safe identifier (schema $def organization_id).
-type OrganizationID string
-
 // ProjectID is an opaque, prefixed, URL-safe identifier (schema $def project_id).
 type ProjectID string
 
@@ -63,7 +60,6 @@ var (
 	messageIDPattern           = regexp.MustCompile(`^msg_[A-Za-z0-9_-]+$`)
 	modelRequestIDPattern      = regexp.MustCompile(`^mreq_[A-Za-z0-9_-]+$`)
 	opaqueIDPattern            = regexp.MustCompile(`^[a-z][a-z0-9]{1,11}_[A-Za-z0-9_-]+$`)
-	organizationIDPattern      = regexp.MustCompile(`^org_[A-Za-z0-9_-]+$`)
 	projectIDPattern           = regexp.MustCompile(`^prj_[A-Za-z0-9_-]+$`)
 	repositoryBindingIDPattern = regexp.MustCompile(`^repo_[A-Za-z0-9_-]+$`)
 	requestIDPattern           = regexp.MustCompile(`^req_[A-Za-z0-9_-]+$`)
@@ -97,9 +93,6 @@ func (id ModelRequestID) Valid() bool { return modelRequestIDPattern.MatchString
 
 // Valid reports whether id matches the canonical opaque_id pattern.
 func (id OpaqueID) Valid() bool { return opaqueIDPattern.MatchString(string(id)) }
-
-// Valid reports whether id matches the canonical organization_id pattern.
-func (id OrganizationID) Valid() bool { return organizationIDPattern.MatchString(string(id)) }
 
 // Valid reports whether id matches the canonical project_id pattern.
 func (id ProjectID) Valid() bool { return projectIDPattern.MatchString(string(id)) }

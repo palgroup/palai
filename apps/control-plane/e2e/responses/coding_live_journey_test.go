@@ -216,8 +216,8 @@ func (h *harness) liveRequestPublication(ctx context.Context, op, sessionID, res
 		Branch:         branch,
 		Base:           base,
 		HeadSHA:        head,
-		IdempotencyKey: repositories.IdempotencyKey(h.tenant.Organization, h.tenant.Project, runID, pubOp, remote, branch, base, head),
-		RequestHash:    repositories.RequestHash(h.tenant.Organization, h.tenant.Project, runID, pubOp, remote, branch, base, head),
+		IdempotencyKey: repositories.IdempotencyKey(h.tenant.Project, runID, pubOp, remote, branch, base, head),
+		RequestHash:    repositories.RequestHash(h.tenant.Project, runID, pubOp, remote, branch, base, head),
 		Display:        op + " " + branch + " -> " + remote,
 	})
 	if err != nil {

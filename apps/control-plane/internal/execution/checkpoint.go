@@ -86,7 +86,7 @@ func (s *CheckpointSink) Persist(ctx context.Context, meta CheckpointMeta, offer
 	}
 	checkpointID := recoveryObjectID("chk", meta.RunID, meta.AttemptID, meta.OfferSequence)
 	boundaryID := recoveryObjectID("bnd", meta.RunID, meta.AttemptID, meta.OfferSequence)
-	key := checkpointObjectKey(meta.Organization, meta.Project, meta.RunID, checkpointID)
+	key := checkpointObjectKey(meta.Project, meta.RunID, checkpointID)
 	checksum, size, err := s.store.Put(ctx, key, raw)
 	if err != nil {
 		return fmt.Errorf("store checkpoint bytes: %w", err)
@@ -160,7 +160,6 @@ func (o *Orchestrator) persistCheckpoint(ctx context.Context, st *attemptState, 
 	// checkpoint.offer (no snapshot) — a checkpoint with no snapshot declares no workspace dependency
 	// (spec §26.4), stored as NULL.
 	err = o.checkpoints.Persist(ctx, CheckpointMeta{
-		Organization:        st.tenant.Organization,
 		Project:             st.tenant.Project,
 		RunID:               string(st.attempt.RunID),
 		AttemptID:           string(st.attempt.AttemptID),
@@ -226,9 +225,11 @@ func recoveryObjectID(prefix, runID, attemptID string, seq int64) string {
 }
 
 // checkpointObjectKey lays out the S3 key tenant-first (defense in depth, the artifacts layout) with
-// a checkpoints/ segment so checkpoint bytes never collide with artifact bytes for the same run.
-func checkpointObjectKey(org, project, runID, checkpointID string) string {
-	return fmt.Sprintf("%s/%s/%s/checkpoints/%s", org, project, runID, checkpointID)
+// a checkpoints/ segment so checkpoint bytes never collide with artifact bytes for the same run. A.2
+// Task 6 dropped the organization segment; existing objects keep the key their row already stores, and
+// every read goes through that stored key rather than re-deriving one.
+func checkpointObjectKey(project, runID, checkpointID string) string {
+	return fmt.Sprintf("%s/%s/checkpoints/%s", project, runID, checkpointID)
 }
 
 // checkpointIntField reads an integer frame field that may have crossed a JSON boundary (numbers

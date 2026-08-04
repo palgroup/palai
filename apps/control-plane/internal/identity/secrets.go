@@ -116,18 +116,14 @@ func (s *SecretStore) RotateSecretRef(ctx context.Context, scope middleware.Scop
 // 000066's header calls out: secret_refs carries no project_id, so there is nothing narrower to key on.
 // requireExisting turns a rotate of a never-created name into a NotFound.
 func (s *SecretStore) putVersion(ctx context.Context, scope middleware.Scope, name, value string, requireExisting bool) (api.ProvisionResult, error) {
-	scopedCtx, org, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
+	ctx = provisioningScope(ctx, scope)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("begin put secret: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	version, createdAt, err := s.insertVersion(ctx, tx, org, name, value, requireExisting)
+	version, createdAt, err := s.insertVersion(ctx, tx, name, value, requireExisting)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -154,7 +150,7 @@ func (s *SecretStore) putVersion(ctx context.Context, scope middleware.Scope, na
 //
 // version 0 with a nil error is the "rotate of a name that has no prior version" answer, which the caller
 // renders as a 404; every other failure is an error.
-func (s *SecretStore) insertVersion(ctx context.Context, tx pgx.Tx, org, name, value string, requireExisting bool) (int, time.Time, error) {
+func (s *SecretStore) insertVersion(ctx context.Context, tx pgx.Tx, name, value string, requireExisting bool) (int, time.Time, error) {
 	sealed, err := s.seal([]byte(value))
 	if err != nil {
 		return 0, time.Time{}, err
@@ -168,7 +164,7 @@ func (s *SecretStore) insertVersion(ctx context.Context, tx pgx.Tx, org, name, v
 	}
 	var createdAt time.Time
 	if err := tx.QueryRow(ctx, storage.Query("InsertSecretRef"),
-		middleware.NewID("sec"), org, name, version, sealed).Scan(&createdAt); err != nil {
+		middleware.NewID("sec"), name, version, sealed).Scan(&createdAt); err != nil {
 		return 0, time.Time{}, fmt.Errorf("insert secret ref: %w", err)
 	}
 	return version, createdAt, nil
@@ -177,11 +173,7 @@ func (s *SecretStore) insertVersion(ctx context.Context, tx pgx.Tx, org, name, v
 // ListSecretRefs lists secret-ref METADATA (name/version/updated_at) for the caller's organization — never a
 // value or ciphertext. One row per name, at its latest version.
 func (s *SecretStore) ListSecretRefs(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
+	ctx = provisioningScope(ctx, scope)
 	rows, err := s.pool.Query(ctx, storage.Query("ListSecretRefs"))
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("list secret refs: %w", err)
@@ -204,11 +196,7 @@ func (s *SecretStore) ListSecretRefs(ctx context.Context, scope middleware.Scope
 // GetSecretRef reads one secret's metadata within the caller's organization; a foreign/unknown name is a
 // miss (404).
 func (s *SecretStore) GetSecretRef(ctx context.Context, scope middleware.Scope, name string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
-	ctx = scopedCtx
+	ctx = provisioningScope(ctx, scope)
 	v, err := scanSecretRef(s.pool.QueryRow(ctx, storage.Query("GetSecretRef"), name))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.ProvisionResult{NotFound: true}, nil
@@ -227,14 +215,14 @@ func (s *SecretStore) GetSecretRef(ctx context.Context, scope middleware.Scope, 
 // "the read is scoped to that org and RLS denies any foreign row — a shared ref name never crosses
 // tenants." Migration 000066 keys secret_refs' policy on the INSTALLATION, because the table carries no
 // project_id (000031) and organizations are gone, so there is nothing narrower to key on: a ref name is
-// single-occupancy across the whole installation and every caller in it reads the same row. `org` still
-// selects the connection scope, and it no longer selects the row.
-// TestSecretRefNamesAreInstallationWide asserts that directly.
-func (s *SecretStore) Resolve(ctx context.Context, org, name string) ([]byte, bool, error) {
-	if org == "" || name == "" {
+// single-occupancy across the whole installation and every caller in it reads the same row.
+// TestSecretRefNamesAreInstallationWide asserts that directly. A.2 Task 6 then dropped the `org`
+// argument, because a parameter that selects nothing is a boundary the signature keeps claiming.
+func (s *SecretStore) Resolve(ctx context.Context, name string) ([]byte, bool, error) {
+	if name == "" {
 		return nil, false, nil
 	}
-	ctx = storage.WithOrgScope(ctx, org)
+	ctx = storage.WithInstallationScope(ctx)
 	var ciphertext []byte
 	err := s.pool.QueryRow(ctx, storage.Query("ResolveSecretRef"), name).Scan(&ciphertext)
 	if errors.Is(err, pgx.ErrNoRows) {

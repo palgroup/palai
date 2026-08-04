@@ -33,7 +33,7 @@ type ScopeFunc func(*http.Request) (Scope, bool)
 // (system-scoped, keyed by the server-minted interface id); Get resolves within the authenticated scope.
 type InterfaceStore interface {
 	ResolvePublic(ctx context.Context, interfaceID string) (PublishedInterface, bool, error)
-	Get(ctx context.Context, org, project, interfaceID string) (PublishedInterface, bool, error)
+	Get(ctx context.Context, project, interfaceID string) (PublishedInterface, bool, error)
 }
 
 // RunRequest / RunResult are the a2a-owned canonical run seam. The adapter admits + reads runs through Runs
@@ -63,8 +63,8 @@ type CancelReport struct {
 // Runs is the canonical run admission + read + cancel seam.
 type Runs interface {
 	Admit(ctx context.Context, req RunRequest) (RunResult, error)
-	Get(ctx context.Context, org, project, runID string) (RunResult, bool, error)
-	Cancel(ctx context.Context, org, project, runID string) (RunResult, CancelReport, error)
+	Get(ctx context.Context, project, runID string) (RunResult, bool, error)
+	Cancel(ctx context.Context, project, runID string) (RunResult, CancelReport, error)
 }
 
 // TaskRef is the stored external->canonical bridge (§38.2).
@@ -80,20 +80,20 @@ type TaskRef struct {
 // Tasks stores + reads the external A2A task/context <-> canonical run/session bridge and each task's push
 // configs.
 type Tasks interface {
-	Put(ctx context.Context, org, project string, ref TaskRef) error
-	GetRef(ctx context.Context, org, project, interfaceID, a2aTaskID string) (TaskRef, bool, error)
+	Put(ctx context.Context, project string, ref TaskRef) error
+	GetRef(ctx context.Context, project, interfaceID, a2aTaskID string) (TaskRef, bool, error)
 	// GetRefByRun resolves an existing task ref by its canonical run reference under an interface. It is the
 	// A2A-retry dedupe seam (M-2): a replayed messageId re-admits to the SAME canonical response, so the
 	// external task minted the first time is reused instead of spawning a second one.
-	GetRefByRun(ctx context.Context, org, project, interfaceID, runID string) (TaskRef, bool, error)
-	List(ctx context.Context, org, project, interfaceID string, limit int) ([]TaskRef, error)
-	SetPushConfigs(ctx context.Context, org, project, interfaceID, a2aTaskID string, cfgs []PushNotificationConfig) error
+	GetRefByRun(ctx context.Context, project, interfaceID, runID string) (TaskRef, bool, error)
+	List(ctx context.Context, project, interfaceID string, limit int) ([]TaskRef, error)
+	SetPushConfigs(ctx context.Context, project, interfaceID, a2aTaskID string, cfgs []PushNotificationConfig) error
 }
 
 // Files ingests an inbound A2A file part -> a scanned, stored artifact (the A2A-004 server half). The raw
 // bytes never become a privileged instruction; they land as an artifact the run may read as tool-result data.
 type Files interface {
-	Ingest(ctx context.Context, org, project, runID string, f FilePart) (artifactID string, err error)
+	Ingest(ctx context.Context, project, runID string, f FilePart) (artifactID string, err error)
 }
 
 // Pusher DELIVERS a task's asynchronous push notification.
@@ -263,7 +263,7 @@ func (s *Server) notifyPush(r *http.Request, sc Scope, interfaceID, taskID strin
 	if s.Pusher == nil || taskID == "" {
 		return
 	}
-	ref, ok, err := s.Tasks.GetRef(r.Context(), sc.Organization, sc.Project, interfaceID, taskID)
+	ref, ok, err := s.Tasks.GetRef(r.Context(), sc.Project, interfaceID, taskID)
 	if err != nil || !ok {
 		return
 	}
@@ -278,7 +278,7 @@ func (s *Server) extendedCard(w http.ResponseWriter, r *http.Request, interfaceI
 		writeErr(w, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	iface, ok, err := s.Interfaces.Get(r.Context(), sc.Organization, sc.Project, interfaceID)
+	iface, ok, err := s.Interfaces.Get(r.Context(), sc.Project, interfaceID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -314,7 +314,7 @@ func (s *Server) admitFromMessage(r *http.Request, interfaceID string, forceTask
 	if !ok {
 		return PublishedInterface{}, RunResult{}, "", "", &problem{http.StatusUnauthorized, "authentication_required", "a bearer API key is required"}
 	}
-	iface, ok, err := s.Interfaces.Get(r.Context(), sc.Organization, sc.Project, interfaceID)
+	iface, ok, err := s.Interfaces.Get(r.Context(), sc.Project, interfaceID)
 	if err != nil {
 		return PublishedInterface{}, RunResult{}, "", "", &problem{http.StatusInternalServerError, "internal_error", ""}
 	}
@@ -331,14 +331,14 @@ func (s *Server) admitFromMessage(r *http.Request, interfaceID string, forceTask
 	}
 
 	// Identity governance: the authenticated scope governs; message metadata is discarded (§38.6).
-	org, project := GovernIdentity(sc.Organization, sc.Project, params.Message)
+	project := GovernIdentity(sc.Project, params.Message)
 
 	idem := params.Message.MessageID
 	if idem == "" {
 		idem = s.newID("a2amsg")
 	}
 	res, err := s.Runs.Admit(r.Context(), RunRequest{
-		Org: org, Project: project,
+		Project:         project,
 		Principal:       sc.Principal, // the authenticated principal governs; admission references it
 		Input:           MessageText(params.Message),
 		IdempotencyKey:  idem,
@@ -354,7 +354,7 @@ func (s *Server) admitFromMessage(r *http.Request, interfaceID string, forceTask
 	// request so the client can retry.
 	if s.Files != nil {
 		for _, f := range FileParts(params.Message) {
-			if _, err := s.Files.Ingest(r.Context(), org, project, res.RunID, f); err != nil {
+			if _, err := s.Files.Ingest(r.Context(), project, res.RunID, f); err != nil {
 				return PublishedInterface{}, RunResult{}, "", "", &problem{http.StatusBadGateway, "file_ingest_failed", "an inbound file part could not be ingested"}
 			}
 		}
@@ -368,7 +368,7 @@ func (s *Server) admitFromMessage(r *http.Request, interfaceID string, forceTask
 	// canonical response already minted, so an A2A retry (replayed messageId → same response) yields one task
 	// (M-2). Otherwise mint fresh EXTERNAL ids and bridge them to the CANONICAL run/session (never replacing
 	// them, §38.2).
-	if existing, ok, err := s.Tasks.GetRefByRun(r.Context(), org, project, interfaceID, res.RunID); err != nil {
+	if existing, ok, err := s.Tasks.GetRefByRun(r.Context(), project, interfaceID, res.RunID); err != nil {
 		return PublishedInterface{}, RunResult{}, "", "", &problem{http.StatusInternalServerError, "internal_error", ""}
 	} else if ok {
 		return iface, res, existing.A2ATaskID, existing.A2AContextID, nil
@@ -378,7 +378,7 @@ func (s *Server) admitFromMessage(r *http.Request, interfaceID string, forceTask
 	if a2aContextID == "" {
 		a2aContextID = s.newID("a2actx")
 	}
-	if err := s.Tasks.Put(r.Context(), org, project, TaskRef{
+	if err := s.Tasks.Put(r.Context(), project, TaskRef{
 		InterfaceID: interfaceID, A2ATaskID: a2aTaskID, A2AContextID: a2aContextID,
 		RunID: res.RunID, SessionID: res.SessionID,
 	}); err != nil {
@@ -478,21 +478,21 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request, interfaceID s
 	}
 	// Resolve the interface within scope first: an unknown or foreign interface is a 404, not an empty 200
 	// (no existence oracle, and no listing under an interface that isn't the caller's).
-	if _, ok, err := s.Interfaces.Get(r.Context(), sc.Organization, sc.Project, interfaceID); err != nil {
+	if _, ok, err := s.Interfaces.Get(r.Context(), sc.Project, interfaceID); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", "")
 		return
 	} else if !ok {
 		writeErr(w, http.StatusNotFound, "not_found", "no such A2A interface")
 		return
 	}
-	refs, err := s.Tasks.List(r.Context(), sc.Organization, sc.Project, interfaceID, 100)
+	refs, err := s.Tasks.List(r.Context(), sc.Project, interfaceID, 100)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", "")
 		return
 	}
 	tasks := make([]Task, 0, len(refs))
 	for _, ref := range refs {
-		res, found, err := s.Runs.Get(r.Context(), sc.Organization, sc.Project, ref.RunID)
+		res, found, err := s.Runs.Get(r.Context(), sc.Project, ref.RunID)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal_error", "")
 			return
@@ -524,11 +524,11 @@ func (s *Server) taskVerb(w http.ResponseWriter, r *http.Request, interfaceID, s
 // when the ref exists but its canonical run is gone (retention-reaped), so a caller projects an honest
 // terminal/unknown state rather than a forever-"working" task (M-1).
 func (s *Server) resolveTask(r *http.Request, sc Scope, interfaceID, taskID string) (ref TaskRef, res RunResult, runFound, ok bool) {
-	ref, ok, err := s.Tasks.GetRef(r.Context(), sc.Organization, sc.Project, interfaceID, taskID)
+	ref, ok, err := s.Tasks.GetRef(r.Context(), sc.Project, interfaceID, taskID)
 	if err != nil || !ok {
 		return TaskRef{}, RunResult{}, false, false
 	}
-	res, runFound, _ = s.Runs.Get(r.Context(), sc.Organization, sc.Project, ref.RunID)
+	res, runFound, _ = s.Runs.Get(r.Context(), sc.Project, ref.RunID)
 	return ref, res, runFound, true
 }
 
@@ -569,7 +569,7 @@ func (s *Server) cancelTask(w http.ResponseWriter, r *http.Request, interfaceID,
 	}
 	// Cancel issues a canonical cancel Command (monotonic, retry-safe) and reports any non-cancelable
 	// uncertain side-effect honestly (§38.3) rather than claiming a clean cancel.
-	res, report, err := s.Runs.Cancel(r.Context(), sc.Organization, sc.Project, ref.RunID)
+	res, report, err := s.Runs.Cancel(r.Context(), sc.Project, ref.RunID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", "")
 		return
@@ -644,7 +644,7 @@ func (s *Server) setPush(w http.ResponseWriter, r *http.Request, interfaceID, ta
 	}
 	// Upsert the config into the task's array (replace on matching id).
 	next := upsertPush(ref.PushConfigs, cfg)
-	if err := s.Tasks.SetPushConfigs(r.Context(), sc.Organization, sc.Project, interfaceID, taskID, next); err != nil {
+	if err := s.Tasks.SetPushConfigs(r.Context(), sc.Project, interfaceID, taskID, next); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", "")
 		return
 	}
@@ -713,7 +713,7 @@ func (s *Server) deletePush(w http.ResponseWriter, r *http.Request, interfaceID,
 		writeErr(w, http.StatusNotFound, "not_found", "no such push config")
 		return
 	}
-	if err := s.Tasks.SetPushConfigs(r.Context(), sc.Organization, sc.Project, interfaceID, taskID, next); err != nil {
+	if err := s.Tasks.SetPushConfigs(r.Context(), sc.Project, interfaceID, taskID, next); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", "")
 		return
 	}

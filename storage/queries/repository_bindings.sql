@@ -6,9 +6,9 @@
 -- name: CreateRepositoryBinding
 -- Register a durable binding for a project's external repository (spec §30.1).
 INSERT INTO repository_bindings
-    (id, organization_id, project_id, provider, repository_identity, clone_url, default_branch,
+    (id, project_id, provider, repository_identity, clone_url, default_branch,
      connection_ref, allowed_operations, policy, data_classification, region_constraint)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 
 -- name: GetRepositoryBinding
 -- Resolve a binding within tenant scope (spec §30.3 step 1). A foreign or unknown id returns no
@@ -42,8 +42,8 @@ LIMIT $6;
 -- Record the model-independent preparation provenance (spec §30.3 step 10, REP-001): base commit,
 -- tree hash, and work branch of the exact tree the engine was handed. Append-only per attempt.
 INSERT INTO preparation_receipts
-    (id, repository_binding_id, organization_id, project_id, run_id, requested_ref, base_commit, tree_hash, branch)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
+    (id, repository_binding_id, project_id, run_id, requested_ref, base_commit, tree_hash, branch)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: GetPreparationReceipt
 -- The latest preparation receipt for a binding+run — its recorded exact-commit provenance.

@@ -7,7 +7,7 @@
 // on the other axis: drop `AND organization_id = $2` from a statement, shift `$3` down to `$2`, and then
 // delete the WRONG one of the two adjacent string arguments at the call site —
 //
-//	QueryRow(ctx, storage.Query("GetResponse"), id, tenant.Organization, tenant.Project)
+//	QueryRow(ctx, storage.Query("GetResponse"), id, tenant.Project)
 //	QueryRow(ctx, storage.Query("GetResponse"), id, tenant.Organization)   <- project's slot, org's value
 //
 // Two parameters, two arguments: the compiler, `go vet` and the arity guard are all three silent, and the
@@ -22,7 +22,7 @@
 //     is now its completion test.
 //   - TestNoQueryBindsAnOrganizationIntoAProjectsSlot is the Go-side identity check described above.
 //   - TestTenantScopeIsPublishedOrganizationFirst reads the OTHER adjacent pair of strings this epic
-//     keeps touching, the one no query mentions: WithTenant(ctx, organization, project).
+//     keeps touching, the one no query mentions: WithTenant(ctx, project).
 //
 // None of them replaces the arity guard, and three perturbations recorded in the task report show why:
 // leaving tenant.Organization in tenant.Project's slot is invisible to arity and caught here, while
@@ -335,7 +335,7 @@ func TestNoQueryBindsAnOrganizationIntoAProjectsSlot(t *testing.T) {
 }
 
 // TestTenantScopeIsPublishedOrganizationFirst reads the OTHER pair of adjacent strings this epic keeps
-// touching. storage.WithTenant(ctx, organization, project) and ScopeToTenant(ctx, organization, project)
+// touching. storage.WithTenant(ctx, project) and ScopeToTenant(ctx, project)
 // publish palai.org_id and palai.project_id, which is what the twelve org-reading policies and every
 // project policy actually enforce — so swapping the two arguments does not narrow a query, it silently
 // scopes the whole connection to the wrong pair, and both parameters are `string`.

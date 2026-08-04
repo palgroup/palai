@@ -23,36 +23,39 @@ import (
 // NAME can never redeem another tenant's credential, even if both call it "openai".
 const tenantSecretRefPrefix = "tenant:"
 
-// TenantSecretRef qualifies a connection's secret-ref handle with the organization that owns it. The org is
-// server-minted from the run's own tenant — never a request body — so the handle is not forgeable by a
-// tenant. It stays a HANDLE: no credential value is ever encoded here.
-func TenantSecretRef(org, name string) modelbroker.SecretRef {
-	return modelbroker.SecretRef(tenantSecretRefPrefix + org + "/" + name)
+// TenantSecretRef marks a connection's secret-ref handle as one a TENANT ROUTE minted, so Redeem sends it
+// to the DB-backed store instead of the deployment env bridge. It stays a HANDLE: no credential value is
+// ever encoded here.
+//
+// IT USED TO CARRY THE OWNING ORGANIZATION as a path segment, and A.2 Task 6 removed it rather than
+// swapping in the project. The segment was never a boundary the redemption enforced: identity's secret
+// store looked the name up under an org SCOPE, and migration 000066 keys secret_refs on the installation
+// (the table has no tenant column at all), so a project segment here would read as an isolation this
+// deployment does not have. The prefix keeps the one distinction Redeem actually draws — tenant route vs
+// deployment env — and nothing persists this form: it is built per dispatch from the stored bare name.
+func TenantSecretRef(name string) modelbroker.SecretRef {
+	return modelbroker.SecretRef(tenantSecretRefPrefix + name)
 }
 
 // SplitTenantSecretRef reverses TenantSecretRef. ok=false means the ref is an unqualified deployment
 // handle (the env route's), which redeems through the env bridge exactly as before.
-func SplitTenantSecretRef(ref modelbroker.SecretRef) (org, name string, ok bool) {
+func SplitTenantSecretRef(ref modelbroker.SecretRef) (name string, ok bool) {
 	rest, found := strings.CutPrefix(string(ref), tenantSecretRefPrefix)
-	if !found {
-		return "", "", false
+	if !found || rest == "" {
+		return "", false
 	}
-	org, name, found = strings.Cut(rest, "/")
-	if !found || org == "" || name == "" {
-		return "", "", false
-	}
-	return org, name, true
+	return rest, true
 }
 
 // RouteSecretResolver is the broker's credential redemption for DB-backed routes. A tenant-qualified ref
-// (minted by a project's route) resolves through Lookup — the E13 T3 secret store, scoped to that org —
-// and every other ref falls through to Fallback, the deployment-default env bridge.
+// (minted by a project's route) resolves through Lookup — the E13 T3 secret store — and every other ref
+// falls through to Fallback, the deployment-default env bridge.
 //
 // A tenant-qualified ref the store cannot resolve FAILS CLOSED. Falling back to the deployment credential
 // would silently run — and bill — one tenant's project on the operator's own key.
 type RouteSecretResolver struct {
-	// Lookup resolves (org, ref name) to the credential value; ok=false is a clean miss.
-	Lookup func(org, name string) ([]byte, bool, error)
+	// Lookup resolves a ref name to the credential value; ok=false is a clean miss.
+	Lookup func(name string) ([]byte, bool, error)
 	// Fallback redeems unqualified deployment refs (the env bridge). Nil rejects every such ref.
 	Fallback modelbroker.SecretResolver
 }
@@ -60,7 +63,7 @@ type RouteSecretResolver struct {
 // Redeem implements modelbroker.SecretResolver. The value lives only in the returned frame — it is never
 // logged, and the error text names the ref, never the credential.
 func (r RouteSecretResolver) Redeem(ref modelbroker.SecretRef) (string, error) {
-	org, name, ok := SplitTenantSecretRef(ref)
+	name, ok := SplitTenantSecretRef(ref)
 	if !ok {
 		if r.Fallback == nil {
 			return "", fmt.Errorf("%w: %s", modelbroker.ErrUnknownSecret, ref)
@@ -70,7 +73,7 @@ func (r RouteSecretResolver) Redeem(ref modelbroker.SecretRef) (string, error) {
 	if r.Lookup == nil {
 		return "", fmt.Errorf("%w: no tenant secret store is wired for %s", modelbroker.ErrUnknownSecret, name)
 	}
-	value, found, err := r.Lookup(org, name)
+	value, found, err := r.Lookup(name)
 	if err != nil {
 		return "", fmt.Errorf("redeem model connection credential %q: %w", name, err)
 	}
@@ -78,8 +81,8 @@ func (r RouteSecretResolver) Redeem(ref modelbroker.SecretRef) (string, error) {
 		// A store outage degrades to a clean miss (the resolver bounds and logs it), so a miss means EITHER
 		// no such ref OR an unreachable store — say both, or an operator spends an outage hunting for a
 		// credential that is actually there. Matches the repository-connection resolver's wording.
-		return "", fmt.Errorf("%w: model connection credential %q did not resolve under org %q: no such secret ref, or the secret store was unreachable (see the secret-store log)",
-			modelbroker.ErrUnknownSecret, name, org)
+		return "", fmt.Errorf("%w: model connection credential %q did not resolve: no such secret ref, or the secret store was unreachable (see the secret-store log)",
+			modelbroker.ErrUnknownSecret, name)
 	}
 	return string(value), nil
 }
@@ -105,7 +108,7 @@ func (o *Orchestrator) effectiveRoute(ctx context.Context, st *attemptState) (Mo
 		route = ModelRoute{
 			Provider:   target.Provider,
 			Model:      target.Model,
-			Secret:     TenantSecretRef(st.tenant.Organization, target.SecretRef),
+			Secret:     TenantSecretRef(target.SecretRef),
 			BaseURL:    target.BaseURL,
 			RevisionID: target.RevisionID,
 			Revision:   target.Revision,

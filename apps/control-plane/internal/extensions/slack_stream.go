@@ -204,7 +204,7 @@ func (f *SlackStreamFollower) follow(ctx context.Context, conn api.SlackConnecti
 //
 // The ref name is NEVER echoed: an operator sees which run went undecorated, not the handle.
 func (f *SlackStreamFollower) redeem(tg slackStreamTarget) []byte {
-	token, err := f.bridge.secrets(tg.org, tg.botTokenRef)
+	token, err := f.bridge.secrets(tg.botTokenRef)
 	if err != nil || len(token) == 0 {
 		log.Printf("slack: run %s cannot be decorated; its connection's bot token could not be redeemed", tg.runID)
 		return nil

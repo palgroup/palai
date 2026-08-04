@@ -148,9 +148,9 @@ func (p *SlackReplyPump) Tick(ctx context.Context) (int, error) {
 // message per 30s for a channel the bot was never in.
 func (p *SlackReplyPump) deliver(ctx context.Context, o slackReplyOrder) bool {
 	a := p.bridge
-	tenant := coordinator.Tenant{Organization: o.org, Project: o.project}
+	tenant := coordinator.Tenant{Project: o.project}
 
-	token, err := a.secrets(o.org, o.botTokenRef)
+	token, err := a.secrets(o.botTokenRef)
 	if err != nil || len(token) == 0 {
 		// The ref name is NOT echoed — an operator sees which connection cannot write, not the handle.
 		log.Printf("slack: connection %s cannot redeem its bot token; run %s is complete but its answer is undelivered",
@@ -192,7 +192,7 @@ func (p *SlackReplyPump) deliver(ctx context.Context, o slackReplyOrder) bool {
 		}
 	}
 
-	scoped := storage.ScopeToTenant(ctx, o.org, o.project)
+	scoped := storage.ScopeToTenant(ctx, o.project)
 
 	// E20 T1: if this run's progress is already streaming into a message THIS process opened, the answer
 	// CLOSES that message instead of posting a second one. That is what keeps "one run, one visible message"
@@ -273,7 +273,7 @@ func (p *SlackReplyPump) retire(ctx context.Context, o slackReplyOrder, why stri
 	if o.attempt < o.maxAttempts {
 		return
 	}
-	if _, err := p.bridge.store.pool.Exec(storage.ScopeToTenant(ctx, o.org, o.project),
+	if _, err := p.bridge.store.pool.Exec(storage.ScopeToTenant(ctx, o.project),
 		storage.Query("MarkSlackReplyDead"), o.id); err != nil {
 		log.Printf("slack: could not retire the undeliverable reply for run %s: %v", o.runID, err)
 		return
@@ -292,7 +292,7 @@ func (p *SlackReplyPump) spine() *coordinator.Store { return p.bridge.spine }
 // update, never a wrong one. Shared with the approval pump, which owns the other kind of delivery row.
 func slackTeamOf(ctx context.Context, a *SlackAdmitter, org, project, connectionID string) string {
 	var team string
-	if err := a.store.pool.QueryRow(storage.ScopeToTenant(ctx, org, project),
+	if err := a.store.pool.QueryRow(storage.ScopeToTenant(ctx, project),
 		`SELECT team_id FROM slack_connections WHERE id = $1 AND organization_id = $2 AND project_id = $3`,
 		connectionID, org, project).Scan(&team); err != nil {
 		return ""

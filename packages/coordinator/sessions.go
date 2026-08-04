@@ -73,8 +73,8 @@ type SessionView struct {
 // creation, deferred from T1. name is the optional operator label and may be empty, in which case the
 // projection falls back to the derived one.
 func (s *Store) CreateSession(ctx context.Context, tenant Tenant, sessionID, name string) (SessionView, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
-	if _, err := s.pool.Exec(ctx, storage.Query("InsertSession"), sessionID, tenant.Organization, tenant.Project, name); err != nil {
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
+	if _, err := s.pool.Exec(ctx, storage.Query("InsertSession"), sessionID, tenant.Project, name); err != nil {
 		return SessionView{}, fmt.Errorf("insert session: %w", err)
 	}
 	return s.GetSession(ctx, tenant, sessionID)
@@ -88,7 +88,7 @@ func (s *Store) CreateSession(ctx context.Context, tenant Tenant, sessionID, nam
 // The label is deliberately not unique: the reference screen shows several sessions sharing one, so
 // this is a name in the human sense. The id remains the identity.
 func (s *Store) RenameSession(ctx context.Context, tenant Tenant, sessionID, name string) (SessionView, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var updated string
 	err := s.pool.QueryRow(ctx, storage.Query("RenameSession"), sessionID, tenant.Project, name).Scan(&updated)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -104,12 +104,12 @@ func (s *Store) RenameSession(ctx context.Context, tenant Tenant, sessionID, nam
 // or unknown id yields Found=false, so the caller renders a 404 that leaks no cross-tenant
 // existence (§39.2).
 func (s *Store) GetSession(ctx context.Context, tenant Tenant, sessionID string) (SessionView, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var (
 		v       SessionView
 		derived *string
 	)
-	err := s.pool.QueryRow(ctx, storage.Query("GetSessionInScope"), sessionID, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(ctx, storage.Query("GetSessionInScope"), sessionID, tenant.Project).
 		Scan(&v.ID, &v.State, &v.CreatedAt, &v.Name,
 			&v.AutoApprove.Tools, &v.AutoApprove.Publications, &v.AutoApprove.SetBy, &v.AutoApprove.SetAt,
 			&derived, &v.Agents,

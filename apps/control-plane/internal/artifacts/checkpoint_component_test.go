@@ -127,7 +127,7 @@ func TestCheckpointMigrationPreservesOriginalWithProvenance(t *testing.T) {
 	ctx := context.Background()
 	org, project, session, runID, attemptID := h.seedRunWithAttempt(t)
 	sink := execution.NewCheckpointSink(h.s3, recovery.New(h.pool))
-	tenant := coordinator.Tenant{Organization: org, Project: project}
+	tenant := coordinator.Tenant{Project: project}
 
 	// Persist the v1 checkpoint.
 	v1Bytes := []byte(`{"pending_tools":["tcall_x"],"state":"awaiting_tools","step":1}`)

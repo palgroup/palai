@@ -19,7 +19,7 @@ func (h *harness) runAgentRevision(runID string) string {
 	var revision *string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT agent_revision_id FROM runs WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		runID, h.tenant.Organization, h.tenant.Project).Scan(&revision); err != nil {
+		runID, h.tenant.Project).Scan(&revision); err != nil {
 		h.t.Fatalf("read run agent_revision_id error = %v", err)
 	}
 	if revision == nil {

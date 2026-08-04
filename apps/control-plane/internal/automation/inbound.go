@@ -57,8 +57,8 @@ type InboundResult struct {
 // inboundTrigger is the global-by-id resolution of an inbound trigger (the unauthenticated route carries
 // no tenant scope; the source signature is the auth).
 type inboundTrigger struct {
-	org, project, typ, createdBy, secretRef, secretRefNext string
-	enabled                                                bool
+	project, typ, createdBy, secretRef, secretRefNext string
+	enabled                                           bool
 }
 
 // IngestInbound is the signed-inbound entry (spec §20.2.2/§21.7, §34.2-34.4). Ordered so verification runs
@@ -94,8 +94,8 @@ func (s *TriggerStore) IngestInbound(ctx context.Context, triggerID string, head
 	// The trigger id resolved a tenant, so from here the request IS that tenant's work and runs under
 	// its scope — the route is unauthenticated, but it is not unscoped. Nothing has been written yet;
 	// the signature is verified below, before the first durable row.
-	ctx = storage.WithTenant(ctx, tr.org, tr.project)
-	secrets := s.inboundSecretsFor(tr.org, tr.secretRef, tr.secretRefNext)
+	ctx = storage.WithTenant(ctx, tr.project)
+	secrets := s.inboundSecretsFor(tr.secretRef, tr.secretRefNext)
 	if len(secrets) == 0 {
 		return InboundResult{}, ErrInboundNotAvailable // a set-but-unresolvable ref: no oracle, log server-side
 	}
@@ -112,7 +112,7 @@ func (s *TriggerStore) IngestInbound(ctx context.Context, triggerID string, head
 		return InboundResult{}, err
 	}
 
-	rev, ok, err := s.GetActiveRevision(ctx, tr.org, tr.project, triggerID)
+	rev, ok, err := s.GetActiveRevision(ctx, tr.project, triggerID)
 	if err != nil {
 		return InboundResult{}, err
 	}
@@ -136,7 +136,7 @@ func (s *TriggerStore) IngestInbound(ctx context.Context, triggerID string, head
 	// DB (23505 → link a duplicate), the T2 ClaimCanonicalDelivery idiom on the source index.
 	deliveryID := newID("tdel")
 	_, err = s.pool.Exec(ctx, storage.Query("InsertInboundDelivery"),
-		deliveryID, tr.org, tr.project, triggerID, rev.ID, tr.createdBy,
+		deliveryID, tr.project, triggerID, rev.ID, tr.createdBy,
 		ev.Source, ev.SourceTenant, ev.SourceEventID, rawBody)
 	switch {
 	case isUniqueViolation(err):
@@ -148,7 +148,7 @@ func (s *TriggerStore) IngestInbound(ctx context.Context, triggerID string, head
 
 	// Inline continuation (map→admit). DB-fast; the RUN is already async by architecture (§34.2). A
 	// transient infra error leaves the durable row for the sweep — still a 2xx (at-least-once from the sender).
-	sc := deliveryScope{org: tr.org, project: tr.project, principal: tr.createdBy, triggerID: triggerID,
+	sc := deliveryScope{project: tr.project, principal: tr.createdBy, triggerID: triggerID,
 		revisionID: rev.ID, deliveryID: deliveryID, sourceTenant: ev.SourceTenant}
 	res, err := s.advanceInbound(ctx, sc, ev.Data)
 	if err != nil {
@@ -215,7 +215,7 @@ func (s *TriggerStore) linkInboundDuplicate(ctx context.Context, tr inboundTrigg
 	}
 	dupID := newID("tdel")
 	if _, err := s.pool.Exec(ctx, storage.Query("InsertInboundDuplicate"),
-		dupID, tr.org, tr.project, triggerID, revID, tr.createdBy,
+		dupID, tr.project, triggerID, revID, tr.createdBy,
 		ev.Source, ev.SourceTenant, ev.SourceEventID, rawBody, original, "duplicate of "+original); err != nil {
 		return InboundResult{}, fmt.Errorf("insert inbound duplicate: %w", err)
 	}
@@ -244,13 +244,13 @@ func (s *TriggerStore) recoverStuckInbound(ctx context.Context, grace time.Durat
 		return fmt.Errorf("scan stuck-inbound deliveries: %w", err)
 	}
 	type remnant struct {
-		id, org, project, principal, triggerID, revisionID, sourceTenant, state string
-		raw                                                                     []byte
+		id, project, principal, triggerID, revisionID, sourceTenant, state string
+		raw                                                                []byte
 	}
 	var remnants []remnant
 	for rows.Next() {
 		var m remnant
-		if err := rows.Scan(&m.id, &m.org, &m.project, &m.principal, &m.triggerID, &m.revisionID, &m.sourceTenant, &m.raw, &m.state); err != nil {
+		if err := rows.Scan(&m.id, &m.project, &m.principal, &m.triggerID, &m.revisionID, &m.sourceTenant, &m.raw, &m.state); err != nil {
 			rows.Close()
 			return err
 		}
@@ -262,7 +262,7 @@ func (s *TriggerStore) recoverStuckInbound(ctx context.Context, grace time.Durat
 	}
 
 	for _, m := range remnants {
-		sc := deliveryScope{org: m.org, project: m.project, principal: m.principal, triggerID: m.triggerID,
+		sc := deliveryScope{project: m.project, principal: m.principal, triggerID: m.triggerID,
 			revisionID: m.revisionID, deliveryID: m.id, sourceTenant: m.sourceTenant}
 		var ev webhook.InboundEvent
 		if err := json.Unmarshal(m.raw, &ev); err != nil {
@@ -290,7 +290,7 @@ func (s *TriggerStore) resolveInboundTrigger(ctx context.Context, triggerID stri
 	ctx = storage.WithSystemScope(ctx)
 	var tr inboundTrigger
 	switch err := s.pool.QueryRow(ctx, storage.Query("ResolveInboundTrigger"), triggerID).
-		Scan(&tr.org, &tr.project, &tr.enabled, &tr.typ, &tr.createdBy, &tr.secretRef, &tr.secretRefNext); {
+		Scan(&tr.project, &tr.enabled, &tr.typ, &tr.createdBy, &tr.secretRef, &tr.secretRefNext); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return inboundTrigger{}, false, nil
 	case err != nil:
@@ -302,7 +302,7 @@ func (s *TriggerStore) resolveInboundTrigger(ctx context.Context, triggerID stri
 // inboundSecretsFor redeems the trigger's 1-2 active source-secret handles to bytes via the resolver. A
 // ref that fails to resolve is skipped (a rotation may reference a not-yet-provisioned secret); the caller
 // treats an empty result as unavailable. Secret bytes never leave this call.
-func (s *TriggerStore) inboundSecretsFor(org, ref, refNext string) [][]byte {
+func (s *TriggerStore) inboundSecretsFor(ref, refNext string) [][]byte {
 	if s.inboundSecrets == nil {
 		return nil
 	}
@@ -311,7 +311,7 @@ func (s *TriggerStore) inboundSecretsFor(org, ref, refNext string) [][]byte {
 		if r == "" {
 			continue
 		}
-		if b, err := s.inboundSecrets(org, r); err == nil && len(b) > 0 {
+		if b, err := s.inboundSecrets(r); err == nil && len(b) > 0 {
 			out = append(out, b)
 		}
 	}

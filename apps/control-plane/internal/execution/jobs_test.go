@@ -36,7 +36,7 @@ func (f *fakeAdvancer) ApplyRunTransition(_ context.Context, _ coordinator.Tenan
 }
 
 func runClaim() coordinator.Claim {
-	return coordinator.Claim{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, JobID: "job_1", Fence: 1}
+	return coordinator.Claim{Tenant: coordinator.Tenant{Project: "prj"}, JobID: "job_1", Fence: 1}
 }
 
 func TestAdvanceRunDrivesFreshRunToRunning(t *testing.T) {

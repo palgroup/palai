@@ -6,8 +6,8 @@
 -- Open a logical workspace bound to one session (and optionally its root run). The id is the
 -- stable logical lineage id; physical allocations follow separately (spec §29.7).
 INSERT INTO workspaces
-    (id, organization_id, project_id, session_id, run_id, state, unsafe_bind, unsafe_host_path, publication_disabled)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
+    (id, project_id, session_id, run_id, state, unsafe_bind, unsafe_host_path, publication_disabled)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: AllocateWorkspace
 -- Mint a new PHYSICAL allocation for a logical workspace with the next fencing token (max+1).
@@ -15,8 +15,8 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 -- appear — the shape a host move takes (spec §29.7). UNIQUE(workspace_id, fence) makes two
 -- racing allocations safe: one wins the fence, the other is a unique_violation and retries.
 INSERT INTO workspace_allocations
-    (id, workspace_id, organization_id, project_id, fence, host_path, state)
-SELECT $1, w.id, w.organization_id, w.project_id,
+    (id, workspace_id, project_id, fence, host_path, state)
+SELECT $1, w.id, w.project_id,
        COALESCE((SELECT MAX(fence) FROM workspace_allocations WHERE workspace_id = w.id), 0) + 1,
        $3, 'active'
 FROM workspaces w
@@ -41,8 +41,8 @@ LIMIT 1;
 -- once a host move has advanced the fence: a non-current allocation affects zero rows, so a stale
 -- writer cannot acquire authority at the DB level (spec §29.8), not in check-then-act app code.
 INSERT INTO workspace_leases
-    (id, workspace_id, allocation_id, organization_id, project_id, run_id, state, fence)
-SELECT $1, a.workspace_id, a.id, a.organization_id, a.project_id, $3, 'active', a.fence
+    (id, workspace_id, allocation_id, project_id, run_id, state, fence)
+SELECT $1, a.workspace_id, a.id, a.project_id, $3, 'active', a.fence
 FROM workspace_allocations a
 WHERE a.id = $2
   AND a.fence = (SELECT MAX(fence) FROM workspace_allocations WHERE workspace_id = a.workspace_id);
@@ -68,10 +68,10 @@ LIMIT 1;
 -- size_bytes (000017) record WHERE the byte-archive lives and how to verify it (E10 Task 6, SAN-005);
 -- they are '' / 0 for a manifest-only (E09) snapshot with no archived bytes.
 INSERT INTO workspace_snapshots
-    (id, workspace_id, allocation_id, organization_id, project_id, fencing_token,
+    (id, workspace_id, allocation_id, project_id, fencing_token,
      tree_checksum, index_checksum, file_checksums, exclusions, reason,
      object_key, archive_checksum, size_bytes)
-SELECT $1, a.workspace_id, a.id, a.organization_id, a.project_id, a.fence,
+SELECT $1, a.workspace_id, a.id, a.project_id, a.fence,
        $3, $4, $5, $6, $7, $8, $9, $10
 FROM workspace_allocations a
 WHERE a.id = $2
@@ -114,11 +114,11 @@ SELECT object_key FROM workspace_snapshots WHERE object_key <> '';
 -- edits persist across runs (the allocation is reused, not re-cloned). Runs inside the admission
 -- transaction, so the workspace is attached iff the response is admitted.
 INSERT INTO workspaces
-    (id, organization_id, project_id, session_id, state, repository_binding_id, requested_ref)
-SELECT $1, $2, $3, $4, 'requested', $5, $6
+    (id, project_id, session_id, state, repository_binding_id, requested_ref)
+SELECT $1, $2, $3, 'requested', $4, $5
 WHERE NOT EXISTS (
     SELECT 1 FROM workspaces
-    WHERE session_id = $4 AND project_id = $3 AND repository_binding_id <> ''
+    WHERE session_id = $3 AND project_id = $2 AND repository_binding_id <> ''
 );
 
 -- name: WorkspaceForSession

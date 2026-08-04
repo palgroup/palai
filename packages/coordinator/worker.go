@@ -64,7 +64,7 @@ func (s *Store) ClaimNext(ctx context.Context, owner string, lease time.Duration
 	var claim Claim
 	var payload []byte
 	err = tx.QueryRow(ctx, storage.Query("ClaimNextJob"), owner, lease.Milliseconds()).Scan(
-		&claim.JobID, &claim.Tenant.Organization, &claim.Tenant.Project,
+		&claim.JobID, &claim.Tenant.Project,
 		&claim.Owner, &claim.Fence, &claim.AttemptCount, &claim.LeaseExpiresAt, &payload)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Claim{}, nil, ErrNoClaimableJob
@@ -128,7 +128,7 @@ func (w *Worker) process(ctx context.Context, claim Claim, payload []byte) error
 	// claimed job's own tenant, so everything a run touches from here down is scoped by migration
 	// 000029's policies exactly as an API request would be. Only the claim/complete/fail statements
 	// around it stay system-scoped (see ClaimNext).
-	resultHash, handlerErr := w.handle(storage.WithTenant(ctx, claim.Tenant.Organization, claim.Tenant.Project), claim, payload)
+	resultHash, handlerErr := w.handle(storage.WithTenant(ctx, claim.Tenant.Project), claim, payload)
 	stopHeartbeat()
 	<-hbDone
 

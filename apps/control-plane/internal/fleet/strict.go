@@ -66,8 +66,8 @@ type Admission struct {
 // key can already page `GET /v1/runners`, which needs no capability beyond a verified scope, so there is
 // no fact here it could not read anyway — and the alternative (checking first) cannot resolve the project
 // whose list to check.
-func (s *Store) Approve(ctx context.Context, org, project, id, principal string) (Admission, error) {
-	ctx = storage.WithTenant(ctx, org, project)
+func (s *Store) Approve(ctx context.Context, project, id, principal string) (Admission, error) {
+	ctx = storage.WithTenant(ctx, project)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Admission{}, fmt.Errorf("begin runner approval: %w", err)
@@ -81,7 +81,7 @@ func (s *Store) Approve(ctx context.Context, org, project, id, principal string)
 	if err != nil {
 		return Admission{}, fmt.Errorf("read the runner to approve: %w", err)
 	}
-	allowed, err := approverAllowed(ctx, tx, current.Organization, current.Project, principal)
+	allowed, err := approverAllowed(ctx, tx, current.Project, principal)
 	if err != nil {
 		return Admission{}, err
 	}
@@ -123,7 +123,7 @@ func (s *Store) Approve(ctx context.Context, org, project, id, principal string)
 			return Admission{}, fmt.Errorf("encode admission detail: %w", err)
 		}
 		if _, err := tx.Exec(ctx, storage.Query("AppendRunnerDecision"),
-			s.mintID("renr"), row.Organization, row.Project, row.ID, row.PoolID, "approved", detail); err != nil {
+			s.mintID("renr"), row.Project, row.ID, row.PoolID, "approved", detail); err != nil {
 			return Admission{}, fmt.Errorf("append admission entry: %w", err)
 		}
 	}
@@ -144,7 +144,7 @@ func (s *Store) Approve(ctx context.Context, org, project, id, principal string)
 // `TestApproverAllowedHasExactlyOneProductionCallSite` counts the call sites in the whole tree, and it went
 // RED on this file's first draft — which had two, one for the no-project-row case. The zero-value policy
 // carries that case instead, so there is one place where the answer is decided.
-func approverAllowed(ctx context.Context, tx pgx.Tx, org, project, principal string) (bool, error) {
+func approverAllowed(ctx context.Context, tx pgx.Tx, project, principal string) (bool, error) {
 	// The zero value IS the no-list case, so a project row that is absent (and a NULL config_policy, which is
 	// every project alive today) needs no branch of its own below.
 	var policy coordinator.ConfigPolicy

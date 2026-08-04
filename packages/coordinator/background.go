@@ -188,7 +188,7 @@ func (s *Store) runningBackgroundTasks(ctx context.Context) ([]BackgroundTask, e
 	var out []BackgroundTask
 	for rows.Next() {
 		var t BackgroundTask
-		if err := rows.Scan(&t.ID, &t.Tenant.Organization, &t.Tenant.Project, &t.RunID, &t.SessionID,
+		if err := rows.Scan(&t.ID, &t.Tenant.Project, &t.RunID, &t.SessionID,
 			&t.ResponseID, &t.Posture, &t.Handle, &t.MachineID, &t.OutputPath, &t.EnvKeys, &t.DeadlineAt,
 			&t.AllocationRoot); err != nil {
 			return nil, fmt.Errorf("scan running background task: %w", err)
@@ -222,7 +222,7 @@ func (s *Store) runningBackgroundTasks(ctx context.Context) ([]BackgroundTask, e
 // to check whether the run is waiting: the condition lives in the wake, once, rather than being
 // re-derived by each of its four callers.
 func (s *Store) settleBackgroundTask(ctx context.Context, task BackgroundTask, outcome BackgroundOutcome) (bool, error) {
-	ctx = storage.ScopeToTenant(ctx, task.Tenant.Organization, task.Tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, task.Tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return false, fmt.Errorf("begin background task settle: %w", err)
@@ -286,7 +286,7 @@ func (s *Store) settleBackgroundTask(ctx context.Context, task BackgroundTask, o
 	// a safe boundary rather than interrupting a model mid-step. A steer or an interrupt would make a
 	// finished build cut into a sentence.
 	if _, err := tx.Exec(ctx, storage.Query("InsertCommand"),
-		commandID, task.Tenant.Organization, task.Tenant.Project, sessionID, runID,
+		commandID, task.Tenant.Project, sessionID, runID,
 		backgroundNoticeKind, "queue", mustMarshal(map[string]any{"message": notice})); err != nil {
 		return false, fmt.Errorf("enqueue background notice command: %w", err)
 	}
@@ -378,13 +378,13 @@ type BackgroundTaskInput struct {
 // doing its job: one call spawns one process, and two rows under one ledger row would mean one of the
 // two processes is never reaped.
 func (s *Store) RecordBackgroundTask(ctx context.Context, tenant Tenant, in BackgroundTaskInput) error {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	keys := in.EnvKeys
 	if keys == nil {
 		keys = []string{}
 	}
 	if _, err := s.pool.Exec(ctx, storage.Query("InsertBackgroundTask"),
-		in.TaskID, tenant.Organization, tenant.Project, in.RunID, in.SessionID, in.ResponseID,
+		in.TaskID, tenant.Project, in.RunID, in.SessionID, in.ResponseID,
 		in.ToolCallID, int64(in.Fence), in.Posture, in.Handle, in.MachineID, in.OutputPath, keys, in.DeadlineAt); err != nil {
 		return fmt.Errorf("record background task: %w", err)
 	}
@@ -442,7 +442,7 @@ func (s *Store) CountRunningBackgroundTasks(ctx context.Context, tenant Tenant, 
 // restarted could not stop a build it had started — E24 T5's lesson, which this task applies verbatim: an
 // in-memory flag is erased by a restart and a column is not.
 func (s *Store) BackgroundTaskForRun(ctx context.Context, tenant Tenant, runID, taskID string) (BackgroundTask, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	var t BackgroundTask
 	var state string
 	err := s.pool.QueryRow(ctx, storage.Query("BackgroundTaskForRun"), taskID, runID, tenant.Project).
@@ -462,7 +462,7 @@ func (s *Store) BackgroundTaskForRun(ctx context.Context, tenant Tenant, runID, 
 // answered by a map that a restart emptied — wrongly in two opposite directions: a run that should have
 // parked did not, and a cancellation killed nothing.
 func (s *Store) RunningBackgroundTasksOfRun(ctx context.Context, tenant Tenant, runID string) ([]BackgroundTask, error) {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("RunningBackgroundTasksOfRun"), runID, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("select running background tasks of run: %w", err)
@@ -487,7 +487,7 @@ func (s *Store) RunningBackgroundTasksOfRun(ctx context.Context, tenant Tenant, 
 // preference — it is the same order settleBackgroundTask takes, settled before the second writer existed
 // rather than after two loops touched the same rows in opposite orders.
 func (s *Store) SettleEndedBackgroundTask(ctx context.Context, tenant Tenant, runID, taskID, state string) error {
-	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin background task settle: %w", err)

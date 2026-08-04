@@ -21,6 +21,6 @@ func NewMCPProgressSink(spine *coordinator.Store) mcp.ProgressSink {
 
 func (s mcpProgressSink) ToolProgress(ctx context.Context, scope mcp.CallScope, p mcp.Progress) {
 	_ = s.spine.AppendToolProgress(ctx,
-		coordinator.Tenant{Organization: scope.Org, Project: scope.Project},
+		coordinator.Tenant{Project: scope.Project},
 		scope.SessionID, scope.ResponseID, scope.CallID, p.Progress, p.Total, p.Message)
 }

@@ -130,7 +130,7 @@ func TestSnapshotRestoreRoundTripsThroughStore(t *testing.T) {
 	ctx := context.Background()
 	org, project, workspaceID, allocationID, hostPath := h.seedAllocationOnDisk(t)
 	sink := execution.NewSnapshotSink(h.s3, h.repo.Spine())
-	tenant := coordinator.Tenant{Organization: org, Project: project}
+	tenant := coordinator.Tenant{Project: project}
 
 	snapID := newID("snap")
 	if _, err := sink.Capture(ctx, execution.SnapshotCaptureInput{

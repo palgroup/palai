@@ -4,8 +4,8 @@
 
 -- name: InsertBot
 INSERT INTO integration_bots
-    (id, organization_id, project_id, name, kind, agent_revision_id, repository_binding_id, principal_id, config)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    (id, project_id, name, kind, agent_revision_id, repository_binding_id, principal_id, config)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING created_at;
 
 -- name: GetBot

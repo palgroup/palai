@@ -143,7 +143,7 @@ func TestLiveBudgetRejectsSecondRunAndLedgerReconciles(t *testing.T) {
 			t.Fatalf("429 detail %q does not carry %q — the remediation body is not stable/actionable", detail, want)
 		}
 	}
-	if n := countRows(t, pool, `SELECT count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`, tenant.Organization, tenant.Project); n != 1 {
+	if n := countRows(t, pool, `SELECT count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`, tenant.Project); n != 1 {
 		t.Fatalf("runs in project = %d, want exactly 1 (the rejected admission created nothing)", n)
 	}
 	if n := countRows(t, pool, `SELECT count(*) FROM idempotency_records WHERE idempotency_key='budget-run-2' AND project_id=$1`, tenant.Project); n != 0 {

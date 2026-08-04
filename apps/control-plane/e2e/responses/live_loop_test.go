@@ -29,10 +29,10 @@ func TestLiveLoopCompletesOneResponseThroughSubprocessEngine(t *testing.T) {
 	h.awaitResponseState(responseID, "completed", 60*time.Second)
 
 	// One transient session and one root run.
-	if n := h.count(`SELECT count(*) FROM sessions WHERE organization_id=$1 AND project_id=$2`, h.tenant.Organization, h.tenant.Project); n != 1 {
+	if n := h.count(`SELECT count(*) FROM sessions WHERE organization_id=$1 AND project_id=$2`, h.tenant.Project); n != 1 {
 		t.Fatalf("session count = %d, want 1", n)
 	}
-	if n := h.count(`SELECT count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`, h.tenant.Organization, h.tenant.Project); n != 1 {
+	if n := h.count(`SELECT count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`, h.tenant.Project); n != 1 {
 		t.Fatalf("run count = %d, want 1", n)
 	}
 

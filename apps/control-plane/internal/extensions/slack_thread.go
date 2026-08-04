@@ -118,7 +118,7 @@ func (a *SlackAdmitter) threadContext(ctx context.Context, conn api.SlackConnect
 		// A deployment with no outbound half admits exactly as it did before this file existed.
 		return "", nil
 	}
-	token, err := a.secrets(conn.Org, conn.BotTokenRef)
+	token, err := a.secrets(conn.BotTokenRef)
 	if err != nil || len(token) == 0 {
 		// The ref name is not echoed — the same no-config-oracle rule VerifySignature follows.
 		log.Printf("slack: thread history skipped for connection %s — the bot token could not be redeemed", conn.ID)

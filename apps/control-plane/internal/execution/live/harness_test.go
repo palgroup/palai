@@ -40,7 +40,7 @@ func newID(prefix string) string {
 func seedRun(t *testing.T, pool *pgxpool.Pool) (coordinator.Tenant, string, string, string) {
 	t.Helper()
 	ctx := context.Background()
-	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	tenant := coordinator.Tenant{Project: newID("prj")}
 	session, response, runID := newID("ses"), newID("resp"), newID("run")
 	do := func(sql string, args ...any) {
 		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
@@ -50,14 +50,14 @@ func seedRun(t *testing.T, pool *pgxpool.Pool) (coordinator.Tenant, string, stri
 	do(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	do(`INSERT INTO projects (id, organization_id, config_policy) VALUES ($1, $2, $3)`,
 		tenant.Project, tenant.Organization, []byte(`{"default_tools":["recovery_note"]}`))
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, tenant.Organization, tenant.Project)
+	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, tenant.Project)
 	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input)
 	    VALUES ($1, $2, $3, $4, 'queued', $5)`,
-		response, tenant.Organization, tenant.Project, session,
+		response, tenant.Project, session,
 		[]byte(`"Record a short note with the recovery_note tool, then confirm you are done."`))
 	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state)
 	    VALUES ($1, $2, $3, $4, $5, 'queued')`,
-		runID, tenant.Organization, tenant.Project, session, response)
+		runID, tenant.Project, session, response)
 	return tenant, session, response, runID
 }
 
@@ -67,7 +67,7 @@ func lastProviderRequestID(t *testing.T, pool *pgxpool.Pool, tenant coordinator.
 	t.Helper()
 	rows, err := pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT result FROM model_requests WHERE run_id=$1 AND organization_id=$2 AND project_id=$3 AND state='completed' ORDER BY updated_at DESC`,
-		runID, tenant.Organization, tenant.Project)
+		runID, tenant.Project)
 	if err != nil {
 		t.Fatalf("read model results: %v", err)
 	}
@@ -94,7 +94,7 @@ func latestRecoveryLevel(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Te
 	var payload []byte
 	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT payload FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type='attempt.recovering.v1' ORDER BY seq DESC LIMIT 1`,
-		sessionID, tenant.Organization, tenant.Project).Scan(&payload); err != nil {
+		sessionID, tenant.Project).Scan(&payload); err != nil {
 		t.Fatalf("read attempt.recovering.v1: %v", err)
 	}
 	var body struct {
@@ -110,7 +110,7 @@ func recoveryProof(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, 
 	var payload []byte
 	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT payload FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type='recovery.proof.v1' ORDER BY seq DESC LIMIT 1`,
-		sessionID, tenant.Organization, tenant.Project).Scan(&payload); err != nil {
+		sessionID, tenant.Project).Scan(&payload); err != nil {
 		t.Fatalf("read recovery.proof.v1: %v", err)
 	}
 	var proof recovery.RecoveryProof

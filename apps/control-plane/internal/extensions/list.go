@@ -40,8 +40,8 @@ type MCPConnectionListItem struct {
 }
 
 // ListMCPConnections returns a tenant-scoped page of MCP connections newest-first (spec §28.13).
-func (s *Store) ListMCPConnections(ctx context.Context, org, project string, w ListWindow) ([]MCPConnectionListItem, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) ListMCPConnections(ctx context.Context, project string, w ListWindow) ([]MCPConnectionListItem, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListMCPConnections"),
 		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
@@ -68,8 +68,8 @@ type ToolLineageItem struct {
 }
 
 // GetTool reads a tool lineage within scope. found=false for a foreign or unknown id (404).
-func (s *Store) GetTool(ctx context.Context, org, project, id string) (ToolLineageItem, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) GetTool(ctx context.Context, project, id string) (ToolLineageItem, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	var it ToolLineageItem
 	err := s.pool.QueryRow(ctx, storage.Query("GetTool"), id, project).
 		Scan(&it.ID, &it.CanonicalName, &it.ModelVisibleName, &it.CreatedAt)
@@ -83,8 +83,8 @@ func (s *Store) GetTool(ctx context.Context, org, project, id string) (ToolLinea
 }
 
 // ListTools returns a tenant-scoped page of tool lineages newest-first (spec §28.2).
-func (s *Store) ListTools(ctx context.Context, org, project string, w ListWindow) ([]ToolLineageItem, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) ListTools(ctx context.Context, project string, w ListWindow) ([]ToolLineageItem, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListTools"),
 		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
@@ -125,8 +125,8 @@ type ToolRevisionItem struct {
 // E25 T7). The caller checks the lineage exists in scope first, so an unknown or foreign tool is a 404
 // rather than an empty page — a list that cannot tell "no revisions" from "not your tool" makes the
 // runbook's first step ambiguous at exactly the moment an operator is looking for a typo.
-func (s *Store) ListToolRevisions(ctx context.Context, org, project, toolID string, w ListWindow) ([]ToolRevisionItem, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) ListToolRevisions(ctx context.Context, project, toolID string, w ListWindow) ([]ToolRevisionItem, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListToolRevisions"),
 		toolID, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {
@@ -149,8 +149,8 @@ func (s *Store) ListToolRevisions(ctx context.Context, org, project, toolID stri
 // revision id. found=false for a foreign/unknown id or an id belonging to another lineage (404). The row
 // shape is ToolRevisionItem, so the single-resource read and the list cannot drift into two projections of
 // the same thing.
-func (s *Store) GetToolRevisionOfTool(ctx context.Context, org, project, toolID, revisionID string) (ToolRevisionItem, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) GetToolRevisionOfTool(ctx context.Context, project, toolID, revisionID string) (ToolRevisionItem, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	var it ToolRevisionItem
 	err := s.pool.QueryRow(ctx, storage.Query("GetToolRevisionOfTool"), revisionID, toolID, project).
 		Scan(&it.ID, &it.ToolID, &it.RevisionNumber, &it.Executor, &it.Description, &it.InputSchema,
@@ -174,8 +174,8 @@ type ToolSetRevisionDetail struct {
 
 // GetToolSetRevision reads one set revision within scope, keyed by BOTH the set name and the revision id.
 // found=false for a foreign/unknown id or an id belonging to another set (404).
-func (s *Store) GetToolSetRevision(ctx context.Context, org, project, setName, revisionID string) (ToolSetRevisionDetail, bool, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) GetToolSetRevision(ctx context.Context, project, setName, revisionID string) (ToolSetRevisionDetail, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	var it ToolSetRevisionDetail
 	err := s.pool.QueryRow(ctx, storage.Query("GetToolSetRevision"), revisionID, setName, project).
 		Scan(&it.ID, &it.Set, &it.RevisionNumber, &it.Digest, &it.Pins, &it.Published, &it.CreatedAt)
@@ -199,8 +199,8 @@ type ToolSetRevisionItem struct {
 }
 
 // ListToolSetRevisions returns a tenant-scoped page of tool-set revisions newest-first (spec §28.4).
-func (s *Store) ListToolSetRevisions(ctx context.Context, org, project string, w ListWindow) ([]ToolSetRevisionItem, error) {
-	ctx = storage.ScopeToTenant(ctx, org, project)
+func (s *Store) ListToolSetRevisions(ctx context.Context, project string, w ListWindow) ([]ToolSetRevisionItem, error) {
+	ctx = storage.ScopeToTenant(ctx, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListToolSetRevisions"),
 		project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
 	if err != nil {

@@ -13,7 +13,7 @@
 -- enrolment request carries no org/project, so the POOL is what resolves the tenant. LIMIT is absent
 -- deliberately — id is the primary key, so this returns at most one row by construction and there is
 -- no ordering ambiguity to resolve (the LIMIT-1-without-ORDER-BY trap this tree has paid for twice).
-SELECT id, organization_id, project_id, posture, os, arch, strict_enrollment
+SELECT id, project_id, posture, os, arch, strict_enrollment
   FROM runner_pools
  WHERE id = $1;
 
@@ -21,15 +21,15 @@ SELECT id, organization_id, project_id, posture, os, arch, strict_enrollment
 -- Record an enrolled machine. The id is minted by the CALLER (server-side, `rnr_`), never by the
 -- enrolling party: that is the whole property this table exists to hold. state is 'active' for a
 -- non-strict pool, which admits on presentation of a valid credential, and 'pending' when the pool
--- carries `strict_enrollment` (E24 T6) — the caller passes it in $8 and the pool row is what decides.
+-- carries `strict_enrollment` (E24 T6) — the caller passes it in $7 and the pool row is what decides.
 --
--- $14 is enrolled_via_key_id (E24 T3): WHICH credential admitted this machine. NULL means the file
+-- $13 is enrolled_via_key_id (E24 T3): WHICH credential admitted this machine. NULL means the file
 -- bootstrap token, which is not a row and cannot be revoked individually — the honest representation
 -- of the pre-pool-key path rather than a sentinel id pointing at nothing.
 INSERT INTO runners (
-    id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
+    id, project_id, pool_id, label, runner_dns, public_key_sha256,
     state, os, arch, posture, capacity, cert_not_after, enrolled_via_key_id, enrolled_at, last_seen_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''), clock_timestamp(), clock_timestamp())
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, nullif($13, ''), clock_timestamp(), clock_timestamp())
 RETURNING created_at, enrolled_at, last_seen_at;
 
 -- name: AppendRunnerEnrollment
@@ -39,11 +39,11 @@ RETURNING created_at, enrolled_at, last_seen_at;
 -- journal writes key_id and never a key value, and the only way to keep that true is for no caller to
 -- have a column to put one in.
 INSERT INTO runner_enrollments (
-    id, organization_id, project_id, runner_id, pool_id, key_id, entry_kind, entry_seq, detail
+    id, project_id, runner_id, pool_id, key_id, entry_kind, entry_seq, detail
 )
-SELECT $1, $2, $3, $4, $5, $6, $7,
-       coalesce((SELECT max(entry_seq) FROM runner_enrollments WHERE runner_id = $4), 0) + 1,
-       $8::jsonb;
+SELECT $1, $2, $3, $4, $5, $6,
+       coalesce((SELECT max(entry_seq) FROM runner_enrollments WHERE runner_id = $3), 0) + 1,
+       $7::jsonb;
 
 -- name: RecordRunnerSeen
 -- Advance the liveness stamp for the runner holding this certificate DNS. Keyed on runner_dns and not
@@ -54,7 +54,7 @@ UPDATE runners
    SET last_seen_at = $2,
        cert_not_after = coalesce($3, cert_not_after)
  WHERE runner_dns = $1
-RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
+RETURNING id, project_id, pool_id, label, runner_dns, public_key_sha256,
           state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
        config_revision, config_applied, config_reported_at;
 
@@ -88,7 +88,7 @@ UPDATE runners
  WHERE id = $1 AND ($2 = '' OR project_id = $2)
    AND (state <> 'revoked' OR $3 = 'revoked')
    AND (state <> 'pending' OR $3 = 'revoked')
-RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
+RETURNING id, project_id, pool_id, label, runner_dns, public_key_sha256,
           state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
        config_revision, config_applied, config_reported_at, created_at;
 
@@ -112,7 +112,7 @@ UPDATE runners
    SET state = 'active'
  WHERE id = $1 AND ($2 = '' OR project_id = $2)
    AND state IN ('pending', 'active')
-RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
+RETURNING id, project_id, pool_id, label, runner_dns, public_key_sha256,
           state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
        config_revision, config_applied, config_reported_at, created_at;
 
@@ -131,26 +131,26 @@ RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_ke
 -- and the same one AppendRunnerEnrollment relies on.
 --
 -- ONE STATEMENT FOR TWO KINDS rather than a near-copy per verb: the at-most-once reasoning above is the
--- part a reader has to get right, and two copies of it are two places for it to drift. $6 is the kind and
+-- part a reader has to get right, and two copies of it are two places for it to drift. $5 is the kind and
 -- it is a literal at each Go call site, never caller input — `entry_kind` is CHECK-constrained by 000045
 -- R4 to ('requested','approved','refused','issued','revoked','renewed') either way.
 --
 -- key_id is deliberately empty: a decision like this is about the MACHINE, and the key that admitted it is
 -- already recorded on the `issued` entry. Writing it again here would suggest the key was the subject.
 INSERT INTO runner_enrollments (
-    id, organization_id, project_id, runner_id, pool_id, key_id, entry_kind, entry_seq, detail
+    id, project_id, runner_id, pool_id, key_id, entry_kind, entry_seq, detail
 )
-SELECT $1, $2, $3, $4, $5, '', $6,
-       coalesce((SELECT max(entry_seq) FROM runner_enrollments WHERE runner_id = $4), 0) + 1,
-       $7::jsonb
+SELECT $1, $2, $3, $4, '', $5,
+       coalesce((SELECT max(entry_seq) FROM runner_enrollments WHERE runner_id = $3), 0) + 1,
+       $6::jsonb
  WHERE NOT EXISTS (SELECT 1
                      FROM runner_enrollments
-                    WHERE runner_id = $4 AND entry_kind = $6);
+                    WHERE runner_id = $3 AND entry_kind = $5);
 
 -- name: GetRunner
 -- One runner inside the caller's tenant. A row belonging to another tenant returns NO row, so the
 -- handler answers 404 without ever learning whether the id exists elsewhere.
-SELECT id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
+SELECT id, project_id, pool_id, label, runner_dns, public_key_sha256,
        state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
        config_revision, config_applied, config_reported_at, created_at
   FROM runners
@@ -160,7 +160,7 @@ SELECT id, organization_id, project_id, pool_id, label, runner_dns, public_key_s
 -- The tenant-scoped keyset page: (created_at, id) DESC, the ordering api/pagination.go mints its
 -- cursor from. $5 is the over-fetch (page size + 1) so the handler detects a further page without a
 -- second round trip.
-SELECT id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
+SELECT id, project_id, pool_id, label, runner_dns, public_key_sha256,
        state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
        config_revision, config_applied, config_reported_at, created_at
   FROM runners
@@ -176,8 +176,8 @@ SELECT id, organization_id, project_id, pool_id, label, runner_dns, public_key_s
 -- born with (identity.Store.provision). Idempotent by both keys the row can already exist under: the
 -- id (a re-boot against a retained volume) and the (org, project, name) uniqueness 000045 R1 adds
 -- (migration 000045 R6 having already seeded it on an upgrading install).
-INSERT INTO runner_pools (id, organization_id, project_id, name, posture, strict_enrollment)
-VALUES ($1, $2, $3, 'default', 'sandboxed-linux', false)
+INSERT INTO runner_pools (id, project_id, name, posture, strict_enrollment)
+VALUES ($1, $2, 'default', 'sandboxed-linux', false)
     ON CONFLICT DO NOTHING;
 
 -- name: InsertRunnerPool
@@ -193,8 +193,8 @@ VALUES ($1, $2, $3, 'default', 'sandboxed-linux', false)
 -- project_id is NOT NULLABLE HERE even though the column allows it: fleet.Store.Register refuses to enrol a
 -- machine into a project-less pool (000045's tenant policy for `runners` narrows on a project), so a pool
 -- created without one would be a row nothing could ever join. The route refuses it before this runs.
-INSERT INTO runner_pools (id, organization_id, project_id, name, posture, os, arch, strict_enrollment)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO runner_pools (id, project_id, name, posture, os, arch, strict_enrollment)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING created_at;
 
 -- name: SetRunnerPoolStrictEnrollment
@@ -209,7 +209,7 @@ UPDATE runner_pools
    SET strict_enrollment = $3
  WHERE ($1 = '' OR project_id = $1)
    AND id = $2
-RETURNING id, organization_id, project_id, name, posture, os, arch, strict_enrollment, created_at;
+RETURNING id, project_id, name, posture, os, arch, strict_enrollment, created_at;
 
 -- name: ListRunnerPools
 -- The tenant-scoped keyset page of pools: (created_at, id) DESC, the ordering api/pagination.go mints
@@ -223,7 +223,7 @@ RETURNING id, organization_id, project_id, name, posture, os, arch, strict_enrol
 -- ON DELETE CASCADE on this table (000045 R2), so removing a pool would silently remove its enrolment
 -- keys, and what happens to the machines whose `pool_id` points here is a separate decision nobody has
 -- asked for. This comment names no future owner, because a comment cannot schedule work.
-SELECT id, organization_id, project_id, name, posture, os, arch, strict_enrollment, created_at
+SELECT id, project_id, name, posture, os, arch, strict_enrollment, created_at
   FROM runner_pools
  WHERE ($1 = '' OR project_id = $1)
    AND ($2::timestamptz IS NULL OR created_at >= $2)
@@ -249,8 +249,8 @@ SELECT id, organization_id, project_id, name, posture, os, arch, strict_enrollme
 -- tenant in the SELECT rather than trusted from the caller: a key minted against another tenant's pool
 -- would be a credential that admits a machine into a fleet its owner never opened. No row means the
 -- pool is not this tenant's (or does not exist), which the caller renders as a 404.
-INSERT INTO runner_pool_keys (id, organization_id, project_id, pool_id, key_sha256, key_prefix, expires_at)
-SELECT $1, p.organization_id, p.project_id, p.id, $4, $5, $6
+INSERT INTO runner_pool_keys (id, project_id, pool_id, key_sha256, key_prefix, expires_at)
+SELECT $1, p.project_id, p.id, $4, $5, $6
   FROM runner_pools p
  WHERE p.id = $3 AND ($2 = '' OR p.project_id = $2)
 RETURNING id, pool_id, key_prefix, created_at, expires_at;
@@ -271,7 +271,7 @@ RETURNING id, pool_id, key_prefix, created_at, expires_at;
 -- The stored digest comes back with the row even though it WAS the lookup key: the caller compares it
 -- in constant time (api/tool_callbacks.go:98 takes the same position after its own keyed read), so a
 -- credential comparison in this tree never depends on a per-site argument about what leaks.
-SELECT k.id, k.organization_id, k.project_id, k.pool_id, k.key_sha256, k.revoked_at, k.expires_at,
+SELECT k.id, k.project_id, k.pool_id, k.key_sha256, k.revoked_at, k.expires_at,
        p.posture, p.strict_enrollment
   FROM runner_pool_keys k
   JOIN runner_pools p ON p.id = k.pool_id
@@ -383,7 +383,7 @@ RETURNING pool_id;
 -- ponytail: THE SAME MISSING INDEX OldestRunAwaitingCapacity NAMES, and for the same reason — E24 owns one
 -- migration and it is T1's. This runs once per reconcile tick (30s) rather than once per runner connect,
 -- so it is the cheaper of the two, and the upgrade is the same one partial index.
-SELECT r.organization_id, r.project_id, r.id, r.response_id
+SELECT r.project_id, r.id, r.response_id
   FROM runs r
   JOIN attempts a ON a.run_id = r.id
                  AND a.project_id = r.project_id
@@ -420,7 +420,7 @@ UPDATE attempts
 -- planner filters. It runs once per runner CONNECT — which for a runner is once per lease — so on a
 -- self-host install whose `runs` table is thousands of rows it is a cheap filtered scan, and on a table
 -- of millions it is not. The upgrade is one line in the next epic's migration:
--- `CREATE INDEX ... ON runs (organization_id, project_id, pool_id) WHERE state = 'waiting'` — a partial
+-- `CREATE INDEX ... ON runs (project_id, pool_id) WHERE state = 'waiting'` — a partial
 -- index, because the rows this asks about are a vanishing fraction of the table.
 SELECT r.id
   FROM runs r
@@ -439,7 +439,7 @@ SELECT r.id
 -- landing in an append-only journal nothing will ever resolve.
 --
 -- IT IS SYSTEM-SCOPED AND CROSSES TENANTS ON PURPOSE, which is the one thing about it worth arguing.
--- deployment_desired carries no organization_id — that absence IS its security property (000052) — so a
+-- deployment_desired carries no tenant column — that absence IS its security property (000052) — so a
 -- per-tenant existence check would be asking a question the document it guards cannot express. The
 -- authority is the same one the rest of this surface runs under: the `provision` capability, checked in the
 -- handler before the store is reached. The leak is bounded to one bit about an id the caller already typed,
