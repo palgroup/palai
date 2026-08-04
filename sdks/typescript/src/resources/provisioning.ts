@@ -3,24 +3,25 @@ import { callArgs, enc, type CallOptions, type ListView } from "./shared.ts";
 
 // The tenancy provisioning projections (spec §39.2, E13 T2). No canonical schema generates them, so
 // they are open: identity fields plus an index signature.
+// Neither Project nor ApiKey declares organization_id any more: A.2 Task 6 dropped the column, so the
+// projections stopped carrying the field. A declared-but-never-sent field reads as one the server might
+// return, and the index signature below already covers anything a future version adds.
 export interface Project {
   id: string;
   object: string;
-  organization_id?: string;
   display_name?: string;
   config_policy?: unknown;
   [key: string]: unknown;
 }
 // ProjectCreated is the other place a fresh tenant's admin key plaintext is disclosed: since A.2 T6,
 // creating a project OPENS a tenant (project + service principal + admin key), the job organization
-// creation used to hold alone. Every later read renders metadata only.
+// creation held alone until that task removed it. Every later read renders metadata only.
 export interface ProjectCreated extends Project {
   admin_api_key: ApiKeyCreated;
 }
 export interface ApiKey {
   id: string;
   object: string;
-  organization_id?: string;
   project_id?: string;
   scopes?: string[];
   [key: string]: unknown;

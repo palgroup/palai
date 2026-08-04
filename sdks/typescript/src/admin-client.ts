@@ -11,7 +11,7 @@ import { ApiKeys, Projects } from "./resources/provisioning.ts";
 // request/retry/auth code, so a transport fix in Palai never needs a parallel fix here.
 //
 // `fleet` is the machine-fleet surface (Task 2): pools, their enrolment keys, and the enrolled
-// machines. `organizations`/`projects`/`apiKeys` (Task 3) are the SAME provisioning classes the root
+// machines. `projects`/`apiKeys` (Task 3) are the SAME provisioning classes the root
 // entrypoint exposes on Palai — grouped here, not copied, each wired to this.#client exactly like
 // Fleet is. Adding any of these earlier would have been a speculative surface with no caller.
 export class PalaiAdmin {
