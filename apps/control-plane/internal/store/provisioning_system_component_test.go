@@ -31,8 +31,16 @@ func (v keyedVerifier) VerifyAPIKey(_ context.Context, token string) (middleware
 // TestTenantAdminKeyCannotOpenAnotherTenant proves opening a tenant is the platform's job, not the
 // customer plane's. A tenant admin key (empty Scopes, unrestricted under HasScope) is exactly the key
 // that must NOT reach this route: this is not a capability check, it is a BOUNDARY — opening a new
-// organization is not an operation on the caller's own tenant, it never belonged on the customer plane at
+// tenant is not an operation on the caller's own tenant, it never belonged on the customer plane at
 // all. Only a key carrying `system` may.
+//
+// IT DROVE POST /v1/organizations UNTIL A.2 TASK 6 AND WAS LEFT BEHIND BY IT — measured RED on
+// 2026-08-04, and the way it failed is the reason this note exists. The route was unmounted, so the
+// tenant-admin leg got 404 rather than 403 and reported "tenant admin anahtarı organizasyon açabildi:
+// 404" — a message accusing the tenant key of opening a tenant, when nothing had been opened at all and
+// the boundary under test was never exercised. The leak check below would then have errored on a dropped
+// table. Both legs now drive POST /v1/projects, which authorizeSystem gates and which api/provisioning.go
+// records as the ONLY tenant-opening route; the seam under test (authorizeSystem) is unchanged.
 func TestTenantAdminKeyCannotOpenAnotherTenant(t *testing.T) {
 	url := os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
 	if url == "" {
@@ -58,14 +66,14 @@ func TestTenantAdminKeyCannotOpenAnotherTenant(t *testing.T) {
 	ts := httptest.NewServer(router)
 	defer ts.Close()
 
-	resp := postOrganization(t, ts.URL, "tenant-admin", `{"display_name":"squatted"}`)
+	resp := postProject(t, ts.URL, "tenant-admin", `{"display_name":"squatted"}`)
 	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("tenant admin anahtarı organizasyon açabildi: %d (beklenen 403)", resp.StatusCode)
+		t.Fatalf("tenant admin anahtarı başka bir tenant açabildi: %d (beklenen 403)", resp.StatusCode)
 	}
 
-	resp = postOrganization(t, ts.URL, "platform", `{"display_name":"legit"}`)
+	resp = postProject(t, ts.URL, "platform", `{"display_name":"legit"}`)
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("platform anahtarı organizasyon açamadı: %d", resp.StatusCode)
+		t.Fatalf("platform anahtarı tenant açamadı: %d", resp.StatusCode)
 	}
 
 	// VE SIZINTI KONTROLÜ, cevap kodundan SONRA: reddedilen çağrı hiçbir satır yazmamalı. Bu ağaç bir kez
@@ -73,25 +81,25 @@ func TestTenantAdminKeyCannotOpenAnotherTenant(t *testing.T) {
 	// sorunu" gibi okundu; bu sıra bilerek korunuyor.
 	var n int
 	if err := repo.Spine().Pool().QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM organizations WHERE display_name = 'squatted'`).Scan(&n); err != nil {
-		t.Fatalf("count squatted organizations: %v", err)
+		`SELECT count(*) FROM projects WHERE display_name = 'squatted'`).Scan(&n); err != nil {
+		t.Fatalf("count squatted projects: %v", err)
 	}
 	if n != 0 {
-		t.Fatalf("403 döndü ama %d organizasyon satırı yazıldı", n)
+		t.Fatalf("403 döndü ama %d proje satırı yazıldı", n)
 	}
 }
 
-func postOrganization(t *testing.T, base, token, body string) *http.Response {
+func postProject(t *testing.T, base, token, body string) *http.Response {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, base+"/v1/organizations", strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, base+"/v1/projects", strings.NewReader(body))
 	if err != nil {
-		t.Fatalf("build POST /v1/organizations: %v", err)
+		t.Fatalf("build POST /v1/projects: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("POST /v1/organizations: %v", err)
+		t.Fatalf("POST /v1/projects: %v", err)
 	}
 	t.Cleanup(func() { resp.Body.Close() })
 	return resp
