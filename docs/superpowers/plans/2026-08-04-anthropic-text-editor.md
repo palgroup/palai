@@ -413,6 +413,35 @@ git commit -m "feat(tools): advertise the text editor, and say what the file too
 
 ---
 
+## §4.5 — Execution record (2026-08-04)
+
+**Shipped in 7 commits:** `f3439d4f` + `1a…` (type threading and its gofmt), `fe567917` (provider_two branch), `36e321bb` (provider_one refusal), `4b200c78` (the editor), `cf4f2f37` (advertisement + changeset), plus two formatting follow-ups.
+
+**The canonical default set is now 9 names**, one of which is not ours: `str_replace_based_edit_tool`. `toolset_test` admits it through a **named** exception map (`anthropicDefined`), not a loosened prefix rule — an unknown unprefixed name still fails.
+
+### The dependency this plan missed, and the guard that now covers it
+
+Task 5 Step 1 asked "what still needs `palai.workspace.file`" and answered it by grepping for `before_hash`. That found `changeset.go` — and **the field was never the constraint**. The real one was six lines above it:
+
+```go
+if row.Name != fileToolName { continue }
+if s, _ := args["op"].(string); s != "write" { continue }
+```
+
+The changeset walk selected ledger rows **by tool name**. Adopting a second editing tool without touching it would have produced a run that edits files and reports a changeset with no ledger provenance — the files still appeared, via the workspace-scan fallback, but with **empty hashes and no tool-call id**, and nothing failing to say so. The publication path derives from that record.
+
+Fixed by `isWorkspaceWriteRow(name, args)`, which knows that each tool names its writing operations differently — the file tool multiplexes on `op`, the editor on `command` — and that both carry read-only operations (`read`, `view`) that must never be recorded as changes. Two new tests pin both halves.
+
+### Perturbations observed RED, then restored
+
+- **`str_replace` made first-match** (the arity refusal deleted) → the two-match case returned `<nil>` where an answer was required. This is the silent-corruption mode the whole plan exists to prevent.
+- **The typed branch fired for every tool** → the custom-tool byte-identity test failed, proving it pins today's shape rather than accepting anything.
+- **`Type` dropped in the advertisement seam** → `Type = "", want it carried across the seam`. The test lives at the seam, not on the structs, precisely so this is catchable.
+
+**Measured after:** every affected package `ok`, and `go vet -tags="component live security" ./...` exits **0** with zero errors.
+
+---
+
 ## §5 — Definition of done
 
 - [ ] `toolbroker.Tool.Type` and `ToolSchema.Type` exist **and the value survives the advertisement seam** (asserted at the seam, not on the structs)
