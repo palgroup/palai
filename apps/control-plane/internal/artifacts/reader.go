@@ -179,8 +179,19 @@ func (rd *Reader) ListRunArtifacts(ctx context.Context, scope middleware.Scope, 
 
 // metadataRow is one artifact's retrieval metadata scanned from the tenant-scoped read.
 type metadataRow struct {
-	id          string
-	runID       string
+	id string
+	// runID IS A POINTER BECAUSE artifacts.run_id IS NULLABLE, and a plain string here was a live 500.
+	//
+	// It read as safe for as long as every artifact had a run: Write demands one, so the only run-less rows
+	// were the Slack bridge's inbound images — written run-less and attached microseconds later, inside one
+	// process, with no client holding the id in between. A NULL therefore existed only inside a window
+	// nobody could observe, and pgx's refusal to scan NULL into a string never fired.
+	//
+	// POST /v1/artifacts makes run-less a NORMAL, DURABLE state: a client ingests an image and only then
+	// decides what to name it in, and it may never create a run at all. MEASURED 2026-08-04 against a real
+	// stack — a freshly ingested, not-yet-attached artifact answered 500 on BOTH its metadata and its
+	// content route, because both go through this scan.
+	runID       *string
 	objectKey   string
 	sizeBytes   int64
 	checksum    string
@@ -210,6 +221,9 @@ func (rd *Reader) metadata(ctx context.Context, org, project, id string) (metada
 // integrity fields, and its classification. object_key is deliberately NOT surfaced — the S3 layout is
 // control-plane internal (spec §24), and a client downloads via /content, never by key.
 func (m metadataRow) projection() map[string]any {
+	// run_id renders as JSON null for an artifact no run has been admitted for yet, rather than as "".
+	// An empty string would be a claim that it belongs to a run whose id is empty; null says what is true,
+	// which is that nothing has claimed it. Marshalling a nil *string produces exactly that.
 	return map[string]any{
 		"id":                  m.id,
 		"object":              "artifact",

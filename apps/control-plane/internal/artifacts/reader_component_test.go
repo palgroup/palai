@@ -234,3 +234,65 @@ func (h *artifactsHarness) seedResponseRun(t *testing.T) (org, project, response
 	h.exec(t, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id) VALUES ($1, $2, $3, $4, $5)`, runID, org, project, session, responseID)
 	return org, project, responseID, runID
 }
+
+// TestAnUnattachedArtifactIsReadableRatherThan500 pins the NULL run_id case on both read routes.
+//
+// IT EXISTS BECAUSE THE PRODUCT ANSWERED 500, live, on 2026-08-04: metadataRow.runID was a plain string,
+// artifacts.run_id is nullable, and pgx refuses to scan NULL into a string. Nothing caught it because
+// nothing could — Write demands a run, so every artifact this suite had ever built already had one, and
+// the only run-less rows in the tree belonged to an in-process bridge that attached them microseconds
+// later. POST /v1/artifacts makes "ingested, not yet named in any run" an ordinary durable state, and a
+// client that ingests an image and then reads it back before creating its run is the FIRST caller to meet
+// this row — which is the caller most likely to exist, since it is how a client checks its own upload.
+//
+// It drives the same two routes an operator does, over a REAL database and a REAL object store, and it
+// asserts the projection says null rather than "" — an empty string would claim the artifact belongs to a
+// run whose id is empty, where null says the true thing: nothing has claimed it yet.
+func TestAnUnattachedArtifactIsReadableRatherThan500(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	org, project, _ := h.seedRun(t)
+	reader := NewReader(h.s3, h.pool)
+	scope := middleware.Scope{Project: project}
+
+	content := []byte("\x89PNG\r\n\x1a\nnot-a-real-png-but-real-bytes")
+	if err := h.writer.WriteInboundArtifact(ctx, org, project, "art_unattached_read", content, "image/png", map[string]any{
+		"source": "api_ingest",
+	}); err != nil {
+		t.Fatalf("WriteInboundArtifact() error = %v", err)
+	}
+
+	meta, err := reader.GetArtifact(ctx, scope, "art_unattached_read")
+	if err != nil {
+		t.Fatalf("GetArtifact() on an unattached artifact error = %v — a NULL run_id must read, not fail", err)
+	}
+	if meta.NotFound {
+		t.Fatal("GetArtifact() reported NotFound for an artifact that was just written")
+	}
+	var projection map[string]any
+	if err := json.Unmarshal(meta.Body, &projection); err != nil {
+		t.Fatalf("decode metadata projection: %v", err)
+	}
+	if got, ok := projection["run_id"]; !ok || got != nil {
+		t.Fatalf("the projection renders run_id = %#v, want JSON null for an artifact no run has claimed", projection["run_id"])
+	}
+
+	out, err := reader.OpenArtifactContent(ctx, scope, "art_unattached_read")
+	if err != nil {
+		t.Fatalf("OpenArtifactContent() on an unattached artifact error = %v", err)
+	}
+	if out.NotFound {
+		t.Fatal("OpenArtifactContent() reported NotFound for an artifact that was just written")
+	}
+	defer out.Reader.Close()
+	streamed, err := io.ReadAll(out.Reader)
+	if err != nil {
+		t.Fatalf("read the streamed bytes: %v", err)
+	}
+	if string(streamed) != string(content) {
+		t.Fatalf("streamed %d bytes, want the %d written", len(streamed), len(content))
+	}
+	if out.MediaType != "image/png" {
+		t.Fatalf("MediaType = %q, want the recorded image/png", out.MediaType)
+	}
+}
