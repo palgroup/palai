@@ -80,7 +80,7 @@ func TestLiveBudgetRejectsSecondRunAndLedgerReconciles(t *testing.T) {
 	}
 	pool := repo.Spine().Pool()
 
-	tenant := seedTenantWithKey(t, pool, "budget")
+	token, tenant := seedTenantWithKey(t, pool, "budget")
 	meters := metering.New(pool)
 	scope := middleware.Scope{Project: tenant.Project}
 

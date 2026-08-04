@@ -72,7 +72,7 @@ func settingsSpine(t *testing.T) (*coordinator.Store, *store.Store, string) {
 	// pool to place the machine in and refuses to issue a certificate it cannot record. That refusal is the
 	// gateway behaving exactly as designed (registry-writes-before-certificate), and it is what a genuinely
 	// fresh install looks like before `palai up` provisions the first organization.
-	if err := identity.New(spine.Pool()).ProvisionFirstOrg(ctx, "sk-component-settings"); err != nil {
+	if err := identity.New(spine.Pool()).ProvisionFirstTenant(ctx, "sk-component-settings"); err != nil {
 		t.Fatalf("provision the bootstrap organization: %v", err)
 	}
 	repo, err := store.Open(ctx, dbURL)

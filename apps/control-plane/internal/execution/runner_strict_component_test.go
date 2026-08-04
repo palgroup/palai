@@ -213,7 +213,7 @@ func TestStrictIsOffOnEveryPoolThisTreeCreates(t *testing.T) {
 		// No strict_enrollment named: the column's DEFAULT is what every pool row that predates 000045 got.
 		{`INSERT INTO runner_pools (id, project_id, name, posture)
 		  VALUES ($1,$2,'upgraded','sandboxed-linux')`, upgraded, project},
-		{storage.Query("InsertDefaultRunnerPool"), provisioned, org, project},
+		{storage.Query("InsertDefaultRunnerPool"), provisioned, project},
 	} {
 		if _, err := f.pool.Exec(ctx, stmt[0].(string), stmt[1:]...); err != nil {
 			t.Fatalf("seed a provisioned tenant: %v", err)

@@ -117,7 +117,7 @@ func placementTenant(t *testing.T, f *poolKeyFixture) (coordinator.Tenant, strin
 			t.Fatalf("seed the tenant: %v", err)
 		}
 	}
-	_, key := mintPoolKey(t, f.keys)
+	_, key := mintPoolKey(t, f.keys, project, poolID, nil)
 	return coordinator.Tenant{Project: project}, poolID, key
 }
 
@@ -159,7 +159,7 @@ func TestPlacementNeverOffersOneTenantsAttemptToAnothersRunner(t *testing.T) {
 	if ch, err := f.gateway.Dial(dialCtx, intruder); err == nil {
 		_ = ch.Close()
 		t.Fatalf("tenant %s's attempt was offered a machine enrolled by tenant %s: today ANY enrolled runner can take ANY tenant's attempt (§3.6 D8)",
-			tenantB.Organization, tenantA.Organization)
+			tenantB.Project, tenantA.Project)
 	}
 	select {
 	case lease := <-machineA.lease:

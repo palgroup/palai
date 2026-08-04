@@ -71,7 +71,7 @@ func poolKeyID(prefix string) string { return middleware.NewID(prefix) }
 func poolKeyTenant(t *testing.T, pool *pgxpool.Pool, postures ...string) (project string, poolIDs []string) {
 	t.Helper()
 	ctx := storage.WithSystemScope(context.Background())
-	project = poolKeyID("org"), poolKeyID("prj")
+	project = poolKeyID("prj")
 	exec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, sql, args...); err != nil {
@@ -94,7 +94,7 @@ func poolKeyTenant(t *testing.T, pool *pgxpool.Pool, postures ...string) (projec
 // and a fake that hashed it the same way the store does would reproduce whatever the store gets wrong.
 func mintPoolKey(t *testing.T, keys *fleet.PoolEnrollmentKeys, project, poolID string, expiresAt *time.Time) (id, value string) {
 	t.Helper()
-	minted, err := keys.Mint(context.Background(), org, project, poolID, expiresAt)
+	minted, err := keys.Mint(context.Background(), project, poolID, expiresAt)
 	if err != nil {
 		t.Fatalf("mint pool key: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestPoolKeyEnrolsOnlyIntoThePoolItNames(t *testing.T) {
 	defer cancel()
 	project, pools := poolKeyTenant(t, f.pool, "unsandboxed-host", "sandboxed-linux")
 	macPool, linuxPool := pools[0], pools[1]
-	macKeyID, macKey := mintPoolKey(t, f.keys)
+	macKeyID, macKey := mintPoolKey(t, f.keys, project, macPool, nil)
 
 	// The key admits into the pool it names.
 	identity, err := f.enrolAsking(ctx, macKey, macPool)
@@ -248,7 +248,7 @@ func TestPoolKeyRevocationRefusesANewEnrolment(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	project, pools := poolKeyTenant(t, f.pool, "sandboxed-linux")
-	keyID, key := mintPoolKey(t, f.keys)
+	keyID, key := mintPoolKey(t, f.keys, project, pools[0], nil)
 
 	if _, err := f.enrolAsking(ctx, key, ""); err != nil {
 		t.Fatalf("the key did not work before it was revoked: %v", err)
@@ -291,7 +291,7 @@ func TestPoolKeyRevocationLeavesAnEnrolledRunnerRenewing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	project, pools := poolKeyTenant(t, f.pool, "sandboxed-linux")
-	keyID, key := mintPoolKey(t, f.keys)
+	keyID, key := mintPoolKey(t, f.keys, project, pools[0], nil)
 
 	identity, err := f.enrolAsking(ctx, key, pools[0])
 	if err != nil {
@@ -340,7 +340,7 @@ func TestPoolKeyRevocationDoesNotCutAnInFlightLease(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	project, pools := poolKeyTenant(t, f.pool, "sandboxed-linux")
-	keyID, key := mintPoolKey(t, f.keys)
+	keyID, key := mintPoolKey(t, f.keys, project, pools[0], nil)
 
 	identity, err := f.enrolAsking(ctx, key, pools[0])
 	if err != nil {
@@ -407,7 +407,7 @@ func TestPoolKeyIsNotAnAPIKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	project, pools := poolKeyTenant(t, f.pool, "sandboxed-linux")
-	_, key := mintPoolKey(t, f.keys)
+	_, key := mintPoolKey(t, f.keys, project, pools[0], nil)
 
 	// A real API key for the same tenant, minted the way the tenancy surface mints one. It carries
 	// `system` because GET /v1/runners now sits behind the fleet's systemOnly gate (Faz A.1 Task 3),
@@ -416,9 +416,9 @@ func TestPoolKeyIsNotAnAPIKey(t *testing.T) {
 	apiKey := "sk_poolkeyfence_" + hex.EncodeToString([]byte(poolKeyID("x")))
 	sys := storage.WithSystemScope(ctx)
 	for _, stmt := range [][]any{
-		{`INSERT INTO principals (id, project_id, kind) VALUES ($1,$2,'service')`, "prin_pkf_" + org, project},
+		{`INSERT INTO principals (id, project_id, kind) VALUES ($1,$2,'service')`, "prin_pkf_" + project, project},
 		{`INSERT INTO api_keys (id, project_id, principal_id, key_hash, scopes)
-		  VALUES ($1,$2,$3,$4,$5)`, "key_pkf_" + org, project, "prin_pkf_" + org, coordinator.HashAPIKey(apiKey), []string{middleware.ScopeSystem}},
+		  VALUES ($1,$2,$3,$4,$5)`, "key_pkf_" + project, project, "prin_pkf_" + project, coordinator.HashAPIKey(apiKey), []string{middleware.ScopeSystem}},
 	} {
 		if _, err := f.pool.Exec(sys, stmt[0].(string), stmt[1:]...); err != nil {
 			t.Fatalf("seed the API key: %v", err)
@@ -504,7 +504,7 @@ func TestPoolKeyValueReachesNoRowJournalOrLog(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	project, pools := poolKeyTenant(t, f.pool, "unsandboxed-host", "sandboxed-linux")
-	keyID, key := mintPoolKey(t, f.keys)
+	keyID, key := mintPoolKey(t, f.keys, project, pools[0], nil)
 
 	// Everything a key can be part of: an enrolment, a scope refusal, a revocation, a refused enrolment.
 	if _, err := f.enrolAsking(ctx, key, pools[0]); err != nil {

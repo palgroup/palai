@@ -56,7 +56,7 @@ func TestSlackRunArtifactReachesTheThreadAsAFile(t *testing.T) {
 
 	// The run produced a screen recording. In production the bytes are in the object store under the run that
 	// made them; here the fake holds them under the same two keys.
-	f.artifacts.putRunArtifact(f.org, f.project, runID, uploadArtifactID, componentQuickTime, 0)
+	f.artifacts.putRunArtifact(f.project, runID, uploadArtifactID, componentQuickTime, 0)
 
 	f.finalizeWith(t, responseID, "completed", fileRefAnswer(uploadArtifactID))
 	f.terminate(t, runID, statemachines.RunCmdProvision, statemachines.RunCmdStart, statemachines.RunCmdComplete)
@@ -199,7 +199,7 @@ func TestSlackUploadRefusesAnArtifactFromAnotherRun(t *testing.T) {
 	runID, responseID, _ := f.runAndResponse(t)
 
 	// The artifact exists, in this very tenant — it just belongs to a DIFFERENT run.
-	f.artifacts.putRunArtifact(f.org, f.project, "run_somebody_elses", uploadArtifactID, componentQuickTime, 0)
+	f.artifacts.putRunArtifact(f.project, "run_somebody_elses", uploadArtifactID, componentQuickTime, 0)
 
 	f.finalizeWith(t, responseID, "completed", fileRefAnswer(uploadArtifactID))
 	f.terminate(t, runID, statemachines.RunCmdProvision, statemachines.RunCmdStart, statemachines.RunCmdComplete)
@@ -233,7 +233,7 @@ func TestSlackUploadRefusesAnOversizeArtifactAndSaysSo(t *testing.T) {
 	runID, responseID, _ := f.runAndResponse(t)
 
 	// The ROW says 40 MiB. The bytes are never read — which is the point of checking the size on the row.
-	f.artifacts.putRunArtifact(f.org, f.project, runID, uploadArtifactID, componentQuickTime, 40<<20)
+	f.artifacts.putRunArtifact(f.project, runID, uploadArtifactID, componentQuickTime, 40<<20)
 
 	f.finalizeWith(t, responseID, "completed", fileRefAnswer(uploadArtifactID))
 	f.terminate(t, runID, statemachines.RunCmdProvision, statemachines.RunCmdStart, statemachines.RunCmdComplete)
@@ -264,7 +264,7 @@ func TestSlackUploadFailureLeavesTheAnswerAndTheRunAlone(t *testing.T) {
 	f.deliver(t, f.eventText(t, "EvU4", "app_mention", "Umapped", "C98", "1700000098.000100", "", "<@"+f.botUser+"> ship it"),
 		time.Now(), "", "").Body.Close()
 	runID, responseID, _ := f.runAndResponse(t)
-	f.artifacts.putRunArtifact(f.org, f.project, runID, uploadArtifactID, componentQuickTime, 0)
+	f.artifacts.putRunArtifact(f.project, runID, uploadArtifactID, componentQuickTime, 0)
 
 	f.finalizeWith(t, responseID, "completed", fileRefAnswer(uploadArtifactID))
 	f.terminate(t, runID, statemachines.RunCmdProvision, statemachines.RunCmdStart, statemachines.RunCmdComplete)

@@ -171,8 +171,8 @@ func TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool(t *testing.T) {
 	// not through a row count, because a key that no longer authenticates is a lost row whatever the
 	// count says — and the run is untouched.
 	scope, err := spine.VerifyAPIKey(context.Background(), bootstrapKey)
-	if err != nil || scope.Organization != "org_local" {
-		t.Fatalf("the pre-upgrade bootstrap key resolved to (%+v, %v) after the upgrade, want org_local", scope, err)
+	if err != nil || scope.Project != "prj_local" {
+		t.Fatalf("the pre-upgrade bootstrap key resolved to (%+v, %v) after the upgrade, want prj_local", scope, err)
 	}
 	var runStateAfter, runPool *string
 	if err := spine.Pool().QueryRow(sys, `SELECT state, pool_id FROM runs WHERE id = $1`, runID).Scan(&runStateAfter, &runPool); err != nil {
@@ -202,23 +202,22 @@ func TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool(t *testing.T) {
 	}
 
 	// R6's OTHER population is identity.provision's — a stack born AFTER 000045, where the migration's
-	// guarded seed cannot help because the migrations run before there is any organization to reference.
-	// CreateOrganization runs the same provision transaction ProvisionFirstOrg does, so a pool arriving
-	// with a tenant born here is the same claim for both.
-	created, err := identity.New(spine.Pool()).CreateOrganization(sys, middleware.Scope{}, []byte(`{"display_name":"fleet-seed"}`))
+	// guarded seed cannot help because the migrations run before there is any tenant to reference.
+	// CreateProject runs the same provision transaction ProvisionFirstTenant does (it is what A.2 Task 6
+	// left of CreateOrganization), so a pool arriving with a tenant born here is the same claim for both.
+	created, err := identity.New(spine.Pool()).CreateProject(sys, middleware.Scope{}, []byte(`{"display_name":"fleet-seed"}`))
 	if err != nil {
-		t.Fatalf("create a second organization: %v", err)
+		t.Fatalf("create a second project: %v", err)
 	}
 	var born struct {
-		ID               string `json:"id"`
-		DefaultProjectID string `json:"default_project_id"`
+		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(created.Body, &born); err != nil || born.ID == "" {
-		t.Fatalf("decode the created organization: %v (%s)", err, created.Body)
+		t.Fatalf("decode the created project: %v (%s)", err, created.Body)
 	}
 	var bornPools int
 	if err := spine.Pool().QueryRow(sys,
-		`SELECT count(*) FROM runner_pools WHERE  project_id = $1 AND posture = 'sandboxed-linux'`, born.DefaultProjectID).Scan(&bornPools); err != nil {
+		`SELECT count(*) FROM runner_pools WHERE project_id = $1 AND posture = 'sandboxed-linux'`, born.ID).Scan(&bornPools); err != nil {
 		t.Fatalf("count the new tenant's pools: %v", err)
 	}
 	if bornPools != 1 {

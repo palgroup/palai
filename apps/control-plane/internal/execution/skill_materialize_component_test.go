@@ -97,7 +97,7 @@ func TestSkillBodyMaterializedAndReadableViaFileTool(t *testing.T) {
 
 	// Materialize into a throwaway allocation dir.
 	alloc := t.TempDir()
-	if err := st.MaterializeRunSkills(ctx, tenant, runID, alloc); err != nil {
+	if err := st.MaterializeRunSkills(ctx, tenant, runID, skillWriterUnder(alloc)); err != nil {
 		t.Fatalf("MaterializeRunSkills: %v", err)
 	}
 	onDisk := filepath.Join(alloc, ".palai", "skills", "commit-convention", "SKILL.md")
@@ -167,10 +167,28 @@ func TestSkillMaterializationRefusesEscapingName(t *testing.T) {
 		[]byte(`[{"name":"../escaped/pwned","description":"","digest":"`+q.Digest+`","path":"x"}]`))
 
 	alloc := t.TempDir()
-	if err := st.MaterializeRunSkills(ctx, tenant, runID, alloc); err == nil {
+	if err := st.MaterializeRunSkills(ctx, tenant, runID, skillWriterUnder(alloc)); err == nil {
 		t.Fatal("MaterializeRunSkills accepted an escaping skill name — containment must refuse it")
 	}
 	if _, statErr := os.Stat(filepath.Join(alloc, ".palai", "escaped")); statErr == nil {
 		t.Fatal("materialization wrote outside <alloc>/.palai/skills/ — containment breached")
+	}
+}
+
+// skillWriterUnder is the local stand-in for the attempt's confined workspace surface: MaterializeRunSkills
+// takes a WRITER since A.3 T5 (the allocation may live on another machine), so a component test that owns a
+// host directory supplies the host-writing equivalent of what the runner does. It mirrors the helper the
+// e2e journey uses, and the paths it receives are SLASH-RELATIVE — filepath.Join is what makes them local.
+//
+// It is NOT the containment boundary and must not be read as one. MaterializeRunSkills refuses an escaping
+// pin by NAME before it calls write at all, which is what TestSkillMaterializationRefusesEscapingName
+// exercises; this closure would happily join a `..` if it were ever handed one.
+func skillWriterUnder(root string) func(rel string, body []byte) error {
+	return func(rel string, body []byte) error {
+		dst := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(dst, body, 0o644)
 	}
 }

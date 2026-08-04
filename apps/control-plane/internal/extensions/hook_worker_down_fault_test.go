@@ -37,7 +37,7 @@ func faultID(prefix string) string {
 
 // openHookFaultStore opens a migrated spine (real Postgres), seeds an org+project, wires the store with the
 // REAL signed-transport executor, and returns the store + pool + scope.
-func openHookFaultStore(t *testing.T) (*Store, *pgxpool.Pool, string, string) {
+func openHookFaultStore(t *testing.T) (*Store, *pgxpool.Pool, string) {
 	t.Helper()
 	url := os.Getenv("PALAI_FAULT_POSTGRES_URL")
 	if url == "" {
@@ -65,7 +65,7 @@ func openHookFaultStore(t *testing.T) (*Store, *pgxpool.Pool, string, string) {
 		remotehttp.NewExecutor(remotehttp.NewOperations(pool)),
 		func(_ string) ([]byte, error) { return []byte("fault-signing-secret"), nil },
 	)
-	return s, pool, org, project
+	return s, pool, project
 }
 
 // insertRemoteFaultHook writes a remote_http hook row DIRECTLY (bypassing the create-time egress gate, which
@@ -88,7 +88,7 @@ func insertRemoteFaultHook(t *testing.T, pool *pgxpool.Pool, project, name, poin
 // stalls another run.
 func TestHookWorkerDownFailsClosedTripsBreakerControlPlaneUp(t *testing.T) {
 	ctx := context.Background()
-	s, pool, org, project := openHookFaultStore(t)
+	s, pool, project := openHookFaultStore(t)
 
 	// A DOWN/erroring worker: every request is a 503 (server up but refusing to serve), so the signed invoke
 	// gets a definite negative answer that counts toward the breaker.
@@ -103,8 +103,8 @@ func TestHookWorkerDownFailsClosedTripsBreakerControlPlaneUp(t *testing.T) {
 	}))
 	defer up.Close()
 
-	insertRemoteFaultHook(t, pool)
-	insertRemoteFaultHook(t, pool)
+	insertRemoteFaultHook(t, pool, project, "down_guard", HookPointBeforeTool, down.URL)
+	insertRemoteFaultHook(t, pool, project, "up_guard", HookPointBeforeModel, up.URL)
 
 	beforeTool := func() HookOutcome {
 		out, err := s.Fire(ctx, HookEvent{

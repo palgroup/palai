@@ -130,7 +130,7 @@ func interactiveApprovalBody(team, user, actionID, requestHash string) []byte {
 // automation trigger store wired to the real admitter, and the shared pool.
 func journeySpine(t *testing.T) (*coordinator.Store, *Store, *automation.TriggerStore, *pgxpool.Pool) {
 	t.Helper()
-	s, _, _ := openStore(t) // skips without PALAI_COMPONENT_POSTGRES_URL; migrates the spine
+	s, _ := openStore(t) // skips without PALAI_COMPONENT_POSTGRES_URL; migrates the spine
 	pool := s.pool
 	cs, err := coordinator.Open(context.Background(), poolURL(t))
 	if err != nil {
@@ -170,9 +170,9 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 
 	// The tenant + the canonical session and its ACTIVE root run. The run's birth is not what this journey
 	// proves (the Slack mapping is), so it is seeded directly — the seedRun idiom.
-	org, project := seedOrgProject(t, store)
+	project := seedOrgProject(t, store)
 	tenant := coordinator.Tenant{Project: project}
-	otherSessionID := seedSession(t, store), seedSession(t, store)
+	sessionID, otherSessionID := seedSession(t, store, project), seedSession(t, store, project)
 	respID, runID := testID("resp"), testID("run")
 	mustSystemExec(t, pool, `UPDATE sessions SET state='active' WHERE id=$1`, sessionID)
 	mustSystemExec(t, pool, `INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'in_progress')`,
@@ -319,8 +319,8 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 	pub, err := cs.RequestPublication(ctx, tenant, coordinator.PublicationRequest{
 		PublicationID: testID("pub"), ApprovalID: testID("apr"), SessionID: sessionID, RunID: runID,
 		Operation: "push_branch", Remote: "git@fake:o/r", Branch: "agent/journey", Base: "main", HeadSHA: "c0ffee",
-		IdempotencyKey: repositories.IdempotencyKey(org, project, runID, repositories.OpPushBranch, "git@fake:o/r", "agent/journey", "main", "c0ffee"),
-		RequestHash:    repositories.RequestHash(org, project, runID, repositories.OpPushBranch, "git@fake:o/r", "agent/journey", "main", "c0ffee"),
+		IdempotencyKey: repositories.IdempotencyKey(project, runID, repositories.OpPushBranch, "git@fake:o/r", "agent/journey", "main", "c0ffee"),
+		RequestHash:    repositories.RequestHash(project, runID, repositories.OpPushBranch, "git@fake:o/r", "agent/journey", "main", "c0ffee"),
 		Display:        "push agent/journey",
 	})
 	if err != nil {

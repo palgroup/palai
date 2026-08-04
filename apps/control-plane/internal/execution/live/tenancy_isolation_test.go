@@ -67,7 +67,7 @@ func TestLiveTenancyIsolationCrossOrgDeny(t *testing.T) {
 	// Org-A owns the run; org-B is a second tenant on the SAME stack with its own key. Each key's plaintext
 	// exists only here; only its hash reaches the database (coordinator.HashAPIKey).
 	tokenA, tenantA, sessionA, respA, runA := seedTenantWithRun(t, pool, "org-A: reply with the single word done.")
-	_ := seedTenantWithKey(t, pool, "org-B")
+	tokenB, _ := seedTenantWithKey(t, pool, "org-B")
 
 	// Drive org-A's run to a terminal completion on the REAL provider — the run being isolated is genuine.
 	broker := modelbroker.New(modelbroker.Config{

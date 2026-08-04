@@ -60,12 +60,12 @@ const (
 func dbSecretResolver(t *testing.T, secrets *identity.SecretStore) SecretResolver {
 	t.Helper()
 	return func(ref string) ([]byte, error) {
-		v, ok, err := secrets.Resolve(context.Background(), org, ref)
+		v, ok, err := secrets.Resolve(context.Background(), ref)
 		switch {
 		case err != nil:
 			return nil, err
 		case !ok:
-			return nil, fmt.Errorf("no secret is stored for ref %q under org %q", ref, org)
+			return nil, fmt.Errorf("no secret is stored for ref %q", ref)
 		}
 		return v, nil
 	}
@@ -125,7 +125,7 @@ func seedSlackWorkspace(t *testing.T, s *Store, project string) (*identity.Secre
 // nothing — the state on main — fails it with the consumer's own symptom.
 func TestSlackHandlesRedeemToTheStoredValues(t *testing.T) {
 	s, project := openStore(t)
-	secrets, conn := seedSlackWorkspace(t, s)
+	secrets, conn := seedSlackWorkspace(t, s, project)
 	resolve := dbSecretResolver(t, secrets)
 
 	for _, want := range []struct{ what, ref string }{

@@ -160,7 +160,7 @@ func TestManagedCloudJourney(t *testing.T) {
 		respA2, tenantA.Project, sessionA)
 
 	// A second seeded tenant with its own key — the outsider whose key must be denied A's resources.
-	_ := seedTenantWithKey(t, pool, "org-B")
+	tokenB, _ := seedTenantWithKey(t, pool, "org-B")
 
 	// Step (real-run): drive the provisioned tenant's run to a terminal completion on the REAL provider —
 	// the run the rest of the journey lists, steers, and isolates is genuine (a real chatcmpl id).

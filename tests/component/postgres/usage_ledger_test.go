@@ -161,9 +161,9 @@ func seedLedgerRow(t *testing.T, pool *pgxpool.Pool, project, meter string, quan
 		sql  string
 		args []any
 	}{
-		{`INSERT INTO projects (id) VALUES ($1) ON CONFLICT DO NOTHING`, []any{project, org}},
-		{`INSERT INTO usage_ledger (id, organization_id, project_id, meter, quantity, unit, dedupe_key)
-		  VALUES ($1, $2, $3, $4, $5, 'token', $1)`, []any{newID("use"), org, project, meter, quantity}},
+		{`INSERT INTO projects (id) VALUES ($1) ON CONFLICT DO NOTHING`, []any{project}},
+		{`INSERT INTO usage_ledger (id, project_id, meter, quantity, unit, dedupe_key)
+		  VALUES ($1, $2, $3, $4, 'token', $1)`, []any{newID("use"), project, meter, quantity}},
 	}
 	for _, stmt := range stmts {
 		if _, err := pool.Exec(ctx, stmt.sql, stmt.args...); err != nil {

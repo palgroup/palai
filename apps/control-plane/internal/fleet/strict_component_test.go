@@ -191,7 +191,7 @@ func stateOf(t *testing.T, pool *pgxpool.Pool, id string) string {
 func strictTenantFixture(t *testing.T) (project, poolID string) {
 	t.Helper()
 	pool := openPool(t)
-	_, poolID := tenantFixture(t, pool, "sandboxed-linux")
+	project, poolID = tenantFixture(t, pool, "sandboxed-linux")
 	if _, err := pool.Exec(storage.WithSystemScope(context.Background()),
 		`UPDATE runner_pools SET strict_enrollment = true WHERE id = $1`, poolID); err != nil {
 		t.Fatalf("make pool %s strict: %v", poolID, err)

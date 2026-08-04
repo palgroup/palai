@@ -65,7 +65,7 @@ func newBirthFixture(t *testing.T) *birthFixture {
 	prj := poolKeyID("prj")
 	sys := storage.WithSystemScope(context.Background())
 	admin, runOnly := "sk_birth_admin_"+poolKeyID("v"), "sk_birth_run_"+poolKeyID("v")
-	principal := "prin_birth_" + org
+	principal := "prin_birth_" + prj
 	stmts := [][]any{
 		{`INSERT INTO projects (id) VALUES ($1)`, prj},
 		{`INSERT INTO principals (id, project_id, kind) VALUES ($1,$2,'service')`, principal, prj},
@@ -75,14 +75,14 @@ func newBirthFixture(t *testing.T) *birthFixture {
 		// empty set as unrestricted), so it must be named explicitly alongside `provision`/`approve` or
 		// the fleet's systemOnly gate refuses this key before any of the assertions below are reached.
 		{`INSERT INTO api_keys (id, project_id, principal_id, key_hash, scopes)
-		  VALUES ($1,$2,$3,$4,$5)`, "key_birth_adm_" + org, prj, principal,
+		  VALUES ($1,$2,$3,$4,$5)`, "key_birth_adm_" + prj, prj, principal,
 			coordinator.HashAPIKey(admin), []string{middleware.ScopeSystem, "provision", "approve"}},
 		// This key still carries `system` — it must clear the fleet's systemOnly gate to REACH the
 		// `provision` check TestPoolBirthIsProvisionGatedAndTenantScoped is actually about. Without
 		// `system` it would be refused at the outer gate for the wrong reason and the test would pass
 		// without ever exercising the capability it names.
 		{`INSERT INTO api_keys (id, project_id, principal_id, key_hash, scopes)
-		  VALUES ($1,$2,$3,$4,$5)`, "key_birth_run_" + org, prj, principal,
+		  VALUES ($1,$2,$3,$4,$5)`, "key_birth_run_" + prj, prj, principal,
 			coordinator.HashAPIKey(runOnly), []string{middleware.ScopeSystem, "run"}},
 	}
 	for _, stmt := range stmts {

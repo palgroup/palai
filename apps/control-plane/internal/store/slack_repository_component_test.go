@@ -83,7 +83,7 @@ func (f *slackFixture) sessionWorkspace(t *testing.T) (bindingID, ref string, fo
 // repository attached. Before T3 this failed — no workspace row existed at all.
 func TestSlackRunCarriesTheConnectionsRepositoryBinding(t *testing.T) {
 	f := newSlackFixture(t)
-	binding := f.bindRepository(t, f.org, f.project)
+	binding := f.bindRepository(t, f.project)
 	f.useRepository(t, binding)
 
 	resp := f.deliver(t, f.event("EvRepo1", "app_mention", "Umapped", "C40", "1700000600.000100", ""), time.Now(), "", "")
@@ -145,7 +145,7 @@ func TestSlackRefusesAnotherTenantsRepositoryBinding(t *testing.T) {
 	f := newSlackFixture(t)
 	foreignProject := newID("prj")
 	exec(t, f.pool, `INSERT INTO projects (id) VALUES ($1)`, foreignProject)
-	foreign := f.bindRepository(t, foreignOrg, foreignProject)
+	foreign := f.bindRepository(t, foreignProject)
 	f.useRepository(t, foreign)
 
 	resp := f.deliver(t, f.event("EvRepo3", "app_mention", "Umapped", "C40", "1700000602.000100", ""), time.Now(), "", "")
