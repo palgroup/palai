@@ -6,15 +6,15 @@
 -- name: GetProjectConfig
 SELECT config_policy
 FROM projects
-WHERE organization_id = $1 AND id = $2;
+WHERE id = $1;
 
 -- InsertConfigRevision records a session config revision at the boundary where it applied. The
 -- sequence is the change_config command's applied_sequence, so the latest-by-sequence revision
 -- is the session's effective config (spec §9.3, §14).
 -- name: InsertConfigRevision
 INSERT INTO config_revisions
-    (id, organization_id, project_id, session_id, command_id, sequence, model, tools, snapshot_hash, immediate)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+    (id, project_id, session_id, command_id, sequence, model, tools, snapshot_hash, immediate)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
 -- LatestSessionConfig reads a session's most recent config revision — the effective override the
 -- orchestrator routes a model step under. No revision (never changed) yields no row, so the step
@@ -22,6 +22,6 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
 -- name: LatestSessionConfig
 SELECT model, tools
 FROM config_revisions
-WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
+WHERE session_id = $1 AND project_id = $2
 ORDER BY sequence DESC
 LIMIT 1;

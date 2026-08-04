@@ -97,7 +97,7 @@ func (p ConfigPolicy) ApproverAllowed(principal string) bool {
 func (s *Store) ProjectConfig(ctx context.Context, tenant Tenant) (ConfigPolicy, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var raw []byte
-	err := s.pool.QueryRow(ctx, storage.Query("GetProjectConfig"), tenant.Organization, tenant.Project).Scan(&raw)
+	err := s.pool.QueryRow(ctx, storage.Query("GetProjectConfig"), tenant.Project).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ConfigPolicy{}, nil
 	}
@@ -111,7 +111,7 @@ func (s *Store) ProjectConfig(ctx context.Context, tenant Tenant) (ConfigPolicy,
 // check (the deny must commit atomically with the command's rejection).
 func projectConfigTx(ctx context.Context, tx pgx.Tx, tenant Tenant) (ConfigPolicy, error) {
 	var raw []byte
-	err := tx.QueryRow(ctx, storage.Query("GetProjectConfig"), tenant.Organization, tenant.Project).Scan(&raw)
+	err := tx.QueryRow(ctx, storage.Query("GetProjectConfig"), tenant.Project).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ConfigPolicy{}, nil
 	}
@@ -144,7 +144,7 @@ func (s *Store) LatestSessionConfig(ctx context.Context, tenant Tenant, sessionI
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var override SessionOverride
 	var toolsJSON []byte
-	err := s.pool.QueryRow(ctx, storage.Query("LatestSessionConfig"), sessionID, tenant.Organization, tenant.Project).
+	err := s.pool.QueryRow(ctx, storage.Query("LatestSessionConfig"), sessionID, tenant.Project).
 		Scan(&override.Model, &toolsJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SessionOverride{}, false, nil
@@ -248,7 +248,7 @@ func applyConfigChangeInTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessio
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertConfigRevision"),
-		plan.RevisionID, tenant.Organization, tenant.Project, sessionID, commandID, seq,
+		plan.RevisionID, tenant.Project, sessionID, commandID, seq,
 		plan.Model, nullableJSON(plan.ToolsJSON), plan.SnapshotHash, plan.Immediate); err != nil {
 		return 0, fmt.Errorf("insert config revision: %w", err)
 	}

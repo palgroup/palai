@@ -149,7 +149,7 @@ func approverAllowed(ctx context.Context, tx pgx.Tx, org, project, principal str
 	// every project alive today) needs no branch of its own below.
 	var policy coordinator.ConfigPolicy
 	var raw []byte
-	err := tx.QueryRow(ctx, storage.Query("GetProjectConfig"), org, project).Scan(&raw)
+	err := tx.QueryRow(ctx, storage.Query("GetProjectConfig"), project).Scan(&raw)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 	case err != nil:
