@@ -44,10 +44,6 @@ var optionalEnv = map[string]bool{
 	"PALAI_PROM_PORT":                 true,
 	"PALAI_GRAFANA_PORT":              true,
 	"PALAI_GRAFANA_ADMIN_PASSWORD":    true,
-	// The Slack Socket Mode workspace (a team id, not a credential). It reads with a compose default
-	// like its neighbours, and it is MORE relevant in production than locally: Socket Mode needs no
-	// public callback URL, so it is the one Slack transport that works behind the edge unchanged.
-	"PALAI_SLACK_SOCKET_TEAM_ID": true,
 	// The edge's own TLS pair. Unset, the overlay mounts ${PALAI_HOME}/ca/server.* exactly as it
 	// always did; set, the edge carries the operator's real-domain certificate while the runner
 	// gateway keeps the single-SAN identity it pins (deploy/compose/production.yml, install.md §7).

@@ -1546,32 +1546,10 @@ func remoteToolSecretResolver(ref string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// slackSecretResolver is the fourth sibling of webhook/inbound/remoteToolSecretResolver (E19 T1): it bridges
-// a slack_connections.signing_secret_ref handle to the v0 signing-secret bytes via
-// PALAI_SLACK_SECRET_FILE_<REF> (a FILE PATH, never inline). The <ORG>__ segment and the per-tenant
-// boundary it claimed both left with A.2 Task 6: secretEnvKey keys on the ref alone and a ref name is
-// installation-wide (000066). The Slack namespace is still DISTINCT from the webhook/inbound/remote-tool
-// ones — four PREFIXES, so the four secret sets stay
-// non-interchangeable. An unresolved ref fails VERIFICATION (a generic 401 upstream), never an unsigned
-// accept: a receiver that cannot check a signature refuses. The same bridge will resolve bot_token_ref /
-// app_token_ref when T2/T3 wire the outbound and Socket Mode legs.
-func slackSecretResolver(ref string) ([]byte, error) {
-	if ref == "" {
-		return nil, errors.New("empty slack secret ref")
-	}
-	if v, ok, err := dbSecret(ref); err != nil {
-		return nil, err
-	} else if ok {
-		return v, nil
-	}
-	path := os.Getenv("PALAI_SLACK_SECRET_FILE_" + secretEnvKey(ref))
-	if path == "" {
-		return nil, fmt.Errorf("no secret bridge configured for slack ref %q", ref)
-	}
-	return os.ReadFile(path)
-}
-
-// a2aRemoteSecretResolver is the fifth sibling of webhook/inbound/remoteTool/slackSecretResolver (E19 T5):
+// a2aRemoteSecretResolver is the fourth sibling of webhook/inbound/remoteToolSecretResolver (E19 T5).
+// It was the FIFTH until 2026-08-05, when slackSecretResolver went with the Slack bridge that was its only
+// caller: a bot's credentials are resolved through GET /v1/bots/{id}/credentials now, and PALAI_SLACK_SECRET_FILE_*
+// has no reader left in this binary.
 // it bridges an a2a_remote_agents.auth_connection_ref handle to the REMOTE CONNECTION'S OWN bearer via
 // PALAI_A2A_REMOTE_SECRET_FILE_<REF> (a FILE PATH, never inline). The <ORG>__ segment and the per-tenant
 // boundary it claimed both left with A.2 Task 6: secretEnvKey keys on the ref alone and a ref name is

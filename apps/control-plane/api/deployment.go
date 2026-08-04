@@ -691,12 +691,11 @@ var deploymentCatalogue = []catalogueEntry{
 	},
 
 	// --- what this deployment is connected to ---------------------------------------------------------
-	{
-		Name: "PALAI_SLACK_SOCKET_TEAM_ID", Group: "integration", Kind: kindValue, Default: "unset — Socket Mode is DORMANT, so a registered workspace can never receive an @mention",
-		Effect:     "The Slack workspace this deployment holds an outbound Socket Mode connection to. A workspace ID, not a credential.",
-		Mutability: mutabilityBringUp, ChangeWith: changeCP,
-		ReaderFile: cpMain, ReaderFunc: "startSlackSocket",
-	},
+	// PALAI_SLACK_SOCKET_TEAM_ID WAS CATALOGUED HERE AND IS GONE (cutover, 2026-08-05). It named the one
+	// Slack workspace the control plane held an outbound Socket Mode connection to, read by
+	// main.startSlackSocket. That function no longer exists: apps/slack-bot holds the connection, one
+	// process per registered bot row, so there is no single-workspace selector to report and no reader to
+	// cite. TestEveryCatalogueCitationResolvesToARealReader is what caught the stale citation.
 	{
 		Name: "PALAI_GITHUB_APP_ID", Group: "integration", Kind: kindValue, Default: "unset — the LOCAL repository broker is used, which reaches public repos and local remotes only",
 		Effect:     "The GitHub App this deployment mints repository read credentials from. All three App variables must be set together; any one missing falls back to the local broker.",
@@ -889,11 +888,6 @@ var nonDesiredReason = map[string]string{
 		"Writing two of three falls back to the local repository broker with nothing on any screen able to say why.",
 	"PALAI_GITHUB_APP_INSTALLATION_ID": "see PALAI_GITHUB_APP_ID.",
 	"PALAI_GITHUB_REPO":                "it narrows a credential this surface cannot mint; on its own it configures nothing.",
-
-	// --- a binding whose other half is a credential ---------------------------------------------------
-	"PALAI_SLACK_SOCKET_TEAM_ID": "the workspace half of a pair whose other half is an app-level TOKEN in the secret store. Written " +
-		"alone it points Socket Mode at a workspace this deployment holds no token for, and the failure is a connect loop that never " +
-		"says which of the two is wrong. A workspace is registered through POST /v1/slack-connections, which takes both.",
 
 	// --- it has a strictly better live write-path ------------------------------------------------------
 	"PALAI_OPENAI_COMPATIBLE_BASE_URL": "superseded by a LIVE write-path that is strictly better: migration 000051 gave " +

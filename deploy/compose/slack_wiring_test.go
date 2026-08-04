@@ -45,22 +45,21 @@ func loadWiring(t *testing.T) composeWiring {
 	return doc
 }
 
-// TestComposePassesTheSlackSocketSelector is Gap 1. main.startSlackSocket is the ONLY start* in the
-// control-plane that is conditional on an env var, and compose passed nothing — so the connect loop
-// was dormant in every compose deployment no matter what the operator configured.
+// TestComposePassesTheSlackSocketSelector WAS HERE AND IS GONE (cutover, 2026-08-05). It asserted that
+// compose passed PALAI_SLACK_SOCKET_TEAM_ID with an EMPTY default — both halves load-bearing, because the
+// control plane's Socket Mode loop could not start without the variable and every Slack-less stack would
+// have changed behaviour with a non-empty one.
 //
-// Both halves are load-bearing: the variable must be PASSED (or Slack can never start) and its
-// default must be EMPTY (or every stack without a Slack app changes behaviour).
-func TestComposePassesTheSlackSocketSelector(t *testing.T) {
-	env := loadWiring(t).Services["control-plane"].Environment
-	got, ok := env["PALAI_SLACK_SOCKET_TEAM_ID"]
-	if !ok {
-		t.Fatal("the control-plane service does not pass PALAI_SLACK_SOCKET_TEAM_ID: the Socket Mode connect loop cannot start in a compose deployment")
-	}
-	if got != "${PALAI_SLACK_SOCKET_TEAM_ID:-}" {
-		t.Fatalf("PALAI_SLACK_SOCKET_TEAM_ID = %q, want ${PALAI_SLACK_SOCKET_TEAM_ID:-} (optional, empty default = dormant)", got)
-	}
-}
+// The loop is deleted. apps/slack-bot holds the connection now, one process per registered bot row, reading
+// its own row through /v1 — so compose configures nothing Slack-shaped and there is no selector to pass. The
+// variable is gone from compose.yaml, from the deployment catalogue and from the CLI's config validator in
+// the same change.
+//
+// THE OTHER THREE TESTS IN THIS FILE STAY and none of them is about Slack's transport: they assert that a
+// secret-ref handle can be redeemed at all, that the object store reaches the control plane, and that no
+// Slack CREDENTIAL is ever a compose environment value. The last one matters more after this cutover rather
+// than less — the bot's credentials live in the secret store and a compose file is exactly where somebody
+// would be tempted to paste one.
 
 // TestComposeCanRedeemASecretRefHandle is Gap 2. `palai up` registers signing_secret_ref /
 // bot_token_ref / app_token_ref — correctly handles, never values — but the base profile mounted no
