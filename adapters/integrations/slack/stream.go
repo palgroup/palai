@@ -76,19 +76,33 @@ type StreamStart struct {
 	TaskDisplayMode string
 }
 
-// TaskDisplayModeTimeline shows a run's steps IN THE ORDER THEY HAPPEN, which is the honest mode for this
-// tree's agent and the reason the alternative is not offered.
+// TaskDisplayModePlan GROUPS a run's steps into ONE container instead of leaving a card per step loose in
+// the thread — which is what makes a finished answer calm rather than preceded by a column of ticks.
 //
-// CONTRACT: https://docs.slack.dev/reference/methods/chat.startStream/ (checked 2026-08-03) — task_display_mode
+// CONTRACT: https://docs.slack.dev/reference/methods/chat.startStream/ (checked 2026-08-04) — task_display_mode
 // is `timeline` (the default), `plan` or `dense`, and it is an argument of chat.startStream ONLY: a stream
-// cannot change how its steps are drawn once it is open.
+// cannot change how its steps are drawn once it is open. Of `plan` the page says it "displays all tasks
+// together, with the first task's placement determining the placement of the rest"; and
+// https://slack.dev/slack-thinking-steps-ai-agents/ (checked 2026-08-04) says of the modes that they are
+// "collapsed by default, so they don't overwhelm the conversation".
 //
-// `plan` GROUPS STEPS DECLARED UP FRONT, and we do not have them. A Palai run discovers its tool calls as the
-// model makes them — the relay learns of a step from tool_call.executing.v1, i.e. as it BEGINS — so a plan
-// view would be a to-do list this bot cannot write: it would either render one step at a time (a plan of one,
-// repeatedly) or claim foreknowledge of work not yet chosen. `timeline` says exactly what is true, which is
-// that these things happened in this order.
-const TaskDisplayModeTimeline = "timeline"
+// THIS TREE PREVIOUSLY CHOSE `timeline` AND GAVE A REASON THAT IS MEASURED FALSE. The reason was that "plan
+// GROUPS STEPS DECLARED UP FRONT, and we do not have them" — a Palai run discovers its tool calls as the model
+// makes them, so a plan was thought to require foreknowledge this bot cannot have. Driven against the live API
+// (2026-08-04, workspace T0AMPM5JX8U) with the EXACT incremental sequence a real run produces — four
+// `task_update` chunks arriving one at a time, none announced in advance — plan mode answers ok and keeps:
+//
+//	{"type":"plan","title":"Thinking completed","tasks":[{task_id,title,status} ×4]}
+//
+// So the grouping is built from the same per-step chunks `timeline` takes; nothing is declared up front and no
+// foreknowledge is claimed. The old comment described the BLOCK-side plan (blocks.go's TaskDisplayMode, which
+// renders a list this tree really does hold all at once), not this one.
+//
+// `dense` IS NOT OFFERED BECAUSE IT MEASURED IDENTICAL TO `timeline`. Its documented job is to collapse
+// "consecutive tool calls into a single summarized task card"; replayed with the same four consecutive calls it
+// kept four separate `task_card` blocks, byte for byte what `timeline` kept. Whatever it does is not visible in
+// the message the workspace stores, so choosing it would be choosing a difference this tree cannot show.
+const TaskDisplayModePlan = "plan"
 
 // StartStream opens a streaming message in a channel thread and returns the ts Slack assigned it — the handle
 // every later append and the final stop address. A missing recipient or thread refuses without calling.
@@ -120,7 +134,16 @@ func StartStream(ctx context.Context, doer Doer, apiBase string, token []byte, r
 		payload["task_display_mode"] = req.TaskDisplayMode
 		// The opening text rides a CHUNK, because sending it as markdown_text would open a text stream and
 		// every task card this mode exists for would then be refused.
-		payload["chunks"] = []map[string]any{MarkdownChunk(req.MarkdownText)}
+		//
+		// AN EMPTY OPENING SENDS NO CHUNK AT ALL, which is what lets a caller open a stream that shows nothing
+		// until the run itself has something to show. MEASURED (2026-08-04): chat.startStream with
+		// task_display_mode and NO `chunks` key is answered ok, and the message it opens keeps `text:""` with
+		// no blocks. That matters because the alternative is not free — whatever opens the body STAYS in the
+		// body, above the answer, for as long as the message exists (see relay.Run, which used to open with
+		// "Working…" and left every finished answer prefixed by it).
+		if req.MarkdownText != "" {
+			payload["chunks"] = []map[string]any{MarkdownChunk(req.MarkdownText)}
+		}
 	} else {
 		payload["markdown_text"] = TruncateMarkdown(req.MarkdownText)
 	}

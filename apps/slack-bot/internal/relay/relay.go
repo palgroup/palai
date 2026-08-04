@@ -69,26 +69,89 @@ type Deps struct {
 	OnApproval ApprovalHook
 }
 
-// startingStatus is what the Slack message shows the instant a relay begins, before anything has
-// journaled: the wait between a run being born and its first model step is otherwise a silent gap.
+// thinkingTaskID is the id of the ONE card that stands for the model's OWN working time — the intervals
+// where the agent is composing rather than running a tool.
 //
-// THE TRAILING NEWLINE IS THE SAME SEPARATOR emitStatus guarantees, and it is needed HERE for a reason that
-// path does not cover: this text is chat.startStream's markdown_text, so it never passes through emitStatus
-// at all, and the first model_step.delta.v1 appends directly onto it. Without it a plain question — no tool
-// calls, which per E08 is EVERY real single-step run — comes back reading `Working…Projede toplam 7 Swift
-// dosyası var`. That is the `doneProjede` defect on the one path that had no status line to blame.
-const startingStatus = "Working…\n"
+// IT IS A LITERAL, AND IT CANNOT COLLIDE with a tool's card: every other id in this stream is a
+// `tool_call_id`, which the ledger mints as `tcall_<hex>`. Repeating this id is what makes the model's
+// thinking ONE pulsing row rather than one row per step — five model steps in the measured run below would
+// otherwise have left five identical "Thinking" cards in the finished message.
+const thinkingTaskID = "palai.thinking"
 
-// runTerminalEvents is Run's own copy of the run terminal set. It MIRRORS terminalEventTypes in
-// apps/control-plane/api/events.go — the SSE endpoint's own closing set — rather than importing it,
-// because that map is unexported there. A run terminal added to one and not the other is a real drift
-// risk, catchable only by re-measuring both sides, not by the compiler.
-var runTerminalEvents = map[string]bool{
-	"run.completed.v1":       true,
-	"run.failed.v1":          true,
-	"run.canceled.v1":        true,
-	"run.timed_out.v1":       true,
-	"run.budget_exceeded.v1": true,
+// thinkingTitle is the card's headline in every state it can be in. It is DELIBERATELY NOT REWRITTEN as the
+// status changes: `title` REPLACES on a task_update, so a title that tracked the state would be a second,
+// redundant encoding of the status pill Slack already draws — and one more string able to disagree with it.
+const thinkingTitle = "Thinking"
+
+// THE GAP THIS CARD EXISTS TO FILL, measured end to end on 2026-08-04 against a real run
+// (ses_3b6c1cf9a3a23336c1ec68a1dcf2095e, the relay's own send log timestamped from the stream opening):
+//
+//	t+ 0.0s  startStream "Working…"
+//	t+ 8.5s  tool 1 in_progress          <- the FIRST thing that ever appeared, 33% into the run
+//	t+ 8.8s  tool 1 done                 <- in_progress lasted 300ms
+//	t+12.0s  tool 2 in_progress          <- 3.2s of nothing before it
+//	t+12.5s  tool 2 done
+//	t+15.0s  tool 3 in_progress          <- 2.5s of nothing
+//	t+15.3s  tool 3 done
+//	t+18.5s  tool 4 in_progress          <- 3.2s of nothing
+//	t+18.8s  tool 4 done
+//	t+20.5s  the answer's first text
+//	t+26.4s  stopStream
+//
+// So of 26 seconds, roughly 19 showed a reader NOTHING NEW, and the four moments that did show something
+// were each visible for a third of a second. That is the whole of "çalışırken hiçbir düşünüyor hâli
+// göremedim": the run was not quiet, the RENDERING was.
+//
+// The same journal says what to draw in those gaps, and it is not a guess: every one of them is bracketed by
+// a `model_step.created.v1` / `model_step.completed.v1` pair. The run's 33 events are
+// run.queued/provisioning/running, then FIVE model steps — four that decide on a tool and emit no text at
+// all, and a fifth that writes the answer as 11 deltas — interleaved with the four tool calls.
+//
+// WHAT THIS IS NOT: the model's reasoning CONTENT. Nothing in this product journals that; `model_step.*` and
+// `tool_call.*` are the whole vocabulary (`grep -rhoE '"(model_step|reasoning)[a-z_.]*\.v1"' --include='*.go'
+// packages apps | sort -u` -> the four model_step types and no reasoning type at all, 2026-08-04). What is
+// journalled is the INTERVAL — that the model started working and that it stopped — and a card that says only
+// that is saying exactly what the tree knows.
+
+// modelStepStatus maps the model's own step events onto the card vocabulary. `created` opens the interval and
+// `completed` closes it, so across a multi-step run this one card pulses in_progress -> done once per step,
+// and at any instant either it or a tool's card is live — never both, because the journal orders
+// model_step.completed.v1 BEFORE the tool_call.executing.v1 it decided on.
+//
+// `model_step.interrupted.v1` is mapped even though the measured run never produced one: it is a declared
+// terminal of the same step (the four types the grep above found), and an unmapped terminal is exactly how a
+// card is left spinning in a finished message.
+var modelStepStatus = map[string]string{
+	"model_step.created.v1":     "in_progress",
+	"model_step.completed.v1":   "done",
+	"model_step.interrupted.v1": "failed",
+}
+
+// runTerminalThinking is how the thinking card is resolved by the RUN ending rather than by a step ending.
+// It is the SLK-P2 rule applied to this card: a run that dies between `created` and `completed` — or before
+// any model step at all, which is every provisioning failure — would otherwise leave it in_progress forever.
+//
+// AND SLACK ITSELF PUNISHES THAT, measured 2026-08-04: a task left in_progress when chat.stopStream lands is
+// stored as `status:"error"` and drags the whole plan container's title to "Something went wrong". So an
+// unresolved card does not merely look unfinished, it reports a failure that did not happen.
+var runTerminalThinking = map[string]string{
+	"run.completed.v1":       "done",
+	"run.failed.v1":          "failed",
+	"run.canceled.v1":        "canceled",
+	"run.timed_out.v1":       "failed",
+	"run.budget_exceeded.v1": "failed",
+}
+
+// isRunTerminal reports whether an event ends the run. The SET is runTerminalThinking's keys — ONE map
+// serves both questions, because two maps listing the same five types is a drift the compiler cannot see and
+// this file would have had to keep in step by hand.
+//
+// That set MIRRORS terminalEventTypes in apps/control-plane/api/events.go — the SSE endpoint's own closing
+// set — rather than importing it, because that map is unexported there. A run terminal added to one and not
+// the other is a real drift risk, catchable only by re-measuring both sides.
+func isRunTerminal(eventType string) bool {
+	_, ok := runTerminalThinking[eventType]
+	return ok
 }
 
 // Run drains sessionID's event stream into the Slack thread at channel/threadTS: one chat.startStream
@@ -98,13 +161,25 @@ var runTerminalEvents = map[string]bool{
 // alternative is a Slack message stuck "streaming" forever. That guarantee is why the stop call lives in
 // one deferred function covering the whole loop rather than at each terminal branch: a branch this
 // package forgets to list can still never leak an open stream.
+//
+// THE MESSAGE OPENS WITH AN EMPTY BODY AND A LIVE CARD, which is one decision with two halves.
+//
+// The body is empty because whatever opens it STAYS in it. This call used to pass "Working…\n", and that word
+// is not a status — chat.appendStream appends, so it is the first line of the answer, permanently. The
+// measured run's finished message read `Working… Projede toplam 281 Swift dosyası var.` and would have read
+// that way for as long as the message existed. A progress word that cannot stop being shown is not progress.
+//
+// The card is drawn immediately because the run IS working from this instant and nothing else says so for
+// several seconds (see thinkingTaskID's measurement: 8.5 of them, in the run that prompted this). Opening a
+// stream in chunk mode with no chunks keeps a genuinely blank message, so without this the thread would show
+// an empty bot reply during exactly the window the reader most needs to see something.
 func Run(ctx context.Context, deps Deps, sessionID, channel, threadTS string) (err error) {
 	if deps.Events == nil || deps.Slack == nil || deps.OnApproval == nil {
 		return fmt.Errorf("relay: Deps needs Events, Slack and OnApproval (session %s)", sessionID)
 	}
 	defer deps.Events.Close()
 
-	ts, startErr := deps.Slack.StartStream(ctx, channel, threadTS, startingStatus)
+	ts, startErr := deps.Slack.StartStream(ctx, channel, threadTS, "")
 	if startErr != nil {
 		return fmt.Errorf("relay: start stream for session %s: %w", sessionID, startErr)
 	}
@@ -112,6 +187,7 @@ func Run(ctx context.Context, deps Deps, sessionID, channel, threadTS string) (e
 	st := &openStream{deps: deps, channel: channel, threadTS: threadTS, ts: ts,
 		taskTitles: map[string]string{}, taskDetailed: map[string]bool{}}
 	defer st.stop(ctx, sessionID, &err)
+	st.setThinking(ctx, "in_progress")
 
 	for {
 		event, nextErr := deps.Events.Next()
@@ -122,7 +198,7 @@ func Run(ctx context.Context, deps Deps, sessionID, channel, threadTS string) (e
 			return fmt.Errorf("relay: read session %s events: %w", sessionID, nextErr)
 		}
 		st.handle(ctx, event)
-		if runTerminalEvents[event.Type] {
+		if isRunTerminal(event.Type) {
 			return nil
 		}
 	}
@@ -158,6 +234,29 @@ type openStream struct {
 	// taskDetailed records which cards have already been given a detail, because a card's `details` field
 	// APPENDS rather than replaces — so the second and later details need a separator in front of them.
 	taskDetailed map[string]bool
+
+	// thinkingStatus is what the thinking card currently shows, so a repeat is not re-sent. It matters
+	// because the events that drive it are the most frequent ones a run has: a five-step run would spend
+	// five extra chat.appendStream calls saying nothing changed, against a Tier 4 budget shared with the
+	// answer's own text.
+	thinkingStatus string
+}
+
+// setThinking advances the ONE card standing for the model's own working time, and sends nothing when the
+// status is already what it would set — see openStream.thinkingStatus.
+//
+// The error is dropped for the same reason updateTask drops its own (a card is decoration over an answer
+// delivered by a separate path), and the status is recorded BEFORE the call rather than after: a failed
+// update must not make the next identical event retry, because the card's states are a sequence, and the
+// right repair for a missed `in_progress` is the `done` that follows it, not a second `in_progress`.
+func (o *openStream) setThinking(ctx context.Context, status string) {
+	if o.thinkingStatus == status {
+		return
+	}
+	o.thinkingStatus = status
+	_ = o.deps.Slack.UpdateTask(ctx, o.channel, o.ts, slack.Task{
+		ID: thinkingTaskID, Title: thinkingTitle, Status: status,
+	})
 }
 
 // stop closes the stream exactly once, from Run's single deferred call, so every exit path — a run
@@ -208,6 +307,22 @@ func (o *openStream) handle(ctx context.Context, event palai.Event) {
 		o.emitStatus(ctx, "\n\n⏸️ Waiting for an approval — see the message below.")
 		o.deps.OnApproval(ctx, o.channel, o.threadTS, event)
 	default:
+		// THE MODEL'S OWN WORKING TIME, which is most of a run's wall clock and used to render as nothing at
+		// all. Taken BEFORE the tool arm below because the two vocabularies are disjoint and this one is
+		// cheaper to decide; a step's card and a tool's card are never the same card (see thinkingTaskID).
+		if status, ok := modelStepStatus[event.Type]; ok {
+			o.setThinking(ctx, status)
+			return
+		}
+		// A RUN TERMINAL RESOLVES THE THINKING CARD, and this is the only place that can: the card is opened
+		// by Run before any event is read, so a run that ends without ever emitting a model step — a
+		// provisioning failure, a cancel while queued — has nothing else to close it. Slack stores a card
+		// still in_progress at stop as `error` and retitles the whole container "Something went wrong"
+		// (measured 2026-08-04), so leaving it open would invent a failure on a run that merely had no steps.
+		if status, ok := runTerminalThinking[event.Type]; ok {
+			o.setThinking(ctx, status)
+			return
+		}
 		if status, ok := toolCallStatus[event.Type]; ok {
 			// NO DETAIL, EVER, FROM A tool_call LIFECYCLE EVENT — the card gets a status and a title and
 			// nothing else. This started as the raw tool name and the owner read it twice as noise: a card

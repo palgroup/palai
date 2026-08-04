@@ -342,13 +342,13 @@ func TestStartStreamPicksTheStreamMode(t *testing.T) {
 	// Chunk mode: asked for by wanting task cards at all.
 	if _, err := StartStream(context.Background(), peer, "https://slack.test/api", []byte("x"), StreamStart{
 		Channel: "C1", ThreadTS: "1.1", RecipientUserID: "U1", RecipientTeamID: "T1",
-		MarkdownText: "Working…\n", TaskDisplayMode: TaskDisplayModeTimeline,
+		MarkdownText: "opening words\n", TaskDisplayMode: TaskDisplayModePlan,
 	}); err != nil {
 		t.Fatalf("StartStream: %v", err)
 	}
 	chunked := peer.decode(t, 0)
-	if got := chunked["task_display_mode"]; got != "timeline" {
-		t.Fatalf("task_display_mode = %v, want timeline", got)
+	if got := chunked["task_display_mode"]; got != "plan" {
+		t.Fatalf("task_display_mode = %v, want plan", got)
 	}
 	if _, present := chunked["markdown_text"]; present {
 		t.Fatalf("a chunk-mode start also sent markdown_text, which opens a TEXT stream and makes every "+
@@ -358,7 +358,7 @@ func TestStartStreamPicksTheStreamMode(t *testing.T) {
 	if len(chunks) != 1 {
 		t.Fatalf("a chunk-mode start sent %v for chunks, want the opening text as one markdown chunk", chunked["chunks"])
 	}
-	if first, _ := chunks[0].(map[string]any); first["type"] != "markdown_text" || first["text"] != "Working…\n" {
+	if first, _ := chunks[0].(map[string]any); first["type"] != "markdown_text" || first["text"] != "opening words\n" {
 		t.Fatalf("the opening chunk = %v, want the opening text as a markdown_text chunk", chunks[0])
 	}
 
@@ -377,6 +377,37 @@ func TestStartStreamPicksTheStreamMode(t *testing.T) {
 	}
 	if _, present := text["chunks"]; present {
 		t.Fatalf("a text-mode start also sent chunks: %v", text)
+	}
+}
+
+// TestAnEmptyOpeningSendsNoChunkAtAll is the property relay.Run depends on to stop prefixing every finished
+// answer with a stale progress word.
+//
+// IT IS ABOUT WHAT IS ABSENT, so it asserts absence rather than an empty string: sending
+// {"type":"markdown_text","text":""} would also "open with nothing" and would still be a body chunk, and the
+// live API answers ok to both — so a test that only checked the text was empty could not tell the two apart.
+// The measured behaviour (2026-08-04, workspace T0AMPM5JX8U) is that a start with NO chunks key keeps a
+// message with `text:""` and no blocks at all.
+func TestAnEmptyOpeningSendsNoChunkAtAll(t *testing.T) {
+	peer := &recordingPeer{}
+	if _, err := StartStream(context.Background(), peer, "https://slack.test/api", []byte("x"), StreamStart{
+		Channel: "C1", ThreadTS: "1.1", RecipientUserID: "U1", RecipientTeamID: "T1",
+		TaskDisplayMode: TaskDisplayModePlan,
+	}); err != nil {
+		t.Fatalf("StartStream: %v", err)
+	}
+	opened := peer.decode(t, 0)
+	if _, present := opened["chunks"]; present {
+		t.Fatalf("an empty opening still sent chunks (%v) — whatever opens the body STAYS in the body, above "+
+			"the answer, for as long as the message exists", opened["chunks"])
+	}
+	if _, present := opened["markdown_text"]; present {
+		t.Fatalf("an empty opening sent markdown_text (%v), which would open a TEXT stream and make every "+
+			"later task card fail", opened["markdown_text"])
+	}
+	if opened["task_display_mode"] != "plan" {
+		t.Fatalf("task_display_mode = %v, want plan — the mode must survive the empty opening, since it is "+
+			"the only call that can set it", opened["task_display_mode"])
 	}
 }
 

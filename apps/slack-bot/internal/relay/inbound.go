@@ -117,7 +117,14 @@ func (s *channelSlackStream) StartStream(ctx context.Context, channel, threadTS,
 		// Set HERE because chat.startStream is the only call that accepts it, and because it OPENS THE
 		// STREAM IN CHUNK MODE — a whole-stream decision, not a formatting hint (see slack.StartStream). It
 		// is why every method below sends chunks: on this stream `markdown_text` is refused.
-		TaskDisplayMode: slack.TaskDisplayModeTimeline,
+		//
+		// PLAN rather than TIMELINE, because it is the difference between a finished answer preceded by a
+		// column of ticks and one preceded by a single collapsed container. Measured on the same card
+		// sequence (2026-08-04): timeline keeps four loose `task_card` blocks, plan keeps one `plan` block
+		// holding the same four tasks, and — the part no page states — a plan-mode stream that draws NO tasks
+		// keeps NO container at all, so the body-only run E08 makes every real single-step run into is
+		// unchanged by this.
+		TaskDisplayMode: slack.TaskDisplayModePlan,
 	})
 }
 

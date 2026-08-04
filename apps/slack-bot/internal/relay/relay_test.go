@@ -100,6 +100,24 @@ func (f *fakeSlack) StopStream(ctx context.Context, channel, ts, markdownText st
 	return nil
 }
 
+// nonThinkingTasks strips the "palai.thinking" card's own updates out of a recorded sequence, isolating
+// what most of the tests below actually assert: the TOOL card's shape. Run draws that card unconditionally —
+// in_progress the instant it starts, resolved by whatever ends the run — regardless of what the fixture
+// under test is about, so a raw len(fake.tasks) count written before that card existed now over-counts by
+// exactly two (one in_progress, one terminal) on every fixture that runs to a terminal event. The thinking
+// card's OWN behaviour — that it opens eagerly, tracks model steps, dedupes repeats, and resolves on every
+// run terminal — is pinned separately by the TestThinkingCard* tests below, not by narrowing here.
+func nonThinkingTasks(tasks []slack.Task) []slack.Task {
+	var out []slack.Task
+	for _, task := range tasks {
+		if task.ID == thinkingTaskID {
+			continue
+		}
+		out = append(out, task)
+	}
+	return out
+}
+
 func TestDeltasBecomeOneAppendPerWindow(t *testing.T) {
 	events := []palai.Event{
 		{Type: "model_step.delta.v1", Data: map[string]any{"text": "Hel"}},
@@ -238,19 +256,20 @@ func TestTheShapeARealRunActuallyProduces(t *testing.T) {
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(fake.tasks) != 2 {
-		t.Fatalf("drew %d card update(s), want 2 (executing, completed) — got %+v", len(fake.tasks), fake.tasks)
+	tasks := nonThinkingTasks(fake.tasks)
+	if len(tasks) != 2 {
+		t.Fatalf("drew %d card update(s), want 2 (executing, completed) — got %+v", len(tasks), tasks)
 	}
 	// ONE card, resolved, and its whole content is a human phrase. No detail line at all: nothing in a real
 	// run has anything to put there, and the raw name that used to fill it was the owner's complaint.
-	for i, task := range fake.tasks {
+	for i, task := range tasks {
 		if task.ID != "tcall_1" || task.Title != "Running a command" || task.Detail != "" {
 			t.Fatalf("update %d = %+v, want one card titled `Running a command` with no detail", i, task)
 		}
 	}
-	if fake.tasks[1].Status != "done" {
+	if tasks[1].Status != "done" {
 		t.Fatalf("the card ended %q, want done — a step left mid-flight in a finished message is the SLK-P2 "+
-			"shape on a card", fake.tasks[1].Status)
+			"shape on a card", tasks[1].Status)
 	}
 	body := fake.startedText + strings.Join(fake.appended, "") + fake.stoppedText
 	if !strings.Contains(body, answer) || strings.Contains(body, "palai.workspace.shell") {
@@ -290,8 +309,9 @@ func TestToolProgressLeavesTheAnswerAlone(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if len(fake.tasks) != 3 {
-		t.Fatalf("drew %d task card update(s), want 3 (executing, progress, completed) — got %+v", len(fake.tasks), fake.tasks)
+	tasks := nonThinkingTasks(fake.tasks)
+	if len(tasks) != 3 {
+		t.Fatalf("drew %d task card update(s), want 3 (executing, progress, completed) — got %+v", len(tasks), tasks)
 	}
 	body := fake.startedText + strings.Join(fake.appended, "") + fake.stoppedText
 	// SCOPE, because the name of this list once over-claimed: these tokens must be absent FROM THE MESSAGE
@@ -312,10 +332,10 @@ func TestToolProgressLeavesTheAnswerAlone(t *testing.T) {
 	// AND THE CARD ITSELF says the step in human words, with nothing repeating it in machine words. A tool
 	// this tree has a phrase for must not ALSO show its registered name: the owner read that as noise, and
 	// no assertion above this one can see it.
-	if fake.tasks[0].Title != "Reading files" {
-		t.Fatalf("card title = %q, want the human phrase", fake.tasks[0].Title)
+	if tasks[0].Title != "Reading files" {
+		t.Fatalf("card title = %q, want the human phrase", tasks[0].Title)
 	}
-	for _, task := range fake.tasks {
+	for _, task := range tasks {
 		if strings.Contains(task.Title+task.Detail, "palai.workspace.file") {
 			t.Fatalf("a card carried the raw tool name (%+v) though `Reading files` already said it — the "+
 				"name belongs on a card only as toolTitle's fallback for a tool with no phrase", task)
@@ -342,7 +362,13 @@ func TestOneToolCallIsOneCardThroughout(t *testing.T) {
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	for _, task := range fake.tasks {
+	// SCOPED TO THIS CALL'S OWN CARD: Run also draws a SEPARATE "palai.thinking" card (a different id, by
+	// design — see thinkingTaskID) for the model's own working time, which this fixture's model_step-less
+	// events never touch directly but which still opens at Run's start and resolves at the run terminal.
+	// Mixing it in here would be asserting the wrong claim: this test is that ONE tool call's updates never
+	// drift onto a second id, not that the whole stream draws only one id ever.
+	tasks := nonThinkingTasks(fake.tasks)
+	for _, task := range tasks {
 		if task.ID != "tc_1" {
 			t.Fatalf("a card carried id %q, want tc_1 for every update of one call — a differing id draws a "+
 				"SECOND card and the step is rendered twice", task.ID)
@@ -351,28 +377,28 @@ func TestOneToolCallIsOneCardThroughout(t *testing.T) {
 	// The statuses must PROGRESS, and the last one must not be in_progress: a step whose card never leaves
 	// in_progress is a finished message that still shows the run working (the SLK-P2 shape, on a card).
 	var got []string
-	for _, task := range fake.tasks {
+	for _, task := range tasks {
 		got = append(got, task.Status)
 	}
 	if want := []string{"in_progress", "in_progress", "done"}; !slices.Equal(got, want) {
 		t.Fatalf("card statuses were %v, want %v", got, want)
 	}
 	// The title is what a human reads; the raw name stays available underneath rather than being discarded.
-	if fake.tasks[0].Title != "Running a command" {
-		t.Fatalf("card title = %q, want a human phrase — `palai.workspace.shell` is jargon", fake.tasks[0].Title)
+	if tasks[0].Title != "Running a command" {
+		t.Fatalf("card title = %q, want a human phrase — `palai.workspace.shell` is jargon", tasks[0].Title)
 	}
 	// NO LIFECYCLE EVENT PUTS A DETAIL ON THE CARD. The opening update once wrote the raw tool name there
 	// and the owner read it as noise twice: `Running a command` with `palai.workspace.shell` under it says
 	// the same thing in machine words, and on a tool that reports no progress that was the card's only
-	// line. Only progress writes a detail now — see fake.tasks[1] below.
-	if fake.tasks[0].Detail != "" || fake.tasks[2].Detail != "" {
+	// line. Only progress writes a detail now — see tasks[1] below.
+	if tasks[0].Detail != "" || tasks[2].Detail != "" {
 		t.Fatalf("a lifecycle update carried a detail (open %q, terminal %q); the title already says what "+
 			"the step is, and the raw name survives as toolTitle's fallback for unmapped tools",
-			fake.tasks[0].Detail, fake.tasks[2].Detail)
+			tasks[0].Detail, tasks[2].Detail)
 	}
-	if fake.tasks[1].Detail != "xcodebuild" {
+	if tasks[1].Detail != "xcodebuild" {
 		t.Fatalf("the progress update's detail = %q, want the notification's message — progress is the one "+
-			"thing that has something to say under the title", fake.tasks[1].Detail)
+			"thing that has something to say under the title", tasks[1].Detail)
 	}
 }
 
@@ -401,16 +427,17 @@ func TestConsecutiveProgressLinesAreSeparated(t *testing.T) {
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(fake.tasks) != 3 {
-		t.Fatalf("drew %d card update(s), want 3", len(fake.tasks))
+	tasks := nonThinkingTasks(fake.tasks)
+	if len(tasks) != 3 {
+		t.Fatalf("drew %d card update(s), want 3", len(tasks))
 	}
 	// The FIRST detail has nothing in front of it, so it takes no separator; the second does.
-	if fake.tasks[1].Detail != "SwiftUIListApp.swift" {
-		t.Fatalf("first progress detail = %q, want no leading separator", fake.tasks[1].Detail)
+	if tasks[1].Detail != "SwiftUIListApp.swift" {
+		t.Fatalf("first progress detail = %q, want no leading separator", tasks[1].Detail)
 	}
-	if fake.tasks[2].Detail != "\nContentView.swift" {
+	if tasks[2].Detail != "\nContentView.swift" {
 		t.Fatalf("second progress detail = %q, want a leading separator — `details` appends, so without one "+
-			"the two fuse into `SwiftUIListApp.swiftContentView.swift`", fake.tasks[2].Detail)
+			"the two fuse into `SwiftUIListApp.swiftContentView.swift`", tasks[2].Detail)
 	}
 }
 
@@ -460,9 +487,10 @@ func TestAnUnmappedToolStillShowsItsName(t *testing.T) {
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(fake.tasks) != 1 || fake.tasks[0].Title != "acme.jira.create_ticket" {
+	tasks := nonThinkingTasks(fake.tasks)
+	if len(tasks) != 1 || tasks[0].Title != "acme.jira.create_ticket" {
 		t.Fatalf("cards = %+v, want one titled with the unmapped tool's own name — a card that showed "+
-			"neither a phrase nor the name would say nothing at all", fake.tasks)
+			"neither a phrase nor the name would say nothing at all", tasks)
 	}
 }
 
@@ -479,8 +507,11 @@ func TestACardIsSkippedWhenNothingCanIdentifyIt(t *testing.T) {
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(fake.tasks) != 0 {
-		t.Fatalf("drew %+v for an event with no tool_call_id, want no card", fake.tasks)
+	// SCOPED to non-thinking cards: Run's own "palai.thinking" card still opens and resolves regardless of
+	// this event, since it tracks the run's wall clock, not this tool call's identifiability. What this
+	// test pins is that the UNIDENTIFIABLE tool_call.executing.v1 itself draws nothing.
+	if tasks := nonThinkingTasks(fake.tasks); len(tasks) != 0 {
+		t.Fatalf("drew %+v for an event with no tool_call_id, want no card", tasks)
 	}
 }
 
@@ -496,18 +527,26 @@ func TestACardIsSkippedWhenNothingCanIdentifyIt(t *testing.T) {
 // The assertion is structural — the rune before the answer's first character must be a newline — rather
 // than `!strings.Contains(body, "doneProjede")`, which would pass the moment either half is reworded and
 // says nothing about the other three lines.
+//
+// "THE OPENING STATUS" LEG IS GONE, and that is a removal, not a rename: this table used to carry a case
+// with nothing in `before`, on the theory that the body still opened with chat.startStream's own
+// markdown_text ("Working…\n"), which never passed through emitStatus and so fused to the first delta by a
+// path this test's separator check did not cover. Run no longer sends that text AT ALL — StartStream now
+// opens with "" (relay.go's Run, and see adapters/integrations/slack's TestAnEmptyOpeningSendsNoChunkAtAll
+// for the wire-level proof that an empty opening carries no chunk and no markdown_text either) — so with
+// nothing in `before` the body is JUST the answer: idx would be 0, and `body[idx-1]` would be reading
+// before the start of the string. Keeping the case and loosening the guard to tolerate idx==0 would stop
+// testing a separator at all, since there is no longer a first half for it to separate. The defect this
+// leg guarded against — a leftover status word gluing to the model's own text — cannot recur on this path
+// because there is no longer a status word on it; the property is enforced structurally now, not by a test.
+// The approval leg below still exercises a REAL status line (emitStatus's guaranteed trailing newline) and
+// stays for exactly that reason.
 func TestAStatusLineIsNeverGluedToTheTextAfterIt(t *testing.T) {
 	const answer = "Projede toplam 7 Swift dosyası var"
 	for _, tc := range []struct {
 		name   string
 		before []palai.Event
 	}{
-		// NOTHING BEFORE THE ANSWER, and this leg is not a filler case: the body still opens with
-		// chat.startStream's own markdown_text ("Working…"), which never passes through emitStatus, so it
-		// was fused to the first delta by a separate path from the one the reported bug took. E08 makes
-		// this the shape of EVERY real single-step run — no tools are exposed to a real provider, so there
-		// is no tool line to blame and `Working…Projede toplam…` is what the owner would see.
-		{name: "the opening status"},
 		{name: "the approval notice", before: []palai.Event{
 			{Type: ApprovalRequestedEventType, Data: map[string]any{"request_hash": "rh_1", "tool_name": "palai.workspace.shell"}},
 		}},
@@ -571,9 +610,10 @@ func TestToolCallProgressWithNoMessageIsSkipped(t *testing.T) {
 	if len(fake.appended) != 0 {
 		t.Fatalf("appended = %v, want none — a messageless progress notification renders nothing", fake.appended)
 	}
-	if len(fake.tasks) != 1 {
+	tasks := nonThinkingTasks(fake.tasks)
+	if len(tasks) != 1 {
 		t.Fatalf("drew %d card update(s), want 1 — a messageless notification must not re-draw the card "+
-			"with an empty detail, which would erase what the step said it was doing: %+v", len(fake.tasks), fake.tasks)
+			"with an empty detail, which would erase what the step said it was doing: %+v", len(tasks), tasks)
 	}
 }
 
@@ -592,17 +632,129 @@ func TestAProgressNotificationDoesNotRenameItsStep(t *testing.T) {
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(fake.tasks) != 2 {
-		t.Fatalf("drew %d card update(s), want 2", len(fake.tasks))
+	tasks := nonThinkingTasks(fake.tasks)
+	if len(tasks) != 2 {
+		t.Fatalf("drew %d card update(s), want 2", len(tasks))
 	}
-	if fake.tasks[1].Title != "Running a command" {
+	if tasks[1].Title != "Running a command" {
 		t.Fatalf("the progress update retitled the step to %q — a card must keep the title it was drawn "+
-			"with when the event carries no tool_name", fake.tasks[1].Title)
+			"with when the event carries no tool_name", tasks[1].Title)
 	}
 	// This progress line is the card's FIRST detail (the opening update writes none), so it takes no
 	// separator. Two progress lines meeting on one card is TestConsecutiveProgressLinesAreSeparated.
-	if fake.tasks[1].Detail != "xcodebuild -scheme App" {
-		t.Fatalf("progress detail = %q, want the notification's message", fake.tasks[1].Detail)
+	if tasks[1].Detail != "xcodebuild -scheme App" {
+		t.Fatalf("progress detail = %q, want the notification's message", tasks[1].Detail)
+	}
+}
+
+// thinkingTasks is nonThinkingTasks' complement: the "palai.thinking" card's own updates, in the order Run
+// sent them. The tests below are the ones this file was missing before this change — every test above
+// scopes IT out to isolate a tool card's own claim, and nothing pinned the card's own mechanism anywhere.
+func thinkingTasks(tasks []slack.Task) []slack.Task {
+	var out []slack.Task
+	for _, task := range tasks {
+		if task.ID == thinkingTaskID {
+			out = append(out, task)
+		}
+	}
+	return out
+}
+
+// TestThinkingCardOpensImmediatelyAndTracksModelSteps pins the two halves of Run's own doc comment ("THE
+// MESSAGE OPENS WITH AN EMPTY BODY AND A LIVE CARD") that no test measured before this one: the card is
+// in_progress before this package has read a single event — proven here by a fixture whose FIRST event is
+// already mid-run (a repeated model_step.created.v1, never itself producing a fresh send) — and it toggles
+// once per model_step.created/completed pair, across TWO steps.
+//
+// THE SECOND STEP IS NOT DECORATION: with only one step, model_step.completed.v1 and the trailing
+// run.completed.v1 both map to "done", so a version of this test ending after one step cannot tell "the step
+// resolved the card" apart from "the step did nothing and the run terminal fixed it anyway" — the two bugs
+// produce the SAME final sequence. The second created/completed pair forces the card back to in_progress
+// and then done AGAIN before the run ends, so if model_step.completed stopped being mapped, the sequence
+// would collapse from four entries to two (see the perturbation this test was checked against, noted in the
+// PR/commit that added it) rather than merely reading the same by coincidence.
+//
+// THE REPEATED "created" AT THE START IS THE DEDUPE CASE: modelStepStatus's own doc says a real run never
+// sends two in a row with no "completed" between them, but setThinking's guard against resending an
+// unchanged status is real code, not a hypothetical. Without the guard this fixture would send in_progress
+// an extra time for each repeat instead of collapsing them.
+func TestThinkingCardOpensImmediatelyAndTracksModelSteps(t *testing.T) {
+	events := []palai.Event{
+		{Type: "model_step.created.v1", Data: map[string]any{}},
+		{Type: "model_step.created.v1", Data: map[string]any{}}, // dedupe: already in_progress, no resend
+		{Type: "tool_call.executing.v1", Data: map[string]any{"tool_call_id": "tc_1", "tool_name": "palai.workspace.shell"}},
+		{Type: "tool_call.completed.v1", Data: map[string]any{"tool_call_id": "tc_1", "tool_name": "palai.workspace.shell"}},
+		{Type: "model_step.completed.v1", Data: map[string]any{}}, // step 1 ends: in_progress -> done
+		{Type: "model_step.created.v1", Data: map[string]any{}},   // step 2 begins: done -> in_progress
+		{Type: "model_step.completed.v1", Data: map[string]any{}}, // step 2 ends: in_progress -> done
+		{Type: "run.completed.v1", Data: map[string]any{}},        // dedupe: the step already left the card "done"
+	}
+	fake := &fakeSlack{}
+	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals},
+		"sess_1", "C1", "1.1"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	thinking := thinkingTasks(fake.tasks)
+	var got []string
+	for _, task := range thinking {
+		got = append(got, task.Status)
+	}
+	if want := []string{"in_progress", "done", "in_progress", "done"}; !slices.Equal(got, want) {
+		t.Fatalf("thinking card statuses were %v, want %v — either a created/completed pair failed to toggle "+
+			"the card, or a repeat sent a status the dedupe guard should have skipped", got, want)
+	}
+	for _, task := range thinking {
+		if task.Title != thinkingTitle {
+			t.Fatalf("thinking card title = %q, want the fixed headline %q — it must not be rewritten per "+
+				"state (see thinkingTitle's own doc)", task.Title, thinkingTitle)
+		}
+		if task.Detail != "" {
+			t.Fatalf("thinking card carried a detail %q — nothing in this product journals the model's "+
+				"reasoning content, only the interval (see the doc above modelStepStatus)", task.Detail)
+		}
+	}
+	// The tool call's own card is untouched by any of this: two different ids, tracked independently.
+	if toolTasks := nonThinkingTasks(fake.tasks); len(toolTasks) != 2 || toolTasks[0].ID != "tc_1" {
+		t.Fatalf("the tool call's card = %+v, want its usual executing/completed pair, unaffected by the "+
+			"thinking card sharing the same message", toolTasks)
+	}
+}
+
+// TestThinkingCardResolvesOnEveryRunTerminal walks runTerminalThinking's OWN table rather than a copy typed
+// here, for the same reason TestEveryToolTerminalResolvesItsCard walks the tool-call state machine's table:
+// a terminal type added to the map without also being exercised here would ship untested, and a hardcoded
+// list here could silently drift from what Run actually consults.
+//
+// EVERY FIXTURE HAS NO MODEL STEP AT ALL — the exact shape runTerminalThinking's own doc names as the reason
+// a run terminal must be able to resolve this card unassisted: a provisioning failure or a cancel while
+// queued never emits a model_step.* event, so if the terminal itself did not resolve the card nothing ever
+// would, and Slack stores an in_progress card left open at chat.stopStream as an ERROR (measured 2026-08-04),
+// inventing a failure a run that simply had no steps never had.
+func TestThinkingCardResolvesOnEveryRunTerminal(t *testing.T) {
+	for term, want := range runTerminalThinking {
+		t.Run(term, func(t *testing.T) {
+			fake := &fakeSlack{}
+			events := []palai.Event{{Type: term, Data: map[string]any{}}}
+			if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals},
+				"sess_1", "C1", "1.1"); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			thinking := thinkingTasks(fake.tasks)
+			var got []string
+			for _, task := range thinking {
+				got = append(got, task.Status)
+			}
+			if wantSeq := []string{"in_progress", want}; !slices.Equal(got, wantSeq) {
+				t.Fatalf("%s left the thinking card at %v, want %v", term, got, wantSeq)
+			}
+			// The mapped status must also survive blocks.go's own vocabulary check: an unmapped status
+			// fails closed to "pending" there, which on a FINISHED run is the spinning-card bug again.
+			if slack.TaskStatus(want) == "pending" {
+				t.Fatalf("%s maps the thinking card to %q, which blocks.go renders as pending — a finished "+
+					"run must not leave its card looking not-yet-started", term, want)
+			}
+		})
 	}
 }
 
