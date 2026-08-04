@@ -324,11 +324,19 @@ var migrationDown29 string
 // (revoke ledger writes from the runtime role; a guarded palai_app role-membership grant for managed PG).
 // It ALTERs api_keys only (no new table), so it opens from the tip of the 000029 chain — sequential, no gap.
 //
-// M3 RULE for every migration after this one: a NEW tenant-scoped table (any table carrying
-// organization_id) MUST call palai_apply_tenant_policy in its OWN up.sql. 000029's catalogue loop covers
-// it on the next boot, but tests/security/tenancy fails a table that ships without ENABLE+FORCE, so make
-// the policy explicit where the table is born. 000030's re-assertion of the api_keys policy is the pattern
-// to copy (see storage/migrations/000030_api_key_scope.up.sql).
+// M3 RULE for every migration after this one: a NEW tenant-scoped table (any table carrying PROJECT_ID)
+// MUST call palai_apply_tenant_policy in its OWN up.sql —
+// `CALL palai_apply_tenant_policy('<table>', 'project_id', false);`. 000029's catalogue loop covers it on
+// the next boot, but tests/security/tenancy fails a table that ships without ENABLE+FORCE, so make the
+// policy explicit where the table is born. 000030's re-assertion of the api_keys policy is the pattern to
+// copy (see storage/migrations/000030_api_key_scope.up.sql).
+//
+// THE DISCRIMINATOR WAS organization_id UNTIL A.2 TASK 6, and leaving it there would have retired the
+// rule silently rather than loudly: 000067 dropped that column from all 86 tables, so a rule keyed on it
+// selects NOTHING and the next tenant table ships unpoliced while the paragraph still reads as guidance.
+// A table with no project_id either is installation-global — palai_apply_installation_policy, the shape
+// 000066 gave environments/environment_values/secret_refs/usage_ledger — and it is a DECISION, not a
+// default: that policy admits any connection that declared a scope.
 //
 //go:embed migrations/000030_api_key_scope.up.sql
 var migrationUp30 string
