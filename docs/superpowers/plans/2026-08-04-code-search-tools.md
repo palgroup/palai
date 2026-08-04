@@ -34,7 +34,13 @@ grep -n 'WorkspaceOp[A-Z][a-z]* *=' packages/runner/workspaceserver.go
 grep -n "^	[A-Z][a-zA-Z]*(ctx" packages/tool-broker/workspace_ops.go
 
 # ripgrep, for the local implementation
-rg --version | head -1
+# ⚠️ CORRECTED 2026-08-04 — THIS MEASUREMENT WAS CONTAMINATED AND ITS ANSWER WAS WRONG.
+# `rg --version` reported 14.1.1 during planning, so this plan specified shelling out to
+# ripgrep. It is NOT installed: `rg` is a shell FUNCTION supplied by the Claude Code shell
+# snapshot, which an exec'd subprocess never sees. `type rg` shows the function; the binary
+# is absent from every PATH directory. Grep is therefore implemented in Go.
+# The right form of this check is the one a subprocess would make:
+env -i PATH="$PATH" sh -c 'command -v rg' || echo "ripgrep absent — implement in Go"
 
 # The tools registered today — expect 11 constructor calls
 grep -n "toolbroker.New(" -A 18 apps/control-plane/cmd/palai-control-plane/main.go
@@ -502,9 +508,11 @@ Expected: compile failure — `Grep` undefined.
 
 - [ ] **Step 4: Implement all five points**
 
-For the local implementation, invoke `rg` with `--json` and parse the stream — **do not parse human output**, whose format is not a contract. Map ripgrep's non-zero "no matches" exit to an empty result, and a genuine usage error to an error carrying its stderr.
-
-**If `rg` is absent on the host**, return a typed error saying so. Do **not** fall back to a hand-rolled scan: a search that silently changes engine changes its regex dialect, and the model was told it is writing ripgrep syntax.
+> **SUPERSEDED 2026-08-04 during execution.** This step said to shell out to `rg --json`, on the strength of the §1 measurement that reported ripgrep 14.1.1 present. That measurement was contaminated — `rg` is a shell function from the harness, not a binary a subprocess can exec — so **Grep is implemented in Go**, using `regexp` and a `filepath.WalkDir`.
+>
+> **The dialect concern this step raised does not apply to that substitution**, which is what makes it safe: Go's `regexp` and ripgrep both implement RE2, so a pattern written for one behaves identically in the other. Had the engines differed, depending on the binary would have been the right call.
+>
+> What the Go implementation does NOT reproduce: full `.gitignore` grammar. It handles the root file's plain directory and name entries plus `.git`, which covers the case that actually corrupts a search (a vendored or build directory), and it says so in its doc comment. Negation, nested ignore files, and globbed ignore rules are out of scope, and a caller who needs an ignored file can still name its path.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
