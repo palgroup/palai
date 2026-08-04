@@ -53,8 +53,22 @@ CREATE TABLE IF NOT EXISTS capability_workers (
 );
 
 -- Match ready jobs to a worker's typed capability, healthy first.
-CREATE INDEX IF NOT EXISTS capability_workers_capability_idx
-    ON capability_workers (organization_id, project_id, capability) WHERE health = 'healthy';
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id. A bare `CREATE INDEX IF NOT EXISTS` still RESOLVES its column list even when the
+    -- index already exists, so the second boot would fail here with 42703. 000065 already rebuilt this
+    -- index project-keyed under the SAME name; the statement below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'capability_workers'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+        CREATE INDEX IF NOT EXISTS capability_workers_capability_idx
+            ON capability_workers (organization_id, project_id, capability) WHERE health = 'healthy';
+    END IF;
+END
+$$;
 
 CALL palai_apply_tenant_policy('capability_workers', 'organization_id', true);
 GRANT SELECT, INSERT, UPDATE, DELETE ON capability_workers TO palai_app;
@@ -109,9 +123,23 @@ CREATE INDEX IF NOT EXISTS capability_jobs_job_seq_idx
 -- Idempotent dispatch: the FIRST entry of a job is entry_seq = 1, so a partial-unique index on the dispatch
 -- entry makes (org, project, idempotency_key) admit exactly one job. A re-dispatch (entry_seq >= 2) reuses
 -- the job_id and is exempt, so a retry does not trip it.
-CREATE UNIQUE INDEX IF NOT EXISTS capability_jobs_idempotency_idx
-    ON capability_jobs (organization_id, project_id, idempotency_key)
-    WHERE entry_seq = 1 AND idempotency_key <> '';
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id. A bare `CREATE INDEX IF NOT EXISTS` still RESOLVES its column list even when the
+    -- index already exists, so the second boot would fail here with 42703. 000065 already rebuilt this
+    -- index project-keyed under the SAME name; the statement below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'capability_jobs'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+        CREATE UNIQUE INDEX IF NOT EXISTS capability_jobs_idempotency_idx
+            ON capability_jobs (organization_id, project_id, idempotency_key)
+            WHERE entry_seq = 1 AND idempotency_key <> '';
+    END IF;
+END
+$$;
 
 CALL palai_apply_tenant_policy('capability_jobs', 'organization_id', true);
 

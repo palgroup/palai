@@ -85,7 +85,7 @@ func generateCorpusCheckers(tsOut, pyOut string) error {
 
 // identifier is one opaque-ID $def projected into each target language.
 type identifier struct {
-	Def     string // snake_case $def key, e.g. "organization_id"
+	Def     string // snake_case $def key, e.g. "model_connection"
 	Pattern string // canonical URL-safe pattern
 	GoName  string // "OrganizationID"
 	GoVar   string // "organizationIDPattern"

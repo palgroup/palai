@@ -54,8 +54,22 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
 -- Every page of every session list sorted the whole table. The column order matches the query exactly:
 -- equality on the tenant pair, then the keyset in its own direction, so the LIMIT is satisfied by
 -- walking the index and the Sort disappears.
-CREATE INDEX IF NOT EXISTS sessions_tenant_keyset_idx
-    ON sessions (organization_id, project_id, created_at DESC, id DESC);
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id. A bare `CREATE INDEX IF NOT EXISTS` still RESOLVES its column list even when the
+    -- index already exists, so the second boot would fail here with 42703. 000065 already rebuilt this
+    -- index project-keyed under the SAME name; the statement below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'sessions'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+        CREATE INDEX IF NOT EXISTS sessions_tenant_keyset_idx
+            ON sessions (organization_id, project_id, created_at DESC, id DESC);
+    END IF;
+END
+$$;
 
 -- responses_session_created_idx serves the DERIVED label (the first non-retracted response of a
 -- session, in (created_at, id) order) — and, not incidentally, SessionHistory, which reads exactly this
@@ -76,8 +90,22 @@ CREATE INDEX IF NOT EXISTS runs_session_created_idx
 -- aggregate filters on it EXPLICITLY: 000032 secures usage_ledger at the ORGANIZATION level with
 -- has_project=false, so the project narrowing is the query's job, not RLS's, and an aggregate that
 -- omitted it would silently sum every sibling project's tokens into this session's row.
-CREATE INDEX IF NOT EXISTS usage_ledger_session_idx
-    ON usage_ledger (organization_id, project_id, session_id, meter);
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id. A bare `CREATE INDEX IF NOT EXISTS` still RESOLVES its column list even when the
+    -- index already exists, so the second boot would fail here with 42703. 000065 already rebuilt this
+    -- index project-keyed under the SAME name; the statement below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'usage_ledger'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+        CREATE INDEX IF NOT EXISTS usage_ledger_session_idx
+            ON usage_ledger (organization_id, project_id, session_id, meter);
+    END IF;
+END
+$$;
 
 -- No grant and no policy call: `sessions` is a 000001 table already covered by the blanket GRANT and by
 -- 000029's tenant policy, and a new COLUMN inherits both. The four indexes are objects on existing

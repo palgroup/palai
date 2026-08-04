@@ -48,6 +48,24 @@ AS $$
 DECLARE
     expression TEXT := palai_tenant_policy_expression(tenant_key, has_project);
 BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id from every table. Roughly forty later migrations CALL this with tenant_key =
+    -- 'organization_id', and each would DROP the project-keyed policy 000062/000066 installed and then
+    -- fail creating its replacement (42703) — so the procedure that INSTALLS row-level security would be
+    -- the one that removes it, forty times over.
+    --
+    -- RETURNING is safe rather than merely convenient, and the reason is ordering: 000062 and 000066 run
+    -- LATER in this same chain and re-assert the correct policy on every one of these tables, so a table
+    -- skipped here is secured a few migrations further on. tests/security/tenancy asserts the end state
+    -- (every tenant table row-level secured) rather than trusting this, which is what makes the skip
+    -- checkable instead of taken on faith.
+    IF NOT EXISTS (SELECT 1 FROM pg_attribute att
+                     JOIN pg_class cls ON cls.oid = att.attrelid
+                     JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                    WHERE ns.nspname = 'public' AND cls.relname = target
+                      AND att.attname = tenant_key AND att.attnum > 0 AND NOT att.attisdropped) THEN
+        RETURN;
+    END IF;
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', target);
     -- FORCE so the boundary holds even if the table owner is ever a non-superuser service account;
     -- without it the owner silently bypasses its own policies.
@@ -91,55 +109,115 @@ CALL palai_apply_tenant_policy('organizations', 'id', false);
 -- rule is then readable in one place and does not depend on how Postgres evaluates policy subqueries.
 ALTER TABLE delivery_attempts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE delivery_attempts FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON delivery_attempts;
-CREATE POLICY tenant_isolation ON delivery_attempts FOR ALL TO PUBLIC
-    USING (coalesce(current_setting('palai.system', true), '') = 'on'
-           OR EXISTS (SELECT 1 FROM webhook_deliveries d
-                       WHERE d.id = delivery_attempts.delivery_id
-                         AND d.organization_id = current_setting('palai.org_id', true)))
-    WITH CHECK (coalesce(current_setting('palai.system', true), '') = 'on'
-           OR EXISTS (SELECT 1 FROM webhook_deliveries d
-                       WHERE d.id = delivery_attempts.delivery_id
-                         AND d.organization_id = current_setting('palai.org_id', true)));
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id from webhook_deliveries. Without this the second boot would DROP the project-keyed policy
+    -- 000066 installed on delivery_attempts and then fail creating its replacement (42703), so the migration that
+    -- INSTALLS row-level security would be the one that removes it. 000066 re-creates the correct policy
+    -- later in this same chain; the branch below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'webhook_deliveries'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+    DROP POLICY IF EXISTS tenant_isolation ON delivery_attempts;
+    CREATE POLICY tenant_isolation ON delivery_attempts FOR ALL TO PUBLIC
+        USING (coalesce(current_setting('palai.system', true), '') = 'on'
+               OR EXISTS (SELECT 1 FROM webhook_deliveries d
+                           WHERE d.id = delivery_attempts.delivery_id
+                             AND d.organization_id = current_setting('palai.org_id', true)))
+        WITH CHECK (coalesce(current_setting('palai.system', true), '') = 'on'
+               OR EXISTS (SELECT 1 FROM webhook_deliveries d
+                           WHERE d.id = delivery_attempts.delivery_id
+                             AND d.organization_id = current_setting('palai.org_id', true)));
+    END IF;
+END
+$$;
 
 ALTER TABLE job_attempts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE job_attempts FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON job_attempts;
-CREATE POLICY tenant_isolation ON job_attempts FOR ALL TO PUBLIC
-    USING (coalesce(current_setting('palai.system', true), '') = 'on'
-           OR EXISTS (SELECT 1 FROM durable_jobs j
-                       WHERE j.id = job_attempts.job_id
-                         AND j.organization_id = current_setting('palai.org_id', true)))
-    WITH CHECK (coalesce(current_setting('palai.system', true), '') = 'on'
-           OR EXISTS (SELECT 1 FROM durable_jobs j
-                       WHERE j.id = job_attempts.job_id
-                         AND j.organization_id = current_setting('palai.org_id', true)));
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id from durable_jobs. Without this the second boot would DROP the project-keyed policy
+    -- 000066 installed on job_attempts and then fail creating its replacement (42703), so the migration that
+    -- INSTALLS row-level security would be the one that removes it. 000066 re-creates the correct policy
+    -- later in this same chain; the branch below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'durable_jobs'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+    DROP POLICY IF EXISTS tenant_isolation ON job_attempts;
+    CREATE POLICY tenant_isolation ON job_attempts FOR ALL TO PUBLIC
+        USING (coalesce(current_setting('palai.system', true), '') = 'on'
+               OR EXISTS (SELECT 1 FROM durable_jobs j
+                           WHERE j.id = job_attempts.job_id
+                             AND j.organization_id = current_setting('palai.org_id', true)))
+        WITH CHECK (coalesce(current_setting('palai.system', true), '') = 'on'
+               OR EXISTS (SELECT 1 FROM durable_jobs j
+                           WHERE j.id = job_attempts.job_id
+                             AND j.organization_id = current_setting('palai.org_id', true)));
+    END IF;
+END
+$$;
 
 ALTER TABLE model_route_revisions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE model_route_revisions FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON model_route_revisions;
-CREATE POLICY tenant_isolation ON model_route_revisions FOR ALL TO PUBLIC
-    USING (coalesce(current_setting('palai.system', true), '') = 'on'
-           OR EXISTS (SELECT 1 FROM model_routes r
-                       WHERE r.id = model_route_revisions.route_id
-                         AND r.organization_id = current_setting('palai.org_id', true)))
-    WITH CHECK (coalesce(current_setting('palai.system', true), '') = 'on'
-           OR EXISTS (SELECT 1 FROM model_routes r
-                       WHERE r.id = model_route_revisions.route_id
-                         AND r.organization_id = current_setting('palai.org_id', true)));
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id from model_routes. Without this the second boot would DROP the project-keyed policy
+    -- 000066 installed on model_route_revisions and then fail creating its replacement (42703), so the migration that
+    -- INSTALLS row-level security would be the one that removes it. 000066 re-creates the correct policy
+    -- later in this same chain; the branch below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'model_routes'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+    DROP POLICY IF EXISTS tenant_isolation ON model_route_revisions;
+    CREATE POLICY tenant_isolation ON model_route_revisions FOR ALL TO PUBLIC
+        USING (coalesce(current_setting('palai.system', true), '') = 'on'
+               OR EXISTS (SELECT 1 FROM model_routes r
+                           WHERE r.id = model_route_revisions.route_id
+                             AND r.organization_id = current_setting('palai.org_id', true)))
+        WITH CHECK (coalesce(current_setting('palai.system', true), '') = 'on'
+               OR EXISTS (SELECT 1 FROM model_routes r
+                           WHERE r.id = model_route_revisions.route_id
+                             AND r.organization_id = current_setting('palai.org_id', true)));
+    END IF;
+END
+$$;
 
 ALTER TABLE schedule_occurrences ENABLE ROW LEVEL SECURITY;
 ALTER TABLE schedule_occurrences FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON schedule_occurrences;
-CREATE POLICY tenant_isolation ON schedule_occurrences FOR ALL TO PUBLIC
-    USING (coalesce(current_setting('palai.system', true), '') = 'on'
-           OR EXISTS (SELECT 1 FROM schedules s
-                       WHERE s.id = schedule_occurrences.schedule_id
-                         AND s.organization_id = current_setting('palai.org_id', true)))
-    WITH CHECK (coalesce(current_setting('palai.system', true), '') = 'on'
-           OR EXISTS (SELECT 1 FROM schedules s
-                       WHERE s.id = schedule_occurrences.schedule_id
-                         AND s.organization_id = current_setting('palai.org_id', true)));
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id from schedules. Without this the second boot would DROP the project-keyed policy
+    -- 000066 installed on schedule_occurrences and then fail creating its replacement (42703), so the migration that
+    -- INSTALLS row-level security would be the one that removes it. 000066 re-creates the correct policy
+    -- later in this same chain; the branch below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'schedules'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+    DROP POLICY IF EXISTS tenant_isolation ON schedule_occurrences;
+    CREATE POLICY tenant_isolation ON schedule_occurrences FOR ALL TO PUBLIC
+        USING (coalesce(current_setting('palai.system', true), '') = 'on'
+               OR EXISTS (SELECT 1 FROM schedules s
+                           WHERE s.id = schedule_occurrences.schedule_id
+                             AND s.organization_id = current_setting('palai.org_id', true)))
+        WITH CHECK (coalesce(current_setting('palai.system', true), '') = 'on'
+               OR EXISTS (SELECT 1 FROM schedules s
+                           WHERE s.id = schedule_occurrences.schedule_id
+                             AND s.organization_id = current_setting('palai.org_id', true)));
+    END IF;
+END
+$$;
 
 -- The runtime role must hold DML on every tenant table, or RLS is not the thing gating it: a missing
 -- GRANT fails closed as a blunt "permission denied for table" instead of the row-scoped policy. Several

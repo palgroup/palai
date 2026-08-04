@@ -194,7 +194,6 @@ type ModelConnection struct {
 	VerifiedAt          string                     `json:"verified_at,omitempty"`
 	VerificationOutcome string                     `json:"verification_outcome,omitempty"`
 	ProjectID           string                     `json:"project_id,omitempty"`
-	OrganizationID      string                     `json:"organization_id,omitempty"`
 	CreatedAt           string                     `json:"created_at,omitempty"`
 	Extra               map[string]json.RawMessage `json:"-"`
 }

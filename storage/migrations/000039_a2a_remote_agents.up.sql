@@ -60,8 +60,22 @@ CREATE TABLE IF NOT EXISTS a2a_remote_agents (
 );
 
 -- List a project's registered remote agents newest-first (admin ListView envelope).
-CREATE INDEX IF NOT EXISTS a2a_remote_agents_project_idx
-    ON a2a_remote_agents (organization_id, project_id, created_at DESC);
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id. A bare `CREATE INDEX IF NOT EXISTS` still RESOLVES its column list even when the
+    -- index already exists, so the second boot would fail here with 42703. 000065 already rebuilt this
+    -- index project-keyed under the SAME name; the statement below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'a2a_remote_agents'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+        CREATE INDEX IF NOT EXISTS a2a_remote_agents_project_idx
+            ON a2a_remote_agents (organization_id, project_id, created_at DESC);
+    END IF;
+END
+$$;
 
 -- The table asserts its own policy (M3). It carries project_id, so has_project=true; the CALL is idempotent
 -- (the procedure DROPs+CREATEs the policy).

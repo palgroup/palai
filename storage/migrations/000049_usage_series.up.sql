@@ -59,9 +59,23 @@
 -- maintains four. The ledger's write path is one row per model step inside a transaction that is
 -- already writing the model request, the fold state and an event, so the marginal write is small -- but
 -- it is not zero, and it is the price of the read above.
-CREATE INDEX IF NOT EXISTS usage_ledger_tenant_series_idx
-    ON usage_ledger (organization_id, project_id, occurred_at)
-    INCLUDE (meter, unit, quantity);
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id. A bare `CREATE INDEX IF NOT EXISTS` still RESOLVES its column list even when the
+    -- index already exists, so the second boot would fail here with 42703. 000065 already rebuilt this
+    -- index project-keyed under the SAME name; the statement below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'usage_ledger'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+        CREATE INDEX IF NOT EXISTS usage_ledger_tenant_series_idx
+            ON usage_ledger (organization_id, project_id, occurred_at)
+            INCLUDE (meter, unit, quantity);
+    END IF;
+END
+$$;
 
 -- No grant and no policy call: usage_ledger already carries 000032's REVOKE-narrowed grants and 000029's
 -- tenant policy, and an index is an object on an existing table that inherits both. 000032 re-asserts

@@ -67,8 +67,22 @@ CREATE TABLE IF NOT EXISTS knowledge_sources (
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     FOREIGN KEY (organization_id, project_id) REFERENCES projects (organization_id, id)
 );
-CREATE INDEX IF NOT EXISTS knowledge_sources_kb_idx
-    ON knowledge_sources (organization_id, project_id, knowledge_base_id);
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id. A bare `CREATE INDEX IF NOT EXISTS` still RESOLVES its column list even when the
+    -- index already exists, so the second boot would fail here with 42703. 000065 already rebuilt this
+    -- index project-keyed under the SAME name; the statement below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'knowledge_sources'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+        CREATE INDEX IF NOT EXISTS knowledge_sources_kb_idx
+            ON knowledge_sources (organization_id, project_id, knowledge_base_id);
+    END IF;
+END
+$$;
 
 -- ingestion_jobs: the durable record of one 9-step ingestion run. Mutable state machine — a failed refresh
 -- lands 'failed' with an error and leaves the KB's prior active pointer untouched (KNO-002); a success
@@ -134,8 +148,22 @@ CREATE TABLE IF NOT EXISTS chunk_revisions (
 );
 -- The GIN index the FTS @@ match and ts_rank read. Scoped by tenant/kb at query time via RLS + the WHERE.
 CREATE INDEX IF NOT EXISTS chunk_revisions_fts_idx ON chunk_revisions USING GIN (fts);
-CREATE INDEX IF NOT EXISTS chunk_revisions_docrev_idx
-    ON chunk_revisions (organization_id, project_id, document_revision_id);
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id. A bare `CREATE INDEX IF NOT EXISTS` still RESOLVES its column list even when the
+    -- index already exists, so the second boot would fail here with 42703. 000065 already rebuilt this
+    -- index project-keyed under the SAME name; the statement below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'chunk_revisions'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+        CREATE INDEX IF NOT EXISTS chunk_revisions_docrev_idx
+            ON chunk_revisions (organization_id, project_id, document_revision_id);
+    END IF;
+END
+$$;
 
 -- index_revisions: APPEND-ONLY. One immutable KB-wide build snapshot. document_revision_ids is the member
 -- set retrieval intersects against (each source's active document_revision at build time), so a rebuild that

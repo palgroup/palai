@@ -53,8 +53,22 @@ CREATE TABLE IF NOT EXISTS hooks (
 
 -- Firing order is (created_at, id): a per-project, per-point read walks hooks in registration order, so the
 -- index that serves the dispatch load also serves the deterministic order.
-CREATE INDEX IF NOT EXISTS hooks_point_order_idx
-    ON hooks (organization_id, project_id, hook_point, created_at, id);
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id. A bare `CREATE INDEX IF NOT EXISTS` still RESOLVES its column list even when the
+    -- index already exists, so the second boot would fail here with 42703. 000065 already rebuilt this
+    -- index project-keyed under the SAME name; the statement below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'hooks'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+        CREATE INDEX IF NOT EXISTS hooks_point_order_idx
+            ON hooks (organization_id, project_id, hook_point, created_at, id);
+    END IF;
+END
+$$;
 
 -- DML-granted to the application role explicitly (000001's blanket GRANT predates this table). UPDATE for
 -- the disabled_at flip; DELETE for admin removal.

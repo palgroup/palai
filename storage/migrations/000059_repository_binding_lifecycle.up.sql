@@ -53,7 +53,21 @@ ALTER TABLE repository_bindings
 
 -- The list and the admission guard both filter on it, and both are already confined to one project, so
 -- the index is (organization_id, project_id, archived_at) rather than a bare column index.
-CREATE INDEX IF NOT EXISTS repository_bindings_live_idx
-    ON repository_bindings (organization_id, project_id, archived_at);
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id. A bare `CREATE INDEX IF NOT EXISTS` still RESOLVES its column list even when the
+    -- index already exists, so the second boot would fail here with 42703. 000065 already rebuilt this
+    -- index project-keyed under the SAME name; the statement below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'repository_bindings'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+        CREATE INDEX IF NOT EXISTS repository_bindings_live_idx
+            ON repository_bindings (organization_id, project_id, archived_at);
+    END IF;
+END
+$$;
 
 INSERT INTO schema_migrations (version) VALUES (59) ON CONFLICT DO NOTHING;

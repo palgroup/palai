@@ -51,8 +51,22 @@ ALTER TABLE runner_pools ADD COLUMN IF NOT EXISTS strict_enrollment BOOLEAN NOT 
 -- NULLABLE in the 000001 shape (an org-wide pool is representable) and the index form takes
 -- IF NOT EXISTS; Postgres treats NULLs as distinct in both forms, so an org-wide pool is not
 -- name-unique — which is honest, because nothing places into one yet.
-CREATE UNIQUE INDEX IF NOT EXISTS runner_pools_name_key
-    ON runner_pools (organization_id, project_id, name);
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id. A bare `CREATE INDEX IF NOT EXISTS` still RESOLVES its column list even when the
+    -- index already exists, so the second boot would fail here with 42703. 000065 already rebuilt this
+    -- index project-keyed under the SAME name; the statement below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'runner_pools'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+        CREATE UNIQUE INDEX IF NOT EXISTS runner_pools_name_key
+            ON runner_pools (organization_id, project_id, name);
+    END IF;
+END
+$$;
 
 -- ---------------------------------------------------------------------------------------------------
 -- R2 — runner_pool_keys (NEW): the credential a machine presents to enrol into ONE pool.
@@ -134,8 +148,22 @@ ALTER TABLE runners ADD CONSTRAINT runners_state_check
 -- The registry's two reads: everything in a pool, and the tenant-scoped keyset page the read surface
 -- serves ((created_at, id) DESC — pagination.go's ordering, so the index matches the query).
 CREATE INDEX IF NOT EXISTS runners_pool_idx ON runners (pool_id, state);
-CREATE INDEX IF NOT EXISTS runners_tenant_page_idx
-    ON runners (organization_id, project_id, created_at DESC, id DESC);
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- organization_id. A bare `CREATE INDEX IF NOT EXISTS` still RESOLVES its column list even when the
+    -- index already exists, so the second boot would fail here with 42703. 000065 already rebuilt this
+    -- index project-keyed under the SAME name; the statement below is the fresh-install path only.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'runners'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+        CREATE INDEX IF NOT EXISTS runners_tenant_page_idx
+            ON runners (organization_id, project_id, created_at DESC, id DESC);
+    END IF;
+END
+$$;
 
 -- ---------------------------------------------------------------------------------------------------
 -- R4 — runner_enrollments (NEW): the APPEND-ONLY journal. capability_jobs' shape (000040) verbatim,
@@ -193,11 +221,29 @@ ALTER TABLE runs ADD COLUMN IF NOT EXISTS pool_id TEXT REFERENCES runner_pools (
 --
 -- The posture is today's: a sandboxed Linux container. strict_enrollment is false, so nothing starts
 -- asking a human for permission on upgrade.
-INSERT INTO runner_pools (id, organization_id, project_id, name, posture, strict_enrollment)
-SELECT 'pool_default', p.organization_id, p.id, 'default', 'sandboxed-linux', false
-  FROM projects p
- WHERE p.organization_id = 'org_local' AND p.id = 'prj_local'
-    ON CONFLICT DO NOTHING;
+DO $$
+BEGIN
+    -- GUARDED BY A.2 TASK 6 (see 000067): the chain re-applies IN FULL on every boot, and 000067 drops
+    -- projects.organization_id, so this seed's column list and its WHERE would both fail with 42703 on
+    -- the second boot.
+    --
+    -- SKIPPING IT SEEDS NOTHING THAT IS MISSING. This row is the upgrade path for an installation that
+    -- predates the fleet tables, and it is ON CONFLICT DO NOTHING against a fixed id — so on any boot
+    -- after the first it was already a no-op. A tenant opened after 000045 gets its default pool from
+    -- identity's provision transaction (storage/queries/runners.sql InsertDefaultRunnerPool), not here.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'projects'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
+        INSERT INTO runner_pools (id, organization_id, project_id, name, posture, strict_enrollment)
+        SELECT 'pool_default', p.organization_id, p.id, 'default', 'sandboxed-linux', false
+          FROM projects p
+         WHERE p.organization_id = 'org_local' AND p.id = 'prj_local'
+            ON CONFLICT DO NOTHING;
+    END IF;
+END
+$$;
 
 -- ---------------------------------------------------------------------------------------------------
 -- Tenancy: four tables, four policies, and the two grants that are actually missing.
