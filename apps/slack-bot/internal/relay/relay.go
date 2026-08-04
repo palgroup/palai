@@ -70,13 +70,90 @@ type Slack interface {
 // as exactly that.
 type ApprovalHook func(ctx context.Context, channel, threadTS string, ev palai.Event)
 
-// Deps is Run's whole seam: a session's events, the Slack stream to render them into, and where an
-// approval request goes. Every field is required — Run refuses rather than doing half a job with a nil
-// one, and a nil OnApproval in particular would be a run that parks on a human who is never asked.
+// Delivery is the DURABLE half of this relay, scoped to the one thread a Run is rendering into: what has
+// already reached Slack, written somewhere that outlives this process.
+//
+// IT EXISTS BECAUSE A PROCESS LIFETIME WAS THE ONLY THING HOLDING AN ANSWER. Before it, how far a run had
+// been rendered lived in a map in memory (inbound.go's inboundState) and nowhere else, so killing the bot
+// mid-run did not delay that thread's answer, it DESTROYED it: no record named the thread, so nothing on
+// restart could finish the job. The old in-process bridge this relay replaced had no such hole — it
+// enqueued a run's reply inside the run's own terminal transaction (packages/coordinator/store.go
+// EnqueueTerminalSlackReply) and a separate pump delivered it, so a dead pump meant a late answer. These
+// three calls are how the relay gets that property back over a public API it does not own.
+//
+// THE THREE CALLS ARE NOT SYMMETRIC and the asymmetry is the whole contract:
+//
+//   - Opened names the Slack message, so another process can finish THAT message rather than posting a
+//     second one (measured resumable across processes — see the stream_ts note in
+//     migrations/0002_delivery_state.sql).
+//   - Delivered advances a cursor that is BOTH the resume point and the de-duplication rule. Run calls it
+//     only for events Slack has confirmed, so the worst a recovery can do is re-send an event that did
+//     land — never skip one that did not.
+//   - Closed says the run reached its terminal and the message is shut. Run calls it on NO other exit,
+//     deliberately: a read error, a shutdown or a panic all leave the record pending, because "we stopped
+//     reading" is exactly the state a restart has to pick up.
+//
+// Every error is returned rather than swallowed so the caller can say it out loud, but Run does not fail a
+// run over one — see recordDelivered.
+type Delivery interface {
+	Opened(ctx context.Context, streamTS string) error
+	Delivered(ctx context.Context, sequence int64) error
+	Closed(ctx context.Context) error
+}
+
+// DeliveryFuncs adapts three closures to Delivery, for a caller that has the writes but no type to hang
+// them on (inbound.go builds one per thread over the store).
+type DeliveryFuncs struct {
+	OpenedFunc    func(ctx context.Context, streamTS string) error
+	DeliveredFunc func(ctx context.Context, sequence int64) error
+	ClosedFunc    func(ctx context.Context) error
+}
+
+func (d DeliveryFuncs) Opened(ctx context.Context, streamTS string) error {
+	if d.OpenedFunc == nil {
+		return nil
+	}
+	return d.OpenedFunc(ctx, streamTS)
+}
+
+func (d DeliveryFuncs) Delivered(ctx context.Context, sequence int64) error {
+	if d.DeliveredFunc == nil {
+		return nil
+	}
+	return d.DeliveredFunc(ctx, sequence)
+}
+
+func (d DeliveryFuncs) Closed(ctx context.Context) error {
+	if d.ClosedFunc == nil {
+		return nil
+	}
+	return d.ClosedFunc(ctx)
+}
+
+// Deps is Run's whole seam: a session's events, the Slack stream to render them into, where an approval
+// request goes, and the durable record of what has already been delivered. Every field is required — Run
+// refuses rather than doing half a job with a nil one, and a nil OnApproval in particular would be a run
+// that parks on a human who is never asked.
+//
+// Delivery is required for the same reason and not as bookkeeping: a Run with no durable record is exactly
+// the relay this package used to be, whose answer a `kill` erased. Making it optional would put the one
+// property this file exists to guarantee behind a caller remembering to ask for it.
 type Deps struct {
 	Events     EventStream
 	Slack      Slack
 	OnApproval ApprovalHook
+	Delivery   Delivery
+
+	// ResumeTS adopts a chat.startStream message that is ALREADY OPEN instead of opening a new one — the
+	// recovery path (resume.go), where a previous process opened the message, wrote part of the answer into
+	// it and died. Empty is the ordinary case: Run opens its own.
+	//
+	// It is safe across processes because a Slack stream is addressed by (channel, ts) and the bot token and
+	// belongs to no connection — measured on 2026-08-04 by opening a stream in one curl invocation,
+	// appending from a second and closing from a third, all ok, the text concatenating in order. So the
+	// recovered half of an answer lands in the same message a reader is already looking at, and the card
+	// that would otherwise have said "streaming" forever (SLK-P2) gets closed.
+	ResumeTS string
 }
 
 // THE GAP THE HEADLINE EXISTS TO FILL, measured end to end on 2026-08-04 against a real run
@@ -151,21 +228,39 @@ var modelStepHeadline = map[string]string{
 // several seconds (see thinkingTaskID's measurement: 8.5 of them, in the run that prompted this). Opening a
 // stream in chunk mode with no chunks keeps a genuinely blank message, so without this the thread would show
 // an empty bot reply during exactly the window the reader most needs to see something.
+// THE STREAM IS ADOPTED RATHER THAN OPENED WHEN Deps.ResumeTS IS SET, and that branch is the difference
+// between an answer arriving where a reader is looking and a second message appearing under a first one
+// stuck at "Working…". A resumed stream also skips the opening headline: the message it is joining has been
+// showing one for as long as the dead process lived, and re-announcing "Working…" over the top of whatever
+// the run had already reported would erase the most recent thing a reader was told.
 func Run(ctx context.Context, deps Deps, sessionID, channel, threadTS string) (err error) {
-	if deps.Events == nil || deps.Slack == nil || deps.OnApproval == nil {
-		return fmt.Errorf("relay: Deps needs Events, Slack and OnApproval (session %s)", sessionID)
+	if deps.Events == nil || deps.Slack == nil || deps.OnApproval == nil || deps.Delivery == nil {
+		return fmt.Errorf("relay: Deps needs Events, Slack, OnApproval and Delivery (session %s)", sessionID)
 	}
 	defer deps.Events.Close()
 
-	ts, startErr := deps.Slack.StartStream(ctx, channel, threadTS, "")
-	if startErr != nil {
-		return fmt.Errorf("relay: start stream for session %s: %w", sessionID, startErr)
+	ts := deps.ResumeTS
+	resumed := ts != ""
+	if !resumed {
+		var startErr error
+		if ts, startErr = deps.Slack.StartStream(ctx, channel, threadTS, ""); startErr != nil {
+			return fmt.Errorf("relay: start stream for session %s: %w", sessionID, startErr)
+		}
+		// RECORDED BEFORE THE FIRST EVENT IS READ, because the message exists from this instant and a
+		// process killed one line later has to leave something behind that names it. A failure here is
+		// reported and the run continues: the alternative is refusing to render an answer because we could
+		// not write down where we were rendering it.
+		if openErr := deps.Delivery.Opened(ctx, ts); openErr != nil {
+			return fmt.Errorf("relay: record the open stream for session %s: %w", sessionID, openErr)
+		}
 	}
 
 	st := &openStream{deps: deps, channel: channel, threadTS: threadTS, ts: ts,
 		cards: newCards(), startedAt: time.Now()}
 	defer st.stop(ctx, sessionID, &err)
-	st.setHeadline(ctx, openingHeadline)
+	if !resumed {
+		st.setHeadline(ctx, openingHeadline)
+	}
 
 	for {
 		event, nextErr := deps.Events.Next()
@@ -176,6 +271,7 @@ func Run(ctx context.Context, deps Deps, sessionID, channel, threadTS string) (e
 			return fmt.Errorf("relay: read session %s events: %w", sessionID, nextErr)
 		}
 		st.handle(ctx, event)
+		st.delivered(ctx, int64(event.Sequence))
 		if isRunTerminal(event.Type) {
 			return nil
 		}
@@ -226,6 +322,50 @@ type openStream struct {
 	// closing stop on a stopped stream, permanently, so a call made after this is a round trip that can
 	// only fail.
 	stopped bool
+
+	// terminal records that a run terminal event was rendered (runEnded). It is what stop() consults to
+	// decide whether this thread still owes somebody an answer: ONLY a terminal clears the durable record.
+	// Every other way out of Run's loop — a read error, a cancelled context, a panic — leaves it false on
+	// purpose, so a restart picks the thread up and finishes it.
+	terminal bool
+
+	// handled is the highest sequence handle() has been called with, delivered or not. It is what stop()
+	// records once a flush finally lands: the text that was stuck in pending belonged to those events, so
+	// the cursor may only move past them at the moment that text reaches Slack, never before.
+	handled int64
+
+	// deliveredSeq is the highest sequence already written through Delivery, so a repeat is not re-sent.
+	// The durable write is a database round trip on the hot path of a stream; a run whose events carry no
+	// new confirmed progress should not pay for one.
+	deliveredSeq int64
+}
+
+// delivered advances the durable cursor — but ONLY for events Slack has actually taken.
+//
+// THE pending GUARD IS THE WHOLE CORRECTNESS ARGUMENT, not an optimisation. emit() buffers text into
+// pending when an append fails and re-sends the whole backlog on the next attempt (see emit), so a
+// non-empty pending means "some of what has been handled is NOT on screen". Recording a cursor past it
+// would tell a recovering process that text was delivered which no reader has ever seen — and since the
+// cursor is also the de-duplication rule, that text would then be skipped forever rather than retried.
+// Erring the other way is cheap: a cursor left behind re-sends something that did land, which a reader
+// sees once more, and only ever within one run's worth of events.
+//
+// A FAILED DURABLE WRITE DOES NOT FAIL THE RUN, and the error is dropped HERE rather than reported — not
+// because it does not matter, but because this is the one place with nothing useful to say about it. The
+// row keeps its previous cursor, so the whole cost of a failed write is a recovery that replays a few
+// events it need not have. Reporting it up through Run would be worse than useless: dispatch.go renders a
+// Run error as "THE ANSWER NEVER REACHED THE THREAD", which about a delivered answer is simply false. The
+// caller that OWNS the write is the one that logs it, with the thread it belongs to — see the DeliveryFuncs
+// inbound.go builds.
+func (o *openStream) delivered(ctx context.Context, sequence int64) {
+	if sequence > o.handled {
+		o.handled = sequence
+	}
+	if o.pending.Len() > 0 || sequence <= o.deliveredSeq {
+		return
+	}
+	o.deliveredSeq = sequence
+	_ = o.deps.Delivery.Delivered(ctx, sequence)
 }
 
 // THE HUMAN PRESSED STOP ON THE STREAMING CARD (S11, restored from the old in-process bridge's
@@ -317,6 +457,7 @@ func (o *openStream) stop(ctx context.Context, sessionID string, outErr *error) 
 	// that ctx by definition, so closing it must not be refused for the same reason the loop stopped.
 	closeCtx := context.WithoutCancel(ctx)
 	var closeErr error
+	flushed := o.pending.Len() == 0
 	if !o.stopped {
 		if err := o.deps.Slack.StopStream(closeCtx, o.channel, o.ts, o.pending.String()); err != nil {
 			if slack.APIErrorCode(err) == slack.CodeStoppedByUser {
@@ -326,6 +467,8 @@ func (o *openStream) stop(ctx context.Context, sessionID string, outErr *error) 
 			} else {
 				closeErr = fmt.Errorf("relay: stop stream for session %s: %w", sessionID, err)
 			}
+		} else {
+			flushed = true
 		}
 	}
 	if o.stopped && o.pending.Len() > 0 {
@@ -335,8 +478,32 @@ func (o *openStream) stop(ctx context.Context, sessionID string, outErr *error) 
 			closeErr = fmt.Errorf("relay: post session %s's answer after the human stopped the live stream: %w", sessionID, err)
 		} else {
 			o.pending.Reset()
+			flushed = true
 		}
 	}
+
+	// THE CURSOR CATCHES UP HERE OR NOWHERE. delivered() refuses to advance past text still sitting in
+	// pending, so a run whose last appends failed and whose closing flush then SUCCEEDED would otherwise
+	// leave a cursor pointing at the last confirmed append — and the next run in this session would replay
+	// everything after it, re-showing an answer the reader already has. The final flush is the moment that
+	// text becomes visible, so it is the moment the cursor may move.
+	if flushed && o.handled > o.deliveredSeq {
+		o.deliveredSeq = o.handled
+		_ = o.deps.Delivery.Delivered(closeCtx, o.handled)
+	}
+
+	// ONLY A TERMINAL CLEARS THE DURABLE RECORD, and the condition is the run's own outcome rather than
+	// this function being reached: stop() runs on EVERY exit, including the ones that mean the opposite of
+	// finished. A read error, a cancelled context and a panic all leave the thread marked pending, which is
+	// what makes a killed process recoverable at all — the record is the only thing that will still name
+	// this thread once this process is gone. A failure to clear is harmless in the other direction: the
+	// next boot re-attaches, sees a journal already at its terminal, renders nothing new and clears it then.
+	if o.terminal {
+		if err := o.deps.Delivery.Closed(closeCtx); err != nil && closeErr == nil {
+			closeErr = fmt.Errorf("relay: clear the delivery record for session %s: %w", sessionID, err)
+		}
+	}
+
 	switch {
 	case rec != nil:
 		*outErr = fmt.Errorf("relay: panic relaying session %s: %v", sessionID, rec)
@@ -442,6 +609,11 @@ func (o *openStream) stepEnded(ctx context.Context, data map[string]any, status 
 // a human what had happened. A terminal that is not `completed` has no words of its own by definition, so
 // this is the only place they can come from. `completed` writes nothing: the model's answer speaks for it.
 func (o *openStream) runEnded(ctx context.Context, outcome runOutcome) {
+	// Recorded FIRST, before any of the calls below can fail: what this flag means is "the run is over",
+	// which is true the instant the terminal event was read, and it must not become conditional on Slack
+	// taking the decorations that report it. A thread left marked pending because a headline update 429'd
+	// would be re-attached on every boot for a run that finished long ago.
+	o.terminal = true
 	for _, card := range o.cards.all {
 		if card.status() == "in_progress" {
 			card.inFlight = 0

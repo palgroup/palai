@@ -26,7 +26,7 @@ import (
 // sides of wherever the stop lands.
 func runStopped(t *testing.T, fake *fakeSlack, events []palai.Event) error {
 	t.Helper()
-	return Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals},
+	return Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals, Delivery: &recordedDelivery{}},
 		"sess_1", "C1", "1.1")
 }
 

@@ -32,7 +32,7 @@ func doneStep(id, tool string) palai.Event {
 func runCards(t *testing.T, events []palai.Event) *fakeSlack {
 	t.Helper()
 	fake := &fakeSlack{}
-	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals},
+	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals, Delivery: &recordedDelivery{}},
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

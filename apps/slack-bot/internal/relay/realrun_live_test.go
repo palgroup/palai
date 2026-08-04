@@ -96,7 +96,7 @@ func TestARealRunRendersItsStepsAsCards(t *testing.T) {
 	// THE REAL WIRING, not a re-implementation of it.
 	stream := NewChannelSlackStreamer(http.DefaultClient, "https://slack.com/api", token)(userID, teamID)
 	seen := &recordingSlack{inner: stream}
-	if err := Run(ctx, Deps{Events: events, Slack: seen, OnApproval: func(context.Context, string, string, palai.Event) {}},
+	if err := Run(ctx, Deps{Events: events, Slack: seen, OnApproval: func(context.Context, string, string, palai.Event) {}, Delivery: &recordedDelivery{}},
 		session.ID, channel, threadTS); err != nil {
 		t.Fatalf("relay.Run: %v", err)
 	}

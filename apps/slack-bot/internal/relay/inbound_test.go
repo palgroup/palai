@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	slack "github.com/palgroup/palai/adapters/integrations/slack"
+	"github.com/palgroup/palai/apps/slack-bot/internal/store"
 	palai "github.com/palgroup/palai/sdks/go"
 )
 
@@ -26,9 +28,150 @@ type fakeStore struct {
 	binds      int
 	rebinds    int
 	rebindsWon int
+
+	// delivery mirrors migrations/0002_delivery_state.sql's four columns per thread. It is reproduced
+	// FAITHFULLY rather than generously — including BeginDelivery's refusal on an unbound thread and
+	// RebindThread's reset of the whole delivery row — because a fake looser than the schema lets a test
+	// pass against a shape Postgres would refuse.
+	delivery map[threadKey]*fakeDelivery
+	// claims is approval_posts: the primary key, and nothing else it does not enforce.
+	claims map[string]bool
+	// failBeginDelivery makes the durable record refuse — the one store failure the inbound path is
+	// supposed to REFUSE A TURN over rather than log and continue.
+	failBeginDelivery error
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{bound: make(map[threadKey]string)} }
+// fakeDelivery is one thread's delivery row.
+type fakeDelivery struct {
+	lastSequence    int64
+	runPending      bool
+	streamTS        string
+	recipientUserID string
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{
+		bound:    make(map[threadKey]string),
+		delivery: make(map[threadKey]*fakeDelivery),
+		claims:   make(map[string]bool),
+	}
+}
+
+// row returns the delivery row for a bound thread, creating it on the first bind exactly as the real
+// INSERT does (every column at its default). It answers nil for a thread with no binding at all, which is
+// what makes BeginDelivery's refusal reproducible here.
+func (f *fakeStore) row(key threadKey) *fakeDelivery {
+	if _, bound := f.bound[key]; !bound {
+		return nil
+	}
+	d, ok := f.delivery[key]
+	if !ok {
+		d = &fakeDelivery{}
+		f.delivery[key] = d
+	}
+	return d
+}
+
+func (f *fakeStore) BeginDelivery(ctx context.Context, botID, teamID, channelID, threadTS, recipientUserID string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failBeginDelivery != nil {
+		return 0, f.failBeginDelivery
+	}
+	d := f.row(threadKey{botID: botID, teamID: teamID, channelID: channelID, threadTS: threadTS})
+	if d == nil {
+		return 0, fmt.Errorf("fakeStore: %s/%s/%s/%s has no binding", botID, teamID, channelID, threadTS)
+	}
+	d.runPending, d.streamTS, d.recipientUserID = true, "", recipientUserID
+	return d.lastSequence, nil
+}
+
+func (f *fakeStore) RecordStreamTS(ctx context.Context, botID, teamID, channelID, threadTS, streamTS string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if d := f.row(threadKey{botID: botID, teamID: teamID, channelID: channelID, threadTS: threadTS}); d != nil {
+		d.streamTS = streamTS
+	}
+	return nil
+}
+
+func (f *fakeStore) RecordDelivered(ctx context.Context, botID, teamID, channelID, threadTS string, sequence int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if d := f.row(threadKey{botID: botID, teamID: teamID, channelID: channelID, threadTS: threadTS}); d != nil && sequence > d.lastSequence {
+		d.lastSequence = sequence // the real GREATEST: never walks backward
+	}
+	return nil
+}
+
+func (f *fakeStore) EndDelivery(ctx context.Context, botID, teamID, channelID, threadTS string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if d := f.row(threadKey{botID: botID, teamID: teamID, channelID: channelID, threadTS: threadTS}); d != nil {
+		d.runPending, d.streamTS = false, ""
+	}
+	return nil
+}
+
+func (f *fakeStore) PendingDeliveries(ctx context.Context, botID string) ([]store.PendingRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []store.PendingRun
+	for key, d := range f.delivery {
+		if key.botID != botID || !d.runPending {
+			continue
+		}
+		out = append(out, store.PendingRun{
+			TeamID: key.teamID, ChannelID: key.channelID, ThreadTS: key.threadTS,
+			SessionID: f.bound[key], LastSequence: d.lastSequence,
+			StreamTS: d.streamTS, RecipientUserID: d.recipientUserID,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ThreadTS < out[j].ThreadTS })
+	return out, nil
+}
+
+func (f *fakeStore) ThreadForSession(ctx context.Context, botID, sessionID string) (store.PendingRun, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var found []store.PendingRun
+	for key, id := range f.bound {
+		if key.botID != botID || id != sessionID {
+			continue
+		}
+		p := store.PendingRun{TeamID: key.teamID, ChannelID: key.channelID, ThreadTS: key.threadTS, SessionID: id}
+		if d := f.delivery[key]; d != nil {
+			p.LastSequence, p.StreamTS, p.RecipientUserID = d.lastSequence, d.streamTS, d.recipientUserID
+		}
+		found = append(found, p)
+	}
+	switch len(found) {
+	case 0:
+		return store.PendingRun{}, false, nil
+	case 1:
+		return found[0], true, nil
+	default:
+		return store.PendingRun{}, false, store.ErrAmbiguousSession
+	}
+}
+
+func (f *fakeStore) ClaimApprovalPost(ctx context.Context, botID, approvalID, channelID, threadTS string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := botID + "|" + approvalID
+	if f.claims[key] {
+		return false, nil
+	}
+	f.claims[key] = true
+	return true, nil
+}
+
+func (f *fakeStore) ReleaseApprovalPost(ctx context.Context, botID, approvalID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.claims, botID+"|"+approvalID)
+	return nil
+}
 
 func (f *fakeStore) SessionForThread(ctx context.Context, botID, teamID, channelID, threadTS string) (string, bool, error) {
 	f.mu.Lock()
@@ -59,6 +202,10 @@ func (f *fakeStore) RebindThread(ctx context.Context, botID, teamID, channelID, 
 	}
 	f.bound[key] = newSessionID
 	f.rebindsWon++
+	// The real UPDATE resets the whole delivery row in the same statement, because a cursor means nothing
+	// outside the journal it came from and the pending run it named was on the session that no longer
+	// exists. A double that skipped this would let a resume-from-a-dead-session bug pass.
+	delete(f.delivery, key)
 	return true, nil
 }
 
@@ -80,11 +227,15 @@ type fakePalai struct {
 
 	// searchGrants records every GrantSlackSearchAuthority call IN ORDER, including the ones carrying an
 	// empty token. Order and emptiness are both load-bearing: the withdraw is a call, not an omission.
-	searchGrants   []palai.SlackSearchAuthorityParams
-	failNextGrant  error
+	searchGrants  []palai.SlackSearchAuthorityParams
+	failNextGrant error
 
 	failNextResponseNotFound bool
 	failNextSteerNotFound    bool
+	// failNextEventsNotFound / failNextEvents are the two ways attaching to a session's journal fails —
+	// see SessionEvents for why they are separate knobs and not one.
+	failNextEventsNotFound bool
+	failNextEvents         error
 
 	// stream is handed the CONTEXT SessionEvents was opened with, because that context is not incidental
 	// to the fake — *palai.SessionEventStream reads its connection under it, and a stream double that
@@ -150,9 +301,23 @@ func (f *fakePalai) SessionEvents(ctx context.Context, sessionID string, p palai
 	f.mu.Lock()
 	f.sessionEventsParams = append(f.sessionEventsParams, p)
 	supplier := f.stream
+	// The two ways attaching to a journal fails are kept APART, because the relay's recovery path treats
+	// them as opposites: a 404 means the answer is gone and the debt should be written off, anything else
+	// means try again later. A double with one knob for both would let a recovery that wrote off a
+	// transient failure pass.
+	notFound, other := f.failNextEventsNotFound, f.failNextEvents
+	f.failNextEventsNotFound, f.failNextEvents = false, nil
 	f.mu.Unlock()
+	if notFound {
+		return nil, &palai.APIError{Status: http.StatusNotFound}
+	}
+	if other != nil {
+		return nil, other
+	}
 	if supplier != nil {
-		return supplier(ctx), nil
+		if stream := supplier(ctx); stream != nil {
+			return stream, nil
+		}
 	}
 	return staticStream(nil), nil // no events: Run's loop hits io.EOF on its first Next() and returns
 }

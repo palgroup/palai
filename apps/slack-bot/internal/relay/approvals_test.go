@@ -94,6 +94,11 @@ func newTestApprovalDeps(t *testing.T) ApprovalDeps {
 		Palai:            &fakeApprovalsPalai{},
 		Slack:            &fakeApprovalSlack{},
 		AllowedApprovers: []string{"U_allowed"},
+		// The claim store is a real (in-memory) one rather than a permissive stub, because half the
+		// properties this file asserts are about how many messages get posted — and a stub that always
+		// granted the claim would make a double-post indistinguishable from a single one.
+		Posts: newFakeStore(),
+		BotID: "bot_1",
 	}
 }
 

@@ -41,6 +41,21 @@ type ThreadStore interface {
 	// won=false means a concurrent recovery on the SAME orphaned thread got there first — see
 	// rebindOrphan, the one caller.
 	RebindThread(ctx context.Context, botID, teamID, channelID, threadTS, oldSessionID, newSessionID string) (bool, error)
+
+	// The DURABLE DELIVERY RECORD (migrations/0002_delivery_state.sql). It hangs off this interface rather
+	// than off an optional field of its own for one reason: InboundDeps.validate already refuses a nil
+	// Store, so widening it here means there is NO PATH through this file that starts a run without a place
+	// to write down how far it got. An optional field would have made the property this relay exists to
+	// guarantee depend on a caller remembering to ask for it — which is how it was lost the first time.
+	// BeginDelivery returns the thread's delivered-through cursor as it stands, which is the sequence the
+	// new run's stream must be opened after — see the store method's own doc for the restart-shaped defect
+	// that return value closes.
+	BeginDelivery(ctx context.Context, botID, teamID, channelID, threadTS, recipientUserID string) (int64, error)
+	RecordStreamTS(ctx context.Context, botID, teamID, channelID, threadTS, streamTS string) error
+	RecordDelivered(ctx context.Context, botID, teamID, channelID, threadTS string, sequence int64) error
+	EndDelivery(ctx context.Context, botID, teamID, channelID, threadTS string) error
+	PendingDeliveries(ctx context.Context, botID string) ([]store.PendingRun, error)
+	ThreadForSession(ctx context.Context, botID, sessionID string) (store.PendingRun, bool, error)
 }
 
 // var _ ThreadStore = (*store.Store)(nil) pins the two shapes together at COMPILE time. Without it,
@@ -744,6 +759,27 @@ func (deps InboundDeps) startRun(ctx context.Context, tk threadKey, sessionID st
 		return fmt.Errorf("relay: create response for session %s: %w", sessionID, err)
 	}
 
+	// FROM HERE THE CONTROL PLANE OWES THIS THREAD AN ANSWER, so from here a record of that has to exist
+	// somewhere this process's death cannot reach. This is the earliest such point and it is deliberately
+	// BEFORE the stream is opened: a process killed in the window between an accepted run and
+	// chat.startStream leaves a live run whose Slack thread nothing else names, and that window is not
+	// theoretical — it spans a whole Slack API round trip.
+	//
+	// A FAILURE HERE FAILS THE TURN, which is the opposite of how the search grant above is handled, and
+	// the asymmetry is the point: a failed grant costs a tool, a failed record costs the whole answer if
+	// this process does not survive the run. Better to tell the human now than to promise an answer that
+	// only a healthy process can keep.
+	// The cursor comes BACK from that write, and using it rather than the in-memory one closes a defect
+	// older than this file's durability work: inboundState's cursor is zero for every thread after a
+	// restart, so the first message in a day-old thread would open its stream at sequence 0, read the
+	// PREVIOUS run's terminal event first and close on it — rendering the last answer's ending in place of
+	// this turn's. The two are kept in step so the rest of the process still sees one number.
+	resumeFrom, err := deps.Store.BeginDelivery(ctx, tk.botID, tk.teamID, tk.channelID, tk.threadTS, ev.UserID)
+	if err != nil {
+		return fmt.Errorf("relay: record the pending run for session %s: %w", sessionID, err)
+	}
+	deps.state.setLastSequence(tk, resumeFrom)
+
 	// ONE CONTEXT FOR THE WHOLE RELAY, and it is detached from the caller's — the event stream and the Run
 	// that drains it are two halves of one thing that outlives this call, so they cannot be opened under
 	// two different lifetimes.
@@ -778,6 +814,7 @@ func (deps InboundDeps) startRun(ctx context.Context, tk threadKey, sessionID st
 		Events:     &sequenceTrackingStream{EventStream: stream, record: func(seq int64) { deps.state.setLastSequence(tk, seq) }},
 		Slack:      deps.NewSlack(ev.UserID, ev.TeamID),
 		OnApproval: deps.OnApproval,
+		Delivery:   deps.delivery(tk),
 	}
 	// Set BEFORE handing off to RunInBackground, not inside the deferred goroutine: a caller that
 	// supplies a SYNCHRONOUS RunInBackground (a test not exercising the steer path) would otherwise
@@ -814,6 +851,47 @@ func (deps InboundDeps) createResponse(ctx context.Context, sessionID string, in
 		req.Repository = map[string]any{"binding_id": deps.RepositoryBindingID}
 	}
 	return deps.Palai.CreateResponse(ctx, req)
+}
+
+// delivery builds the durable record one relay.Run writes its progress through, bound to ONE thread.
+//
+// IT IS BUILT UNCONDITIONALLY AND FROM A REQUIRED FIELD, which is the structural half of the guarantee:
+// deps.Store cannot be nil (validate refuses one) and there is no branch below that could produce a
+// different Delivery, so no path through this file starts a run without a place to write down how far it
+// got. That is a stronger statement than a nil check, because it is not a condition anybody can meet
+// wrongly — it is the absence of an alternative.
+//
+// THE FAILURES ARE LOGGED HERE RATHER THAN RETURNED UPWARD, because this is the layer that knows which
+// thread they belong to. relay.Run has only the session id, and it renders a returned error as a lost
+// answer (dispatch.go's "THE ANSWER NEVER REACHED THE THREAD") — which about a delivered answer whose
+// bookkeeping failed would be a false alarm pointing an operator at the wrong file. What each failure
+// actually costs is spelled out per line: they are not the same.
+func (deps InboundDeps) delivery(tk threadKey) Delivery {
+	return DeliveryFuncs{
+		OpenedFunc: func(ctx context.Context, streamTS string) error {
+			return deps.Store.RecordStreamTS(ctx, tk.botID, tk.teamID, tk.channelID, tk.threadTS, streamTS)
+		},
+		DeliveredFunc: func(ctx context.Context, sequence int64) error {
+			if err := deps.Store.RecordDelivered(ctx, tk.botID, tk.teamID, tk.channelID, tk.threadTS, sequence); err != nil {
+				// COSTS A REPLAY, NOT AN ANSWER: the row keeps its earlier cursor, so a recovery would
+				// re-send some events that already landed. Worth a line, not worth stopping for.
+				deps.logf("relay: could not record delivery progress for %s/%s (sequence %d) — a recovery would replay from further back: %v",
+					tk.channelID, tk.threadTS, sequence, err)
+			}
+			return nil
+		},
+		ClosedFunc: func(ctx context.Context) error {
+			if err := deps.Store.EndDelivery(ctx, tk.botID, tk.teamID, tk.channelID, tk.threadTS); err != nil {
+				// COSTS ONE POINTLESS RE-ATTACH: the thread stays marked pending, so the next boot opens
+				// this session's journal, finds it already at its terminal, renders nothing and clears the
+				// row then. Harmless, and it fails in the safe direction — the dangerous failure would be
+				// clearing a run that had NOT finished.
+				deps.logf("relay: could not clear the delivery record for %s/%s — the next start will re-attach to a run that is already finished: %v",
+					tk.channelID, tk.threadTS, err)
+			}
+			return nil
+		},
+	}
 }
 
 // sequenceTrackingStream wraps a session's EventStream and records the sequence of the last event it

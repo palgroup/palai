@@ -149,6 +149,8 @@ func run(ctx context.Context) error {
 			Palai:            relay.NewApprovalsPalaiClient(client),
 			Slack:            relay.NewApprovalSlack(http.DefaultClient, slackAPIBase, creds.botToken),
 			AllowedApprovers: slackCfg.AllowedApprovers,
+			Posts:            st,
+			BotID:            bot.ID,
 		},
 		botUserID: slackCfg.BotUserID,
 	}
@@ -183,12 +185,39 @@ func run(ctx context.Context) error {
 		log.Printf("slack-bot: image leg NOT ready — a screenshot shared with a message will be relayed as a note saying it could not be attached")
 	}
 
+	// BEFORE THE SOCKET, and that ordering is the whole reason this call is here rather than alongside the
+	// sweep below. These are answers this process's predecessor was in the middle of writing when it died;
+	// finishing them cannot wait on a WebSocket handshake, and a thread that has been silent since the last
+	// restart should not have to wait for the next inbound message either. It hands each recovery off to a
+	// goroutine and returns, so a run that is genuinely still working does not hold the socket shut.
+	//
+	// A FAILURE HERE DOES NOT STOP THE BOT. Recovery is about the PREVIOUS process's unfinished business;
+	// refusing to serve the next message because the last one could not be cleaned up would turn a partial
+	// outage into a total one. The record stays pending either way, so the next start tries again.
+	if err := relay.RecoverPendingRuns(ctx, d.inbound); err != nil {
+		log.Printf("slack-bot: could not finish the answers left by the previous process (they are still recorded and the next start will retry): %v", err)
+	}
+
+	// The approval sweep runs for the whole life of the process, not only at boot. Its boot pass is the one
+	// that matters most — a run parked on a human while this bot was down was never asked, and nothing else
+	// will ever ask — but the same loop also covers a live process whose event stream dropped, and that
+	// second case would be invisible in every test a boot-only scan could pass.
+	sweepCtx, stopSweep := context.WithCancel(ctx)
+	defer stopSweep()
+	sweepDone := startApprovalSweep(sweepCtx, relay.SweepApprovalDeps{
+		Approvals: d.approvals,
+		Threads:   st,
+		Logf:      log.Printf,
+	})
+
 	log.Printf("slack-bot: opening Socket Mode")
 	socketErr := socket.Run(ctx, socket.Config{
 		AppToken: creds.appToken,
 		APIBase:  slackAPIBase,
 		Doer:     http.DefaultClient,
 	}, d)
+	stopSweep()
+	<-sweepDone
 
 	// The socket is closed. Relays still draining a run are NOT cancelled with it — the Slack message each
 	// one opened has to be closed, or it renders as permanently streaming — so this waits for them, and
@@ -204,6 +233,44 @@ func run(ctx context.Context) error {
 		log.Printf("slack-bot: some runs were still streaming into Slack after %s; exiting anyway — their messages may stay open until Slack closes them", shutdownGrace)
 	}
 	return socketErr
+}
+
+// approvalSweepInterval is how often this process re-asks the control plane whether any run of its own is
+// parked on a human who has not been shown the buttons.
+//
+// IT IS A CONSTANT AND NOT A SETTING, deliberately. The cost is one GET /v1/approvals per tick against a
+// route that answers an empty page in the ordinary case, and the benefit — a parked run being noticed
+// within a few seconds instead of never — is not something an operator should have to opt into. A knob here
+// would mostly be a way to turn the guarantee off.
+const approvalSweepInterval = 15 * time.Second
+
+// startApprovalSweep runs SweepApprovals on a ticker until ctx ends, and returns a channel that closes once
+// the loop has stopped — so shutdown can wait for a sweep that is mid-post rather than exiting underneath
+// one and leaving a claim taken for a message that never went out.
+//
+// THE FIRST PASS IS IMMEDIATE, before the first tick, because the case it exists for is already true at
+// boot: a run parked while this process was down has been waiting since then, and making it wait one more
+// interval is the one delay this whole change is meant to remove.
+func startApprovalSweep(ctx context.Context, deps relay.SweepApprovalDeps) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(approvalSweepInterval)
+		defer ticker.Stop()
+		for {
+			if err := relay.SweepApprovals(ctx, deps); err != nil && ctx.Err() == nil {
+				// Logged, never fatal: this is a background repair, and a control plane that is briefly
+				// unreachable must not take the bot's live path down with it.
+				log.Printf("slack-bot: the approval sweep could not run this time (a parked run may still be waiting to be asked about): %v", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return done
 }
 
 // loadBot is everything BOTH modes do before they diverge: the four variables, this bot's own row, the

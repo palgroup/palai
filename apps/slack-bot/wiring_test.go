@@ -22,12 +22,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 
 	slack "github.com/palgroup/palai/adapters/integrations/slack"
 	"github.com/palgroup/palai/apps/slack-bot/internal/relay"
+	"github.com/palgroup/palai/apps/slack-bot/internal/store"
 	palai "github.com/palgroup/palai/sdks/go"
 )
 
@@ -98,11 +100,21 @@ func (s *fakeStream) Close() error { return nil }
 // fakeStore is relay.ThreadStore over a map. The REAL store is what main.go passes; this one exists so
 // these assertions need no Postgres.
 type fakeStore struct {
-	mu   sync.Mutex
-	rows map[string]string
+	mu         sync.Mutex
+	rows       map[string]string
+	delivered  map[string]int64
+	pending    map[string]bool
+	streams    map[string]string
+	recipients map[string]string
+	claims     map[string]bool
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{rows: map[string]string{}} }
+func newFakeStore() *fakeStore {
+	return &fakeStore{
+		rows: map[string]string{}, delivered: map[string]int64{}, pending: map[string]bool{},
+		streams: map[string]string{}, recipients: map[string]string{}, claims: map[string]bool{},
+	}
+}
 
 func (s *fakeStore) key(botID, teamID, channelID, threadTS string) string {
 	return strings.Join([]string{botID, teamID, channelID, threadTS}, "|")
@@ -134,7 +146,107 @@ func (s *fakeStore) RebindThread(_ context.Context, botID, teamID, channelID, th
 		return false, nil
 	}
 	s.rows[k] = newSessionID
+	delete(s.delivered, k)
 	return true, nil
+}
+
+// The durable delivery half (migrations/0002_delivery_state.sql). This double is deliberately thinner than
+// the relay package's own: nothing in THIS package's tests asserts on recovery, so what these owe is a
+// working interface and honest bookkeeping, not a second reimplementation of the schema.
+func (s *fakeStore) BeginDelivery(_ context.Context, botID, teamID, channelID, threadTS, recipientUserID string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := s.key(botID, teamID, channelID, threadTS)
+	if _, bound := s.rows[k]; !bound {
+		return 0, fmt.Errorf("fakeStore: %s has no binding", k)
+	}
+	s.pending[k], s.streams[k], s.recipients[k] = true, "", recipientUserID
+	return s.delivered[k], nil
+}
+
+func (s *fakeStore) RecordStreamTS(_ context.Context, botID, teamID, channelID, threadTS, streamTS string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.streams[s.key(botID, teamID, channelID, threadTS)] = streamTS
+	return nil
+}
+
+func (s *fakeStore) RecordDelivered(_ context.Context, botID, teamID, channelID, threadTS string, sequence int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := s.key(botID, teamID, channelID, threadTS)
+	if sequence > s.delivered[k] {
+		s.delivered[k] = sequence
+	}
+	return nil
+}
+
+func (s *fakeStore) EndDelivery(_ context.Context, botID, teamID, channelID, threadTS string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := s.key(botID, teamID, channelID, threadTS)
+	s.pending[k], s.streams[k] = false, ""
+	return nil
+}
+
+func (s *fakeStore) PendingDeliveries(_ context.Context, botID string) ([]store.PendingRun, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []store.PendingRun
+	for k, isPending := range s.pending {
+		parts := strings.Split(k, "|")
+		if !isPending || len(parts) != 4 || parts[0] != botID {
+			continue
+		}
+		out = append(out, store.PendingRun{
+			TeamID: parts[1], ChannelID: parts[2], ThreadTS: parts[3], SessionID: s.rows[k],
+			LastSequence: s.delivered[k], StreamTS: s.streams[k], RecipientUserID: s.recipients[k],
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ThreadTS < out[j].ThreadTS })
+	return out, nil
+}
+
+func (s *fakeStore) ThreadForSession(_ context.Context, botID, sessionID string) (store.PendingRun, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var found []store.PendingRun
+	for k, id := range s.rows {
+		parts := strings.Split(k, "|")
+		if id != sessionID || len(parts) != 4 || parts[0] != botID {
+			continue
+		}
+		found = append(found, store.PendingRun{
+			TeamID: parts[1], ChannelID: parts[2], ThreadTS: parts[3], SessionID: id,
+			LastSequence: s.delivered[k], StreamTS: s.streams[k], RecipientUserID: s.recipients[k],
+		})
+	}
+	switch len(found) {
+	case 0:
+		return store.PendingRun{}, false, nil
+	case 1:
+		return found[0], true, nil
+	default:
+		return store.PendingRun{}, false, store.ErrAmbiguousSession
+	}
+}
+
+func (s *fakeStore) ClaimApprovalPost(_ context.Context, botID, approvalID, _, _ string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := botID + "|" + approvalID
+	if s.claims[k] {
+		return false, nil
+	}
+	s.claims[k] = true
+	return true, nil
+}
+
+func (s *fakeStore) ReleaseApprovalPost(_ context.Context, botID, approvalID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.claims, botID+"|"+approvalID)
+	return nil
 }
 
 // fakeStreamSlack is relay.Slack, and it records the RECIPIENT it was built for — the fields
@@ -272,7 +384,7 @@ func testBot(t *testing.T, approvers []string, streamEvents []palai.Event) (*dis
 	as := &fakeApprovalSlack{}
 
 	d := &dispatcher{
-		approvals: relay.ApprovalDeps{Palai: ap, Slack: as, AllowedApprovers: approvers},
+		approvals: relay.ApprovalDeps{Palai: ap, Slack: as, AllowedApprovers: approvers, Posts: fs, BotID: "bot_1"},
 		botUserID: "U_BOT",
 		logf:      func(string, ...any) {},
 	}

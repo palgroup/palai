@@ -35,7 +35,17 @@ import (
 	"strings"
 
 	slack "github.com/palgroup/palai/adapters/integrations/slack"
+	"github.com/palgroup/palai/apps/slack-bot/internal/store"
 	palai "github.com/palgroup/palai/sdks/go"
+)
+
+// var _ ApprovalPosts / ApprovalThreads = (*store.Store)(nil) pins these two seams to the real store at
+// COMPILE time, for the reason inbound.go's identical line records: this package's interfaces and the
+// store drifted silently once already, because no production call site wired them together and
+// `go build ./...` stayed clean through the whole divergence.
+var (
+	_ ApprovalPosts   = (*store.Store)(nil)
+	_ ApprovalThreads = (*store.Store)(nil)
 )
 
 // ApprovalRequestedEventType is the event OnApprovalRequested handles. It is journaled
@@ -135,6 +145,35 @@ type ApprovalDeps struct {
 	Slack ApprovalSlack
 	// AllowedApprovers are the Slack user ids permitted to decide through this bot.
 	AllowedApprovers []string
+
+	// Posts is the durable at-most-once record of which approvals have already been put to a human, and
+	// BotID is the key it partitions by. Both are required, because this question now has two producers
+	// that overlap by design — the live event arm and SweepApprovals — and without the claim the ordinary
+	// case posts twice (see ApprovalPosts).
+	Posts ApprovalPosts
+	BotID string
+}
+
+// ApprovalPosts is the claim this bridge takes before it asks a human anything.
+//
+// WHY A CLAIM AND NOT A LOG. Making the approval question survive a restart means a second producer:
+// SweepApprovals reads GET /v1/approvals and asks about anything still open, which is precisely what a
+// process that died between "a run parked" and "the buttons posted" leaves behind. But an approval stays
+// open until somebody CLICKS it, so the sweep sees the ones the live arm has already asked about too — and
+// would post them again, giving a reader two identical questions with two pairs of buttons and no way to
+// tell which is real.
+//
+// THE ORDER IS CLAIM, POST, RELEASE-ON-FAILURE, and each part is load-bearing. Claiming first is what
+// actually closes the double-post window: a record written after a successful post leaves both producers
+// inside it. Releasing on failure is what keeps the claim from becoming the new silent loss — without it a
+// single Slack hiccup would mark a question as asked forever and the run would park on a human who was
+// shown nothing, which is the exact failure this whole change exists to make impossible. What survives
+// therefore means "a human can see this question", never "we tried once".
+type ApprovalPosts interface {
+	// ClaimApprovalPost reserves approvalID. won=false means someone already has it — post nothing.
+	ClaimApprovalPost(ctx context.Context, botID, approvalID, channelID, threadTS string) (bool, error)
+	// ReleaseApprovalPost gives a claim back after a post that did not land.
+	ReleaseApprovalPost(ctx context.Context, botID, approvalID string) error
 }
 
 func (deps ApprovalDeps) validate() error {
@@ -143,6 +182,10 @@ func (deps ApprovalDeps) validate() error {
 		return errors.New("relay: ApprovalDeps needs a Palai")
 	case deps.Slack == nil:
 		return errors.New("relay: ApprovalDeps needs a Slack")
+	case deps.Posts == nil:
+		return errors.New("relay: ApprovalDeps needs Posts — without the claim, a restart's recovery sweep asks every open question a second time")
+	case deps.BotID == "":
+		return errors.New("relay: ApprovalDeps needs a BotID — it is what the post claims are partitioned by")
 	}
 	return nil
 }
@@ -194,8 +237,129 @@ func OnApprovalRequested(ctx context.Context, deps ApprovalDeps, channel, thread
 		return err
 	}
 
+	return postApprovalOnce(ctx, deps, channel, threadTS, approval)
+}
+
+// postApprovalOnce is the ONE place either producer puts an approval question into Slack — the live event
+// arm above and SweepApprovals below both come through here, which is what makes the claim a real
+// guarantee rather than a convention two call sites are each expected to honour.
+//
+// A LOST CLAIM IS A SUCCESS, not a refusal: it means the question is already on screen, which is the whole
+// thing the caller wanted. Returning an error for it would make the sweep's ordinary, every-few-seconds
+// outcome look like a failure in the log.
+func postApprovalOnce(ctx context.Context, deps ApprovalDeps, channel, threadTS string, approval palai.Approval) error {
+	if approval.ID == "" {
+		return fmt.Errorf("relay: an approval with no id cannot be posted exactly once (session %s)", approval.SessionID)
+	}
+	won, err := deps.Posts.ClaimApprovalPost(ctx, deps.BotID, approval.ID, channel, threadTS)
+	if err != nil {
+		return fmt.Errorf("relay: claim the right to ask about approval %s: %w", approval.ID, err)
+	}
+	if !won {
+		return nil // already asked; a second pair of buttons would be worse than silence
+	}
 	if _, err := deps.Slack.PostMessage(ctx, buildApprovalMessage(channel, threadTS, approval)); err != nil {
+		// THE CLAIM GOES BACK. Keeping it would turn one failed Slack call into a question nobody is ever
+		// asked and a run parked forever — the failure this file exists to prevent, reintroduced by its own
+		// de-duplication. If the release ALSO fails there is nothing further to try, and it is reported
+		// alongside the post failure rather than replacing it.
+		if relErr := deps.Posts.ReleaseApprovalPost(ctx, deps.BotID, approval.ID); relErr != nil {
+			return fmt.Errorf("relay: post approval message for %s: %w (and the claim could not be released, so no later sweep will retry it: %v)", approval.ID, err, relErr)
+		}
 		return fmt.Errorf("relay: post approval message for %s: %w", approval.ID, err)
+	}
+	return nil
+}
+
+// ApprovalThreads resolves the Slack thread a session's approval belongs in. It is the reverse of the
+// mapping the rest of this bot keeps: an approval row names a session_id and carries nothing Slack at all
+// (GET /v1/approvals), so the sweep cannot know where to ask without it.
+//
+// found=false is the ordinary case rather than an error, and that is the point of the whole filter: this
+// project's approvals include every run started from the console, the CLI or another bot, and none of
+// those belong in any Slack thread. A sweep that posted them would take a question asked somewhere else
+// and put it, with working buttons, in front of a Slack channel.
+type ApprovalThreads interface {
+	ThreadForSession(ctx context.Context, botID, sessionID string) (store.PendingRun, bool, error)
+}
+
+// SweepApprovalDeps is the sweep's seam: the bridge itself plus the thread lookup it needs and a place to
+// say what it did.
+type SweepApprovalDeps struct {
+	Approvals ApprovalDeps
+	Threads   ApprovalThreads
+	Logf      func(string, ...any)
+}
+
+func (d SweepApprovalDeps) logf(format string, args ...any) {
+	if d.Logf != nil {
+		d.Logf(format, args...)
+	}
+}
+
+// SweepApprovals asks about every open approval belonging to a thread this bot owns that nobody has been
+// asked about yet.
+//
+// IT IS THE DURABLE HALF OF THE APPROVAL QUESTION, and the hole it fills was the quietest one this process
+// had. A gated tool call parks its run server-side and journals approval.requested.v1; the live arm posts
+// the buttons when it sees that event go by. If this process was not running at that instant — restarted,
+// crashed, redeployed — nobody was ever asked, nothing timed out visibly, and the thread simply stopped.
+// dispatch.go already named that outcome ("NOBODY WAS ASKED") because it was a known ceiling; this is the
+// floor under it.
+//
+// IT RUNS ON A TIMER, NOT ONLY AT BOOT, and the extra cost is one listing call every interval against a
+// route that returns an empty page in the ordinary case. What it buys is that the same code closes both
+// holes: the restart, and a live process that missed the event because its stream dropped. A boot-only
+// scan would leave the second one open and would look identical in every test.
+//
+// EVERY FAILURE IS PER-APPROVAL. One row that cannot be resolved or posted must not stop the sweep, or a
+// single broken thread would starve every other pending question in the workspace; the errors are counted
+// and reported, and the next tick tries again.
+func SweepApprovals(ctx context.Context, deps SweepApprovalDeps) error {
+	if err := deps.Approvals.validate(); err != nil {
+		return err
+	}
+	if deps.Threads == nil {
+		return errors.New("relay: SweepApprovalDeps needs Threads — an approval names a session, and only this bot knows which thread that is")
+	}
+
+	after := ""
+	var asked, failed int
+	for page := 0; page < maxApprovalListPages; page++ {
+		result, err := deps.Approvals.Palai.ListApprovals(ctx, palai.ListApprovalsParams{After: after, Limit: approvalListPageSize})
+		if err != nil {
+			return fmt.Errorf("relay: list open approvals: %w", err)
+		}
+		for _, approval := range result.Data {
+			if approval.SessionID == "" {
+				continue
+			}
+			thread, found, err := deps.Threads.ThreadForSession(ctx, deps.Approvals.BotID, approval.SessionID)
+			if err != nil {
+				failed++
+				deps.logf("relay: could not resolve the thread for approval %s (session %s): %v", approval.ID, approval.SessionID, err)
+				continue
+			}
+			if !found {
+				continue // not this bot's session: a console run, another bot, another channel entirely
+			}
+			if err := postApprovalOnce(ctx, deps.Approvals, thread.ChannelID, thread.ThreadTS, approval); err != nil {
+				failed++
+				deps.logf("relay: NOBODY HAS BEEN ASKED about approval %s — its run is parked in %s/%s waiting for a decision and the question is not on screen: %v",
+					approval.ID, thread.ChannelID, thread.ThreadTS, err)
+				continue
+			}
+			asked++
+		}
+		if !result.HasMore || result.NextCursor == nil {
+			break
+		}
+		after = *result.NextCursor
+	}
+	// Only ever says something when something happened: this runs on a timer, and a line per tick would
+	// bury the boot output an operator actually reads under an empty sweep every few seconds.
+	if asked > 0 || failed > 0 {
+		deps.logf("relay: approval sweep asked about %d parked run(s); %d could not be asked", asked, failed)
 	}
 	return nil
 }

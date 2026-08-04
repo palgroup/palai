@@ -227,9 +227,16 @@ func (s *Store) RebindThread(ctx context.Context, botID, teamID, channelID, thre
 	if newSessionID == "" {
 		return false, errors.New("store: RebindThread: newSessionID is required")
 	}
+	// THE DELIVERY STATE IS RESET IN THE SAME STATEMENT, not in a second call, and that is the property
+	// this write owes the recovery scan rather than a tidiness. last_sequence is a cursor into ONE
+	// session's journal (migrations/0002_delivery_state.sql), so carrying the dead session's number into
+	// the new one would make the next stream resume past events it never delivered. run_pending/stream_ts
+	// go with it: the run those two named was on the session that no longer exists, so a recovery that
+	// found them would re-attach to a 404. Doing it here means no caller can rebind and forget — and the
+	// CAS's own guarantee extends to it, since the loser of a rebind race changes nothing at all.
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE thread_sessions
-		 SET session_id = $6
+		 SET session_id = $6, last_sequence = 0, run_pending = false, stream_ts = ''
 		 WHERE bot_id = $1 AND team_id = $2 AND channel_id = $3 AND thread_ts = $4 AND session_id = $5`,
 		botID, teamID, channelID, threadTS, oldSessionID, newSessionID,
 	)
@@ -237,4 +244,228 @@ func (s *Store) RebindThread(ctx context.Context, botID, teamID, channelID, thre
 		return false, fmt.Errorf("store: rebind thread: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// PendingRun is one thread that was being rendered into when this process last stopped — everything the
+// recovery scan (relay.RecoverPendingRuns) needs to finish the job, and nothing else.
+//
+// StreamTS may be EMPTY and that is a different recovery, not a degraded one: it means the run was accepted
+// by the control plane but the process died before chat.startStream returned, so there is no message to
+// resume and recovery opens one. RecipientUserID is what makes that second case possible at all (see the
+// column's own note in migrations/0002_delivery_state.sql).
+type PendingRun struct {
+	TeamID          string
+	ChannelID       string
+	ThreadTS        string
+	SessionID       string
+	LastSequence    int64
+	StreamTS        string
+	RecipientUserID string
+}
+
+// BeginDelivery records that a run has been accepted for this thread and has delivered nothing yet.
+//
+// IT IS CALLED AFTER POST /v1/responses RETURNS AND BEFORE chat.startStream, which is the whole point of
+// its existence as a separate call from RecordStreamTS: the window between those two is where a killed
+// process leaves a live run with no Slack message, and a design that only wrote the stream ts would have
+// no record of it. From this write until EndDelivery, this thread is one the recovery scan will pick up.
+//
+// It does NOT touch last_sequence — it RETURNS it, and that return value fixes something older than this
+// column. A second run in the same session continues the same journal, so the new stream must be opened
+// after the previous run's terminal or it reads that terminal first and closes on it, rendering the
+// PREVIOUS answer's ending instead of this one's. That cursor used to live only in memory
+// (relay/inbound.go's inboundState), so it was zero for the first message in every thread after every
+// restart — the exact case a long-lived thread is in all day. Reading it back here makes the resume point
+// survive the process, which is the same property the rest of this file is about.
+//
+// The only things that reset it are a rebind to a different session (RebindThread) and a first bind (the
+// column's default), because a sequence number means nothing outside the journal it came from.
+func (s *Store) BeginDelivery(ctx context.Context, botID, teamID, channelID, threadTS, recipientUserID string) (int64, error) {
+	var lastSequence int64
+	err := s.pool.QueryRow(ctx,
+		`UPDATE thread_sessions
+		 SET run_pending = true, stream_ts = '', recipient_user_id = $5
+		 WHERE bot_id = $1 AND team_id = $2 AND channel_id = $3 AND thread_ts = $4
+		 RETURNING last_sequence`,
+		botID, teamID, channelID, threadTS, recipientUserID,
+	).Scan(&lastSequence)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The thread has no row at all. Every caller binds before it starts a run (relay/inbound.go
+		// openNewSession), so this is not a state this bot reaches on its own — it is somebody deleting the
+		// row underneath a live turn. Refuse rather than start a run nothing will be able to recover.
+		return 0, fmt.Errorf("store: BeginDelivery: %s/%s/%s/%s has no binding to record a run against", botID, teamID, channelID, threadTS)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("store: begin delivery: %w", err)
+	}
+	return lastSequence, nil
+}
+
+// RecordStreamTS names the Slack message this thread's pending run is being written into, so a later
+// process can finish THAT message instead of posting a second one.
+func (s *Store) RecordStreamTS(ctx context.Context, botID, teamID, channelID, threadTS, streamTS string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE thread_sessions SET stream_ts = $5
+		 WHERE bot_id = $1 AND team_id = $2 AND channel_id = $3 AND thread_ts = $4`,
+		botID, teamID, channelID, threadTS, streamTS,
+	)
+	if err != nil {
+		return fmt.Errorf("store: record stream ts: %w", err)
+	}
+	return nil
+}
+
+// RecordDelivered advances the thread's delivered-through cursor.
+//
+// GREATEST rather than a plain assignment: the caller is a single goroutine per thread today, but the
+// column's meaning is "everything up to here has reached Slack" and a monotonic write is the only shape
+// that cannot be walked BACKWARD by an out-of-order call — and walking it backward is the one direction
+// that costs a reader something, since it re-sends text they have already read.
+func (s *Store) RecordDelivered(ctx context.Context, botID, teamID, channelID, threadTS string, sequence int64) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE thread_sessions SET last_sequence = GREATEST(last_sequence, $5)
+		 WHERE bot_id = $1 AND team_id = $2 AND channel_id = $3 AND thread_ts = $4`,
+		botID, teamID, channelID, threadTS, sequence,
+	)
+	if err != nil {
+		return fmt.Errorf("store: record delivered sequence: %w", err)
+	}
+	return nil
+}
+
+// EndDelivery records that this thread's run reached its terminal and its Slack message is closed, so
+// recovery has nothing left to do for it.
+//
+// IT IS CALLED ONLY ON A REAL TERMINAL. A relay that stops for any other reason — a read error, a
+// shutdown, a panic — deliberately leaves the row pending, because "we stopped reading" is precisely the
+// state a restart must pick up. The cursor is left where it is rather than cleared: it is what the next
+// run in the same session resumes from.
+func (s *Store) EndDelivery(ctx context.Context, botID, teamID, channelID, threadTS string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE thread_sessions SET run_pending = false, stream_ts = ''
+		 WHERE bot_id = $1 AND team_id = $2 AND channel_id = $3 AND thread_ts = $4`,
+		botID, teamID, channelID, threadTS,
+	)
+	if err != nil {
+		return fmt.Errorf("store: end delivery: %w", err)
+	}
+	return nil
+}
+
+// PendingDeliveries lists every thread of botID's that owes somebody an answer — the boot scan's whole
+// input. Ordered by thread so a run of the scan is reproducible and a log of it can be compared with the
+// next one; the set is normally empty, since a run that finishes clears its own row.
+func (s *Store) PendingDeliveries(ctx context.Context, botID string) ([]PendingRun, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT team_id, channel_id, thread_ts, session_id, last_sequence, stream_ts, recipient_user_id
+		 FROM thread_sessions
+		 WHERE bot_id = $1 AND run_pending
+		 ORDER BY team_id, channel_id, thread_ts`,
+		botID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list pending deliveries: %w", err)
+	}
+	defer rows.Close()
+	var out []PendingRun
+	for rows.Next() {
+		var p PendingRun
+		if err := rows.Scan(&p.TeamID, &p.ChannelID, &p.ThreadTS, &p.SessionID, &p.LastSequence, &p.StreamTS, &p.RecipientUserID); err != nil {
+			return nil, fmt.Errorf("store: scan pending delivery: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list pending deliveries: %w", err)
+	}
+	return out, nil
+}
+
+// ErrAmbiguousSession is ThreadForSession finding a session id bound to more than one thread.
+//
+// It cannot happen through this package's own writes — BindThread mints a session per thread and
+// RebindThread only ever moves one row — so it is a refusal rather than a pick. The alternative is the
+// shape this tree has already been bitten by twice: a LIMIT 1 with nothing deciding WHICH row, answering
+// confidently with one of two possible threads. An approval question posted into the wrong thread is a
+// gated action shown to the wrong audience, so guessing is the one thing this lookup must not do.
+var ErrAmbiguousSession = errors.New("store: this session id is bound to more than one thread")
+
+// ThreadForSession is the ONE reverse lookup in this schema: an approval row names a session and nothing
+// else (GET /v1/approvals carries no Slack anything), so the sweep has to find the thread to ask in.
+//
+// ORDER BY + LIMIT 2 is the ambiguity check, not pagination: reading a second row is how this call learns
+// that the answer is not unique, which a LIMIT 1 could never tell it. See ErrAmbiguousSession.
+func (s *Store) ThreadForSession(ctx context.Context, botID, sessionID string) (PendingRun, bool, error) {
+	if sessionID == "" {
+		return PendingRun{}, false, errors.New("store: ThreadForSession: sessionID is required")
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT team_id, channel_id, thread_ts, session_id, last_sequence, stream_ts, recipient_user_id
+		 FROM thread_sessions
+		 WHERE bot_id = $1 AND session_id = $2
+		 ORDER BY team_id, channel_id, thread_ts
+		 LIMIT 2`,
+		botID, sessionID,
+	)
+	if err != nil {
+		return PendingRun{}, false, fmt.Errorf("store: resolve thread for session: %w", err)
+	}
+	defer rows.Close()
+	var found []PendingRun
+	for rows.Next() {
+		var p PendingRun
+		if err := rows.Scan(&p.TeamID, &p.ChannelID, &p.ThreadTS, &p.SessionID, &p.LastSequence, &p.StreamTS, &p.RecipientUserID); err != nil {
+			return PendingRun{}, false, fmt.Errorf("store: scan thread for session: %w", err)
+		}
+		found = append(found, p)
+	}
+	if err := rows.Err(); err != nil {
+		return PendingRun{}, false, fmt.Errorf("store: resolve thread for session: %w", err)
+	}
+	switch len(found) {
+	case 0:
+		return PendingRun{}, false, nil
+	case 1:
+		return found[0], true, nil
+	default:
+		return PendingRun{}, false, fmt.Errorf("%w: %s", ErrAmbiguousSession, sessionID)
+	}
+}
+
+// ClaimApprovalPost reserves the right to put approvalID's question into Slack, exactly once across every
+// producer this bot has (the live event arm and the sweep — see approval_posts's own note).
+//
+// won=false means somebody already claimed it and a human can already see the buttons, so the caller posts
+// NOTHING. The claim is taken BEFORE the post rather than recorded after it, because the hazard being
+// closed is two posts of one question, and a record written afterwards leaves both posters inside the
+// window. The other direction — a claim whose post then fails — is closed by ReleaseApprovalPost, so the
+// row that survives means "a human can see this", not "we tried".
+func (s *Store) ClaimApprovalPost(ctx context.Context, botID, approvalID, channelID, threadTS string) (bool, error) {
+	if approvalID == "" {
+		return false, errors.New("store: ClaimApprovalPost: approvalID is required")
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO approval_posts (bot_id, approval_id, channel_id, thread_ts)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (bot_id, approval_id) DO NOTHING`,
+		botID, approvalID, channelID, threadTS,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: claim approval post: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ReleaseApprovalPost gives back a claim whose post did not land, so the next sweep asks again. Without it
+// a single Slack hiccup would mark a question as asked forever and the run would park on a human who was
+// never shown anything — the exact failure this whole file exists to make impossible.
+func (s *Store) ReleaseApprovalPost(ctx context.Context, botID, approvalID string) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM approval_posts WHERE bot_id = $1 AND approval_id = $2`,
+		botID, approvalID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: release approval post: %w", err)
+	}
+	return nil
 }

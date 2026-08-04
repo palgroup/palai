@@ -123,7 +123,7 @@ func TestWhatTheThreadShowsWhileTheRunIsStillWorking(t *testing.T) {
 		}
 	}()
 
-	runErr := Run(ctx, Deps{Events: events, Slack: seen, OnApproval: func(context.Context, string, string, palai.Event) {}},
+	runErr := Run(ctx, Deps{Events: events, Slack: seen, OnApproval: func(context.Context, string, string, palai.Event) {}, Delivery: &recordedDelivery{}},
 		session.ID, channel, threadTS)
 	close(done)
 	if runErr != nil {
