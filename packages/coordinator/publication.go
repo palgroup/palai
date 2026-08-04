@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	statemachines "github.com/palgroup/palai/packages/state-machines"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -349,9 +350,41 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	if err := guardRunActive(ctx, tx, tenant, runID); err != nil {
+	// THE RUN'S STATE IS READ, NOT GUARDED ON, AND THAT IS A CORRECTION MEASURED LIVE ON 2026-08-04.
+	// This line was guardRunActive, so a decision on a run that had already ended returned ErrRunTerminal
+	// — an error, which the HTTP surface renders as 500 internal_error and marks `retryable: true`. The
+	// reproduction: park a run on a push_branch approval, deny it, let the run reach a terminal state with
+	// the open_pull_request approval still pending, then deny THAT one. Three attempts, three 500s, three
+	// `deny` commands left `queued` forever, and the publication sitting `pending_approval` until the
+	// expiry reaper released it half an hour later. Nothing was ever pushed — the gate held — but the
+	// operator was handed an approval they could not close and an error that told them to retry.
+	//
+	// A RUN THAT ENDED IS NOT AN INTERNAL FAILURE. It is an ordinary fact about a question whose asker is
+	// gone, and the two answers to that question are not the same:
+	//
+	//   deny    — LANDS. The publication closes, the command settles, the journal records who denied it.
+	//             Nothing needs to run: a deny authorizes no write. The reaper ALREADY performs exactly
+	//             this transition on a terminal run (SweepExpiredApprovals -> expirePublicationTx, observed
+	//             writing approval.expired.v1 five events after run.completed.v1), so `pending_approval ->
+	//             terminal state on an ended run` is a transition this system already makes; it just made
+	//             it thirty minutes late and under the wrong name.
+	//
+	//   approve — REFUSED, and refusing is the honest answer rather than the cautious one. An approved
+	//             publication is drained by ApprovedPublicationsForRun, which the boundary pump reaches
+	//             only from inside a live attempt; a run that has ended has no next boundary and nothing
+	//             will ever run it again. Writing `approved` here would mint a row that says a human
+	//             authorized a push, and that push would never happen — the reaper would expire it later,
+	//             which is the failure-that-erases-itself shape this tree keeps finding. So the command is
+	//             settled (it can never be applied) and ErrRunTerminal is returned for the caller to draw.
+	//
+	// The tool-approval family has never had this defect: DecideToolApproval reaches the same run through
+	// lockRunForWake, which takes the lock and judges nothing. The two families disagreed, and the one that
+	// 500s was this one.
+	runState, err := lockRunStateTx(ctx, tx, tenant, runID)
+	if err != nil {
 		return 0, err
 	}
+	runEnded := runTerminalStates[statemachines.RunState(runState)]
 
 	// Lock the session's pending publication so the transition is single-winner.
 	var pubID, pendingHash string
@@ -412,6 +445,18 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 	newState, event := "approved", approvalApprovedEvent
 	if kind == "deny" {
 		newState, event = "denied", approvalDeniedEvent
+	}
+	// The approve half of the terminal-run split above, placed HERE rather than at the read so that every
+	// ordering property already argued for survives: an unauthorized principal is still refused first and
+	// learns nothing extra, an elapsed deadline still expires the publication and wakes whatever waited on
+	// it, and a stale one-shot hash still authorizes nothing. Only the last act — the transition — is what
+	// a terminal run cannot support, so only the last act is refused. The command is settled first because
+	// nothing will ever apply it; leaving it queued is the half of this defect that outlived the 500.
+	if runEnded && newState == "approved" {
+		if _, err := settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
+			return 0, err
+		}
+		return 0, fmt.Errorf("%w: run %s is %s, so an approved publication would never be published", ErrRunTerminal, runID, runState)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("SetPublicationState"),
 		pubID, tenant.Project, newState, "pending_approval"); err != nil {

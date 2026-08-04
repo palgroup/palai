@@ -239,6 +239,13 @@ func (s *Store) decidePublicationApproval(ctx context.Context, scope middleware.
 		commandID, kind, d.RequestHash, approver); {
 	case errors.Is(err, coordinator.ErrApproverNotAuthorized):
 		return api.ApprovalOutcome{Found: true, Unauthorized: true}, nil
+	case errors.Is(err, coordinator.ErrRunTerminal):
+		// THE RUN ENDED, so an APPROVE has nowhere to land — the throat settled the command and refused
+		// (see ApplyApprovalDecision). It is a TYPED outcome rather than an error for the reason
+		// Unauthorized is one: the receiver worked and the request authorized nothing. Rendering it as an
+		// error is exactly the defect measured live on 2026-08-04 — a 500 marked `retryable: true` on a
+		// request that can never succeed. A DENY never reaches this arm; it lands.
+		return api.ApprovalOutcome{Found: true, RunEnded: true}, nil
 	case errors.Is(err, coordinator.ErrCommandNotPending):
 		// The boundary pump (or an expiry sweep) settled the command first. Those are different facts and
 		// only the publication's own state separates them: a decision that authorized nothing must never be

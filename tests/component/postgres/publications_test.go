@@ -4,7 +4,10 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/palgroup/palai/adapters/repositories"
 	"github.com/palgroup/palai/packages/coordinator"
@@ -411,4 +414,114 @@ func requestPushPublication(t *testing.T, cs *coordinator.Store, tenant coordina
 // approvePayload builds an approve/deny command payload carrying the one-shot request hash.
 func approvePayload(requestHash string) []byte {
 	return []byte(`{"request_hash":"` + requestHash + `"}`)
+}
+
+// TestApprovalDecisionOnEndedRunDeniesAndRefusesApprove is the regression for a defect measured on the
+// LIVE stack on 2026-08-04, through the shipped HTTP surface, three attempts and three HTTP 500s.
+//
+// THE SEQUENCE, and it is an ordinary one: a run parks on a push_branch approval, the operator denies it,
+// the run wakes, asks to open a pull request, and reaches a TERMINAL state (it completed, or the operator
+// canceled it) while that second approval is still open. Deciding the second approval then went through
+// guardRunActive, which answered ErrRunTerminal — an ERROR, which the approval surface renders as
+// `internal_error` with `retryable: true`. The publication stayed `pending_approval` until the expiry
+// reaper released it half an hour later, and each retry left another `deny` command `queued` forever.
+//
+// The gate held throughout — nothing was published — so the two claims this asserts are about what an
+// operator can DO, not about what a model can reach:
+//
+//	deny    LANDS on an ended run: the publication closes, the command settles. The reaper already makes
+//	        exactly this transition on a terminal run; it just makes it late and calls it `expired`.
+//	approve is REFUSED with ErrRunTerminal, because ApprovedPublicationsForRun is drained by the boundary
+//	        pump from inside a live attempt and an ended run has no next boundary — an `approved` row here
+//	        would claim a human authorized a push that nothing would ever perform. Its command is settled
+//	        anyway, because nothing can ever apply it.
+func TestApprovalDecisionOnEndedRunDeniesAndRefusesApprove(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+	tenant, sessionID, runID := seedRun(t, pool)
+	exec(t, pool, `UPDATE sessions SET state='active' WHERE id=$1`, sessionID)
+	respID := newID("resp")
+	exec(t, pool, `INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'in_progress')`,
+		respID, tenant.Project, sessionID)
+	exec(t, pool, `UPDATE runs SET state='running', response_id=$2 WHERE id=$1`, runID, respID)
+
+	// Both questions are asked while the run is live — the live shape exactly: a push and then a pull
+	// request, two open publications on one session.
+	push := requestPushPublication(t, cs, tenant, sessionID, runID, "abc123")
+	pull := requestPushPublication(t, cs, tenant, sessionID, runID, "def456")
+
+	// ...and THEN the run ends with both still pending. `canceled` is the operator's own verb and is the
+	// state the live reproduction reached; `completed` reaches this code through the same predicate.
+	exec(t, pool, `UPDATE runs SET state='canceled' WHERE id=$1`, runID)
+
+	// 1. DENY LANDS. LockPendingApprovalForSession takes the session's OLDEST open publication, which is
+	// the push — the same one the operator is looking at.
+	denyCmd := coordinator.CommandInput{CommandID: newID("cmd"), Kind: "deny", Payload: approvePayload(push.RequestHash)}
+	if _, err := cs.AcceptCommand(ctx, tenant, sessionID, denyCmd); err != nil {
+		t.Fatalf("AcceptCommand(deny) error = %v", err)
+	}
+	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, denyCmd.CommandID, "deny", push.RequestHash, ""); err != nil {
+		t.Fatalf("ApplyApprovalDecision(deny, ended run) error = %v, want nil — a deny on an ended run closes the approval", err)
+	}
+	if got := publicationState(t, pool, push.ID); got != "denied" {
+		t.Fatalf("publication state after deny on an ended run = %q, want denied", got)
+	}
+	if got := commandState(t, pool, denyCmd.CommandID); got != "applied" {
+		t.Fatalf("deny command state = %q, want applied — a decision that landed must not stay queued", got)
+	}
+
+	// 2. APPROVE IS REFUSED, and the refusal is TYPED so the surface can render a 409 rather than a 500.
+	approveCmd := coordinator.CommandInput{CommandID: newID("cmd"), Kind: "approve", Payload: approvePayload(pull.RequestHash)}
+	if _, err := cs.AcceptCommand(ctx, tenant, sessionID, approveCmd); err != nil {
+		t.Fatalf("AcceptCommand(approve) error = %v", err)
+	}
+	switch _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, approveCmd.CommandID, "approve", pull.RequestHash, ""); {
+	case err == nil:
+		t.Fatal("ApplyApprovalDecision(approve, ended run) error = nil, want ErrRunTerminal — nothing would ever publish it")
+	case !errors.Is(err, coordinator.ErrRunTerminal):
+		t.Fatalf("ApplyApprovalDecision(approve, ended run) error = %v, want ErrRunTerminal", err)
+	}
+	if got := publicationState(t, pool, pull.ID); got != "pending_approval" {
+		t.Fatalf("publication state after a refused approve = %q, want pending_approval (still deniable)", got)
+	}
+	if got := commandState(t, pool, approveCmd.CommandID); got != "applied" {
+		t.Fatalf("refused approve's command state = %q, want applied — nothing can ever apply it", got)
+	}
+	if approved, _ := cs.ApprovedPublicationsForRun(ctx, tenant, runID); len(approved) != 0 {
+		t.Fatalf("approved publications on an ended run = %d, want 0", len(approved))
+	}
+
+	// 3. AND THE OPERATOR'S REMEDY WORKS: the approval the approve could not decide is still deniable, so
+	// the row closes now rather than when the reaper gets to it.
+	secondDeny := coordinator.CommandInput{CommandID: newID("cmd"), Kind: "deny", Payload: approvePayload(pull.RequestHash)}
+	if _, err := cs.AcceptCommand(ctx, tenant, sessionID, secondDeny); err != nil {
+		t.Fatalf("AcceptCommand(deny after refused approve) error = %v", err)
+	}
+	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, secondDeny.CommandID, "deny", pull.RequestHash, ""); err != nil {
+		t.Fatalf("ApplyApprovalDecision(deny after refused approve) error = %v", err)
+	}
+	if got := publicationState(t, pool, pull.ID); got != "denied" {
+		t.Fatalf("publication state after the remedy deny = %q, want denied", got)
+	}
+}
+
+func publicationState(t *testing.T, pool *pgxpool.Pool, publicationID string) string {
+	t.Helper()
+	var state string
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT state FROM publications WHERE id=$1`, publicationID).Scan(&state); err != nil {
+		t.Fatalf("read publication %s: %v", publicationID, err)
+	}
+	return state
+}
+
+func commandState(t *testing.T, pool *pgxpool.Pool, commandID string) string {
+	t.Helper()
+	var state string
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT state FROM commands WHERE id=$1`, commandID).Scan(&state); err != nil {
+		t.Fatalf("read command %s: %v", commandID, err)
+	}
+	return state
 }

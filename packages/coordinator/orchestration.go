@@ -36,19 +36,33 @@ func (s *Store) RunIDForResponse(ctx context.Context, tenant Tenant, responseID 
 // even when a cancel races an in-flight attempt (spec §22.3 monotonic terminality). The FOR
 // UPDATE lock serializes against ApplyRunTransition, so a cancel and a commit cannot both win.
 func guardRunActive(ctx context.Context, tx pgx.Tx, tenant Tenant, runID string) error {
-	var sessionID, state string
-	var responseID *string
-	err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Project).Scan(&sessionID, &responseID, &state)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("run %s not found in tenant scope", runID)
-	}
+	state, err := lockRunStateTx(ctx, tx, tenant, runID)
 	if err != nil {
-		return fmt.Errorf("lock run: %w", err)
+		return err
 	}
 	if runTerminalStates[statemachines.RunState(state)] {
 		return fmt.Errorf("%w: run %s is %s", ErrRunTerminal, runID, state)
 	}
 	return nil
+}
+
+// lockRunStateTx takes guardRunActive's FOR UPDATE lock and returns the run's state instead of
+// judging it. It exists because a terminal run is not one fact but two, and only the caller knows
+// which it is looking at: for the commit-before-deliver primitives a terminal run REFUSES the write,
+// while for an approval decision (ApplyApprovalDecision) a deny still has somewhere to land and only
+// an approve has nowhere to go. Both take the same lock against ApplyRunTransition; they differ only
+// in what they do with the answer, so the lock is written once here.
+func lockRunStateTx(ctx context.Context, tx pgx.Tx, tenant Tenant, runID string) (string, error) {
+	var sessionID, state string
+	var responseID *string
+	err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Project).Scan(&sessionID, &responseID, &state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("run %s not found in tenant scope", runID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("lock run: %w", err)
+	}
+	return state, nil
 }
 
 // RunContext resolves a run's durable execution context for the orchestrator: its
@@ -158,8 +172,10 @@ func (s *Store) CreateChildRun(ctx context.Context, tenant Tenant, in ChildRunIn
 	if err := guardRunActive(ctx, tx, tenant, in.ParentRunID); err != nil {
 		return err
 	}
+	// A child response carries NO metadata: it is fabricated by a delegating parent, not submitted by a
+	// caller, so there is no correlation to echo and nil COALESCEs to the empty object.
 	if _, err := tx.Exec(ctx, storage.Query("InsertResponse"),
-		in.ChildResponseID, tenant.Project, in.SessionID, in.Input, in.Store); err != nil {
+		in.ChildResponseID, tenant.Project, in.SessionID, in.Input, in.Store, nil); err != nil {
 		return fmt.Errorf("insert child response: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertChildRun"),

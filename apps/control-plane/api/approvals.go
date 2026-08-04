@@ -134,6 +134,12 @@ type ApprovalOutcome struct {
 	// decidable" are different facts for the operator reading the log — collapsing them would hide a
 	// misconfigured approver list behind what looks like an expired button.
 	Unauthorized bool
+	// RunEnded reports an APPROVE aimed at a run that already reached a terminal state, which
+	// ApplyApprovalDecision refuses because nothing would ever carry the write out. It is separated from
+	// the general not-decidable outcome for Unauthorized's reason and one more: unlike the other three
+	// void cases, this one leaves the operator something they can still do — DENY the same approval and
+	// close it — and a 409 that did not say so would send them to retry the approve instead.
+	RunEnded bool
 }
 
 // ApprovalAPI is the store seam for the approval surface; *store.Store implements it. It takes the whole
@@ -250,6 +256,13 @@ func (h *approvalHandler) decide(w http.ResponseWriter, r *http.Request, approve
 	case out.Unauthorized:
 		middleware.WriteProblem(w, r, http.StatusForbidden, "not_an_approver",
 			"this principal is not in the project's approver list")
+	case out.RunEnded:
+		// 409 for the same reason the arm below is one: nothing happened, and a script must not read that
+		// as success. It is its OWN code because the remedy is specific — this approval is still open and
+		// still deniable; it is only the approve that has nowhere to go.
+		middleware.WriteProblem(w, r, http.StatusConflict, "approval_run_ended",
+			"the run this approval belongs to has ended, so an approved write would never be carried out. "+
+				"The approval is still open: deny it to close it.")
 	case !out.Applied:
 		// VOID, not failed: already decided, the deadline passed, or the one-shot hash no longer matches
 		// the bytes. 409 rather than 200 because a script must not read "nothing happened" as success.

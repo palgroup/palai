@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,6 +176,10 @@ func TestApprovalOutcomesMapToDistinguishableStatuses(t *testing.T) {
 		{"unknown or foreign", ApprovalOutcome{}, http.StatusNotFound},
 		{"not an approver", ApprovalOutcome{Found: true, Unauthorized: true}, http.StatusForbidden},
 		{"void: stale hash, expired, or already decided", ApprovalOutcome{Found: true}, http.StatusConflict},
+		// MEASURED LIVE, 2026-08-04: this one used to be a 500 with `retryable: true`, because
+		// ApplyApprovalDecision answered a terminal run with ErrRunTerminal and nothing typed it. Three
+		// attempts, three 500s, and the approval left open until the expiry reaper took it.
+		{"the run has ended", ApprovalOutcome{Found: true, RunEnded: true}, http.StatusConflict},
 		{"applied", ApprovalOutcome{Found: true, Applied: true}, http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -185,6 +190,36 @@ func TestApprovalOutcomesMapToDistinguishableStatuses(t *testing.T) {
 				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.want)
 			}
 		})
+	}
+}
+
+// TestEndedRunIsItsOwnCodeAndNotAnInternalError pins the two properties the live defect turned on. The
+// status alone is not enough: a 409 that reused `approval_not_decidable` would tell an operator their
+// approval was already answered when it is still open and still deniable, and that is the ONE thing they
+// can still do about it.
+func TestEndedRunIsItsOwnCodeAndNotAnInternalError(t *testing.T) {
+	base := approvalTestServer(t, &fakeApprovalAPI{out: ApprovalOutcome{Found: true, RunEnded: true}})
+	resp := do(t, "POST", base+"/v1/approvals/apr_1/approve", `{"request_hash":"h1"}`, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 — an ended run is a fact about the run, never an internal error", resp.StatusCode)
+	}
+	var problem struct {
+		Code      string `json:"code"`
+		Detail    string `json:"detail"`
+		Retryable bool   `json:"retryable"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if problem.Code != "approval_run_ended" {
+		t.Fatalf("code = %q, want approval_run_ended (distinct from approval_not_decidable)", problem.Code)
+	}
+	if problem.Retryable {
+		t.Fatal("retryable = true on a request that can never succeed")
+	}
+	if !strings.Contains(problem.Detail, "deny it") {
+		t.Fatalf("detail = %q, want it to name the remedy (deny)", problem.Detail)
 	}
 }
 
