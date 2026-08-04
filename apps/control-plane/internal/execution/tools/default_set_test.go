@@ -112,30 +112,36 @@ func TestThePublishToolsAreTheirOwnListAndNeitherPublishes(t *testing.T) {
 	}
 }
 
-// TestTheSearchToolIsInTheDefaultSet is the specific half, kept separate from the general guard because it
-// states the intent rather than the invariant: the search tool must SHIP ON, and its two real gates are
-// elsewhere (the workspace granting search:read.public, and the run carrying an action_token). Leaving it
-// out of the list would disable the feature in a way that looks like configuration rather than a bug.
-func TestTheSearchToolIsInTheDefaultSet(t *testing.T) {
-	for _, name := range toolset.Default() {
-		if name == slackSearchToolName {
-			return
-		}
-	}
-	t.Fatalf("%s is not in `palai up`'s default tool list, so no Slack run can ever be offered it. The gates "+
-		"that decide whether a search may actually happen are the SCOPE and the action_token, not this list",
-		slackSearchToolName)
-}
-
-// A default that grants a side-effecting tool would be a posture change nobody chose — anyone in the
-// workspace can DM this bot. The CLI has its own version of this test; this one holds the line from the side
-// that knows what each tool DOES.
-func TestNoDefaultToolHasSideEffects(t *testing.T) {
-	for _, name := range toolset.Default() {
-		for _, forbidden := range []string{"workspace.shell", "workspace.file", "workspace.commit", "publish."} {
-			if strings.Contains(name, forbidden) {
-				t.Fatalf("the DEFAULT list grants %q — a tool that writes, runs commands or publishes must be "+
-					"an explicit SLACK_AGENT_TOOLS decision", name)
+// TestNoDefaultToolPublishes keeps the half of the old side-effect guard that still stands: nothing a
+// bring-up binds — with a repository or without one — may be a tool that moves work OFF the machine.
+// Publication is the one capability gated by an explicit human decision (E23 T6), and toolset.Publish() is
+// the separate list that carries it.
+//
+// NARROWED AND RENAMED 2026-08-04, both for the same reason. This test used to forbid `workspace.file` and
+// `workspace.shell` in the default set as well, and it was called TestNoDefaultToolHasSideEffects. Commit
+// 1e5fc63e deleted `palai up`'s Slack wiring and the agent tool lists with it, and the posture that clause
+// defended belonged to that world: the grant of a bot anyone in a workspace can DM, not the baseline of a
+// bring-up. Those two names are now in toolset.Default() DELIBERATELY (toolset.go:14-25) — a bring-up that
+// cannot read a file or run a command is the defect this guard's own plan exists to fix. The old remedy
+// sentence told the reader to make "an explicit SLACK_AGENT_TOOLS decision"; that variable's only occurrence
+// in the whole tree was this message string, so it named a mechanism no reader could act on. And the old
+// NAME is why the rename is not cosmetic: `workspace.shell` runs arbitrary commands, so a test asserting
+// "no default tool has side effects" would now print a PASS for a claim that is false.
+//
+// What survives is not a leftover. A file write and a command are bounded by the workspace; a push, a pull
+// request and a merge are not, and a default that granted one would be a posture change nobody chose.
+func TestNoDefaultToolPublishes(t *testing.T) {
+	for _, list := range []struct {
+		source string
+		names  []string
+	}{
+		{"toolset.Default()", toolset.Default()},
+		{"toolset.Repository()", toolset.Repository()},
+	} {
+		for _, name := range list.names {
+			if strings.Contains(name, "publish.") {
+				t.Fatalf("%s grants %q — publication leaves the machine, so it stays in toolset.Publish() "+
+					"behind the human decision that gates it, and is never bound by a default", list.source, name)
 			}
 		}
 	}
