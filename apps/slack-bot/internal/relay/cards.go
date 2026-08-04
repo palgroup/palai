@@ -387,13 +387,33 @@ func (c *stepCard) task(detail string) slack.Task {
 	return slack.Task{ID: c.id, Title: c.title(), Status: c.status(), Detail: detail}
 }
 
-// trimHeadline keeps a container title to one line. A caption is one line by construction
-// (toolbroker.ArgumentSummary renders exactly one), but the field is the model's words downstream of a
-// contract this package does not own, and a headline that grew a newline would take the container's single
-// visible line and turn it into several.
+// maxHeadline bounds the container's title, in RUNES.
+//
+// MEASURED FROM A REAL RUN rather than picked: the live leg on 2026-08-04 mirrored a step whose caption was
+//
+//	$ bash -lc find . -name '*.swift' -not -path '*/.build/*' | wc -l && echo --- && find . -name '*.swift'
+//	-not -path '*/.build/*' -exec wc -l {} + | sort -rn | head -10
+//
+// — 197 characters into a field that is ONE line. `arguments_summary` is capped at 256 bytes upstream, which
+// is the right bound for a card's row and far too much for a headline. The card still carries the whole
+// caption; this cut applies only to the mirrored copy.
+const maxHeadline = 80
+
+// trimHeadline keeps a container title to one readable line.
+//
+// TWO CUTS, AND THE SECOND IS NOT COSMETIC. A caption is one line by construction (toolbroker.ArgumentSummary
+// renders exactly one), but the field is the model's words downstream of a contract this package does not
+// own, and a headline that grew a newline would take the container's single visible line and turn it into
+// several. The length cut is what keeps that line readable when the caption is a hundred-character pipeline.
+//
+// Both are marked with an ellipsis, because a headline a reader cannot tell is truncated is a headline that
+// says the command ended where it did not.
 func trimHeadline(text string) string {
 	if i := strings.IndexAny(text, "\r\n"); i >= 0 {
-		return strings.TrimSpace(text[:i]) + " …"
+		text = strings.TrimSpace(text[:i]) + " …"
+	}
+	if runes := []rune(text); len(runes) > maxHeadline {
+		return strings.TrimRight(string(runes[:maxHeadline-1]), " ") + "…"
 	}
 	return text
 }

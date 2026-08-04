@@ -463,6 +463,17 @@ func TestAHeadlineIsAlwaysOneLine(t *testing.T) {
 	if got := trimHeadline("$ swift build"); got != "$ swift build" {
 		t.Fatalf("trimHeadline altered a one-line headline: %q", got)
 	}
+	// AND IT IS BOUNDED, from the live leg's own overflow: a step whose caption was a 197-character pipeline
+	// was mirrored whole into a field that is ONE line. The card still carries the full caption; only the
+	// mirrored copy is cut, and the cut is visible.
+	long := "$ " + strings.Repeat("x", 300)
+	got := trimHeadline(long)
+	if len([]rune(got)) != maxHeadline {
+		t.Fatalf("trimHeadline kept %d runes of a %d-rune caption, want %d", len([]rune(got)), len([]rune(long)), maxHeadline)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("a cut headline (%q) does not say it was cut, so it reads as a command that ended there", got)
+	}
 	fake := runCards(t, []palai.Event{
 		shellStep("tc_1", "echo one\necho two"),
 		{Type: "run.completed.v1", Data: map[string]any{}},

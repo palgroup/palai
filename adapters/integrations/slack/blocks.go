@@ -648,10 +648,58 @@ func TaskUpdateChunk(task Task) map[string]any {
 	chunk["id"] = task.ID
 	// A plain string: the chunk schema takes text here and Slack renders it into the card's rich_text
 	// itself. Sending the block's rich_text object instead is one of the two shapes measured to be refused.
-	if detail := NeutralizeBroadcasts(task.Detail); detail != "" {
+	//
+	// AND IT IS RENDERED AS MARKDOWN, which the title is NOT — see EscapeCardDetails. That asymmetry is the
+	// reason the escape is applied here rather than in taskFields: the two fields of one card need opposite
+	// treatment, and a helper shared between them would have to do nothing to be correct for both.
+	if detail := EscapeCardDetails(NeutralizeBroadcasts(task.Detail)); detail != "" {
 		chunk["details"] = detail
 	}
 	return chunk
+}
+
+// cardDetailSpecials are the characters Slack's markdown gives meaning to inside a card's `details`, in the
+// order they must be escaped — the BACKSLASH FIRST, because escaping it after the others would also escape
+// the backslashes this function just added and each one would come back doubled.
+var cardDetailSpecials = []string{`\`, "*", "`", "_", "~", ">", "<"}
+
+// EscapeCardDetails makes a string survive the card's `details` field unchanged.
+//
+// THE DEFECT IT CLOSES IS A LIE ABOUT WHAT RAN. A live run on 2026-08-04 put a real shell command on a card
+// and the workspace stored it with the asterisks GONE:
+//
+//	sent   `$ bash -lc find . -name '*.swift' -not -path '*/.build/*' | wc -l`
+//	stored `$ bash -lc find . -name '.swift' -not -path '/.build/' | wc -l`
+//
+// A reader copying that line runs a different command from the one the bot ran, and the damage is
+// DATA-DEPENDENT — emphasis needs a matching pair, so a command with one asterisk survives and the same
+// command with two does not, which is the worst possible failure mode for a transcript.
+//
+// MEASURED, character by character, against the live API (2026-08-04, workspace T0AMPM5JX8U — each sent raw
+// and backslash-escaped, then read back with conversations.replies):
+//
+//	*  raw a*b*c  -> "abc"      escaped -> "a*b*c"    <- consumed; the escape is REQUIRED
+//	`  raw a`b`c  -> "abc"      escaped -> "a`b`c"    <- consumed; the escape is REQUIRED
+//	_  raw a_b_c  -> "a_b_c"    escaped -> "a_b_c"    <- survived here, and the escape costs nothing
+//	~  raw a~b~c  -> "a~b~c"    escaped -> "a~b~c"
+//	>  raw a>b>c  -> "a>b>c"    escaped -> "a>b>c"
+//	<  raw a<b<c  -> "a<b<c"    escaped -> "a<b<c"
+//	\  raw a\b\c  -> "a\b\c"    escaped -> "a\b\c"    <- so a backslash IS consumed when doubled
+//
+// The four that survived RAW are escaped anyway, and that is deliberate rather than thorough-for-its-own
+// sake: each was measured to render identically escaped, so the cost is nothing, while the position they
+// were tested in is one position out of many (emphasis rules turn on word boundaries, and a caption is a
+// command line, not a word). Escaping only what was observed to break would be trusting one sample of a
+// rule nobody has published.
+//
+// THE TITLE IS NOT ESCAPED AND MUST NOT BE. Measured the same day, a task title is PLAIN TEXT: `find . -name
+// '*.swift'` came back byte-identical, backticks and asterisks and all. Escaping it would put visible
+// backslashes in front of them.
+func EscapeCardDetails(text string) string {
+	for _, special := range cardDetailSpecials {
+		text = strings.ReplaceAll(text, special, `\`+special)
+	}
+	return text
 }
 
 // PlanUpdateChunk renders the `plan_update` chunk — the one that writes the plan container's OWN headline,

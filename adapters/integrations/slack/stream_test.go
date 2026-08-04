@@ -339,6 +339,54 @@ func TestPlanUpdateChunkCarriesTheDocumentedShape(t *testing.T) {
 	}
 }
 
+// TestACommandSurvivesTheCardsDetails is a lie about what ran, closed. Measured on 2026-08-04 against a live
+// run: a card carrying `$ bash -lc find . -name '*.swift' -not -path '*/.build/*'` was STORED by the
+// workspace as `$ bash -lc find . -name '.swift' -not -path '/.build/'`. The `details` field is parsed as
+// markdown and the asterisks were consumed as emphasis, so a reader copying that line would run a different
+// command from the one the bot ran.
+//
+// THE DAMAGE IS DATA-DEPENDENT, which is what makes it worth a test rather than a fix and a shrug: emphasis
+// needs a matching PAIR, so a command carrying one asterisk survived while the same command carrying two did
+// not. A transcript that is right most of the time is the worst kind.
+func TestACommandSurvivesTheCardsDetails(t *testing.T) {
+	for _, command := range []string{
+		`$ bash -lc find . -name '*.swift' -not -path '*/.build/*' | wc -l`,
+		"$ grep -rn `date` . | head",
+		`$ sed -i '' 's/_old_/_new_/g' Sources/App.swift`,
+		`$ echo "a > b" && printf '%s\n' \*`,
+	} {
+		chunk := TaskUpdateChunk(Task{ID: "tc_1", Title: "Running a command", Status: "in_progress", Detail: command})
+		sent, _ := chunk["details"].(string)
+		// The escape must be REVERSIBLE by the same rule Slack applies: one backslash consumed per escaped
+		// character. Undoing it here is what makes this a round-trip assertion rather than a restatement of
+		// whatever ReplaceAll happened to do.
+		back := sent
+		for _, special := range cardDetailSpecials {
+			back = strings.ReplaceAll(back, `\`+special, special)
+		}
+		if back != command {
+			t.Fatalf("a command did not survive the escape:\n  in   %q\n  wire %q\n  back %q", command, sent, back)
+		}
+		// And every character Slack is measured to consume must be escaped ON THE WIRE, not merely
+		// recoverable: an unescaped `*` is the defect itself.
+		for _, consumed := range []string{"*", "`"} {
+			for i := 0; i < len(sent); i++ {
+				if string(sent[i]) == consumed && (i == 0 || sent[i-1] != '\\') {
+					t.Fatalf("%q reaches the wire unescaped in %q — Slack consumes it", consumed, sent)
+				}
+			}
+		}
+	}
+	// A TITLE IS NOT ESCAPED. It is plain text on this surface (measured the same day: a title carrying
+	// asterisks and backticks came back byte-identical), so escaping it would put visible backslashes in
+	// front of them.
+	title := `find . -name '*.swift'`
+	chunk := TaskUpdateChunk(Task{ID: "tc_1", Title: title, Status: "done"})
+	if chunk["title"] != title {
+		t.Fatalf("the title was altered: %q, want %q — a task title is plain text", chunk["title"], title)
+	}
+}
+
 // TestATaskCardCannotBroadcast: a card's title and output are strings a MODEL had a hand in (the detail
 // carries a tool's own progress message), so they go through the same defusing every other outbound string
 // does. The assertion is made on the DECODED payload — see the note in TestModelTextCannotBroadcast for why
