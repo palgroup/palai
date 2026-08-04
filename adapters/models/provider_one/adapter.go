@@ -279,6 +279,15 @@ func buildBody(req modelbroker.Request) ([]byte, map[string]string, error) {
 				return nil, nil, fmt.Errorf("tool name %q collides with %q on the wire (both encode to %q)", t.Name, existing, wire)
 			}
 			names[wire] = t.Name
+			// A TYPED TOOL CANNOT CROSS THIS ADAPTER, AND IT MUST NOT BE DROPPED QUIETLY. This provider
+			// speaks OpenAI's chat/completions shape, where an Anthropic-defined tool type has no
+			// meaning. Skipping it would leave the model with no editor and no sign anything was
+			// missing — the run would simply stop being able to change a line while looking healthy.
+			// Failing here names the route as the thing to fix. Also covers openai_compatible, which
+			// embeds this Adapter and shares this builder.
+			if t.Type != "" {
+				return nil, nil, fmt.Errorf("tool %q declares the Anthropic-defined type %q, which this OpenAI-compatible provider cannot carry; route this agent to an Anthropic model or drop the tool from its set", t.Name, t.Type)
+			}
 			fn := map[string]any{"name": wire, "parameters": t.Parameters}
 			if t.Description != "" {
 				fn["description"] = t.Description
