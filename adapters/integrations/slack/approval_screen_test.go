@@ -79,6 +79,30 @@ func TestACallWithNoArgumentsDrawsNoArgumentTable(t *testing.T) {
 	}
 }
 
+// THE SECOND GUARD, ASSERTED DIRECTLY, and this test exists because of what a perturbation did NOT do.
+//
+// Deleting approvalArgumentTable's own empty-set refusal left every test above GREEN — correctly, because
+// the property never broke: ToolApprovalMessage guards at the call site too, and a probe against the
+// perturbed build confirmed the empty table still did not appear. Two independent guards, which is the
+// right shape for a screen this one; the tree's own rule says a green perturbation means the test is
+// innocent whenever the PROPERTY held, and weakening the design to make one bite is the harm that rule
+// warns about.
+//
+// What it did reveal is that the inner guard was UNWITNESSED — a future refactor could delete it silently
+// and nothing would say so until the day a caller forgot its own check. So it is asserted here, at the
+// level it lives, rather than made load-bearing at a level it does not.
+func TestTheArgumentTableHelperRefusesToDrawAHeaderOverNothing(t *testing.T) {
+	if got := approvalArgumentTable("argument", "value", nil); got != nil {
+		t.Fatalf("an empty set produced %#v, want no block at all", got)
+	}
+	if got := approvalArgumentTable("what", "value", []ApprovalArgument{}); got != nil {
+		t.Fatalf("an empty (non-nil) set produced %#v, want no block at all", got)
+	}
+	if got := approvalArgumentTable("what", "value", []ApprovalArgument{{Name: "repository", Value: "r"}}); got == nil {
+		t.Fatal("a populated set produced no block")
+	}
+}
+
 // DEFECT 1b — and it must SAY there are none, rather than leaving a gap.
 //
 // The two halves are separate assertions because hiding the block and reporting the absence are different
