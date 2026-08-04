@@ -514,6 +514,7 @@ func (o *openStream) updateTask(ctx context.Context, data map[string]any, status
 // confidently describing the wrong action.
 var toolTitles = map[string]string{
 	"palai.workspace.file":             "Reading files",
+	"str_replace_based_edit_tool":      "Editing a file",
 	"palai.workspace.glob":             "Finding files",
 	"palai.workspace.grep":             "Searching the code",
 	"palai.workspace.shell":            "Running a command",

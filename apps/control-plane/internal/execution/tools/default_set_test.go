@@ -45,6 +45,7 @@ func TestEveryDefaultToolResolves(t *testing.T) {
 		FileTool(),
 		// And the filename search, granted unconditionally: finding a file by name is what a run does
 		// before it can read one, with or without a repository.
+		TextEditorTool(),
 		GlobTool(),
 		GrepTool(),
 		ShellTool(),

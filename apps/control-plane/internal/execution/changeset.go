@@ -19,7 +19,11 @@ import (
 // broker registers (tools.FileTool()/ShellTool().Name); kept as literals here so the compiler does not
 // import the tools package. ponytail: stable tool ids — if one is renamed, update it in both places.
 const (
-	fileToolName  = "palai.workspace.file"
+	fileToolName = "palai.workspace.file"
+	// editorToolName is Anthropic's client-side text editor. It writes through the same workspace
+	// surface and returns the same {path, before_hash, after_hash, created} report, so its rows belong
+	// in the changeset exactly as the file tool's do.
+	editorToolName = "str_replace_based_edit_tool"
 	shellToolName = "palai.workspace.shell"
 )
 
@@ -222,11 +226,8 @@ func changedFiles(rows []coordinator.ToolCallRow) []coordinator.ChangesetFile {
 	byPath := map[string]*coordinator.ChangesetFile{}
 	var order []string
 	for _, row := range rows {
-		if row.Name != fileToolName {
-			continue
-		}
 		args := decodeJSON(row.Arguments)
-		if s, _ := args["op"].(string); s != "write" {
+		if !isWorkspaceWriteRow(row.Name, args) {
 			continue
 		}
 		// A REFUSED WRITE CHANGED NO FILE, and this line is the reason it cannot be left implicit.
@@ -388,6 +389,30 @@ func changesetContentHash(rec coordinator.ChangesetRecord) string {
 	})
 	sum := sha256.Sum256(canonical)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// isWorkspaceWriteRow reports whether a ledger row is a tool call that WROTE a workspace file.
+//
+// IT EXISTS BECAUSE THE ALTERNATIVE SHIPPED: the walk selected rows with `row.Name != fileToolName`,
+// so the day a second editing tool arrived, every file it touched lost its ledger provenance and fell
+// back to a workspace scan — hashes empty, tool-call id absent, and nothing failing to say so. A
+// changeset is derived from the ledger precisely so it does not depend on a scan.
+//
+// EACH TOOL NAMES ITS WRITING OPERATIONS DIFFERENTLY, which is why a name check alone is not enough:
+// the file tool multiplexes on `op`, the editor on `command`, and both carry read-only operations
+// (`read`, `view`) that must never be recorded as changes.
+func isWorkspaceWriteRow(name string, args map[string]any) bool {
+	switch name {
+	case fileToolName:
+		op, _ := args["op"].(string)
+		return op == "write"
+	case editorToolName:
+		switch command, _ := args["command"].(string); command {
+		case "create", "str_replace", "insert":
+			return true
+		}
+	}
+	return false
 }
 
 func decodeJSON(s string) map[string]any {

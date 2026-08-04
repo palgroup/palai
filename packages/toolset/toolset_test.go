@@ -7,6 +7,13 @@ import (
 	"github.com/palgroup/palai/packages/toolset"
 )
 
+// anthropicDefined names every tool whose identifier belongs to Anthropic rather than to this
+// platform. Each entry is a literal the model was trained against; the day one is removed from the
+// canonical lists it should come out of here too.
+var anthropicDefined = map[string]bool{
+	"str_replace_based_edit_tool": true, // text_editor_20250728
+}
+
 // TestEveryListIsNonEmptyAndWellFormed pins the shape a grant depends on. A list that is empty, or
 // that carries a name in the wrong namespace, empties or corrupts every effective tool set computed
 // from it (execution/config.go:120-137 intersects LAST, so garbage in is silence out).
@@ -22,8 +29,12 @@ func TestEveryListIsNonEmptyAndWellFormed(t *testing.T) {
 		}
 		seen := map[string]bool{}
 		for _, tool := range list {
-			if !strings.HasPrefix(tool, "palai.") {
-				t.Errorf("%s() carries %q, which is not in the palai. namespace", name, tool)
+			// ANTHROPIC-DEFINED TOOLS ARE THE ONE EXEMPTION, and it is a named list rather than a
+			// loosened rule: their names are literals the model was trained against, so a `palai.`
+			// spelling would be a different tool as far as it is concerned. Everything we author still
+			// has to live in our namespace, and an unknown unprefixed name still fails.
+			if !strings.HasPrefix(tool, "palai.") && !anthropicDefined[tool] {
+				t.Errorf("%s() carries %q, which is neither in the palai. namespace nor a named Anthropic-defined tool", name, tool)
 			}
 			if seen[tool] {
 				t.Errorf("%s() lists %q twice", name, tool)

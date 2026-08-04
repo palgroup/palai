@@ -24,7 +24,11 @@ const maxFileReadBytes = 1 << 20
 func FileTool() toolbroker.Tool {
 	return toolbroker.Tool{
 		Name:        "palai.workspace.file",
-		Description: "Read, write, list, stat, or checksum files within the run's sandboxed workspace. Paths resolve relative to the workspace root; traversal, absolute paths, and likely-secret reads are denied.",
+		Description: "List, stat, or checksum files within the run's sandboxed workspace, and read or " +
+			"write whole files when you need the content hashes a changeset records. To READ part of a " +
+			"file or EDIT one, prefer the text editor — it views by line range and replaces an exact " +
+			"string, where this tool's write replaces the entire file. Paths resolve relative to the " +
+			"workspace root; traversal, absolute paths, and likely-secret reads are denied.",
 		ReplayClass: toolbroker.ClassReversible, // a workspace edit is revertible via the snapshot/git (§26.6)
 		InputSchema: map[string]any{
 			"type": "object",

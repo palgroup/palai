@@ -656,7 +656,8 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		toolBroker := toolbroker.New(
 			toolbroker.ConformanceMathAdd(),
 			tools.FileTool(),
-			tools.GlobTool(), // find files by name before reading any of them
+			tools.TextEditorTool(), // Anthropic's editor: str_replace instead of whole-file rewriting
+			tools.GlobTool(),       // find files by name before reading any of them
 			tools.GrepTool(), // and by content, without paying the shell's irreversible classification
 			tools.ShellTool(),
 			tools.BackgroundKillTool(), // E26 T2: stop a task the shell tool's `background` parameter started
@@ -916,8 +917,8 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 // Since E13 T8 this env selection is the FALLBACK, not the whole story: a project with a published
 // model route dispatches through that route's model and its own connection credential, and only a
 // project without one runs on what this function returns. The broker's resolver reflects that split —
-// a tenant-qualified ref (minted by a DB route) redeems from the T3 secret store under that tenant's own
-// organization, and an unqualified ref redeems from the env bridge below.
+// a tenant-qualified ref (minted by a DB route) redeems from the T3 secret store,
+// and an unqualified ref redeems from the env bridge below.
 //
 // The fake adapter's EXCHANGE is a deployment setting too, and PALAI_FAKE_SCRIPT_FILE is it: unset — every
 // deployment that exists — replays registry.FakeScript unchanged, and a file lets a stack with no
@@ -956,8 +957,9 @@ func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute, error) {
 		FakeScript:              script,
 	})
 	// The credential resolver is the same in both branches: a tenant-qualified ref (minted by a DB route)
-	// redeems from the T3 secret store under that tenant's own organization, and an unqualified ref redeems
-	// from the env bridge. The `fake` entry is unconditional for the same reason the adapter map is — a
+	// redeems from the T3 secret store, and an unqualified ref redeems from the env bridge. "Qualified" is
+	// a ROUTING mark, not a tenant boundary — see execution.TenantSecretRef. The `fake` entry is
+	// unconditional for the same reason the adapter map is — a
 	// project may route to a family the deployment default is not.
 	broker := modelbroker.New(modelbroker.Config{Adapters: adapters, Secrets: execution.RouteSecretResolver{
 		Lookup: dbSecret,
@@ -1292,9 +1294,13 @@ func environmentValueSecret(ref string) ([]byte, error) {
 
 // mcpSecretResolver bridges an MCP connection's secret_ref handle to the bearer bytes at request time (the
 // webhookSecretResolver twin): the DB-backed store (E13 T3) is consulted first, then
-// PALAI_MCP_SECRET_FILE_<ORG>__<REF> holds a FILE PATH, never the secret inline, read only here and never
-// logged. The org prefix is a server-minted hard tenant boundary, so a tenant's ref can only name a secret
-// provisioned under its OWN org.
+// PALAI_MCP_SECRET_FILE_<REF> holds a FILE PATH, never the secret inline, read only here and never logged.
+//
+// <REF> is secretEnvKey(ref) — the ref upper-cased with every non-alphanumeric byte replaced by `_`, and
+// NOTHING ELSE. It said <ORG>__<REF> until A.2 Task 6, and that was an operator-facing env var name this
+// binary could not produce. The org segment is gone from the key AND from the property: a ref name is
+// single-occupancy across the installation (000066), so there is no per-tenant namespace here to enforce.
+// See identity.SecretStore.Resolve, which records the same correction for the DB half.
 func mcpSecretResolver(ref string) ([]byte, error) {
 	if ref == "" {
 		return nil, errors.New("empty mcp secret ref")
@@ -1537,12 +1543,15 @@ func startScheduleTicker(ctx context.Context, store *automation.ScheduleStore, s
 }
 
 // webhookSecretResolver bridges an endpoint's SecretRef handle to the signing-secret bytes at delivery
-// time (the E09 credential-broker hand-off pattern): PALAI_WEBHOOK_SECRET_FILE_<ORG>__<REF> holds a
-// FILE PATH, never the secret inline, and the bytes are read only here and never logged (E13 seals the
-// file at rest). The env key is scoped by the endpoint's ORG so a tenant's SigningSecretRef can only
-// name a secret provisioned under its OWN org — a foreign ref resolves to no env var (F2). The org is
-// server-minted (never tenant-forgeable), so the org prefix is a hard tenant boundary. An unresolved
-// ref fails the attempt (a retry), never an unsigned delivery.
+// time (the E09 credential-broker hand-off pattern): PALAI_WEBHOOK_SECRET_FILE_<REF> holds a FILE PATH,
+// never the secret inline, and the bytes are read only here and never logged (E13 seals the file at rest).
+//
+// THE ENV KEY IS NO LONGER SCOPED BY ORG, and the claim goes with the segment rather than being softened.
+// It read "<ORG>__<REF> … a tenant's SigningSecretRef can only name a secret provisioned under its OWN
+// org — a foreign ref resolves to no env var (F2)". secretEnvKey takes the ref ALONE, so that env var name
+// never existed after A.2 Task 6, and the boundary it described does not either: a ref name is
+// installation-wide (000066). An unresolved ref still fails the attempt (a retry), never an unsigned
+// delivery — that half was always about resolution, not about tenancy, and it still holds.
 func webhookSecretResolver(ref string) ([]byte, error) {
 	if ref == "" {
 		return nil, errors.New("empty webhook secret ref")
@@ -1560,10 +1569,12 @@ func webhookSecretResolver(ref string) ([]byte, error) {
 }
 
 // inboundSecretResolver is the receiver-side sibling of webhookSecretResolver (E11 Task 5): it bridges a
-// trigger's inbound source-secret ref to bytes via PALAI_INBOUND_SECRET_FILE_<ORG>__<REF> (a FILE PATH,
-// never inline; E13 seals the file at rest). The org prefix is a server-minted hard tenant boundary, so a
-// tenant's ref can only name a secret provisioned under its OWN org — and the inbound namespace is
-// DISTINCT from the outbound PALAI_WEBHOOK_SECRET_FILE_ one, so the two secret sets are non-interchangeable.
+// trigger's inbound source-secret ref to bytes via PALAI_INBOUND_SECRET_FILE_<REF> (a FILE PATH, never
+// inline; E13 seals the file at rest). The <ORG>__ segment left with A.2 Task 6 along with the boundary it
+// claimed — secretEnvKey keys on the ref alone and a ref name is installation-wide (000066). What DOES
+// still hold is the other half: the inbound namespace is DISTINCT from the outbound
+// PALAI_WEBHOOK_SECRET_FILE_ one, so the two secret sets remain non-interchangeable — that separation is
+// carried by the PREFIX, which no tenant ever supplied.
 // An unresolved ref fails verification (a generic 404 upstream — no config oracle), never an unsigned accept.
 func inboundSecretResolver(ref string) ([]byte, error) {
 	if ref == "" {
@@ -1582,11 +1593,12 @@ func inboundSecretResolver(ref string) ([]byte, error) {
 }
 
 // remoteToolSecretResolver is the third sibling of webhook/inboundSecretResolver (E12 Task 4): it bridges
-// a tool_revision.secret_ref handle to the HMAC signing-secret bytes via PALAI_REMOTE_TOOL_SECRET_FILE_
-// <ORG>__<REF> (a FILE PATH, never inline; E13 seals the file at rest). The SAME secret signs the outbound
-// invoke and verifies the inbound callback. The org prefix is a server-minted hard tenant boundary, so a
-// tenant's ref can only name a secret provisioned under its OWN org — and the remote-tool namespace is
-// DISTINCT from the webhook/inbound ones, so the three secret sets are non-interchangeable. An unresolved
+// a tool_revision.secret_ref handle to the HMAC signing-secret bytes via
+// PALAI_REMOTE_TOOL_SECRET_FILE_<REF> (a FILE PATH, never inline; E13 seals the file at rest). The SAME
+// secret signs the outbound invoke and verifies the inbound callback. The <ORG>__ segment and the
+// per-tenant boundary it claimed both left with A.2 Task 6: secretEnvKey keys on the ref alone and a ref
+// name is installation-wide (000066). The remote-tool namespace is still DISTINCT from the
+// webhook/inbound ones — three PREFIXES, so the three secret sets stay non-interchangeable. An unresolved
 // ref fails the invoke (a retry) / a generic-404 callback, never an unsigned request or accept.
 func remoteToolSecretResolver(ref string) ([]byte, error) {
 	if ref == "" {
@@ -1606,9 +1618,10 @@ func remoteToolSecretResolver(ref string) ([]byte, error) {
 
 // slackSecretResolver is the fourth sibling of webhook/inbound/remoteToolSecretResolver (E19 T1): it bridges
 // a slack_connections.signing_secret_ref handle to the v0 signing-secret bytes via
-// PALAI_SLACK_SECRET_FILE_<ORG>__<REF> (a FILE PATH, never inline). The org prefix is a server-minted hard
-// tenant boundary, so a tenant's ref can only name a secret provisioned under its OWN org — and the Slack
-// namespace is DISTINCT from the webhook/inbound/remote-tool ones, so the four secret sets are
+// PALAI_SLACK_SECRET_FILE_<REF> (a FILE PATH, never inline). The <ORG>__ segment and the per-tenant
+// boundary it claimed both left with A.2 Task 6: secretEnvKey keys on the ref alone and a ref name is
+// installation-wide (000066). The Slack namespace is still DISTINCT from the webhook/inbound/remote-tool
+// ones — four PREFIXES, so the four secret sets stay
 // non-interchangeable. An unresolved ref fails VERIFICATION (a generic 401 upstream), never an unsigned
 // accept: a receiver that cannot check a signature refuses. The same bridge will resolve bot_token_ref /
 // app_token_ref when T2/T3 wire the outbound and Socket Mode legs.
@@ -1630,10 +1643,11 @@ func slackSecretResolver(ref string) ([]byte, error) {
 
 // a2aRemoteSecretResolver is the fifth sibling of webhook/inbound/remoteTool/slackSecretResolver (E19 T5):
 // it bridges an a2a_remote_agents.auth_connection_ref handle to the REMOTE CONNECTION'S OWN bearer via
-// PALAI_A2A_REMOTE_SECRET_FILE_<ORG>__<REF> (a FILE PATH, never inline). The org prefix is a server-minted
-// hard tenant boundary, so a tenant's ref can only name a secret provisioned under its OWN org — and the
-// A2A-remote namespace is DISTINCT from the webhook/inbound/remote-tool/Slack ones, so the five secret sets
-// are non-interchangeable. This is the ONLY bearer a remote child dial can carry: an unresolved ref FAILS
+// PALAI_A2A_REMOTE_SECRET_FILE_<REF> (a FILE PATH, never inline). The <ORG>__ segment and the per-tenant
+// boundary it claimed both left with A.2 Task 6: secretEnvKey keys on the ref alone and a ref name is
+// installation-wide (000066). The A2A-remote namespace is still DISTINCT from the
+// webhook/inbound/remote-tool/Slack ones — five PREFIXES, so the five secret sets stay
+// non-interchangeable. This is the ONLY bearer a remote child dial can carry: an unresolved ref FAILS
 // the dispatch (an honest child failure), it never falls back to the platform's or the parent's credential.
 func a2aRemoteSecretResolver(ref string) ([]byte, error) {
 	if ref == "" {

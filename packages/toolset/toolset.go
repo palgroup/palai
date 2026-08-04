@@ -17,6 +17,10 @@ package toolset
 // main.go:656-672) — a name that is not is a tool the model is offered and can never be given.
 var defaultTools = []string{
 	"palai.workspace.file",
+	// The Anthropic-defined text editor. Its NAME IS NOT OURS TO NAMESPACE: `str_replace_based_edit_tool`
+	// is the literal the model was trained against, and a `palai.`-prefixed spelling would be a tool it
+	// has never seen. toolset_test names it as the one admitted exception.
+	"str_replace_based_edit_tool",
 	"palai.workspace.glob",
 	"palai.workspace.grep",
 	"palai.workspace.shell",
