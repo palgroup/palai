@@ -64,20 +64,20 @@ func TestLiveCronFiresOnce(t *testing.T) {
 		}
 	}
 	exec(`INSERT INTO organizations (id) VALUES ($1)`, org)
-	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org)
-	exec(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`, principal, org, project)
+	exec(`INSERT INTO projects (id) VALUES ($1)`, project)
+	exec(`INSERT INTO principals (id, project_id, kind) VALUES ($1, $2, 'service')`, principal, project)
 
 	// A published AgentRevision pinning the live model.
 	agents := automation.New(pool)
-	profileID, err := agents.CreateProfile(ctx, org, project, randID("profile"))
+	profileID, err := agents.CreateProfile(ctx, project, randID("profile"))
 	if err != nil {
 		t.Fatalf("CreateProfile error = %v", err)
 	}
-	rev, err := agents.CreateRevision(ctx, org, project, profileID, []byte(`{"model":"`+liveModel()+`","instructions":"run the scheduled task"}`))
+	rev, err := agents.CreateRevision(ctx, project, profileID, []byte(`{"model":"`+liveModel()+`","instructions":"run the scheduled task"}`))
 	if err != nil {
 		t.Fatalf("CreateRevision error = %v", err)
 	}
-	if _, _, err := agents.PublishRevision(ctx, org, project, rev.ID); err != nil {
+	if _, _, err := agents.PublishRevision(ctx, project, rev.ID); err != nil {
 		t.Fatalf("PublishRevision error = %v", err)
 	}
 
@@ -99,10 +99,9 @@ func TestLiveCronFiresOnce(t *testing.T) {
 	store := automation.NewScheduleStore(pool, triggers)
 	base := time.Now().UTC().Truncate(time.Minute)
 	scheduleID := randID("sch")
-	exec(`INSERT INTO schedules (id, organization_id, project_id, name, trigger_id, created_by, kind, cron_expr,
-	      timezone, misfire_policy, misfire_grace_seconds, max_catch_up, jitter_seconds, next_fire_at)
-	      VALUES ($1,$2,$3,$4,$5,$6,'cron','* * * * *','UTC','fire_once_now',60,0,0,$7)`,
-		scheduleID, org, project, randID("name"), triggerID, principal, base)
+	exec(`INSERT INTO schedules (id, project_id, name, trigger_id, created_by, kind, cron_expr, timezone, misfire_policy, misfire_grace_seconds, max_catch_up, jitter_seconds, next_fire_at)
+	      VALUES ($1,$2,$3,$4,$5,'cron','* * * * *','UTC','fire_once_now',60,0,0,$6)`,
+		scheduleID, project, randID("name"), triggerID, principal, base)
 
 	// Tick the REAL ticker twice within the same minute (a fixed `now` within grace): exactly-once must hold
 	// — the second tick materializes nothing new.

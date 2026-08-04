@@ -71,20 +71,20 @@ func TestLiveInboundWebhookRun(t *testing.T) {
 		}
 	}
 	exec(`INSERT INTO organizations (id) VALUES ($1)`, org)
-	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org)
-	exec(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`, principal, org, project)
+	exec(`INSERT INTO projects (id) VALUES ($1)`, project)
+	exec(`INSERT INTO principals (id, project_id, kind) VALUES ($1, $2, 'service')`, principal, project)
 
 	// A published AgentRevision pinning the live model.
 	agents := automation.New(pool)
-	profileID, err := agents.CreateProfile(ctx, org, project, randID("profile"))
+	profileID, err := agents.CreateProfile(ctx, project, randID("profile"))
 	if err != nil {
 		t.Fatalf("CreateProfile error = %v", err)
 	}
-	rev, err := agents.CreateRevision(ctx, org, project, profileID, []byte(`{"model":"`+liveModel()+`","instructions":"summarize the order"}`))
+	rev, err := agents.CreateRevision(ctx, project, profileID, []byte(`{"model":"`+liveModel()+`","instructions":"summarize the order"}`))
 	if err != nil {
 		t.Fatalf("CreateRevision error = %v", err)
 	}
-	if _, _, err := agents.PublishRevision(ctx, org, project, rev.ID); err != nil {
+	if _, _, err := agents.PublishRevision(ctx, project, rev.ID); err != nil {
 		t.Fatalf("PublishRevision error = %v", err)
 	}
 
@@ -96,9 +96,13 @@ func TestLiveInboundWebhookRun(t *testing.T) {
 		t.Fatalf("write secret file error = %v", err)
 	}
 	ref := "live-ref"
-	t.Setenv("PALAI_INBOUND_SECRET_FILE_"+inboundEnvKey(org)+"__"+inboundEnvKey(ref), secretFile)
-	resolver := func(o, r string) ([]byte, error) {
-		path := os.Getenv("PALAI_INBOUND_SECRET_FILE_" + inboundEnvKey(o) + "__" + inboundEnvKey(r))
+	// THE KEY IS THE REF ALONE, AND IT MIRRORS main.go:1575 RATHER THAN BEING CHOSEN HERE. A.2 took the
+	// organization out of the lookup, so the shipped resolver reads
+	// `PALAI_INBOUND_SECRET_FILE_<REF>` with no org segment and no `__` separator. A test that kept the
+	// two-part key would set a variable production never reads and then prove a resolver nobody runs.
+	t.Setenv("PALAI_INBOUND_SECRET_FILE_"+inboundEnvKey(ref), secretFile)
+	resolver := func(r string) ([]byte, error) {
+		path := os.Getenv("PALAI_INBOUND_SECRET_FILE_" + inboundEnvKey(r))
 		if path == "" {
 			return nil, os.ErrNotExist
 		}
