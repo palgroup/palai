@@ -516,3 +516,43 @@ func TestHostShellReportsAMissingCommandAsExit127(t *testing.T) {
 		t.Fatalf("stderr does not say what happened: %q", res.Stderr)
 	}
 }
+
+// TestHostShellMasksTheControlPlanesOwnSecret drives the EXECUTOR, not the redactor, and that
+// distinction is the whole reason this test exists. The unit tests in packages/tool-broker prove
+// HostSecretValues selects the right values; they cannot prove this executor CALLS it. Removing the
+// call from exec.go left every one of them green — the mechanism was proven, the surface was not.
+//
+// The leak it reproduces was measured on a live native stack, 2026-08-04: the agent's shell runs as
+// the same uid as the control plane, so `ps -E -p <cp pid>` hands it 62 variables with their values.
+// `os.Unsetenv` does not remove them, because macOS answers `ps` from the kernel's copy of the
+// process's initial environment. The value therefore has to be masked wherever it surfaces.
+func TestHostShellMasksTheControlPlanesOwnSecret(t *testing.T) {
+	// A value the shape blocklist CANNOT see, so a pass here is the name-based path and nothing else.
+	// ASSEMBLED AT RUNTIME, NOT WRITTEN AS A LITERAL, and the reason is itself the point: GitHub's push
+	// protection recognises the Slack token SHAPE and blocks a push containing one. That is external
+	// confirmation that the shape is distinctive and worth masking — and that our own four-regexp
+	// blocklist, which lets it through, is the gap this test covers.
+	leaked := "xoxb-" + "99887766554-33221100998-notarealslacktokenvalue"
+	t.Setenv("PALAI_PROBE_SLACK_TOKEN", leaked)
+	if toolbroker.RedactSecrets(leaked) != leaked {
+		t.Fatal("the shape blocklist already masks this value; the test would pass without the fix")
+	}
+
+	res, err := run(t, 10*time.Second, toolbroker.ShellCommand{
+		// The command does not read the environment — it prints a literal. That is deliberate: the
+		// child environment is a three-name allow-list, so the agent could never have echoed the
+		// variable. It obtains the value some OTHER way (ps, a credential file) and the executor must
+		// still refuse to carry it back.
+		Argv:          []string{"echo", leaked},
+		WorkspaceRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.Contains(res.Stdout, leaked) {
+		t.Errorf("the control plane's own secret came back through the shell tool: %q", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "***") {
+		t.Errorf("stdout carries no mask, so nothing was redacted at all: %q", res.Stdout)
+	}
+}
