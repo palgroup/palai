@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/packages/contracts"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
@@ -487,8 +488,36 @@ func serveLease(ctx context.Context, supervisor *StreamSupervisor, leaseSession 
 	lease := leaseSession.Lease()
 	logf("received lease %s for run %s (fence %d)", lease.LeaseID, lease.RunID, lease.Fence)
 
+	// THE MACHINE OPENS THE ALLOCATION (A.3 T5). It used to have to already exist, because the control
+	// plane created it — on the control plane's own disk, which is the same disk only when the two share
+	// a filesystem. Now the machine lays out the §29.9 directory for any allocation the offer names
+	// under its managed root, and every refusal that governed the MOUNT still governs the creation:
+	// resolveNewAllocationDir walks the root down to the leaf and refuses any component that is not a
+	// real directory, so a symlink cannot make this write outside the root.
+	//
+	// It happens HERE, before the relay and before the engine, because both need it: the supervisor
+	// bind-mounts this path into the engine, and a ws.request can arrive the instant the relay starts.
+	if dir, err := openLeaseWorkspace(lease, allocationRoot, allowUnsafeBind); err != nil {
+		logf("reject lease %s: %v", lease.LeaseID, err)
+		if cerr := leaseSession.Complete(ctx, "failed", ""); cerr != nil {
+			logf("report rejected lease completion for run %s: %v", lease.RunID, cerr)
+		}
+		return
+	} else {
+		// The MACHINE's spelling of the path — symlink-resolved against its own root, so on macOS a
+		// /var allocation becomes /private/var. The mount and every later under-root check use it.
+		lease.WorkspaceHostPath = dir
+	}
+
 	// A normal allocation must sit under the runner's managed root before it is bind-mounted; an
 	// unsafe local bind requires the runner's own opt-in (spec §30.13, §24 boundary). Reject, don't mount.
+	//
+	// IT RUNS AFTER THE CREATION ABOVE AND IS NOT REDUNDANT WITH IT, and the difference is the kind of
+	// comparison: this one symlink-RESOLVES both sides and compares real paths, which is only possible
+	// once the directory exists; the creation walks the path lexically and refuses non-directory
+	// components. Two independent tests of the same property is what this tree means by defence in
+	// depth, and it has already recorded the case where a perturbation stayed green because the second
+	// guard held.
 	if err := admitWorkspaceMount(lease, allocationRoot, allowUnsafeBind); err != nil {
 		logf("reject lease %s: %v", lease.LeaseID, err)
 		if cerr := leaseSession.Complete(ctx, "failed", ""); cerr != nil {
@@ -641,6 +670,35 @@ func workspaceUnderRoot(path, root string) error {
 // The root itself is resolved first and the result is built from the RESOLVED root, so a runner whose
 // allocation root is legitimately behind a symlink — /var on macOS is exactly this — still works, and
 // the path returned is the one every later workspaceUnderRoot will compare against.
+// openLeaseWorkspace decides where THIS lease's workspace is on THIS machine, creating it when the
+// offer names an allocation that is not there yet. An empty path is a workspace-less lease and stays
+// empty.
+//
+// AN UNSAFE LOCAL BIND IS NOT CREATED, and that asymmetry is the whole of what the flag means: a
+// §30.13 direct host bind (REP-012) names a directory the OPERATOR already has and deliberately
+// placed outside the managed root, so there is nothing to mint and nothing to place. Creating it
+// would turn a typo into a new empty directory somewhere on the operator's disk and mount it as if it
+// were their project.
+func openLeaseWorkspace(lease Lease, allocationRoot string, allowUnsafeBind bool) (string, error) {
+	if lease.WorkspaceHostPath == "" {
+		return "", nil
+	}
+	if lease.WorkspaceUnsafe {
+		if !allowUnsafeBind {
+			return "", errors.New("unsafe local bind requested but runner has not opted in (PALAI_WORKSPACE_UNSAFE_BIND=1)")
+		}
+		return lease.WorkspaceHostPath, nil
+	}
+	dir, err := resolveNewAllocationDir(lease.WorkspaceHostPath, allocationRoot)
+	if err != nil {
+		return "", err
+	}
+	if err := workspace.Prepare(dir); err != nil {
+		return "", fmt.Errorf("lay out allocation: %w", err)
+	}
+	return dir, nil
+}
+
 func resolveNewAllocationDir(path, root string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", errors.New("workspace open names no allocation")

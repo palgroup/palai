@@ -67,8 +67,8 @@ func (b *githubAppBroker) Mint(ctx context.Context, scope Scope, aud Audience) (
 		return Credential{}, err
 	}
 	handle := "rcred_" + randHex(8)
-	b.retain(handle, mintedSecret{username: "x-access-token", token: token, scope: scope, aud: aud, expiresAt: expires})
-	return Credential{Handle: handle, Username: "x-access-token", Scope: scope, Audience: aud, ExpiresAt: expires}, nil
+	b.retain(handle, mintedSecret{username: HelperUsername, token: token, scope: scope, aud: aud, expiresAt: expires})
+	return Credential{Handle: handle, Username: HelperUsername, Scope: scope, Audience: aud, ExpiresAt: expires}, nil
 }
 
 // Revoke removes the local secret + helper file AND revokes the installation token at GitHub, so a

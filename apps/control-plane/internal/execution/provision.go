@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 
 	"github.com/palgroup/palai/adapters/repositories"
-	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
+	"github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
+	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 
 	"github.com/palgroup/palai/storage"
 )
@@ -46,48 +46,133 @@ func (o *Orchestrator) SetConnectionSecrets(secrets SecretResolver) {
 	o.provisionSecrets = secrets
 }
 
-// provisionRootWorkspace realizes the session's attached coding workspace for the ROOT run and returns
-// the allocation host path (the tools' WorkspaceRoot; the repo lives at hostPath/repo), the writer lease
-// to release at attempt end, and the logical workspace id. It drives the §29.7 lifecycle
-// requested→provisioning→preparing→ready→leased: on the FIRST run it allocates a host dir, lays out the
-// workspace, and clones @ the requested ref under a brokered credential (CP-side, the model never sees
-// it); a LATER run in the same session reuses the current allocation — edits persist, the clone is not
-// repeated — and records a fresh preparation receipt at the current head so its changeset diffs from
-// where this run starts. Either way it acquires the single writer lease (spec §29.8). A session with no
-// attachment (found=false) yields "" — the run then has no workspace, exactly as before.
+// PROVISIONING IS TWO HALVES NOW, AND THE SEAM BETWEEN THEM IS THE DIAL (A.3 T5).
 //
-// ponytail: this handles the clean happy path + pause/resume (the defer release returns the workspace to
-// ready, so resume re-leases the SAME allocation). Reclaim after a HARD worker kill — a dangling active
-// lease on a still-`leased` workspace — is E10 recovery (the host_lost/recovering states exist for it);
-// here it surfaces as a lease conflict routed to retry, not silent corruption.
-func (o *Orchestrator) provisionRootWorkspace(ctx context.Context, tenant coordinator.Tenant, sessionID, runID, jobID string, fence uint64) (hostPath, leaseID, workspaceID string, err error) {
+// It used to be one function that ran before the dial and did everything on THIS host: mkdir, clone,
+// state machine, writer lease. That was correct while the bytes lived here and became wrong the
+// moment a lease could place a run on another machine — the control plane would clone into its own
+// filesystem and hand the machine a path that means nothing there.
+//
+// planRootWorkspace runs BEFORE the dial because the lease offer carries the allocation path: the
+// runner bind-mounts it and, since this task, CREATES it (packages/runner/serve.go). It reads and
+// mints, and writes nothing. realizeRootWorkspace runs AFTER, on the connection the dial returned,
+// so every byte it puts on disk goes to the machine that will run the commands.
+//
+// WHY NOT MINT THE PATH ON THE MACHINE TOO. It would be one fewer thing the control plane names, and
+// it cannot happen before the dial, and the mount needs it AT the offer. The name is therefore still
+// this side's, and the machine's defence is unchanged and structural: it refuses any path outside the
+// root it was configured with, and now refuses to CREATE one too. That both ends resolve
+// PALAI_WORKSPACE_ROOT to the same absolute path is not a new coupling this introduces — it is the
+// requirement cmd/cli/internal/stack/native.go already calls "the ONE absolute path a run's workspace
+// has on both sides".
+
+// workspacePlan is what the pre-dial half decided: which workspace the session has, which allocation
+// this run will use, and whether that allocation still needs a clone.
+type workspacePlan struct {
+	ws        coordinator.SessionWorkspace
+	sessionID string
+	allocID   string
+	hostPath  string
+	// fresh distinguishes the two paths realizeRootWorkspace takes. A fresh allocation is cloned @ the
+	// requested ref; a reused one is not — a prior run's edits persist and only a new preparation
+	// receipt at the current head is recorded, so this run's changeset diffs from where it starts.
+	fresh bool
+}
+
+// planRootWorkspace decides the session's coding workspace for the ROOT run without touching disk or
+// writing a row. A session with no attachment yields found=false — the run then has no workspace,
+// exactly as before.
+func (o *Orchestrator) planRootWorkspace(ctx context.Context, tenant coordinator.Tenant, sessionID string) (workspacePlan, bool, error) {
 	ws, found, err := o.spine.WorkspaceForSession(ctx, tenant, sessionID)
 	if err != nil || !found {
-		return "", "", "", err
+		return workspacePlan{}, false, err
 	}
-
-	var alloc coordinator.Allocation
 	switch statemachines.WorkspaceState(ws.State) {
 	case statemachines.WorkspaceReady, statemachines.WorkspaceLeased:
 		// A later run in the session: ready = released by a prior run; leased = a prior attempt whose
-		// state-release lost the race to a crash. Reuse the current allocation — edits persist, the clone
-		// is not repeated.
-		alloc, err = o.reuseAllocation(ctx, tenant, ws, runID)
+		// state-release lost the race to a crash. Reuse the current allocation.
+		alloc, err := o.spine.CurrentAllocation(ctx, ws.WorkspaceID)
+		if err != nil {
+			return workspacePlan{}, false, err
+		}
+		return workspacePlan{ws: ws, sessionID: sessionID, allocID: alloc.ID, hostPath: alloc.HostPath}, true, nil
+	case statemachines.WorkspacePaused, statemachines.WorkspaceRestoring:
+		// THE MACHINE WAS HANDED BACK WHILE THE THREAD WAS QUIET. An idle releaser archives the
+		// allocation and reclaims its directory, and a woken thread has to restore it onto a new fenced
+		// allocation — which may well be under a different provision root on a different Mac.
+		//
+		// NOTHING PAUSES A WORKSPACE ON `main` TODAY, and this arm says so rather than pretending
+		// otherwise: the releaser and ResumeReleasedWorkspace live on wip/workspace-idle-release and are
+		// A.4's work. The arm exists because the SWITCH is written once — the parked branch touches these
+		// exact lines — and because falling into `default` here would silently clone a FRESH allocation
+		// over a workspace whose bytes are in an archive, which is the loudest possible way to lose a
+		// user's work quietly. It refuses instead.
+		return workspacePlan{}, false, fmt.Errorf("workspace %s is %s: restoring a released workspace is not wired on this build",
+			ws.WorkspaceID, ws.State)
+	case statemachines.WorkspaceSnapshotting:
+		// An idle sweep died between claiming the workspace and finishing with it. The bytes are still on
+		// disk — a releaser deletes them only after reaching `paused` — so the repair is to give the claim
+		// back and reuse the allocation, NOT to restore. Restoring would replace a tree that is present
+		// and current with an archive that may be older than it. The claim-back is A.4's, with the sweep
+		// that makes the claim; until then this refuses rather than reusing a workspace another party
+		// believes it holds.
+		return workspacePlan{}, false, fmt.Errorf("workspace %s is snapshotting: another party holds it", ws.WorkspaceID)
 	default:
 		// requested, or provisioning/preparing left by a crashed/failed clone (blocker 2): (re)provision
-		// fresh and idempotently — a partial allocation from a failed attempt is abandoned, a new one cloned.
-		alloc, err = o.provisionFreshAllocation(ctx, tenant, sessionID, ws, runID, fence)
+		// fresh and idempotently — a partial allocation from a failed attempt is abandoned, a new one
+		// cloned.
+		allocID := "alloc_" + randHex16()
+		return workspacePlan{ws: ws, sessionID: sessionID, allocID: allocID, hostPath: filepath.Join(o.provisionRoot, allocID), fresh: true}, true, nil
+	}
+}
+
+// realizeRootWorkspace puts the workspace on the machine and returns the allocation root the tools
+// confine to, the writer lease to release at attempt end, the logical workspace id, and the ops every
+// workspace-touching tool acts through.
+//
+// EVERY BYTE IT WRITES GOES THROUGH `ops`, which is the whole of this task at the control plane: for a
+// channel that reaches a machine that is the machine's disk, and for one that does not it is this
+// host's — the deterministic e2e tier, and the hand-built component orchestrators, which have no
+// machine at all. The choice is made once, here, from the connection; nothing downstream re-decides
+// it, and no tool falls back to a filesystem when its ops is missing.
+func (o *Orchestrator) realizeRootWorkspace(ctx context.Context, ch EngineChannel, tenant coordinator.Tenant, plan workspacePlan, runID, jobID string, fence uint64) (hostPath, leaseID, workspaceID string, ops toolbroker.WorkspaceOps, err error) {
+	ws := plan.ws
+	ops = workspaceOpsFor(ch, plan.hostPath)
+
+	// ASK THE MACHINE WHERE THE ALLOCATION ACTUALLY IS, and record ITS answer rather than the name this
+	// side minted. The runner already laid the directory out when it admitted the lease, so this is
+	// idempotent — what it is FOR is the path: the machine resolves it against its own root, and on
+	// macOS a /var allocation comes back /private/var. Storing the unresolved name would put a path in
+	// the allocation row that every later under-root check has to re-resolve, and this tree's record on
+	// path comparisons is that the version which resolves once and keeps the answer is the one that
+	// stays correct.
+	if remote, isRemote := ops.(*RemoteWorkspace); isRemote && plan.fresh {
+		root, oerr := remote.Open(ctx)
+		if oerr != nil {
+			return "", "", "", nil, fmt.Errorf("open allocation on the machine: %w", oerr)
+		}
+		plan.hostPath = root
+	}
+
+	var alloc coordinator.Allocation
+	if plan.fresh {
+		alloc, err = o.provisionFreshAllocation(ctx, ops, tenant, plan, runID, fence)
+	} else {
+		alloc, err = o.reuseAllocation(ctx, ops, tenant, ws, plan.allocID, runID)
 	}
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", nil, err
 	}
 
 	// Materialize the run's frozen skills into the allocation (spec §28.16, progressive loading half-2):
 	// each pinned skill's sanitized body lands at <alloc>/.palai/skills/<name>/, a sibling of the repo (so
 	// it never enters a changeset), readable on-demand via the FileTool. Both the fresh-clone and the
 	// reuse path run this, so every run refreshes its own skills; a skill-less run materializes nothing.
-	if err := o.store.MaterializeRunSkills(ctx, tenant, runID, alloc.HostPath); err != nil {
-		return "", "", "", fmt.Errorf("materialize run skills: %w", err)
+	if err := o.store.MaterializeRunSkills(ctx, tenant, runID, func(rel string, body []byte) error {
+		_, werr := ops.Write(ctx, rel, body)
+		return werr
+	}); err != nil {
+		return "", "", "", nil, fmt.Errorf("materialize run skills: %w", err)
 	}
 
 	// The single writer lease the root run holds for the whole run (spec §29.8), released at attempt end.
@@ -95,21 +180,62 @@ func (o *Orchestrator) provisionRootWorkspace(ctx context.Context, tenant coordi
 	// only on PROOF the holder is dead (E09 T10 devir), never a blind TTL, and never steals a live one.
 	leaseID, err = o.acquireWriterLease(ctx, tenant, alloc.ID, runID, jobID)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", nil, err
 	}
-	// Drive ready→leased. A workspace already `leased` (the crash inconsistency above) has no Lease
-	// transition, so ErrInvalidState is tolerated — the physical lease we just acquired is the authority.
-	// Any OTHER failure would LEAK the just-acquired lease (no TTL until E10 recovery, so the session
-	// bricks forever — blocker 1), because the caller's defer release is not armed until this returns a
-	// leaseID; release it here before surfacing the error.
-	if err := o.spine.AdvanceWorkspace(ctx, tenant, ws.WorkspaceID, statemachines.WorkspaceCmdLease); err != nil && !errors.Is(err, statemachines.ErrInvalidState) {
+	// Drive ready→leased. Any failure would LEAK the just-acquired lease (no TTL until E10 recovery, so
+	// the session bricks forever — blocker 1), because the caller's defer release is not armed until this
+	// returns a leaseID; release it here before surfacing the error.
+	//
+	// AN ILLEGAL TRANSITION IS TOLERATED ONLY FROM `leased`, AND THE NARROWNESS IS THE POINT — inherited
+	// from wip/workspace-idle-release, whose single most valuable line this is. It was once tolerated
+	// from ANY state, which was correct while `leased` (a prior attempt whose state-release lost the race
+	// to a crash) was the only state this line could be reached in, and the comment justified exactly
+	// that one case while the code swallowed every case. An idle releaser adds a second: it claims a
+	// workspace into `snapshotting` and then archives and DELETES the directory. A run that acquired its
+	// physical lease just before that claim landed would, under a blanket tolerance, sail past this line
+	// and be handed a host path whose bytes are being removed underneath it. The claim is atomic and this
+	// is where the loser finds out.
+	if err := o.spine.AdvanceWorkspace(ctx, tenant, ws.WorkspaceID, statemachines.WorkspaceCmdLease); err != nil {
 		// Release under the run's tenant scope, not a bare background context: migration 000029's
 		// policies gate this write too, so an unscoped release would affect zero rows and LEAK the
 		// lease it means to reclaim.
-		_ = o.spine.ReleaseWriterLease(storage.WithTenant(context.Background(), tenant.Project), leaseID)
-		return "", "", "", err
+		scoped := storage.WithTenant(context.Background(), tenant.Project)
+		if !errors.Is(err, statemachines.ErrInvalidState) {
+			_ = o.spine.ReleaseWriterLease(scoped, leaseID)
+			return "", "", "", nil, err
+		}
+		state, serr := o.spine.WorkspaceLifecycleState(ctx, tenant, ws.WorkspaceID)
+		if serr != nil {
+			_ = o.spine.ReleaseWriterLease(scoped, leaseID)
+			return "", "", "", nil, serr
+		}
+		if state != string(statemachines.WorkspaceLeased) {
+			_ = o.spine.ReleaseWriterLease(scoped, leaseID)
+			return "", "", "", nil, fmt.Errorf("%w: workspace %s became %s while this attempt was claiming it",
+				coordinator.ErrWriterLeaseHeld, ws.WorkspaceID, state)
+		}
+		// Already `leased`: the physical lease we just acquired is the authority, as before.
 	}
-	return alloc.HostPath, leaseID, ws.WorkspaceID, nil
+	return alloc.HostPath, leaseID, ws.WorkspaceID, ops, nil
+}
+
+// workspaceOpsFor derives the filesystem ONE attempt's workspace tools act on, from the connection
+// that attempt holds. It is shellFor one layer over and the two must agree: a command that runs on a
+// machine and a file write that lands on the control plane would edit two different trees while
+// reporting one.
+//
+// A CHANNEL THAT REACHES A MACHINE YIELDS THAT MACHINE'S DISK. Everything else yields this host's,
+// and that is NOT the fallback shellFor refuses to have. The difference is what is at stake: a shell
+// command is model-chosen argv, so running it beside the control plane is arbitrary execution on the
+// wrong host and there is no honest default; a workspace operation acts on an allocation THIS PROCESS
+// ITSELF realized, because a channel that cannot reach a machine is a channel whose provisioning also
+// happened here (realizeRootWorkspace uses the same ops for both). The bytes and the operation stay
+// together either way, which is the property that matters.
+func workspaceOpsFor(ch EngineChannel, hostPath string) toolbroker.WorkspaceOps {
+	if conn, ok := ch.(WorkspaceConn); ok {
+		return NewRemoteWorkspace(conn, hostPath)
+	}
+	return tools.LocalWorkspace(hostPath)
 }
 
 // acquireWriterLease takes the root run's single writer lease, reclaiming a stale one a crash left
@@ -151,25 +277,32 @@ func (o *Orchestrator) acquireWriterLease(ctx context.Context, tenant coordinato
 	return retryID, nil
 }
 
-// provisionFreshAllocation mints the first physical allocation for a workspace: a host dir under the
-// provisioner root, the §29.9 workspace layout, then the deterministic clone @ the requested ref (the
-// preparation receipt is the model-independent provenance). It drives requested→provisioning→preparing→
-// ready around the clone.
-func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, tenant coordinator.Tenant, sessionID string, ws coordinator.SessionWorkspace, runID string, fence uint64) (coordinator.Allocation, error) {
-	allocID := "alloc_" + randHex16()
-	dir := filepath.Join(o.provisionRoot, allocID)
-	if err := workspace.Prepare(dir); err != nil {
-		return coordinator.Allocation{}, err
-	}
+// provisionFreshAllocation mints the first physical allocation for a workspace: the §29.9 layout, then
+// the deterministic clone @ the requested ref (the preparation receipt is the model-independent
+// provenance). It drives requested→provisioning→preparing→ready around the clone.
+//
+// THE DIRECTORY AND THE CLONE BOTH HAPPEN THROUGH `ops`, WHICH IS THE MACHINE (A.3 T5). This function
+// used to call workspace.Prepare and repositories.Prepare directly — two writes into the control
+// plane's own filesystem — and a run placed on another Mac then found an empty path. The layout is now
+// laid down by the runner as it admits the lease (packages/runner/serve.go), and the clone runs on the
+// machine, so nothing here touches a disk.
+func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, ops toolbroker.WorkspaceOps, tenant coordinator.Tenant, plan workspacePlan, runID string, fence uint64) (coordinator.Allocation, error) {
+	ws, allocID, dir := plan.ws, plan.allocID, plan.hostPath
 	// The uid this allocation's tools run under, created WITH the allocation. It is acquired before the
 	// clone rather than after, because the clone writes into the directory the account must own — an
 	// account minted afterwards would inherit a tree written by somebody else.
+	//
+	// HONEST CEILING: the account is minted on the CONTROL PLANE's host, and after this task the tree it
+	// must own is on the MACHINE's. On the one configuration where both are true — a native Mac serving
+	// its own runs — this is unchanged and correct. On a split deploy it names a uid that does not own
+	// anything, and moving it is the same shape as the rest of this task (a verb the machine performs)
+	// rather than a hole in it; it is reported, not worked around.
 	if o.sessionAccounts != nil {
-		account, err := o.sessionAccounts.Acquire(ctx, sessionID)
+		account, err := o.sessionAccounts.Acquire(ctx, plan.sessionID)
 		if err != nil {
 			return coordinator.Allocation{}, fmt.Errorf("provision %s: %w", allocID, err)
 		}
-		log.Printf("workspace %s: session %s runs as %s", ws.WorkspaceID, sessionID, account)
+		log.Printf("workspace %s: session %s runs as %s", ws.WorkspaceID, plan.sessionID, account)
 	}
 	// Drive requested→provisioning→preparing idempotently: a retry after a failed clone re-enters from
 	// `provisioning` or `preparing`, so an already-applied transition (ErrInvalidState) is skipped —
@@ -185,26 +318,8 @@ func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, tenant coor
 		return coordinator.Allocation{}, err
 	}
 	// The infrastructure-owned clone @ the exact ref, under a brokered read credential the model never
-	// sees (spec §30.2-30.3). This is the exact call the repository.go deferral named — now wired.
-	if _, err := PrepareRepository(ctx, o.spine, o.provisionBroker, tenant, PrepareRepositoryInput{
-		BindingID:    ws.BindingID,
-		RunID:        runID,
-		RequestedRef: ws.RequestedRef,
-		WorkBranch:   rootWorkBranch(ws.WorkspaceID, runID),
-		TargetDir:    filepath.Join(dir, workspace.RepoDir),
-		SecretsDir:   filepath.Join(dir, provisionSecretsDir),
-		AttemptFence: fence,
-		ToolCall:     "provision",
-		// A binding that names a connection_ref clones under its OWN tenant's credential (E13 T9).
-		ConnectionSecrets: o.provisionSecrets,
-	}); err != nil {
-		return coordinator.Allocation{}, err
-	}
-	// Defense-in-depth (§24): the credential helper + git home PrepareRepository wrote into <alloc>/secrets
-	// are useless now (the read credential is already revoked), but the shell sandbox rw-mounts the
-	// allocation ROOT, so remove the secrets staging area rather than leave even revoked-token residue in
-	// the sandbox-visible tree. It is snapshot-excluded regardless, so removing it changes no snapshot.
-	if err := os.RemoveAll(filepath.Join(dir, provisionSecretsDir)); err != nil {
+	// sees (spec §30.2-30.3) — minted here, spent on the machine, revoked here on every return path.
+	if err := o.cloneOnMachine(ctx, ops, tenant, plan, runID, fence); err != nil {
 		return coordinator.Allocation{}, err
 	}
 	if err := o.spine.AdvanceWorkspace(ctx, tenant, ws.WorkspaceID, statemachines.WorkspaceCmdMarkReady); err != nil {
@@ -216,10 +331,17 @@ func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, tenant coor
 // reuseAllocation reuses the session workspace's current allocation for a LATER run — the clone is not
 // repeated, so a prior run's edits persist (spec §29.7, E09 Task 10) — and records a fresh preparation
 // receipt at the current head so THIS run's changeset diffs from where it starts, not the original clone.
-func (o *Orchestrator) reuseAllocation(ctx context.Context, tenant coordinator.Tenant, ws coordinator.SessionWorkspace, runID string) (coordinator.Allocation, error) {
+func (o *Orchestrator) reuseAllocation(ctx context.Context, ops toolbroker.WorkspaceOps, tenant coordinator.Tenant, ws coordinator.SessionWorkspace, allocID, runID string) (coordinator.Allocation, error) {
 	alloc, err := o.spine.CurrentAllocation(ctx, ws.WorkspaceID)
 	if err != nil {
 		return coordinator.Allocation{}, err
+	}
+	// The allocation the pre-dial plan named is the one being reused; a different one here means the
+	// workspace moved between the plan and the dial, and reading a head from a tree this attempt was not
+	// planned against would record a base commit for a repository it never saw.
+	if alloc.ID != allocID {
+		return coordinator.Allocation{}, fmt.Errorf("workspace %s changed allocation between planning (%s) and the dial (%s)",
+			ws.WorkspaceID, allocID, alloc.ID)
 	}
 	// A pause/resume re-enters this for the SAME run: recording a second receipt at the (advanced) head
 	// would make RunBaseCommit pick the newest and the changeset miss the pre-pause commits (REP-005). A
@@ -229,7 +351,11 @@ func (o *Orchestrator) reuseAllocation(ctx context.Context, tenant coordinator.T
 	} else if found {
 		return alloc, nil
 	}
-	head, tree, err := repositories.Head(ctx, filepath.Join(alloc.HostPath, workspace.RepoDir))
+	// The head is read WHERE THE REPOSITORY IS. A reused allocation whose machine is not the one this
+	// attempt dialed has no repository to read and this fails loudly — see the workspace-affinity note
+	// in the A.3 T5 report; a silent empty head would record a base commit of "" and make the run's
+	// whole changeset wrong.
+	head, tree, err := ops.Head(ctx)
 	if err != nil {
 		return coordinator.Allocation{}, err
 	}

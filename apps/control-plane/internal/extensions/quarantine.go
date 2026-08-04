@@ -135,9 +135,42 @@ func Quarantine(gzipped []byte) (QuarantineResult, error) {
 // destDir. Directories are created as needed; the caller (workspace materialization) confines destDir to
 // the run's allocation, so the files land under <alloc>/.palai/skills/<name>/.
 func ExtractSanitizedArchive(sanitizedTar []byte, destDir string) error {
+	members, err := SanitizedArchiveMembers(sanitizedTar)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("prepare skill dir: %w", err)
 	}
+	for _, m := range members {
+		target := filepath.Join(destDir, filepath.FromSlash(m.Path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("prepare skill path %s: %w", m.Path, err)
+		}
+		if err := os.WriteFile(target, m.Body, 0o644); err != nil {
+			return fmt.Errorf("write skill file %s: %w", m.Path, err)
+		}
+	}
+	return nil
+}
+
+// ArchiveMember is one regular file of a sanitized archive: its safe slash-relative path and its
+// bytes.
+type ArchiveMember struct {
+	Path string
+	Body []byte
+}
+
+// SanitizedArchiveMembers reads a sanitized archive into memory WITHOUT writing anything, so a caller
+// that does not own a local filesystem can place the members itself.
+//
+// IT EXISTS BECAUSE A RUN'S ALLOCATION MAY BE ON ANOTHER MACHINE (A.3 T5). ExtractSanitizedArchive
+// writes with os.WriteFile, which is this process's disk; a run placed on a Mac would be offered
+// skills whose bodies live somewhere it cannot read. The REFUSALS are unchanged and stay here — an
+// entry naming an absolute path or a `..` traversal is rejected outright, never clamped — so both
+// callers get the same containment and there is one place that decides it.
+func SanitizedArchiveMembers(sanitizedTar []byte) ([]ArchiveMember, error) {
+	var members []ArchiveMember
 	tr := tar.NewReader(bytes.NewReader(sanitizedTar))
 	for {
 		hdr, err := tr.Next()
@@ -145,28 +178,22 @@ func ExtractSanitizedArchive(sanitizedTar []byte, destDir string) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("read sanitized archive: %w", err)
+			return nil, fmt.Errorf("read sanitized archive: %w", err)
 		}
 		if hdr.Typeflag != tar.TypeReg {
 			continue // the sanitized tar holds only regular files; skip anything else defensively
 		}
 		rel, err := safeArchivePath(hdr.Name)
 		if err != nil {
-			return err
-		}
-		target := filepath.Join(destDir, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return fmt.Errorf("prepare skill path %s: %w", rel, err)
+			return nil, err
 		}
 		body, err := io.ReadAll(io.LimitReader(tr, maxSkillFileBytes+1))
 		if err != nil {
-			return fmt.Errorf("read skill file %s: %w", rel, err)
+			return nil, fmt.Errorf("read skill file %s: %w", rel, err)
 		}
-		if err := os.WriteFile(target, body, 0o644); err != nil {
-			return fmt.Errorf("write skill file %s: %w", rel, err)
-		}
+		members = append(members, ArchiveMember{Path: rel, Body: body})
 	}
-	return nil
+	return members, nil
 }
 
 // safeArchivePath rejects any escape in an UNTRUSTED skill entry name. Unlike the snapshot restoreEntry

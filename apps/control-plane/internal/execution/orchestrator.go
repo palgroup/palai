@@ -390,6 +390,13 @@ type attemptState struct {
 	// provisioned and its writer lease, released at attempt end. Empty on a run with no attached binding.
 	workspaceID      string
 	workspaceLeaseID string
+	// workspaceOps is the confined file/git surface this attempt's coding tools act through — the disk
+	// of the machine holding the lease when the allocation lives there, this host's when it does not
+	// (workspaceOpsFor). It is chosen ONCE, from the connection, and nothing downstream re-decides it:
+	// a shell command and a file write that disagreed about which host they are on would edit two trees
+	// while reporting one. Nil on an attempt with no workspace, which is what makes a workspace tool
+	// answer `unavailable` instead of reaching for this process's filesystem.
+	workspaceOps toolbroker.WorkspaceOps
 	// Engine handshake identity, captured from engine.ready — the §26.2 checkpoint provenance the
 	// engine's opaque offer does not carry.
 	engineVersion   string
@@ -574,34 +581,29 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	}
 
 	// Auto-provision the coding workspace for the ROOT run when the session has an attached binding
-	// (spec §29.7-30.3, E09 Task 10): resolve the binding, allocate the host dir, clone @ the ref under
-	// a brokered credential, acquire the single writer lease, and set the mount BEFORE the engine dials
-	// (the tools and the runner bind-mount need it known at dial time; the lease spans the whole run).
-	// Only the root run (depth 0) provisions + leases — a child (depth>0) already carries the workspace
-	// dispatchChild resolved for it (read-only snapshot / isolated worktree, no second writer lease).
-	// A run with no attachment, or no provisioner wired, gets no workspace — the pre-E09 behaviour.
+	// (spec §29.7-30.3, E09 Task 10). Only the root run (depth 0) provisions + leases — a child (depth>0)
+	// already carries the workspace dispatchChild resolved for it (read-only snapshot / isolated
+	// worktree, no second writer lease). A run with no attachment, or no provisioner wired, gets no
+	// workspace — the pre-E09 behaviour.
+	//
+	// IT IS TWO HALVES ACROSS THE DIAL NOW (A.3 T5), and the split is not a refactor: the bytes belong on
+	// the machine that will run the commands, and which machine that is is not known until the dial
+	// returns. This half only READS and MINTS A NAME — the allocation id and its path — because the lease
+	// offer carries that path and the runner both bind-mounts it and, since this task, CREATES it. The
+	// half that puts anything on a disk runs below, on the connection the dial handed back.
 	var workspaceID, workspaceLeaseID string
+	var wsPlan workspacePlan
+	var wsPlanned bool
 	if depth == 0 && attempt.WorkspaceHostPath == "" && o.provisionRoot != "" && o.provisionBroker != nil {
-		hostPath, leaseID, wsID, perr := o.provisionRootWorkspace(ctx, tenant, sessionID, string(attempt.RunID), attempt.JobID, attempt.Fence)
+		plan, planned, perr := o.planRootWorkspace(ctx, tenant, sessionID)
 		if perr != nil {
-			// A PROVISIONING FAILURE IS THE PLATFORM'S OWN, AND IT MUST SAY SO. Before this it returned an
-			// error into the retry ladder and the run dead-lettered into the generic terminal — "the run
-			// failed during execution" — with the reason recorded NOWHERE an operator can reach. Measured
-			// 2026-08-02 on a live stack: the runs row has no error column, the attempts row carries only
-			// state, run.failed.v1's payload is {state, run_id}, and the control-plane log says nothing. So
-			// a bad clone URL, a missing credential and a model refusing to answer were one sentence.
-			//
-			// The sanitized-problem stance still holds. terminalProblems is a fixed line because a failure
-			// must never carry raw PROVIDER or ENGINE text; a clone failure is neither — it is this
-			// deployment's own git invocation against a repository the operator configured.
-			//
-			// It fails the run rather than retrying, for the reason failContextOverflow does: a missing
-			// credential and a wrong ref are DETERMINISTIC, so the ladder would spend eight attempts
-			// reproducing the same error and hide it behind the generic terminal anyway.
-			log.Printf("run %s: workspace provisioning failed: %v", attempt.RunID, perr)
+			log.Printf("run %s: workspace planning failed: %v", attempt.RunID, perr)
 			return o.failProvisioning(ctx, tenant, attempt, responseID, perr)
 		}
-		attempt.WorkspaceHostPath, workspaceLeaseID, workspaceID = hostPath, leaseID, wsID
+		if planned {
+			wsPlan, wsPlanned = plan, true
+			attempt.WorkspaceHostPath = plan.hostPath
+		}
 	}
 	// Release the writer lease + return the workspace to ready on EVERY exit (terminal, error, pause):
 	// a fresh attempt (resume) re-leases the same allocation, and edits persist across runs.
@@ -649,10 +651,48 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	}
 	defer func() { _ = ch.Close() }()
 
+	// THE HALF OF PROVISIONING THAT TOUCHES A DISK (A.3 T5), and it runs here because here is the first
+	// line that knows WHICH disk. It lays the allocation out, clones @ the requested ref, materializes
+	// the run's skills, and takes the single writer lease — all of it through the connection the dial
+	// returned, so an attempt placed on a Mac prepares its workspace on that Mac.
+	//
+	// IT IS BEFORE THE ENGINE IS SPOKEN TO, WHICH IS THE ORDERING THAT MATTERS. The runner started the
+	// engine when it admitted the lease, but the engine says nothing until it is asked and no tool call
+	// can arrive before this returns — so the repository is on disk before anything could look for it.
+	var workspaceOps toolbroker.WorkspaceOps
+	if wsPlanned {
+		hostPath, leaseID, wsID, ops, perr := o.realizeRootWorkspace(ctx, ch, tenant, wsPlan, string(attempt.RunID), attempt.JobID, attempt.Fence)
+		if perr != nil {
+			// A PROVISIONING FAILURE IS THE PLATFORM'S OWN, AND IT MUST SAY SO. Before this it returned an
+			// error into the retry ladder and the run dead-lettered into the generic terminal — "the run
+			// failed during execution" — with the reason recorded NOWHERE an operator can reach. Measured
+			// 2026-08-02 on a live stack: the runs row has no error column, the attempts row carries only
+			// state, run.failed.v1's payload is {state, run_id}, and the control-plane log says nothing. So
+			// a bad clone URL, a missing credential and a model refusing to answer were one sentence.
+			//
+			// The sanitized-problem stance still holds. terminalProblems is a fixed line because a failure
+			// must never carry raw PROVIDER or ENGINE text; a clone failure is neither — it is this
+			// deployment's own git invocation against a repository the operator configured.
+			//
+			// It fails the run rather than retrying, for the reason failContextOverflow does: a missing
+			// credential and a wrong ref are DETERMINISTIC, so the ladder would spend eight attempts
+			// reproducing the same error and hide it behind the generic terminal anyway.
+			log.Printf("run %s: workspace provisioning failed: %v", attempt.RunID, perr)
+			return o.failProvisioning(ctx, tenant, attempt, responseID, perr)
+		}
+		attempt.WorkspaceHostPath, workspaceLeaseID, workspaceID, workspaceOps = hostPath, leaseID, wsID, ops
+	} else if attempt.WorkspaceHostPath != "" {
+		// A CHILD RUN, or a descriptor that arrived with a workspace already resolved for it
+		// (dispatchChild's read-only snapshot / isolated worktree). It provisions nothing, so nothing
+		// above chose its ops — but its tools still need one, and it must be the same choice: the disk of
+		// whatever this attempt's channel reaches.
+		workspaceOps = workspaceOpsFor(ch, attempt.WorkspaceHostPath)
+	}
+
 	st := &attemptState{
 		attempt: attempt, tenant: tenant, sessionID: sessionID, responseID: responseID,
 		ch: ch, ledger: runner.NewFrameLedger(),
-		workspaceID: workspaceID, workspaceLeaseID: workspaceLeaseID,
+		workspaceID: workspaceID, workspaceLeaseID: workspaceLeaseID, workspaceOps: workspaceOps,
 		attemptStart: time.Now(),
 	}
 

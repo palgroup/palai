@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
+	"path"
 	"strings"
 
 	"github.com/palgroup/palai/apps/control-plane/api"
@@ -45,11 +45,18 @@ func (s *Store) PinRunSkills(ctx context.Context, tenant coordinator.Tenant, run
 
 // MaterializeRunSkills unpacks a run's FROZEN skills into its workspace allocation (spec §28.16,
 // progressive loading half-2): for each pinned skill, it loads the sanitized archive BY DIGEST (the pin's
-// exact digest — never "latest") and extracts it under <hostPath>/.palai/skills/<name>/, a sibling of the
-// repo so it never enters a changeset diff. The body is then readable on-demand via the FileTool; a run
-// with no workspace (or no skills) materializes nothing — the model still sees the metadata rider, but
-// the body is unreadable (the visible boundary). Idempotent: it overwrites with digest-equal content.
-func (s *Store) MaterializeRunSkills(ctx context.Context, tenant coordinator.Tenant, runID, hostPath string) error {
+// exact digest — never "latest") and writes it under .palai/skills/<name>/, a sibling of the repo so it
+// never enters a changeset diff. The body is then readable on-demand via the FileTool; a run with no
+// workspace (or no skills) materializes nothing — the model still sees the metadata rider, but the body
+// is unreadable (the visible boundary). Idempotent: it overwrites with digest-equal content.
+//
+// IT TAKES A WRITER RATHER THAN A HOST PATH (A.3 T5), because the allocation may not be on this host.
+// It used to os.WriteFile into <hostPath>/.palai/skills, which is the control plane's disk, and a run
+// placed on another machine would then be offered skills whose bodies it cannot read. write is the
+// attempt's own confined workspace surface, so the bytes land wherever that allocation lives — and the
+// paths handed to it are SLASH-RELATIVE, which is what a workspace-relative path is on both sides of
+// the wire.
+func (s *Store) MaterializeRunSkills(ctx context.Context, tenant coordinator.Tenant, runID string, write func(rel string, body []byte) error) error {
 	pinned, err := s.spine.PinnedExecConfig(ctx, tenant, runID)
 	if err != nil {
 		return err
@@ -61,24 +68,39 @@ func (s *Store) MaterializeRunSkills(ctx context.Context, tenant coordinator.Ten
 	if err := json.Unmarshal(pinned.SkillPins, &pins); err != nil {
 		return err
 	}
-	skillsRoot := filepath.Join(hostPath, ".palai", "skills")
 	for _, p := range pins {
 		// Belt-and-suspenders (SEC-1): the name is validated at create, but a pin must NEVER write outside
 		// the skills root — a `..` that slipped through cannot escape the run allocation on the shared host.
-		destDir := filepath.Join(skillsRoot, p.Name)
-		if rel, err := filepath.Rel(skillsRoot, destDir); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		//
+		// IT IS CHECKED ON THE NAME rather than on a joined path, and that is what the move to a writer
+		// changes: there is no host path here to join against and compare, and this tree's own record is
+		// that every hand-written path comparison has shipped defeated at least once. A name that is not a
+		// single safe component is refused outright; the confinement of the RESULT is WorkspaceFS's, on
+		// whichever host holds the allocation.
+		if p.Name == "" || p.Name != path.Base(p.Name) || p.Name == "." || p.Name == ".." || strings.ContainsRune(p.Name, '/') {
 			return fmt.Errorf("skill %q resolves outside the skills root", p.Name)
 		}
 		archive, err := s.tools.LoadSkillArchive(ctx, tenant.Project, p.Digest)
 		if err != nil {
 			return err
 		}
-		if err := extensions.ExtractSanitizedArchive(archive, destDir); err != nil {
+		members, err := extensions.SanitizedArchiveMembers(archive)
+		if err != nil {
 			return err
+		}
+		for _, m := range members {
+			if err := write(path.Join(skillsRootDir, p.Name, m.Path), m.Body); err != nil {
+				return fmt.Errorf("write skill %s file %s: %w", p.Name, m.Path, err)
+			}
 		}
 	}
 	return nil
 }
+
+// skillsRootDir is where a run's frozen skills live inside its allocation — a sibling of the repo, so
+// a skill body never enters a changeset diff. It is slash-separated because it is a workspace-relative
+// path, which is the one spelling both ends of the A.3 workspace wire agree on.
+const skillsRootDir = ".palai/skills"
 
 // The E12 skills management surface (spec §20.2, §28.15-28.16, TOL-011). These methods adapt the
 // tenant-scoped api.SkillRegistryAPI contract to the extensions store: scope → (organization, project),

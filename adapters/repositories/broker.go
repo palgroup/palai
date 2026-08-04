@@ -38,7 +38,6 @@ const (
 // "unusable by another tool or destination" — the handle is opaque and single-use, revoked after
 // the operation, so it cannot be replayed against a different destination.
 type Audience struct {
-	Organization string
 	Project      string
 	Run          string
 	AttemptFence uint64
@@ -147,6 +146,65 @@ func (v *credentialVault) writeHelper(handle, cloneURL, dir string) (string, err
 	return "store --file=" + path, nil
 }
 
+// HostSpendable is a broker whose minted secret can be spent on ANOTHER HOST, and it exists because
+// A.3 T5 moved the clone to the machine that holds the attempt's lease.
+//
+// IT WIDENS A SEAL THIS PACKAGE DELIBERATELY SET, so the widening is named rather than incidental. The
+// Broker doc says the interface is sealed "so the raw token cannot cross the package boundary into the
+// engine, a log, or a test", and that sentence is still true of all three: nothing here reaches the
+// engine, nothing logs a secret, and the seal on writeHelper is untouched. What is new is a FOURTH
+// destination the sentence did not contemplate, and it is not optional — git reads a credential
+// through a helper FILE, and the file has to sit next to the repository being cloned. Once the
+// repository is on another machine, either the secret goes there or the clone does not happen.
+//
+// THE MACHINE IS NOT A NEW TRUST CLASS, which is the argument that makes this defensible rather than
+// merely necessary. The control plane already hands a machine an attempt's ENVIRONMENT VALUES, which
+// reach exec.Cmd.Env or container.Config.Env and then live in that kernel's environ copy for the life
+// of the process (packages/tool-broker/sandbox_exec.go states it and a test measures it). A
+// five-minute read token is a strictly smaller thing than that, over the same mTLS connection, to the
+// same enrolled machine.
+//
+// WHAT IS STILL TRUE, AND IS THE PART TO KEEP: the credential is short-lived (tokenTTL), bound to one
+// audience, and REVOKED by the control plane on every return path — so a machine that keeps a copy
+// keeps a dead one. Nothing about the App key or the tenant's stored credential moves.
+type HostSpendable interface {
+	// Secret returns the username and raw token behind a handle so a caller can hand them to the host
+	// that will spend them. It fails closed for an unknown, revoked, or expired handle, exactly as
+	// writeHelper does — the two are the same lookup with two destinations.
+	Secret(handle string) (username, token string, err error)
+}
+
+var _ HostSpendable = (*credentialVault)(nil)
+
+// HelperUsername is the Git username every broker in this package mints against. It is exported so a
+// caller that spends a secret on ANOTHER host can verify the credential it is about to send is one
+// that host knows how to use, rather than assuming it. Measured 2026-08-04 — all three brokers agree:
+//
+//	grep -n "username:" adapters/repositories/*.go   -> 3 hits, all "x-access-token"
+//
+// The check exists because a future broker minting a different username would otherwise authenticate
+// wrongly on the far side and report it as a clone failure, which is the expensive way to find out.
+const HelperUsername = "x-access-token"
+
+// Secret is credentialVault's HostSpendable half. It shares writeHelper's checks rather than
+// re-spelling them: an unknown handle and an expired one must fail the same way through both doors,
+// or the weaker door becomes the one every caller uses.
+func (v *credentialVault) Secret(handle string) (string, string, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	sec, ok := v.secrets[handle]
+	if !ok {
+		return "", "", fmt.Errorf("credential: unknown or revoked handle")
+	}
+	if !sec.expiresAt.After(v.now()) {
+		return "", "", fmt.Errorf("credential: credential expired")
+	}
+	// NO SECRET, NO CREDENTIAL — writeHelper's rule, and for its reason: an empty token means the broker
+	// has nothing to offer, and handing over `x-access-token:` would turn an anonymous clone that WOULD
+	// have worked into a provider-side refusal. An empty answer here is "clone with no helper".
+	return sec.username, sec.token, nil
+}
+
 // revoke removes handle's secret and helper file, returning the secret so a broker can additionally
 // revoke it at the provider. ok is false for an unknown or already-revoked handle (idempotent).
 func (v *credentialVault) revoke(handle string) (mintedSecret, bool, error) {
@@ -229,8 +287,8 @@ func (b *AnonymousBroker) Mint(_ context.Context, scope Scope, aud Audience) (Cr
 	// and the absence proofs that scan for it are unchanged.
 	token := b.fixedToken
 	expires := b.now().Add(tokenTTL)
-	b.retain(handle, mintedSecret{username: "x-access-token", token: token, scope: scope, aud: aud, expiresAt: expires})
-	return Credential{Handle: handle, Username: "x-access-token", Scope: scope, Audience: aud, ExpiresAt: expires}, nil
+	b.retain(handle, mintedSecret{username: HelperUsername, token: token, scope: scope, aud: aud, expiresAt: expires})
+	return Credential{Handle: handle, Username: HelperUsername, Scope: scope, Audience: aud, ExpiresAt: expires}, nil
 }
 
 // Revoke drops the secret and removes its helper file so nothing can redeem the handle again.
@@ -270,8 +328,8 @@ func (b *tokenBroker) Mint(_ context.Context, scope Scope, aud Audience) (Creden
 	}
 	handle := "rcred_" + randHex(8)
 	expires := b.now().Add(tokenTTL)
-	b.retain(handle, mintedSecret{username: "x-access-token", token: b.token, scope: scope, aud: aud, expiresAt: expires})
-	return Credential{Handle: handle, Username: "x-access-token", Scope: scope, Audience: aud, ExpiresAt: expires}, nil
+	b.retain(handle, mintedSecret{username: HelperUsername, token: b.token, scope: scope, aud: aud, expiresAt: expires})
+	return Credential{Handle: handle, Username: HelperUsername, Scope: scope, Audience: aud, ExpiresAt: expires}, nil
 }
 
 // Revoke drops the retained secret and removes its helper file, so nothing on the host can redeem the
