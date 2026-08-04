@@ -108,22 +108,52 @@ func TestARevisionNamingAnUnknownEnvironmentIsRefusedAtCreateAndAtPublish(t *tes
 	}
 }
 
-// TestARevisionCannotNameAnotherOrganizationsEnvironment closes the tenancy half of the same check. The
-// refusal is RLS-driven — verifyEnvironment reads under the revision's own org scope — so a foreign id is
-// invisible rather than forbidden, and reported as absent. That is the intended answer: an operator must
-// not learn from an error message that an id exists in another tenant.
-func TestARevisionCannotNameAnotherOrganizationsEnvironment(t *testing.T) {
+// TestAnEnvironmentIsVisibleToEveryProjectInTheInstallation records a CEILING, and it is deliberately the
+// opposite assertion to the one that stood here.
+//
+// This test was TestARevisionCannotNameAnotherOrganizationsEnvironment and its sentence said the refusal
+// was "RLS-driven — verifyEnvironment reads under the revision's own org scope, so a foreign id is
+// invisible rather than forbidden". Both halves of that are gone. Organizations were removed, and
+// `environments` carries no project_id (000001_core.up.sql:439), so 000002_row_level_security.up.sql:196
+// applies the INSTALLATION policy to it. verifyEnvironment (agents.go:216) opens
+// storage.WithInstallationScope and asks "does this id exist", not "does it exist in your tenant" —
+// which agents.go:204 already states in the production comment. This test was the half left behind still
+// claiming the opposite, and it is the only reason the removal was visible at all.
+//
+// Deleting it would delete the record together with the claim, so it asserts what is true instead, and it
+// is written to RED the moment the ceiling closes: when `environments` gains a project_id and this read is
+// re-scoped, the acceptance below becomes ErrEnvironmentNotFound and whoever closed it is sent here to
+// restore the tenancy refusal. Within ONE installation "does it exist" and "does it exist in your tenant"
+// are the same question; across two customers sharing one they are not, which is why the installation
+// policy's own header names this table as needing a project_id BEFORE such an installation exists.
+func TestAnEnvironmentIsVisibleToEveryProjectInTheInstallation(t *testing.T) {
 	s, projectA := openStore(t)
 	ctx := context.Background()
 
-	// A second environment in the same installation, owned by nobody this agent is bound to.
+	// An environment seeded OUTSIDE projectA — and it cannot be seeded inside it, because the table has no
+	// column that would put it there. That absence is the ceiling itself, not a shortcut of the fixture.
 	envB := seedEnvironment(t, s)
 
 	profileID, err := s.CreateProfile(ctx, projectA, "deployer")
 	if err != nil {
 		t.Fatalf("CreateProfile: %v", err)
 	}
-	if _, err := s.CreateRevision(ctx, projectA, profileID, []byte(`{"model":"m","environment":"`+envB+`"}`)); !errors.Is(err, ErrEnvironmentNotFound) {
-		t.Fatalf("A's revision naming B's environment = %v, want ErrEnvironmentNotFound — an agent must not be bound to an environment it does not name", err)
+	rev, err := s.CreateRevision(ctx, projectA, profileID, []byte(`{"model":"m","environment":"`+envB+`"}`))
+	if errors.Is(err, ErrEnvironmentNotFound) {
+		t.Fatal("a project's revision was REFUSED an environment of its own installation — the ceiling this " +
+			"test records has CLOSED, which is the wanted direction. Restore the tenancy claim it replaced: " +
+			"a revision must not be bound to an environment belonging to another tenant.")
+	}
+	if err != nil {
+		t.Fatalf("CreateRevision naming an installation environment: %v", err)
+	}
+	if rev.Environment != envB {
+		t.Fatalf("the revision reports environment %q, want the installation environment %q it named", rev.Environment, envB)
+	}
+	// NON-VACUITY. The acceptance above has to be the installation scope answering "it exists", not
+	// verifyEnvironment waving every string through — an id in NO project of this installation is still
+	// refused, which is what makes the acceptance a statement about SCOPE rather than about nothing.
+	if _, err := s.CreateRevision(ctx, projectA, profileID, []byte(`{"model":"m","environment":"env_vanished"}`)); !errors.Is(err, ErrEnvironmentNotFound) {
+		t.Fatalf("a revision naming an id in no project of this installation = %v, want ErrEnvironmentNotFound", err)
 	}
 }

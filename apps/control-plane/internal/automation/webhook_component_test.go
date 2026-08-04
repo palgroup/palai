@@ -572,8 +572,14 @@ func TestPumpSupervisedEndpointDownDoesNotStarveOthers(t *testing.T) {
 	}
 	// The down endpoint's delivery made progress (an attempt was recorded) but is still pending —
 	// it did not starve the healthy delivery, and it did not silently vanish.
+	//
+	// SCOPED TO THIS TEST'S PROJECT, and that is what makes the number 1 mean anything. The org sweep took
+	// `organization_id=$1 AND` out of this WHERE, which was the ONLY tenant term it had, so the count began
+	// answering for every project in the shared component database — it read 4 against a want of 1, and the
+	// other three were the neighbours' rows. A global COUNT asserts about tests it has never heard of.
 	var pending int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM webhook_deliveries WHERE  state='pending'`).Scan(&pending); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
+		`SELECT count(*) FROM webhook_deliveries WHERE project_id=$1 AND state='pending'`, project).Scan(&pending); err != nil {
 		t.Fatalf("count pending error = %v", err)
 	}
 	if pending != 1 {

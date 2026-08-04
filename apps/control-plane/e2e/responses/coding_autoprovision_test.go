@@ -120,7 +120,7 @@ func (h *harness) allocationRootFor(sessionID string) string {
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT a.host_path FROM workspace_allocations a
 		 JOIN workspaces w ON w.id = a.workspace_id
-		 WHERE w.session_id = $1  w.project_id = $2
+		 WHERE w.session_id = $1 AND w.project_id = $2
 		 ORDER BY a.fence DESC LIMIT 1`,
 		sessionID, h.tenant.Project).Scan(&hostPath); err != nil {
 		h.t.Fatalf("read allocation host path: %v", err)

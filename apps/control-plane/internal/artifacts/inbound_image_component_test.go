@@ -44,7 +44,7 @@ func TestArtifactInboundImageWriteIsIdempotentAtACallerChosenID(t *testing.T) {
 	var storedRun *string
 	var mediaType, logicalType string
 	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT run_id, media_type, logical_type FROM artifacts WHERE id = $1  project_id = $2`,
+		`SELECT run_id, media_type, logical_type FROM artifacts WHERE id = $1 AND project_id = $2`,
 		artifactID, project).Scan(&storedRun, &mediaType, &logicalType); err != nil {
 		t.Fatalf("read inbound artifact row error = %v", err)
 	}

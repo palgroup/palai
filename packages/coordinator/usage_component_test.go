@@ -17,11 +17,15 @@ import (
 // E29 T7 — WHICH limit a 429 names, when two of them are exhausted at once.
 //
 // The schema's own scope model GUARANTEES the tie. budgets/quotas are UNIQUE on
-// (organization_id, project_id, meter_prefix) (migration 000032), so an ORGANIZATION-wide row
-// (project_id = '') and a PROJECT row on the SAME meter_prefix are both legal and both live at once;
-// ExhaustedBudget's `WHERE b.project_id IN ('', $2)` takes BOTH, the HAVING exhausts BOTH, and the
-// ordering key — meter_prefix — is EQUAL for the two. `LIMIT 1` then picks one, and until this task
-// nothing in the query said which.
+// (project_id, meter_prefix) — 000001_core.up.sql:1664 and :2294; organization_id was in that key and is
+// gone — so an INSTALLATION-wide row (project_id = '', what a system-scoped SetBudget writes, since it
+// passes scope.Project and a system key carries none) and a PROJECT row on the SAME meter_prefix are both
+// legal and both live at once; ExhaustedBudget's `WHERE b.project_id IN ('', $1)` takes BOTH, the HAVING
+// exhausts BOTH, and the ordering key — meter_prefix — is EQUAL for the two. `LIMIT 1` then picks one,
+// and until this task nothing in the query said which.
+//
+// THE WIDE ROW IS NOW UNIQUE PER meter_prefix ACROSS THE WHOLE INSTALLATION, which is why the fixture
+// below deletes it between arrangements instead of leaving four of them: see writeLimitPair.
 //
 // WHAT ACTUALLY DECIDED IT, MEASURED RATHER THAN ASSUMED (2026-08-01, postgres 16.14, the digest
 // scripts/test/component:25 pins). Against a real Postgres, EXPLAIN (COSTS OFF) on the pre-fix query:
@@ -90,10 +94,11 @@ func TestExhaustedBudgetNamesTheNarrowestLimitWhicheverRowWasWrittenFirst(t *tes
 	answers := map[string]string{}
 	for _, arrangement := range limitArrangements() {
 		project := seedLimitTenant(t, cs)
-		writeLimitPair(t, cs, arrangement, func(id, projectID string, limit int) {
+		wideID := writeLimitPair(t, cs, arrangement, func(id, projectID string, limit int) {
 			mustExecPin(t, cs, `INSERT INTO budgets (id, project_id, meter_prefix, limit_quantity, period_start)
 				VALUES ($1,$2,'model.',$3,$4)`, id, projectID, limit, time.Now().UTC().Add(-time.Hour))
 		}, project)
+		t.Cleanup(func() { dropWideLimit(t, cs, "budgets", wideID) })
 		seedLimitSpend(t, cs, project)
 
 		// Repeated on purpose: an ambiguity that resolves one way per plan-cache generation is still an
@@ -109,6 +114,8 @@ func TestExhaustedBudgetNamesTheNarrowestLimitWhicheverRowWasWrittenFirst(t *tes
 			}
 			answers[arrangement.name] = describeLimit(*got)
 		}
+		// The wide row goes NOW, not at cleanup: the next arrangement needs (project_id='', 'model.') free.
+		dropWideLimit(t, cs, "budgets", wideID)
 	}
 	assertOneAnswer(t, "budget", answers)
 }
@@ -123,10 +130,11 @@ func TestExhaustedQuotaNamesTheNarrowestLimitWhicheverRowWasWrittenFirst(t *test
 	answers := map[string]string{}
 	for _, arrangement := range limitArrangements() {
 		project := seedLimitTenant(t, cs)
-		writeLimitPair(t, cs, arrangement, func(id, projectID string, limit int) {
+		wideID := writeLimitPair(t, cs, arrangement, func(id, projectID string, limit int) {
 			mustExecPin(t, cs, `INSERT INTO quotas (id, project_id, meter_prefix, limit_quantity, window_seconds)
 				VALUES ($1,$2,'model.',$3,3600)`, id, projectID, limit)
 		}, project)
+		t.Cleanup(func() { dropWideLimit(t, cs, "quotas", wideID) })
 		seedLimitSpend(t, cs, project)
 
 		for attempt := 0; attempt < 8; attempt++ {
@@ -136,13 +144,18 @@ func TestExhaustedQuotaNamesTheNarrowestLimitWhicheverRowWasWrittenFirst(t *test
 					arrangement.name, attempt, narrowUsed, narrowLimit, wideUsed, wideLimit)
 			}
 			if got.Kind != "quota" {
-				t.Fatalf("%s: attempt %d reported kind %q, want quota", arrangement.name, attempt, got.Kind)
+				t.Fatalf("%s: attempt %d reported kind %q, want quota — an exhausted BUDGET is visible here, "+
+					"and since checkDurableLimits returns on the budget this test never reaches its own subject. "+
+					"An installation-wide (project_id='') budget left behind by another test binds this project too",
+					arrangement.name, attempt, got.Kind)
 			}
 			if got.ResetAt == nil {
 				t.Fatalf("%s: attempt %d reported an exhausted quota with no reset moment", arrangement.name, attempt)
 			}
 			answers[arrangement.name] = describeLimit(*got)
 		}
+		// As in the budget test: the next arrangement needs the installation-wide key free.
+		dropWideLimit(t, cs, "quotas", wideID)
 	}
 	assertOneAnswer(t, "quota", answers)
 }
@@ -193,8 +206,9 @@ func readDurableLimit(t *testing.T, cs *Store, project string) *LimitExceeded {
 	return limit
 }
 
-// seedLimitTenant gives each arrangement its own organization, so the four are independent states rather
-// than four readings of one table, and a sibling project whose spend the organization-wide row sums.
+// seedLimitTenant gives each arrangement its own project, so the four are independent states rather than
+// four readings of one table. It is the ONLY isolation left: the wide row cannot be made per-arrangement,
+// because an EMPTY project_id is installation-wide by definition — hence dropWideLimit.
 func seedLimitTenant(t *testing.T, cs *Store) (project string) {
 	t.Helper()
 	project = pinTestID("prj")
@@ -202,25 +216,45 @@ func seedLimitTenant(t *testing.T, cs *Store) (project string) {
 	return project
 }
 
-// writeLimitPair inserts the organization-wide row and the project row in the arrangement's order, with
+// writeLimitPair inserts the installation-wide row and the project row in the arrangement's order, with
 // the arrangement's id ordering. The ids are shaped rank-first so the comparison is deterministic here;
 // production's are 16 random bytes, which is exactly why both relative orders occur in the field.
-func writeLimitPair(t *testing.T, cs *Store, a limitArrangement, insert func(id, projectID string, limit int), project string) {
+//
+// It RETURNS the wide row's id because the caller has to delete it again, and that is not tidiness. The
+// wide row carries an EMPTY project_id, which MEANS every project in the installation — so it binds later
+// test in this shared database exactly as it binds a real deployment's every project. Two consequences,
+// and both were live failures until 2026-08-04: the unique key is (project_id, meter_prefix) since
+// organization_id left it, so a SECOND arrangement cannot insert its own wide row while the first one's
+// still exists; and an exhausted wide BUDGET left behind is found by the quota test, whose whole premise
+// is that no budget is exhausted (checkDurableLimits returns on the budget and never reaches the quota).
+// Under organization_id the four wide rows were four distinct rows and neither happened.
+func writeLimitPair(t *testing.T, cs *Store, a limitArrangement, insert func(id, projectID string, limit int), project string) (wideID string) {
 	t.Helper()
 	rankedID := func(rank int) string { return fmt.Sprintf("bdg_%d_%s", rank, pinTestID("r")) }
 	orgRank, projectRank := 1, 0
 	if a.orgLowerID {
 		orgRank, projectRank = 0, 1
 	}
-	writeOrg := func() { insert(rankedID(orgRank), "", wideLimit) }
+	wideID = rankedID(orgRank)
+	writeWide := func() { insert(wideID, "", wideLimit) }
 	writeProject := func() { insert(rankedID(projectRank), project, narrowLimit) }
 	if a.orgWrittenFirst {
-		writeOrg()
+		writeWide()
 		writeProject()
-		return
+		return wideID
 	}
 	writeProject()
-	writeOrg()
+	writeWide()
+	return wideID
+}
+
+// dropWideLimit removes the installation-wide row an arrangement wrote, so the next arrangement can write
+// its own and no later test inherits an exhausted limit that binds every project. It is idempotent, and
+// callers run it both inline (the next arrangement needs the key free) and from t.Cleanup (a t.Fatal must
+// not leave the row behind for the rest of the package).
+func dropWideLimit(t *testing.T, cs *Store, table, id string) {
+	t.Helper()
+	mustExecPin(t, cs, fmt.Sprintf(`DELETE FROM %s WHERE id=$1 AND project_id=''`, table), id)
 }
 
 // seedLimitSpend exhausts BOTH rows and makes them report different numbers: this project spends

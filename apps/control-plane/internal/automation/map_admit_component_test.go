@@ -41,7 +41,7 @@ func TestDeliveryRunEntersSameAdmissionPath(t *testing.T) {
 	// A response row exists, queued, in the delivery's session (same shape as /v1/responses).
 	var respState, respSession string
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT state, session_id FROM responses WHERE id = $1  project_id = $2`,
+		`SELECT state, session_id FROM responses WHERE id = $1 AND project_id = $2`,
 		del.ResponseID, project).Scan(&respState, &respSession); err != nil {
 		t.Fatalf("read response error = %v", err)
 	}
@@ -55,7 +55,7 @@ func TestDeliveryRunEntersSameAdmissionPath(t *testing.T) {
 	// The run row exists and pins EXACTLY the trigger's agent revision (AGT-001).
 	var pinnedAgentRev *string
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT agent_revision_id FROM runs WHERE id = $1  project_id = $2`,
+		`SELECT agent_revision_id FROM runs WHERE id = $1 AND project_id = $2`,
 		del.RunID, project).Scan(&pinnedAgentRev); err != nil {
 		t.Fatalf("read run error = %v", err)
 	}
@@ -67,7 +67,10 @@ func TestDeliveryRunEntersSameAdmissionPath(t *testing.T) {
 	if got := count(t, pool, `SELECT count(*) FROM events WHERE session_id=$1 AND type='run.queued.v1'`, del.SessionID); got != 1 {
 		t.Fatalf("run.queued.v1 events = %d, want 1", got)
 	}
-	if got := count(t, pool, `SELECT count(*) FROM durable_jobs WHERE  kind='response.run'`); got < 1 {
+	// SCOPED TO THIS DELIVERY'S PROJECT. The org sweep took `organization_id=$1 AND` out of this WHERE and
+	// left nothing narrower than the table, so the count answered for every project in the shared component
+	// database at once — and against `< 1` a global count is a claim that can barely fail.
+	if got := count(t, pool, `SELECT count(*) FROM durable_jobs WHERE project_id=$1 AND kind='response.run'`, project); got < 1 {
 		t.Fatal("no response.run dispatch job enqueued (a triggered run must reach the same workers)")
 	}
 }

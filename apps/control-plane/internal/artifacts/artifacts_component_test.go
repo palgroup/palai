@@ -126,7 +126,7 @@ func TestArtifactPutRecordsRowAndBytes(t *testing.T) {
 		checksum  string
 	)
 	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT run_id, object_key, size_bytes, checksum FROM artifacts WHERE id = $1  project_id = $2`,
+		`SELECT run_id, object_key, size_bytes, checksum FROM artifacts WHERE id = $1 AND project_id = $2`,
 		art.ID, project).Scan(&gotRun, &objectKey, &size, &checksum); err != nil {
 		t.Fatalf("read artifacts row error = %v", err)
 	}
@@ -260,7 +260,7 @@ func TestStoreFalsePurgeDeletesArtifactBytes(t *testing.T) {
 		size      int64
 	)
 	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT object_key, size_bytes FROM artifacts WHERE id = $1  project_id = $2`,
+		`SELECT object_key, size_bytes FROM artifacts WHERE id = $1 AND project_id = $2`,
 		art.ID, project).Scan(&objectKey, &size); err != nil {
 		t.Fatalf("read artifact row error = %v", err)
 	}
