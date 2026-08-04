@@ -86,6 +86,28 @@ case "$provider/$case_name" in
     run="TestLiveProviderTwoReadsTextInAnImage"
     required_key="ANTROPHIC_API_KEY"
     ;;
+  provider-two/thinking-visible)
+    # 2026-08-05 (the reasoning leg): the round trip behind model_step.thinking.v1. Anthropic rejects the
+    # budget shape on the routed model — 400 "thinking.type.enabled" is not supported — so the wire shape
+    # is `thinking: {"type":"adaptive","display":"summarized"}`, and a test could not have guessed it.
+    #
+    # It is a DIFFERENTIAL, and that is the whole design: `display` defaults to "omitted", under which the
+    # response still carries thinking blocks and still BILLS for them while their text is empty. So a
+    # single asking run proves nothing — an adapter that sent no thinking key at all would look identical.
+    # Two runs of the same prompt on the same model, differing only in the canonical ThinkingMode: the
+    # asked leg must carry reasoning, the unasked leg must not. Measured on claude-sonnet-5: asked
+    # in=113 out=594 reasoning=296B fragments=6; unasked in=113 out=537 reasoning=0B fragments=0. Deleting
+    # `display` alone leaves the model reasoning MORE (out=1171) and us shown none of it, which is exactly
+    # the failure this case exists to make visible. Uses ANTROPHIC_API_KEY; no docker.
+    #
+    # Honest ceiling (named in the test): what is proven is that reasoning is returned and STREAMS as
+    # deltas — the journal/SSE half is the component tier's
+    # TestDispatchJournalsReasoningSeparatelyFromTheAnswer, because a provider-tier test builds a
+    # modelbroker.Request and never reaches dispatch.
+    pkg="./tests/live/provider"
+    run="TestLiveProviderTwoReturnsVisibleReasoningOnlyWhenAsked"
+    required_key="ANTROPHIC_API_KEY"
+    ;;
   provider-two/wrapped-message-array)
     # 2026-08-04: the live proof for the message-array input form. NOT a provider-tier case by mistake —
     # the defect was in execution's decoder, not in the adapter, so a test that hand-builds a
@@ -551,7 +573,7 @@ case "$provider/$case_name" in
     ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=cancel-terminal, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=artifact-retrieval, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=hook-deny-visible, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip, PROVIDER=provider-one CASE=remote-tool-async-roundtrip, PROVIDER=provider-one CASE=mcp-tool-roundtrip, PROVIDER=provider-one CASE=mcp-sampling-budgeted, PROVIDER=provider-one CASE=skill-no-authority, PROVIDER=provider-one CASE=tenancy-isolation, PROVIDER=provider-one CASE=second-tenant-provisioning, PROVIDER=provider-one CASE=secret-rotation-restartless, PROVIDER=provider-one CASE=run-history-list, PROVIDER=provider-one CASE=edge-admission, PROVIDER=provider-one CASE=budget-admission, PROVIDER=provider-one CASE=model-route-per-project, PROVIDER=provider-one CASE=sdk-parity-journey, PROVIDER=provider-two CASE=text-stream-tool-schema, PROVIDER=openai-compatible CASE=capability-probe" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=cancel-terminal, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=artifact-retrieval, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=hook-deny-visible, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip, PROVIDER=provider-one CASE=remote-tool-async-roundtrip, PROVIDER=provider-one CASE=mcp-tool-roundtrip, PROVIDER=provider-one CASE=mcp-sampling-budgeted, PROVIDER=provider-one CASE=skill-no-authority, PROVIDER=provider-one CASE=tenancy-isolation, PROVIDER=provider-one CASE=second-tenant-provisioning, PROVIDER=provider-one CASE=secret-rotation-restartless, PROVIDER=provider-one CASE=run-history-list, PROVIDER=provider-one CASE=edge-admission, PROVIDER=provider-one CASE=budget-admission, PROVIDER=provider-one CASE=model-route-per-project, PROVIDER=provider-one CASE=sdk-parity-journey, PROVIDER=provider-two CASE=text-stream-tool-schema, PROVIDER=provider-two CASE=thinking-visible, PROVIDER=openai-compatible CASE=capability-probe" >&2
     exit 2
     ;;
 esac
