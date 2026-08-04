@@ -1,13 +1,11 @@
 package tools
 
 import (
-	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+	"github.com/palgroup/palai/packages/toolset"
 )
 
 // THE DEFECT THIS FILE EXISTS FOR, shipped and caught the same day (E21 T5): the workspace search tool was
@@ -16,53 +14,21 @@ import (
 // already holds, so a tool absent from that list is never resolved however completely it is built. The whole
 // feature was dead and every test around it was green.
 //
-// The gap is structural rather than careless: cmd/cli cannot import this package (Go's internal rule), so it
-// hardcodes the names, and nothing compared the two sides. This test is that comparison. It lives here
-// because this is the only place that can see BOTH the CLI's literal list and the real broker.
-
-// readCLIToolList extracts the names of one `var <name> = []string{...}` from cmd/cli's source. Reading
-// source is the price of the internal boundary; the alternative is a shared package that exists only to be
-// imported by a test.
+// The canonical lists are read from packages/toolset, NOT parsed out of the CLI's source. The regex this
+// replaces asserted the shape of a Go declaration in a file three directories away: it went RED the day
+// commit 1e5fc63e deleted that declaration, and it would have gone silently WRONG the day somebody
+// reformatted it. An import cannot drift from what the CLI actually grants, because it is what the CLI
+// actually grants.
 //
-// THREE LISTS SINCE E22 T4, and the guard covers ALL of them: slackDefaultTools is what every bring-up
-// binds, slackRepositoryTools is the coding half a bring-up ADDS when it bound a repository, and
-// slackPublishTools is the publish half added under the same condition. A name that resolves in none of them
-// is a tool the model would be offered and could never be given — the exact defect this file was written
-// for, and a conditional list is a second place for it to happen.
-func readCLIToolList(t *testing.T, name string) []string {
-	t.Helper()
-	// tools -> execution -> internal -> control-plane -> apps -> repo root
-	path := filepath.Join("..", "..", "..", "..", "..", "cmd", "cli", "internal", "stack", "up.go")
-	src, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v — if this file moved, this guard must follow it rather than be deleted", path, err)
-	}
-	m := regexp.MustCompile(`var ` + name + ` = \[\]string\{([^}]*)\}`).FindSubmatch(src)
-	if m == nil {
-		t.Fatalf("%s was not found in cmd/cli/internal/stack/up.go: the guard cannot be allowed to pass by "+
-			"failing to find what it checks", name)
-	}
-	var names []string
-	for _, raw := range strings.Split(string(m[1]), ",") {
-		if name := strings.Trim(strings.TrimSpace(raw), `"`); name != "" {
-			names = append(names, name)
-		}
-	}
-	if len(names) == 0 {
-		t.Fatalf("parsed an EMPTY %s — a guard that finds nothing proves nothing", name)
-	}
-	return names
-}
+// THREE LISTS, and the guard covers ALL of them: toolset.Default() is what every bring-up binds,
+// toolset.Repository() is the coding half a bring-up ADDS when it bound a repository, and toolset.Publish()
+// is the publication half added under the same condition. A name that resolves in none of them is a tool the
+// model would be offered and could never be given — the exact defect this file was written for, and a
+// conditional list is a second place for it to happen.
 
-// readCLISlackDefaultTools is the unconditional list: what a bring-up binds with no repository.
-func readCLISlackDefaultTools(t *testing.T) []string {
-	t.Helper()
-	return readCLIToolList(t, "slackDefaultTools")
-}
-
-// TestEverySlackDefaultToolResolves is the guard proper: every name `palai up` binds must be a tool this
+// TestEveryDefaultToolResolves is the guard proper: every name `palai up` binds must be a tool this
 // control plane can actually produce, either from the static broker set or from the Slack-search lookup.
-func TestEverySlackDefaultToolResolves(t *testing.T) {
+func TestEveryDefaultToolResolves(t *testing.T) {
 	authorities := NewSearchAuthorities()
 	authorities.Grant("run_guard", "T1", "https://slack.test/api", []byte("t"), "act")
 	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{RunID: "run_guard"}}
@@ -92,9 +58,9 @@ func TestEverySlackDefaultToolResolves(t *testing.T) {
 	)
 	broker.SetLookup(SlackSearchLookup(nil, authorities, nil))
 
-	names := readCLISlackDefaultTools(t)
-	names = append(names, readCLIToolList(t, "slackRepositoryTools")...)
-	names = append(names, readCLIToolList(t, "slackPublishTools")...)
+	names := toolset.Default()
+	names = append(names, toolset.Repository()...)
+	names = append(names, toolset.Publish()...)
 	for _, name := range names {
 		if _, found, err := broker.SchemaResolved(t.Context(), env, name); err != nil || !found {
 			t.Fatalf("`palai up` binds %q and this control plane cannot resolve it (found=%v err=%v). "+
@@ -116,27 +82,27 @@ func TestEverySlackDefaultToolResolves(t *testing.T) {
 // assertion reads the shipped tools rather than the comment above them — if someone made pushExec push, the
 // ReplayClass would still say idempotent and this test is what would notice the description stopped being
 // true. The behavioural proof is publish_test.go (the tool returns pending_approval and calls no publisher);
-// what is checked here is that the two names in the CLI's publish list are those two tools and nothing else.
+// what is checked here is that the names in the canonical publish list are those tools and nothing else.
 func TestThePublishToolsAreTheirOwnListAndNeitherPublishes(t *testing.T) {
-	for _, name := range readCLIToolList(t, "slackRepositoryTools") {
+	for _, name := range toolset.Repository() {
 		if strings.HasPrefix(name, "palai.publish.") {
-			t.Fatalf("the CODING tool list grants %q: the publish half has its own list (slackPublishTools) so "+
+			t.Fatalf("the CODING tool list grants %q: the publish half has its own list (toolset.Publish) so "+
 				"that granting a workspace and granting a publication stay two decisions", name)
 		}
 	}
-	publish := readCLIToolList(t, "slackPublishTools")
+	publish := toolset.Publish()
 	byName := map[string]toolbroker.Tool{
 		PushTool().Name:        PushTool(),
 		PullRequestTool().Name: PullRequestTool(),
 		MergeTool().Name:       MergeTool(),
 	}
 	if len(publish) != len(byName) {
-		t.Fatalf("slackPublishTools = %v, want exactly the %d publication tools this control plane mounts", publish, len(byName))
+		t.Fatalf("toolset.Publish() = %v, want exactly the %d publication tools this control plane mounts", publish, len(byName))
 	}
 	for _, name := range publish {
 		tool, ok := byName[name]
 		if !ok {
-			t.Fatalf("slackPublishTools names %q, which is not one of this control plane's publication tools — a "+
+			t.Fatalf("toolset.Publish() names %q, which is not one of this control plane's publication tools — a "+
 				"third publish tool is a third approval surface and must be an explicit decision", name)
 		}
 		if !strings.Contains(tool.Description, "approval") {
@@ -151,7 +117,7 @@ func TestThePublishToolsAreTheirOwnListAndNeitherPublishes(t *testing.T) {
 // elsewhere (the workspace granting search:read.public, and the run carrying an action_token). Leaving it
 // out of the list would disable the feature in a way that looks like configuration rather than a bug.
 func TestTheSearchToolIsInTheDefaultSet(t *testing.T) {
-	for _, name := range readCLISlackDefaultTools(t) {
+	for _, name := range toolset.Default() {
 		if name == slackSearchToolName {
 			return
 		}
@@ -164,8 +130,8 @@ func TestTheSearchToolIsInTheDefaultSet(t *testing.T) {
 // A default that grants a side-effecting tool would be a posture change nobody chose — anyone in the
 // workspace can DM this bot. The CLI has its own version of this test; this one holds the line from the side
 // that knows what each tool DOES.
-func TestNoDefaultSlackToolHasSideEffects(t *testing.T) {
-	for _, name := range readCLISlackDefaultTools(t) {
+func TestNoDefaultToolHasSideEffects(t *testing.T) {
+	for _, name := range toolset.Default() {
 		for _, forbidden := range []string{"workspace.shell", "workspace.file", "workspace.commit", "publish."} {
 			if strings.Contains(name, forbidden) {
 				t.Fatalf("the DEFAULT list grants %q — a tool that writes, runs commands or publishes must be "+
