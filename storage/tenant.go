@@ -60,10 +60,9 @@ func WithTenant(ctx context.Context, organization, project string) context.Conte
 // ITS LIST OF CALLERS IS DOWN TO TWO, and the two that left are why this function is nearly done.
 // identity/provisioning used it for organizations/api_keys/principals/projects; migration 000066 rekeys
 // those to project, under which an empty project GUC matches only rows whose own project_id is the empty
-// string too — so
-// widening by leaving the project blank stopped meaning "the whole organization" and identity now names
-// the widening it wants (identity's provisioningScope: system for the platform, the caller's own project
-// for a tenant).
+// string too — so widening by leaving the project blank stopped meaning "the whole organization", and
+// identity now names the widening it wants (identity's provisioningScope: system for the platform, the
+// caller's own project for a tenant).
 //
 // What still uses it reads a table with no project_id at all and no organization boundary left either:
 // identity.SecretStore.Resolve over secret_refs (000031) and automation's verifyEnvironment over
