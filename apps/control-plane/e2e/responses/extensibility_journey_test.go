@@ -29,6 +29,8 @@ package responses
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	mcpclient "github.com/palgroup/palai/adapters/integrations/mcp"
@@ -54,7 +56,7 @@ func TestExtensibilityJourneyDeterministic(t *testing.T) {
 	if err := h.repo.PinRunSkills(ctx, h.tenant, run1); err != nil {
 		t.Fatalf("pin run skills: %v", err)
 	}
-	if err := h.repo.MaterializeRunSkills(ctx, h.tenant, run1, alloc1); err != nil {
+	if err := h.repo.MaterializeRunSkills(ctx, h.tenant, run1, skillWriterUnder(alloc1)); err != nil {
 		t.Fatalf("materialize run skills: %v", err)
 	}
 
@@ -103,7 +105,7 @@ func TestExtensibilityJourneyDeterministic(t *testing.T) {
 	// The signed remote_http round-trip completed via the one-use callback (invoke -> 202 -> signed callback).
 	var remoteOpID, remoteCallID, remoteOpState string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
-		`SELECT id, tool_call_id, state FROM remote_tool_operations WHERE organization_id=$1 AND project_id=$2 ORDER BY created_at DESC LIMIT 1`,
+		`SELECT id, tool_call_id, state FROM remote_tool_operations WHERE  project_id=$1 ORDER BY created_at DESC LIMIT 1`,
 		h.tenant.Project).Scan(&remoteOpID, &remoteCallID, &remoteOpState); err != nil {
 		t.Fatalf("read remote_tool_operations: %v", err)
 	}
@@ -173,7 +175,7 @@ func TestExtensibilityJourneyDeterministic(t *testing.T) {
 		t.Fatal("run 3 never reached the control-plane after the crash — the process did not stay up")
 	}
 	// The before_tool policy hook denied the file tool: a real control-plane deny fired, and the tool never ran.
-	if n := h.count(`SELECT count(*) FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type='policy.denied.v1'`,
+	if n := h.count(`SELECT count(*) FROM events WHERE session_id=$1  project_id=$2 AND type='policy.denied.v1'`,
 		session3, h.tenant.Project); n < 1 {
 		t.Fatalf("run 3: no policy.denied.v1 journaled — the before_tool hook deny never fired")
 	}
@@ -210,4 +212,19 @@ func advertisedEver(sets [][]string, name string) bool {
 		}
 	}
 	return false
+}
+
+// skillWriterUnder is the local half of the seam A.3 T5 opened. MaterializeRunSkills used to take the
+// allocation DIRECTORY and write into this process's filesystem; it now takes a writer, because in
+// production the bytes belong on the MACHINE holding the attempt's lease and the control plane only says
+// WHAT to write. This journey runs both planes in one process, so the writer is the local equivalent — the
+// point is that the caller now chooses where, and nothing inside materialisation assumes a path it can open.
+func skillWriterUnder(root string) func(rel string, body []byte) error {
+	return func(rel string, body []byte) error {
+		dst := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(dst, body, 0o644)
+	}
 }
