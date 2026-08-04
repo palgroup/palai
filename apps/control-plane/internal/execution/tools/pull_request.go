@@ -33,11 +33,15 @@ func PullRequestTool() toolbroker.Tool {
 }
 
 func pullRequestExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
+	// ANSWERS, for the reason spelled out in push.go's pair: this tool is not wired, nothing happened,
+	// and a bare error here wedges the attempt instead of telling the model.
 	if env.Publications == nil {
-		return nil, fmt.Errorf("pull request tool: no publication registry wired for this run")
+		return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable,
+			"pull request tool: no publication registry wired for this run")
 	}
 	if env.WorkspaceRoot == "" || env.Workspace == nil {
-		return nil, fmt.Errorf("pull request tool: no workspace bound for this run")
+		return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable,
+			"pull request tool: no workspace bound for this run")
 	}
 	// The head is read WHERE THE REPOSITORY IS (A.3 T5), the same as the push tool's. Nothing else
 	// about this tool moved: it still opens no pull request, and the head/base still come from the

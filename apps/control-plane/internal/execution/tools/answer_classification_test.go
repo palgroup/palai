@@ -83,17 +83,42 @@ func TestEveryFailedWorkspaceReadIsAnAnswer(t *testing.T) {
 // TestAWorkspacelessWorkspaceToolAnswersInsteadOfHanging is the case
 // docs/operations/palai-on-a-mac.md §4.1 MEASURED on 2026-07-28 and wrote down as a hang: a run offered
 // a workspace tool with no workspace bound. Nothing runs, so it is an answer, and the model is told.
+//
+// IT NAMES ALL SIX CODING TOOLS, and until 2026-08-04 it named two. The sentence above says "a workspace
+// tool" and the map said `file` and `shell`, so the guard was fully green while THREE of the four tools
+// it did not name returned a bare error — commit, push and pull_request — which is the wedge this file
+// exists to prevent, sitting behind a proof of its absence. A guard only ever sees the shape it names,
+// so the subject of this loop is now the same set the tools package ships:
+//
+//	grep -ln "no workspace bound for this run" apps/control-plane/internal/execution/tools/*.go
+//	# -> commit.go file.go glob.go grep.go media.go pull_request.go push.go shell.go text_editor.go
+//
+// The six below are the WRITE-CAPABLE and workspace-mounting set; glob/grep/text_editor answer through
+// the same file-tool path already covered above. The list is spelled out one tool at a time rather than
+// derived, because a derivation over a registry would silently shrink with it.
 func TestAWorkspacelessWorkspaceToolAnswersInsteadOfHanging(t *testing.T) {
-	for name, tool := range map[string]toolbroker.Tool{"file": FileTool(), "shell": ShellTool()} {
+	args := map[string]map[string]any{
+		"file":         {"op": "read", "path": "x"},
+		"shell":        {"argv": []any{"echo", "ok"}},
+		"commit":       {"message": "m"},
+		"push":         {},
+		"pull_request": {},
+		"media":        {"path": "shot.png"},
+	}
+	for name, tool := range map[string]toolbroker.Tool{
+		"file": FileTool(), "shell": ShellTool(), "commit": CommitTool(),
+		"push": PushTool(), "pull_request": PullRequestTool(), "media": MediaTool(),
+	} {
 		env := toolbroker.ExecEnv{}
 		if name == "shell" {
 			env.Shell = stubShell{} // past the no-posture check, so this test measures the WORKSPACE one
 		}
-		args := map[string]any{"op": "read", "path": "x"}
-		if name == "shell" {
-			args = map[string]any{"argv": []any{"echo", "ok"}}
+		if name == "push" || name == "pull_request" {
+			// Past the no-registry check, for the same reason the shell gets a stub posture: this test is
+			// about the WORKSPACE refusal, and a nil registry would refuse first and prove the wrong half.
+			env.Publications = stubPublications{}
 		}
-		_, err := tool.Exec(context.Background(), env, args)
+		_, err := tool.Exec(context.Background(), env, args[name])
 		answer, ok := toolbroker.AsAnswer(err)
 		if !ok {
 			t.Fatalf("%s tool with no workspace bound = %v, want an answer (this shape HUNG a bring-up on 2026-07-28)", name, err)
@@ -102,6 +127,15 @@ func TestAWorkspacelessWorkspaceToolAnswersInsteadOfHanging(t *testing.T) {
 			t.Fatalf("%s tool no-workspace code = %q, want %q", name, answer.Code, toolbroker.AnswerUnavailable)
 		}
 	}
+}
+
+// stubPublications is a registry that RECORDS NOTHING and would be a bug if it were ever reached: the
+// two publication tools above must refuse for the workspace before they reach it, so a call landing
+// here fails the test by returning a success the assertion rejects.
+type stubPublications struct{}
+
+func (stubPublications) RequestPublication(context.Context, toolbroker.TaskScope, map[string]any) (map[string]any, error) {
+	return map[string]any{"status": "pending_approval"}, nil
 }
 
 // TestTheShellToolAnswersItsPreFlightRefusalsAndFaultsOnTheRest draws the line at the moment a process

@@ -33,15 +33,25 @@ func CommitTool() toolbroker.Tool {
 // commitExec commits the workspace repo. The repo lives at <allocation>/repo (spec §29.9); a
 // workspace-less or read-only attempt fails cleanly rather than touching anything.
 func commitExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
+	// THE THREE PRE-FLIGHT REFUSALS ARE ANSWERS; the Commit below is not. The line is the one
+	// answer.go draws: everything above env.Workspace.Commit is a statement about a write that did not
+	// happen, so the model is told and the run continues, while Commit's own error may have left a
+	// half-landed effect and still aborts the attempt. Each code is the one answer.go already names for
+	// its condition — "no workspace bound" under AnswerUnavailable, "a write to a read-only workspace"
+	// under AnswerRefused (the same spelling file.go:111 uses), a missing argument under
+	// AnswerInvalidArguments, which the model can fix on its next turn and could not before.
 	if env.WorkspaceRoot == "" || env.Workspace == nil {
-		return nil, fmt.Errorf("commit tool: no workspace bound for this run")
+		return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable,
+			"commit tool: no workspace bound for this run")
 	}
 	if env.ReadOnly {
-		return nil, fmt.Errorf("commit tool: workspace is read-only for this run")
+		return nil, toolbroker.Answerf(toolbroker.AnswerRefused,
+			"commit tool: workspace is read-only for this run")
 	}
 	message, _ := args["message"].(string)
 	if message == "" {
-		return nil, fmt.Errorf("commit tool: a commit message is required")
+		return nil, toolbroker.Answerf(toolbroker.AnswerInvalidArguments,
+			"commit tool: a commit message is required")
 	}
 	// The commit runs WHERE THE REPOSITORY IS (A.3 T5), which is the machine holding this attempt's
 	// lease whenever the allocation was realized there. It is still a control-plane-DIRECTED git

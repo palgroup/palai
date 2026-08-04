@@ -29,11 +29,24 @@ func PushTool() toolbroker.Tool {
 }
 
 func pushExec(ctx context.Context, env toolbroker.ExecEnv, _ map[string]any) (map[string]any, error) {
+	// BOTH REFUSALS ARE ANSWERS, and neither was until 2026-08-04. They are the case answer.go names
+	// under AnswerUnavailable word for word — "the tool is not wired on this deployment (no shell
+	// posture, no workspace bound, no registry)" — and this tool returned a bare error for both, so an
+	// attempt that reached either one died with its tool_call row still `executing`, was classified
+	// uncertain by the next attempt's ledger consult, and spent the retry ladder reproducing a refusal
+	// that cannot change. Nothing has happened here: no publication is recorded, no ref moves.
+	//
+	// The configuration is not hypothetical — it is the one `palai up` warns about in so many words:
+	// "a run carrying this binding still ANSWERS \"no workspace bound for this run\" and cannot clone,
+	// edit or commit" (cmd/cli/internal/stack/up.go:765). That sentence was true of file/shell/glob/
+	// grep/text_editor and false of exactly the three tools it names.
 	if env.Publications == nil {
-		return nil, fmt.Errorf("push tool: no publication registry wired for this run")
+		return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable,
+			"push tool: no publication registry wired for this run")
 	}
 	if env.WorkspaceRoot == "" || env.Workspace == nil {
-		return nil, fmt.Errorf("push tool: no workspace bound for this run")
+		return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable,
+			"push tool: no workspace bound for this run")
 	}
 	// The head is read WHERE THE REPOSITORY IS (A.3 T5). It is the one thing this tool touches: the
 	// push itself is still a gated side effect that happens after an approval, at a boundary, through

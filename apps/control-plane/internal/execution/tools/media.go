@@ -98,7 +98,12 @@ func mediaExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any)
 		// no workspace bound used to HANG. Nothing ran, so it is an answer the model can act on. Both
 		// conditions for the reason the file tool states: a bound workspace is a path AND something that
 		// can reach it, and a hand-built ExecEnv that forgot the second should answer rather than panic.
-		return nil, toolbroker.Answer("no_workspace", fmt.Errorf("%s: no workspace bound for this run", mediaToolName))
+		//
+		// IT IS THE SAME CODE TOO, which the sentence above claimed and the call did not: this read
+		// `no_workspace` until 2026-08-04 while the other five coding tools read `unavailable`, and
+		// answer.go's codes live in one place precisely "so two tools cannot spell the same refusal two
+		// ways". Nothing keyed on the old spelling — it appeared exactly once in the tree, here.
+		return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable, "%s: no workspace bound for this run", mediaToolName)
 	}
 	// NO STORE MEANS NO SHOWING, AND IT SAYS SO. Returning an id-less success would have the model tell
 	// the user "here is the screenshot" with nothing behind it — the failure mode this whole tool exists
