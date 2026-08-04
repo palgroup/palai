@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/palgroup/palai/adapters/repositories"
+	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
@@ -138,19 +139,27 @@ func (o *Orchestrator) realizeRootWorkspace(ctx context.Context, ch EngineChanne
 	ws := plan.ws
 	ops := workspaceOpsFor(ch, plan.hostPath)
 
-	// ASK THE MACHINE WHERE THE ALLOCATION ACTUALLY IS, and record ITS answer rather than the name this
-	// side minted. The runner already laid the directory out when it admitted the lease, so this is
-	// idempotent — what it is FOR is the path: the machine resolves it against its own root, and on
-	// macOS a /var allocation comes back /private/var. Storing the unresolved name would put a path in
-	// the allocation row that every later under-root check has to re-resolve, and this tree's record on
-	// path comparisons is that the version which resolves once and keeps the answer is the one that
-	// stays correct.
-	if remote, isRemote := ops.(*RemoteWorkspace); isRemote && plan.fresh {
+	// THE ALLOCATION IS OPENED BY WHOEVER HOLDS THE DISK, which is the one line where the two cases
+	// genuinely differ and so the one place that names them. Both are idempotent — a later run in the
+	// same session re-opens an allocation full of a prior run's edits and must keep them — which is why
+	// neither is conditional on `fresh`.
+	if remote, isRemote := ops.(*RemoteWorkspace); isRemote {
+		// The runner already laid the directory out when it admitted the lease, so this asks for one
+		// thing: the PATH. The machine resolves it against its own root, and on macOS a /var allocation
+		// comes back /private/var. Storing the unresolved name would put a path in the allocation row
+		// that every later under-root check has to re-resolve, and this tree's record on path comparisons
+		// is that the version resolving once and keeping the answer is the one that stays correct.
 		root, oerr := remote.Open(ctx)
 		if oerr != nil {
 			return "", "", "", fmt.Errorf("open allocation on the machine: %w", oerr)
 		}
 		plan.hostPath = root
+	} else if err := workspace.Prepare(plan.hostPath); err != nil {
+		// No machine, so this host holds the disk and this host lays it out — which is exactly what
+		// provisionFreshAllocation did before the split. It is NOT optional and it is not only about the
+		// repo: repositories.Prepare creates its own target dir, but scratch, artifacts and the skills
+		// tree have no other author, and NewWorkspaceFS refuses a root that is not there at all.
+		return "", "", "", fmt.Errorf("lay out allocation %s: %w", plan.allocID, err)
 	}
 
 	var alloc coordinator.Allocation
