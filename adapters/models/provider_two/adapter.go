@@ -383,6 +383,18 @@ func (a Adapter) buildBody(req modelbroker.Request) ([]byte, map[string]string, 
 				return nil, nil, fmt.Errorf("tool name %q collides with %q on the wire (both encode to %q)", t.Name, existing, wire)
 			}
 			names[wire] = t.Name
+			// AN ANTHROPIC-DEFINED TOOL IS DECLARED, NOT DESCRIBED. Its type names a schema the model
+			// already carries, so the request sends {type, name} and NO input_schema — sending one would
+			// be a different request shape than the one the tool's behaviour was trained against. The
+			// description is omitted for the same reason: the platform does not get to restate what a
+			// tool the model already knows does.
+			if t.Type != "" {
+				if len(t.Parameters) > 0 {
+					return nil, nil, fmt.Errorf("tool %q declares both a type (%q) and an input schema; an Anthropic-defined tool carries neither schema nor description", t.Name, t.Type)
+				}
+				tools = append(tools, map[string]any{"type": t.Type, "name": wire})
+				continue
+			}
 			tool := map[string]any{"name": wire, "input_schema": t.Parameters}
 			if t.Description != "" {
 				tool["description"] = t.Description
