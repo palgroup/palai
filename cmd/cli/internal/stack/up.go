@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/palgroup/palai/packages/toolset"
 )
 
 // up.go is `palai up`: ONE command that ends in a stack PROVEN to be talking to a real model
@@ -247,6 +249,18 @@ func Bootstrap(envFile string, native bool) error {
 	// intersected with the project's default_tools baseline, so a project whose config_policy is NULL —
 	// which is every project until somebody sets one — resolves EVERY agent to the empty set. The runs
 	// complete. They answer in one step. They call nothing, and no layer says why.
+	//
+	// SO THE BRING-UP NOW GRANTS THAT BASELINE rather than only naming its absence. It runs here, after the
+	// round trip has proven the stack, because it is configuration and not a precondition of the proof —
+	// the single-step run above calls no tools either way.
+	if granted := api.grantDefaultToolBaseline(); granted != "" {
+		fmt.Fprintf(os.Stderr, "        tools     %s\n", granted)
+	}
+	// THE WARNING SURVIVES THE WRITE, and it is not belt-and-braces: it reads the server again, so it is
+	// the only thing that speaks when the grant above did NOT land. The grant stands down silently in
+	// three cases — the read failed, the PATCH failed, or the project already grants tools — and in the
+	// first two the baseline is still empty. This check is what tells the operator so, with the command
+	// that fixes it by hand.
 	warns = appendWarn(warns, api.emptyToolBaselineWarning())
 	// WHAT THE FLEET IS DOING (E24 T6), on the report rather than in a warning: a machine held in a strict
 	// pool's waiting room is a machine an operator will otherwise read as broken.
@@ -1387,6 +1401,76 @@ func applyConcurrencyEnv(get func(string) string) error {
 		}
 	}
 	return nil
+}
+
+// --- the tool baseline this bring-up grants ----------------------------------------------------
+
+// bootstrapDefaultTools is the baseline `palai up` grants prj_local. It is a straight pass-through to
+// the canonical list ON PURPOSE — a bring-up that filtered or reordered here would be a second list,
+// and a second list is what this whole change exists to remove.
+func bootstrapDefaultTools() []string { return toolset.Default() }
+
+// policyWithDefaultTools returns `existing` with default_tools set to `tools`, COPIED rather than
+// mutated.
+//
+// THE COPY IS THE POINT, AND SO IS THE MERGE. `UpdateProjectConfigPolicy` is an assignment, not a
+// merge (see cmd/cli/internal/admin/admin.go's set-policy comment), so a PATCH carrying only
+// default_tools deletes approvers, pool, and allowed_models. On a first bring-up the policy is empty
+// and nothing is lost, which is exactly why the defect would ship: it appears on the SECOND run, and
+// what it drops includes the approver allow-list — a surface an operator closed on purpose.
+func policyWithDefaultTools(existing map[string]any, tools []string) map[string]any {
+	merged := make(map[string]any, len(existing)+1)
+	for k, v := range existing {
+		merged[k] = v
+	}
+	merged["default_tools"] = tools
+	return merged
+}
+
+// policyAlreadyGrantsTools reports whether the policy names at least one tool, which is when the grant
+// below stands down: an operator who chose their own baseline must not have a re-run replace it.
+//
+// IT JUDGES THE VALUE, NOT THE KEY'S PRESENCE, and that distinction is load-bearing in both directions.
+// `configPolicyInput` marshals its slices without omitempty (apps/control-plane/internal/identity/
+// store.go:559-565), so a policy written for `pool` alone still stores `"default_tools":null` — the key
+// is there and grants nothing. And the value arrives from a JSON decode into map[string]any, so a
+// populated list is []any of string and never []string; a type assertion to the Go type would be false
+// on every real policy and overwrite the operator's list on every bring-up.
+func policyAlreadyGrantsTools(policy map[string]any) bool {
+	names, ok := policy["default_tools"].([]any)
+	return ok && len(names) > 0
+}
+
+// grantDefaultToolBaseline writes the canonical default tool set into the project this bring-up
+// provisions, unless that project already grants tools of its own. It reports what it wrote, or "" when
+// it wrote nothing.
+//
+// IT IS READ-MODIFY-WRITE BECAUSE THE ENDPOINT IS AN ASSIGNMENT. The document that comes back from the
+// GET is echoed into the PATCH with one key changed; see policyWithDefaultTools for what a bare write
+// would delete on the second bring-up.
+//
+// IT IS BEST-EFFORT AND NEVER FATAL. A stack whose model round-trip is proven is a working stack, and
+// refusing the whole command over a policy write would be a worse trade than reporting the gap — which
+// is what emptyToolBaselineWarning, which runs after this and reads the server again, does with the
+// exact command that fixes it.
+func (c *apiClient) grantDefaultToolBaseline() string {
+	var project struct {
+		ConfigPolicy map[string]any `json:"config_policy"`
+	}
+	status, err := c.do(http.MethodGet, "/v1/projects/"+bootstrapProjectID, nil, &project)
+	if err != nil || status != http.StatusOK {
+		return ""
+	}
+	if policyAlreadyGrantsTools(project.ConfigPolicy) {
+		return ""
+	}
+	tools := bootstrapDefaultTools()
+	body := map[string]any{"config_policy": policyWithDefaultTools(project.ConfigPolicy, tools)}
+	status, err = c.do(http.MethodPatch, "/v1/projects/"+bootstrapProjectID, body, nil)
+	if err != nil || status != http.StatusOK {
+		return ""
+	}
+	return fmt.Sprintf("%s now grants %d default tools: %s", bootstrapProjectID, len(tools), strings.Join(tools, ", "))
 }
 
 // emptyToolBaselineWarning reports the project granting no tools, or "" when it grants some or when the
