@@ -79,7 +79,13 @@ func TestTheSweepAsksAboutAParkedRunNobodyWasAskedAbout(t *testing.T) {
 // reason the claim exists: an approval stays open until somebody CLICKS it, so every tick sees the same
 // row again. Without the claim a reader would collect one identical question with working buttons per
 // interval, and would have no way to tell which pair was real.
-func TestTheSweepAsksAboutTheSameApprovalExactlyOnce(t *testing.T) {
+//
+// THE LOG IS ASSERTED ALONGSIDE THE POSTS, and that half is here because the first version of this file
+// asserted only the posts and shipped a defect the LIVE proof caught instead: nothing was double-posted,
+// but the sweep counted every already-claimed row as an asking, so a single parked approval made it report
+// "asked about 1 parked run(s)" every fifteen seconds forever. A test that reads only the Slack side
+// cannot see that — the Slack side was correct. What was wrong was the sentence describing it.
+func TestTheSweepAsksAboutTheSameApprovalExactlyOnceAndSaysSoOnlyOnce(t *testing.T) {
 	f := newSweepFixture(t, ours("appr_1"))
 	for i := 0; i < 4; i++ {
 		if err := SweepApprovals(context.Background(), f.deps); err != nil {
@@ -88,6 +94,9 @@ func TestTheSweepAsksAboutTheSameApprovalExactlyOnce(t *testing.T) {
 	}
 	if len(f.slack.posted) != 1 {
 		t.Fatalf("four sweeps posted %d message(s), want 1 — an open approval is listed on every tick", len(f.slack.posted))
+	}
+	if n := strings.Count(f.log(), "approval sweep asked about"); n != 1 {
+		t.Fatalf("four sweeps reported asking %d time(s), want 1 — a line claiming a human was just asked, about a question asked once, is what an operator would chase:\n%s", n, f.log())
 	}
 }
 

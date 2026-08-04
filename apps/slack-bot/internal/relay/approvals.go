@@ -237,7 +237,8 @@ func OnApprovalRequested(ctx context.Context, deps ApprovalDeps, channel, thread
 		return err
 	}
 
-	return postApprovalOnce(ctx, deps, channel, threadTS, approval)
+	_, err = postApprovalOnce(ctx, deps, channel, threadTS, approval)
+	return err
 }
 
 // postApprovalOnce is the ONE place either producer puts an approval question into Slack — the live event
@@ -247,16 +248,24 @@ func OnApprovalRequested(ctx context.Context, deps ApprovalDeps, channel, thread
 // A LOST CLAIM IS A SUCCESS, not a refusal: it means the question is already on screen, which is the whole
 // thing the caller wanted. Returning an error for it would make the sweep's ordinary, every-few-seconds
 // outcome look like a failure in the log.
-func postApprovalOnce(ctx context.Context, deps ApprovalDeps, channel, threadTS string, approval palai.Approval) error {
+//
+// BUT IT IS NOT A POST EITHER, and keeping those two apart is what `posted` is for. It was NOT here when
+// this file was first written, and the omission was caught by the live proof rather than by any test: the
+// sweep counted every lost claim as an asking, so a single parked approval made it log "asked about 1
+// parked run(s)" on EVERY tick, forever, while Slack showed exactly one question. Nothing was
+// double-posted — the claim held — but the LOG said a human had just been asked, once every fifteen
+// seconds, about a question asked once. A line that reports an action nobody took is the same defect as
+// an action nobody reports, and it is the one an operator would have chased.
+func postApprovalOnce(ctx context.Context, deps ApprovalDeps, channel, threadTS string, approval palai.Approval) (posted bool, err error) {
 	if approval.ID == "" {
-		return fmt.Errorf("relay: an approval with no id cannot be posted exactly once (session %s)", approval.SessionID)
+		return false, fmt.Errorf("relay: an approval with no id cannot be posted exactly once (session %s)", approval.SessionID)
 	}
 	won, err := deps.Posts.ClaimApprovalPost(ctx, deps.BotID, approval.ID, channel, threadTS)
 	if err != nil {
-		return fmt.Errorf("relay: claim the right to ask about approval %s: %w", approval.ID, err)
+		return false, fmt.Errorf("relay: claim the right to ask about approval %s: %w", approval.ID, err)
 	}
 	if !won {
-		return nil // already asked; a second pair of buttons would be worse than silence
+		return false, nil // already asked; a second pair of buttons would be worse than silence
 	}
 	if _, err := deps.Slack.PostMessage(ctx, buildApprovalMessage(channel, threadTS, approval)); err != nil {
 		// THE CLAIM GOES BACK. Keeping it would turn one failed Slack call into a question nobody is ever
@@ -264,11 +273,11 @@ func postApprovalOnce(ctx context.Context, deps ApprovalDeps, channel, threadTS 
 		// de-duplication. If the release ALSO fails there is nothing further to try, and it is reported
 		// alongside the post failure rather than replacing it.
 		if relErr := deps.Posts.ReleaseApprovalPost(ctx, deps.BotID, approval.ID); relErr != nil {
-			return fmt.Errorf("relay: post approval message for %s: %w (and the claim could not be released, so no later sweep will retry it: %v)", approval.ID, err, relErr)
+			return false, fmt.Errorf("relay: post approval message for %s: %w (and the claim could not be released, so no later sweep will retry it: %v)", approval.ID, err, relErr)
 		}
-		return fmt.Errorf("relay: post approval message for %s: %w", approval.ID, err)
+		return false, fmt.Errorf("relay: post approval message for %s: %w", approval.ID, err)
 	}
-	return nil
+	return true, nil
 }
 
 // ApprovalThreads resolves the Slack thread a session's approval belongs in. It is the reverse of the
@@ -343,13 +352,18 @@ func SweepApprovals(ctx context.Context, deps SweepApprovalDeps) error {
 			if !found {
 				continue // not this bot's session: a console run, another bot, another channel entirely
 			}
-			if err := postApprovalOnce(ctx, deps.Approvals, thread.ChannelID, thread.ThreadTS, approval); err != nil {
+			posted, err := postApprovalOnce(ctx, deps.Approvals, thread.ChannelID, thread.ThreadTS, approval)
+			if err != nil {
 				failed++
 				deps.logf("relay: NOBODY HAS BEEN ASKED about approval %s — its run is parked in %s/%s waiting for a decision and the question is not on screen: %v",
 					approval.ID, thread.ChannelID, thread.ThreadTS, err)
 				continue
 			}
-			asked++
+			// Counted only when this sweep actually put the question on screen — see postApprovalOnce for
+			// the live-measured reason `posted` exists at all.
+			if posted {
+				asked++
+			}
 		}
 		if !result.HasMore || result.NextCursor == nil {
 			break
