@@ -204,7 +204,7 @@ test("every rail row's text clears 4.5:1 against the rail — the criterion a <s
   await page.waitForTimeout(400);
 
   const measured = await page.evaluate(() =>
-    [...document.querySelectorAll<HTMLElement>(".rail-item, .rail-search, .rail-org-name, .rail-org-sub, .workspace-name, .rail-search-label")].map((el) => {
+    [...document.querySelectorAll<HTMLElement>(".rail-item, .rail-search, .workspace-name, .rail-search-label")].map((el) => {
       let surface = "rgb(255, 255, 255)";
       for (let node: Element | null = el; node !== null; node = node.parentElement) {
         const bg = getComputedStyle(node).backgroundColor;
@@ -321,26 +321,33 @@ test("the navigator says a no-match is about SCREENS, because /v1 has no text se
   await expect(page.getByTestId("command-search-empty")).toContainText(/no text search/i);
 });
 
-test("the rail's two ends are the scope: a project readout at the top, the organisation at the foot", async ({ page }) => {
+test("the rail states the scope ONCE, at the top, and carries no organisation card at the foot", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByTestId("panel-organizations")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("panel-projects")).toBeVisible({ timeout: 15_000 });
 
-  // THE ORDER IS THE MEASUREMENT: the reference puts a workspace control under its wordmark and its account
-  // card at the foot. Ours had one bordered "Scope" card at the foot holding both, which is why the first
-  // thing on every screen read as a box that had failed to load.
+  // THIS ASSERTED TWO ENDS UNTIL A.2 TASK 6: a project readout at the top and an organisation card at the
+  // foot, in the reference's order. The card read the first row of /v1/organizations, and that route is
+  // unmounted — so on a real stack it rendered "——" over "—" on every screen while this spec passed,
+  // because the fixture still served the route. Removing the route from the fixture is what made it fail.
   const scope = page.getByTestId("scope");
-  const org = page.getByTestId("rail-org");
   await expect(scope).toBeVisible();
-  await expect(org).toBeVisible();
-  const scopeY = (await scope.boundingBox())!.y;
-  const orgY = (await org.boundingBox())!.y;
-  expect(scopeY, "the project readout belongs above the nav and the org card below it").toBeLessThan(orgY);
 
-  // AND IT SAYS SOMETHING. A scope block whose two lines are em dashes is the defect this console shipped
-  // for two epics — `String(row.display_name ?? row.id)` keeps an EMPTY display_name because "" is neither
-  // null nor undefined.
+  // THE CARD IS GONE, ASSERTED RATHER THAN ASSUMED. Without this line the removal is proven by nothing: a
+  // reintroduced org card would simply not be looked at.
+  await expect(page.getByTestId("rail-org")).toHaveCount(0);
+
+  // THE READOUT IS STILL ABOVE THE NAV, which is the half of the ordering that survives — the reference puts
+  // its workspace control under the wordmark, and ours had one bordered "Scope" card at the foot holding
+  // everything, which is why the first thing on every screen read as a box that had failed to load.
+  const nav = page.getByRole("navigation").first();
+  const scopeY = (await scope.boundingBox())!.y;
+  const navY = (await nav.boundingBox())!.y;
+  expect(scopeY, "the project readout belongs above the nav").toBeLessThan(navY);
+
+  // AND IT SAYS SOMETHING. A scope block whose lines are em dashes is the defect this console shipped for
+  // two epics — `String(row.display_name ?? row.id)` keeps an EMPTY display_name because "" is neither null
+  // nor undefined.
   await expect(scope).not.toContainText("—");
-  await expect(org).toContainText("Local Org");
 });
 
 test("Documentation leaves the console, and says so to a screen reader as well as with an arrow", async ({ page }) => {

@@ -83,13 +83,14 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // the public API answers, stacked at equal weight with no answer to "what is this deployment doing". The
   // registries that nothing else needed here moved to /registry; what stays is what an overview is FOR.
   //
-  // FOUR COLLECTIONS STAY ON THIS PAGE BECAUSE SHIPPED SPECS BIND THEM HERE, and that is recorded rather than
-  // worked around: tests/public-api-only.spec.ts reads `panel-organizations` and `panel-secret-refs` on "/",
-  // and tests/pagination.spec.ts drives `panel-agents` here — three files this pass is not allowed to edit,
-  // plus tests/profile.ts's sign-in landing. So organizations, projects, secret refs and agents are rendered
-  // as the overview's own registry strip; model connections, model routes and knowledge bases, which no spec
-  // pins to this path, are on /registry where they belong.
-  { path: "/", label: "Overview", group: "Overview", readyTestId: "panel-organizations", lead: "What this deployment is running right now — the scope you are in, what it holds, and what is waiting on you." },
+  // THREE COLLECTIONS STAY ON THIS PAGE. It was four until A.2 Task 6: the organizations panel fetched
+  // /v1/organizations, which that task unmounted, so it is gone and this route's readiness signal moved to
+  // panel-projects. The earlier note said the four "stay because shipped specs bind them here" and listed
+  // the specs as files "this pass is not allowed to edit" — which is the rationale inverted: a spec naming a
+  // panel is not a reason to keep a dead panel, it is a spec to update. tests/public-api-only.spec.ts,
+  // tests/pagination.spec.ts and tests/profile.ts's sign-in landing were updated with the removal. Model
+  // connections, model routes and knowledge bases, which no spec pins to this path, remain on /registry.
+  { path: "/", label: "Overview", group: "Overview", readyTestId: "panel-projects", lead: "What this deployment is running right now — the scope you are in, what it holds, and what is waiting on you." },
   // O4/O5, THE READ HALF ONLY (the write half is E26). `panel-usage-meters` is the first of four panels and
   // the one that can still be a spinner. All four are EMPTY on a fresh stack and that is the point of the
   // scan: an empty metering screen is a rendered SENTENCE here, never a blank region (DIV-UI-002 measured
@@ -119,7 +120,7 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // the binding's own page, where an operator goes looking for the edit control that does not exist.
   { path: "/repositories", label: "Repositories", group: "Build", readyTestId: "panel-repository-bindings", lead: "The repositories a coding run can attach a workspace to. Registering a binding checks nothing — the first thing that exercises one is a run." },
   // E25 T4. Its readiness signal is the LIST panel rather than a form, for the same reason "/" uses
-  // panel-organizations: the forms on this page render their final markup synchronously (no data feeds them
+  // panel-projects: the forms on this page render their final markup synchronously (no data feeds them
   // except the environment picker, and BOTH of its states — a select, or the "create one first" note — are
   // real states worth scanning), while the panel is the one part that can still be a spinner.
   { path: "/environments", label: "Environments", group: "Build", readyTestId: "panel-environments", lead: "The named KEY=value sets an agent's shell commands run against. A value is written here and never read back." },

@@ -35,7 +35,7 @@ test.beforeAll(() => announceProfile("bots.spec.ts"));
 test.beforeAll(resetFakeFixture);
 test.beforeEach(async ({ page }) => signIn(page));
 
-// A bot's name is unique per PROJECT (migration 000061's UNIQUE (organization_id, project_id, name)), so a
+// A bot's name is unique per PROJECT (the integration_bots UNIQUE (project_id, name) index), so a
 // fixed name would pass once and 409 on every re-run of this file — and on the real profile, forever.
 const botName = () => `probe-bot-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000)}`;
 const teamID = () => `T${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 1000)}`;

@@ -83,8 +83,8 @@ async function probe(base: string, method: string, path: string, data?: unknown,
 // Every method the browser can address, plus the two surfaces that matter most: the run-starting stream
 // relay, and E23 T9's approval DECISION route.
 const RELAY_SURFACE = [
-  { what: "read the organization list", method: "GET", path: "/api/palai/v1/organizations" },
-  { what: "create an organization", method: "POST", path: "/api/palai/v1/organizations", data: { display_name: "Attacker Org" } },
+  { what: "read the project list", method: "GET", path: "/api/palai/v1/projects" },
+  { what: "create a project", method: "POST", path: "/api/palai/v1/projects", data: { display_name: "Attacker Project" } },
   { what: "patch a project", method: "PATCH", path: "/api/palai/v1/projects/proj_local", data: { display_name: "owned" } },
   { what: "delete an agent", method: "DELETE", path: "/api/palai/v1/agents/agt_1" },
   { what: "decide a tool approval (E23 T9)", method: "POST", path: "/api/palai/v1/approvals/apv_1/approve", data: { request_hash: "sha256:9f2b1c" } },
@@ -152,7 +152,9 @@ test("the correct password opens a session; the wrong one is refused in constant
 
   // The correct password, through the real form in a real browser.
   await signInViaForm(page);
-  await expect(page.getByTestId("panel-organizations")).toContainText("org_local", { timeout: 15_000 });
+  // panel-organizations / "org_local" until A.2 Task 6 unmounted that route. `_local` rather than a whole
+  // id: the fixture seeds `proj_local` and identity/store.go seeds `prj_local` (DIV-SHP-002).
+  await expect(page.getByTestId("panel-projects")).toContainText("_local", { timeout: 15_000 });
 });
 
 test("the session cookie is httpOnly, Secure, SameSite=Strict — and invisible to the page's own scripts", async ({ page }) => {
@@ -185,13 +187,13 @@ test("a write carrying a foreign Origin is refused 403 even WITH a valid session
   const cookieHeader = (await sessionHeaders(page)).Cookie;
 
   // The same write, three ways. Only the Origin differs — so the 403s are about Origin and nothing else.
-  const foreign = await probe(ORIGIN, "POST", "/api/palai/v1/organizations", { display_name: "csrf" }, { Cookie: cookieHeader, Origin: "https://evil.example" });
+  const foreign = await probe(ORIGIN, "POST", "/api/palai/v1/projects", { display_name: "csrf" }, { Cookie: cookieHeader, Origin: "https://evil.example" });
   expect(foreign.status, "a foreign Origin must be refused").toBe(403);
   expect(foreign.code).toBe("origin_mismatch");
 
   // No Origin at all is refused too: every browser stamps one on a non-GET fetch, so its absence means the
   // caller is not the console.
-  const originless = await probe(ORIGIN, "POST", "/api/palai/v1/organizations", { display_name: "csrf" }, { Cookie: cookieHeader });
+  const originless = await probe(ORIGIN, "POST", "/api/palai/v1/projects", { display_name: "csrf" }, { Cookie: cookieHeader });
   expect(originless.status, "a mutating request with no Origin must be refused").toBe(403);
 
   // And the sign-in route itself, which is the one mutation an attacker's page would most like to trigger.
@@ -199,14 +201,15 @@ test("a write carrying a foreign Origin is refused 403 even WITH a valid session
   expect(foreignLogin.status, "a cross-origin sign-in must be refused").toBe(403);
 
   // The control: the SAME cookie with the console's own Origin is NOT refused for being cross-origin. It
-  // reaches the relay and gets the upstream's answer (the fixture serves no POST /v1/organizations), which is
-  // what makes the three 403s above a statement about Origin rather than about the request.
-  const own = await probe(ORIGIN, "POST", "/api/palai/v1/organizations", { display_name: "ok" }, { Cookie: cookieHeader, Origin: ORIGIN });
+  // reaches the relay and gets the upstream's answer, which is what makes the three 403s above a statement
+  // about Origin rather than about the request. (These four probed /v1/organizations until A.2 Task 6
+  // unmounted it; the path only ever needed to be a real relay route, and /v1/projects is one.)
+  const own = await probe(ORIGIN, "POST", "/api/palai/v1/projects", { display_name: "ok" }, { Cookie: cookieHeader, Origin: ORIGIN });
   expect([403, 401]).not.toContain(own.status);
 
   // A GET is NOT origin-checked, and that is deliberate: a top-level navigation carries no Origin, and
   // SameSite=Strict is what protects reads. Stated here so the asymmetry is a decision, not an oversight.
-  const read = await probe(ORIGIN, "GET", "/api/palai/v1/organizations", undefined, { Cookie: cookieHeader });
+  const read = await probe(ORIGIN, "GET", "/api/palai/v1/projects", undefined, { Cookie: cookieHeader });
   expect(read.status).toBe(200);
 });
 

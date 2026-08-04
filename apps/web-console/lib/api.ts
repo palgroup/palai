@@ -29,7 +29,7 @@ async function toProblem(res: Response): Promise<RelayError> {
   }
 }
 
-// apiGet reads a /v1 resource through the relay. `path` is the upstream path AFTER /v1 (e.g. "/organizations").
+// apiGet reads a /v1 resource through the relay. `path` is the upstream path AFTER /v1 (e.g. "/projects").
 export async function apiGet<T = unknown>(path: string): Promise<T> {
   const res = await fetch(`${RELAY}/v1${path}`, { headers: { Accept: "application/json" } });
   if (!res.ok) throw await toProblem(res);

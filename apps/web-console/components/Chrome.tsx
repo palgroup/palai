@@ -316,31 +316,22 @@ function scopeLabel(row: ScopeRow | undefined): string {
 }
 
 /**
- * useScope reads the organisation and the project list once, for the two ends of the rail.
+ * useScope reads the project list once, for the rail's project picker.
  *
- * IT IS ONE HOOK FOR TWO COMPONENTS BECAUSE IT IS ONE PAIR OF READS. The project picker sits at the TOP of
- * the rail and the org card at the FOOT — measured, that is where the reference puts its workspace picker and
- * its account card — and having each fetch its own copy would double two requests on every page load to render
- * two halves of one fact.
+ * IT READ TWO THINGS UNTIL A.2 TASK 6. The second was /v1/organizations, for an org card at the FOOT of the
+ * rail; that route is unmounted, so the read 404'd and the card rendered two em dashes on every screen. Both
+ * are gone. The remaining read is the project list, which is what the picker at the top of the rail is for.
  *
  * A failure is SILENT and that is deliberate: on the un-configured console (no operator password) every relay
  * read is a 401, and a shell that rendered an alert on every page would put a role="alert" on fifteen screens
  * that are simply closed.
  */
 function useScope() {
-  const [orgs, setOrgs] = useState<ScopeRow[] | null>(null);
   const [projects, setProjects] = useState<ScopeRow[] | null>(null);
   const [project, setProject] = useState("");
 
   useEffect(() => {
     let live = true;
-    apiGet<{ data?: ScopeRow[] }>("/organizations")
-      .then((body) => {
-        if (live) setOrgs(body.data ?? []);
-      })
-      .catch(() => {
-        /* closed door or an unreachable upstream — the shell states nothing rather than alarming fifteen pages */
-      });
     apiGet<{ data?: ScopeRow[] }>("/projects")
       .then((body) => {
         if (!live) return;
@@ -358,7 +349,7 @@ function useScope() {
     };
   }, []);
 
-  return { orgs, projects, project, setProject };
+  return { projects, project, setProject };
 }
 
 /**
@@ -417,16 +408,18 @@ function Workspace() {
 }
 
 /**
- * RailFoot is Documentation and the organisation card, in the reference's own order at the foot of the rail.
+ * RailFoot is Documentation, at the foot of the rail.
  *
- * THE ORG CARD IS A READOUT AND NOT A BUTTON. The reference's is a menu opener (account, billing, sign out);
- * ours has nowhere to go — the console has one server-side credential and no account model — so rendering a
- * button here would be a control that does nothing, which is the defect this file's neighbours are full of
- * comments about. It carries the card's geometry and none of its affordance.
+ * IT HELD AN ORGANISATION CARD BESIDE IT UNTIL A.2 TASK 6, a readout of the first row of
+ * /v1/organizations, placed where the reference puts its account card. That route is unmounted; the card
+ * read a 404 and rendered "——" over "—" on every screen in the console. It is removed rather than repointed
+ * at the project: the project already has a readout at the TOP of the rail, and a second copy of it at the
+ * foot would be geometry kept for its own sake.
+ *
+ * So the scope is now stated ONCE, where it is chosen. shell.spec.ts asserts that, and asserts this foot no
+ * longer carries an org card at all.
  */
 function RailFoot() {
-  const { orgs } = useScope();
-  const org = orgs?.[0];
   return (
     <div className="rail-foot">
       <a className="rail-item" href="https://github.com/palgroup/palai#readme" data-testid="rail-documentation">
@@ -439,15 +432,6 @@ function RailFoot() {
         </span>
         <span className="sr-only">(opens in a new tab)</span>
       </a>
-      <div className="rail-org" data-testid="rail-org">
-        <span className="rail-org-mark" aria-hidden="true">
-          <RailIcon name="Org" />
-        </span>
-        <span className="rail-org-text">
-          <span className="rail-org-name">{scopeLabel(org)}</span>
-          <span className="rail-org-sub">{org === undefined ? "—" : String(org.id ?? "—")}</span>
-        </span>
-      </div>
     </div>
   );
 }

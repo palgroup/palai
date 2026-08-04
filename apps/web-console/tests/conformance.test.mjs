@@ -183,7 +183,8 @@ before(async () => {
 // --- SEEDING BOTH SIDES (E25 T2, extended by T4) --------------------------------------------------------
 //
 // The item-shape arm can only compare a collection that has a row on BOTH sides, and a bootstrap stack seeds
-// exactly three: organizations, projects, api-keys. So this sweep has been comparing three item shapes and
+// exactly two: projects, api-keys (it seeded organizations too until A.2 Task 6 dropped them). So this sweep
+// has been comparing that handful of item shapes and
 // PROVING ENVELOPES for the rest — which is honest but thin, and it is why the knowledge-base fixture row
 // carried `display_name` (the real projection's field is `name`) for months with nothing to catch it.
 //
@@ -577,7 +578,7 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
   // produce a false divergence for every unpopulated collection — which then has to be excused in the
   // ledger, which is how a ledger stops meaning anything. The honest consequence is stated rather than
   // hidden: on a fresh stack this arm proves ENVELOPES everywhere and ITEMS only for the three collections
-  // the bootstrap seeds (organizations, projects, api-keys).
+  // the bootstrap seeds (projects, api-keys).
   it("the JSON shapes of the routes both serve agree, or the difference is on the ledger", async () => {
     // Only GETs that need no prior state, so the comparison is about SHAPE and never about test setup.
     const comparable = ROUTES.filter((r) => r.method === "GET" && !r.pattern.endsWith("/events") && !r.pattern.endsWith("/content"));
@@ -633,7 +634,8 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
     // became comparable; `GET /v1/agents` did NOT, and structurally cannot: the fixture's agents collection
     // must exceed one page for truncation to be observable at all (DIV-UI-005/DIV-SHP-004), so its first page
     // carries a minted `next_cursor` the real stack's short list omits, and an envelope difference SUBSUMES
-    // the item comparison. The eight that must hold: organizations, projects, api-keys, knowledge-bases,
+    // the item comparison. The eight that must hold (organizations was among them until A.2 Task 6):
+    // projects, api-keys, knowledge-bases,
     // environments, secret-refs, repository-bindings, agent-revisions. T7 seeds tool revisions and raises it
     // again; it must never fall.
     //
@@ -661,7 +663,7 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
     // because it did not exist. GET /v1/tool-sets/{set}/revisions/{revision_id} is compared too, but as an
     // ENVELOPE rather than an item — it is a single resource, not a page, so `data[0]` is undefined and it
     // does not raise this count. Its whole key set is still diffed, which for a detail projection is the
-    // stronger of the two checks. The eleven: organizations, projects, api-keys, knowledge-bases,
+    // stronger of the two checks. The eleven: projects, api-keys, knowledge-bases,
     // environments, secret-refs, repository-bindings, agent-revisions, tools, tool-revisions, tool-sets.
     //
     // E25 T8 RAISES IT TO 13, AND T7's ELEVEN HAD NEVER ACTUALLY BEEN REACHED. T7 wrote the number above
@@ -696,19 +698,25 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
     //                     one active machine, and this arm compares its row. A ledger is worth exactly the
     //                     truth of its lines, and this is the line the sweep corrected.
     //
-    // The sixteen, as the run prints them: organizations, projects, api-keys, runner-pools, runner-pool-keys,
+    // THE FLOOR FELL FROM 16 TO 15, AND A FALLING FLOOR NEEDS A REASON OR IT IS JUST A LOWERED BAR. The
+    // reason is not a seed that stopped landing — it is that `organizations` STOPPED EXISTING. A.2 Task 6
+    // unmounted GET /v1/organizations on the real stack and this pass removed it from the fixture, so there
+    // is no collection left to compare rather than a comparison that is being skipped. Every other member
+    // is untouched, and the rule stands for them: it must never fall again without a line like this one.
+    //
+    // The fifteen, as the run prints them: projects, api-keys, runner-pools, runner-pool-keys,
     // runners, secret-refs, knowledge-bases, agent-revisions, tools, tool-revisions, tool-sets,
     // repository-bindings, environments, responses, usage-ledger.
     assert.ok(
-      itemsCompared >= 16,
+      itemsCompared >= 15,
       `only ${itemsCompared} collections had a row on BOTH sides (${comparedSubjects.join(", ")}), so this arm ` +
-        "compared almost no item shapes — the bootstrap seeds organizations/projects/api-keys and this sweep " +
+        "compared almost no item shapes — the bootstrap seeds projects/api-keys and this sweep " +
         "seeds a knowledge base, an environment, one environment value (which is a secret_refs row), a " +
         "repository binding, an agent, a published agent revision, a tool, a published tool revision, a " +
         "published tool-set revision, a RUN (which settles a usage ledger row in the same transaction) and a " +
         "POOL ENROLMENT KEY — while the bootstrap ALSO seeds a runner pool and `palai local up` enrols one " +
-        "MACHINE. Sixteen of those seventeen can be compared; GET /v1/agents cannot, because its envelope " +
-        "differs irreducibly (see DIV-SHP-004). Fewer than sixteen means either the real stack is not seeded " +
+        "MACHINE. Fifteen of those sixteen can be compared; GET /v1/agents cannot, because its envelope " +
+        "differs irreducibly (see DIV-SHP-004). Fewer than fifteen means either the real stack is not seeded " +
         "or a seed did not land, and this arm would pass vacuously",
     );
   });

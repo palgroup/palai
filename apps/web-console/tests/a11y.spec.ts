@@ -189,10 +189,16 @@ for (const d of [...FORM_DIALOGS, ...PRIMITIVE_DIALOGS]) {
 // that the panel held REAL ROWS and not a spinner when axe looked at it.
 test("axe-core reports zero violations on the admin surface", async ({ page }) => {
   await page.goto("/");
-  // org_local is the id BOTH surfaces carry: the fixture seeds it, and identity/store.go's ProvisionFirstOrg
-  // seeds it on every real bootstrap. Its display NAME is not — the real seed passes no orgName at all
-  // (DIV-SHP-001) — so asserting on the name would be asserting on the fixture.
-  await expect(page.getByTestId("panel-organizations")).toContainText("org_local", { timeout: 15_000 });
+  // A LOADED-WITH-DATA PRECONDITION, and the substring is chosen rather than casual. This read
+  // panel-organizations / "org_local" until A.2 Task 6 unmounted that route, and it named
+  // identity/store.go's ProvisionFirstOrg — a function that is now ProvisionFirstTenant. The project panel
+  // is the surviving equivalent.
+  //
+  // It does NOT assert a whole id, because no whole id is true on both profiles: the fixture seeds
+  // `proj_local` and identity/store.go seeds `prj_local` (DIV-SHP-002, off by a letter — policy.spec.ts
+  // records the same trap). `_local` is the part both carry, so this stays a real content assertion instead
+  // of degrading to toBeVisible, which a panel rendering its ERROR state would also satisfy.
+  await expect(page.getByTestId("panel-projects")).toContainText("_local", { timeout: 15_000 });
   const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
   expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
 });
@@ -207,7 +213,7 @@ test("axe-core reports zero violations on the admin surface", async ({ page }) =
 // it as coverage: it is a subscription, not a scan. That is the honest cost of widening a tag set.
 test("the WCAG 2.1/2.2 tags genuinely select rules the 2.0 tags do not", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByTestId("panel-organizations")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("panel-projects")).toBeVisible({ timeout: 15_000 });
 
   const ruleIDs = async (tags: string[]) => {
     const r = await new AxeBuilder({ page }).withTags(tags).analyze();

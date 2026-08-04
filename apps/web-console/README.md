@@ -6,7 +6,7 @@ the server-side relay (`app/api/palai/**`) and never reaches the browser — the
 
 ## Surfaces
 
-- **Admin (§47.1, `/`):** organizations, projects, API keys, model connections/routes, secret-ref
+- **Admin (§47.1, `/`):** projects, API keys, model connections/routes, secret-ref
   METADATA (the value is never shown), agent revisions + diff, knowledge bases. Every panel fetches a
   `/v1` list through the same-origin relay.
 - **Live (§47.2, `/runs`):** start a run and watch its canonical event timeline sorted into lanes

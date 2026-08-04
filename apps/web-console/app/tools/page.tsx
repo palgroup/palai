@@ -330,7 +330,7 @@ export default function ToolsPage() {
             // credential that was never found.
             emptyNote: (
               <>
-                <strong>This organization has no secret refs.</strong> Write one with{" "}
+                <strong>This installation has no secret refs.</strong> Write one with{" "}
                 <code>palai secret create</code>, or write an environment value on the{" "}
                 <a href="/environments">Environments</a> page (that creates a secret ref too). A server that
                 needs no credential needs none of this — register the connection without one.

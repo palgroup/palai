@@ -4,7 +4,7 @@ import { announceProfile, signIn, skipOnReal } from "./profile";
 
 // LIST TRUNCATION IS VISIBLE (E25 T2, plan §3.6 D18 / feature list O12). This is a BUG FIX with a spec, not a
 // feature: components/Panel.tsx read `body.data` and did not have `has_more` in its type at all, while
-// api/pagination.go's defaultPageLimit is 20. So every admin list in this console — organizations, projects,
+// api/pagination.go's defaultPageLimit is 20. So every admin list in this console — projects,
 // keys, connections, routes, secret-refs, knowledge bases, agents, and after E25 the approval queue — showed
 // at most twenty rows and said nothing. The twenty-first row did not appear to exist.
 //
@@ -130,7 +130,7 @@ test("no request ever carries ?before=, and on page one the backward arrow canno
   });
 
   await page.goto("/");
-  await expect(page.getByTestId("panel-organizations")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("panel-projects")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("panel-agents").locator("tbody tr")).toHaveCount(20, { timeout: 15_000 });
 
   // THE POSITION WHERE A BACKWARD REQUEST WOULD BE MEANINGLESS IS THE POSITION WHERE THE CONTROL REFUSES.

@@ -31,20 +31,19 @@ import { compactTokens } from "@/lib/sessions";
 // (?created_after / ?created_before) and the totals are not, and until the summary gains a window the honest
 // card is the lifetime one.
 //
-// FOUR COLLECTIONS STAY ON THIS PATH BECAUSE SHIPPED SPECS PIN THEM HERE, and that is recorded rather than
-// quietly worked around: tests/public-api-only.spec.ts reads `panel-organizations` and `panel-secret-refs`
-// on "/", tests/pagination.spec.ts drives `panel-agents` here, and tests/profile.ts's sign-in lands on
-// `ceiling-note`. Three of those are files this pass must not weaken. They are not passengers either — the
-// organisations and projects ARE the scope every other screen reads, the agent list is the deployment's unit
-// of work, and secret refs are the one collection whose metadata-only projection is worth seeing beside the
-// keys that use it. Model connections, model routes and knowledge bases, which no spec pins, are on
-// /registry.
+// THREE COLLECTIONS STAY ON THIS PATH, and they earn it rather than being pinned by a test. It was four
+// until A.2 Task 6 removed the organizations panel with the route behind it. The note here used to say the
+// four "stay because shipped specs pin them here" and name three spec files "this pass must not weaken" —
+// which had the dependency backwards, and is how a panel outlived its endpoint. What is true: the PROJECT is
+// the scope every other screen reads, the agent list is the deployment's unit of work, and secret refs are
+// the one collection whose metadata-only projection is worth seeing beside the keys that use it. Model
+// connections, model routes and knowledge bases, which no spec pins, are on /registry.
 //
 // EVERY READ RIDES THE RELAY (browser → /api/palai/v1/* → upstream /v1/*), so the public-API-only intercept
 // still sees the whole admin surface ride it. Secret-ref VALUES are never rendered — metadata only.
 //
 // AND THERE IS NO "Created" COLUMN ON THE THREE COLLECTIONS BELOW, which was a column drafted and then
-// deleted. `organizationView`, `projectView` and `apiKeyView` all declare `CreatedAt *time.Time` with
+// deleted. `projectView` and `apiKeyView` both declare `CreatedAt *time.Time` with
 // `json:"created_at,omitempty"` (apps/control-plane/internal/identity/store.go), so the stamp is ABSENT from
 // the wire whenever the pointer is nil — and it is nil on every row the deterministic fixture serves.
 // Rendering three columns of em dashes teaches a reader that this screen is broken, which is a worse lie
@@ -252,33 +251,16 @@ export default function OverviewPage() {
 
           THEY ARE A TWO-COLUMN GRID NOW AND THEY WERE A COLUMN OF FOUR — "muz gibiii uzun sayfalar var aq".
           Four full-width tables of two columns each is a page that scrolls for no reason: none of them is
-          wide, and stacking them made the fourth invisible without a scroll. All four stay on this path and
-          that is not a choice — tests/public-api-only.spec.ts reads panel-organizations and panel-secret-refs
-          here, tests/pagination.spec.ts drives panel-agents here, and none of the three may be weakened. */}
-      <div className="registry-grid">
-      <Panel
-        title="Organizations"
-        testId="panel-organizations"
-        fetchPath="/organizations"
-        columns={[
-          { header: "ID", sort: (r) => String(r.id ?? ""), render: (r) => <IdCell id={String(r.id ?? "")} label="organization ID" /> },
-          {
-            header: "Name",
-            sort: (r) => String(r.display_name ?? ""),
-            render: (r) => <NameCell name={String(r.display_name ?? "")} id="" />,
-          },
-        ]}
-        emptyNote={
-          <>
-            <p className="empty-title">No organization</p>
-            <p className="empty-body">
-              An organization is the outermost scope this deployment holds. A bootstrap seeds one, so an
-              empty list here means the control plane has not finished starting.
-            </p>
-          </>
-        }
-      />
+          wide, and stacking them made the fourth invisible without a scroll.
 
+          THE ORGANIZATIONS PANEL WAS THE FIRST OF THEM AND IT IS GONE (A.2 Task 6 unmounted
+          /v1/organizations, so it fetched a route that 404s). The sentence here used to say the four panels
+          "stay on this path and that is not a choice — tests/public-api-only.spec.ts reads
+          panel-organizations". That is the rationale backwards: a test naming a surface is not a reason to
+          keep a dead one, it is a test that has to be told the surface is gone. The specs were updated with
+          this edit; what may not be weakened is the CLAIM each of them makes (every read rides the relay,
+          page one cannot go backward), not the particular panel it happens to drive. */}
+      <div className="registry-grid">
       <Panel
         title="Projects"
         testId="panel-projects"
@@ -297,7 +279,10 @@ export default function OverviewPage() {
               </a>
             ),
           },
-          { header: "Organization", sort: (r) => String(r.organization_id ?? ""), render: (r) => <code>{String(r.organization_id ?? "")}</code> },
+          // AN "Organization" COLUMN WAS HERE, rendering `r.organization_id`. A.2 Task 6 dropped that column
+          // from every table, so the projection stopped carrying the field and every row rendered an empty
+          // <code> — a column of blanks, which teaches a reader the screen is broken. It is the same reason
+          // the note at the top of this file gives for having no "Created" column.
         ]}
         emptyNote={
           <>

@@ -45,7 +45,8 @@ export interface SessionRow extends Record<string, unknown> {
   first_activity_at?: string | null;
   last_activity_at?: string | null;
   duration_ms?: number | null;
-  organization_id?: string;
+  // organization_id was declared here beside project_id until A.2 Task 6 dropped the column; the
+  // projection no longer carries it and nothing read it.
   project_id?: string;
 }
 

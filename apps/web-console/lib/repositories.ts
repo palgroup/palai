@@ -30,7 +30,8 @@ export interface BindingRow extends Record<string, unknown> {
    * and wrong the day the field starts being emitted as "".
    */
   archived_at?: string;
-  organization_id?: string;
+  // organization_id was declared here beside project_id until A.2 Task 6 dropped the column; the
+  // projection no longer carries it and nothing read it.
   project_id?: string;
 }
 

@@ -67,7 +67,7 @@ interface Page<Row> {
 }
 
 // Panel is the generic admin-list surface: it fetches a /v1 list through the relay on mount and renders
-// a labelled table. Every admin section (organizations, projects, keys, connections, routes, secret-refs,
+// a labelled table. Every admin section (projects, keys, connections, routes, secret-refs,
 // agents, knowledge bases) is one Panel + a column spec — no per-endpoint boilerplate. Loading / empty /
 // error states are TEXT (never color-only), so a screen reader and a colorblind user both get the state.
 //
@@ -331,7 +331,7 @@ export function Panel<Row extends Record<string, unknown>>({
   //
   // NO FIXED HEIGHT IS RESERVED HERE, AND THAT IS A MEASUREMENT RATHER THAN AN OMISSION. A panel's height IS
   // its row count, and the row count is exactly what has not arrived: measured on the fake profile, the same
-  // component resolves to 154px with one row (panel-organizations) and 1379px with twenty (panel-agents).
+  // component resolves to 154px with one row (panel-projects) and 1379px with twenty (panel-agents).
   // A reserve sized for either is wrong by about 1200px for the other, and sizing for the larger replaces a
   // panel that grows with a blank region that collapses — a worse jump, and a worse one to read.
   // Settled. `rows` is still nullable to the compiler because a fetch that REJECTED leaves it null, and that

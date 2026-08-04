@@ -614,7 +614,7 @@ export default function PolicyPage() {
                 <code>provision</code> — the whole admin surface, including <strong>this policy form</strong>
               </label>
               <p className="muted" id="key-scope-provision-hint">
-                Organizations, projects, keys, model wiring, environments and tools. A key with this can rewrite
+                Projects, keys, model wiring, environments and tools. A key with this can rewrite
                 the approver list above.
               </p>
               <label htmlFor="key-scope-approve">

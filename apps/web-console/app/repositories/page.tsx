@@ -449,7 +449,7 @@ export default function RepositoriesPage() {
                       // CLI (`palai secret create|list|get|rotate`, cmd/cli/internal/admin/admin.go:134). A
                       // link that promises a management screen there is not is the same defect as a comment
                       // claiming a property the code lacks, in a form the reader can click.
-                      hint: "The NAME of a stored secret, never its value. This list is every secret ref in the organization — model-provider keys and environment values included — so pick the one that is a Git credential. There is no screen that lists them by purpose; `palai secret list` is the other way to see them.",
+                      hint: "The NAME of a stored secret, never its value. This list is every secret ref in the installation — model-provider keys and environment values included — so pick the one that is a Git credential. There is no screen that lists them by purpose; `palai secret list` is the other way to see them.",
                     },
                   ]),
               ...(connectionMode !== "new"

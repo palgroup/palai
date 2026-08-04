@@ -52,7 +52,9 @@ test("every console request rides the /v1 relay — no privileged backchannel, n
   // Exercise the admin surface (many list fetches) and a full live run — the broadest set of data requests
   // the console makes on this profile.
   await page.goto("/");
-  await expect(page.getByTestId("panel-organizations")).toContainText("org_local", { timeout: 15_000 });
+  // panel-organizations / "org_local" until A.2 Task 6 unmounted that route. `_local` rather than a whole
+  // id: the fixture seeds `proj_local` and identity/store.go seeds `prj_local` (DIV-SHP-002).
+  await expect(page.getByTestId("panel-projects")).toContainText("_local", { timeout: 15_000 });
   if (IS_REAL) {
     // E25 T2 — THIS USED TO SAY "/v1/secret-refs is not registered on a compose stack (DIV-RTE-001), so the
     // panel renders its ERROR state", and that was measured FALSE: compose.yaml:116 passes the secret master

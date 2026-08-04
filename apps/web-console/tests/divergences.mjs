@@ -56,20 +56,17 @@ export const DIVERGENCES = [
   // =====================================================================================================
   // RESPONSE SHAPE — routes both serve, answered differently.
   // =====================================================================================================
-  {
-    id: "DIV-SHP-001",
-    kind: "shape",
-    subject: "GET /v1/organizations",
-    detail:
-      "Real: {id, object, display_name, created_at} with display_name EMPTY — ProvisionFirstOrg (identity/store.go) passes no orgName, so the bootstrap org has no display name at all. Fixture: {id, object, display_name} with 'Local Org'. The console's admin panel asserts on a display name the real bootstrap stack never sets.",
-    owner: "console fixture; the empty seed name is real bootstrap behaviour, not a bug to fix here",
-  },
+  // DIV-SHP-001 (GET /v1/organizations) IS RETIRED, not excused. A.2 Task 6 unmounted the route and this
+  // pass removed it from the fixture, so the two sides no longer disagree about a shape — there is no shape.
+  // A ledger entry for a route neither side serves would be a line that can never be closed and can never
+  // fail, which is the state this file exists to prevent. Deleted rather than marked resolved because the
+  // sweep derives its subjects from ROUTES, and an id nothing can reach is not evidence of anything.
   {
     id: "DIV-SHP-002",
     kind: "shape",
     subject: "GET /v1/projects",
     detail:
-      "Real: {id, object, organization_id, display_name (empty), config_policy, created_at} and the id is `prj_local`. Fixture: {id, object, organization_id, display_name} and the id is `proj_local` — off by a letter from the id identity/store.go actually seeds, which is precisely the kind of thing a fixture gets away with forever until something compares it.",
+      "Real: {id, object, display_name (empty), config_policy, created_at} and the id is `prj_local`. Fixture: {id, object, display_name} and the id is `proj_local` — off by a letter from the id identity/store.go actually seeds, which is precisely the kind of thing a fixture gets away with forever until something compares it. (Both sides carried organization_id until A.2 Task 6 dropped the column; neither does now.)",
     owner: "console fixture",
   },
   {
@@ -77,7 +74,7 @@ export const DIVERGENCES = [
     kind: "shape",
     subject: "GET /v1/api-keys",
     detail:
-      "Real: {id, object, organization_id, project_id, principal_id, scopes, created_at} — and the bootstrap key's `scopes` is the EMPTY array (ProvisionFirstOrg seeds no scopes). Fixture: {id, object, project_id, scopes, revoked_at} with scopes ['provision','responses'] and a revoked_at the real view does not project. A console rendering a revocation column is rendering a field the API does not return.",
+      "Real: {id, object, project_id, principal_id, scopes, created_at} — organization_id left with A.2 Task 6 — and the bootstrap key's `scopes` is NO LONGER the empty array (ProvisionFirstTenant seeds system/provision/approve). Fixture: {id, object, project_id, scopes, revoked_at} with scopes ['provision','responses'] and a revoked_at the real view does not project. A console rendering a revocation column is rendering a field the API does not return.",
     owner: "console fixture",
   },
   {

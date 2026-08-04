@@ -396,7 +396,7 @@ export default function RepositoryBindingPage() {
                       options: refOptions,
                       placeholder: "Choose a credential…",
                       testId: "binding-connection-select",
-                      hint: "Every secret ref in the organization — model-provider keys and environment values included. Pick the one that is a Git credential.",
+                      hint: "Every secret ref in the installation — model-provider keys and environment values included. Pick the one that is a Git credential.",
                     },
                   ]),
               ...(connMode !== "new"

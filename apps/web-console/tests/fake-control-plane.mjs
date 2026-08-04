@@ -741,7 +741,6 @@ function responseListRows() {
       id: sid.replace("ses_", "resp_"),
       model: "",
       object: "response",
-      organization_id: "org_local",
       output: [],
       project_id: "proj_local",
       session_id: sid,
@@ -818,8 +817,10 @@ const USAGE_LEDGER = [
 // The static admin fixtures — the §47.1 surface. Secret-ref rows are metadata only (name/version); a
 // connection carries a secret REF name, never a value; an api-key row is metadata only.
 const ADMIN = {
-  organizations: listView([{ id: "org_local", object: "organization", display_name: "Local Org" }]),
-  projects: listView([{ id: "proj_local", object: "project", organization_id: "org_local", display_name: "Default Project" }]),
+  // NO `organizations` KEY, and no organization_id on the project row. A.2 Task 6 dropped the table, the
+  // column and the routes; a fixture that kept them would let a console read a shape production cannot
+  // return — which is exactly how the org panel stayed green after the product lost it.
+  projects: listView([{ id: "proj_local", object: "project", display_name: "Default Project" }]),
   // `principal_id` JOINED THIS ROW BECAUSE THE REAL PROJECTION HAS ALWAYS CARRIED IT and this fixture did
   // not. Measured against the live stack 2026-08-03:
   //
@@ -923,7 +924,7 @@ const projectPolicies = new Map([
  * only ever puts an id in this path that GET /v1/projects just handed it.
  */
 function projectDetail(id) {
-  const row = ADMIN.projects.data.find((p) => p.id === id) ?? { id, object: "project", organization_id: "org_local", display_name: "Default Project" };
+  const row = ADMIN.projects.data.find((p) => p.id === id) ?? { id, object: "project", display_name: "Default Project" };
   return { ...row, config_policy: projectPolicies.get(id) ?? null, created_at: "2026-07-24T00:00:00Z" };
 }
 
@@ -1279,7 +1280,7 @@ function streamEvents(sid, rid, runId, request, response) {
 //
 // GET /v1/sessions and GET /v1/sessions/{id} are registered by the real router (api/router.go:321-322) and
 // this fixture served NEITHER, which is why the Sessions screen could not be built against it. The shape
-// below is migration 000048's projection key for key — id, object, status, created_at, organization_id,
+// below is the session projection's key set — id, object, status, created_at,
 // project_id, name, name_source, agents, input_tokens, output_tokens, first_activity_at, last_activity_at,
 // duration_ms — because the conformance sweep diffs this against the running real one and a generous fixture
 // is how a console ends up rendering a field the API does not send.
@@ -1321,7 +1322,6 @@ const SESSIONS = Array.from({ length: 24 }, (_, i) => {
     object: "session",
     status: i % 6 === 5 ? "closed" : i % 6 === 4 ? "paused" : "active",
     created_at: new Date(createdAt).toISOString(),
-    organization_id: "org_local",
     project_id: "prj_local",
     name: i === REFUSED_INDEX ? REFUSED_NAME : named ? `Release rehearsal ${String(i + 1)}` : unnamed ? "" : "Push the release branch.",
     name_source: named ? "operator" : unnamed ? "none" : "derived",
@@ -1332,7 +1332,7 @@ const SESSIONS = Array.from({ length: 24 }, (_, i) => {
     // hand-diffing this collection against the running stack on 2026-07-31, because the conformance sweep
     // could not run (its `before` hook drives a real run to terminal and this stack leaves runs queued).
     // MEASURED: `GET /v1/sessions/{id}` for a session created through the API answers eleven keys —
-    // agents, created_at, id, input_tokens, name, name_source, object, organization_id, output_tokens,
+    // agents, created_at, id, input_tokens, name, name_source, object, output_tokens,
     // project_id, status — and first_activity_at / last_activity_at / duration_ms are ABSENT, because the
     // Go projection carries them omitempty. A fixture serving `null` teaches a shape the API never sends,
     // which is the DIV-SHP-004 defect exactly: the console would be written against a key that is not there.
@@ -1749,7 +1749,10 @@ const decideApproval = (approve) => (request, response, { approval_id: id }) =>
   });
 
 export const ROUTES = [
-  { method: "GET", pattern: "/v1/organizations", handle: adminList("organizations") },
+  // NO /v1/organizations. A.2 Task 6 unmounted the three organization routes from api/router.go, and
+  // this fixture kept serving the GET — so five console specs asserting `panel-organizations` were
+  // green against a route the product does not have. A fake that is more generous than production
+  // does not merely fail to catch a defect, it manufactures the evidence that there is none.
   { method: "GET", pattern: "/v1/projects", handle: adminList("projects") },
   { method: "GET", pattern: "/v1/api-keys", handle: adminList("api-keys") },
 
@@ -1767,7 +1770,7 @@ export const ROUTES = [
         }
         projectSeq += 1;
         const id = `prj_console_${String(projectSeq).padStart(4, "0")}`;
-        const row = { id, object: "project", organization_id: "org_local", display_name: typeof body.display_name === "string" ? body.display_name : "" };
+        const row = { id, object: "project", display_name: typeof body.display_name === "string" ? body.display_name : "" };
         // UNSHIFT, for the reason the agents route does it: a spec that creates a project and then picks it
         // must find it, and a fixture that appends teaches an ordering the real list does not have.
         ADMIN.projects.data.unshift(row);
@@ -1829,7 +1832,6 @@ export const ROUTES = [
         sendJSON(response, 201, {
           id,
           object: "api_key",
-          organization_id: "org_local",
           project_id: projectID,
           principal_id: `prin_console_${String(apiKeySeq).padStart(4, "0")}`,
           scopes,
@@ -2245,7 +2247,7 @@ export const ROUTES = [
         const name = typeof body.name === "string" ? body.name : "";
         const kind = typeof body.kind === "string" ? body.kind : "";
         if (name === "" || kind === "") return sendProblem(response, 400, "invalid_request", "name and kind are required");
-        // MIGRATION 000061's UNIQUE (organization_id, project_id, name), surfaced as ErrBotNameTaken's 409
+        // The integration_bots UNIQUE (project_id, name) index, surfaced as ErrBotNameTaken's 409
         // rather than as a 500. It is the refusal an operator meets AFTER the seals have already succeeded,
         // which is the only path on which "the credentials survived and here is what they are called" has to
         // be said — the retry arm tests/bots.spec.ts drives.
@@ -2859,7 +2861,6 @@ export const ROUTES = [
           repository_identity: identity,
           clone_url: cloneURL,
           default_branch: typeof body.default_branch === "string" && body.default_branch !== "" ? body.default_branch : "main",
-          organization_id: "org_local",
           project_id: "proj_local",
           created_at: new Date(Date.UTC(2026, 6, 30, 2, 0, bindingSeq)).toISOString(),
           ...(typeof body.connection_ref === "string" && body.connection_ref !== "" ? { connection_ref: body.connection_ref } : {}),
@@ -2965,7 +2966,7 @@ export const ROUTES = [
         }
         const name = typeof body.name === "string" ? body.name.trim() : "";
         if (name === "") return sendProblem(response, 400, "invalid_request");
-        // A duplicate NAME is a conflict in the real store (UNIQUE(organization_id, name)), reported rather
+        // A duplicate NAME is a conflict in the real store (UNIQUE on the name), reported rather
         // than silently returning someone else's environment.
         for (const env of environments.values()) {
           if (env.name === name) return sendProblem(response, 409, "conflict");
@@ -3351,7 +3352,6 @@ export const ROUTES = [
     handle: (_request, response) =>
       sendJSON(response, 200, {
         object: "usage_summary",
-        organization_id: "org_local",
         project_id: "proj_local",
         meters: USAGE_METERS,
         // EMPTY ARRAYS, not absent keys: readBudgets/readQuotas initialise `[]budgetView{}` so the real
@@ -3392,7 +3392,6 @@ export const ROUTES = [
           object: "session",
           status: "active",
           created_at: now,
-          organization_id: "org_local",
           project_id: "prj_local",
           name: typeof body.name === "string" ? body.name : "",
           // A session created through the API has no runs yet, so there is no first prompt to derive a label
