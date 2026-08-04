@@ -404,11 +404,14 @@ function writeFrame(
       return false;
     }
 
-    // A TOOL CALL BECOMES A TOOL FRAME. The name rides the frame since E30 T2; the arguments and the
-    // result do NOT, and that split is deliberate rather than an oversight to work around: an event
-    // payload is POSTed to every registered webhook endpoint and stored immutably per delivery, and a
-    // trivial `xcodebuild` build measures 51,422 bytes. So the bytes live on the `tool_calls` ledger and
-    // are read once, when there is something to render.
+    // A TOOL CALL BECOMES A TOOL FRAME. The name rides the frame since E30 T2, and since A.4 so does
+    // `arguments_summary` — ONE bounded, redacted line, capped at 256 bytes, present only for the tools
+    // whose argument shape this deployment authored.
+    //
+    // The RESULT still does not, and that half of the split is deliberate rather than an oversight to
+    // work around: an event payload is POSTed to every registered webhook endpoint and stored immutably
+    // per delivery, and a trivial `xcodebuild` build measures 51,422 bytes. The full arguments and the
+    // result live on the `tool_calls` ledger and are read once, when there is something to render.
     case "tool_call.executing.v1": {
       const id = str(d.tool_call_id);
       if (id !== "" && str(d.replay_class) !== "") replayClasses.set(id, str(d.replay_class));
