@@ -94,7 +94,19 @@ func withinGrace(lastModified, cutoff time.Time) bool {
 // bucket was the rejected alternative, a second GC + credential surface).
 // ponytail: the referenced set is held in memory; fine for the local/single-bucket scale, a
 // streaming anti-join is the upgrade path if the index ever outgrows one map.
+//
+// THE READ IS SYSTEM-SCOPED, and that is a safety requirement rather than a convenience. This set is
+// SUBTRACTED from a bucket listing that spans every tenant, so a reference read narrower than the bucket
+// makes another tenant's live objects look like orphans and deletes them. There is no project to scope to
+// here either — the collector is an installation-wide reconciler that main.go hands the supervisor's own
+// context, which carries no tenant at all.
+//
+// It was not scoped, and since PrepareConn began refusing a project-less tenant scope (storage/embed.go:301)
+// EVERY pass failed at the first query with "tenant scope requires a project". Run() logs a failed pass and
+// ticks again, so the symptom was an hourly log line and an object store that never reclaimed anything —
+// never a crash, and nothing in CI runs this tier.
 func (c *Collector) referencedKeys(ctx context.Context) (map[string]struct{}, error) {
+	ctx = storage.WithSystemScope(ctx)
 	keys := map[string]struct{}{}
 	for _, query := range []string{"ReferencedArtifactObjectKeys", "ReferencedCheckpointObjectKeys", "ReferencedSnapshotObjectKeys"} {
 		if err := c.addReferencedKeys(ctx, keys, query); err != nil {

@@ -278,10 +278,25 @@ type QuarantinedHost struct {
 	QuarantinedAt time.Time
 }
 
+// A HOST IS NOT A TENANT, so all three accessors below open an INSTALLATION scope.
+//
+// host_quarantine is one of the five tables 000002_row_level_security names as taking no policy at all —
+// "installation-global by design" — and it carries no project column to scope to: a poisoned disk is a
+// property of the machine, and every tenant that might be placed there needs the same answer.
+//
+// They took the caller's context unchanged, and none of the three has a tenant to put in one. Since
+// PrepareConn began refusing a project-less tenant scope (storage/embed.go:301) that made every call fail
+// with "tenant scope requires a project", which is worse here than elsewhere: IsHostQuarantined is the
+// SAN-008 placement guard, so the check that keeps a new allocation off a poisoned host answered with an
+// error instead of an answer, and QuarantineHost could not record the poisoning that guard reads.
+//
+// Installation, not system: this is the documented narrow exception for a table with no project column,
+// and it is the smaller of the two escapes.
+
 // QuarantineHost marks a host poisoned by an allocation-destroy failure so no new allocation is placed
 // on it (spec §29 SAN-008). Idempotent on host_id — a repeat failure re-quarantines without error.
 func (s *Store) QuarantineHost(ctx context.Context, hostID, reason string) error {
-	if _, err := s.pool.Exec(ctx, storage.Query("QuarantineHost"), hostID, reason); err != nil {
+	if _, err := s.pool.Exec(storage.WithInstallationScope(ctx), storage.Query("QuarantineHost"), hostID, reason); err != nil {
 		return fmt.Errorf("quarantine host %s: %w", hostID, err)
 	}
 	return nil
@@ -290,7 +305,7 @@ func (s *Store) QuarantineHost(ctx context.Context, hostID, reason string) error
 // IsHostQuarantined reports whether a host is quarantined — the placement guard before a new allocation.
 func (s *Store) IsHostQuarantined(ctx context.Context, hostID string) (bool, error) {
 	var quarantined bool
-	if err := s.pool.QueryRow(ctx, storage.Query("IsHostQuarantined"), hostID).Scan(&quarantined); err != nil {
+	if err := s.pool.QueryRow(storage.WithInstallationScope(ctx), storage.Query("IsHostQuarantined"), hostID).Scan(&quarantined); err != nil {
 		return false, fmt.Errorf("check host quarantine %s: %w", hostID, err)
 	}
 	return quarantined, nil
@@ -298,7 +313,7 @@ func (s *Store) IsHostQuarantined(ctx context.Context, hostID string) (bool, err
 
 // ListQuarantinedHosts returns every quarantined host newest-first — the doctor's quarantine view.
 func (s *Store) ListQuarantinedHosts(ctx context.Context) ([]QuarantinedHost, error) {
-	rows, err := s.pool.Query(ctx, storage.Query("ListQuarantinedHosts"))
+	rows, err := s.pool.Query(storage.WithInstallationScope(ctx), storage.Query("ListQuarantinedHosts"))
 	if err != nil {
 		return nil, fmt.Errorf("list quarantined hosts: %w", err)
 	}

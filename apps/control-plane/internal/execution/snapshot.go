@@ -10,6 +10,7 @@ import (
 	"github.com/palgroup/palai/adapters/sandboxes/oci/snapshot"
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/packages/coordinator"
+	"github.com/palgroup/palai/storage"
 )
 
 // MaxSnapshotArchiveBytes bounds a workspace snapshot archive. It matches the object store's read bound
@@ -80,6 +81,16 @@ func (s *SnapshotSink) Capture(ctx context.Context, in SnapshotCaptureInput) (st
 	}
 	fileChecksums, _ := json.Marshal(manifest.FileChecksums)
 	exclusions, _ := json.Marshal(manifest.Exclusions)
+	// THE ROW IS WRITTEN UNDER THE PROJECT THIS CAPTURE NAMES, taken from the input rather than from whatever
+	// scope the caller's context happens to carry. SnapshotInput has no project field, so the insert lands
+	// wherever the GUC points, and depending on an ambient scope for that is the fragility RestoreTo already
+	// avoids by taking its tenant as an argument — this is the same guarantee for the write half.
+	//
+	// It is behaviour-preserving where it was already working: the orchestrator passes Project:
+	// st.tenant.Project (snapshot.go's captureBoundarySnapshot) under a context scoped to that same tenant.
+	// What it fixes is every OTHER caller, which had to know to scope first and got a bare
+	// "tenant scope requires a project" from the pool when it did not.
+	ctx = storage.ScopeToTenant(ctx, in.Project)
 	if err := s.spine.CreateWorkspaceSnapshot(ctx, coordinator.SnapshotInput{
 		SnapshotID:      in.SnapshotID,
 		AllocationID:    in.AllocationID,

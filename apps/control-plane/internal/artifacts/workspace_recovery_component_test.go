@@ -83,10 +83,17 @@ func TestHostMoveKeepsLogicalIdNewFencedAllocation(t *testing.T) {
 	}
 
 	// SAN-006: the OLD (now fenced-out) allocation can no longer acquire the writer lease or snapshot.
-	if err := h.repo.Spine().AcquireWriterLease(ctx, newID("lease"), oldAllocID, newID("run")); err != coordinator.ErrStaleAllocation {
+	//
+	// SCOPED, because these two reach the spine DIRECTLY and neither takes a tenant: they read it off the
+	// context, and production always arrives here through a caller that has already scoped (the orchestrator
+	// for the lease, SnapshotSink.Capture for the snapshot). Unscoped they fail on the ACQUIRE, which is a
+	// refusal the pool made about the connection rather than the one the DB makes about the fence — so the
+	// assertion would pass its `!= ErrStaleAllocation` check for a reason that has nothing to do with SAN-006.
+	fenced := storage.ScopeToTenant(ctx, tenant.Project)
+	if err := h.repo.Spine().AcquireWriterLease(fenced, newID("lease"), oldAllocID, newID("run")); err != coordinator.ErrStaleAllocation {
 		t.Fatalf("old-allocation lease = %v, want ErrStaleAllocation (fenced out)", err)
 	}
-	if err := h.repo.Spine().CreateWorkspaceSnapshot(ctx, coordinator.SnapshotInput{
+	if err := h.repo.Spine().CreateWorkspaceSnapshot(fenced, coordinator.SnapshotInput{
 		SnapshotID: newID("snap"), AllocationID: oldAllocID, TreeChecksum: "sha256:x", ObjectKey: "k",
 	}); err != coordinator.ErrStaleAllocation {
 		t.Fatalf("old-allocation snapshot = %v, want ErrStaleAllocation (fenced out)", err)
@@ -131,7 +138,11 @@ func TestOldHostAuthoritativeFramesDeniedDiagnosticsAllowed(t *testing.T) {
 	}
 
 	// Authoritative write from the fenced-out old allocation: DENIED at the DB.
-	if err := h.repo.Spine().CreateWorkspaceSnapshot(ctx, coordinator.SnapshotInput{
+	//
+	// Scoped for the reason above: CreateWorkspaceSnapshot takes no tenant, production reaches it only
+	// through SnapshotSink.Capture (which scopes from its input's Project), and an unscoped call is refused
+	// by the POOL before the fence guard it is here to witness ever runs.
+	if err := h.repo.Spine().CreateWorkspaceSnapshot(storage.ScopeToTenant(ctx, tenant.Project), coordinator.SnapshotInput{
 		SnapshotID: newID("snap"), AllocationID: oldAllocID, TreeChecksum: "sha256:stale", ObjectKey: "k",
 	}); err != coordinator.ErrStaleAllocation {
 		t.Fatalf("old-host authoritative snapshot = %v, want ErrStaleAllocation (denied)", err)

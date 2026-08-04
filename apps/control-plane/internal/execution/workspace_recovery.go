@@ -12,6 +12,7 @@ import (
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
+	"github.com/palgroup/palai/storage"
 )
 
 // ErrRecoveryImpossible reports that a host-lost workspace cannot be recovered: there is no byte-archived
@@ -133,7 +134,13 @@ func (r *WorkspaceRecovery) RecoverWorkspace(ctx context.Context, tenant coordin
 	// boundary snapshot into it. A fresh dir means zero residue from any prior tenant (SAN-007).
 	allocID := "alloc_" + randHex16()
 	dir := filepath.Join(r.root, allocID)
-	alloc, err := r.spine.AllocateWorkspace(ctx, allocID, in.WorkspaceID, dir)
+	// SCOPED TO THE TENANT THIS RECOVERY IS FOR. AllocateWorkspace is the one spine call in this function
+	// that does not take the tenant as an argument — every sibling above and below does — so it reads the
+	// scope off the context, and this context has none. Since PrepareConn began refusing a project-less
+	// tenant scope the call failed outright, which means a host-lost workspace could not be recovered at
+	// all: the state machine had already been driven to `recovering`, so the workspace was left parked
+	// there rather than restored or explicitly failed.
+	alloc, err := r.spine.AllocateWorkspace(storage.ScopeToTenant(ctx, tenant.Project), allocID, in.WorkspaceID, dir)
 	if err != nil {
 		return RecoverResult{}, err
 	}
