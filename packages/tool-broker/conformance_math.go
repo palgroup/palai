@@ -3,6 +3,7 @@ package toolbroker
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 )
 
 // ConformanceMathAdd is the pure conformance tool palai.conformance.math.add. It
@@ -42,12 +43,26 @@ func ConformanceMathAdd() Tool {
 	}
 }
 
-// validate checks value against a strict JSON Schema. It supports the subset the
-// conformance tools use: object with properties, required, additionalProperties:
-// false, and the scalar types integer, number, and string.
-// ponytail: minimal in-repo schema subset; swap for a real JSON Schema validator
-// if conformance tools ever need $ref, arrays, or enums.
+// validate checks value against a strict JSON Schema. It supports the subset this tree's tools
+// actually declare: object with properties/required/additionalProperties:false, the scalar types
+// integer, number, string and boolean, arrays with an optional `items` schema, and `enum` on any of
+// them.
+//
+// AN UNKNOWN TYPE IS STILL REFUSED, and that refusal is load-bearing rather than incidental. It is
+// why array/boolean/enum had to be ADDED here rather than worked around at the call site: a tool
+// declaring a type this subset lacked did not degrade to an unchecked field, it failed outright. The
+// visible cost of the missing cases was the opposite shape — the shell tool's `argv`, `shell` and
+// `background` shipped with NO type at all, so the only thing between the model and a malformed call
+// was an English sentence in the description.
+// ponytail: still an in-repo subset; swap for a real JSON Schema validator if a tool ever needs $ref,
+// oneOf, or numeric bounds.
 func validate(schema map[string]any, value any) error {
+	// AN ENUM CONSTRAINS THE VALUE, NOT THE TYPE, so it is checked ahead of the type switch and
+	// applies to a typeless schema too. Comparison is `==` on the decoded values, which is exact for
+	// the strings and JSON numbers a tool call carries.
+	if allowed, ok := schema["enum"].([]any); ok && !slices.Contains(allowed, value) {
+		return fmt.Errorf("value %#v is not one of %v", value, allowed)
+	}
 	switch typ, _ := schema["type"].(string); typ {
 	case "object":
 		obj, ok := value.(map[string]any)
@@ -90,6 +105,28 @@ func validate(schema map[string]any, value any) error {
 	case "string":
 		if _, ok := value.(string); !ok {
 			return fmt.Errorf("expected string, got %T", value)
+		}
+		return nil
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("expected boolean, got %v (%T)", value, value)
+		}
+		return nil
+	case "array":
+		items, ok := value.([]any)
+		if !ok {
+			return fmt.Errorf("expected array, got %T", value)
+		}
+		// `items` IS OPTIONAL and its absence is not an error: an array schema without one constrains
+		// the container and nothing else, exactly as an untyped schema does for a scalar.
+		itemSchema, declared := schema["items"].(map[string]any)
+		if !declared {
+			return nil
+		}
+		for i, item := range items {
+			if err := validate(itemSchema, item); err != nil {
+				return fmt.Errorf("item %d: %w", i, err)
+			}
 		}
 		return nil
 	case "":
