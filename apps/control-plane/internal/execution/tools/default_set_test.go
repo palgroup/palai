@@ -20,11 +20,12 @@ import (
 // reformatted it. An import cannot drift from what the CLI actually grants, because it is what the CLI
 // actually grants.
 //
-// THREE LISTS, and the guard covers ALL of them: toolset.Default() is what every bring-up binds,
-// toolset.Repository() is the coding half a bring-up ADDS when it bound a repository, and toolset.Publish()
-// is the publication half added under the same condition. A name that resolves in none of them is a tool the
-// model would be offered and could never be given — the exact defect this file was written for, and a
-// conditional list is a second place for it to happen.
+// THREE LISTS, and the guard covers ALL of them: toolset.Default() is what every bring-up binds today.
+// toolset.Repository() (the coding half) and toolset.Publish() (the publication half) have NO grant path
+// today (dated 2026-08-04 — no bring-up calls either; see toolset.go:27-32) but this guard resolves them
+// anyway, because that is what closes off the second place the file's own defect could happen: whoever
+// wires the conditional grant (repository-bound, publication) must not be able to introduce a name the
+// broker cannot produce, and this test would go RED the day one did.
 
 // TestEveryDefaultToolResolves is the guard proper: every name `palai up` binds must be a tool this
 // control plane can actually produce, either from the static broker set or from the Slack-search lookup.
@@ -63,9 +64,10 @@ func TestEveryDefaultToolResolves(t *testing.T) {
 	names = append(names, toolset.Publish()...)
 	for _, name := range names {
 		if _, found, err := broker.SchemaResolved(t.Context(), env, name); err != nil || !found {
-			t.Fatalf("`palai up` binds %q and this control plane cannot resolve it (found=%v err=%v). "+
-				"advertisedTools only asks about names in the effective set, so the model would never be "+
-				"offered it — the tool would be mounted and dead", name, found, err)
+			t.Fatalf("%q is a canonical toolset name and this control plane cannot resolve it (found=%v "+
+				"err=%v). advertisedTools only asks about names already in a run's effective set, so a "+
+				"grant path added for this name later would offer the model a tool that is mounted and "+
+				"dead", name, found, err)
 		}
 	}
 }

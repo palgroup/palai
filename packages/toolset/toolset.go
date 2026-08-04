@@ -14,7 +14,7 @@ package toolset
 // defaultTools is what every bring-up binds, with or without a repository: read and write files, run
 // a command, stop what that command started, show a human what happened, and reach for outside
 // knowledge. Each name is registered in toolbroker.New (apps/control-plane/cmd/palai-control-plane/
-// main.go:659-675) — a name that is not is a tool the model is offered and can never be given.
+// main.go:656-672) — a name that is not is a tool the model is offered and can never be given.
 var defaultTools = []string{
 	"palai.workspace.file",
 	"palai.workspace.shell",
@@ -24,8 +24,12 @@ var defaultTools = []string{
 	"palai.knowledge.retrieve",
 }
 
-// repositoryTools is the coding half a bring-up ADDS once it has bound a repository. Committing
-// without a repository is not a weaker capability, it is a meaningless one.
+// repositoryTools is the coding half of the canonical surface: committing without a repository is not
+// a weaker capability, it is a meaningless one. NO GRANT PATH EXISTS TODAY (dated 2026-08-04) — `palai
+// up` writes only Default() (cmd/cli/internal/stack/up.go's bootstrapDefaultTools), and nothing in this
+// tree calls Repository(). The list still earns its place: it is what a future conditional grant
+// (bound-a-repository) will reach for, and it is what the guards below bind names ↔ broker
+// registrations ↔ Slack titles against ahead of that wiring.
 var repositoryTools = []string{
 	"palai.workspace.commit",
 }

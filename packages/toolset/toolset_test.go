@@ -45,8 +45,10 @@ func TestDefaultCarriesNoSlackSpecificTool(t *testing.T) {
 }
 
 // TestAllIsTheUnionAndTheListsAreDisjoint keeps All() honest as the single thing a guard can range
-// over. Disjointness matters because up.go appends Repository()/Publish() onto Default(): an overlap
-// would write a duplicate into the project policy.
+// over. Disjointness matters even though `palai up` writes only Default() today (dated 2026-08-04 —
+// no bring-up calls Repository() or Publish(); see toolset.go:27-32): All() is what the resolve and
+// title guards range over, and a name shared by two lists would make either guard's per-list bookkeeping
+// wrong, plus set up any later grant that DOES combine lists to write a duplicate into the project policy.
 func TestAllIsTheUnionAndTheListsAreDisjoint(t *testing.T) {
 	seen := map[string]string{}
 	for listName, list := range map[string][]string{

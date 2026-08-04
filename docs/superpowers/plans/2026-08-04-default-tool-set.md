@@ -778,6 +778,9 @@ Named so a later reader does not mistake absence for oversight:
 - **It does not run `palai up` end to end.** Task 5 proves the computation, not the deployment. A live bring-up on a machine configured the way the docs describe is the honest final check, and it belongs to whoever next brings a stack up.
 - **It does not register `palai.task` / `palai.todo`.** They are defined (`tools/task.go:14,18`) and absent from `toolbroker.New` — a one-line fix, but a different claim with its own guard, and granting them before registering them would put an unresolvable name in the baseline.
 - **It does not touch the tool surface itself.** No Edit tool, no Grep, no Glob. See §7.
+- **It does not wire a grant path for `toolset.Repository()` or `toolset.Publish()`.** `palai up` writes
+  `Default()` only (`bootstrapDefaultTools()`, `cmd/cli/internal/stack/up.go:1414`). See §7 item 0b for
+  the measurement and what remains.
 
 ---
 
@@ -795,6 +798,17 @@ grep -rn "palai\.slack\.search" --include="*.go" . | grep -v _test
 ```
 
 No grant path. This is E21 T5's defect returning: a tool mounted, tested, and dead. It belongs to whoever restores Slack's own tool grant — **not** to `palai up`'s generic baseline, which is why the test could not stay. Do not close this by adding the name to `toolset.Default()`: a Slack-less stack would carry a name the broker's static set cannot resolve.
+
+**0b. `toolset.Repository()` and `toolset.Publish()` are two more names with no grant path — found in this plan's final review, 2026-08-04.**
+
+Task 1 built three canonical lists so a future conditional grant (repository-bound coding tools, publication tools) would have one place to name; Task 3 wired only `Default()` into `palai up`. That was the scoped decision (§1's `bootstrapDefaultTools` returns `toolset.Default()`, not `toolset.All()`), but three comments written during implementation stated the opposite — that a bring-up "ADDS" or "binds" the other two lists — and were corrected as part of this same review pass. Measured:
+
+```bash
+grep -rn "toolset\.Repository()\|toolset\.Publish()" --include="*.go" . | grep -v _test
+# (no output) — every caller of Repository() and Publish() is a test
+```
+
+This is the same shape as item 0: a canonical name that exists, resolves, and titles cleanly, but that nothing in `palai up` grants. Unlike `palai.slack.search`, these two lists are not stray — `TestEveryDefaultToolResolves` and `TestNoDefaultToolPublishes` (`apps/control-plane/internal/execution/tools/default_set_test.go`) already prove they resolve and stay side-effect-scoped, so the remaining work is narrower: decide what "bound a repository" means operationally in `cmd/cli/internal/stack/up.go`, and add the conditional write. Do not close this by folding `Repository()`/`Publish()` into `Default()`: a run with no repository would be granted `palai.workspace.commit` and a run with no publication decision would be granted the publish tools unconditionally — the same posture change `TestNoDefaultToolPublishes` exists to catch.
 
 ---
 
