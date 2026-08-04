@@ -475,21 +475,14 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("GET /v1/queue-connections/{connection_id}", qh.getConnection)
 	}
 
-	// The Slack workspace REGISTRATION surface (E19 T9, spec §36): register a workspace binding with its
-	// secret_ref handles, and list what this project has registered. INSIDE the auth middleware for the same
-	// reason the queue admin surface is — an operator action with no source signature of its own, so the
-	// bearer scope is the only tenant authority. The two Slack RECEIVERS mount unauthenticated below; this
-	// one must not, and the split is why it is its own option.
-	if cfg.slackConnections != nil {
-		sch := &slackConnectionHandler{slack: cfg.slackConnections}
-		mux.HandleFunc("POST /v1/slack-connections", sch.createConnection)
-		mux.HandleFunc("GET /v1/slack-connections", sch.listConnections)
-		// The repair half: a binding registered before a field existed (an app_token_ref, say) was previously
-		// only fixable with raw SQL against slack_connections, which is not a thing an operator has.
-		mux.HandleFunc("GET /v1/slack-connections/{connection_id}", sch.getConnection)
-		mux.HandleFunc("PATCH /v1/slack-connections/{connection_id}", sch.reviseConnection)
-		mux.HandleFunc("DELETE /v1/slack-connections/{connection_id}", sch.deleteConnection)
-	}
+	// THE /v1/slack-connections REGISTRATION SURFACE WAS HERE AND IS GONE (cutover, 2026-08-05). It
+	// registered a workspace binding with its secret_ref handles for the in-process Slack bridge. A Slack
+	// workspace is now registered as a BOT — POST /v1/bots plus /v1/bots/{id}/credentials, mounted above —
+	// which apps/slack-bot reads its own row from. That surface is strictly wider: it has a console panel
+	// (the five routes here never had one; every reference to them in apps/web-console was a comment
+	// explaining why the bots surface was built instead), and it lifts a ceiling this one had — the bridge
+	// opened a socket for ONE workspace named by PALAI_SLACK_SOCKET_TEAM_ID and never picked up a workspace
+	// registered after boot, while a bot is a process per row.
 
 	// The runner registry (E24 T1): the read surface for the fleet. Bearer-scoped and RLS-confined, so
 	// a caller sees its own tenant's machines and nothing else. The write routes below it are T3's key
@@ -611,23 +604,18 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	if toolCallbacks != nil {
 		top.Handle("POST /v1/tool-callbacks/{operation_id}", middleware.RequestContext(toolCallbacks))
 	}
-	// The Slack Events API receiver (E19 T1, spec §36): its auth IS the per-request v0 signature, so — like
-	// the signed inbound receiver and the tool callback — it mounts on the UNAUTHENTICATED top mux, bypassing
-	// middleware.Auth but still wrapped in RequestContext so its problem bodies carry the correlation id. An
-	// unresolvable or unauthenticated workspace is a generic 404 (no config oracle). nil in every tier that
-	// wires no Slack bridge, which is also what keeps `slack` out of discovery there.
-	if cfg.slack != nil {
-		sh := &slackHandler{slack: cfg.slack}
-		top.Handle("POST /v1/slack/events", middleware.RequestContext(http.HandlerFunc(sh.receive)))
-	}
-	// The Slack interactivity receiver (E19 T2, spec §36): the same unauthenticated posture as the events
-	// route above, and the same v0 signature as its auth — but over a form body rather than JSON, which is
-	// why it is its own handler (slack_interactions.go states the contract and the inference behind the
-	// verify-then-decode order). Separately gated so a stack can mount the inbound half alone.
-	if cfg.slackInteractions != nil {
-		ih := &slackInteractionsHandler{slack: cfg.slackInteractions}
-		top.Handle("POST /v1/slack/interactions", middleware.RequestContext(http.HandlerFunc(ih.receive)))
-	}
+	// THE TWO SLACK RECEIVERS WERE HERE AND ARE GONE (cutover, 2026-08-05): POST /v1/slack/events and
+	// POST /v1/slack/interactions, both unauthenticated because their auth WAS the per-request v0 signature.
+	//
+	// THIS DEPLOYMENT NO LONGER SPEAKS SLACK'S HTTP TRANSPORT AT ALL, and that is a deliberate narrowing
+	// rather than an omission. apps/slack-bot holds an OUTBOUND Socket Mode connection, which needs no public
+	// URL, no tunnel and no inbound firewall hole — and Socket Mode carries neither a v0 signature nor an HTTP
+	// redelivery, so the whole signature-verification and retry-ledger apparatus these two routes existed for
+	// went with them.
+	//
+	// THE VERIFIER ITSELF STILL SHIPS (adapters/integrations/slack) and `signing_secret_ref` still sits unused
+	// on the bot row for whoever mounts an HTTP transport next; apps/slack-bot's botrow.go says so in the same
+	// words. What does NOT exist is a receiver, so nothing in this tree depends on that field today.
 	// The A2A public Agent Card (E17 T2, spec §38.1): a safe published projection carrying no internal detail
 	// (A2A-001), so — like /healthz and the signed inbound receiver — it mounts on the UNAUTHENTICATED top mux
 	// bypassing middleware.Auth (still wrapped in RequestContext for the correlation id). This exact-path route

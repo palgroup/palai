@@ -22,7 +22,6 @@ import (
 	// container without /usr/share/zoneinfo (spec §33.1; time.LoadLocation's documented final fallback).
 	_ "time/tzdata"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/palgroup/palai/adapters/integrations/a2a"
 	mcpclient "github.com/palgroup/palai/adapters/integrations/mcp"
 	"github.com/palgroup/palai/adapters/integrations/webhook"
@@ -288,60 +287,25 @@ func main() {
 		api.AdmissionLimits{MaxConcurrentRuns: edge.MaxConcurrentRuns, MaxQueuedRuns: edge.MaxQueuedRuns},
 		os.Getenv("PALAI_PUBLIC_BASE_URL"), a2aPusher)
 	routerOpts = append(routerOpts, api.WithA2A(a2aServer, a2aServer.PublicCardHandler()))
-	// The Slack Events API receiver (E19 T1, spec §36): the 000035 connection/thread store over the same spine
-	// pool, wired behind the SAME api.Admitter the A2A surface and POST /v1/responses use, so a Slack event
-	// admits through the one §20.9 path under the one set of per-project caps — no parallel admission. The
-	// tenant comes ONLY from the resolved slack_connections row (no bearer exists on this route; the v0
-	// signature is the auth), and the run target from that row's default_policy. Unconditional like WithUsage:
-	// it needs no external key material, and a stack with no registered workspace simply gets no traffic —
-	// mounting is also what lets discovery advertise `slack` at all, at the tier T11 recomputes (preview).
+	// THE SLACK SEARCH AUTHORITIES (E21 T5), and after the 2026-08-05 cutover they are all that is left of
+	// Slack inside this binary. Until then this block built an in-process Slack bridge: an Events API receiver,
+	// an interactivity receiver, a workspace-registration surface, a Socket Mode connect loop, a reply pump, an
+	// approval pump, a run follower and two file legs. Slack is now a SEPARATE PROCESS (apps/slack-bot) that
+	// consumes this control plane over `/v1` exactly like any other client, so the bridge and everything that
+	// fed it were deleted rather than left dormant.
 	//
-	// The interactivity half (E19 T2) is wired onto the SAME bridge with WithDecisions: an interactive
-	// approval resolves the same connection, verifies under the same signing secret, and then drives the
-	// coordinator's one-shot approval primitive — SlackAuthorizationPolicyFor + ApproverAuthorized are
-	// enforced there, so an unmapped clicker enqueues nothing. It needs the approval spine and an outbound
-	// HTTP client; PALAI_SLACK_API_BASE_URL overrides Slack's own base for a staging/proxied deployment and
-	// is empty in production (⇒ https://slack.com/api). The bot token is redeemed from bot_token_ref at call
-	// time by the same org-scoped resolver.
+	// The authorities survive because they are NOT a transport: they are the per-turn grant that decides whether
+	// the model is offered the Slack search tool at all. Nothing is persisted — an action_token's lifetime is
+	// undocumented, so a grant lives exactly as long as the turn does.
 	//
-	// The REGISTRATION half (E19 T9) rides the same store through its own seam: until it existed,
-	// CreateSlackConnection had zero non-test callers, so an operator who had just been handed a signing
-	// secret and a bot token had NO way to register the workspace except hand-written SQL — which made the
-	// phase's own promise ("supply the credentials, run the live legs unchanged") untrue at step one. It is
-	// a separate seam from the admission bridge on purpose: registration is a bearer-scoped operator action,
-	// the receivers are unauthenticated signature-verified callbacks.
-	slackStore := extensions.New(repo.Spine().Pool())
-	// The SEARCH AUTHORITIES (E21 T5) are built here rather than beside the tool broker below, because both
-	// ends need them and they are born at opposite ends of this function: admission writes a run's authority
-	// in, the broker's lookup reads it out. Nothing is persisted — an action_token's lifetime is undocumented,
-	// so it lives exactly as long as the run does.
+	// TWO ENDS, BORN AT OPPOSITE ENDS OF THIS FUNCTION: the route below writes a grant in, and the tool broker's
+	// lookup (startDispatch) reads it out. The relay cannot key a grant by run id — it learns a run id only from
+	// the response this control plane returns, by which time the run has already asked the broker what tools it
+	// may have — so the grant is keyed on the SESSION it creates the response in.
+	//
+	// The route mounts only where WithBotCredentials did (router.go): it resolves the bot's own token rather
+	// than accepting one on the wire, so with no master key there is nothing to authorise with.
 	slackSearchAuthorities := tools.NewSearchAuthorities()
-	slackBridge := extensions.NewSlackAdmitter(
-		slackStore, repo, slackSecretResolver,
-		api.AdmissionLimits{MaxConcurrentRuns: edge.MaxConcurrentRuns, MaxQueuedRuns: edge.MaxQueuedRuns}).
-		WithDecisions(repo.Spine(), http.DefaultClient, os.Getenv("PALAI_SLACK_API_BASE_URL")).
-		// The RUN FOLLOWER (E20 T1): while a Slack-born run works, its thread shows a status and the message
-		// appears when the first step lands instead of only after the terminal transaction. `repo` is the SAME
-		// api.EventReader the SSE endpoint tails, so no second journal read path exists. Unconditional and
-		// scope-free — assistant.threads.setStatus and the chat.*Stream family are all `chat:write`, which
-		// this app already holds, so nothing here waits on a reinstall or on the agent panel.
-		WithStreaming(repo, supervisor, 0).
-		// WORKSPACE SEARCH (E21 T5): a run born from a message that carried an action_token may search this
-		// workspace's PUBLIC channels. Nothing it finds is stored — the Real-time Search API's terms forbid
-		// copying retrieved data, which is the same reason knowledge-vector stays disabled.
-		WithSearch(slackSearchAuthorities)
-	slackBridge = mountSlackFileLegs(slackBridge, artStore, repo.Spine().Pool())
-	routerOpts = append(routerOpts, api.WithSlack(slackBridge), api.WithSlackInteractions(slackBridge),
-		api.WithSlackConnections(extensions.NewSlackRegistry(slackStore)))
-	// THE SAME AUTHORITIES, REACHED FROM OUTSIDE. WithSearch above serves the in-process admission route,
-	// which mints the run itself and so can key a grant by run id. A relay running as its own process
-	// cannot: it learns a run id only from the response this control plane returns, by which time the run
-	// has already asked the broker what tools it may have. This option mounts the route it grants through
-	// instead, keyed on the session it creates the response in — one store, two admission routes, and the
-	// tool's lookup reads whichever key is populated.
-	//
-	// The route mounts only where WithBotCredentials did (router.go): it resolves the bot's own token
-	// rather than accepting one on the wire, so with no master key there is nothing to authorise with.
 	routerOpts = append(routerOpts,
 		api.WithSlackSearchGrants(slackSearchAuthorities, os.Getenv("PALAI_SLACK_API_BASE_URL")))
 	// The queue bridges (E19 T6, spec §34.1-34.5). ONE store serves all three halves: the admin surface
@@ -435,60 +399,9 @@ func main() {
 	startScheduleTicker(ctx, scheduleStore, supervisor)
 	startRetention(ctx, repo, supervisor, artStore)
 	startOrphanGC(ctx, repo, supervisor, artStore)
-	// The Slack RETURN LEG's poster. Unconditional like the other pumps and for the same reason: it serves
-	// every project and stays inert until a Slack-born run terminates, so there is nothing for an operator
-	// to configure. Its work was committed inside each run's terminal transaction, which is why this loop
-	// being down (or restarting) delays an answer and can never lose one.
-	go supervisor.Supervise(ctx, "slack-reply-pump", extensions.NewSlackReplyPump(slackBridge).Run)
-	// The APPROVAL question's poster (E23 T3). Same posture and the same reason, with one difference worth
-	// the line: a run is PARKED on what this loop delivers, so being down here delays a decision rather than
-	// an answer. It still cannot lose one — the order committed with the approval — and it still cannot
-	// wedge a run, because the expiry reaper releases a question nobody was ever shown.
-	go supervisor.Supervise(ctx, "slack-approval-pump", extensions.NewSlackApprovalPump(slackBridge).Run)
-	drainSlackSocket := startSlackSocket(ctx, slackBridge, supervisor)
 
 	log.Printf("palai control-plane listening on %s", addr)
-	serveWithGracefulDrain(srv, gateway, drainSlackSocket)
-}
-
-// startSlackSocket launches the Slack Socket Mode connect loop (E19 T3, spec §36) and returns its drain, or
-// nil when the deployment has not configured Socket Mode. It is the ONLY start* here that is conditional on
-// an env var, and the reason is the transport itself: Socket Mode holds an OUTBOUND WebSocket to Slack for a
-// SPECIFIC workspace, so unlike the pumps and reapers — which serve every project and sit inert until work
-// exists — there is nothing for it to do until an operator names one.
-//
-// PALAI_SLACK_SOCKET_TEAM_ID is that workspace's Slack team id (§0.1). The connection it resolves to supplies
-// everything else: the tenant, the run target, the bot user for the self-loop guard, and the app_token_ref
-// whose xapp- token is Socket Mode's only authentication. Nothing about the transport is configured twice.
-//
-// WHY THIS IS WORTH MOUNTING AT ALL, in one line an operator can act on: Socket Mode needs NO PUBLIC URL — no
-// tunnel, no DNS, no inbound firewall hole — so it is the cheapest way to put this deployment on a real Slack
-// workspace (plan §0.1).
-//
-// It gets its OWN cancellable context rather than riding the process context every other loop uses, because
-// it is the one loop with something to drain: an in-flight envelope has already been acknowledged to Slack,
-// so it must finish rather than be killed. serveWithGracefulDrain calls the returned func on SIGTERM.
-func startSlackSocket(ctx context.Context, bridge *extensions.SlackAdmitter, supervisor *coordinator.Supervisor) func(context.Context) error {
-	socket := bridge.SocketMode(os.Getenv("PALAI_SLACK_SOCKET_TEAM_ID"))
-	if socket == nil {
-		return nil
-	}
-	sockCtx, stop := context.WithCancel(ctx)
-	finished := make(chan struct{})
-	go func() {
-		defer close(finished)
-		supervisor.Supervise(sockCtx, "slack-socket", socket.Run)
-	}()
-	log.Printf("palai control-plane: Slack Socket Mode enabled for the configured workspace")
-	return func(drainCtx context.Context) error {
-		stop()
-		select {
-		case <-finished:
-			return nil
-		case <-drainCtx.Done():
-			return drainCtx.Err()
-		}
-	}
+	serveWithGracefulDrain(srv, gateway)
 }
 
 // serveWithGracefulDrain serves until SIGTERM/Interrupt, then DRAINS the runner gateway before exit:
@@ -499,12 +412,12 @@ func startSlackSocket(ctx context.Context, bridge *extensions.SlackAdmitter, sup
 // new control-plane, so a run always survives the swap on its pinned engine. A stack with no gateway
 // (assignment-only tiers) or no in-flight lease drains instantly, so ordinary shutdowns are unchanged.
 //
-// drainSocket (nil unless Socket Mode is configured, E19 T3) is drained on the SAME budget and BEFORE the
-// gateway, because it is upstream of it: the socket is what admits new Slack work, and letting it keep
-// admitting while runner leases drain would mean draining against a source still filling the queue. Its own
-// in-flight envelope is already ACKNOWLEDGED to Slack — Slack will not redeliver it — so it finishes rather
-// than being killed.
-func serveWithGracefulDrain(srv *http.Server, gateway *execution.RunnerGateway, drainSocket func(context.Context) error) {
+// IT USED TO DRAIN A SECOND THING FIRST. Until the 2026-08-05 cutover this binary held Slack's Socket Mode
+// connection itself, and that socket drained BEFORE the gateway because it was upstream of it — draining
+// runner leases while a socket kept admitting new Slack work would have been draining against a source still
+// filling the queue. Slack is now dialled by apps/slack-bot, a separate process with its own lifecycle, so
+// this binary has exactly one thing to drain again.
+func serveWithGracefulDrain(srv *http.Server, gateway *execution.RunnerGateway) {
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -521,16 +434,6 @@ func serveWithGracefulDrain(srv *http.Server, gateway *execution.RunnerGateway, 
 	if drainTimeout <= 0 {
 		drainTimeout = 20 * time.Second
 	}
-	if drainSocket != nil {
-		socketCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
-		if err := drainSocket(socketCtx); err != nil {
-			log.Printf("slack socket drain did not quiesce (%v); an in-flight envelope may have been abandoned after it was acknowledged", err)
-		} else {
-			log.Printf("slack socket drain complete")
-		}
-		cancel()
-	}
-
 	if gateway != nil {
 		drainCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 		if err := gateway.Drain(drainCtx); err != nil {
@@ -1764,51 +1667,6 @@ func envDurationOr(name string, def time.Duration) time.Duration {
 		return d
 	}
 	return def
-}
-
-// mountSlackFileLegs mounts BOTH directions of the Slack file path onto the bridge, because both are gated
-// on the same thing — the object store — and splitting them into two functions would mean two chances to
-// forget one.
-//
-// INBOUND is the IMAGE leg (E20, extensions/slack_vision.go): a screenshot dropped in a thread is fetched
-// with the bot token and named by the run's input, so the model can see it. `files:read`.
-//
-// OUTBOUND is the ARTIFACT UPLOAD leg (E22 T5, extensions/slack_upload.go): an artifact the run produced —
-// a screenshot, a screen recording, a build log — reaches the thread as a real FILE rather than a link.
-// `files:write`, which this app requests for the first time in E22 (deploy/slack/app-manifest.yaml).
-//
-// Without an object store there is nothing to put an inbound image IN and nothing to read an outbound
-// artifact OUT of, so both are off and both say so.
-//
-// IT IS A FUNCTION RATHER THAN THREE LINES IN run() FOR TWO REASONS, both of them things that already went
-// wrong:
-//
-//   - IT SAYS WHEN IT IS OFF. The leg was built, tested and mounted here, and then ran for weeks against a
-//     compose deployment that set no PALAI_S3_ENDPOINT. Every shared image was skipped, and the only evidence
-//     anywhere was a parenthetical inside the run's own input — the owner had to ask why the agent could not
-//     see his screenshot, and finding out took a trace. A dead capability now announces itself at boot.
-//   - IT IS TESTABLE. TestSlackImageLegIsMountedWhenThereIsAnObjectStore holds this composition, so deleting
-//     the mount fails a test instead of quietly costing the model its eyes.
-//
-// pool may be nil only in that test: NewWriter stores it and dials nothing until a write.
-func mountSlackFileLegs(bridge *extensions.SlackAdmitter, artStore *artifacts.Store, pool *pgxpool.Pool) *extensions.SlackAdmitter {
-	if artStore != nil {
-		// ONE writer serves both legs: it is the same object store and the same pool, and a second instance
-		// would only be a second thing to configure differently by accident.
-		writer := artifacts.NewWriter(artStore, pool)
-		bridge = bridge.WithFileFetch(http.DefaultClient, writer).WithArtifactUpload(writer)
-	}
-	if !bridge.FileFetchReady() {
-		log.Printf("palai control-plane: the Slack image leg is OFF — no object store is configured " +
-			"(PALAI_S3_ENDPOINT is unset), so a screenshot shared in a thread is admitted as text and the run " +
-			"cannot see it")
-	}
-	if !bridge.ArtifactUploadReady() {
-		log.Printf("palai control-plane: the Slack artifact upload leg is OFF — no object store is configured " +
-			"(PALAI_S3_ENDPOINT is unset), so a screenshot or recording a run produces is answered as a link " +
-			"rather than delivered as a file in the thread")
-	}
-	return bridge
 }
 
 // artifactStoreFromEnv builds the control-plane's S3 artifact store from PALAI_S3_* when an

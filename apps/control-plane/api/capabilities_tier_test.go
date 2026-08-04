@@ -71,9 +71,10 @@ func repoRootFromTest(t *testing.T) string {
 }
 
 // fullyMountedRouter builds the router with EVERY optional surface a governed capability derives from
-// mounted — A2A (E17 T2), the capability-worker gateway (E17 T9, E19 T8a), the Slack Events receiver
-// (E19 T1), the knowledge spine (E17 T4) and the queue-binding admin surface (E19 T6) — so the served map
-// contains every governed capability and the bit-equality assert below has something to compare for each.
+// mounted — A2A (E17 T2), the capability-worker gateway (E17 T9, E19 T8a), the BOT REGISTRY (which `slack`
+// derives from since the 2026-08-05 cutover; it was the Slack Events receiver before), the knowledge spine
+// (E17 T4) and the queue-binding admin surface (E19 T6) — so the served map contains every governed
+// capability and the bit-equality assert below has something to compare for each.
 //
 // This is the honest reconciliation of mount-gated discovery with the tier recompute, and the two halves are
 // tested separately so neither can hide the other: TestA2ACapabilityAdvertisedOnlyWhenMounted,
@@ -87,7 +88,7 @@ func fullyMountedRouter() http.Handler {
 	srv := &a2a.Server{Interfaces: stubIfaceStore{iface: a2a.PublishedInterface{ID: "if_tier"}}, ScopeFunc: newA2AScopeFunc(stubOrgResolver{})}
 	return NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		SSEConfig{}, nil, nil, WithA2A(srv, srv.PublicCardHandler()), WithCapabilityWorkers(),
-		WithSlack(newSlackBridge([]byte("tier-probe"))), WithKnowledge(stubKnowledge{}),
+		WithBots(&fakeBotRegistry{}), WithKnowledge(stubKnowledge{}),
 		WithQueueConnections(&fakeQueueAPI{}, nil))
 }
 

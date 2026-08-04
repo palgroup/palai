@@ -267,7 +267,6 @@ func everyRouteMountedRouter(t *testing.T) http.Handler {
 		WithKnowledge(stubKnowledge{}),
 		WithCapabilityWorkers(),
 		WithQueueConnections(&fakeQueueAPI{}, publicResolver{}),
-		WithSlackConnections(&fakeSlackConnectionAPI{}),
 		WithRunners(&fakeRunnerRegistry{}),
 		WithApprovals(&fakeApprovalAPI{}),
 		WithBots(&fakeBotRegistry{}),

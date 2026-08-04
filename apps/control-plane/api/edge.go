@@ -55,13 +55,8 @@ type routerConfig struct {
 	modelRoutes     ModelRouteAPI
 	knowledge       KnowledgeAPI
 	metrics         http.Handler
-	a2a             http.Handler   // the authed A2A 1.0 surface (E17 T2)
-	a2aCard         http.Handler   // the unauthenticated public Agent Card handler
-	slack           SlackEventsAPI // the Slack Events API admission bridge (E19 T1); nil ⇒ route unmounted
-	// slackInteractions is the Slack interactivity decision bridge (E19 T2); nil ⇒ route unmounted.
-	slackInteractions SlackInteractionsAPI
-	// slackConnections is the workspace registration admin surface (E19 T9); nil ⇒ routes unmounted.
-	slackConnections SlackConnectionAPI
+	a2a             http.Handler // the authed A2A 1.0 surface (E17 T2)
+	a2aCard         http.Handler // the unauthenticated public Agent Card handler
 	// queues is the queue-binding admin surface (E19 T6); nil ⇒ routes unmounted, and discovery must not
 	// advertise `queues` at all.
 	queues QueueConnectionAPI
@@ -213,40 +208,16 @@ func WithQueueConnections(queues QueueConnectionAPI, resolver webhook.Resolver) 
 	return func(c *routerConfig) { c.queues = queues; c.queueResolver = resolver }
 }
 
-// WithSlack mounts the Slack Events API receiver (E19 T1, spec §36) on the UNAUTHENTICATED top mux — its
-// auth is the per-request v0 signature, the inbound-webhook posture (see slack.go). A trailing option like
-// the rest: a stack that registers no Slack connections leaves the route unmounted, and discovery then does
-// not advertise `slack` at all (§2 — the a2a/capability-workers posture). Mounting makes the capability
-// advertisABLE; the tier stays whatever the E17 T11 recompute says it is (preview — §6 leg 1 is untouched
-// by wiring).
-func WithSlack(events SlackEventsAPI) RouterOption {
-	return func(c *routerConfig) { c.slack = events }
-}
-
-// WithSlackInteractions mounts the Slack interactivity receiver (E19 T2, spec §36) beside the events route on
-// the UNAUTHENTICATED top mux — same posture, same v0 signature as its auth (see slack_interactions.go).
+// THE THREE SLACK OPTIONS THAT USED TO SIT HERE ARE GONE (cutover, 2026-08-05): WithSlack mounted the Events
+// API receiver, WithSlackInteractions the interactivity receiver, and WithSlackConnections the workspace
+// registration surface. All three were the in-process Slack bridge's mounting points.
 //
-// It is a SEPARATE option from WithSlack on purpose rather than a fourth method on SlackEventsAPI: the two
-// surfaces need different collaborators (the events bridge needs an Admitter; this one needs the coordinator's
-// approval spine and an outbound Slack client), so a stack that wires only the inbound half must be able to
-// mount only the inbound half. An unmounted route answers 404 rather than 500 on a nil seam.
-func WithSlackInteractions(interactions SlackInteractionsAPI) RouterOption {
-	return func(c *routerConfig) { c.slackInteractions = interactions }
-}
-
-// WithSlackConnections mounts the workspace REGISTRATION surface (E19 T9, spec §36) on the AUTHENTICATED
-// mux beside the queue-binding admin surface it is modelled on. It is separate from WithSlack for the same
-// reason WithSlackInteractions is: the three surfaces have different collaborators and different auth
-// postures (the two receivers verify a per-request v0 signature and mount unauthenticated; this one is a
-// bearer-scoped operator action), so a stack must be able to mount any subset.
-//
-// It closes the gap that made E19's own handover promise false: until this option existed,
-// CreateSlackConnection had no non-test caller, so "supply the credentials and run the live legs unchanged"
-// would in fact have required hand-written SQL. Mounting does NOT move the tier — `slack` stays preview
-// until §6 leg 1 (a real workspace receipt), and only the E17 T11 recompute writes the word.
-func WithSlackConnections(connections SlackConnectionAPI) RouterOption {
-	return func(c *routerConfig) { c.slackConnections = connections }
-}
+// SLACK IS STILL SERVED, BY A DIFFERENT SHAPE. apps/slack-bot dials Slack itself and reaches this control
+// plane over `/v1` — /v1/bots for its own registration and credentials, /v1/responses to birth a run,
+// /v1/sessions/{id}/events to follow it, /v1/approvals to decide one. Those routes are mounted by
+// WithBotCredentials and the ordinary authenticated surface, so no Slack-specific option is needed for a
+// deployment to serve a Slack workspace. WithSlackSearchGrants is the one remaining Slack-NAMED option, and
+// it mounts a grant route rather than a transport.
 
 // WithRunners mounts the runner registry READ surface (E24 T1): which machines have enrolled, under
 // which pool, and when each last authenticated. A trailing option for the reason WithSecretRefs is —

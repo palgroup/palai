@@ -31,10 +31,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/palgroup/palai/adapters/integrations/slack"
-	"github.com/palgroup/palai/tests/uat"
 )
 
 // TestLiveSlackSocketProtocol opens a REAL Socket Mode connection with a REAL app-level token and checks the
@@ -52,9 +50,17 @@ import (
 // `connections:write`, subscribe to app_mention, and invite the bot to a channel. Then @-mention it while
 // this test waits.
 //
-// DO NOT run this while the control plane's own Socket Mode loop is connected to the same app: Slack
-// distributes events across an app's open connections, so a second consumer can take the mention the other
-// one was waiting for. Run this OR TestLiveSlackSocketMentionBirthsExactlyOneRun, not both at once.
+// DO NOT run this while apps/slack-bot is connected to the same app: Slack distributes events across an
+// app's open connections, so a second consumer can take the mention this one was waiting for. Stop the bot
+// for the duration, or point this leg at an app nothing else is dialling.
+//
+// UNTIL THE 2026-08-05 CUTOVER this warning named the control plane's own Socket Mode loop, and the file
+// carried a second leg (TestLiveSlackSocketMentionBirthsExactlyOneRun) that watched the running stack's
+// database for a run that loop had birthed. The loop is gone: Slack is dialled by apps/slack-bot, which
+// reaches this deployment over `/v1` like any other client. The run-birth observation went with it because
+// what it read — an idempotency reservation under route '/v1/slack/events' — is no longer written by
+// anything. THE PROTOCOL LEG BELOW IS UNAFFECTED: it dials Slack directly through the adapter the bot
+// itself uses, so it still measures shipped code.
 func TestLiveSlackSocketProtocol(t *testing.T) {
 	token := need(t, "SLACK_APP_TOKEN", "§0.1 — App → Basic Information → App-Level Tokens → Generate, scope connections:write")
 	if !strings.HasPrefix(token, "xapp-") {
@@ -203,58 +209,4 @@ func TestLiveSlackSocketProtocol(t *testing.T) {
 		_ = conn.Close(websocket.StatusNormalClosure, "live smoke complete")
 		return
 	}
-}
-
-// TestLiveSlackSocketMentionBirthsExactlyOneRun is the wiring half: with a RUNNING control plane whose
-// PALAI_SLACK_SOCKET_TEAM_ID names this workspace, one real @-mention must produce exactly one run — over a
-// transport that required no public URL.
-//
-// It observes the running stack's DATABASE rather than opening a socket of its own, for two reasons: the
-// thing under test is the DEPLOYED loop, and a second consumer would compete for the same events (Slack
-// distributes an app's events across its open connections).
-//
-// This is the Socket Mode half of §6 leg 1. It does NOT flip `slack` out of preview by itself — the tier is
-// recomputed from claim outcomes by E17 T11 / E18 T10, and the operator legs are what close it.
-func TestLiveSlackSocketMentionBirthsExactlyOneRun(t *testing.T) {
-	need(t, "SLACK_APP_TOKEN", "§0.1 — App → Basic Information → App-Level Tokens → Generate, scope connections:write")
-	dbURL := need(t, "PALAI_SLACK_LIVE_POSTGRES_URL", "the RUNNING control plane's Postgres URL (make compose-up prints it)")
-	team := need(t, "SLACK_TEAM_ID", "§0.1 — workspace admin → about, or any event payload's team_id")
-
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		t.Fatalf("connect to the running stack: %v", err)
-	}
-	defer pool.Close()
-
-	// Keyed on the admission reservation; uat.SlackBornRunsByTeam records why the input projection stopped working.
-	const bornSince = uat.SlackBornRunsByTeam
-	start := time.Now().UTC()
-	t.Logf("watching for a Socket-Mode-born run in workspace %s. The control plane must be running with PALAI_SLACK_SOCKET_TEAM_ID=%s and the workspace registered with a resolvable app_token_ref. @-mention the bot now.",
-		team, team)
-
-	deadline := time.Now().Add(liveWindow(t))
-	byEvent := map[string][]string{}
-	for time.Now().Before(deadline) {
-		byEvent = pollSlackBornRuns(t, ctx, pool, bornSince, team, start)
-		if len(byEvent) > 0 {
-			// Socket Mode has no documented redelivery, but the control plane may hold overlapping connections
-			// during a refresh — so settle briefly and re-read once before concluding.
-			time.Sleep(10 * time.Second)
-			byEvent = pollSlackBornRuns(t, ctx, pool, bornSince, team, start)
-			break
-		}
-		time.Sleep(2 * time.Second)
-	}
-	if len(byEvent) == 0 {
-		t.Fatalf("no Slack-born run appeared in %s — check that Socket Mode is ON in the app, that PALAI_SLACK_SOCKET_TEAM_ID is set on the running control plane, that its log carries \"Slack Socket Mode enabled\", and that the connection's app_token_ref resolves",
-			liveWindow(t))
-	}
-	for eventID, responses := range byEvent {
-		if len(responses) != 1 {
-			t.Fatalf("source event %s produced %d responses (%v), want exactly 1 — one effect per source event holds across transports, and an overlapping reconnect is exactly when a second one would appear",
-				eventID, len(responses), responses)
-		}
-	}
-	t.Logf("%d real Slack event(s) each produced exactly one run, over Socket Mode, with NO public URL. §6 leg 1's Socket Mode half has a receipt.", len(byEvent))
 }

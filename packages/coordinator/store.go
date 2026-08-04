@@ -525,18 +525,21 @@ func applyRunTransitionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, runID s
 			tenant.Project, runID, resp, sessionID, string(next)); err != nil {
 			return Transition{}, fmt.Errorf("enqueue terminal queue deliveries: %w", err)
 		}
-		// The SLACK RETURN LEG (E19, 000041), and it is here rather than in finalize for one concrete reason:
-		// finalize is only the ENGINE's terminal path. A cancel (orchestration.CancelRunReconciled), a
-		// dead-letter sweep (lease.go), a queue-deadline timeout, and a crash-restore fail all reach terminal
-		// WITHOUT passing through it — so a reply wired there would leave a human in Slack staring at silence
-		// for exactly the outcomes they most need told about. This is the choke point all five share.
+		// THE SLACK RETURN LEG (E19, 000041) WAS THE SECOND WRITE HERE AND IS GONE (cutover, 2026-08-05). It
+		// queued a slack_reply_deliveries row inside this transaction so a run's answer reached the thread
+		// even if the poster was down; extensions.SlackReplyPump drained it. Bridge and pump were both
+		// deleted, so the row had no reader left, and an enqueue nobody drains is an unbounded table rather
+		// than a durability guarantee.
 		//
-		// A run whose session has no Slack thread inserts zero rows, which is every non-Slack run. Idempotent
-		// on the run id, so a retried transition is one message.
-		if _, err := tx.Exec(ctx, storage.Query("EnqueueTerminalSlackReply"),
-			tenant.Project, runID, resp, sessionID, string(next)); err != nil {
-			return Transition{}, fmt.Errorf("enqueue terminal slack reply: %w", err)
-		}
+		// THE PROPERTY IT PROTECTED IS STILL HELD, BY THE SIDE THAT NOW OWNS THE THREAD. apps/slack-bot
+		// records its own delivery state (its migration 0002_delivery_state.sql, which cites this very line)
+		// and finishes an interrupted render on restart through relay.RecoverPendingRuns. The durability moved
+		// with the renderer instead of being dropped.
+		//
+		// WHY IT SAT HERE RATHER THAN IN finalize, kept because the reasoning outlives the code: finalize is
+		// only the ENGINE's terminal path, while a cancel (orchestration.CancelRunReconciled), a dead-letter
+		// sweep (lease.go), a queue-deadline timeout and a crash-restore fail all reach terminal WITHOUT
+		// passing through it. Anything that must happen on EVERY terminal outcome belongs at this choke point.
 	}
 	return Transition{To: next, Event: event, Sequence: seq}, nil
 }

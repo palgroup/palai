@@ -261,11 +261,10 @@ func (s *Store) RequestPublication(ctx context.Context, tenant Tenant, in Public
 	// "a human owes an answer" and "the question is recorded for delivery" become durable together, so a
 	// poster that is down, restarting or absent delays the question and can never lose it.
 	//
-	// A session with no Slack thread inserts ZERO rows, which is every non-Slack run in the deployment.
-	if _, err := tx.Exec(ctx, storage.Query("EnqueueApprovalMessage"),
-		tenant.Project, in.ApprovalID, in.RunID, in.ResponseID, in.SessionID); err != nil {
-		return Publication{}, fmt.Errorf("enqueue approval message: %w", err)
-	}
+	// THE SAME ORDER-TO-POST WAS WRITTEN HERE AND IS GONE (cutover, 2026-08-05), for the reason given at the
+	// identical call site in approvals.go: it queued a slack_approval_deliveries row that only
+	// extensions.SlackApprovalPump ever read, and that pump was deleted with the in-process Slack bridge.
+	// apps/slack-bot asks the question now, off the approval.requested.v1 event appended just below.
 	payload := mustMarshal(map[string]any{
 		"publication_id": in.PublicationID, "operation": in.Operation, "branch": in.Branch,
 		"request_hash": in.RequestHash, "display": in.Display,

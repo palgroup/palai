@@ -153,11 +153,18 @@ func (s *Store) RequestToolApproval(ctx context.Context, tenant Tenant, in ToolA
 	// interrupted nobody. Writing the order HERE rather than from the poster is the loss-lessness claim:
 	// "a human owes an answer" and "the question is recorded for delivery" become durable together.
 	//
-	// A session with no Slack thread inserts ZERO rows, which is every non-Slack run in the deployment.
-	if _, err := tx.Exec(ctx, storage.Query("EnqueueApprovalMessage"),
-		tenant.Project, in.ApprovalID, in.RunID, in.ResponseID, in.SessionID); err != nil {
-		return fmt.Errorf("enqueue tool approval message: %w", err)
-	}
+	// THE ORDER-TO-ASK WAS WRITTEN HERE AND IS GONE (cutover, 2026-08-05): a slack_approval_deliveries row,
+	// committed in this transaction, drained by extensions.SlackApprovalPump. The pump was deleted with the
+	// rest of the in-process Slack bridge and nothing else ever read the table.
+	//
+	// WHO ASKS NOW, since "the question is recorded for delivery" was the whole point: apps/slack-bot posts
+	// the approval when it sees approval.requested.v1 on the session's event stream — the event appended a
+	// few lines below, which is committed in THIS transaction and is durable exactly as this row was. On
+	// restart relay.RecoverPendingRuns re-reads the stream and asks again for anything still open.
+	//
+	// AND THE GATE DOES NOT DEPEND ON IT EITHER WAY: a question nobody is shown still expires, and the expiry
+	// reaper still wakes the parked run. That was true when the pump existed and is why losing a delivery
+	// costs a human the button rather than wedging a run (SLK-006's rule, which outlived its surface).
 	// The genesis event carries the BINDING, never a rendered screen: an event stream that repeated the
 	// display would be a second copy of it, and a second copy is the drift this epic refuses.
 	payload := mustMarshal(map[string]any{

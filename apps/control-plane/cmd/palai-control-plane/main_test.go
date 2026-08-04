@@ -13,10 +13,7 @@ import (
 	"github.com/palgroup/palai/adapters/sandboxes/host"
 	"github.com/palgroup/palai/adapters/sandboxes/posture"
 	"github.com/palgroup/palai/apps/control-plane/api"
-	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
-	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
-	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
@@ -142,74 +139,24 @@ func TestCapabilityWorkerListenerRefusesOffHost(t *testing.T) {
 	}
 }
 
-// TestSlackSocketStartsOnlyWhenTheWorkspaceIsNamed pins the composition-root half of the Slack last
-// mile: startSlackSocket is the ONE conditional loop in this binary, and PALAI_SLACK_SOCKET_TEAM_ID
-// is what decides. It was untestable-by-omission rather than wrong — compose passed the variable
-// nowhere, so the loop was dormant in every deployment an operator actually runs and nothing said
-// so. deploy/compose/slack_wiring_test.go holds the other end of the same wire.
+// THE TWO SLACK COMPOSITION-ROOT TESTS THAT SAT HERE ARE GONE (cutover, 2026-08-05), and what they held is
+// worth recording because both were built to catch the same failure this repository keeps paying for — a
+// capability wired to nothing, failing silently.
 //
-// Dormant means dormant: a nil drain, so serveWithGracefulDrain has nothing to wait on either.
-// TestSlackImageLegIsMountedWhenThereIsAnObjectStore holds the composition the image leg needs, in the
-// spirit of TestBareRouterAdvertisesOnlyWhatItCanServe: a capability that is built, tested and then WIRED TO
-// NOTHING is this codebase's recurring failure, and its worst property is silence — the owner shared a
-// screenshot, the agent said it could not see it, and the only evidence was a parenthetical inside the run's
-// own input.
+//   - TestSlackSocketStartsOnlyWhenTheWorkspaceIsNamed pinned startSlackSocket as the ONE conditional loop in
+//     this binary, gated on PALAI_SLACK_SOCKET_TEAM_ID. This binary no longer holds a Socket Mode connection;
+//     apps/slack-bot does, one process per registered bot row, so there is no conditional loop left to pin
+//     and no single-workspace selector to forget to pass.
+//   - TestSlackImageLegIsMountedWhenThereIsAnObjectStore held mountSlackFileLegs, which mounted the inbound
+//     image fetch and the outbound artifact upload on the same object-store decision. The relay carries the
+//     inbound half now (apps/slack-bot/internal/relay/images.go). The outbound half was NOT carried and was
+//     not lost either — it was measured dead before deletion: the workspace grants no `files:write` scope, so
+//     every upload would answer missing_scope, and across this installation's whole history 0 of 244 stored
+//     responses ever produced the file_ref variant that triggers it.
 //
-// Both directions are asserted and both are load bearing. Mounted-when-there-is-a-store is the regression
-// this fixes; unmounted-when-there-is-not is what keeps a deployment with no object store admitting a shared
-// file as text instead of failing.
-func TestSlackImageLegIsMountedWhenThereIsAnObjectStore(t *testing.T) {
-	// The store is a bare value and the pool is nil on purpose: this asserts the MOUNT DECISION and nothing
-	// downstream of it. NewWriter dials nothing until a write, and the write path itself is proven against a
-	// real object store and a real Postgres in the extensions component suite.
-	bridge := mountSlackFileLegs(extensions.NewSlackAdmitter(nil, nil, nil, api.AdmissionLimits{}), &artifacts.Store{}, nil)
-	if !bridge.FileFetchReady() {
-		t.Fatal("an object store is configured and the Slack image leg is not mounted: every shared screenshot " +
-			"is skipped, the run's input says only that a file 'could not be attached', and nothing in the " +
-			"control-plane log says why")
-	}
-	// E22 T5: the OUTBOUND half is mounted by the same decision, and it is asserted here for the same reason
-	// the inbound one is — a leg that is built and not mounted fails silently, and this repository has paid
-	// for that lesson once already.
-	if !bridge.ArtifactUploadReady() {
-		t.Fatal("an object store is configured and the Slack artifact upload leg is not mounted: a run's " +
-			"screenshot or recording is answered as a link nobody in the thread can open")
-	}
-
-	off := mountSlackFileLegs(extensions.NewSlackAdmitter(nil, nil, nil, api.AdmissionLimits{}), nil, nil)
-	if off.FileFetchReady() {
-		t.Fatal("the image leg reports ready with no object store behind it: a fetched image would have nowhere to go")
-	}
-	if off.ArtifactUploadReady() {
-		t.Fatal("the upload leg reports ready with no object store behind it: there is nothing to read an artifact out of")
-	}
-}
-
-func TestSlackSocketStartsOnlyWhenTheWorkspaceIsNamed(t *testing.T) {
-	// The bridge's store is nil: this asserts the START DECISION, and the loop's own work (which
-	// would touch the store) is proven against a real Postgres in the extensions component suite.
-	// A panic on the supervised stack is recovered by runGuarded, so it can only cost a backoff.
-	bridge := extensions.NewSlackAdmitter(nil, nil, nil, api.AdmissionLimits{})
-	supervisor := coordinator.NewSupervisor(func(string, ...any) {}, time.Second)
-
-	t.Setenv("PALAI_SLACK_SOCKET_TEAM_ID", "")
-	if drain := startSlackSocket(context.Background(), bridge, supervisor); drain != nil {
-		t.Fatal("the Socket Mode loop started with no workspace named: a stack with no Slack app must be unchanged")
-	}
-
-	t.Setenv("PALAI_SLACK_SOCKET_TEAM_ID", "T0AMPM5JX8U")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	drain := startSlackSocket(ctx, bridge, supervisor)
-	if drain == nil {
-		t.Fatal("PALAI_SLACK_SOCKET_TEAM_ID names a workspace and the connect loop did not start: nothing can arrive from Slack")
-	}
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer drainCancel()
-	if err := drain(drainCtx); err != nil {
-		t.Fatalf("the started loop did not drain on shutdown: %v", err)
-	}
-}
+// WHAT NO LONGER HAS A COMPOSITION-ROOT TEST, said plainly rather than left to be discovered: nothing in this
+// binary is Slack-conditional any more, so there is no mount decision here to assert. The equivalent
+// assertions live on the relay side, in the package that now owns the decision.
 
 // TestShellPostureRefusesBothSandboxImageAndNativeHost pins the mutual exclusion (E22 plan §2). A
 // stack runs its shell tool in a container or on the host; there is no "sometimes sandboxed" state,

@@ -52,6 +52,16 @@ var migrationUp3 string
 //go:embed migrations/000003_lease_occupancy.down.sql
 var migrationDown3 string
 
+// The second migration after the baseline: `responses` gains the `metadata` column, so the field both
+// published schemas have always declared has a writer and a reader. It creates no table, which is why it
+// carries no policy call of its own; 000002's sweep already secured responses.
+//
+//go:embed migrations/000004_response_metadata.up.sql
+var migrationUp4 string
+
+//go:embed migrations/000004_response_metadata.down.sql
+var migrationDown4 string
+
 //go:embed queries/agents.sql
 var agentsSQL string
 
@@ -84,9 +94,6 @@ var hooksSQL string
 //
 //go:embed queries/model_routes.sql
 var modelRoutesSQL string
-
-//go:embed queries/slack.sql
-var slackSQL string
 
 //go:embed queries/queues.sql
 var queuesSQL string
@@ -207,20 +214,21 @@ var knowledgeSQL string
 // MigrationUp is the forward chain, applied in version order. Each file is individually idempotent, so
 // the whole chain is safe to re-run — which it is, in full, on every boot.
 func MigrationUp() string {
-	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3
+	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4
 }
 
-// MigrationDown reverses MigrationUp in the opposite order: 000003 takes its columns back off
-// runner_leases, 000002 drops the policies and the procedures that install them, then 000001 drops the
+// MigrationDown reverses MigrationUp in the opposite order: 000004 takes `metadata` back off responses,
+// 000003 takes its columns back off runner_leases, 000002 drops the policies and the procedures that
+// install them, then 000001 drops the
 // tables those policies were on and last the role that held the grants. Store.Rollback runs it, and the
 // component tier leans on that to return a shared database to empty between tests — so "reverses" has to
 // mean NOTHING is left behind, including the role, which is a cluster object the next database in the same
 // cluster would see.
 func MigrationDown() string {
-	return migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
+	return migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
 }
 
-var namedQueries = parseNamedQueries(usageSQL, agentsSQL, jobsSQL, eventsSQL, responsesSQL, identitySQL, provisioningSQL, secretsSQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL, recoverySQL, webhooksSQL, triggersSQL, schedulesSQL, toolsSQL, remoteToolsSQL, mcpSQL, skillsSQL, hooksSQL, modelRoutesSQL, metricsSQL, slackSQL, knowledgeSQL, queuesSQL, a2aSQL, workersSQL, runnersSQL, leasesSQL, environmentsSQL, backgroundSQL, deploymentSQL, botsSQL)
+var namedQueries = parseNamedQueries(usageSQL, agentsSQL, jobsSQL, eventsSQL, responsesSQL, identitySQL, provisioningSQL, secretsSQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL, recoverySQL, webhooksSQL, triggersSQL, schedulesSQL, toolsSQL, remoteToolsSQL, mcpSQL, skillsSQL, hooksSQL, modelRoutesSQL, metricsSQL, knowledgeSQL, queuesSQL, a2aSQL, workersSQL, runnersSQL, leasesSQL, environmentsSQL, backgroundSQL, deploymentSQL, botsSQL)
 
 // Query returns the SQL statement labelled "-- name: <name>" in storage/queries.
 // It panics on an unknown name because query names are compile-time constants.

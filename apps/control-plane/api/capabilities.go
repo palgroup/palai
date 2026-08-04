@@ -108,16 +108,32 @@ func capabilities(cfg routerConfig) http.HandlerFunc {
 		if cfg.capabilityWorkers {
 			caps["capability-workers"] = "stable"
 		}
-		// The Slack integration (E17 T1 adapter + E19 T1 Events API route): advertised ONLY where WithSlack
-		// actually mounted the receiver, so a binary that serves no Slack surface does not claim `slack` while
-		// POST /v1/slack/events 404s. Until E19 T1 this was a static string — the same §2 defect D14 named for
-		// capability-workers, one tier quieter.
+		// The Slack integration (E17 T1 adapter + the bot registry). It is advertised ONLY where the registry
+		// is mounted, so a binary that can register no bot does not claim `slack` while POST /v1/bots 404s.
+		// Until E19 T1 this was a static string — the same §2 defect D14 named for capability-workers, one
+		// tier quieter.
 		//
-		// It enters as PREVIEW and the wiring does NOT move it: every SLK claim is green, but the stable flip
-		// awaits §6 leg 1 — an external receipt from a REAL Slack workspace. The local proof is a FAKE peer
-		// built to the published contract, and uat.CapabilityOperatorLegs caps the tier mechanically, so the
-		// T11 CapabilityTierProof recompute — not this line — decides the word.
-		if cfg.slack != nil {
+		// THE MOUNT THIS DERIVES FROM MOVED ON 2026-08-05, AND THE CLAIM DELIBERATELY DID NOT. It used to read
+		// `cfg.slack != nil` — the in-process Events API receiver. That receiver, the interactivity receiver,
+		// the Socket Mode loop and the workspace-registration surface were all deleted when Slack became a
+		// SEPARATE PROCESS (apps/slack-bot) that consumes this control plane over `/v1`.
+		//
+		// KEEPING THE WORD IS THE HONEST ANSWER, and the alternative was considered rather than skipped:
+		// dropping `slack` from discovery would tell every client that this deployment cannot serve a Slack
+		// workspace, which is FALSE — measured the same day, a registered bot was connected to a real
+		// workspace and answering in it. §2 forbids claiming what the deployment cannot serve; it does not ask
+		// a deployment to disclaim what it does serve, and a discovery entry that under-claims is the rarer,
+		// quieter form of the same lie (see `sessions` above, which read "unavailable" for three years).
+		//
+		// SO THE DERIVATION FOLLOWS THE MOUNT INSTEAD OF THE TRANSPORT: `cfg.bots` is what makes a Slack
+		// workspace registrable, and a workspace nothing can register is a workspace nothing can serve. The
+		// registry is kind-agnostic, so this is advertisABILITY exactly as before — the old receiver claimed
+		// `slack` with zero connections registered too.
+		//
+		// It enters as PREVIEW and the wiring does NOT move it: the stable flip awaits §6 leg 1 — an external
+		// receipt from a REAL Slack workspace — and uat.CapabilityOperatorLegs caps the tier mechanically, so
+		// the T11 CapabilityTierProof recompute, not this line, decides the word.
+		if cfg.bots != nil {
 			caps["slack"] = "preview"
 		}
 		// The knowledge spine (E17 T4): the FTS ingestion/index/retrieval core, advertised ONLY when
