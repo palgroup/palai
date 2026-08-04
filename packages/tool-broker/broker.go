@@ -59,8 +59,14 @@ type Tool struct {
 	// Description is the fixed platform text the model reads when the tool is advertised (E12 T1).
 	// It is authored by the platform, never tenant-supplied — a tenant description bound to approval
 	// is T2's job (§28.2 untrusted-claim discipline). Empty is allowed (a bare conformance tool).
-	Description  string
-	InputSchema  map[string]any
+	Description string
+	// Type is the Anthropic-defined tool type (e.g. "text_editor_20250728"), empty for an ordinary
+	// custom tool. A typed tool's SHAPE LIVES IN THE MODEL rather than in InputSchema: the provider is
+	// sent {type, name} and no schema, because the schema the tool was trained against is not ours to
+	// restate. A tool carrying a Type therefore leaves InputSchema and Description empty, and the
+	// adapter refuses the combination rather than sending both.
+	Type        string
+	InputSchema map[string]any
 	OutputSchema map[string]any
 	ReplayClass  ReplayClass
 	Invoke       func(args map[string]any) (map[string]any, error)

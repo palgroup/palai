@@ -52,7 +52,12 @@ type Message struct {
 
 // ToolSchema is a function tool the model may call; Parameters is a JSON Schema.
 type ToolSchema struct {
-	Name        string         `json:"name"`
+	Name string `json:"name"`
+	// Type names an Anthropic-defined tool (e.g. "text_editor_20250728") whose schema the model already
+	// carries; empty for an ordinary custom tool. `omitempty` is load-bearing — a custom tool must not
+	// gain a `"type": ""` key it never had, and an adapter that saw one would have to decide what an
+	// empty type means.
+	Type        string         `json:"type,omitempty"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters"`
 	Strict      bool           `json:"strict,omitempty"`

@@ -13,6 +13,7 @@ import (
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
+	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
 // interruptPollInterval is how often the in-flight-abort watcher checks for a pending interrupt
@@ -732,6 +733,22 @@ func (o *Orchestrator) effectiveModel(ctx context.Context, st *attemptState) (st
 // the run is checkpointed under. A name the effective set carries but the broker does not register
 // is silently dropped — the model is never offered a tool the broker cannot execute (broker.Execute
 // returns ErrUnknownTool for it). An empty effective set yields nil, leaving the request unchanged.
+// toolSchemaFor renders one registered tool as the wire shape a provider is offered.
+//
+// IT IS A FUNCTION RATHER THAN FOUR LINES INSIDE THE LOOP so the conversion can be tested on its own.
+// The failure it exists to make visible is the one this tree keeps paying for: a field added to both
+// structs and dropped in between. A `Type` that reaches neither end is a compile error; a `Type` that
+// reaches both ends and is lost here is silent, and turns an Anthropic-defined tool into an unknown
+// custom tool with no schema.
+func toolSchemaFor(tool toolbroker.Tool) modelbroker.ToolSchema {
+	return modelbroker.ToolSchema{
+		Name:        tool.Name,
+		Type:        tool.Type,
+		Description: tool.Description,
+		Parameters:  tool.InputSchema,
+	}
+}
+
 func (o *Orchestrator) advertisedTools(ctx context.Context, st *attemptState, pinned coordinator.PinnedConfig) ([]modelbroker.ToolSchema, []SkillRef, error) {
 	override, _, err := o.spine.LatestSessionConfig(ctx, st.tenant, st.sessionID)
 	if err != nil {
@@ -773,11 +790,7 @@ func (o *Orchestrator) advertisedTools(ctx context.Context, st *attemptState, pi
 		if !ok {
 			continue // an effective-set name the broker cannot execute or resolve is not offered
 		}
-		advertised = append(advertised, modelbroker.ToolSchema{
-			Name:        tool.Name,
-			Description: tool.Description,
-			Parameters:  tool.InputSchema,
-		})
+		advertised = append(advertised, toolSchemaFor(tool))
 	}
 	// The run's frozen skills ride alongside the advertised tools (spec §28.16). They are NOT tools — the
 	// caller prepends them as a single progressive-loading system message (metadata only; the body reads
