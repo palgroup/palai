@@ -47,7 +47,10 @@ func TestSecretRefWriteResolveRotate(t *testing.T) {
 	org, project, _ := provisionOrg(t, idstore, "sec-alpha")
 	scope := middleware.Scope{Project: project}
 
-	created, err := store.CreateSecretRef(ctx, scope, []byte(`{"name":"provider-one","value":"sk-live-v1"}`))
+	// Per-run, because 000065 made the ref name unique across the INSTALLATION: a literal shared with any
+	// sibling fixture makes this test's "version 2" assertion depend on how many of them ran first.
+	name := "provider-one-" + newID("sec")
+	created, err := store.CreateSecretRef(ctx, scope, []byte(`{"name":"`+name+`","value":"sk-live-v1"}`))
 	if err != nil {
 		t.Fatalf("CreateSecretRef error = %v", err)
 	}
@@ -56,7 +59,7 @@ func TestSecretRefWriteResolveRotate(t *testing.T) {
 	}
 
 	// Resolve is the resolver-chain hook main.go puts in front of the env-file bridge. It decrypts.
-	got, ok, err := store.Resolve(ctx, org, "provider-one")
+	got, ok, err := store.Resolve(ctx, org, name)
 	if err != nil || !ok {
 		t.Fatalf("Resolve(v1) ok=%v err=%v", ok, err)
 	}
@@ -65,14 +68,14 @@ func TestSecretRefWriteResolveRotate(t *testing.T) {
 	}
 
 	// Rotation inserts a new version; the next Resolve sees it with no restart (SEC-002).
-	rotated, err := store.RotateSecretRef(ctx, scope, "provider-one", []byte(`{"value":"sk-live-v2"}`))
+	rotated, err := store.RotateSecretRef(ctx, scope, name, []byte(`{"value":"sk-live-v2"}`))
 	if err != nil {
 		t.Fatalf("RotateSecretRef error = %v", err)
 	}
 	if strings.Contains(string(rotated.Body), "sk-live-v2") {
 		t.Fatalf("rotate projection disclosed the value: %s", rotated.Body)
 	}
-	got2, ok, err := store.Resolve(ctx, org, "provider-one")
+	got2, ok, err := store.Resolve(ctx, org, name)
 	if err != nil || !ok {
 		t.Fatalf("Resolve(v2) ok=%v err=%v", ok, err)
 	}
@@ -101,7 +104,7 @@ func TestSecretRefWriteResolveRotate(t *testing.T) {
 	// longer allows for an empty project (A.2 Task 1).
 	if err := cs.Pool().QueryRow(storage.WithOrgScope(ctx, org),
 		"SELECT ciphertext FROM secret_refs WHERE organization_id = $1 AND name = $2 ORDER BY version DESC LIMIT 1",
-		org, "provider-one").Scan(&cipher); err != nil {
+		org, name).Scan(&cipher); err != nil {
 		t.Fatalf("read stored ciphertext: %v", err)
 	}
 	if strings.Contains(string(cipher), "sk-live-v2") {
@@ -132,13 +135,16 @@ func TestSecretRefNamesAreInstallationWide(t *testing.T) {
 		t.Fatalf("resolve org A: %v", err)
 	}
 	_, bProj, _ := provisionOrg(t, idstore, "sec-b-b")
-	if _, err := store.CreateSecretRef(ctx, middleware.Scope{Project: bProj}, []byte(`{"name":"shared-name","value":"sk-b-only"}`)); err != nil {
+	// Per-run, for the reason the test is about: the name is unique across the INSTALLATION, so a literal
+	// would pass once against a retained database and then be somebody's version 2 forever after.
+	sharedName := "shared-name-" + newID("sec")
+	if _, err := store.CreateSecretRef(ctx, middleware.Scope{Project: bProj}, []byte(`{"name":"`+sharedName+`","value":"sk-b-only"}`)); err != nil {
 		t.Fatalf("CreateSecretRef(b) error = %v", err)
 	}
 
 	// The other tenant reads it. This is the removed boundary, stated as a value comparison so it cannot
 	// pass on a technicality: a miss would fail here too.
-	got, ok, err := store.Resolve(ctx, aOrg, "shared-name")
+	got, ok, err := store.Resolve(ctx, aOrg, sharedName)
 	if err != nil || !ok {
 		t.Fatalf("Resolve(a, shared-name) ok=%v err=%v — a secret ref is installation-wide and must resolve", ok, err)
 	}
@@ -148,14 +154,14 @@ func TestSecretRefNamesAreInstallationWide(t *testing.T) {
 
 	// And the name is single-occupancy: the other tenant's write is the NEXT VERSION of the same secret,
 	// so both now read the newer value. Version 2, not a second version 1 and not a duplicate-key error.
-	out, err := store.CreateSecretRef(ctx, middleware.Scope{Project: aProj}, []byte(`{"name":"shared-name","value":"sk-a-wins"}`))
+	out, err := store.CreateSecretRef(ctx, middleware.Scope{Project: aProj}, []byte(`{"name":"`+sharedName+`","value":"sk-a-wins"}`))
 	if err != nil {
 		t.Fatalf("CreateSecretRef(a, same name) error = %v", err)
 	}
 	if !strings.Contains(string(out.Body), `"version":2`) {
 		t.Fatalf("the second tenant's write rendered %s, want version 2 of the one shared ref", out.Body)
 	}
-	if got, ok, err := store.Resolve(ctx, aOrg, "shared-name"); err != nil || !ok || string(got) != "sk-a-wins" {
+	if got, ok, err := store.Resolve(ctx, aOrg, sharedName); err != nil || !ok || string(got) != "sk-a-wins" {
 		t.Fatalf("after the second write Resolve = %q ok=%v err=%v, want sk-a-wins", got, ok, err)
 	}
 }

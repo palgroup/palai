@@ -36,16 +36,27 @@ func TestInstallRestoreSecretCanaryTwoMasterKeys(t *testing.T) {
 
 	// Seal a secret under master key A (the source stack's key).
 	storeA := identity.NewSecretStore(cs.Pool(), keyA)
-	if _, err := storeA.CreateSecretRef(ctx, scope, []byte(`{"name":"provider-one","value":"sk-live"}`)); err != nil {
+	// The name is per-run: secret_refs' UNIQUE is (name, version) since 000065, installation-wide, so a
+	// literal "provider-one" makes this fixture the SECOND version of whichever sibling wrote it first.
+	canaryName := "provider-one-" + newID("canary")
+	if _, err := storeA.CreateSecretRef(ctx, scope, []byte(`{"name":"`+canaryName+`","value":"sk-live"}`)); err != nil {
 		t.Fatalf("CreateSecretRef: %v", err)
 	}
 
-	// Read the raw ciphertext exactly as the canary does (SELECT encode(ciphertext,'hex')).
+	// Read the raw ciphertext exactly as the canary does (SELECT encode(ciphertext,'hex')), BUT NAMING THE
+	// ROW. This read was `FROM secret_refs LIMIT 1` — no WHERE, no ORDER BY — and it worked only because
+	// migration 000031's policy confined it to this fixture's own organization, so "some row" and "my row"
+	// were the same row. A.2 Task 6's 000066 keys secret_refs on the INSTALLATION, this suite shares one
+	// database across dozens of harnesses, and the unordered LIMIT 1 then returned a SIBLING TEST's blob
+	// sealed under a different master key: `cipher: message authentication failed`, from an assertion whose
+	// subject is master-key interop. This tree already records an unordered LIMIT 1 deciding two security
+	// outcomes; this is the same defect surviving because a policy was holding it up.
 	var ctHex string
 	// secret_refs carries no project_id (000031); WithOrgScope is the named exception WithTenant no
 	// longer allows for an empty project (A.2 Task 1).
 	if err := cs.Pool().QueryRow(storage.WithOrgScope(ctx, org),
-		"SELECT encode(ciphertext, 'hex') FROM secret_refs LIMIT 1").Scan(&ctHex); err != nil {
+		"SELECT encode(ciphertext, 'hex') FROM secret_refs WHERE organization_id = $1 AND name = $2 ORDER BY version DESC LIMIT 1",
+		org, canaryName).Scan(&ctHex); err != nil {
 		t.Fatalf("read ciphertext: %v", err)
 	}
 	sealed, err := hex.DecodeString(ctHex)
@@ -64,7 +75,7 @@ func TestInstallRestoreSecretCanaryTwoMasterKeys(t *testing.T) {
 
 	// And the control-plane's own resolver fails closed with ErrSecretDecrypt under the wrong key —
 	// the silent-death symptom the canary exists to catch before the first provider call.
-	if _, ok, err := identity.NewSecretStore(cs.Pool(), keyB).Resolve(ctx, org, "provider-one"); ok || !errors.Is(err, identity.ErrSecretDecrypt) {
+	if _, ok, err := identity.NewSecretStore(cs.Pool(), keyB).Resolve(ctx, org, canaryName); ok || !errors.Is(err, identity.ErrSecretDecrypt) {
 		t.Fatalf("Resolve under a mismatched master key must be ErrSecretDecrypt, got ok=%v err=%v", ok, err)
 	}
 }

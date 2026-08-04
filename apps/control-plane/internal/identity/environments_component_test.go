@@ -58,7 +58,9 @@ func TestEnvironmentWriteResolveRotateAndUnbind(t *testing.T) {
 	org, project, _ := provisionOrg(t, idstore, "env-alpha")
 	scope := middleware.Scope{Project: project}
 
-	envID := createEnvironment(t, store, scope, "production")
+	// Per-run: 000065 made the environment name unique across the INSTALLATION, so a literal is a 409 the
+	// second time this suite runs against a retained database.
+	envID := createEnvironment(t, store, scope, "production-"+newID("env"))
 
 	// A keyless environment LISTS. This is the whole reason `environments` is a table rather than a naming
 	// convention over secret_refs (migration 000046's header), so it is asserted rather than assumed.
@@ -179,7 +181,7 @@ func TestEnvironmentRefusesReservedAndMalformedKeyNames(t *testing.T) {
 	store := identity.NewSecretStore(cs.Pool(), masterKey(t))
 	_, project, _ := provisionOrg(t, identity.New(cs.Pool()), "env-keys")
 	scope := middleware.Scope{Project: project}
-	envID := createEnvironment(t, store, scope, "keyrules")
+	envID := createEnvironment(t, store, scope, "keyrules-"+newID("env"))
 
 	for _, key := range []string{"lowercase", "With_Mixed", "WITH-DASH", "1LEADING", "HAS SPACE", "PALAI_ANYTHING", "PALAI_SIMCTL_SET", ""} {
 		body, _ := json.Marshal(map[string]string{"key": key, "value": sentinelValue})
@@ -229,7 +231,10 @@ func TestEnvironmentsAreInstallationWide(t *testing.T) {
 	scopeA := middleware.Scope{Project: projectA}
 	scopeB := middleware.Scope{Project: projectB}
 
-	envA := createEnvironment(t, store, scopeA, "a-production")
+	// The name is per-run because the uniqueness under test is INSTALLATION-wide: a literal would make this
+	// test pass once against a retained database and fail on the next run for a reason unrelated to it.
+	sharedName := "a-production-" + newID("env")
+	envA := createEnvironment(t, store, scopeA, sharedName)
 	if out, err := store.PutEnvironmentValue(ctx, scopeA, envA, []byte(`{"key":"JIRA_TOKEN","value":"`+sentinelValue+`"}`)); err != nil || out.BadField {
 		t.Fatalf("seed A's key: %+v %v", out, err)
 	}
@@ -271,8 +276,15 @@ func TestEnvironmentsAreInstallationWide(t *testing.T) {
 	// "a-production" is refused rather than given its own. The replaced test asserted the opposite, and
 	// deliberately: a 409 used to be a cross-tenant existence oracle. With one installation there is no
 	// second tenant for it to disclose anything to.
-	if _, err := store.CreateEnvironment(ctx, scopeB, []byte(`{"name":"a-production"}`)); err == nil {
-		t.Fatal("a second project created an environment with a name the installation already holds")
+	// The refusal is a typed OUTCOME, not a Go error — CreateEnvironment maps the unique violation to
+	// ProvisionResult{Conflict} and the handler renders 409. Asserting `err == nil` here would have been
+	// a test failing for a reason unrelated to its claim: the product WAS refusing.
+	dup, err := store.CreateEnvironment(ctx, scopeB, []byte(`{"name":"`+sharedName+`"}`))
+	if err != nil {
+		t.Fatalf("CreateEnvironment(duplicate name) error = %v, want a typed conflict", err)
+	}
+	if !dup.Conflict {
+		t.Fatalf("a second project created an environment with a name the installation already holds: %+v", dup)
 	}
 
 	// The boundary that SURVIVES: a connection that declared no scope at all still sees nothing. This is
