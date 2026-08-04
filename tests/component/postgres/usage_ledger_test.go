@@ -387,11 +387,11 @@ func TestInterruptedModelStepIsMetered(t *testing.T) {
 }
 
 // TestBudgetScopeNarrowingAcrossSiblingProjects pins the project narrowing the LIMIT queries perform in
-// SQL. Migration 000032 secures the metering tables at the ORGANIZATION level on purpose — that is what
-// lets an org-wide budget sum sibling projects from a project-narrowed admission connection — so RLS is
-// NOT what keeps one project's spend off another project's budget. These predicates are, and deleting any
-// of them mis-charges a tenant rather than failing loudly. A single-project fixture cannot see that, so
-// this drives a two-project organization through the real admission gate:
+// SQL. The metering tables are row-level secured at the INSTALLATION level on purpose — that is what lets
+// a budget sum sibling projects from a project-narrowed admission connection — so RLS is NOT what keeps
+// one project's spend off another project's budget. These predicates are, and deleting any of them
+// mis-charges a tenant rather than failing loudly. A single-project fixture cannot see that, so this
+// drives two sibling projects through the real admission gate:
 //
 //	(a) a SIBLING project's exhausted budget must not bind us     (the WHERE project_id IN ('', $2));
 //	(b) our OWN project budget must not count the sibling's spend (the JOIN's project predicate);

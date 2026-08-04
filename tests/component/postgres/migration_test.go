@@ -24,12 +24,23 @@ import (
 	"github.com/palgroup/palai/storage"
 )
 
+// THE `TestMigrationNN…` NAMES IN THIS FILE ARE HISTORY, NOT A CLAIM THAT MIGRATION NN EXISTS. The chain
+// was squashed from sixty-seven files to a two-link baseline on 2026-08-04, so there is no 000037 and no
+// 000045; each name still records which migration first introduced the property its test pins, which is
+// the only thing those numbers were ever good for here. The properties themselves are unchanged and are
+// asserted against the schema the baseline builds.
+//
+// THEY ARE NOT RENAMED, AND THE REASON IS MECHANICAL RATHER THAN SENTIMENTAL: scripts/test/component
+// selects this tier with a `-run` allow-list of literal test names, so a rename that missed that list
+// would not fail — it would make the test silently stop running, which is the exact defect this tree has
+// found seven times. A rename here is a rename in two places or it is a deletion in disguise.
+
 // allTables is every relation the core migration must create (brief Step 3).
 //
-// `organizations` LEFT THIS LIST WITH A.2 TASK 6 (migration 000067 drops it). It is named here rather
-// than silently absent because this list is read in BOTH directions — every table must exist after apply
-// AND be gone after rollback — so a removal that was a mistake would look exactly like a removal that was
-// a decision.
+// A TABLE LEFT THIS LIST WITH A.2 TASK 6 — the one that carried the tenant boundary above the project.
+// The removal is recorded here rather than left silent because this list is read in BOTH directions —
+// every table must exist after apply AND be gone after rollback — so a removal that was a mistake would
+// look exactly like a removal that was a decision.
 var allTables = []string{
 	"projects", "principals", "api_keys",
 	"idempotency_records",
@@ -97,13 +108,14 @@ var allTables = []string{
 	// thing from the tool_calls row that spawned it — the process outlives that row, which is exactly why
 	// it needs one of its own.
 	"background_tasks",
-	// The E29 desired-configuration journal (000052): what this MACHINE should be running with, appended
-	// one revision at a time by the admin panel and read by the next bring-up. It carries NO
-	// organization_id and that absence is deliberate — four of its writable settings are the admission
-	// bounds that exist to hold a tenant — so it is also a BY-NAME entry in tests/security/tenancy's
-	// nonTenantTables, which is where a reader looking for "why is this one outside RLS" will look.
+	// The E29 desired-configuration journal: what this MACHINE should be running with, appended one
+	// revision at a time by the admin panel and read by the next bring-up. It carries NO tenant column at
+	// all and that absence is deliberate — four of its writable settings are the admission bounds that
+	// exist to hold a tenant, and a tenant-scoped home for them would let a tenant raise its own limit —
+	// so it is also a BY-NAME entry in tests/security/tenancy's nonTenantTables, which is where a reader
+	// looking for "why is this one outside RLS" will look.
 	"deployment_desired",
-	// The kind-agnostic bot registry (migration 000061, 2026-08-03 plan Task 4). Referenced by NO other
+	// The kind-agnostic bot registry (2026-08-03 plan Task 4). Referenced by NO other
 	// table — a later session.bot_id column carries this row's id as a plain opaque string, on purpose:
 	// the control plane must never learn what a bot IS, and an FK would be that knowledge.
 	"integration_bots",
@@ -1178,11 +1190,10 @@ func TestTenantScopeOwnsExecutionRows(t *testing.T) {
 	seedRun(t, pool)
 
 	// A session's project must EXIST. This arm used to make a different and stronger claim — it seeded a
-	// second organization, gave it a project, and required that pairing THIS org's id with THAT org's
-	// project be refused — and A.2 Task 6's 000065 is what took the strength away, deliberately: the
-	// composite `FOREIGN KEY (organization_id, project_id) REFERENCES projects (organization_id, id)` that
-	// enforced the pairing is rebuilt as `FOREIGN KEY (project_id) REFERENCES projects (id)`, because with
-	// organizations gone there is no second member for the pair to agree with. What survives is the half
+	// second tenant ABOVE the project, gave it a project, and required that pairing one tenant's id with
+	// the other's project be refused — and A.2 Task 6 is what took the strength away, deliberately: the
+	// composite foreign key that enforced the pairing is rebuilt on the project alone, because with that
+	// tenant gone there is no second member for the pair to agree with. What survives is the half
 	// that still means something, and it is asserted against an id no projects row carries so the check
 	// cannot pass on a technicality: drop the foreign key entirely and this insert succeeds.
 	_, err := pool.Exec(storage.WithSystemScope(ctx),
@@ -2039,22 +2050,25 @@ func TestMigration45RunnerFleet(t *testing.T) {
 		t.Fatalf("a run was placed into a pool that does not exist (code %q, want 23503)", got)
 	}
 
-	// R6: the bootstrap tenant's default pool. seedRun's project is a fresh one, so this reads the row the
-	// migration seeded for prj_local — the population an UPGRADE from 000044 is. It is keyed on the id
-	// alone now: A.2 Task 6's 000067 dropped organization_id, and 'pool_default' was always the seed's
-	// fixed id (the ON CONFLICT target), so the id IS the identity of the row this asks about.
+	// R6: NO MIGRATION SEEDS A POOL, and asserting zero is a stronger claim than the "at most one" this
+	// used to make. A migration once inserted the default pool for an install upgrading into the fleet
+	// tables; that seed went with the chain squash, and it had already been unreachable before it — it
+	// selected from a projects table that is empty on a first boot, and its own guard skipped it on every
+	// boot after. Every pool alive today comes from identity.Store.provision, which runs
+	// InsertDefaultRunnerPool in the same transaction as the four identity rows.
+	//
+	// "AT MOST ONE" WOULD NOW BE VACUOUS. This harness migrates a database with no identity bootstrap, so
+	// the count is zero and any `> 1` check passes without measuring anything. Zero is what fails if a
+	// migration ever writes a tenant row again — which is the thing worth catching, because a tenant row
+	// written by the chain is written before there is a tenant to own it.
 	var seeded int
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM runner_pools WHERE id = 'pool_default'`).Scan(&seeded); err != nil {
-		t.Fatalf("count the seeded default pool: %v", err)
+		`SELECT count(*) FROM runner_pools`).Scan(&seeded); err != nil {
+		t.Fatalf("count pools after the chain: %v", err)
 	}
-	// The harness migrates a database with no identity bootstrap, so prj_local does not exist and the
-	// guarded SELECT correctly seeds nothing. What must hold either way is that it never seeded a
-	// SECOND one — the ON CONFLICT half, across the two boots above. Since A.2 Task 6 the seed is also
-	// skipped outright on the second boot (000067 drops projects.organization_id, and the seed's own
-	// guard reads that column's presence), which makes "at most 1" true for one more reason than before.
-	if seeded > 1 {
-		t.Fatalf("the default pool was seeded %d times across two boots, want at most 1", seeded)
+	if seeded != 0 {
+		t.Fatalf("the migration chain left %d runner pool(s) behind; the chain seeds no tenant rows and "+
+			"identity.Store.provision is the only writer of a default pool", seeded)
 	}
 
 	// R4 — THE APPEND-ONLY JOURNAL, across the reboot that re-ran both blanket grants.
@@ -2405,10 +2419,10 @@ func TestMigration48SessionListIndexesAndLabel(t *testing.T) {
 	//
 	// WHAT THIS CATCHES AND WHAT IT DOES NOT, because a plan assertion that overstates itself is worse
 	// than none. It catches the index disappearing (the plan then has nothing to name) and it catches a
-	// Sort reappearing, which is the shape the pre-000048 list had. It does NOT catch a wrong column
-	// ORDER: measured 2026-07-31 on a fresh database, an index built as (created_at DESC, id DESC,
-	// organization_id, project_id) produces a plan textually identical to the correct one — same Index
-	// Scan, same "Index Cond: organization_id AND project_id" — and differs only in estimated cost
+	// Sort reappearing, which is the shape the list had before it was indexed. It does NOT catch a wrong
+	// column ORDER: measured 2026-07-31 on a fresh database, an index built with the keyset columns FIRST
+	// produces a plan textually identical to the correct one — same Index Scan, same Index Cond — and
+	// differs only in estimated cost
 	// (15.16 vs 8.17). EXPLAIN cannot tell them apart, so neither can this test. The column order is
 	// held by review and by the migration's own comment, not here.
 	tx, err := pool.Begin(ctx)
@@ -2441,7 +2455,7 @@ func TestMigration48SessionListIndexesAndLabel(t *testing.T) {
 	}
 	if !strings.Contains(plan.String(), "sessions_tenant_keyset_idx") {
 		t.Fatalf("the session page's plan does not use sessions_tenant_keyset_idx; its column order no longer "+
-			"matches (organization_id, project_id) equality followed by the (created_at DESC, id DESC) keyset.\n%s",
+			"matches project_id equality followed by the (created_at DESC, id DESC) keyset.\n%s",
 			plan.String())
 	}
 	// And no Sort: the index supplies the order, which is the whole reason its trailing columns carry
