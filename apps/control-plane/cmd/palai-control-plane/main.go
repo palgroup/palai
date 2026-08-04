@@ -658,7 +658,7 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			tools.FileTool(),
 			tools.TextEditorTool(), // Anthropic's editor: str_replace instead of whole-file rewriting
 			tools.GlobTool(),       // find files by name before reading any of them
-			tools.GrepTool(), // and by content, without paying the shell's irreversible classification
+			tools.GrepTool(),       // and by content, without paying the shell's irreversible classification
 			tools.ShellTool(),
 			tools.BackgroundKillTool(), // E26 T2: stop a task the shell tool's `background` parameter started
 			// The agent's own way to SHOW a human what it did — a simulator screenshot or a screen
