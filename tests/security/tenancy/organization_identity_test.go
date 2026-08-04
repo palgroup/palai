@@ -14,19 +14,28 @@
 // statement now filters `project_id = <an organization id>`. These tests read the argument's NAME against
 // the statement's own SQL, so that edit fails at the file:line where it was made.
 //
-// Three tests, split by what each can be authoritative about:
+// TWO tests, split by what each can be authoritative about:
 //
 //   - TestNoStatementStillFiltersByOrganization is the SQL-side inventory. It attributes every
 //     organization_id reference in storage/queries to the table it belongs to, and requires a FILTER to
 //     survive only where the database still refuses a NULL or a mismatch. It was this task's worklist and
 //     is now its completion test.
 //   - TestNoQueryBindsAnOrganizationIntoAProjectsSlot is the Go-side identity check described above.
-//   - TestTenantScopeIsPublishedOrganizationFirst reads the OTHER adjacent pair of strings this epic
-//     keeps touching, the one no query mentions: WithTenant(ctx, project).
 //
-// None of them replaces the arity guard, and three perturbations recorded in the task report show why:
-// leaving tenant.Organization in tenant.Project's slot is invisible to arity and caught here, while
-// passing one argument too many is invisible here and caught there.
+// THIS SAID "THREE" AND NAMED TestTenantScopeIsPublishedOrganizationFirst AS THE THIRD. That test is
+// gone: A.2 Task 6 deleted the hazard it watched, and the deletion is recorded in full at the bottom of
+// this file, where the function used to be. The header is the part a reader checks the roster against,
+// so a count it inflates is a guard someone believes is standing.
+//
+// Neither replaces the arity guard next door, and the perturbations recorded in the task report show
+// why: an organization-spelled identifier sitting in a project's slot is invisible to arity and caught
+// here, while passing one argument too many is invisible here and caught there.
+//
+// The identity check is NOT retired along with the field it was written for. coordinator.Tenant is a
+// one-field struct now, so the literal `tenant.Organization` of the original example no longer compiles —
+// but identityNames matches any argument spelled organization/organizationID/org/orgID, and a local
+// variable may still carry one of those names into a project's slot. Zero matches is this guard's PASS,
+// not its retirement.
 package tenancy
 
 import (

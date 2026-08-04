@@ -170,8 +170,13 @@ func (s *SecretStore) insertVersion(ctx context.Context, tx pgx.Tx, name, value 
 	return version, createdAt, nil
 }
 
-// ListSecretRefs lists secret-ref METADATA (name/version/updated_at) for the caller's organization — never a
-// value or ciphertext. One row per name, at its latest version.
+// ListSecretRefs lists secret-ref METADATA (name/version/updated_at) — never a value or ciphertext. One
+// row per name, at its latest version.
+//
+// The set is the INSTALLATION's, not the caller's: provisioningScope narrows to the caller's project, but
+// secret_refs carries the installation policy (any connection that declared a scope matches every row), so
+// a tenant admin and the platform get the identical list. Resolve's doc records the same for the read
+// path. It said "for the caller's organization", which named a narrowing that is not here.
 func (s *SecretStore) ListSecretRefs(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
 	ctx = provisioningScope(ctx, scope)
 	rows, err := s.pool.Query(ctx, storage.Query("ListSecretRefs"))
@@ -193,8 +198,8 @@ func (s *SecretStore) ListSecretRefs(ctx context.Context, scope middleware.Scope
 	return api.ProvisionResult{Body: mustJSON(listView{Object: "list", Data: data})}, nil
 }
 
-// GetSecretRef reads one secret's metadata within the caller's organization; a foreign/unknown name is a
-// miss (404).
+// GetSecretRef reads one secret's metadata. There is no FOREIGN name to miss on — see ListSecretRefs for
+// why the scope is the installation — so an ABSENT name is the only 404 this can produce.
 func (s *SecretStore) GetSecretRef(ctx context.Context, scope middleware.Scope, name string) (api.ProvisionResult, error) {
 	ctx = provisioningScope(ctx, scope)
 	v, err := scanSecretRef(s.pool.QueryRow(ctx, storage.Query("GetSecretRef"), name))
