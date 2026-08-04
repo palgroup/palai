@@ -43,13 +43,27 @@ func TestLocalUpReachesTheRepositoryBinding(t *testing.T) {
 	}
 }
 
-// TestPalaiUpStillBindsExactlyOnce: Bootstrap resolves the binding itself, into its own report, so the
-// bring-up half it drives must NOT resolve one as well. Two call sites on one `palai up` would register
-// the binding twice and print the line twice, which is a change to a command that was asked not to change.
+// TestPalaiUpStillBindsExactlyOnce: Bootstrap resolves the binding itself, into its own report, so
+// nothing it drives may resolve one as well. Two resolutions on one `palai up` would register the
+// binding twice and print the line twice, which is a change to a command that was asked not to change.
+//
+// THE FIRST WRITING OF THIS TEST ASKED THE WRONG QUESTION AND A PERTURBATION CAUGHT IT. It asked
+// whether composeUp reaches resolveRepository, which is a boolean, and the defect is a COUNT: swapping
+// Bootstrap's composeUp back to Up left composeUp innocent, Bootstrap reaching resolveRepository by two
+// paths, and this test green. The property that actually excludes it is that Up is a command ENTRY
+// POINT — `palai local up` and nothing else — so no function in this package may call it. An internal
+// caller that wants a stack wants composeUp; one that wants Up wants the reporting twice.
 func TestPalaiUpStillBindsExactlyOnce(t *testing.T) {
 	calls := packageCallGraph(t)
 	if !reaches(calls, "Bootstrap", "resolveRepository") {
 		t.Fatal("`palai up` (Bootstrap) no longer reaches resolveRepository: it has stopped binding a repository")
+	}
+	for fn, callees := range calls {
+		if callees["Up"] {
+			t.Fatalf("%s calls Up, which is `palai local up`'s entry point and resolves the repository binding "+
+				"on its own. Every internal caller reaches the stack through composeUp, because a caller that "+
+				"has its own report — Bootstrap does — would otherwise bind twice and say so twice", fn)
+		}
 	}
 	if reaches(calls, "composeUp", "resolveRepository") {
 		t.Fatal("composeUp reaches resolveRepository, and Bootstrap reaches it too — so `palai up` now binds " +
