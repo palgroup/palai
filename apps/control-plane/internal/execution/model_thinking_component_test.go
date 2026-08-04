@@ -137,21 +137,20 @@ func TestDispatchJournalsReasoningSeparatelyFromTheAnswer(t *testing.T) {
 			"than one, and a single window cannot distinguish a lossless coalescer from one that keeps only the last",
 			len(thinkingSeqs), deltaFlushBytes)
 	}
-	if gotReasoning != wantReasoning {
-		t.Fatalf("concatenated reasoning = %d bytes, want %d — the coalescer dropped, duplicated or reordered a window",
-			len(gotReasoning), len(wantReasoning))
-	}
-
 	gotAnswer, deltaSeqs := collectWindows(t, sctx, pool, sessionID, "model_step.delta.v1", "text", requestID)
 	if len(deltaSeqs) == 0 {
 		t.Fatal("no model_step.delta.v1 was journalled: a step that streamed reasoning must still stream its " +
 			"answer, and a reasoning sink that swallowed the answer would pass every assertion above")
 	}
-	if gotAnswer != wantAnswer {
-		t.Fatalf("concatenated answer deltas = %d bytes, want %d", len(gotAnswer), len(wantAnswer))
-	}
 
-	// (4) THE SEPARATION, in both directions. This is the assertion that refuses the one-stream design.
+	// (4) THE SEPARATION, in both directions — CHECKED BEFORE THE EQUALITIES BELOW, ON PURPOSE.
+	//
+	// Ordering is load-bearing here, and it was measured rather than assumed: with the equality assertions
+	// first, a perturbation that leaked reasoning into the answer stream failed as
+	// "concatenated answer deltas = 24576 bytes, want 12288" — a BYTE-COUNT problem, when what had actually
+	// happened was the model's private working being published into the text a person reads. This tree
+	// records that exact defect class (an assertion whose failure points at the wrong file), so the sharper
+	// diagnosis has to run first: a leak must report as a leak, not as arithmetic.
 	if i := strings.IndexAny(gotAnswer, "rst"); i >= 0 {
 		t.Fatalf("a reasoning byte (%q at offset %d) reached the ANSWER delta stream: the Slack relay writes "+
 			"delta text straight into the reply body, so this is the model's private working shown to a person",
@@ -161,6 +160,15 @@ func TestDispatchJournalsReasoningSeparatelyFromTheAnswer(t *testing.T) {
 		t.Fatalf("an answer byte (%q at offset %d) reached the REASONING stream: the two streams are not "+
 			"separable and a consumer coalescing by event type would rebuild neither correctly",
 			gotReasoning[i], i)
+	}
+
+	// Losslessness, once the two streams are known not to be contaminated by each other.
+	if gotReasoning != wantReasoning {
+		t.Fatalf("concatenated reasoning = %d bytes, want %d — the coalescer dropped, duplicated or reordered a window",
+			len(gotReasoning), len(wantReasoning))
+	}
+	if gotAnswer != wantAnswer {
+		t.Fatalf("concatenated answer deltas = %d bytes, want %d", len(gotAnswer), len(wantAnswer))
 	}
 
 	// (3) the ordering bracket: strictly inside the step's own created/completed pair.
