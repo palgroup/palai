@@ -86,6 +86,26 @@ Fixed by merging ADJACENT tool results into one turn — adjacency matters, beca
 
 **Sequence from here:** Task 0 (done) → the protocol change → the parked/uncertain ruling → Task 2 → Task 3.
 
+### §2.6 — Execution record (2026-08-04, later): Task 2 is CLOSED by measurement, Task 3 shipped
+
+The protocol change was built and reverted, and the reason is a number this plan never took.
+
+**The ruling arrived first.** The owner decided the parked case: run the batch, hold the siblings' results, let the approved one finish last, then continue. Confirmed moot for today — `grep -rn "RequiresApproval: *true" execution/tools/` returns nothing, so no built-in tool gates, and `errRunParked` originates only in `parkOnPendingPublication`.
+
+**The protocol change shipped and was reverted** (`034a3574`, reverted in `2dd92a05`). `batch_size` on each `tool.request`, stamped from the FRAMES EMITTED rather than the turn's `tool_calls` — the restore path re-emits only calls still in `_pending_tools`, so a turn of three comes back as one and a controller awaiting three would hang. Four tests, two perturbations, 86 green.
+
+**Then the measurement that should have come first:**
+
+```
+go test ./adapters/sandboxes/oci/workspace/ -run 'TestGrep|TestGlob'   → each exec ~0.01s
+```
+
+A model turn costs seconds. So concurrent execution of three lookups saves ~20ms, while collapsing three turns into one saves ~6s — **a ratio near 300:1, and Task 0 already bought the large half.** Task 2's remaining value is the 20ms, and its cost is structural surgery on `dispatchTool`: `Exec` sits between the before_tool hook seam, the approval gate, the durable pre-write and `resolveEnvValues`, with five turn-ending error classes around it. Splitting execution from delivery there, in the tree's most invariant-dense function, to win 20ms is not a trade worth making.
+
+`batch_size` was reverted rather than left in place because an unread field is the "declared but not wired" shape this tree keeps paying for. It is recorded here; rebuild it if a tool ever appears whose exec is measured in seconds rather than milliseconds — a remote fetch or an MCP call over a slow transport is the plausible one, and `palai.research.fetch` is already deliberately serial pending exactly that measurement.
+
+**Task 3 shipped, then was corrected** (`e793032e`, then `1ecdce1d`). The first version added the fan-out line to a platform text that opened *"Work like a careful colleague"* and prescribed restraint, verification and reporting style. The owner rejected the whole register: **layer 1 is inherited by every revision and requested by none, so a deployment building a deliberately bold agent would find the platform arguing with its own agent inside one prompt.** The text now describes only what the environment affords and what it costs; the fan-out line survives as a fact about turns ("a turn is the unit that costs time here"), not as advice. A named guard, `TestThePlatformTextPrescribesNoCharacter`, holds the line.
+
 ---
 
 ## §3 — File Structure
@@ -285,9 +305,11 @@ git commit -m "feat(execution): a turn's read-only tools run concurrently, deliv
 
 ---
 
-## Task 3: Tell the model it may fan out
+## Task 3: Tell the model it may fan out — SHIPPED, see §2.6
 
 A model batches calls only when it believes they overlap. Making the system parallel without saying so leaves the behaviour unused on the turns that would benefit most.
+
+> **Step 2's suggested sentence below was written in the voice this text no longer uses.** It reads as advice ("ask for them together") where layer 1 may only state a fact. Shipped instead as: *"A turn is the unit that costs time here: two turns cost roughly twice one … a call whose answer nothing is waiting on has cost you a turn for nothing."* Same information, no instruction on how to behave.
 
 **Files:**
 - Modify: `apps/control-plane/internal/execution/platform_instructions.go` **if the platform-instruction-layer plan has landed**; otherwise the parallel-safe tools' own `Description` fields
