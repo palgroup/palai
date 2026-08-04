@@ -579,30 +579,42 @@ func TestEveryCanonicalToolHasAHumanTitle(t *testing.T) {
 	}
 }
 
-// TestNoTitleIsOrphanedFromAToolThisTreeDefines sweeps the OTHER direction. A walk over one list only
-// ever finds one class of defect; the canonical list finds untitled tools, and only this direction
-// finds a title left behind by a tool that was renamed or removed.
+// knownNonGrantTitles are the titles that legitimately sit outside the canonical grant set, each one
+// NAMED rather than waved through by a blanket rule. palai.slack.search is Slack-specific and resolves
+// through the Slack lookup path; palai.task and palai.todo are defined (tools/task.go:14,18) but are
+// not in toolbroker.New; palai.web.search and palai.fs.write are titled here and registered nowhere.
 //
-// IT IS A REPORT, NOT A FAILURE: toolTitles legitimately carries names outside the default set —
-// palai.slack.search is Slack-specific, and palai.task/palai.todo are defined but not yet registered
-// in toolbroker.New. Failing on those would force the map to shrink to the grant list, which is not
-// what it is for.
-func TestNoTitleIsOrphanedFromAToolThisTreeDefines(t *testing.T) {
+// THE DAY ONE OF THESE IS REGISTERED AND GRANTED it moves to the canonical list and comes out of this
+// map — the map shrinking is the signal that the surface grew.
+var knownNonGrantTitles = map[string]bool{
+	"palai.slack.search": true,
+	"palai.task":         true,
+	"palai.todo":         true,
+	"palai.web.search":   true,
+	"palai.fs.write":     true,
+}
+
+// TestNoTitleIsOrphaned sweeps the OTHER direction, and the direction is the whole point: a walk over
+// the canonical list finds tools with no title, and ONLY this walk finds a title left behind by a tool
+// that was renamed or removed. One direction cannot find both.
+func TestNoTitleIsOrphaned(t *testing.T) {
 	canonical := map[string]bool{}
 	for _, tool := range toolset.All() {
 		canonical[tool] = true
 	}
 	for tool := range toolTitles {
-		if !canonical[tool] {
-			t.Logf("title for %q is outside the canonical grant set (Slack-specific or not yet registered)", tool)
+		if canonical[tool] || knownNonGrantTitles[tool] {
+			continue
 		}
+		t.Errorf("toolTitles carries %q, which is neither granted nor a named exception: a renamed or "+
+			"removed tool leaves its title behind, and this is the only check that sees it", tool)
 	}
 }
 ```
 
 - [ ] **Step 3: Run test to verify the first one's behavior**
 
-Run: `go test ./apps/slack-bot/internal/relay/ -run 'TestEveryCanonicalToolHasAHumanTitle|TestNoTitleIsOrphanedFromAToolThisTreeDefines' -v`
+Run: `go test ./apps/slack-bot/internal/relay/ -run 'TestEveryCanonicalToolHasAHumanTitle|TestNoTitleIsOrphaned' -v`
 
 Expected at plan time: **PASS** — all ten canonical names already have titles (`relay.go:433-448` covers every one). That is a real result, not a vacuous one: Step 4 proves it.
 
