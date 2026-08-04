@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/palgroup/palai/packages/toolset"
 )
 
 // TestConfigSnapshotContentAddressedWithProvenance proves the resolver is content-addressed
@@ -205,5 +207,59 @@ func TestSkillInstructionsGrantNoCapability(t *testing.T) {
 	}
 	if len(snap.Skills) != 1 || snap.Skills[0].Name != "pusher" {
 		t.Fatalf("skills = %+v, want the pinned skill present (as context, not authority)", snap.Skills)
+	}
+}
+
+// TestTheBringUpBaselineSurvivesTheRevisionCeiling is the end this plan exists for. Every other guard
+// proves a property of the LIST; this one proves the list survives the computation that consumes it.
+//
+// IT CALLS Resolve RATHER THAN RE-DERIVING THE INTERSECTION, because a test that recomputes the rule
+// it is checking passes against its own arithmetic and would have stayed green through the very
+// change that emptied every operator's tool set.
+func TestTheBringUpBaselineSurvivesTheRevisionCeiling(t *testing.T) {
+	baseline := toolset.Default()
+
+	// A revision that declares the same surface: the ceiling admits all of it.
+	granted := Resolve(ResolveInput{
+		DeploymentModel:    "m",
+		ProjectTools:       baseline,
+		AgentRevisionID:    "arev_1",
+		AgentRevisionTools: baseline,
+	})
+	if len(granted.Tools) != len(baseline) {
+		t.Fatalf("effective tools = %v, want all %d baseline tools", granted.Tools, len(baseline))
+	}
+	for _, want := range baseline {
+		if !hasTool(granted.Tools, want) {
+			t.Errorf("the baseline tool %q did not survive a revision that declares it", want)
+		}
+	}
+
+	// A revision declaring NOTHING (non-nil empty) empties the set. Asserted so the emptiness is a
+	// KNOWN consequence of the ceiling rather than a surprise found in a live run — this is the exact
+	// shape of the outage this plan closes: a run completes, answers in one step, and calls nothing.
+	empty := Resolve(ResolveInput{
+		DeploymentModel:    "m",
+		ProjectTools:       baseline,
+		AgentRevisionID:    "arev_1",
+		AgentRevisionTools: []string{},
+	})
+	if len(empty.Tools) != 0 {
+		t.Fatalf("a revision declaring no tools yielded %v, want none", empty.Tools)
+	}
+}
+
+// TestAnEmptyProjectBaselineEmptiesTheEffectiveSet is the defect itself, pinned. This is what
+// `palai up` produced between commit 1e5fc63e and this plan, and it must never again be reachable
+// without a test naming it.
+func TestAnEmptyProjectBaselineEmptiesTheEffectiveSet(t *testing.T) {
+	got := Resolve(ResolveInput{
+		DeploymentModel:    "m",
+		ProjectTools:       nil,
+		AgentRevisionID:    "arev_1",
+		AgentRevisionTools: toolset.Default(),
+	})
+	if len(got.Tools) != 0 {
+		t.Fatalf("effective tools = %v on an empty baseline, want none: the ceiling intersects LAST", got.Tools)
 	}
 }
