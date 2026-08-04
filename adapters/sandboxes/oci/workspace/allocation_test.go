@@ -59,6 +59,80 @@ func TestSnapshotSkipsThePerSessionDirectoryAsASubtree(t *testing.T) {
 	}
 }
 
+// TestSnapshotSkipsARootBuildOutputDirectoryAsASubtree pins the fix for the live case that found it: two
+// idle-eligible allocations on the operator's deployment carried a root `build/` — a coding session's own
+// `xcodebuild` run, DerivedData-shaped and 81 MiB — that pushed the archive over MaxSnapshotArchiveBytes
+// and left both stuck permanently `ready`, retried and refused every ~30s (control-plane.log,
+// 2026-08-05). It is skipped as a SUBTREE like SessionDir: enumerating a DerivedData tree would pay
+// exactly the walk + checksum cost the exclusion exists to avoid.
+func TestSnapshotSkipsARootBuildOutputDirectoryAsASubtree(t *testing.T) {
+	root := t.TempDir()
+	if err := Prepare(root); err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	writeFile(t, filepath.Join(root, RepoDir, "app.go"), "package main\n")
+	writeFile(t, filepath.Join(root, "build", "ModuleCache.noindex", "Foo.pcm"), "not repository content")
+	writeFile(t, filepath.Join(root, "build", "Logs", "Build", "log.xcactivitylog"), "build log bytes")
+
+	manifest, err := Snapshot(root)
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if _, ok := manifest.FileChecksums["repo/app.go"]; !ok {
+		t.Fatalf("the workspace's own file went missing: %v", manifest.FileChecksums)
+	}
+	for path := range manifest.FileChecksums {
+		if strings.HasPrefix(path, "build/") {
+			t.Fatalf("build output %q was checksummed into the snapshot", path)
+		}
+	}
+	if !slices.Contains(manifest.Exclusions, "build") {
+		t.Fatalf("the skipped build directory is not recorded in the exclusion manifest %v", manifest.Exclusions)
+	}
+	for _, e := range manifest.Exclusions {
+		if strings.HasPrefix(e, "build/") {
+			t.Fatalf("the build subtree was ENUMERATED (%q) rather than skipped", e)
+		}
+	}
+
+	// A directory of the same name INSIDE repo/ is ordinary content, not a root build-output dir: a repo
+	// can legitimately have one, and only the allocation root's own children are ever excluded.
+	writeFile(t, filepath.Join(root, RepoDir, "build", "notes.md"), "hand-authored, not tool output")
+	nested, err := Snapshot(root)
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if _, ok := nested.FileChecksums["repo/build/notes.md"]; !ok {
+		t.Fatalf("a repo-nested %q directory was excluded like the root one; only the allocation root's own children should be", "build")
+	}
+}
+
+// TestBuildOutputDirsAreAllExcludedAtTheRoot proves the OTHER three conventional names in the set (Xcode
+// DerivedData, SwiftPM .build, npm node_modules) skip the same way `build` does — they share one map and
+// one code path, but only `build` is measured against this deployment's own data (see buildOutputDirs'
+// doc comment), so each configured name gets its own assertion rather than trusting the shared mechanism.
+func TestBuildOutputDirsAreAllExcludedAtTheRoot(t *testing.T) {
+	for name := range buildOutputDirs {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := Prepare(root); err != nil {
+				t.Fatalf("Prepare() error = %v", err)
+			}
+			writeFile(t, filepath.Join(root, name, "cache-entry"), "regenerable output")
+			manifest, err := Snapshot(root)
+			if err != nil {
+				t.Fatalf("Snapshot() error = %v", err)
+			}
+			if !slices.Contains(manifest.Exclusions, name) {
+				t.Fatalf("%q not recorded in Exclusions %v", name, manifest.Exclusions)
+			}
+			if _, ok := manifest.FileChecksums[name+"/cache-entry"]; ok {
+				t.Fatalf("%q was checksummed into the snapshot", name+"/cache-entry")
+			}
+		})
+	}
+}
+
 // TestSnapshotCreateChecksumsAndExclusions proves the SAN-005 create half (spec §29.10): a
 // snapshot checksums the real worktree deterministically, its index checksum reflects the staged
 // state, and secret/credential paths are excluded — recorded in the exclusion manifest and never

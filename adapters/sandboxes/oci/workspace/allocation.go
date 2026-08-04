@@ -47,6 +47,32 @@ func RepoPath(allocationRoot string) string { return filepath.Join(allocationRoo
 // posture's executor is the one package that must not. tests/docs keeps the two spellings equal.
 const SessionDir = ".palai-session"
 
+// buildOutputDirs are ALLOCATION-ROOT directory names treated as reproducible build/dependency output
+// rather than workspace content, and skipped as a SUBTREE the same way SessionDir is. A bare name, so it
+// only matches a direct child of root — a directory that happens to reuse one of these names somewhere
+// INSIDE repo/ is ordinary repository content as far as this package knows and is walked like anything
+// else, because a repo can legitimately have one (e.g. a hand-authored `docs/build/`).
+//
+// `build` IS MEASURED: 2026-08-05, 2 of 110 live allocations on the operator's own deployment carried a
+// root `build/` written by a coding session's own `xcodebuild` invocation, shaped exactly like Xcode's
+// DerivedData (SDKStatCaches.noindex, ModuleCache.noindex, Index.noindex, CompilationCache.noindex,
+// Build, Logs) — 81 MiB each, 53% of the fleet's archived bytes, and not one byte of it a file anyone
+// edited; `xcodebuild build` regenerates all of it. DerivedData, .build and node_modules are the SAME
+// well-known, always-regenerable convention (Xcode, SwiftPM, npm) added for the same reason, but this
+// deployment has not produced one at the allocation root yet — they are UNVERIFIED here, unlike `build`.
+//
+// THIS NARROWS THE IDLE RELEASER'S "NOTHING IS LOST" CLAIM (execution/idle_release.go): a session's own
+// build products under one of these four names at the allocation root do not survive a release/resume
+// round trip. That is the intended trade for what this deployment has actually produced — none of it is
+// a file a developer wrote — but a workflow that depends on generated output living under one of these
+// names is not covered, and that is stated here rather than left to be discovered at restore time.
+var buildOutputDirs = map[string]bool{
+	"build":        true,
+	"DerivedData":  true,
+	".build":       true,
+	"node_modules": true,
+}
+
 // secretsDir is a staging subdirectory a snapshot always excludes; combined with the credential
 // basenames below it is the create-side exclusion set (spec §29.10). /secrets proper is a sibling
 // mount, never inside the allocation, so it cannot enter a snapshot at all.
@@ -112,6 +138,12 @@ func snapshotWith(root string, checksum func(string) (string, error)) (Manifest,
 		// The per-session directory is skipped as a SUBTREE and recorded as ONE exclusion. Enumerating
 		// it would pay exactly the walk the rule exists to avoid.
 		if d.IsDir() && rel == SessionDir {
+			exclusions = append(exclusions, rel)
+			return fs.SkipDir
+		}
+		// A root-level build/dependency cache (buildOutputDirs) is skipped the same way and for the same
+		// reason: it is regenerable, not repository content, and can be gigabytes.
+		if d.IsDir() && buildOutputDirs[rel] {
 			exclusions = append(exclusions, rel)
 			return fs.SkipDir
 		}

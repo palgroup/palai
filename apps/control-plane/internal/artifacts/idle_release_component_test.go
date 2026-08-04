@@ -230,6 +230,62 @@ func TestAResumedWorkspaceCarriesUncommittedWorkBack(t *testing.T) {
 	}
 }
 
+// TestASweepThatFailsOneCandidateStillReleasesTheOthers pins Sweep's own claim ("A failure on one
+// candidate is logged and the pass continues to the next") against a live-looking symptom that read the
+// other way: control-plane.log showed a run of "sweep failed after releasing 0" lines for two
+// permanently-oversized workspaces and, without cross-referencing the per-candidate lines above each one,
+// that looks exactly like "one failure stops the whole sweep". It does not — the SAME log's earlier line
+// was "sweep failed after releasing 30" in the pass that first hit both stuck candidates, and this test is
+// the regression guard for that: a candidate whose capture cannot succeed must not stop a DIFFERENT
+// candidate later in the same pass from being handed back.
+func TestASweepThatFailsOneCandidateStillReleasesTheOthers(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+
+	_, sessA, wsA, _, hostA := h.seedIdleWorkspace(t)
+	_, sessB, wsB, _, hostB := h.seedIdleWorkspace(t)
+
+	// IdleWorkspacesForRelease orders by w.id, a total order over a random id (storage/queries/workspaces.sql)
+	// — NOT insertion order. Which of these two the sweep reaches first is decided here, or this test could
+	// pass by accident: if the failing one happened to sort LAST, even a sweep that stopped at the first
+	// failure would still show released=1, and the bug this guards against would go uncaught.
+	badWS, badSession, badHost, goodWS, goodHost := wsA, sessA, hostA, wsB, hostB
+	if wsB < wsA {
+		badWS, badSession, badHost, goodWS, goodHost = wsB, sessB, hostB, wsA, hostA
+	}
+
+	// The bad candidate is LEFT `ready` on purpose (that is what this test asserts), and its t.TempDir
+	// directory dies with this test — exactly the shared-database trap TestIdleReleaseRefusesWithoutASnapshotSink
+	// already names: without handing the clock back, the NEXT test's sweep re-adopts this workspace as an
+	// idle candidate, finds its directory gone, and fails at a test that touched none of this.
+	t.Cleanup(func() { h.touchSession(t, badSession) })
+
+	// The bad candidate's directory is gone before the sweep claims it, so its capture fails outright and
+	// deterministically — no size bound or injected remover needed to make exactly one candidate fail.
+	if err := os.RemoveAll(badHost); err != nil {
+		t.Fatal(err)
+	}
+
+	releaser := execution.NewIdleReleaser(h.repo.Spine(), execution.NewSnapshotSink(h.s3, h.repo.Spine()), idleTestTTL)
+	released, err := releaser.Sweep(ctx)
+	if err == nil {
+		t.Fatal("Sweep() with one unreadable candidate returned a nil error, want the capture failure surfaced")
+	}
+	if released != 1 {
+		t.Fatalf("Sweep() released = %d, want 1 — a candidate ordered after a failing one must still be released", released)
+	}
+	if state := workspaceState(t, h, goodWS); state != "paused" {
+		t.Fatalf("workspace after the failing candidate: state = %q, want paused", state)
+	}
+	if _, err := os.Stat(goodHost); !os.IsNotExist(err) {
+		t.Fatalf("workspace after the failing candidate: directory survived (stat err=%v) — the sweep never reached it", err)
+	}
+	// The failing candidate's own claim was returned (snapshotting -> ready), not left stuck mid-snapshot.
+	if state := workspaceState(t, h, badWS); state != "ready" {
+		t.Fatalf("failing workspace state = %q, want ready (claim returned)", state)
+	}
+}
+
 // TestABusyWorkspaceIsNotReleased pins the three independent skip reasons. Each is a separate fact and
 // none implies the others, which is why the query tests them separately and so does this: a workspace
 // that is not `ready`, one holding an active writer lease, and one whose session has a live response.run

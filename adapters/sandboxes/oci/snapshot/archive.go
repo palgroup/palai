@@ -21,9 +21,13 @@ import (
 )
 
 // Archive tars the allocation at root into w, capturing EXACTLY the files a create-side snapshot
-// includes (workspace.Snapshot's FileChecksums keys) — so the secrets/ staging area and credential
-// helpers are excluded by the same predicate the manifest uses, and no secret can enter the archive
-// (SAN-005 exclusion). .git IS included (its objects/refs/index/config/HEAD are ordinary files under
+// includes (workspace.Snapshot's FileChecksums keys) — so the secrets/ staging area, credential
+// helpers, AND any root-level build/dependency cache (workspace.buildOutputDirs — Xcode DerivedData,
+// SwiftPM .build, npm node_modules, and the operator's own measured `build`) are excluded by the same
+// predicate the manifest uses. No secret can enter the archive (SAN-005 exclusion); the build-cache
+// exclusion is a size decision, not a safety one — this is where "nothing is lost" narrows to "nothing a
+// developer wrote is lost", because regenerable output under one of those names does not ride the
+// archive. .git IS included (its objects/refs/index/config/HEAD are ordinary files under
 // repo/.git, none excluded), so the restored repo can push (E09 Task 8). Entries are written in sorted
 // path order, so the archive bytes are deterministic for the same tree. It returns the create-side
 // manifest — the tree/index/file checksums a Restore must re-derive EQUAL.
