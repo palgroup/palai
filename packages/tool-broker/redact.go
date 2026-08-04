@@ -118,3 +118,44 @@ func HostSecretValues() []string {
 	}
 	return out
 }
+
+// HostSecretFileValues returns the CONTENTS of the credential files this process's environment points
+// at, for RedactValues.
+//
+// IT CLOSES THE HALF HostSecretValues DELIBERATELY LEAVES OPEN. That function skips any value starting
+// with "/" because a path is a POINTER to a secret and masking it would mutilate every error message
+// that names a file. But the thing it points AT is the secret, and on this posture the agent runs as
+// the same uid as the control plane — measured 2026-08-05, `key_local` carries {system, provision,
+// approve} with no expiry and lives in a 0600 file that same uid reads freely. `cat` on it produced
+// clean output until this existed.
+//
+// The environment names them all: PALAI_BOOTSTRAP_API_KEY_FILE, PALAI_SECRET_MASTER_KEY_FILE,
+// PALAI_GITHUB_APP_PRIVATE_KEY_FILE, PALAI_ENROLLMENT_TOKEN_FILE, PALAI_RUNNER_CA_KEY.
+//
+// BOUNDED ON PURPOSE. Only files under 64 KiB are read: a credential is small, and a redactor that
+// slurps whatever an operator pointed a variable at is a denial-of-service against its own tool call.
+// Read errors are silent — a missing or unreadable file masks nothing, which is the same posture as a
+// missing variable, and a redactor that failed loudly would turn every tool call into an incident.
+func HostSecretFileValues() []string {
+	var out []string
+	for _, entry := range os.Environ() {
+		name, path, found := strings.Cut(entry, "=")
+		if !found || !strings.HasPrefix(path, "/") || !sensitiveHostEnvNames.MatchString(name) {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 || info.Size() > 64*1024 {
+			continue
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		// A trailing newline is what `cat` prints and what a file written by `printf` usually lacks, so the
+		// stored form and the echoed form differ by one byte. Trim, or the mask misses the common case.
+		if value := strings.TrimSpace(string(raw)); len(value) >= 4 {
+			out = append(out, value)
+		}
+	}
+	return out
+}

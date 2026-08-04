@@ -175,7 +175,10 @@ func (e *Executor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (toolbr
 	// environment). Masking the value closes every path that carries it, `cat .palai/api-key` included.
 	redact := func(s string) string {
 		s = toolbroker.RedactValues(toolbroker.RedactSecrets(s), envValues)
-		return toolbroker.RedactValues(s, toolbroker.HostSecretValues())
+		s = toolbroker.RedactValues(s, toolbroker.HostSecretValues())
+		// And the CONTENTS of the files those variables point at: the paths are deliberately not masked,
+		// but `cat`-ing one is how the same uid reaches key_local, the master key or the CA key.
+		return toolbroker.RedactValues(s, toolbroker.HostSecretFileValues())
 	}
 
 	start := time.Now()

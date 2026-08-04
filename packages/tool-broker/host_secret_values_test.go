@@ -1,6 +1,8 @@
 package toolbroker
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -125,5 +127,50 @@ func TestAnOrdinaryURLIsUntouched(t *testing.T) {
 		if got := RedactSecrets(u); got != u {
 			t.Errorf("a credential-free URL was mangled: %q → %q", u, got)
 		}
+	}
+}
+
+// TestTheContentsOfACredentialFileAreMasked closes the half HostSecretValues deliberately leaves
+// open, and the gap was real rather than theoretical. Measured on a live stack 2026-08-05:
+//
+//	key_local | scopes {system,provision,approve} | expires_at NULL
+//
+// living in a 0600 file at the path PALAI_BOOTSTRAP_API_KEY_FILE names. 0600 is the correct
+// permission and no barrier at all to the same uid — which is what the agent's shell runs as — so
+// `cat` on it produced clean output while the redactor was busy NOT masking the path.
+func TestTheContentsOfACredentialFileAreMasked(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api-key")
+	const secret = "apik_live_bootstrap_value_that_must_not_escape"
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatalf("write probe credential: %v", err)
+	}
+	t.Setenv("PALAI_BOOTSTRAP_API_KEY_FILE", path)
+
+	// The PATH must still be readable — that is the deliberate asymmetry, not an oversight.
+	for _, v := range HostSecretValues() {
+		if v == path {
+			t.Error("the path itself was offered for masking; error messages naming a file would be unreadable")
+		}
+	}
+	// The CONTENT must not survive, and the trailing newline `cat` prints must not defeat the match.
+	if masked := RedactValues("$ cat "+path+"\n"+secret+"\n", HostSecretFileValues()); strings.Contains(masked, secret) {
+		t.Errorf("the bootstrap credential survived being cat'd: %q", masked)
+	}
+}
+
+// TestAnOversizeOrMissingFileIsSkipped — the bound is a denial-of-service guard on the redactor
+// itself: a variable pointing at a large file would be slurped on every single tool call. A missing
+// file is silent for the same reason a missing variable is.
+func TestAnOversizeOrMissingFileIsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	big := filepath.Join(dir, "big.key")
+	if err := os.WriteFile(big, make([]byte, 65*1024), 0o600); err != nil {
+		t.Fatalf("write oversize file: %v", err)
+	}
+	t.Setenv("PALAI_PROBE_BIG_KEY", big)
+	t.Setenv("PALAI_PROBE_MISSING_TOKEN", filepath.Join(dir, "does-not-exist"))
+	if got := len(HostSecretFileValues()); got != 0 {
+		t.Errorf("read %d file(s) that should have been skipped", got)
 	}
 }

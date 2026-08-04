@@ -407,5 +407,7 @@ func shellEnv() []string {
 // including reading a credential file off disk, and catches the shapes secretPatterns cannot.
 func redactSecrets(s string, envValues []string) string {
 	s = toolbroker.RedactValues(toolbroker.RedactSecrets(s), envValues)
-	return toolbroker.RedactValues(s, toolbroker.HostSecretValues())
+	s = toolbroker.RedactValues(s, toolbroker.HostSecretValues())
+	// And the CONTENTS of the files those variables point at — the paths stay readable, the secrets do not.
+	return toolbroker.RedactValues(s, toolbroker.HostSecretFileValues())
 }

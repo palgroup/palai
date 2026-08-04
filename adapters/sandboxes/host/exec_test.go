@@ -556,3 +556,30 @@ func TestHostShellMasksTheControlPlanesOwnSecret(t *testing.T) {
 		t.Errorf("stdout carries no mask, so nothing was redacted at all: %q", res.Stdout)
 	}
 }
+
+// TestHostShellMasksACredentialFileItCats drives the EXECUTOR for the file half, for the reason the
+// last perturbation taught: proving the redactor selects the right values does not prove this
+// executor calls it, and a deleted call left every unit test green.
+//
+// The scenario is the live one, measured 2026-08-05: `key_local` carries {system, provision,
+// approve} with no expiry, in a 0600 file the agent's uid reads freely.
+func TestHostShellMasksACredentialFileItCats(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api-key")
+	const secret = "apik_probe_bootstrap_value_not_real"
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatalf("write probe credential: %v", err)
+	}
+	t.Setenv("PALAI_BOOTSTRAP_API_KEY_FILE", path)
+
+	res, err := run(t, 10*time.Second, toolbroker.ShellCommand{
+		Argv:          []string{"cat", path},
+		WorkspaceRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.Contains(res.Stdout, secret) {
+		t.Errorf("the bootstrap credential came back through the shell tool: %q", res.Stdout)
+	}
+}
