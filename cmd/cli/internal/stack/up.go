@@ -208,6 +208,15 @@ func Bootstrap(envFile string, native bool) error {
 	}
 	fmt.Fprintf(os.Stderr, "        config    %s\n", desiredLine)
 
+	// THE CREDENTIAL REACHES ITS DURABLE HOME BEFORE THE PROOF NEEDS IT, and the ordering is the whole
+	// correctness of this call. Since the environment fallback was removed (2026-08-04) a run redeems
+	// its credential from the encrypted store and nowhere else, so a seed placed AFTER the round trip
+	// would leave the proof below with no provider to reach — the bring-up would fail on the one step
+	// it exists to perform, on a stack that was correctly configured a second later.
+	if seeded := api.seedModelConnection(choice.credential); seeded != "" {
+		fmt.Fprintf(os.Stderr, "        provider  %s\n", seeded)
+	}
+
 	// [5/5] The point of the whole command.
 	fmt.Fprintln(os.Stderr, "[5/5] proof     one real single-step run...")
 	rt, err := roundTripProof(api)
@@ -1568,6 +1577,52 @@ func (c *apiClient) grantDefaultToolBaseline() string {
 		return ""
 	}
 	return fmt.Sprintf("%s now grants %d default tools: %s", bootstrapProjectID, len(tools), strings.Join(tools, ", "))
+}
+
+// seedModelConnection moves a bring-up credential into the encrypted store and names it from a model
+// connection, reporting what it did or "" when it did nothing.
+//
+// IT IS THE OTHER HALF OF REMOVING THE ENVIRONMENT FALLBACK, and without it that removal would have
+// been a regression dressed as a fix: `palai up` still reads OPENAI_API_KEY and still writes the 0600
+// file secret, but as of 2026-08-04 nothing reads that file — the compose entrypoint's bridge and the
+// broker's EnvResolver both went. An operator would set the variable, watch the bring-up accept it,
+// and get a run that reaches no provider. A credential path that is accepted and then ignored is worse
+// than one that is refused.
+//
+// So the seed goes where the console puts it: sealed through POST /v1/secret-refs, named by a
+// connection. Same two calls, same destination, same encryption — the operator's .env.local is now a
+// BOOTSTRAP SEED rather than the durable home, which is what the file secret's own comment always
+// claimed it was.
+//
+// IT NEVER OVERWRITES. A deployment that already has a connection has been configured by a human on
+// the console, and a bring-up that re-seeded it would silently replace a considered choice with
+// whatever is in a dotenv file.
+func (c *apiClient) seedModelConnection(credential string) string {
+	if strings.TrimSpace(credential) == "" {
+		return ""
+	}
+	var page struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	// A read that FAILS must not seed: "cannot tell" is not "has none", and seeding over an existing
+	// connection is the one outcome this function must never produce.
+	if status, err := c.do(http.MethodGet, "/v1/model-connections", nil, &page); err != nil || status != http.StatusOK || len(page.Data) > 0 {
+		return ""
+	}
+	const ref = "bring-up-provider-one"
+	if status, err := c.do(http.MethodPost, "/v1/secret-refs",
+		map[string]any{"name": ref, "value": credential}, nil); err != nil || (status != http.StatusCreated && status != http.StatusOK) {
+		return ""
+	}
+	if status, err := c.do(http.MethodPost, "/v1/model-connections",
+		map[string]any{"provider": liveSelector, "secret_ref": ref}, nil); err != nil || (status != http.StatusCreated && status != http.StatusOK) {
+		return ""
+	}
+	return fmt.Sprintf("sealed the %s credential into the encrypted store as %q and bound a %s connection to it. "+
+		"It is no longer read from the environment, so you can remove %s from .env.local — the console's "+
+		"/registry screen is where it lives now.", credentialEnv, ref, liveSelector, credentialEnv)
 }
 
 // missingModelConnectionNotice reports that this deployment has no model connection, or "" when it has

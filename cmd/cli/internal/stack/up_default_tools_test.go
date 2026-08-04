@@ -2,6 +2,7 @@ package stack
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -177,5 +178,80 @@ func TestAnEmptyOrUnreadableBaselineSaysNothingHere(t *testing.T) {
 	}
 	if n := newProjectStub(t, nil).missingCanonicalToolsNotice(); n != "" {
 		t.Errorf("an unreadable project produced a notice: %s", n)
+	}
+}
+
+// recordingStub serves GET /v1/model-connections with `existing` rows and records every POST it
+// receives, so a test can assert BOTH calls of the seal-then-name flow actually happened.
+func recordingStub(t *testing.T, existing int) (*apiClient, *[]string) {
+	t.Helper()
+	var posts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			posts = append(posts, r.URL.Path+" "+string(body))
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"x"}`))
+			return
+		}
+		rows := make([]map[string]any, existing)
+		for i := range rows {
+			rows[i] = map[string]any{"id": "mconn_existing"}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": rows})
+	}))
+	t.Cleanup(srv.Close)
+	return &apiClient{baseURL: srv.URL, key: "apik_stub", http: srv.Client()}, &posts
+}
+
+// TestABringUpCredentialIsSealedIntoTheStoreNotTheEnvironment is the other half of removing the
+// environment fallback, and without it that removal is a regression: `palai up` still reads
+// OPENAI_API_KEY and still writes the 0600 file secret, but nothing reads that file any more. An
+// operator would set the variable, watch the bring-up accept it, and get a run that reaches no
+// provider — a credential path that is accepted and then ignored is worse than one that is refused.
+func TestABringUpCredentialIsSealedIntoTheStoreNotTheEnvironment(t *testing.T) {
+	client, posts := recordingStub(t, 0)
+	if line := client.seedModelConnection("sk-bring-up-seed-value"); line == "" {
+		t.Fatal("a bring-up with a credential and no connection seeded nothing")
+	}
+	if len(*posts) != 2 {
+		t.Fatalf("got %d POSTs, want 2 (seal the secret, then name it from a connection): %v", len(*posts), *posts)
+	}
+	if !strings.HasPrefix((*posts)[0], "/v1/secret-refs ") {
+		t.Errorf("the first call is %q, want the secret to be SEALED first", (*posts)[0])
+	}
+	if !strings.HasPrefix((*posts)[1], "/v1/model-connections ") {
+		t.Errorf("the second call is %q, want the connection to NAME the ref", (*posts)[1])
+	}
+	// The connection must carry the REF, never the value — that is the property the whole design rests on.
+	if strings.Contains((*posts)[1], "sk-bring-up-seed-value") {
+		t.Errorf("the connection body carries the credential VALUE: %q", (*posts)[1])
+	}
+}
+
+// TestAnExistingConnectionIsNeverOverwritten — a deployment that already has one was configured by a
+// human on the console. A bring-up that re-seeded it would replace a considered choice with whatever
+// sits in a dotenv file, silently, on every run of the command.
+func TestAnExistingConnectionIsNeverOverwritten(t *testing.T) {
+	client, posts := recordingStub(t, 1)
+	if line := client.seedModelConnection("sk-would-clobber"); line != "" {
+		t.Errorf("a stack with a connection was re-seeded: %s", line)
+	}
+	if len(*posts) != 0 {
+		t.Errorf("%d write(s) went out against an already-configured deployment: %v", len(*posts), *posts)
+	}
+}
+
+// TestAnUnreadableConnectionListDoesNotSeed — "cannot tell" is not "has none". If the read fails, the
+// safe move is to do nothing: seeding over an existing connection is the one outcome this must never
+// produce, and a failed GET cannot rule it out.
+func TestAnUnreadableConnectionListDoesNotSeed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	client := &apiClient{baseURL: srv.URL, key: "apik_stub", http: srv.Client()}
+	if line := client.seedModelConnection("sk-value"); line != "" {
+		t.Errorf("seeded against a deployment whose state could not be read: %s", line)
 	}
 }
