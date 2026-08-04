@@ -184,6 +184,11 @@ func (r *tlRecorder) PostMessage(ctx context.Context, channel, threadTS, markdow
 	return r.inner.PostMessage(ctx, channel, threadTS, markdownText)
 }
 
+func (r *tlRecorder) UpdatePlan(ctx context.Context, channel, ts, title string) error {
+	r.note("plan_update %q", title)
+	return r.inner.UpdatePlan(ctx, channel, ts, title)
+}
+
 func (r *tlRecorder) UpdateTask(ctx context.Context, channel, ts string, task slack.Task) error {
 	r.note("task_update id=%s status=%-11s title=%q detail=%q", task.ID, task.Status, task.Title, tlClip(task.Detail))
 	return r.inner.UpdateTask(ctx, channel, ts, task)

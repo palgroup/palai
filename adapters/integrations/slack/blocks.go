@@ -654,6 +654,33 @@ func TaskUpdateChunk(task Task) map[string]any {
 	return chunk
 }
 
+// PlanUpdateChunk renders the `plan_update` chunk — the one that writes the plan container's OWN headline,
+// the line a reader sees when the container is collapsed and the only line that is visible for the whole
+// length of a run.
+//
+// CONTRACT: https://docs.slack.dev/reference/methods/chat.appendStream/ (checked 2026-08-04) — the chunk is
+// {"type":"plan_update","title":…}, described there as "used for updating the title of a plan".
+//
+// WITHOUT IT SLACK WRITES THAT LINE ITSELF, and what it writes is why this exists. Measured against the live
+// API (2026-08-04, workspace T0AMPM5JX8U) and confirmed on the operator's own threads: an app that never
+// sends this chunk gets `Thinking` for the whole run, `Thinking completed` at the end — and
+// `Something went wrong` if ANY task is left unresolved when the stream stops. A real 6m24s run therefore
+// showed one unchanging word for six and a half minutes.
+//
+// OURS WINS, INCLUDING OVER THE FAILURE HEADLINE, and that is the measurement that made this worth wiring
+// rather than a guess: a stream closed with a task still `in_progress` — the exact shape that produces
+// "Something went wrong" — kept the title this chunk set (`Reading the iOS project`) while the task itself
+// was still stored as `error`. So the container reports what the app knows and the task still reports its
+// own honest state; neither is faked by the other.
+//
+// The title is defused like every other string this package sends and truncated to the streaming budget.
+// TruncateMarkdown is the right cap even though a title is not markdown: it is the one place this package
+// bounds a string, and a title has no separate documented limit that has been measured to bite (a
+// 300-character title was accepted intact on the same day).
+func PlanUpdateChunk(title string) map[string]any {
+	return map[string]any{"type": "plan_update", "title": TruncateMarkdown(NeutralizeBroadcasts(title))}
+}
+
 // MarkdownChunk is the OTHER chunk type, and a chunk-mode stream needs it for every scrap of body text it
 // carries — including the model's own answer.
 //

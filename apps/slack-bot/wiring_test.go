@@ -145,6 +145,7 @@ type fakeStreamSlack struct {
 	appended                         []string
 	posted                           []string
 	tasks                            []slack.Task
+	plans                            []string
 	stopped                          int
 	// failStop makes the closing chat.stopStream refuse. It is the cheapest way to make relay.Run return
 	// a non-nil error from inside the background goroutine — the value this bot once discarded.
@@ -153,6 +154,15 @@ type fakeStreamSlack struct {
 
 func (f *fakeStreamSlack) StartStream(context.Context, string, string, string) (string, error) {
 	return "ts_1", nil
+}
+
+// UpdatePlan records the container headline. Like tasks it is kept in its own slice: a wiring test that
+// asserts what reached the BODY must not be able to read a headline and count it as prose.
+func (f *fakeStreamSlack) UpdatePlan(_ context.Context, _, _, title string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.plans = append(f.plans, title)
+	return nil
 }
 
 func (f *fakeStreamSlack) AppendStream(_ context.Context, _, _, markdownText string) error {

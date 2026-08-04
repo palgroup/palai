@@ -154,6 +154,12 @@ func TestARealRunRendersItsStepsAsCards(t *testing.T) {
 type recordingSlack struct {
 	inner Slack
 	tasks []slack.Task
+	plans []string
+}
+
+func (r *recordingSlack) UpdatePlan(ctx context.Context, channel, ts, title string) error {
+	r.plans = append(r.plans, title)
+	return r.inner.UpdatePlan(ctx, channel, ts, title)
 }
 
 func (r *recordingSlack) StartStream(ctx context.Context, channel, threadTS, markdownText string) (string, error) {

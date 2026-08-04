@@ -64,6 +64,10 @@ type fakeSlack struct {
 	// tasks are the task_update chunks, kept apart from appended because a card is not body text: a test
 	// asserting what the message BODY says must not be able to read a card and call it prose.
 	tasks []slack.Task
+	// plans are the plan_update titles, kept apart from tasks for the same reason tasks are kept apart from
+	// appended: the container's headline and a step's card are two different surfaces, and a test asserting
+	// what the headline said must not be satisfied by a card that happened to say it.
+	plans []string
 
 	failAppends int
 	// failStop makes the closing chat.stopStream refuse — the ONE Slack failure Run reports rather than
@@ -78,6 +82,10 @@ type fakeSlack struct {
 	// stopCards makes UpdateTask refuse the same way, so a test can reproduce the ordering where a CARD is
 	// the first call the stop refuses (a run drawing cards between deltas).
 	stopCards bool
+	// stopPlans is the same for the container headline, which is the EARLIEST call any run makes — Run
+	// writes it before reading an event — and therefore the one that discovers a stream stopped before the
+	// run ever started rendering.
+	stopPlans bool
 	// stopOnClose makes ONLY the closing chat.stopStream refuse, which is what a stop pressed after the last
 	// append actually produces — no later append exists to discover it.
 	stopOnClose bool
@@ -107,6 +115,19 @@ func (f *fakeSlack) UpdateTask(ctx context.Context, channel, ts string, task sla
 	return nil
 }
 
+// UpdatePlan has its OWN refusal knob rather than sharing stopCards, and the reason is that these two are
+// the same call on the wire and must not be the same call here. Run writes the headline BEFORE it reads its
+// first event, so a double that refused both would make the headline the first refusal in every fixture, and
+// TestACardCanBeWhatDiscoversTheStop — whose whole claim is that a CARD can be the call that discovers a
+// stopped stream — would go green having never let a card reach Slack at all.
+func (f *fakeSlack) UpdatePlan(ctx context.Context, channel, ts, title string) error {
+	if f.stopPlans {
+		return &slack.APIError{Code: slack.CodeStoppedByUser}
+	}
+	f.plans = append(f.plans, title)
+	return nil
+}
+
 func (f *fakeSlack) AppendStream(ctx context.Context, channel, ts, markdownText string) error {
 	if f.stopAfter > 0 && len(f.appended)+1 >= f.stopAfter {
 		return &slack.APIError{Code: slack.CodeStoppedByUser}
@@ -125,7 +146,7 @@ func (f *fakeSlack) AppendStream(ctx context.Context, channel, ts, markdownText 
 func (f *fakeSlack) StopStream(ctx context.Context, channel, ts, markdownText string) error {
 	f.stopped++
 	f.stoppedText = markdownText
-	if f.stopOnClose || f.stopAfter > 0 || f.stopCards {
+	if f.stopOnClose || f.stopAfter > 0 || f.stopCards || f.stopPlans {
 		// Slack refuses the CLOSE on a stopped stream too, not only the appends — the whole reason the
 		// answer needs another path. It is derived from the same knobs rather than opted into separately
 		// because a double whose close SUCCEEDED on a stopped stream would be a fiction, and code written
@@ -144,24 +165,6 @@ func (f *fakeSlack) PostMessage(ctx context.Context, channel, threadTS, markdown
 	}
 	f.posted = append(f.posted, markdownText)
 	return nil
-}
-
-// nonThinkingTasks strips the "palai.thinking" card's own updates out of a recorded sequence, isolating
-// what most of the tests below actually assert: the TOOL card's shape. Run draws that card unconditionally —
-// in_progress the instant it starts, resolved by whatever ends the run — regardless of what the fixture
-// under test is about, so a raw len(fake.tasks) count written before that card existed now over-counts by
-// exactly two (one in_progress, one terminal) on every fixture that runs to a terminal event. The thinking
-// card's OWN behaviour — that it opens eagerly, tracks model steps, dedupes repeats, and resolves on every
-// run terminal — is pinned separately by the TestThinkingCard* tests below, not by narrowing here.
-func nonThinkingTasks(tasks []slack.Task) []slack.Task {
-	var out []slack.Task
-	for _, task := range tasks {
-		if task.ID == thinkingTaskID {
-			continue
-		}
-		out = append(out, task)
-	}
-	return out
 }
 
 func TestDeltasBecomeOneAppendPerWindow(t *testing.T) {
@@ -302,7 +305,7 @@ func TestTheShapeARealRunActuallyProduces(t *testing.T) {
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	tasks := nonThinkingTasks(fake.tasks)
+	tasks := fake.tasks
 	if len(tasks) != 2 {
 		t.Fatalf("drew %d card update(s), want 2 (executing, completed) — got %+v", len(tasks), tasks)
 	}
@@ -355,7 +358,7 @@ func TestToolProgressLeavesTheAnswerAlone(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	tasks := nonThinkingTasks(fake.tasks)
+	tasks := fake.tasks
 	if len(tasks) != 3 {
 		t.Fatalf("drew %d task card update(s), want 3 (executing, progress, completed) — got %+v", len(tasks), tasks)
 	}
@@ -413,7 +416,7 @@ func TestOneToolCallIsOneCardThroughout(t *testing.T) {
 	// events never touch directly but which still opens at Run's start and resolves at the run terminal.
 	// Mixing it in here would be asserting the wrong claim: this test is that ONE tool call's updates never
 	// drift onto a second id, not that the whole stream draws only one id ever.
-	tasks := nonThinkingTasks(fake.tasks)
+	tasks := fake.tasks
 	for _, task := range tasks {
 		if task.ID != "tc_1" {
 			t.Fatalf("a card carried id %q, want tc_1 for every update of one call — a differing id draws a "+
@@ -473,9 +476,19 @@ func TestConsecutiveProgressLinesAreSeparated(t *testing.T) {
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	tasks := nonThinkingTasks(fake.tasks)
-	if len(tasks) != 3 {
-		t.Fatalf("drew %d card update(s), want 3", len(tasks))
+	tasks := fake.tasks
+	// FOUR updates, and the fourth is the one this fixture would rather not have: the tool call never
+	// reports a terminal, so the run terminal resolves the card that was left open. That sweep is what keeps
+	// a finished message from showing a step still running — Slack stores an in_progress card as `error` when
+	// chat.stopStream lands — and it costs one update on any fixture that ends a run mid-step.
+	if len(tasks) != 4 {
+		t.Fatalf("drew %d card update(s), want 4 (executing, two progress lines, and the run terminal "+
+			"resolving the step this fixture leaves open) — got %+v", len(tasks), tasks)
+	}
+	if tasks[3].Status != "done" || tasks[3].Detail != "" {
+		t.Fatalf("the closing update = %+v, want the card resolved with no further detail — the run ended, "+
+			"and appending anything here would add a line to the list the two progress notifications built",
+			tasks[3])
 	}
 	// The FIRST detail has nothing in front of it, so it takes no separator; the second does.
 	if tasks[1].Detail != "SwiftUIListApp.swift" {
@@ -533,10 +546,24 @@ func TestAnUnmappedToolStillShowsItsName(t *testing.T) {
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	tasks := nonThinkingTasks(fake.tasks)
-	if len(tasks) != 1 || tasks[0].Title != "acme.jira.create_ticket" {
-		t.Fatalf("cards = %+v, want one titled with the unmapped tool's own name — a card that showed "+
-			"neither a phrase nor the name would say nothing at all", tasks)
+	// TWO updates for ONE card: the step opening, then the run terminal resolving it (this fixture sends no
+	// tool terminal). Both must carry the name — a task_update that omits `title` CLEARS it (measured against
+	// the live API 2026-08-04: a second chunk with only {id,status} stored the card with title ""), so the
+	// closing sweep re-sending the title is load-bearing, not redundant.
+	tasks := fake.tasks
+	if len(tasks) != 2 {
+		t.Fatalf("drew %d update(s), want 2 (executing, then the terminal resolving it) — %+v", len(tasks), tasks)
+	}
+	for i, task := range tasks {
+		if task.Title != "acme.jira.create_ticket" {
+			t.Fatalf("update %d titled %q, want the unmapped tool's own name — a card that showed neither a "+
+				"phrase nor the name would say nothing at all", i, task.Title)
+		}
+	}
+	// AND NO CAPTION IS INVENTED FOR IT. This event carries no `arguments_summary`, which is the deliberate
+	// state for every MCP and remote-HTTP tool, so the card has nothing to add under its title.
+	if tasks[0].Detail != "" {
+		t.Fatalf("the card carried a detail %q for a tool whose frame has no arguments_summary", tasks[0].Detail)
 	}
 }
 
@@ -556,7 +583,7 @@ func TestACardIsSkippedWhenNothingCanIdentifyIt(t *testing.T) {
 	// SCOPED to non-thinking cards: Run's own "palai.thinking" card still opens and resolves regardless of
 	// this event, since it tracks the run's wall clock, not this tool call's identifiability. What this
 	// test pins is that the UNIDENTIFIABLE tool_call.executing.v1 itself draws nothing.
-	if tasks := nonThinkingTasks(fake.tasks); len(tasks) != 0 {
+	if tasks := fake.tasks; len(tasks) != 0 {
 		t.Fatalf("drew %+v for an event with no tool_call_id, want no card", tasks)
 	}
 }
@@ -656,10 +683,19 @@ func TestToolCallProgressWithNoMessageIsSkipped(t *testing.T) {
 	if len(fake.appended) != 0 {
 		t.Fatalf("appended = %v, want none — a messageless progress notification renders nothing", fake.appended)
 	}
-	tasks := nonThinkingTasks(fake.tasks)
-	if len(tasks) != 1 {
-		t.Fatalf("drew %d card update(s), want 1 — a messageless notification must not re-draw the card "+
-			"with an empty detail, which would erase what the step said it was doing: %+v", len(tasks), tasks)
+	// TWO updates: the step opening and the run terminal resolving it. The messageless notification between
+	// them draws NOTHING — that is the whole claim, and it is why the count is asserted rather than just the
+	// details: a card re-drawn with an empty detail would leave the same details behind but cost an update,
+	// and on a chatty MCP tool that is one wasted Tier 4 call per notification.
+	tasks := fake.tasks
+	if len(tasks) != 2 {
+		t.Fatalf("drew %d card update(s), want 2 (executing, then the run terminal) — a messageless progress "+
+			"notification must draw nothing at all: %+v", len(tasks), tasks)
+	}
+	for i, task := range tasks {
+		if task.Detail != "" {
+			t.Fatalf("update %d carried a detail %q — nothing in this fixture has a line to add", i, task.Detail)
+		}
 	}
 }
 
@@ -678,9 +714,14 @@ func TestAProgressNotificationDoesNotRenameItsStep(t *testing.T) {
 		"sess_1", "C1", "1.1"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	tasks := nonThinkingTasks(fake.tasks)
-	if len(tasks) != 2 {
-		t.Fatalf("drew %d card update(s), want 2", len(tasks))
+	tasks := fake.tasks
+	if len(tasks) != 3 {
+		t.Fatalf("drew %d card update(s), want 3 (executing, progress, and the run terminal resolving the "+
+			"step this fixture leaves open) — %+v", len(tasks), tasks)
+	}
+	if tasks[2].Title != "Running a command" {
+		t.Fatalf("the closing update retitled the step to %q — the title must survive every later update, "+
+			"including the sweep, since an update without one CLEARS it", tasks[2].Title)
 	}
 	if tasks[1].Title != "Running a command" {
 		t.Fatalf("the progress update retitled the step to %q — a card must keep the title it was drawn "+
@@ -690,117 +731,6 @@ func TestAProgressNotificationDoesNotRenameItsStep(t *testing.T) {
 	// separator. Two progress lines meeting on one card is TestConsecutiveProgressLinesAreSeparated.
 	if tasks[1].Detail != "xcodebuild -scheme App" {
 		t.Fatalf("progress detail = %q, want the notification's message", tasks[1].Detail)
-	}
-}
-
-// thinkingTasks is nonThinkingTasks' complement: the "palai.thinking" card's own updates, in the order Run
-// sent them. The tests below are the ones this file was missing before this change — every test above
-// scopes IT out to isolate a tool card's own claim, and nothing pinned the card's own mechanism anywhere.
-func thinkingTasks(tasks []slack.Task) []slack.Task {
-	var out []slack.Task
-	for _, task := range tasks {
-		if task.ID == thinkingTaskID {
-			out = append(out, task)
-		}
-	}
-	return out
-}
-
-// TestThinkingCardOpensImmediatelyAndTracksModelSteps pins the two halves of Run's own doc comment ("THE
-// MESSAGE OPENS WITH AN EMPTY BODY AND A LIVE CARD") that no test measured before this one: the card is
-// in_progress before this package has read a single event — proven here by a fixture whose FIRST event is
-// already mid-run (a repeated model_step.created.v1, never itself producing a fresh send) — and it toggles
-// once per model_step.created/completed pair, across TWO steps.
-//
-// THE SECOND STEP IS NOT DECORATION: with only one step, model_step.completed.v1 and the trailing
-// run.completed.v1 both map to "done", so a version of this test ending after one step cannot tell "the step
-// resolved the card" apart from "the step did nothing and the run terminal fixed it anyway" — the two bugs
-// produce the SAME final sequence. The second created/completed pair forces the card back to in_progress
-// and then done AGAIN before the run ends, so if model_step.completed stopped being mapped, the sequence
-// would collapse from four entries to two (see the perturbation this test was checked against, noted in the
-// PR/commit that added it) rather than merely reading the same by coincidence.
-//
-// THE REPEATED "created" AT THE START IS THE DEDUPE CASE: modelStepStatus's own doc says a real run never
-// sends two in a row with no "completed" between them, but setThinking's guard against resending an
-// unchanged status is real code, not a hypothetical. Without the guard this fixture would send in_progress
-// an extra time for each repeat instead of collapsing them.
-func TestThinkingCardOpensImmediatelyAndTracksModelSteps(t *testing.T) {
-	events := []palai.Event{
-		{Type: "model_step.created.v1", Data: map[string]any{}},
-		{Type: "model_step.created.v1", Data: map[string]any{}}, // dedupe: already in_progress, no resend
-		{Type: "tool_call.executing.v1", Data: map[string]any{"tool_call_id": "tc_1", "tool_name": "palai.workspace.shell"}},
-		{Type: "tool_call.completed.v1", Data: map[string]any{"tool_call_id": "tc_1", "tool_name": "palai.workspace.shell"}},
-		{Type: "model_step.completed.v1", Data: map[string]any{}}, // step 1 ends: in_progress -> done
-		{Type: "model_step.created.v1", Data: map[string]any{}},   // step 2 begins: done -> in_progress
-		{Type: "model_step.completed.v1", Data: map[string]any{}}, // step 2 ends: in_progress -> done
-		{Type: "run.completed.v1", Data: map[string]any{}},        // dedupe: the step already left the card "done"
-	}
-	fake := &fakeSlack{}
-	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals},
-		"sess_1", "C1", "1.1"); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	thinking := thinkingTasks(fake.tasks)
-	var got []string
-	for _, task := range thinking {
-		got = append(got, task.Status)
-	}
-	if want := []string{"in_progress", "done", "in_progress", "done"}; !slices.Equal(got, want) {
-		t.Fatalf("thinking card statuses were %v, want %v — either a created/completed pair failed to toggle "+
-			"the card, or a repeat sent a status the dedupe guard should have skipped", got, want)
-	}
-	for _, task := range thinking {
-		if task.Title != thinkingTitle {
-			t.Fatalf("thinking card title = %q, want the fixed headline %q — it must not be rewritten per "+
-				"state (see thinkingTitle's own doc)", task.Title, thinkingTitle)
-		}
-		if task.Detail != "" {
-			t.Fatalf("thinking card carried a detail %q — nothing in this product journals the model's "+
-				"reasoning content, only the interval (see the doc above modelStepStatus)", task.Detail)
-		}
-	}
-	// The tool call's own card is untouched by any of this: two different ids, tracked independently.
-	if toolTasks := nonThinkingTasks(fake.tasks); len(toolTasks) != 2 || toolTasks[0].ID != "tc_1" {
-		t.Fatalf("the tool call's card = %+v, want its usual executing/completed pair, unaffected by the "+
-			"thinking card sharing the same message", toolTasks)
-	}
-}
-
-// TestThinkingCardResolvesOnEveryRunTerminal walks runTerminalThinking's OWN table rather than a copy typed
-// here, for the same reason TestEveryToolTerminalResolvesItsCard walks the tool-call state machine's table:
-// a terminal type added to the map without also being exercised here would ship untested, and a hardcoded
-// list here could silently drift from what Run actually consults.
-//
-// EVERY FIXTURE HAS NO MODEL STEP AT ALL — the exact shape runTerminalThinking's own doc names as the reason
-// a run terminal must be able to resolve this card unassisted: a provisioning failure or a cancel while
-// queued never emits a model_step.* event, so if the terminal itself did not resolve the card nothing ever
-// would, and Slack stores an in_progress card left open at chat.stopStream as an ERROR (measured 2026-08-04),
-// inventing a failure a run that simply had no steps never had.
-func TestThinkingCardResolvesOnEveryRunTerminal(t *testing.T) {
-	for term, want := range runTerminalThinking {
-		t.Run(term, func(t *testing.T) {
-			fake := &fakeSlack{}
-			events := []palai.Event{{Type: term, Data: map[string]any{}}}
-			if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake, OnApproval: noApprovals},
-				"sess_1", "C1", "1.1"); err != nil {
-				t.Fatalf("Run: %v", err)
-			}
-			thinking := thinkingTasks(fake.tasks)
-			var got []string
-			for _, task := range thinking {
-				got = append(got, task.Status)
-			}
-			if wantSeq := []string{"in_progress", want}; !slices.Equal(got, wantSeq) {
-				t.Fatalf("%s left the thinking card at %v, want %v", term, got, wantSeq)
-			}
-			// The mapped status must also survive blocks.go's own vocabulary check: an unmapped status
-			// fails closed to "pending" there, which on a FINISHED run is the spinning-card bug again.
-			if slack.TaskStatus(want) == "pending" {
-				t.Fatalf("%s maps the thinking card to %q, which blocks.go renders as pending — a finished "+
-					"run must not leave its card looking not-yet-started", term, want)
-			}
-		})
 	}
 }
 

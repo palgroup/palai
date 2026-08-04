@@ -131,6 +131,14 @@ func (s *fakeSelfTestStream) UpdateTask(_ context.Context, _, _ string, task sla
 	return nil
 }
 
+// UpdatePlan completes relay.Slack alongside UpdateTask and is recorded the same way and for the same
+// reason: the self-test drives the wire calls, not a run's rendering, so a headline must not reach
+// parent.messages where leg 4 reads the message text back.
+func (s *fakeSelfTestStream) UpdatePlan(_ context.Context, _, _, title string) error {
+	s.parent.calls = append(s.parent.calls, "updatePlan("+title+")")
+	return nil
+}
+
 // PostMessage completes relay.Slack. The self-test never stops a stream from the UI, so no leg reaches this;
 // like UpdateTask it records the call and touches no message text, which keeps leg 4's read-back measuring
 // only what chat.stopStream itself put there.

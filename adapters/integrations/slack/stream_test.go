@@ -305,6 +305,40 @@ func TestMarkdownChunkUsesTheTextKey(t *testing.T) {
 	}
 }
 
+// TestPlanUpdateChunkCarriesTheDocumentedShape pins the `plan_update` chunk, which is the only way an app
+// writes the plan container's own headline.
+//
+// WITHOUT IT SLACK WRITES THAT LINE, and what it writes is the reason this chunk is wired at all: measured
+// against the live API on 2026-08-04, a container an app never titles reads `Thinking` for the whole run and
+// `Something went wrong` if any task is left unresolved when the stream stops. A real 6m24s run in the
+// operator's channel therefore showed one unchanging word for six and a half minutes.
+//
+// The same measurement settled the part no page states: a title set by this chunk SURVIVES a stream closed
+// with a task still in_progress — Slack does not overwrite it with the failure headline.
+func TestPlanUpdateChunkCarriesTheDocumentedShape(t *testing.T) {
+	chunk := PlanUpdateChunk("Done · 33 steps · 6m 24s")
+	if chunk["type"] != "plan_update" {
+		t.Fatalf("chunk type = %v, want plan_update", chunk["type"])
+	}
+	if chunk["title"] != "Done · 33 steps · 6m 24s" {
+		t.Fatalf("chunk.title = %v, want the headline", chunk["title"])
+	}
+	// A plan_update carries a title and NOTHING else: the chunk schema is {type, title}, and a stray `id` or
+	// `status` borrowed from the task shape is the same `invalid_arguments` refusal the nested task shape
+	// earned — a wire failure on a call that looks right.
+	if len(chunk) != 2 {
+		t.Fatalf("chunk = %v, want exactly {type, title}", chunk)
+	}
+	// The headline is model-influenced downstream (a step's caption becomes one), so it is defused and
+	// bounded on the same terms as every other outbound string in this package.
+	if got := PlanUpdateChunk("ping <!channel>")["title"].(string); strings.Contains(got, "<!channel>") {
+		t.Fatalf("a headline carried a live broadcast: %q", got)
+	}
+	if got := PlanUpdateChunk(strings.Repeat("x", MaxStreamMarkdown+500))["title"].(string); len([]rune(got)) > MaxStreamMarkdown {
+		t.Fatalf("a headline carried %d characters, over the %d budget", len([]rune(got)), MaxStreamMarkdown)
+	}
+}
+
 // TestATaskCardCannotBroadcast: a card's title and output are strings a MODEL had a hand in (the detail
 // carries a tool's own progress message), so they go through the same defusing every other outbound string
 // does. The assertion is made on the DECODED payload — see the note in TestModelTextCannotBroadcast for why

@@ -175,6 +175,18 @@ func (s *channelSlackStream) PostMessage(ctx context.Context, channel, threadTS,
 	return err
 }
 
+// UpdatePlan writes the container's headline, the one line that stays visible while the plan is collapsed.
+// It is a chunk on the same stream as everything else — a plan title is not a separate message and cannot be
+// set any other way, since chat.startStream's task_display_mode fixes only HOW the container draws, never
+// what it says.
+func (s *channelSlackStream) UpdatePlan(ctx context.Context, channel, ts, title string) error {
+	if title == "" {
+		return nil // nothing to say; sending an empty title would blank the line Slack is showing.
+	}
+	return slack.AppendStreamChunks(ctx, s.doer, s.apiBase, s.token, channel, ts,
+		[]map[string]any{slack.PlanUpdateChunk(title)})
+}
+
 func (s *channelSlackStream) UpdateTask(ctx context.Context, channel, ts string, task slack.Task) error {
 	chunk := slack.TaskUpdateChunk(task)
 	if chunk == nil {

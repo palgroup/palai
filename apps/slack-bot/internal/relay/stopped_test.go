@@ -113,10 +113,19 @@ func TestNothingIsWrittenToAStoppedStreamAgain(t *testing.T) {
 	if err := runStopped(t, fake, events); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// The thinking card is drawn BEFORE the first event is read (Run opens it eagerly), so exactly one card
-	// legitimately precedes the stop; every card after it must be skipped.
-	if len(fake.tasks) != 1 {
-		t.Fatalf("the relay drew %d cards (%v), want only the one opened before the stop was known", len(fake.tasks), fake.tasks)
+	// NOT ONE CARD REACHES SLACK. The eager write Run makes before reading its first event is the container
+	// HEADLINE, not a card, so the stop here is discovered by the first delta and every card after it is
+	// skipped — including the run terminal's own sweep, which would otherwise spend an update per open step
+	// on a stream that refuses all of them.
+	if len(fake.tasks) != 0 {
+		t.Fatalf("the relay drew %d cards (%v) on a stopped stream; Slack refuses every one of them",
+			len(fake.tasks), fake.tasks)
+	}
+	// And exactly ONE headline: the opening one, written before the stop was knowable. The run terminal's
+	// closing summary must not be attempted on a stream that cannot take it.
+	if len(fake.plans) != 1 {
+		t.Fatalf("the relay wrote %d headlines (%q), want only the one written before the stop was known",
+			len(fake.plans), fake.plans)
 	}
 	if len(fake.appended) != 0 {
 		t.Fatalf("the relay appended %d time(s) to a stopped stream (%q); Slack refuses every one of them", len(fake.appended), fake.appended)
@@ -127,10 +136,25 @@ func TestNothingIsWrittenToAStoppedStreamAgain(t *testing.T) {
 // is composing draws cards between deltas, so the FIRST call Slack refuses can be a task_update rather than
 // an append. Learning the stop there is what keeps the rest of the run from spending a wasted round trip per
 // card — and, more importantly, what puts the answer on the plain-message path at the end.
+//
+// THE FIXTURE CARRIES A REAL TOOL CALL and that is not decoration. This test used to run on deltaRun alone,
+// which drew no tool card at all: the refusal it measured was the eagerly-opened "Thinking" card, drawn
+// before the first event was read. That card is now the container's headline instead, so the same fixture
+// would have let the delta through and asserted a card path nothing walked. A test named for a card must
+// make a card.
 func TestACardCanBeWhatDiscoversTheStop(t *testing.T) {
 	fake := &fakeSlack{stopCards: true} // only UpdateTask refuses; AppendStream would still accept text
-	if err := runStopped(t, fake, deltaRun("the answer")); err != nil {
+	events := []palai.Event{
+		{Type: "tool_call.executing.v1", Data: map[string]any{"tool_call_id": "tc_1", "tool_name": "palai.workspace.shell"}},
+		{Type: "model_step.delta.v1", Data: map[string]any{"text": "the answer"}},
+		{Type: "run.completed.v1", Data: map[string]any{}},
+	}
+	if err := runStopped(t, fake, events); err != nil {
 		t.Fatalf("Run: %v", err)
+	}
+	if len(fake.tasks) != 0 {
+		t.Fatalf("fakeSlack recorded %+v, but every UpdateTask under stopCards refuses — the fixture must be "+
+			"reaching a card for this test to mean anything", fake.tasks)
 	}
 	if len(fake.appended) != 0 {
 		t.Fatalf("appended %q after a CARD reported the stream stopped; the refusal covers the whole stream, "+
@@ -138,6 +162,28 @@ func TestACardCanBeWhatDiscoversTheStop(t *testing.T) {
 	}
 	if len(fake.posted) != 2 || !strings.Contains(fake.posted[1], "the answer") {
 		t.Fatalf("plain messages = %q, want the notice and then the answer", fake.posted)
+	}
+}
+
+// TestTheHeadlineCanBeWhatDiscoversTheStop is the EARLIEST any run can learn its stream is stopped: Run
+// writes the container headline before it has read a single event, so on a stream a human stopped between
+// the start and the first chunk, that write is the first refusal there is.
+//
+// It matters for the same reason the card case does — every later call on a stopped stream is a round trip
+// that can only fail — and for one more: this is the only refusal that can happen before the relay has
+// anything to deliver, so it is the one that proves the notice does not depend on there being an answer yet.
+func TestTheHeadlineCanBeWhatDiscoversTheStop(t *testing.T) {
+	fake := &fakeSlack{stopPlans: true} // only UpdatePlan refuses
+	if err := runStopped(t, fake, deltaRun("the answer")); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(fake.plans) != 0 || len(fake.appended) != 0 {
+		t.Fatalf("headlines=%q appends=%q after the opening headline was refused; nothing may be written to a "+
+			"stopped stream again", fake.plans, fake.appended)
+	}
+	if len(fake.posted) != 2 || !strings.Contains(fake.posted[1], "the answer") {
+		t.Fatalf("plain messages = %q, want the notice and then the answer — a stop discovered before the run "+
+			"produced anything must still deliver what it produces later", fake.posted)
 	}
 }
 
