@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"strings"
 	"sync"
 	"testing"
@@ -57,9 +58,16 @@ func (f *fakeUploader) CreateArtifact(_ context.Context, content []byte) (string
 // That refusal is real and is exercised by its own test in the adapter package; here the fetch is pointed
 // at the server through a Doer that rewrites the destination, so this test measures the leg's behaviour
 // rather than re-measuring the adapter's host check.
+//
+// It also records WHICH file each request asked for, in order. That is what makes an assertion about
+// SELECTION possible at all: the artifact ids the uploader mints (art_1, art_2, …) follow the order attach
+// was called in, so they are identical for every possible selection of the same size — an assertion on them
+// alone can never fail, whichever files the code under test chose. The fetched ids are the only place the
+// choice is visible.
 type slackFileServer struct {
 	srv       *httptest.Server
 	gotBearer string
+	fetched   []string
 }
 
 func newSlackFileServer(t *testing.T, body []byte, status int) *slackFileServer {
@@ -67,6 +75,9 @@ func newSlackFileServer(t *testing.T, body []byte, status int) *slackFileServer 
 	s := &slackFileServer{}
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.gotBearer = r.Header.Get("Authorization")
+		// imageFile builds the path as …/<file id>.png, and the redirecting Doer rewrites only the host, so
+		// the file this request is for survives into the path.
+		s.fetched = append(s.fetched, strings.TrimSuffix(path.Base(r.URL.Path), ".png"))
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
 	}))

@@ -40,7 +40,7 @@ func (f *fakeHistory) ThreadReplies(_ context.Context, channel, threadTS string,
 // newHistoryDeps wires the inbound deps over fakes with BOTH optional halves mounted — the image leg
 // (pointed at a local file server through the redirecting Doer images_test.go already uses) and the thread
 // read. It is the shape a real deployment has, since main.go mounts the two together.
-func newHistoryDeps(t *testing.T, hist *fakeHistory) (InboundDeps, *fakePalai, *fakeStore, *fakeUploader) {
+func newHistoryDeps(t *testing.T, hist *fakeHistory) (InboundDeps, *fakePalai, *fakeStore, *fakeUploader, *slackFileServer) {
 	t.Helper()
 	deps, fp, fs := newTestDeps(t)
 	files := newSlackFileServer(t, pngBytes, http.StatusOK)
@@ -48,7 +48,7 @@ func newHistoryDeps(t *testing.T, hist *fakeHistory) (InboundDeps, *fakePalai, *
 	deps = deps.WithImages(&ImageLeg{
 		Doer: redirectingDoer{to: files.srv.URL}, Token: []byte("xoxb-secret"), Artifacts: up,
 	}, nil).WithThreadHistory(hist)
-	return deps, fp, fs, up
+	return deps, fp, fs, up, files
 }
 
 // threadMessage builds one message of a fetched thread page.
@@ -111,7 +111,7 @@ func TestAScreenshotPostedOneMessageEarlierReachesTheModel(t *testing.T) {
 		threadMessage("100.004", "F_OLD"), // the screenshot
 		threadMessage("100.005"),          // the @mention itself, as conversations.replies returns it
 	}}
-	deps, fp, _, up := newHistoryDeps(t, hist)
+	deps, fp, _, up, _ := newHistoryDeps(t, hist)
 
 	if err := HandleEvent(context.Background(), deps, lateMention()); err != nil {
 		t.Fatalf("HandleEvent: %v", err)
@@ -145,7 +145,7 @@ func TestAnEarlierImageSaysItIsEarlier(t *testing.T) {
 		threadMessage("100.004", "F_OLD"),
 		threadMessage("100.005"),
 	}}
-	deps, fp, _, _ := newHistoryDeps(t, hist)
+	deps, fp, _, _, _ := newHistoryDeps(t, hist)
 
 	if err := HandleEvent(context.Background(), deps, lateMention()); err != nil {
 		t.Fatalf("HandleEvent: %v", err)
@@ -157,20 +157,24 @@ func TestAnEarlierImageSaysItIsEarlier(t *testing.T) {
 	}
 }
 
-// TestTheTriggeringMessagesOwnFileIsNotAttachedTwice pins the skip rule, and pins that it is an ID
-// comparison rather than a text heuristic: conversations.replies returns the very message that caused the
-// read, files and all. Taking it here as well as from ev.Files would fetch one screenshot twice, upload it
-// twice and put two image_refs for one picture in front of the model — which also spends two slots of the
-// platform's per-request image ceiling on one image.
+// TestTheTriggeringMessagesOwnFileIsNotAttachedTwice pins the PROPERTY — one picture, one attachment.
+// conversations.replies returns the very message that caused the read, files and all, so taking it here as
+// well as from ev.Files would fetch one screenshot twice, upload it twice and put two image_refs for one
+// picture in front of the model, spending two slots of the platform's per-request image ceiling on one image.
+// The same is true of a RE-SHARE: one Slack file object appearing in two messages is one file id.
 //
-// The second half is the same defence against a RE-SHARE: the same Slack file object appearing in two
-// different messages is one file id, and it is attached once.
+// TWO GUARDS HOLD THIS AND THEY ARE REDUNDANT TODAY, which is worth saying rather than leaving for whoever
+// next perturbs one of them and finds this test still green: the message is skipped by its ts, AND the file
+// ids of ev.Files are pre-seeded into the dedupe set. Removing either one alone leaves the property intact
+// here, because every file of the triggering message reaches this relay on ev.Files. The ts skip's own
+// contract — that it is an ID comparison and not a text heuristic — is pinned where only it can apply, by
+// TestTheTriggeringMessageIsSkippedByItsIDAlone below.
 func TestTheTriggeringMessagesOwnFileIsNotAttachedTwice(t *testing.T) {
 	hist := &fakeHistory{msgs: []slack.ThreadMessage{
 		threadMessage("100.003", "F_SAME"), // the same file, re-shared earlier in the thread
 		threadMessage("100.005", "F_SAME"), // the triggering message, as Slack returns it
 	}}
-	deps, fp, _, up := newHistoryDeps(t, hist)
+	deps, fp, _, up, _ := newHistoryDeps(t, hist)
 	ev := lateMention()
 	ev.Files = []slack.SharedFile{imageFile("F_SAME")}
 
@@ -185,6 +189,35 @@ func TestTheTriggeringMessagesOwnFileIsNotAttachedTwice(t *testing.T) {
 	}
 }
 
+// TestTheTriggeringMessageIsSkippedByItsIDAlone drives the selection directly, in the one state where the
+// dedupe set cannot mask the ts comparison: the page's file-carrying message IS the trigger, and ev carries
+// no files of its own to pre-seed anything with.
+//
+// THAT STATE IS NOT INVENTED. This relay reached it for real until 2026-08-03: HandleEvent dropped
+// KindFileShare outright, so a message whose whole content was an attachment arrived with nothing on it. Any
+// future narrowing of what the mapping puts on ev.Files puts it back, and the failure it would cause is the
+// quiet kind — one screenshot fetched, uploaded and shown to the model twice, described as "shared earlier"
+// the second time.
+//
+// It also pins the comparison itself: the messages carry the same TEXT and differ only by ts, so a heuristic
+// on words would take the wrong one.
+func TestTheTriggeringMessageIsSkippedByItsIDAlone(t *testing.T) {
+	ev := lateMention() // MessageTS 100.005, and deliberately no Files
+	page := []slack.ThreadMessage{
+		threadMessage("100.004", "F_EARLIER"),
+		threadMessage("100.005", "F_TRIGGER"),
+	}
+
+	files, dropped := threadImages(page, ev, maxThreadImages)
+	if dropped != 0 {
+		t.Fatalf("dropped = %d, want 0", dropped)
+	}
+	if len(files) != 1 || files[0].ID != "F_EARLIER" {
+		t.Fatalf("selected %v, want only F_EARLIER — the trigger's own file is admitted through ev.Files and "+
+			"taking it here as well shows one picture to the model twice", files)
+	}
+}
+
 // TestAThreadTheBotIsAlreadyInReadsNothing pins the second clause of the fetch rule, and it is the clause
 // that keeps this cheap and correct: a thread with a session of its own already carries every image shared
 // in it while the bot was present — the control plane replays those turns — so a read here would re-fetch,
@@ -192,7 +225,7 @@ func TestTheTriggeringMessagesOwnFileIsNotAttachedTwice(t *testing.T) {
 // duplicates.
 func TestAThreadTheBotIsAlreadyInReadsNothing(t *testing.T) {
 	hist := &fakeHistory{msgs: []slack.ThreadMessage{threadMessage("100.004", "F_OLD")}}
-	deps, _, fs, up := newHistoryDeps(t, hist)
+	deps, _, fs, up, _ := newHistoryDeps(t, hist)
 	if _, err := fs.BindThread(context.Background(), "bot_1", "T1", "C1", "1.1", "ses_existing"); err != nil {
 		t.Fatalf("seed the bound thread: %v", err)
 	}
@@ -216,7 +249,7 @@ func TestAThreadTheBotIsAlreadyInReadsNothing(t *testing.T) {
 // and nothing else: one Slack round trip, per new conversation, to learn what it already knows.
 func TestATopLevelMentionReadsNothing(t *testing.T) {
 	hist := &fakeHistory{}
-	deps, _, _, _ := newHistoryDeps(t, hist)
+	deps, _, _, _, _ := newHistoryDeps(t, hist)
 
 	ev := lateMention()
 	ev.InThread = false
@@ -235,7 +268,7 @@ func TestATopLevelMentionReadsNothing(t *testing.T) {
 // chatter in a channel the bot merely sits in must produce no Slack call at all.
 func TestAMessageThatBirthsNoRunReadsNothing(t *testing.T) {
 	hist := &fakeHistory{msgs: []slack.ThreadMessage{threadMessage("300.001", "F_OLD")}}
-	deps, fp, _, up := newHistoryDeps(t, hist)
+	deps, fp, _, up, _ := newHistoryDeps(t, hist)
 
 	chatter := slack.Event{Type: "message", Kind: slack.KindMessage, InThread: true, ChannelType: "channel",
 		TeamID: "T1", ChannelID: "C1", ThreadTS: "300.001", MessageTS: "300.002",
@@ -262,7 +295,7 @@ func TestATruncatedPageAttachesNothing(t *testing.T) {
 		threadMessage("1.2", "F_ANCIENT"),
 		threadMessage("1.3", "F_ALSO_ANCIENT"),
 	}}
-	deps, fp, _, up := newHistoryDeps(t, hist)
+	deps, fp, _, up, _ := newHistoryDeps(t, hist)
 
 	if err := HandleEvent(context.Background(), deps, lateMention()); err != nil {
 		t.Fatalf("HandleEvent: %v", err)
@@ -294,7 +327,7 @@ func TestTheNewestEarlierImagesWinTheBudgetAndArriveInOrder(t *testing.T) {
 		threadMessage("100.004", "F_5"),
 		threadMessage("100.005"), // the mention
 	}}
-	deps, fp, _, up := newHistoryDeps(t, hist)
+	deps, fp, _, up, files := newHistoryDeps(t, hist)
 
 	if err := HandleEvent(context.Background(), deps, lateMention()); err != nil {
 		t.Fatalf("HandleEvent: %v", err)
@@ -302,13 +335,16 @@ func TestTheNewestEarlierImagesWinTheBudgetAndArriveInOrder(t *testing.T) {
 	if up.n != maxThreadImages {
 		t.Fatalf("uploads = %d, want the thread budget of %d", up.n, maxThreadImages)
 	}
-	// The uploader mints art_1, art_2, … in the order it was CALLED, so asserting the ids in the input is
-	// asserting the fetch order too: art_1 must be the oldest survivor.
-	if refs := imageRefs(inputItems(t, fp)); len(refs) != 3 || refs[0] != "art_1" || refs[2] != "art_3" {
-		t.Fatalf("image_refs = %v, want three in the order they were posted", refs)
+	// THE FILES, NOT THE ARTIFACT IDS. The uploader mints art_1, art_2, … in the order it is CALLED, so the
+	// ids in the input read identically for EVERY selection of the same size — an assertion on them cannot
+	// fail whichever three pictures were chosen, and a forward walk (the exact defect this test exists for)
+	// passed one. What the files were, and in which order, is only visible at the fetch.
+	if got := strings.Join(files.fetched, ","); got != "F_3,F_4,F_5" {
+		t.Fatalf("fetched %q, want the three NEWEST (F_3,F_4,F_5) in the order they were posted — the "+
+			"picture a request is about is the one nearest to it, and F_5 was one message above the mention", got)
 	}
-	if len(hist.msgs[2].Files) != 2 {
-		t.Fatal("fixture drift: the third message must carry two files for the within-message ordering to matter")
+	if refs := imageRefs(inputItems(t, fp)); len(refs) != 3 {
+		t.Fatalf("image_refs = %v, want one per fetched picture", refs)
 	}
 	text := inputText(inputItems(t, fp))
 	if !strings.Contains(text, "2 further image(s)") {
@@ -325,7 +361,7 @@ func TestTheMessagesOwnPictureOutranksTheThreads(t *testing.T) {
 		threadMessage("100.003", "F_OLD"),
 		threadMessage("100.005", "F_NEW"),
 	}}
-	deps, fp, _, _ := newHistoryDeps(t, hist)
+	deps, fp, _, _, _ := newHistoryDeps(t, hist)
 	ev := lateMention()
 	ev.Files = []slack.SharedFile{imageFile("F_NEW")}
 
@@ -355,7 +391,7 @@ func TestANonImageSharedEarlierIsNotReportedAsARefusal(t *testing.T) {
 		{UserID: "U2", TS: "100.003", Text: "the spec", Files: []slack.SharedFile{doc}},
 		threadMessage("100.005"),
 	}}
-	deps, fp, _, up := newHistoryDeps(t, hist)
+	deps, fp, _, up, _ := newHistoryDeps(t, hist)
 
 	if err := HandleEvent(context.Background(), deps, lateMention()); err != nil {
 		t.Fatalf("HandleEvent: %v", err)
@@ -386,7 +422,7 @@ func TestAFailedThreadReadStillDeliversTheTurn(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hist := &fakeHistory{err: tc.err}
-			deps, fp, _, _ := newHistoryDeps(t, hist)
+			deps, fp, _, _, _ := newHistoryDeps(t, hist)
 
 			if err := HandleEvent(context.Background(), deps, lateMention()); err != nil {
 				t.Fatalf("HandleEvent: %v — a failed history read must not cost the turn", err)
@@ -451,7 +487,7 @@ func TestNoThreadIsReadWithNoHistoryMounted(t *testing.T) {
 // also what the has_more refusal above is measured against.
 func TestTheThreadReadIsBounded(t *testing.T) {
 	hist := &fakeHistory{}
-	deps, _, _, _ := newHistoryDeps(t, hist)
+	deps, _, _, _, _ := newHistoryDeps(t, hist)
 
 	if err := HandleEvent(context.Background(), deps, lateMention()); err != nil {
 		t.Fatalf("HandleEvent: %v", err)
