@@ -664,7 +664,7 @@ The stable /v1 surface is organized as follows:
 | Compute | workspaces, snapshots, runners, runner pools, environment images |
 | Automation | triggers, schedules, inbound events, webhook endpoints, outbound webhook deliveries |
 | Output | artifacts, artifact versions, structured results, repository changesets |
-| Governance | organizations, projects, memberships, service accounts, API keys, policies, secret references |
+| Governance | projects, service accounts, API keys, policies, secret references (organizations and memberships belong to the operating layer — §39.1) |
 | Operations | usage, budgets, quotas, audit events, eval suites, eval runs, health and capability discovery |
 
 The first stable release MAY expose administration resources through a separate /v1/admin namespace. Administration and execution resources still use the same identity, error, pagination, audit, and compatibility rules.
@@ -787,25 +787,16 @@ POST   /v1/capability-worker-pools
 GET    /v1/capability-workers
 
 # Governance, operations, and evaluation
-# NOT IMPLEMENTED — the eight organization/membership routes below are design surface, not shipped
-# API. A.2 Task 6 unmounted the three organization routes that DID exist and dropped the table; the
-# membership routes never existed. POST /v1/projects is what opens a tenant today (project + service
-# principal + admin key + default runner pool), gated on the `system` capability.
-POST   /v1/organizations
-GET    /v1/organizations
-GET    /v1/organizations/{organization_id}
-PATCH  /v1/organizations/{organization_id}
-POST   /v1/organizations/{organization_id}/projects
-GET    /v1/organizations/{organization_id}/projects
-# SHIPPED:
+# THE ORGANIZATION AND MEMBERSHIP ROUTES ARE GONE FROM THIS TABLE, not marked pending. Tenancy above
+# the project belongs to the layer that OPERATES Palai — see §39.1 for the decision and why it is
+# recorded rather than dropped in silence. The three organization routes that did exist were unmounted
+# by A.2 Task 6 with the table behind them; the membership routes never existed and will not.
+# Opening a tenant is POST /v1/projects, which returns the project, its service principal, a default
+# runner pool and a one-time admin key, and is gated on the `system` capability.
 POST   /v1/projects
 GET    /v1/projects
 GET    /v1/projects/{project_id}
 PATCH  /v1/projects/{project_id}
-POST   /v1/organizations/{organization_id}/memberships
-GET    /v1/organizations/{organization_id}/memberships
-PATCH  /v1/memberships/{membership_id}
-DELETE /v1/memberships/{membership_id}
 POST   /v1/service-accounts
 GET    /v1/service-accounts
 POST   /v1/service-accounts/{service_account_id}/tokens
@@ -841,7 +832,7 @@ Deployment-global operations that must not be tenant-accessible—migration stat
 - Named action endpoints are used only when the operation is not ordinary CRUD, such as publish, verify, cancel, fork, finalize, or redeliver.
 - List/get operations enforce current authorization even when an idempotent create response is replayed.
 - Bulk operations are separate explicit endpoints with item-level idempotency and results; arbitrary arrays on ordinary create are not treated as transactional bulk.
-- No endpoint accepts a caller-selected organization/project body field to escape the route/credential scope.
+- No endpoint accepts a caller-selected project body field to escape the route/credential scope.
 
 ### 20.3 Canonical identifiers
 
@@ -860,7 +851,6 @@ Every durable resource includes:
 {
   "id": "res_...",
   "object": "resource_type",
-  "organization_id": "org_...",
   "project_id": "prj_...",
   "created_at": "2026-07-16T12:00:00.000000Z",
   "updated_at": "2026-07-16T12:00:00.000000Z",
@@ -1296,7 +1286,7 @@ GET /v1/capabilities returns:
 - enabled integration adapters;
 - deployment mode and region.
 
-Discovery is filtered by caller permissions and does not reveal organization-wide inventory to project-scoped callers.
+Discovery is filtered by caller permissions and does not reveal installation-wide inventory to project-scoped callers.
 
 ## 23. Official SDK and CLI contract
 
@@ -1890,7 +1880,7 @@ Model/tool configuration changes, steering messages, cooperative pause, and norm
 Context is assembled deterministically in this precedence:
 
 1. kernel safety and protocol instructions;
-2. deployment/organization/project policy-visible instructions;
+2. deployment/project policy-visible instructions;
 3. pinned agent revision instructions;
 4. session config instructions;
 5. run-specific instructions;
@@ -2459,7 +2449,7 @@ Hedging is never used for a step that can invoke provider-hosted external tools.
 
 ### 27.12 Rate limits and circuit breakers
 
-The broker maintains per connection, provider, model, organization, and project limiters. Provider headers update observed windows without being blindly trusted across tenants.
+The broker maintains per connection, provider, model, and project limiters. Provider headers update observed windows without being blindly trusted across tenants.
 
 Circuit breakers distinguish:
 
@@ -2706,13 +2696,13 @@ Capabilities are typed grants, not booleans:
 }
 ~~~
 
-Effective capability is the intersection of deployment, organization, project, connection, agent revision, session, run, and child constraints. A lower layer cannot broaden an upper layer.
+Effective capability is the intersection of deployment, project, connection, agent revision, session, run, and child constraints. A lower layer cannot broaden an upper layer.
 
 ### 28.11 Capability tokens
 
 At execution time, the broker issues a short-lived, audience-bound, one-operation or narrowly scoped capability token:
 
-- bound to organization, project, run, attempt fencing token, tool call, executor, action, and resource;
+- bound to project, run, attempt fencing token, tool call, executor, action, and resource;
 - expires within minutes;
 - unusable by another tool or destination;
 - contains no long-lived secret;
@@ -3913,7 +3903,7 @@ Registration pins Agent Card identity/version, endpoint, authentication Connecti
 - extension URIs require allowlisting;
 - remote task IDs are scoped by connection;
 - push callbacks use the platform webhook security model;
-- A2A metadata cannot override organization/project identity.
+- A2A metadata cannot override project identity.
 
 ### 38.7 Versioning
 
@@ -3923,20 +3913,28 @@ A2A protocol revision is negotiated independently of platform API revision. Unsu
 
 ### 39.1 Hierarchy
 
+> **WHAT WAS REMOVED FROM THIS SECTION AND WHY.** Tenancy ABOVE the project — organizations,
+> memberships, owner/admin roles over them, and billing — is not Palai's job; it is the job of the layer
+> that OPERATES Palai. Palai serves a **project**. The thing that manages many projects, who owns them,
+> and who pays for them is a separate product, and keeping its model here made this document describe a
+> boundary the code does not have and should not grow.
+>
+> This is recorded rather than silently dropped: a reader who found nothing here would conclude the
+> question was never considered. It was, and the answer is that it lives one layer up.
+
 ~~~text
-Deployment
-└── Organization
-    ├── Memberships / groups / service accounts
-    ├── billing account and organization policies
-    ├── organization-scoped connections and runner pools
-    └── Project
-        ├── project policy, quotas, budgets, and API keys
-        ├── models, tools, agents, environments, repositories
-        ├── sessions, runs, workspaces, and artifacts
-        └── integrations, schedules, usage, audit, and evals
+Installation
+└── Project
+    ├── project policy, quotas, budgets, and API keys
+    ├── models, tools, agents, environments, repositories
+    ├── sessions, runs, workspaces, and artifacts
+    └── integrations, schedules, usage, audit, and evals
 ~~~
 
-Project is the default data and execution isolation boundary. Cross-project access is denied unless an organization-level resource has an explicit project grant.
+Project is the default data and execution isolation boundary, and the INSTALLATION is the outer one.
+Cross-project access is denied. Four tables carry no project column at all — environments, environment
+values, secret refs and the usage ledger — so they are installation-wide by construction; §39.2 states
+what that costs.
 
 ### 39.2 Tenant invariants
 
@@ -4037,10 +4035,8 @@ Baseline roles:
 
 | Role | Scope |
 |---|---|
-| organization_owner | organization lifecycle and all governance |
-| organization_admin | membership, projects, shared configuration |
 | security_admin | policy, connections, audit, extension trust |
-| billing_admin | plan, invoices, budgets, usage |
+| billing_admin | plan, invoices, budgets, usage — an OPERATING-LAYER role, listed for completeness; Palai has no billing surface |
 | project_admin | project resources and membership |
 | developer | agents/tools/environments and development runs |
 | operator | runners, runs, retries, schedules, incidents |
@@ -4354,7 +4350,6 @@ Each event contains:
 {
   "id": "use_...",
   "subject": "project:prj_...",
-  "organization_id": "org_...",
   "project_id": "prj_...",
   "session_id": "ses_...",
   "run_id": "run_...",
@@ -4817,17 +4812,17 @@ Managed runner pools MAY cache public or tenant-scoped Git objects:
 - cache is an optimization and failure falls back to clean fetch;
 - purge follows repository disconnect/deletion policy.
 
-### 46.7 SaaS organization lifecycle
+### 46.7 SaaS customer lifecycle — NOT PALAI'S
 
-~~~text
-trial → active → past_due → restricted → suspended → closing → deleted
-~~~
+The trial → active → past_due → restricted → suspended → closing → deleted lifecycle, and everything
+that hangs off it (billing state gating runs, suspension policy, export-on-close, identifier reuse), is
+the OPERATING LAYER's. It is named here so its absence from Palai is a decision rather than an
+oversight, and so nobody implements a billing state machine inside a control plane that has no billing
+surface.
 
-- past_due may block new costly runs but preserves retrieval/export for a grace period;
-- suspension fences execution and revokes API keys/runners according to reason;
-- security suspension is distinct from billing restriction;
-- closing offers export and deletes according to retention/contract;
-- organization ID is never reassigned.
+What Palai owes that layer is the primitives it needs to act: a project can be created, its policy and
+quotas can be written, its keys can be revoked, and its runs can be fenced. Those exist. The states
+above are composed FROM them, one layer up.
 
 ### 46.8 Abuse controls
 
@@ -5052,7 +5047,7 @@ The security program uses the [OWASP Top 10 for Agentic Applications 2026](https
 Explicit boundaries:
 
 1. public caller ↔ API edge;
-2. organization/project ↔ another tenant;
+2. project ↔ another tenant;
 3. control plane ↔ execution runner;
 4. runner host ↔ sandbox/microVM;
 5. engine ↔ model/tool brokers;
@@ -5313,7 +5308,7 @@ Each record contains:
 - immutable ID and time;
 - actor and authentication method;
 - delegation/support chain;
-- organization/project/resource;
+- project/resource;
 - action and outcome;
 - request/trace/policy decision IDs;
 - source network/device metadata under privacy policy;
