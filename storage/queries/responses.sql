@@ -40,8 +40,14 @@ FOR UPDATE;
 
 -- GetResponse reads a response's terminal projection for retrieval. purged_at is
 -- non-null once the content has been reaped, which the handler renders as 410.
+-- `metadata` is read from its own COLUMN and not out of the `output` projection blob, which is why it
+-- survives every terminal path. That blob is rewritten by FinalizeResponse, TimeoutQueuedIfExpired,
+-- timeOutOneCapacityPark and cancel, each assembling its own projection; a field carried only inside it
+-- lasts until the first of those writers forgets to re-copy it. This column has one reader and no writer
+-- that can drop it. PurgeExpiredStoreFalse scrubs this column alongside `input`, and retrieval reads
+-- 410 off purged_at before it would render the empty object that leaves.
 -- name: GetResponse
-SELECT state, output, purged_at, created_at
+SELECT state, output, purged_at, created_at, metadata
 FROM responses
 WHERE id = $1 AND project_id = $2;
 
@@ -394,9 +400,13 @@ WHERE project_id = $1 AND principal_id = $2
 INSERT INTO sessions (id, project_id, name)
 VALUES ($1, $2, $3);
 
+-- $6 is the caller's `metadata` object (spec §22.3): opaque correlation the server never interprets,
+-- stored so GET /v1/responses/{id} can hand it back. NULL — a child run, which has no caller to supply
+-- one — COALESCEs to the empty object rather than relying on the column default, because a positional
+-- INSERT names the column and so opts out of that default.
 -- name: InsertResponse
-INSERT INTO responses (id, project_id, session_id, state, input, store)
-VALUES ($1, $2, $3, 'queued', $4, $5);
+INSERT INTO responses (id, project_id, session_id, state, input, store, metadata)
+VALUES ($1, $2, $3, 'queued', $4, $5, COALESCE($6::jsonb, '{}'::jsonb));
 
 -- name: InsertRun
 INSERT INTO runs (id, project_id, session_id, response_id, state, delegation, agent_revision_id, run_template_revision_id, output_contract, instructions)
@@ -470,10 +480,15 @@ purge_artifacts AS (
       AND a.project_id = v.project_id
 ),
 -- input is NOT NULL, so its customer content is scrubbed to an empty object rather than
--- nulled; output is nullable and cleared outright.
+-- nulled; output is nullable and cleared outright. metadata is customer content of the same
+-- kind as input — caller-supplied, server-uninterpreted — and is NOT NULL for the same reason,
+-- so it is scrubbed the same way. A store:false response whose content has been reaped must not
+-- keep the correlation the caller attached to it: retrieval answers 410 from purged_at and never
+-- reads these columns again, so anything left here is data the caller asked to be transient and
+-- that nothing will ever hand back.
 purged AS (
     UPDATE responses r
-    SET input = '{}'::jsonb, output = NULL, purged_at = clock_timestamp()
+    SET input = '{}'::jsonb, output = NULL, metadata = '{}'::jsonb, purged_at = clock_timestamp()
     FROM victims v
     WHERE r.id = v.id
     RETURNING r.id

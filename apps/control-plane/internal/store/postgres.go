@@ -117,6 +117,7 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 			Delegations:           req.Delegations,
 			OutputContract:        req.OutputContract,
 			Instructions:          req.Instructions,
+			Metadata:              req.Metadata,
 			RepositoryBindingID:   req.RepositoryBindingID,
 			RepositoryRef:         req.RepositoryRef,
 			AgentID:               req.AgentID,
@@ -189,6 +190,20 @@ func (s *Store) GetResponse(ctx context.Context, scope middleware.Scope, id stri
 		CreatedAt: view.CreatedAt.UTC().Format(time.RFC3339Nano),
 		Output:    []contracts.ContentItem{},
 		Usage:     contracts.Usage{},
+	}
+	// The caller's `metadata`, from its own column. It is decoded BEFORE the projection blob below and
+	// independently of it, which is the property worth keeping: every terminal path rewrites that blob
+	// and none of them carries metadata, so a response that completed, timed out, was canceled or was
+	// parked-then-timed-out all render the same metadata — the one that was admitted. An empty object
+	// decodes to an empty map and `omitempty` keeps it off the wire.
+	if len(view.Metadata) > 0 {
+		var stored map[string]any
+		if err := json.Unmarshal(view.Metadata, &stored); err != nil {
+			return api.RetrieveResult{}, fmt.Errorf("decode response metadata: %w", err)
+		}
+		if len(stored) > 0 {
+			resp.Metadata = stored
+		}
 	}
 	if len(view.Output) > 0 {
 		var projection struct {

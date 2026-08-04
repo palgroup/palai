@@ -23,6 +23,11 @@ const (
 	// admissionRetryAfterSeconds is the Retry-After hint on a capacity 429 (§20.12): a run frees a
 	// slot when it terminates, which the edge cannot predict, so a short fixed hint is honest.
 	admissionRetryAfterSeconds = "1"
+	// maxMetadataProperties mirrors the `maxProperties: 64` both response-create.json and response.json
+	// declare on `metadata`. The number lives here rather than being read from the schema because this
+	// package validates no schema at runtime (validateCreate's own comment says full schema validation is
+	// a later task); if the schemas move, this moves with them.
+	maxMetadataProperties = 64
 )
 
 // Admitter is the store seam for response admission and retrieval. The Postgres store
@@ -104,6 +109,19 @@ type AdmitRequest struct {
 	// one-word instruction was not obeyed — while the SAME instruction placed in `input` was. The
 	// field has been in this server's published schema for the life of that schema.
 	Instructions string
+	// Metadata is the request's `metadata` object as canonical JSON, or nil when it named none.
+	//
+	// IT IS STORED AND ECHOED, NOT ACTED ON. The server never reads a key out of it: it routes nothing,
+	// authorizes nothing, and joins nothing. That is what makes it safe to accept from an untrusted
+	// caller and hand back verbatim, and it is the same discipline §38.6 applies to A2A message metadata
+	// (examined, discarded, never an identity override).
+	//
+	// Until migration 000004 nothing stored it and nothing returned it. Measured on 2026-08-05 against
+	// the running stack: POST with {"metadata":{"bot_id":"..."}} answered 202 with an id, and GET on that
+	// id answered `metadata: null` — accepted, dropped, and still advertised by the response schema on
+	// the way back out. The field has been in both published schemas for the life of those schemas, and
+	// @palai/sdk's Orchestrator.start puts `workflow_id` in it on every call it makes.
+	Metadata []byte
 	// RepositoryBindingID / RepositoryRef carry the contracted `repository` field (spec §30.1, E09
 	// Task 10): resolved from the raw body like Delegations, they attach a session-scoped coding
 	// workspace the root run auto-provisions. Empty leaves the response non-coding.
@@ -272,6 +290,19 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The caller's `metadata`, marshalled once for the durable column. A request that named none stays
+	// nil, which the INSERT COALESCEs to the empty object — so "sent nothing" and "sent {}" are the same
+	// stored value and the same (absent) rendering, which is what `omitempty` on the contract already
+	// meant. Note it needs no re-probe of the raw body the way `store` does: an absent object and an
+	// empty one carry the same meaning here, so there is no tri-state to recover.
+	var metadata []byte
+	if len(req.Metadata) > 0 {
+		if metadata, err = json.Marshal(req.Metadata); err != nil {
+			middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+			return
+		}
+	}
+
 	responseID := middleware.NewID("resp")
 	runID := middleware.NewID("run")
 	sessionID := middleware.NewID("ses")
@@ -286,6 +317,10 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 		SessionID: contracts.SessionID(sessionID),
 		RunID:     contracts.RunID(runID),
 		ProjectID: contracts.ProjectID(scope.Project),
+		// Echoed on the 202 as well as on every later GET. This body is what a replay returns verbatim
+		// (spec §20.9 step 4), so putting it here is also what makes a replayed admission carry the
+		// metadata of the request that was actually admitted rather than of the one that repeated it.
+		Metadata: req.Metadata,
 	}
 	body, err := json.Marshal(projection)
 	if err != nil {
@@ -316,6 +351,7 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 		Delegations:           delegations,
 		OutputContract:        outputContract,
 		Instructions:          req.Instructions,
+		Metadata:              metadata,
 		RepositoryBindingID:   bindingID,
 		RepositoryRef:         repositoryRef,
 		AgentID:               agentID,
@@ -652,6 +688,14 @@ func validateCreate(req contracts.ResponseCreateRequest) error {
 	// the finalizer checks exactly.
 	if _, err := outputcontract.Parse(req.Output); err != nil {
 		return err
+	}
+	// The `metadata` bound both published schemas declare (maxProperties: 64). It is enforced here
+	// because migration 000004 gave the field a writer: an unbounded object was harmless while nothing
+	// stored it and is a per-response storage cost now that something does. Refusing is also the only
+	// honest reading of a declared bound — the alternative is to accept 500 keys against a contract that
+	// says 64, which is the class of defect this change exists to remove.
+	if len(req.Metadata) > maxMetadataProperties {
+		return fmt.Errorf("metadata carries %d properties; the maximum is %d", len(req.Metadata), maxMetadataProperties)
 	}
 	return nil
 }

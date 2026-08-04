@@ -47,6 +47,10 @@ type ResponseView struct {
 	State     string
 	Output    []byte
 	CreatedAt time.Time
+	// Metadata is the caller's `metadata` object as stored JSON ('{}' when the request named none, and
+	// after a retention purge has scrubbed it). It comes from its own column rather than from Output,
+	// so no projection rewrite can drop it — see the GetResponse query's own note.
+	Metadata []byte
 }
 
 // GetResponse reads a response's terminal projection within the tenant scope. A missing
@@ -59,8 +63,9 @@ func (s *Store) GetResponse(ctx context.Context, tenant Tenant, id string) (Resp
 		output   []byte
 		purgedAt *time.Time
 	)
+	var metadata []byte
 	err := s.pool.QueryRow(ctx, storage.Query("GetResponse"), id, tenant.Project).
-		Scan(&view.State, &output, &purgedAt, &view.CreatedAt)
+		Scan(&view.State, &output, &purgedAt, &view.CreatedAt, &metadata)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ResponseView{}, nil
 	}
@@ -69,6 +74,7 @@ func (s *Store) GetResponse(ctx context.Context, tenant Tenant, id string) (Resp
 	}
 	view.Found = true
 	view.Output = output
+	view.Metadata = metadata
 	view.Purged = purgedAt != nil
 	return view, nil
 }

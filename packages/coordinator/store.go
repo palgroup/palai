@@ -661,6 +661,13 @@ type AdmissionInput struct {
 	// (migration 000055). Before that migration nothing persisted it and nothing applied it, though
 	// the published schema has declared the field for the life of that schema.
 	Instructions string
+	// Metadata is the request's `metadata` object as canonical JSON, or nil when it named none. It is
+	// opaque correlation the server never interprets — it routes nothing, authorizes nothing, and is
+	// echoed back verbatim by GET /v1/responses/{id}. Persisted on the RESPONSE rather than the run
+	// because execution never reads it and its only reader is the retrieval of the resource the caller
+	// named (migration 000004). Before that migration nothing stored it and nothing returned it, though
+	// both the create and the response schema have declared the field for the life of those schemas.
+	Metadata []byte
 	// RepositoryBindingID / RepositoryRef carry the contracted `repository` field (spec §30.1, E09
 	// Task 10): when the binding is set, admission attaches a session-scoped coding workspace so the
 	// root run auto-provisions it. Empty leaves the response non-coding — the pre-E09 behaviour.
@@ -920,7 +927,7 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 		}
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertResponse"),
-		in.ResponseID, tenant.Project, sessionID, in.Input, in.Store); err != nil {
+		in.ResponseID, tenant.Project, sessionID, in.Input, in.Store, nullableJSON(in.Metadata)); err != nil {
 		return Admission{}, fmt.Errorf("insert response: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertRun"),
