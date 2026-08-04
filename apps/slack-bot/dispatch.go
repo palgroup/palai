@@ -102,8 +102,26 @@ func (d *dispatcher) OnInteractive(ctx context.Context, payload json.RawMessage)
 // is already parked server-side waiting for an answer; if this post does not land, nobody is ever asked,
 // nothing times out visibly, and the thread simply stops. relay.Run cannot act on it (see
 // relay.ApprovalHook), so saying it out loud here is the whole of the response.
+//
+// EXCEPT FOR ONE OUTCOME THAT IS NOT A FAILURE AT ALL, and it became routine the day recovery shipped.
+// A recovered run REPLAYS its journal (relay/resume.go), so every approval.requested.v1 it already handled
+// arrives here a second time — and by then the approval is usually DECIDED, which drops it out of
+// GET /v1/approvals and makes findPendingApproval answer ErrApprovalNotFound. Logging the sentence above
+// for that says three things that are all false: that a run is parked, that a human is owed a question,
+// and that the thread will stop. Measured live 2026-08-04, on a thread whose approval had been decided
+// minutes earlier.
+//
+// It is reported anyway, because the same error also covers the case where the row has not committed
+// visibly yet — which IS a question nobody can see. What changes is that the line says which of the two a
+// reader is looking at instead of asserting the worse one.
 func (d *dispatcher) onApprovalRequested(ctx context.Context, channel, threadTS string, ev palai.Event) {
-	if err := relay.OnApprovalRequested(ctx, d.approvals, channel, threadTS, ev); err != nil {
+	err := relay.OnApprovalRequested(ctx, d.approvals, channel, threadTS, ev)
+	switch {
+	case err == nil:
+	case errors.Is(err, relay.ErrApprovalNotFound):
+		d.log("slack-bot: no open approval matches session=%s channel=%s thread=%s — it was almost certainly decided already (a recovered run replays the events it handled before it was interrupted). Nothing was posted, and nothing is owed unless this approval is genuinely still pending: %v",
+			ev.SessionID, channel, threadTS, err)
+	default:
 		d.log("slack-bot: NOBODY WAS ASKED — session=%s channel=%s thread=%s. The run is parked waiting for an approval and the message carrying the buttons did not post, so the thread will simply stop: %v",
 			ev.SessionID, channel, threadTS, err)
 	}

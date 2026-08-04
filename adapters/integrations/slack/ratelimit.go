@@ -45,6 +45,22 @@ const CodeStoppedByUser = "stopped_by_user"
 // the E20 plan §3.5 divergence row.
 const CodeInvalidThreadTS = "invalid_thread_ts"
 
+// CodeMessageNotInStreamingState is Slack refusing an append or a close because the message is no longer a
+// live stream. Unlike CodeStoppedByUser, NOBODY DID ANYTHING: a stream nothing has written to for long
+// enough simply leaves streaming state on Slack's side.
+//
+// IT IS THE FAILURE MODE OF AN ABANDONED STREAM, which is exactly what a killed relay leaves behind — so it
+// is reached precisely on the recovery path that exists to rescue such a message. Measured live 2026-08-04:
+// a stream opened at 1785875481.424069, abandoned by a process that was killed, and resumed by a later one
+// roughly ten minutes afterwards answered `message_not_in_streaming_state` to chat.stopStream. Nothing was
+// deleted and nobody pressed anything; time alone did it.
+//
+// CONTRACT: https://docs.slack.dev/reference/methods/chat.appendStream/ (checked 2026-07-27) lists it among
+// the method's notable error codes. The page does not state the interval, and this tree does not claim one:
+// what is recorded here is that the state is reachable without any human action, which is all the relay's
+// fallback needs to know.
+const CodeMessageNotInStreamingState = "message_not_in_streaming_state"
+
 // APIErrorCode returns Slack's own error string when err is an API refusal, and "" for anything else
 // (transport failures, cancellations, the bounded-repair give-up). Callers switch on this rather than on
 // substring matching an error message.

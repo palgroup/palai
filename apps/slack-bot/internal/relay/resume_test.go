@@ -492,3 +492,89 @@ func TestATurnIsRefusedWhenItsPendingMarkCannotBeRecorded(t *testing.T) {
 		t.Fatalf("the refusal reads %q, want it to name what could not be recorded", err)
 	}
 }
+
+// -------------------------------------------------------------------------------------------------
+// the stream Slack closed on its own — the recovery path's own way of losing an answer
+// -------------------------------------------------------------------------------------------------
+
+// A STREAM THAT LEFT STREAMING STATE STILL DELIVERS ITS ANSWER, as a plain message.
+//
+// THIS DEFECT WAS FOUND BY THE LIVE PROOF AND NOT BY ANY TEST, and it was in the recovery this file
+// exists to guarantee. Measured 2026-08-04: a stream abandoned by a killed process and resumed about ten
+// minutes later answered `message_not_in_streaming_state` — nobody deleted anything and nobody pressed
+// anything; a message nothing writes to leaves streaming state on its own. Every branch of the relay
+// tested only for `stopped_by_user`, so that refusal took the ORDINARY failure path: the close errored,
+// Run returned it, dispatch.go logged THE ANSWER NEVER REACHED THE THREAD — and the answer was still
+// sitting in pending, with no second attempt at any other route.
+//
+// The record made it worse rather than better: the run HAD reached its terminal, so Closed had already
+// cleared the pending mark. That answer was gone permanently. The longer the bot was down, the more likely
+// it was to be — which is exactly backwards for a durability feature.
+func TestAnAnswerSurvivesAStreamSlackHasAlreadyClosed(t *testing.T) {
+	events := seq([]palai.Event{
+		{Type: "model_step.delta.v1", Data: map[string]any{"text": "the answer nobody saw"}},
+		{Type: "run.completed.v1"},
+	})
+	// EVERY call is refused, not just the close, because that is what a closed stream really does: a
+	// recovery replaying into one has its appends refused first, and the text it was carrying is what ends
+	// up stranded in pending. A fixture that let the appends through would leave pending EMPTY and pass
+	// while proving nothing — the first draft of this test did exactly that.
+	fake := &fakeSlack{stopAfter: 1, refuseCode: slack.CodeMessageNotInStreamingState}
+	rec := &recordedDelivery{}
+	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake,
+		OnApproval: noApprovals, Delivery: rec, ResumeTS: "1785875481.424069"}, "sess_1", "C1", "1.1"); err != nil {
+		t.Fatalf("Run: %v — a stream Slack closed is not a lost answer", err)
+	}
+	if len(fake.posted) != 1 {
+		t.Fatalf("%d plain message(s) were posted, want exactly 1 carrying the answer; appended=%q", len(fake.posted), fake.appended)
+	}
+	if !strings.Contains(fake.posted[0], "the answer nobody saw") {
+		t.Fatalf("the rescued message does not carry the answer: %q", fake.posted[0])
+	}
+}
+
+// AND IT DOES NOT BLAME THE READER FOR IT. `stopped_by_user` means a person pressed stop; this means a
+// message timed out. Telling somebody "live updates were stopped" attributes to them a decision they never
+// made, in the thread they are already wondering about.
+func TestAClosedStreamIsNotExplainedAsSomebodyPressingStop(t *testing.T) {
+	events := seq([]palai.Event{
+		{Type: "model_step.delta.v1", Data: map[string]any{"text": "half an answer"}},
+		{Type: "run.completed.v1"},
+	})
+	fake := &fakeSlack{stopAfter: 1, refuseCode: slack.CodeMessageNotInStreamingState}
+	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake,
+		OnApproval: noApprovals, Delivery: &recordedDelivery{}}, "sess_1", "C1", "1.1"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	joined := strings.Join(fake.posted, "\n")
+	if strings.Contains(joined, stoppedNotice) {
+		t.Fatalf("the thread was told the run was not cancelled, about a stop nobody made:\n%s", joined)
+	}
+	if !strings.Contains(joined, closedAnswerPrefix) {
+		t.Fatalf("the rescued answer is not explained by what actually happened:\n%s", joined)
+	}
+	if strings.Contains(joined, stoppedAnswerPrefix) {
+		t.Fatalf("the rescued answer is explained as a human's stop:\n%s", joined)
+	}
+}
+
+// THE HUMAN'S STOP IS UNCHANGED — same rescue, its own words. Asserted alongside so the two refusals
+// cannot quietly collapse into one sentence again.
+func TestAHumanStopStillGetsItsOwnWords(t *testing.T) {
+	events := seq([]palai.Event{
+		{Type: "model_step.delta.v1", Data: map[string]any{"text": "half an answer"}},
+		{Type: "run.completed.v1"},
+	})
+	fake := &fakeSlack{stopAfter: 1} // default refusal: stopped_by_user
+	if err := Run(context.Background(), Deps{Events: staticStream(events), Slack: fake,
+		OnApproval: noApprovals, Delivery: &recordedDelivery{}}, "sess_1", "C1", "1.1"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	joined := strings.Join(fake.posted, "\n")
+	if !strings.Contains(joined, stoppedAnswerPrefix) {
+		t.Fatalf("a human's stop lost its own explanation:\n%s", joined)
+	}
+	if strings.Contains(joined, closedAnswerPrefix) {
+		t.Fatalf("a human's stop is now explained as a timeout:\n%s", joined)
+	}
+}

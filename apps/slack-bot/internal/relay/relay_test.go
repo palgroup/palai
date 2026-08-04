@@ -101,6 +101,20 @@ type fakeSlack struct {
 	// failPost makes that last path fail too, which is the one loss this relay still has no answer for and
 	// therefore must REPORT.
 	failPost bool
+	// refuseCode overrides WHICH refusal the stop knobs above produce. It defaults to
+	// slack.CodeStoppedByUser, which is what every knob meant when only one refusal was handled; a test
+	// about the OTHER one (a stream Slack closed on its own) sets this instead of adding a fifth knob that
+	// would have to be threaded through all four call sites.
+	refuseCode string
+}
+
+// refusal is the code this double answers with, defaulting to the human's stop.
+func (f *fakeSlack) refusal() error {
+	code := f.refuseCode
+	if code == "" {
+		code = slack.CodeStoppedByUser
+	}
+	return &slack.APIError{Code: code}
 }
 
 func (f *fakeSlack) StartStream(ctx context.Context, channel, threadTS, markdownText string) (string, error) {
@@ -111,7 +125,7 @@ func (f *fakeSlack) StartStream(ctx context.Context, channel, threadTS, markdown
 
 func (f *fakeSlack) UpdateTask(ctx context.Context, channel, ts string, task slack.Task) error {
 	if f.stopCards {
-		return &slack.APIError{Code: slack.CodeStoppedByUser}
+		return f.refusal()
 	}
 	f.tasks = append(f.tasks, task)
 	return nil
@@ -124,7 +138,7 @@ func (f *fakeSlack) UpdateTask(ctx context.Context, channel, ts string, task sla
 // stopped stream — would go green having never let a card reach Slack at all.
 func (f *fakeSlack) UpdatePlan(ctx context.Context, channel, ts, title string) error {
 	if f.stopPlans {
-		return &slack.APIError{Code: slack.CodeStoppedByUser}
+		return f.refusal()
 	}
 	f.plans = append(f.plans, title)
 	return nil
@@ -132,7 +146,7 @@ func (f *fakeSlack) UpdatePlan(ctx context.Context, channel, ts, title string) e
 
 func (f *fakeSlack) AppendStream(ctx context.Context, channel, ts, markdownText string) error {
 	if f.stopAfter > 0 && len(f.appended)+1 >= f.stopAfter {
-		return &slack.APIError{Code: slack.CodeStoppedByUser}
+		return f.refusal()
 	}
 	if f.appendErr != nil {
 		return f.appendErr
@@ -157,7 +171,7 @@ func (f *fakeSlack) StopStream(ctx context.Context, channel, ts, markdownText st
 		// answer needs another path. It is derived from the same knobs rather than opted into separately
 		// because a double whose close SUCCEEDED on a stopped stream would be a fiction, and code written
 		// against it would leave the answer inside a call Slack never accepted.
-		return &slack.APIError{Code: slack.CodeStoppedByUser}
+		return f.refusal()
 	}
 	if f.failStop {
 		return errors.New("slack: stop failed")
