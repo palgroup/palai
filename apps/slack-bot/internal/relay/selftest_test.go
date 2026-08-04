@@ -131,6 +131,14 @@ func (s *fakeSelfTestStream) UpdateTask(_ context.Context, _, _ string, task sla
 	return nil
 }
 
+// PostMessage completes relay.Slack. The self-test never stops a stream from the UI, so no leg reaches this;
+// like UpdateTask it records the call and touches no message text, which keeps leg 4's read-back measuring
+// only what chat.stopStream itself put there.
+func (s *fakeSelfTestStream) PostMessage(_ context.Context, _, _, markdownText string) error {
+	s.parent.calls = append(s.parent.calls, "postMessage("+markdownText+")")
+	return nil
+}
+
 func (s *fakeSelfTestStream) StopStream(_ context.Context, _, ts, markdownText string) error {
 	s.parent.calls = append(s.parent.calls, "stopStream("+markdownText+")")
 	if s.stopErr != nil {

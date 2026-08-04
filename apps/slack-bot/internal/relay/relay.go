@@ -46,6 +46,11 @@ type Slack interface {
 	// UpdateTask renders one step of the run in the message's task timeline — a card, not body prose.
 	// Calling it again with the same Task.ID advances THAT card rather than drawing a second one.
 	UpdateTask(ctx context.Context, channel, ts string, task slack.Task) error
+	// PostMessage posts a PLAIN message into the thread — not into the open stream, which is the whole
+	// point of it: it is the only way left to reach a human once Slack has refused the stream for good
+	// (see stopped_by_user below). It is REQUIRED rather than optional for that reason; an implementation
+	// without it turns the one recoverable Slack failure this relay has into a lost answer.
+	PostMessage(ctx context.Context, channel, threadTS, markdownText string) error
 }
 
 // ApprovalHook is what Run does with an approval.requested.v1 event: hand it to the approval bridge
@@ -240,6 +245,62 @@ type openStream struct {
 	// five extra chat.appendStream calls saying nothing changed, against a Tier 4 budget shared with the
 	// answer's own text.
 	thinkingStatus string
+
+	// stopped records that the HUMAN pressed stop on Slack's streaming card — see userStopped. Once it is
+	// set, nothing in this file writes to the stream again: Slack refuses every later append AND the
+	// closing stop on a stopped stream, permanently, so a call made after this is a round trip that can
+	// only fail.
+	stopped bool
+}
+
+// THE HUMAN PRESSED STOP ON THE STREAMING CARD (S11, restored from the old in-process bridge's
+// SlackStreamFollower.stoppedByUser — this relay shares no code with it and must not diverge from what it
+// decided).
+//
+// WHAT SLACK DOES: chat.appendStream answers `stopped_by_user`, documented as "The streaming message was
+// stopped by the user and no further appends are accepted" — and the refusal is PERMANENT and covers the
+// closing chat.stopStream too, so a relay that keeps writing is a relay writing into a wall.
+//
+// WHAT THE RELAY USED TO DO WITH IT, and it is the defect this pair of constants closes: nothing. Every
+// AppendStream failure took one branch (buffer into pending and try again on the next send), so after a stop
+// every send failed, the closing StopStream failed, Run returned that error, and dispatch.go logged THE
+// ANSWER NEVER REACHED THE THREAD. The model finished, its text was journalled server-side, and the person
+// who pressed stop got NOTHING — which is not what pressing stop asks for. Stopping the live typing is a
+// request about the RENDERING; it carries no authenticated actor, no approver identity and no command, so it
+// is not run control (the old side's §2 invariant, unchanged here): the STREAM stops, the RUN does not.
+//
+// SO THE ANSWER MOVES TO A PLAIN MESSAGE, and that is the whole repair. Two things are said, at the two
+// moments they are true:
+const (
+	// stoppedNotice is posted ONCE, the moment Slack first refuses, and only while the run is still going.
+	// It exists because the human's model of what they just did is wrong in a way that costs them something:
+	// they believe they cancelled the run, so a thread that then goes quiet reads as "cancelled", and a
+	// question they type next STEERS the run they think they killed (HandleEvent's steer branch) instead of
+	// asking a fresh one.
+	//
+	// It promises only what this relay can keep — that later text ARRIVES AS A MESSAGE — never that there
+	// will be any. A run that had already said everything before the stop writes nothing more, and this
+	// sentence stays true.
+	stoppedNotice = "⏹️ Live updates stopped here. The run itself was not cancelled — it is still working, and whatever it writes from here will arrive as a message in this thread."
+	// stoppedAnswerPrefix leads the plain message carrying what the stream never delivered. It says why the
+	// text arrives detached from the card above it, because an answer that appears in a second message with
+	// no explanation reads as the bot repeating itself.
+	stoppedAnswerPrefix = "Live updates were stopped, so the rest of this answer is posted here:\n\n"
+)
+
+// userStopped records the stop and tells the thread, exactly once.
+//
+// THE NOTICE'S OWN FAILURE IS DROPPED, deliberately: what must not be lost is the ANSWER, and that failure
+// IS reported (stop() turns it into Run's returned error, which dispatch.go logs). Failing the relay over an
+// undelivered courtesy line would trade the thing that matters for the thing that does not.
+func (o *openStream) userStopped(ctx context.Context, announce bool) {
+	if o.stopped {
+		return
+	}
+	o.stopped = true
+	if announce {
+		_ = o.deps.Slack.PostMessage(ctx, o.channel, o.threadTS, stoppedNotice)
+	}
 }
 
 // setThinking advances the ONE card standing for the model's own working time, and sends nothing when the
@@ -254,9 +315,7 @@ func (o *openStream) setThinking(ctx context.Context, status string) {
 		return
 	}
 	o.thinkingStatus = status
-	_ = o.deps.Slack.UpdateTask(ctx, o.channel, o.ts, slack.Task{
-		ID: thinkingTaskID, Title: thinkingTitle, Status: status,
-	})
+	o.updateCard(ctx, slack.Task{ID: thinkingTaskID, Title: thinkingTitle, Status: status})
 }
 
 // stop closes the stream exactly once, from Run's single deferred call, so every exit path — a run
@@ -264,18 +323,44 @@ func (o *openStream) setThinking(ctx context.Context, status string) {
 //
 // A recovered panic becomes Run's returned error instead of crashing the process a whole bot's worth of
 // OTHER sessions shares. *outErr is only overwritten when Run was not already returning a real error, so
-// a StopStream failure never masks one.
+// a delivery failure never masks one.
+//
+// THE CLOSE IS ALSO WHERE A STOP CAN BE DISCOVERED, and that case is not a rarity worth skipping: a human
+// who presses stop while the model is composing the last of its answer produces NO further append, so the
+// closing call is the first one Slack refuses — with the whole of pending on it. Handled as one shape with
+// the mid-stream case: whatever the stream would not take is posted as a plain message.
 func (o *openStream) stop(ctx context.Context, sessionID string, outErr *error) {
 	rec := recover()
 	// context.WithoutCancel: ctx can already be Done() here — that is exactly how a read error or a
 	// caller-initiated shutdown reaches this defer — but the Slack message this call closes outlives
 	// that ctx by definition, so closing it must not be refused for the same reason the loop stopped.
-	stopErr := o.deps.Slack.StopStream(context.WithoutCancel(ctx), o.channel, o.ts, o.pending.String())
+	closeCtx := context.WithoutCancel(ctx)
+	var closeErr error
+	if !o.stopped {
+		if err := o.deps.Slack.StopStream(closeCtx, o.channel, o.ts, o.pending.String()); err != nil {
+			if slack.APIErrorCode(err) == slack.CodeStoppedByUser {
+				// announce=false: the notice says the run is still working, and by here it is not. The
+				// plain message below carries its own explanation instead.
+				o.userStopped(closeCtx, false)
+			} else {
+				closeErr = fmt.Errorf("relay: stop stream for session %s: %w", sessionID, err)
+			}
+		}
+	}
+	if o.stopped && o.pending.Len() > 0 {
+		// THE ANSWER, ON THE ONLY PATH LEFT. An empty pending posts NOTHING: everything the model wrote had
+		// already reached the card before the human stopped it, so there is nothing to repeat.
+		if err := o.deps.Slack.PostMessage(closeCtx, o.channel, o.threadTS, stoppedAnswerPrefix+o.pending.String()); err != nil {
+			closeErr = fmt.Errorf("relay: post session %s's answer after the human stopped the live stream: %w", sessionID, err)
+		} else {
+			o.pending.Reset()
+		}
+	}
 	switch {
 	case rec != nil:
 		*outErr = fmt.Errorf("relay: panic relaying session %s: %v", sessionID, rec)
-	case *outErr == nil && stopErr != nil:
-		*outErr = fmt.Errorf("relay: stop stream for session %s: %w", sessionID, stopErr)
+	case *outErr == nil && closeErr != nil:
+		*outErr = closeErr
 	}
 }
 
@@ -414,10 +499,8 @@ func (o *openStream) updateTask(ctx context.Context, data map[string]any, status
 	// answer delivered by an entirely separate path, so a failed update must not fail the relay, and it must
 	// not enter openStream.pending either — that buffer is the model's words retrying, and a step's card
 	// arriving late on the back of a text append would be worse than the step simply not advancing. The
-	// answer still arrives whatever this call does.
-	_ = o.deps.Slack.UpdateTask(ctx, o.channel, o.ts, slack.Task{
-		ID: id, Title: title, Status: status, Detail: detail,
-	})
+	// answer still arrives whatever this call does. updateCard owns the ONE exception (stopped_by_user).
+	o.updateCard(ctx, slack.Task{ID: id, Title: title, Status: status, Detail: detail})
 }
 
 // toolTitles turns a tool's registered name into something a human reads. The names are a closed set the
@@ -489,17 +572,42 @@ func (o *openStream) emitStatus(ctx context.Context, text string) {
 // openStream.pending) prepended ahead of it. A successful AppendStream clears pending; a failed one adds
 // this text to what was already waiting, so the NEXT attempt — including the final chat.stopStream —
 // tries the whole backlog again rather than only the newest chunk.
+// A STOPPED STREAM SKIPS THE CALL ENTIRELY and keeps the text: Slack refuses every append on one forever,
+// so an attempt is a round trip that can only fail, and the text it was carrying is delivered by stop() as a
+// plain message instead (see the stoppedNotice block).
 func (o *openStream) emit(ctx context.Context, text string) {
 	combined := o.pending.String() + text
 	if combined == "" {
 		return
 	}
-	if err := o.deps.Slack.AppendStream(ctx, o.channel, o.ts, combined); err != nil {
-		o.pending.Reset()
-		o.pending.WriteString(combined)
-		return
+	if !o.stopped {
+		if err := o.deps.Slack.AppendStream(ctx, o.channel, o.ts, combined); err == nil {
+			o.pending.Reset()
+			return
+		} else if slack.APIErrorCode(err) == slack.CodeStoppedByUser {
+			o.userStopped(ctx, true)
+		}
 	}
 	o.pending.Reset()
+	o.pending.WriteString(combined)
+}
+
+// updateCard is the ONE place a card reaches Slack, and it exists so the two callers cannot disagree about
+// the stopped stream. A card update is a chunk on the same stream as the answer's text, so it earns the same
+// `stopped_by_user` refusal — and it can be the FIRST call to earn it, since a run whose model is composing
+// draws cards between deltas. Learning it here rather than only in emit is what keeps a stopped stream from
+// spending one wasted round trip per card for the rest of the run.
+//
+// The error is otherwise DROPPED, unchanged: a card is decoration over an answer delivered by a separate
+// path (see updateTask's own note), and its text must never enter openStream.pending.
+func (o *openStream) updateCard(ctx context.Context, task slack.Task) {
+	if o.stopped {
+		return
+	}
+	if err := o.deps.Slack.UpdateTask(ctx, o.channel, o.ts, task); err != nil &&
+		slack.APIErrorCode(err) == slack.CodeStoppedByUser {
+		o.userStopped(ctx, true)
+	}
 }
 
 // toolName is the raw registered name off a tool_call.* event (packages/coordinator/orchestration.go

@@ -168,6 +168,10 @@ func (r *recordingSlack) StopStream(ctx context.Context, channel, ts, markdownTe
 	return r.inner.StopStream(ctx, channel, ts, markdownText)
 }
 
+func (r *recordingSlack) PostMessage(ctx context.Context, channel, threadTS, markdownText string) error {
+	return r.inner.PostMessage(ctx, channel, threadTS, markdownText)
+}
+
 func (r *recordingSlack) UpdateTask(ctx context.Context, channel, ts string, task slack.Task) error {
 	r.tasks = append(r.tasks, task)
 	return r.inner.UpdateTask(ctx, channel, ts, task)

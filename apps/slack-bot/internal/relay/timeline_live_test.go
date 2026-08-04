@@ -179,6 +179,11 @@ func (r *tlRecorder) StopStream(ctx context.Context, channel, ts, markdownText s
 	return r.inner.StopStream(ctx, channel, ts, markdownText)
 }
 
+func (r *tlRecorder) PostMessage(ctx context.Context, channel, threadTS, markdownText string) error {
+	r.note("postMessage %q", tlClip(markdownText))
+	return r.inner.PostMessage(ctx, channel, threadTS, markdownText)
+}
+
 func (r *tlRecorder) UpdateTask(ctx context.Context, channel, ts string, task slack.Task) error {
 	r.note("task_update id=%s status=%-11s title=%q detail=%q", task.ID, task.Status, task.Title, tlClip(task.Detail))
 	return r.inner.UpdateTask(ctx, channel, ts, task)

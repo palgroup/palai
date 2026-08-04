@@ -147,6 +147,27 @@ func (s *channelSlackStream) StopStream(ctx context.Context, channel, ts, markdo
 	return slack.StopStreamChunks(ctx, s.doer, s.apiBase, s.token, channel, ts, chunks)
 }
 
+// PostMessage posts an ORDINARY threaded message — the path the answer takes when the human has stopped the
+// stream and Slack refuses it for good (relay.go's stoppedNotice block).
+//
+// IT GOES THROUGH slack.ThreadReply RATHER THAN A HAND-BUILT BODY, and both of that function's jobs are
+// load-bearing here rather than incidental. This message carries THE MODEL'S OWN WORDS onto a surface that
+// expands them — unlike a stream chunk, a chat.postMessage `text` renders `<!channel>` as a real broadcast —
+// so NeutralizeBroadcasts is what keeps a run from paging a workspace by writing the token; and the answer
+// this path carries is a whole run's undelivered text, which is exactly the thing that overruns Slack's
+// per-message ceiling, so the truncation marker is what keeps a cut answer from reading as a complete one.
+//
+// slack.PostMessage (not a bare Do) brings the package's single bounded 429 repair with it: this is the LAST
+// attempt anything makes to deliver this text, so a rate limit here is the difference between a late answer
+// and no answer.
+func (s *channelSlackStream) PostMessage(ctx context.Context, channel, threadTS, markdownText string) error {
+	_, err := slack.PostMessage(ctx, s.doer, slack.PostRequest{
+		MethodURL: s.apiBase + "/chat.postMessage", Token: s.token,
+		Body: slack.ThreadReply(channel, threadTS, markdownText, ""),
+	}, slack.PostOptions{})
+	return err
+}
+
 func (s *channelSlackStream) UpdateTask(ctx context.Context, channel, ts string, task slack.Task) error {
 	chunk := slack.TaskUpdateChunk(task)
 	if chunk == nil {

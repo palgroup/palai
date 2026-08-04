@@ -69,6 +69,28 @@ type fakeSlack struct {
 	// failStop makes the closing chat.stopStream refuse — the ONE Slack failure Run reports rather than
 	// absorbs, since there is no later call to carry the text (see openStream.pending).
 	failStop bool
+
+	// stopAfter makes AppendStream answer Slack's `stopped_by_user` from the Nth call onward, which is what
+	// the human pressing stop on the streaming card actually produces. It is a THRESHOLD rather than a
+	// one-shot flag because the refusal is permanent: a double that refused once and then accepted again
+	// would let a relay that keeps writing into a stopped stream pass.
+	stopAfter int
+	// stopCards makes UpdateTask refuse the same way, so a test can reproduce the ordering where a CARD is
+	// the first call the stop refuses (a run drawing cards between deltas).
+	stopCards bool
+	// stopOnClose makes ONLY the closing chat.stopStream refuse, which is what a stop pressed after the last
+	// append actually produces — no later append exists to discover it.
+	stopOnClose bool
+	// appendErr is an arbitrary AppendStream failure, used to prove a NEIGHBOURING Slack refusal is not read
+	// as the stop button.
+	appendErr error
+	// posted are the plain chat.postMessage bodies — the path an answer takes once the stream is stopped.
+	// Kept apart from appended and tasks for the same reason those two are apart from each other: a test
+	// asserting the answer reached the human must not be able to read a stream append and call it a message.
+	posted []string
+	// failPost makes that last path fail too, which is the one loss this relay still has no answer for and
+	// therefore must REPORT.
+	failPost bool
 }
 
 func (f *fakeSlack) StartStream(ctx context.Context, channel, threadTS, markdownText string) (string, error) {
@@ -78,11 +100,20 @@ func (f *fakeSlack) StartStream(ctx context.Context, channel, threadTS, markdown
 }
 
 func (f *fakeSlack) UpdateTask(ctx context.Context, channel, ts string, task slack.Task) error {
+	if f.stopCards {
+		return &slack.APIError{Code: slack.CodeStoppedByUser}
+	}
 	f.tasks = append(f.tasks, task)
 	return nil
 }
 
 func (f *fakeSlack) AppendStream(ctx context.Context, channel, ts, markdownText string) error {
+	if f.stopAfter > 0 && len(f.appended)+1 >= f.stopAfter {
+		return &slack.APIError{Code: slack.CodeStoppedByUser}
+	}
+	if f.appendErr != nil {
+		return f.appendErr
+	}
 	if f.failAppends > 0 {
 		f.failAppends--
 		return errors.New("slack: append failed")
@@ -94,9 +125,24 @@ func (f *fakeSlack) AppendStream(ctx context.Context, channel, ts, markdownText 
 func (f *fakeSlack) StopStream(ctx context.Context, channel, ts, markdownText string) error {
 	f.stopped++
 	f.stoppedText = markdownText
+	if f.stopOnClose || f.stopAfter > 0 || f.stopCards {
+		// Slack refuses the CLOSE on a stopped stream too, not only the appends — the whole reason the
+		// answer needs another path. It is derived from the same knobs rather than opted into separately
+		// because a double whose close SUCCEEDED on a stopped stream would be a fiction, and code written
+		// against it would leave the answer inside a call Slack never accepted.
+		return &slack.APIError{Code: slack.CodeStoppedByUser}
+	}
 	if f.failStop {
 		return errors.New("slack: stop failed")
 	}
+	return nil
+}
+
+func (f *fakeSlack) PostMessage(ctx context.Context, channel, threadTS, markdownText string) error {
+	if f.failPost {
+		return errors.New("slack: chat.postMessage failed")
+	}
+	f.posted = append(f.posted, markdownText)
 	return nil
 }
 

@@ -143,6 +143,7 @@ type fakeStreamSlack struct {
 	mu                               sync.Mutex
 	recipientUserID, recipientTeamID string
 	appended                         []string
+	posted                           []string
 	tasks                            []slack.Task
 	stopped                          int
 	// failStop makes the closing chat.stopStream refuse. It is the cheapest way to make relay.Run return
@@ -158,6 +159,16 @@ func (f *fakeStreamSlack) AppendStream(_ context.Context, _, _, markdownText str
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.appended = append(f.appended, markdownText)
+	return nil
+}
+
+// PostMessage completes relay.Slack. It is the plain-message path a stopped stream's answer takes; no
+// wiring test drives a stopped stream (that is relay_test.go's, against Slack's own error code), so this
+// records the call and nothing here reads it.
+func (f *fakeStreamSlack) PostMessage(_ context.Context, _, _, markdownText string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.posted = append(f.posted, markdownText)
 	return nil
 }
 
