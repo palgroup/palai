@@ -67,7 +67,9 @@ All resources hang off the server-only `Palai` client:
   all over the shared opaque, tenant-bound cursor (`after` + `limit`)
 - admin — `secretRefs` (write-only value, metadata reads, rotate), `modelRoutes`
   (connections / routes / revisions / publish), and tenancy provisioning
-  (`organizations` / `projects` / `apiKeys`)
+  (`projects` / `apiKeys`). `projects.create` is what OPENS a tenant and discloses its admin key
+  once — an `organizations` resource did that until A.2 Task 6 unmounted /v1/organizations, and it is
+  gone from the client rather than left to 404.
 - `Orchestrator` — the external-orchestrator kit: the §35.1 five-step contract
   (`start` / `waitByPoll` / `waitByStream` / `sendMessage` / `cancel` / `reconcile` / `runActivity`),
   keeping the external workflow id and Palai's canonical run id separate. See

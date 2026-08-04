@@ -51,7 +51,12 @@ func dispatch(args []string) error {
 	// `pool` joins it for the SAME reason and closes the hole its sibling made visible (E28 T1): until this
 	// task there was a verb for a pool's enrolment KEY and none for the pool, so `--pool <pool_id>` could
 	// only ever name the one pool a tenant is born with. `palai pool create|list|set-strict`.
-	case "org", "project", "apikey", "secret", "poolkey", "pool", "model":
+	// `org` IS NOT IN THIS LIST, and it was until A.2 Task 6 — which removed the verb from admin.Run's
+	// switch and left it here. The two halves disagreed, so `palai org list` reached admin.Run, matched no
+	// case, and printed `palai: usage: palai org <>` — a usage line with an EMPTY verb list, which tells an
+	// operator nothing and looks like a broken build. Falling through to the full usage below is the
+	// answer an unknown command already gets.
+	case "project", "apikey", "secret", "poolkey", "pool", "model":
 		return admin.Run(args[0], args[1:], os.Stdout, os.Stdin)
 	// `palai admin <resource> …` is the explicit spelling of the same family, and the machine lifecycle
 	// (E24 T5/T6) is reached ONLY this way — `palai admin runner approve|cordon|resume|revoke|list`. The prefix is not
@@ -373,7 +378,6 @@ audit integrity (E18 T7 SEC-103; the chain is recomputed FROM THE ROWS, the anch
                                            recompute + compare; a gap or tamper alert exits non-zero
 
 admin (thin client over the E13 APIs; base URL + key from flags, env, or .palai):
-  palai org create --display-name <n> | list | get <org_id>
   palai project create --display-name <n> | list | get <prj_id> | set-policy <prj_id> --allowed-models <a,b>
   palai apikey create --project <prj_id> [--scope <s>]... | list | get <key_id> | revoke <key_id>
   palai secret create --name <n> | list | get <name> | rotate <name>   (secret VALUE on stdin)

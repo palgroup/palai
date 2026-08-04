@@ -35,9 +35,9 @@ Six checks, each recomputed from the archive rather than read out of the manifes
 |---|---|---|
 | `archive_checksum` | Every member matches the manifest, per file | `DR-004` |
 | `migration_version` | The schema version in the dump is the one claimed | `DR-004` |
-| `tenant_ids` | Every organization in the manifest is present in the data | `DR-004` |
+| `tenant_ids` | Every PROJECT in the manifest is present in the data (the tenant id since A.2 Task 6) | `DR-004` |
 | `run_retrieval` | A real response is retrievable from the restored data — not just that rows exist | `DR-004` |
-| `rls_isolation` | Every org-bearing table still FORCEs RLS with a policy | `DR-005` |
+| `rls_isolation` | Every tenant-scoped table still FORCEs RLS with a policy | `DR-005` |
 | `secret_decrypt` | A secret canary decrypts under the target master key | `DR-006` |
 
 "All checks green" is the only acceptable state before you trust a backup. A backup you have never

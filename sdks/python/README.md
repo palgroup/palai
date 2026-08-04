@@ -70,7 +70,9 @@ async methods are awaitable):
   all over the shared opaque, tenant-bound cursor (`after` + `limit`)
 - admin — `secret_refs` (write-only value, metadata reads, rotate), `model_routes` (connections /
   routes / revisions / publish **and read-back** — E16 T1), and tenancy provisioning
-  (`organizations` / `projects` / `api_keys`)
+  (`projects` / `api_keys`). `projects.create` is what OPENS a tenant and discloses its admin key
+  once — an `organizations` resource did that until A.2 Task 6 unmounted /v1/organizations, and it is
+  gone from the client rather than left to 404.
 - `palai.webhook` — inbound webhook signature `verify` / `sign` (§21.5, API-014)
 
 Lists page with an opaque `after` cursor and a `limit`; the SDK passes the server's `next_cursor`

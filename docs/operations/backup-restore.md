@@ -60,10 +60,10 @@ palai restore --archive palai-backup-<project>-<UTC>.tar.gz
 > provider/MCP/webhook secret is undecryptable and the install is silently non-functional —
 > `restore verify`'s secret canary fails loudly if the key is missing or mismatched.
 
-**Fail-closed (no-clobber):** restore refuses any target that holds tenant data — **any** row in an
-org-bearing (tenant-scoped) table beyond a fresh install's baseline: not just extra organizations or
-runs, but a project, api-key, `secret_ref`, model-route, schedule, tool, etc. created under **any**
-org (including the seeded `org_local`). The gate enumerates the FORCE-RLS tables from the live
+**Fail-closed (no-clobber):** restore refuses any target that holds tenant data — **any** row in a
+tenant-scoped table beyond a fresh install's baseline: not just extra runs, but a project, api-key,
+`secret_ref`, model-route, schedule, tool, etc. beyond the three rows a fresh install is seeded with
+(`prj_local`, `prin_local`, `key_local`). The gate enumerates the FORCE-RLS tables from the live
 catalog, excludes the four boot-seed identity rows and the runner-enrollment tables, and counts the
 rest; a non-empty result names the offending tables. A **freshly `init`ed, brought-up** stack passes;
 a stack that has been provisioned or used does not — no live data is ever overwritten.

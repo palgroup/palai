@@ -122,7 +122,7 @@ above, through the same relay, with the API key staying server-side.
 What the page gives you, in the order you will use it:
 
 1. **The list**, with each environment's key COUNT.
-2. **Create an environment.** A name unique in your organization; it starts with no keys.
+2. **Create an environment.** A name unique across the installation; it starts with no keys.
 3. **Write a value.** Pick an environment from a dropdown, type a key name, type the value.
 4. **Rotate.** The same form, the same button. Write the key again and the version goes up.
 5. **Unbind.** One button per key, with a confirmation that says what it actually removes.
@@ -171,11 +171,17 @@ fresh one from the service that issued it.
 
 ## Two facts about scope that will surprise you if nobody says them
 
-**1. An environment belongs to an ORGANIZATION, not to a project.** Two projects in the same organization
-see the same environments. This follows the secret store beneath it, which is org-scoped: making the
-grouping project-scoped while its values were org-scoped would have let one project resolve another
-project's key by deriving the same address. If you need per-project separation, use separate
-organizations.
+**1. An environment belongs to the INSTALLATION, not to a project.** EVERY project on this installation
+sees EVERY environment. This follows the secret store beneath it, which is installation-scoped: making the
+grouping project-scoped while its values were not would have let one project resolve another project's key
+by deriving the same address.
+
+It said "belongs to an ORGANIZATION" and ended "if you need per-project separation, use separate
+organizations" until A.2 Task 6. **That escape hatch no longer exists** — organizations are gone, and the
+tenant-policy rekey keyed environments, environment values, secret refs and usage rows on the installation
+because they carry no project column to key on. So the boundary is now the INSTALLATION: two customers who
+must not see each other's environments need two installations, not two anything-inside-one. Giving these
+tables a project_id is what would change that, and it has not been done.
 
 **2. A run's environment comes from the revision it PINNED.** Republishing an agent against a different
 environment does not move a run that is already going. But the KEY LIST is read live, so adding a key to
@@ -219,7 +225,7 @@ Of OWASP's three relevant lines, one is closed and two are not:
 | OWASP | Status here |
 |---|---|
 | §2.7.2 Rotation | **Closed.** Write the key again; the next command gets the new value with no restart. The console makes it one button, and it is the same button as create. |
-| §2.3 Access Control / §6.3 least privilege | **Partly.** These routes need the `provision` capability. There are no per-environment permissions and no roles — any key that can provision can read every key NAME and write every value in the organization. The console does not narrow this: it holds one key, and anyone who knows the operator password acts as that key. |
+| §2.3 Access Control / §6.3 least privilege | **Partly.** These routes need the `provision` capability. There are no per-environment permissions and no roles — any key that can provision can read every key NAME and write every value **in the installation** (see the scope note above: these tables carry no project column). The console does not narrow this: it holds one key, and anyone who knows the operator password acts as that key. |
 | §2.6 Auditing | **Open — `CON-P3`.** No read audit exists. Nor does the console add one: it records who typed a value nowhere, because there is nowhere to record it. |
 
 ---

@@ -144,7 +144,7 @@ work.
 **It is OFF by default and that is a deliberate availability decision.** Waiting for a person per machine
 in a pool that scales on demand cancels the scaling: a rented Mac takes 6–20 minutes to arrive, and an
 operator who added capacity to absorb load would find it parked behind an approval queue. So the default
-is off, everywhere — the bootstrap pool, every new organization's `default` pool, and every pool that
+is off, everywhere — the bootstrap pool, every new tenant's `default` pool, and every pool that
 existed before the column did.
 
 **It can now be turned on, which until E28 it could not.** The column has existed since `000045` and the

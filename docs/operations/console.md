@@ -29,7 +29,7 @@ the console. Each step names the screen and the page that goes deeper.
    approve` (§3), or mint it from `/policy` (§3b) — the screen offers the two capabilities by name and says
    what each opens. Skipping this leaves the console holding a key with EVERY capability; the door is shut,
    the key is not narrow, and `CON-P2` says how far that goes.
-3. **Sign in** at `/login`, and confirm `/` shows your organization and project. If it shows an error panel
+3. **Sign in** at `/login`, and confirm `/` shows your project. If it shows an error panel
    instead, the console is running but its upstream is not — see §5.
 4. **Create an environment and write its keys** at `/environments`. An environment is a named `KEY=value` set
    an agent's **shell commands** run against. A value is written once and **never read back** — not by you,
@@ -447,7 +447,7 @@ metering model rather than about the screen.
 
 ### The scope is the key's, and there is no selector
 
-There is **no organization or project selector on this page and that is deliberate**: the scope comes from
+There is **no project selector on this page and that is deliberate**: the scope comes from
 the verified identity behind the console's own API key, never from a query parameter. A dropdown here would
 be a control that either does nothing or names somebody else's tenant.
 
@@ -1128,7 +1128,7 @@ say why.
 - **The row menu holds two items and both are navigations.** No rename, no delete, no duplicate — the API
   mounts none of them, and a third entry would be a control that refuses.
 - **An environment bound here reaches the agent's SHELL**, as `KEY=value` — never something the model is
-  shown and never part of a prompt. Publishing a revision that names an environment this organization does
+  shown and never part of a prompt. Publishing a revision that names an environment this installation does
   not have is refused with a **400** (not a 404: the revision id in the path is real).
 - **A browser cannot prove the keys arrive.** That loop is closed at the component tier, over the same HTTP
   routes this screen calls:
@@ -1172,7 +1172,7 @@ afterwards, from this console or any route**; a wrong token shows up at CLONE TI
 names the binding, as a git authentication refusal.
 
 **Where the existing credential list comes from, and where it does not.** *Use a credential already sealed*
-lists **every** secret ref in the organization — model-provider keys and environment values included — so
+lists **every** secret ref in the installation — model-provider keys and environment values included — so
 pick the one that is a Git credential. There is no screen that lists them by purpose: `ls app/` names no
 secret-ref management page, and the four things that write one are this control, `/registry` (a
 model-provider connection), `/environments` (a value under the derived name `env:<id>:<key>`) and the CLI
