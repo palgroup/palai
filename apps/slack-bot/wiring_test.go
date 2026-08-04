@@ -690,3 +690,7 @@ func TestTheConsolesOwnConfigShapeParses(t *testing.T) {
 		t.Fatalf("the startup line does not warn that no approver is configured: %s", empty.describe())
 	}
 }
+
+func (f *fakePalai) GrantSlackSearchAuthority(context.Context, string, palai.SlackSearchAuthorityParams) error {
+	return nil
+}

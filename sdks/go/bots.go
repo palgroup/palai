@@ -113,3 +113,33 @@ func (b *Bots) Credentials(ctx context.Context, id string, opts ...CallOption) (
 	}
 	return &out, nil
 }
+
+// SlackSearchAuthorityParams is one turn's Slack search grant.
+//
+// ActionToken is a CREDENTIAL and is the only secret this SDK ever sends. It authorises one Slack
+// Real-time Search call on behalf of the conversation the message arrived in, and it is deliberately the
+// ONLY secret on this request: the bot's long-lived token is never transmitted, because the control plane
+// already holds it sealed and resolves it from the bot id in the path.
+//
+// AN EMPTY ActionToken IS A WITHDRAWAL, not a no-op. Slack attaches a token to the message that ADDRESSES
+// the app and to nothing else — measured 2026-08-04: an app_mention and the message.channels of the same
+// message each carried one, while a thread reply, a file share, an edit and every bot-authored message
+// carried none. A relay must therefore call this on EVERY turn with whatever the message carried, so the
+// tokenless turn clears the previous turn's grant instead of inheriting it.
+type SlackSearchAuthorityParams struct {
+	SessionID   string `json:"session_id"`
+	TeamID      string `json:"team_id,omitempty"`
+	ActionToken string `json:"action_token"`
+}
+
+// GrantSlackSearchAuthority records (or withdraws) the Slack search authority for the next run in a
+// session — PUT /v1/bots/{bot_id}/slack-search-authority. It is a PUT because it REPLACES: each turn
+// overwrites the last, and there is no separate revoke call to forget.
+//
+// It answers 204 with no body, so nothing is decoded — an echo would put the action_token in a response.
+func (b *Bots) GrantSlackSearchAuthority(ctx context.Context, id string, p SlackSearchAuthorityParams, opts ...CallOption) error {
+	o := requestOptions{body: p}
+	applyCallOptions(&o, opts)
+	path := "/v1/bots/" + escapePathSegment(id) + "/slack-search-authority"
+	return b.client.doJSON(ctx, http.MethodPut, path, o, nil)
+}

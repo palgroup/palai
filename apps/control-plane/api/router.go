@@ -405,6 +405,16 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	if cfg.botCredentials != nil {
 		bch := &botCredentialsHandler{credentials: cfg.botCredentials}
 		mux.HandleFunc("GET /v1/bots/{bot_id}/credentials", bch.get)
+
+		// The search-authority route rides the SAME resolver and is mounted only with it, because it resolves
+		// the bot's token itself instead of accepting one on the wire. Both seams must be present or the
+		// route would be a grant that authorises nothing.
+		if cfg.slackSearchGrants != nil {
+			bsh := &botSearchAuthorityHandler{
+				credentials: cfg.botCredentials, grants: cfg.slackSearchGrants, apiBase: cfg.slackAPIBaseURL,
+			}
+			mux.HandleFunc("PUT /v1/bots/{bot_id}/slack-search-authority", bsh.put)
+		}
 	}
 
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}

@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -76,6 +77,11 @@ type fakePalai struct {
 
 	steers       int
 	lastSteerMsg string
+
+	// searchGrants records every GrantSlackSearchAuthority call IN ORDER, including the ones carrying an
+	// empty token. Order and emptiness are both load-bearing: the withdraw is a call, not an omission.
+	searchGrants   []palai.SlackSearchAuthorityParams
+	failNextGrant  error
 
 	failNextResponseNotFound bool
 	failNextSteerNotFound    bool
@@ -762,5 +768,93 @@ func TestHandleEventRefusesIncompleteDeps(t *testing.T) {
 	}
 	if fp.sessionsCreated != 0 {
 		t.Fatalf("sessionsCreated = %d, want 0 — an incomplete Deps must refuse before doing anything", fp.sessionsCreated)
+	}
+}
+
+func (f *fakePalai) GrantSlackSearchAuthority(_ context.Context, _ string, p palai.SlackSearchAuthorityParams) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.searchGrants = append(f.searchGrants, p)
+	if err := f.failNextGrant; err != nil {
+		f.failNextGrant = nil
+		return err
+	}
+	return nil
+}
+
+// grantsSeen returns a copy under the lock.
+func (f *fakePalai) grantsSeen() []palai.SlackSearchAuthorityParams {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]palai.SlackSearchAuthorityParams(nil), f.searchGrants...)
+}
+
+// THE ADDRESSED TURN HANDS OVER ITS TOKEN, and the tokenless one HANDS OVER AN EMPTY STRING rather than
+// staying silent. The second half is the property with teeth.
+//
+// Slack attaches an action_token to the message that ADDRESSES the app and to nothing else — measured live
+// on 2026-08-04 against team T0AMPM5JX8U: an app_mention and the message.channels twin of the same message
+// each carried one, while a human's thread REPLY, a file_share, an edit and every bot-authored message
+// carried none. A thread is mostly replies. So a relay that called the grant only when it HAD a token would
+// leave the opening @mention's authority standing for every later reply in that thread — a search power
+// nobody's message granted. The withdraw is a call, which is why this asserts on the call and not merely on
+// the absence of a second grant.
+func TestATokenlessTurnSendsTheWithdrawRatherThanStayingSilent(t *testing.T) {
+	deps, fp, _ := newTestDeps(t)
+
+	addressed := slack.Event{Type: "app_mention", Kind: slack.KindMessage,
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001",
+		SourceEventID: "Ev1", UserID: "U2", Text: "what did we say about the release?",
+		ActionToken: "xoxa-the-turns-token"}
+	if err := HandleEvent(context.Background(), deps, addressed); err != nil {
+		t.Fatalf("HandleEvent(addressed): %v", err)
+	}
+
+	// The follow-up: a human reply in the same thread, carrying no token, as Slack actually delivers it.
+	reply := slack.Event{Type: "message", Kind: slack.KindMessage,
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.002", InThread: true,
+		SourceEventID: "Ev2", UserID: "U2", Text: "and the one before that?"}
+	if err := HandleEvent(context.Background(), deps, reply); err != nil {
+		t.Fatalf("HandleEvent(reply): %v", err)
+	}
+
+	grants := fp.grantsSeen()
+	if len(grants) != 2 {
+		t.Fatalf("the control plane was told about %d turns, want 2 — a turn that carries no action_token "+
+			"must still be reported, because saying nothing leaves the previous turn's authority standing: %+v",
+			len(grants), grants)
+	}
+	if grants[0].ActionToken != "xoxa-the-turns-token" {
+		t.Fatalf("the addressed turn granted %q, want the message's own token", grants[0].ActionToken)
+	}
+	if grants[0].TeamID != "T1" {
+		t.Fatalf("the grant named team %q, want T1 — the workspace is the pacer's key", grants[0].TeamID)
+	}
+	if grants[1].ActionToken != "" {
+		t.Fatalf("the tokenless reply granted %q, want an empty token: an empty action_token is what "+
+			"WITHDRAWS the earlier grant, and sending anything else re-authorises the search",
+			grants[1].ActionToken)
+	}
+	if grants[1].SessionID != grants[0].SessionID {
+		t.Fatalf("the withdraw named session %q but the grant named %q: a withdraw aimed at a different "+
+			"session leaves the real one authorised", grants[1].SessionID, grants[0].SessionID)
+	}
+}
+
+// A FAILED GRANT DOES NOT FAIL THE TURN. The tool is simply never offered and the model answers from the
+// thread — which is exactly how a workspace that never granted search:read.public behaves. Losing the whole
+// answer because an optional capability could not be armed would be a far worse trade.
+func TestAFailedSearchGrantStillDeliversTheTurn(t *testing.T) {
+	deps, fp, _ := newTestDeps(t)
+	fp.failNextGrant = errors.New("the control plane refused the grant")
+
+	ev := slack.Event{Type: "app_mention", Kind: slack.KindMessage,
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001",
+		SourceEventID: "Ev1", UserID: "U2", Text: "hi", ActionToken: "tok"}
+	if err := HandleEvent(context.Background(), deps, ev); err != nil {
+		t.Fatalf("HandleEvent: %v — a search grant this turn could not arm must not cost the answer", err)
+	}
+	if fp.responses != 1 {
+		t.Fatalf("responses = %d, want 1: the run was never created", fp.responses)
 	}
 }

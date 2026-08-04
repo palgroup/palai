@@ -333,6 +333,17 @@ func main() {
 	slackBridge = mountSlackFileLegs(slackBridge, artStore, repo.Spine().Pool())
 	routerOpts = append(routerOpts, api.WithSlack(slackBridge), api.WithSlackInteractions(slackBridge),
 		api.WithSlackConnections(extensions.NewSlackRegistry(slackStore)))
+	// THE SAME AUTHORITIES, REACHED FROM OUTSIDE. WithSearch above serves the in-process admission route,
+	// which mints the run itself and so can key a grant by run id. A relay running as its own process
+	// cannot: it learns a run id only from the response this control plane returns, by which time the run
+	// has already asked the broker what tools it may have. This option mounts the route it grants through
+	// instead, keyed on the session it creates the response in — one store, two admission routes, and the
+	// tool's lookup reads whichever key is populated.
+	//
+	// The route mounts only where WithBotCredentials did (router.go): it resolves the bot's own token
+	// rather than accepting one on the wire, so with no master key there is nothing to authorise with.
+	routerOpts = append(routerOpts,
+		api.WithSlackSearchGrants(slackSearchAuthorities, os.Getenv("PALAI_SLACK_API_BASE_URL")))
 	// The queue bridges (E19 T6, spec §34.1-34.5). ONE store serves all three halves: the admin surface
 	// mounted here, the supervised consume→admit bridge, and the outbound DeliverDue pump (both started
 	// below). Unconditional like WithUsage — the reference adapter's broker is this deployment's own

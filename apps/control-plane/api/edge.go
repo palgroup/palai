@@ -94,6 +94,10 @@ type routerConfig struct {
 	// botCredentials resolves the secret handles a bot row names; nil ⇒ the redemption route is unmounted,
 	// which is what a deployment with no master key gets.
 	botCredentials BotCredentials
+	// slackSearchGrants receives a relay's per-turn Slack search authority; nil ⇒ the grant route is
+	// unmounted, which is the honest state for a deployment whose runs cannot search at all.
+	slackSearchGrants SlackSearchGrants
+	slackAPIBaseURL   string
 }
 
 // WithDesiredConfig mounts the desired-configuration write path and gives GET /v1/deployment its desired
@@ -294,4 +298,14 @@ func WithBots(bots BotRegistry) RouterOption {
 // with nothing.
 func WithBotCredentials(credentials BotCredentials) RouterOption {
 	return func(c *routerConfig) { c.botCredentials = credentials }
+}
+
+// WithSlackSearchGrants mounts PUT /v1/bots/{bot_id}/slack-search-authority, the route a relay outside this
+// control plane grants a run's one-turn Slack search authority through. It takes the deployment's Slack API
+// base as well, because that is the control plane's own configuration and must never be a request field —
+// see bot_search_authority.go. It needs the credentials resolver too and is mounted only alongside it: the
+// route resolves the bot's token itself rather than accepting one on the wire, so without a resolver there
+// is nothing to authorise a search with.
+func WithSlackSearchGrants(grants SlackSearchGrants, apiBase string) RouterOption {
+	return func(c *routerConfig) { c.slackSearchGrants, c.slackAPIBaseURL = grants, apiBase }
 }

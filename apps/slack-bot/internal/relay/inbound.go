@@ -60,6 +60,9 @@ type Palai interface {
 	Steer(ctx context.Context, sessionID string, p palai.SteerParams) (*palai.Command, error)
 	CreateResponse(ctx context.Context, req palai.ResponseCreateRequest) (*palai.Response, error)
 	SessionEvents(ctx context.Context, sessionID string, p palai.EventsParams) (EventStream, error)
+	// GrantSlackSearchAuthority hands the control plane this turn's one-use Slack search credential, or
+	// withdraws the last one. See grantSearchAuthority for why it is called on EVERY turn.
+	GrantSlackSearchAuthority(ctx context.Context, botID string, p palai.SlackSearchAuthorityParams) error
 }
 
 // palaiClient adapts *palai.Client's nested resource groups to Palai. Production constructs
@@ -75,6 +78,10 @@ func (p palaiClient) CreateSession(ctx context.Context, params palai.CreateSessi
 
 func (p palaiClient) Steer(ctx context.Context, sessionID string, params palai.SteerParams) (*palai.Command, error) {
 	return p.c.Sessions.Steer(ctx, sessionID, params)
+}
+
+func (p palaiClient) GrantSlackSearchAuthority(ctx context.Context, botID string, params palai.SlackSearchAuthorityParams) error {
+	return p.c.Bots.GrantSlackSearchAuthority(ctx, botID, params)
 }
 
 func (p palaiClient) CreateResponse(ctx context.Context, req palai.ResponseCreateRequest) (*palai.Response, error) {
@@ -559,6 +566,11 @@ func HandleEvent(ctx context.Context, deps InboundDeps, ev slack.Event) error {
 		if len(ev.Files) > 0 {
 			steerText += steerImageNote
 		}
+		// A STEER IS A TURN TOO, and it is the turn most likely to carry nothing: a steer happens when the
+		// human types again into a thread whose run is still draining, which is a reply, and a reply carries
+		// no action_token. So this call is usually the WITHDRAW — without it the live run would keep
+		// searching on the strength of the message that opened the thread.
+		deps.grantSearchAuthority(ctx, sessionID, ev)
 		_, err := deps.Palai.Steer(ctx, sessionID, palai.SteerParams{Message: steerText})
 		switch {
 		case err == nil:
@@ -631,6 +643,43 @@ func (deps InboundDeps) rebindOrphan(ctx context.Context, tk threadKey, oldSessi
 	return sess.ID, nil
 }
 
+// grantSearchAuthority tells the control plane what this turn may search with, and it is called on EVERY
+// turn — including, and especially, the turns that carry nothing.
+//
+// THE TOKENLESS CALL IS THE POINT. Slack attaches an action_token to the message that ADDRESSES this app
+// and to no other. Measured live on 2026-08-04 against team T0AMPM5JX8U: an `app_mention` and the
+// `message.channels` of the same addressed message each carried one (inner level, 62 chars), while a human
+// THREAD REPLY, a `file_share`, an edit and every bot-authored message carried none. A thread is mostly
+// replies, so if this were called only when a token existed, the thread's opening @mention would leave a
+// grant standing that every later reply could spend — a standing search power nobody's message granted.
+// Sending the empty token WITHDRAWS it, which is why there is one call and not a grant/revoke pair.
+//
+// A FAILURE HERE DOES NOT FAIL THE TURN, and that asymmetry is deliberate in both directions. A failed
+// GRANT costs a search: the tool is simply never offered and the model answers from the thread, which is
+// exactly how a workspace that never granted search:read.public behaves. A failed WITHDRAW is the one that
+// matters, so it is logged loudly rather than swallowed — the stale authority it leaves behind is bounded
+// by the control plane's own process lifetime (the store is in-memory and never persisted) but until then
+// a later reply in this thread could search on the strength of an earlier message's token.
+func (deps InboundDeps) grantSearchAuthority(ctx context.Context, sessionID string, ev slack.Event) {
+	if deps.BotID == "" || sessionID == "" {
+		return
+	}
+	err := deps.Palai.GrantSlackSearchAuthority(ctx, deps.BotID, palai.SlackSearchAuthorityParams{
+		SessionID: sessionID, TeamID: ev.TeamID, ActionToken: ev.ActionToken,
+	})
+	if err == nil {
+		return
+	}
+	if ev.ActionToken == "" {
+		deps.logf("relay: THE PREVIOUS TURN'S SLACK SEARCH AUTHORITY WAS NOT WITHDRAWN — session=%s. This "+
+			"message carried no action_token, so the earlier one is still what this session would search "+
+			"with until the control plane restarts: %v", sessionID, err)
+		return
+	}
+	// Debug-level in effect: the turn proceeds and the model answers without the tool.
+	deps.logf("relay: this turn will run without Slack search (session=%s): %v", sessionID, err)
+}
+
 // startRun opens a new run against sessionID and hands its events to Run on a background goroutine.
 // A 404 on the create (the session ThreadStore resolved is itself orphaned — the same failure mode
 // rebindOrphan handles for Steer, reached here when NO run was active in this process, e.g. a restart)
@@ -664,12 +713,19 @@ func (deps InboundDeps) startRun(ctx context.Context, tk threadKey, sessionID st
 	}
 	input := runInput(ev.Text, images)
 
+	// BEFORE the create, not after: a run asks the broker which tools it may have as it starts, so an
+	// authority granted once the response id is known would arrive after the advertisement it is meant to
+	// affect. The session is what this relay knows first, and it is what the grant is keyed on.
+	deps.grantSearchAuthority(ctx, sessionID, ev)
 	_, err := deps.createResponse(ctx, sessionID, input)
 	if isNotFound(err) {
 		sessionID, err = deps.rebindOrphan(ctx, tk, sessionID)
 		if err != nil {
 			return err
 		}
+		// The rebind moved the turn to a DIFFERENT session, and the grant above was keyed on the old one.
+		// Without this the retried run would carry no authority at all.
+		deps.grantSearchAuthority(ctx, sessionID, ev)
 		_, err = deps.createResponse(ctx, sessionID, input)
 	}
 	if err != nil {
