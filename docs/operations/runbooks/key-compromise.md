@@ -15,26 +15,36 @@ of the surface you need to mint the replacement with.
 ```sh
 palai apikey list
 palai apikey create --project prj_local --scope provision
-curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/projects" -H "Authorization: Bearer $KEYVAL"
+curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/organizations" -H "Authorization: Bearer $KEYVAL"
 palai apikey revoke "$NEWKEY"
-curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/projects" -H "Authorization: Bearer $KEYVAL"
+curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/organizations" -H "Authorization: Bearer $KEYVAL"
 palai apikey get "$NEWKEY"
 ```
 
-The two `curl`s are the point: **200 before the revoke, 401 immediately after, same key**. Revocation
-is enforced at the request, not merely recorded — a `revoked_at` timestamp in a JSON body would prove
-only that a row changed. `GET /v1/projects` is gated on the `provision` capability the replacement key
-is minted with, so a 200 means the credential was accepted and authorised.
-
-> **THESE PROBED `/v1/organizations` UNTIL A.2 TASK 6, AND THAT HAD BROKEN THE CHECK RATHER THAN
-> WEAKENED IT.** The route is unmounted, so both curls answered **404** — the same code before and
-> after the revoke. The step would have printed an identical number for a live key and a dead one and
-> read as "ran fine", which is the failure this runbook exists to rule out. The probe must be a route
-> that is BOTH mounted and authenticated; an unmounted one refuses everybody and proves nothing.
+> ## ⚠ THE TWO `curl`s ABOVE NO LONGER PROVE ANYTHING — READ THIS BEFORE RELYING ON THEM
 >
-> The pinned transcript below was recorded against the old route and still shows it. It is left as the
-> record of what was run that day rather than edited — but it no longer matches these commands, so it
-> must be **re-recorded** on the next stack that runs this runbook.
+> They are the point of this section: **200 before the revoke, 401 immediately after, same key** —
+> revocation enforced at the request, not merely recorded, because a `revoked_at` timestamp in a JSON
+> body proves only that a row changed.
+>
+> **`/v1/organizations` was unmounted by A.2 Task 6, so both now answer `404`.** The same code before
+> and after. The step prints one number twice and reads as "ran fine" while saying nothing about
+> whether the credential died — which is the exact failure this runbook exists to rule out. The check
+> did not get weaker; it stopped being a check.
+>
+> **The fix is one word in two lines:** probe `$BASE/v1/projects` instead. It is mounted and gated on
+> the `provision` capability the replacement key is minted with, so `200` means accepted AND
+> authorised, and the `401` after the revoke is the credential dying. A probe route must be BOTH
+> mounted and authenticated — an unmounted one refuses everybody and proves nothing.
+>
+> **Why it is not already applied:** `TestRunbookCommandsWereExecuted` requires every command in this
+> file to appear in the pinned transcript, and the recorder
+> (`scripts/ops/record-runbook-transcripts.sh`) is DESTRUCTIVE — it runs `palai local reset --confirm`.
+> So the swap and a re-record must land together, on a THROWAWAY stack. Whoever does it: change both
+> curls here, change the two matching lines in the recorder (they carry the same note), and re-record.
+
+Until then, verify the revocation with `palai apikey get "$NEWKEY"` (below) and by making any
+authenticated call you know the key could make before — a `401` is the signal.
 
 `create` prints the key value **exactly once**; it is never retrievable again, and the recorder
 redacts it out of the transcript while still using it for the two probes above. Give the replacement

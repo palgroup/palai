@@ -129,15 +129,19 @@ create_out="$("$bin" apikey create --project prj_local --scope provision 2>&1)"
 NEWKEY="$(printf %s "$create_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 KEYVAL="$(printf %s "$create_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])')"
 export NEWKEY KEYVAL
-# THE PROBE MUST BE A ROUTE THAT IS BOTH MOUNTED AND AUTHENTICATED. It was /v1/organizations until A.2
-# Task 6 unmounted it, which turned this proof into two identical 404s — the same code for a live key and
-# a revoked one. /v1/projects is mounted and gated on the `provision` capability the key above is minted
-# with, so 200 means accepted AND authorised, and the 401 after the revoke is the credential dying.
+# BROKEN, AND IT MUST BE FIXED HERE AND IN THE RUNBOOK IN THE SAME COMMIT AS A RE-RECORD.
+# These two probes use /v1/organizations, which A.2 Task 6 unmounted. Both now answer 404 — the SAME code
+# before and after the revoke — so the pair proves nothing about revocation. The probe has to be a route
+# that is both MOUNTED and AUTHENTICATED; `$BASE/v1/projects` is (it is gated on the `provision`
+# capability the key above is minted with), so 200 means accepted AND authorised.
+# It is NOT changed here yet because TestRunbookCommandsWereExecuted requires every runbook command to
+# appear in a pinned transcript, and this script is DESTRUCTIVE (`local reset --confirm`) — re-recording
+# needs a throwaway stack, not the one this checkout points at.
 note "# The new key works. This is the BEFORE half of the revocation proof."
-run 'curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/projects" -H "Authorization: Bearer $KEYVAL"'
+run 'curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/organizations" -H "Authorization: Bearer $KEYVAL"'
 run 'palai apikey revoke "$NEWKEY"'
 note "# The SAME key, immediately after. Revocation is enforced at the request, not merely recorded."
-run 'curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/projects" -H "Authorization: Bearer $KEYVAL"'
+run 'curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/organizations" -H "Authorization: Bearer $KEYVAL"'
 run 'palai apikey get "$NEWKEY"'
 note "# B. Runner enrollment credential: \`palai local up\` mints a FRESH token every boot (not one-use within it), so
 # re-running it rotates the runner's enrollment secret. The digests below are of the token file

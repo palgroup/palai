@@ -787,12 +787,19 @@ POST   /v1/capability-worker-pools
 GET    /v1/capability-workers
 
 # Governance, operations, and evaluation
+# NOT IMPLEMENTED — the eight organization/membership routes below are design surface, not shipped
+# API. A.2 Task 6 unmounted the three organization routes that DID exist and dropped the table; the
+# membership routes never existed. POST /v1/projects is what opens a tenant today (project + service
+# principal + admin key + default runner pool), gated on the `system` capability.
 POST   /v1/organizations
 GET    /v1/organizations
 GET    /v1/organizations/{organization_id}
 PATCH  /v1/organizations/{organization_id}
 POST   /v1/organizations/{organization_id}/projects
 GET    /v1/organizations/{organization_id}/projects
+# SHIPPED:
+POST   /v1/projects
+GET    /v1/projects
 GET    /v1/projects/{project_id}
 PATCH  /v1/projects/{project_id}
 POST   /v1/organizations/{organization_id}/memberships
@@ -880,7 +887,7 @@ Supported public authentication mechanisms are:
 - service-account tokens with explicit roles and expiry;
 - workload credentials for trusted runner and capability-worker connections.
 
-Each request resolves exactly one principal, organization, project, policy revision, and request ID. Project selection comes from a path or credential scope, not an untrusted body field. SaaS browser clients MUST call the API through a backend or use short-lived, narrowly scoped tokens; long-lived project keys MUST NOT be embedded in mobile or browser code.
+Each request resolves exactly one principal, project, policy revision, and request ID. (It resolved an organization too until A.2 Task 6; the request scope no longer carries one.) Project selection comes from a path or credential scope, not an untrusted body field. SaaS browser clients MUST call the API through a backend or use short-lived, narrowly scoped tokens; long-lived project keys MUST NOT be embedded in mobile or browser code.
 
 Every response includes:
 
@@ -3933,7 +3940,12 @@ Project is the default data and execution isolation boundary. Cross-project acce
 
 ### 39.2 Tenant invariants
 
-- Every durable object has an organization and project scope unless explicitly deployment-scoped.
+- Every durable object has a project scope unless explicitly deployment-scoped. **AS IMPLEMENTED THIS IS
+  WEAKER THAN THE MODEL ABOVE, AND THE GAP IS DELIBERATE:** four tables — environments, environment
+  values, secret refs and the usage ledger — carry no project column and are keyed on the INSTALLATION,
+  so every project on one installation reads all of them. Palai Cloud's model is one installation per
+  customer, which is what makes that acceptable; an installation intended to hold two customers needs a
+  project_id on those four tables FIRST. The organization half of this invariant left with A.2 Task 6.
 - Tenant scope comes from verified identity and route context, not request-body fields.
 - Database queries include scope and use row-level controls as defense in depth.
 - Object keys, cache keys, search documents, usage subjects, runner leases, and event channels include an opaque tenant partition.
@@ -3969,7 +3981,7 @@ Tests attempt cross-tenant access through:
 
 ### 39.5 Object storage isolation
 
-- object paths use non-user-controlled organization/project prefixes and random object IDs;
+- object paths use non-user-controlled project prefixes and random object IDs (the organization segment left with A.2 Task 6; objects written before it keep the key their row already stores);
 - bucket policy or per-tenant credentials restrict access;
 - signed URLs are short-lived, action-specific, checksum/size-bound where supported, and cannot list a prefix;
 - managed high-assurance tiers use dedicated buckets/accounts/keys when required;
