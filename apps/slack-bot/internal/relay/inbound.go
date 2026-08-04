@@ -402,6 +402,47 @@ func isNotFound(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound
 }
 
+// birthsRun is THE RUN-BIRTH RULE, restored from the old in-process bridge's slackBirthsRun
+// (apps/control-plane/internal/extensions/slack_admit.go) — this relay shares no code with it, but must
+// not diverge from what it decided. Without this rule ANY message in a channel the app is invited into
+// becomes a turn: the app subscribes to Slack's message.channels, so every human talking in that channel
+// silently starts a Palai run whether or not they ever addressed the bot. That was this relay's own bug
+// until this function existed — HandleEvent's Kind filter above only asked "is this shaped like a
+// message", never "was it said TO us".
+//
+// correlated is exactly slackBirthsRun's `ours`: whether THIS bot already has a session bound to ev's
+// thread (deps.Store.SessionForThread's own `found`), regardless of whether that session is still alive
+// server-side — a dead one is recovered downstream by the orphan path (rebindOrphan) that already
+// existed, not by this check, so the thread stays "ours" through that recovery exactly as it did before.
+//
+// THE RULE, mirroring slackBirthsRun's three live clauses (its first, for corrections/tombstones, has no
+// counterpart here: HandleEvent's Kind filter has already dropped both before this runs):
+//
+//   - A DM IS ALWAYS A TURN — Slack's own channel_type is the authority (ev.IsDM()), never a channel id
+//     prefix. A screenshot or question dragged into a DM has nothing else it could be addressed to.
+//   - AN app_mention IS ALWAYS A TURN — somebody typed the bot's name; that is the invitation, and it
+//     needs no prior relationship with the thread.
+//   - ANYTHING ELSE IS A TURN ONLY AS A FOLLOW-UP: it must be inside a Slack thread (ev.InThread — Slack's
+//     own thread_ts was present, see MapEvent) AND that thread must already be one of ours (correlated).
+//     Both halves are load-bearing. Without `correlated`, every reply in every thread in a channel the
+//     app sits in opens a run. Without `InThread`, a top-level message that merely reuses an old thread's
+//     root ts as its own correlation key (HandleEvent's threadKey, built off ev.ThreadTS regardless of
+//     InThread) would qualify too.
+//
+// A file share takes no clause of its own, for the same reason slackBirthsRun's doc gives: SLK-005
+// classifies it so the fetch can be scoped, which is a statement about what to DO with the file, not
+// about whether the human was talking. It follows the ordinary rule above — dropped into a DM, always a
+// turn; dropped into a thread this bot already holds, a turn; dropped into a channel this bot merely sits
+// in, nothing.
+func birthsRun(ev slack.Event, correlated bool) bool {
+	switch {
+	case ev.IsDM(), ev.Type == "app_mention":
+		return true
+	default:
+		return ev.InThread && correlated
+	}
+}
+
 // HandleEvent turns one already-decoded, already-authenticated Slack event into a Palai turn: it
 // drops the app's own messages and a redelivered twin, resolves (or opens) the thread's session, and
 // either steers a live run or starts a new one — draining that run's events into the Slack thread on
@@ -458,9 +499,21 @@ func HandleEvent(ctx context.Context, deps InboundDeps, ev slack.Event) error {
 
 	tk := threadKey{botID: deps.BotID, teamID: ev.TeamID, channelID: ev.ChannelID, threadTS: ev.ThreadTS}
 
-	sessionID, err := deps.resolveSession(ctx, tk)
+	// The correlation read has to happen BEFORE a session can be opened, not after: the old shape here
+	// (resolveSession) minted a session for every thread's first event unconditionally, mention or DM or
+	// not — which is the literal bug birthsRun exists to close. See birthsRun.
+	sessionID, correlated, err := deps.Store.SessionForThread(ctx, tk.botID, tk.teamID, tk.channelID, tk.threadTS)
 	if err != nil {
-		return err
+		return fmt.Errorf("relay: resolve thread session: %w", err)
+	}
+	if !birthsRun(ev, correlated) {
+		return nil // ordinary channel chatter the bot was never addressed in — see birthsRun
+	}
+	if !correlated {
+		sessionID, err = deps.openNewSession(ctx, tk)
+		if err != nil {
+			return err
+		}
 	}
 
 	if deps.state.isActive(tk) {
@@ -487,19 +540,6 @@ func HandleEvent(ctx context.Context, deps InboundDeps, ev slack.Event) error {
 	}
 
 	return deps.startRun(ctx, tk, sessionID, ev)
-}
-
-// resolveSession returns tk's bound session, opening one via Sessions.Create + BindThread if this is
-// the thread's first event.
-func (deps InboundDeps) resolveSession(ctx context.Context, tk threadKey) (string, error) {
-	sessionID, found, err := deps.Store.SessionForThread(ctx, tk.botID, tk.teamID, tk.channelID, tk.threadTS)
-	if err != nil {
-		return "", fmt.Errorf("relay: resolve thread session: %w", err)
-	}
-	if found {
-		return sessionID, nil
-	}
-	return deps.openNewSession(ctx, tk)
 }
 
 // openNewSession opens a session for a thread that has never been bound, and BINDS it — never

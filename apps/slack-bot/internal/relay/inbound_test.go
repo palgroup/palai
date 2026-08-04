@@ -264,7 +264,9 @@ func TestATopLevelMentionIsDeliveredOnce(t *testing.T) {
 	// The other direction, and the exact regression a text-keyed dedupe (this file's earlier version)
 	// introduced: a LATER, genuinely different message that happens to share the same TEXT ("yes",
 	// answering two different bot questions) must NOT be swallowed. Different MessageTS, same text.
-	again := slack.Event{Type: "message", Kind: slack.KindMessage,
+	// InThread: true because it is a genuine Slack reply under the mention's own thread, and birthsRun
+	// requires that (plus the correlation the mention already established) for a non-mention message.
+	again := slack.Event{Type: "message", Kind: slack.KindMessage, InThread: true,
 		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.002",
 		SourceEventID: "Ev4", UserID: "U2", Text: "hi"}
 	if err := HandleEvent(context.Background(), deps, again); err != nil {
@@ -350,10 +352,16 @@ func TestRepositoryIsOmittedWhenTheBotIsNotRepositoryBound(t *testing.T) {
 	deps, fp, _ := newTestDeps(t)
 	deps.RepositoryBindingID = ""
 
-	ev := slack.Event{Type: "message", Kind: slack.KindMessage,
+	// app_mention, not a bare "message": this thread has never been correlated, and an unaddressed
+	// message in an uncorrelated thread must not birth a run at all (birthsRun) — which would make the
+	// assertion below pass vacuously (a zero-value ResponseCreateRequest also has a nil Repository).
+	ev := slack.Event{Type: "app_mention", Kind: slack.KindMessage,
 		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.001", UserID: "U2", Text: "hi"}
 	if err := HandleEvent(context.Background(), deps, ev); err != nil {
 		t.Fatalf("HandleEvent: %v", err)
+	}
+	if fp.responses != 1 {
+		t.Fatalf("responses = %d, want 1 — the turn must actually have been created for the Repository check below to mean anything", fp.responses)
 	}
 	if fp.lastCreateReq.Repository != nil {
 		t.Fatalf("Repository = %v, want nil (an unbound bot must not attach a workspace)", fp.lastCreateReq.Repository)
@@ -382,7 +390,9 @@ func TestASecondMessageWhileARunIsOpenSteersIntoIt(t *testing.T) {
 		t.Fatalf("HandleEvent(first): %v", err)
 	}
 
-	second := slack.Event{Type: "message", Kind: slack.KindMessage,
+	// InThread: true — a genuine reply in the thread `first` opened, which birthsRun requires (alongside
+	// the correlation `first` already established) for a follow-up that is not itself a mention or a DM.
+	second := slack.Event{Type: "message", Kind: slack.KindMessage, InThread: true,
 		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.002", UserID: "U2", Text: "and also this"}
 	if err := HandleEvent(context.Background(), deps, second); err != nil {
 		t.Fatalf("HandleEvent(second): %v", err)
@@ -441,7 +451,9 @@ func TestASecondMessageAfterTheRunFinishedStartsAFreshResponseOnTheSameSession(t
 	}
 	firstSessionID := *fp.lastCreateReq.SessionID
 
-	second := slack.Event{Type: "message", Kind: slack.KindMessage,
+	// InThread: true — a genuine reply in the thread `first` opened; see the identical note in
+	// TestASecondMessageWhileARunIsOpenSteersIntoIt.
+	second := slack.Event{Type: "message", Kind: slack.KindMessage, InThread: true,
 		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.002", UserID: "U2", Text: "two"}
 	if err := HandleEvent(context.Background(), deps, second); err != nil {
 		t.Fatalf("HandleEvent(second): %v", err)
@@ -519,9 +531,9 @@ func TestALostRebindRaceUsesTheWinnersSession(t *testing.T) {
 	fp.failNextResponseNotFound = true
 
 	// Simulate a concurrent winner landing in the exact window rebindOrphan opens: after THIS call has
-	// already read "ses_stale" (resolveSession, before HandleEvent even starts here) and minted its own
-	// replacement session, but before its RebindThread compare-and-swap runs. onCreateSession fires
-	// synchronously inside that window.
+	// already read "ses_stale" (the correlation read HandleEvent does before deciding birth) and minted
+	// its own replacement session, but before its RebindThread compare-and-swap runs. onCreateSession
+	// fires synchronously inside that window.
 	fp.onCreateSession = func() {
 		fs.mu.Lock()
 		fs.bound[threadKey{botID: "bot_1", teamID: "T1", channelID: "C1", threadTS: "1.1"}] = "ses_winner"
@@ -566,6 +578,68 @@ func TestAnEditOrDeleteNeverBecomesATurn(t *testing.T) {
 	}
 	if fp.sessionsCreated != 0 || fp.responses != 0 {
 		t.Fatal("an edit or a deletion must never become a new turn (SLK-005)")
+	}
+}
+
+// TestOrdinaryChannelChatterNeverBirthsARun is the run-birth rule's headline case, and the literal bug it
+// restores against: the app subscribes to Slack's message.channels, so a plain top-level message — not an
+// @mention, not a DM, not a reply inside a thread the bot already holds — must be acknowledged in silence,
+// not become a Palai turn just because it is shaped like a message. Before birthsRun existed, this exact
+// event opened a session and started a run.
+func TestOrdinaryChannelChatterNeverBirthsARun(t *testing.T) {
+	deps, fp, fs := newTestDeps(t)
+	// A genuine top-level channel message: no thread_ts on the wire, so MapEvent sets InThread=false and
+	// uses the message's own ts as ThreadTS (its would-be correlation root) — see inbound.go's MapEvent
+	// doc ("a top-level message starts its own thread; ts is the correlation root").
+	chatter := slack.Event{Type: "message", Kind: slack.KindMessage, ChannelType: "channel",
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "200.001", MessageTS: "200.001", UserID: "U2", Text: "anyone up for lunch?"}
+
+	if err := HandleEvent(context.Background(), deps, chatter); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+	if fp.sessionsCreated != 0 || fp.responses != 0 {
+		t.Fatalf("sessionsCreated=%d responses=%d, want 0/0 — ordinary channel chatter must never birth a run", fp.sessionsCreated, fp.responses)
+	}
+	if _, found, err := fs.SessionForThread(context.Background(), "bot_1", "T1", "C1", "200.001"); err != nil || found {
+		t.Fatalf("thread bound=%v err=%v, want unbound — a non-birthing event must leave no trace at all", found, err)
+	}
+}
+
+// TestAThreadReplyTheBotWasNeverPartOfDoesNotBirthARun is the OTHER half of the default clause
+// (ev.InThread && correlated): being inside a genuine Slack thread is not enough on its own. Two humans
+// can carry on a thread under a message the bot was never addressed in — the app is in the channel, so
+// it still receives every reply — and none of those replies may open a run just because they arrived with
+// a thread_ts.
+func TestAThreadReplyTheBotWasNeverPartOfDoesNotBirthARun(t *testing.T) {
+	deps, fp, fs := newTestDeps(t)
+	reply := slack.Event{Type: "message", Kind: slack.KindMessage, ChannelType: "channel", InThread: true,
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "1.2", UserID: "U2", Text: "agreed, noon works"}
+
+	if err := HandleEvent(context.Background(), deps, reply); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+	if fp.sessionsCreated != 0 || fp.responses != 0 {
+		t.Fatalf("sessionsCreated=%d responses=%d, want 0/0 — a thread the bot never correlated must not birth a run", fp.sessionsCreated, fp.responses)
+	}
+	if _, found, err := fs.SessionForThread(context.Background(), "bot_1", "T1", "C1", "1.1"); err != nil || found {
+		t.Fatalf("thread bound=%v err=%v, want unbound", found, err)
+	}
+}
+
+// TestADMWithoutAMentionBirthsARunEvenUncorrelated pins the DM half of birthsRun against the same
+// uncorrelated-thread shape TestOrdinaryChannelChatterNeverBirthsARun refuses: a DM needs no @mention and
+// no prior correlation, because there is nothing else a direct message to the app could be addressed to.
+// ev.IsDM() (ChannelType == "im") is the authority, never an id prefix.
+func TestADMWithoutAMentionBirthsARunEvenUncorrelated(t *testing.T) {
+	deps, fp, _ := newTestDeps(t)
+	dm := slack.Event{Type: "message", Kind: slack.KindMessage, ChannelType: "im",
+		TeamID: "T1", ChannelID: "D1", ThreadTS: "300.001", MessageTS: "300.001", UserID: "U2", Text: "what's the status?"}
+
+	if err := HandleEvent(context.Background(), deps, dm); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+	if fp.sessionsCreated != 1 || fp.responses != 1 {
+		t.Fatalf("sessionsCreated=%d responses=%d, want 1/1 — a DM must birth a run with no @mention and no prior correlation", fp.sessionsCreated, fp.responses)
 	}
 }
 

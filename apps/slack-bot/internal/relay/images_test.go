@@ -269,6 +269,35 @@ func TestAFileShareBirthsATurn(t *testing.T) {
 	}
 }
 
+// TestAFileDroppedInAChannelWithNoMentionDoesNotBirthATurn is birthsRun's file-share clause pinned against
+// its OWN doc: "dropped into a channel this bot merely sits in, nothing" — a file share is a message with
+// an attachment, so it follows the ordinary run-birth rule rather than a rule of its own. Someone dragging
+// a screenshot into a channel the app is invited into, without addressing it, must not start a run — the
+// mirror image of TestAFileShareBirthsATurn's DM case, which must.
+func TestAFileDroppedInAChannelWithNoMentionDoesNotBirthATurn(t *testing.T) {
+	deps, fp, _ := newTestDeps(t)
+	files := newSlackFileServer(t, pngBytes, http.StatusOK)
+	up := &fakeUploader{}
+	deps = deps.WithImages(&ImageLeg{
+		Doer: redirectingDoer{to: files.srv.URL}, Token: []byte("xoxb-secret"), Artifacts: up,
+	}, nil)
+
+	ev := slack.Event{Type: "message", Kind: slack.KindFileShare, ChannelType: "channel",
+		TeamID: "T1", ChannelID: "C1", ThreadTS: "400.001", MessageTS: "400.001",
+		SourceEventID: "Ev1", UserID: "U2", Text: "look at this",
+		Files: []slack.SharedFile{imageFile("F1")}}
+
+	if err := HandleEvent(context.Background(), deps, ev); err != nil {
+		t.Fatalf("HandleEvent() error = %v", err)
+	}
+	if fp.responses != 0 {
+		t.Fatalf("responses created = %d, want 0 — a file dropped into a channel with no @mention must not birth a run", fp.responses)
+	}
+	if up.n != 0 {
+		t.Fatalf("uploads = %d, want 0 — nothing should have been fetched for a turn that never opens", up.n)
+	}
+}
+
 // TestAFileShareWithNoFilesBirthsNothing is the OTHER half of admitting KindFileShare, and it is what keeps
 // that change as narrow as its comment claims: the kind is admitted because it carries pictures, so one
 // carrying none must admit nothing new.
@@ -375,7 +404,9 @@ func TestAPictureAttachedToASteerIsSaidNotDropped(t *testing.T) {
 	}
 	<-started
 
-	second := slack.Event{Type: "message", Kind: slack.KindMessage,
+	// InThread: true — a genuine reply in the thread `first` opened, which birthsRun (relay/inbound.go)
+	// requires alongside the correlation `first` already established.
+	second := slack.Event{Type: "message", Kind: slack.KindMessage, InThread: true,
 		TeamID: "T1", ChannelID: "C1", ThreadTS: "1.1", MessageTS: "100.002",
 		SourceEventID: "Ev2", UserID: "U2", Text: "and this one",
 		Files: []slack.SharedFile{imageFile("F1")}}
