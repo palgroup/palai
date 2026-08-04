@@ -771,6 +771,26 @@ git commit -m "test(execution): the bring-up baseline survives the revision ceil
 
 ---
 
+## §5.5 — Execution record (2026-08-04) and what is still open
+
+**Shipped in 14 commits.** All five tasks complete, each with a task review; a final whole-branch review returned "with fixes" and those fixes landed in `b9434879` + `b60c2cd8`.
+
+**The plan was wrong three times and execution caught all three** — recorded because the corrections are more useful than the plan's original text:
+
+1. §1 said two tests were RED. **Four** were: every test in the guard file reached the deleted regex helper.
+2. Task 2's steps assumed a Slack default list still existed. Three contradictions surfaced, went to the human, and were ruled on — see §5.
+3. Task 3 Step 5 supplied a comment claiming the warning "still fires for a project this bring-up did not provision". `emptyToolBaselineWarning` filters `if p.ID != "prj_local" { continue }`, so it cannot. The implementer refused to write it.
+
+A fourth false claim — that a bring-up ADDS `Repository()`/`Publish()` — survived into seven comment sites and was caught by the final review. See §7 item 0b.
+
+**Still open, in priority order:**
+
+- [ ] **No live `palai up` transcript exists.** The grant's PATCH authorization for the bootstrap key is exercised nowhere. If the server refuses it, the feature stands down silently and only the warning speaks. **The next bring-up must look for the line naming the tools `prj_local` now grants and treat its absence as a bug.**
+- [ ] **Re-run §5's gate on a compiling tree.** At execution time an unrelated in-flight org/tenancy refactor left `main` unable to build (`botcreds`, `bots`, `artifacts`). The gate was proven green in a pristine worktree at `25b26f0a` — all 5 packages `ok`, 17 guards `--- PASS` by name, tagged vet exit 0 — but not on the live tree.
+- [ ] `grantDefaultToolBaseline`'s three stand-down paths have no test; an `httptest` server would cover GET-fail / skip / PATCH-fail. The destructive direction is structurally closed (a shape mismatch 400s and stands down), so this is coverage, not risk.
+
+---
+
 ## §6 — What this plan does NOT do
 
 Named so a later reader does not mistake absence for oversight:
