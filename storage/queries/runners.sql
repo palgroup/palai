@@ -186,7 +186,7 @@ VALUES ($1, $2, $3, 'default', 'sandboxed-linux', false)
 -- every installation alive today has it, so its three literals stay literal and a second pool is a second
 -- statement. Two statements, two subjects.
 --
--- NO `ON CONFLICT`: the (organization_id, project_id, name) index 000045 R1 adds is what makes a duplicate
+-- NO `ON CONFLICT`: the (project_id, name) index — 000045 R1 adds it, 000065 rekeys it — is what makes a duplicate
 -- name a 409 an operator can act on, and swallowing the conflict here would answer 201 for a pool that was
 -- not created.
 --

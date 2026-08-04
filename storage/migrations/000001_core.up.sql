@@ -298,6 +298,17 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 
 -- Immutable usage ledger (spec §43): the dedupe key makes metering exactly-once.
+--
+-- THE ONE STATEMENT IN THIS FILE THAT RUNS FOR REAL ON EVERY BOOT, and the reason its foreign key is
+-- project-keyed while every other table here still names a composite. The whole chain re-applies at each
+-- boot (packages/coordinator/migrate.go applies every migration, always — resumability depends on it), and
+-- `CREATE TABLE IF NOT EXISTS` is a no-op for the tables that exist. This one does not exist: 000032
+-- superseded it with usage_ledger and 000034 DROPS it, at the tail of the same chain that creates it here,
+-- so every boot re-creates and re-drops it. A.2 Task 6's 000065 rebuilds projects' keys on project alone —
+-- the UNIQUE (organization_id, id) this table's key used to reference is gone — so the composite form
+-- would fail this statement, and with it migration 000001, on the SECOND boot of every installation. The
+-- table's own organization_id column stays: it names no other table, and 000034 drops the whole table long
+-- before 000066 removes that column anywhere it survives.
 CREATE TABLE IF NOT EXISTS usage_events (
     id BIGSERIAL PRIMARY KEY,
     organization_id TEXT NOT NULL,
@@ -307,7 +318,7 @@ CREATE TABLE IF NOT EXISTS usage_events (
     quantity NUMERIC NOT NULL DEFAULT 0,
     occurred_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    FOREIGN KEY (organization_id, project_id) REFERENCES projects (organization_id, id),
+    FOREIGN KEY (project_id) REFERENCES projects (id),
     UNIQUE (organization_id, project_id, dedupe_key)
 );
 

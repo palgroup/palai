@@ -8,7 +8,7 @@
 -- name: InsertCommand
 INSERT INTO commands (id, organization_id, project_id, session_id, run_id, kind, delivery, payload, state)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'queued')
-ON CONFLICT (organization_id, project_id, id) DO NOTHING
+ON CONFLICT (project_id, id) DO NOTHING
 RETURNING id;
 
 -- GetCommand reads a command's projection fields for the accept/replay response.
@@ -228,7 +228,7 @@ LIMIT 1;
 -- name: InsertDeliveredMessage
 INSERT INTO delivered_messages (command_id, organization_id, project_id, run_id, boundary_request_id, applied_sequence)
 VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (organization_id, project_id, command_id) DO NOTHING;
+ON CONFLICT (project_id, command_id) DO NOTHING;
 
 -- MarkDeliveredMessagesFolded advances a run's still-'delivered' rows to 'folded' when a model step
 -- commits (spec §26.9): a message delivered at a prior boundary was folded into the request the

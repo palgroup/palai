@@ -1,0 +1,23 @@
+-- 000065 down. It removes this migration's LEDGER ROW and nothing else, and that is a decision with a
+-- reason rather than an omission.
+--
+-- Reversing step 2 would mean re-deriving 45 index definitions — five of them partial, one carrying an
+-- INCLUDE list — from an organization_id column that a rollback is on its way to a schema without, and
+-- re-adding 66 composite foreign keys whose referenced UNIQUE (organization_id, id) this file would have to
+-- rebuild first. Every one of those objects would then be dropped again a few statements later:
+-- MigrationDown() is applied as ONE script, tail-first, and 000001_core.down.sql drops organizations and
+-- every table referencing it with CASCADE. There is no schema state in which the restored constraint is
+-- reachable, so restoring it buys nothing observable and adds a second, less-tested derivation of the same
+-- 111 objects.
+--
+-- This is 000063's precedent, stated there for the foreign keys it did not put back, and its argument holds
+-- here for the same reason: MigrationDown()'s only caller is Store.Rollback, whose only caller is
+-- tests/component/postgres — `palai upgrade rollback` is an APPLICATION rollback, an image swap
+-- (stack/upgrade.go), and never runs this.
+--
+-- What a re-run of the UP does after this: everything, from scratch. Its loops select on "still names
+-- organization_id", and after a rollback-then-migrate the chain has rebuilt those objects in their original
+-- shape, so 000065 finds them again and rebuilds them again. The chain is not left half-applied by the
+-- absence of a reversal here.
+
+DELETE FROM schema_migrations WHERE version = 65;

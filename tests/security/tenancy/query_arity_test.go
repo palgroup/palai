@@ -46,11 +46,19 @@ const arityRepoRoot = "../../.."
 var arityDBVerbs = map[string]bool{"Exec": true, "Query": true, "QueryRow": true, "Queue": true}
 
 // arityKnownUses is how many storage.Query uses this sweep reached when the floor below was last set:
-// 583 audited + 27 reported unauditable, 2026-08-04. Cross-checked against a reader that knows no Go,
-// `grep -rn 'storage\.Query(' --include='*.go' . | wc -l` -> 614, and the four that are not calls are
-// named rather than rounded away: three in this file (two in prose above, one inside the t.Errorf string
-// below) and cmd/cli/internal/stack/doctor_v2_test.go:19, also inside a format string. 614 - 4 = 610.
-const arityKnownUses = 610
+// 582 audited + 27 reported unauditable, 2026-08-04 (A.2 Task 6). Cross-checked against a reader that
+// knows no Go, `grep -rn 'storage\.Query(' --include='*.go' . | grep -v node_modules | wc -l` -> 615,
+// minus the SIX that are not calls, named rather than rounded away: three in this file (two in prose
+// above, one inside the t.Errorf string below), two in organization_identity_test.go's prose, and
+// cmd/cli/internal/stack/doctor_v2_test.go:19 inside a format string. 615 - 6 = 609.
+//
+// IT MOVED DOWN BY ONE, and the floor exists to make that a decision rather than a drift: A.2 Task 6 gave
+// POST /v1/projects the tenant-opening job, and the two paths that now open a tenant share ONE
+// storage.Query("InsertProject") in identity's seedTenant where CreateOrganization and CreateProject
+// previously carried one each. Confirmed deleted, not merely no longer matched:
+// `git show 7386cbe8^:apps/control-plane/internal/identity/store.go | grep -c 'storage\.Query('` -> 18,
+// the same grep on the file today -> 17.
+const arityKnownUses = 609
 
 // aritySkip is a report line for a storage.Query use this test does not audit. Every one of them is
 // logged: the guard's VALUE to Task 5 is its coverage, and a hole nobody can see is a false assurance.

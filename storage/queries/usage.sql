@@ -17,7 +17,7 @@
 -- name: SettleUsage
 INSERT INTO usage_ledger (id, organization_id, project_id, session_id, run_id, meter, quantity, unit, dedupe_key, model_request_id)
 VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), $6, $7, $9, $8, nullif($10, ''))
-ON CONFLICT (organization_id, project_id, dedupe_key) DO NOTHING;
+ON CONFLICT (project_id, dedupe_key) DO NOTHING;
 
 -- ExhaustedBudget returns the caller's first budget whose cumulative settled usage since period_start
 -- has reached its limit, or no row when every budget still has headroom.
@@ -102,7 +102,7 @@ LIMIT 1;
 -- name: UpsertBudget
 INSERT INTO budgets (id, organization_id, project_id, meter_prefix, limit_quantity)
 VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (organization_id, project_id, meter_prefix)
+ON CONFLICT (project_id, meter_prefix)
 DO UPDATE SET limit_quantity = EXCLUDED.limit_quantity, updated_at = clock_timestamp()
 RETURNING id, project_id, meter_prefix, limit_quantity, period_start, updated_at;
 
@@ -119,7 +119,7 @@ ORDER BY project_id, meter_prefix;
 -- name: UpsertQuota
 INSERT INTO quotas (id, organization_id, project_id, meter_prefix, limit_quantity, window_seconds)
 VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (organization_id, project_id, meter_prefix)
+ON CONFLICT (project_id, meter_prefix)
 DO UPDATE SET limit_quantity = EXCLUDED.limit_quantity, window_seconds = EXCLUDED.window_seconds, updated_at = clock_timestamp()
 RETURNING id, project_id, meter_prefix, limit_quantity, window_seconds, updated_at;
 

@@ -95,7 +95,7 @@ SELECT 1 FROM principals WHERE id = $1 AND organization_id = $2 AND project_id =
 INSERT INTO slack_thread_sessions (
     id, organization_id, project_id, connection_id, team_id, channel_id, thread_ts, session_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-ON CONFLICT (organization_id, project_id, team_id, channel_id, thread_ts) DO NOTHING
+ON CONFLICT (project_id, team_id, channel_id, thread_ts) DO NOTHING
 RETURNING id;
 
 -- GetThreadSession reads the canonical session a (team, channel, thread) already resolved to — the reuse
@@ -284,7 +284,7 @@ INSERT INTO slack_message_turns (
     id, organization_id, project_id, connection_id, team_id, channel_id, message_ts, response_id, session_id,
     requester_user_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-ON CONFLICT (organization_id, project_id, team_id, channel_id, message_ts) DO NOTHING;
+ON CONFLICT (project_id, team_id, channel_id, message_ts) DO NOTHING;
 
 -- RetractSlackMessageTurn withdraws the turn a deleted message opened: the response stays (what was said and
 -- that it was withdrawn are both facts an operator may need), but SessionHistory stops carrying it, so the

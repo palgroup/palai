@@ -1219,19 +1219,19 @@ func TestTenantScopeOwnsExecutionRows(t *testing.T) {
 
 	tenant, _, _ := seedRun(t, pool)
 
-	// A second tenant, whose project is owned by a different organization.
-	otherOrg := newID("org")
-	otherProject := newID("prj")
-	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, otherOrg)
-	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, otherProject, otherOrg)
-
-	// Claiming another org's project for this org's session is a composite-FK
-	// violation: one project (within one organization) owns every session row.
+	// A session's project must EXIST. This arm used to make a different and stronger claim — it seeded a
+	// second organization, gave it a project, and required that pairing THIS org's id with THAT org's
+	// project be refused — and A.2 Task 6's 000065 is what took the strength away, deliberately: the
+	// composite `FOREIGN KEY (organization_id, project_id) REFERENCES projects (organization_id, id)` that
+	// enforced the pairing is rebuilt as `FOREIGN KEY (project_id) REFERENCES projects (id)`, because with
+	// organizations gone there is no second member for the pair to agree with. What survives is the half
+	// that still means something, and it is asserted against an id no projects row carries so the check
+	// cannot pass on a technicality: drop the foreign key entirely and this insert succeeds.
 	_, err := pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`,
-		newID("ses"), tenant.Organization, otherProject)
+		newID("ses"), tenant.Organization, newID("prj"))
 	if got := pgCode(err); got != "23503" {
-		t.Fatalf("cross-tenant session insert code = %q (%v), want 23503 foreign_key_violation", got, err)
+		t.Fatalf("session insert naming an absent project code = %q (%v), want 23503 foreign_key_violation", got, err)
 	}
 
 	// A response cannot exist without a project scope at all.

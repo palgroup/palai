@@ -159,8 +159,12 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 		// a new table the moment it exists — but they can only prove "no rows come back", and a table with no
 		// rows in it satisfies that vacuously. The canary below needs a row in EACH org to have anything to
 		// fail on.
+		// THE NAME IS PER-TENANT SINCE A.2 T6's 000065, and the collision it avoids is the finding, not a
+		// fixture detail: environments carries no project_id, so its uniqueness was `(organization_id, name)`
+		// and is now `(name)` — INSTALLATION-WIDE. Two tenants can no longer both own an environment called
+		// "production", and this fixture, which seeds two, was the first thing to say so.
 		{`INSERT INTO environments (id, organization_id, name) VALUES ($1, $2, $3)`,
-			[]any{environment, org, "production"}},
+			[]any{environment, org, "production-" + org}},
 		{`INSERT INTO environment_values (environment_id, organization_id, key) VALUES ($1, $2, $3)`,
 			[]any{environment, org, "JIRA_TOKEN"}},
 		// The E25 T7 registry trio, and these are PROJECT-scoped (000024) — the opposite of the environment

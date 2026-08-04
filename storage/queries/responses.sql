@@ -375,7 +375,7 @@ WHERE id = $1 AND project_id = $2;
 INSERT INTO idempotency_records
     (organization_id, project_id, principal_id, method, route, idempotency_key, request_hash, status, response_body)
 VALUES ($1, $2, $3, $4, $5, $6, $7, 'completed', $8)
-ON CONFLICT (organization_id, project_id, principal_id, method, route, idempotency_key) DO NOTHING
+ON CONFLICT (project_id, principal_id, method, route, idempotency_key) DO NOTHING
 RETURNING id;
 
 -- GetIdempotency reads the reserved record for replay. result_purged_at is non-null

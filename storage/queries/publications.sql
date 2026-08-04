@@ -12,7 +12,7 @@ INSERT INTO publications
     (id, organization_id, project_id, session_id, run_id, response_id, operation, remote, branch, base,
      head_sha, idempotency_key, display, args)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-ON CONFLICT (organization_id, project_id, idempotency_key) DO NOTHING
+ON CONFLICT (project_id, idempotency_key) DO NOTHING
 RETURNING id;
 
 -- InsertApproval records the one-shot approval binding for a publication (spec §22.4). It rides the
