@@ -29,7 +29,7 @@ func TestCommitDoesNotImplyPush(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := commitExec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: root}, map[string]any{"message": "add new.txt"})
+	out, err := commitExec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: root, Workspace: LocalWorkspace(root)}, map[string]any{"message": "add new.txt"})
 	if err != nil {
 		t.Fatalf("commitExec() error = %v", err)
 	}

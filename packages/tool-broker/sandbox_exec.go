@@ -20,6 +20,17 @@ type ExecEnv struct {
 	WorkspaceRoot string
 	ReadOnly      bool
 	Shell         ShellRunner
+	// Workspace is the confined file/git surface the coding tools act through (A.3 T5). It is the
+	// sibling of Shell and it is chosen the same way: from the connection this attempt holds, so an
+	// allocation that lives on a machine is edited on that machine and one that lives here is edited
+	// here. Nil on an attempt with no workspace bound — a workspace tool then answers `unavailable`
+	// rather than reaching for this process's own filesystem.
+	//
+	// WorkspaceRoot IS STILL HERE AND STILL MEANS SOMETHING, which is worth saying because the two
+	// look redundant. It is the root a SHELL COMMAND runs in (ShellCommand.WorkspaceRoot), a path in
+	// the filesystem of whichever machine runs it, and it is also how a tool asks "is a workspace
+	// bound at all". What it is no longer is a path this process may open.
+	Workspace WorkspaceOps
 	// Background is the orchestration seam a `background: true` shell call and the background kill tool
 	// reach through (E26 T2). It is SEPARATE from Shell rather than a capability of it for the reason
 	// BackgroundRunner is separate from ShellRunner: one answers with a result and the other with a

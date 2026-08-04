@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -504,7 +505,13 @@ func serveLease(ctx context.Context, supervisor *StreamSupervisor, leaseSession 
 	// requests on the same connection are not relayed at all — they run on THIS machine's executor
 	// (toolserver.go), which is the whole of what a lease can now be asked to do beyond an engine.
 	inbound := make(chan contracts.EngineFrame)
-	go RelayInbound(leaseCtx, leaseSession, tools, inbound, logf)
+	go RelayInboundServing(leaseCtx, leaseSession, MachineServers{
+		Tools: tools,
+		// THE DISK BEHIND ws.* (A.3 T5), bound to the SAME managed root admitWorkspaceMount just
+		// checked this lease's path against. One value, one meaning: a machine that will not mount a
+		// path outside its root will not read or write one either.
+		Workspace: NewWorkspaceServer(allocationRoot),
+	}, inbound, logf)
 
 	sink := func(ctx context.Context, frame contracts.EngineFrame) error {
 		return leaseSession.SendEngineFrame(ctx, frame)
@@ -617,6 +624,65 @@ func workspaceUnderRoot(path, root string) error {
 		return errors.New("workspace path is outside the runner allocation root")
 	}
 	return nil
+}
+
+// resolveNewAllocationDir answers where an allocation that DOES NOT EXIST YET may be created, and it
+// is the one place in this package that has to reason about a path it cannot symlink-resolve (A.3
+// T5). workspaceUnderRoot resolves both sides and is therefore useless before the directory is there;
+// this walks down instead, creating each missing component and REFUSING any existing component that
+// is not a real directory.
+//
+// THE LSTAT IS THE CHECK AND MkdirAll WOULD NOT HAVE IT. MkdirAll follows an existing symlink
+// component without complaint, so a `<root>/a` pointing at /etc would make `<root>/a/b` a directory
+// in /etc — created by a path the control plane named, which is precisely the trust boundary §30.13
+// draws. Every component is therefore Lstat'ed: a symlink, a regular file, a device, anything that is
+// not a directory, ends the walk.
+//
+// The root itself is resolved first and the result is built from the RESOLVED root, so a runner whose
+// allocation root is legitimately behind a symlink — /var on macOS is exactly this — still works, and
+// the path returned is the one every later workspaceUnderRoot will compare against.
+func resolveNewAllocationDir(path, root string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", errors.New("workspace open names no allocation")
+	}
+	if strings.TrimSpace(root) == "" {
+		return "", errors.New("this runner has no managed allocation root, so it can open no allocation")
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve runner allocation root: %w", err)
+	}
+	// The request's path is compared LEXICALLY against the resolved root, which is sound only because
+	// every component below is then verified to be a real directory: a `..` that climbs out is caught
+	// here, and a symlink that would climb out is caught by the walk.
+	abs := filepath.Clean(path)
+	if !filepath.IsAbs(abs) {
+		return "", errors.New("workspace allocation path must be absolute")
+	}
+	rel, err := filepath.Rel(realRoot, abs)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", errors.New("workspace path is outside the runner allocation root")
+	}
+	current := realRoot
+	for _, component := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			// 0o755 mirrors workspace.Prepare's mode: the allocation is handed to the run's own uid by
+			// the session-account layer, not by being world-writable here.
+			if err := os.Mkdir(current, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+				return "", fmt.Errorf("create allocation directory: %w", err)
+			}
+		case err != nil:
+			return "", fmt.Errorf("inspect allocation directory: %w", err)
+		case !info.IsDir():
+			// A symlink lands here too — Lstat does not follow it, so its mode is ModeSymlink and never
+			// ModeDir. That is the case this loop exists for.
+			return "", fmt.Errorf("allocation path component %s is not a directory", component)
+		}
+	}
+	return current, nil
 }
 
 // OutcomeClass maps a supervised streaming outcome to the lease.complete outcome class the

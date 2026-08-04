@@ -3,10 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 
-	"github.com/palgroup/palai/adapters/repositories"
-	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
@@ -39,10 +36,13 @@ func pullRequestExec(ctx context.Context, env toolbroker.ExecEnv, args map[strin
 	if env.Publications == nil {
 		return nil, fmt.Errorf("pull request tool: no publication registry wired for this run")
 	}
-	if env.WorkspaceRoot == "" {
+	if env.WorkspaceRoot == "" || env.Workspace == nil {
 		return nil, fmt.Errorf("pull request tool: no workspace bound for this run")
 	}
-	head, _, err := repositories.Head(ctx, filepath.Join(env.WorkspaceRoot, workspace.RepoDir))
+	// The head is read WHERE THE REPOSITORY IS (A.3 T5), the same as the push tool's. Nothing else
+	// about this tool moved: it still opens no pull request, and the head/base still come from the
+	// binding rather than the model.
+	head, _, err := env.Workspace.Head(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("pull request tool: read workspace head: %w", err)
 	}

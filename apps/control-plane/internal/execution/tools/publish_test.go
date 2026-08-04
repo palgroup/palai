@@ -44,7 +44,7 @@ func TestPushToolRecordsPendingPublicationAtWorkspaceHead(t *testing.T) {
 	head := run("rev-parse", "HEAD")
 
 	reg := &fakePublicationRegistry{}
-	out, err := pushExec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: root, Publications: reg}, nil)
+	out, err := pushExec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: root, Workspace: LocalWorkspace(root), Publications: reg}, nil)
 	if err != nil {
 		t.Fatalf("pushExec() error = %v", err)
 	}
@@ -62,7 +62,11 @@ func TestPushToolRecordsPendingPublicationAtWorkspaceHead(t *testing.T) {
 // TestPushToolFailsCleanlyWithoutRegistry proves the push tool fails cleanly rather than acting when no
 // publication registry is wired (the SetBackgroundRunner-nil discipline).
 func TestPushToolFailsCleanlyWithoutRegistry(t *testing.T) {
-	if _, err := pushExec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: t.TempDir()}, nil); err == nil {
+	// ONE directory, named once: t.TempDir() mints a NEW one on every call, so spelling it twice would
+	// hand the tool a root and a filesystem that are not the same place — a shape that still passes
+	// here (neither holds a repo) and would quietly stop measuring anything the day it mattered.
+	root := t.TempDir()
+	if _, err := pushExec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: root, Workspace: LocalWorkspace(root)}, nil); err == nil {
 		t.Fatal("pushExec with no registry = nil error, want a clean failure")
 	}
 }

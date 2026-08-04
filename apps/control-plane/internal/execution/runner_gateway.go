@@ -1803,6 +1803,12 @@ func (g *RunnerGateway) readLoop(pr *pendingRunner) {
 			}
 			gc.closeFrames() // succeeded → close frames → Receive sees io.EOF
 			return
+		case runner.WorkspaceResultType:
+			// The machine's answer to an operation this control plane asked it to perform on its own disk
+			// (A.3 T5). Its own arm for the reason exec.result needs one: without it the message falls
+			// through to the heartbeat default and is counted as liveness, and every workspace tool waits
+			// for an answer that had already arrived.
+			gc.deliverWorkspaceResult(message.Data)
 		case runner.ExecResultType:
 			// The machine's answer to a command this control plane asked it to run (A.3). Without this
 			// arm the message would fall through to the heartbeat default below and be counted as
@@ -1843,11 +1849,14 @@ type gatewayChannel struct {
 	// gaveUp records that the relay backlog overflowed and its one reserved slot is spent. It is owned by
 	// readLoop, the only goroutine that ever calls emit, so it needs no lock.
 	gaveUp bool
-	// execs is the set of commands this lease asked the MACHINE to run and has not yet heard back
-	// about (A.3). It lives here because readLoop below is the connection's sole reader: the answer
-	// arrives on the goroutine that reads every other message, so this is where that goroutine hands
-	// it over. Every method that touches it is in remote_shell.go, beside the client that waits on it.
-	execs execPending
+	// execs and workspaces are the questions this lease asked the MACHINE and has not yet heard back
+	// about (A.3): a command to run, and an operation on the machine's own disk. They live here
+	// because readLoop below is the connection's sole reader — the answer arrives on the goroutine
+	// that reads every other message, so this is where that goroutine hands it over. Two registries
+	// rather than one because two correlation ids are two namespaces: an exec.result must not be able
+	// to settle a workspace wait, and the field names on the wire (exec_id, ws_id) say so.
+	execs      pendingAnswers[ExecAnswer]
+	workspaces pendingAnswers[WorkspaceAnswer]
 }
 
 type relayRead struct {
@@ -1881,15 +1890,15 @@ func newGatewayChannel(pr *pendingRunner, attempt AttemptDescriptor) *gatewayCha
 // closeFrames closes the frames channel exactly once (readLoop reaches it from several paths), so
 // Receive sees io.EOF and a repeated close never panics.
 //
-// It also answers every command still waiting on this machine (A.3), which is what a tool call gets
-// instead of silence when the connection that would have carried its exec.result is the one that just
-// ended. This covers the path a dropped connection actually takes — readLoop's read error, which
+// It also answers every question still waiting on this machine (A.3) — a command and a workspace
+// operation alike — which is what a tool call gets instead of silence when the connection that would
+// have carried its answer is the one that just ended. This covers the path a dropped connection actually takes — readLoop's read error, which
 // reaches here directly. Every OTHER teardown answers earlier still, in failRelay, and that ordering
 // is load-bearing rather than incidental; the comment there says why.
 func (c *gatewayChannel) closeFrames() {
 	c.framesOnce.Do(func() {
 		close(c.frames)
-		c.execs.closeAll(errLeaseConnectionEnded)
+		c.closeAllPending(errLeaseConnectionEnded)
 	})
 }
 
@@ -1936,7 +1945,7 @@ func (c *gatewayChannel) Close() error {
 		}
 		// The other teardown door (A.3). An attempt that releases its lease while a command is still
 		// out gets its answer here rather than waiting for readLoop to notice the torn-down socket.
-		c.execs.closeAll(errLeaseConnectionEnded)
+		c.closeAllPending(errLeaseConnectionEnded)
 	})
 	return nil
 }
@@ -1950,7 +1959,7 @@ func (c *gatewayChannel) Close() error {
 // neither would ever move. Answering the command first releases the orchestrator, which returns to
 // Receive, which is what lets the emit below complete and the attempt learn why its lease ended.
 func (c *gatewayChannel) failRelay(err error) {
-	c.execs.closeAll(err)
+	c.closeAllPending(err)
 	c.emit(relayRead{err: err})
 	c.closeFrames()
 }
@@ -1976,7 +1985,7 @@ func (c *gatewayChannel) emit(read relayRead) bool {
 			// Answer every waiting command first, for the same reason failRelay does: releasing them is
 			// what lets the orchestrator move, and it is the only party that could still drain this
 			// backlog.
-			c.execs.closeAll(errRelayBacklogFull)
+			c.closeAllPending(errRelayBacklogFull)
 			c.frames <- relayRead{err: errRelayBacklogFull} // the reserved slot; cannot block
 		}
 		// The reserved slot is spent, so a SECOND overflow must return without sending. readLoop returns

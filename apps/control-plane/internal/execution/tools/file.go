@@ -54,22 +54,19 @@ func FileTool() toolbroker.Tool {
 //
 // THE WRITE PATH IS NOT COVERED BY THAT SENTENCE and is classified by sentinel instead — see below.
 func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
-	if env.WorkspaceRoot == "" {
+	if env.WorkspaceRoot == "" || env.Workspace == nil {
 		// The case docs/operations/palai-on-a-mac.md §4.1 measured on 2026-07-28 and wrote down: a run
 		// offered a workspace tool with no workspace bound HUNG rather than failing. Nothing ran, so it is
 		// an answer, and a model told this can say so instead of the run never ending.
+		//
+		// BOTH CONDITIONS, AND THE SECOND IS THE A.3 ONE. WorkspaceRoot names where the bytes are;
+		// env.Workspace is the thing that can reach them. An attempt can have the first without the
+		// second — a machine whose lease connection is gone, holding a path that is real on a host this
+		// process cannot open — and reaching for the path anyway is the failure this epic exists to
+		// remove: an edit that silently landed beside the control plane instead of where the run runs.
 		return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable, "file tool: no workspace bound for this run")
 	}
-	fs, err := workspace.NewWorkspaceFS(env.WorkspaceRoot)
-	if err != nil {
-		// NOT an answer, deliberately, and it is a NARROWER branch than it looks: NewWorkspaceFS only
-		// refuses a root that is blank or that EvalSymlinks cannot resolve — i.e. an allocation that was
-		// never provisioned, or one that has gone away underneath a live run. That is the deployment
-		// being broken rather than the model being wrong, so it keeps today's abort. A root that exists
-		// and is merely unusable constructs fine and fails inside the read below, where it is an answer
-		// (TestAnAllocationRootThatDoesNotExistIsRefusedBeforeAnyRead pins both halves).
-		return nil, fmt.Errorf("file tool: %w", err)
-	}
+	fs := env.Workspace
 	op, _ := args["op"].(string)
 	path, _ := args["path"].(string)
 
@@ -78,9 +75,9 @@ func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) 
 		if likelySecretPath(path) {
 			return nil, toolbroker.Answerf(toolbroker.AnswerRefused, "file tool: refusing to read likely-secret path %q", path)
 		}
-		data, truncated, err := fs.Read(path, maxFileReadBytes)
+		data, truncated, err := fs.Read(ctx, path, maxFileReadBytes)
 		if err != nil {
-			return nil, fileAnswer(env, fileAnswerCode(err), err)
+			return nil, fileFailure(env, err)
 		}
 		content := string(data)
 		// REDACTION ON THE WAY OUT (E26 T6, §3.6 D8). A background task writes its own log file, which
@@ -107,7 +104,7 @@ func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) 
 			return nil, toolbroker.Answerf(toolbroker.AnswerRefused, "file tool: workspace is read-only for this run")
 		}
 		content, _ := args["content"].(string)
-		report, err := fs.Write(path, []byte(content))
+		report, err := fs.Write(ctx, path, []byte(content))
 		if err != nil {
 			// A WRITE IS THE ONE OPERATION HERE THAT CAN LAND HALFWAY, so the read rule above does not
 			// apply and the classification is by SENTINEL rather than by "it failed". ErrPathEscape and
@@ -116,6 +113,9 @@ func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) 
 			// Every other Write error (staging, rename, reading the prior content) sits at or after the
 			// mutation and keeps today's abort, because a rename that may or may not have happened is
 			// exactly what `uncertain` is for.
+			// A ROOT THAT COULD NOT BE BOUND IS ALSO NOT ANSWERABLE and needs no arm of its own: it
+			// matches neither sentinel, so it falls to the abort below, which is where the constructor
+			// that used to raise it already sent it.
 			if errors.Is(err, workspace.ErrPathEscape) || errors.Is(err, workspace.ErrNotRegular) {
 				return nil, fileAnswer(env, fileAnswerCode(err), err)
 			}
@@ -126,9 +126,9 @@ func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) 
 			"after_hash": report.AfterHash, "created": report.Created,
 		}, nil
 	case "list":
-		entries, err := fs.List(path)
+		entries, err := fs.List(ctx, path)
 		if err != nil {
-			return nil, fileAnswer(env, fileAnswerCode(err), err)
+			return nil, fileFailure(env, err)
 		}
 		items := make([]any, 0, len(entries))
 		for _, e := range entries {
@@ -136,20 +136,41 @@ func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) 
 		}
 		return map[string]any{"path": path, "entries": items}, nil
 	case "stat":
-		st, err := fs.Stat(path)
+		st, err := fs.Stat(ctx, path)
 		if err != nil {
-			return nil, fileAnswer(env, fileAnswerCode(err), err)
+			return nil, fileFailure(env, err)
 		}
 		return map[string]any{"path": st.Path, "is_dir": st.IsDir, "size": st.Size}, nil
 	case "checksum":
-		sum, err := fs.Checksum(path)
+		sum, err := fs.Checksum(ctx, path)
 		if err != nil {
-			return nil, fileAnswer(env, fileAnswerCode(err), err)
+			return nil, fileFailure(env, err)
 		}
 		return map[string]any{"path": path, "checksum": sum}, nil
 	default:
 		return nil, toolbroker.Answerf(toolbroker.AnswerInvalidArguments, "file tool: unknown op %q", op)
 	}
+}
+
+// fileFailure classifies one workspace-filesystem failure, and it carries the ONE asymmetry this tool
+// draws — a decision on the record rather than an accident of where a constructor used to sit.
+//
+// A ROOT THAT CANNOT BE BOUND IS A FAULT, EVERYTHING ELSE IS AN ANSWER. An allocation that was never
+// provisioned, or that has gone away underneath a live run, is the deployment being broken rather
+// than the model being wrong, so it keeps today's abort; a root that exists and is merely unusable —
+// a regular file where a directory should be — fails inside the operation, and that is an answer,
+// because the rule is about what the operation DID and a read that failed changed nothing.
+// TestAnAllocationRootThatDoesNotExistIsRefusedBeforeAnyRead pins both halves.
+//
+// IT WAS AN `if err != nil` AROUND A CONSTRUCTOR AND IS NOW A SENTINEL, because the constructor moved.
+// When the allocation lives on another machine the filesystem is bound there and the failure crosses a
+// wire, so the branch has to read a cause it can still recognise on this side (workspace.ErrRootUnusable,
+// rebuilt by workspace.ErrorForCode) instead of a call it can no longer see.
+func fileFailure(env toolbroker.ExecEnv, err error) error {
+	if errors.Is(err, workspace.ErrRootUnusable) {
+		return fmt.Errorf("file tool: %w", err)
+	}
+	return fileAnswer(env, fileAnswerCode(err), err)
 }
 
 // fileAnswer wraps a workspace-filesystem failure as the model's answer, with the allocation's absolute

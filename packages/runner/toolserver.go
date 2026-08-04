@@ -289,7 +289,7 @@ func remarshal(data map[string]any, field string, into any) error {
 // existed: the runner has no way to act on a message it cannot name, and continuing would leave the
 // control plane waiting on a reply the runner will never form.
 func RelayInbound(ctx context.Context, session *LeaseSession, tools *ToolServer, inbound chan<- contracts.EngineFrame, logf func(string, ...any)) {
-	RelayInboundWithBackground(ctx, session, tools, nil, inbound, logf)
+	RelayInboundServing(ctx, session, MachineServers{Tools: tools}, inbound, logf)
 }
 
 // RelayInboundWithBackground is RelayInbound plus the bg.* triple (A.3 T7). The two are separate
@@ -297,6 +297,26 @@ func RelayInbound(ctx context.Context, session *LeaseSession, tools *ToolServer,
 // predates the background triple relays exactly what it always did — a machine with no background
 // server answers a bg.* request with a refusal rather than ending the lease on an unknown type.
 func RelayInboundWithBackground(ctx context.Context, session *LeaseSession, tools *ToolServer, background *BackgroundServer, inbound chan<- contracts.EngineFrame, logf func(string, ...any)) {
+	RelayInboundServing(ctx, session, MachineServers{Tools: tools, Background: background}, inbound, logf)
+}
+
+// MachineServers is everything on this machine a lease may be asked to reach: the executor behind
+// exec.*, the detached executor behind bg.*, and the disk behind ws.*. It is one struct rather than a
+// fourth positional argument because the list grew twice in one epic, and a call site that passes
+// three nils in a row is a call site whose next reader cannot tell which nil means what.
+//
+// EVERY FIELD MAY BE NIL AND NIL IS NEVER SILENCE. Each server answers its own request type with a
+// refusal when it is unwired (ToolServer.Handle, BackgroundServer.Handle, WorkspaceServer.Handle), so
+// an unconfigured machine tells the control plane so instead of leaving a tool call waiting forever.
+type MachineServers struct {
+	Tools      *ToolServer
+	Background *BackgroundServer
+	Workspace  *WorkspaceServer
+}
+
+// RelayInboundServing is the relay loop itself. The two functions above are its named shapes.
+func RelayInboundServing(ctx context.Context, session *LeaseSession, servers MachineServers, inbound chan<- contracts.EngineFrame, logf func(string, ...any)) {
+	tools, background, workspaces := servers.Tools, servers.Background, servers.Workspace
 	defer close(inbound)
 	for {
 		message, err := session.ReceiveMessage(ctx)
@@ -323,6 +343,18 @@ func RelayInboundWithBackground(ctx context.Context, session *LeaseSession, tool
 				answer := background.Handle(ctx, message)
 				if err := session.SendExecResult(ctx, answer); err != nil {
 					logf("send background result: %v", err)
+				}
+			}()
+		case WorkspaceRequestType:
+			// THE SAME GOROUTINE ARGUMENT AGAIN, and here it is about a CLONE: `ws.request` carries the
+			// §30.3 preparation, which fetches a repository over the network and can take as long as the
+			// repository is large. A reader blocked on that is a reader that cannot see the interrupt
+			// frame the command pump sends next, so an operator's stop would arrive after the clone it
+			// was meant to stop.
+			go func() {
+				answer := workspaces.Handle(ctx, message)
+				if err := session.SendExecResult(ctx, answer); err != nil {
+					logf("send workspace result: %v", err)
 				}
 			}()
 		case ExecRequestType:

@@ -17,7 +17,7 @@ import (
 func TestFileToolDeniesWorkspaceEscape(t *testing.T) {
 	root := realTempDir(t)
 	tool := FileTool()
-	env := toolbroker.ExecEnv{WorkspaceRoot: root}
+	env := toolbroker.ExecEnv{WorkspaceRoot: root, Workspace: LocalWorkspace(root)}
 
 	// A symlink inside the workspace that points outside it, and a non-regular special file (a fifo,
 	// standing in for a device/socket/runtime interface) inside it.
@@ -69,7 +69,7 @@ func TestFileToolDeniesWorkspaceEscape(t *testing.T) {
 func TestFileWriteReportsBeforeAfterHashAndChangedPaths(t *testing.T) {
 	root := realTempDir(t)
 	tool := FileTool()
-	env := toolbroker.ExecEnv{WorkspaceRoot: root}
+	env := toolbroker.ExecEnv{WorkspaceRoot: root, Workspace: LocalWorkspace(root)}
 
 	first, err := tool.Exec(context.Background(), env, map[string]any{"op": "write", "path": "repo/app.py", "content": "print(1)\n"})
 	if err != nil {

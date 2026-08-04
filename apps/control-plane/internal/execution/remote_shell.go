@@ -68,52 +68,58 @@ var (
 	_ toolbroker.ShellRunner = (*RemoteShell)(nil)
 )
 
-// execPending is the set of commands one lease has asked its machine to run and not yet heard back
-// about, keyed by the exec id the control plane minted. It is the whole of the correlation mechanism:
+// pendingAnswers is the set of questions one lease has asked its machine and not yet heard back
+// about, keyed by the id the control plane minted. It is the whole of the correlation mechanism:
 // contracts.RunnerMessage carries no identity field, and contracts.EngineFrame.ReplyTo — the field
 // that LOOKS like this tree's correlation — is written in one place and compared in none, besides
 // being on the wrong protocol.
-type execPending struct {
+//
+// IT IS GENERIC BECAUSE THERE ARE NOW TWO KINDS OF QUESTION ON ONE CONNECTION and there was very
+// nearly a second copy of it. A command (exec.*) and a workspace operation (ws.*, A.3 T5) correlate
+// identically and differ only in what an answer IS; the properties below — the buffered channel, the
+// removal under the lock, the refusal after close — are the ones a second hand-written copy would
+// eventually get wrong in one of the two.
+type pendingAnswers[T any] struct {
 	mu      sync.Mutex
-	waiting map[string]chan ExecAnswer
-	// closed is set once the connection ended, so a command registered after that is refused
+	waiting map[string]chan T
+	// closed is set once the connection ended, so a question registered after that is refused
 	// immediately rather than waiting for an answer that can no longer be delivered.
 	closed error
 }
 
-// register claims execID and returns the channel its answer will arrive on. The channel is buffered
-// so that delivering an answer NEVER blocks the caller of deliver — see deliver.
-func (p *execPending) register(execID string) (<-chan ExecAnswer, func(), error) {
+// register claims id and returns the channel its answer will arrive on. The channel is buffered so
+// that delivering an answer NEVER blocks the caller of deliver — see deliver.
+func (p *pendingAnswers[T]) register(id string) (<-chan T, func(), error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed != nil {
 		return nil, nil, p.closed
 	}
-	if _, taken := p.waiting[execID]; taken {
-		return nil, nil, fmt.Errorf("exec id %s is already awaiting an answer on this lease", execID)
+	if _, taken := p.waiting[id]; taken {
+		return nil, nil, fmt.Errorf("id %s is already awaiting an answer on this lease", id)
 	}
 	if p.waiting == nil {
-		p.waiting = make(map[string]chan ExecAnswer)
+		p.waiting = make(map[string]chan T)
 	}
-	answers := make(chan ExecAnswer, 1)
-	p.waiting[execID] = answers
+	answers := make(chan T, 1)
+	p.waiting[id] = answers
 	return answers, func() {
 		p.mu.Lock()
-		delete(p.waiting, execID)
+		delete(p.waiting, id)
 		p.mu.Unlock()
 	}, nil
 }
 
-// deliver hands one answer to the command waiting for it and reports whether anyone was.
+// deliver hands one answer to the question waiting for it and reports whether anyone was.
 //
 // IT MUST NEVER BLOCK, because its caller is the connection's sole reader (readLoop). A reader parked
 // here would strand every later message on that connection, the lease.complete included. Two things
 // make that true and both are needed: the channel holds one answer, and the entry is removed under
 // the lock before the send, so this is the only send that entry will ever see.
-func (p *execPending) deliver(execID string, answer ExecAnswer) bool {
+func (p *pendingAnswers[T]) deliver(id string, answer T) bool {
 	p.mu.Lock()
-	answers, waiting := p.waiting[execID]
-	delete(p.waiting, execID)
+	answers, waiting := p.waiting[id]
+	delete(p.waiting, id)
 	p.mu.Unlock()
 	if !waiting {
 		return false
@@ -122,10 +128,14 @@ func (p *execPending) deliver(execID string, answer ExecAnswer) bool {
 	return true
 }
 
-// closeAll answers every command still waiting, and refuses later ones. It is called from both of the
-// channel's teardown doors so that "no command outlives the connection it was sent on" holds however
-// the lease ended. Calling it twice is harmless: the second call finds nothing waiting.
-func (p *execPending) closeAll(err error) {
+// closeAll answers every question still waiting, and refuses later ones, so that "no question outlives
+// the connection it was sent on" holds however the lease ended. Calling it twice is harmless: the
+// second call finds nothing waiting. Its callers are the gatewayChannel teardown doors, and they all
+// go through closeAllPending — see there for why that indirection is not ceremony.
+//
+// The answer is passed IN rather than built here, because only the caller knows what "the connection
+// ended" looks like in its own answer type. That is the price of not writing this registry twice.
+func (p *pendingAnswers[T]) closeAll(err error, answer T) {
 	p.mu.Lock()
 	waiting := p.waiting
 	p.waiting = nil
@@ -134,7 +144,7 @@ func (p *execPending) closeAll(err error) {
 	}
 	p.mu.Unlock()
 	for _, answers := range waiting {
-		answers <- ExecAnswer{Err: err}
+		answers <- answer
 	}
 }
 
@@ -255,4 +265,14 @@ func (s *RemoteShell) Run(ctx context.Context, cmd toolbroker.ShellCommand) (too
 	case <-ctx.Done():
 		return toolbroker.ShellResult{}, fmt.Errorf("machine exec %s: no answer before the context ended: %w", execID, ctx.Err())
 	}
+}
+
+// closeAllPending answers every question still waiting on this lease — a command and a workspace
+// operation alike — and refuses later ones. It is the ONE call every teardown door makes, so a door
+// added later cannot answer half the waiters: a registry left out here is a tool call that waits for
+// an answer the connection can no longer carry, which is exactly the wedge this seam exists to
+// prevent and exactly the shape a reader would not notice was missing.
+func (c *gatewayChannel) closeAllPending(err error) {
+	c.execs.closeAll(err, ExecAnswer{Err: err})
+	c.workspaces.closeAll(err, WorkspaceAnswer{Err: err})
 }

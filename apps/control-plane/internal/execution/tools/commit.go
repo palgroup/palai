@@ -3,10 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 
-	"github.com/palgroup/palai/adapters/repositories"
-	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
@@ -36,7 +33,7 @@ func CommitTool() toolbroker.Tool {
 // commitExec commits the workspace repo. The repo lives at <allocation>/repo (spec §29.9); a
 // workspace-less or read-only attempt fails cleanly rather than touching anything.
 func commitExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
-	if env.WorkspaceRoot == "" {
+	if env.WorkspaceRoot == "" || env.Workspace == nil {
 		return nil, fmt.Errorf("commit tool: no workspace bound for this run")
 	}
 	if env.ReadOnly {
@@ -46,8 +43,12 @@ func commitExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any
 	if message == "" {
 		return nil, fmt.Errorf("commit tool: a commit message is required")
 	}
-	repoDir := filepath.Join(env.WorkspaceRoot, workspace.RepoDir)
-	sha, err := repositories.Commit(ctx, repoDir, message)
+	// The commit runs WHERE THE REPOSITORY IS (A.3 T5), which is the machine holding this attempt's
+	// lease whenever the allocation was realized there. It is still a control-plane-DIRECTED git
+	// operation under the platform's fixed author identity — the model supplies a message and nothing
+	// else — so the property this tool's doc comment claims is unchanged: no credential is involved
+	// and no push permission is granted.
+	sha, err := env.Workspace.Commit(ctx, message)
 	if err != nil {
 		return nil, fmt.Errorf("commit tool: %w", err)
 	}

@@ -27,7 +27,7 @@ import (
 // every one of them used to end the run.
 func TestEveryFailedWorkspaceReadIsAnAnswer(t *testing.T) {
 	root := realTempDir(t)
-	env := toolbroker.ExecEnv{WorkspaceRoot: root}
+	env := toolbroker.ExecEnv{WorkspaceRoot: root, Workspace: LocalWorkspace(root)}
 	if err := os.Symlink("/etc", filepath.Join(root, "escape")); err != nil {
 		t.Fatalf("plant escaping symlink: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestAnAllocationRootThatDoesNotExistIsRefusedBeforeAnyRead(t *testing.T) {
 	base := t.TempDir()
 
 	absent := filepath.Join(base, "never-provisioned")
-	_, err := FileTool().Exec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: absent},
+	_, err := FileTool().Exec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: absent, Workspace: LocalWorkspace(absent)},
 		map[string]any{"op": "read", "path": "anything"})
 	if err == nil {
 		t.Fatal("a read against an absent allocation root succeeded")
@@ -181,7 +181,7 @@ func TestAnAllocationRootThatDoesNotExistIsRefusedBeforeAnyRead(t *testing.T) {
 	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	_, err = FileTool().Exec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: notADir},
+	_, err = FileTool().Exec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: notADir, Workspace: LocalWorkspace(notADir)},
 		map[string]any{"op": "read", "path": "anything"})
 	if _, ok := toolbroker.AsAnswer(err); !ok {
 		t.Fatalf("a read that reached the filesystem and failed = %v, want an answer (it changed nothing)", err)
@@ -212,7 +212,7 @@ func TestARefusalDoesNotCarryTheHostPathOffThisMachine(t *testing.T) {
 	if real == root {
 		t.Skip("this platform's temp dir is not behind a symlink; the alias half is not measurable here")
 	}
-	_, err := FileTool().Exec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: root},
+	_, err := FileTool().Exec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: root, Workspace: LocalWorkspace(root)},
 		map[string]any{"op": "read", "path": "README"})
 	answer, ok := toolbroker.AsAnswer(err)
 	if !ok {

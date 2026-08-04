@@ -38,16 +38,20 @@ type WorkspaceFS struct {
 // NewWorkspaceFS binds a confinement to a real allocation root, resolving it through any symlinks so
 // containment checks compare real paths. The root must exist.
 func NewWorkspaceFS(root string) (*WorkspaceFS, error) {
+	// EVERY REFUSAL HERE WRAPS ErrRootUnusable, and the wrap is what lets the file tool's one
+	// asymmetry survive a workspace that lives on another machine: an absent root's own cause chain
+	// satisfies fs.ErrNotExist, so without a sentinel of its own a never-provisioned allocation would
+	// cross the wire as a missing FILE and be answered instead of faulted (failure.go).
 	if strings.TrimSpace(root) == "" {
-		return nil, errors.New("workspace root is required")
+		return nil, fmt.Errorf("%w: no root given", ErrRootUnusable)
 	}
 	abs, err := filepath.Abs(root)
 	if err != nil {
-		return nil, fmt.Errorf("resolve workspace root: %w", err)
+		return nil, fmt.Errorf("%w: resolve workspace root: %v", ErrRootUnusable, err)
 	}
 	real, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return nil, fmt.Errorf("resolve workspace root: %w", err)
+		return nil, fmt.Errorf("%w: resolve workspace root: %v", ErrRootUnusable, err)
 	}
 	return &WorkspaceFS{root: real}, nil
 }

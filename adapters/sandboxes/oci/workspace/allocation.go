@@ -29,6 +29,12 @@ const (
 	ArtifactsDir = "artifacts"
 )
 
+// RepoPath joins an allocation root to its repository. It exists so the join is spelled once: the
+// same two components were written out at six call sites across the coding tools and the approval
+// pump, and A.3 T5 added a seventh on the machine side of the wire, where a different spelling would
+// mean the control plane and the machine disagreed about where a run's repository is.
+func RepoPath(allocationRoot string) string { return filepath.Join(allocationRoot, RepoDir) }
+
 // SessionDir is machine-local RUNTIME state, not workspace content: under the NATIVE shell posture
 // (E22 T2) the host executor gives each run its own HOME, TMPDIR and CoreSimulator device set here,
 // so two concurrent runs on one Mac stop sharing them. Prepare does not create it — an OCI run gets

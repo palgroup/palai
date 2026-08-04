@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -92,9 +93,11 @@ func MediaTool() toolbroker.Tool {
 }
 
 func mediaExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
-	if env.WorkspaceRoot == "" {
+	if env.WorkspaceRoot == "" || env.Workspace == nil {
 		// The same answer the file tool gives, and for the same reason: a run offered a workspace tool with
-		// no workspace bound used to HANG. Nothing ran, so it is an answer the model can act on.
+		// no workspace bound used to HANG. Nothing ran, so it is an answer the model can act on. Both
+		// conditions for the reason the file tool states: a path without a way to reach it is not a bound
+		// workspace, it is a path on somebody else's disk.
 		return nil, toolbroker.Answer("no_workspace", fmt.Errorf("%s: no workspace bound for this run", mediaToolName))
 	}
 	// NO STORE MEANS NO SHOWING, AND IT SAYS SO. Returning an id-less success would have the model tell
@@ -121,15 +124,19 @@ func mediaExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any)
 	// Every path-equality and prefix comparison this repository has written by hand has shipped
 	// defeated at least once; WorkspaceFS.resolve carries the traversal, absolute-path and
 	// escaping-symlink refusals, and reusing it is the only version that stays correct when one of them
-	// is tightened.
-	fs, err := workspace.NewWorkspaceFS(env.WorkspaceRoot)
-	if err != nil {
-		return nil, fmt.Errorf("%s: open workspace: %w", mediaToolName, err)
-	}
+	// is tightened. That is still exactly true after A.3 T5 moved the read behind a seam: the ops this
+	// calls resolve through the SAME WorkspaceFS, on whichever host holds the allocation, and the
+	// refusal crosses back carrying its sentinel (workspace.FailureCode).
+	//
 	// maxMediaBytes+1 so an oversized file comes back TRUNCATED rather than silently at the limit — the
 	// difference between "exactly the cap" and "past the cap" is what decides whether this refuses.
-	data, truncated, err := fs.Read(path, maxMediaBytes+1)
+	data, truncated, err := env.Workspace.Read(ctx, path, maxMediaBytes+1)
 	if err != nil {
+		// AN ALLOCATION THAT CANNOT BE BOUND KEEPS THE FAULT PATH, as it did when this tool opened the
+		// filesystem itself: it is the deployment being broken, not the model naming a bad path.
+		if errors.Is(err, workspace.ErrRootUnusable) {
+			return nil, fmt.Errorf("%s: open workspace: %w", mediaToolName, err)
+		}
 		// A read that failed changed nothing, so it is an answer: the model named a path that is not
 		// there, or not readable, or not inside the workspace, and it can try again.
 		return nil, toolbroker.Answer("read_failed", fmt.Errorf("%s: %w", mediaToolName, err))

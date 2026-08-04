@@ -22,7 +22,7 @@ type recordingArtifacts struct {
 	err       error
 }
 
-func (r *recordingArtifacts) WriteArtifact(_ context.Context, _, _, _ string, content []byte, mediaType, logicalType string, provenance map[string]any) (string, error) {
+func (r *recordingArtifacts) WriteArtifact(_ context.Context, _, _ string, content []byte, mediaType, logicalType string, provenance map[string]any) (string, error) {
 	if r.err != nil {
 		return "", r.err
 	}
@@ -33,7 +33,7 @@ func (r *recordingArtifacts) WriteArtifact(_ context.Context, _, _, _ string, co
 func mediaEnv(t *testing.T, store toolbroker.ArtifactWriter) (toolbroker.ExecEnv, string) {
 	t.Helper()
 	root := t.TempDir()
-	return toolbroker.ExecEnv{WorkspaceRoot: root, Artifacts: store}, root
+	return toolbroker.ExecEnv{WorkspaceRoot: root, Workspace: LocalWorkspace(root), Artifacts: store}, root
 }
 
 func TestMediaToolShowsWhatTheAgentChose(t *testing.T) {
