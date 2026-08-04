@@ -18,9 +18,11 @@ import (
 // composition root) is no longer the only answer — it is the deployment-default FALLBACK underneath the
 // project's route. A project with no published route runs exactly as it did before this task.
 
-// tenantSecretRefPrefix marks a credential handle as belonging to one organization. A route's connection
-// ref is qualified with the run's own org so the broker's redemption is tenant-scoped: one tenant's ref
-// NAME can never redeem another tenant's credential, even if both call it "openai".
+// tenantSecretRefPrefix marks a credential handle as one a TENANT ROUTE minted, which is a routing
+// distinction and NOT a tenant boundary — read TenantSecretRef below, which says so at length. It used to
+// say "belonging to one organization … one tenant's ref NAME can never redeem another tenant's credential,
+// even if both call it openai"; secret_refs is keyed on the installation (000066), so two projects naming
+// a ref "openai" name the SAME row and always did once the org segment came off.
 const tenantSecretRefPrefix = "tenant:"
 
 // TenantSecretRef marks a connection's secret-ref handle as one a TENANT ROUTE minted, so Redeem sends it

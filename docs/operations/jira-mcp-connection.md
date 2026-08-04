@@ -47,10 +47,12 @@ printf %s 'Basic <the base64 from above>' | palai secret create --name jira-api-
 
 The connection's `secret_ref` is that **name**. It resolves through the DB-backed secret store, which needs a
 master key configured on the stack. Without one, the resolver falls back to an env-file bridge — the env var
-holds a **file path**, never the secret inline:
+holds a **file path**, never the secret inline. The suffix is the ref name upper-cased with every
+non-alphanumeric character replaced by `_` (`jira-api-token` → `JIRA_API_TOKEN`), and nothing else: this
+line carried an `<ORG>__` segment until A.2 Task 6, which no build of the control plane ever read.
 
 ```sh
-PALAI_MCP_SECRET_FILE_<ORG>__JIRA_API_TOKEN=/run/secrets/jira-api-token
+PALAI_MCP_SECRET_FILE_JIRA_API_TOKEN=/run/secrets/jira-api-token
 ```
 
 > Palai sends a secret that names its own scheme verbatim (case-insensitively) and defaults a bare secret to

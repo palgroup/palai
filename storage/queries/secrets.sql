@@ -16,21 +16,27 @@ SELECT coalesce(max(version), 0) + 1 FROM secret_refs WHERE name = $1;
 INSERT INTO secret_refs (id, name, version, ciphertext) VALUES ($1, $2, $3, $4)
 RETURNING created_at;
 
--- ResolveSecretRef returns the latest version's ciphertext for a name (org enforced by RLS), the bytes the
--- resolver chain decrypts. A foreign/unknown name is invisible under RLS and returns no row (a clean miss
--- the resolver treats as "fall back to the env bridge").
+-- ResolveSecretRef returns the latest version's ciphertext for a name, the bytes the resolver chain
+-- decrypts. Its ONE caller is identity.SecretStore.Resolve, which runs it under WithInstallationScope —
+-- so there is no org to enforce and no FOREIGN name to hide, per the header: 000066 made a name
+-- installation-wide. An UNKNOWN name returns no row (a clean miss the resolver treats as "fall back to
+-- the env bridge"), and that is the only miss this statement has.
 -- name: ResolveSecretRef
 SELECT ciphertext FROM secret_refs WHERE name = $1 ORDER BY version DESC LIMIT 1;
 
 -- ListSecretRefs returns metadata ONLY (name, latest version, latest version's created_at as updated_at) —
--- never the ciphertext. One row per name in the caller's organization.
+-- never the ciphertext. One row per name in the INSTALLATION, for EVERY caller: identity.SecretStore
+-- runs this under provisioningScope, but 000066's policy on secret_refs admits any connection that
+-- declared a scope, so a tenant admin and the platform see the identical set. That is 000066's stated
+-- ceiling, not an oversight here.
 -- name: ListSecretRefs
 SELECT name, max(version) AS version, max(created_at) AS updated_at
 FROM secret_refs
 GROUP BY name
 ORDER BY name;
 
--- GetSecretRef returns one name's metadata (org enforced by RLS); an absent/foreign name returns no row.
+-- GetSecretRef returns one name's metadata. There is no FOREIGN name to refuse — see ListSecretRefs —
+-- so an ABSENT name is the only one that returns no row.
 -- name: GetSecretRef
 SELECT name, max(version) AS version, max(created_at) AS updated_at
 FROM secret_refs
