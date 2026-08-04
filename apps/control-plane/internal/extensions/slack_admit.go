@@ -251,7 +251,14 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	}
 
 	if requested == nil {
-		release, locked, err := a.lockThread(ctx, slackThreadLockText(conn, ev))
+		// `scoped`, NOT `ctx`, and this is a fix rather than a tidy-up. lockThread acquires its own pooled
+		// connection, and PrepareConn (storage/embed.go:301) REFUSES an acquisition whose context carries a
+		// non-system tenant scope with no project — the A.2 Task 1 rule that an empty project is the absence
+		// of a boundary rather than a wide one. The raw request context carries no project, so this acquire
+		// failed for every event that reached it, and the events that reach it are exactly the ones opening a
+		// thread's FIRST session: a brand-new Slack conversation could not be admitted at all, answering 503.
+		// Before organizations went, a project-less scope still published an org and the acquire succeeded.
+		release, locked, err := a.lockThread(scoped, slackThreadLockText(conn, ev))
 		if err != nil {
 			return api.SlackAdmitOutcome{}, err
 		}

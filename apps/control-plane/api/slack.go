@@ -264,7 +264,11 @@ func (h *slackHandler) receive(w http.ResponseWriter, r *http.Request) {
 	out, err := h.slack.Admit(ctx, conn, ev)
 	switch {
 	case err != nil:
-		h.log("slack events: admission failed: connection=%s event=%s", conn.ID, ev.SourceEventID)
+		// THE ERROR IS NAMED. It was not, and the cost was measured on 2026-08-05: seventy-two tests in this
+		// family failed as a bare "503, want a 2xx ack" with the reason discarded here, so every one of them
+		// reported the symptom of an admission failure and none of them its cause. The body stays generic —
+		// an outsider learns nothing — but the OPERATOR's log says what broke.
+		h.log("slack events: admission failed: connection=%s event=%s: %v", conn.ID, ev.SourceEventID, err)
 		middleware.WriteProblem(w, r, http.StatusServiceUnavailable, "internal_error", "the receiver is temporarily unavailable")
 		return
 	case out.Ignored:
