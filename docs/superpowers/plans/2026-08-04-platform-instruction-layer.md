@@ -77,7 +77,7 @@ The 27 words say what the engine *is* and what it may not *control*. They say no
 - Consumes: nothing
 - Produces: `layerInstructionsPlatform = "platform"`, resolved first in the layer slice
 
-- [ ] **Step 1: Read the resolution function and its tests**
+- [x] **Step 1: Read the resolution function and its tests**
 
 ```bash
 grep -n "layerInstructionsRevision\|layerInstructionsRun" apps/control-plane/internal/execution/*.go
@@ -86,7 +86,7 @@ grep -n "func Test" apps/control-plane/internal/execution/instructions_test.go
 
 Find the function that builds `[]InstructionLayer` and the tests that pin today's order. **Match their style.**
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 ```go
 // TestThePlatformLayerLeadsAndTenantTextFollows pins the ONE ordering property that matters for
@@ -122,21 +122,21 @@ func TestThePlatformLayerIsPresentWithNoTenantText(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `go test ./apps/control-plane/internal/execution/ -run Platform -v`
 Expected: compile failure — `layerInstructionsPlatform` undefined.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 Add the constant beside its siblings and prepend the layer during resolution. Update the file's header comment, which currently lists layers 1, 2 and 4 as having **no writer** — layer 1 now has one, and leaving that sentence unchanged would make it false the moment this lands.
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `go test ./apps/control-plane/internal/execution/ -run Instruction -v`
 Expected: all PASS, including the pre-existing ordering tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git status --porcelain apps/control-plane/internal/execution/
@@ -156,7 +156,7 @@ git commit -m "feat(execution): §25.12 layer 1 exists and leads the instruction
 - Consumes: Task 1's layer
 - Produces: `platformInstructions` — the constant Task 1's resolver returns
 
-- [ ] **Step 1: Write the guards first**
+- [x] **Step 1: Write the guards first**
 
 These are the tests that keep the text honest as it is edited over time:
 
@@ -186,11 +186,11 @@ func TestThePlatformTextIsSubstantial(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Expected: compile failure — `platformInstructions` undefined.
 
-- [ ] **Step 3: Write the text**
+- [x] **Step 3: Write the text**
 
 Create the file. Its doc comment must record **where the patterns came from and where they did not**:
 
@@ -216,12 +216,12 @@ Then write the discipline. Cover, in your own words, at minimum:
 
 Write it as instructions to a capable colleague, not as rules for a machine. Avoid `CRITICAL:`/`YOU MUST` framing — Anthropic's own migration guidance is that emphatic phrasing overtriggers on current models, and prompts written to overcome older models' reluctance now misfire.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./apps/control-plane/internal/execution/ -run Platform -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git status --porcelain apps/control-plane/internal/execution/
@@ -241,7 +241,7 @@ Tasks 1 and 2 prove a layer exists and carries text. Neither proves a **model re
 **Interfaces:**
 - Consumes: everything above
 
-- [ ] **Step 1: Find where a built model request is asserted**
+- [x] **Step 1: Find where a built model request is asserted**
 
 ```bash
 grep -rn "applyInstructionLayers\|Messages\[0\]" apps/control-plane/internal/execution/*_test.go | head
@@ -249,7 +249,7 @@ grep -rn "applyInstructionLayers\|Messages\[0\]" apps/control-plane/internal/exe
 
 Find the test that inspects the messages a dispatch actually sends. Extend that path rather than building a parallel harness.
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 ```go
 // TestThePlatformTextReachesTheModelRequest is the end this plan exists for. Everything above proves
@@ -277,21 +277,21 @@ func TestThePlatformTextReachesTheModelRequest(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Expected: FAIL if the resolver is not wired into the dispatch path — which is precisely the failure worth catching.
 
-- [ ] **Step 4: Make it pass**
+- [x] **Step 4: Make it pass**
 
 If it already passes because Task 1 wired the resolver into an existing call site, say so in your report and move to Step 5 — a test that passes on arrival is fine **once you have proven it can fail** (Step 5).
 
-- [ ] **Step 5: Perturb**
+- [x] **Step 5: Perturb**
 
 Remove the platform layer from the resolver's output and re-run.
 Expected: the test FAILS naming the missing text.
 Restore and confirm green.
 
-- [ ] **Step 6: Run the package and vet**
+- [x] **Step 6: Run the package and vet**
 
 ```bash
 go test ./apps/control-plane/internal/execution/... -v
@@ -299,7 +299,7 @@ go vet -tags="component live security" ./...
 ```
 Expected: PASS, vet exits 0.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git status --porcelain apps/control-plane/internal/execution/
@@ -327,12 +327,12 @@ Tasks 1 and 2 landed together rather than separately, because they cannot be spl
 
 ## §5 — Definition of done
 
-- [ ] A `platform` layer resolves **unconditionally**, leads the layer slice, and appears exactly once
-- [ ] The text names no tool and carries no `palai.*` identifier
-- [ ] The text's provenance is recorded in its file's doc comment, naming the MIT/public sources and stating explicitly that nothing is copied from the leaked prompt
-- [ ] A built model request carries the text, after the engine's kernel turn and before any revision text
-- [ ] The Task 3 perturbation was observed RED and restored
-- [ ] `go vet -tags="component live security" ./...` exits 0
+- [x] A `platform` layer resolves **unconditionally**, leads the layer slice, and appears exactly once
+- [x] The text names no tool and carries no `palai.*` identifier
+- [x] The text's provenance is recorded in its file's doc comment, naming the MIT/public sources and stating explicitly that nothing is copied from the leaked prompt
+- [x] A built model request carries the text, after the engine's kernel turn and before any revision text
+- [x] The Task 3 perturbation was observed RED and restored
+- [x] `go vet -tags="component live security" ./...` exits 0
 
 ---
 

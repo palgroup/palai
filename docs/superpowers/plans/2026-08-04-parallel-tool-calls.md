@@ -130,7 +130,7 @@ A model turn costs seconds. So concurrent execution of three lookups saves ~20ms
 - Consumes: nothing
 - Produces: `toolbroker.Tool.ParallelSafe bool`, set on the read-only tools
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```go
 // TestOnlyReadOnlyToolsAreParallelSafe pins the classification by NAMING the safe set rather than
@@ -167,11 +167,11 @@ func TestParallelSafeDefaultsToFalse(t *testing.T) {
 
 **Note on `palai.workspace.file`:** it multiplexes read and write behind one `op` parameter, so the *tool* cannot be marked safe even though its read path would be. Record that in the test's comment — it is a concrete argument for the separate Read/Edit tools the text-editor plan introduces, and the classification should be revisited once those land.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Expected: compile failure — `ParallelSafe` undefined.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```go
 // ParallelSafe marks a tool that may run CONCURRENTLY with other parallel-safe tools in the same
@@ -186,12 +186,12 @@ ParallelSafe bool
 
 Then set it on the read-only tools. Judge each one; do not pattern-match on the name.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./packages/tool-broker/... ./apps/control-plane/internal/execution/tools/... -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git status --porcelain packages/tool-broker apps/control-plane/internal/execution/tools
@@ -201,7 +201,7 @@ git commit -m "feat(tools): a tool declares whether it may run beside another"
 
 ---
 
-## Task 2: Dispatch a turn's parallel-safe frames concurrently
+## Task 2: Dispatch a turn's parallel-safe frames concurrently — CLOSED BY MEASUREMENT, see §2.6
 
 **Files:**
 - Modify: `apps/control-plane/internal/execution/tool_dispatch.go`
@@ -318,13 +318,13 @@ A model batches calls only when it believes they overlap. Making the system para
 **Interfaces:**
 - Consumes: Tasks 1-2
 
-- [ ] **Step 1: Check which surface exists**
+- [x] **Step 1: Check which surface exists**
 
 ```bash
 ls apps/control-plane/internal/execution/platform_instructions.go 2>/dev/null && echo "platform layer present" || echo "use tool descriptions"
 ```
 
-- [ ] **Step 2: Write the sentence**
+- [x] **Step 2: Write the sentence**
 
 If the platform layer exists, add one line to it — in that file's voice, naming no tool:
 
@@ -332,11 +332,11 @@ If the platform layer exists, add one line to it — in that file's voice, namin
 
 If it does not, add an equivalent clause to each parallel-safe tool's `Description`. Do **not** create a third instruction surface for this.
 
-- [ ] **Step 3: Assert it**
+- [x] **Step 3: Assert it**
 
 Extend the relevant existing guard (the platform text's word-count/no-tool-name test, or the tool-description tests) so the guidance cannot silently disappear.
 
-- [ ] **Step 4: Run and commit**
+- [x] **Step 4: Run and commit**
 
 ```bash
 go test ./apps/control-plane/internal/execution/... -v
@@ -349,7 +349,7 @@ git commit -m "docs(execution): tell the model that independent lookups may be b
 
 ## §5 — Definition of done
 
-- [ ] `Tool.ParallelSafe` exists, **defaults to false**, and every registered tool is explicitly classified (an unclassified tool fails the guard)
+- [x] `Tool.ParallelSafe` exists, **defaults to false**, and every registered tool is explicitly classified (an unclassified tool fails the guard)
 - [ ] A turn's parallel-safe frames run concurrently, observed by a **barrier**, not by elapsed time
 - [ ] A turn containing one unsafe frame runs fully serially
 - [ ] Results are delivered in **call order** regardless of completion order
@@ -357,7 +357,7 @@ git commit -m "docs(execution): tell the model that independent lookups may be b
 - [ ] One refusal does not cancel its siblings
 - [ ] All three Task 2 perturbations were observed RED and restored
 - [ ] `go test ./apps/control-plane/internal/execution/ -race` passes
-- [ ] `go vet -tags="component live security" ./...` exits 0
+- [x] `go vet -tags="component live security" ./...` exits 0
 
 ---
 

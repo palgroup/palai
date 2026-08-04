@@ -83,13 +83,13 @@ Editing without searching is blind editing, which is why this plan comes before 
 - Consumes: nothing
 - Produces: `validate` accepting `{"type":"array","items":{...}}`, `{"type":"boolean"}`, and `{"enum":[...]}` on any schema
 
-- [ ] **Step 1: Find the existing validator tests**
+- [x] **Step 1: Find the existing validator tests**
 
 Run: `grep -rn "func Test" packages/tool-broker/*_test.go | grep -i "valid\|schema"`
 
 Read them. Match their construction style — do not invent a new fixture shape.
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 Add to that file:
 
@@ -156,12 +156,12 @@ func TestValidateStillRejectsAnUnknownType(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `go test ./packages/tool-broker/ -run 'TestValidate' -v`
 Expected: the array/boolean/enum tests FAIL (`unsupported schema type`), the unknown-type test PASSES already.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 In `validate`, add the two cases and hoist the enum check ahead of the type switch — an enum applies whether or not a type is declared:
 
@@ -205,12 +205,12 @@ and in the switch:
 
 Update the doc comment above `validate` — it currently says the subset covers "integer, number, and string" and carries a `ponytail:` note about arrays and enums being future work. Both sentences become false with this change.
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `go test ./packages/tool-broker/ -v`
 Expected: all PASS, including the pre-existing tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git status --porcelain packages/tool-broker/
@@ -232,7 +232,7 @@ The validator's new capability is worth nothing until a tool declares the types.
 - Consumes: `validate`'s array/boolean support from Task 1
 - Produces: nothing — this is a correctness fix
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `shell_test.go`:
 
@@ -265,12 +265,12 @@ func TestTheShellSchemaDeclaresItsTypes(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./apps/control-plane/internal/execution/tools/ -run TestTheShellSchemaDeclaresItsTypes -v`
 Expected: FAIL — every property reports type `""`.
 
-- [ ] **Step 3: Add the types**
+- [x] **Step 3: Add the types**
 
 In `shell.go`'s `InputSchema`, add `"type"` to each property, keeping every existing `description` **unchanged** — those sentences carry measured behaviour and are not yours to reword:
 
@@ -280,12 +280,12 @@ In `shell.go`'s `InputSchema`, add `"type"` to each property, keeping every exis
 "background": map[string]any{"type": "boolean", "description": /* unchanged */},
 ```
 
-- [ ] **Step 4: Run the package**
+- [x] **Step 4: Run the package**
 
 Run: `go test ./apps/control-plane/internal/execution/tools/ -v`
 Expected: all PASS. **If an existing shell test now fails**, it was passing a wrongly-typed argument that the validator previously ignored — that is a real defect the types just exposed. Report it rather than loosening the schema.
 
-- [ ] **Step 5: Sweep for other untyped fields**
+- [x] **Step 5: Sweep for other untyped fields**
 
 Run:
 
@@ -295,7 +295,7 @@ grep -rn 'map\[string\]any{"description"' apps/control-plane/internal/execution/
 
 Every hit is a property declared with a description and no type. Fix the ones in tools this plan touches; **list the rest in your report** rather than fixing them all — an unrelated tool's schema change belongs to whoever owns that tool.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git status --porcelain apps/control-plane/internal/execution/tools/
@@ -331,7 +331,7 @@ A workspace op touches five points. This task does all five for Glob, because a 
 - Consumes: nothing from earlier tasks
 - Produces: `Glob(ctx context.Context, pattern string, limit int) (paths []string, truncated bool, err error)` on `toolbroker.WorkspaceOps`; protocol op `"glob"`
 
-- [ ] **Step 1: Read the shape of an existing op end to end**
+- [x] **Step 1: Read the shape of an existing op end to end**
 
 Read all four sites for `checksum` — it is the simplest op with a scalar result:
 
@@ -344,7 +344,7 @@ grep -n "checksum\|Checksum" packages/runner/workspaceserver.go \
 
 **Copy that shape.** Do not invent a new error convention, a new parameter-encoding style, or a new place to put the confinement check.
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 Write one test per implementation, both asserting the same behaviour. For the local one, create a temp workspace with a known tree; for the remote one, follow the existing remote-workspace test's fake-transport pattern.
 
@@ -354,12 +354,12 @@ Assert all four of these:
 3. A `limit` of N returns N paths and `truncated == true` when more matched.
 4. A pattern escaping the workspace (`../*`) is **refused**, not silently emptied.
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `go test ./packages/tool-broker/... ./apps/control-plane/internal/execution/... -run Glob -v`
 Expected: compile failure — `Glob` undefined.
 
-- [ ] **Step 4: Implement all five points**
+- [x] **Step 4: Implement all five points**
 
 1. `workspaceserver.go`: `WorkspaceOpGlob = "glob"` beside its siblings, with a one-line comment matching theirs; add the handler arm.
 2. `workspace_ops.go`: the interface method with a doc comment stating the ordering and the truncation contract.
@@ -367,18 +367,18 @@ Expected: compile failure — `Glob` undefined.
 4. `workspace_local.go`: `filepath.WalkDir` + `path.Match` semantics for `**`. **Do not shell out for Glob** — it is a filesystem walk and `rg --files` would add a dependency for no gain.
 5. Confinement: the same guard every other op uses. A pattern is not a path, so **resolve each candidate result** and drop or refuse anything outside the root. This tree's history is that path comparisons in a verifier ship defeated — use the existing helper, do not write a new prefix check.
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `go test ./packages/tool-broker/... ./apps/control-plane/internal/execution/... -run Glob -v`
 Expected: PASS on both implementations.
 
-- [ ] **Step 6: Prove the confinement bites**
+- [x] **Step 6: Prove the confinement bites**
 
 Perturb: remove the confinement check in the local implementation and re-run.
 Expected: the escape test FAILS.
 **If it stays GREEN, the test is not reaching the guard** — fix the test, then restore the check and confirm green.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git status --porcelain packages/runner packages/tool-broker apps/control-plane/internal/execution
@@ -403,7 +403,7 @@ git commit -m "feat(workspace): glob is a workspace op, so a remote allocation i
 - Consumes: `WorkspaceOps.Glob` from Task 3; the validator's `array`/`integer` support from Task 1
 - Produces: tool name `palai.workspace.glob`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Follow `file_test.go`'s construction style. Assert:
 1. A nil `env.Workspace` answers `unavailable` — it does **not** touch this process's disk (copy `file.go:57-62`'s pattern and the test that pins it).
@@ -411,12 +411,12 @@ Follow `file_test.go`'s construction style. Assert:
 3. `ReplayClass` is `ClassReversible`.
 4. A refused pattern comes back as a `toolbroker.Answer`, not a raw error — a search that failed changed nothing, so the model may try again.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./apps/control-plane/internal/execution/tools/ -run Glob -v`
 Expected: FAIL — `GlobTool` undefined.
 
-- [ ] **Step 3: Implement the tool**
+- [x] **Step 3: Implement the tool**
 
 Schema — now declarable because of Task 1:
 
@@ -434,21 +434,21 @@ InputSchema: map[string]any{
 
 Write the description as onboarding documentation for someone who has never seen this codebase — Anthropic's measured guidance is that *"even small refinements to tool descriptions can yield dramatic improvements"*, and this one has to teach a model when to reach for Glob instead of Grep.
 
-- [ ] **Step 4: Register it in all three places**
+- [x] **Step 4: Register it in all three places**
 
 The three guards from the default-tool-set plan will fail until you do:
 1. `toolbroker.New(...)` in `main.go` — otherwise `TestEveryDefaultToolResolves` fails.
 2. `toolset.defaultTools` — searching is not conditional on a repository.
 3. `relay.go`'s `toolTitles` — otherwise `TestEveryCanonicalToolHasAHumanTitle` fails. Suggested phrase: `"Finding files"`.
 
-- [ ] **Step 5: Run the guards and the tool's own tests**
+- [x] **Step 5: Run the guards and the tool's own tests**
 
 ```bash
 go test ./apps/control-plane/internal/execution/tools/ ./packages/toolset/ ./apps/slack-bot/internal/relay/ -v
 ```
 Expected: all PASS, including the three cross-cutting guards.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git status --porcelain
@@ -470,7 +470,7 @@ Same five points as Task 3, for content search. The local implementation shells 
 - Consumes: Task 3's shape (copy it)
 - Produces: `Grep(ctx context.Context, req GrepRequest) (GrepResult, error)` on `toolbroker.WorkspaceOps`; protocol op `"grep"`
 
-- [ ] **Step 1: Design the request and result types**
+- [x] **Step 1: Design the request and result types**
 
 Put them in `workspace_ops.go` beside the interface:
 
@@ -491,7 +491,7 @@ type GrepRequest struct {
 
 Define `GrepResult` to carry the three output modes without three shapes: matched lines with file+line number, or file paths, or per-file counts plus a total.
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 Assert, on both implementations:
 1. `content` mode returns file, line number, and the matching line.
@@ -501,12 +501,12 @@ Assert, on both implementations:
 5. `.gitignore` is respected, and a path passed explicitly is searched anyway.
 6. A `Path` escaping the workspace is refused.
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `go test ./packages/tool-broker/... ./apps/control-plane/internal/execution/... -run Grep -v`
 Expected: compile failure — `Grep` undefined.
 
-- [ ] **Step 4: Implement all five points**
+- [x] **Step 4: Implement all five points**
 
 > **SUPERSEDED 2026-08-04 during execution.** This step said to shell out to `rg --json`, on the strength of the §1 measurement that reported ripgrep 14.1.1 present. That measurement was contaminated — `rg` is a shell function from the harness, not a binary a subprocess can exec — so **Grep is implemented in Go**, using `regexp` and a `filepath.WalkDir`.
 >
@@ -514,18 +514,18 @@ Expected: compile failure — `Grep` undefined.
 >
 > What the Go implementation does NOT reproduce: full `.gitignore` grammar. It handles the root file's plain directory and name entries plus `.git`, which covers the case that actually corrupts a search (a vendored or build directory), and it says so in its doc comment. Negation, nested ignore files, and globbed ignore rules are out of scope, and a caller who needs an ignored file can still name its path.
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `go test ./packages/tool-broker/... ./apps/control-plane/internal/execution/... -run Grep -v`
 Expected: PASS on both implementations.
 
-- [ ] **Step 6: Prove the count-vs-truncation property**
+- [x] **Step 6: Prove the count-vs-truncation property**
 
 Perturb: make `count` mode's total sum only the listed entries rather than every match, and re-run.
 Expected: the count test FAILS.
 Restore and confirm green. *(This is the exact bug Claude Code carried until v2.1.208 — a total that silently under-reports when the head limit trims the list.)*
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git status --porcelain packages/runner packages/tool-broker apps/control-plane/internal/execution
@@ -546,17 +546,17 @@ git commit -m "feat(workspace): grep is a workspace op, backed by ripgrep where 
 - Consumes: `WorkspaceOps.Grep` from Task 5; the validator's `enum`/`boolean`/`integer` support from Task 1
 - Produces: tool name `palai.workspace.grep`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Assert the same four properties as Task 4's tool test (nil workspace → `unavailable`; result shape; `ClassReversible`; refusal is an `Answer`), plus:
 5. `output_mode` rejects an unlisted value **through the schema validator**, not through a hand-written check in the tool. This is what Task 1 was for — assert it by calling the broker's validation path, not by asserting on a string.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./apps/control-plane/internal/execution/tools/ -run Grep -v`
 Expected: FAIL — `GrepTool` undefined.
 
-- [ ] **Step 3: Implement the tool**
+- [x] **Step 3: Implement the tool**
 
 Schema — every one of these types was impossible before Task 1:
 
@@ -573,11 +573,11 @@ Schema — every one of these types was impossible before Task 1:
 
 The description must say **ripgrep syntax, not POSIX**, and give the `interface\{\}` example — that specific confusion costs a Go-repo agent a wasted call every time.
 
-- [ ] **Step 4: Register it in all three places**
+- [x] **Step 4: Register it in all three places**
 
 `main.go`, `toolset.defaultTools`, and `relay.go`'s `toolTitles` (suggested phrase: `"Searching the code"`).
 
-- [ ] **Step 5: Run every guard this plan touches**
+- [x] **Step 5: Run every guard this plan touches**
 
 ```bash
 go test ./packages/tool-broker/... ./packages/toolset/... \
@@ -587,7 +587,7 @@ go vet -tags="component live security" ./...
 ```
 Expected: all PASS, vet exits 0.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git status --porcelain
@@ -619,13 +619,13 @@ git commit -m "feat(tools): palai.workspace.grep, so a model can find code by co
 
 ## §5 — Definition of done
 
-- [ ] `validate` accepts `array` (with optional `items`), `boolean`, and `enum`, and still **rejects** an unknown type
-- [ ] `shell.go`'s `argv`/`shell`/`background` declare real types; the untyped-field sweep's remaining hits are listed in a report
-- [ ] `WorkspaceOps` has `Glob` and `Grep`, each implemented in **both** `RemoteWorkspace` and `LocalWorkspace`, each with a protocol constant and handler
-- [ ] `palai.workspace.glob` and `palai.workspace.grep` are registered in `toolbroker.New`, in `toolset.Default()`, and in `relay.toolTitles`
-- [ ] All three cross-cutting guards pass: `TestEveryDefaultToolResolves`, `TestEveryCanonicalToolHasAHumanTitle`, `TestKnownNonGrantTitlesStaysDisjointFromCanonical`
-- [ ] Both perturbations (Task 3 Step 6, Task 5 Step 6) were observed RED and then restored
-- [ ] `go vet -tags="component live security" ./...` exits 0
+- [x] `validate` accepts `array` (with optional `items`), `boolean`, and `enum`, and still **rejects** an unknown type
+- [x] `shell.go`'s `argv`/`shell`/`background` declare real types; the untyped-field sweep's remaining hits are listed in a report
+- [x] `WorkspaceOps` has `Glob` and `Grep`, each implemented in **both** `RemoteWorkspace` and `LocalWorkspace`, each with a protocol constant and handler
+- [x] `palai.workspace.glob` and `palai.workspace.grep` are registered in `toolbroker.New`, in `toolset.Default()`, and in `relay.toolTitles`
+- [x] All three cross-cutting guards pass: `TestEveryDefaultToolResolves`, `TestEveryCanonicalToolHasAHumanTitle`, `TestKnownNonGrantTitlesStaysDisjointFromCanonical`
+- [x] Both perturbations (Task 3 Step 6, Task 5 Step 6) were observed RED and then restored
+- [x] `go vet -tags="component live security" ./...` exits 0
 
 ---
 

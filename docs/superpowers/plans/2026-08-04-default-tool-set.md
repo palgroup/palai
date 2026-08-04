@@ -108,7 +108,7 @@ Measured from `apps/control-plane/cmd/palai-control-plane/main.go:659-675` (`too
 - Consumes: nothing
 - Produces: `toolset.Default() []string`, `toolset.Repository() []string`, `toolset.Publish() []string`, `toolset.All() []string` — every one returns a fresh copy so a caller cannot mutate the package's state.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `packages/toolset/toolset_test.go`:
 
@@ -199,12 +199,12 @@ func TestCallersCannotMutateTheCanonicalLists(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./packages/toolset/ -v`
 Expected: FAIL — the package does not exist (`no required module provides package`).
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `packages/toolset/toolset.go`:
 
@@ -276,12 +276,12 @@ func clone(in []string) []string {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `go test ./packages/toolset/ -v`
 Expected: PASS — all four tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git status --porcelain packages/toolset/
@@ -304,13 +304,13 @@ The guard currently reads `cmd/cli/internal/stack/up.go` as **text** and regex-m
 - Consumes: `toolset.Default()`, `toolset.Repository()`, `toolset.Publish()` from Task 1
 - Produces: nothing — this is a guard
 
-- [ ] **Step 1: Read the current guard end to end**
+- [x] **Step 1: Read the current guard end to end**
 
 Run: `cat apps/control-plane/internal/execution/tools/default_set_test.go`
 
 Note the four test functions and what each asserts. You are replacing only how the *names* are obtained; every assertion about them stays.
 
-- [ ] **Step 2: Confirm the RED and its reason**
+- [x] **Step 2: Confirm the RED and its reason**
 
 Run:
 ```bash
@@ -319,7 +319,7 @@ go test ./apps/control-plane/internal/execution/tools/ \
 ```
 Expected: 2× FAIL, each with `slackDefaultTools was not found in cmd/cli/internal/stack/up.go`.
 
-- [ ] **Step 3: Replace the source-reading helpers**
+- [x] **Step 3: Replace the source-reading helpers**
 
 Delete `readCLIToolList` and `readCLISlackDefaultTools` entirely (the `os`, `path/filepath`, and `regexp` imports go with them if nothing else uses them — let the compiler tell you). Add the import `"github.com/palgroup/palai/packages/toolset"` and replace the call sites:
 
@@ -339,19 +339,19 @@ Rename the tests so no Slack-named symbol survives in this file:
 - `TestEverySlackDefaultToolResolves` → `TestEveryDefaultToolResolves`
 - `TestNoDefaultSlackToolHasSideEffects` → `TestNoDefaultToolHasSideEffects`
 
-- [ ] **Step 4: Run the guard**
+- [x] **Step 4: Run the guard**
 
 Run: `go test ./apps/control-plane/internal/execution/tools/ -run 'TestEveryDefaultToolResolves|TestThePublishToolsAreTheirOwnListAndNeitherPublishes|TestTheSearchToolIsInTheDefaultSet|TestNoDefaultToolHasSideEffects' -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Prove the guard still bites (perturbation)**
+- [x] **Step 5: Prove the guard still bites (perturbation)**
 
 Add a bogus name to `packages/toolset/toolset.go`'s `defaultTools` — `"palai.workspace.does_not_exist"` — and re-run Step 4.
 Expected: `TestEveryDefaultToolResolves` FAILS naming that tool.
 
 **If it stays GREEN, the guard is defeated — stop and fix the guard, not the list.** Then remove the bogus name and confirm green again.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git status --porcelain apps/control-plane/internal/execution/tools/default_set_test.go
@@ -370,7 +370,7 @@ git commit -m "fix(tools): the default-set guard imports the list instead of reg
 - Consumes: `toolset.Default()` from Task 1
 - Produces: a `prj_local` whose `config_policy.default_tools` is non-empty after `palai up`
 
-- [ ] **Step 1: Read the existing writer, and the trap in it**
+- [x] **Step 1: Read the existing writer, and the trap in it**
 
 Run: `sed -n '265,295p' cmd/cli/internal/admin/admin.go`
 
@@ -389,7 +389,7 @@ This is load-bearing for a bring-up, and it is the difference between a correct 
 
 So the write must be **read-modify-write**, not a bare PATCH. Step 4 implements that.
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Create the test beside the existing bring-up tests in `cmd/cli/internal/stack/`. Name the file `up_default_tools_test.go`:
 
@@ -462,12 +462,12 @@ func TestTheGrantAcceptsAnAbsentPolicy(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `go test ./cmd/cli/internal/stack/ -run 'TestBringUpGrants|TestTheGrant' -v`
 Expected: FAIL to compile — `undefined: bootstrapDefaultTools`, `undefined: policyWithDefaultTools`.
 
-- [ ] **Step 4: Add the accessor and the merge**
+- [x] **Step 4: Add the accessor and the merge**
 
 In `up.go`, add both functions the tests name:
 
@@ -503,7 +503,7 @@ Then wire the write into the bring-up sequence, **after** the project exists and
 
 Reuse the CLI's existing request helper rather than building a fresh HTTP client — `grep -n "func (c \*client) do\|func body(" cmd/cli/internal/admin/admin.go` shows the shape the admin path uses.
 
-- [ ] **Step 5: Keep the warning, and say why**
+- [x] **Step 5: Keep the warning, and say why**
 
 Do NOT delete the warning. Narrow its comment so a reader knows when it can still fire.
 
@@ -515,7 +515,7 @@ Do NOT delete the warning. Narrow its comment so a reader knows when it can stil
 >
 > The accurate narrowing, and what the implementer wrote instead: the warning survives because it **re-reads the server after the write**, so it still fires when the grant stood down — the write failed, the project was absent, or an operator's own baseline was left in place.
 
-- [ ] **Step 6: Run the tests and the package**
+- [x] **Step 6: Run the tests and the package**
 
 Run: `go test ./cmd/cli/internal/stack/ -run 'TestBringUpGrants|TestTheGrant' -v`
 Expected: all four PASS.
@@ -523,7 +523,7 @@ Expected: all four PASS.
 Run: `go build ./cmd/cli/...`
 Expected: exit 0.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git status --porcelain cmd/cli/internal/stack/
@@ -544,13 +544,13 @@ This is the second half of the user's requirement. `apps/slack-bot/internal/rela
 - Consumes: `toolset.All()` from Task 1; `toolTitles` (unexported, same package)
 - Produces: nothing — this is a guard
 
-- [ ] **Step 1: Confirm the map and the fallback**
+- [x] **Step 1: Confirm the map and the fallback**
 
 Run: `sed -n '429,460p' apps/slack-bot/internal/relay/relay.go`
 
 Confirm `toolTitles` is a package-level `map[string]string` and that the fallback uses the raw name. **The test must be in `package relay`** (not `relay_test`) to reach an unexported map.
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Create `apps/slack-bot/internal/relay/tool_titles_test.go`:
 
@@ -616,20 +616,20 @@ func TestNoTitleIsOrphaned(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run test to verify the first one's behavior**
+- [x] **Step 3: Run test to verify the first one's behavior**
 
 Run: `go test ./apps/slack-bot/internal/relay/ -run 'TestEveryCanonicalToolHasAHumanTitle|TestNoTitleIsOrphaned' -v`
 
 Expected at plan time: **PASS** — all ten canonical names already have titles (`relay.go:433-448` covers every one). That is a real result, not a vacuous one: Step 4 proves it.
 
-- [ ] **Step 4: Prove the guard bites (perturbation)**
+- [x] **Step 4: Prove the guard bites (perturbation)**
 
 Delete the `"palai.knowledge.retrieve": "Searching the knowledge base",` line from `toolTitles` and re-run Step 3.
 Expected: `TestEveryCanonicalToolHasAHumanTitle` FAILS naming `palai.knowledge.retrieve`.
 
 **If it stays GREEN, the test is not reaching the map — check the package clause.** Restore the line and confirm green.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git status --porcelain apps/slack-bot/internal/relay/
@@ -649,13 +649,13 @@ Tasks 1-4 prove the list is canonical, resolvable, written, and titled. None of 
 **Interfaces:**
 - Consumes: `toolset.Default()`; the effective-set computation in `execution/config.go:120-137`
 
-- [ ] **Step 1: Read the neighbouring test**
+- [x] **Step 1: Read the neighbouring test**
 
 Run: `sed -n '68,95p' apps/control-plane/internal/execution/config_test.go`
 
 Measured on 2026-08-04: the file is `package execution` (no prefix on `Resolve`), the entry point is `Resolve(ResolveInput{...}) ConfigSnapshot`, the effective names land on `.Tools`, and a `hasTool(list, name)` helper already exists. **No new helper is needed** — call the real `Resolve` directly.
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Add to `config_test.go` (add `"github.com/palgroup/palai/packages/toolset"` to its imports):
 
@@ -715,19 +715,19 @@ func TestAnEmptyProjectBaselineEmptiesTheEffectiveSet(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `go test ./apps/control-plane/internal/execution/ -run 'TestTheBringUpBaselineSurvivesTheRevisionCeiling|TestAnEmptyProjectBaselineEmptiesTheEffectiveSet' -v`
 Expected: FAIL to compile until the `toolset` import is added; then both PASS.
 
 **If `TestAnEmptyProjectBaselineEmptiesTheEffectiveSet` FAILS**, the ceiling no longer intersects last — stop. That is a change to §2's premise and the rest of this plan needs re-reading before it is trusted.
 
-- [ ] **Step 4: Confirm both pass**
+- [x] **Step 4: Confirm both pass**
 
 Run: `go test ./apps/control-plane/internal/execution/ -run 'TestTheBringUpBaselineSurvives|TestAnEmptyProjectBaseline' -v`
 Expected: both PASS.
 
-- [ ] **Step 5: Run every guard this plan touched**
+- [x] **Step 5: Run every guard this plan touched**
 
 ```bash
 go test ./packages/toolset/... \
@@ -737,7 +737,7 @@ go test ./packages/toolset/... \
 ```
 Expected: all PASS. **Diff this against the two FAILs from §1** — that diff is the plan's deliverable.
 
-- [ ] **Step 6: Build the tagged trees the plain run misses**
+- [x] **Step 6: Build the tagged trees the plain run misses**
 
 This tree ships seven build tags and a plain `go vet` covers three. A stale caller in a tagged test is invisible until it is not:
 
@@ -746,7 +746,7 @@ go vet -tags="component live security" ./...
 ```
 Expected: exit 0.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git status --porcelain apps/control-plane/internal/execution/
@@ -758,16 +758,16 @@ git commit -m "test(execution): the bring-up baseline survives the revision ceil
 
 ## §5 — Definition of done
 
-- [ ] `go test ./packages/toolset/...` PASSES (4 tests)
-- [ ] `TestEveryDefaultToolResolves` and `TestThePublishToolsAreTheirOwnListAndNeitherPublishes` PASS
-- [ ] `TestTheSearchToolIsInTheDefaultSet` is **deleted** — decided 2026-08-04. Its premise was a Slack default list, and `1e5fc63e` removed that world. Its report was TRUE and is preserved in §7: nothing grants `palai.slack.search` today.
-- [ ] `TestNoDefaultToolHasSideEffects` is **renamed `TestNoDefaultToolPublishes`**, keeps its `publish.` clause — now over `Default()` AND `Repository()` — and **drops** its file/shell clause. Decided 2026-08-04. The file/shell prohibition contradicts this plan's purpose, and its stated remedy (`SLACK_AGENT_TOOLS`) had exactly one occurrence in the tree: that test's own error string. The rename is load-bearing, not cosmetic — `Default()` grants `workspace.shell`, so the old name would print `--- PASS` for a claim the test no longer makes.
-- [ ] `TestTheGrantPreservesEveryOtherPolicyKey` PASSES — the re-run does not clear `approvers`
-- [ ] `TestAnEmptyProjectBaselineEmptiesTheEffectiveSet` PASSES — the outage's own shape is pinned
-- [ ] `TestEveryCanonicalToolHasAHumanTitle` PASSES — Slack carries no name the grant list does not
-- [ ] `grep -rn "slackDefaultTools\|slackRepositoryTools\|slackPublishTools" --include="*.go" .` returns hits ONLY in `tests/uat/` prose (the released bundle's wording, which is history and must not be edited)
-- [ ] `go vet -tags="component live security" ./...` exits 0
-- [ ] Both perturbations (Task 2 Step 5, Task 4 Step 4) were observed RED and then restored
+- [x] `go test ./packages/toolset/...` PASSES (4 tests)
+- [x] `TestEveryDefaultToolResolves` and `TestThePublishToolsAreTheirOwnListAndNeitherPublishes` PASS
+- [x] `TestTheSearchToolIsInTheDefaultSet` is **deleted** — decided 2026-08-04. Its premise was a Slack default list, and `1e5fc63e` removed that world. Its report was TRUE and is preserved in §7: nothing grants `palai.slack.search` today.
+- [x] `TestNoDefaultToolHasSideEffects` is **renamed `TestNoDefaultToolPublishes`**, keeps its `publish.` clause — now over `Default()` AND `Repository()` — and **drops** its file/shell clause. Decided 2026-08-04. The file/shell prohibition contradicts this plan's purpose, and its stated remedy (`SLACK_AGENT_TOOLS`) had exactly one occurrence in the tree: that test's own error string. The rename is load-bearing, not cosmetic — `Default()` grants `workspace.shell`, so the old name would print `--- PASS` for a claim the test no longer makes.
+- [x] `TestTheGrantPreservesEveryOtherPolicyKey` PASSES — the re-run does not clear `approvers`
+- [x] `TestAnEmptyProjectBaselineEmptiesTheEffectiveSet` PASSES — the outage's own shape is pinned
+- [x] `TestEveryCanonicalToolHasAHumanTitle` PASSES — Slack carries no name the grant list does not
+- [x] `grep -rn "slackDefaultTools\|slackRepositoryTools\|slackPublishTools" --include="*.go" .` returns hits ONLY in `tests/uat/` prose (the released bundle's wording, which is history and must not be edited)
+- [x] `go vet -tags="component live security" ./...` exits 0
+- [x] Both perturbations (Task 2 Step 5, Task 4 Step 4) were observed RED and then restored
 
 ---
 
@@ -793,6 +793,23 @@ A fourth false claim — that a bring-up ADDS `Repository()`/`Publish()` — sur
 
 **The gate's third leg was RED, and not from this plan.** `go vet -tags="component live security" ./...` exits **1** with **17** errors — every one of them a tagged test still calling the pre-refactor signatures (`tenant.Organization undefined`, `too many arguments in call to h.writer.Read`). **Zero name a file this plan touched** (checked by grepping the vet output for `toolset|default_set_test|tool_titles_test|up_default_tools_test|config_test`). This is the tree's own recorded trap: a plain `go build` covers the untagged world and leaves tagged tests broken but invisible. Re-run once whoever owns the refactor finishes the tagged callers.
 </details>
+
+- [ ] **The `tools-memory` UAT catalog gate is RED, and three of its fifteen violations are this plan's.** Found 2026-08-04 while checking off §5, by running the gate rather than reading it — §5's own grep looked for `slackDefaultTools`, so it never asked whether the tests this plan RENAMED were referenced by name anywhere.
+
+  ```
+  go test ./tests/uat/tools-memory/ -count=1     → FAIL, 15 violations
+  ```
+
+  The catalog pins each case's proofs as `file:TestName` strings and verifies every one resolves. Splitting them by cause:
+
+  | Count | Cause |
+  |---|---|
+  | 12 | `1e5fc63e` — it deleted `cmd/cli/internal/stack/up_tools_test.go` (206 lines), so TLM-004 names a file that is gone, and TLM-002's seven proofs live nowhere in the tree |
+  | 3 | **this plan** — TLM-004 names `TestEverySlackDefaultToolResolves`, `TestTheSearchToolIsInTheDefaultSet` and `TestNoDefaultSlackToolHasSideEffects`, which are respectively renamed, deleted (§5 line 3, deliberately) and renamed |
+
+  **So the gate was already red before this plan touched it, and this plan made it redder.** It went unnoticed because `scripts/uat` runs in no CI leg — the tree's recorded finding that CI runs only `make verify`.
+
+  **The fix is not obvious and must not be improvised.** These are RELEASED bundle evidence lists, which this plan's own constraints forbid editing, and the honest repair may be a new bundle revision rather than an edit — the same question `1e5fc63e` left unanswered and larger than either change. **Whoever picks this up should decide the 12 and the 3 together**, because a fix that only renames this plan's three leaves a gate that is still red for the older reason and now looks like it was tended.
 
 - [ ] `grantDefaultToolBaseline`'s three stand-down paths have no test; an `httptest` server would cover GET-fail / skip / PATCH-fail. The destructive direction is structurally closed (a shape mismatch 400s and stands down), so this is coverage, not risk.
 

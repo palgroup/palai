@@ -80,7 +80,7 @@ Today the only way a model writes a file is `palai.workspace.file` with `op: "wr
 - Consumes: nothing
 - Produces: `toolbroker.Tool.Type string` and `modelbroker.ToolSchema.Type string`, carried across the advertisement seam
 
-- [ ] **Step 1: Find the advertisement seam**
+- [x] **Step 1: Find the advertisement seam**
 
 Run:
 
@@ -90,7 +90,7 @@ grep -rn "ToolSchema{" --include="*.go" . | grep -v _test
 
 One of those sites converts registered `toolbroker.Tool`s into the `ToolSchema`s a request carries. Read it. **That conversion is the seam this task widens** — a `Type` added to both structs but dropped in between is exactly the "declared but not wired" defect this tree keeps paying for.
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Write it at the **seam**, not on the structs — a test that only checks two struct literals proves nothing about the conversion:
 
@@ -107,11 +107,11 @@ func TestTheToolTypeReachesTheWire(t *testing.T) {
 
 Fill in the construction from the seam you found in Step 1 — use its real types, do not invent a fixture.
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Expected: compile failure — `Type` undefined on one or both structs.
 
-- [ ] **Step 4: Add the field to both structs and carry it across**
+- [x] **Step 4: Add the field to both structs and carry it across**
 
 On `toolbroker.Tool`:
 
@@ -125,12 +125,12 @@ Type string
 
 Mirror it on `ToolSchema` with `json:"type,omitempty"` — **`omitempty` is load-bearing**: an ordinary custom tool must not gain a `"type": ""` key it never had.
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run the seam's package tests plus `go build ./...`.
 Expected: PASS, build clean.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git status --porcelain packages/tool-broker packages/model-broker <the seam's dir>
@@ -150,7 +150,7 @@ git commit -m "feat(tools): a tool can declare an Anthropic-defined type, and it
 - Consumes: `ToolSchema.Type` from Task 1
 - Produces: request bodies where a typed tool is `{type, name}` and a custom tool is unchanged
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Assert against the **built request body**, following the existing adapter tests' style:
 
@@ -159,12 +159,12 @@ Assert against the **built request body**, following the existing adapter tests'
 3. `str_replace_based_edit_tool` survives `wireToolName` **unchanged**. Assert the literal; the name is what the model was trained on and a silent rewrite would be undetectable at runtime.
 4. A typed tool that also carries a non-empty `Parameters` is a **programming error** — assert the adapter returns an error naming the tool rather than sending both.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./adapters/models/provider_two/ -run Tool -v`
 Expected: FAIL — the typed tool serialises with `input_schema` and no `type`.
 
-- [ ] **Step 3: Implement the branch**
+- [x] **Step 3: Implement the branch**
 
 In the tool loop, before building the map:
 
@@ -184,18 +184,18 @@ if t.Type != "" {
 
 Keep the existing duplicate-wire-name check applying to typed tools too.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `go test ./adapters/models/provider_two/ -v`
 Expected: all PASS, including the pre-existing adapter tests.
 
-- [ ] **Step 5: Prove the custom-tool path is untouched**
+- [x] **Step 5: Prove the custom-tool path is untouched**
 
 Perturb: make the branch fire for **every** tool (drop the `t.Type != ""` condition) and re-run.
 Expected: the custom-tool byte-identity test FAILS.
 Restore and confirm green. This proves the test actually pins today's shape rather than accepting anything.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git status --porcelain adapters/models/provider_two/
@@ -217,16 +217,16 @@ An OpenAI-shaped endpoint has no concept of `text_editor_20250728`. The failure 
 - Consumes: `ToolSchema.Type` from Task 1
 - Produces: a named error when a typed tool is routed to an OpenAI-shaped provider
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Assert that building a request carrying a tool with a non-empty `Type` returns an error whose message names **both** the tool and the reason, and that a request with only custom tools is unaffected.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./adapters/models/provider_one/ -run Tool -v`
 Expected: FAIL — no error; the type is silently ignored.
 
-- [ ] **Step 3: Implement the refusal**
+- [x] **Step 3: Implement the refusal**
 
 ```go
 // A TYPED TOOL CANNOT CROSS THIS ADAPTER, and it must not be dropped quietly. This provider speaks
@@ -240,12 +240,12 @@ if t.Type != "" {
 
 Check whether `adapters/models/openai_compatible` needs the same guard — if it shares this serialisation path, one fix covers both; if not, it needs its own. **Measure, do not assume.**
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `go test ./adapters/models/... -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git status --porcelain adapters/models/
@@ -265,7 +265,7 @@ git commit -m "fix(provider_one): a typed tool is refused by name instead of sil
 - Consumes: `toolbroker.Tool.Type` from Task 1; `ExecEnv.Workspace` (`WorkspaceOps`)
 - Produces: tool `Type: "text_editor_20250728"`, `Name: "str_replace_based_edit_tool"`
 
-- [ ] **Step 1: Read the command contract**
+- [x] **Step 1: Read the command contract**
 
 The model sends `command` plus command-specific fields:
 
@@ -278,7 +278,7 @@ The model sends `command` plus command-specific fields:
 
 `undo_edit` is **not** part of this version. Do not implement it.
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 One per property. The `str_replace` arity rules are the reason this tool exists — test them first:
 
@@ -322,29 +322,29 @@ func TestTheEditorDeclaresATypeAndNoSchema(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `go test ./apps/control-plane/internal/execution/tools/ -run 'StrReplace|View|Insert|Editor' -v`
 Expected: FAIL — `TextEditorTool` undefined.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 Act through `env.Workspace` only. Classification follows `file.go`'s rule, which is already written down there and is worth re-reading before you copy it: **a read that failed changed nothing**, so `view` failures are `toolbroker.Answer`s the model can retry; a write that failed may have landed, so only provably pre-effect failures are answerable.
 
 `str_replace` is a **read-modify-write** through `WorkspaceOps`: read, count occurrences, refuse unless exactly one, write. Count on the raw bytes — no normalisation, no trimming. A single whitespace difference must miss, because that is the contract the model is working to.
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `go test ./apps/control-plane/internal/execution/tools/ -v`
 Expected: all PASS.
 
-- [ ] **Step 6: Prove the arity guard bites**
+- [x] **Step 6: Prove the arity guard bites**
 
 Perturb: make `str_replace` replace the **first** match instead of demanding uniqueness, and re-run.
 Expected: the two-match test FAILS.
 Restore and confirm green. A first-match editor is the silent-corruption mode this whole plan exists to avoid.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git status --porcelain apps/control-plane/internal/execution/tools/
@@ -367,7 +367,7 @@ git commit -m "feat(tools): the Anthropic text editor, whose str_replace demands
 - Consumes: everything above
 - Produces: `str_replace_based_edit_tool` in the canonical set
 
-- [ ] **Step 1: Measure what still needs `palai.workspace.file`**
+- [x] **Step 1: Measure what still needs `palai.workspace.file`**
 
 The two tools overlap on read and write. Before changing anything, find out what would break if the file tool lost them:
 
@@ -379,7 +379,7 @@ grep -rn "before_hash\|after_hash\|BeforeHash\|AfterHash" --include="*.go" apps/
 
 **Record the answer in your report.** It decides Step 3.
 
-- [ ] **Step 2: Register the editor in all three places**
+- [x] **Step 2: Register the editor in all three places**
 
 1. `toolbroker.New(...)` — otherwise `TestEveryDefaultToolResolves` fails.
 2. `toolset.defaultTools` — editing is not conditional on a repository.
@@ -387,13 +387,13 @@ grep -rn "before_hash\|after_hash\|BeforeHash\|AfterHash" --include="*.go" apps/
 
 **Note the name is not `palai.`-prefixed.** `toolset`'s own test asserts every canonical name starts with `palai.` — this one cannot, because the literal is Anthropic's. Widen that assertion to admit exactly this name, with a comment saying why. Do **not** loosen it to accept any prefix.
 
-- [ ] **Step 3: Narrow the file tool's description**
+- [x] **Step 3: Narrow the file tool's description**
 
 Both tools will be advertised together, so the model needs to know which to reach for. Rewrite `file.go`'s `Description` (line 27) to say what it is now **for** — listing, stat, checksum, and the hashed write the changeset consumes — and to point at the editor for ordinary reading and editing.
 
 Do not change `file.go`'s behaviour in this task. If Step 1 showed nothing depends on its write path, removing it is a **separate** plan with its own guard.
 
-- [ ] **Step 4: Run every guard**
+- [x] **Step 4: Run every guard**
 
 ```bash
 go test ./packages/toolset/... ./packages/tool-broker/... ./packages/model-broker/... \
@@ -403,7 +403,7 @@ go vet -tags="component live security" ./...
 ```
 Expected: all PASS, vet exits 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git status --porcelain
@@ -444,13 +444,13 @@ Fixed by `isWorkspaceWriteRow(name, args)`, which knows that each tool names its
 
 ## §5 — Definition of done
 
-- [ ] `toolbroker.Tool.Type` and `ToolSchema.Type` exist **and the value survives the advertisement seam** (asserted at the seam, not on the structs)
-- [ ] `provider_two` sends `{type, name}` with **no** `input_schema` for a typed tool, and custom tools serialise byte-identically to before
-- [ ] `str_replace_based_edit_tool` is asserted to survive `wireToolName` unchanged
-- [ ] `provider_one` (and `openai_compatible`, if it shares the path) **errors by name** on a typed tool
-- [ ] `str_replace` refuses 0 matches and >1 matches with **different** messages, and the two-match perturbation was observed RED
-- [ ] A nil `ExecEnv.Workspace` answers `unavailable` and touches no local disk
-- [ ] All three cross-cutting guards pass; `go vet -tags="component live security" ./...` exits 0
+- [x] `toolbroker.Tool.Type` and `ToolSchema.Type` exist **and the value survives the advertisement seam** (asserted at the seam, not on the structs)
+- [x] `provider_two` sends `{type, name}` with **no** `input_schema` for a typed tool, and custom tools serialise byte-identically to before
+- [x] `str_replace_based_edit_tool` is asserted to survive `wireToolName` unchanged
+- [x] `provider_one` (and `openai_compatible`, if it shares the path) **errors by name** on a typed tool
+- [x] `str_replace` refuses 0 matches and >1 matches with **different** messages, and the two-match perturbation was observed RED
+- [x] A nil `ExecEnv.Workspace` answers `unavailable` and touches no local disk
+- [x] All three cross-cutting guards pass; `go vet -tags="component live security" ./...` exits 0
 
 ---
 
