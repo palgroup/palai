@@ -60,7 +60,7 @@ func TestLiveRunHistoryListCrossTenantCursor(t *testing.T) {
 	tokenA, tenantA, sessionA, respA, runA := seedTenantWithRun(t, pool, "org-A: reply with the single word done.")
 	respA2 := newID("resp")
 	if _, err := pool.Exec(storage.WithSystemScope(ctx),
-		`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued','{}'::jsonb)`,
+		`INSERT INTO responses (id, project_id, session_id, state, input) VALUES ($1,$2,$3,'queued','{}'::jsonb)`,
 		respA2, tenantA.Project, sessionA); err != nil {
 		t.Fatalf("seed org-A second response: %v", err)
 	}

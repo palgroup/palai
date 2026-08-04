@@ -80,12 +80,11 @@ func seedDetachParent(t *testing.T, pool *pgxpool.Pool, childModel string) (coor
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
-	do(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	do(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, tenant.Project)
-	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
+	do(`INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
+	do(`INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, session, tenant.Project)
+	do(`INSERT INTO responses (id, project_id, session_id, state, input) VALUES ($1,$2,$3,'queued',$4)`,
 		response, tenant.Project, session, []byte(`"Delegate the research, then summarize the result."`))
-	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, delegation) VALUES ($1,$2,$3,$4,$5,'queued',$6)`,
+	do(`INSERT INTO runs (id, project_id, session_id, response_id, state, delegation) VALUES ($1,$2,$3,$4,'queued',$5)`,
 		runID, tenant.Project, session, response, deleg)
 	return tenant, session, response, runID
 }
@@ -127,7 +126,7 @@ func TestLiveDetachedChildConversationRealProvider(t *testing.T) {
 	tenant, sessionID, responseID, runID := seedDetachParent(t, pool, childModel)
 	// The project must allow the child model or the required delegation is unroutable.
 	allow, _ := json.Marshal(map[string]any{"allowed_models": []string{liveModel(), childModel}})
-	if _, err := pool.Exec(storage.WithSystemScope(ctx), `UPDATE projects SET config_policy=$1 WHERE id=$2 AND organization_id=$3`, allow, tenant.Project, tenant.Organization); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(ctx), `UPDATE projects SET config_policy=$1 WHERE id=$2 `, allow, tenant.Project); err != nil {
 		t.Fatalf("set allowed models: %v", err)
 	}
 
@@ -166,7 +165,7 @@ func TestLiveDetachedChildConversationRealProvider(t *testing.T) {
 	}
 	// Exactly one child (rebind, not clone), and it ran on the real provider with its own chatcmpl id.
 	var childRun string
-	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT id FROM runs WHERE parent_run_id=$1 AND organization_id=$2 AND project_id=$3`,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT id FROM runs WHERE parent_run_id=$1  project_id=$2`,
 		runID, tenant.Project).Scan(&childRun); err != nil {
 		t.Fatalf("read child run: %v", err)
 	}
@@ -187,7 +186,7 @@ func awaitState(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, res
 	var last string
 	for time.Now().Before(deadline) {
 		if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
-			`SELECT state FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+			`SELECT state FROM responses WHERE id=$1  project_id=$2`,
 			responseID, tenant.Project).Scan(&last); err == nil && last == want {
 			return
 		}

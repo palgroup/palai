@@ -115,18 +115,25 @@ func TestLiveTenancyIsolationCrossOrgDeny(t *testing.T) {
 	}
 
 	// LAYER 2 — database: a WHERE-less-on-tenant count under org-B's scope must not include org-A's row.
-	// This is the RLS deny at Postgres: the query asks for exactly org-A's response id and the policy hides
-	// it, so even a query that forgot to scope by organization sees nothing across the boundary.
-	// "" for organization is the point, not an oversight: migration 000062 keys this table's RLS on
-	// project_id alone, so an org_id GUC that was never set to anything real still proves the SAME deny —
-	// project_id is what is carrying the isolation now.
-	if n := countUnderTenant(t, pool, "", scopeB.Project,
+	// This is the RLS deny at Postgres: the query asks for exactly the first tenant's response id and the
+	// policy hides it, so even a query that forgot to scope sees nothing across the boundary. Migration
+	// 000062 keys this table's RLS on project_id alone, and A.2 removed the organization parameter that used
+	// to sit beside it — project_id is the whole of the isolation now.
+	//
+	// AND DROPPING THAT PARAMETER FIXED A CALL SITE THAT WAS ALREADY WRONG. Under the old
+	// (t, pool, org, project, query, args...) signature the second call below read
+	// `countUnderTenant(t, pool, tenantA.Project, "SELECT ...", respA)` — five arguments where six were
+	// meant, so `tenantA.Project` landed in `org`, the SQL landed in `project`, and `respA` became the
+	// QUERY. It compiled because all three are strings; it would have failed at runtime trying to execute a
+	// run id as SQL, and nothing caught it because this leg only runs against a real provider. With the org
+	// parameter gone the same call site is correct, and it is written out here rather than left to luck.
+	if n := countUnderTenant(t, pool, scopeB.Project,
 		`SELECT count(*) FROM responses WHERE id=$1`, respA); n != 0 {
-		t.Fatalf("org-B-scoped DB read saw %d of org-A's response rows, want 0 (migration 000062 RLS deny)", n)
+		t.Fatalf("the second tenant's scoped DB read saw %d of the first tenant's response rows, want 0 (migration 000062 RLS deny)", n)
 	}
 	if n := countUnderTenant(t, pool, tenantA.Project,
 		`SELECT count(*) FROM responses WHERE id=$1`, respA); n != 1 {
-		t.Fatalf("org-A-scoped DB read saw %d of its own response rows, want exactly 1", n)
+		t.Fatalf("the first tenant's scoped DB read saw %d of its own response rows, want exactly 1", n)
 	}
 
 	t.Logf("tenancy-isolation PASS: a REAL provider run in org-A (%s) is invisible to org-B's key at the API surface (404) AND denied at the database by RLS (000029); org-A sees its own row at both layers.", runA)
@@ -146,16 +153,15 @@ func seedTenantWithRun(t *testing.T, pool *pgxpool.Pool, prompt string) (token s
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
-	do(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	do(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	do(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`,
+	do(`INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
+	do(`INSERT INTO principals (id, project_id, kind) VALUES ($1, $2, 'service')`,
 		principal, tenant.Project)
-	do(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4, $5)`,
+	do(`INSERT INTO api_keys (id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4)`,
 		keyID, tenant.Project, principal, coordinator.HashAPIKey(token))
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, tenant.Project)
-	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
+	do(`INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, session, tenant.Project)
+	do(`INSERT INTO responses (id, project_id, session_id, state, input) VALUES ($1,$2,$3,'queued',$4)`,
 		response, tenant.Project, session, encodeJSONString(prompt))
-	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'queued')`,
+	do(`INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,'queued')`,
 		runID, tenant.Project, session, response)
 	return token, tenant, session, response, runID
 }
@@ -173,11 +179,10 @@ func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, label string) (token st
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
-	do(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	do(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	do(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`,
+	do(`INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
+	do(`INSERT INTO principals (id, project_id, kind) VALUES ($1, $2, 'service')`,
 		principal, tenant.Project)
-	do(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4, $5)`,
+	do(`INSERT INTO api_keys (id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4)`,
 		keyID, tenant.Project, principal, coordinator.HashAPIKey(token))
 	return token, tenant
 }
@@ -198,11 +203,10 @@ func seedSystemKey(t *testing.T, pool *pgxpool.Pool) (token string) {
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
-	do(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	do(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	do(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`,
+	do(`INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
+	do(`INSERT INTO principals (id, project_id, kind) VALUES ($1, $2, 'service')`,
 		principal, tenant.Project)
-	do(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, scopes) VALUES ($1, $2, $3, $4, $5, $6)`,
+	do(`INSERT INTO api_keys (id, project_id, principal_id, key_hash, scopes) VALUES ($1, $2, $3, $4, $5)`,
 		keyID, tenant.Project, principal, coordinator.HashAPIKey(token), []string{middleware.ScopeSystem})
 	return token
 }
@@ -210,9 +214,9 @@ func seedSystemKey(t *testing.T, pool *pgxpool.Pool) (token string) {
 // countUnderTenant runs query inside ONE transaction scoped to the given tenant via the same
 // palai.org_id / palai.project_id GUCs the auth middleware publishes, so the count is subject to
 // migration 000029's row-level-security policies exactly as a request would be.
-func countUnderTenant(t *testing.T, pool *pgxpool.Pool, org, project, query string, args ...any) int {
+func countUnderTenant(t *testing.T, pool *pgxpool.Pool, project, query string, args ...any) int {
 	t.Helper()
-	ctx := storage.WithTenant(context.Background(), org, project)
+	ctx := storage.WithTenant(context.Background(), project)
 	var n int
 	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, query, args...).Scan(&n)

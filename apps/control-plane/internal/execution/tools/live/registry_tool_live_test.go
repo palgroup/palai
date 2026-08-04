@@ -64,38 +64,37 @@ func TestLiveRegistryToolRoundtripForcedPreT1(t *testing.T) {
 	}
 	pool := cs.Pool()
 
-	org, project := liveID("org"), liveID("prj")
+	project := liveID("prj")
 	sessionID, runID := liveID("ses"), liveID("run")
 	profileID, arevID := liveID("aprof"), liveID("arev")
-	execLive(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	execLive(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
-	execLive(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, org, project)
-	execLive(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`, profileID, org, project)
+	execLive(t, pool, `INSERT INTO projects (id) VALUES ($1)`, project)
+	execLive(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, project)
+	execLive(t, pool, `INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,'reviewer')`, profileID, project)
 
 	// Register the echo tool + a published control_plane revision, and a published set that pins it.
 	reg := extensions.New(pool)
-	tool, err := reg.CreateTool(ctx, org, project, "acme.search."+registryEchoShortName)
+	tool, err := reg.CreateTool(ctx, project, "acme.search."+registryEchoShortName)
 	if err != nil {
 		t.Fatalf("create tool: %v", err)
 	}
-	rev, err := reg.CreateToolRevision(ctx, org, project, tool.ID, []byte(`{"executor":"control_plane","input_schema":{"type":"object"},"replay_class":"pure"}`))
+	rev, err := reg.CreateToolRevision(ctx, project, tool.ID, []byte(`{"executor":"control_plane","input_schema":{"type":"object"},"replay_class":"pure"}`))
 	if err != nil {
 		t.Fatalf("create tool revision: %v", err)
 	}
-	if _, _, err := reg.PublishToolRevision(ctx, org, project, rev.ID, nil); err != nil {
+	if _, _, err := reg.PublishToolRevision(ctx, project, rev.ID, nil); err != nil {
 		t.Fatalf("publish tool revision: %v", err)
 	}
-	set, err := reg.CreateToolSetRevision(ctx, org, project, "reviewers", []byte(`{"tools":[{"tool_revision_id":"`+rev.ID+`"}]}`))
+	set, err := reg.CreateToolSetRevision(ctx, project, "reviewers", []byte(`{"tools":[{"tool_revision_id":"`+rev.ID+`"}]}`))
 	if err != nil {
 		t.Fatalf("create set revision: %v", err)
 	}
-	if _, _, err := reg.PublishToolSetRevision(ctx, org, project, set.ID); err != nil {
+	if _, _, err := reg.PublishToolSetRevision(ctx, project, set.ID); err != nil {
 		t.Fatalf("publish set revision: %v", err)
 	}
 	// The run pins an agent revision naming the published set in tool_sets.
-	execLive(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, published_at, tool_sets)
-	                   VALUES ($1,$2,$3,$4,1,$5,clock_timestamp(),$6::jsonb)`, arevID, org, project, profileID, liveModel(), `["`+set.ID+`"]`)
-	execLive(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, agent_revision_id) VALUES ($1,$2,$3,$4,$5)`, runID, org, project, sessionID, arevID)
+	execLive(t, pool, `INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, published_at, tool_sets)
+	                   VALUES ($1,$2,$3,1,$4,clock_timestamp(),$5::jsonb)`, arevID, project, profileID, liveModel(), `["`+set.ID+`"]`)
+	execLive(t, pool, `INSERT INTO runs (id, project_id, session_id, agent_revision_id) VALUES ($1,$2,$3,$4)`, runID, project, sessionID, arevID)
 
 	// A REAL provider forced tool call for the registered short name (the live element).
 	req := modelbroker.Request{

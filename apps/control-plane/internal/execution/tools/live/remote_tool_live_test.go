@@ -81,15 +81,14 @@ func TestLiveRemoteToolAsyncRoundtrip(t *testing.T) {
 	}
 	pool := cs.Pool()
 
-	org, project := liveID("org"), liveID("prj")
+	project := liveID("prj")
 	sessionID, runID := liveID("ses"), liveID("run")
 	profileID, arevID := liveID("aprof"), liveID("arev")
-	execLive(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, org)
 	execLive(t, pool, `INSERT INTO projects (id) VALUES ($1)`, project)
 	execLive(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, project)
 	execLive(t, pool, `INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,'reviewer')`, profileID, project)
 
-	// The shared HMAC secret (in-process only; never logged). The org-scoped resolver hands it to BOTH the
+	// The shared HMAC secret (in-process only; never logged). The ref-keyed resolver hands it to BOTH the
 	// outbound invoke signer and the inbound callback verifier — the same secret, both directions.
 	secret := []byte("live-remote-tool-hmac-secret")
 	ops := remotehttp.NewOperations(pool)

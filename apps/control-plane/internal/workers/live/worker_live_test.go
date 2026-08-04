@@ -83,10 +83,7 @@ func newID(prefix string) string { return prefix + "_" + time.Now().Format("1504
 func seedTenant(t *testing.T, cs *coordinator.Store) workers.Tenant {
 	t.Helper()
 	ctx := storage.WithSystemScope(context.Background())
-	org, project := newID("org"), newID("prj")
-	if _, err := cs.Pool().Exec(ctx, `INSERT INTO organizations (id) VALUES ($1)`, org); err != nil {
-		t.Fatalf("seed org: %v", err)
-	}
+	project := newID("prj")
 	if _, err := cs.Pool().Exec(ctx, `INSERT INTO projects (id) VALUES ($1)`, project); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}

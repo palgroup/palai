@@ -118,7 +118,7 @@ func TestLiveBudgetRejectsSecondRunAndLedgerReconciles(t *testing.T) {
 
 	// --- Reconciliation: the ledger's per-step rows equal the run's own terminal projection. ---
 	settled := ledgerTokens(t, pool, runID)
-	projected := projectionTokens(t, pool, tenant.Organization, responseID)
+	projected := projectionTokens(t, pool, responseID)
 	if settled == 0 || projected == 0 {
 		t.Fatalf("settled=%v projected=%v, want a non-zero real token spend on both sides", settled, projected)
 	}
@@ -143,7 +143,7 @@ func TestLiveBudgetRejectsSecondRunAndLedgerReconciles(t *testing.T) {
 			t.Fatalf("429 detail %q does not carry %q — the remediation body is not stable/actionable", detail, want)
 		}
 	}
-	if n := countRows(t, pool, `SELECT count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`, tenant.Project); n != 1 {
+	if n := countRows(t, pool, `SELECT count(*) FROM runs WHERE  project_id=$1`, tenant.Project); n != 1 {
 		t.Fatalf("runs in project = %d, want exactly 1 (the rejected admission created nothing)", n)
 	}
 	if n := countRows(t, pool, `SELECT count(*) FROM idempotency_records WHERE idempotency_key='budget-run-2' AND project_id=$1`, tenant.Project); n != 0 {
@@ -186,11 +186,11 @@ func ledgerTokens(t *testing.T, pool *pgxpool.Pool, runID string) float64 {
 
 // projectionTokens reads the run's own terminal projection usage (responses.output, the committed
 // terminal body) — the orchestrator's INDEPENDENT in-process accumulation of the same provider receipts.
-func projectionTokens(t *testing.T, pool *pgxpool.Pool, org, responseID string) float64 {
+func projectionTokens(t *testing.T, pool *pgxpool.Pool, responseID string) float64 {
 	t.Helper()
 	var raw []byte
 	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT output FROM responses WHERE id=$1 AND organization_id=$2`, responseID, org).Scan(&raw); err != nil {
+		`SELECT output FROM responses WHERE id=$1 `, responseID).Scan(&raw); err != nil {
 		t.Fatalf("read terminal projection: %v", err)
 	}
 	var body struct {

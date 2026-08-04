@@ -150,13 +150,13 @@ func TestManagedCloudJourney(t *testing.T) {
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionA, tenantA.Project)
-	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
+	do(`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionA, tenantA.Project)
+	do(`INSERT INTO responses (id, project_id, session_id, state, input) VALUES ($1,$2,$3,'queued',$4)`,
 		respA, tenantA.Project, sessionA, encodeJSONString("managed-cloud journey: reply with the single word done."))
-	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'queued')`,
+	do(`INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,'queued')`,
 		runA, tenantA.Project, sessionA, respA)
 	respA2 := newID("resp")
-	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued','{}'::jsonb)`,
+	do(`INSERT INTO responses (id, project_id, session_id, state, input) VALUES ($1,$2,$3,'queued','{}'::jsonb)`,
 		respA2, tenantA.Project, sessionA)
 
 	// A second seeded tenant with its own key — the outsider whose key must be denied A's resources.

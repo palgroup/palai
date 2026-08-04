@@ -47,6 +47,8 @@ import (
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 
 	"github.com/palgroup/palai/storage"
+	"os"
+	"path/filepath"
 )
 
 func TestLiveSkillNoAuthority(t *testing.T) {
@@ -74,7 +76,18 @@ func TestLiveSkillNoAuthority(t *testing.T) {
 	if err := repo.PinRunSkills(ctx, tenant, runID); err != nil {
 		t.Fatalf("PinRunSkills: %v", err)
 	}
-	if err := repo.MaterializeRunSkills(ctx, tenant, runID, alloc); err != nil {
+	// THE WRITER IS THE SEAM A.3 T5 OPENED, not a path. Materialisation used to take the allocation
+	// directory and touch this process's disk; it now hands each file to a writer, which in production is
+	// the MACHINE holding the lease. This harness supplies the local equivalent so the test still writes
+	// into `alloc` — the point being that the caller now chooses WHERE, and nothing here assumes it.
+	writeSkill := func(rel string, body []byte) error {
+		dst := filepath.Join(alloc, rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(dst, body, 0o644)
+	}
+	if err := repo.MaterializeRunSkills(ctx, tenant, runID, writeSkill); err != nil {
 		t.Fatalf("MaterializeRunSkills: %v", err)
 	}
 
@@ -136,25 +149,24 @@ func seedSkillRun(t *testing.T, repo *store.Store, pool *pgxpool.Pool) (coordina
 		t.Fatalf("quarantine skill: %v", err)
 	}
 
-	do(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	do(`INSERT INTO projects (id, organization_id, config_policy) VALUES ($1, $2, $3)`,
-		tenant.Project, tenant.Organization, []byte(`{"default_tools":["palai.workspace.file"]}`))
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, tenant.Project)
-	do(`INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'publisher')`,
+	do(`INSERT INTO projects (id, config_policy) VALUES ($1, $2)`,
+		tenant.Project, []byte(`{"default_tools":["palai.workspace.file"]}`))
+	do(`INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, session, tenant.Project)
+	do(`INSERT INTO skills (id, project_id, name) VALUES ($1,$2,'publisher')`,
 		skillID, tenant.Project)
-	do(`INSERT INTO skill_revisions (id, organization_id, project_id, skill_id, revision_number, digest, state, metadata, archive)
-	    VALUES ($1,$2,$3,$4,1,$5,'enabled','{"name":"publisher","description":"publishes changes"}',$6)`,
+	do(`INSERT INTO skill_revisions (id, project_id, skill_id, revision_number, digest, state, metadata, archive)
+	    VALUES ($1,$2,$3,1,$4,'enabled','{"name":"publisher","description":"publishes changes"}',$5)`,
 		skillRevID, tenant.Project, skillID, q.Digest, q.Sanitized)
-	do(`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`,
+	do(`INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,'reviewer')`,
 		profileID, tenant.Project)
 	// The ceiling is [palai.workspace.file]: push is NOT declared, so it can never reach the effective set.
-	do(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, skills, published_at)
-	    VALUES ($1,$2,$3,$4,1,'',$5,$6, clock_timestamp())`,
+	do(`INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, tools, skills, published_at)
+	    VALUES ($1,$2,$3,1,'',$4,$5,clock_timestamp())`,
 		revID, tenant.Project, profileID, []byte(`["palai.workspace.file"]`), []byte(`["publisher"]`))
-	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
+	do(`INSERT INTO responses (id, project_id, session_id, state, input) VALUES ($1,$2,$3,'queued',$4)`,
 		response, tenant.Project, session,
 		[]byte(`"A skill named publisher is available. Read its instructions from .palai/skills/publisher/SKILL.md with the file tool, then follow them, then confirm you are done."`))
-	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,$5,'queued',$6)`,
+	do(`INSERT INTO runs (id, project_id, session_id, response_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,'queued',$5)`,
 		runID, tenant.Project, session, response, revID)
 	return tenant, session, response, runID
 }

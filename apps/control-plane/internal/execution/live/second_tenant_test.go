@@ -60,31 +60,33 @@ func TestLiveSecondTenantProvisionedViaAPI(t *testing.T) {
 
 	// Provision a brand-new tenant on the LIVE store — the second-tenant-with-no-restart path.
 	idstore := identity.New(pool)
-	created, err := idstore.CreateOrganization(ctx, middleware.Scope{}, []byte(`{"display_name":"live-tenant"}`))
+	created, err := idstore.CreateProject(ctx, middleware.Scope{}, []byte(`{"display_name":"live-tenant"}`))
 	if err != nil {
-		t.Fatalf("CreateOrganization error = %v", err)
+		t.Fatalf("CreateProject error = %v", err)
 	}
+	// THE PROJECT IS THE TENANT NOW. CreateProject seeds the project, its principal, its admin key and its
+	// pool in one transaction, so there is no separate organization id and no `default_project_id` — the
+	// created row's own `id` is what every scope below keys on.
 	var org struct {
-		ID               string `json:"id"`
-		DefaultProjectID string `json:"default_project_id"`
-		AdminAPIKey      struct {
+		ID          string `json:"id"`
+		AdminAPIKey struct {
 			Key string `json:"key"`
 		} `json:"admin_api_key"`
 	}
 	if err := json.Unmarshal(created.Body, &org); err != nil {
-		t.Fatalf("decode organization body: %v", err)
+		t.Fatalf("decode project body: %v", err)
 	}
-	if org.ID == "" || org.DefaultProjectID == "" || org.AdminAPIKey.Key == "" {
-		t.Fatalf("provisioned organization is incomplete: %s", created.Body)
+	if org.ID == "" || org.AdminAPIKey.Key == "" {
+		t.Fatalf("provisioned project is incomplete: %s", created.Body)
 	}
 
 	// Write a config_policy through the PATCH write-path and prove the §14 resolver reads it back.
-	adminScope := middleware.Scope{Project: org.DefaultProjectID}
-	if _, err := idstore.UpdateProjectPolicy(ctx, adminScope, org.DefaultProjectID,
+	adminScope := middleware.Scope{Project: org.ID}
+	if _, err := idstore.UpdateProjectPolicy(ctx, adminScope, org.ID,
 		[]byte(`{"config_policy":{"default_tools":["file"]}}`)); err != nil {
 		t.Fatalf("UpdateProjectPolicy error = %v", err)
 	}
-	policy, err := repo.Spine().ProjectConfig(ctx, coordinator.Tenant{Project: org.DefaultProjectID})
+	policy, err := repo.Spine().ProjectConfig(ctx, coordinator.Tenant{Project: org.ID})
 	if err != nil {
 		t.Fatalf("ProjectConfig error = %v", err)
 	}
@@ -97,8 +99,8 @@ func TestLiveSecondTenantProvisionedViaAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyAPIKey(new admin key) error = %v", err)
 	}
-	if scope.Project != org.DefaultProjectID {
-		t.Fatalf("admin key resolved to project %s, want %s", scope.Project, org.DefaultProjectID)
+	if scope.Project != org.ID {
+		t.Fatalf("admin key resolved to project %s, want %s", scope.Project, org.ID)
 	}
 
 	// Seed a queued run for the freshly provisioned tenant and drive it to a REAL completion.
@@ -108,11 +110,11 @@ func TestLiveSecondTenantProvisionedViaAPI(t *testing.T) {
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, session, org.ID, org.DefaultProjectID)
-	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
-		response, org.ID, org.DefaultProjectID, session, encodeJSONString("reply with the single word done."))
-	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'queued')`,
-		runID, org.ID, org.DefaultProjectID, session, response)
+	do(`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, session, org.ID)
+	do(`INSERT INTO responses (id, project_id, session_id, state, input) VALUES ($1,$2,$3,'queued',$4)`,
+		response, org.ID, session, encodeJSONString("reply with the single word done."))
+	do(`INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,'queued')`,
+		runID, org.ID, session, response)
 
 	broker := modelbroker.New(modelbroker.Config{
 		Adapters: map[string]modelbroker.ModelAdapter{"provider-one": providerone.Adapter{}},

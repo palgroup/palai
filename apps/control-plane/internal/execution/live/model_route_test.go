@@ -105,7 +105,7 @@ func TestLiveModelRoutePerProject(t *testing.T) {
 		Secrets: execution.RouteSecretResolver{
 			// main.go's dbSecret adds a bounded timeout around this same call; the smoke calls the store
 			// directly so a resolve failure surfaces as itself rather than as a timeout.
-			Lookup:   func(name string) ([]byte, bool, error) { return secretStore.Resolve(ctx, org, name) },
+			Lookup:   func(name string) ([]byte, bool, error) { return secretStore.Resolve(ctx, name) },
 			Fallback: modelbroker.EnvResolver{"provider-one": credentialEnv},
 		},
 	})
@@ -125,8 +125,10 @@ func TestLiveModelRoutePerProject(t *testing.T) {
 	if alpha.model == beta.model {
 		t.Fatalf("both projects routed the same model %q — set PALAI_LIVE_MODEL_B to a second real model id", alpha.model)
 	}
-	if alpha.secretRef == beta.secretRef || alpha.tenant.Organization == beta.tenant.Organization {
-		t.Fatal("the two projects must own distinct credential refs in distinct organizations")
+	// DISTINCT PROJECTS, which is what a distinct tenant IS after A.2 — the organization is gone and the
+	// project carries the boundary this assertion was always about.
+	if alpha.secretRef == beta.secretRef || alpha.tenant.Project == beta.tenant.Project {
+		t.Fatal("the two projects must own distinct credential refs in distinct projects")
 	}
 
 	for _, p := range []liveRoutedProject{alpha, beta} {
@@ -173,14 +175,14 @@ type liveRoutedProject struct {
 	revisionID string
 }
 
-// routeLiveProject provisions a tenant, stores its provider credential under its OWN org, and publishes a
+// routeLiveProject provisions a tenant, stores its provider credential under its OWN project, and publishes a
 // model route bound to it — every write through the production API engine (identity.SecretStore and
 // api.ModelRouteAPI), never raw SQL.
 func routeLiveProject(t *testing.T, ctx context.Context, repo *store.Store, idstore *identity.Store, secrets *identity.SecretStore, name, model, credential string) liveRoutedProject {
 	t.Helper()
-	org := provisionLiveTenant(t, idstore, name)
-	tenant := coordinator.Tenant{Project: org.DefaultProjectID}
-	scope := middleware.Scope{Project: org.DefaultProjectID}
+	project := provisionLiveTenant(t, idstore, name)
+	tenant := coordinator.Tenant{Project: project}
+	scope := middleware.Scope{Project: project}
 
 	secretRef := name + "-credential"
 	// The credential value travels in the request body of the write-only secret API and lands as sealed
@@ -234,10 +236,10 @@ func seedLiveRun(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant) st
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, session, tenant.Project)
-	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
+	do(`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, session, tenant.Project)
+	do(`INSERT INTO responses (id, project_id, session_id, state, input) VALUES ($1,$2,$3,'queued',$4)`,
 		response, tenant.Project, session, encodeJSONString("reply with the single word done."))
-	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'queued')`,
+	do(`INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,'queued')`,
 		runID, tenant.Project, session, response)
 	return runID
 }

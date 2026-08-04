@@ -64,13 +64,12 @@ func TestLiveInboundWebhookRun(t *testing.T) {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 	pool := spine.Pool()
-	org, project, principal := randID("org"), randID("prj"), randID("prin")
+	project, principal := randID("prj"), randID("prin")
 	exec := func(sql string, args ...any) {
 		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
-	exec(`INSERT INTO organizations (id) VALUES ($1)`, org)
 	exec(`INSERT INTO projects (id) VALUES ($1)`, project)
 	exec(`INSERT INTO principals (id, project_id, kind) VALUES ($1, $2, 'service')`, principal, project)
 

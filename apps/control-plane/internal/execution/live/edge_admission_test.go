@@ -115,10 +115,10 @@ func TestLiveEdgeAdmissionBurstRateLimited(t *testing.T) {
 		t.Fatalf("cap burst: accepted=%d limited=%d, want 3 distinct accepted / 5 limited (queued bound 3)", len(acceptedRuns), capLimited)
 	}
 	// No run lost or duplicated: exactly one run + one response per 202, and nothing for a 429.
-	if n := countRows(t, pool, `SELECT count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`, capTenant.Project); n != 3 {
+	if n := countRows(t, pool, `SELECT count(*) FROM runs WHERE  project_id=$1`, capTenant.Project); n != 3 {
 		t.Fatalf("runs in project = %d, want exactly 3 (one per accepted admission, none per 429)", n)
 	}
-	if n := countRows(t, pool, `SELECT count(*) FROM responses WHERE organization_id=$1 AND project_id=$2`, capTenant.Project); n != 3 {
+	if n := countRows(t, pool, `SELECT count(*) FROM responses WHERE  project_id=$1`, capTenant.Project); n != 3 {
 		t.Fatalf("responses in project = %d, want exactly 3", n)
 	}
 
@@ -140,7 +140,7 @@ func TestLiveEdgeAdmissionBurstRateLimited(t *testing.T) {
 	if n := countRows(t, pool, `SELECT count(*) FROM model_requests WHERE run_id=$1 AND state='completed'`, drainRun); n < 1 {
 		t.Fatalf("completed model_requests for drained run = %d, want >=1 (the real provider must have answered)", n)
 	}
-	if n := countRows(t, pool, `SELECT count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`, capTenant.Project); n != 3 {
+	if n := countRows(t, pool, `SELECT count(*) FROM runs WHERE  project_id=$1`, capTenant.Project); n != 3 {
 		t.Fatalf("runs in project after draining one = %d, want still exactly 3 (no duplicate)", n)
 	}
 

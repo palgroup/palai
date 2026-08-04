@@ -116,7 +116,7 @@ func hookPolicyDeniedCount(t *testing.T, pool *pgxpool.Pool, tenant coordinator.
 	t.Helper()
 	var n int
 	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(*) FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type='policy.denied.v1'`,
+		`SELECT count(*) FROM events WHERE session_id=$1  project_id=$2 AND type='policy.denied.v1'`,
 		sessionID, tenant.Project).Scan(&n); err != nil {
 		t.Fatalf("count policy.denied.v1 events: %v", err)
 	}

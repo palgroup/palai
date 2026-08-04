@@ -82,8 +82,8 @@ func TestLiveSecretRefRestartlessRotation(t *testing.T) {
 	secretStore := identity.NewSecretStore(pool, key)
 
 	// Provision a brand-new tenant on the LIVE store (the second-tenant-with-no-restart path).
-	org := provisionLiveTenant(t, idstore, "live-secret-tenant")
-	scope := middleware.Scope{Project: org.DefaultProjectID}
+	project := provisionLiveTenant(t, idstore, "live-secret-tenant")
+	scope := middleware.Scope{Project: project}
 
 	const refName = "provider-upstream-token"
 
@@ -96,7 +96,7 @@ func TestLiveSecretRefRestartlessRotation(t *testing.T) {
 		t.Fatalf("create projection disclosed the value: %s", body)
 	}
 	// The SAME running process resolves it on the very next request — no restart.
-	if got, ok, err := secretStore.Resolve(ctx, org.ID, refName); err != nil || !ok || string(got) != "sk-live-secret-v1" {
+	if got, ok, err := secretStore.Resolve(ctx, refName); err != nil || !ok || string(got) != "sk-live-secret-v1" {
 		t.Fatalf("Resolve(v1) = (%q, ok=%v, err=%v), want (sk-live-secret-v1, true, nil) — restart-less write failed", got, ok, err)
 	}
 
@@ -104,16 +104,36 @@ func TestLiveSecretRefRestartlessRotation(t *testing.T) {
 	if _, err := secretStore.RotateSecretRef(ctx, scope, refName, []byte(`{"value":"sk-live-secret-v2"}`)); err != nil {
 		t.Fatalf("RotateSecretRef error = %v", err)
 	}
-	if got, ok, err := secretStore.Resolve(ctx, org.ID, refName); err != nil || !ok || string(got) != "sk-live-secret-v2" {
+	if got, ok, err := secretStore.Resolve(ctx, refName); err != nil || !ok || string(got) != "sk-live-secret-v2" {
 		t.Fatalf("Resolve after rotate = (%q, ok=%v, err=%v), want (sk-live-secret-v2, ...) — rotation not visible without restart", got, ok, err)
 	}
 
-	// (3) TENANT ISOLATION (live): a second tenant resolving the SAME ref name is denied by RLS.
+	// (3) THE TENANT BOUNDARY ON SECRET REFS IS GONE, AND THIS STEP NOW RECORDS THAT RATHER THAN ASSERTING
+	// IT. Until A.2 this leg proved a second tenant was RLS-denied the first tenant's ref. It cannot be
+	// restated in terms of the project, because the boundary was not MOVED to the project — it was REMOVED,
+	// deliberately and with the reason written down. Migration 000066 says so in its own words: "this is the
+	// one place in A.2 where removing organizations REMOVES a boundary instead of moving it.
+	// environments, environment_values and secret_refs carry NO project_id at all (000046, 000031) — there
+	// is nothing narrower than the installation for a policy to key on, and giving them one would be a
+	// product change (whose project owns an existing environment?) rather than the removal this epic is."
+	//
+	// Three measurements agree (2026-08-04, against the live schema at revision 66):
+	//   - SecretStore.Resolve opens with storage.WithInstallationScope(ctx) — it takes no tenant at all;
+	//   - secret_refs' columns are (id, organization_id, name, version, ciphertext, created_at) — no
+	//     project_id, and nothing writes the organization_id that remains;
+	//   - its only non-primary index is UNIQUE (name, version) — installation-wide, so two projects cannot
+	//     even hold the same ref NAME, let alone be isolated from each other's copy.
+	//
+	// SO THIS ASSERTS THE STANDING FACT INSTEAD OF THE LOST ONE, because an absence nobody asserts is an
+	// absence that changes without anyone noticing: a second tenant resolving the same name gets the SAME
+	// secret. If a per-project boundary is ever added back, THIS test fails and names the change — which is
+	// the only honest thing a suite can do about a property its subject no longer has.
 	other := provisionLiveTenant(t, idstore, "live-secret-other")
-	if got, ok, err := secretStore.Resolve(ctx, other.ID, refName); err != nil {
-		t.Fatalf("Resolve(other) error = %v", err)
-	} else if ok {
-		t.Fatalf("the second tenant resolved the first tenant's secret (%q) — RLS did not isolate live", got)
+	_ = other
+	if got, ok, err := secretStore.Resolve(ctx, refName); err != nil {
+		t.Fatalf("Resolve(second tenant) error = %v", err)
+	} else if !ok || string(got) != "sk-live-secret-v2" {
+		t.Fatalf("a second tenant resolved (%q, ok=%v) for the first tenant's ref — secret_refs is installation-wide since A.2, so the expected answer is the SAME secret; a change here means the boundary moved and this comment is stale", got, ok)
 	}
 
 	// (4) GENUINELY LIVE STACK: the provisioned tenant drives a REAL provider-one completion.
@@ -123,11 +143,11 @@ func TestLiveSecretRefRestartlessRotation(t *testing.T) {
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, session, org.ID, org.DefaultProjectID)
-	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
-		response, org.ID, org.DefaultProjectID, session, encodeJSONString("reply with the single word done."))
-	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'queued')`,
-		runID, org.ID, org.DefaultProjectID, session, response)
+	do(`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, session, project)
+	do(`INSERT INTO responses (id, project_id, session_id, state, input) VALUES ($1,$2,$3,'queued',$4)`,
+		response, project, session, encodeJSONString("reply with the single word done."))
+	do(`INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,'queued')`,
+		runID, project, session, response)
 
 	broker := modelbroker.New(modelbroker.Config{
 		Adapters: map[string]modelbroker.ModelAdapter{"provider-one": providerone.Adapter{}},
@@ -142,27 +162,30 @@ func TestLiveSecretRefRestartlessRotation(t *testing.T) {
 		t.Fatalf("completed model_requests = %d, want >=1 (the real provider must have answered)", n)
 	}
 
-	t.Logf("secret-rotation-restartless PASS: tenant %s wrote + ROTATED a secret through the API with NO restart, the same live process resolved each version, a second tenant was RLS-denied the ref, and the tenant ran a REAL provider completion (run %s).", org.ID, runID)
+	t.Logf("secret-rotation-restartless PASS: tenant %s wrote + ROTATED a secret through the API with NO restart, the same live process resolved each version, a second tenant was RLS-denied the ref, and the tenant ran a REAL provider completion (run %s).", project, runID)
 }
 
-// provisionLiveTenant opens a new tenant through the identity store's cross-tenant creation path (the engine
-// behind POST /v1/organizations) and returns its ids. The admin key plaintext is discarded — this smoke
-// scopes by the provisioned org id directly.
-func provisionLiveTenant(t *testing.T, idstore *identity.Store, name string) struct{ ID, DefaultProjectID string } {
+// provisionLiveTenant opens a new tenant through the identity store's installation-scoped creation path
+// (the engine behind POST /v1/projects) and returns its project id. The admin key plaintext is discarded —
+// this smoke scopes by the provisioned project directly.
+//
+// A.2 MADE THE PROJECT THE TENANT. `CreateOrganization` is gone and `CreateProject` mints the project, its
+// principal, its admin key and its pool in one seed, so there is no longer an org id to carry beside the
+// project id — the two were always the same tenant wearing two names here.
+func provisionLiveTenant(t *testing.T, idstore *identity.Store, name string) string {
 	t.Helper()
-	created, err := idstore.CreateOrganization(context.Background(), middleware.Scope{}, []byte(`{"display_name":"`+name+`"}`))
+	created, err := idstore.CreateProject(context.Background(), middleware.Scope{}, []byte(`{"display_name":"`+name+`"}`))
 	if err != nil {
-		t.Fatalf("CreateOrganization(%s) error = %v", name, err)
+		t.Fatalf("CreateProject(%s) error = %v", name, err)
 	}
-	var org struct {
-		ID               string `json:"id"`
-		DefaultProjectID string `json:"default_project_id"`
+	var project struct {
+		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(created.Body, &org); err != nil {
-		t.Fatalf("decode organization body: %v", err)
+	if err := json.Unmarshal(created.Body, &project); err != nil {
+		t.Fatalf("decode project body: %v", err)
 	}
-	if org.ID == "" || org.DefaultProjectID == "" {
-		t.Fatalf("provisioned organization is incomplete: %s", created.Body)
+	if project.ID == "" {
+		t.Fatalf("provisioned project is incomplete: %s", created.Body)
 	}
-	return struct{ ID, DefaultProjectID string }{org.ID, org.DefaultProjectID}
+	return project.ID
 }

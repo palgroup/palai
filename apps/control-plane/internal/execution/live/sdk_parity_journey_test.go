@@ -118,7 +118,7 @@ func TestSDKParityJourney(t *testing.T) {
 			"openai-compatible": openaicompatible.Adapter{Adapter: providerone.Adapter{BaseURL: standIn.URL}, Prober: openaicompatible.NewProber()},
 		},
 		Secrets: execution.RouteSecretResolver{
-			Lookup: func(name string) ([]byte, bool, error) { return secretStore.Resolve(ctx, org, name) },
+			Lookup: func(name string) ([]byte, bool, error) { return secretStore.Resolve(ctx, name) },
 			Fallback: modelbroker.EnvResolver{
 				"provider-one": credentialEnv,
 				"provider-two": anthropicCredentialEnv,
@@ -329,10 +329,10 @@ func seedParityRun(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, 
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
-	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, session, tenant.Project)
-	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
+	do(`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, session, tenant.Project)
+	do(`INSERT INTO responses (id, project_id, session_id, state, input) VALUES ($1,$2,$3,'queued',$4)`,
 		response, tenant.Project, session, encodeJSONString(prompt))
-	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'queued')`,
+	do(`INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,'queued')`,
 		run, tenant.Project, session, response)
 	return run, response
 }

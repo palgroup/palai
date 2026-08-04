@@ -70,10 +70,9 @@ func TestLiveMCPToolRoundtripSpontaneous(t *testing.T) {
 	}
 	pool := cs.Pool()
 
-	org, project := liveID("org"), liveID("prj")
+	project := liveID("prj")
 	sessionID, runID := liveID("ses"), liveID("run")
 	profileID, arevID := liveID("aprof"), liveID("arev")
-	execLive(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, org)
 	execLive(t, pool, `INSERT INTO projects (id) VALUES ($1)`, project)
 	execLive(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, project)
 	execLive(t, pool, `INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,$3)`, profileID, project, profileID)
@@ -102,7 +101,7 @@ func TestLiveMCPToolRoundtripSpontaneous(t *testing.T) {
 	if _, err := reg.DiscoverConnection(ctx, project, conn.ID); err != nil {
 		t.Fatalf("discover connection: %v", err)
 	}
-	revID := latestMCPRevisionID(t, pool, org, project, "mcp."+mcpConnName+".echo")
+	revID := latestMCPRevisionID(t, pool, project, "mcp."+mcpConnName+".echo")
 	if _, _, err := reg.PublishToolRevision(ctx, project, revID, nil); err != nil {
 		t.Fatalf("publish echo revision: %v", err)
 	}
@@ -177,7 +176,7 @@ func TestLiveMCPToolRoundtripSpontaneous(t *testing.T) {
 }
 
 // latestMCPRevisionID reads the newest revision id for a canonical tool name (tenant-scoped).
-func latestMCPRevisionID(t *testing.T, pool *pgxpool.Pool, org, project, canonical string) string {
+func latestMCPRevisionID(t *testing.T, pool *pgxpool.Pool, project, canonical string) string {
 	t.Helper()
 	var id string
 	err := pool.QueryRow(storage.WithSystemScope(context.Background()),
