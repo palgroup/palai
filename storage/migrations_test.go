@@ -7,16 +7,24 @@ import (
 	"testing"
 )
 
-// TestOrderedMigrationsIsContiguousVersionOrder proves OrderedMigrations parses every embedded
-// forward migration into a gap-free, version-sorted list carrying the SQL and a non-empty checksum —
-// the per-migration source the boot runner iterates (E15 T1). It also pins the chain head so the
-// preflight/journal invariant is anchored: the head is 000043_slack_requester (E21 T3 — the durable Slack
-// requester the agent's own question is addressed to), with 000042_slack_message_turns (E20) the penultimate
-// link — strict, no gaps.
+// TestOrderedMigrationsIsContiguousVersionOrder proves OrderedMigrations parses every embedded forward
+// migration into a gap-free, version-sorted list carrying the SQL and a non-empty checksum — the
+// per-migration source the boot runner iterates (E15 T1). It also pins the chain head, so the
+// preflight/journal invariant is anchored.
 //
-// THIS PIN WAS STALE FOR TWO EPICS and the staleness is worth naming: it still read 000040 while 000041 and
-// 000042 had landed, so the one test that anchors the chain head was RED on main rather than guarding it. A
-// head pin nobody updates is a head pin nobody reads.
+// THE CHAIN IS TWO LINKS AND IT WAS SIXTY-SEVEN. It was squashed to a baseline on 2026-08-04; the head
+// pinned below is the second of the two, and the "penultimate" is now simply the first.
+//
+// THE PIN IS A RENAME GUARD AS MUCH AS A HEAD PIN, and that is why the NAME is pinned beside the number:
+// `git mv` stages the OLD content, so a renumbering whose header edit is never re-added leaves a file
+// whose name says one version and whose `VALUES (n)` marker says another, and only asserting both catches
+// it. It did that job three times on the old chain — 000049 was taken by three branches at once, 000052 by
+// two, and 000060 by two more.
+//
+// IT ALSO WENT STALE THREE TIMES, which is the other half of the lesson: it still read 000040 while 41 and
+// 42 had landed, and 000062 landed without moving it at all. A head pin nobody updates is a head pin
+// nobody reads. With two links there is far less to keep up with, and adding a third link means editing
+// exactly this assertion.
 func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	migrations := OrderedMigrations()
 	if len(migrations) == 0 {
@@ -45,46 +53,19 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 		}
 	}
 
-	// E29's webhook_delivery_trail_survives_its_endpoint is the current chain head; model_connection_endpoint
-	// is the link before it. THE NAME IS PINNED AS WELL AS THE NUMBER, and that is what makes this a rename guard too:
-	// `git mv` stages the OLD content, so a renumbering whose header edit is never re-added would leave a
-	// file whose name says 51 and whose marker says 49, and only the pair below catches it.
-	//
-	// THIS PIN HAS NOW DONE ITS JOB TWICE ON ONE NUMBER. 000049 was taken by three branches in flight at
-	// once — usage_series, usage_step_attribution and this one — and the model_connection_endpoint branch
-	// was parked long enough that the other two landed first. It renumbered 49 -> 51 at merge, and the
-	// assertion below is what forces that rename to be FINISHED rather than half-done: the file name, the
-	// `VALUES (51)` marker inside it and the embed var all have to agree before this test goes green.
-	//
-	// It is a pin on the CHAIN, not a claim that one epic owns one migration — E29 holds 48, 51 and now 52,
-	// and the "one migration per epic" reasoning an earlier revision of this comment carried was never
-	// structural, only a property of the four epics that happened to need one each.
-	// AND IT IS ABOUT TO DO IT A THIRD TIME, ON 000052. The structured-output branch below and the
-	// `desired-config` branch both took 52 as the next contiguous number in their own trees, because
-	// each was cut when 51 was the tip. Whichever lands second renames — filename pair, `VALUES (52)`
-	// marker, embed var, and this assertion — and this test is what makes the rename finish.
 	head := migrations[len(migrations)-1]
-	if head.Version != 67 || head.Name != "drop_organizations" {
-		t.Fatalf("chain head = %06d_%s, want 000067_drop_organizations", head.Version, head.Name)
+	if head.Version != 2 || head.Name != "row_level_security" {
+		t.Fatalf("chain head = %06d_%s, want 000002_row_level_security", head.Version, head.Name)
 	}
-	// The penultimate moves every time a new head lands, and asserting BOTH is what forces a renumber
-	// to finish: a rename that updated the filename pair but not the `VALUES (n)` marker or the embed
-	// var leaves these two disagreeing. 000054 was itself renumbered from 52 on the way in, and
-	// integration_bots itself renumbered from 60 -> 61 for the same reason (machine_desired_config took
-	// 60 first).
-	//
-	// THIS PIN WENT STALE A THIRD TIME (2026-08-03): 000062_tenant_policy_by_project (A.2 Task 2) landed
-	// on main without moving the head/penultimate pair below, which is exactly the failure mode the two
-	// comments above already describe — a pin nobody updates is a pin nobody reads. Caught here while
-	// verifying A.2 Task 3, not by anything Task 3 itself touches.
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 66 || penultimate.Name != "tenant_policy_without_organization" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000066_tenant_policy_without_organization", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 1 || penultimate.Name != "core" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000001_core", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path
 	// applies — the two forms cannot drift, or Rollback's down mirror would reverse a chain the boot
-	// runner never applied.
+	// runner never applied. This comparison is the reason the up files stay embedded twice; see the
+	// ponytail on migrationFS.
 	full := MigrationUp()
 	for _, m := range migrations {
 		if !strings.Contains(full, m.Up) {
@@ -94,63 +75,67 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 }
 
 // TestEveryLateTenantTableCarriesItsOwnPolicyAndGrant is a STATIC guard, and it exists because the
-// runtime one cannot work. Measured on 2026-07-29 while landing 000045:
+// runtime one cannot work. Measured on 2026-07-29 while landing what was then 000045:
 //
-// Deleting `CALL palai_apply_tenant_policy('runner_pool_keys', ...)` from 000045 left
-// tests/security/tenancy GREEN. The reason is structural, not a bug in that corpus: 000029's sweep is
-// catalogue-driven and the whole chain re-runs on every boot, so a table 45 creates without a policy
-// IS swept by 29 on the NEXT boot — and every harness in this repository migrates more than once
-// (tenancy's newSuite applies the chain per TEST, and the component package shares one database across
-// dozens of openHarness calls). So no runtime tier can ever observe the state the omission produces.
+// Deleting a `CALL palai_apply_tenant_policy(...)` from a late migration left tests/security/tenancy
+// GREEN. The reason is structural, not a bug in that corpus: the row-level-security sweep is
+// catalogue-driven and the whole chain re-runs on every boot, so a table created without a policy IS
+// swept on the NEXT boot — and every harness in this repository migrates more than once. No runtime tier
+// can ever observe the state the omission produces.
 //
-// That state is real and it is not harmless: on the FIRST boot of a fresh install, between 45 creating
-// the table and the next restart, the table exists with row-level security not enabled at all. Every
-// row in it is visible to every tenant for that window.
+// That state is real and it is not harmless: on the FIRST boot of a fresh install, between the table being
+// created and the next restart, the table exists with row-level security not enabled at all. Every row in
+// it is visible to every scope for that window.
 //
-// So the rule is checked where it is checkable: in the SQL. A migration after 000029 that creates a
-// table carrying organization_id must carry its own policy CALL and its own GRANT — 29's sweep and 29's
-// blanket grant both run BEFORE it and the table does not exist yet.
+// SO THE RULE IS ABOUT MIGRATIONS AFTER THE SWEEP, AND AFTER THE SQUASH THERE ARE NONE. The baseline
+// creates every table in 000001 and 000002 secures all of them, so today this guard has zero subjects —
+// and a guard with zero subjects is the vacuity this tree keeps finding. Its floor therefore moved to
+// something that is NOT zero today: the pattern must still parse the baseline's own tables. That is what
+// fails if the regexes stop matching, while the rule itself still binds the first migration anyone adds
+// after 000002.
 func TestEveryLateTenantTableCarriesItsOwnPolicyAndGrant(t *testing.T) {
 	createTable := regexp.MustCompile(`(?s)CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\);`)
-	grantOn := regexp.MustCompile(`GRANT [A-Z, ]+ ON ([\w, ]+?) TO palai_app`)
+	grantOn := regexp.MustCompile(`GRANT [A-Z, ]+ ON TABLE ([\w, ]+?) TO palai_app`)
 
-	checked := 0
+	// The sweep lives in 000002; everything it runs over is created before it.
+	const sweepVersion = 2
+
+	baselineTables := 0
 	for _, m := range OrderedMigrations() {
-		// 000029 is where the procedure and the blanket grant are defined; everything before it is
-		// covered by its sweep, which runs after those tables exist.
-		if m.Version <= 29 {
+		if m.Version > sweepVersion {
+			granted := map[string]bool{}
+			for _, g := range grantOn.FindAllStringSubmatch(m.Up, -1) {
+				for _, table := range strings.Split(g[1], ",") {
+					granted[strings.TrimSpace(table)] = true
+				}
+			}
+			for _, c := range createTable.FindAllStringSubmatch(m.Up, -1) {
+				name, body := c[1], c[2]
+				if !strings.Contains(body, "project_id") {
+					continue
+				}
+				if !strings.Contains(m.Up, "palai_apply_tenant_policy('"+name+"'") {
+					t.Errorf("migration %06d_%s creates tenant table %s without its own CALL palai_apply_tenant_policy('%s', ...): "+
+						"000002's sweep ran before this file and the table did not exist yet, so the table is unsecured "+
+						"until the next boot", m.Version, m.Name, name, name)
+				}
+				if !granted[name] {
+					t.Errorf("migration %06d_%s creates tenant table %s without its own GRANT ... ON TABLE %s TO palai_app: "+
+						"000001's grants ran before this file, so the runtime role fails closed with "+
+						"\"permission denied\" rather than with the row-scoped policy", m.Version, m.Name, name, name)
+				}
+			}
 			continue
 		}
-		granted := map[string]bool{}
-		for _, g := range grantOn.FindAllStringSubmatch(m.Up, -1) {
-			for _, table := range strings.Split(g[1], ",") {
-				granted[strings.TrimSpace(table)] = true
-			}
-		}
-		for _, c := range createTable.FindAllStringSubmatch(m.Up, -1) {
-			name, body := c[1], c[2]
-			if !strings.Contains(body, "organization_id") {
-				continue
-			}
-			checked++
-			if !strings.Contains(m.Up, "palai_apply_tenant_policy('"+name+"'") {
-				t.Errorf("migration %06d_%s creates tenant table %s without its own CALL palai_apply_tenant_policy('%s', ...): "+
-					"000029's sweep ran before this file and the table did not exist yet, so the table is unsecured "+
-					"until the next boot", m.Version, m.Name, name, name)
-			}
-			if !granted[name] {
-				t.Errorf("migration %06d_%s creates tenant table %s without its own GRANT ... ON %s TO palai_app: "+
-					"000029's blanket grant ran before this file, so the runtime role fails closed with "+
-					"\"permission denied\" rather than with the row-scoped policy", m.Version, m.Name, name, name)
-			}
-		}
+		baselineTables += len(createTable.FindAllStringSubmatch(m.Up, -1))
 	}
-	// NON-VACUITY: this guard is a regexp over SQL, so a pattern that silently stops matching would make
-	// it pass for every future migration. 000045 alone contributes two tables; the chain contributed 26
-	// when this was written, and a floor well under that catches a broken pattern without turning every
-	// new migration into an edit here.
-	if checked < 20 {
-		t.Fatalf("the CREATE TABLE pattern matched only %d late tenant tables; it has stopped parsing the chain "+
-			"and this guard is now vacuous", checked)
+
+	// NON-VACUITY. This guard is a pair of regexps over SQL, so a pattern that silently stopped matching
+	// would pass for every future migration. There are no late tables to count today, so the floor is on
+	// the baseline the patterns are shaped against: 000001 declares ninety-five tables, and a floor well
+	// under that catches a broken pattern without turning a schema change into an edit here.
+	if baselineTables < 80 {
+		t.Fatalf("the CREATE TABLE pattern matched only %d tables in the baseline; it has stopped parsing "+
+			"the chain and this guard is now vacuous", baselineTables)
 	}
 }

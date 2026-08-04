@@ -15,7 +15,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -248,45 +247,24 @@ func TestSessionChainingMigrationColumns(t *testing.T) {
 	}
 }
 
-// TestSessionChainingMigrationBackfillsPreexistingEvents proves the one-shot backfill closes
-// the upgrade-boundary retention gap: events written before 000003 carry a NULL response_id
-// the per-response scrub can't reach, so the migration keys each session's legacy events to
-// its sole response (LP-0 1:1). Re-running the marker-gated backfill drives the real
-// migration path, not a copy.
-func TestSessionChainingMigrationBackfillsPreexistingEvents(t *testing.T) {
-	cs := openHarness(t)
-	ctx := context.Background()
-	pool := cs.Pool()
-
-	tenant, sessionID, _ := seedRun(t, pool)
-	// A pre-000003 response with events that predate the response_id column (NULL-keyed).
-	respID := seedTerminalResponse(t, pool, tenant, sessionID, false, time.Hour)
-	for seq := 1; seq <= 2; seq++ {
-		exec(t, pool,
-			`INSERT INTO events (id, project_id, session_id, seq, type, payload)
-			 VALUES ($1, $2, $3, $4, 'output.item.v1', '{"content":"legacy"}')`,
-			newID("evt"), tenant.Project, sessionID, seq)
-	}
-
-	// Clear the version marker so the one-shot backfill runs again on the next Migrate. Written as the
-	// owner: migration 000030 (M1) revoked the runtime role's write on schema_migrations — only the
-	// RESET-ROLE migration path may touch the ledger now, which is exactly what clearing a marker is.
-	execAsOwner(t, pool, `DELETE FROM schema_migrations WHERE version = 3`)
-	if err := cs.Migrate(ctx); err != nil {
-		t.Fatalf("re-Migrate() error = %v", err)
-	}
-
-	// The legacy events are now keyed to their session's sole response, so the per-response
-	// purge can reach them (the upgrade-boundary gap is closed).
-	var keyed int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM events WHERE session_id = $1 AND response_id = $2`, sessionID, respID).Scan(&keyed); err != nil {
-		t.Fatalf("count keyed events error = %v", err)
-	}
-	if keyed != 2 {
-		t.Fatalf("backfilled events keyed to the response = %d, want 2", keyed)
-	}
-}
+// TestSessionChainingMigrationBackfillsPreexistingEvents was REMOVED when the chain was squashed to a
+// baseline on 2026-08-04, and what it proved is worth recording rather than deleting in silence.
+//
+// It drove the one-shot backfill in what was then 000003: events written before that migration carried a
+// NULL response_id the per-response retention scrub could not reach, so the migration keyed each session's
+// legacy events to its sole response and closed the upgrade-boundary gap. The test cleared the version
+// marker to make the marker-gated backfill run again, which drove the real migration path rather than a
+// copy of it.
+//
+// THE SUBJECT IS GONE, NOT THE COVERAGE OF A LIVE RISK. A backfill exists to repair rows written before a
+// column did; the baseline creates events.response_id with the table, so on every database this chain can
+// now produce there has never been an event that predates it. There is no upgrade boundary left inside the
+// chain for a backfill to sit on.
+//
+// WHAT THIS DOES NOT COVER, AND DID NOT COVER BEFORE: an event written with a NULL response_id by ordinary
+// code rather than by an upgrade. That is the retention suite's question, not a migration's. If a future
+// migration ever backfills again, restore this test's shape — clear the marker, re-Migrate, count — rather
+// than asserting the backfill's SQL by reading it.
 
 // TestConfigRevisionsMigration proves 000005 adds its table and column idempotently and
 // reverses cleanly: config_revisions and projects.config_policy exist after apply (a re-apply
@@ -1015,15 +993,6 @@ func TestTriggersMigration(t *testing.T) {
 			t.Fatalf("after apply, %s is missing", name)
 		}
 	}
-	// The forward migration records its version (the guarded down.sql DELETEs it before the table drop —
-	// exercised, without a partial-rollback helper, by the clean full Rollback + reapply below).
-	var version21 int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = 21`).Scan(&version21); err != nil {
-		t.Fatalf("count version 21 error = %v", err)
-	}
-	if version21 != 1 {
-		t.Fatalf("schema_migrations records version 21 %d times, want 1", version21)
-	}
 
 	tenant, _, _ := seedRun(t, pool)
 
@@ -1090,13 +1059,6 @@ func TestMigration22Schedules(t *testing.T) {
 			t.Fatalf("after apply, %s is missing", name)
 		}
 	}
-	var version22 int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = 22`).Scan(&version22); err != nil {
-		t.Fatalf("count version 22 error = %v", err)
-	}
-	if version22 != 1 {
-		t.Fatalf("schema_migrations records version 22 %d times, want 1", version22)
-	}
 
 	tenant, _, _ := seedRun(t, pool)
 
@@ -1159,13 +1121,6 @@ func TestMigration23InboundTriggerAuth(t *testing.T) {
 		if !columnExists(t, pool, "triggers", col) {
 			t.Fatalf("after apply, triggers.%s is missing", col)
 		}
-	}
-	var version23 int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = 23`).Scan(&version23); err != nil {
-		t.Fatalf("count version 23 error = %v", err)
-	}
-	if version23 != 1 {
-		t.Fatalf("schema_migrations records version 23 %d times, want 1", version23)
 	}
 
 	if err := cs.Rollback(ctx); err != nil {
@@ -1364,13 +1319,6 @@ func TestMigration25RemoteTools(t *testing.T) {
 	if !indexExists(t, pool, "remote_tool_operations_one_pending") {
 		t.Fatal("after apply, remote_tool_operations_one_pending is missing")
 	}
-	var version25 int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = 25`).Scan(&version25); err != nil {
-		t.Fatalf("count version 25 error = %v", err)
-	}
-	if version25 != 1 {
-		t.Fatalf("schema_migrations records version 25 %d times, want 1", version25)
-	}
 
 	tenant, _, _ := seedRun(t, pool)
 	callID := newID("tcall") // a correlation key; no tool_calls row need exist (no FK)
@@ -1434,13 +1382,6 @@ func TestMigration28Hooks(t *testing.T) {
 	}
 	if !indexExists(t, pool, "hooks_point_order_idx") {
 		t.Fatal("after apply, hooks_point_order_idx is missing")
-	}
-	var version28 int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = 28`).Scan(&version28); err != nil {
-		t.Fatalf("count version 28 error = %v", err)
-	}
-	if version28 != 1 {
-		t.Fatalf("schema_migrations records version 28 %d times, want 1", version28)
 	}
 
 	tenant, _, _ := seedRun(t, pool)
@@ -1507,13 +1448,6 @@ func TestMigration30APIKeyScope(t *testing.T) {
 		t.Fatalf("api_keys row security enabled=%v forced=%v, want both true", enabled, forced)
 	}
 
-	var version30 int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = 30`).Scan(&version30); err != nil {
-		t.Fatalf("count version 30 error = %v", err)
-	}
-	if version30 != 1 {
-		t.Fatalf("schema_migrations records version 30 %d times, want 1", version30)
-	}
 
 	// M1: the runtime role may READ the ledger but not write it.
 	assertPriv := func(priv string, want bool) {
@@ -1649,14 +1583,6 @@ func TestMigration37Queues(t *testing.T) {
 	if !indexExists(t, pool, "queue_messages_deliverable_idx") || !indexExists(t, pool, "queue_deliveries_due_idx") {
 		t.Fatal("after apply, a 000037 index is missing")
 	}
-	var version37 int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM schema_migrations WHERE version = 37`).Scan(&version37); err != nil {
-		t.Fatalf("count version 37 error = %v", err)
-	}
-	if version37 != 1 {
-		t.Fatalf("schema_migrations records version 37 %d times, want 1", version37)
-	}
 
 	// Seed a tenant + a connection so the unique/append-only inserts have a valid scope + FK target.
 	tenant, _, _ := seedRun(t, pool)
@@ -1739,13 +1665,6 @@ func TestMigration27Skills(t *testing.T) {
 	if !columnExists(t, pool, "runs", "skill_pins") {
 		t.Fatal("after apply, runs.skill_pins is missing")
 	}
-	var version27 int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = 27`).Scan(&version27); err != nil {
-		t.Fatalf("count version 27 error = %v", err)
-	}
-	if version27 != 1 {
-		t.Fatalf("schema_migrations records version 27 %d times, want 1", version27)
-	}
 
 	tenant, _, _ := seedRun(t, pool)
 	skillID := newID("skill")
@@ -1816,14 +1735,6 @@ func TestMigration41SlackReplies(t *testing.T) {
 	if !indexExists(t, pool, "slack_reply_deliveries_due_idx") || !indexExists(t, pool, "slack_thread_sessions_session_idx") {
 		t.Fatal("after apply, a 000041 index is missing — the enqueue would scan slack_thread_sessions on every terminal transition")
 	}
-	var version41 int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM schema_migrations WHERE version = 41`).Scan(&version41); err != nil {
-		t.Fatalf("count version 41 error = %v", err)
-	}
-	if version41 != 1 {
-		t.Fatalf("schema_migrations records version 41 %d times, want 1", version41)
-	}
 
 	tenant, _, runID := seedRun(t, pool)
 	connID := newID("slkc")
@@ -1878,14 +1789,6 @@ func TestMigration42SlackMessageTurns(t *testing.T) {
 	}
 	if !columnExists(t, pool, "responses", "retracted_at") {
 		t.Fatal("after apply, responses.retracted_at is missing — nothing could withdraw a turn from history")
-	}
-	var version42 int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM schema_migrations WHERE version = 42`).Scan(&version42); err != nil {
-		t.Fatalf("count version 42 error = %v", err)
-	}
-	if version42 != 1 {
-		t.Fatalf("schema_migrations records version 42 %d times, want 1", version42)
 	}
 
 	tenant, sessionID, _ := seedRun(t, pool)
@@ -1948,14 +1851,6 @@ func TestMigration43SlackRequester(t *testing.T) {
 	}
 	if !columnExists(t, pool, "slack_reply_deliveries", "requester_user_id") {
 		t.Fatal("after apply, slack_reply_deliveries.requester_user_id is missing — the reply pump could not address the mention")
-	}
-	var version43 int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM schema_migrations WHERE version = 43`).Scan(&version43); err != nil {
-		t.Fatalf("count version 43 error = %v", err)
-	}
-	if version43 != 1 {
-		t.Fatalf("schema_migrations records version 43 %d times, want 1", version43)
 	}
 
 	tenant, sessionID, runID := seedRun(t, pool)
@@ -2053,14 +1948,6 @@ func TestMigration45RunnerFleet(t *testing.T) {
 	// runner in" is how a later reader writes to the one nothing reads.
 	if columnExists(t, pool, "runners", "status") {
 		t.Fatal("runners.status survived; the 000001 column it replaces must not coexist with state")
-	}
-	var version45 int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM schema_migrations WHERE version = 45`).Scan(&version45); err != nil {
-		t.Fatalf("count version 45 error = %v", err)
-	}
-	if version45 != 1 {
-		t.Fatalf("schema_migrations records version 45 %d times, want 1", version45)
 	}
 
 	// THE POLICY EXPRESSION, read out of the catalogue. `runners` gained a project_id in THIS migration,

@@ -51,10 +51,21 @@ func freshDatabase(t *testing.T) string {
 	return u.String()
 }
 
-// TestMigrationJournalRecordsChainHead proves the migration journal (000033) records one row per applied
-// migration from its own introduction on, with the file's real checksum and a non-empty version stamp,
-// and that a second Migrate is a clean no-op (E15 T1). The journal head equals the binary's chain head,
-// which is what an upgrade/DR audit reads to confirm the chain reached the expected version.
+// TestMigrationJournalRecordsChainHead proves the migration journal records one row per applied migration
+// with the file's real checksum and a non-empty version stamp, and that a second Migrate is a clean no-op
+// (E15 T1). The journal head equals the binary's chain head, which is what an upgrade/DR audit reads to
+// confirm the chain reached the expected version.
+//
+// EVERY MIGRATION IS JOURNALED NOW. The old sixty-seven-link chain introduced schema_revisions two thirds
+// of the way along, so this loop carried a `m.Version < 33` arm asserting the earlier links were
+// deliberately absent. The baseline creates the journal table in 000001, the runner's floor is gone, and
+// an arm that skips versions below 33 in a two-link chain would skip the entire chain.
+//
+// IT ALSO CHECKS schema_migrations, AND THAT IS NOT DUPLICATION — IT IS TWELVE SPOT CHECKS REPLACED BY ONE
+// COMPLETE ONE. Twelve tests in migration_test.go each counted their own migration's marker row
+// ("schema_migrations records version 21 1 time"), which between them covered twelve of sixty-seven
+// versions and none of the rest. The chain's markers are now asserted here for EVERY version, and
+// statically for every migration file in storage.TestOrderedMigrationsIsContiguousVersionOrder.
 func TestMigrationJournalRecordsChainHead(t *testing.T) {
 	cs := openHarness(t) // migrates the shared database to the chain head
 	pool := cs.Pool()
@@ -73,16 +84,8 @@ func TestMigrationJournalRecordsChainHead(t *testing.T) {
 
 	for _, m := range migrations {
 		var checksum, appliedBy string
-		err := pool.QueryRow(ctx, `SELECT checksum, applied_by FROM schema_revisions WHERE version = $1`, m.Version).
-			Scan(&checksum, &appliedBy)
-		if m.Version < 33 {
-			// Migrations older than the journal are deliberately NOT recorded — they predate it.
-			if err == nil {
-				t.Fatalf("migration %d is journaled but predates the journal (000033)", m.Version)
-			}
-			continue
-		}
-		if err != nil {
+		if err := pool.QueryRow(ctx, `SELECT checksum, applied_by FROM schema_revisions WHERE version = $1`, m.Version).
+			Scan(&checksum, &appliedBy); err != nil {
 			t.Fatalf("migration %d is not journaled: %v", m.Version, err)
 		}
 		if checksum != m.Checksum {
@@ -91,6 +94,26 @@ func TestMigrationJournalRecordsChainHead(t *testing.T) {
 		if appliedBy == "" {
 			t.Fatalf("migration %d journal applied_by is empty", m.Version)
 		}
+		// The applied schema's own marker, which the boot preflight reads as the database head. Exactly
+		// one row per version: the marker is `ON CONFLICT DO NOTHING`, so a chain re-applied on every
+		// boot must not accumulate duplicates.
+		var marked int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = $1`, m.Version).Scan(&marked); err != nil {
+			t.Fatalf("count schema_migrations version %d: %v", m.Version, err)
+		}
+		if marked != 1 {
+			t.Fatalf("schema_migrations records version %d %d times, want exactly 1", m.Version, marked)
+		}
+	}
+
+	// And NOTHING BEYOND the chain: a marker for a version this binary does not carry would put the
+	// database ahead of the binary and the preflight would refuse the next boot.
+	var extra int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version > $1`, wantHead).Scan(&extra); err != nil {
+		t.Fatalf("count schema_migrations beyond the head: %v", err)
+	}
+	if extra != 0 {
+		t.Fatalf("schema_migrations carries %d version(s) above the chain head %d", extra, wantHead)
 	}
 
 	// Idempotent: a second Migrate re-applies the whole chain but the journal's ON CONFLICT DO NOTHING
@@ -150,28 +173,38 @@ func TestMigrationJournalIsAppendOnlyToApplicationRole(t *testing.T) {
 	}
 }
 
-// TestContractUsageEventsRoundTrip proves 000033 (schema_revisions) and 000034 (the usage_events
-// contract) round-trip cleanly: the journal is present after apply and gone after rollback, while
-// usage_events is ABSENT after apply — the CONTRACT dropped it — and both versions are recorded in
-// schema_migrations exactly once (E15 T1).
-func TestContractUsageEventsRoundTrip(t *testing.T) {
+// TestMigrationChainRoundTripsThroughRollback proves the chain survives apply -> rollback -> re-apply: the
+// journal and the tables are present after apply, GONE after rollback, and back after the re-apply. The
+// component tier leans on Rollback to return this shared database to empty between tests, so a down that
+// leaves anything behind is a whole tier's worth of cross-contamination.
+//
+// IT WAS TestContractUsageEventsRoundTrip, and what it lost is worth naming rather than quietly dropping.
+// It used to also prove the expand/migrate/CONTRACT pattern end to end: 000001 created usage_events,
+// 000032 superseded it with usage_ledger, and 000034 DROPPED it, so "absent after apply" was evidence that
+// a destructive contraction had really run. The squash removed every intermediate state, so there is no
+// contraction left in the chain to witness — the baseline simply never creates the table. That pattern is
+// unproven in this tier until a migration performs one again, and the first one that does should restore
+// this half of the assertion rather than write a new test.
+func TestMigrationChainRoundTripsThroughRollback(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
 	pool := cs.Pool()
 
+	// A table from each of the two links: the journal is 000001's and the policy procedure is 000002's,
+	// so the round trip below is over the WHOLE chain rather than its first half.
 	if !tableExists(t, pool, "schema_revisions") {
 		t.Fatal("after apply, schema_revisions is missing")
 	}
-	if tableExists(t, pool, "usage_events") {
-		t.Fatal("after apply, usage_events still exists (000034 must have dropped it)")
+	if !rowLevelSecurityEnabled(t, pool, "projects") {
+		t.Fatal("after apply, projects has no row-level security (000002 did not run)")
 	}
-	for _, version := range []int{33, 34} {
+	for _, m := range storage.OrderedMigrations() {
 		var count int
-		if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = $1`, version).Scan(&count); err != nil {
-			t.Fatalf("count schema_migrations version %d: %v", version, err)
+		if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = $1`, m.Version).Scan(&count); err != nil {
+			t.Fatalf("count schema_migrations version %d: %v", m.Version, err)
 		}
 		if count != 1 {
-			t.Fatalf("schema_migrations records version %d %d times, want 1", version, count)
+			t.Fatalf("schema_migrations records version %d %d times, want 1", m.Version, count)
 		}
 	}
 
@@ -181,6 +214,9 @@ func TestContractUsageEventsRoundTrip(t *testing.T) {
 	if tableExists(t, pool, "schema_revisions") {
 		t.Fatal("after rollback, schema_revisions still exists")
 	}
+	if tableExists(t, pool, "projects") {
+		t.Fatal("after rollback, projects still exists")
+	}
 
 	if err := cs.Migrate(ctx); err != nil {
 		t.Fatalf("re-Migrate() error = %v", err)
@@ -188,72 +224,90 @@ func TestContractUsageEventsRoundTrip(t *testing.T) {
 	if !tableExists(t, pool, "schema_revisions") {
 		t.Fatal("after reapply, schema_revisions is missing")
 	}
-	if tableExists(t, pool, "usage_events") {
-		t.Fatal("after reapply, usage_events still exists")
+	if !rowLevelSecurityEnabled(t, pool, "projects") {
+		t.Fatal("after reapply, projects has no row-level security")
 	}
+}
+
+// rowLevelSecurityEnabled reports whether a table has row-level security both ENABLEd and FORCEd, which is
+// the pair 000002's procedures assert. Reading only relrowsecurity would pass on a table whose owner still
+// bypasses its own policies.
+func rowLevelSecurityEnabled(t *testing.T, pool *pgxpool.Pool, table string) bool {
+	t.Helper()
+	var enabled, forced bool
+	err := pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT c.relrowsecurity, c.relforcerowsecurity FROM pg_class c
+		   JOIN pg_namespace n ON n.oid = c.relnamespace
+		  WHERE n.nspname = 'public' AND c.relname = $1`, table).Scan(&enabled, &forced)
+	if err != nil {
+		return false
+	}
+	return enabled && forced
 }
 
 // TestMigrationInterruptionResumes is claim OPS-006: a control-plane killed mid-chain restarts, the chain
 // resumes to the correct head, and data is intact. It runs on a FRESH database so the partial state is
-// real: PALAI_MIGRATE_FAULT_AFTER=33 aborts the chain right after 000033 commits, leaving the journal
-// head at 33 and usage_events still present (000034 has not run); a restart (no fault) drives the chain to
-// 34, drops usage_events, and leaves rows seeded between the two runs byte-identical.
+// real: PALAI_MIGRATE_FAULT_AFTER=1 aborts the chain right after 000001 commits, leaving the tables present
+// and NOT ONE of them row-level secured (000002 has not run); a restart with no fault drives the chain to
+// the head, secures them, and leaves rows seeded between the two runs byte-identical.
+//
+// THE FAULT MOVED FROM 33 TO 1, AND THE INTERRUPTION IS WHY THE SQUASH KEPT TWO FILES. This drill needs a
+// state that is neither "nothing applied" nor "chain complete", and a one-migration chain has none: its
+// single transaction either commits or rolls back. Splitting at the chain's real seam — tables, then the
+// policies that can only be applied to tables that exist — is what keeps that state, and this test, real.
+//
+// THE PARTIAL STATE IS ALSO THE DANGEROUS ONE, which makes it worth witnessing rather than merely
+// resuming from: between the two links every table exists with row-level security not enabled at all.
 func TestMigrationInterruptionResumes(t *testing.T) {
 	dbURL := freshDatabase(t)
 	ctx := context.Background()
 
-	// First boot: crash right after 000033.
-	t.Setenv("PALAI_MIGRATE_FAULT_AFTER", "33")
+	// First boot: crash right after 000001.
+	t.Setenv("PALAI_MIGRATE_FAULT_AFTER", "1")
 	cs, err := coordinator.Open(ctx, dbURL)
 	if err != nil {
 		t.Fatalf("open fresh store: %v", err)
 	}
 	t.Cleanup(cs.Close)
 	if err := cs.Migrate(ctx); err == nil {
-		t.Fatal("Migrate() returned nil, want the injected interruption after 000033")
-	} else if !strings.Contains(err.Error(), "injected interruption after migration 000033") {
-		t.Fatalf("Migrate() error = %v, want the injected-interruption-after-33 fault", err)
+		t.Fatal("Migrate() returned nil, want the injected interruption after 000001")
+	} else if !strings.Contains(err.Error(), "injected interruption after migration 000001") {
+		t.Fatalf("Migrate() error = %v, want the injected-interruption-after-1 fault", err)
 	}
 	pool := cs.Pool()
 	sys := storage.WithSystemScope(ctx)
 
-	// Partial state: journal head 33, schema_migrations head 33, usage_events present (000001 created it,
-	// 000034 has not dropped it).
+	// Partial state: both heads at 1, the tables there, and `projects` NOT yet secured.
 	var journalHead, migrationHead int
 	if err := pool.QueryRow(sys, `SELECT coalesce(max(version), 0) FROM schema_revisions`).Scan(&journalHead); err != nil {
 		t.Fatalf("read journal head after fault: %v", err)
 	}
-	if journalHead != 33 {
-		t.Fatalf("journal head after fault = %d, want 33 (partial)", journalHead)
+	if journalHead != 1 {
+		t.Fatalf("journal head after fault = %d, want 1 (partial)", journalHead)
 	}
 	if err := pool.QueryRow(sys, `SELECT coalesce(max(version), 0) FROM schema_migrations`).Scan(&migrationHead); err != nil {
 		t.Fatalf("read schema_migrations head after fault: %v", err)
 	}
-	if migrationHead != 33 {
-		t.Fatalf("schema_migrations head after fault = %d, want 33 (partial)", migrationHead)
+	if migrationHead != 1 {
+		t.Fatalf("schema_migrations head after fault = %d, want 1 (partial)", migrationHead)
 	}
-	if !tableExists(t, pool, "usage_events") {
-		t.Fatal("usage_events is gone after the fault at 33, but 000034 should not have run yet")
+	if !tableExists(t, pool, "projects") {
+		t.Fatal("projects is absent after the fault at 1, but 000001 creates it")
+	}
+	if rowLevelSecurityEnabled(t, pool, "projects") {
+		t.Fatal("projects is already row-level secured after the fault at 1, but 000002 has not run — " +
+			"the partial state this drill resumes from is not the one it claims")
 	}
 
-	// Seed rows between the crash and the resume; their checksum must survive the resumed chain (which
-	// includes the destructive 000034 contract) unchanged — the "data intact" half of the claim.
+	// Seed rows between the crash and the resume; their digest must survive the resumed chain unchanged —
+	// the "data intact" half of the claim.
 	//
-	// THE SEEDED TABLE IS `projects` SINCE A.2 TASK 6. It used to be `organizations`, whose rows this
-	// build no longer writes; leaving the digest pointed at it would have checksummed an EMPTY table
-	// before and after, and "" == "" is a comparison that can never fail.
-	//
-	// organization_id IS SUPPLIED HERE, AND ONLY HERE, because of WHERE in the chain this runs: the drill
-	// has stopped at version 33, and 000063 (which makes the column nullable) and 000067 (which drops it)
-	// are still ahead. At this instant projects.organization_id is NOT NULL with a foreign key to
-	// organizations, so a project cannot be written without one. Both are gone by the time the resumed
-	// chain reaches its head — which is the point: the digest below is over `id`, and it must survive a
-	// chain that deletes the columns beside it.
-	org := newID("org")
-	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, org)
+	// THE SEEDED TABLE IS `projects`, and the digest is over `id` alone. It has to be a table something
+	// really writes: an earlier revision of this test checksummed a table this build no longer populates,
+	// which made the comparison "" == "" — one that can never fail.
 	prj1, prj2 := newID("prj"), newID("prj")
-	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, prj1, org)
-	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, prj2, org)
+	exec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, prj1)
+	exec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, prj2)
 	before := seededRowDigest(t, pool)
 	if before == "" {
 		t.Fatal("the pre-migration digest is empty — nothing was seeded, so the comparison below is vacuous")
@@ -271,8 +325,9 @@ func TestMigrationInterruptionResumes(t *testing.T) {
 	if journalHead != wantHead[len(wantHead)-1].Version {
 		t.Fatalf("journal head after resume = %d, want the chain head %d", journalHead, wantHead[len(wantHead)-1].Version)
 	}
-	if tableExists(t, pool, "usage_events") {
-		t.Fatal("usage_events survived the resumed chain, but 000034 should have dropped it")
+	// The link the fault stopped short of really ran: the table seeded above is now secured.
+	if !rowLevelSecurityEnabled(t, pool, "projects") {
+		t.Fatal("projects is still unsecured after the resume — the chain reported the head without 000002 taking effect")
 	}
 	if after := seededRowDigest(t, pool); after != before {
 		t.Fatalf("seeded rows changed across the resumed migration: %q -> %q (data not intact)", before, after)
@@ -365,8 +420,9 @@ func TestMigrationPreflightFailsClosedOnBadGateVars(t *testing.T) {
 // seededRowDigest is a stable md5 over the projects table's ids — the pre/post "row-checksum" the
 // interruption/resume drill compares to prove the resumed chain left seeded data intact.
 //
-// It reads `projects` rather than `organizations` (A.2 Task 6): a digest over a table nothing writes is
-// "" on both sides of the migration and would report "intact" whatever the chain did.
+// IT MUST READ A TABLE THIS BUILD ACTUALLY WRITES. It once pointed at a table that had stopped being
+// populated, and a digest over an empty table is "" on both sides of the migration — it reports "intact"
+// whatever the chain did to anything else.
 func seededRowDigest(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 	var digest string
