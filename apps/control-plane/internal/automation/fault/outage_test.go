@@ -83,20 +83,20 @@ func newHarness(t *testing.T) *harness {
 		}
 	}
 	exec(`INSERT INTO organizations (id) VALUES ($1)`, org)
-	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, proj, org)
-	exec(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`, principal, org, proj)
+	exec(`INSERT INTO projects (id) VALUES ($1)`, proj)
+	exec(`INSERT INTO principals (id, project_id, kind) VALUES ($1, $2, 'service')`, principal, proj)
 
 	// A published AgentRevision + a type='cron' trigger pinned to it (the run target a firing admits).
 	agents := automation.New(pool)
-	profileID, err := agents.CreateProfile(ctx, org, proj, randID("profile"))
+	profileID, err := agents.CreateProfile(ctx, proj, randID("profile"))
 	if err != nil {
 		t.Fatalf("CreateProfile error = %v", err)
 	}
-	rev, err := agents.CreateRevision(ctx, org, proj, profileID, []byte(`{"model":"gpt-4o-mini","instructions":"scheduled work"}`))
+	rev, err := agents.CreateRevision(ctx, proj, profileID, []byte(`{"model":"gpt-4o-mini","instructions":"scheduled work"}`))
 	if err != nil {
 		t.Fatalf("CreateRevision error = %v", err)
 	}
-	if _, _, err := agents.PublishRevision(ctx, org, proj, rev.ID); err != nil {
+	if _, _, err := agents.PublishRevision(ctx, proj, rev.ID); err != nil {
 		t.Fatalf("PublishRevision error = %v", err)
 	}
 	triggers := automation.NewTriggerStore(pool).WithAdmitter(spine)
@@ -118,10 +118,9 @@ func (h *harness) seedSchedule(t *testing.T, nextFireAt time.Time, policy string
 	t.Helper()
 	id := randID("sch")
 	if _, err := h.pool.Exec(storage.WithSystemScope(context.Background()),
-		`INSERT INTO schedules (id, organization_id, project_id, name, trigger_id, created_by, kind, cron_expr,
-		 timezone, misfire_policy, misfire_grace_seconds, max_catch_up, jitter_seconds, next_fire_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,'cron','* * * * *','UTC',$7,60,$8,0,$9)`,
-		id, h.org, h.proj, randID("name"), h.triggerID, h.principal, policy, maxCatchUp, nextFireAt.UTC()); err != nil {
+		`INSERT INTO schedules (id, project_id, name, trigger_id, created_by, kind, cron_expr, timezone, misfire_policy, misfire_grace_seconds, max_catch_up, jitter_seconds, next_fire_at)
+		 VALUES ($1,$2,$3,$4,$5,'cron','* * * * *','UTC',$6,60,$7,0,$8)`,
+		id, h.proj, randID("name"), h.triggerID, h.principal, policy, maxCatchUp, nextFireAt.UTC()); err != nil {
 		t.Fatalf("seed schedule error = %v", err)
 	}
 	return id

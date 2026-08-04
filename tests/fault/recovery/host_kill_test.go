@@ -144,9 +144,8 @@ func seedWorkspaceWithAllocation(t *testing.T, cs *coordinator.Store, hostPath s
 	tenant := coordinator.Tenant{Project: hostKillID("prj")}
 	sessionID := hostKillID("ses")
 	pool := cs.Pool()
-	mustExec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	mustExec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	mustExec(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Project)
+	mustExec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
+	mustExec(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, sessionID, tenant.Project)
 	wsID := hostKillID("wsp")
 	if err := cs.CreateWorkspace(ctx, tenant, coordinator.WorkspaceInput{WorkspaceID: wsID, SessionID: sessionID, State: "leased"}); err != nil {
 		t.Fatalf("CreateWorkspace() error = %v", err)

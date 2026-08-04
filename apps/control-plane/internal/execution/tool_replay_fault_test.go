@@ -79,10 +79,9 @@ func seedFaultRun(t *testing.T, cs *coordinator.Store) (coordinator.Tenant, stri
 		sql  string
 		args []any
 	}{
-		{`INSERT INTO organizations (id) VALUES ($1)`, []any{tenant.Organization}},
-		{`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, []any{tenant.Project, tenant.Organization}},
-		{`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, []any{sessionID, tenant.Project}},
-		{`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, []any{runID, tenant.Project, sessionID}},
+		{`INSERT INTO projects (id) VALUES ($1)`, []any{tenant.Project}},
+		{`INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, []any{sessionID, tenant.Project}},
+		{`INSERT INTO runs (id, project_id, session_id, state) VALUES ($1, $2, $3, 'running')`, []any{runID, tenant.Project, sessionID}},
 	} {
 		if _, err := cs.Pool().Exec(storage.WithSystemScope(ctx), q.sql, q.args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", q.sql, err)

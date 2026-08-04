@@ -71,9 +71,12 @@ func newID(prefix string) string {
 	return prefix + "_" + hex.EncodeToString(raw[:])
 }
 
-// seedTenant creates org -> project and returns the scope. A durable job's tenant
-// columns reference projects (organization_id, id), so the queue cannot hold a job
-// for a tenant that does not exist.
+// seedTenant creates the project and returns the scope. A durable job's tenant column
+// references projects (id), so the queue cannot hold a job for a tenant that does not
+// exist. A.2 took the organization out of that key: `projects.organization_id` is now
+// NULLABLE (000063 and 000065 both DROP NOT NULL — confirmed against the live schema at
+// revision 66, where information_schema reports is_nullable=YES with no default), so the
+// row is written with the project alone and no organization row has to exist first.
 //
 // The claim loop is cross-tenant infrastructure — ClaimNext leases the oldest ready
 // job in the whole queue — so a job a test leaves behind would be visible to the next
@@ -89,10 +92,13 @@ func seedTenant(t *testing.T, pool *pgxpool.Pool) coordinator.Tenant {
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
-	exec(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
+	exec(`INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
 	t.Cleanup(func() {
-		_, _ = pool.Exec(storage.WithSystemScope(context.Background()), `DELETE FROM durable_jobs WHERE organization_id = $1`, tenant.Organization)
+		// KEYED ON THE PROJECT, WHICH IS THE COLUMN THE QUEUE ACTUALLY CARRIES. `durable_jobs` still HAS an
+		// `organization_id` — 000067 has not landed — but nothing writes it any more, so a cleanup keyed on
+		// it would match zero rows and silently leave every job behind. ClaimNext leases the oldest ready
+		// job in the WHOLE queue, so those leftovers are visible to the next test.
+		_, _ = pool.Exec(storage.WithSystemScope(context.Background()), `DELETE FROM durable_jobs WHERE project_id = $1`, tenant.Project)
 	})
 	return tenant
 }

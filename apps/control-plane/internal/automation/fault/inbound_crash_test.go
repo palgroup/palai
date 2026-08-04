@@ -42,21 +42,21 @@ func TestAckedDeliveryCrashBeforeRunRecoversExactlyOnce(t *testing.T) {
 		}
 	}
 	exec(`INSERT INTO organizations (id) VALUES ($1)`, org)
-	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, proj, org)
-	exec(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`, principal, org, proj)
+	exec(`INSERT INTO projects (id) VALUES ($1)`, proj)
+	exec(`INSERT INTO principals (id, project_id, kind) VALUES ($1, $2, 'service')`, principal, proj)
 
 	// A published AgentRevision + a webhook trigger pinned to it (the inbound run target), created AS the
 	// principal so the delivery's principal_id resolves.
 	agents := automation.New(pool)
-	profileID, err := agents.CreateProfile(ctx, org, proj, randID("profile"))
+	profileID, err := agents.CreateProfile(ctx, proj, randID("profile"))
 	if err != nil {
 		t.Fatalf("CreateProfile error = %v", err)
 	}
-	rev, err := agents.CreateRevision(ctx, org, proj, profileID, []byte(`{"model":"gpt-4o-mini","instructions":"inbound work"}`))
+	rev, err := agents.CreateRevision(ctx, proj, profileID, []byte(`{"model":"gpt-4o-mini","instructions":"inbound work"}`))
 	if err != nil {
 		t.Fatalf("CreateRevision error = %v", err)
 	}
-	if _, _, err := agents.PublishRevision(ctx, org, proj, rev.ID); err != nil {
+	if _, _, err := agents.PublishRevision(ctx, proj, rev.ID); err != nil {
 		t.Fatalf("PublishRevision error = %v", err)
 	}
 	store := automation.NewTriggerStore(pool).WithAdmitter(spine)
@@ -76,11 +76,9 @@ func TestAckedDeliveryCrashBeforeRunRecoversExactlyOnce(t *testing.T) {
 	// inline continuation never ran (the loop was down). updated_at in the past so grace=0 sweeps it.
 	deliveryID := randID("tdel")
 	exec(`INSERT INTO trigger_deliveries
-	        (id, organization_id, project_id, trigger_id, trigger_revision_id, principal_id,
-	         source, source_tenant, source_event_id, raw_payload, state, received_at, updated_at)
-	      VALUES ($1,$2,$3,$4,$5,$6,'harness','','evt-crash',$7,'received',
-	              clock_timestamp() - interval '10 seconds', clock_timestamp() - interval '10 seconds')`,
-		deliveryID, org, proj, triggerID, triggerRev.ID, principal,
+	        (id, project_id, trigger_id, trigger_revision_id, principal_id, source, source_tenant, source_event_id, raw_payload, state, received_at, updated_at)
+	      VALUES ($1,$2,$3,$4,$5,'harness','','evt-crash',$6,'received',clock_timestamp() - interval '10 seconds',clock_timestamp() - interval '10 seconds')`,
+		deliveryID, proj, triggerID, triggerRev.ID, principal,
 		[]byte(`{"source":"harness","data":{"order":{"id":"o-crash","summary":"finish me"}}}`))
 
 	reconciler := automation.NewDeliveryReconciler(store, time.Second, 0, 100, nil)

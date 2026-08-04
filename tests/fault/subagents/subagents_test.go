@@ -99,19 +99,18 @@ func seedParent(t *testing.T, pool *pgxpool.Pool, parentState, childState string
 	sessionID := newID("ses")
 	parentRun, parentResp = newID("run"), newID("resp")
 	childRun, childResp = newID("run"), newID("resp")
-	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	exec(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Project)
-	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'in_progress','{}')`,
+	exec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
+	exec(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, sessionID, tenant.Project)
+	exec(t, pool, `INSERT INTO responses (id, project_id, session_id, state, input) VALUES ($1, $2, $3, 'in_progress', '{}')`,
 		parentResp, tenant.Project, sessionID)
-	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,$6)`,
+	exec(t, pool, `INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1, $2, $3, $4, $5)`,
 		parentRun, tenant.Project, sessionID, parentResp, parentState)
 	// The ChildRun shares the session (parent_run_id set, so it does not consume the root slot). Its
 	// delegation.spec carries the child_request_id + detached flag exactly as dispatchChild writes them.
 	deleg := fmt.Sprintf(`{"spec":{"child_request_id":%q,"detached":%t}}`, "creq_"+childRun, detached)
-	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'in_progress','{}')`,
+	exec(t, pool, `INSERT INTO responses (id, project_id, session_id, state, input) VALUES ($1, $2, $3, 'in_progress', '{}')`,
 		childResp, tenant.Project, sessionID)
-	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, parent_run_id, depth, delegation) VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8)`,
+	exec(t, pool, `INSERT INTO runs (id, project_id, session_id, response_id, state, parent_run_id, depth, delegation) VALUES ($1, $2, $3, $4, $5, $6, 1, $7)`,
 		childRun, tenant.Project, sessionID, childResp, childState, parentRun, deleg)
 	return tenant, parentRun, parentResp, childRun, childResp
 }
@@ -200,7 +199,7 @@ func TestWakeSkipsParentWithPendingUserPause(t *testing.T) {
 	tenant, parentRun, _, _, _ := seedParent(t, pool, "waiting", "completed", true)
 	sessionID := sessionOf(t, pool, parentRun)
 	// A queued pause command bound to the parent run (the user asked to pause).
-	exec(t, pool, `INSERT INTO commands (id, organization_id, project_id, session_id, run_id, kind, state) VALUES ($1,$2,$3,$4,$5,'pause','queued')`,
+	exec(t, pool, `INSERT INTO commands (id, project_id, session_id, run_id, kind, state) VALUES ($1, $2, $3, $4, 'pause', 'queued')`,
 		newID("cmd"), tenant.Project, sessionID, parentRun)
 
 	woken, err := store.WakeDetachedParent(ctx, tenant, parentRun)
@@ -223,9 +222,9 @@ func TestWakeDetachedParentWaitsForAllChildren(t *testing.T) {
 	// A second child, still running, under the same parent.
 	sessionID := sessionOf(t, pool, parentRun)
 	secondResp, secondRun := newID("resp"), newID("run")
-	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'in_progress','{}')`,
+	exec(t, pool, `INSERT INTO responses (id, project_id, session_id, state, input) VALUES ($1, $2, $3, 'in_progress', '{}')`,
 		secondResp, tenant.Project, sessionID)
-	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, parent_run_id, depth) VALUES ($1,$2,$3,$4,$5,'running',$6,1)`,
+	exec(t, pool, `INSERT INTO runs (id, project_id, session_id, response_id, state, parent_run_id, depth) VALUES ($1, $2, $3, $4, 'running', $5, 1)`,
 		secondRun, tenant.Project, sessionID, secondResp, parentRun)
 
 	woken, err := store.WakeDetachedParent(ctx, tenant, parentRun)
@@ -292,7 +291,7 @@ func TestDeadLetteredDetachedChildWakesParent(t *testing.T) {
 	ctx := context.Background()
 	tenant, parentRun, _, childRun, _ := seedParent(t, pool, "waiting", "running", true)
 	// The child's response.run job dead-lettered (exhausted its attempts without self-reporting).
-	exec(t, pool, `INSERT INTO durable_jobs (id, organization_id, project_id, kind, status, payload) VALUES ($1,$2,$3,'response.run','dead',$4)`,
+	exec(t, pool, `INSERT INTO durable_jobs (id, project_id, kind, status, payload) VALUES ($1, $2, 'response.run', 'dead', $3)`,
 		newID("job"), tenant.Project, fmt.Sprintf(`{"run_id":%q}`, childRun))
 
 	if _, err := store.SweepDeadLetteredRuns(ctx); err != nil {
