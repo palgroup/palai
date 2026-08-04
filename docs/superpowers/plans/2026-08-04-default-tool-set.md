@@ -758,7 +758,7 @@ git commit -m "test(execution): the bring-up baseline survives the revision ceil
 - [ ] `go test ./packages/toolset/...` PASSES (4 tests)
 - [ ] `TestEveryDefaultToolResolves` and `TestThePublishToolsAreTheirOwnListAndNeitherPublishes` PASS
 - [ ] `TestTheSearchToolIsInTheDefaultSet` is **deleted** — decided 2026-08-04. Its premise was a Slack default list, and `1e5fc63e` removed that world. Its report was TRUE and is preserved in §7: nothing grants `palai.slack.search` today.
-- [ ] `TestNoDefaultToolHasSideEffects` keeps its `publish.` clause and **drops** its file/shell clause — decided 2026-08-04. The file/shell prohibition contradicts this plan's purpose, and its stated remedy (`SLACK_AGENT_TOOLS`) has exactly one occurrence in the tree: that test's own error string.
+- [ ] `TestNoDefaultToolHasSideEffects` is **renamed `TestNoDefaultToolPublishes`**, keeps its `publish.` clause — now over `Default()` AND `Repository()` — and **drops** its file/shell clause. Decided 2026-08-04. The file/shell prohibition contradicts this plan's purpose, and its stated remedy (`SLACK_AGENT_TOOLS`) had exactly one occurrence in the tree: that test's own error string. The rename is load-bearing, not cosmetic — `Default()` grants `workspace.shell`, so the old name would print `--- PASS` for a claim the test no longer makes.
 - [ ] `TestTheGrantPreservesEveryOtherPolicyKey` PASSES — the re-run does not clear `approvers`
 - [ ] `TestAnEmptyProjectBaselineEmptiesTheEffectiveSet` PASSES — the outage's own shape is pinned
 - [ ] `TestEveryCanonicalToolHasAHumanTitle` PASSES — Slack carries no name the grant list does not
