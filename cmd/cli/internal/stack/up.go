@@ -267,6 +267,19 @@ func Bootstrap(envFile string, native bool) error {
 	// same way and returns "" by design (see emptyToolBaselineWarning), so nothing tells the operator at
 	// all.
 	warns = appendWarn(warns, api.emptyToolBaselineWarning())
+	// AND THE OTHER HALF OF THE SAME SILENCE, measured on a live stack 2026-08-04. The grant above stands
+	// down when the project ALREADY grants tools, which is every stack that was ever brought up — so a
+	// tool added to the canonical set after a deployment exists reaches that deployment NEVER. The live
+	// stack this was found on granted seven tools and was missing five, including the whole of this
+	// week's search and editing work; `palai up` had nothing to say about it.
+	//
+	// IT REPORTS RATHER THAN WRITES, and that is the decision, not laziness. An operator who deliberately
+	// REMOVED a tool — dropping palai.workspace.shell from a shared stack is the obvious one — would find
+	// it silently restored by the next bring-up, and a grant that overrides a human's narrowing is a
+	// worse defect than the one it fixes. So the bring-up names the gap and the command, and the operator
+	// decides. Merging is also NOT the safe middle: the canonical set does not contain the publish tools,
+	// so a bring-up that rewrote the list wholesale would delete capabilities the stack has.
+	warns = appendWarn(warns, api.missingCanonicalToolsNotice())
 	// WHAT THE FLEET IS DOING (E24 T6), on the report rather than in a warning: a machine held in a strict
 	// pool's waiting room is a machine an operator will otherwise read as broken.
 	printReport(cfg, posture, rt, caps, observedFacts(rt), fleetLine(api.fleet()), red, warns...)
@@ -1551,6 +1564,50 @@ func (c *apiClient) grantDefaultToolBaseline() string {
 		return ""
 	}
 	return fmt.Sprintf("%s now grants %d default tools: %s", bootstrapProjectID, len(tools), strings.Join(tools, ", "))
+}
+
+// missingCanonicalToolsNotice reports canonical default tools the project does NOT grant, or "" when it
+// grants all of them, grants none at all (emptyToolBaselineWarning owns that case and says more), or when
+// the question cannot be answered.
+//
+// IT EXISTS BECAUSE THE GRANT ONLY EVER RUNS ONCE. grantDefaultToolBaseline stands down on a project that
+// already grants tools, so on every stack that has been brought up before, a newly added tool is invisible
+// forever. Measured on a live stack 2026-08-04: seven tools granted, five canonical ones absent.
+//
+// It NAMES rather than writes; see the call site for why restoring a tool a human removed is the worse
+// defect. It is silent on failure for the same reason emptyToolBaselineWarning is: a notice that cannot
+// tell "absent" from "unreadable" trains an operator to ignore it.
+func (c *apiClient) missingCanonicalToolsNotice() string {
+	var project struct {
+		ConfigPolicy struct {
+			DefaultTools []string `json:"default_tools"`
+		} `json:"config_policy"`
+	}
+	status, err := c.do(http.MethodGet, "/v1/projects/"+bootstrapProjectID, nil, &project)
+	if err != nil || status != http.StatusOK || len(project.ConfigPolicy.DefaultTools) == 0 {
+		return ""
+	}
+	granted := make(map[string]bool, len(project.ConfigPolicy.DefaultTools))
+	for _, name := range project.ConfigPolicy.DefaultTools {
+		granted[name] = true
+	}
+	var missing []string
+	for _, name := range bootstrapDefaultTools() {
+		if !granted[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	// The command ADDS to what is there rather than replacing it: the canonical set carries no publish
+	// tool, so an operator who pasted a bare set-policy would drop the stack's ability to push.
+	return fmt.Sprintf("%s does not grant %d tool(s) this build ships: %s. A bring-up grants the baseline "+
+		"only when there is none, so tools added after this stack was created never arrive on their own. "+
+		"Add them WITHOUT dropping what is already granted: `palai admin project set-policy %s "+
+		"--default-tools=%s`.",
+		bootstrapProjectID, len(missing), strings.Join(missing, ", "), bootstrapProjectID,
+		strings.Join(append(append([]string{}, project.ConfigPolicy.DefaultTools...), missing...), ","))
 }
 
 // emptyToolBaselineWarning reports the project granting no tools, or "" when it grants some or when the

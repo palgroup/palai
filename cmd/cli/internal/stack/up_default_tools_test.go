@@ -1,7 +1,11 @@
 package stack
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/palgroup/palai/packages/toolset"
@@ -96,5 +100,82 @@ func TestTheGrantSkipsAPolicyThatAlreadyGrantsTools(t *testing.T) {
 				t.Fatalf("policyAlreadyGrantsTools(%v) = %v, want %v", tc.policy, got, tc.want)
 			}
 		})
+	}
+}
+
+// newProjectStub serves one GET /v1/projects/prj_local carrying `policy` as the config_policy, and
+// returns a client pointed at it. `policy` of nil serves a 500 instead, for the unreadable case.
+func newProjectStub(t *testing.T, policy map[string]any) *apiClient {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if policy == nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "prj_local", "config_policy": policy})
+	}))
+	t.Cleanup(srv.Close)
+	return &apiClient{baseURL: srv.URL, key: "apik_stub", http: srv.Client()}
+}
+
+// TestAStackThatAlreadyGrantsToolsIsToldWhatItIsMissing reproduces the LIVE STACK measured on
+// 2026-08-04, which is the whole reason this notice exists: prj_local granted seven tools, the build
+// shipped nine canonical ones, and five of them — including every tool from that week's search and
+// editing work — were absent. `palai up` said NOTHING, because grantDefaultToolBaseline stands down
+// the moment a project grants anything at all. On every stack that has ever been brought up, that is
+// always. A tool added to the canonical set therefore reached an existing deployment NEVER.
+func TestAStackThatAlreadyGrantsToolsIsToldWhatItIsMissing(t *testing.T) {
+	live := []string{ // the seven the live stack actually carried
+		"palai.workspace.file", "palai.workspace.shell", "palai.workspace.show_media",
+		"palai.workspace.commit", "palai.workspace.background_kill",
+		"palai.publish.push", "palai.publish.pull_request",
+	}
+	notice := newProjectStub(t, map[string]any{"default_tools": live}).missingCanonicalToolsNotice()
+	if notice == "" {
+		t.Fatal("a stack missing five canonical tools was told nothing")
+	}
+	for _, want := range []string{
+		"str_replace_based_edit_tool", "palai.workspace.glob", "palai.workspace.grep",
+		"palai.research.fetch", "palai.knowledge.retrieve",
+	} {
+		if !strings.Contains(notice, want) {
+			t.Errorf("the notice does not name the missing tool %q", want)
+		}
+	}
+}
+
+// TestTheSuggestedCommandKeepsWhatTheStackAlreadyHas is the destructive half, and it is the one worth
+// having: the canonical set carries NO publish tool, so a notice that told the operator to write the
+// canonical list would talk them into deleting their stack's ability to push and open pull requests.
+// The command must ADD.
+func TestTheSuggestedCommandKeepsWhatTheStackAlreadyHas(t *testing.T) {
+	live := []string{"palai.workspace.file", "palai.publish.push", "palai.publish.pull_request"}
+	notice := newProjectStub(t, map[string]any{"default_tools": live}).missingCanonicalToolsNotice()
+	command := notice[strings.Index(notice, "--default-tools="):]
+	for _, keep := range live {
+		if !strings.Contains(command, keep) {
+			t.Errorf("the suggested command drops %q, which the stack already grants", keep)
+		}
+	}
+}
+
+// TestAFullyGrantedStackIsNotNagged — a notice that fires on a correct stack is one an operator
+// learns to ignore, and then the real one is invisible too.
+func TestAFullyGrantedStackIsNotNagged(t *testing.T) {
+	if n := newProjectStub(t, map[string]any{"default_tools": toolset.Default()}).missingCanonicalToolsNotice(); n != "" {
+		t.Errorf("a stack granting the whole canonical set was nagged anyway: %s", n)
+	}
+}
+
+// TestAnEmptyOrUnreadableBaselineSaysNothingHere — the empty case belongs to emptyToolBaselineWarning,
+// which says considerably more; two notices about one condition is how an operator learns to skim. An
+// unreadable project is silent for the reason recorded on that function: a notice that cannot tell
+// "absent" from "unreadable" is worse than none.
+func TestAnEmptyOrUnreadableBaselineSaysNothingHere(t *testing.T) {
+	if n := newProjectStub(t, map[string]any{"default_tools": []string{}}).missingCanonicalToolsNotice(); n != "" {
+		t.Errorf("the empty baseline was reported twice: %s", n)
+	}
+	if n := newProjectStub(t, nil).missingCanonicalToolsNotice(); n != "" {
+		t.Errorf("an unreadable project produced a notice: %s", n)
 	}
 }
