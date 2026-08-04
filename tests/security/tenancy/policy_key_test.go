@@ -21,9 +21,17 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// asProject runs fn inside one transaction whose palai.project_id GUC names project. It mirrors asOrg
-// above but sets the NEW tenant key instead of the old one, and never touches palai.org_id at all — see
-// the package comment for why that absence is the point of every test in this file.
+// asProject runs fn inside one transaction whose palai.project_id GUC names project, mirroring the
+// per-request scope the auth middleware resolves. The mechanism differs from production on purpose: this
+// sets the GUC transaction-locally (set_config is_local=true) so subtests isolate, where production sets
+// it session-level once per pool acquisition (storage.OpenPool, is_local=false). Both reach the same policy.
+//
+// It never touches palai.org_id, and since A.2 Task 6 there is nothing to touch — migration 000067 dropped
+// the GUC's last writer along with the column. An empty project leaves the GUC unset, which is the
+// "connection that never declared a tenant" case.
+//
+// THIS IS NOW THE CORPUS'S ONLY SCOPE HELPER. tenancy_test.go carried an `asOrg` beside it until Task 6;
+// the two have collapsed into one because there is one tenant key left.
 func (s *suite) asProject(t *testing.T, project string, fn func(tx pgx.Tx)) {
 	t.Helper()
 	ctx := context.Background()
@@ -40,14 +48,14 @@ func (s *suite) asProject(t *testing.T, project string, fn func(tx pgx.Tx)) {
 	fn(tx)
 }
 
-// runOf reads a tenant's seeded run id as the OWNER (bypasses RLS), matching the projectOf/scheduleOf/
-// bindingOf helpers in tenancy_test.go.
-func (s *suite) runOf(t *testing.T, org string) string {
+// runOf reads a tenant's seeded run id as the OWNER (bypasses RLS), matching the scheduleOf/bindingOf
+// helpers in tenancy_test.go.
+func (s *suite) runOf(t *testing.T, project string) string {
 	t.Helper()
 	var id string
 	if err := s.owner.QueryRow(context.Background(),
-		`SELECT id FROM runs WHERE organization_id = $1`, org).Scan(&id); err != nil {
-		t.Fatalf("read run of %s: %v", org, err)
+		`SELECT id FROM runs WHERE project_id = $1`, project).Scan(&id); err != nil {
+		t.Fatalf("read run of %s: %v", project, err)
 	}
 	return id
 }
@@ -57,9 +65,9 @@ func (s *suite) runOf(t *testing.T, org string) string {
 // palai.org_id is never set in this test.
 func TestPolicyIsolatesProjectsWithinOneInstallation(t *testing.T) {
 	s := newSuite(t)
-	projectA := s.projectOf(t, s.orgA)
-	projectB := s.projectOf(t, s.orgB)
-	runA := s.runOf(t, s.orgA)
+	projectA := s.projectA
+	projectB := s.projectB
+	runA := s.runOf(t, s.projectA)
 
 	s.asProject(t, projectA, func(tx pgx.Tx) {
 		rows, err := tx.Query(context.Background(), `SELECT id FROM runs ORDER BY id`)
@@ -103,7 +111,7 @@ func TestPolicyIsolatesProjectsWithinOneInstallation(t *testing.T) {
 // unenforced limit is silent rather than an error.
 func TestInstallationWideRowsAreVisibleToEveryProject(t *testing.T) {
 	s := newSuite(t)
-	projectA := s.projectOf(t, s.orgA)
+	projectA := s.projectA
 
 	budgetID := newID("bud")
 	if _, err := s.owner.Exec(context.Background(),

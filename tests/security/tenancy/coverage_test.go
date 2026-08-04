@@ -8,11 +8,19 @@
 //
 //   - a table carrying project_id but NOT under row-level security at all — a walk over pg_class finds
 //     this directly, the same shape TestEveryTenantTableIsRowLevelSecured already guards.
-//   - a table carrying organization_id but NO project_id — the one 000062's sweep, keyed off project_id's
-//     presence, could never have reached, because it never looks at a table lacking that column at all.
-//     Such a table is NOT caught by TestEveryTenantTableIsRowLevelSecured either: that test only fails a
-//     table that is not under RLS at all, and an organization_id-only table nobody migrated is still very
-//     much under the OLD org-keyed policy — secured, just against the boundary this epic is retiring.
+//
+//   - a SECURED table carrying NO project_id — the one 000062's sweep, keyed off project_id's presence,
+//     could never have reached, because it never looks at a table lacking that column at all. Such a
+//     table is NOT caught by TestEveryTenantTableIsRowLevelSecured either: that test only fails a table
+//     that is not under RLS at all, and one of these is very much under a policy — just not a per-project
+//     one, which is the whole question this file asks.
+//
+//     IT ASKED THAT QUESTION AS "carries organization_id but no project_id" UNTIL A.2 TASK 6, and the
+//     re-keying is not cosmetic: 000067 dropped organization_id from every table, so the old predicate
+//     now matches NOTHING and both halves of the sweep — the orphan check and the stale-entry check —
+//     would have passed while looking at an empty set. A vacuous green on a coverage sweep is the exact
+//     failure this file was written to prevent, one layer up. "Has a tenant_isolation policy and no
+//     project_id" is the surviving shape of the same question.
 package tenancy
 
 import (
@@ -20,8 +28,8 @@ import (
 	"testing"
 )
 
-// installationWideOnly are the tables the sweep below finds carrying organization_id and NO project_id —
-// the shape no catalogue-driven policy rule could have reached, so each needs a decision recorded by hand.
+// installationWideOnly are the tables the sweep below finds row-level secured with NO project_id — the
+// shape no catalogue-driven policy rule could have reached, so each needs a decision recorded by hand.
 // Three of the four are installation-wide, which is what names the list; `projects` is the exception and
 // says so at its own entry. A.2 Task 3 found them by sweeping for organization_id with no
 // project_id; A.2 Task 6 removed the organization and 000066 keys them where the sweep said they were.
@@ -35,6 +43,27 @@ import (
 //
 // A NEW table that lands here unnamed is what this allowlist exists to catch: it forces the same three-way
 // decision (project column / installation-wide / drop) rather than letting it slide as an accident.
+// parentResolved are the tables the same sweep finds secured with no project_id of their own, whose
+// policy resolves their PARENT's project through an EXISTS instead (000029 wrote them that way, 000066
+// re-keyed them onto project). They are NOT installation-wide and must not be listed as such — every one
+// of them is confined to exactly one project, just transitively.
+//
+// THEY ONLY BECAME VISIBLE TO THIS SWEEP WITH A.2 TASK 6. While the question was "carries organization_id
+// and no project_id" they matched on the organization_id they carried; 000067 dropped it, the question
+// became "secured and no project_id", and these four surfaced. They are named rather than filtered by
+// detecting an EXISTS in the policy expression, because a list a reader can check beats a pattern that
+// decides for them — and a FIFTH child arriving here unnamed is exactly what should stop a build.
+var parentResolved = map[string]bool{
+	// delivery_attempts (000020) -> webhook_deliveries.
+	"delivery_attempts": true,
+	// job_attempts (000001) -> durable_jobs.
+	"job_attempts": true,
+	// model_route_revisions (000001) -> model_routes.
+	"model_route_revisions": true,
+	// schedule_occurrences (000022) -> schedules.
+	"schedule_occurrences": true,
+}
+
 var installationWideOnly = map[string]bool{
 	// secret_refs (000031) — the secret store fronting the env-file bridge (identity.SecretStore.Resolve).
 	// A.2 Task 6's 000066 keys it on the INSTALLATION: with organizations gone and no project_id column,
@@ -97,16 +126,20 @@ func TestEveryTenantTableIsCoveredAndNoneWasSkipped(t *testing.T) {
 	orphans := queryNames(t, s, `
 		SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 		 WHERE n.nspname='public' AND c.relkind='r'
-		   AND EXISTS (SELECT 1 FROM information_schema.columns col
-		                WHERE col.table_schema='public' AND col.table_name=c.relname
-		                  AND col.column_name='organization_id')
+		   AND EXISTS (SELECT 1 FROM pg_policies p
+		                WHERE p.schemaname='public' AND p.tablename=c.relname
+		                  AND p.policyname='tenant_isolation')
 		   AND NOT EXISTS (SELECT 1 FROM information_schema.columns col
 		                    WHERE col.table_schema='public' AND col.table_name=c.relname
 		                      AND col.column_name='project_id')`)
 	for _, name := range orphans {
+		if parentResolved[name] {
+			continue
+		}
 		if !installationWideOnly[name] {
-			t.Errorf("table %q carries organization_id but no project_id and is not on installationWideOnly — "+
-				"decide: add a project column, accept it as installation-wide (name it here with why), or drop it", name)
+			t.Errorf("table %q is row-level secured but carries no project_id, and is not on "+
+				"installationWideOnly — decide: add a project column, accept it as installation-wide "+
+				"(name it here with why), or drop it", name)
 		}
 	}
 	// The allowlist itself must name only tables that are actually orphaned this way — an entry for a
@@ -117,9 +150,16 @@ func TestEveryTenantTableIsCoveredAndNoneWasSkipped(t *testing.T) {
 	for _, name := range orphans {
 		found[name] = true
 	}
+	for name := range parentResolved {
+		if !found[name] {
+			t.Errorf("parentResolved names %q, but it is no longer a secured table without a project_id — "+
+				"remove the stale entry", name)
+		}
+	}
 	for name := range installationWideOnly {
 		if !found[name] {
-			t.Errorf("installationWideOnly names %q, but it no longer carries organization_id without project_id — remove the stale entry", name)
+			t.Errorf("installationWideOnly names %q, but it is no longer a secured table without a "+
+				"project_id — remove the stale entry", name)
 		}
 	}
 }

@@ -67,7 +67,7 @@ func TestTenantConnectionWithNoProjectIsRefused(t *testing.T) {
 	// acquisition outstanding and t.Cleanup(pool.Close) hangs forever waiting for it back.
 	err := pool.QueryRow(ctx, `SELECT 1`).Scan(new(int))
 	if err == nil {
-		t.Fatal("a tenant connection with an organization but no project was acquired — that is the absence of a boundary, not one")
+		t.Fatal("a tenant connection with no project was acquired — that is the absence of a boundary, not one")
 	}
 	if !errors.Is(err, storage.ErrProjectRequired) {
 		t.Fatalf("acquire failed with %v, want it to wrap storage.ErrProjectRequired", err)
@@ -128,7 +128,7 @@ func TestInstallationScopeStillOpensWithNoProject(t *testing.T) {
 // carrying a stale value from whatever the pooled connection published last.
 //
 // current_setting(..., true) answers NULL for a GUC nothing has set, which is why this scans into a
-// *string and asserts nil rather than comparing to "": a set_config('palai.org_id', '', false) would
+// *string and asserts nil rather than comparing to "": a set_config('palai.org_id', ”, false) would
 // answer the empty string and pass a comparison, and that is exactly the residue being forbidden.
 func TestOrgIDGUCIsGone(t *testing.T) {
 	pool := openApplicationPool(t)
