@@ -18,9 +18,9 @@ import (
 func TestEveryToolIsClassifiedForParallelSafety(t *testing.T) {
 	want := map[string]bool{
 		// Read-only: no workspace mutation, no external object, nothing another call could observe.
-		"palai.workspace.glob":      true,
-		"palai.workspace.grep":      true,
-		"palai.knowledge.retrieve":  true,
+		"palai.workspace.glob":     true,
+		"palai.workspace.grep":     true,
+		"palai.knowledge.retrieve": true,
 		// Multiplexed read AND write behind one parameter, so the TOOL cannot be safe even though its
 		// read path would be. This is a concrete cost of the `op`/`command` shape: splitting reads onto
 		// their own tool is what would let them overlap.
