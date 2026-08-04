@@ -4,6 +4,7 @@ package execution
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -297,7 +298,18 @@ func (h *publishHarness) approveAs(principal, decision, requestHash string) int6
 	}
 	applied, err := h.spine.ApplyApprovalDecision(ctx, h.tenant, h.sessionID, h.respID, h.runID,
 		commandID, decision, requestHash, principal)
-	if err != nil {
+	// A REFUSAL IS THE VALUE THIS HELPER PROMISES, NOT AN ERROR TO REPORT — and until 2026-08-05 the three
+	// sentences above claimed that while the line below did the opposite. ErrApproverNotAuthorized is a
+	// typed outcome whose own declaration says callers "treat it as 'the receiver worked and the click/POST
+	// authorized nothing', never as a failure"; the command is settled before it is returned. The Slack
+	// helper this one replaced never had to say so, because SlackAdmitter.Decide converted it into
+	// SlackDecisionOutcome.Rejected and returned a nil error — so de-Slacking the harness moved the
+	// conversion's only home without carrying it, and the sole caller that drives an unnamed principal
+	// (TestMergePullRequestWithoutAnApprovalPublishesNothing) died at this Fatalf reading
+	// "ApplyApprovalDecision(approve): approver_not_authorized" — an error, at the exact line whose claim is
+	// that a refusal is not one — instead of reaching the `applied != 0` assertion it exists to make.
+	// Every OTHER error still fails: this widens the helper by exactly one documented outcome.
+	if err != nil && !errors.Is(err, coordinator.ErrApproverNotAuthorized) {
 		h.t.Fatalf("ApplyApprovalDecision(%s): %v", decision, err)
 	}
 	return applied
