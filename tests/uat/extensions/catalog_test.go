@@ -137,20 +137,12 @@ var expectedExtensionsCatalog = map[string]struct {
 		"adapters/integrations/slack/socket_test.go:TestSocketFrameCarriesAcceptsResponsePayload",
 		"adapters/integrations/slack/socket_test.go:TestSocketDisconnectReasonIsDecoded",
 		"adapters/integrations/slack/socket_test.go:TestSocketAckShape",
-		"apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketAcknowledgesBeforeDoingTheWork",
-		"apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketAckShapeMatchesTheDocumentedEnvelope",
-		"apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketOverlapsOnWarningAndLosesNoEvents",
-		"apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketStopsPermanentlyOnLinkDisabled",
-		"apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketDrainsGracefully",
-		"apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketNeverLogsTheTokenOrTheTicket",
-		"apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModeAndHTTPShareOneCanonicalIdentity",
 	}},
 	// E19 T1 shipped the Events API route, so the redelivery collapse is now asserted on the REAL route
 	// against real Postgres rather than only on the pure mapping: unit -> component-real.
 	"SLK-002": {"component-real", []string{
 		"adapters/integrations/slack/inbound_test.go:TestMapEventRedeliveryIsIdentityStable",
 		"apps/control-plane/internal/automation/dedupe_component_test.go:TestDuplicateDeliveryLinksOriginalSingleAction",
-		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackRetryStormRunsTheEffectOnce",
 	}},
 	// The post-E20 live fix EXTENDED this case rather than opening an id, and the reason is that it is the SAME
 	// invariant read from the other side: the thread↔session correlation is what decides whether a thread's
@@ -165,29 +157,12 @@ var expectedExtensionsCatalog = map[string]struct {
 		"adapters/integrations/slack/history_test.go:TestThreadRepliesTypesTheAPIRefusal",
 		"adapters/integrations/slack/history_test.go:TestThreadRepliesDoesNotRetryARateLimit",
 		"adapters/integrations/slack/inbound_test.go:TestMapEventCarriesTheAffectedMessageTS",
-		"apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteIsEmptyWhenThereIsNothingToQuote",
-		"apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteLeadsWithTheUntrustedLabelAndEndsBeforeTheRequest",
-		"apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteAttributesWithoutNamingAnyone",
-		"apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteMakesBothTruncationsVisible",
-		"apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteQuotesAnInjectionAsData",
-		"apps/control-plane/internal/extensions/slack_component_test.go:TestSlackThreadSessionCorrelation",
-		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackThreadCorrelatesToOneSession",
-		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackConcurrentFirstEventsNeverSplitAThread",
-		"apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryIsFetchedOnceForAThreadWeWereInvitedInto",
-		"apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackTopLevelMentionReadsNoThread",
-		"apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadReadAddressesTheEventNotTheContext",
-		"apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryIsNotReadOutsideTheChannelAllowList",
-		"apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryRefusalStillAdmitsTheRun",
-		"apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryRedeliveryStillReplays",
 	}},
 	// E19 T2 gave ApproverAuthorized its FIRST production caller, which is what earns deleting E17 T11's
 	// "UNWIRED DECISION PATH" note: the allow-list is now enforced on the shipped interactivity route.
 	"SLK-004": {"component-real", []string{
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace",
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse",
-		"apps/control-plane/internal/extensions/slack_component_test.go:TestSlackConnectionCreateReadRLS",
-		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackUnauthorizedClickEnqueuesNothing",
-		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackStaleHashAndForeignThreadDecideNothing",
 	}},
 	// E20 extended this case rather than opening an id, and what it added is the half SLK-005 had DECLARED as
 	// its own ceiling: the file leg. The fetch, the artifact, the input's image_ref, the provider's content
@@ -202,23 +177,15 @@ var expectedExtensionsCatalog = map[string]struct {
 		"apps/control-plane/internal/execution/vision_test.go:TestDecodeMessagesTakesNothingButBytesFromAnImageItem",
 		"apps/control-plane/internal/execution/vision_component_test.go:TestDispatchResolvesAnImageRefIntoTheProviderRequest",
 		"adapters/models/provider_one/vision_test.go:TestBuildBodyRendersAnImageAsAContentPart",
-		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind",
-		"apps/control-plane/internal/store/slack_image_component_test.go:TestSlackSharedImageBecomesAnImageRefInTheRunInput",
-		"apps/control-plane/internal/store/slack_image_component_test.go:TestSlackImageRedeliveryReplaysOntoTheSameRunAndArtifact",
-		"apps/control-plane/internal/store/slack_image_component_test.go:TestSlackNonImageAndOversizeFilesAreRefusedVisibly",
 		"apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestArtifactInboundImageWriteIsIdempotentAtACallerChosenID",
 		"apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestInboundImageIsReachedByRetentionOnlyOnceAttached",
 	}},
 	"SLK-006": {"component-real", []string{
 		"adapters/integrations/slack/ratelimit_test.go:TestPostMessageRepairsA429Once",
 		"adapters/integrations/slack/ratelimit_test.go:TestPostMessageBoundedRepairThenRateLimited",
-		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionRepairsTheVisibleMessageExactlyOnceUnderA429",
-		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackCoalescedUpdatesArePacedPerChannel",
-		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionSurvivesAPermanentlyRateLimitedSlack",
 		// E20 T1 extended this case rather than opening an id: the streaming calls ride the SAME retry owner
 		// and the SAME pacer, so "one repair, no second layer" is now asserted on the stream cadence too.
 		"adapters/integrations/slack/stream_test.go:TestStreamCallsTruncateTheirOwnText",
-		"apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamAppendRepairsA429WithoutASecondRetryLayer",
 	}},
 	// E20 T4 extended this case rather than opening an id — the same move T1 made on SLK-006, and for the same
 	// reason: the claim is already here. "ONLY from a MINTED button" always had a supply side nobody proved,
@@ -230,20 +197,15 @@ var expectedExtensionsCatalog = map[string]struct {
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace",
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalDenyIsMapped",
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse",
-		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackAuthorizedClickApprovesThroughTheWholeChain",
-		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDenyClickDeniesThePublication",
 		"adapters/integrations/slack/blocks_test.go:TestRenderRefusesToMintAnActionableElementFromModelOutput",
 		"adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement",
 		"adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement",
-		"apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStopStreamCarriesRenderedBlocksAndNoForgedButton",
 	}},
 	// The self-loop guard lives in the pure MapEvent, so it holds on every transport — but "it should" is
 	// not evidence, and a bot event that opened a run over a WebSocket would be a loop nobody notices.
 	"SLK-008": {"component-real", []string{
 		"adapters/integrations/slack/inbound_test.go:TestMapEventDropsBotAndSelfEvents",
 		"adapters/integrations/slack/inbound_test.go:TestMapEventDropsNestedBotEdit",
-		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackBotSelfEventBirthsNothing",
-		"apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModeSelfEventBirthsNothing",
 	}},
 	"A2A-001": {"component-real", []string{
 		"adapters/integrations/a2a/card_test.go:TestAgentCardNeverLeaksInternalDetail",

@@ -217,13 +217,23 @@ func canonicalWiringProof(t *testing.T) uat.WiringProof {
 		deliveries     int
 		runs           int
 	}{
-		{name: "slack-connections", route: "POST /v1/slack-connections", status: 201},
-		// The transport-invariance counter: ONE source event id, TWO deliveries (Socket Mode then the HTTP
-		// callback), ONE run — reserved under the route constant only the shared Admitter writes.
-		{name: "slack-events", route: "POST /v1/slack/events", status: 200,
-			admissionRoute: "/v1/slack/events", sourceEvents: []string{"EvWiring1"}, deliveries: 2, runs: 1},
-		{name: "slack-interactions", route: "POST /v1/slack/interactions", status: 200},
-		{name: "slack-socket", route: "loop extensions.SlackSocket"},
+		// THE FOUR SLACK SURFACES WERE HERE AND ARE GONE (cutover, 2026-08-05): slack-connections,
+		// slack-events, slack-interactions and slack-socket. The routes they observed do not exist — Slack is
+		// apps/slack-bot now, reaching this control plane over `/v1` like any other client.
+		//
+		// WHAT WENT WITH THEM IS WORTH MORE THAN THE FOUR ROWS, and it is stated here rather than left for a
+		// reader to notice: slack-events carried this proof's ONLY transport-invariance counter — ONE source
+		// event id, TWO deliveries (Socket Mode then the HTTP callback), ONE run, reserved under the route
+		// constant only the shared Admitter writes. That triple was the mechanical evidence that the REAL
+		// Admitter ran rather than a parallel path, and no surface left in the canonical set declares one.
+		//
+		// WiringProof.Complete() does NOT refuse a proof with no counter — it only refuses an INCONSISTENT
+		// one — so this bundle now verifies green while claiming strictly less than it used to. That is a
+		// weakening, not a repair, and it is written down because a silently weaker proof is the exact shape
+		// this tree keeps finding. Restoring it needs an observation nothing here can fabricate: a journey
+		// that drives an admitting surface twice with one source event. queue-inbound is the obvious
+		// candidate (it admits through the same shared Admitter), and the E19 journey that would have
+		// observed it was deleted with the bridge.
 		{name: "a2a-push", route: "POST /v1/a2a/interfaces/{interface_id}/tasks/{id}/pushNotificationConfigs", status: 200},
 		{name: "queue-inbound", route: "loop automation.QueueBridge"},
 		{name: "queue-outbound", route: "loop automation.QueueOutboxPump"},
@@ -240,7 +250,7 @@ func canonicalWiringProof(t *testing.T) uat.WiringProof {
 		})
 		routes = append(routes, s.route)
 	}
-	routes = append(routes, "GET /v1/capabilities", "GET /v1/queue-connections", "GET /v1/slack-connections")
+	routes = append(routes, "GET /v1/capabilities", "GET /v1/queue-connections")
 	sort.Strings(routes)
 
 	snapshot := make(map[string]string, len(uat.CapabilityTierOrder))
@@ -250,7 +260,7 @@ func canonicalWiringProof(t *testing.T) uat.WiringProof {
 	return uat.WiringProof{
 		Surfaces:           out,
 		CapabilitySnapshot: snapshot,
-		SnapshotSource:     "GET /v1/capabilities read over real HTTP from the fully-mounted router the E19 journey drove (apps/control-plane/internal/store TestWiringJourney) — the SAME process that served every route above",
+		SnapshotSource:     "GET /v1/capabilities read over real HTTP from the fully-mounted router the E19 journey drove (apps/control-plane/internal/store TestWiringJourney) — the SAME process that served every route above. THE JOURNEY WAS DELETED ON 2026-08-05 with the in-process Slack bridge it half existed to drive, so this snapshot is the last one it took and no invocation re-takes it; the tier VALUES are still checked bit-for-bit against the recompute by apps/control-plane/api TestServedCapabilityTiersEqualTheRecompute, which is what stops them rotting",
 		RouterSurface:      routes,
 		ContractsDigest:    uat.WiringContractsDigest(),
 		Peers:              uat.WiringPeers,
@@ -380,8 +390,24 @@ func TestWiringBundleCarriesEveryDivergenceRow(t *testing.T) {
 		}
 	}
 	// D1..D15 are the plan §3.5 rows. D14 and D15 are internal-consistency rows and are covered; every
-	// vendor row this epic's surfaces implement must be present.
-	for _, row := range []string{"D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12", "D13", "D14", "D15"} {
+	// vendor row this release's REMAINING surfaces implement must be present.
+	//
+	// TEN ROWS LEFT THIS EXPECTATION ON 2026-08-05 (D1..D10) AND THEY DID NOT ALL LEAVE FOR THE SAME REASON,
+	// which is the distinction worth keeping:
+	//
+	//   - D1, D2, D3, D8, D9 are Slack's HTTP contracts — the retry schedule and its suppression header, the
+	//     retry headers, the retry's event_id, the form-encoded interactivity POST, and the v0 signature.
+	//     This deployment mounts NO HTTP Slack receiver, so it implements none of them. Genuinely out of
+	//     scope, not deferred.
+	//   - D4, D5, D6, D7 (Socket Mode's ack, the overlapping refresh, accepts_response_payload, and the
+	//     absence of a signature) and D10 (chat.postMessage's Special Tier) are STILL IMPLEMENTED — by
+	//     apps/slack-bot and the shared adapter it dials. They left this table because they are no longer
+	//     implemented by a surface THIS release wires, not because they stopped mattering.
+	//
+	// THE FIVE THAT MOVED HAVE NO GATE HERE ANY MORE, and that is the honest gap: this test can only check
+	// the rows its own surfaces carry. Whoever gives apps/slack-bot a release bundle re-homes D4..D7 and D10
+	// into it; until then their grounding lives in the adapter's own tests and in tests/live/slack.
+	for _, row := range []string{"D11", "D12", "D13", "D14", "D15"} {
 		if !seen[row] {
 			t.Errorf("§3.5 row %s is in no surface's contract ledger — the divergence table is the plan's crown output and a dropped row is a silently reintroduced gap", row)
 		}

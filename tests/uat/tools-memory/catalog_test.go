@@ -106,7 +106,6 @@ var expectedToolsMemoryCatalog = map[string]struct {
 		"adapters/integrations/slack/mention_test.go:TestAMentionRendersAsAnOrdinarySection",
 		"adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement",
 		"tests/component/postgres/migration_test.go:TestMigration43SlackRequester",
-		"apps/control-plane/internal/store/slack_mention_component_test.go:TestSlackTerminalRunMentionsTheRequesterAndOnlyTheRequester",
 	}},
 	// E21 T4 — the tool surface. Four of these drive the REAL Orchestrator, which is the gap §3.6 D3 measured:
 	// every prior MCP proof stopped at the broker, and the only engine-level evidence was behind a live tag.

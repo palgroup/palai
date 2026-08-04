@@ -66,14 +66,7 @@ var expectedCodeAndShipCatalog = map[string]struct {
 	// "and a connection WITHOUT one is bit-unchanged" and "another tenant's ref is not found". All three are
 	// listed, plus the dead-tool guard, because granting a tool whose every call fails is the failure mode
 	// §3.6 D4 measured.
-	"CAS-001": {"component-real", []string{
-		"apps/control-plane/api/slack_connections_test.go:TestSlackDefaultPolicyAcceptsARepositoryAndStaysClosed",
-		"apps/control-plane/api/slack_connections_test.go:TestSlackDefaultPolicyWithoutARepositoryIsBitUnchanged",
-		"apps/control-plane/api/slack_connections_test.go:TestSlackDefaultPolicyRefusesARefWithNoBinding",
-		"apps/control-plane/api/slack_connections_test.go:TestSlackDefaultPolicyPatchBindsARepositoryToAnExistingConnection",
-		"apps/control-plane/internal/store/slack_repository_component_test.go:TestSlackRunCarriesTheConnectionsRepositoryBinding",
-		"apps/control-plane/internal/store/slack_repository_component_test.go:TestSlackConnectionWithoutARepositoryIsBitUnchanged",
-		"apps/control-plane/internal/store/slack_repository_component_test.go:TestSlackRefusesAnotherTenantsRepositoryBinding",
+	"CAS-001": {"unit", []string{
 		// WITHDRAWN 2026-08-04: `1e5fc63e` removed the bring-up's conditional tool grant. Recorded in CAS-001.
 		"cmd/cli/internal/stack/up_repository_test.go:TestABringUpBindsTheRepositoryAndSaysWhatItMade",
 		"cmd/cli/internal/stack/up_repository_test.go:TestABringUpReusesTheRepositoryBindingItAlreadyMade",
@@ -93,14 +86,6 @@ var expectedCodeAndShipCatalog = map[string]struct {
 	// LAST one is the half of E22's ceiling that is still true and is asserted on its own rather than
 	// dropped — a genuinely terminal run still refuses the click.
 	"CAS-002": {"component-real", []string{
-		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackWaitsForAnApproveAndThenPublishes",
-		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackDenialPreventsThePushEntirely",
-		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackTargetsTheBindingsBaseBranch",
-		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackPostsAnApprovalMessageIntoTheThread",
-		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackParksTheRunSoTheApproveLands",
-		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackDenyWakesTheParkedRunAndPublishesNothing",
-		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackDeliveryFailureKeepsTheApprovalAndReleasesTheRun",
-		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackCeilingATerminalRunStillRefusesTheClick",
 		"apps/control-plane/internal/execution/tools/publish_test.go:TestNoPublishToolLetsTheModelNameTheDestination",
 		"apps/control-plane/internal/execution/tools/publish_test.go:TestPushToolRecordsPendingPublicationAtWorkspaceHead",
 		"apps/control-plane/internal/execution/tools/default_set_test.go:TestThePublishToolsAreTheirOwnListAndNeitherPublishes",
@@ -112,8 +97,14 @@ var expectedCodeAndShipCatalog = map[string]struct {
 		"cmd/cli/internal/stack/up_publisher_test.go:TestTheGitHubAppKeyRidesAFileSecretAndTheEnvironmentCarriesOnlyAPath",
 		"cmd/cli/internal/stack/up_publisher_test.go:TestComposeMountsTheGitHubAppKeyAsAFileSecret",
 		"adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement",
-		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackUnauthorizedClickEnqueuesNothing",
 		"tests/live/repository/live_test.go:TestLiveApprovedPushAndDraftPullRequest",
+		// RE-EARNED 2026-08-05 — the same claims, off Slack: AcceptCommand + ApplyApprovalDecision instead
+		// of SlackAdmitter.Decide, which is the path every decision surface takes.
+		"apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationWaitsForAnApproveAndThenPublishes",
+		"apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationDenialPreventsThePushEntirely",
+		"apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationTargetsTheBindingsBaseBranch",
+		"apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationParksTheRunSoTheApproveLands",
+		"apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationDenyWakesTheParkedRunAndPublishesNothing",
 	}},
 	// E22 T6 — the Jira rider and the ticket body. One component test carries all five refusals because they
 	// are five re-derivations over ONE call; the rider tests are what make the surface reachable at all, and
@@ -137,16 +128,7 @@ var expectedCodeAndShipCatalog = map[string]struct {
 		"adapters/integrations/slack/blocks_test.go:TestTaskCardSourceTextIsNeutralised",
 		"adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement",
 		"adapters/integrations/slack/manifest_test.go:TestManifestGrantsTheScopesTheSubscribedEventsRequire",
-		"apps/control-plane/internal/extensions/slack_upload_test.go:TestArtifactIDIsRecognisedByShapeAndNearMissesAreRefused",
-		"apps/control-plane/internal/extensions/slack_upload_test.go:TestArtifactRefsComeOnlyFromFileRefsInOrderAndDeduplicated",
-		"apps/control-plane/internal/extensions/slack_upload_test.go:TestUploadNoteSaysWhatWasNotAttached",
-		"apps/control-plane/cmd/palai-control-plane/main_test.go:TestSlackImageLegIsMountedWhenThereIsAnObjectStore",
 		"apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestReadRunArtifactRefusesForeignRunsForeignTenantsAndOversize",
-		"apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackRunArtifactReachesTheThreadAsAFile",
-		"apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackUploadRefusesAnArtifactFromAnotherRun",
-		"apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackUploadRefusesAnOversizeArtifactAndSaysSo",
-		"apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackUploadFailureLeavesTheAnswerAndTheRunAlone",
-		"apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackOrdinaryAnswerUploadsNothing",
 		"tests/live/code-and-ship/upload_live_test.go:TestLiveSlackUploadsAScreenshotAndARecording",
 	}},
 	// E22 T1/T2 — the host, and the boundary this epic DELETES. The three live legs are listed because the

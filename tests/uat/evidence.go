@@ -1517,11 +1517,24 @@ func (p ConsoleProof) Complete() bool {
 // about a real Slack workspace, a foreign A2A peer or a broker product. Those are §6 legs 1/2/5.
 const WiringBundle = "integration-wiring-0.1.0"
 
-// WiredSurfaceOrder is the ordered, canonical set of surfaces E19 wired to the production path. A
-// WiringProof must declare EXACTLY these (no more, no fewer) so a surface cannot dodge the mount check by
-// being omitted — the CapabilityTierOrder discipline applied to mounts.
+// WiredSurfaceOrder is the ordered, canonical set of surfaces wired to the production path. A WiringProof
+// must declare EXACTLY these (no more, no fewer) so a surface cannot dodge the mount check by being omitted
+// — the CapabilityTierOrder discipline applied to mounts.
+//
+// IT LOST ITS FOUR SLACK ENTRIES ON 2026-08-05 — slack-connections, slack-events, slack-interactions and
+// slack-socket — because the mounts they name are gone. E19 wired an in-process Slack bridge; Slack is now
+// apps/slack-bot, a separate process that reaches this control plane over `/v1` like any other client, so
+// there is no /v1/slack/events to probe and no `extensions.SlackSocket` loop to observe.
+//
+// LEAVING THEM WOULD HAVE BEEN THE EXACT DEFECT THIS TABLE EXISTS TO CATCH. The proof's whole load-bearing
+// claim is "a RUNNING stack answered on this route" — §3.5 D14, a claim that OUTLIVES its mount. A canonical
+// table still demanding a route nothing serves is that defect with the polarity flipped, and it would have
+// been discovered as an unfixable red rather than as a lie.
+//
+// `slack` IS STILL AN ADVERTISED CAPABILITY and this is not in tension with that: it derives from the bot
+// registry mount now (api/capabilities.go says why at length). What this table lost is not the capability,
+// it is the four ROUTES that used to be the evidence for it.
 var WiredSurfaceOrder = []string{
-	"slack-connections", "slack-events", "slack-interactions", "slack-socket",
 	"a2a-push", "queue-inbound", "queue-outbound", "console",
 }
 
@@ -1534,27 +1547,19 @@ var WiredSurfaceOrder = []string{
 // method+path. The distinction is recorded in wiredSurfaceIsRoute below, because a loop cannot be probed for
 // a status code and pretending otherwise would be the fabrication this proof is built to catch.
 var wiredSurfaceCapability = map[string]string{
-	"slack-connections":  "slack",
-	"slack-events":       "slack",
-	"slack-interactions": "slack",
-	"slack-socket":       "slack",
-	"a2a-push":           "a2a",
-	"queue-inbound":      "queues",
-	"queue-outbound":     "queues",
-	"console":            "console",
+	"a2a-push":       "a2a",
+	"queue-inbound":  "queues",
+	"queue-outbound": "queues",
+	"console":        "console",
 }
 
 // wiredSurfaceIsRoute reports whether a surface is an HTTP route on the shipped router (so the running stack
 // can be probed for a non-404) or a supervised loop (so the observation is that the loop RAN).
 var wiredSurfaceIsRoute = map[string]bool{
-	"slack-connections":  true,
-	"slack-events":       true,
-	"slack-interactions": true,
-	"a2a-push":           true, // the pushNotificationConfigs CRUD, mounted only when a Pusher exists (D13)
-	"console":            true, // the /v1 surface the console reaches; the browser never leaves the relay
-	"slack-socket":       false,
-	"queue-inbound":      false,
-	"queue-outbound":     false,
+	"a2a-push":       true, // the pushNotificationConfigs CRUD, mounted only when a Pusher exists (D13)
+	"console":        true, // the /v1 surface the console reaches; the browser never leaves the relay
+	"queue-inbound":  false,
+	"queue-outbound": false,
 }
 
 // ContractRequirement is one published external-contract requirement a wired surface implements, carried
@@ -1579,67 +1584,6 @@ type ContractRequirement struct {
 // The three internal-consistency rows (D13/D14/D15) carry this repository's own plan as their source: they
 // are not vendor statements and must not be dressed as ones.
 var WiringContracts = map[string][]ContractRequirement{
-	"slack-connections": {{
-		Divergence:  "D14",
-		SourceURL:   "docs/superpowers/plans/phase-19-integration-wiring.md#35",
-		Requirement: "discovery advertises only what is MOUNTED; a registration surface is what makes a `slack` mount reachable by an operator instead of by hand-written SQL",
-	}},
-	"slack-events": {
-		{
-			Divergence:  "D1",
-			SourceURL:   "https://docs.slack.dev/apis/events-api/",
-			Requirement: "a delivery without a 2xx inside 3 seconds is retried three times (immediately, +1m, +5m); a non-200 answer carrying `x-slack-no-retry: 1` suppresses the retry, so a TERMINAL rejection must set it or a poison event is pulled four times",
-		},
-		{
-			Divergence:  "D2",
-			SourceURL:   "https://docs.slack.dev/apis/events-api/",
-			Requirement: "a retry carries both `x-slack-retry-num` (1..3) and `x-slack-retry-reason` (http_timeout, http_error, connection_failed, ssl_error, too_many_redirects, unknown_error)",
-		},
-		{
-			Divergence:  "D3",
-			SourceURL:   "https://docs.slack.dev/apis/events-api/",
-			Requirement: "event_id is globally unique across workspaces; that a RETRY repeats the same event_id is NOT stated on the page and is carried in the tree as a labelled ASSUMPTION the live leg asserts",
-		},
-		{
-			Divergence:  "D9",
-			SourceURL:   "https://docs.slack.dev/authentication/verifying-requests-from-slack/",
-			Requirement: "the v0 base string is exactly 'v0:'+timestamp+':'+raw_body, HMAC-SHA256 hex, the header value 'v0='-prefixed, compared timing-safe, with a timestamp more than five minutes old refused",
-		},
-	},
-	"slack-interactions": {
-		{
-			Divergence:  "D8",
-			SourceURL:   "https://docs.slack.dev/interactivity/handling-user-interaction/",
-			Requirement: "an interaction arrives application/x-www-form-urlencoded with the JSON in a single `payload` parameter and must be answered 200 within 3 seconds; the signature is verified over the RAW form body BEFORE `payload` is extracted",
-		},
-		{
-			Divergence:  "D10",
-			SourceURL:   "https://docs.slack.dev/apis/web-api/rate-limits/",
-			Requirement: "chat.postMessage is Special Tier — roughly one message per channel per second with short bursts — and a throttled call answers 429 with Retry-After in seconds",
-		},
-	},
-	"slack-socket": {
-		{
-			Divergence:  "D4",
-			SourceURL:   "https://docs.slack.dev/apis/events-api/using-socket-mode/",
-			Requirement: "every envelope must be acknowledged so Slack knows whether to retry; NO ack-time budget and no retry count are published for Socket Mode (the 3-second rule is the HTTP page's), so the tree acknowledges BEFORE the work and names the gap rather than inventing an SLA",
-		},
-		{
-			Divergence:  "D5",
-			SourceURL:   "https://docs.slack.dev/apis/events-api/using-socket-mode/",
-			Requirement: "apps.connections.open returns a short-lived wss ticket URL; a `disconnect` with reason `warning` arrives ~10 seconds before close, and up to 10 concurrent connections are supported — so a graceful refresh OVERLAPS a new socket before draining the old one",
-		},
-		{
-			Divergence:  "D6",
-			SourceURL:   "https://docs.slack.dev/apis/events-api/using-socket-mode/",
-			Requirement: "the envelope carries `accepts_response_payload`; a response payload may only be returned on an envelope that accepts one",
-		},
-		{
-			Divergence:  "D7",
-			SourceURL:   "https://docs.slack.dev/apis/events-api/using-socket-mode/",
-			Requirement: "Socket Mode envelopes are NOT signed — the pre-authenticated WebSocket is the authentication — so the absence of a v0 verify on this transport is the documented behaviour, not an omission",
-		},
-	},
 	"a2a-push": {
 		{
 			Divergence:  "D11",
@@ -1841,19 +1785,18 @@ const WiringPeers = "documented-fake"
 // missing credential would turn one absent variable into a red wall; a leg that PASSED would be asserting
 // something it never ran. tests/uat/wiring checks this table against the live test FILES, so a leg listed
 // here that does not exist — or a live test that exists and is not listed — fails the gate.
+//
+// FOUR LEGS LEFT THIS TABLE ON 2026-08-05, with the tests they named. Two watched the RUNNING control plane's
+// database for a run a Slack mention had birthed (over HTTP and over Socket Mode); that admission is gone
+// with the in-process bridge, and the reservation they keyed on — route '/v1/slack/events' — is written by
+// nothing now. The other two stood up their own receiver to settle Slack's HTTP transport: the retry's
+// event_id (D3) and the interactivity POST's form encoding and v0 signature (D8). This deployment mounts no
+// HTTP receiver, so those measured a contract nothing here implements.
+//
+// D3 AND D8 ARE THEREFORE UNSETTLED AGAIN rather than answered — the honest state, since the verifier and
+// the dedupe both still ship. What remains is every leg that measures code apps/slack-bot actually runs: the
+// Socket Mode protocol, the four chat.*Stream legs, and the approval message post-and-repair.
 var WiringLiveLegs = []LiveLeg{
-	{
-		Test:              "TestLiveSlackRetryCarriesTheSameEventID",
-		EnvVars:           []string{"SLACK_SIGNING_SECRET"},
-		HandoverRow:       "§0.1 — App → Basic Information → App Credentials → Signing Secret",
-		WithoutCredential: "skip",
-	},
-	{
-		Test:              "TestLiveSlackMentionBirthsExactlyOneRun",
-		EnvVars:           []string{"PALAI_SLACK_LIVE_POSTGRES_URL", "SLACK_TEAM_ID"},
-		HandoverRow:       "§0.1 — SLACK_TEAM_ID from the workspace admin page or any event payload's team_id; the Postgres URL comes from the running stack (make compose-up prints it)",
-		WithoutCredential: "skip",
-	},
 	{
 		Test:              "TestLiveSlackApprovalMessageIsPostedAndRepaired",
 		EnvVars:           []string{"SLACK_BOT_TOKEN", "SLACK_TEST_CHANNEL"},
@@ -1861,21 +1804,9 @@ var WiringLiveLegs = []LiveLeg{
 		WithoutCredential: "skip",
 	},
 	{
-		Test:              "TestLiveSlackButtonClickIsFormEncodedAndVerifies",
-		EnvVars:           []string{"SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "SLACK_TEST_CHANNEL"},
-		HandoverRow:       "§0.1 — the signing secret, the bot token and the test channel together: this leg posts a real button and verifies the real click",
-		WithoutCredential: "skip",
-	},
-	{
 		Test:              "TestLiveSlackSocketProtocol",
 		EnvVars:           []string{"SLACK_APP_TOKEN"},
 		HandoverRow:       "§0.1 — App → Basic Information → App-Level Tokens → Generate, scope connections:write. NO PUBLIC URL IS NEEDED for this leg",
-		WithoutCredential: "skip",
-	},
-	{
-		Test:              "TestLiveSlackSocketMentionBirthsExactlyOneRun",
-		EnvVars:           []string{"SLACK_APP_TOKEN", "PALAI_SLACK_LIVE_POSTGRES_URL", "SLACK_TEAM_ID"},
-		HandoverRow:       "§0.1 — the app-level token and the team id, plus the running stack's Postgres URL",
 		WithoutCredential: "skip",
 	},
 	// E20 T1's legs. The first is the cheapest receipt in the whole epic and the one to run first: if

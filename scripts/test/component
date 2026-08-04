@@ -152,11 +152,21 @@ run_postgres() {
   # releases the run it parked. They are named here for the reason the paragraph above gives, and this list
   # is the tripwire that reason exists for: a security test that never runs reports the same green as one
   # that passes.
-  # TestPublicationFromSlack* covers E23 T3 as well as E22 T4 — the prefix already selected them, and the
-  # names are worth reading because the claim changed under it: an approval message is now POSTED into the
-  # thread by production code (ApprovalMessage's first production caller), the run PARKS instead of
-  # answering, the approve that used to 503 lands, a deny releases the run, and a delivery Slack refuses
-  # costs the human a button and never the approval, its deadline, or the run (SLK-006).
+  # TestPublication* covers E22 T4 and E23 T3: the tool records a pending publication and does NOT act, a
+  # boundary driven before anybody decides touches no publisher, a stale request hash decides nothing, the
+  # run PARKS instead of answering, an approve lands on the parked run and publishes exactly once to the
+  # destination the BINDING resolved, and a deny releases the run and publishes nothing.
+  #
+  # THE ALTERNATIVE WAS `TestPublicationFromSlack` UNTIL 2026-08-05 and the rename is this list's own trap
+  # sprung the other way round: the tests moved off SlackAdmitter.Decide onto the generic decision path and
+  # were renamed with it, so the old alternative would have matched NOTHING and exited 0 in silence. The
+  # word is now the widest safe prefix — it also picks up TestPublicationRefusedBeforeAHumanIsAsked and
+  # TestPublicationAcceptedWhenTheBindingCarriesItsOwnCredential, which are named separately below and are
+  # harmless to select twice.
+  #
+  # ONE LEG OF THE OLD SET IS NOT IN THE NEW ONE: a delivery Slack refuses costing the human a button and
+  # never the approval, its deadline or the run (SLK-006). It measured an in-process delivery this
+  # deployment no longer performs.
   # TestApprover* is the E23 T2 gate: WHO may approve. It drives the REAL HTTP command adapter (a scope from
   # a REAL VerifyAPIKey) into the REAL pump, and it is named here for the reason above — an approver check
   # nothing runs is an approver check nothing enforces. Its Slack twin (TestSlackApprover*) rides the
@@ -185,18 +195,16 @@ run_postgres() {
   # bindings for one model-visible name and the lookup used to take whichever the planner emitted first,
   # so a planner's choice could decide whether a human is asked. It refuses now, at every entry point.
   #
-  # TestSlackToolApproval* is E23 T8 — the DECISION SURFACE for the generic half — and it needs its own
-  # alternative rather than riding one of the names above, which is this list's trap sprung deliberately
-  # rather than by accident: `TestToolApproval` does NOT match `TestSlackToolApprovalAsks...` (Go's -run is
-  # an unanchored regexp and "TestToolApproval" is not a substring of "TestSlackToolApproval"), and neither
-  # does `TestPublicationFromSlack` or `TestApprover`. Without this word the four tests proving that a
-  # gated MCP write tool can be approved AT ALL would report the same green as tests that pass.
-  # What they run: the ask is posted into the correlated thread as T4's three-button ARGUMENT TABLE (not
-  # E19's two-button publication screen — the screen is chosen from the approvals row's own discriminator),
-  # an authorized click routes to DecideToolApproval and WAKES the parked run, an unauthorized one decides
-  # nothing under EITHER approver list, a deny releases the run with a reason and runs nothing, and a
-  # REGISTERED revision's operator label reaches the screen through the same lookup the executor uses.
-  # This is the hole the epic's own exit gate found and filed as HIL-P8.
+  # TestSlackToolApproval* HAD ITS OWN ALTERNATIVE HERE UNTIL 2026-08-05 — E23 T8's DECISION SURFACE for
+  # the generic half, four tests driving a gated MCP write tool's approval through a click in a thread. They
+  # went with the in-process Slack bridge. What survives and still runs is the same gate reached the way
+  # every client reaches it: TestHTTPToolApproval* (named below) drives the approval LIST and the decide
+  # route, and TestToolApproval*/TestExpiredToolApproval* drive the park, the wake and the expiry.
+  #
+  # The paragraph is kept rather than deleted because the trap it documents is still live: `TestToolApproval`
+  # did NOT match `TestSlackToolApprovalAsks...` (Go's -run is an unanchored regexp and one is not a
+  # substring of the other), which is why those four needed a word of their own. The next test whose name
+  # merely LOOKS covered needs the same treatment.
   #
   # TestAutoApprove* is E30 T1 — THE SESSION'S STANDING AUTHORIZATION — and it needs its own alternative
   # for the reason this list has said five times already: not one of the eleven names starts with a word
@@ -427,7 +435,7 @@ run_postgres() {
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -timeout "$COMPONENT_LONG_LEG_TIMEOUT" -v \
-        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestSlackToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestToolWithoutApprovalDeclared|TestHTTPToolApproval|TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool|TestPoolKey|TestPoolBirth|TestPlacement|TestLifecycle|TestStrict|TestAnUnsandboxedHostAttempt|TestASingleRunnerDeployment|TestAPoolServesItsWaitingRuns|TestDialRefusesAPool|TestAMachineDeclaringAPosture|TestAnEnvironmentReachesARunsShellAndItsValueEntersNoDurableRow|TestARunWhoseRevisionNamesAnEnvironmentFailsClosedWithNoResolver|TestARunsEnvironmentIsPinnedToItsRevisionNotToTheLatest|TestAConsoleWrittenEnvironment|TestTheJiraRunbookRunsOnThePublicAPIAlone|TestAForeignTenantsToolRevisionIsNotFound|TestTheToolRevisionReadRoutesRequireTheProvisionCapability|TestAToolRevisionTimeoutAboveTheCeilingIsRefusedAsBadInput|TestEveryToolRegistryCreateAdvertisesAnAddressThatResolves|TestABackgroundShellCallReturnsAHandleWhileTheProcessIsStillRunning|TestABackgroundTasksOutputIsReadableMidFlight|TestTheModelCallsAnotherToolWhileTheBackgroundProcessIsStillRunning|TestThreeBackgroundTasksRunConcurrentlyWithoutInterleavingTheirOutput|TestAGatedToolCalledWithBackgroundSpawnsNothingUntilAHumanDecides|TestABackgroundedDirectoryChangeDoesNotCarryOverToTheNextCommand|TestBackgroundIsRefusedRatherThanDowngradedWhenTheFeatureIsDisabled|TestBackgroundKillStopsTheProcessGroupAndKillingTwiceIsKillingOnce|TestAShellCallWithoutBackgroundIsFieldForFieldUnchanged|TestARunWithALiveBackgroundTaskParksInsteadOfCompleting|TestARunWithNoLiveBackgroundTaskStillCompletes|TestAFailedTerminalDoesNotParkOnALiveBackgroundTask|TestALostOrUnprobeableBackgroundTaskDoesNotParkTheRun|TestAParkedRunsResponseReadsWaitingForTool|TestALiveResponseReachesInProgressBeforeItParks|TestWaitingForToolNeverOverwritesATerminalResponse|TestTheParkWritesNoRunTerminalIntoTheSessionJournal|TestAParkedRunReentersExactlyOnceWhenItsBackgroundTaskFinishes|TestTwoTicksTwoPlanesAndARestartProduceOneBackgroundNotice|TestARunningRunIsNotInterruptedAndTheNoticeFoldsAtTheNextBoundary|TestATerminalRunsBackgroundNoticeIsStampedRatherThanDropped|TestWithoutTheReconcilerSweepNoBackgroundNoticeEverLands|TestATaskPastItsDeadlineIsKilledMarkedExpiredAndTheModelIsTold|TestUnsetMeansSixtyMinutesAndUnboundedMustBeWrittenExplicitly|TestCancellingARunKillsEveryLiveBackgroundTaskOfIt|TestARestartedControlPlaneAdoptsItsRunningTasksFromTheRowRatherThanFromMemory|TestADeadTaskNoWatcherEverSawGetsNoInventedExitCode|TestAnUnprovableHandleBecomesLostAndReceivesNoSignal|TestTheSixthBackgroundTaskOfARunIsRefusedRatherThanQueued|TestTheMachineCeilingIsCountedAcrossTenantsFromTheDatabase|TestAFinishedTasksLogIsDeletedAfterItsTTLAndARunningTasksIsNot|TestKillingATaskThatAlreadyFinishedClaimsNothing|TestBothTheFileReadAndTheExitNoticeAreRedactedFromOnePlace|TestNoDecodedFieldOfATaskRowItsEventsOrItsCommandsCarriesAnEnvironmentValue|TestACredentialCarryingTaskCannotBeCreatedWithoutADeadline|TestARunParkedForApprovalOnABackgroundCallResolvedNoEnvironmentValue|TestAMissingFileIsAnsweredToTheModelInsteadOfWedgingTheRun|TestARefusedTraversalIsAnsweredAndTheOutsideFileIsNeverRead|TestAToolFaultStillAbortsTheAttemptAndLeavesItsRowUncommitted|TestTheToolErrorBudgetEndsARunThatKeepsBeingRefused|TestAnExplicitlyUnboundedBudgetIsHonoured|TestAReplayedRefusalCountsAgainstTheSameBudget|TestAutoApprove|TestToolFrame|TestToolCallLedgerRead|TestPublicationRefusedBeforeAHumanIsAsked|TestAnApprovedPushPublishesOnARunWhoseNextStepIsItsLast|TestPublicationAcceptedWhenTheBindingCarriesItsOwnCredential|TestDispatchJournalsStreamedTextAsDeltasBetweenCreatedAndCompleted|TestDispatchJournalsReasoningSeparatelyFromTheAnswer|TestPlacementNeverParksARunWhereItsOwnWakeCannotFindIt|TestPlacementAWokenRunDoesNotGetAFreshRetryBudget|TestAnInlineChildThatNeverFinishedReachesATerminal|TestAParkedInlineChildIsLeftAlone|TestAPanelEditReachesAMachineThatIsAlreadyRunning|TestAMachineDocumentNamingNoMachineIsRefused' \
+        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublication|TestToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestToolWithoutApprovalDeclared|TestHTTPToolApproval|TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool|TestPoolKey|TestPoolBirth|TestPlacement|TestLifecycle|TestStrict|TestAnUnsandboxedHostAttempt|TestASingleRunnerDeployment|TestAPoolServesItsWaitingRuns|TestDialRefusesAPool|TestAMachineDeclaringAPosture|TestAnEnvironmentReachesARunsShellAndItsValueEntersNoDurableRow|TestARunWhoseRevisionNamesAnEnvironmentFailsClosedWithNoResolver|TestARunsEnvironmentIsPinnedToItsRevisionNotToTheLatest|TestAConsoleWrittenEnvironment|TestTheJiraRunbookRunsOnThePublicAPIAlone|TestAForeignTenantsToolRevisionIsNotFound|TestTheToolRevisionReadRoutesRequireTheProvisionCapability|TestAToolRevisionTimeoutAboveTheCeilingIsRefusedAsBadInput|TestEveryToolRegistryCreateAdvertisesAnAddressThatResolves|TestABackgroundShellCallReturnsAHandleWhileTheProcessIsStillRunning|TestABackgroundTasksOutputIsReadableMidFlight|TestTheModelCallsAnotherToolWhileTheBackgroundProcessIsStillRunning|TestThreeBackgroundTasksRunConcurrentlyWithoutInterleavingTheirOutput|TestAGatedToolCalledWithBackgroundSpawnsNothingUntilAHumanDecides|TestABackgroundedDirectoryChangeDoesNotCarryOverToTheNextCommand|TestBackgroundIsRefusedRatherThanDowngradedWhenTheFeatureIsDisabled|TestBackgroundKillStopsTheProcessGroupAndKillingTwiceIsKillingOnce|TestAShellCallWithoutBackgroundIsFieldForFieldUnchanged|TestARunWithALiveBackgroundTaskParksInsteadOfCompleting|TestARunWithNoLiveBackgroundTaskStillCompletes|TestAFailedTerminalDoesNotParkOnALiveBackgroundTask|TestALostOrUnprobeableBackgroundTaskDoesNotParkTheRun|TestAParkedRunsResponseReadsWaitingForTool|TestALiveResponseReachesInProgressBeforeItParks|TestWaitingForToolNeverOverwritesATerminalResponse|TestTheParkWritesNoRunTerminalIntoTheSessionJournal|TestAParkedRunReentersExactlyOnceWhenItsBackgroundTaskFinishes|TestTwoTicksTwoPlanesAndARestartProduceOneBackgroundNotice|TestARunningRunIsNotInterruptedAndTheNoticeFoldsAtTheNextBoundary|TestATerminalRunsBackgroundNoticeIsStampedRatherThanDropped|TestWithoutTheReconcilerSweepNoBackgroundNoticeEverLands|TestATaskPastItsDeadlineIsKilledMarkedExpiredAndTheModelIsTold|TestUnsetMeansSixtyMinutesAndUnboundedMustBeWrittenExplicitly|TestCancellingARunKillsEveryLiveBackgroundTaskOfIt|TestARestartedControlPlaneAdoptsItsRunningTasksFromTheRowRatherThanFromMemory|TestADeadTaskNoWatcherEverSawGetsNoInventedExitCode|TestAnUnprovableHandleBecomesLostAndReceivesNoSignal|TestTheSixthBackgroundTaskOfARunIsRefusedRatherThanQueued|TestTheMachineCeilingIsCountedAcrossTenantsFromTheDatabase|TestAFinishedTasksLogIsDeletedAfterItsTTLAndARunningTasksIsNot|TestKillingATaskThatAlreadyFinishedClaimsNothing|TestBothTheFileReadAndTheExitNoticeAreRedactedFromOnePlace|TestNoDecodedFieldOfATaskRowItsEventsOrItsCommandsCarriesAnEnvironmentValue|TestACredentialCarryingTaskCannotBeCreatedWithoutADeadline|TestARunParkedForApprovalOnABackgroundCallResolvedNoEnvironmentValue|TestAMissingFileIsAnsweredToTheModelInsteadOfWedgingTheRun|TestARefusedTraversalIsAnsweredAndTheOutsideFileIsNeverRead|TestAToolFaultStillAbortsTheAttemptAndLeavesItsRowUncommitted|TestTheToolErrorBudgetEndsARunThatKeepsBeingRefused|TestAnExplicitlyUnboundedBudgetIsHonoured|TestAReplayedRefusalCountsAgainstTheSameBudget|TestAutoApprove|TestToolFrame|TestToolCallLedgerRead|TestPublicationRefusedBeforeAHumanIsAsked|TestAnApprovedPushPublishesOnARunWhoseNextStepIsItsLast|TestPublicationAcceptedWhenTheBindingCarriesItsOwnCredential|TestDispatchJournalsStreamedTextAsDeltasBetweenCreatedAndCompleted|TestDispatchJournalsReasoningSeparatelyFromTheAnswer|TestPlacementNeverParksARunWhereItsOwnWakeCannotFindIt|TestPlacementAWokenRunDoesNotGetAFreshRetryBudget|TestAnInlineChildThatNeverFinishedReachesATerminal|TestAParkedInlineChildIsLeftAlone|TestAPanelEditReachesAMachineThatIsAlreadyRunning|TestAMachineDocumentNamingNoMachineIsRefused' \
         ./apps/control-plane/internal/execution
     status=$?
   fi
@@ -501,20 +509,18 @@ run_postgres() {
   # The E17 Task 2 A2A wiring drives this same real spine: an A2A message:send through the production
   # WithA2A Admitter (NewA2AServer's a2aRuns over store.Store) births a genuine run under the auth scope
   # and resolves through the real GetResponse — the real-Admitter admission the review requires. The E19
-  # Task 1 Slack Events route joins it: the SHIPPED POST /v1/slack/events, over the production router and
-  # the same real Admitter, against a fake Slack peer built to the published contract (one run per source
-  # event through a retry storm, one session per thread, bot-self births nothing, and a rejected delivery
-  # writes nothing at all).
   #
-  # The RETURN LEG joins them: what lands in responses.input is the human's message (not the envelope the
-  # model used to describe back), and a run driven terminal through the REAL coordinator answers in its
-  # thread exactly once -- through repeated ticks, a re-driven terminal transition, a permanently
-  # rate-limited Slack, and a disabled connection. TestSlack* already selects all of it.
+  # THE WHOLE SLACK HALF OF THIS LEG IS GONE (cutover, 2026-08-05) and it was the larger half. The E19 Task 1
+  # Events route (the SHIPPED POST /v1/slack/events over the production router and the same real Admitter,
+  # against a fake peer built to the published contract), the RETURN LEG (a run driven terminal answering in
+  # its thread exactly once through repeated ticks, a re-driven transition, a permanently rate-limited Slack
+  # and a disabled connection), and the E20 TestAgentSurfaceJourney all drove an in-process bridge this
+  # binary no longer has.
   #
-  # TestAgentSurfaceJourney is named EXPLICITLY and that is not decoration: this -run list is an allow-list,
-  # so a test whose name it does not match is a test this tier never runs. The E20 journey does not begin
-  # with "TestSlack", so without this alternation it would have ridden `make test-component` reporting
-  # nothing at all — this repository's signature failure, eleven findings deep.
+  # WHAT THAT COSTS THIS LEG, said plainly: the A2A entry above is now the ONLY real-Admitter admission it
+  # exercises. The Slack half was the one that proved transport invariance — one source event, two
+  # deliveries, one run — and nothing here replaces it. apps/slack-bot admits through POST /v1/responses like
+  # any other client, so the equivalent proof belongs to whoever gives that relay a journey.
   # TestSessionListJourneyRendersTheScreenFromOneCall is named for the same reason, and it is the E29
   # session-list journey: the shipped router with ONLY the session family mounted, over a real Postgres,
   # creating a labelled session and a bodyless one through POST, renaming through PATCH, and reading the
@@ -544,7 +550,7 @@ run_postgres() {
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v \
-        -run 'TestA2ARealAdmitterBirthsRun|TestSlack|TestAgentSurfaceJourney|TestSessionListJourneyRendersTheScreenFromOneCall|TestSessionsCapabilityAgreesWithTheServedSurface|TestDesiredConfigJourneyWritesADocumentTheDeploymentReadReports|TestTenantAdminKeyCannotOpenAnotherTenant|TestEveryFleetRouteRefusesATenantKey' \
+        -run 'TestA2ARealAdmitterBirthsRun|TestSessionListJourneyRendersTheScreenFromOneCall|TestSessionsCapabilityAgreesWithTheServedSurface|TestDesiredConfigJourneyWritesADocumentTheDeploymentReadReports|TestTenantAdminKeyCannotOpenAnotherTenant|TestEveryFleetRouteRefusesATenantKey' \
         ./apps/control-plane/internal/store
     status=$?
   fi
@@ -583,19 +589,16 @@ run_postgres() {
       go test -tags=component -count=1 -v ./tests/component/fleet
     status=$?
   fi
-  # The E19 last mile: the three *_ref handles a `palai up` registration writes on a REAL
-  # slack_connections row redeem to the values stored through the E13 T3 secret store, and each is
-  # read off its REAL consumer — a v0 MAC computed longhand, and the two Authorization headers a
-  # fake Slack sees on chat.update and apps.connections.open. Before it, `palai up` registered
-  # handles that resolved NOWHERE and every consumer failed silently by design. The companion
-  # asserts the loop refuses to dial at all on an unredeemable handle.
-  if test "$status" -eq 0; then
-    PALAI_COMPONENT_POSTGRES_URL="$url" \
-      go test -tags=component -count=1 -v \
-        -run 'TestSlackHandlesRedeemToTheStoredValues|TestSlackSocketRefusesToDialOnAnUnredeemableHandle' \
-        ./apps/control-plane/internal/extensions
-    status=$?
-  fi
+  # THE E19 SECRET-REDEMPTION LEG WAS HERE AND IS GONE (cutover, 2026-08-05). It drove the three *_ref
+  # handles a `palai up` registration wrote on a REAL slack_connections row through the E13 T3 secret store,
+  # reading each off its REAL consumer: a v0 MAC computed longhand, and the two Authorization headers a fake
+  # Slack saw on chat.update and apps.connections.open. Its companion asserted the Socket Mode loop refused
+  # to dial at all on an unredeemable handle.
+  #
+  # Both tests lived in internal/extensions and went with the in-process Slack bridge, along with the
+  # slack_connections registration surface whose handles they redeemed. A bot's credentials are resolved
+  # through GET /v1/bots/{id}/credentials now, and apps/slack-bot's own component suite (run further down,
+  # against the bot's own database) is what covers that path.
   set -e
   if test "$status" -ne 0; then
     docker logs "$container" >&2 || true

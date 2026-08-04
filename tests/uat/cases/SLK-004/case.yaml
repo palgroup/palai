@@ -7,6 +7,13 @@ expect_status: rejected
 proof:
   - adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace
   - adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse
-  - apps/control-plane/internal/extensions/slack_component_test.go:TestSlackConnectionCreateReadRLS
-  - apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackUnauthorizedClickEnqueuesNothing
-  - apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackStaleHashAndForeignThreadDecideNothing
+  # WITHDRAWN 2026-08-05 — the Slack cutover. The proofs below named files that were deleted with the
+  # control plane's in-process Slack bridge (extensions/slack_*, api/slack*, the store's slack_*
+  # component suites). Slack is served by apps/slack-bot now, a separate process that reaches this
+  # control plane over `/v1`, so the mechanisms these lines proved are either gone or live in a
+  # component this case does not cover. The case TEXT above is shipped and left byte-for-byte; the
+  # checksum reads neither this list nor the text (caseChecksumParts hashes id + run_id + the release's
+  # contracts digest), so withdrawing a proof cannot move a committed checksum.
+  #   - apps/control-plane/internal/extensions/slack_component_test.go:TestSlackConnectionCreateReadRLS
+  #   - apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackUnauthorizedClickEnqueuesNothing
+  #   - apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackStaleHashAndForeignThreadDecideNothing

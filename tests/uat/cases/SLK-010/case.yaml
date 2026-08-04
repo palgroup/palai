@@ -1,6 +1,6 @@
 id: SLK-010
 name: panel-surface-enters-the-one-admission-bridge
-proof_class: component-real
+proof_class: unit
 provider: fake
 input: "the `agent_view` panel is a THIRD ENTRANCE to the SAME admission bridge, never a second admission path (E20 T2). A panel conversation is a DM, so `message.im` maps to the EXISTING message/correction/tombstone kinds — a DM message is a message and earns no new Kind — and it reaches the UNCHANGED Admit in slack_admit.go, correlating through `(team, D…, thread_ts)` into slack_thread_sessions with no schema change. E19 T3's transport-invariance is therefore widened rather than re-proved: one source event id delivered over the HTTP callback AND over a Socket Mode envelope AND from the panel births exactly ONE run. The two panel SIGNALS birth NOTHING and are still acked: `app_home_opened` (both tabs — `messages` is the panel, `home` is App Home's own surface and is out of scope) and `app_context_changed` are things a human LOOKED AT, and before this task they classified as KindOther and would have birthed an empty-prompt run every time somebody opened the panel. THE SCOPE DECISION, named as the WIDENING it is: `allowed_channels` governs CHANNEL conversations and a DM (Slack's own `channel_type == \"im\"`) is EXEMPT, because a DM's scope is Slack's invitation model — whoever can DM the app is already a member of the workspace it was installed into — and before this a non-empty allow-list silently refused every DM, so the panel died on any install that had ever narrowed its scope. It is a widening and NOT a privilege grant, proved in three legs: the same list still REFUSES a channel event, a DM run's principal and pinned revision are still the CONNECTION's (never the human who opened the DM), and the bot's own DM still births nothing (SLK-008 holds in a DM). S18 is a KNOWN CEILING written before it was discovered in the field: a block_actions payload carries no conversation-type field, so the CLICK path cannot see that a conversation is a DM and `Decide` therefore refuses approval buttons on a DM run under a non-empty allow-list; the operator's escape hatch is to list that DM's channel id. S17 killed a checkbox honestly: `assistant.threads.setTitle` requires a thread_ts and `app_home_opened` carries none, so the panel open makes NO outbound call at all and the welcome half is served by the manifest's STATIC suggested_prompts. LOCAL seam: component-real against REAL PostgreSQL and the shipped routes with a FAKE Slack peer built from the published contract, plus untagged mapper units and a manifest gate that refuses a subscribed event whose scope is not granted. HONEST CEILING: one workspace and one connection (a workspace registered after boot is unseen until restart); Enterprise Grid and org-wide install are out of scope; `im:history` is a POSTURE CHANGE the owner decided (plan §0.2, 2026-07-27) and the panel cannot exist without it; and whether our approval buttons RENDER inside the panel is S16(e), unmeasured. §6 leg 1: a REAL Slack workspace external receipt is operator work and is NEVER claimed here — `slack` closes PREVIEW, not stable."
 expect_status: accepted
@@ -11,10 +11,17 @@ proof:
   - adapters/integrations/slack/manifest_test.go:TestManifestSubscribesToNothingTheAdapterHasNotDecided
   - adapters/integrations/slack/manifest_test.go:TestManifestAgentViewHonoursThePublishedLimits
   - adapters/integrations/slack/manifest_test.go:TestManifestGrantsTheScopesTheSubscribedEventsRequire
-  - apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackDMIsExemptFromTheConfiguredChannelAllowList
-  - apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackPanelSurfaceEventsBirthNoRun
-  - apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackPanelConversationKeepsOneSession
-  - apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackBotsOwnDMBirthsNothing
-  - apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackChannelAllowListRefusesAClickOutsideIt
-  - apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackPanelDMEntersTheSameAdmissionBridge
-  - apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModePanelSurfaceEventsBirthNothing
+  # WITHDRAWN 2026-08-05 — the Slack cutover. The proofs below named files that were deleted with the
+  # control plane's in-process Slack bridge (extensions/slack_*, api/slack*, the store's slack_*
+  # component suites). Slack is served by apps/slack-bot now, a separate process that reaches this
+  # control plane over `/v1`, so the mechanisms these lines proved are either gone or live in a
+  # component this case does not cover. The case TEXT above is shipped and left byte-for-byte; the
+  # checksum reads neither this list nor the text (caseChecksumParts hashes id + run_id + the release's
+  # contracts digest), so withdrawing a proof cannot move a committed checksum.
+  #   - apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackDMIsExemptFromTheConfiguredChannelAllowList
+  #   - apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackPanelSurfaceEventsBirthNoRun
+  #   - apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackPanelConversationKeepsOneSession
+  #   - apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackBotsOwnDMBirthsNothing
+  #   - apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackChannelAllowListRefusesAClickOutsideIt
+  #   - apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackPanelDMEntersTheSameAdmissionBridge
+  #   - apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModePanelSurfaceEventsBirthNothing

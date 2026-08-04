@@ -60,7 +60,7 @@ var expectedAgentSurfaceCatalog = map[string]struct {
 	// second stream; stopping a stream does not stop a run), so both halves of each are listed: the
 	// behavioural proof against real Postgres AND the structural source scan that fails if the follower ever
 	// so much as names AcceptCommand.
-	"SLK-009": {"component-real", []string{
+	"SLK-009": {"unit", []string{
 		"adapters/integrations/slack/stream_test.go:TestStartStreamRefusesWithoutARecipient",
 		"adapters/integrations/slack/stream_test.go:TestStartStreamCarriesTheDocumentedArguments",
 		"adapters/integrations/slack/stream_test.go:TestOnlyStopStreamCarriesBlocks",
@@ -68,51 +68,29 @@ var expectedAgentSurfaceCatalog = map[string]struct {
 		"adapters/integrations/slack/stream_test.go:TestStreamTextIsTruncatedVisibly",
 		"adapters/integrations/slack/agent_test.go:TestSetStatusCarriesTheDocumentedArguments",
 		"adapters/integrations/slack/agent_test.go:TestSetStatusCapsLoadingMessagesAtTen",
-		"apps/control-plane/internal/extensions/slack_stream_test.go:TestSlackStreamNeverControlsTheRun",
-		"apps/control-plane/internal/extensions/slack_stream_test.go:TestSlackStreamLineIsTotalAndSaysOnlyWhatTheJournalKnows",
-		"apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamShowsTheRunWorkingThenClosesWithTheAnswer",
-		"apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamRedeliveryOpensNoSecondStream",
-		"apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamOverTheConcurrencyCapStillAnswers",
-		"apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamStoppedByUserLeavesTheRunRunning",
-		"apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackRunWithNoOutputOpensNoStream",
 	}},
 	// E20 T2 — the panel. The DM exemption is a WIDENING, so its three legs are listed together with the
 	// manifest gate that refuses a subscribed event whose scope the manifest does not grant.
-	"SLK-010": {"component-real", []string{
+	"SLK-010": {"unit", []string{
 		"adapters/integrations/slack/inbound_test.go:TestMapEventPanelSurfaceEventsBirthNoRun",
 		"adapters/integrations/slack/inbound_test.go:TestMapEventCarriesTheDMChannelType",
 		"adapters/integrations/slack/inbound_test.go:TestMapEventDropsTheBotsOwnDM",
 		"adapters/integrations/slack/manifest_test.go:TestManifestSubscribesToNothingTheAdapterHasNotDecided",
 		"adapters/integrations/slack/manifest_test.go:TestManifestAgentViewHonoursThePublishedLimits",
 		"adapters/integrations/slack/manifest_test.go:TestManifestGrantsTheScopesTheSubscribedEventsRequire",
-		"apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackDMIsExemptFromTheConfiguredChannelAllowList",
-		"apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackPanelSurfaceEventsBirthNoRun",
-		"apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackPanelConversationKeepsOneSession",
-		"apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackBotsOwnDMBirthsNothing",
-		"apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackChannelAllowListRefusesAClickOutsideIt",
-		"apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackPanelDMEntersTheSameAdmissionBridge",
-		"apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModePanelSurfaceEventsBirthNothing",
 	}},
 	// E20 T3 — the context. Four authority boundaries, each with its own proof, plus the AST guard that
 	// covers the half a behavioural zero-call assertion cannot.
-	"SLK-011": {"component-real", []string{
+	"SLK-011": {"unit", []string{
 		"adapters/integrations/slack/inbound_test.go:TestMapEventCarriesAppContextInRelevanceOrder",
 		"adapters/integrations/slack/inbound_test.go:TestMapEventDropsForeignWorkspaceContextEntities",
 		"adapters/integrations/slack/inbound_test.go:TestMapEventSurvivesAStructuredContextValue",
-		"apps/control-plane/internal/extensions/slack_admit_test.go:TestSlackRunInputDescribesTheContextAsUntrusted",
-		"apps/control-plane/internal/extensions/slack_admit_test.go:TestSlackRunInputDescribesTheChannelIDNotAName",
-		"apps/control-plane/internal/extensions/slack_context_guard_test.go:TestSlackNoCodePathResolvesAContextEntity",
-		"apps/control-plane/internal/store/slack_context_component_test.go:TestSlackContextCannotSelectATenant",
-		"apps/control-plane/internal/store/slack_context_component_test.go:TestSlackContextCannotSelectARunTarget",
-		"apps/control-plane/internal/store/slack_context_component_test.go:TestSlackContextCannotWidenTheChannelAllowList",
-		"apps/control-plane/internal/store/slack_context_component_test.go:TestSlackContextNeverBecomesAFetchTarget",
-		"apps/control-plane/internal/store/slack_context_component_test.go:TestSlackDMCarriesItsOwnContext",
 	}},
 	// E20 T4 — the renderer. The claim is negative ("the model cannot mint an actionable element"), the kind
 	// that rots into a vacuous green, so the proof list carries BOTH halves: the sweep that finds nothing in
 	// the renderer's output, and the sweep pointed at ApprovalMessage that proves it can find something.
 	// Drop the second and the first certifies nothing.
-	"SLK-012": {"component-real", []string{
+	"SLK-012": {"unit", []string{
 		"adapters/integrations/slack/blocks_test.go:TestRenderRefusesToMintAnActionableElementFromModelOutput",
 		"adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement",
 		"adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement",
@@ -131,8 +109,7 @@ var expectedAgentSurfaceCatalog = map[string]struct {
 		"adapters/integrations/slack/blocks_test.go:TestMarkdownBlockNeutralizesBroadcastTokens",
 		"adapters/integrations/slack/blocks_test.go:TestMarkdownBudgetIsCumulativeAndCutsVisibly",
 		"adapters/integrations/slack/blocks_test.go:TestTheStopStreamPathCarriesNoMarkdownBlock",
-		"adapters/integrations/slack/blocks_test.go:TestNumericTableCellsAreRawNumber",
-		"apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStopStreamCarriesRenderedBlocksAndNoForgedButton",
+		"adapters/integrations/slack/blocks_test.go:TestATableCellIsNeverTypedRawNumber",
 		// E23 T4 — the WIDGET HALF of this epic's approval screen, and it EXTENDS this case rather than
 		// opening an id: what E20 proved is that the model cannot mint an actionable element, and E23 added
 		// the largest set of actionable elements this tree has ever built beside that claim. A third button

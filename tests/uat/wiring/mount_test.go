@@ -114,7 +114,7 @@ func TestMountRefusals(t *testing.T) {
 			// surface. This is `capability-workers` claiming "stable" from a binary with no gateway.
 			name: "advertised but not mounted",
 			mutate: func(p *uat.WiringProof) {
-				p.RouterSurface = dropRoute(p.RouterSurface, "POST /v1/slack/events")
+				p.RouterSurface = dropRoute(p.RouterSurface, "POST /v1/a2a/interfaces/{interface_id}/tasks/{id}/pushNotificationConfigs")
 			},
 			want: "router surface does not contain it",
 		},
@@ -123,7 +123,7 @@ func TestMountRefusals(t *testing.T) {
 			// it. Discovery is supposed to be a function of the mount, and a function is total.
 			name: "mounted but not advertised",
 			mutate: func(p *uat.WiringProof) {
-				delete(p.CapabilitySnapshot, "slack")
+				delete(p.CapabilitySnapshot, "a2a")
 			},
 			want: "does not advertise",
 		},
@@ -132,7 +132,7 @@ func TestMountRefusals(t *testing.T) {
 			// it". Serving it anyway is the most dangerous shape of all, because a reader trusts the word.
 			name: "advertised disabled while mounted",
 			mutate: func(p *uat.WiringProof) {
-				p.CapabilitySnapshot["slack"] = "disabled"
+				p.CapabilitySnapshot["a2a"] = "disabled"
 			},
 			want: "a disabled entry is a NEGATIVE claim",
 		},
@@ -141,7 +141,7 @@ func TestMountRefusals(t *testing.T) {
 			// claiming the surface anyway is the fabrication the observed_status field exists to catch.
 			name: "route observed 404",
 			mutate: func(p *uat.WiringProof) {
-				setSurface(p, "slack-events", func(s *uat.WiredSurface) { s.ObservedStatus = 404 })
+				setSurface(p, "a2a-push", func(s *uat.WiredSurface) { s.ObservedStatus = 404 })
 			},
 			want: "wiring_proof is incomplete",
 		},
@@ -150,7 +150,7 @@ func TestMountRefusals(t *testing.T) {
 			// have been taken.
 			name: "supervised loop claims a status",
 			mutate: func(p *uat.WiringProof) {
-				setSurface(p, "slack-socket", func(s *uat.WiredSurface) { s.ObservedStatus = 200 })
+				setSurface(p, "queue-inbound", func(s *uat.WiredSurface) { s.ObservedStatus = 200 })
 			},
 			want: "wiring_proof is incomplete",
 		},
@@ -159,7 +159,7 @@ func TestMountRefusals(t *testing.T) {
 			// silently stops accounting for D1 (the retry-amplification row) has reintroduced the gap.
 			name: "shrunken contract ledger",
 			mutate: func(p *uat.WiringProof) {
-				setSurface(p, "slack-events", func(s *uat.WiredSurface) { s.Contracts = s.Contracts[1:] })
+				setSurface(p, "a2a-push", func(s *uat.WiredSurface) { s.Contracts = s.Contracts[1:] })
 			},
 			want: "wiring_proof is incomplete",
 		},
@@ -168,7 +168,7 @@ func TestMountRefusals(t *testing.T) {
 			// digest is over the CODE table, so this cannot stay self-consistent.
 			name: "rewritten source url",
 			mutate: func(p *uat.WiringProof) {
-				setSurface(p, "slack-socket", func(s *uat.WiredSurface) {
+				setSurface(p, "a2a-push", func(s *uat.WiredSurface) {
 					next := append([]uat.ContractRequirement(nil), s.Contracts...)
 					next[0].SourceURL = "https://example.invalid/whatever"
 					s.Contracts = next
@@ -181,7 +181,7 @@ func TestMountRefusals(t *testing.T) {
 			// happens when the SAME event arrives twice, which is the entire claim.
 			name: "no duplicate delivery",
 			mutate: func(p *uat.WiringProof) {
-				setSurface(p, "slack-events", func(s *uat.WiredSurface) { s.Deliveries = 1 })
+				admitting(p, func(s *uat.WiredSurface) { s.Deliveries = 1 })
 			},
 			want: "wiring_proof is incomplete",
 		},
@@ -190,7 +190,7 @@ func TestMountRefusals(t *testing.T) {
 			// run.
 			name: "two runs from one event",
 			mutate: func(p *uat.WiringProof) {
-				setSurface(p, "slack-events", func(s *uat.WiredSurface) { s.AdmittedRuns = 2 })
+				admitting(p, func(s *uat.WiredSurface) { s.AdmittedRuns = 2 })
 			},
 			want: "wiring_proof is incomplete",
 		},
@@ -199,7 +199,7 @@ func TestMountRefusals(t *testing.T) {
 			// the SHARED Admitter ran rather than a parallel path.
 			name: "admission with no route constant",
 			mutate: func(p *uat.WiringProof) {
-				setSurface(p, "slack-events", func(s *uat.WiredSurface) { s.AdmissionRoute = "" })
+				admitting(p, func(s *uat.WiredSurface) { s.AdmissionRoute = "" })
 			},
 			want: "wiring_proof is incomplete",
 		},
@@ -258,7 +258,7 @@ func TestDroppingTheWiringClaimReroutesAndIsVisible(t *testing.T) {
 	// that the DISPATCH is what closes it: with the marker PRESENT, the wiring gate must be the one running.
 	// A mount-broken bundle proves which gate judged it.
 	broken := mutateWiringProof(t, base, func(p *uat.WiringProof) {
-		p.RouterSurface = dropRoute(p.RouterSurface, "POST /v1/slack/events")
+		p.RouterSurface = dropRoute(p.RouterSurface, "POST /v1/a2a/interfaces/{interface_id}/tasks/{id}/pushNotificationConfigs")
 	})
 	if !hasRefusal(uat.PromoteGateFor(broken, "rc"), "router surface does not contain it") {
 		t.Fatal("a mount-broken bundle WITH its wiring claim was not judged by the wiring gate — PromoteGateFor must dispatch E19 before E17, or the mount guard is optional in practice")
@@ -334,6 +334,30 @@ func dropRoute(routes []string, drop string) []string {
 		}
 	}
 	return out
+}
+
+// admitting gives queue-inbound a VALID transport-invariance counter and then applies fn to break it.
+//
+// IT SYNTHESISES THE COUNTER BECAUSE NO SURFACE DECLARES ONE ANY MORE. Until the 2026-08-05 cutover the
+// three negatives below mutated slack-events, which carried the bundle's only counter: one source event id,
+// two deliveries, one run. Slack is a separate process now and that surface is gone from the canonical set.
+//
+// SYNTHESISING IS LEGITIMATE HERE AND WOULD NOT BE IN THE BUNDLE, and the difference is what is under test.
+// A refusal matrix tests the VERIFIER: it takes a valid proof, breaks it one way, and requires a finding. It
+// has always manufactured its inputs — that is what `mutate` is. What may never be manufactured is an
+// OBSERVATION a committed bundle carries, and this function is not reachable from the generator.
+//
+// Without it these three cases would have been quietly deleted or left mutating a field no surface has,
+// where they would have passed by never firing — a vacuous refusal, which is worse than an absent one
+// because it reports as coverage.
+func admitting(p *uat.WiringProof, fn func(*uat.WiredSurface)) {
+	setSurface(p, "queue-inbound", func(s *uat.WiredSurface) {
+		s.AdmissionRoute = "/v1/responses"
+		s.SourceEventIDs = []string{"EvQueue1"}
+		s.Deliveries = 2
+		s.AdmittedRuns = 1
+		fn(s)
+	})
 }
 
 func setSurface(p *uat.WiringProof, name string, fn func(*uat.WiredSurface)) {

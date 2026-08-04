@@ -8,8 +8,18 @@ proof:
   - apps/control-plane/internal/execution/tool_approval_component_test.go:TestToolApprovalParksTheRunRatherThanAnsweringWithoutADecision
   - apps/control-plane/internal/execution/tool_approval_component_test.go:TestExpiredToolApprovalCancelsTheCallAndWakesTheParkedRun
   - apps/control-plane/internal/execution/reconciler_test.go:TestReconcilerSweepReportsDeadLetteredWithConfiguredCeiling
-  - apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackParksTheRunSoTheApproveLands
-  - apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackDenyWakesTheParkedRunAndPublishesNothing
-  - apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackDeliveryFailureKeepsTheApprovalAndReleasesTheRun
-  - apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackCeilingATerminalRunStillRefusesTheClick
-  - apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackPostsAnApprovalMessageIntoTheThread
+  # WITHDRAWN 2026-08-05 — the Slack cutover. The proofs below named files that were deleted with the
+  # control plane's in-process Slack bridge (extensions/slack_*, api/slack*, the store's slack_*
+  # component suites). Slack is served by apps/slack-bot now, a separate process that reaches this
+  # control plane over `/v1`, so the mechanisms these lines proved are either gone or live in a
+  # component this case does not cover. The case TEXT above is shipped and left byte-for-byte; the
+  # checksum reads neither this list nor the text (caseChecksumParts hashes id + run_id + the release's
+  # contracts digest), so withdrawing a proof cannot move a committed checksum.
+  #   - apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackParksTheRunSoTheApproveLands
+  #   - apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackDenyWakesTheParkedRunAndPublishesNothing
+  #   - apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackDeliveryFailureKeepsTheApprovalAndReleasesTheRun
+  #   - apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackCeilingATerminalRunStillRefusesTheClick
+  #   - apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackPostsAnApprovalMessageIntoTheThread
+  # RE-EARNED 2026-08-05 — the park and the wake, off Slack (see publish_approval_component_test.go).
+  - apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationParksTheRunSoTheApproveLands
+  - apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationDenyWakesTheParkedRunAndPublishesNothing

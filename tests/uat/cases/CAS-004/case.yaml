@@ -15,14 +15,21 @@ proof:
   - adapters/integrations/slack/blocks_test.go:TestTaskCardSourceTextIsNeutralised
   - adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement
   - adapters/integrations/slack/manifest_test.go:TestManifestGrantsTheScopesTheSubscribedEventsRequire
-  - apps/control-plane/internal/extensions/slack_upload_test.go:TestArtifactIDIsRecognisedByShapeAndNearMissesAreRefused
-  - apps/control-plane/internal/extensions/slack_upload_test.go:TestArtifactRefsComeOnlyFromFileRefsInOrderAndDeduplicated
-  - apps/control-plane/internal/extensions/slack_upload_test.go:TestUploadNoteSaysWhatWasNotAttached
-  - apps/control-plane/cmd/palai-control-plane/main_test.go:TestSlackImageLegIsMountedWhenThereIsAnObjectStore
+  # WITHDRAWN 2026-08-05 — the Slack cutover. The proofs below named files that were deleted with the
+  # control plane's in-process Slack bridge (extensions/slack_*, api/slack*, the store's slack_*
+  # component suites). Slack is served by apps/slack-bot now, a separate process that reaches this
+  # control plane over `/v1`, so the mechanisms these lines proved are either gone or live in a
+  # component this case does not cover. The case TEXT above is shipped and left byte-for-byte; the
+  # checksum reads neither this list nor the text (caseChecksumParts hashes id + run_id + the release's
+  # contracts digest), so withdrawing a proof cannot move a committed checksum.
+  #   - apps/control-plane/internal/extensions/slack_upload_test.go:TestArtifactIDIsRecognisedByShapeAndNearMissesAreRefused
+  #   - apps/control-plane/internal/extensions/slack_upload_test.go:TestArtifactRefsComeOnlyFromFileRefsInOrderAndDeduplicated
+  #   - apps/control-plane/internal/extensions/slack_upload_test.go:TestUploadNoteSaysWhatWasNotAttached
+  #   - apps/control-plane/cmd/palai-control-plane/main_test.go:TestSlackImageLegIsMountedWhenThereIsAnObjectStore
   - apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestReadRunArtifactRefusesForeignRunsForeignTenantsAndOversize
-  - apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackRunArtifactReachesTheThreadAsAFile
-  - apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackUploadRefusesAnArtifactFromAnotherRun
-  - apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackUploadRefusesAnOversizeArtifactAndSaysSo
-  - apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackUploadFailureLeavesTheAnswerAndTheRunAlone
-  - apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackOrdinaryAnswerUploadsNothing
+  #   - apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackRunArtifactReachesTheThreadAsAFile
+  #   - apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackUploadRefusesAnArtifactFromAnotherRun
+  #   - apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackUploadRefusesAnOversizeArtifactAndSaysSo
+  #   - apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackUploadFailureLeavesTheAnswerAndTheRunAlone
+  #   - apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackOrdinaryAnswerUploadsNothing
   - tests/live/code-and-ship/upload_live_test.go:TestLiveSlackUploadsAScreenshotAndARecording

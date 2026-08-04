@@ -13,9 +13,16 @@ proof:
   - apps/control-plane/internal/execution/vision_test.go:TestDecodeMessagesTakesNothingButBytesFromAnImageItem
   - apps/control-plane/internal/execution/vision_component_test.go:TestDispatchResolvesAnImageRefIntoTheProviderRequest
   - adapters/models/provider_one/vision_test.go:TestBuildBodyRendersAnImageAsAContentPart
-  - apps/control-plane/internal/store/slack_events_component_test.go:TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind
-  - apps/control-plane/internal/store/slack_image_component_test.go:TestSlackSharedImageBecomesAnImageRefInTheRunInput
-  - apps/control-plane/internal/store/slack_image_component_test.go:TestSlackImageRedeliveryReplaysOntoTheSameRunAndArtifact
-  - apps/control-plane/internal/store/slack_image_component_test.go:TestSlackNonImageAndOversizeFilesAreRefusedVisibly
+  # WITHDRAWN 2026-08-05 — the Slack cutover. The proofs below named files that were deleted with the
+  # control plane's in-process Slack bridge (extensions/slack_*, api/slack*, the store's slack_*
+  # component suites). Slack is served by apps/slack-bot now, a separate process that reaches this
+  # control plane over `/v1`, so the mechanisms these lines proved are either gone or live in a
+  # component this case does not cover. The case TEXT above is shipped and left byte-for-byte; the
+  # checksum reads neither this list nor the text (caseChecksumParts hashes id + run_id + the release's
+  # contracts digest), so withdrawing a proof cannot move a committed checksum.
+  #   - apps/control-plane/internal/store/slack_events_component_test.go:TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind
+  #   - apps/control-plane/internal/store/slack_image_component_test.go:TestSlackSharedImageBecomesAnImageRefInTheRunInput
+  #   - apps/control-plane/internal/store/slack_image_component_test.go:TestSlackImageRedeliveryReplaysOntoTheSameRunAndArtifact
+  #   - apps/control-plane/internal/store/slack_image_component_test.go:TestSlackNonImageAndOversizeFilesAreRefusedVisibly
   - apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestArtifactInboundImageWriteIsIdempotentAtACallerChosenID
   - apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestInboundImageIsReachedByRetentionOnlyOnceAttached

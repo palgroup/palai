@@ -3,7 +3,7 @@
   "captured_at": "2026-07-26T00:00:00Z",
   "cases": [
     {
-      "checksum": "sha256:4559dbf8ac8ed784920bce2b0ad97755e22b2740a2c3650ea056079e3d9f454d",
+      "checksum": "sha256:2d68208234b317bd89727572b68c27c035b790c188cde9b37d1dedf848cd9f66",
       "db_assertions": [
         "A2A-001: proven by 4 in-tree proof(s) at the component-real tier — adapters/integrations/a2a/card_test.go:TestAgentCardNeverLeaksInternalDetail; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_PublicCardNeverLeaksAndAdvertisesExactVersion; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_ExtendedCardRequiresAuth; tests/component/postgres/a2a_store_test.go:TestA2AStoreRLSAndCanonicalRefInvariant",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -69,7 +69,7 @@
         "peer": "loopback",
         "transcript_digest": "sha256:92c9e91af9939198ce4ace6f595bf588bbc11bf68826bfb2ef89c62321cfceea"
       },
-      "checksum": "sha256:ef9de075fa558cbae1c36156b678ea3bea0f717536e0b0532993f452079b4704",
+      "checksum": "sha256:521d718acdc603e50657557874b8f2b768d618c0235b5f903de70f3d69f7f291",
       "db_assertions": [
         "A2A-002: proven by 8 in-tree proof(s) at the e2e-deterministic tier — adapters/integrations/a2a/card_test.go:TestGovernIdentityIgnoresForgedMetadata; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_SendReturnsTaskWithExternalCanonicalSeparation; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_ForgedMetadataIdentityIsIgnored; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_SendReturnsDirectMessageForCompleteNonDurable; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_InboundFilePartIsIngested; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_StreamTerminalConsistency; adapters/integrations/a2a/conformance_test.go:TestA2ALoopbackExchange; tests/component/postgres/a2a_store_test.go:TestA2AStoreRLSAndCanonicalRefInvariant",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -94,7 +94,7 @@
       }
     },
     {
-      "checksum": "sha256:752c78ec0985e76eb29acc8f598590ad2cdfad94b8219fcc5a76ffdb1599634f",
+      "checksum": "sha256:ebb941fef4cd876f83e628e694202b80be7996c5a105eb65ec7accdf58db4f11",
       "db_assertions": [
         "A2A-003: proven by 16 in-tree proof(s) at the e2e-deterministic tier — adapters/integrations/a2a/conformance_test.go:TestA2AConformance_InputRequiredMapsToWaiting; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_TaskGetListCancel; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_PushConfigCRUD; adapters/integrations/a2a/conformance_test.go:TestA2APushCRUDIsUnmountedWithoutAPusher; adapters/integrations/a2a/conformance_test.go:TestA2APushFailureDoesNotCorruptTheTask; adapters/integrations/a2a/pusher_test.go:TestPushBodyIsAStreamResponseNotATask; adapters/integrations/a2a/pusher_test.go:TestStreamResponseRequiresExactlyOneMember; adapters/integrations/a2a/pusher_test.go:TestPushRefusesSSRFTargets; adapters/integrations/a2a/pusher_test.go:TestPushAllowlistMatchesTheWholeHost; adapters/integrations/a2a/pusher_test.go:TestPushRevalidatesRedirectsRatherThanDenyingThemAll; adapters/integrations/a2a/pusher_test.go:TestPushCarriesTokenTimestampAndSingleUseID; adapters/integrations/a2a/pusher_test.go:TestPushRetriesWithoutLossWhileTheSinkIsDown; adapters/integrations/a2a/pusher_test.go:TestPushDeadLettersAfterTheAttemptBound; adapters/integrations/a2a/pusher_test.go:TestPushTerminalRejectIsNotRetried; apps/control-plane/api/a2a_wiring_test.go:TestA2APushSurfaceStaysUnmountedWithoutAConfiguredPusher; apps/control-plane/api/a2a_wiring_test.go:TestA2APushMountsOnlyWithAConfiguredPusher",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -122,7 +122,7 @@
       }
     },
     {
-      "checksum": "sha256:0a49e43d372d37ada369ffb859b8b6dc896e044bca3da1f5fd874bca46167c9e",
+      "checksum": "sha256:922e9a9819ffbc5af73c1984e9b1b486fc3a406bdda40473a5e169439d772250",
       "db_assertions": [
         "A2A-004: proven by 7 in-tree proof(s) at the e2e-deterministic tier — adapters/integrations/a2a/client_test.go:TestA2AClientRefusesInternalCardEndpoint; adapters/integrations/a2a/client_test.go:TestA2AClientRevalidatesRedirectToInternal; adapters/integrations/a2a/client_test.go:TestA2AClientRefusesDisallowedExtensionURI; adapters/integrations/a2a/client_test.go:TestA2AClientVersionNegotiationExplicitFail; adapters/integrations/a2a/client_test.go:TestA2AClientIngestsAndScansPushedFile; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_InboundFilePartIsIngested; packages/egress/egress_test.go:TestVetIPDeniesMetadataPrivateAndSpecialUse",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -147,7 +147,7 @@
       }
     },
     {
-      "checksum": "sha256:8e7c8ee7ae194587dfcaf0e80f8881a1e50207eca3a2941536143990ba50c329",
+      "checksum": "sha256:6d22fe439587ba1facb99f4cb1472f5d101157f042e4153b5055eee8c6e040dc",
       "db_assertions": [
         "A2A-005: proven by 6 in-tree proof(s) at the e2e-deterministic tier — adapters/integrations/a2a/client_test.go:TestA2AClientRemoteOutputIsUntrusted; adapters/integrations/a2a/client_test.go:TestA2AClientNeverInheritsParentCredential; adapters/integrations/a2a/client_test.go:TestA2AClientNeedsResolverForAuthConnection; adapters/integrations/a2a/client_test.go:TestA2AClientRemoteTaskIDsAreConnectionScoped; adapters/integrations/a2a/client_test.go:TestA2AClientLoopbackInteropAgainstT2Server; tests/component/postgres/a2a_remote_agent_store_test.go:TestA2ARemoteAgentStoreRLS",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -172,7 +172,7 @@
       }
     },
     {
-      "checksum": "sha256:ce429d9bae215b41c9de4147842ee3a5821302a1499c08e60b61ece1d63908de",
+      "checksum": "sha256:dcc721c3f7b78c720c588a760bbed6e1fab926643e92b2ad51342a4760103324",
       "db_assertions": [
         "AUT-009: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/inbound_component_test.go:TestRedeliveryAfterLostAckDoesNotDuplicate; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect; apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeLostAckRedeliversToExactlyOneRun",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -209,7 +209,7 @@
       }
     },
     {
-      "checksum": "sha256:a8a56172430d14a4b1daedc1f096771389054a871da0d58ea6dc0085eed831b1",
+      "checksum": "sha256:572ec89349076a85b41ad86e6577d0cf92d6e0c728e784bf308bb41d21804efb",
       "db_assertions": [
         "AUT-010: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/inbound_component_test.go:TestFloodBoundsMemoryReportsDepthApplies429; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterFloodAppliesBackpressureNoDrop; apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeFloodBackpressureNoDropOneRunEach",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -234,7 +234,7 @@
       }
     },
     {
-      "checksum": "sha256:a767e428cbeef10dd9873f2e99d137d118058e71de61c5dfacfd9ab61b875975",
+      "checksum": "sha256:eb61cf2f9e367db2cdaaacda1514d8b051c4dce0c254ea739ad997cbd60943cb",
       "db_assertions": [
         "AUT-013: proven by 5 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetrySameIdempotencyKeySingleEverything; apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetryDifferentKeySameDedupeSingleAction; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect; apps/control-plane/internal/automation/orchestrator_storm_component_test.go:TestOrchestratorRetryStormSingleRun; apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeLostAckRedeliversToExactlyOneRun",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -259,7 +259,7 @@
       }
     },
     {
-      "checksum": "sha256:b75847e8b797b51619af53ed6262605abadb27ffaf8c2cbecc8d155f55092908",
+      "checksum": "sha256:932fb614be85eaed7a32ef5789f32689b21559e9b26aa96d6f2eacb63ee8fcae",
       "db_assertions": [
         "KNO-001: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/knowledge_component_test.go:TestIngestIsImmutableAndVersioned; apps/control-plane/internal/knowledge/knowledge_component_test.go:TestFTSRanksAndCitesWithVerifiableOffsets; apps/control-plane/internal/knowledge/chunk_test.go:TestChunkDocumentIsDeterministicWithVerifiableOffsets",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -284,7 +284,7 @@
       }
     },
     {
-      "checksum": "sha256:665316fcc7c98b3442666f1f7e1013020cae370f80080001b68a31badf8b938c",
+      "checksum": "sha256:6abadc5efe1a77e6d75d077c17578f7aff465017e6f6d904026080d47a76e342",
       "db_assertions": [
         "KNO-002: proven by 1 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/knowledge_component_test.go:TestFailedRefreshLeavesPriorActiveIntact",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -309,7 +309,7 @@
       }
     },
     {
-      "checksum": "sha256:2e253b713b946a9949dcfeb6c71008381e354163d711345052bb38aace3c1bea",
+      "checksum": "sha256:2ef2585b705847759e8e01391a9715d442ffc3f44d64ff31eae113a6b335923e",
       "db_assertions": [
         "KNO-003: proven by 5 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/retrieval_acl_component_test.go:TestForgedACLGrantInBodyIsRejectedAndGovernedByScope; apps/control-plane/internal/knowledge/retrieval_acl_component_test.go:TestPostFilterTopKIsForbidden; apps/control-plane/internal/knowledge/retrieval_acl_component_test.go:TestCrossProjectACLNegative; apps/control-plane/internal/knowledge/knowledge_component_test.go:TestRetrievalIsTenantAndACLScoped; apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestDerivePrincipalGrantsFromKeyScopesOnly",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -351,7 +351,7 @@
       }
     },
     {
-      "checksum": "sha256:29f436dfff8c834400d281d0e76c7006feb656c08f37366c13b04ee4b9d267d2",
+      "checksum": "sha256:a285d18286a1b45f7e88de6fbe106f7249d239a0298a1d6a6fc75b681b794ee9",
       "db_assertions": [
         "KNO-004: proven by 1 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/knowledge_component_test.go:TestSourceDeletePropagates",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -376,7 +376,7 @@
       }
     },
     {
-      "checksum": "sha256:d0a6b182b85d04bef97bd2c96903e62b109a8b8999715af9e93d3014a1a5f9dd",
+      "checksum": "sha256:fa8a69b6ae162b9f3f9d4e4138c9e21584b3c034f26b67da57d69f1816829905",
       "db_assertions": [
         "KNO-005: proven by 4 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestHybridStrategyFusesKeywordAndVectorWithCitations; apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestVectorStrategyDisabledByDefault; apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestResolveVectorHitsDropsLeakyRecords; apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestReciprocalRankFusionRewardsBothStrategies",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -401,7 +401,7 @@
       }
     },
     {
-      "checksum": "sha256:fb1c499258cdcdb8b9d2b9a1ac3a9efe168e3ae434e3be3d41a7d2196dac1f46",
+      "checksum": "sha256:1d5c430defdc1856bd497e6f710d89ebce3e79213695510d9dbccdbba16949aa",
       "db_assertions": [
         "KNO-006: proven by 3 in-tree proof(s) at the e2e-deterministic tier — apps/control-plane/internal/execution/tools/knowledge_test.go:TestRetrievalToolQuarantinesUntrustedContent; apps/control-plane/internal/execution/tools/knowledge_test.go:TestRetrievalToolCitesWithOffsets; apps/control-plane/internal/knowledge/retrieval_tool_component_test.go:TestRetrievalToolCitesVerifiableOffsetsEndToEnd",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -426,7 +426,7 @@
       }
     },
     {
-      "checksum": "sha256:7cdd35813088cc4e90fc37a6ba8b3e47f9e62a3ea5b0b0b884490866823798ff",
+      "checksum": "sha256:40d8feb9939513b5187e687acbcf99ccb6aacfb720e86578fd4a584ed8608003",
       "db_assertions": [
         "KNO-007: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestRestrictedSourceNotEmbeddedToDisallowedRegion; apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestEmbeddingPolicyBlocksRestrictedToDisallowedTarget",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -451,7 +451,7 @@
       }
     },
     {
-      "checksum": "sha256:88f6d083d2bb61ff3792d4df5570372c3415f73de1a1f246df38b636dd761435",
+      "checksum": "sha256:d85e917b68e2c5747c66559d6f8b7b10db610d728002c3c2846a7ba8177e7183",
       "db_assertions": [
         "KNO-008: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestFreshnessDeadlineFailsWarnsNeverSilentStale; apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestEvaluateFreshness",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -476,7 +476,7 @@
       }
     },
     {
-      "checksum": "sha256:abe717444696ff55033e249fe3db83eb3137bf9697829b34088c1d995bc516cb",
+      "checksum": "sha256:96b6c8dc09a82e19f00e7e3ae7d808cc971762f8f1cf40c7bbb4d3dd36338271",
       "db_assertions": [
         "QUA-001: proven by 3 in-tree proof(s) at the unit tier — tests/evals/harness_test.go:TestFourSuitesGreen; tests/evals/harness_test.go:TestDigestIsContentAddressed; tests/evals/integration_test.go:TestIntegrationBenchmark",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -501,7 +501,7 @@
       }
     },
     {
-      "checksum": "sha256:552f6616232f89f2042d1317c1e977aae3d5e0df1286a1f0cccc4a31ff11619d",
+      "checksum": "sha256:f7e0b933f57b7f6aa15100378b047c0c29deed18e62e308d53653a6ad29014e5",
       "db_assertions": [
         "QUA-002: proven by 3 in-tree proof(s) at the unit tier — tests/evals/harness_test.go:TestModelJudgeNeverSoleGateForProtected; tests/evals/harness_test.go:TestRegressedPolicyIsDetectable; tests/evals/live_test.go:TestModelJudgeCalibrationSmoke",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -526,7 +526,7 @@
       }
     },
     {
-      "checksum": "sha256:56f51c9672396504402f2c93616488c472fdd4efd2f864b48cef3e10ac6e2af5",
+      "checksum": "sha256:40368f30ff36bb89e7f79d32ccd0e50c126f63a6c64e8b15ce365145489892ec",
       "db_assertions": [
         "QUA-003: proven by 3 in-tree proof(s) at the unit tier — tests/evals/harness_test.go:TestFourSuitesGreen; tests/evals/harness_test.go:TestRegressedPolicyIsDetectable; tests/uat/eval_gate_test.go:TestEvalPromoteGateBlocksRealSecurityRegression",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -551,7 +551,7 @@
       }
     },
     {
-      "checksum": "sha256:909541ce64bb10e67f2108047772664b0b175ca523a32405ba435673822aea40",
+      "checksum": "sha256:ee4395ba013d8abb8cb7439fe2c7bcec7c7a5492a8ffe01ed9945310199b0ac1",
       "db_assertions": [
         "QUA-004: proven by 3 in-tree proof(s) at the unit tier — tests/uat/eval_gate_test.go:TestEvalPromoteGateRefusesSubThreshold; tests/uat/eval_gate_test.go:TestEvalPromoteGateBlocksRealSecurityRegression; tests/uat/eval_gate_test.go:TestEvalPromoteGateRefusesMissingProof",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -610,7 +610,7 @@
       }
     },
     {
-      "checksum": "sha256:5fa4474ee8a42895a9e28f3863653f44ae0aa6f28e34cac84afba6ac9619fbd1",
+      "checksum": "sha256:6248ba29bc2e99c745fa7c2a7077451c7add2db8a4fc70e5fec4046f62166e3d",
       "db_assertions": [
         "SLK-001: proven by 12 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventNormalizesToCanonicalIdentity; adapters/integrations/slack/inbound_test.go:TestUnwrapSocketFrameFeedsTheSameMapping; adapters/integrations/slack/socket_test.go:TestSocketFrameCarriesAcceptsResponsePayload; adapters/integrations/slack/socket_test.go:TestSocketDisconnectReasonIsDecoded; adapters/integrations/slack/socket_test.go:TestSocketAckShape; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketAcknowledgesBeforeDoingTheWork; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketAckShapeMatchesTheDocumentedEnvelope; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketOverlapsOnWarningAndLosesNoEvents; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketStopsPermanentlyOnLinkDisabled; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketDrainsGracefully; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketNeverLogsTheTokenOrTheTicket; apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModeAndHTTPShareOneCanonicalIdentity",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -664,7 +664,7 @@
       }
     },
     {
-      "checksum": "sha256:dc3a71895c1af3273b7394ef84e0e3dd0de0e87073fc2975332528e878c81d4b",
+      "checksum": "sha256:694a83b9a0e4ea84f40597714eefc013efce4dd8b582043742d04359664677ae",
       "db_assertions": [
         "SLK-002: proven by 3 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventRedeliveryIsIdentityStable; apps/control-plane/internal/automation/dedupe_component_test.go:TestDuplicateDeliveryLinksOriginalSingleAction; apps/control-plane/internal/store/slack_events_component_test.go:TestSlackRetryStormRunsTheEffectOnce",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -689,7 +689,7 @@
       }
     },
     {
-      "checksum": "sha256:ab8fc82836bc8f7c1cee659bb3785653f4f9314d52d62b86eb6d99b1834bdf49",
+      "checksum": "sha256:c4dde0af9e2471083b62ae7d739373214ef544a20250f117a3a3cbc0cfc1af47",
       "db_assertions": [
         "SLK-003: proven by 20 in-tree proof(s) at the component-real tier — adapters/integrations/slack/history_test.go:TestThreadRepliesCarriesTheDocumentedArguments; adapters/integrations/slack/history_test.go:TestThreadRepliesRefusesAnUnboundedOrUnaddressedRead; adapters/integrations/slack/history_test.go:TestThreadRepliesDropsSubtypedAndEmptyMessages; adapters/integrations/slack/history_test.go:TestThreadRepliesTypesTheAPIRefusal; adapters/integrations/slack/history_test.go:TestThreadRepliesDoesNotRetryARateLimit; adapters/integrations/slack/inbound_test.go:TestMapEventCarriesTheAffectedMessageTS; apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteIsEmptyWhenThereIsNothingToQuote; apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteLeadsWithTheUntrustedLabelAndEndsBeforeTheRequest; apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteAttributesWithoutNamingAnyone; apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteMakesBothTruncationsVisible; apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteQuotesAnInjectionAsData; apps/control-plane/internal/extensions/slack_component_test.go:TestSlackThreadSessionCorrelation; apps/control-plane/internal/store/slack_events_component_test.go:TestSlackThreadCorrelatesToOneSession; apps/control-plane/internal/store/slack_events_component_test.go:TestSlackConcurrentFirstEventsNeverSplitAThread; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryIsFetchedOnceForAThreadWeWereInvitedInto; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackTopLevelMentionReadsNoThread; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadReadAddressesTheEventNotTheContext; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryIsNotReadOutsideTheChannelAllowList; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryRefusalStillAdmitsTheRun; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryRedeliveryStillReplays",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -714,7 +714,7 @@
       }
     },
     {
-      "checksum": "sha256:6e18918b965ad31d5cb3ce0eae52b2714fdb58f7fd038712999ab113a96665dc",
+      "checksum": "sha256:dcfeb2e4664df2ae7f4f734aca3e936f3a5755a35a78cf2604eaaa3fdbd162a5",
       "db_assertions": [
         "SLK-004: proven by 5 in-tree proof(s) at the component-real tier — adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace; adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse; apps/control-plane/internal/extensions/slack_component_test.go:TestSlackConnectionCreateReadRLS; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackUnauthorizedClickEnqueuesNothing; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackStaleHashAndForeignThreadDecideNothing",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -739,7 +739,7 @@
       }
     },
     {
-      "checksum": "sha256:5720822b25996e82efef3cf2960f67281b6de18127c4e8dc73bc019fb852e8da",
+      "checksum": "sha256:f06c97c8965302ff11e0013fb7bcf389f527b2f152d33514817485527ed74caf",
       "db_assertions": [
         "SLK-005: proven by 14 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventClassifiesEditsAndDeletes; adapters/integrations/slack/files_test.go:TestFetchImageUsesTheTokenOnlyAsABearerHeader; adapters/integrations/slack/files_test.go:TestFetchImageRefusesAnyHostButSlackFiles; adapters/integrations/slack/files_test.go:TestFetchImageRefusesBytesThatAreNotAnImage; apps/control-plane/internal/execution/vision_test.go:TestDecodeMessagesResolvesAnImageRefToBytes; apps/control-plane/internal/execution/vision_test.go:TestDecodeMessagesTakesNothingButBytesFromAnImageItem; apps/control-plane/internal/execution/vision_component_test.go:TestDispatchResolvesAnImageRefIntoTheProviderRequest; adapters/models/provider_one/vision_test.go:TestBuildBodyRendersAnImageAsAContentPart; apps/control-plane/internal/store/slack_events_component_test.go:TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind; apps/control-plane/internal/store/slack_image_component_test.go:TestSlackSharedImageBecomesAnImageRefInTheRunInput; apps/control-plane/internal/store/slack_image_component_test.go:TestSlackImageRedeliveryReplaysOntoTheSameRunAndArtifact; apps/control-plane/internal/store/slack_image_component_test.go:TestSlackNonImageAndOversizeFilesAreRefusedVisibly; apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestArtifactInboundImageWriteIsIdempotentAtACallerChosenID; apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestInboundImageIsReachedByRetentionOnlyOnceAttached",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -764,7 +764,7 @@
       }
     },
     {
-      "checksum": "sha256:335212ce7807042c217f851febdc51a1737cbd235deeae2bfd1897425c4d588f",
+      "checksum": "sha256:1c6717caf35397dacc997eeca119b812fdaba950e942b04ec0ed7e8f05d4a22c",
       "db_assertions": [
         "SLK-006: proven by 7 in-tree proof(s) at the component-real tier — adapters/integrations/slack/ratelimit_test.go:TestPostMessageRepairsA429Once; adapters/integrations/slack/ratelimit_test.go:TestPostMessageBoundedRepairThenRateLimited; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionRepairsTheVisibleMessageExactlyOnceUnderA429; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackCoalescedUpdatesArePacedPerChannel; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionSurvivesAPermanentlyRateLimitedSlack; adapters/integrations/slack/stream_test.go:TestStreamCallsTruncateTheirOwnText; apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamAppendRepairsA429WithoutASecondRetryLayer",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -789,7 +789,7 @@
       }
     },
     {
-      "checksum": "sha256:25526c5380a5573abdd4674c255d434dc715fb54af31462a17d5dc8917fb8922",
+      "checksum": "sha256:dccf9d567b12cfba4211563caf5851cf796240aa501b52e3c1662e3314fa585d",
       "db_assertions": [
         "SLK-007: proven by 9 in-tree proof(s) at the component-real tier — adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace; adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalDenyIsMapped; adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackAuthorizedClickApprovesThroughTheWholeChain; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDenyClickDeniesThePublication; adapters/integrations/slack/blocks_test.go:TestRenderRefusesToMintAnActionableElementFromModelOutput; adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement; adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement; apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStopStreamCarriesRenderedBlocksAndNoForgedButton",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -814,7 +814,7 @@
       }
     },
     {
-      "checksum": "sha256:7606d7dcfc7f2eaebbd541ac15b7c0a4328699a4c84e585ea5011f9bc176a4d3",
+      "checksum": "sha256:ee02663bf478219ed2869f6cd9870c06707c996b69b319bca8faa83c889c7cbe",
       "db_assertions": [
         "SLK-008: proven by 4 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventDropsBotAndSelfEvents; adapters/integrations/slack/inbound_test.go:TestMapEventDropsNestedBotEdit; apps/control-plane/internal/store/slack_events_component_test.go:TestSlackBotSelfEventBirthsNothing; apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModeSelfEventBirthsNothing",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -839,7 +839,7 @@
       }
     },
     {
-      "checksum": "sha256:53404e8d0a65e735e8edbf71a852350510498d59bda72fe9b163a22f32c4d2f3",
+      "checksum": "sha256:ce0afb7dfb3a3986e2505db186c926e328fedf019b43a187a3c8ef278cf9d2b6",
       "db_assertions": [
         "SUB-007: proven by 9 in-tree proof(s) at the component-real tier — adapters/integrations/a2a/client_test.go:TestA2AClientRemoteChildIsUntrustedAndNoCredentialInheritance; adapters/integrations/a2a/client_test.go:TestA2AClientLoopbackInteropAgainstT2Server; adapters/integrations/a2a/client_test.go:TestA2AClientIngestsAPushedFileOnTheDIRECTMESSAGEBranchToo; apps/control-plane/internal/execution/remote_child_component_test.go:TestRemoteChildDispatchesToTheRegisteredRemote; apps/control-plane/internal/execution/remote_child_component_test.go:TestRemoteChildNeverInheritsTheParentCredential; apps/control-plane/internal/execution/remote_child_component_test.go:TestRemoteChildFailureIsAnHonestParentTerminal; apps/control-plane/internal/execution/remote_child_component_test.go:TestRemoteChildIsRefusedRatherThanRunLocally; apps/control-plane/internal/execution/child_dispatch_test.go:TestRemoteAgentRidesTheChildRequestOnlyWhenNamed; apps/control-plane/internal/execution/child_dispatch_test.go:TestRemoteChildrenCountAgainstFanout",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -871,7 +871,7 @@
       }
     },
     {
-      "checksum": "sha256:221a86cc2190c894b5d9f98ab4283f4343237a9aa79c4e3deada11ae6cf714ac",
+      "checksum": "sha256:e97cd2b539b458731eafb3258df8a3d9f12f3a8f612796e8aa0344a22085f523",
       "console_claim": "axe-clean-keyboard-operable-and-every-request-on-the-v1-relay-over-a-FAKE-upstream",
       "console_proof": {
         "api_key_reached_browser": false,
@@ -917,7 +917,7 @@
       }
     },
     {
-      "checksum": "sha256:d38728c474ba28d6cce8b6274bb2680b5e79f9faabaa5a74885f6bcf7989bd9d",
+      "checksum": "sha256:8da291b3dc4417359dac6518980301997cca655b11d532c934d805cfb9055f5d",
       "db_assertions": [
         "UI-002: proven by 6 in-tree proof(s) at the e2e-deterministic tier — apps/web-console/tests/journey.spec.ts:UI-002: the approval UI shows the authoritative operation/branch/request_hash from the canonical event — the proposal display string does not replace them; apps/web-console/tests/journey.spec.ts:approve proceeds through recovery to a completed run with a downloadable artifact; apps/web-console/tests/journey.spec.ts:deny blocks the operation — the run terminates canceled, the push never completes; apps/web-console/tests/journey.spec.ts:the console renders a run's terminal state end to end — model, status and output from the upstream; apps/web-console/tests/conformance.test.mjs:the fixture's scripted event vocabulary and payload keys match a REAL run's journal; apps/web-console/tests/conformance.test.mjs:no ledger row has gone stale — every row was re-observed against the running real stack",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -942,7 +942,7 @@
       }
     },
     {
-      "checksum": "sha256:8473158fd437754748c8488aae37e77510142472d765613d4e38db134ff174c5",
+      "checksum": "sha256:bb897043e24eb3c4e886f49c003dfa51389fad30f26ad46b2321b7e37009456d",
       "db_assertions": [
         "WRK-001: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestWorkerEnrollTypedDispatchAndArtifactRoundTrip; apps/control-plane/internal/workers/catalog_test.go:TestAppleBuildCapabilityIsAbsentEverywhere; apps/control-plane/internal/workers/live/worker_live_test.go:TestTwoSidedTypedJobRoundTrip",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -967,7 +967,7 @@
       }
     },
     {
-      "checksum": "sha256:b54cb296b4926b4923ca9b985415abe103767176346a8d97d850521907dd6f3f",
+      "checksum": "sha256:798983b3c958b143464067c0faa9bdcd4f9dfa347f1984f489f506b9aa2146dd",
       "db_assertions": [
         "WRK-002: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestWorkerEnrollTypedDispatchAndArtifactRoundTrip; apps/control-plane/internal/workers/catalog_test.go:TestNoTunnel_TypedOperationPassesTheGate; apps/control-plane/internal/workers/live/worker_live_test.go:TestTwoSidedTypedJobRoundTrip",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -992,7 +992,7 @@
       }
     },
     {
-      "checksum": "sha256:9c3ff9371257cb5739e91e039cf4bac03ebd0df3433bb1a62820afbf10a1c8e5",
+      "checksum": "sha256:fbbaf8a241d7d2adacf9d09dae06f063d141a9f0c6f50634c49e7ce5ea8976fc",
       "db_assertions": [
         "WRK-003: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestWorkerFenceStaleRejectOnRedispatch; apps/control-plane/internal/workers/workers_component_test.go:TestWorkerHealthChangeCutsLease; apps/control-plane/internal/workers/live/worker_live_test.go:TestFenceStaleRejectThroughGateway",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -1033,7 +1033,7 @@
       }
     },
     {
-      "checksum": "sha256:0f1cad862fab8d70a49d405f6401438e72e5411fd201492dc5e2e9a6d8a05e3a",
+      "checksum": "sha256:5616fe6b3b810c68a5358133116ad16b48b7b1c17509f71cf9208e6d2ad96d60",
       "db_assertions": [
         "WRK-004: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestSecretHandleScopeAndExpiry; apps/control-plane/internal/workers/live/worker_live_test.go:TestTwoSidedTypedJobRoundTrip",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -1058,7 +1058,7 @@
       }
     },
     {
-      "checksum": "sha256:abd54ceffd20e1051ca71f5f25cf8a2b6175124e00487dc4f6e22725b0e2b33d",
+      "checksum": "sha256:fa87c225dc03ab68328281975aa23d80ac4d8ed7467d9558392eddea3d5923cd",
       "db_assertions": [
         "WRK-005: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestWorkerEnrollTypedDispatchAndArtifactRoundTrip; apps/control-plane/internal/workers/buildcheck_test.go:TestBuildCheckIsHonestAndDeterministic; apps/control-plane/internal/workers/live/worker_live_test.go:TestTwoSidedTypedJobRoundTrip",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -1083,7 +1083,7 @@
       }
     },
     {
-      "checksum": "sha256:bd30da0e07c92b2f19669e24c102cd23a38e03b6bd3643496c3ed2827dbbe158",
+      "checksum": "sha256:fa03e4561ddadd4bb0de94086eff6ed03e5484998cab2a9782bb434971012495",
       "db_assertions": [
         "WRK-006: proven by 4 in-tree proof(s) at the unit tier — apps/control-plane/internal/workers/catalog_test.go:TestNoTunnel_UntypedOperationIsRefusedAtDispatch; apps/control-plane/internal/workers/catalog_test.go:TestAppleBuildCapabilityIsAbsentEverywhere; apps/control-plane/internal/workers/workers_component_test.go:TestNoTunnelSubmitForForeignOperationRefused; apps/control-plane/internal/workers/live/worker_live_test.go:TestNoTunnelSurface",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -1108,7 +1108,7 @@
       }
     },
     {
-      "checksum": "sha256:f55442ec3ce335607e95db718b573c6c0bcdac3c17d29a18c69e5cd730918f9b",
+      "checksum": "sha256:1215de9413ff39d41723553259a28f918acdd79a13e2dbac05220d335d54df99",
       "db_assertions": [
         "WRK-007: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestQuarantineOnUncertain; apps/control-plane/internal/workers/workers_component_test.go:TestWorkerFenceStaleRejectOnRedispatch",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -1233,7 +1233,7 @@
         "snapshot_source": "GET /v1/capabilities read over real HTTP from the FULLY MOUNTED router the E19 journey drove (apps/control-plane/internal/store TestWiringJourney) — the same process that served every wired route. NOT a deployed config: no shipped deployment sets PALAI_CAPABILITY_WORKER_LISTEN_ADDR, so no deployed binary serves this exact map",
         "claims_digest": "sha256:f0d46879af1792764ba43cb078666d73618f1d6ca80e9bdac2cd71af0a5a5b26"
       },
-      "checksum": "sha256:4fd8bfc39e6ce02dec18c778e1cc3ec89468b7b0d2cd0e2774e481b15ba44e70",
+      "checksum": "sha256:1dd620a22cda86d9cf305405b27c6d021b377e55909df7e4ce100ba95a3965b7",
       "db_assertions": [
         "RELEASE-LEVEL entry, not a UAT case (it has no tests/uat/cases directory): a capability's maturity tier is not a behaviour one case asserts, it is the RECOMPUTATION over all of them",
         "the verifier RECOMPUTES every tier from the canonical code tables + this bundle's own per-case outcomes and refuses any declared tier or /v1/capabilities snapshot that disagrees — the manifest's own tier copy is never an input (plan §T11)",
@@ -1259,7 +1259,7 @@
       }
     },
     {
-      "checksum": "sha256:d083b54574056ac76dbb12268e740f4978860b4ac749b6937dffbccd40f35dab",
+      "checksum": "sha256:1e826b853cd50990c43a74a7078c0b780ff8632cf34bdc7b7f34fc23a2b924b5",
       "db_assertions": [
         "RELEASE-LEVEL entry, not a UAT case (it has no tests/uat/cases directory): a MOUNT is not a behaviour one case asserts, it is an observation over the whole RUNNING stack — E19 opened no UAT id, per plan §1",
         "the verifier RE-DERIVES every surface's mount from the running stack's OWN /v1/capabilities snapshot and router surface, in BOTH directions: advertised-but-not-mounted is the §3.5 D14 defect verbatim (`capability-workers` was advertised `stable` by a binary that never imported the gateway package), and mounted-but-not-advertised is the same lie inverted",
@@ -1286,107 +1286,6 @@
       "wiring_claim": "six-surfaces-mounted-and-observed-from-a-running-stack-with-every-contract-anchored-to-its-source",
       "wiring_proof": {
         "surfaces": [
-          {
-            "surface": "slack-connections",
-            "route": "POST /v1/slack-connections",
-            "observed_status": 201,
-            "admission_route": "",
-            "admitted_runs": 0,
-            "source_event_ids": null,
-            "deliveries": 0,
-            "contracts": [
-              {
-                "divergence": "D14",
-                "source_url": "docs/superpowers/plans/phase-19-integration-wiring.md#35",
-                "requirement": "discovery advertises only what is MOUNTED; a registration surface is what makes a `slack` mount reachable by an operator instead of by hand-written SQL"
-              }
-            ]
-          },
-          {
-            "surface": "slack-events",
-            "route": "POST /v1/slack/events",
-            "observed_status": 200,
-            "admission_route": "/v1/slack/events",
-            "admitted_runs": 1,
-            "source_event_ids": [
-              "EvWiring1"
-            ],
-            "deliveries": 2,
-            "contracts": [
-              {
-                "divergence": "D1",
-                "source_url": "https://docs.slack.dev/apis/events-api/",
-                "requirement": "a delivery without a 2xx inside 3 seconds is retried three times (immediately, +1m, +5m); a non-200 answer carrying `x-slack-no-retry: 1` suppresses the retry, so a TERMINAL rejection must set it or a poison event is pulled four times"
-              },
-              {
-                "divergence": "D2",
-                "source_url": "https://docs.slack.dev/apis/events-api/",
-                "requirement": "a retry carries both `x-slack-retry-num` (1..3) and `x-slack-retry-reason` (http_timeout, http_error, connection_failed, ssl_error, too_many_redirects, unknown_error)"
-              },
-              {
-                "divergence": "D3",
-                "source_url": "https://docs.slack.dev/apis/events-api/",
-                "requirement": "event_id is globally unique across workspaces; that a RETRY repeats the same event_id is NOT stated on the page and is carried in the tree as a labelled ASSUMPTION the live leg asserts"
-              },
-              {
-                "divergence": "D9",
-                "source_url": "https://docs.slack.dev/authentication/verifying-requests-from-slack/",
-                "requirement": "the v0 base string is exactly 'v0:'+timestamp+':'+raw_body, HMAC-SHA256 hex, the header value 'v0='-prefixed, compared timing-safe, with a timestamp more than five minutes old refused"
-              }
-            ]
-          },
-          {
-            "surface": "slack-interactions",
-            "route": "POST /v1/slack/interactions",
-            "observed_status": 200,
-            "admission_route": "",
-            "admitted_runs": 0,
-            "source_event_ids": null,
-            "deliveries": 0,
-            "contracts": [
-              {
-                "divergence": "D8",
-                "source_url": "https://docs.slack.dev/interactivity/handling-user-interaction/",
-                "requirement": "an interaction arrives application/x-www-form-urlencoded with the JSON in a single `payload` parameter and must be answered 200 within 3 seconds; the signature is verified over the RAW form body BEFORE `payload` is extracted"
-              },
-              {
-                "divergence": "D10",
-                "source_url": "https://docs.slack.dev/apis/web-api/rate-limits/",
-                "requirement": "chat.postMessage is Special Tier — roughly one message per channel per second with short bursts — and a throttled call answers 429 with Retry-After in seconds"
-              }
-            ]
-          },
-          {
-            "surface": "slack-socket",
-            "route": "loop extensions.SlackSocket",
-            "observed_status": 0,
-            "admission_route": "",
-            "admitted_runs": 0,
-            "source_event_ids": null,
-            "deliveries": 0,
-            "contracts": [
-              {
-                "divergence": "D4",
-                "source_url": "https://docs.slack.dev/apis/events-api/using-socket-mode/",
-                "requirement": "every envelope must be acknowledged so Slack knows whether to retry; NO ack-time budget and no retry count are published for Socket Mode (the 3-second rule is the HTTP page's), so the tree acknowledges BEFORE the work and names the gap rather than inventing an SLA"
-              },
-              {
-                "divergence": "D5",
-                "source_url": "https://docs.slack.dev/apis/events-api/using-socket-mode/",
-                "requirement": "apps.connections.open returns a short-lived wss ticket URL; a `disconnect` with reason `warning` arrives ~10 seconds before close, and up to 10 concurrent connections are supported — so a graceful refresh OVERLAPS a new socket before draining the old one"
-              },
-              {
-                "divergence": "D6",
-                "source_url": "https://docs.slack.dev/apis/events-api/using-socket-mode/",
-                "requirement": "the envelope carries `accepts_response_payload`; a response payload may only be returned on an envelope that accepts one"
-              },
-              {
-                "divergence": "D7",
-                "source_url": "https://docs.slack.dev/apis/events-api/using-socket-mode/",
-                "requirement": "Socket Mode envelopes are NOT signed — the pre-authenticated WebSocket is the authentication — so the absence of a v0 verify on this transport is the documented behaviour, not an omission"
-              }
-            ]
-          },
           {
             "surface": "a2a-push",
             "route": "POST /v1/a2a/interfaces/{interface_id}/tasks/{id}/pushNotificationConfigs",
@@ -1472,40 +1371,18 @@
           "queues": "preview",
           "slack": "preview"
         },
-        "snapshot_source": "GET /v1/capabilities read over real HTTP from the fully-mounted router the E19 journey drove (apps/control-plane/internal/store TestWiringJourney) — the SAME process that served every route above",
+        "snapshot_source": "GET /v1/capabilities read over real HTTP from the fully-mounted router the E19 journey drove (apps/control-plane/internal/store TestWiringJourney) — the SAME process that served every route above. THE JOURNEY WAS DELETED ON 2026-08-05 with the in-process Slack bridge it half existed to drive, so this snapshot is the last one it took and no invocation re-takes it; the tier VALUES are still checked bit-for-bit against the recompute by apps/control-plane/api TestServedCapabilityTiersEqualTheRecompute, which is what stops them rotting",
         "router_surface": [
           "GET /v1/capabilities",
           "GET /v1/queue-connections",
           "GET /v1/responses/{response_id}",
-          "GET /v1/slack-connections",
           "POST /v1/a2a/interfaces/{interface_id}/tasks/{id}/pushNotificationConfigs",
-          "POST /v1/slack-connections",
-          "POST /v1/slack/events",
-          "POST /v1/slack/interactions",
           "loop automation.QueueBridge",
-          "loop automation.QueueOutboxPump",
-          "loop extensions.SlackSocket"
+          "loop automation.QueueOutboxPump"
         ],
-        "contracts_digest": "sha256:88652c76ffeacee6733c9e012b3a4ae4ad991d18a2f578506b89587685ef2006",
+        "contracts_digest": "sha256:02c4021fb228ea68a922f11cf97eb658f7c16e9b4b8d50d19a7c2ce868c90a10",
         "peers": "documented-fake",
         "live_legs": [
-          {
-            "test": "TestLiveSlackRetryCarriesTheSameEventID",
-            "env_vars": [
-              "SLACK_SIGNING_SECRET"
-            ],
-            "handover_row": "§0.1 — App → Basic Information → App Credentials → Signing Secret",
-            "without_credential": "skip"
-          },
-          {
-            "test": "TestLiveSlackMentionBirthsExactlyOneRun",
-            "env_vars": [
-              "PALAI_SLACK_LIVE_POSTGRES_URL",
-              "SLACK_TEAM_ID"
-            ],
-            "handover_row": "§0.1 — SLACK_TEAM_ID from the workspace admin page or any event payload's team_id; the Postgres URL comes from the running stack (make compose-up prints it)",
-            "without_credential": "skip"
-          },
           {
             "test": "TestLiveSlackApprovalMessageIsPostedAndRepaired",
             "env_vars": [
@@ -1516,31 +1393,11 @@
             "without_credential": "skip"
           },
           {
-            "test": "TestLiveSlackButtonClickIsFormEncodedAndVerifies",
-            "env_vars": [
-              "SLACK_SIGNING_SECRET",
-              "SLACK_BOT_TOKEN",
-              "SLACK_TEST_CHANNEL"
-            ],
-            "handover_row": "§0.1 — the signing secret, the bot token and the test channel together: this leg posts a real button and verifies the real click",
-            "without_credential": "skip"
-          },
-          {
             "test": "TestLiveSlackSocketProtocol",
             "env_vars": [
               "SLACK_APP_TOKEN"
             ],
             "handover_row": "§0.1 — App → Basic Information → App-Level Tokens → Generate, scope connections:write. NO PUBLIC URL IS NEEDED for this leg",
-            "without_credential": "skip"
-          },
-          {
-            "test": "TestLiveSlackSocketMentionBirthsExactlyOneRun",
-            "env_vars": [
-              "SLACK_APP_TOKEN",
-              "PALAI_SLACK_LIVE_POSTGRES_URL",
-              "SLACK_TEAM_ID"
-            ],
-            "handover_row": "§0.1 — the app-level token and the team id, plus the running stack's Postgres URL",
             "without_credential": "skip"
           },
           {

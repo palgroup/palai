@@ -8,9 +8,16 @@ proof:
   - adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace
   - adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalDenyIsMapped
   - adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse
-  - apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackAuthorizedClickApprovesThroughTheWholeChain
-  - apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDenyClickDeniesThePublication
+  # WITHDRAWN 2026-08-05 — the Slack cutover. The proofs below named files that were deleted with the
+  # control plane's in-process Slack bridge (extensions/slack_*, api/slack*, the store's slack_*
+  # component suites). Slack is served by apps/slack-bot now, a separate process that reaches this
+  # control plane over `/v1`, so the mechanisms these lines proved are either gone or live in a
+  # component this case does not cover. The case TEXT above is shipped and left byte-for-byte; the
+  # checksum reads neither this list nor the text (caseChecksumParts hashes id + run_id + the release's
+  # contracts digest), so withdrawing a proof cannot move a committed checksum.
+  #   - apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackAuthorizedClickApprovesThroughTheWholeChain
+  #   - apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDenyClickDeniesThePublication
   - adapters/integrations/slack/blocks_test.go:TestRenderRefusesToMintAnActionableElementFromModelOutput
   - adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement
   - adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement
-  - apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStopStreamCarriesRenderedBlocksAndNoForgedButton
+  #   - apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStopStreamCarriesRenderedBlocksAndNoForgedButton

@@ -90,11 +90,7 @@ var expectedToolApprovalCatalog = map[string]struct {
 		"adapters/integrations/slack/approval_widgets_test.go:TestAnUnwrittenOperatorLabelIsSaidOutLoud",
 		"adapters/integrations/slack/approval_widgets_test.go:TestApprovalModalDumpsEveryLeafAndAsksForADenyReasonWithoutDispatching",
 		"adapters/integrations/slack/blocks_test.go:TestTheActionableElementScanIsPackageLocalOnlyAndTheModalIsBuiltInsideIt",
-		"apps/control-plane/api/slack_modal_route_test.go:TestShowArgumentsOpensTheModalInsideTheAckBudgetAndDecidesNothing",
-		"apps/control-plane/api/slack_modal_route_test.go:TestAStalledModalStillAnswersSlackInsideTheBudget",
-		"apps/control-plane/api/slack_modal_route_test.go:TestARefusedModalIsAcknowledgedWithoutTellingTheClicker",
 		"apps/control-plane/internal/execution/tool_approval_component_test.go:TestToolApprovalScreenComesFromTheLedgerRowAndNotTheFrame",
-		"apps/control-plane/internal/extensions/slack_modal_component_test.go:TestSlackApprovalModalReadsTheLedgerAndWritesNothing",
 	}},
 	// E23 T1/T3 — the park and its deadline. The expiry leg is the one with no prior art in this tree, and the
 	// LAST entry is what keeps the claim honest rather than triumphant: a genuinely terminal run still refuses
@@ -103,11 +99,9 @@ var expectedToolApprovalCatalog = map[string]struct {
 		"apps/control-plane/internal/execution/tool_approval_component_test.go:TestToolApprovalParksTheRunRatherThanAnsweringWithoutADecision",
 		"apps/control-plane/internal/execution/tool_approval_component_test.go:TestExpiredToolApprovalCancelsTheCallAndWakesTheParkedRun",
 		"apps/control-plane/internal/execution/reconciler_test.go:TestReconcilerSweepReportsDeadLetteredWithConfiguredCeiling",
-		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackParksTheRunSoTheApproveLands",
-		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackDenyWakesTheParkedRunAndPublishesNothing",
-		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackDeliveryFailureKeepsTheApprovalAndReleasesTheRun",
-		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackCeilingATerminalRunStillRefusesTheClick",
-		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackPostsAnApprovalMessageIntoTheThread",
+		// RE-EARNED 2026-08-05 — the park and the wake, off Slack.
+		"apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationParksTheRunSoTheApproveLands",
+		"apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationDenyWakesTheParkedRunAndPublishesNothing",
 	}},
 	// E23 T2 — who may decide. Both surfaces are listed because the whole design claim is that they refuse in
 	// the SAME function, and the bit-unchanged legs are listed because an approver list that changed the
@@ -125,13 +119,6 @@ var expectedToolApprovalCatalog = map[string]struct {
 		"apps/control-plane/internal/execution/approver_component_test.go:TestApproverTheRequestBodyCannotNameItsOwnApprover",
 		"apps/control-plane/internal/execution/approver_component_test.go:TestApproverTheListIsReadLiveSoNarrowingTakesPendingApprovalsWithIt",
 		"apps/control-plane/internal/execution/approver_component_test.go:TestApproverAnEmptyListIsNotAnEmptyString",
-		"apps/control-plane/internal/store/slack_approver_component_test.go:TestSlackApproverBothListsMustBePassed",
-		"apps/control-plane/internal/store/slack_approver_component_test.go:TestSlackApproverListedOnBothPasses",
-		"apps/control-plane/internal/store/slack_approver_component_test.go:TestSlackApproverAUserIdAloneIsNotAPrincipal",
-		"apps/control-plane/internal/store/slack_approver_component_test.go:TestSlackApproverWithNoProjectListIsBitUnchanged",
-		"apps/control-plane/internal/store/slack_approver_component_test.go:TestSlackApproverConnectionListStillRunsFirst",
-		"apps/control-plane/internal/store/slack_approver_component_test.go:TestSlackApproverNarrowingTheProjectListTakesAPendingApprovalWithIt",
-		"apps/control-plane/internal/store/slack_approver_component_test.go:TestSlackApproverTheRefusalRecordsNoDecider",
 		"cmd/cli/internal/stack/up_approver_test.go:TestApproverListAbsenceIsSaidOutLoud",
 		"cmd/cli/internal/stack/up_approver_test.go:TestApproverListPresenceIsSilent",
 		"cmd/cli/internal/stack/up_approver_test.go:TestApproverListUnreadableWarnsAboutTheREADNotTheLIST",

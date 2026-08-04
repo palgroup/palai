@@ -1375,25 +1375,8 @@
           "queues": "preview",
           "slack": "preview"
         },
-        "contracts_digest": "sha256:88652c76ffeacee6733c9e012b3a4ae4ad991d18a2f578506b89587685ef2006",
+        "contracts_digest": "sha256:02c4021fb228ea68a922f11cf97eb658f7c16e9b4b8d50d19a7c2ce868c90a10",
         "live_legs": [
-          {
-            "env_vars": [
-              "SLACK_SIGNING_SECRET"
-            ],
-            "handover_row": "§0.1 — App → Basic Information → App Credentials → Signing Secret",
-            "test": "TestLiveSlackRetryCarriesTheSameEventID",
-            "without_credential": "skip"
-          },
-          {
-            "env_vars": [
-              "PALAI_SLACK_LIVE_POSTGRES_URL",
-              "SLACK_TEAM_ID"
-            ],
-            "handover_row": "§0.1 — SLACK_TEAM_ID from the workspace admin page or any event payload's team_id; the Postgres URL comes from the running stack (make compose-up prints it)",
-            "test": "TestLiveSlackMentionBirthsExactlyOneRun",
-            "without_credential": "skip"
-          },
           {
             "env_vars": [
               "SLACK_BOT_TOKEN",
@@ -1405,30 +1388,10 @@
           },
           {
             "env_vars": [
-              "SLACK_SIGNING_SECRET",
-              "SLACK_BOT_TOKEN",
-              "SLACK_TEST_CHANNEL"
-            ],
-            "handover_row": "§0.1 — the signing secret, the bot token and the test channel together: this leg posts a real button and verifies the real click",
-            "test": "TestLiveSlackButtonClickIsFormEncodedAndVerifies",
-            "without_credential": "skip"
-          },
-          {
-            "env_vars": [
               "SLACK_APP_TOKEN"
             ],
             "handover_row": "§0.1 — App → Basic Information → App-Level Tokens → Generate, scope connections:write. NO PUBLIC URL IS NEEDED for this leg",
             "test": "TestLiveSlackSocketProtocol",
-            "without_credential": "skip"
-          },
-          {
-            "env_vars": [
-              "SLACK_APP_TOKEN",
-              "PALAI_SLACK_LIVE_POSTGRES_URL",
-              "SLACK_TEAM_ID"
-            ],
-            "handover_row": "§0.1 — the app-level token and the team id, plus the running stack's Postgres URL",
-            "test": "TestLiveSlackSocketMentionBirthsExactlyOneRun",
             "without_credential": "skip"
           },
           {
@@ -1487,118 +1450,12 @@
           "GET /v1/capabilities",
           "GET /v1/queue-connections",
           "GET /v1/responses/{response_id}",
-          "GET /v1/slack-connections",
           "POST /v1/a2a/interfaces/{interface_id}/tasks/{id}/pushNotificationConfigs",
-          "POST /v1/slack-connections",
-          "POST /v1/slack/events",
-          "POST /v1/slack/interactions",
           "loop automation.QueueBridge",
-          "loop automation.QueueOutboxPump",
-          "loop extensions.SlackSocket"
+          "loop automation.QueueOutboxPump"
         ],
-        "snapshot_source": "GET /v1/capabilities read over real HTTP from the fully-mounted router the E19 journey drove (apps/control-plane/internal/store TestWiringJourney) — the SAME process that served every route above",
+        "snapshot_source": "GET /v1/capabilities read over real HTTP from the fully-mounted router the E19 journey drove (apps/control-plane/internal/store TestWiringJourney) — the SAME process that served every route above. THE JOURNEY WAS DELETED ON 2026-08-05 with the in-process Slack bridge it half existed to drive, so this snapshot is the last one it took and no invocation re-takes it; the tier VALUES are still checked bit-for-bit against the recompute by apps/control-plane/api TestServedCapabilityTiersEqualTheRecompute, which is what stops them rotting",
         "surfaces": [
-          {
-            "admission_route": "",
-            "admitted_runs": 0,
-            "contracts": [
-              {
-                "divergence": "D14",
-                "requirement": "discovery advertises only what is MOUNTED; a registration surface is what makes a `slack` mount reachable by an operator instead of by hand-written SQL",
-                "source_url": "docs/superpowers/plans/phase-19-integration-wiring.md#35"
-              }
-            ],
-            "deliveries": 0,
-            "observed_status": 201,
-            "route": "POST /v1/slack-connections",
-            "source_event_ids": null,
-            "surface": "slack-connections"
-          },
-          {
-            "admission_route": "/v1/slack/events",
-            "admitted_runs": 1,
-            "contracts": [
-              {
-                "divergence": "D1",
-                "requirement": "a delivery without a 2xx inside 3 seconds is retried three times (immediately, +1m, +5m); a non-200 answer carrying `x-slack-no-retry: 1` suppresses the retry, so a TERMINAL rejection must set it or a poison event is pulled four times",
-                "source_url": "https://docs.slack.dev/apis/events-api/"
-              },
-              {
-                "divergence": "D2",
-                "requirement": "a retry carries both `x-slack-retry-num` (1..3) and `x-slack-retry-reason` (http_timeout, http_error, connection_failed, ssl_error, too_many_redirects, unknown_error)",
-                "source_url": "https://docs.slack.dev/apis/events-api/"
-              },
-              {
-                "divergence": "D3",
-                "requirement": "event_id is globally unique across workspaces; that a RETRY repeats the same event_id is NOT stated on the page and is carried in the tree as a labelled ASSUMPTION the live leg asserts",
-                "source_url": "https://docs.slack.dev/apis/events-api/"
-              },
-              {
-                "divergence": "D9",
-                "requirement": "the v0 base string is exactly 'v0:'+timestamp+':'+raw_body, HMAC-SHA256 hex, the header value 'v0='-prefixed, compared timing-safe, with a timestamp more than five minutes old refused",
-                "source_url": "https://docs.slack.dev/authentication/verifying-requests-from-slack/"
-              }
-            ],
-            "deliveries": 2,
-            "observed_status": 200,
-            "route": "POST /v1/slack/events",
-            "source_event_ids": [
-              "EvWiring1"
-            ],
-            "surface": "slack-events"
-          },
-          {
-            "admission_route": "",
-            "admitted_runs": 0,
-            "contracts": [
-              {
-                "divergence": "D8",
-                "requirement": "an interaction arrives application/x-www-form-urlencoded with the JSON in a single `payload` parameter and must be answered 200 within 3 seconds; the signature is verified over the RAW form body BEFORE `payload` is extracted",
-                "source_url": "https://docs.slack.dev/interactivity/handling-user-interaction/"
-              },
-              {
-                "divergence": "D10",
-                "requirement": "chat.postMessage is Special Tier — roughly one message per channel per second with short bursts — and a throttled call answers 429 with Retry-After in seconds",
-                "source_url": "https://docs.slack.dev/apis/web-api/rate-limits/"
-              }
-            ],
-            "deliveries": 0,
-            "observed_status": 200,
-            "route": "POST /v1/slack/interactions",
-            "source_event_ids": null,
-            "surface": "slack-interactions"
-          },
-          {
-            "admission_route": "",
-            "admitted_runs": 0,
-            "contracts": [
-              {
-                "divergence": "D4",
-                "requirement": "every envelope must be acknowledged so Slack knows whether to retry; NO ack-time budget and no retry count are published for Socket Mode (the 3-second rule is the HTTP page's), so the tree acknowledges BEFORE the work and names the gap rather than inventing an SLA",
-                "source_url": "https://docs.slack.dev/apis/events-api/using-socket-mode/"
-              },
-              {
-                "divergence": "D5",
-                "requirement": "apps.connections.open returns a short-lived wss ticket URL; a `disconnect` with reason `warning` arrives ~10 seconds before close, and up to 10 concurrent connections are supported — so a graceful refresh OVERLAPS a new socket before draining the old one",
-                "source_url": "https://docs.slack.dev/apis/events-api/using-socket-mode/"
-              },
-              {
-                "divergence": "D6",
-                "requirement": "the envelope carries `accepts_response_payload`; a response payload may only be returned on an envelope that accepts one",
-                "source_url": "https://docs.slack.dev/apis/events-api/using-socket-mode/"
-              },
-              {
-                "divergence": "D7",
-                "requirement": "Socket Mode envelopes are NOT signed — the pre-authenticated WebSocket is the authentication — so the absence of a v0 verify on this transport is the documented behaviour, not an omission",
-                "source_url": "https://docs.slack.dev/apis/events-api/using-socket-mode/"
-              }
-            ],
-            "deliveries": 0,
-            "observed_status": 0,
-            "route": "loop extensions.SlackSocket",
-            "source_event_ids": null,
-            "surface": "slack-socket"
-          },
           {
             "admission_route": "",
             "admitted_runs": 0,
@@ -1679,7 +1536,7 @@
     {
       "checksum": "sha256:5308524c475a40fd743fe9d2642aee1290064a974300ea9f4b963d6a52ad0cce",
       "db_assertions": [
-        "SLK-009: proven by 14 in-tree proof(s) at the component-real tier — adapters/integrations/slack/stream_test.go:TestStartStreamRefusesWithoutARecipient; adapters/integrations/slack/stream_test.go:TestStartStreamCarriesTheDocumentedArguments; adapters/integrations/slack/stream_test.go:TestOnlyStopStreamCarriesBlocks; adapters/integrations/slack/stream_test.go:TestAppendStreamSurfacesStoppedByUser; adapters/integrations/slack/stream_test.go:TestStreamTextIsTruncatedVisibly; adapters/integrations/slack/agent_test.go:TestSetStatusCarriesTheDocumentedArguments; adapters/integrations/slack/agent_test.go:TestSetStatusCapsLoadingMessagesAtTen; apps/control-plane/internal/extensions/slack_stream_test.go:TestSlackStreamNeverControlsTheRun; apps/control-plane/internal/extensions/slack_stream_test.go:TestSlackStreamLineIsTotalAndSaysOnlyWhatTheJournalKnows; apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamShowsTheRunWorkingThenClosesWithTheAnswer; apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamRedeliveryOpensNoSecondStream; apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamOverTheConcurrencyCapStillAnswers; apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamStoppedByUserLeavesTheRunRunning; apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackRunWithNoOutputOpensNoStream",
+        "SLK-009: proven by 7 in-tree proof(s) at the unit tier — adapters/integrations/slack/stream_test.go:TestStartStreamRefusesWithoutARecipient; adapters/integrations/slack/stream_test.go:TestStartStreamCarriesTheDocumentedArguments; adapters/integrations/slack/stream_test.go:TestOnlyStopStreamCarriesBlocks; adapters/integrations/slack/stream_test.go:TestAppendStreamSurfacesStoppedByUser; adapters/integrations/slack/stream_test.go:TestStreamTextIsTruncatedVisibly; adapters/integrations/slack/agent_test.go:TestSetStatusCarriesTheDocumentedArguments; adapters/integrations/slack/agent_test.go:TestSetStatusCapsLoadingMessagesAtTen",
         "OPENED BY E20 and certified HERE rather than in extensions-0.1.0, which is a measured decision: tests/uat/extensions' catalog IS that shipped bundle's case list and uat.CapabilityClaims feeds a digest folded into its every checksum, so registering these four there would have forced the regeneration of a committed HISTORICAL release. A case belongs to the bundle that certifies it",
         "NOT in uat.CapabilityClaims[\"slack\"] and therefore NOT an input to the `slack` tier recompute — which changes nothing about the outcome: `slack` is capped at preview by CapabilityOperatorLegs (§6 leg 1) whatever its claims do, and four MORE green claims could never have raised it",
         "HONEST CEILING: every counterparty is the FAKE Slack peer built from the published references. §6 leg 1 — a REAL Slack workspace external receipt — is operator work and is NEVER claimed here",
@@ -1705,7 +1562,7 @@
     {
       "checksum": "sha256:4f0ba85dc1b382bde87204a282c70b83d357f61e48b11c0e6b94bf37fe65b754",
       "db_assertions": [
-        "SLK-010: proven by 13 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventPanelSurfaceEventsBirthNoRun; adapters/integrations/slack/inbound_test.go:TestMapEventCarriesTheDMChannelType; adapters/integrations/slack/inbound_test.go:TestMapEventDropsTheBotsOwnDM; adapters/integrations/slack/manifest_test.go:TestManifestSubscribesToNothingTheAdapterHasNotDecided; adapters/integrations/slack/manifest_test.go:TestManifestAgentViewHonoursThePublishedLimits; adapters/integrations/slack/manifest_test.go:TestManifestGrantsTheScopesTheSubscribedEventsRequire; apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackDMIsExemptFromTheConfiguredChannelAllowList; apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackPanelSurfaceEventsBirthNoRun; apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackPanelConversationKeepsOneSession; apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackBotsOwnDMBirthsNothing; apps/control-plane/internal/store/slack_channel_scope_component_test.go:TestSlackChannelAllowListRefusesAClickOutsideIt; apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackPanelDMEntersTheSameAdmissionBridge; apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModePanelSurfaceEventsBirthNothing",
+        "SLK-010: proven by 6 in-tree proof(s) at the unit tier — adapters/integrations/slack/inbound_test.go:TestMapEventPanelSurfaceEventsBirthNoRun; adapters/integrations/slack/inbound_test.go:TestMapEventCarriesTheDMChannelType; adapters/integrations/slack/inbound_test.go:TestMapEventDropsTheBotsOwnDM; adapters/integrations/slack/manifest_test.go:TestManifestSubscribesToNothingTheAdapterHasNotDecided; adapters/integrations/slack/manifest_test.go:TestManifestAgentViewHonoursThePublishedLimits; adapters/integrations/slack/manifest_test.go:TestManifestGrantsTheScopesTheSubscribedEventsRequire",
         "OPENED BY E20 and certified HERE rather than in extensions-0.1.0, which is a measured decision: tests/uat/extensions' catalog IS that shipped bundle's case list and uat.CapabilityClaims feeds a digest folded into its every checksum, so registering these four there would have forced the regeneration of a committed HISTORICAL release. A case belongs to the bundle that certifies it",
         "NOT in uat.CapabilityClaims[\"slack\"] and therefore NOT an input to the `slack` tier recompute — which changes nothing about the outcome: `slack` is capped at preview by CapabilityOperatorLegs (§6 leg 1) whatever its claims do, and four MORE green claims could never have raised it",
         "HONEST CEILING: every counterparty is the FAKE Slack peer built from the published references. §6 leg 1 — a REAL Slack workspace external receipt — is operator work and is NEVER claimed here",
@@ -1731,7 +1588,7 @@
     {
       "checksum": "sha256:915ed72a55ece5b85a52d52f33078e0653a1083822c93bae7d99115c81cd9458",
       "db_assertions": [
-        "SLK-011: proven by 11 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventCarriesAppContextInRelevanceOrder; adapters/integrations/slack/inbound_test.go:TestMapEventDropsForeignWorkspaceContextEntities; adapters/integrations/slack/inbound_test.go:TestMapEventSurvivesAStructuredContextValue; apps/control-plane/internal/extensions/slack_admit_test.go:TestSlackRunInputDescribesTheContextAsUntrusted; apps/control-plane/internal/extensions/slack_admit_test.go:TestSlackRunInputDescribesTheChannelIDNotAName; apps/control-plane/internal/extensions/slack_context_guard_test.go:TestSlackNoCodePathResolvesAContextEntity; apps/control-plane/internal/store/slack_context_component_test.go:TestSlackContextCannotSelectATenant; apps/control-plane/internal/store/slack_context_component_test.go:TestSlackContextCannotSelectARunTarget; apps/control-plane/internal/store/slack_context_component_test.go:TestSlackContextCannotWidenTheChannelAllowList; apps/control-plane/internal/store/slack_context_component_test.go:TestSlackContextNeverBecomesAFetchTarget; apps/control-plane/internal/store/slack_context_component_test.go:TestSlackDMCarriesItsOwnContext",
+        "SLK-011: proven by 3 in-tree proof(s) at the unit tier — adapters/integrations/slack/inbound_test.go:TestMapEventCarriesAppContextInRelevanceOrder; adapters/integrations/slack/inbound_test.go:TestMapEventDropsForeignWorkspaceContextEntities; adapters/integrations/slack/inbound_test.go:TestMapEventSurvivesAStructuredContextValue",
         "OPENED BY E20 and certified HERE rather than in extensions-0.1.0, which is a measured decision: tests/uat/extensions' catalog IS that shipped bundle's case list and uat.CapabilityClaims feeds a digest folded into its every checksum, so registering these four there would have forced the regeneration of a committed HISTORICAL release. A case belongs to the bundle that certifies it",
         "NOT in uat.CapabilityClaims[\"slack\"] and therefore NOT an input to the `slack` tier recompute — which changes nothing about the outcome: `slack` is capped at preview by CapabilityOperatorLegs (§6 leg 1) whatever its claims do, and four MORE green claims could never have raised it",
         "HONEST CEILING: every counterparty is the FAKE Slack peer built from the published references. §6 leg 1 — a REAL Slack workspace external receipt — is operator work and is NEVER claimed here",
@@ -1757,7 +1614,7 @@
     {
       "checksum": "sha256:4cf96dad9b271eb84839c4221dc5a0a6f557fd899ba17e83565bf6351f33a711",
       "db_assertions": [
-        "SLK-012: proven by 20 in-tree proof(s) at the component-real tier — adapters/integrations/slack/blocks_test.go:TestRenderRefusesToMintAnActionableElementFromModelOutput; adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement; adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement; adapters/integrations/slack/blocks_test.go:TestUnknownVariantRendersAsInertText; adapters/integrations/slack/blocks_test.go:TestTaskStatusMapIsExplicitAndFailsClosed; adapters/integrations/slack/blocks_test.go:TestOneTaskIsACardAndSeveralAreAPlan; adapters/integrations/slack/blocks_test.go:TestTableTruncationIsVisible; adapters/integrations/slack/blocks_test.go:TestBlockLimitIsVisible; adapters/integrations/slack/blocks_test.go:TestBlocksNeutralizeBroadcastTokens; adapters/integrations/slack/blocks_test.go:TestFileRefLinksOnlyHTTPAndHTTPS; adapters/integrations/slack/blocks_test.go:TestPostMessageRendersProseAsAMarkdownBlock; adapters/integrations/slack/blocks_test.go:TestMarkdownBlockNeutralizesBroadcastTokens; adapters/integrations/slack/blocks_test.go:TestMarkdownBudgetIsCumulativeAndCutsVisibly; adapters/integrations/slack/blocks_test.go:TestTheStopStreamPathCarriesNoMarkdownBlock; adapters/integrations/slack/blocks_test.go:TestNumericTableCellsAreRawNumber; apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStopStreamCarriesRenderedBlocksAndNoForgedButton; adapters/integrations/slack/approval_widgets_test.go:TestApprovalMessageMintsThreeButtonsAllBoundToTheRequestHash; adapters/integrations/slack/approval_widgets_test.go:TestShowArgumentsIsMappedButCanNeverBecomeADecision; adapters/integrations/slack/approval_widgets_test.go:TestTheRejectedBlocksAreAbsentFromBothSurfaces; adapters/integrations/slack/blocks_test.go:TestTheActionableElementScanIsPackageLocalOnlyAndTheModalIsBuiltInsideIt",
+        "SLK-012: proven by 19 in-tree proof(s) at the unit tier — adapters/integrations/slack/blocks_test.go:TestRenderRefusesToMintAnActionableElementFromModelOutput; adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement; adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement; adapters/integrations/slack/blocks_test.go:TestUnknownVariantRendersAsInertText; adapters/integrations/slack/blocks_test.go:TestTaskStatusMapIsExplicitAndFailsClosed; adapters/integrations/slack/blocks_test.go:TestOneTaskIsACardAndSeveralAreAPlan; adapters/integrations/slack/blocks_test.go:TestTableTruncationIsVisible; adapters/integrations/slack/blocks_test.go:TestBlockLimitIsVisible; adapters/integrations/slack/blocks_test.go:TestBlocksNeutralizeBroadcastTokens; adapters/integrations/slack/blocks_test.go:TestFileRefLinksOnlyHTTPAndHTTPS; adapters/integrations/slack/blocks_test.go:TestPostMessageRendersProseAsAMarkdownBlock; adapters/integrations/slack/blocks_test.go:TestMarkdownBlockNeutralizesBroadcastTokens; adapters/integrations/slack/blocks_test.go:TestMarkdownBudgetIsCumulativeAndCutsVisibly; adapters/integrations/slack/blocks_test.go:TestTheStopStreamPathCarriesNoMarkdownBlock; adapters/integrations/slack/blocks_test.go:TestATableCellIsNeverTypedRawNumber; adapters/integrations/slack/approval_widgets_test.go:TestApprovalMessageMintsThreeButtonsAllBoundToTheRequestHash; adapters/integrations/slack/approval_widgets_test.go:TestShowArgumentsIsMappedButCanNeverBecomeADecision; adapters/integrations/slack/approval_widgets_test.go:TestTheRejectedBlocksAreAbsentFromBothSurfaces; adapters/integrations/slack/blocks_test.go:TestTheActionableElementScanIsPackageLocalOnlyAndTheModalIsBuiltInsideIt",
         "OPENED BY E20 and certified HERE rather than in extensions-0.1.0, which is a measured decision: tests/uat/extensions' catalog IS that shipped bundle's case list and uat.CapabilityClaims feeds a digest folded into its every checksum, so registering these four there would have forced the regeneration of a committed HISTORICAL release. A case belongs to the bundle that certifies it",
         "NOT in uat.CapabilityClaims[\"slack\"] and therefore NOT an input to the `slack` tier recompute — which changes nothing about the outcome: `slack` is capped at preview by CapabilityOperatorLegs (§6 leg 1) whatever its claims do, and four MORE green claims could never have raised it",
         "HONEST CEILING: every counterparty is the FAKE Slack peer built from the published references. §6 leg 1 — a REAL Slack workspace external receipt — is operator work and is NEVER claimed here",
@@ -2042,7 +1899,7 @@
     {
       "checksum": "sha256:9be6e801549b4db8006377f5b77f2209c24567e6f58ddfd8d95da55b2c05393d",
       "db_assertions": [
-        "TLM-003: proven by 10 in-tree proof(s) at the component-real tier — adapters/integrations/slack/mention_test.go:TestAMentionTheModelWroteIsStillNeutralized; adapters/integrations/slack/mention_test.go:TestMentionMintsExactlyOneIDAndItIsTheDeliveryRows; adapters/integrations/slack/mention_test.go:TestTheModelCannotChooseWhoIsMentioned; adapters/integrations/slack/mention_test.go:TestAnEmptyRequesterSkipsTheMentionAndKeepsTheWords; adapters/integrations/slack/mention_test.go:TestAPublicationDisplayCannotBroadcast; adapters/integrations/slack/mention_test.go:TestStatusCannotBroadcast; adapters/integrations/slack/mention_test.go:TestAMentionRendersAsAnOrdinarySection; adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement; tests/component/postgres/migration_test.go:TestMigration43SlackRequester; apps/control-plane/internal/store/slack_mention_component_test.go:TestSlackTerminalRunMentionsTheRequesterAndOnlyTheRequester",
+        "TLM-003: proven by 9 in-tree proof(s) at the component-real tier — adapters/integrations/slack/mention_test.go:TestAMentionTheModelWroteIsStillNeutralized; adapters/integrations/slack/mention_test.go:TestMentionMintsExactlyOneIDAndItIsTheDeliveryRows; adapters/integrations/slack/mention_test.go:TestTheModelCannotChooseWhoIsMentioned; adapters/integrations/slack/mention_test.go:TestAnEmptyRequesterSkipsTheMentionAndKeepsTheWords; adapters/integrations/slack/mention_test.go:TestAPublicationDisplayCannotBroadcast; adapters/integrations/slack/mention_test.go:TestStatusCannotBroadcast; adapters/integrations/slack/mention_test.go:TestAMentionRendersAsAnOrdinarySection; adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement; tests/component/postgres/migration_test.go:TestMigration43SlackRequester",
         "OPENED BY E21 UNDER THE `TLM-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and — worse — PromoteGateFor selects the E20 family by AgentSurfaceCaseIDs MEMBERSHIP, so an unlisted `SLK-013` would have fallen silently through to a WEAKER gate. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
         "NOT in uat.CapabilityClaims and therefore NOT an input to any tier recompute — which changes nothing about the outcome: `slack` is capped at preview by CapabilityOperatorLegs (§6 leg 1) whatever its claims do, `knowledge-vector` is `disabled` by capabilityUnservable, and NO `mcp` capability exists to move (§3.6 D9 — opening one would shift CapabilityClaimsDigest and redden every case checksum in nineteen committed bundles to advertise something that is an admin connection rather than a discovery surface)",
         "HONEST CEILING: every counterparty is a FAKE built from the published references — a fake Slack, a fake MCP/remote tool and a fake provider. §6 leg 1 (a REAL Slack workspace external receipt) and §6 leg 4 (an end-to-end run against a REAL MCP server) are operator work and are NEVER claimed here"

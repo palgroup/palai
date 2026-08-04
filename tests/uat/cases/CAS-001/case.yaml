@@ -1,17 +1,24 @@
 id: CAS-001
 name: a-slack-thread-is-bound-to-a-real-repository-and-code-is-written-in-it
-proof_class: component-real
+proof_class: unit
 provider: fake
 input: "a Slack run was STRUCTURALLY non-coding until this case, and the wall was not the one anybody expected (E22 T3, plan §3.6 D3). `PALAI_WORKSPACE_ROOT` was the easy half and it was never even set in this repository — the only match outside a test was the PROSE of UI-002's case.yaml, while `scripts/uat/coding` had been asserting for two epics that compose 'must have' an env nothing configured. The second wall is the one that mattered: slack_admit.go's AdmitResponse call never set RepositoryBindingID or RepositoryRef at all, and `slackRunTarget` carried an agent revision and a principal and nothing else — so a Slack run reached the orchestrator with no repository, which is why the four workspace tools returned a clean 'no workspace bound for this run' rather than doing anything. Both halves close HERE, with a closed struct and two fields and ZERO migration, because `slack_connections.default_policy` was already a closed struct with DisallowUnknownFields and a repository ref is a policy value. THE BINDING PATH IS THE OPERATOR'S, NEVER THE MODEL'S, and that is the whole security content of this case: one connection names one repository, the ref is resolved against the tenant's own bindings at admission and a ref belonging to ANOTHER tenant is not found rather than refused-with-detail, and no tool, no prompt and no ticket body can reach the field — a thread does not choose a repository any more than it chooses a base branch (CAS-002). THE TOOL LIST IS GRANTED BY THE BINDING, not by an operator remembering to widen it (§3.6 D4): `palai up` adds the workspace tools ONLY when a repository was bound, because writing `palai.workspace.shell` into SLACK_AGENT_TOOLS today advertises a tool whose every call ends in the same clean error, and an advertised tool that can only fail is worse than an absent one — `TestEverySlackDefaultToolResolves` is the guard that stops the list from naming a tool the binary does not have. NOTHING ELSE MOVED: the same Admit -> slackRunInput -> orchestrator -> slack_reply path carries it, a connection with NO repository is BIT-UNCHANGED (asserted, because the cheapest way to break a working deployment is to make a new field mandatory), a missing configuration WARNS instead of skipping silently, a surface the stack does not mount is reported rather than swallowed, and a second bring-up REUSES the binding it already made instead of minting a duplicate. HONEST CEILINGS, three, each named rather than discovered: (1) ONE CONNECTION IS ONE REPOSITORY — a per-THREAD choice needs a column on slack_thread_sessions, migration 000044, and a path by which the MODEL could select a repository, which is the sibling of the destination rule this epic refuses; (2) the clone itself is E09's and is not re-proven here; (3) the counterparty in this tier is the documented FAKE Slack peer, so a REAL workspace's thread reaching a REAL clone at its base branch is the credential-gated live leg (tests/live/repository, tests/live/workspace) and §6 leg 1, and is NEVER claimed here."
 expect_status: accepted
 proof:
-  - apps/control-plane/api/slack_connections_test.go:TestSlackDefaultPolicyAcceptsARepositoryAndStaysClosed
-  - apps/control-plane/api/slack_connections_test.go:TestSlackDefaultPolicyWithoutARepositoryIsBitUnchanged
-  - apps/control-plane/api/slack_connections_test.go:TestSlackDefaultPolicyRefusesARefWithNoBinding
-  - apps/control-plane/api/slack_connections_test.go:TestSlackDefaultPolicyPatchBindsARepositoryToAnExistingConnection
-  - apps/control-plane/internal/store/slack_repository_component_test.go:TestSlackRunCarriesTheConnectionsRepositoryBinding
-  - apps/control-plane/internal/store/slack_repository_component_test.go:TestSlackConnectionWithoutARepositoryIsBitUnchanged
-  - apps/control-plane/internal/store/slack_repository_component_test.go:TestSlackRefusesAnotherTenantsRepositoryBinding
+  # WITHDRAWN 2026-08-05 — the Slack cutover. The proofs below named files that were deleted with the
+  # control plane's in-process Slack bridge (extensions/slack_*, api/slack*, the store's slack_*
+  # component suites). Slack is served by apps/slack-bot now, a separate process that reaches this
+  # control plane over `/v1`, so the mechanisms these lines proved are either gone or live in a
+  # component this case does not cover. The case TEXT above is shipped and left byte-for-byte; the
+  # checksum reads neither this list nor the text (caseChecksumParts hashes id + run_id + the release's
+  # contracts digest), so withdrawing a proof cannot move a committed checksum.
+  #   - apps/control-plane/api/slack_connections_test.go:TestSlackDefaultPolicyAcceptsARepositoryAndStaysClosed
+  #   - apps/control-plane/api/slack_connections_test.go:TestSlackDefaultPolicyWithoutARepositoryIsBitUnchanged
+  #   - apps/control-plane/api/slack_connections_test.go:TestSlackDefaultPolicyRefusesARefWithNoBinding
+  #   - apps/control-plane/api/slack_connections_test.go:TestSlackDefaultPolicyPatchBindsARepositoryToAnExistingConnection
+  #   - apps/control-plane/internal/store/slack_repository_component_test.go:TestSlackRunCarriesTheConnectionsRepositoryBinding
+  #   - apps/control-plane/internal/store/slack_repository_component_test.go:TestSlackConnectionWithoutARepositoryIsBitUnchanged
+  #   - apps/control-plane/internal/store/slack_repository_component_test.go:TestSlackRefusesAnotherTenantsRepositoryBinding
   # PROOF LEDGER CORRECTION, 2026-08-04. The case TEXT above is shipped and left byte-for-byte; the
   # checksum is sha256(id | run_id | CodeAndShipContractsDigest) and reads neither this list nor the text.
   #

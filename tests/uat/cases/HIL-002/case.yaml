@@ -17,8 +17,15 @@ proof:
   - adapters/integrations/slack/approval_widgets_test.go:TestAnUnwrittenOperatorLabelIsSaidOutLoud
   - adapters/integrations/slack/approval_widgets_test.go:TestApprovalModalDumpsEveryLeafAndAsksForADenyReasonWithoutDispatching
   - adapters/integrations/slack/blocks_test.go:TestTheActionableElementScanIsPackageLocalOnlyAndTheModalIsBuiltInsideIt
-  - apps/control-plane/api/slack_modal_route_test.go:TestShowArgumentsOpensTheModalInsideTheAckBudgetAndDecidesNothing
-  - apps/control-plane/api/slack_modal_route_test.go:TestAStalledModalStillAnswersSlackInsideTheBudget
-  - apps/control-plane/api/slack_modal_route_test.go:TestARefusedModalIsAcknowledgedWithoutTellingTheClicker
+  # WITHDRAWN 2026-08-05 — the Slack cutover. The proofs below named files that were deleted with the
+  # control plane's in-process Slack bridge (extensions/slack_*, api/slack*, the store's slack_*
+  # component suites). Slack is served by apps/slack-bot now, a separate process that reaches this
+  # control plane over `/v1`, so the mechanisms these lines proved are either gone or live in a
+  # component this case does not cover. The case TEXT above is shipped and left byte-for-byte; the
+  # checksum reads neither this list nor the text (caseChecksumParts hashes id + run_id + the release's
+  # contracts digest), so withdrawing a proof cannot move a committed checksum.
+  #   - apps/control-plane/api/slack_modal_route_test.go:TestShowArgumentsOpensTheModalInsideTheAckBudgetAndDecidesNothing
+  #   - apps/control-plane/api/slack_modal_route_test.go:TestAStalledModalStillAnswersSlackInsideTheBudget
+  #   - apps/control-plane/api/slack_modal_route_test.go:TestARefusedModalIsAcknowledgedWithoutTellingTheClicker
   - apps/control-plane/internal/execution/tool_approval_component_test.go:TestToolApprovalScreenComesFromTheLedgerRowAndNotTheFrame
-  - apps/control-plane/internal/extensions/slack_modal_component_test.go:TestSlackApprovalModalReadsTheLedgerAndWritesNothing
+  #   - apps/control-plane/internal/extensions/slack_modal_component_test.go:TestSlackApprovalModalReadsTheLedgerAndWritesNothing
