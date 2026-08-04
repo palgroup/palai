@@ -59,3 +59,20 @@ func TestNoTitleIsOrphaned(t *testing.T) {
 			"removed tool leaves its title behind, and this is the only check that sees it", tool)
 	}
 }
+
+// TestKnownNonGrantTitlesStaysDisjointFromCanonical makes the comment on knownNonGrantTitles
+// executable instead of trusted. That comment promises that THE DAY one of these names is
+// registered and granted, it moves to the canonical list and comes out of this map — but neither
+// test above would notice a name that started appearing in BOTH: each walks one list looking for
+// what it's missing, not for what the other list has already caught up to.
+func TestKnownNonGrantTitlesStaysDisjointFromCanonical(t *testing.T) {
+	canonical := map[string]bool{}
+	for _, tool := range toolset.All() {
+		canonical[tool] = true
+	}
+	for name := range knownNonGrantTitles {
+		if canonical[name] {
+			t.Errorf("%q is now granted, so its exception is stale — delete it from knownNonGrantTitles", name)
+		}
+	}
+}
