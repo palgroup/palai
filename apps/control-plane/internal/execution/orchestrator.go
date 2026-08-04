@@ -83,6 +83,15 @@ type Orchestrator struct {
 	// under it is written with an empty machine and is therefore never probed locally afterwards, which
 	// is the same conservative reading rows predating the column get.
 	machineID string
+	// machines reaches a NAMED machine outside any lease (A.3 T7). It is what makes background
+	// execution a property of the machine rather than of this process: StartBackground asks the
+	// attempt's machine to spawn, and the reconciler asks the row's machine whether it finished.
+	//
+	// Nil is a deployment with no gateway — every component test that builds an Orchestrator by hand,
+	// and the deterministic e2e tier. Those attempts have no machine, so a background call is refused
+	// rather than silently running here, which is the same discipline shellFor applies to a synchronous
+	// command.
+	machines MachineCaller
 	// bgSpawn serialises the CEILING CHECK and the start it guards (E26 T5, §0.3). It is all that is left
 	// of a map from task id to handle: the durable background_tasks row replaced that map in T5, because a
 	// map dies with the process that made it and the whole point of a background task is to outlive that
@@ -235,6 +244,34 @@ func (o *Orchestrator) SetBackgroundRunner(b toolbroker.BackgroundRunner) {
 // unset, every task this plane starts is written with an unknown machine and is therefore never probed
 // locally again, which is the same conservative reading rows predating the column get.
 func (o *Orchestrator) SetBackgroundMachine(id string) { o.machineID = id }
+
+// MachineCaller reaches a named machine with no lease in hand. *RunnerGateway satisfies it; a
+// deployment without one leaves it nil and every background call is refused.
+type MachineCaller interface {
+	CallMachine(ctx context.Context, machineID, verb string, payload map[string]any) (map[string]any, error)
+}
+
+// SetMachineCaller wires the surface background execution travels on (A.3 T7). It is separate from the
+// EngineDialer even though the gateway satisfies both, because the two answer different questions: a
+// dialer hands out WHICHEVER machine a pool has free for an attempt, and this one addresses the machine
+// a task ALREADY runs on — by name, long after that attempt ended.
+func (o *Orchestrator) SetMachineCaller(m MachineCaller) { o.machines = m }
+
+// callMachine is the one place a background verb crosses to a machine, so the refusals are written once.
+// An unreachable machine is ErrMachineUnreachable, which every caller turns into `lost` — never
+// `exited`, because the process may still be running and this control plane cannot prove it is ours.
+func (o *Orchestrator) callMachine(ctx context.Context, machineID, verb string, payload map[string]any) (map[string]any, error) {
+	if o.machines == nil {
+		return nil, fmt.Errorf("%w: this deployment has no runner gateway", ErrMachineUnreachable)
+	}
+	// AN EMPTY MACHINE IS UNREACHABLE AND NOT "HERE" (T6's rule, kept). A row written before the column
+	// existed says nothing about where it ran, and resolving that to some machine would be the wrong
+	// answer this whole seam exists to stop.
+	if machineID == "" {
+		return nil, fmt.Errorf("%w: the row names no machine", ErrMachineUnreachable)
+	}
+	return o.machines.CallMachine(ctx, machineID, verb, payload)
+}
 
 // THERE IS NO BackgroundRunner() ACCESSOR, AND ITS ABSENCE IS A DELETION. T5 shipped one whose doc comment
 // said it existed "so a COMPOSITION-ROOT test can ask what production actually wired" — and the E26 T7

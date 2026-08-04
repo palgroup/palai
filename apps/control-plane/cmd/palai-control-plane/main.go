@@ -708,6 +708,11 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		// an admin registers one, so a hook-less run is bit-unchanged.
 		toolRegistry.SetHookHandlers(extensions.PlatformHookHandlers())
 		orch := execution.NewOrchestrator(repo, gateway, broker, toolBroker)
+		// THE SURFACE BACKGROUND EXECUTION TRAVELS ON (A.3 T7). It is the same gateway the dialer is, and
+		// it is wired separately because the two answer different questions: a dialer hands out whichever
+		// machine a pool has free for an attempt, this addresses the machine a task ALREADY runs on — by
+		// name, long after that attempt ended.
+		orch.SetMachineCaller(gateway)
 		orch.SetModelRoute(route)
 		// §20.12 queue-deadline: a run that waited in the admission queue past PALAI_QUEUE_DEADLINE is
 		// timed out at dispatch, before any billable compute. Unset ⇒ disabled (runs never expire on

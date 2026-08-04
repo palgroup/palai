@@ -487,7 +487,10 @@ func (o *Orchestrator) execEnv(st *attemptState) toolbroker.ExecEnv {
 		// than being read off an argument, so "kill task X" can be answered safely: a task id belongs to the
 		// run that started it, and a model naming somebody else's id is refused by the lookup itself.
 		Background: &backgroundTasks{
-			orch: o, tenant: st.tenant, runID: string(st.attempt.RunID),
+			// THE ATTEMPT'S MACHINE, from the same connection shellFor derives its executor from (A.3 T7).
+			// A background task starts where this attempt's synchronous commands run, and its row records
+			// that machine so a reconciler holding no lease can address the right kernel later.
+			orch: o, machineID: machineOf(st.ch), tenant: st.tenant, runID: string(st.attempt.RunID),
 			sessionID: st.sessionID, responseID: st.responseID, fence: st.attempt.Fence,
 		},
 		Tasks:        o.tasks,

@@ -57,7 +57,17 @@ func ShellTool() toolbroker.Tool {
 // result (`exit_code`), which is why `false` completed cleanly while a missing workspace wedged the run.
 // That asymmetry was the whole diagnosis, and this is the half of it that changes.
 func shellExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
-	if env.Shell == nil {
+	// THE SYNCHRONOUS EXECUTOR IS CHECKED ONLY FOR A SYNCHRONOUS CALL (A.3 T7). It used to be checked
+	// here, above everything, which made the BACKGROUND parameter depend on it — and the two answer
+	// different questions: this one is "can this attempt run a command and wait", the background branch's
+	// is "can this attempt leave a process behind". They gave the same answer while both executors were
+	// this process's; they stopped being the same question when each moved to the attempt's machine, and
+	// a background call refused for want of a SYNCHRONOUS runner would be refused for the wrong reason.
+	//
+	// Two branches are now correct where one was: a run whose machine can do neither is refused twice
+	// over, once per capability, and each refusal names the capability it is about.
+	background, _ := args["background"].(bool)
+	if !background && env.Shell == nil {
 		return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable,
 			"shell tool: no sandbox shell runner wired for this run")
 	}
@@ -100,7 +110,7 @@ func shellExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any)
 	// Note where this sits: inside Exec, which dispatchTool reaches only AFTER the approval gate. A tool a
 	// deployment declared approval_required cannot be spawned by adding a parameter — the human is asked
 	// first, and nothing has started while they think about it.
-	if background, _ := args["background"].(bool); background {
+	if background {
 		if env.Background == nil {
 			// Still pre-flight: the deployment does not do background tasks, and nothing was spawned.
 			return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable, "shell tool: %w", toolbroker.ErrBackgroundUnsupported)

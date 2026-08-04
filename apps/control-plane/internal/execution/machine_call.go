@@ -171,3 +171,27 @@ func (g *RunnerGateway) sessionFor(runnerID string) (*pendingRunner, error) {
 	}
 	return nil, fmt.Errorf("%w: machine %s has no live session", ErrMachineUnreachable, runnerID)
 }
+
+// MachineID reports which machine this lease reached. It is the gateway's own minted identity (the
+// certificate SAN), never anything the connecting party said.
+func (c *gatewayChannel) MachineID() string { return c.pr.runnerID }
+
+// MachineIdentified is the sibling of ExecConn: a channel that can say WHICH machine it reached. An
+// attempt learns its machine the same way it learns its executor — from the connection it holds — so a
+// background task started during that attempt records a machine the reconciler can address later.
+type MachineIdentified interface {
+	MachineID() string
+}
+
+var _ MachineIdentified = (*gatewayChannel)(nil)
+
+// machineOf reports the machine an attempt's channel reached, or "" for a channel that reached none —
+// a bare engine channel, which is what the deterministic e2e tier and every hand-built component
+// orchestrator hold. Empty flows through to callMachine, which refuses it.
+func machineOf(ch EngineChannel) string {
+	identified, ok := ch.(MachineIdentified)
+	if !ok {
+		return ""
+	}
+	return identified.MachineID()
+}

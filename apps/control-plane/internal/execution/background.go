@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
+	"github.com/palgroup/palai/packages/runner"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
@@ -189,7 +191,11 @@ var (
 // belongs to, the call that spawned it and the fence that attempt held. Every one of those is known at
 // execEnv time and none of them can be recovered later from a handle.
 type backgroundTasks struct {
-	orch       *Orchestrator
+	orch *Orchestrator
+	// machineID is the machine THIS attempt reached, learned from its channel (machineOf). A task
+	// started here runs there and its row records it, which is what lets a reconciler with no lease
+	// address the right kernel long after this attempt ended.
+	machineID  string
 	tenant     coordinator.Tenant
 	runID      string
 	sessionID  string
@@ -207,7 +213,11 @@ func (b *backgroundTasks) StartBackground(ctx context.Context, cmd toolbroker.Sh
 	if backgroundDisabled() {
 		return toolbroker.BackgroundTicket{}, errBackgroundDisabled
 	}
-	if b.orch == nil || b.orch.background == nil {
+	// THE GATE IS THE MACHINE NOW, NOT THIS PROCESS (A.3 T7). It used to ask whether the CONTROL PLANE
+	// could detach, which is a question about the wrong host once the task runs elsewhere. An attempt
+	// with no machine has nowhere to put the process, and saying so here is what keeps a backgrounded
+	// command from quietly running beside the control plane.
+	if b.orch == nil || b.orch.machines == nil || b.machineID == "" {
 		return toolbroker.BackgroundTicket{}, toolbroker.ErrBackgroundUnsupported
 	}
 
@@ -263,7 +273,18 @@ func (b *backgroundTasks) StartBackground(ctx context.Context, cmd toolbroker.Sh
 			"synchronously", len(cmd.Env))
 	}
 
-	handle, err := b.orch.background.Start(ctx, cmd, spec)
+	// THE SPAWN CROSSES TO THE MACHINE (A.3 T7). Until now this ran in the control plane, so a task a
+	// model backgrounded on a Mac was a process beside the control plane — and every row carried this
+	// process's identity, which made T6's routing agree with itself and fire nowhere. It runs where the
+	// attempt's synchronous commands run, and the handle it returns names THAT machine's kernel.
+	answer, err := b.orch.callMachine(ctx, b.machineID, runner.BackgroundStartType, map[string]any{
+		"command": cmd,
+		"spec":    spec,
+	})
+	if err != nil {
+		return toolbroker.BackgroundTicket{}, fmt.Errorf("start a background task on machine %s: %w", b.machineID, err)
+	}
+	handle, err := decodeMachineHandle(answer)
 	if err != nil {
 		return toolbroker.BackgroundTicket{}, err
 	}
@@ -282,13 +303,13 @@ func (b *backgroundTasks) StartBackground(ctx context.Context, cmd toolbroker.Sh
 	if err := b.orch.spine.RecordBackgroundTask(ctx, b.tenant, coordinator.BackgroundTaskInput{
 		TaskID: taskID, RunID: b.runID, SessionID: b.sessionID, ResponseID: b.responseID,
 		ToolCallID: string(callID), Fence: b.fence,
-		Posture: string(handle.Posture), Handle: handle.Value, MachineID: b.orch.machineID, OutputPath: spec.OutputPath,
+		Posture: string(handle.Posture), Handle: handle.Value, MachineID: b.machineID, OutputPath: spec.OutputPath,
 		DeadlineAt: deadline,
 		// env_keys holds KEY NAMES so the read path can re-resolve and mask them (T6). The VALUES are in
 		// cmd.Env and stay there; sorted so the column does not depend on Go's map iteration order.
 		EnvKeys: sortedEnvKeys(cmd.Env),
 	}); err != nil {
-		if kerr := b.orch.background.Kill(ctx, handle); kerr != nil {
+		if _, kerr := b.orch.callMachine(ctx, b.machineID, runner.BackgroundKillType, map[string]any{"handle": handle}); kerr != nil {
 			// Both failures matter and neither replaces the other: the caller learns the task was refused,
 			// and the log names the process that is now genuinely unaccounted for.
 			log.Printf("background task %s could not be recorded (%v) AND could not be killed (%v): handle %s is now an orphan", taskID, err, kerr, handle.Value)
@@ -303,7 +324,7 @@ func (b *backgroundTasks) StartBackground(ctx context.Context, cmd toolbroker.Sh
 	// running is strictly worse than one imprecise status field, and `running` is the honest reading of
 	// "Start succeeded and nothing has told us otherwise".
 	state := toolbroker.BackgroundRunning
-	if status, perr := b.orch.background.Probe(ctx, handle); perr == nil {
+	if status, perr := b.orch.probeOnMachine(ctx, b.machineID, handle); perr == nil {
 		state = status.State
 	}
 	return toolbroker.BackgroundTicket{TaskID: taskID, OutputPath: spec.OutputPath, State: state}, nil
@@ -317,7 +338,7 @@ func (b *backgroundTasks) StartBackground(ctx context.Context, cmd toolbroker.Sh
 // that restarted could not stop a build it had started — the ceiling T2 recorded as a test and this task
 // closes. E24 T5's lesson applies verbatim: an in-memory flag is erased by a restart, a column is not.
 func (b *backgroundTasks) KillBackground(ctx context.Context, taskID string) (toolbroker.BackgroundTicket, error) {
-	if b.orch == nil || b.orch.background == nil {
+	if b.orch == nil || b.orch.machines == nil {
 		return toolbroker.BackgroundTicket{}, toolbroker.ErrBackgroundUnsupported
 	}
 	task, err := b.orch.spine.BackgroundTaskForRun(ctx, b.tenant, b.runID, taskID)
@@ -330,19 +351,22 @@ func (b *backgroundTasks) KillBackground(ctx context.Context, taskID string) (to
 	// A TASK ON ANOTHER MACHINE IS NOT KILLED FROM HERE (A.3 T6). The signal would go to a process group
 	// of that number on THIS box, which is some other process or none — a pgid is a small integer. The
 	// model is told, rather than left to believe a build it asked to stop is stopping.
-	if !b.orch.reachesMachine(task.MachineID) {
-		return toolbroker.BackgroundTicket{}, toolbroker.Answerf(toolbroker.AnswerUnavailable,
-			"background task %s was started on another machine, so this control plane cannot stop it", taskID)
-	}
 	handle := toolbroker.Handle{Posture: toolbroker.BackgroundPosture(task.Posture), Value: task.Handle, MachineID: task.MachineID}
 	// WAS IT STILL RUNNING WHEN WE WERE ASKED. The answer decides whether the row records a kill, and it
 	// has to be taken BEFORE the signal because afterwards both cases look identical. A probe that cannot
 	// answer is treated as "not ours to claim" — the sweep will say what happened.
 	wasRunning := false
-	if status, perr := b.orch.background.Probe(ctx, handle); perr == nil {
+	if status, perr := b.orch.probeOnMachine(ctx, task.MachineID, handle); perr == nil {
 		wasRunning = status.State == toolbroker.BackgroundRunning
 	}
-	if err := b.orch.background.Kill(ctx, handle); err != nil {
+	if _, err := b.orch.callMachine(ctx, task.MachineID, runner.BackgroundKillType, map[string]any{"handle": handle}); err != nil {
+		// A MACHINE WE CANNOT REACH IS NOT SIGNALLED AND THE MODEL IS TOLD (T6's rule, kept). An answer
+		// rather than an error: the task the model asked to stop may still be running, and the run
+		// continues knowing that instead of ending as uncertain.
+		if errors.Is(err, ErrMachineUnreachable) {
+			return toolbroker.BackgroundTicket{}, toolbroker.Answerf(toolbroker.AnswerUnavailable,
+				"background task %s runs on a machine this control plane cannot reach, so it was not stopped", taskID)
+		}
 		return toolbroker.BackgroundTicket{}, err
 	}
 	// A TASK WE ACTUALLY STOPPED IS SETTLED AS `killed` RATHER THAN LEFT FOR THE SWEEP, and the reason is
@@ -365,7 +389,7 @@ func (b *backgroundTasks) KillBackground(ctx context.Context, taskID string) (to
 	// adapter refused to signal (a pgid it cannot prove is ours) reports `lost` here, and the model is told
 	// that rather than being told the task is dead.
 	state := toolbroker.BackgroundExited
-	if status, perr := b.orch.background.Probe(ctx, handle); perr == nil {
+	if status, perr := b.orch.probeOnMachine(ctx, task.MachineID, handle); perr == nil {
 		state = status.State
 	}
 	return toolbroker.BackgroundTicket{TaskID: task.ID, OutputPath: task.OutputPath, State: state}, nil
@@ -398,18 +422,21 @@ func (b *backgroundTasks) RedactOutput(ctx context.Context, s string) (string, e
 // that cannot be proven to be ours is not a failure — it is the answer `lost`, and the rule built on it is
 // absolute: it receives no signal, on a deadline, on a cancellation or on a sweep.
 func (o *Orchestrator) BackgroundKiller() coordinator.BackgroundKiller {
-	if o == nil || o.background == nil {
+	if o == nil || o.machines == nil {
 		return nil
 	}
 	return func(ctx context.Context, task coordinator.BackgroundTask) (string, error) {
 		// Same rule as every other signal site: a handle this machine cannot prove is ours is never
 		// signalled. `lost` is what the row records, which is also what it would record for a handle that
 		// stopped matching locally — the run is cancelled either way, and no stranger's process is hit.
-		if !o.reachesMachine(task.MachineID) {
+		handle := toolbroker.Handle{Posture: toolbroker.BackgroundPosture(task.Posture), Value: task.Handle, MachineID: task.MachineID}
+		_, kerr := o.callMachine(ctx, task.MachineID, runner.BackgroundKillType, map[string]any{"handle": handle})
+		if errors.Is(kerr, ErrMachineUnreachable) {
+			// Unreachable is `lost`, which is also what a handle that stopped matching locally records.
+			// The run is cancelled either way and no stranger's process is signalled.
 			return string(toolbroker.BackgroundLost), nil
 		}
-		handle := toolbroker.Handle{Posture: toolbroker.BackgroundPosture(task.Posture), Value: task.Handle, MachineID: task.MachineID}
-		switch err := o.background.Kill(ctx, handle); {
+		switch err := kerr; {
 		case errors.Is(err, toolbroker.ErrHandleLost):
 			return string(toolbroker.BackgroundLost), err
 		case err != nil:
@@ -439,7 +466,7 @@ func (o *Orchestrator) BackgroundKiller() coordinator.BackgroundKiller {
 // first is a run that never ends. The error is logged rather than swallowed, so an operator whose Docker
 // socket has gone away learns it here.
 func (o *Orchestrator) runHasLiveBackgroundTask(ctx context.Context, tenant coordinator.Tenant, runID string) bool {
-	if o.background == nil {
+	if o.machines == nil {
 		return false
 	}
 	mine, err := o.spine.RunningBackgroundTasksOfRun(ctx, tenant, runID)
@@ -451,11 +478,8 @@ func (o *Orchestrator) runHasLiveBackgroundTask(ctx context.Context, tenant coor
 		// A task on another machine cannot be probed here, and this gate must NOT read a local answer for
 		// it: an `exited` from the wrong kernel would let a run finish while its build is still compiling
 		// elsewhere. Not-ours counts as not-live for the park decision — the sweep settles it as `lost`.
-		if !o.reachesMachine(task.MachineID) {
-			continue
-		}
 		handle := toolbroker.Handle{Posture: toolbroker.BackgroundPosture(task.Posture), Value: task.Handle, MachineID: task.MachineID}
-		status, err := o.background.Probe(ctx, handle)
+		status, err := o.probeOnMachine(ctx, task.MachineID, handle)
 		if err != nil {
 			log.Printf("probe background task %s of run %s: %v", task.ID, runID, err)
 			continue
@@ -491,7 +515,7 @@ func sortedEnvKeys(env map[string]string) []string {
 // orchestrator what production would hand over, the same reason backgroundRunnerFor is a named function
 // in main.go.
 func (o *Orchestrator) BackgroundObserver() coordinator.BackgroundObserver {
-	if o == nil || o.background == nil {
+	if o == nil || o.machines == nil {
 		return nil
 	}
 	return o.observeBackgroundTask
@@ -511,7 +535,7 @@ func (o *Orchestrator) BackgroundObserver() coordinator.BackgroundObserver {
 // process is ours, so it will never be signalled again (T1's absolute rule) and leaving the row
 // `running` forever would park its run on a question nothing can answer.
 func (o *Orchestrator) observeBackgroundTask(ctx context.Context, task coordinator.BackgroundTask) (coordinator.BackgroundOutcome, bool, error) {
-	if o.background == nil {
+	if o.machines == nil {
 		return coordinator.BackgroundOutcome{}, false, toolbroker.ErrBackgroundUnsupported
 	}
 	handle := toolbroker.Handle{
@@ -534,14 +558,22 @@ func (o *Orchestrator) observeBackgroundTask(ctx context.Context, task coordinat
 	// another machine wrote is on that machine. Reading anyway would usually find nothing, and on a
 	// shared filesystem it could find a DIFFERENT run's file at the same relative path — an excerpt from
 	// somebody else's build, handed to a model as this task's output. The note says why instead.
-	if !o.reachesMachine(task.MachineID) {
+	status, err := o.probeOnMachine(ctx, task.MachineID, handle)
+	switch {
+	case errors.Is(err, ErrMachineUnreachable):
+		// THE MACHINE IS NOT HERE — powered off, revoked, or a row that names none. `lost` is the honest
+		// state and the definition already says why: the process may still be running and this control
+		// plane cannot prove it is ours. It carries the safety rule too, because a lost handle is never
+		// signalled.
+		//
+		// AND NO TAIL IS READ (T6's decision, kept). The file a task wrote is on its machine; reading a
+		// local path anyway would usually find nothing, and on a shared filesystem it could find a
+		// DIFFERENT run's output at the same relative path and hand it to a model as this task's.
 		return coordinator.BackgroundOutcome{
 			State:    string(toolbroker.BackgroundLost),
-			TailNote: "this task was started on another machine, so this control plane can neither probe it nor read its output",
+			TailNote: "the machine this task runs on could not be reached, so neither its state nor its output can be read from here",
 		}, true, nil
-	}
-	status, err := o.background.Probe(ctx, handle)
-	if err != nil {
+	case err != nil:
 		return coordinator.BackgroundOutcome{}, false, err
 	}
 	var state string
@@ -579,8 +611,24 @@ func (o *Orchestrator) observeBackgroundTask(ctx context.Context, task coordinat
 // deployment that never named its machine cannot claim it. Comparing them as equal would resolve the
 // oldest rows — the ones with the least evidence — to a local probe, which is exactly the wrong answer
 // this seam exists to stop.
-func (o *Orchestrator) reachesMachine(rowMachine string) bool {
-	return rowMachine != "" && rowMachine == o.machineID
+func (o *Orchestrator) probeOnMachine(ctx context.Context, machineID string, handle toolbroker.Handle) (toolbroker.BackgroundStatus, error) {
+	answer, err := o.callMachine(ctx, machineID, runner.BackgroundProbeType, map[string]any{"handle": handle})
+	if err != nil {
+		return toolbroker.BackgroundStatus{}, err
+	}
+	raw, ok := answer["status"]
+	if !ok {
+		return toolbroker.BackgroundStatus{}, errors.New("the machine answered a probe and named no status")
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return toolbroker.BackgroundStatus{}, fmt.Errorf("encode the machine's status: %w", err)
+	}
+	var status toolbroker.BackgroundStatus
+	if err := json.Unmarshal(encoded, &status); err != nil {
+		return toolbroker.BackgroundStatus{}, fmt.Errorf("decode the machine's status: %w", err)
+	}
+	return status, nil
 }
 
 // backgroundExpired is the state a task reaches when the reaper ended it for outliving its ceiling. It is
@@ -601,7 +649,8 @@ const backgroundExpired = "expired"
 // matters, and inventing a number would put a sentinel in the one column whose whole point is not having
 // one.
 func (o *Orchestrator) expireBackgroundTask(ctx context.Context, task coordinator.BackgroundTask, handle toolbroker.Handle) (toolbroker.BackgroundStatus, error) {
-	switch err := o.background.Kill(ctx, handle); {
+	_, kerr := o.callMachine(ctx, task.MachineID, runner.BackgroundKillType, map[string]any{"handle": handle})
+	switch err := kerr; {
 	case errors.Is(err, toolbroker.ErrHandleLost):
 		return toolbroker.BackgroundStatus{State: toolbroker.BackgroundLost}, nil
 	case err != nil:
@@ -610,7 +659,7 @@ func (o *Orchestrator) expireBackgroundTask(ctx context.Context, task coordinato
 		return toolbroker.BackgroundStatus{}, fmt.Errorf("expire background task %s: %w", task.ID, err)
 	}
 	out := toolbroker.BackgroundStatus{State: backgroundExpired}
-	if status, perr := o.background.Probe(ctx, handle); perr == nil {
+	if status, perr := o.probeOnMachine(ctx, task.MachineID, handle); perr == nil {
 		out.ExitCode = status.ExitCode
 	}
 	return out, nil
@@ -722,4 +771,22 @@ func (o *Orchestrator) backgroundTail(ctx context.Context, task coordinator.Back
 		return "", "the output excerpt was withheld because this run's environment values could not be re-resolved to mask them"
 	}
 	return redacted, ""
+}
+
+// decodeMachineHandle reads the handle a machine returned from bg.start. It re-marshals before
+// decoding, the same way every other value that has crossed this wire is read.
+func decodeMachineHandle(answer map[string]any) (toolbroker.Handle, error) {
+	raw, ok := answer["handle"]
+	if !ok {
+		return toolbroker.Handle{}, errors.New("the machine started a task and named no handle")
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return toolbroker.Handle{}, fmt.Errorf("encode the machine's handle: %w", err)
+	}
+	var handle toolbroker.Handle
+	if err := json.Unmarshal(encoded, &handle); err != nil {
+		return toolbroker.Handle{}, fmt.Errorf("decode the machine's handle: %w", err)
+	}
+	return handle, nil
 }
