@@ -273,6 +273,73 @@ func (w *RemoteWorkspace) Glob(ctx context.Context, pattern string, limit int) (
 	return paths, truncated, nil
 }
 
+// Grep asks the machine holding this allocation to search its own files' contents.
+func (w *RemoteWorkspace) Grep(ctx context.Context, req toolbroker.GrepRequest) (toolbroker.GrepResult, error) {
+	data, err := w.call(ctx, runner.WorkspaceOpGrep, map[string]any{
+		"pattern": req.Pattern, "path": req.Path, "glob": req.Glob,
+		"output_mode": req.OutputMode, "before": req.Before, "after": req.After,
+		"multiline": req.Multiline, "limit": req.Limit,
+	})
+	if err != nil {
+		return toolbroker.GrepResult{}, err
+	}
+	out := toolbroker.GrepResult{Counts: map[string]int{}}
+	out.Mode, _ = data["mode"].(string)
+	out.Truncated, _ = data["truncated"].(bool)
+	if total, ok := data["total"].(float64); ok {
+		out.Total = int(total)
+	}
+	for _, entry := range asSlice(data["files"]) {
+		if s, ok := entry.(string); ok {
+			out.Files = append(out.Files, s)
+		}
+	}
+	if counts, ok := data["counts"].(map[string]any); ok {
+		for path, n := range counts {
+			if f, ok := n.(float64); ok {
+				out.Counts[path] = int(f)
+			}
+		}
+	}
+	for _, entry := range asSlice(data["matches"]) {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		match := toolbroker.GrepMatch{}
+		match.Path, _ = m["path"].(string)
+		match.Text, _ = m["text"].(string)
+		if line, ok := m["line"].(float64); ok {
+			match.Line = int(line)
+		}
+		match.Before = asStrings(m["before"])
+		match.After = asStrings(m["after"])
+		out.Matches = append(out.Matches, match)
+	}
+	return out, nil
+}
+
+// asSlice and asStrings decode the JSON shapes a search result arrives in. Anything of the wrong type
+// is dropped rather than guessed at — a line this side cannot read as a line is not one to invent.
+func asSlice(v any) []any {
+	out, _ := v.([]any)
+	return out
+}
+
+func asStrings(v any) []string {
+	raw := asSlice(v)
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, entry := range raw {
+		if s, ok := entry.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func (w *RemoteWorkspace) Head(ctx context.Context) (string, string, error) {
 	data, err := w.call(ctx, runner.WorkspaceOpHead, nil)
 	if err != nil {

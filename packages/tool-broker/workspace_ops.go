@@ -41,6 +41,8 @@ type WorkspaceOps interface {
 	// dropped matches — a caller that cannot tell a complete answer from a clipped one concludes the
 	// missing files do not exist. `**` crosses directories; a bare `*` does not.
 	Glob(ctx context.Context, pattern string, limit int) ([]string, bool, error)
+	// Grep searches file CONTENTS. The pattern is RE2 syntax, the same dialect ripgrep implements.
+	Grep(ctx context.Context, req GrepRequest) (GrepResult, error)
 	// Head reports the workspace repository's current commit and tree.
 	Head(ctx context.Context) (commit, tree string, err error)
 	// Commit records every tracked change in the workspace repository under the platform's fixed
@@ -72,6 +74,41 @@ type FileStat struct {
 }
 
 // DirEntry is one entry of a confined directory listing.
+// GrepRequest is one content search. It mirrors adapters/sandboxes/oci/workspace.GrepQuery, which the
+// adapters convert to — the same split the DirEntry and WriteReport pairs below already carry, so the
+// broker's surface does not depend on a sandbox package.
+type GrepRequest struct {
+	Pattern    string // RE2 regex syntax: `interface{}` must be written `interface\{\}`
+	Path       string // workspace-relative subtree; "" searches everything
+	Glob       string // filename filter, e.g. `**/*.go`
+	OutputMode string // "content" | "files_with_matches" | "count"; empty means files_with_matches
+	Before     int    // leading context lines, content mode only
+	After      int    // trailing context lines, content mode only
+	Multiline  bool   // let `.` cross line boundaries
+	Limit      int    // maximum entries LISTED; Total still counts every match
+}
+
+// GrepMatch is one matching line with any context the request asked for.
+type GrepMatch struct {
+	Path   string
+	Line   int
+	Text   string
+	Before []string
+	After  []string
+}
+
+// GrepResult carries whichever shape the mode asked for. Total is every match found, including
+// matches in entries the limit did not list — a total that summed only the listed rows would read as
+// authoritative while under-reporting.
+type GrepResult struct {
+	Mode      string
+	Matches   []GrepMatch
+	Files     []string
+	Counts    map[string]int
+	Total     int
+	Truncated bool
+}
+
 type DirEntry struct {
 	Name  string `json:"name"`
 	IsDir bool   `json:"is_dir"`

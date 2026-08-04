@@ -54,6 +54,7 @@ const (
 	WorkspaceOpHead     = "head"     // the workspace repository's current commit + tree
 	WorkspaceOpCommit   = "commit"   // commit the worktree under the platform's fixed identity
 	WorkspaceOpGlob     = "glob"     // confined filename search, newest modification first
+	WorkspaceOpGrep     = "grep"     // confined content search, RE2 syntax
 )
 
 // WorkspaceRequestData builds the data payload of a ws.request. Correlation is this pair's own field,
@@ -228,8 +229,56 @@ func (s *WorkspaceServer) perform(ctx context.Context, op, root string, req map[
 			return nil, err
 		}
 		return map[string]any{"paths": paths, "truncated": truncated}, nil
+	case WorkspaceOpGrep:
+		query, err := grepQueryFrom(req)
+		if err != nil {
+			return nil, err
+		}
+		res, err := fs.Grep(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		// The result crosses as a plain map so the wire carries no sandbox type. Matches are flattened
+		// the same way, because a []GrepMatch would arrive as []any of maps and be re-read anyway.
+		matches := make([]any, 0, len(res.Matches))
+		for _, m := range res.Matches {
+			matches = append(matches, map[string]any{
+				"path": m.Path, "line": m.Line, "text": m.Text, "before": m.Before, "after": m.After,
+			})
+		}
+		return map[string]any{
+			"mode": res.Mode, "matches": matches, "files": res.Files,
+			"counts": res.Counts, "total": res.Total, "truncated": res.Truncated,
+		}, nil
 	}
 	return nil, fmt.Errorf("unknown workspace op %q", op)
+}
+
+// grepQueryFrom rebuilds a search request from the wire. Numbers arrive as JSON numbers, so each one
+// goes through int64Field rather than a direct assertion — a request whose `limit` decoded as float64
+// would otherwise be silently dropped to zero and search the whole tree.
+func grepQueryFrom(req map[string]any) (workspace.GrepQuery, error) {
+	pattern, _ := req["pattern"].(string)
+	path, _ := req["path"].(string)
+	glob, _ := req["glob"].(string)
+	mode, _ := req["output_mode"].(string)
+	multiline, _ := req["multiline"].(bool)
+	before, err := int64Field(req, "before")
+	if err != nil {
+		return workspace.GrepQuery{}, err
+	}
+	after, err := int64Field(req, "after")
+	if err != nil {
+		return workspace.GrepQuery{}, err
+	}
+	limit, err := int64Field(req, "limit")
+	if err != nil {
+		return workspace.GrepQuery{}, err
+	}
+	return workspace.GrepQuery{
+		Pattern: pattern, Path: path, Glob: glob, OutputMode: mode,
+		Before: int(before), After: int(after), Multiline: multiline, Limit: int(limit),
+	}, nil
 }
 
 // clone runs the infrastructure-owned deterministic preparation (§30.3) on THIS machine, into an

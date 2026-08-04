@@ -90,6 +90,39 @@ func (l localWorkspace) Glob(_ context.Context, pattern string, limit int) ([]st
 	return fs.Glob(pattern, limit)
 }
 
+func (l localWorkspace) Grep(ctx context.Context, req toolbroker.GrepRequest) (toolbroker.GrepResult, error) {
+	fs, err := l.fs()
+	if err != nil {
+		return toolbroker.GrepResult{}, err
+	}
+	res, err := fs.Grep(ctx, workspace.GrepQuery{
+		Pattern:    req.Pattern,
+		Path:       req.Path,
+		Glob:       req.Glob,
+		OutputMode: req.OutputMode,
+		Before:     req.Before,
+		After:      req.After,
+		Multiline:  req.Multiline,
+		Limit:      req.Limit,
+	})
+	if err != nil {
+		return toolbroker.GrepResult{}, err
+	}
+	out := toolbroker.GrepResult{
+		Mode:      res.Mode,
+		Files:     res.Files,
+		Counts:    res.Counts,
+		Total:     res.Total,
+		Truncated: res.Truncated,
+	}
+	for _, m := range res.Matches {
+		out.Matches = append(out.Matches, toolbroker.GrepMatch{
+			Path: m.Path, Line: m.Line, Text: m.Text, Before: m.Before, After: m.After,
+		})
+	}
+	return out, nil
+}
+
 func (l localWorkspace) Checksum(_ context.Context, rel string) (string, error) {
 	fs, err := l.fs()
 	if err != nil {

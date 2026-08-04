@@ -63,6 +63,61 @@ func TestGlobSearchesTheMachineThatHoldsTheLease(t *testing.T) {
 	}
 }
 
+// TestGrepSearchesTheMachineThatHoldsTheLease is the content-search half of the same property, and it
+// carries a richer result across the wire than glob does: a mode, per-file counts, a total, and
+// matches with line numbers. Each of those is a chance for the round trip to lose something quietly,
+// which is why the assertions name the fields rather than just the length.
+func TestGrepSearchesTheMachineThatHoldsTheLease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	disk := newMachineDisk(t)
+	for rel, body := range map[string]string{
+		"a.go":     "package main\nfunc Alpha() {}\n// Alpha again\n",
+		"src/c.go": "package src\nfunc Alpha() {}\n",
+		"notes.md": "nothing here\n",
+	} {
+		abs := filepath.Join(disk.alloc, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatalf("mkdir for %s: %v", rel, err)
+		}
+		if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	machineExec := &recordingExecutor{result: toolbroker.ShellResult{ExitCode: 0}}
+	ch := remoteShellFixture(t, ctx, "t5-grep-token", "run_t5grep", servingMachine(disk, machineExec))
+	ws := remoteWorkspaceOn(t, ch, disk.alloc)
+
+	content, err := ws.Grep(ctx, toolbroker.GrepRequest{Pattern: `func Alpha`, OutputMode: "content"})
+	if err != nil {
+		t.Fatalf("remote grep: %v", err)
+	}
+	if content.Mode != "content" {
+		t.Errorf("mode = %q, want content", content.Mode)
+	}
+	if len(content.Matches) != 2 {
+		t.Fatalf("matched %+v, want a.go and src/c.go", content.Matches)
+	}
+	for _, m := range content.Matches {
+		if m.Path == "" || m.Line == 0 || m.Text == "" {
+			t.Errorf("a match lost a field crossing the wire: %+v", m)
+		}
+	}
+
+	counted, err := ws.Grep(ctx, toolbroker.GrepRequest{Pattern: `Alpha`, OutputMode: "count"})
+	if err != nil {
+		t.Fatalf("remote grep count: %v", err)
+	}
+	if counted.Total < 3 {
+		t.Errorf("total = %d, want every Alpha on the machine", counted.Total)
+	}
+	if len(counted.Counts) == 0 {
+		t.Error("per-file counts did not survive the round trip")
+	}
+}
+
 // TestARemoteGlobRefusalKeepsItsMeaningAcrossTheWire — an escaping pattern is refused on the machine,
 // and the refusal has to arrive as an error rather than as an empty result. An empty list reads as
 // "there are no such files", which sends a caller looking for the wrong cause.
