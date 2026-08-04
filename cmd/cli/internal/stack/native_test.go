@@ -175,7 +175,6 @@ func TestNativeEnvironmentReachesTheContainersByTheirPublishedPorts(t *testing.T
 		"PALAI_RUNNER_LISTEN_ADDR":     ":18443",
 		"PALAI_WORKSPACE_ROOT":         "/tmp/palai-workspaces",
 		"PALAI_ENGINE_IMAGE":           "sha256:deadbeef",
-		"PALAI_SECRET_PROVIDER_ONE":    "sk-test-value",
 		"PALAI_SECRET_MASTER_KEY_FILE": p.masterKey,
 		"PALAI_BOOTSTRAP_API_KEY_FILE": p.apiKey,
 		"PALAI_RUNNER_SERVER_CERT":     p.serverCert,
@@ -183,6 +182,21 @@ func TestNativeEnvironmentReachesTheContainersByTheirPublishedPorts(t *testing.T
 	} {
 		if got[name] != want {
 			t.Errorf("%s = %q, want %q", name, got[name], want)
+		}
+	}
+	// NO PROVIDER CREDENTIAL REACHES THIS ENVIRONMENT, and the assertion is inverted from what it was:
+	// this map used to require PALAI_SECRET_PROVIDER_ONE="sk-test-value". The bridge was removed
+	// 2026-08-04 because an environment value is readable by anything running as the same uid — which on
+	// this posture includes the agent's own shell — and cannot be unset afterwards, since macOS answers
+	// `ps` from the kernel's copy of the process's initial environment. The credential is sealed through
+	// POST /v1/secret-refs and named by a model connection instead.
+	//
+	// Asserted by ABSENCE over the whole map rather than by deleting the old line, because deleting it
+	// would have left the tree with no statement either way, and the next person restoring the bridge
+	// would have found every test green.
+	for name := range got {
+		if strings.HasPrefix(name, "PALAI_SECRET_PROVIDER") || name == "PALAI_SECRET_OPENAI_COMPATIBLE" {
+			t.Errorf("%s reached the native environment: a provider credential must never enter it", name)
 		}
 	}
 	// A container path in a native process names a file that is not there. The entrypoint's own

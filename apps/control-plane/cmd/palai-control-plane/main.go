@@ -975,18 +975,24 @@ func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute, error) {
 	// project may route to a family the deployment default is not.
 	broker := modelbroker.New(modelbroker.Config{Adapters: adapters, Secrets: execution.RouteSecretResolver{
 		Lookup: dbSecret,
-		// Both sources, always, for the same reason the adapter map is unconditional: which credential
-		// sources exist is a property of the binary, and a project may route to a family the deployment
-		// default is not. `fake` dials nothing, so its "credential" is a placeholder the broker still
-		// insists on redeeming.
-		Fallback: modelbroker.ChainResolver{
-			modelbroker.EnvResolver{
-				modelbroker.SecretRef("provider-one"):      "PALAI_SECRET_PROVIDER_ONE",
-				modelbroker.SecretRef("provider-two"):      "PALAI_SECRET_PROVIDER_TWO",
-				modelbroker.SecretRef("openai-compatible"): "PALAI_SECRET_OPENAI_COMPATIBLE",
-			},
-			modelbroker.StaticResolver{modelbroker.SecretRef("fake"): "unused"},
-		},
+		// THERE IS NO ENVIRONMENT FALLBACK, and its removal is the point rather than a simplification.
+		//
+		// Until 2026-08-04 this chain read PALAI_SECRET_PROVIDER_ONE/_TWO/_OPENAI_COMPATIBLE, so a
+		// provider credential lived in the control plane's environment for the life of the process. That
+		// is reachable by anything running as the same uid, which on the native posture includes the
+		// agent's own shell — measured: `ps -E -p <pid>` served 62 variables with their values, and
+		// `os.Unsetenv` does not remove them because macOS answers ps from the kernel's copy of the
+		// initial environment. A value that ever enters the environment cannot be taken back out.
+		//
+		// The supported path was already built and the fallback was the way around it: the console seals
+		// the credential through POST /v1/secret-refs and a model connection NAMES the ref, so what the
+		// deployment stores is a handle and the value is redeemed at call time from the encrypted store.
+		// Keeping a second, weaker path meant every deployment that skipped the console silently ran on
+		// the weaker one — and no operator could tell which, because both produced a working stack.
+		//
+		// `fake` stays: it dials nothing, so its "credential" is a placeholder the broker still insists on
+		// redeeming, and the shipped-binary wiring proof needs a route that reaches no network.
+		Fallback: modelbroker.StaticResolver{modelbroker.SecretRef("fake"): "unused"},
 	}})
 
 	if live {

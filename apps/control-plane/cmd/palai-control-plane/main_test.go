@@ -920,3 +920,48 @@ func TestTheDeploymentCanRouteTheDeterministicAdapterAScript(t *testing.T) {
 		}
 	})
 }
+
+// TestTheShippedBinaryRedeemsNoCredentialFromTheEnvironment is a source guard, and it is a source
+// guard on purpose: the thing it protects is an ABSENCE, and an absence has no call site to assert
+// against. modelBrokerFromEnv builds its resolver inline, so a behavioural test would have to reach
+// inside it; the next person restoring the fallback would add three map entries and every other test
+// in this package would stay green.
+//
+// WHAT WAS REMOVED, 2026-08-04: modelbroker.EnvResolver mapping provider-one/provider-two/
+// openai-compatible to PALAI_SECRET_PROVIDER_*. It put a provider credential in the control plane's
+// environment for the life of the process, where anything running as the same uid can read it —
+// which on the native posture includes the agent's own shell. Measured: `ps -E -p <pid>` served 62
+// variables with values, and os.Unsetenv does not take one back because macOS answers ps from the
+// kernel's copy of the initial environment.
+//
+// The encrypted path had shipped since E13 and the console builds it: the credential is sealed via
+// POST /v1/secret-refs and a model connection NAMES the ref. Keeping a second, weaker path meant a
+// deployment that skipped the console ran on it silently — and both produced a working stack, so no
+// operator could tell which one they had.
+//
+// EnvResolver itself is NOT deleted and must not be: ~35 live tests use it to feed a harness its own
+// credential, which is exactly the right use. The rule is about the SHIPPED BINARY.
+func TestTheShippedBinaryRedeemsNoCredentialFromTheEnvironment(t *testing.T) {
+	raw, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	source := string(raw)
+	for _, banned := range []string{
+		"modelbroker.EnvResolver",
+		"PALAI_SECRET_PROVIDER_ONE",
+		"PALAI_SECRET_PROVIDER_TWO",
+		"PALAI_SECRET_OPENAI_COMPATIBLE",
+	} {
+		// The names may appear in PROSE — the comment above the resolver explains what was removed and
+		// why — so only a line that is not a comment counts.
+		for _, line := range strings.Split(source, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") || !strings.Contains(trimmed, banned) {
+				continue
+			}
+			t.Errorf("main.go redeems a credential from the environment (%q on %q): a provider key in the "+
+				"process environment is readable by anything running as the same uid and cannot be unset", banned, trimmed)
+		}
+	}
+}

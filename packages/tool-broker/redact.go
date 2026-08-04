@@ -15,6 +15,13 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._-]{8,}`),
 	regexp.MustCompile(`gh[posu]_[A-Za-z0-9]{20,}`),
 	regexp.MustCompile(`github_pat_[A-Za-z0-9_]{20,}`),
+	// A credential embedded in a URL: postgres://user:pass@host, redis://…, https://user:token@…
+	// Added 2026-08-04 because PALAI_DATABASE_URL is the one secret-bearing variable that CANNOT leave
+	// the environment — the process needs it to dial — so it is the case redaction has to carry alone.
+	// Its NAME defeats a name test (nothing in it says secret), and its shape defeated this list until
+	// now. Only the credential is masked; the scheme and host stay readable, because an operator
+	// debugging a connection needs to see where it points.
+	regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^\s/:@]+:[^\s/@]+@`),
 }
 
 // RedactSecrets masks secret-shaped tokens in captured shell output. The command's own output is
@@ -25,6 +32,12 @@ var secretPatterns = []*regexp.Regexp{
 // same function, so a new secret shape added for one posture cannot be missing from the other.
 func RedactSecrets(s string) string {
 	for _, pattern := range secretPatterns {
+		// A pattern with a capture group keeps what it captured and masks the rest: the URL-credential
+		// pattern preserves the scheme so `postgres://***@host` still tells an operator what it is.
+		if pattern.NumSubexp() > 0 {
+			s = pattern.ReplaceAllString(s, "${1}***@")
+			continue
+		}
 		s = pattern.ReplaceAllString(s, "***")
 	}
 	return s

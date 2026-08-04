@@ -266,11 +266,19 @@ func nativeEnv(cfg Config, p paths, get func(string) string, engine, listen, roo
 	} {
 		env[k] = v
 	}
-	// The provider credential, bridged the way control-plane-entrypoint.sh bridges it: read from the
-	// 0600 file into the child's environment, never into argv and never back onto disk.
-	if raw, err := os.ReadFile(p.secretPath(liveSelector)); err == nil && len(strings.TrimSpace(string(raw))) > 0 {
-		env["PALAI_SECRET_PROVIDER_ONE"] = strings.TrimSpace(string(raw))
-	}
+	// THE PROVIDER CREDENTIAL IS NOT BRIDGED HERE ANY MORE, removed 2026-08-04 together with the
+	// control plane's env fallback and the compose entrypoint's copy of the same bridge.
+	//
+	// It used to be read from the 0600 file into the child's environment — never into argv, never back
+	// onto disk, which was careful about the wrong thing. On this posture the agent's shell runs as the
+	// same uid as the control plane, and an environment value is readable by anything that uid can run:
+	// `ps -E -p <pid>` served 62 variables with their values, and `os.Unsetenv` cannot take one back
+	// because macOS answers ps from the kernel's copy of the initial environment.
+	//
+	// The credential now takes the path the console already builds: sealed through POST /v1/secret-refs
+	// into the encrypted store, named by a model connection, redeemed at call time. A bring-up that
+	// finds no connection says so (see missingModelConnectionNotice) instead of quietly working through
+	// a weaker route nobody chose.
 	// The shell posture rides through from .env.local unchanged — including a wrong value, which the
 	// control plane refuses at boot by design (docs/operations/palai-on-a-mac.md §1).
 	if posture := strings.TrimSpace(get("PALAI_SHELL_NATIVE")); posture != "" {

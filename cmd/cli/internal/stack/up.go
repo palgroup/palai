@@ -280,6 +280,10 @@ func Bootstrap(envFile string, native bool) error {
 	// decides. Merging is also NOT the safe middle: the canonical set does not contain the publish tools,
 	// so a bring-up that rewrote the list wholesale would delete capabilities the stack has.
 	warns = appendWarn(warns, api.missingCanonicalToolsNotice())
+	// AND WHETHER A MODEL CAN BE REACHED AT ALL. This is now a real possibility rather than a
+	// theoretical one: the environment fallback that used to carry a provider credential was removed
+	// the same day, so a stack whose operator never opened the console reaches no provider.
+	warns = appendWarn(warns, api.missingModelConnectionNotice())
 	// WHAT THE FLEET IS DOING (E24 T6), on the report rather than in a warning: a machine held in a strict
 	// pool's waiting room is a machine an operator will otherwise read as broken.
 	printReport(cfg, posture, rt, caps, observedFacts(rt), fleetLine(api.fleet()), red, warns...)
@@ -1564,6 +1568,39 @@ func (c *apiClient) grantDefaultToolBaseline() string {
 		return ""
 	}
 	return fmt.Sprintf("%s now grants %d default tools: %s", bootstrapProjectID, len(tools), strings.Join(tools, ", "))
+}
+
+// missingModelConnectionNotice reports that this deployment has no model connection, or "" when it has
+// one or the question cannot be answered.
+//
+// IT EXISTS BECAUSE A CREDENTIAL PATH WAS REMOVED, 2026-08-04. Until then a provider key could reach the
+// control plane through PALAI_SECRET_PROVIDER_ONE — the compose entrypoint bridged it, `palai up` bridged
+// it, and the broker read it as a fallback. That put a credential in the process environment, where
+// anything running as the same uid can read it and where it cannot be unset afterwards.
+//
+// The encrypted path had been shipped since E13 and the console builds it in two calls: the credential is
+// sealed through POST /v1/secret-refs and a model connection NAMES the ref. Removing the fallback makes
+// that the only path — which is the point — but it also means a stack brought up without one reaches no
+// provider at all. AN OPERATOR MUST NOT DISCOVER THAT FROM A FAILED RUN. The bring-up says it here, with
+// the screen that fixes it, for the same reason emptyToolBaselineWarning exists.
+//
+// Silent on failure, deliberately, like its two siblings: a notice that cannot tell "none configured"
+// from "could not ask" fires on every deployment whose route moved, and is then ignored when it matters.
+func (c *apiClient) missingModelConnectionNotice() string {
+	var page struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	status, err := c.do(http.MethodGet, "/v1/model-connections", nil, &page)
+	if err != nil || status != http.StatusOK || len(page.Data) > 0 {
+		return ""
+	}
+	return "this deployment has NO model connection, so every run that is not on the fake provider will " +
+		"fail to reach a model. The provider credential is no longer read from the environment (it was " +
+		"reachable by anything running as this user); add it in the console under Registry — the key is " +
+		"sealed into the encrypted store and the connection names it, so the value never lands in a " +
+		"process environment or a compose file."
 }
 
 // missingCanonicalToolsNotice reports canonical default tools the project does NOT grant, or "" when it

@@ -94,3 +94,36 @@ func TestTheNameTestMatchesTheNamesThisTreeActuallyUses(t *testing.T) {
 		}
 	}
 }
+
+// TestACredentialInsideAURLIsMasked covers the one secret-bearing variable that CANNOT leave the
+// environment: PALAI_DATABASE_URL. The process needs it to dial Postgres, so unlike a provider key it
+// cannot be moved into the encrypted store — redaction has to carry this case alone.
+//
+// It defeats both other defences on its own. Its NAME says nothing about secrets, so the name test in
+// HostSecretValues does not select it; and its SHAPE matched none of the four token regexps. An agent
+// reading `ps` therefore got a working database password in clear text.
+func TestACredentialInsideAURLIsMasked(t *testing.T) {
+	masked := RedactSecrets("postgres://palai:hunter2@127.0.0.1:5432/palai?sslmode=disable")
+	if strings.Contains(masked, "hunter2") {
+		t.Errorf("the database password survived redaction: %q", masked)
+	}
+	// The scheme and host must SURVIVE. An operator debugging a connection needs to see where it
+	// points, and a redactor that eats the whole URL gets turned off by whoever is on call.
+	if !strings.Contains(masked, "postgres://") || !strings.Contains(masked, "127.0.0.1:5432") {
+		t.Errorf("redaction destroyed the part an operator needs: %q", masked)
+	}
+}
+
+// TestAnOrdinaryURLIsUntouched — over-masking is the failure mode that gets a redactor disabled. A URL
+// with no credential in it must come back byte-identical.
+func TestAnOrdinaryURLIsUntouched(t *testing.T) {
+	for _, u := range []string{
+		"https://api.example.com/v1/messages",
+		"http://127.0.0.1:60351/healthz",
+		"postgres://127.0.0.1:5432/palai?sslmode=disable",
+	} {
+		if got := RedactSecrets(u); got != u {
+			t.Errorf("a credential-free URL was mangled: %q → %q", u, got)
+		}
+	}
+}
