@@ -1,0 +1,20 @@
+id: EXE-001
+name: a-synchronous-command-runs-on-the-machine-that-holds-the-attempts-lease-and-an-attempt-with-no-machine-is-refused
+proof_class: component-real
+provider: fake
+input: "THE CONTROL PLANE NO LONGER RUNS THE COMMAND, AND THE MEASUREMENT MATTERS MORE THAN THE FEATURE. Before this phase `Orchestrator.shell` was a PROCESS-WIDE executor installed once at boot through `orch.SetShellRunner(shellRunnerFromEnv())`, so every attempt in every tenant shared one executor and every `palai.workspace.shell` call ran beside the control plane whatever machine the run was placed on. E24 published that as a ceiling and it was true. WHAT IS PROVED HERE, over a REAL websocket lease against a REAL packages/runner router — a local seam on ONE box, and this case never claims a second computer: a new `exec.request`/`exec.result` pair carries a command to the machine and its answer back, correlated by a control-plane-minted `exec_id`; the machine runs it on ITS OWN executor and a non-zero exit comes back as a RESULT rather than as an error, because an error aborts the attempt while an exit code is an answer the model can read; the exec runs in its own goroutine so the reader keeps flowing, which is what lets an interrupt frame arrive during a build that takes minutes; `exec.request` never reaches the engine's stdin; and the executor is derived PER ATTEMPT from the attempt's own channel, so two attempts on two machines get two answers. THE NEGATIVE HALF IS THE CLAIM: an attempt with NO machine is handed no shell runner at all and the tool answers `unavailable` — it does NOT fall back to this host. A typed-nil `*RemoteShell` would have made the refusal unreachable (a non-nil interface holding a nil pointer), so the failed branch returns an untyped nil deliberately. THE RELAY IS BUFFERED FOR A REASON THAT WAS MEASURED RATHER THAN GUESSED: the reference engine emits one frame per tool_call and answers none until all return, so a turn calling two tools leaves the second frame behind the first, the sole reader parks in `emit` and has not yet read the `exec.result` behind it — a permanent wedge. `relayBacklog = 64`; overflow ends the lease with a NAMED error rather than hanging, and the reserved last slot exists so the reason can be carried. HONEST CEILINGS. This was never driven through a RUN: no model → engine → tool.request → dispatch → exec.request transcript exists, and the chain is proven by COMPOSITION only. The wall-clock limit lives on the machine and there is deliberately no second timer here. The machine's `did not run` and its `ran and failed` COLLAPSE at this seam into one error. §6 operator legs are untouched — no rented Mac, no second host, and `linux/amd64` remains unverified."
+expect_status: completed
+proof:
+  - packages/runner/toolserver_test.go:TestToolServerRunsTheCommandOnItsOwnExecutor
+  - packages/runner/toolserver_test.go:TestToolServerReturnsNonZeroExitAsAResultNotAnError
+  - packages/runner/toolserver_test.go:TestToolServerAnswersWhenNoExecutorIsWired
+  - packages/runner/toolserver_test.go:TestControllerFrameStillReachesTheEngine
+  - packages/runner/toolserver_test.go:TestExecRequestRunsOnTheMachineAndAnswersOverTheWire
+  - apps/control-plane/internal/execution/remote_shell_test.go:TestRemoteShellRunsTheCommandOnTheMachineThatHoldsTheLease
+  - apps/control-plane/internal/execution/remote_shell_test.go:TestRemoteShellReturnsNonZeroExitAsAResultNotAnError
+  - apps/control-plane/internal/execution/remote_shell_test.go:TestRemoteShellSurfacesTheMachinesRefusal
+  - apps/control-plane/internal/execution/remote_shell_test.go:TestRemoteShellAnswersWhenTheLeaseConnectionDies
+  - apps/control-plane/internal/execution/remote_shell_test.go:TestRemoteShellAnswersWhenTheRelayEndsWhileNobodyIsReceiving
+  - apps/control-plane/internal/execution/remote_shell_test.go:TestRemoteShellAnswersBehindAnUnconsumedEngineFrame
+  - apps/control-plane/internal/execution/attempt_shell_test.go:TestTwoAttemptsOnTwoMachinesGetTwoAnswers
+  - apps/control-plane/internal/execution/attempt_shell_test.go:TestAnAttemptWithNoMachineGetsNoShellAndTheToolRefuses

@@ -69,7 +69,30 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return []Refusal{{Detail: "manifest is not valid JSON: " + err.Error()}}
 	}
-	// The E28 fleet-console family is checked FIRST, ahead of E26, and for the reason every clause below
+	// The Faz A.3 tool-execution family is checked FIRST, ahead of E28, and for the reason every clause below
+	// repeats one level down: it is now the most specific policy in the tree and it COMPOSES the fleet-console
+	// gate underneath itself (which composes background, admin-console, tool-approval, code-and-ship,
+	// tools-memory, agent-surface, wiring, the E17 tier table and the eval gate). An A.3 bundle DERIVES its
+	// inherited case set from the E28 release, so it also carries the E28 fleet-console claim, the E26
+	// background claim, the E25 admin-console claim, the E23 tool-approval claim and everything under them —
+	// without this clause it would reroute to FleetConsolePromoteGate, which knows nothing about the placement
+	// ledger, the no-fallback half, the background addressing, the outstanding `uname` legs or the SUPERSEDED
+	// published ceilings, and would pass it: every tool-execution guard would be optional in practice.
+	//
+	// THE FAMILY IS RECOGNIZED BY THE A.3 CASE IDS, NOT BY THE tool_execution_claim THIS GATE ENFORCES — the
+	// ninth time this reasoning has been written down, and the reason it keeps being written is that the
+	// alternative fails SILENTLY. That is also why A.3's ids carry the `EXE-` prefix: `FLT-`, `CON-`, `BGT-`
+	// and `FLC-` are each already inside extensionIDPrefixes with their own owner lists and their own gates,
+	// so an `FLT-006` would match carriesE24FleetCase four clauses down and dispatch to FleetPromoteGate — a
+	// WEAKER gate for this bundle, which is the promote-gate-family-dispatch defect reached from a naming
+	// choice. TestTheA3AndE2xFamiliesAreDisjoint in tests/uat/tool-execution asserts the id sets never overlap
+	// rather than leaving it assumed.
+	for _, c := range m.Cases {
+		if carriesA3ToolExecutionCase(c) {
+			return ToolExecutionPromoteGate(raw, target)
+		}
+	}
+	// The E28 fleet-console family is checked next, ahead of E26, and for the reason every clause below
 	// repeats one level down: it is now the most specific policy in the tree and it COMPOSES the background
 	// gate underneath itself (which composes admin-console, tool-approval, code-and-ship, tools-memory,
 	// agent-surface, wiring, the E17 tier table and the eval gate). An E28 bundle DERIVES its inherited case

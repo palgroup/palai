@@ -363,6 +363,25 @@ type evidenceCase struct {
 	// run `xcodebuild` on a Mac, which is the largest of the ceilings (g) counts.
 	FleetConsoleClaim string             `json:"fleet_console_claim"`
 	FleetConsoleProof *FleetConsoleProof `json:"fleet_console_proof"`
+	// The Faz A.3 tool-execution claim extends the same discipline to the invariant THIS phase owns, and it
+	// is the first release in this tree whose subject is WHERE a tool runs rather than what one does: a
+	// synchronous command and the six coding tools execute on the machine that holds the attempt's lease, a
+	// workspace tool REFUSES rather than falling back to this host's disk, background start/probe/kill are
+	// addressed to that machine and an unreachable one is never signalled, the runner's composition root can
+	// build both shell postures, and the runner runs natively on the Mac. It requires its proof, and seven
+	// counters are RE-DERIVED rather than believed.
+	//
+	// WHAT IT DOES NOT CLAIM, AND THE CLAIM WOULD BE DISHONEST WITHOUT IT: that any of the above was proven
+	// THROUGH A RUN. Every leg is proven by composition — a real wire, a real router, a real lease — and
+	// never once by a model → engine → `tool.request` → `exec.request` → machine transcript. The `uname`
+	// ledger carries the outstanding legs by name, with the reason each is absent rather than zero.
+	//
+	// AND IT CARRIES THE ONE RECORD A LATER RELEASE OWES AN EARLIER ONE: the SUPERSEDED ledger, naming the
+	// published ceilings this phase made false. `runner-fleet-0.1.0` says every tool still runs in the
+	// control plane's own process; it no longer does. That text is NOT edited — it was true when it shipped —
+	// so the supersession is a new record naming the old one, down to the symbol its reasoning rested on.
+	ToolExecutionClaim string              `json:"tool_execution_claim"`
+	ToolExecutionProof *ToolExecutionProof `json:"tool_execution_proof"`
 }
 
 type evidenceTerm struct {
@@ -2907,6 +2926,18 @@ var committedBundleSurfaces = map[string]string{
 	// `fleet-console-` sorts between `extensions-` and `integration-wiring-`, so it is a name that CAN win
 	// carrier rows on order, which is why the rule is measured for it rather than assumed.
 	FleetConsoleBundle: SurfaceRecomputed,
+	// The Faz A.3 tool-execution bundle. Its anchor is the CANONICAL contract ledger digest
+	// (ToolExecutionContractsDigest), derived from the code table in evidence_tool_execution.go — so a bundle
+	// that dropped or reworded a divergence row would move every checksum in it. It may NOT be
+	// LegacyShapeOnly: this is a bundle written TODAY.
+	//
+	// THE SHIPPED RC IS NOT REGENERATED, AND THIS NAME NEEDED THE RULE MORE THAN ANY BEFORE IT.
+	// `tool-execution-` sorts BEFORE `tools-memory-` ('-' < 's'), so it is a name that CAN win carrier rows
+	// on order and naming luck does not protect the RC here. What does is the dated as-of rule: this bundle's
+	// captured_at (2026-08-04) is after release-1.0.0-rc1's (2026-07-26T11:00:00Z), so the recompute drops it
+	// from the index and the RC's checksums still reproduce with its manifest bytes untouched.
+	// TestTheAsOfRuleIsWhatKeepsTheShippedRCGreen is where that is asserted rather than here.
+	ToolExecutionBundle: SurfaceRecomputed,
 	// The E18 T10 RC bundle. Its anchor is the RECOMPUTED release index over the SEVENTEEN committed bundles
 	// that predate its own capture, plus the materialized case corpus — so a checksum here cannot be
 	// hand-written: it moves the moment one of those bundles or the corpus does.
@@ -2996,6 +3027,8 @@ func caseChecksumParts(m evidenceManifest, c evidenceCase) []string {
 		return []string{c.ID, c.RunID, BackgroundContractsDigest()}
 	case FleetConsoleBundle: // tests/uat/fleet-console/bundle_test.go
 		return []string{c.ID, c.RunID, FleetConsoleContractsDigest()}
+	case ToolExecutionBundle: // tests/uat/tool-execution/bundle_test.go
+		return []string{c.ID, c.RunID, ToolExecutionContractsDigest()}
 	case "extensions-0.1.0": // tests/uat/extensions/bundle_test.go
 		return []string{c.ID, c.RunID, CapabilityClaimsDigest()}
 	case "managed-cloud-0.1.0": // tests/uat/managed-cloud/evidence_test.go
@@ -3753,6 +3786,26 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "fleet_console_proof (a fleet-console claim requires the pool ledger with every pool created beside its posture, its waiting-room switch and the PUBLIC surface it was created through, the waiting-room ledger with every machine that reached `pending` in a strict pool beside the surface it was admitted from, the key-scan ledger with the minted value's hits in the response body, the DOM, both web storages, the URL and a LATER response — each DECODED before it was scanned and each naming a harmless token it DID find — the policy ledger with the approver entries before and after each write beside the number of fields that write's REQUEST carried, the route ledger with every page lib/routes.ts declares beside the colour schemes axe scanned it in, the action ledger with every destructive action beside whether the server can undo it and which confirmation it goes through, the ceiling ledger with the gap ids the screens state and the test id rendering each, the conformance sweep's compared subjects, and every published contract with its source and §3.5 divergence id; a 'shipped' marker is not proof — plan §T4)"})
 			case !c.FleetConsoleProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "fleet_console_proof is incomplete: a peer not honestly named \"" + FleetConsolePeer + "\" (this bundle cannot claim a REAL rented Mac — every machine here is a fake runner built from the shipped enrolment package, and `FLT-P15` stands: a Mac pool is creatable and still does not run `xcodebuild` on a Mac, §6 legs 1 and 2), a shrunken/edited contract ledger or a contracts_digest that does not equal the canonical one, a pool ledger with no `unsandboxed-host` posture — the value NO code path could write before this epic, so a release without it certifies the hole rather than the fix — or one whose pool came from the SEED rather than from a public surface, no machine that actually reached `pending` or none admitted FROM THE CONSOLE, a minted key VALUE found in any of the five sites, a site scanned without DECODING first (a sweep that can never fail) or naming no probe it found, an approver list that SHRANK across a policy write, or a write whose request carried fewer than all five policy fields (asserting only the stored outcome passes on a server that merged), a route lib/routes.ts declares that axe never scanned or scanned in one colour scheme only, a route ledger missing a page this epic opened, an IRREVERSIBLE action outside an alertdialog — or a REVERSIBLE one inside it, refused in both directions because the claim is a DIFFERENCE rather than a count of dialogs — a ceiling this epic owes that no page states, or a conformance sweep that compares no more collections than it did before this epic (plan §T4)"})
+			}
+		}
+
+		// The Faz A.3 tool-execution anchor. Complete() already RE-DERIVES the verbs that executed on the
+		// machine and the ones that did NOT from the placement ledger (the second is checked for AGREEMENT
+		// rather than for zero, because the surfaces A.4 inherits are part of this record and a proof shaped
+		// to say "all of it moved" would have to drop them), the tools that fell back to this host's disk with
+		// the machine's answer withheld (zero, over rows that EACH name the perturbation that reddened their
+		// own line — a refusal nobody perturbed may be answering for an unrelated reason), the three
+		// background verbs addressed to the machine and the signals sent to a machine we could not reach
+		// (zero), both shell postures the runner's composition root can build, the `uname` legs measured and
+		// OUTSTANDING (every outstanding one carrying WHY it is absent rather than a zero), the seven tasks'
+		// own ceilings, and the PUBLISHED ceilings this phase superseded — so a proof that declares a number
+		// the bytes do not support never reaches this branch clean.
+		if c.ToolExecutionClaim != "" {
+			switch {
+			case c.ToolExecutionProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "tool_execution_proof (a tool-execution claim requires the placement ledger with every tool verb beside the shipped test proving WHERE it ran and the surfaces still left in the control plane, the fallback ledger with every tool driven under a withheld machine answer beside the perturbation that reddened its own line, the background ledger with all three verbs and the cordon/revoke/unknown-machine answers, the posture ledger with both shell postures and the composition root that builds each, the `uname` ledger with every leg of the phase's own proof file — each MEASURED with its answer or OUTSTANDING with the reason it is absent rather than zero — the ceiling ledger with the seven tasks' own ceilings and where each was measured, the superseded ledger naming every PUBLISHED ceiling this phase made false with the clause and the symbol its reasoning rested on, and every contract with its source and divergence id; a 'moved' marker is not proof)"})
+			case !c.ToolExecutionProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "tool_execution_proof is incomplete: a machine not honestly named \"" + ToolExecutionMachine + "\" (this release measured nothing across a boundary — the control plane and the machine are two processes on ONE box, and a field that could say \"remote\" is a field that could claim a second computer), a shrunken/edited contract ledger or a contracts_digest that does not equal the canonical one, a placement ledger whose machine or control-plane count disagrees with its rows or which puts no verb on the machine at all, a tool that FELL BACK to this host's disk — or a fallback row carrying no perturbation and no line it reddened, which is how a refusal answering for an unrelated reason passes as a refusal answering for this one — fewer than the three background verbs addressed to the machine or a SIGNAL sent to a machine we could not reach (a pgid is a small integer and this reaper spans tenants, so the process it killed need not be Palai's), fewer than both shell postures on the runner's composition root (with one, a Linux pool's commands are still executing beside the control plane and this phase's exit criterion is unreachable by construction), a `uname` ledger with no measured leg at all or an OUTSTANDING leg that says only that it is missing and not why — \"absent\" and \"zero\" are different facts and only one of them tells a reader what would have to happen next — no ceiling carried from the seven task reports, or NO SUPERSEDED CEILING, which would leave this bundle with no reason to exist: the record it is cut to write is that a published ceiling no longer holds"})
 			}
 		}
 

@@ -89,7 +89,12 @@ var dockerBoundClasses = map[string]bool{"component-real": true, "live-provider"
 // FLC-003 had already shipped in T1, T2 and T3, and `go test ./tests/uat/...` reported `ok` for all twenty-two
 // packages: this sweep, the checksum sweep and every family gate. Three case directories, resolved by nothing,
 // green by silence. Ownership may live in uat.FleetConsoleCaseIDs; escaping the sweep may not.
-var extensionIDPrefixes = []string{"SLK-", "A2A-", "KNO-", "QUA-", "TLM-", "CAS-", "HIL-", "FLT-", "CON-", "BGT-", "UI-", "WRK-", "FLC-"}
+// EXE- (Faz A.3) joins as the FOURTEENTH member and the NINTH family whose ownership lives elsewhere, and it
+// is the first of them to join BEFORE its first case directory exists rather than after — which is the only
+// reason there is no fourth demonstration paragraph here. The eight above were written as corrections; this
+// one is written as the rule finally being applied in the right order. Ownership may live in
+// uat.ToolExecutionCaseIDs; escaping the sweep may not.
+var extensionIDPrefixes = []string{"SLK-", "A2A-", "KNO-", "QUA-", "TLM-", "CAS-", "HIL-", "FLT-", "CON-", "BGT-", "UI-", "WRK-", "FLC-", "EXE-"}
 
 // legacyCasePrefixes are the case-id families that already existed when TestEveryCasePrefixIsClaimed was
 // written, and that are owned by OTHER catalogs and gates — tests/uat/automation, tests/uat/managed-cloud,
@@ -529,8 +534,9 @@ func TestExtensionsCatalogMaterialized(t *testing.T) {
 					!slices.Contains(uat.FleetCaseIDs, e.Name()) &&
 					!slices.Contains(uat.AdminConsoleCaseIDs, e.Name()) &&
 					!slices.Contains(uat.BackgroundCaseIDs, e.Name()) &&
-					!slices.Contains(uat.FleetConsoleCaseIDs, e.Name()) {
-					t.Errorf("%s: a case dir under a guarded prefix is in NONE of expectedExtensionsCatalog, uat.AgentSurfaceCaseIDs, uat.ToolsMemoryCaseIDs, uat.CodeAndShipCaseIDs, uat.ToolApprovalCaseIDs, uat.FleetCaseIDs, uat.AdminConsoleCaseIDs, uat.BackgroundCaseIDs or uat.FleetConsoleCaseIDs (add it to one, or it escapes proof resolution entirely)", e.Name())
+					!slices.Contains(uat.FleetConsoleCaseIDs, e.Name()) &&
+					!slices.Contains(uat.ToolExecutionCaseIDs, e.Name()) {
+					t.Errorf("%s: a case dir under a guarded prefix is in NONE of expectedExtensionsCatalog, uat.AgentSurfaceCaseIDs, uat.ToolsMemoryCaseIDs, uat.CodeAndShipCaseIDs, uat.ToolApprovalCaseIDs, uat.FleetCaseIDs, uat.AdminConsoleCaseIDs, uat.BackgroundCaseIDs, uat.FleetConsoleCaseIDs or uat.ToolExecutionCaseIDs (add it to one, or it escapes proof resolution entirely)", e.Name())
 				}
 				break
 			}
@@ -557,6 +563,11 @@ func TestTheSLKCatalogsAreDisjoint(t *testing.T) {
 		// earlier family marker and dispatch to a weaker gate, and that argument is only true while the id
 		// sets stay disjoint. The pair loop below turns it from an argument into an assertion.
 		"uat.FleetConsoleCaseIDs": uat.FleetConsoleCaseIDs,
+		// Faz A.3. The NINTH downstream owner, and it rests on the same argument one level up: `EXE-` was
+		// chosen over extending any earlier prefix precisely so an A.3 id could never match an earlier family
+		// marker in PromoteGateFor and dispatch to a weaker gate. The pair loop below is what keeps that an
+		// assertion rather than an argument.
+		"uat.ToolExecutionCaseIDs": uat.ToolExecutionCaseIDs,
 	}
 	for name, ids := range owners {
 		for _, id := range ids {

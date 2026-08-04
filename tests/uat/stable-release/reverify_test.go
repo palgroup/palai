@@ -23,7 +23,21 @@ import (
 // rather than a silence: without it, a bundle that LOST its family claims would quietly move from "passes
 // its own gate" to "no gate recognizes it" and the sweep below would still be green.
 var promoteFamilies = map[string]string{
-	// E28's family is checked FIRST of all in PromoteGateFor, one level above E26, and this bundle inherits
+	// Faz A.3's family is checked FIRST of all in PromoteGateFor, one level above E28, and this bundle
+	// inherits the dispatch hazard one layer deeper again: it carries the E28 fleet-console claim, the E26
+	// background claim, the E25 admin-console claim and everything under them, because it derives its
+	// inherited case set from those releases. Dispatching on any of them would reroute it to a gate that
+	// knows nothing about the placement ledger, the no-fallback half, the background addressing, the
+	// outstanding `uname` legs or the SUPERSEDED published ceilings. It is recognized by the A.3 CASE IDS —
+	// and their `EXE-` prefix is part of that decision in BOTH directions, exactly as `FLC-`, `BGT-`, `CON-`,
+	// `FLT-`, `HIL-` and `CAS-` were.
+	//
+	// AND THIS ENTRY IS WHERE THE COUNT E28 CORRECTED WAS PAID AGAIN. E28's note below calls this table the
+	// FIFTH registration point after its own plan undercounted at four; A.3 found the same by walking into
+	// it — the bundle generated, verified 87 cases clean and passed all eight of its own package's tests
+	// while THIS sweep was the only thing in the tree that said the release had no declared judge.
+	"tool-execution-0.1.0": "Faz A.3 tool-execution (the placement ledger re-derived with its machine and control-plane counts checked for AGREEMENT rather than for zero, because this phase left named surfaces behind and a gate that could only accept \"all of it moved\" would force the next release to drop them from the record + ZERO tools that fell back to this host's disk under a withheld machine answer, over rows that EACH carry the perturbation and the line it reddened, since a refusal nobody perturbed may be answering for an unrelated reason + all three background verbs addressed to the machine and ZERO signals to one that could not be reached, because a pgid is a small integer and this reaper spans tenants + BOTH shell postures on the runner's composition root, or a Linux pool's commands never leave this process and the phase's exit criterion is unreachable by construction + an honest `uname` ledger that is ALLOWED to carry outstanding legs and REFUSES one that says only that it is missing, since \"absent\" and \"zero\" are different facts + at least one SUPERSEDED published ceiling naming the symbol its old reasoning rested on, checked pure here and walked against the tree in tests/uat/tool-execution + the composed fleet-console/background/admin-console/tool-approval/code-and-ship/tools-memory/agent-surface/wiring/extensions/eval gates)",
+	// E28's family is checked next in PromoteGateFor, one level above E26, and this bundle inherits
 	// the dispatch hazard one layer deeper again: it carries the E26 background claim, the E25 admin-console
 	// claim, the E23 tool-approval claim, the E22 code-and-ship claim, the E21 tools-memory claim, the E20
 	// agent-surface claim, the E19 wiring claim AND E17 area claims, because it derives its inherited case
