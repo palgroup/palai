@@ -107,8 +107,13 @@ func (l *ImageLeg) Ready() bool {
 //
 // The error is logged with the file id and the reason; the token is in neither, by construction — nothing
 // in slack.FetchImage puts a credential in an error.
-func (l *ImageLeg) attach(ctx context.Context, files []slack.SharedFile, logf func(string, ...any)) (ids []string, skipped int) {
-	candidates, skipped := slack.ImageCandidates(files, maxImagesPerMessage, maxImageBytes)
+//
+// `max` is a PARAMETER rather than maxImagesPerMessage read straight from the package, because the two
+// callers spend two different budgets: the triggering message's own attachments get that constant, and a
+// thread's earlier pictures get their own (see history.go's maxThreadImages) so they can never take a slot
+// from the message the human actually sent.
+func (l *ImageLeg) attach(ctx context.Context, files []slack.SharedFile, max int, logf func(string, ...any)) (ids []string, skipped int) {
+	candidates, skipped := slack.ImageCandidates(files, max, maxImageBytes)
 	if len(candidates) == 0 {
 		return nil, skipped
 	}
@@ -135,6 +140,24 @@ func (l *ImageLeg) attach(ctx context.Context, files []slack.SharedFile, logf fu
 	return ids, skipped
 }
 
+// turnImages is everything one turn's pictures amount to, split by WHERE they came from — the message the
+// human just sent, or the earlier messages of a thread this bot was invited into late (history.go).
+//
+// The split is carried this far rather than collapsed into one list plus one count because the prompt has to
+// say something different about each: a file attached to the request is one the asker expects an answer
+// about, and an image from three messages ago is context they did not hand over. A model told the difference
+// can answer accordingly; one handed six pictures with no provenance cannot.
+type turnImages struct {
+	// own are the artifact ids for the triggering message's own attachments, and skipped is how many of its
+	// files did not become one — for any reason, including not being an image at all.
+	own     []string
+	skipped int
+	// earlier are the artifact ids for images shared EARLIER in the same thread, oldest first, and missing is
+	// how many images this read found there and could not carry (past the budget, or a failed fetch).
+	earlier []string
+	missing int
+}
+
 // runInput builds the turn's `input` — the WHOLE reason this file exists, since an artifact nothing names
 // is an artifact no model sees.
 //
@@ -145,14 +168,19 @@ func (l *ImageLeg) attach(ctx context.Context, files []slack.SharedFile, logf fu
 // WITH IMAGES it returns the §25.10 content array, and the ORDER IS THE HUMAN'S WORDS FIRST: it matches
 // every vision example a provider publishes, and it keeps what the person actually asked ahead of anything
 // else in the turn.
-func runInput(text string, artifactIDs []string, skipped int) any {
-	text += imageNote(len(artifactIDs), skipped)
-	if len(artifactIDs) == 0 {
+//
+// THE PICTURES THEMSELVES ARE CHRONOLOGICAL — the thread's earlier ones, then the message's own — which is
+// both how a reader saw them and what decides which survive a long conversation: the control plane spends
+// its per-request image budget on the LAST images in the input (execution.decodeMessages), so the message
+// the human actually sent is the one that keeps its slot.
+func runInput(text string, images turnImages) any {
+	text += imageNote(len(images.own), images.skipped) + threadImageNote(len(images.earlier), images.missing)
+	if len(images.own)+len(images.earlier) == 0 {
 		return text
 	}
-	items := make([]any, 0, len(artifactIDs)+1)
+	items := make([]any, 0, len(images.own)+len(images.earlier)+1)
 	items = append(items, map[string]any{"type": "input_text", "text": text})
-	for _, id := range artifactIDs {
+	for _, id := range append(append([]string(nil), images.earlier...), images.own...) {
 		items = append(items, map[string]any{"type": "image_ref", "artifact_id": id})
 	}
 	return items
@@ -179,6 +207,37 @@ func imageNote(attached, skipped int) string {
 	default:
 		return fmt.Sprintf("\n\n(%d further files shared with this message could not be attached and are not visible in this conversation)", skipped)
 	}
+}
+
+// threadImageNote says where an image the human did NOT attach to this message came from.
+//
+// IT EXISTS BECAUSE SILENCE HERE WOULD BE A LIE OF PROVENANCE, not merely an omission. Handed a screenshot
+// with no note, a model reads it as "the picture attached to this request" and answers as though the person
+// pointed at it; it might be a diagram somebody else posted twenty minutes earlier about something else. The
+// sentence costs one line and turns a confident wrong answer into an accurate one.
+//
+// IT NAMES NO FILE, NO UPLOADER AND NO TIME, for imageNote's reason: a filename and a display name are
+// uploader-controlled text with no business being quoted into a conversation, and this note is entirely
+// ours, with no field of the payload in it, so there is nothing here for a user to write.
+//
+// `missing` counts only IMAGES this read found and could not carry — never a document somebody shared in the
+// thread hours ago, which was offered to nobody (see threadImages).
+func threadImageNote(attached, missing int) string {
+	var note string
+	switch {
+	case attached == 1:
+		note = "\n\n(one image shared EARLIER in this Slack thread is attached to this turn: it was posted before this request, not with it"
+	case attached > 1:
+		note = fmt.Sprintf("\n\n(%d images shared EARLIER in this Slack thread are attached to this turn: they were posted before this request, not with it", attached)
+	case missing > 0:
+		return fmt.Sprintf("\n\n(%d image(s) shared earlier in this Slack thread could not be attached, so they are not visible in this conversation)", missing)
+	default:
+		return ""
+	}
+	if missing > 0 {
+		note += fmt.Sprintf("; %d further image(s) from earlier in the thread could not be attached and are not visible", missing)
+	}
+	return note + ")"
 }
 
 // steerImageNote is what a picture attached to a message that STEERS a still-running turn gets instead of

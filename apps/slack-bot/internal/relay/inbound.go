@@ -237,6 +237,10 @@ type InboundDeps struct {
 	// above it: with no leg the relay behaves exactly as it did before images existed, so validate() does
 	// not require one. What it must never do is fail quietly — see ImageLeg.Ready and its boot line.
 	Images *ImageLeg
+	// History is the optional thread read (history.go), which finds the pictures shared BEFORE the message
+	// that births a run. Optional on the same terms as Images and for the same reason; without it a thread
+	// this bot is invited into late contributes the triggering message's attachments and nothing more.
+	History ThreadHistory
 	// Logf is where the image leg's per-file refusals go. Optional; nil discards them, which is what a
 	// test that is not asserting on logs wants.
 	Logf func(string, ...any)
@@ -530,6 +534,17 @@ func HandleEvent(ctx context.Context, deps InboundDeps, ev slack.Event) error {
 	if !birthsRun(ev, correlated) {
 		return nil // ordinary channel chatter the bot was never addressed in — see birthsRun
 	}
+
+	// THE THREAD THIS BOT WAS INVITED INTO LATE (history.go owns the rule, the bounds and the authority
+	// argument). It runs HERE, at the one point where BOTH halves of the rule are known — `correlated`, which
+	// only exists between the store read above and the session that is about to be opened, and birthsRun's
+	// yes, so no Slack read is ever made for a message this bot was not addressed in.
+	var earlier []slack.SharedFile
+	var earlierDropped int
+	if !correlated && ev.InThread {
+		earlier, earlierDropped = deps.earlierThreadImages(ctx, ev)
+	}
+
 	if !correlated {
 		sessionID, err = deps.openNewSession(ctx, tk)
 		if err != nil {
@@ -560,7 +575,7 @@ func HandleEvent(ctx context.Context, deps InboundDeps, ev slack.Event) error {
 		deps.state.setActive(tk, false)
 	}
 
-	return deps.startRun(ctx, tk, sessionID, ev)
+	return deps.startRun(ctx, tk, sessionID, ev, earlier, earlierDropped)
 }
 
 // openNewSession opens a session for a thread that has never been bound, and BINDS it — never
@@ -620,7 +635,9 @@ func (deps InboundDeps) rebindOrphan(ctx context.Context, tk threadKey, oldSessi
 // A 404 on the create (the session ThreadStore resolved is itself orphaned — the same failure mode
 // rebindOrphan handles for Steer, reached here when NO run was active in this process, e.g. a restart)
 // recovers the same way: a fresh session, rebound, retried once.
-func (deps InboundDeps) startRun(ctx context.Context, tk threadKey, sessionID string, ev slack.Event) error {
+// earlier are the images the EARLIER messages of this thread shared (HandleEvent decides whether to look for
+// any; history.go decides which); earlierDropped is how many of those it already left behind.
+func (deps InboundDeps) startRun(ctx context.Context, tk threadKey, sessionID string, ev slack.Event, earlier []slack.SharedFile, earlierDropped int) error {
 	// The images are fetched and uploaded ONCE, before the create, and the resulting input is reused on the
 	// orphan retry below. Fetching inside the retry instead would pay Slack twice and — worse — mint a
 	// SECOND set of artifacts for one message, leaving the first set attached to nothing.
@@ -629,12 +646,23 @@ func (deps InboundDeps) startRun(ctx context.Context, tk threadKey, sessionID st
 	// to NAME them, so they must have ids by the time it is built. The control plane closes the other half
 	// — it attaches every artifact the input names inside the same transaction that inserts the run, so
 	// there is no window where the bytes exist attached to nothing (see coordinator.AdmitResponse).
-	var artifactIDs []string
-	var skipped int
+	//
+	// THE MESSAGE'S OWN FILES ARE FETCHED FIRST, and that ordering is the one thing keeping the two budgets
+	// from competing: the attachment the human just made can never lose its slot to a picture from earlier in
+	// the thread, whatever the thread holds.
+	var images turnImages
+	images.missing = earlierDropped
 	if len(ev.Files) > 0 {
-		artifactIDs, skipped = deps.Images.attach(ctx, ev.Files, deps.logf)
+		images.own, images.skipped = deps.Images.attach(ctx, ev.Files, maxImagesPerMessage, deps.logf)
 	}
-	input := runInput(ev.Text, artifactIDs, skipped)
+	if len(earlier) > 0 {
+		var failed int
+		// len(earlier) as the cap: this set was already chosen and bounded by threadImages, so a second cap
+		// here would silently narrow a decision made with more information than this line has.
+		images.earlier, failed = deps.Images.attach(ctx, earlier, len(earlier), deps.logf)
+		images.missing += failed
+	}
+	input := runInput(ev.Text, images)
 
 	_, err := deps.createResponse(ctx, sessionID, input)
 	if isNotFound(err) {

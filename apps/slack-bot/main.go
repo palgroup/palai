@@ -166,7 +166,11 @@ func run(ctx context.Context) error {
 		Doer:      http.DefaultClient,
 		Token:     creds.botToken,
 		Artifacts: relay.NewArtifactCreator(client),
-	}, log.Printf)
+		// The thread read that finds the pictures shared BEFORE the message that births a run. It is mounted
+		// unconditionally alongside the leg it feeds: it needs no credential of its own (the same bot token,
+		// the same client), and what it finds is worth nothing without a leg to attach it — so a deployment
+		// carrying one and not the other would be a configuration with no meaning.
+	}, log.Printf).WithThreadHistory(relay.NewThreadHistory(http.DefaultClient, slackAPIBase, creds.botToken))
 
 	// SAID AT BOOT, ONCE, because the alternative is how this capability died the last time it was built:
 	// mounted behind a nil check in a deployment that never configured it, with the only evidence anywhere
@@ -174,7 +178,7 @@ func run(ctx context.Context) error {
 	// screenshots were being dropped. A line per message would bury a permanent configuration fact under
 	// traffic; a line at boot is where an operator already looks.
 	if d.inbound.Images.Ready() {
-		log.Printf("slack-bot: image leg ready — a screenshot shared with a message is fetched and attached to the turn")
+		log.Printf("slack-bot: image leg ready — a screenshot shared with a message is fetched and attached to the turn, and so are the images shared earlier in a thread this bot is invited into")
 	} else {
 		log.Printf("slack-bot: image leg NOT ready — a screenshot shared with a message will be relayed as a note saying it could not be attached")
 	}

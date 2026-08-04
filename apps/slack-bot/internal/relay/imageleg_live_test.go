@@ -124,7 +124,7 @@ func TestARealSlackFileBecomesARealArtifact(t *testing.T) {
 		t.Fatal("the leg reports itself not ready with all three halves supplied")
 	}
 
-	ids, skipped := leg.attach(ctx, []slack.SharedFile{shared}, t.Logf)
+	ids, skipped := leg.attach(ctx, []slack.SharedFile{shared}, maxImagesPerMessage, t.Logf)
 	if len(ids) != 1 {
 		t.Fatalf("attach() returned %d artifact ids and skipped %d — the real fetch or the real ingest refused", len(ids), skipped)
 	}
@@ -157,7 +157,7 @@ func TestARealSlackFileBecomesARealArtifact(t *testing.T) {
 	t.Logf("round trip byte-identical against Slack's own bytes: %d bytes, Content-Type=%s", len(stored), getResp.Header.Get("Content-Type"))
 
 	// --- 5. The id is nameable: a run's input carrying it is accepted. ---
-	input := runInput("bu ekran goruntusunde ne yaziyor?", ids, skipped)
+	input := runInput("bu ekran goruntusunde ne yaziyor?", turnImages{own: ids, skipped: skipped})
 	items, ok := input.([]any)
 	if !ok || len(items) != 2 {
 		t.Fatalf("runInput built %#v, want a two-item content array", input)
