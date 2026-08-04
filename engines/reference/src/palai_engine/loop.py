@@ -66,6 +66,25 @@ def _delegation_content(data: dict, spec: dict) -> str:
     return f"[delegation skipped role={role} reason={data.get('reason')}]"
 
 
+def _stamp_tool_batch(frames: list[dict]) -> list[dict]:
+    """Tell the controller how many tool.requests this turn emits, so it can collect the whole batch
+    before dispatching instead of running the first and blocking on the rest.
+
+    THE COUNT IS THE FRAMES EMITTED, NOT THE TURN'S tool_calls, and the difference is the whole reason
+    this is a function rather than a `len(tool_calls)` at the call site. The restore path re-emits only
+    the calls still in _pending_tools — a tool that already answered gets no frame — so a batch of three
+    can come back as two. A controller told to await three would wait forever for a request the engine
+    deliberately never sent.
+
+    child.requests are excluded: they are answered by a ChildRun, not by the tool dispatcher, so they
+    are not part of the batch the controller collects. A mixed turn still awaits all of them in
+    _pending_tools; that is the engine's bookkeeping, not the controller's."""
+    tool_frames = [f for f in frames if f.get("type") == "tool.request"]
+    for frame in tool_frames:
+        frame["data"]["batch_size"] = len(tool_frames)
+    return frames
+
+
 class Loop:
     """One run's state machine. ``handle`` consumes one controller frame and returns
     the engine frames it triggers. The loop starts after a successful handshake."""
@@ -217,7 +236,7 @@ class Loop:
             self.log("safe_boundary", boundary="before_tool", tool_call_id=call_id)
             frames.append(self._tool_request_frame(call_id, call, reply_to))
         self.state = State.AWAITING_TOOLS
-        return frames
+        return _stamp_tool_batch(frames)
 
     def _tool_request_frame(self, call_id: str, call: dict, reply_to: str | None) -> dict:
         """Build one tool.request frame (shared by the forward dispatch and the restore re-emit, so
@@ -455,7 +474,7 @@ class Loop:
                 frames.append(self._child_request_frame(child_id, spec, None))
             else:
                 frames.append(self._tool_request_frame(call_id, call, None))
-        return frames
+        return _stamp_tool_batch(frames)
 
     def _reemit_pending_children(self) -> list[dict]:
         """Re-derive the child.request for every outstanding config-seeded delegation (spec §25.18)."""
