@@ -415,20 +415,27 @@ func (f *slackFixture) reservedSourceEvents(t *testing.T, route string) []string
 // answer is zero, computed rather than asserted.
 func (f *slackFixture) contextEntitiesThatGainedAuthority(t *testing.T, runID string) int {
 	t.Helper()
-	var org, project, revision string
+	// THE TENANT IS THE PROJECT. This read still named organization_id, a column that no longer exists, so it
+	// could only ever have failed here — and the term it fed below (`org != f.org`) had already gone vacuous
+	// on both sides, f.org having lost its last assignment with the column.
+	var project, revision string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT organization_id, project_id, COALESCE(agent_revision_id,'') FROM runs WHERE id=$1`, runID).
-		Scan(&org, &project, &revision); err != nil {
+		`SELECT project_id, COALESCE(agent_revision_id,'') FROM runs WHERE id=$1`, runID).
+		Scan(&project, &revision); err != nil {
 		t.Fatalf("read the context-carrying run's identity: %v", err)
 	}
 	var foreignPrincipals int
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(*) FROM idempotency_records
-		  WHERE  project_id=$1 AND route=$2 AND principal_id <> $3`, f.project, uat.AgentSurfaceAdmissionRoute, f.principal).Scan(&foreignPrincipals); err != nil {
+		  WHERE project_id=$1 AND route=$2 AND principal_id <> $3`, f.project, uat.AgentSurfaceAdmissionRoute, f.principal).Scan(&foreignPrincipals); err != nil {
 		t.Fatalf("count reservations taken under a foreign principal: %v", err)
 	}
+	// NON-VACUITY: the run must actually PIN a project and a revision, or "it did not change" says nothing.
+	if project == "" || revision == "" {
+		t.Fatalf("the run pins project=%q revision=%q; an empty side makes every comparison below vacuous", project, revision)
+	}
 	gained := foreignPrincipals
-	for _, mismatch := range []bool{org != f.org, project != f.project, revision != f.revision} {
+	for _, mismatch := range []bool{project != f.project, revision != f.revision} {
 		if mismatch {
 			gained++
 		}

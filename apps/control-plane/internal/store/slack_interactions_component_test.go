@@ -311,7 +311,7 @@ func (f *slackFixture) seedApproval(t *testing.T, channel, root string) seededAp
 	if err := f.pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT t.session_id, r.id, COALESCE(r.response_id,'')
 		   FROM slack_thread_sessions t JOIN runs r ON r.session_id = t.session_id
-		  WHERE  t.channel_id=$1 AND t.thread_ts=$2`, channel, root).Scan(&sessionID, &runID, &responseID); err != nil {
+		  WHERE t.project_id=$1 AND t.channel_id=$2 AND t.thread_ts=$3`, f.project, channel, root).Scan(&sessionID, &runID, &responseID); err != nil {
 		t.Fatalf("read the seeded thread's session/run: %v", err)
 	}
 
@@ -409,7 +409,7 @@ func (f *slackFixture) threadMessageTS(t *testing.T, channel, root string) strin
 	var ts string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT COALESCE(last_bot_message_ts,'') FROM slack_thread_sessions
-		  WHERE  channel_id=$1 AND thread_ts=$2`, channel, root).Scan(&ts); err != nil {
+		  WHERE project_id=$1 AND channel_id=$2 AND thread_ts=$3`, f.project, channel, root).Scan(&ts); err != nil {
 		t.Fatalf("read last_bot_message_ts: %v", err)
 	}
 	return ts

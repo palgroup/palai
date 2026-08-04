@@ -75,11 +75,15 @@ func (h *fakeSlackFileHost) seen() []fileFetch {
 }
 
 // inboundWrite is one artifact the bridge asked to persist.
+//
+// There is no `org` here any more, and its absence is the point: the recorder never set one (the writer
+// takes a project), so the tenancy assertion below compared "" to "" and could not fail. The project is
+// the tenant.
 type inboundWrite struct {
-	org, project, id string
-	mediaType        string
-	size             int
-	provenance       map[string]any
+	project, id string
+	mediaType   string
+	size        int
+	provenance  map[string]any
 }
 
 // recordingInboundArtifacts stands in for the object store and records the ORDER of the two calls, which is
@@ -253,8 +257,11 @@ func TestSlackSharedImageBecomesAnImageRefInTheRunInput(t *testing.T) {
 		t.Fatalf("artifact writes = %d (%v), want 1", len(writes), writes)
 	}
 	w := writes[0]
-	if w.org != f.org || w.project != f.project {
-		t.Fatalf("artifact written into %s/%s, want the connection's own tenant %s/%s", w.org, w.project, f.org, f.project)
+	if w.project == "" {
+		t.Fatal("the artifact was written into an EMPTY project, so the tenancy check below would be vacuous")
+	}
+	if w.project != f.project {
+		t.Fatalf("artifact written into project %s, want the connection's own tenant %s", w.project, f.project)
 	}
 	if w.mediaType != "image/png" || w.size != len(componentPNG) {
 		t.Fatalf("artifact = %s/%d bytes, want image/png and %d", w.mediaType, w.size, len(componentPNG))

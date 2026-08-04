@@ -29,12 +29,16 @@ package uat
 // The join to responses goes through the reservation's stored projection (response_body->>'id'), because
 // idempotency_records carries no response FK — the projection is what the bridge wrote and what a replay
 // hands back, so it names exactly the one response the reservation settled on.
+//
+// THE TENANT HALF OF THE JOIN IS project_id ALONE. It named organization_id too, and that column left with
+// the organizations table — so this predicate did not return the wrong rows, it did not EXECUTE at all
+// (`column i.organization_id does not exist`). The component test above is the only reason that was ever
+// seen: the live smokes this SQL exists for cannot run without a real workspace credential.
 const SlackBornRunsByTeam = `
 	SELECT split_part(i.idempotency_key, ':', 2), r.id
 	  FROM responses r
 	  JOIN idempotency_records i
-	    ON i.organization_id = r.organization_id
-	   AND i.project_id = r.project_id
+	    ON i.project_id = r.project_id
 	   AND i.response_body->>'id' = r.id
 	 WHERE i.route = '/v1/slack/events'
 	   AND i.idempotency_key LIKE $1 || ':%'

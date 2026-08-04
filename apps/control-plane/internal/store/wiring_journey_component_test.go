@@ -222,12 +222,13 @@ func TestWiringJourney(t *testing.T) {
 	// ---- 1. register the workspace over the SHIPPED admin route ---------------------------------------
 	//
 	// This is the step that did not exist before T9. The registration names secret_ref HANDLES; the values
-	// live in the fixture's org-scoped secret bridge, exactly as production resolves them from secret_refs.
+	// live in the fixture's secret bridge, keyed on the ref ALONE, exactly as production resolves them —
+	// a ref name is installation-wide since A.2 Task 6 (main.go's slackSecretResolver).
 	team := strings.ToUpper(newID("T"))
 	const signingRef, botRef, appRef = "slack/wiring/signing", "slack/wiring/bot", "slack/wiring/app"
-	f.secrets[f.org+"/"+signingRef] = f.secret
-	f.secrets[f.org+"/"+botRef] = f.botToken
-	f.secrets[f.org+"/"+appRef] = f.appToken
+	f.secrets[signingRef] = f.secret
+	f.secrets[botRef] = f.botToken
+	f.secrets[appRef] = f.appToken
 
 	resp, raw := f.authed(t, http.MethodPost, "/v1/slack-connections", fmt.Sprintf(
 		`{"team_id":%q,"bot_user_id":%q,"signing_secret_ref":%q,"bot_token_ref":%q,"app_token_ref":%q,

@@ -47,13 +47,14 @@ import (
 type slackFixture struct {
 	// repo is the REAL api.Admitter this fixture serves — held so a sibling harness (the E19 T9 wiring
 	// journey) can mount the rest of the production router over the same store rather than opening a second.
-	repo      *store.Store
-	pool      *pgxpool.Pool
-	url       string
-	secret    []byte
-	botToken  []byte
-	appToken  []byte // the Socket Mode app-level (xapp-) token, E19 T3
-	org       string
+	repo     *store.Store
+	pool     *pgxpool.Pool
+	url      string
+	secret   []byte
+	botToken []byte
+	appToken []byte // the Socket Mode app-level (xapp-) token, E19 T3
+	// No `org` — it lost its last assignment when organizations went, and while it stayed on this struct it
+	// was a zero value that two tenancy assertions compared against and could never fail.
 	project   string
 	principal string
 	revision  string
@@ -305,7 +306,7 @@ func newSlackFixture(t *testing.T) *slackFixture {
 		repo: repo, pool: pool, secret: []byte("component-signing-secret-not-a-credential"),
 		botToken: []byte("xoxb-component-fake-not-a-credential"),
 		appToken: []byte("xapp-1-component-fake-not-a-credential"),
-		project: newID("prj"), principal: newID("prin"),
+		project:  newID("prj"), principal: newID("prin"),
 		revision: newID("arev"), team: strings.ToUpper(newID("T")), botUser: newID("Ubot"),
 		slack: &fakeSlackWebAPI{},
 	}
@@ -332,12 +333,17 @@ func newSlackFixture(t *testing.T) *slackFixture {
 		t.Fatalf("register the Slack workspace: %v", err)
 	}
 
-	// The org-scoped secret bridge, the production resolver's shape: a ref only resolves under the org it was
-	// provisioned in, so a connection can never redeem another tenant's secret.
+	// The secret bridge, in the production resolver's shape: KEYED ON THE REF ALONE. main.go's
+	// slackSecretResolver says it in as many words — "the <ORG>__ segment and the per-tenant boundary it
+	// claimed both left with A.2 Task 6: secretEnvKey keys on the ref alone and a ref name is
+	// installation-wide". This map was still building `<org>/<ref>` keys while the lookup below had already
+	// been swept to a bare ref, so NOTHING resolved: every signing secret came back missing and all 85 tests
+	// served by this fixture died on a 401. That 401 is production behaving CORRECTLY — an unresolved ref
+	// fails verification rather than accepting unsigned, which is the one direction a receiver may fail.
 	f.secrets = map[string][]byte{
-		f.org + "/" + signingRef: f.secret,
-		f.org + "/" + botRef:     f.botToken,
-		f.org + "/" + appRef:     f.appToken,
+		signingRef: f.secret,
+		botRef:     f.botToken,
+		appRef:     f.appToken,
 	}
 	secrets := func(ref string) ([]byte, error) {
 		secret, ok := f.secrets[ref]
@@ -1113,7 +1119,7 @@ func TestSlackClosedSessionDoesNotBrickTheThread(t *testing.T) {
 	var state string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT s.state FROM slack_thread_sessions t JOIN sessions s ON s.id = t.session_id
-		  WHERE  t.thread_ts=$1`, root).Scan(&state); err != nil {
+		  WHERE t.project_id=$1 AND t.thread_ts=$2`, f.project, root).Scan(&state); err != nil {
 		t.Fatalf("read the repaired correlation: %v", err)
 	}
 	if state != "active" {
