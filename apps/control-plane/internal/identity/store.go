@@ -74,21 +74,32 @@ type tenantSeed struct {
 	poolID string
 }
 
-// provision inserts a tenant seed in one system-scoped transaction. Organization creation must run under
-// the system scope: no palai.org_id exists yet for the org being born, so the RLS policies would otherwise
-// deny every insert. Every statement is ON CONFLICT DO NOTHING, so a re-run against an already-seeded id
-// is a clean no-op (the bootstrap re-boot path).
-func (s *Store) provision(ctx context.Context, seed tenantSeed) error {
+// systemTx runs body in one system-scoped transaction and commits it. Tenant creation must run under the
+// system scope: no palai.org_id/palai.project_id exists yet for the tenant being born, so the RLS policies
+// would otherwise deny every insert. The commit is HERE rather than in each caller because a helper that
+// returns before committing discards the write while every error check still reads as success.
+func (s *Store) systemTx(ctx context.Context, body func(context.Context, pgx.Tx) error) error {
 	ctx = storage.WithSystemScope(ctx)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin provision: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-
-	if _, err := tx.Exec(ctx, storage.Query("InsertOrganization"), seed.orgID, seed.orgName); err != nil {
-		return fmt.Errorf("insert organization: %w", err)
+	if err := body(ctx, tx); err != nil {
+		return err
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit provision: %w", err)
+	}
+	return nil
+}
+
+// seedTenant inserts the four rows a tenant is born with: its project, a service principal, an admin API
+// key (hash only — the bearer value never persists), and its default runner pool. Every statement is
+// ON CONFLICT DO NOTHING, so a re-run against an already-seeded id is a clean no-op (the bootstrap re-boot
+// path). The two creation paths differ in exactly one row above these four — the organization — so they
+// share this body rather than each carrying its own copy of the four.
+func seedTenant(ctx context.Context, tx pgx.Tx, seed tenantSeed) error {
 	if _, err := tx.Exec(ctx, storage.Query("InsertProject"), seed.projectID, seed.orgID, seed.projectName); err != nil {
 		return fmt.Errorf("insert project: %w", err)
 	}
@@ -105,10 +116,25 @@ func (s *Store) provision(ctx context.Context, seed tenantSeed) error {
 		seed.poolID, seed.orgID, seed.projectID); err != nil {
 		return fmt.Errorf("insert default runner pool: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit provision: %w", err)
-	}
 	return nil
+}
+
+// provision opens an organization and the tenant seeded beneath it, in one system-scoped transaction.
+func (s *Store) provision(ctx context.Context, seed tenantSeed) error {
+	return s.systemTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, storage.Query("InsertOrganization"), seed.orgID, seed.orgName); err != nil {
+			return fmt.Errorf("insert organization: %w", err)
+		}
+		return seedTenant(ctx, tx, seed)
+	})
+}
+
+// provisionProject opens a tenant inside an organization that already exists — the same four rows, without
+// the organization above them. It is what POST /v1/projects runs.
+func (s *Store) provisionProject(ctx context.Context, seed tenantSeed) error {
+	return s.systemTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return seedTenant(ctx, tx, seed)
+	})
 }
 
 // ProvisionFirstOrg seeds the single bootstrap organization and its admin key from bootstrapKey, reusing
@@ -245,7 +271,19 @@ func (s *Store) GetOrganization(ctx context.Context, scope middleware.Scope, id 
 	return api.ProvisionResult{Body: mustJSON(v)}, nil
 }
 
-// CreateProject registers a project in the caller's organization.
+// CreateProject OPENS A TENANT. Until A.2 Task 6 it inserted one projects row and nothing else — no
+// principal, no key — so a project it created could not be used by anybody: the whole tenant (project +
+// service principal + one-time admin key + default runner pool) was reachable ONLY through
+// POST /v1/organizations, and this epic removes organizations. This is where CreateOrganization's
+// remaining three rows moved, so the call that opens a customer and hands back its key still exists.
+//
+// The plaintext admin key is returned exactly once, in this response, and only its hash is stored — the
+// same contract CreateOrganization and CreateAPIKey carry (apiKeyView.Key is omitempty and no read
+// projection ever sets it).
+//
+// SYSTEM-SCOPED, like the organization creation it replaces and for the same reason, stated in
+// provisioningHandler.authorizeSystem: opening a tenant is not an operation ON the caller's tenant, it is
+// the creation of another one. A tenant admin key (empty scopes) therefore no longer reaches this route.
 func (s *Store) CreateProject(ctx context.Context, scope middleware.Scope, body []byte) (api.ProvisionResult, error) {
 	var in struct {
 		DisplayName string `json:"display_name"`
@@ -253,17 +291,40 @@ func (s *Store) CreateProject(ctx context.Context, scope middleware.Scope, body 
 	if err := strictDecode(body, &in); err != nil {
 		return api.ProvisionResult{BadField: true}, nil
 	}
-	scopedCtx, org, err := orgScope(ctx, s.pool, scope.Project)
+	// SCAFFOLDING WITH A NAMED END, in this same task: projects still carry organization_id until the
+	// column drop below this commit, and a row whose organization_id is NULL is invisible to the
+	// organization-keyed RLS policy still on `projects`. So the new tenant is filed under the caller's
+	// own organization — the only one a single installation has — and this lookup disappears with the
+	// column, not before it.
+	organization, err := storage.OrganizationForProject(ctx, s.pool, scope.Project)
 	if err != nil {
+		return api.ProvisionResult{}, fmt.Errorf("resolve organization for project: %w", err)
+	}
+	seed := tenantSeed{
+		orgID:       organization,
+		projectID:   middleware.NewID("prj"),
+		projectName: in.DisplayName,
+		principalID: middleware.NewID("prin"),
+		keyID:       middleware.NewID("key"),
+		scopes:      []string{},
+		poolID:      middleware.NewID("pool"),
+	}
+	secret := newSecret()
+	seed.keyHash = coordinator.HashAPIKey(secret)
+	if err := s.provisionProject(ctx, seed); err != nil {
 		return api.ProvisionResult{}, err
 	}
-	ctx = scopedCtx
-	projID := middleware.NewID("prj")
-	if _, err := s.pool.Exec(ctx, storage.Query("InsertProject"), projID, org, in.DisplayName); err != nil {
-		return api.ProvisionResult{}, fmt.Errorf("insert project: %w", err)
+	out := projectCreated{
+		projectView: projectView{
+			ID: seed.projectID, Object: "project", OrganizationID: organization,
+			DisplayName: in.DisplayName, ConfigPolicy: json.RawMessage("null"),
+		},
+		AdminAPIKey: apiKeyView{
+			ID: seed.keyID, Object: "api_key", OrganizationID: organization,
+			ProjectID: seed.projectID, PrincipalID: seed.principalID, Scopes: seed.scopes, Key: secret,
+		},
 	}
-	v := projectView{ID: projID, Object: "project", OrganizationID: org, DisplayName: in.DisplayName, ConfigPolicy: json.RawMessage("null")}
-	return api.ProvisionResult{Body: mustJSON(v)}, nil
+	return api.ProvisionResult{Body: mustJSON(out)}, nil
 }
 
 // ListProjects lists every project in the caller's organization.
@@ -500,6 +561,13 @@ type organizationCreated struct {
 	organizationView
 	DefaultProjectID string     `json:"default_project_id"`
 	AdminAPIKey      apiKeyView `json:"admin_api_key"`
+}
+
+// projectCreated is the create-only projection: the project plus the admin key whose plaintext this
+// response is the sole place to read. Reads render projectView, which has no key field at all.
+type projectCreated struct {
+	projectView
+	AdminAPIKey apiKeyView `json:"admin_api_key"`
 }
 
 type projectView struct {

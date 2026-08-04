@@ -23,6 +23,12 @@ export interface Project {
   config_policy?: unknown;
   [key: string]: unknown;
 }
+// ProjectCreated is the other place a fresh tenant's admin key plaintext is disclosed: since A.2 T6,
+// creating a project OPENS a tenant (project + service principal + admin key), the job organization
+// creation used to hold alone. Every later read renders metadata only.
+export interface ProjectCreated extends Project {
+  admin_api_key: ApiKeyCreated;
+}
 export interface ApiKey {
   id: string;
   object: string;
@@ -80,8 +86,11 @@ export class Projects {
   constructor(client: Palai) {
     this.#client = client;
   }
-  async create(params: ProjectCreateParams, options: CallOptions = {}): Promise<Project> {
-    const r = await this.#client.request<Project>("POST", "/v1/projects", { body: params, ...callArgs(options) });
+  // create OPENS a tenant (201) and the response discloses its admin key plaintext once. It requires a key
+  // with the `system` capability, not merely `provision` — opening a tenant is not an operation on the
+  // caller's own tenant.
+  async create(params: ProjectCreateParams, options: CallOptions = {}): Promise<ProjectCreated> {
+    const r = await this.#client.request<ProjectCreated>("POST", "/v1/projects", { body: params, ...callArgs(options) });
     return r.body;
   }
   async list(options: CallOptions = {}): Promise<ListView<Project>> {

@@ -12,8 +12,9 @@ import (
 // TEN-003/MCI-001): organizations, projects (+ the §14 config_policy write-path), and API keys. The
 // Postgres-backed internal/identity store implements it; production wires it, and tiers that never
 // provision pass nil so the routes stay unmounted. Every method is scoped by the verified identity,
-// never a request-body field. Organization CREATION is the single genuinely cross-tenant operation (it
-// establishes a new tenant, like bootstrap) — every other method acts within the caller's own organization.
+// never a request-body field. CreateOrganization and CreateProject are the genuinely cross-tenant
+// operations (each establishes a new tenant, like bootstrap, and each returns an admin key's plaintext
+// exactly once) — every other method acts within the caller's own tenant.
 type ProvisioningAPI interface {
 	CreateOrganization(ctx context.Context, scope middleware.Scope, body []byte) (ProvisionResult, error)
 	ListOrganizations(ctx context.Context, scope middleware.Scope) (ProvisionResult, error)
@@ -61,9 +62,8 @@ func (h *provisioningHandler) createOrganization(w http.ResponseWriter, r *http.
 	if !ok {
 		return
 	}
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	if err != nil {
-		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body could not be read")
+	raw, ok := h.readBody(w, r)
+	if !ok {
 		return
 	}
 	out, err := h.provisioning.CreateOrganization(r.Context(), scope, raw)
@@ -88,8 +88,15 @@ func (h *provisioningHandler) getOrganization(w http.ResponseWriter, r *http.Req
 	h.write(w, r, out, err, http.StatusOK, "")
 }
 
+// createProject OPENS A TENANT — project, service principal, and a one-time admin key — so it is gated on
+// middleware.ScopeSystem exactly as organization creation is, not on the `provision` capability the rest of
+// this surface carries. See authorizeSystem for why the two are different questions.
 func (h *provisioningHandler) createProject(w http.ResponseWriter, r *http.Request) {
-	scope, raw, ok := h.begin(w, r)
+	scope, ok := h.authorizeSystem(w, r)
+	if !ok {
+		return
+	}
+	raw, ok := h.readBody(w, r)
 	if !ok {
 		return
 	}
@@ -165,8 +172,9 @@ func (h *provisioningHandler) revokeAPIKey(w http.ResponseWriter, r *http.Reques
 
 // authorizeSystem is the platform gate. It is a SEPARATE function from authorize rather than a flag on
 // it, because the two answer different questions: authorize asks "may this tenant do this to itself",
-// this asks "is this the platform". Opening a tenant is the second question — a new organization is not
-// an operation ON the caller's tenant, it is the creation of another one.
+// this asks "is this the platform". Opening a tenant is the second question — a new tenant is not an
+// operation ON the caller's tenant, it is the creation of another one. Two routes ask it:
+// POST /v1/organizations, and POST /v1/projects since A.2 Task 6 gave it the tenant-opening job.
 func (h *provisioningHandler) authorizeSystem(w http.ResponseWriter, r *http.Request) (middleware.Scope, bool) {
 	scope, ok := middleware.ScopeFrom(r.Context())
 	if !ok {
@@ -195,18 +203,28 @@ func (h *provisioningHandler) authorize(w http.ResponseWriter, r *http.Request) 
 	return scope, true
 }
 
-// begin authorizes and reads the bounded body, shared by the create/patch handlers.
+// begin authorizes and reads the bounded body, shared by the create/patch handlers gated on `provision`.
 func (h *provisioningHandler) begin(w http.ResponseWriter, r *http.Request) (middleware.Scope, []byte, bool) {
 	scope, ok := h.authorize(w, r)
 	if !ok {
 		return middleware.Scope{}, nil, false
 	}
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	if err != nil {
-		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body could not be read")
+	raw, ok := h.readBody(w, r)
+	if !ok {
 		return middleware.Scope{}, nil, false
 	}
 	return scope, raw, true
+}
+
+// readBody reads the bounded request body. It is separate from begin because the two tenant-OPENING
+// routes authorize differently (authorizeSystem) but read the body identically.
+func (h *provisioningHandler) readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body could not be read")
+		return nil, false
+	}
+	return raw, true
 }
 
 // write renders a provisioning outcome: the typed rejects first, then 2xx with the resource (and a

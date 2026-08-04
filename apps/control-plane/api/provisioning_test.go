@@ -100,7 +100,6 @@ func TestProvisioningSurface(t *testing.T) {
 	}{
 		{"GET", "/v1/organizations", ``, "", http.StatusOK},
 		{"GET", "/v1/organizations/org_9", ``, "", http.StatusOK},
-		{"POST", "/v1/projects", `{"display_name":"p"}`, "/v1/projects/x_1", http.StatusCreated},
 		{"GET", "/v1/projects", ``, "", http.StatusOK},
 		{"GET", "/v1/projects/prj_9", ``, "", http.StatusOK},
 		{"PATCH", "/v1/projects/prj_9", `{"config_policy":{"allowed_models":["m"]}}`, "", http.StatusOK},
@@ -119,22 +118,34 @@ func TestProvisioningSurface(t *testing.T) {
 		}
 	}
 
-	// Organization creation is gated on middleware.ScopeSystem, not on the ordinary admin key above — its
-	// own server, backed by its own system-scoped key, so the shared `admin` verifier stays exactly what
-	// its name says: a tenant admin, which is no longer enough to open a tenant.
-	platform := scopedVerifier{middleware.Scope{Scopes: []string{middleware.ScopeSystem}}}
+	// The two TENANT-OPENING routes are gated on middleware.ScopeSystem, not on the ordinary admin key
+	// above — their own server, backed by its own system-scoped key, so the shared `admin` verifier stays
+	// exactly what its name says: a tenant admin, which is not enough to open a tenant. POST /v1/projects
+	// joined this pair in A.2 Task 6, when it took over CreateOrganization's job of minting the tenant's
+	// principal and one-time admin key.
+	platform := scopedVerifier{middleware.Scope{Project: "prj_1", Scopes: []string{middleware.ScopeSystem}}}
 	platformBase := provisioningTestServer(t, platform, fake)
-	orgResp := do(t, "POST", platformBase+"/v1/organizations", `{"display_name":"acme"}`, nil)
-	if orgResp.StatusCode != http.StatusCreated {
-		t.Fatalf("POST /v1/organizations with a system-scoped key status = %d, want %d", orgResp.StatusCode, http.StatusCreated)
-	}
-	if got := orgResp.Header.Get("Location"); got != "/v1/organizations/x_1" {
-		t.Fatalf("POST /v1/organizations Location = %q, want %q", got, "/v1/organizations/x_1")
+	for _, open := range []struct{ path, wantLoc string }{
+		{"/v1/organizations", "/v1/organizations/x_1"},
+		{"/v1/projects", "/v1/projects/x_1"},
+	} {
+		resp := do(t, "POST", platformBase+open.path, `{"display_name":"acme"}`, nil)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("POST %s with a system-scoped key status = %d, want %d", open.path, resp.StatusCode, http.StatusCreated)
+		}
+		if got := resp.Header.Get("Location"); got != open.wantLoc {
+			t.Fatalf("POST %s Location = %q, want %q", open.path, got, open.wantLoc)
+		}
+		// The same route with a tenant admin key (empty scopes, no system) is refused — the gate is the
+		// route's, not the platform verifier's.
+		if refused := do(t, "POST", base+open.path, `{"display_name":"acme"}`, nil); refused.StatusCode != http.StatusForbidden {
+			t.Fatalf("POST %s with a tenant admin key status = %d, want 403", open.path, refused.StatusCode)
+		}
 	}
 
 	// A strict-decode reject renders 400, an absent resource renders 404 — the typed store outcomes.
 	fake.create = ProvisionResult{BadField: true}
-	if resp := do(t, "POST", base+"/v1/projects", `{"nope":1}`, nil); resp.StatusCode != http.StatusBadRequest {
+	if resp := do(t, "POST", platformBase+"/v1/projects", `{"nope":1}`, nil); resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown-field create status = %d, want 400", resp.StatusCode)
 	}
 	fake.create = ProvisionResult{MissingField: "project_id"}
@@ -148,7 +159,10 @@ func TestProvisioningSurface(t *testing.T) {
 }
 
 // TestProvisioningRequiresProvisionScope proves the basic-scope gate: a key whose non-empty scopes omit
-// `provision` is refused (403) on every provisioning route, while an admin key (empty scopes) is admitted.
+// `provision` is refused (403) on every provisioning route, and reaches the store on none of them. The two
+// tenant-OPENING routes in the list (POST /v1/organizations, POST /v1/projects) are refused by the
+// stricter system gate rather than this one — TestProvisioningSurface is where that difference is pinned,
+// because a run-only key fails both and so cannot tell them apart.
 func TestProvisioningRequiresProvisionScope(t *testing.T) {
 	runOnly := scopedVerifier{middleware.Scope{Project: "prj_1", Scopes: []string{"run"}}}
 	fake := &fakeProvisioning{create: ProvisionResult{Body: []byte(`{"id":"x_1"}`)}, read: ProvisionResult{Body: []byte(`{}`)}}

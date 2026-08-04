@@ -116,6 +116,105 @@ func TestProvisionSecondTenantViaAPI(t *testing.T) {
 	}
 }
 
+// TestCreateProjectOpensAUsableTenant is the replacement contract for POST /v1/organizations, which A.2
+// Task 6 removes: the call that opens a customer must still hand back a working credential. It proves four
+// things about ONE CreateProject call, in the order they would fail if the row it used to insert alone were
+// all it still inserted:
+//
+//	(1) the response carries an admin key plaintext,
+//	(2) that plaintext resolves through the PRODUCTION credential path (VerifyAPIKey) onto the new project
+//	    — which can only happen if the principal and the api_keys row were both written,
+//	(3) the plaintext is NOT recoverable afterwards: neither the key's own read projection nor the listing
+//	    carries it, and what is stored is the hash, not the secret, and
+//	(4) the tenant is usable: its project resolves and its own scope reads it back.
+//
+// It drives the store the router drives, not a hand-built seed, so a regression in which row is written
+// lands here rather than in a fixture.
+func TestCreateProjectOpensAUsableTenant(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	idstore := identity.New(cs.Pool())
+
+	_, parent, _ := provisionOrg(t, idstore, "tenant-opener")
+
+	out, err := idstore.CreateProject(ctx, middleware.Scope{Project: parent}, []byte(`{"display_name":"opened"}`))
+	if err != nil {
+		t.Fatalf("CreateProject error = %v", err)
+	}
+	var created struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"display_name"`
+		AdminAPIKey struct {
+			ID          string   `json:"id"`
+			PrincipalID string   `json:"principal_id"`
+			ProjectID   string   `json:"project_id"`
+			Scopes      []string `json:"scopes"`
+			Key         string   `json:"key"`
+		} `json:"admin_api_key"`
+	}
+	if err := json.Unmarshal(out.Body, &created); err != nil {
+		t.Fatalf("decode project body: %v", err)
+	}
+	// (1) the one and only disclosure.
+	if !strings.HasPrefix(created.AdminAPIKey.Key, "sk_") {
+		t.Fatalf("CreateProject body carries no admin key plaintext: %s", out.Body)
+	}
+	if created.ID == "" || created.ID == parent {
+		t.Fatalf("CreateProject returned project id %q, want a fresh one (parent %s)", created.ID, parent)
+	}
+	if created.AdminAPIKey.ProjectID != created.ID || created.AdminAPIKey.PrincipalID == "" {
+		t.Fatalf("admin key is not bound to the new project: %s", out.Body)
+	}
+
+	// (2) the production credential path, not a query written for this test.
+	scope, err := cs.VerifyAPIKey(ctx, created.AdminAPIKey.Key)
+	if err != nil {
+		t.Fatalf("VerifyAPIKey(new project's admin key) error = %v", err)
+	}
+	if scope.Project != created.ID {
+		t.Fatalf("the new admin key resolved to project %s, want %s", scope.Project, created.ID)
+	}
+	if scope.Principal != created.AdminAPIKey.PrincipalID {
+		t.Fatalf("the new admin key resolved to principal %s, want %s", scope.Principal, created.AdminAPIKey.PrincipalID)
+	}
+
+	// (3) exactly once: no read renders it again, and the stored verifier is the hash.
+	tenantScope := middleware.Scope{Project: created.ID}
+	read, err := idstore.GetAPIKey(ctx, tenantScope, created.AdminAPIKey.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKey error = %v", err)
+	}
+	list, err := idstore.ListAPIKeys(ctx, tenantScope)
+	if err != nil {
+		t.Fatalf("ListAPIKeys error = %v", err)
+	}
+	for label, body := range map[string]string{"GetAPIKey": string(read.Body), "ListAPIKeys": string(list.Body)} {
+		if strings.Contains(body, created.AdminAPIKey.Key) || strings.Contains(body, `"key"`) {
+			t.Fatalf("%s re-disclosed the admin key plaintext: %s", label, body)
+		}
+	}
+	var stored string
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx),
+		`SELECT key_hash FROM api_keys WHERE id = $1`, created.AdminAPIKey.ID).Scan(&stored); err != nil {
+		t.Fatalf("read stored key_hash: %v", err)
+	}
+	if stored == created.AdminAPIKey.Key || stored == "" {
+		t.Fatalf("api_keys stored the bearer value itself (%q), not a hash", stored)
+	}
+	if stored != coordinator.HashAPIKey(created.AdminAPIKey.Key) {
+		t.Fatal("the stored verifier is not the hash of the disclosed plaintext")
+	}
+
+	// (4) the tenant is usable under its own scope.
+	got, err := idstore.GetProject(ctx, tenantScope, created.ID)
+	if err != nil || got.NotFound {
+		t.Fatalf("GetProject(own project) error = %v notFound = %v", err, got.NotFound)
+	}
+	if !strings.Contains(string(got.Body), `"display_name":"opened"`) {
+		t.Fatalf("the opened project reads back as %s", got.Body)
+	}
+}
+
 // TestConfigPolicyResolverReachable proves the §14 project layer is now API-reachable: a config_policy
 // written through UpdateProjectPolicy is read back by the coordinator's resolver, the exact path a run's
 // admission/config resolution consults.

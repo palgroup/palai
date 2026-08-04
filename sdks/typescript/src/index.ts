@@ -35,6 +35,7 @@ export type {
   Organization,
   OrganizationCreated,
   Project,
+  ProjectCreated,
   ApiKey,
   ApiKeyCreated,
   OrganizationCreateParams,

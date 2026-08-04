@@ -213,8 +213,10 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	// The tenancy provisioning surface (spec §39.2, E13 Task 2, TEN-003/MCI-001): organizations, projects
 	// (+ the §14 config_policy PATCH write-path), and API keys. Durable identity, not idempotent operations,
 	// so no Idempotency-Key. Every route is scoped by the verified key and gated on the `provision`
-	// capability; organization creation is the one cross-tenant op (it opens a new tenant, so a second tenant
-	// is provisioned with NO restart). nil in tiers that never provision (the Docker-free conformance tiers).
+	// capability, EXCEPT the two that open a tenant — POST /v1/organizations and, since A.2 Task 6,
+	// POST /v1/projects — which are gated on `system` and each return a tenant admin key's plaintext once,
+	// so a new tenant is provisioned with NO restart. nil in tiers that never provision (the Docker-free
+	// conformance tiers).
 	if provisioning != nil {
 		ph := &provisioningHandler{provisioning: provisioning}
 		mux.HandleFunc("POST /v1/organizations", ph.createOrganization)
