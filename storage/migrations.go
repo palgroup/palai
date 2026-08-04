@@ -15,9 +15,12 @@ import (
 // //go:embed string vars in embed.go stay the source for the concatenated MigrationUp()/MigrationDown()
 // (the down-mirror Rollback still uses); this FS is only the split view.
 //
-// ponytail: the up files are embedded twice (a few KB). The clean fold — deriving MigrationUp() itself
-// from this FS and deleting the per-file up vars — waits until someone retires the hand-written concat;
-// it is a bigger, riskier edit to a load-bearing file than this task warrants.
+// ponytail: the up files are embedded twice. That was "a few KB" across sixty-seven small files and is
+// now ~190KB across two big ones, so the cost moved — but the fold that would remove it (deriving
+// MigrationUp() from this FS and deleting the per-file up vars) is NOT the cheap win the size suggests:
+// the two forms exist to be compared, and TestOrderedMigrationsIsContiguousVersionOrder checks that the
+// concatenation carries every migration's body. Derive one from the other and that check asserts a string
+// contains itself. Pay the duplication, keep the comparison.
 //
 //go:embed migrations/*.up.sql
 var migrationFS embed.FS

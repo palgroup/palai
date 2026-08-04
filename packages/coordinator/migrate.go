@@ -12,10 +12,14 @@ import (
 	"github.com/palgroup/palai/storage"
 )
 
-// journalIntroVersion is the migration that creates the schema_revisions journal (000033). The boot
-// runner records a journal row only from this version on; earlier migrations predate the journal and
-// stay recorded in schema_migrations alone.
-const journalIntroVersion = 33
+// EVERY MIGRATION IS JOURNALED, AND THERE IS NO LONGER A VERSION BELOW WHICH IT IS NOT. The old
+// sixty-seven-link chain introduced schema_revisions two thirds of the way along, so the runner carried a
+// `journalIntroVersion = 33` floor and the links before it were recorded in schema_migrations alone. The
+// baseline creates the journal table in 000001, so the floor would now be `>= 1` — a branch that can never
+// be false, which is a worse thing to leave in the tree than the constant was to remove.
+//
+// The floor was also a live trap during the squash: left at 33 against a two-link chain it would have
+// silently journaled NOTHING, and schema_revisions would have been an empty table nobody noticed.
 
 // migrationLockKey is the fixed 64-bit key the boot chain holds a pg_advisory_lock on so only one
 // migrator runs at a time (the bytes spell "PALAI_MG"). Any stable arbitrary constant works; it only has
@@ -40,10 +44,16 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	// Single active migrator: hold a session advisory lock across the WHOLE chain on a dedicated
 	// connection, so two control-planes booting at once (E15's multi-replica K8s) serialize — the second
-	// waits, then re-runs the idempotent chain as a no-op. Without it, because usage_events is
-	// create(000001)/drop(000034) every boot, two concurrent chains race on a CREATE/DROP (23505 or a
-	// catalog 42P01) and one boot fails. The lock is session-scoped, so it auto-releases if this migrator
-	// crashes — a dead migrator never wedges the next boot.
+	// waits, then re-runs the idempotent chain as a no-op.
+	//
+	// IDEMPOTENT IS NOT THE SAME AS CONCURRENCY-SAFE, which is why the lock survived the squash. The old
+	// chain's create(000001)/drop(000034) of usage_events was the sharpest example and that table is gone,
+	// but `CREATE TABLE IF NOT EXISTS` is itself not atomic against another session creating the same
+	// table: both see it absent, both create, and one gets a 23505 on the catalogue's unique index. With
+	// ninety-five tables that race is likelier now, not less likely.
+	//
+	// The lock is session-scoped, so it auto-releases if this migrator crashes — a dead migrator never
+	// wedges the next boot.
 	lockConn, err := s.pool.Acquire(storage.WithSystemScope(ctx))
 	if err != nil {
 		return fmt.Errorf("acquire migration lock connection: %w", err)
@@ -80,7 +90,7 @@ func (s *Store) applyMigration(ctx context.Context, m storage.Migration) error {
 		return fmt.Errorf("acquire migration connection: %w", err)
 	}
 	defer conn.Release()
-	// RESET ROLE so DDL runs as the owning role: the runtime role (migration 000029's palai_app) owns
+	// RESET ROLE so DDL runs as the owning role: the runtime role (migration 000001's palai_app) owns
 	// nothing and may not ALTER. RESET lasts only this acquisition; the pool re-applies the runtime scope
 	// when the connection is next handed out.
 	if _, err := conn.Exec(ctx, "RESET ROLE"); err != nil {
@@ -107,13 +117,11 @@ func (s *Store) applyMigration(ctx context.Context, m storage.Migration) error {
 	if _, err := tx.Exec(ctx, m.Up); err != nil {
 		return err
 	}
-	if m.Version >= journalIntroVersion {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO schema_revisions (version, checksum, applied_by) VALUES ($1, $2, $3)
-			 ON CONFLICT (version) DO NOTHING`,
-			m.Version, m.Checksum, migratorVersionStamp()); err != nil {
-			return fmt.Errorf("record journal row: %w", err)
-		}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO schema_revisions (version, checksum, applied_by) VALUES ($1, $2, $3)
+		 ON CONFLICT (version) DO NOTHING`,
+		m.Version, m.Checksum, migratorVersionStamp()); err != nil {
+		return fmt.Errorf("record journal row: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
