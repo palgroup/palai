@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/palgroup/palai/adapters/integrations/slack"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"

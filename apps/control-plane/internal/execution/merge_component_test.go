@@ -125,8 +125,8 @@ func (h *mergeHarness) openAndPublishAPullRequest() {
 	if _, err := h.dispatch(tools.PullRequestTool(), redeliveryID("tc"), 1, map[string]any{"title": "t", "body": "b"}); !errors.Is(err, errRunParked) {
 		h.t.Fatalf("the pull-request dispatch did not park: %v", err)
 	}
-	if got := h.click("Uapprover", "approve", h.requestHash()); got.Rejected != "" {
-		h.t.Fatalf("the approver's click on the pull request was refused: %q", got.Rejected)
+	if applied := h.approve("approve", h.requestHash()); applied != 1 {
+		h.t.Fatalf("the approver's decision on the pull request applied %d row(s), want 1", applied)
 	}
 	if n := h.pumpMerge(); n != 1 {
 		h.t.Fatalf("the pull request published %d time(s), want 1: %v", n, h.merger.operations())
@@ -179,18 +179,22 @@ func TestMergePullRequestWithoutAnApprovalPublishesNothing(t *testing.T) {
 		}
 	}
 
-	// An unauthorized click decides nothing either — the merge does not widen who may approve.
+	// An unauthorized decider decides nothing either — the merge does not widen who may approve. The
+	// project's list is narrowed to the harness approver first, because with NO list configured every
+	// tenant key may decide (coordinator.ConfigPolicy.ApproverAllowed's documented posture), and a refusal
+	// asserted against an unconfigured project would be asserting nothing.
 	hash := h.requestHash()
-	if got := h.click("Uintruder", "approve", hash); got.Rejected == "" {
-		t.Fatalf("an unmapped user's click on a MERGE was accepted: %+v", got)
+	h.setApprovers(`{"approvers":["` + publishApprover + `"]}`)
+	if applied := h.approveAs("key_intruder", "approve", hash); applied != 0 {
+		t.Fatalf("a principal the approver list does not name applied %d row(s) on a MERGE, want 0", applied)
 	}
 	if n := h.pumpMerge(); n != 1 {
-		t.Fatalf("the publisher merged after an UNAUTHORIZED click: %v", h.merger.operations())
+		t.Fatalf("the publisher merged after an UNAUTHORIZED decision: %v", h.merger.operations())
 	}
 
 	// And now the approve, which is the other half of the same claim: the gate is a gate, not a wall.
-	if got := h.click("Uapprover", "approve", hash); got.Rejected != "" {
-		t.Fatalf("the authorized approver's click was refused: %q", got.Rejected)
+	if applied := h.approve("approve", hash); applied != 1 {
+		t.Fatalf("the listed approver's decision applied %d row(s), want 1", applied)
 	}
 	if n := h.pumpMerge(); n != 2 {
 		t.Fatalf("the publisher performed %d operation(s) after the approve, want 2 (the PR and the merge): %v",
@@ -258,8 +262,8 @@ func TestMergePullRequestRefusesWhenTheHeadMovedAfterTheApproval(t *testing.T) {
 	if !strings.Contains(display, h.head) {
 		t.Fatalf("the approval detail %q does not name the exact head %s the approve will authorize", display, h.head)
 	}
-	if got := h.click("Uapprover", "approve", h.requestHash()); got.Rejected != "" {
-		t.Fatalf("the approver's click was refused: %q", got.Rejected)
+	if applied := h.approve("approve", h.requestHash()); applied != 1 {
+		t.Fatalf("the approver's decision applied %d row(s), want 1", applied)
 	}
 
 	// THE RACE: the branch advances between the button and the boundary. The approved row still carries the
@@ -337,8 +341,8 @@ func TestMergePullRequestDeniedPreventsTheMergeAndReleasesTheRun(t *testing.T) {
 	if _, err := h.dispatch(tools.MergeTool(), redeliveryID("tc"), 2, nil); !errors.Is(err, errRunParked) {
 		t.Fatalf("the merge dispatch did not park: %v", err)
 	}
-	if got := h.click("Uapprover", "deny", h.requestHash()); got.Rejected != "" {
-		t.Fatalf("the deny click was refused: %q", got.Rejected)
+	if applied := h.approve("deny", h.requestHash()); applied != 1 {
+		t.Fatalf("the deny applied %d row(s), want 1", applied)
 	}
 	if _, state, _, _, _, _ := h.publicationRow("merge_pull_request"); state != "denied" {
 		t.Fatalf("the merge publication is %q after a deny, want denied", state)
@@ -375,8 +379,8 @@ func TestMergePullRequestMethodComesFromTheBindingNotTheModel(t *testing.T) {
 	if _, err := h.dispatch(tools.MergeTool(), redeliveryID("tc"), 2, nil); !errors.Is(err, errRunParked) {
 		t.Fatalf("the merge dispatch did not park: %v", err)
 	}
-	if got := h.click("Uapprover", "approve", h.requestHash()); got.Rejected != "" {
-		t.Fatalf("the approver's click was refused: %q", got.Rejected)
+	if applied := h.approve("approve", h.requestHash()); applied != 1 {
+		t.Fatalf("the approver's decision applied %d row(s), want 1", applied)
 	}
 	if n := h.pumpMerge(); n != 2 {
 		t.Fatalf("the pump published %d time(s), want 2: %v", n, h.merger.operations())
