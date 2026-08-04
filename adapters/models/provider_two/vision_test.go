@@ -117,16 +117,27 @@ func TestBuildBodyOmitsTheTextBlockWhenTheTurnHasNoWords(t *testing.T) {
 // THE REGRESSION GUARD, and it is why images ride a separate field rather than a re-typed Content: a turn
 // with no images must render the SAME single text block it always did, so every text-only run's provider
 // request is byte-identical to the pre-vision one.
+//
+// THE EMPTY CASE IS NOT PADDING — it is the only input that can tell the two branches apart, and it was
+// added because a perturbation proved that. Deleting wireMessages' `len(m.Images) == 0` fast path leaves
+// "merhaba" rendering identically (an imageless turn produces no image blocks either way), so a test
+// carrying only the "merhaba" row stays GREEN while the branch is gone. On the empty turn the two diverge:
+// the fast path keeps the pre-vision {"type":"text","text":""} and the image path emits an empty content
+// array. Both are shapes Anthropic rejects, and that is precisely the point — this change is not entitled
+// to alter what a TEXT-ONLY run sends, not even a degenerate one, so the pre-existing 400 is preserved
+// rather than quietly traded for a different one.
 func TestBuildBodyLeavesATextOnlyTurnUnchanged(t *testing.T) {
-	_, messages := wireBody(t, modelbroker.Request{
-		Messages: []modelbroker.Message{{Role: "user", Content: "merhaba"}},
-	})
-	if messages[0]["role"] != "user" {
-		t.Fatalf("role = %v, want user", messages[0]["role"])
-	}
-	parts := blocks(t, messages[0])
-	if len(parts) != 1 || parts[0]["type"] != "text" || parts[0]["text"] != "merhaba" {
-		t.Fatalf("content = %#v, want exactly one text block saying \"merhaba\"", parts)
+	for _, content := range []string{"merhaba", ""} {
+		_, messages := wireBody(t, modelbroker.Request{
+			Messages: []modelbroker.Message{{Role: "user", Content: content}},
+		})
+		if messages[0]["role"] != "user" {
+			t.Fatalf("content %q: role = %v, want user", content, messages[0]["role"])
+		}
+		parts := blocks(t, messages[0])
+		if len(parts) != 1 || parts[0]["type"] != "text" || parts[0]["text"] != content {
+			t.Fatalf("content %q rendered as %#v, want exactly one text block carrying it", content, parts)
+		}
 	}
 }
 
