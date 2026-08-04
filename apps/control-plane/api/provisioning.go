@@ -37,6 +37,10 @@ type ProvisionResult struct {
 	MissingField string
 	BadField     bool
 	NotFound     bool
+	// InsufficientScope names a capability the request asked to GRANT that the caller does not itself
+	// hold (403). It carries the capability rather than a bool so the refusal can name it: an operator
+	// told only "insufficient scope" on a multi-capability request cannot tell which one was refused.
+	InsufficientScope string
 	// Conflict renders 409: a well-formed request that a current-state precondition refuses (E17 T5
 	// retrieval uses it for a missed freshness deadline under the fail policy, and for a disabled vector
 	// strategy). Other provisioning surfaces leave it false, so their renderers are unaffected.
@@ -207,6 +211,12 @@ func (h *provisioningHandler) write(w http.ResponseWriter, r *http.Request, out 
 		return
 	case out.BadField:
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body carries an unsupported field")
+		return
+	case out.InsufficientScope != "":
+		// 403 rather than 400: the body is well-formed and the capability is real. What is missing is the
+		// caller's own authority to hand it out.
+		middleware.WriteProblem(w, r, http.StatusForbidden, "insufficient_scope",
+			"this API key cannot grant the "+out.InsufficientScope+" capability, which it does not hold itself")
 		return
 	case out.NotFound:
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such project or API key in this scope")

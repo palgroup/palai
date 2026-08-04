@@ -57,13 +57,43 @@ const ScopeSystem = "system"
 
 // HasSystem reports whether this key carries the platform capability. Unlike HasScope, an empty set is
 // NOT unrestricted here — system must be granted explicitly, never inherited.
-func (s Scope) HasSystem() bool {
+func (s Scope) HasSystem() bool { return s.carries(ScopeSystem) }
+
+// carries is literal possession, with no empty-set rule. It is what a NEVER-INHERITED capability is
+// tested with.
+func (s Scope) carries(capability string) bool {
 	for _, c := range s.Scopes {
-		if c == ScopeSystem {
+		if c == capability {
 			return true
 		}
 	}
 	return false
+}
+
+// neverInherited are the capabilities the empty-set rule does NOT hand out. A key with no scopes is an
+// unrestricted TENANT admin; it is not the platform, and it is not whatever privileged capability comes
+// next. Membership here is the single place that distinction is declared, so adding a second privileged
+// capability is one line rather than a second gate somebody has to remember to write.
+var neverInherited = map[string]bool{ScopeSystem: true}
+
+// CanGrant reports whether this key may MINT another key carrying capability.
+//
+// THE RULE IS THAT A KEY CANNOT HAND OUT WHAT IT DOES NOT HOLD, and it is deliberately expressed as
+// "the caller must satisfy the same test that GATES the capability" rather than as a check against
+// `system` by name — a rule written around one capability leaves the next privileged one undefended.
+//
+// The two arms differ because the underlying capabilities differ, not as a special case:
+//   - a never-inherited capability needs LITERAL possession, exactly as its own gate reads it;
+//   - every other capability goes through HasScope, so an unrestricted tenant-admin key (empty set) can
+//     still mint the ordinary keys it has always been able to mint.
+//
+// Writing this with HasScope alone would defeat it entirely: HasScope answers TRUE for an empty set, so
+// the least-scoped key in the system would be the one able to grant everything.
+func (s Scope) CanGrant(capability string) bool {
+	if neverInherited[capability] {
+		return s.carries(capability)
+	}
+	return s.HasScope(capability)
 }
 
 // Verifier resolves a bearer token to its tenant scope. The stored verifier is a

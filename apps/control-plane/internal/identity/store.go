@@ -315,6 +315,19 @@ func (s *Store) CreateAPIKey(ctx context.Context, scope middleware.Scope, body [
 	if scopes == nil {
 		scopes = []string{}
 	}
+	// A KEY CANNOT MINT A KEY MORE CAPABLE THAN ITSELF. Every requested capability is checked against the
+	// caller through middleware.Scope.CanGrant, which applies the SAME test that gates the capability —
+	// literal possession for a never-inherited one, HasScope for the rest.
+	//
+	// This is checked HERE, on the write path, because the route's own gate is the wrong place to look for
+	// it: the provisioning routes are gated on `provision`, and the capability being handed out is a
+	// separate value in the BODY. Reading the gate tells you the caller may create a key; it says nothing
+	// about what may go IN it. Every read-side use of the platform capability was already correct.
+	for _, c := range scopes {
+		if !scope.CanGrant(c) {
+			return api.ProvisionResult{InsufficientScope: c}, nil
+		}
+	}
 	principalID, keyID := middleware.NewID("prin"), middleware.NewID("key")
 	secret := newSecret()
 

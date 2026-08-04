@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -100,6 +101,114 @@ func postProject(t *testing.T, base, token, body string) *http.Response {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST /v1/projects: %v", err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+// TestAKeyCannotMintAKeyMoreCapableThanItself drives the WIRE, not the predicate.
+//
+// middleware's own test pins Scope.CanGrant's logic. This one exists because a correct predicate that
+// nothing calls is the defect this tree keeps finding: the check lives on the WRITE path (identity's
+// CreateAPIKey), and the route in front of it is gated on `provision` — a gate that answers "may this
+// caller create a key", never "what may go IN it". So the capability travels in the BODY, past the gate,
+// and only this path can refuse it.
+//
+// BOTH DIRECTIONS RUN. A test that only proves the refusal is satisfied by a store that refuses
+// everything, which would break the platform's ability to mint its second key.
+func TestAKeyCannotMintAKeyMoreCapableThanItself(t *testing.T) {
+	url := os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
+	if url == "" {
+		t.Skip("PALAI_COMPONENT_POSTGRES_URL is required; run make test-component TEST=postgres")
+	}
+	ctx := context.Background()
+	repo, err := Open(ctx, url)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(repo.Close)
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	idstore := identity.New(repo.Spine().Pool())
+
+	// The platform opens a tenant, so the key below is minted against a project that really exists —
+	// otherwise a 404 could be mistaken for the refusal this test is about.
+	// THE PLATFORM KEY CARRIES BOTH, and that is not fixture padding — it is what
+	// identity.ProvisionFirstTenant seeds (`system`, `provision`, `approve`). The route is gated on
+	// `provision` and the GRANT is checked against `system`: two different questions on one request. A
+	// first draft gave this key `system` alone and leg (3) failed 403 at the ROUTE, before the grant check
+	// ran at all — which would have "proved" the refusal while never reaching the code under test.
+	verifier := keyedVerifier{
+		"platform":     {Principal: "prin_platform", Scopes: []string{middleware.ScopeSystem, "provision"}},
+		"tenant-admin": {Principal: "prin_t", Scopes: []string{"provision"}},
+	}
+	router := api.NewRouter(verifier, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, idstore, nil,
+		api.SSEConfig{}, nil, nil)
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	var opened struct {
+		ID string `json:"id"`
+	}
+	resp := postProject(t, ts.URL, "platform", `{"display_name":"mint-scope"}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("platform tenant açamadı: %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&opened); err != nil {
+		t.Fatalf("decode project: %v", err)
+	}
+	verifier["tenant-admin"] = middleware.Scope{Project: opened.ID, Principal: "prin_t", Scopes: []string{"provision"}}
+
+	body := `{"project_id":"` + opened.ID + `","scopes":["` + middleware.ScopeSystem + `"]}`
+
+	// (1) THE REFUSAL. A `provision` key asking for `system` is 403 — not 400: the body is well formed
+	// and the capability is real; what is missing is the caller's authority to hand it out.
+	refused := postJSON(t, ts.URL, "tenant-admin", "/v1/api-keys", body)
+	if refused.StatusCode != http.StatusForbidden {
+		t.Fatalf("provision anahtarı system mintleyebildi: %d (beklenen 403)", refused.StatusCode)
+	}
+
+	// (2) AND NO ROW WAS WRITTEN — checked AFTER the status, the order this file already argues for: a
+	// refusal that still commits is the failure worth catching, and it hides behind a correct 403.
+	var leaked int
+	if err := repo.Spine().Pool().QueryRow(storage.WithSystemScope(ctx),
+		`SELECT count(*) FROM api_keys WHERE project_id = $1 AND $2 = ANY(scopes)`,
+		opened.ID, middleware.ScopeSystem).Scan(&leaked); err != nil {
+		t.Fatalf("count system keys: %v", err)
+	}
+	if leaked != 0 {
+		t.Fatalf("403 döndü ama system taşıyan %d anahtar yazıldı", leaked)
+	}
+
+	// (3) THE GRANT STILL WORKS. Without this the rule could be satisfied by refusing everyone.
+	allowed := postJSON(t, ts.URL, "platform", "/v1/api-keys", body)
+	if allowed.StatusCode != http.StatusCreated {
+		t.Fatalf("system taşıyan anahtar system veremedi: %d (beklenen 201)", allowed.StatusCode)
+	}
+	var minted struct {
+		Scopes []string `json:"scopes"`
+	}
+	if err := json.NewDecoder(allowed.Body).Decode(&minted); err != nil {
+		t.Fatalf("decode minted key: %v", err)
+	}
+	if len(minted.Scopes) != 1 || minted.Scopes[0] != middleware.ScopeSystem {
+		t.Fatalf("mintlenen anahtarın kapsamı %v, beklenen [%s]", minted.Scopes, middleware.ScopeSystem)
+	}
+}
+
+// postJSON posts an arbitrary body to path with token's bearer, for the two mint attempts above.
+func postJSON(t *testing.T, base, token, path, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, base+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build POST %s: %v", path, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
 	}
 	t.Cleanup(func() { resp.Body.Close() })
 	return resp
