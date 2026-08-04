@@ -112,7 +112,7 @@ func (a Adapter) Execute(ctx context.Context, req modelbroker.Request, secret st
 			ModelRequestID: req.ModelRequestID,
 			Model:          req.Model,
 			Attempts:       1,
-			Error:          sanitizeError(resp),
+			Error:          sanitizeError(resp, secret),
 		}, nil
 	}
 
@@ -598,24 +598,89 @@ func canonicalFinishReason(stop string) string {
 	}
 }
 
-// sanitizeError converts a non-200 response into a canonical error that carries the
-// HTTP status and the provider's stable error type, but never the provider's free
-// text (which can echo a credential prefix) and never the credential itself.
-func sanitizeError(resp *http.Response) *modelbroker.SanitizedError {
+// sanitizeError converts a non-200 response into a canonical error carrying the HTTP status, the
+// provider's stable error type, AND — redacted — the provider's own explanation of what was wrong.
+//
+// THE EXPLANATION USED TO BE THROWN AWAY, and on 2026-08-04 that cost an hour of live debugging. A run
+// carrying an image failed with `provider_error: provider returned HTTP 400 (code
+// invalid_request_error, status 400)` once per second, forever. Anthropic had said exactly which field
+// was invalid, in the response body, and this function dropped that sentence on the floor: the operator
+// was left with a code that every malformed provider-two request in existence shares.
+//
+// WHY DROPPING IT WAS DEFENSIBLE, AND WHY CARRYING IT IS BETTER. The reason was real: a provider's free
+// text can echo a credential prefix back at you, and this string reaches a log. The answer is to REDACT
+// rather than to discard, because "no information" is not actually the safe choice — it just moves the
+// cost from a hypothetical leak to a certain outage. redactCredential below is given the credential this
+// very call used, so an echo is removed by construction rather than by hoping the provider is careful.
+//
+// The caller boundary is unchanged: orchestrator's terminalProblems still refuses to put this text in a
+// caller-facing Problem, because it is the DEPLOYMENT's operator who needs it, not a tenant.
+func sanitizeError(resp *http.Response, secret string) *modelbroker.SanitizedError {
 	code := "provider_error"
+	detail := ""
 	var parsed struct {
 		Error struct {
-			Type string `json:"type"`
+			Type    string `json:"type"`
+			Message string `json:"message"`
 		} `json:"error"`
 	}
 	if raw, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024)); err == nil {
-		if json.Unmarshal(raw, &parsed) == nil && parsed.Error.Type != "" {
-			code = parsed.Error.Type
+		if json.Unmarshal(raw, &parsed) == nil {
+			if parsed.Error.Type != "" {
+				code = parsed.Error.Type
+			}
+			detail = redactCredential(parsed.Error.Message, secret)
 		}
 	}
-	return &modelbroker.SanitizedError{
-		Code:    code,
-		Message: fmt.Sprintf("provider returned HTTP %d", resp.StatusCode),
-		Status:  resp.StatusCode,
+	message := fmt.Sprintf("provider returned HTTP %d", resp.StatusCode)
+	if detail != "" {
+		message += ": " + detail
 	}
+	return &modelbroker.SanitizedError{Code: code, Message: message, Status: resp.StatusCode}
+}
+
+// maxProviderDetail bounds how much provider text is carried into a log line. Anthropic's validation
+// messages are one sentence naming a JSON path; anything far longer is not an explanation.
+const maxProviderDetail = 400
+
+// redactCredential removes anything that could be the credential from provider text, and it is
+// deliberately paranoid in two independent ways rather than trusting either one.
+//
+//   - ANY 8-character run of the SECRET ITSELF is removed. A provider that echoes a credential
+//     typically echoes a PREFIX ("...api key sk-ant-api03-Xy7…"), which an exact-match comparison would
+//     sail straight past. Scanning every 8-char window of the real credential catches a prefix, a
+//     suffix, or any fragment, without ever needing to know which form the provider chose.
+//   - ANY `sk-`-prefixed token is removed even if it matches nothing we hold, because the message may
+//     quote a DIFFERENT key — an operator pasting the wrong secret is exactly when this fires.
+//
+// The window is 8 rather than 4 so that ordinary English and JSON paths cannot collide with it by
+// accident; a key fragment shorter than 8 characters is not a usable credential.
+func redactCredential(text, secret string) string {
+	const window = 8
+	if text == "" {
+		return ""
+	}
+	for i := 0; i+window <= len(secret); i++ {
+		if fragment := secret[i : i+window]; strings.Contains(text, fragment) {
+			text = strings.ReplaceAll(text, fragment, "[redacted]")
+		}
+	}
+	for {
+		start := strings.Index(text, "sk-")
+		if start < 0 {
+			break
+		}
+		end := start + 3
+		for end < len(text) && (text[end] == '-' || text[end] == '_' ||
+			(text[end] >= 'a' && text[end] <= 'z') || (text[end] >= 'A' && text[end] <= 'Z') ||
+			(text[end] >= '0' && text[end] <= '9')) {
+			end++
+		}
+		text = text[:start] + "[redacted]" + text[end:]
+	}
+	text = strings.Join(strings.Fields(text), " ") // a log line is one line
+	if len(text) > maxProviderDetail {
+		text = text[:maxProviderDetail] + "…"
+	}
+	return text
 }

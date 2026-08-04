@@ -295,6 +295,12 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		if isContextOverflow(result.Error) {
 			return false, fmt.Errorf("%w: %w", errContextOverflow, failure)
 		}
+		// A permanent rejection is NAMED too, for the same reason and by the same mechanism: the retry
+		// ladder cannot change a request the provider has already refused (orchestrator's
+		// isPermanentProviderRejection).
+		if isPermanentProviderRejection(result.Error) {
+			return false, fmt.Errorf("%w: %w", errProviderPermanent, failure)
+		}
 		return false, failure
 	}
 	st.usage = addUsage(st.usage, result.Usage)
@@ -356,6 +362,7 @@ func decodeMessages(raw any, resolve imageResolver) ([]modelbroker.Message, erro
 		}
 		return nil, fmt.Errorf("messages is not an array")
 	}
+	items = flattenWrappedMessages(items)
 	out := make([]modelbroker.Message, 0, len(items))
 	// The image budget is spent on the MOST RECENT images, so `budget` starts as the number of images this
 	// conversation must skip before it starts resolving. See countImageRefs for why it works this way round.
@@ -391,6 +398,74 @@ func decodeMessages(raw any, resolve imageResolver) ([]modelbroker.Message, erro
 		out = append(out, msg)
 	}
 	return out, nil
+}
+
+// flattenWrappedMessages undoes an engine wrap that turns a whole CONVERSATION into one turn's content,
+// and without it every request made in the public API's message-array form silently loses all of its
+// content — text and images alike.
+//
+// WHAT THE ENGINE DOES. engines/reference/src/palai_engine/context.py's start() appends the run's input
+// as one user turn, whatever shape it has:
+//
+//	self._messages.append({"role": "user", "content": run_start_data["input"]})
+//
+// That is right for the two shapes it was written for — a bare string, and an array of CONTENT ITEMS
+// (which is what the Slack bridge sends). It is wrong for the third shape the Responses API accepts and
+// the SDKs encourage, an array of MESSAGES, because the result is a user turn whose content array holds
+// message objects rather than content items.
+//
+// WHAT THAT COST, measured 2026-08-04 on the live deployment. decodeContentParts keys on an item's
+// `type`; a message object has none, so every item matched no case and was dropped. The turn arrived at
+// the provider with no text and no image, the adapter rendered its one empty text block, and Anthropic
+// answered 400 invalid_request_error once per second forever. Every response whose input used this shape
+// failed; every response that sent a bare string succeeded, 34 seconds apart, on the same route and
+// model. The image leg looked broken and was not — the content never reached it.
+//
+// WHY THE FIX IS HERE AND NOT IN THE ENGINE. The engine is a pinned container image and its wrap is
+// legitimate for the shapes it handles; this decoder is the contract boundary that already normalises
+// what the engine emits into modelbroker.Message, and it is the half that can be proved from Go. The
+// engine line above is the upstream writer and is worth fixing there too — recorded rather than silently
+// worked around.
+//
+// The discriminator is exact rather than heuristic: a content item always carries `type` and never
+// `role`, and a message always carries `role` and `content`. A single non-conforming element leaves the
+// turn untouched, so a genuine content array is never re-interpreted.
+func flattenWrappedMessages(items []any) []any {
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		fields, ok := item.(map[string]any)
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		parts, ok := fields["content"].([]any)
+		if !ok || len(parts) == 0 || !allMessageShaped(parts) {
+			out = append(out, item)
+			continue
+		}
+		out = append(out, parts...)
+	}
+	return out
+}
+
+// allMessageShaped reports whether every element is a MESSAGE object rather than a content item.
+func allMessageShaped(parts []any) bool {
+	for _, part := range parts {
+		fields, ok := part.(map[string]any)
+		if !ok {
+			return false
+		}
+		if _, isContentItem := fields["type"].(string); isContentItem {
+			return false
+		}
+		if role, ok := fields["role"].(string); !ok || role == "" {
+			return false
+		}
+		if _, hasContent := fields["content"]; !hasContent {
+			return false
+		}
+	}
+	return true
 }
 
 // ImageReader is the object-store read path an image content item resolves through. It is a separate

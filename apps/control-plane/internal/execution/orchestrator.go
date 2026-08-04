@@ -831,6 +831,13 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 				// Named, not retried: the history that did not fit will not fit on attempt two.
 				return o.failContextOverflow(ctx, st)
 			}
+			if errors.Is(err, errProviderPermanent) {
+				// Named, not retried: the provider has already answered this exact request. The full
+				// sanitized failure — including the provider's own explanation — is logged below by the
+				// generic branch's sibling; here the run is settled so it stops saying "Working…".
+				log.Printf("run %s step %d: provider rejected the request permanently: %v", st.attempt.RunID, st.modelStepIndex, err)
+				return o.failProviderRejected(ctx, st)
+			}
 			if err != nil {
 				// THE CAUSE, WHERE AN OPERATOR CAN REACH IT. Measured 2026-08-02 driving the iOS live chain:
 				// an agent-driven run parked at `safe_boundary before_model, step 1`, the engine exited 0
@@ -1059,9 +1066,15 @@ func validateFrame(f contracts.EngineFrame, a AttemptDescriptor) error {
 var errContextOverflow = errors.New("context_overflow")
 
 // contextOverflowCodes are the provider error codes that mean "this did not fit". The classification
-// keys on the CODE and only the code, because both adapters' sanitizeError deliberately discards the
-// provider's free text (it can echo a credential prefix) and replaces it with "provider returned HTTP
-// N" — so there is no message to match against, by construction.
+// keys on the CODE and only the code.
+//
+// THAT WAS ONCE FORCED AND IS NOW A CHOICE, and the difference is worth stating because the old reason is
+// still written in half the tree: both adapters used to discard the provider's free text outright, so
+// there was no message to match against, by construction. As of 2026-08-04 provider-two's sanitizeError
+// carries the provider's explanation with the credential redacted out of it, so a message IS available
+// for that family. The classification still does not read it — matching on a provider's free-form
+// sentence is how a wording change silently reclassifies a failure — but the text is now there for the
+// operator in the log, which is what it is for.
 //
 // CONTRACT: OpenAI API errors — https://developers.openai.com/api/docs/guides/error-codes
 // (fetched 2026-07-27). UNCONFIRMED IN THE DOCUMENT: that page enumerates only status-level
@@ -1090,6 +1103,58 @@ var contextOverflowCodes = map[string]bool{
 // isContextOverflow reports whether a sanitized provider failure is an oversized request.
 func isContextOverflow(e *modelbroker.SanitizedError) bool {
 	return e != nil && contextOverflowCodes[e.Code]
+}
+
+// errProviderPermanent marks a provider failure the SAME request can never recover from. It is a
+// sentinel in errContextOverflow's shape, for the same reason: model_dispatch wraps the sanitized failure
+// and the run loop acts on it, so neither end parses the other's text.
+//
+// Named apart from model_dispatch's errProviderRejected on purpose — that one is the METRICS
+// classification for "the result carried an error at all" and is never surfaced; this one is a statement
+// that retrying is futile.
+var errProviderPermanent = errors.New("provider_rejected_permanently")
+
+// isPermanentProviderRejection reports whether retrying this exact request is pointless.
+//
+// THE COST OF NOT HAVING THIS, measured 2026-08-04 on the live deployment: a malformed request drew
+// `400 invalid_request_error`, the attempt failed into the retry ladder, and the ladder re-sent the
+// BYTE-IDENTICAL body once a second. The provider answered 400 every time, because a 400 is a statement
+// about the request and the request never changed. The run sat in `in_progress` and the operator watched
+// "Working…" forever — the run never reached a terminal state that could say why.
+//
+// The classification is by STATUS CLASS, not by code, and that is deliberate: provider-two returns the
+// same `invalid_request_error` type for a malformed image block, an unsupported parameter and an
+// oversized prompt, so a code table would have to enumerate every provider's vocabulary to say the one
+// thing the status already says. 4xx means the caller must change something; 5xx and 429 mean the server
+// might answer differently in a moment, and those stay on the ladder.
+//
+//   - 408 and 429 are EXCLUDED: both explicitly invite a retry.
+//   - 401/403 are INCLUDED. A rejected credential does not become accepted by asking again a second
+//     later; the operator has to rotate or re-scope it, and a run hanging in `in_progress` hides that
+//     from them exactly as a 400 did.
+func isPermanentProviderRejection(e *modelbroker.SanitizedError) bool {
+	if e == nil || e.Status < 400 || e.Status >= 500 {
+		return false
+	}
+	return e.Status != 408 && e.Status != 429 // Request Timeout / Too Many Requests: both invite a retry
+}
+
+// providerRejectedProblem is the terminal Response error a permanently-rejected run projects.
+//
+// IT CARRIES NO PROVIDER TEXT, and that is the terminalProblems boundary rather than an oversight: the
+// provider's own sentence names request internals and reaches a TENANT here, while the operator who
+// needs it already has it in this deployment's log (the dispatch failure is logged with the full
+// sanitized message). The title still does the job Slack needs — renderSlackReply appends it, so a person
+// is told the request was rejected rather than being told nothing at all.
+func providerRejectedProblem() contracts.Problem {
+	return contracts.Problem{
+		Type:   problemTypePrefix + "provider_rejected",
+		Code:   "provider_rejected",
+		Title:  "The model provider rejected this request",
+		Status: 502,
+		Detail: "the model provider refused the request and retrying it unchanged cannot succeed; " +
+			"the deployment's control-plane log carries the provider's own explanation",
+	}
 }
 
 // contextOverflowProblem is the terminal Response error an overflowed run projects. It is separate
@@ -1183,6 +1248,27 @@ func (o *Orchestrator) failContextOverflow(ctx context.Context, st *attemptState
 		return err
 	}
 	problem := contextOverflowProblem()
+	projection, _ := json.Marshal(map[string]any{
+		"output": st.output,
+		"usage":  st.usage,
+		"model":  st.model,
+		"error":  problem,
+	})
+	return o.spine.FinalizeResponse(ctx, st.tenant, st.responseID, "failed", projection)
+}
+
+// failProviderRejected drives the run to an explicit, NAMED terminal failure when the provider refused
+// the request in a way retrying cannot fix. failContextOverflow's shape exactly: one terminal transition,
+// one projection, and nil returned so the attempt ends cleanly instead of feeding the retry ladder a
+// request the provider has already answered.
+func (o *Orchestrator) failProviderRejected(ctx context.Context, st *attemptState) error {
+	switch _, err := o.spine.ApplyRunTransition(ctx, st.tenant, string(st.attempt.RunID), statemachines.RunCmdFail); {
+	case errors.Is(err, coordinator.ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):
+		return nil // another path already settled this run; its projection stands
+	case err != nil:
+		return err
+	}
+	problem := providerRejectedProblem()
 	projection, _ := json.Marshal(map[string]any{
 		"output": st.output,
 		"usage":  st.usage,
