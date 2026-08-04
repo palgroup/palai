@@ -109,16 +109,28 @@ WHERE state = 'running';
 -- It is NOT filtered by state. A kill of a task that already finished must be idempotent (§3.5 P7's
 -- "cancelling twice is idempotent"), and a row filtered out by state would report "no such task" for a
 -- task the model can see in its own transcript.
+-- machine_id RIDES THIS READ BECAUSE THE CALLER SIGNALS ON WHAT IT RETURNS (A.3 T6/T7). KillBackground
+-- builds a Handle from these columns and asks THAT machine to stop the process; a row read without the
+-- column carries the empty machine, which callMachine refuses as "the row names no machine" — so every
+-- kill a model asked for, and every kill a cancellation performed, failed closed while the process kept
+-- running. It shipped that way because the column was added by the migration and the routing by the
+-- reader, and nothing in between selected it.
 -- name: BackgroundTaskForRun
-SELECT id, posture, handle, output_path, state
+SELECT id, posture, handle, machine_id, output_path, state
 FROM background_tasks
 WHERE id = $1 AND run_id = $2 AND project_id = $3;
 
 -- RunningBackgroundTasksOfRun is the park gate's read (E26 T3) and the cancellation's kill list (T5).
 -- Both used to ask an in-memory map; a map answers wrongly after a restart in two opposite directions —
 -- a run that should park does not, and a cancellation kills nothing.
+--
+-- machine_id RIDES IT FOR THE SAME REASON BackgroundTaskForRun CARRIES IT: the park gate PROBES the
+-- machine each row names, and an empty one is refused rather than resolved to this host. Without the
+-- column every probe errored, every task read as not-live, and a completed run with a live build
+-- finished instead of parking — the exact defect E26 T3 exists to prevent, reintroduced through the read
+-- rather than through the gate.
 -- name: RunningBackgroundTasksOfRun
-SELECT id, posture, handle, output_path
+SELECT id, posture, handle, machine_id, output_path
 FROM background_tasks
 WHERE run_id = $1 AND project_id = $2 AND state = 'running'
 ORDER BY started_at, id;

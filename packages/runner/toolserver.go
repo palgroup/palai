@@ -55,6 +55,17 @@ const (
 	// id already says which question is being answered and a second discriminator would be a second
 	// thing to keep in step.
 	BackgroundResultType = "bg.result"
+	// BackgroundErrorHandleLost is `error_kind` for the ONE refusal the control plane BRANCHES on rather
+	// than merely reports (toolbroker.ErrHandleLost). It exists because a wire flattens a typed error into
+	// a string: before it, three control-plane arms tested errors.Is(err, ErrHandleLost) and none could
+	// ever be true for a task on a machine — so a handle that could not be proven ours fell through to the
+	// generic arm, and "a lost handle is settled as lost, never signalled" became "a lost handle errors on
+	// every tick forever".
+	//
+	// A KIND AND NOT A MESSAGE MATCH. The refusal text is the machine's own and stays the machine's; a
+	// control plane that recognised it by prefix would be one adapter's wording away from silently losing
+	// the branch again, which is exactly how it was lost the first time.
+	BackgroundErrorHandleLost = "handle_lost"
 )
 
 // BackgroundRequestData builds the data payload of a bg.* request. It is the sibling of
@@ -235,7 +246,14 @@ func backgroundAnswer(bgID string, payload map[string]any) contracts.RunnerMessa
 }
 
 func backgroundRefusal(bgID string, err error) contracts.RunnerMessage {
-	return contracts.RunnerMessage{Type: BackgroundResultType, Data: BackgroundRequestData(bgID, map[string]any{"error": err.Error()})}
+	payload := map[string]any{"error": err.Error()}
+	// THE ONE KIND THE OTHER SIDE BRANCHES ON RIDES ALONG. Everything else about a refusal is for a human
+	// to read; this one decides whether a row is settled `lost` or retried forever, so it must survive the
+	// crossing as something other than prose.
+	if errors.Is(err, toolbroker.ErrHandleLost) {
+		payload["error_kind"] = BackgroundErrorHandleLost
+	}
+	return contracts.RunnerMessage{Type: BackgroundResultType, Data: BackgroundRequestData(bgID, payload)}
 }
 
 // decodeBackgroundSpec and decodeBackgroundHandle re-marshal before decoding, the same way

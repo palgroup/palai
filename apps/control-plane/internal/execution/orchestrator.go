@@ -229,6 +229,20 @@ func (o *Orchestrator) SetModelRoute(r ModelRoute) { o.route = r }
 // setter makes the broken state unrepresentable.
 func (o *Orchestrator) SetBackgroundRunner(b toolbroker.BackgroundRunner) {
 	o.background = b
+	o.rewireBackgroundKiller()
+}
+
+// rewireBackgroundKiller re-derives the cancellation killer from what this orchestrator can currently
+// reach. IT IS CALLED BY BOTH SETTERS BECAUSE SINCE A.3 T7 THE ABILITY TO KILL IS A PROPERTY OF REACHING
+// THE MACHINE, not of holding a local executor: BackgroundKiller() returns nil while o.machines is nil,
+// so a composition root that called SetBackgroundRunner FIRST and SetMachineCaller second shipped a
+// deployment whose cancellation killed nothing — silently, because both wires look present and the value
+// captured between them is the one that was nil.
+//
+// main.go happens to call them in the safe order today; that ordering is not something the type system
+// says, and "correct because of the line number it sits on" is the shape this tree has paid for before.
+// Deriving it from both ends makes the order irrelevant.
+func (o *Orchestrator) rewireBackgroundKiller() {
 	if o.spine != nil {
 		o.spine.SetBackgroundKiller(o.BackgroundKiller())
 	}
@@ -255,7 +269,13 @@ type MachineCaller interface {
 // EngineDialer even though the gateway satisfies both, because the two answer different questions: a
 // dialer hands out WHICHEVER machine a pool has free for an attempt, and this one addresses the machine
 // a task ALREADY runs on — by name, long after that attempt ended.
-func (o *Orchestrator) SetMachineCaller(m MachineCaller) { o.machines = m }
+func (o *Orchestrator) SetMachineCaller(m MachineCaller) {
+	o.machines = m
+	// The killer is re-derived here for the reason rewireBackgroundKiller names: reaching a machine is
+	// what grants the ability to stop a task, so the grant has to be taken after this assignment and not
+	// only after the other setter's.
+	o.rewireBackgroundKiller()
+}
 
 // callMachine is the one place a background verb crosses to a machine, so the refusals are written once.
 // An unreachable machine is ErrMachineUnreachable, which every caller turns into `lost` — never

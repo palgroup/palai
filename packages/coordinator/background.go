@@ -446,7 +446,7 @@ func (s *Store) BackgroundTaskForRun(ctx context.Context, tenant Tenant, runID, 
 	var t BackgroundTask
 	var state string
 	err := s.pool.QueryRow(ctx, storage.Query("BackgroundTaskForRun"), taskID, runID, tenant.Project).
-		Scan(&t.ID, &t.Posture, &t.Handle, &t.OutputPath, &state)
+		Scan(&t.ID, &t.Posture, &t.Handle, &t.MachineID, &t.OutputPath, &state)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return BackgroundTask{}, ErrNoBackgroundTask
@@ -471,7 +471,7 @@ func (s *Store) RunningBackgroundTasksOfRun(ctx context.Context, tenant Tenant, 
 	var out []BackgroundTask
 	for rows.Next() {
 		t := BackgroundTask{Tenant: tenant, RunID: runID}
-		if err := rows.Scan(&t.ID, &t.Posture, &t.Handle, &t.OutputPath); err != nil {
+		if err := rows.Scan(&t.ID, &t.Posture, &t.Handle, &t.MachineID, &t.OutputPath); err != nil {
 			return nil, fmt.Errorf("scan running background task of run: %w", err)
 		}
 		out = append(out, t)

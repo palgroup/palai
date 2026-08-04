@@ -30,6 +30,7 @@ import (
 
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/runner"
+	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
 // ErrMachineUnreachable is what a caller gets when the named machine has no live session on this
@@ -136,14 +137,48 @@ func (g *RunnerGateway) CallMachine(ctx context.Context, runnerID, verb string, 
 		if answer.err != nil {
 			return nil, answer.err
 		}
-		if refusal, ok := answer.data["error"].(string); ok && refusal != "" {
-			return nil, errors.New(refusal)
+		if refusal := machineRefusal(answer.data); refusal != nil {
+			return nil, refusal
 		}
 		return answer.data, nil
 	case <-ctx.Done():
 		return nil, fmt.Errorf("%s on machine %s: no answer before the context ended: %w", verb, runnerID, ctx.Err())
 	}
 }
+
+// machineRefusal reads one machine answer as a refusal, or nil when the answer is an OUTCOME. It is one
+// function rather than an inline check so that every path a bg.* answer can arrive on decodes it the same
+// way — the gateway's, and the in-process machine the component fixtures drive.
+//
+// IT REBUILDS THE ONE TYPED ERROR A CALLER BRANCHES ON. A wire carries strings, and toolbroker.ErrHandleLost
+// is not advice: three arms in background.go decide with it — a cancellation settles the row `lost` instead
+// of retrying it forever, a deadline does the same, and an explicit kill refuses rather than reporting a
+// stranger's process stopped. Flattened to prose, all three fell through to their generic arm, and the rule
+// they exist to keep ("a lost handle is never signalled") held only because no signal was sent by the arm
+// that had already failed.
+//
+// The MESSAGE stays the machine's own — the wrapper carries the identity, not the wording — because the
+// adapter that raised it is the only side that knows which pgid or which container could not be proven.
+func machineRefusal(data map[string]any) error {
+	refusal, _ := data["error"].(string)
+	if refusal == "" {
+		return nil
+	}
+	if kind, _ := data["error_kind"].(string); kind == runner.BackgroundErrorHandleLost {
+		return machineError{msg: refusal, kind: toolbroker.ErrHandleLost}
+	}
+	return errors.New(refusal)
+}
+
+// machineError is a refusal that crossed a wire with its KIND intact: it reads as the machine wrote it and
+// answers errors.Is as the sentinel the machine raised.
+type machineError struct {
+	msg  string
+	kind error
+}
+
+func (e machineError) Error() string { return e.msg }
+func (e machineError) Unwrap() error { return e.kind }
 
 // sessionFor finds a live session belonging to the named machine, and refuses a revoked one.
 //
