@@ -2050,25 +2050,30 @@ func TestMigration45RunnerFleet(t *testing.T) {
 		t.Fatalf("a run was placed into a pool that does not exist (code %q, want 23503)", got)
 	}
 
-	// R6: NO MIGRATION SEEDS A POOL, and asserting zero is a stronger claim than the "at most one" this
-	// used to make. A migration once inserted the default pool for an install upgrading into the fleet
-	// tables; that seed went with the chain squash, and it had already been unreachable before it — it
-	// selected from a projects table that is empty on a first boot, and its own guard skipped it on every
-	// boot after. Every pool alive today comes from identity.Store.provision, which runs
-	// InsertDefaultRunnerPool in the same transaction as the four identity rows.
+	// R6: NO MIGRATION SEEDS THE DEFAULT POOL. A migration once inserted it for an install upgrading into
+	// the fleet tables; that seed went with the chain squash, and it had already been unreachable before
+	// it — it selected from a projects table that is empty on a first boot (the identity bootstrap runs
+	// AFTER the migrations), and its own guard skipped it on every boot after. Every pool alive today
+	// comes from identity.Store.provision, which runs InsertDefaultRunnerPool in the same transaction as
+	// the four identity rows.
 	//
-	// "AT MOST ONE" WOULD NOW BE VACUOUS. This harness migrates a database with no identity bootstrap, so
-	// the count is zero and any `> 1` check passes without measuring anything. Zero is what fails if a
-	// migration ever writes a tenant row again — which is the thing worth catching, because a tenant row
-	// written by the chain is written before there is a tenant to own it.
+	// THE QUESTION IS ABOUT THE SEED'S FIXED ID, NOT ABOUT A COUNT, AND THAT IS A CORRECTION. The first
+	// version of this assertion counted runner_pools GLOBALLY and required zero. It failed, correctly:
+	// this tier shares ONE database across dozens of tests and this very test creates a pool of its own a
+	// few lines above, so a global count measures the neighbours rather than the chain. 'pool_default' is
+	// the ON CONFLICT target the seed used and the id identity.Store.provision still writes for the
+	// bootstrap tenant — and this harness runs no bootstrap, so nothing but a migration could put it here.
+	//
+	// "AT MOST ONE", WHICH THIS REPLACED, WAS VACUOUS: the row is absent in this harness, so a `> 1` check
+	// passed without measuring anything at all.
 	var seeded int
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM runner_pools`).Scan(&seeded); err != nil {
-		t.Fatalf("count pools after the chain: %v", err)
+		`SELECT count(*) FROM runner_pools WHERE id = 'pool_default'`).Scan(&seeded); err != nil {
+		t.Fatalf("count the default pool after the chain: %v", err)
 	}
 	if seeded != 0 {
-		t.Fatalf("the migration chain left %d runner pool(s) behind; the chain seeds no tenant rows and "+
-			"identity.Store.provision is the only writer of a default pool", seeded)
+		t.Fatalf("the migration chain left a 'pool_default' row behind; no migration seeds a tenant row, "+
+			"and identity.Store.provision is the only writer of the default pool")
 	}
 
 	// R4 — THE APPEND-ONLY JOURNAL, across the reboot that re-ran both blanket grants.
