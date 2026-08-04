@@ -66,8 +66,8 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	var pool struct {
-		id, org, project, posture, os, arch string
-		strict                              bool
+		id, project, posture, os, arch string
+		strict                         bool
 	}
 	err = tx.QueryRow(ctx, storage.Query("ResolveRunnerPool"), reg.PoolID).
 		Scan(&pool.id, &pool.project, &pool.posture, &pool.os, &pool.arch, &pool.strict)
@@ -94,7 +94,7 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 			return Runner{}, fmt.Errorf("encode refusal detail: %w", err)
 		}
 		if _, err := tx.Exec(ctx, storage.Query("AppendRunnerEnrollment"),
-			s.mintID("renr"), pool.org, pool.project, reg.ID, pool.id, reg.KeyID, "refused", detail); err != nil {
+			s.mintID("renr"), pool.project, reg.ID, pool.id, reg.KeyID, "refused", detail); err != nil {
 			return Runner{}, fmt.Errorf("append refusal entry: %w", err)
 		}
 		// Commit the refusal: the record of a machine turned away is the only thing this transaction

@@ -108,7 +108,7 @@ func TestInstallationWideRowsAreVisibleToEveryProject(t *testing.T) {
 	budgetID := newID("bud")
 	if _, err := s.owner.Exec(context.Background(),
 		`INSERT INTO budgets (id, project_id, meter_prefix, limit_quantity) VALUES ($1, '', 'model.', 1000)`,
-		budgetID, s.orgA); err != nil {
+		budgetID); err != nil {
 		t.Fatalf("seed installation-wide budget: %v", err)
 	}
 

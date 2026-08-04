@@ -58,7 +58,22 @@ var arityDBVerbs = map[string]bool{"Exec": true, "Query": true, "QueryRow": true
 // previously carried one each. Confirmed deleted, not merely no longer matched:
 // `git show 7386cbe8^:apps/control-plane/internal/identity/store.go | grep -c 'storage\.Query('` -> 18,
 // the same grep on the file today -> 17.
-const arityKnownUses = 609
+//
+// IT MOVED DOWN BY THREE MORE when A.2 Task 6's tagged sweep landed (609 -> 606), and each one is
+// attributed to a DELETION rather than to a use the walk stopped reaching. Measured per file rather than
+// in aggregate, because an aggregate that happens to net out is exactly what this floor cannot see:
+//
+//	diff <(git grep -c 'storage\.Query(' d4936f94 -- '*.go' | sed 's/^d4936f94://' | sort) \
+//	     <(git grep -c 'storage\.Query(' HEAD      -- '*.go' | sed 's/^HEAD://'      | sort)
+//
+//	identity/organization_cache_component_test.go   1 -> gone   (-1)  file deleted: it measured
+//	                                                                  storage.OrganizationForProject's
+//	                                                                  cache, and the function is gone
+//	identity/store.go                              17 -> 14     (-3)  CreateOrganization's statements
+//	packages/coordinator/store.go                  43 -> 44     (+1)  a statement added since
+//
+// -1 -3 +1 = -3, which is the whole of 609 -> 606. Nothing else in the tree changed its count.
+const arityKnownUses = 606
 
 // aritySkip is a report line for a storage.Query use this test does not audit. Every one of them is
 // logged: the guard's VALUE to Task 5 is its coverage, and a hole nobody can see is a false assurance.

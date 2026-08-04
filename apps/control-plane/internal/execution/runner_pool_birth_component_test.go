@@ -560,7 +560,7 @@ func TestPoolBirthLeavesTheBornWithPoolBitUnchanged(t *testing.T) {
 	b := newBirthFixture(t)
 	ctx := storage.WithSystemScope(context.Background())
 	born := poolKeyID("pool")
-	if _, err := b.pool.Exec(ctx, storage.Query("InsertDefaultRunnerPool"), born, b.org, b.prj); err != nil {
+	if _, err := b.pool.Exec(ctx, storage.Query("InsertDefaultRunnerPool"), born, b.prj); err != nil {
 		t.Fatalf("provision a tenant's default pool: %v", err)
 	}
 	before := poolRow(t, b.pool, born)
