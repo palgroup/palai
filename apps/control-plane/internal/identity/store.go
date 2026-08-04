@@ -155,8 +155,10 @@ func (s *Store) ProvisionFirstTenant(ctx context.Context, bootstrapKey string) e
 		keyHash:     coordinator.HashAPIKey(bootstrapKey),
 		scopes:      []string{middleware.ScopeSystem, "provision", "approve"},
 		// The fixed bootstrap pool id, in the same spirit as the four ids above: stable so a re-boot
-		// against a retained volume is a no-op, and identical to the id migration 000045 R6 seeds for
-		// an upgrading install — the two populations must not end up with two different default pools.
+		// against a retained volume is a no-op. It was once shared with a migration that seeded the same
+		// id for an install upgrading into the fleet tables, so the two populations could not end up with
+		// two different default pools; that seed went with the chain squash, and this is now the only
+		// statement that writes it.
 		poolID: fleet.DefaultPoolID,
 	})
 }
