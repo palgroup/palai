@@ -6,10 +6,20 @@ input: "the owner's flagship flow is 'hand the agent a Jira ticket and it writes
 expect_status: accepted
 proof:
   - apps/control-plane/internal/extensions/jira_ticket_injection_component_test.go:TestJiraTicketBodyCannotInstructTheAgent
-  - cmd/cli/internal/stack/up_mcp_test.go:TestABringUpNamesNoMCPConnectionByDefault
-  - cmd/cli/internal/stack/up_mcp_test.go:TestAnOperatorNamesMCPConnectionsByName
-  - cmd/cli/internal/stack/up_mcp_test.go:TestNoneDisarmsTheMCPRiderAndBlankIsUnset
-  - cmd/cli/internal/stack/up_mcp_test.go:TestChangingTheMCPRiderMintsANewRevisionRatherThanSilentlyReusingTheOld
-  - cmd/cli/internal/stack/up_mcp_test.go:TestReorderingTheMCPRiderIsNotAChange
-  - cmd/cli/internal/stack/up_mcp_test.go:TestTheBringUpSaysWhenNoMCPConnectionIsNamed
+  # PROOF LEDGER CORRECTION, 2026-08-04. Six proofs withdrawn; the case TEXT above is shipped and left
+  # byte-for-byte, and the checksum reads neither this list nor the text.
+  #
+  # WITHDRAWN — `1e5fc63e refactor(cli): bring-up prepares a stack and nothing else` DELETED
+  # cmd/cli/internal/stack/up_mcp_test.go entirely, along with the bring-up's MCP-rider handling:
+  #   TestABringUpNamesNoMCPConnectionByDefault
+  #   TestAnOperatorNamesMCPConnectionsByName
+  #   TestNoneDisarmsTheMCPRiderAndBlankIsUnset
+  #   TestChangingTheMCPRiderMintsANewRevisionRatherThanSilentlyReusingTheOld
+  #   TestReorderingTheMCPRiderIsNotAChange
+  #   TestTheBringUpSaysWhenNoMCPConnectionIsNamed
+  #
+  # WHAT THIS COSTS THE CASE, stated rather than buried: the fail-closed DEFAULT — a bring-up naming no
+  # MCP connection — now rests on the orchestrator-side rider proof (TLM-004's
+  # TestARunReachesNoMCPServerItsRiderDoesNotName) and no longer on a bring-up test of its own. The
+  # injection claim this case is named for is untouched and keeps both its proofs.
   - adapters/integrations/mcp/jira_live_test.go:TestLiveJiraMCPServerReachableAndEnumerable

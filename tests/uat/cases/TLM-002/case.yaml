@@ -8,12 +8,27 @@ proof:
   - cmd/cli/internal/stack/up_secret_e2e_test.go:TestASecretSurvivesARestartOnAStackWithNoSlackApp
   - cmd/cli/internal/stack/up_operator_test.go:TestMasterKeyPointerIsNotInterpolatedFromTheInvokingShell
   - cmd/cli/internal/stack/up_operator_test.go:TestEveryBringUpLeavesABootableMasterKey
-  - cmd/cli/internal/stack/up_operator_test.go:TestMasterKeyIsNoLongerSlackConditional
-  - cmd/cli/internal/stack/up_operator_test.go:TestRunTargetIsNoLongerAPrerequisiteForRegistration
-  - cmd/cli/internal/stack/up_operator_test.go:TestExplicitRunTargetAlwaysWins
-  - cmd/cli/internal/stack/up_operator_test.go:TestMissingRunTargetIsProvisionedAndSaidOutLoud
-  - cmd/cli/internal/stack/up_operator_test.go:TestProvisionedRunTargetIsReusedOnASecondBringUp
-  - cmd/cli/internal/stack/up_operator_test.go:TestSkipIsReportedAsAWarningNotSwallowed
-  - cmd/cli/internal/stack/up_test.go:TestATeamIdAndASigningSecretAreEnoughToRegister
+  # PROOF LEDGER CORRECTION, 2026-08-04. Seven proofs are withdrawn here, and the case TEXT above is
+  # left byte-for-byte: it records what was true when this case was accepted. Nothing here moves the
+  # case checksum, which is sha256(id | run_id | ToolsMemoryContractsDigest) and reads neither this
+  # list nor the text.
+  #
+  # WITHDRAWN — `1e5fc63e refactor(cli): bring-up prepares a stack and nothing else` removed the
+  # bring-up's registration responsibilities entirely. The case text's claim (2) — "the bring-up
+  # resolves them against the running stack over the EXISTING provisioning API", with explicit ids
+  # winning and a surviving skip escalating to a warning — describes a `palai up` that no longer
+  # exists. None of these seven survives under any name; each was checked individually:
+  #   up_operator_test.go:TestMasterKeyIsNoLongerSlackConditional
+  #   up_operator_test.go:TestRunTargetIsNoLongerAPrerequisiteForRegistration
+  #   up_operator_test.go:TestExplicitRunTargetAlwaysWins
+  #   up_operator_test.go:TestMissingRunTargetIsProvisionedAndSaidOutLoud
+  #   up_operator_test.go:TestProvisionedRunTargetIsReusedOnASecondBringUp
+  #   up_operator_test.go:TestSkipIsReportedAsAWarningNotSwallowed
+  #   up_test.go:TestATeamIdAndASigningSecretAreEnoughToRegister
+  #
+  # WHAT STILL STANDS: claim (1), the master-key pointer, keeps both its proofs below and they pass —
+  # that is the cliff this case exists for. Claim (3), the orphan sweep, keeps its proof. The withdrawn
+  # seven all belonged to claim (2). A reader deciding whether this case still certifies what it says
+  # should read (2) as LAPSED, not as proven.
   - deploy/compose/slack_wiring_test.go:TestComposeCanRedeemASecretRefHandle
   - adapters/integrations/mcp/sweep_quiet_test.go:TestSweepPassErrorIsLoggedOncePerProcess

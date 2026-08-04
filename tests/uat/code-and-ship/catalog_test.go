@@ -74,12 +74,13 @@ var expectedCodeAndShipCatalog = map[string]struct {
 		"apps/control-plane/internal/store/slack_repository_component_test.go:TestSlackRunCarriesTheConnectionsRepositoryBinding",
 		"apps/control-plane/internal/store/slack_repository_component_test.go:TestSlackConnectionWithoutARepositoryIsBitUnchanged",
 		"apps/control-plane/internal/store/slack_repository_component_test.go:TestSlackRefusesAnotherTenantsRepositoryBinding",
-		"cmd/cli/internal/stack/up_repository_test.go:TestABringUpGrantsWorkspaceToolsOnlyWithARepositoryBinding",
+		// WITHDRAWN 2026-08-04: `1e5fc63e` removed the bring-up's conditional tool grant. Recorded in CAS-001.
 		"cmd/cli/internal/stack/up_repository_test.go:TestABringUpBindsTheRepositoryAndSaysWhatItMade",
 		"cmd/cli/internal/stack/up_repository_test.go:TestABringUpReusesTheRepositoryBindingItAlreadyMade",
 		"cmd/cli/internal/stack/up_repository_test.go:TestAMissingRepositoryConfigurationWarnsRatherThanSkippingSilently",
 		"cmd/cli/internal/stack/up_repository_test.go:TestARepositorySurfaceTheStackDoesNotMountIsReportedRatherThanSwallowed",
-		"apps/control-plane/internal/execution/tools/default_set_test.go:TestEverySlackDefaultToolResolves",
+		// RENAMED 2026-08-04: the comparison survives, now reading packages/toolset, not a Slack-named literal.
+		"apps/control-plane/internal/execution/tools/default_set_test.go:TestEveryDefaultToolResolves",
 		"tests/live/repository/live_test.go:TestLiveSlackBoundRepositoryClonesAtItsBaseBranch",
 		"tests/live/workspace/live_test.go:TestLiveSlackBoundRepositoryLandsWhereTheWorkspaceToolsLook",
 	}},
@@ -103,8 +104,9 @@ var expectedCodeAndShipCatalog = map[string]struct {
 		"apps/control-plane/internal/execution/tools/publish_test.go:TestNoPublishToolLetsTheModelNameTheDestination",
 		"apps/control-plane/internal/execution/tools/publish_test.go:TestPushToolRecordsPendingPublicationAtWorkspaceHead",
 		"apps/control-plane/internal/execution/tools/default_set_test.go:TestThePublishToolsAreTheirOwnListAndNeitherPublishes",
-		"apps/control-plane/internal/execution/tools/default_set_test.go:TestEverySlackDefaultToolResolves",
-		"cmd/cli/internal/stack/up_repository_test.go:TestABringUpWithARepositoryGrantsThePublishToolsAndOneWithoutGrantsNone",
+		// RENAMED 2026-08-04: the comparison survives, now reading packages/toolset, not a Slack-named literal.
+		"apps/control-plane/internal/execution/tools/default_set_test.go:TestEveryDefaultToolResolves",
+		// WITHDRAWN 2026-08-04: same cause; the model-cannot-choose-a-destination clause is unaffected. See CAS-002.
 		"cmd/cli/internal/stack/up_publisher_test.go:TestABoundRepositoryWithNoGitHubAppWarnsRatherThanWaitingForever",
 		"cmd/cli/internal/stack/up_publisher_test.go:TestAHalfConfiguredGitHubAppIsRefusedByName",
 		"cmd/cli/internal/stack/up_publisher_test.go:TestTheGitHubAppKeyRidesAFileSecretAndTheEnvironmentCarriesOnlyAPath",
@@ -118,12 +120,8 @@ var expectedCodeAndShipCatalog = map[string]struct {
 	// the live leg asserts a tool BY NAME because an unaccepted credential does not answer 401 (X16 J5).
 	"CAS-003": {"component-real", []string{
 		"apps/control-plane/internal/extensions/jira_ticket_injection_component_test.go:TestJiraTicketBodyCannotInstructTheAgent",
-		"cmd/cli/internal/stack/up_mcp_test.go:TestABringUpNamesNoMCPConnectionByDefault",
-		"cmd/cli/internal/stack/up_mcp_test.go:TestAnOperatorNamesMCPConnectionsByName",
-		"cmd/cli/internal/stack/up_mcp_test.go:TestNoneDisarmsTheMCPRiderAndBlankIsUnset",
-		"cmd/cli/internal/stack/up_mcp_test.go:TestChangingTheMCPRiderMintsANewRevisionRatherThanSilentlyReusingTheOld",
-		"cmd/cli/internal/stack/up_mcp_test.go:TestReorderingTheMCPRiderIsNotAChange",
-		"cmd/cli/internal/stack/up_mcp_test.go:TestTheBringUpSaysWhenNoMCPConnectionIsNamed",
+		// WITHDRAWN 2026-08-04: `1e5fc63e` DELETED up_mcp_test.go with the bring-up's MCP-rider handling. The
+		// fail-closed default now rests on TLM-004's orchestrator-side rider proof. Recorded in CAS-003.
 		"adapters/integrations/mcp/jira_live_test.go:TestLiveJiraMCPServerReachableAndEnumerable",
 	}},
 	// E22 T5 — the upload. The extension-from-content test is the one to read: `simctl io recordVideo

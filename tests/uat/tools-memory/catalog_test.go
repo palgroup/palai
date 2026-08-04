@@ -85,13 +85,10 @@ var expectedToolsMemoryCatalog = map[string]struct {
 		"cmd/cli/internal/stack/up_secret_e2e_test.go:TestASecretSurvivesARestartOnAStackWithNoSlackApp",
 		"cmd/cli/internal/stack/up_operator_test.go:TestMasterKeyPointerIsNotInterpolatedFromTheInvokingShell",
 		"cmd/cli/internal/stack/up_operator_test.go:TestEveryBringUpLeavesABootableMasterKey",
-		"cmd/cli/internal/stack/up_operator_test.go:TestMasterKeyIsNoLongerSlackConditional",
-		"cmd/cli/internal/stack/up_operator_test.go:TestRunTargetIsNoLongerAPrerequisiteForRegistration",
-		"cmd/cli/internal/stack/up_operator_test.go:TestExplicitRunTargetAlwaysWins",
-		"cmd/cli/internal/stack/up_operator_test.go:TestMissingRunTargetIsProvisionedAndSaidOutLoud",
-		"cmd/cli/internal/stack/up_operator_test.go:TestProvisionedRunTargetIsReusedOnASecondBringUp",
-		"cmd/cli/internal/stack/up_operator_test.go:TestSkipIsReportedAsAWarningNotSwallowed",
-		"cmd/cli/internal/stack/up_test.go:TestATeamIdAndASigningSecretAreEnoughToRegister",
+		// Claim (2)'s seven proofs were WITHDRAWN 2026-08-04: `1e5fc63e refactor(cli): bring-up prepares a
+		// stack and nothing else` removed the registration responsibility they proved, and none survives
+		// under any name. The withdrawal is recorded in TLM-002/case.yaml beside the list it edits. Claim
+		// (1)'s two master-key proofs above still stand and still pass — that is this case's own cliff.
 		"deploy/compose/slack_wiring_test.go:TestComposeCanRedeemASecretRefHandle",
 		"adapters/integrations/mcp/sweep_quiet_test.go:TestSweepPassErrorIsLoggedOncePerProcess",
 	}},
@@ -120,18 +117,18 @@ var expectedToolsMemoryCatalog = map[string]struct {
 		"apps/control-plane/internal/execution/tool_surface_component_test.go:TestAnExternalToolIsAdvertisedAsUntrustedToTheModel",
 		"apps/control-plane/internal/execution/tool_surface_component_test.go:TestARunReachesNoMCPServerItsRiderDoesNotName",
 		"apps/control-plane/internal/execution/tool_surface_component_test.go:TestARegistryToolDispatchesThroughTheRealOrchestratorAndTheResultReachesTheEngine",
-		"cmd/cli/internal/stack/up_tools_test.go:TestABringUpBindsOnlyReadOnlyToolsByDefault",
-		"cmd/cli/internal/stack/up_tools_test.go:TestAnOperatorWidensTheToolListByName",
-		"cmd/cli/internal/stack/up_tools_test.go:TestNoneGrantsNothingAndBlankFallsBackToTheDefaults",
-		"cmd/cli/internal/stack/up_tools_test.go:TestChangingTheToolListMintsANewRevisionRatherThanSilentlyReusingTheOld",
-		"cmd/cli/internal/stack/up_tools_test.go:TestReorderingTheToolListIsNotAChange",
+		// `1e5fc63e` deleted up_tools_test.go with the SLACK_AGENT_TOOLS behaviour it proved; four of its
+		// five proofs are withdrawn and the fifth follows the behaviour to its canonical replacement.
+		// Recorded in TLM-004/case.yaml.
+		"cmd/cli/internal/stack/up_default_tools_test.go:TestBringUpGrantsTheCanonicalDefaultSet",
 		"apps/control-plane/internal/execution/config_test.go:TestResolveGrantsToolSetsOnANullProjectBaseline",
 		// The dead-tool guard: palai.slack.search was absent from `palai up`'s default list when T5
 		// shipped, so the search tool was mounted, tested and unreachable. cmd/cli cannot import the tool
-		// package, so nothing compared the two sides until this did.
-		"apps/control-plane/internal/execution/tools/default_set_test.go:TestEverySlackDefaultToolResolves",
-		"apps/control-plane/internal/execution/tools/default_set_test.go:TestTheSearchToolIsInTheDefaultSet",
-		"apps/control-plane/internal/execution/tools/default_set_test.go:TestNoDefaultSlackToolHasSideEffects",
+		// package, so nothing compared the two sides until this did. The comparison SURVIVES — it now
+		// reads packages/toolset rather than a Slack-named literal, hence the renames. Its third leg
+		// (TestTheSearchToolIsInTheDefaultSet) is withdrawn: nothing grants palai.slack.search today.
+		"apps/control-plane/internal/execution/tools/default_set_test.go:TestEveryDefaultToolResolves",
+		"apps/control-plane/internal/execution/tools/default_set_test.go:TestNoDefaultToolPublishes",
 	}},
 	// E21 T5 — the workspace search. The last two entries are E21 T7's own: the DECLARATION that the tool's
 	// output may not be persisted, and the journey that sweeps what the run actually wrote down. They are here

@@ -11,12 +11,29 @@ proof:
   - apps/control-plane/internal/execution/tool_surface_component_test.go:TestAnExternalToolIsAdvertisedAsUntrustedToTheModel
   - apps/control-plane/internal/execution/tool_surface_component_test.go:TestARunReachesNoMCPServerItsRiderDoesNotName
   - apps/control-plane/internal/execution/tool_surface_component_test.go:TestARegistryToolDispatchesThroughTheRealOrchestratorAndTheResultReachesTheEngine
-  - cmd/cli/internal/stack/up_tools_test.go:TestABringUpBindsOnlyReadOnlyToolsByDefault
-  - cmd/cli/internal/stack/up_tools_test.go:TestAnOperatorWidensTheToolListByName
-  - cmd/cli/internal/stack/up_tools_test.go:TestNoneGrantsNothingAndBlankFallsBackToTheDefaults
-  - cmd/cli/internal/stack/up_tools_test.go:TestChangingTheToolListMintsANewRevisionRatherThanSilentlyReusingTheOld
-  - cmd/cli/internal/stack/up_tools_test.go:TestReorderingTheToolListIsNotAChange
+  # PROOF LEDGER CORRECTION, 2026-08-04. Eight proofs below were replaced or withdrawn. The case TEXT
+  # above is shipped and is left byte-for-byte: it records what was true when this case was accepted,
+  # and the corrections belong beside it rather than inside it. Nothing here moves the case checksum,
+  # which is sha256(id | run_id | ToolsMemoryContractsDigest) and reads neither this list nor the text.
+  #
+  # WITHDRAWN — `1e5fc63e refactor(cli): bring-up prepares a stack and nothing else` deleted
+  # cmd/cli/internal/stack/up_tools_test.go (206 lines) along with the behaviour it proved. The case
+  # text's sentence "SLACK_AGENT_TOOLS widens it by name" no longer describes this tree; that env var
+  # has no reader today. Five proofs went with it:
+  #   up_tools_test.go:TestAnOperatorWidensTheToolListByName
+  #   up_tools_test.go:TestNoneGrantsNothingAndBlankFallsBackToTheDefaults
+  #   up_tools_test.go:TestChangingTheToolListMintsANewRevisionRatherThanSilentlyReusingTheOld
+  #   up_tools_test.go:TestReorderingTheToolListIsNotAChange
+  #   default_set_test.go:TestTheSearchToolIsInTheDefaultSet — deliberately deleted 2026-08-04. Its
+  #     premise was a SLACK default list, and 1e5fc63e removed that world. Its report was TRUE and is
+  #     preserved: nothing grants palai.slack.search today.
+  #
+  # REPLACED — the behaviour survives under a new name, so the proof follows it rather than lapsing.
+  # `palai up` grants a CANONICAL set now (packages/toolset) instead of a Slack-named one:
+  #   TestABringUpBindsOnlyReadOnlyToolsByDefault → TestBringUpGrantsTheCanonicalDefaultSet
+  #   TestEverySlackDefaultToolResolves           → TestEveryDefaultToolResolves
+  #   TestNoDefaultSlackToolHasSideEffects        → TestNoDefaultToolPublishes
+  - cmd/cli/internal/stack/up_default_tools_test.go:TestBringUpGrantsTheCanonicalDefaultSet
   - apps/control-plane/internal/execution/config_test.go:TestResolveGrantsToolSetsOnANullProjectBaseline
-  - apps/control-plane/internal/execution/tools/default_set_test.go:TestEverySlackDefaultToolResolves
-  - apps/control-plane/internal/execution/tools/default_set_test.go:TestTheSearchToolIsInTheDefaultSet
-  - apps/control-plane/internal/execution/tools/default_set_test.go:TestNoDefaultSlackToolHasSideEffects
+  - apps/control-plane/internal/execution/tools/default_set_test.go:TestEveryDefaultToolResolves
+  - apps/control-plane/internal/execution/tools/default_set_test.go:TestNoDefaultToolPublishes

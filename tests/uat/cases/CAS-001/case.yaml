@@ -12,11 +12,20 @@ proof:
   - apps/control-plane/internal/store/slack_repository_component_test.go:TestSlackRunCarriesTheConnectionsRepositoryBinding
   - apps/control-plane/internal/store/slack_repository_component_test.go:TestSlackConnectionWithoutARepositoryIsBitUnchanged
   - apps/control-plane/internal/store/slack_repository_component_test.go:TestSlackRefusesAnotherTenantsRepositoryBinding
-  - cmd/cli/internal/stack/up_repository_test.go:TestABringUpGrantsWorkspaceToolsOnlyWithARepositoryBinding
+  # PROOF LEDGER CORRECTION, 2026-08-04. The case TEXT above is shipped and left byte-for-byte; the
+  # checksum is sha256(id | run_id | CodeAndShipContractsDigest) and reads neither this list nor the text.
+  #
+  # WITHDRAWN — `1e5fc63e refactor(cli): bring-up prepares a stack and nothing else` removed the
+  # bring-up's tool-granting from the repository binding, so the conditional this proved is gone:
+  #   up_repository_test.go:TestABringUpGrantsWorkspaceToolsOnlyWithARepositoryBinding
+  # A bring-up now grants one CANONICAL set (packages/toolset) regardless of the binding, proven by
+  # up_default_tools_test.go:TestBringUpGrantsTheCanonicalDefaultSet — which is a DIFFERENT claim and is
+  # deliberately not substituted in: this case asserted a conditional grant, and that conditional lapsed.
   - cmd/cli/internal/stack/up_repository_test.go:TestABringUpBindsTheRepositoryAndSaysWhatItMade
   - cmd/cli/internal/stack/up_repository_test.go:TestABringUpReusesTheRepositoryBindingItAlreadyMade
   - cmd/cli/internal/stack/up_repository_test.go:TestAMissingRepositoryConfigurationWarnsRatherThanSkippingSilently
   - cmd/cli/internal/stack/up_repository_test.go:TestARepositorySurfaceTheStackDoesNotMountIsReportedRatherThanSwallowed
-  - apps/control-plane/internal/execution/tools/default_set_test.go:TestEverySlackDefaultToolResolves
+  # RENAMED 2026-08-04: the comparison survives, reading packages/toolset instead of a Slack-named literal.
+  - apps/control-plane/internal/execution/tools/default_set_test.go:TestEveryDefaultToolResolves
   - tests/live/repository/live_test.go:TestLiveSlackBoundRepositoryClonesAtItsBaseBranch
   - tests/live/workspace/live_test.go:TestLiveSlackBoundRepositoryLandsWhereTheWorkspaceToolsLook

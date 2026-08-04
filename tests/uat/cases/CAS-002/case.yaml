@@ -16,8 +16,14 @@ proof:
   - apps/control-plane/internal/execution/tools/publish_test.go:TestNoPublishToolLetsTheModelNameTheDestination
   - apps/control-plane/internal/execution/tools/publish_test.go:TestPushToolRecordsPendingPublicationAtWorkspaceHead
   - apps/control-plane/internal/execution/tools/default_set_test.go:TestThePublishToolsAreTheirOwnListAndNeitherPublishes
-  - apps/control-plane/internal/execution/tools/default_set_test.go:TestEverySlackDefaultToolResolves
-  - cmd/cli/internal/stack/up_repository_test.go:TestABringUpWithARepositoryGrantsThePublishToolsAndOneWithoutGrantsNone
+  # RENAMED 2026-08-04: the comparison survives, reading packages/toolset instead of a Slack-named literal.
+  - apps/control-plane/internal/execution/tools/default_set_test.go:TestEveryDefaultToolResolves
+  # WITHDRAWN 2026-08-04 — `1e5fc63e refactor(cli): bring-up prepares a stack and nothing else` removed
+  # the conditional grant this proved (publish tools iff a repository was bound). The case TEXT above is
+  # shipped and left byte-for-byte; the checksum reads neither this list nor the text.
+  #   up_repository_test.go:TestABringUpWithARepositoryGrantsThePublishToolsAndOneWithoutGrantsNone
+  # The clause this case most depends on — that neither publish tool lets the model choose a destination —
+  # is UNAFFECTED and keeps both its proofs above (publish_test.go, default_set_test.go).
   - cmd/cli/internal/stack/up_publisher_test.go:TestABoundRepositoryWithNoGitHubAppWarnsRatherThanWaitingForever
   - cmd/cli/internal/stack/up_publisher_test.go:TestAHalfConfiguredGitHubAppIsRefusedByName
   - cmd/cli/internal/stack/up_publisher_test.go:TestTheGitHubAppKeyRidesAFileSecretAndTheEnvironmentCarriesOnlyAPath
