@@ -678,13 +678,13 @@ var cardDetailSpecials = []string{`\`, "*", "`", "_", "~", ">", "<"}
 // MEASURED, character by character, against the live API (2026-08-04, workspace T0AMPM5JX8U — each sent raw
 // and backslash-escaped, then read back with conversations.replies):
 //
-//	*  raw a*b*c  -> "abc"      escaped -> "a*b*c"    <- consumed; the escape is REQUIRED
-//	`  raw a`b`c  -> "abc"      escaped -> "a`b`c"    <- consumed; the escape is REQUIRED
-//	_  raw a_b_c  -> "a_b_c"    escaped -> "a_b_c"    <- survived here, and the escape costs nothing
-//	~  raw a~b~c  -> "a~b~c"    escaped -> "a~b~c"
-//	>  raw a>b>c  -> "a>b>c"    escaped -> "a>b>c"
-//	<  raw a<b<c  -> "a<b<c"    escaped -> "a<b<c"
-//	\  raw a\b\c  -> "a\b\c"    escaped -> "a\b\c"    <- so a backslash IS consumed when doubled
+//	asterisk  raw a*b*c -> "abc"     escaped -> "a*b*c"   CONSUMED; the escape is REQUIRED
+//	backtick  raw a`b`c -> "abc"     escaped -> "a`b`c"   CONSUMED; the escape is REQUIRED
+//	under_    raw a_b_c -> "a_b_c"   escaped -> "a_b_c"   survived here, and the escape costs nothing
+//	tilde     raw a~b~c -> "a~b~c"   escaped -> "a~b~c"
+//	gt        raw a>b>c -> "a>b>c"   escaped -> "a>b>c"
+//	lt        raw a<b<c -> "a<b<c"   escaped -> "a<b<c"
+//	backslash raw a\b\c -> "a\b\c"   escaped -> "a\b\c"   so a backslash IS consumed when doubled
 //
 // The four that survived RAW are escaped anyway, and that is deliberate rather than thorough-for-its-own
 // sake: each was measured to render identically escaped, so the cost is nothing, while the position they

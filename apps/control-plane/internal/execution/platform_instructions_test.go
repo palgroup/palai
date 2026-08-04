@@ -30,6 +30,34 @@ func TestThePlatformTextIsSubstantial(t *testing.T) {
 	}
 }
 
+// TestThePlatformTextPrescribesNoCharacter is the guard for the rule that produced this text's
+// second draft, and the reason it is a TEST rather than a note is that the first draft was written
+// by someone who had read the layering and still did it. "Work like a careful colleague", then
+// instructions on restraint, verification habits and reporting style — none of it wrong advice, all
+// of it somebody else's sentence to write.
+//
+// §25.12 layer 1 is inherited by every revision and requested by none. A deployment configuring a
+// deliberately bold agent would have met this layer arguing with its own agent inside one prompt,
+// and the model would have split the difference between two voices no operator chose. So layer 1
+// describes the world — what exists, what it costs, how it answers — and layer 3 says who the agent
+// is.
+//
+// The list is crude and that is the point: it catches the register, not every phrasing. A fact about
+// the mechanism survives any persona ("a replacement has to match exactly one place"); a preference
+// does not, and a preference stated here silently outranks the operator's.
+func TestThePlatformTextPrescribesNoCharacter(t *testing.T) {
+	for _, persona := range []string{
+		"Work like", "work like a", // the literal opening of the first draft
+		"careful", "carefully", "thoughtful", "diligent", "meticulous", "rigorous",
+		"you should", "You should", "make sure", "Make sure", "be sure to",
+		"stop there", "leave the rest alone", "Lead with", // the first draft's restraint and reporting rules
+	} {
+		if strings.Contains(platformInstructions, persona) {
+			t.Errorf("the platform text contains %q: that prescribes how to BE, which is the revision author's to say — layer 1 may only describe what the environment affords", persona)
+		}
+	}
+}
+
 // TestThePlatformTextAvoidsEmphaticFraming pins a prompting property that is easy to lose in an
 // edit. Anthropic's own migration guidance is that CRITICAL/YOU MUST framing OVERTRIGGERS on current
 // models — prompts written to overcome older models' reluctance now misfire — so this text is
