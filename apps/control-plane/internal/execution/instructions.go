@@ -8,12 +8,18 @@ import (
 // these constants are the subset of that list that has a WRITER in this tree today:
 //
 //  1. kernel safety and protocol instructions          — the ENGINE's own (context.py KERNEL_INSTRUCTION)
+//     plus the PLATFORM's working discipline           — layerInstructionsPlatform
 //  2. deployment/organization/project policy-visible   — NO WRITER (see below)
 //  3. pinned agent revision instructions               — layerInstructionsRevision
 //  4. session config instructions                      — NO WRITER (see below)
 //  5. run-specific instructions                        — layerInstructionsRun
 //  6. selected durable conversation items              — run.start `messages`
 //  10. current user/trigger input                      — run.start `input`
+//
+// LAYER 1 HAS TWO WRITERS AND THAT IS DELIBERATE. The engine states what it is and what it may not
+// control; the platform states how to work. They are split along the line that decides who owns the
+// text: a second engine would carry its own identity and protocol turn, and would still need the
+// same working discipline, so the discipline lives on the control plane every engine shares.
 //
 // LAYERS 2 AND 4 HAVE NO WRITER, and naming them here is the honest form of that. Nothing in this
 // tree stores a project-level or session-level instruction string: `project_config` carries
@@ -22,6 +28,7 @@ import (
 // an obvious ORDER to insert it at — not because anything resolves them today. Claiming otherwise
 // would be the exact defect this file exists to fix, one layer up.
 const (
+	layerInstructionsPlatform = "platform"
 	layerInstructionsRevision = "agent_revision"
 	layerInstructionsRun      = "run"
 )
@@ -55,7 +62,12 @@ type InstructionLayer struct {
 // caller's refinement of it second — which is the composition a caller means by "run this agent, and
 // for this one call also do X".
 func resolveInstructionLayers(revision, run string) []InstructionLayer {
-	var out []InstructionLayer
+	// The platform layer is UNCONDITIONAL and leads. Unconditional because working discipline is not
+	// something a tenant opts into, and leading because a revision or a run narrows it by speaking
+	// after it — the same precedence the revision/run pair already uses between themselves. Placing
+	// tenant text ahead of it would put a caller-supplied string in the position that overrides
+	// platform guidance, which is the untrusted-claim shape §28.2 exists to refuse.
+	out := []InstructionLayer{{Layer: layerInstructionsPlatform, Text: platformInstructions}}
 	if revision != "" {
 		out = append(out, InstructionLayer{Layer: layerInstructionsRevision, Text: revision})
 	}
