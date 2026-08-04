@@ -65,8 +65,8 @@ type Tool struct {
 	// sent {type, name} and no schema, because the schema the tool was trained against is not ours to
 	// restate. A tool carrying a Type therefore leaves InputSchema and Description empty, and the
 	// adapter refuses the combination rather than sending both.
-	Type        string
-	InputSchema map[string]any
+	Type         string
+	InputSchema  map[string]any
 	OutputSchema map[string]any
 	ReplayClass  ReplayClass
 	Invoke       func(args map[string]any) (map[string]any, error)
