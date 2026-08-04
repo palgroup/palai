@@ -82,6 +82,14 @@ func (l localWorkspace) Stat(_ context.Context, rel string) (toolbroker.FileStat
 	return toolbroker.FileStat{Path: st.Path, IsDir: st.IsDir, Size: st.Size}, nil
 }
 
+func (l localWorkspace) Glob(_ context.Context, pattern string, limit int) ([]string, bool, error) {
+	fs, err := l.fs()
+	if err != nil {
+		return nil, false, err
+	}
+	return fs.Glob(pattern, limit)
+}
+
 func (l localWorkspace) Checksum(_ context.Context, rel string) (string, error) {
 	fs, err := l.fs()
 	if err != nil {

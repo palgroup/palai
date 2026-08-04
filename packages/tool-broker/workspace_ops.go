@@ -36,6 +36,11 @@ type WorkspaceOps interface {
 	Stat(ctx context.Context, rel string) (FileStat, error)
 	// Checksum returns the content digest of a workspace-relative regular file.
 	Checksum(ctx context.Context, rel string) (string, error)
+	// Glob returns workspace-relative paths of regular files matching a glob pattern, NEWEST
+	// modification first, capped at limit (0 means uncapped). The bool reports whether the cap
+	// dropped matches — a caller that cannot tell a complete answer from a clipped one concludes the
+	// missing files do not exist. `**` crosses directories; a bare `*` does not.
+	Glob(ctx context.Context, pattern string, limit int) ([]string, bool, error)
 	// Head reports the workspace repository's current commit and tree.
 	Head(ctx context.Context) (commit, tree string, err error)
 	// Commit records every tracked change in the workspace repository under the platform's fixed

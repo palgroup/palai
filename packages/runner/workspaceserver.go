@@ -53,6 +53,7 @@ const (
 	WorkspaceOpChecksum = "checksum" // confined content digest
 	WorkspaceOpHead     = "head"     // the workspace repository's current commit + tree
 	WorkspaceOpCommit   = "commit"   // commit the worktree under the platform's fixed identity
+	WorkspaceOpGlob     = "glob"     // confined filename search, newest modification first
 )
 
 // WorkspaceRequestData builds the data payload of a ws.request. Correlation is this pair's own field,
@@ -214,6 +215,19 @@ func (s *WorkspaceServer) perform(ctx context.Context, op, root string, req map[
 			return nil, err
 		}
 		return map[string]any{"checksum": sum}, nil
+	case WorkspaceOpGlob:
+		// The pattern rides its own field rather than `path`: it is not a path, it is a matcher, and
+		// the confinement it needs is the one Glob applies to every candidate it produces.
+		pattern, _ := req["pattern"].(string)
+		limit, err := int64Field(req, "limit")
+		if err != nil {
+			return nil, err
+		}
+		paths, truncated, err := fs.Glob(pattern, int(limit))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"paths": paths, "truncated": truncated}, nil
 	}
 	return nil, fmt.Errorf("unknown workspace op %q", op)
 }

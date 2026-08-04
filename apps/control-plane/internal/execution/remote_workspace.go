@@ -252,6 +252,27 @@ func (w *RemoteWorkspace) Checksum(ctx context.Context, rel string) (string, err
 	return sum, nil
 }
 
+// Glob asks the machine holding this allocation to search its own disk by filename. The pattern
+// travels; the walk does not — a control plane that globbed its own filesystem here would answer for
+// the wrong machine, and would answer at all only by accident of the two happening to be the same.
+func (w *RemoteWorkspace) Glob(ctx context.Context, pattern string, limit int) ([]string, bool, error) {
+	data, err := w.call(ctx, runner.WorkspaceOpGlob, map[string]any{"pattern": pattern, "limit": limit})
+	if err != nil {
+		return nil, false, err
+	}
+	// The wire carries JSON, so a []string arrives as []any. Anything that is not a string is dropped
+	// rather than guessed at: a path this side cannot read as a path is not one it should return.
+	raw, _ := data["paths"].([]any)
+	paths := make([]string, 0, len(raw))
+	for _, entry := range raw {
+		if s, ok := entry.(string); ok {
+			paths = append(paths, s)
+		}
+	}
+	truncated, _ := data["truncated"].(bool)
+	return paths, truncated, nil
+}
+
 func (w *RemoteWorkspace) Head(ctx context.Context) (string, string, error) {
 	data, err := w.call(ctx, runner.WorkspaceOpHead, nil)
 	if err != nil {
