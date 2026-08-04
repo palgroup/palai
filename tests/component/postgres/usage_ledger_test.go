@@ -74,13 +74,22 @@ func TestMigration32UsageLedgerAppendOnlyAcrossReboots(t *testing.T) {
 	}
 }
 
-// TestMigration32MeteringPolicyStaysOrgLevelAcrossReboots proves the deliberate exception 000032 makes:
-// its three tables are secured at the ORGANIZATION level even though they carry a project_id column, so
-// an organization-wide budget can be summed from the project-narrowed connection that admits a run. That
-// is exactly the shape 000029's catalogue sweep would overwrite with a project-aware policy on boot #2,
-// so this migrates TWICE and then asserts a sibling project's row is still visible within the org — and
-// that the ORGANIZATION boundary itself is untouched.
-func TestMigration32MeteringPolicyStaysOrgLevelAcrossReboots(t *testing.T) {
+// TestMeteringPolicyStaysWiderThanTheProjectAcrossReboots proves the deliberate exception 000032 made and
+// A.2 Task 6's 000066 carried forward: usage_ledger is secured WIDER than the project even though it
+// carries a project_id column, so an installation-wide budget can be summed from the project-narrowed
+// connection that admits a run. Narrowing it would make that sum miss every sibling project, and a budget
+// that under-counts fails OPEN, silently — which is why the exception exists at all.
+//
+// The second half of the old claim IS GONE, and it is removed rather than weakened. This test used to end
+// by asserting that org-A's connection saw zero of org-B's ledger rows — "the tenant boundary leaked".
+// 000066 keys usage_ledger on the INSTALLATION, because keying it on project is exactly what would break
+// the first half and there is no organization left to key it on: within one installation every project
+// now reads every ledger row. What survives, and is asserted below, is that a connection which declared
+// NO scope still sees nothing.
+//
+// It still migrates TWICE: 000029's catalogue sweep would overwrite the exception with a narrower policy
+// on boot #2, and that is the regression this test was written to catch.
+func TestMeteringPolicyStaysWiderThanTheProjectAcrossReboots(t *testing.T) {
 	cs := openHarness(t)
 	ctx := storage.WithSystemScope(context.Background())
 	pool := cs.Pool()
@@ -118,13 +127,23 @@ func TestMigration32MeteringPolicyStaysOrgLevelAcrossReboots(t *testing.T) {
 		t.Fatalf("org-A ledger total from a project-B-narrowed connection = %v, want 42 (the org-level metering policy did not survive the 000029 sweep)", orgTotal)
 	}
 
-	var foreign int
-	if err := conn.QueryRow(ctx, `SELECT count(*) FROM usage_ledger WHERE organization_id = $1`, orgB).Scan(&foreign); err != nil {
-		t.Fatalf("count org-B ledger: %v", err)
+	// The other seeded tenant's rows are now VISIBLE, and that is asserted rather than left unmentioned:
+	// a test that simply stopped looking would read as if the boundary were still there.
+	var other int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM usage_ledger WHERE organization_id = $1`, orgB).Scan(&other); err != nil {
+		t.Fatalf("count the other tenant's ledger: %v", err)
 	}
-	if foreign != 0 {
-		t.Fatalf("org-A's connection saw %d org-B ledger row(s); the tenant boundary leaked", foreign)
+	if other != 1 {
+		t.Fatalf("the other tenant's ledger row count = %d, want 1 — usage_ledger is installation-wide after 000066", other)
 	}
+
+	// THE DENY-BY-DEFAULT HALF IS NOT ASSERTED HERE, and the reason is a measured property rather than an
+	// oversight: this connection has already published palai.project_id, and a custom GUC cannot return to
+	// NULL once set in a session — `set_config(name, NULL, false)` and `RESET` both leave it reading as the
+	// empty string. So the world this arm would need is unreachable from this connection, and an arm
+	// written anyway would be measuring its own setup. It lives where a never-scoped connection exists:
+	// tests/security/tenancy's TestConnectionWithoutTenantContextSeesNoTenantRows (every RLS table) and
+	// TestInstallationWideTablesAreVisibleToEveryTenant (these four by name).
 }
 
 // seedLedgerRow writes one settled ledger row as the migration owner, creating its organization and
@@ -413,16 +432,33 @@ func TestBudgetScopeNarrowingAcrossSiblingProjects(t *testing.T) {
 		t.Fatalf("our project's budget was charged the SIBLING's spend (%+v); the usage join is not narrowed to the budget's project", *limit)
 	}
 
-	// (c) An organization-wide budget ('' project) DOES sum every project, so the sibling's 140 exhausts
-	// it — the deliberate consequence of the org-level metering policy, and the reason it exists.
+	// (c) An installation-wide budget ('' project) DOES sum every project, so the sibling's 140 is inside
+	// the total — the deliberate consequence of the wider-than-project metering policy, and the reason it
+	// exists.
+	//
+	// THE EXPECTED TOTAL IS MEASURED, NOT WRITTEN DOWN, and A.2 Task 6 is why. This used to assert
+	// `Used == 140` exactly, which held while usage_ledger was secured per ORGANIZATION and the fixture
+	// owned its own. 000066 keys it on the INSTALLATION, and this suite shares ONE database across dozens
+	// of openHarness calls, so an installation-wide budget legitimately sums every other test's model.*
+	// rows too (1264 when this was first re-run, and a number that moves whenever a test is added). The
+	// claim being pinned is the SIBLING's contribution, so the baseline is read first and the assertion is
+	// the difference — which fails just as loudly if the join stops crossing projects.
+	var baseline float64
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx),
+		`SELECT coalesce(sum(quantity), 0) FROM usage_ledger WHERE meter LIKE 'model.%'`).Scan(&baseline); err != nil {
+		t.Fatalf("read the installation-wide model.* baseline: %v", err)
+	}
 	exec(t, cs.Pool(), `DELETE FROM budgets WHERE organization_id = $1`, tenant.Organization)
 	setBudget("", 100)
 	limit := admit(t, "scope-c")
 	if limit == nil {
-		t.Fatal("an org-wide budget did not see the sibling project's spend; the organization-wide limit under-counts (it fails OPEN)")
+		t.Fatal("an installation-wide budget did not see the sibling project's spend; the wide limit under-counts (it fails OPEN)")
 	}
-	if limit.Used != 140 || limit.Limit != 100 {
-		t.Fatalf("org-wide rejection = %+v, want used 140 of 100 (the sibling's spend, summed across the org)", *limit)
+	if limit.Used != baseline || limit.Limit != 100 {
+		t.Fatalf("installation-wide rejection = %+v, want used %v of 100 (every project's model.* spend, the sibling's 140 among them)", *limit, baseline)
+	}
+	if baseline < 140 {
+		t.Fatalf("the baseline is %v, below the sibling's own 140 — the sum is not crossing projects at all", baseline)
 	}
 }
 

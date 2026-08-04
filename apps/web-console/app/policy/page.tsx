@@ -690,7 +690,7 @@ export default function PolicyPage() {
               </dd>
               <dt>Capabilities</dt>
               <dd>{(revoking.scopes ?? []).length === 0 ? "EVERY capability" : (revoking.scopes ?? []).join(", ")}</dd>
-              <dt>Keys left in this organization</dt>
+              <dt>Keys left in this project</dt>
               <dd>{String(keyRows.filter(live).length - 1)} still live after this one</dd>
             </dl>
           }

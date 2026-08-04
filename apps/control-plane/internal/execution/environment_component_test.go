@@ -56,7 +56,9 @@ func TestAnEnvironmentReachesARunsShellAndItsValueEntersNoDurableRow(t *testing.
 	// The environment, and its two keys, written through the REAL store — so the bytes under test are
 	// bytes the API path sealed, not a fixture INSERT.
 	envID := pinnedID("env")
-	exec(`INSERT INTO environments (id, organization_id, name) VALUES ($1,$2,'production')`, envID, tenant.Organization)
+	// The name carries the fixture's own id: 000065 made environments.name unique across the INSTALLATION,
+	// and this suite shares one database, so a literal 'production' collides with every sibling fixture.
+	exec(`INSERT INTO environments (id, organization_id, name) VALUES ($1,$2,$3)`, envID, tenant.Organization, "production-"+envID)
 	scope := middleware.Scope{Project: tenant.Project}
 	for _, body := range []string{
 		`{"key":"JIRA_TOKEN","value":"` + envSentinel + `"}`,
@@ -210,7 +212,7 @@ func TestARunWhoseRevisionNamesAnEnvironmentFailsClosedWithNoResolver(t *testing
 	ctx := context.Background()
 
 	envID := pinnedID("env")
-	exec(`INSERT INTO environments (id, organization_id, name) VALUES ($1,$2,'production')`, envID, tenant.Organization)
+	exec(`INSERT INTO environments (id, organization_id, name) VALUES ($1,$2,$3)`, envID, tenant.Organization, "production-"+envID)
 	exec(`INSERT INTO environment_values (environment_id, organization_id, key) VALUES ($1,$2,'JIRA_TOKEN')`, envID, tenant.Organization)
 	profileID, revID, sessionID, runID := pinnedID("aprof"), pinnedID("arev"), pinnedID("ses"), pinnedID("run")
 	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project)
@@ -274,8 +276,8 @@ func TestARunsEnvironmentIsPinnedToItsRevisionNotToTheLatest(t *testing.T) {
 	ctx := context.Background()
 
 	envA, envB := pinnedID("env"), pinnedID("env")
-	exec(`INSERT INTO environments (id, organization_id, name) VALUES ($1,$2,'production')`, envA, tenant.Organization)
-	exec(`INSERT INTO environments (id, organization_id, name) VALUES ($1,$2,'staging')`, envB, tenant.Organization)
+	exec(`INSERT INTO environments (id, organization_id, name) VALUES ($1,$2,$3)`, envA, tenant.Organization, "production-"+envA)
+	exec(`INSERT INTO environments (id, organization_id, name) VALUES ($1,$2,$3)`, envB, tenant.Organization, "staging-"+envB)
 	exec(`INSERT INTO environment_values (environment_id, organization_id, key) VALUES ($1,$2,'A_ONLY')`, envA, tenant.Organization)
 	exec(`INSERT INTO environment_values (environment_id, organization_id, key) VALUES ($1,$2,'B_ONLY')`, envB, tenant.Organization)
 

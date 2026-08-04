@@ -84,8 +84,12 @@ func newSecretFixture(t *testing.T) *secretFixture {
 
 	f.envID = redeliveryID("env")
 	if _, err := f.spine.Pool().Exec(sys,
-		`INSERT INTO environments (id, organization_id, name) VALUES ($1,$2,'production')`,
-		f.envID, f.tenant.Organization); err != nil {
+		// THE NAME CARRIES THE FIXTURE'S OWN ID. `environments.name` became unique across the whole
+		// INSTALLATION in A.2 T6's 000065 (it was `(organization_id, name)`, and organizations are gone), and
+		// this suite shares one database across dozens of harnesses — so a literal 'production' collides with
+		// every other fixture that wanted the same obvious name.
+		`INSERT INTO environments (id, organization_id, name) VALUES ($1,$2,$3)`,
+		f.envID, f.tenant.Organization, "production-"+f.envID); err != nil {
 		t.Fatalf("seed the environment: %v", err)
 	}
 	// The write path is the REAL one: PutEnvironmentValue seals into secret_refs under the derived name

@@ -1,19 +1,19 @@
 // Package identity is the durable store behind the tenancy provisioning API (spec §39.2, E13 Task 2,
-// TEN-003/MCI-001): organizations, projects (+ the §14 config_policy write-path), and API keys. It is the
-// write half of the identity tables migration 000001 declared, and the machinery bootstrap reuses to seed
-// the very first organization — so a second tenant is opened by exactly the same code path, over the API,
-// with no process restart and no manual SQL.
+// TEN-003/MCI-001): projects (+ the §14 config_policy write-path) and API keys. It is the write half of the
+// identity tables migration 000001 declared, and the machinery bootstrap reuses to seed the very first
+// tenant — so a second tenant is opened by exactly the same code path, over the API, with no process
+// restart and no manual SQL.
 //
-// SCOPING (the load-bearing rule, migration 000029): organization CREATION runs under the system scope,
-// because it establishes a tenant before one exists (the deliberate, greppable escape hatch, exactly like
-// bootstrap and VerifyAPIKey). Every other operation runs under the CALLER's own organization, widened to
-// the whole org (project-agnostic): API keys and projects are organization-level identity resources, and
-// the per-project narrowing that isolates run/session data does not gate identity management. The
-// organization boundary itself is NEVER widened — the org always comes from the verified key, never a body
-// field — so a caller can only ever administer its own organization.
+// SCOPING (the load-bearing rule, migrations 000029 and 000066). TENANT CREATION runs under the system
+// scope, because it establishes a tenant before one exists — the deliberate, greppable escape hatch,
+// exactly like bootstrap and VerifyAPIKey. Every other operation runs under provisioningScope, which
+// answers a two-way question rather than widening: a key holding `system` is the PLATFORM and administers
+// the whole installation (it is what opens the projects); a key without it is a tenant admin and
+// administers ITS OWN PROJECT, because after A.2 Task 6 a tenant IS a project. Another project's key,
+// principal or policy is invisible rather than forbidden, so a refusal discloses nothing.
 //
-// HONEST CEILING: this is basic scopes only. A key that can provision can provision its whole
-// organization; named roles, relationships, and OIDC are E13-H/E17.
+// HONEST CEILING: this is basic scopes only. A key that can provision can provision its whole project;
+// named roles, relationships, and OIDC are E13-H/E17.
 package identity
 
 import (
@@ -174,21 +174,34 @@ func (s *Store) ProvisionFirstOrg(ctx context.Context, bootstrapKey string) erro
 	})
 }
 
-// orgScope widens the request to its whole organization for a provisioning read/write. The organization is
-// resolved fresh from the caller's own project (A.2 Task 3: middleware.Scope no longer carries one) —
-// still only ever the caller's own tenant, since project is itself verified — and it relaxes ONLY the
-// intra-org project narrowing, because identity resources are managed org-wide.
+// provisioningScope binds a provisioning read/write to what the caller may administer. THE PLATFORM SEES
+// THE INSTALLATION; A TENANT SEES ITS PROJECT — two answers because the callers are two different things,
+// and the split is the same one authorizeSystem already draws at the route.
 //
-// storage.WithOrgScope, not storage.WithTenant with an empty project (A.2 Task 1): WithTenant now REFUSES
-// to acquire a connection with no project, because once organizations are gone an empty project would mean
-// every project rather than a boundary. WithOrgScope is the named, narrow exception for exactly this
-// surface — see its doc comment for why identity/provisioning keeps it for now.
-func orgScope(ctx context.Context, pool *pgxpool.Pool, project string) (context.Context, string, error) {
-	organization, err := storage.OrganizationForProject(ctx, pool, project)
+// It replaces orgScope, and the replacement is forced rather than chosen. Until A.2 Task 6 this widened to
+// storage.WithOrgScope — organization set, project empty — which worked because api_keys, principals and
+// projects were the three tables 000062 deliberately left keyed on organization_id. Migration 000066 rekeys
+// all three to project, and under that rule an empty project GUC matches only rows whose own project_id is
+// ” — which no api_keys row ever has. Widening by leaving the project blank stops meaning "the whole
+// organization" the moment the organization is not the key.
+//
+// SO THE WIDENING IS NOW EXPLICIT. A key holding `system` is the platform (the operator's own bootstrap
+// key, or Palai Cloud's), and administering every project of the installation is exactly its job: it is
+// what opens them. A key WITHOUT it is a tenant admin, and after this task a tenant IS a project — it
+// lists, mints and revokes within its own, and another project's key is invisible rather than forbidden,
+// which is the answer that discloses nothing.
+//
+// The organization is still resolved, and only for as long as the `organizations` table outlives this
+// call: its own policy compares palai.org_id, and ListOrganizations/GetOrganization still read it.
+func provisioningScope(ctx context.Context, pool *pgxpool.Pool, scope middleware.Scope) (context.Context, string, error) {
+	organization, err := storage.OrganizationForProject(ctx, pool, scope.Project)
 	if err != nil {
 		return ctx, "", fmt.Errorf("resolve organization for project: %w", err)
 	}
-	return storage.WithOrgScope(ctx, organization), organization, nil
+	if scope.HasSystem() {
+		return storage.WithSystemScope(ctx), organization, nil
+	}
+	return storage.WithTenant(ctx, organization, scope.Project), organization, nil
 }
 
 // CreateOrganization opens a NEW tenant: an organization, its default project, a service principal, and a
@@ -230,7 +243,7 @@ func (s *Store) CreateOrganization(ctx context.Context, _ middleware.Scope, body
 // ListOrganizations lists the organizations visible in the caller's scope — under RLS, the caller's own
 // organization (no cross-tenant listing).
 func (s *Store) ListOrganizations(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -256,7 +269,7 @@ func (s *Store) ListOrganizations(ctx context.Context, scope middleware.Scope) (
 
 // GetOrganization reads one organization within the caller's scope; a foreign/unknown id is a miss (404).
 func (s *Store) GetOrganization(ctx context.Context, scope middleware.Scope, id string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -329,7 +342,7 @@ func (s *Store) CreateProject(ctx context.Context, scope middleware.Scope, body 
 
 // ListProjects lists every project in the caller's organization.
 func (s *Store) ListProjects(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -355,7 +368,7 @@ func (s *Store) ListProjects(ctx context.Context, scope middleware.Scope) (api.P
 
 // GetProject reads one project within the caller's organization; a foreign/unknown id is a miss (404).
 func (s *Store) GetProject(ctx context.Context, scope middleware.Scope, id string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -380,7 +393,7 @@ func (s *Store) UpdateProjectPolicy(ctx context.Context, scope middleware.Scope,
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("marshal config policy: %w", err)
 	}
-	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -411,7 +424,7 @@ func (s *Store) CreateAPIKey(ctx context.Context, scope middleware.Scope, body [
 	if in.ProjectID == "" {
 		return api.ProvisionResult{MissingField: "project_id"}, nil
 	}
-	scopedCtx, org, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, org, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -452,7 +465,7 @@ func (s *Store) CreateAPIKey(ctx context.Context, scope middleware.Scope, body [
 
 // ListAPIKeys lists key METADATA (never the hash or plaintext) for every key in the caller's organization.
 func (s *Store) ListAPIKeys(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -478,7 +491,7 @@ func (s *Store) ListAPIKeys(ctx context.Context, scope middleware.Scope) (api.Pr
 
 // GetAPIKey reads one key's metadata within the caller's organization; a foreign/unknown id is a miss (404).
 func (s *Store) GetAPIKey(ctx context.Context, scope middleware.Scope, id string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -496,7 +509,7 @@ func (s *Store) GetAPIKey(ctx context.Context, scope middleware.Scope, id string
 // RevokeAPIKey revokes a key in the caller's organization (idempotent — the first revoked_at is kept). A
 // foreign/unknown id is a miss (404). The response renders the key's current metadata.
 func (s *Store) RevokeAPIKey(ctx context.Context, scope middleware.Scope, id string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}

@@ -64,8 +64,8 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	// each was cut when 51 was the tip. Whichever lands second renames — filename pair, `VALUES (52)`
 	// marker, embed var, and this assertion — and this test is what makes the rename finish.
 	head := migrations[len(migrations)-1]
-	if head.Version != 65 || head.Name != "project_scoped_integrity" {
-		t.Fatalf("chain head = %06d_%s, want 000065_project_scoped_integrity", head.Version, head.Name)
+	if head.Version != 66 || head.Name != "tenant_policy_without_organization" {
+		t.Fatalf("chain head = %06d_%s, want 000066_tenant_policy_without_organization", head.Version, head.Name)
 	}
 	// The penultimate moves every time a new head lands, and asserting BOTH is what forces a renumber
 	// to finish: a rename that updated the filename pair but not the `VALUES (n)` marker or the embed
@@ -78,8 +78,8 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	// comments above already describe — a pin nobody updates is a pin nobody reads. Caught here while
 	// verifying A.2 Task 3, not by anything Task 3 itself touches.
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 64 || penultimate.Name != "background_task_machine" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000064_background_task_machine", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 65 || penultimate.Name != "project_scoped_integrity" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000065_project_scoped_integrity", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

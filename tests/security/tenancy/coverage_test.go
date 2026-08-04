@@ -20,29 +20,40 @@ import (
 	"testing"
 )
 
-// installationWideOnly are the tables this task's own sweep found carrying organization_id with no
-// project_id column at all — each one predates per-project structure and is genuinely organization-wide,
-// not merely unswept by accident. None of these is news: every one already has its own documented
-// exception (storage/tenant.go's WithOrgScope doc, or 000062's own header) for exactly this reason. Once
-// organizations are gone (Task 4), each such table has exactly one project's worth of installation, so
-// staying keyed on organization_id costs nothing — it is the SAME single boundary project_id would give,
-// under the column that already carries it. A NEW table that lands here unnamed is exactly what this
-// allowlist exists to catch: it forces the same three-way decision (project column / installation-wide /
-// drop) the brief for this task asked for, rather than letting it slide as an accident.
+// installationWideOnly are the tables the sweep below finds carrying organization_id and NO project_id —
+// the shape no catalogue-driven policy rule could have reached, so each needs a decision recorded by hand.
+// Three of the four are installation-wide, which is what names the list; `projects` is the exception and
+// says so at its own entry. A.2 Task 3 found them by sweeping for organization_id with no
+// project_id; A.2 Task 6 removed the organization and 000066 keys them where the sweep said they were.
+//
+// THE COST IS NAMED HERE BECAUSE THIS IS THE LIST A READER CHECKS. While organizations existed these tables
+// had a real boundary and an installation could hold two tenants apart on them. It cannot any more: within
+// one installation every project reads every row of these three. That is exactly today's observable
+// behaviour (one installation has held one organization since A.2 Task 1), and it is acceptable only under
+// Palai's post-A.2 model of one installation per customer. An installation that ever hosts two customers
+// needs project_id on these tables FIRST.
+//
+// A NEW table that lands here unnamed is what this allowlist exists to catch: it forces the same three-way
+// decision (project column / installation-wide / drop) rather than letting it slide as an accident.
 var installationWideOnly = map[string]bool{
-	// projects — an organization's own project catalogue. A project cannot be scoped to itself; identity's
-	// org-wide provisioning surface (Store.orgScope, apps/control-plane/internal/identity/store.go) reads
-	// and writes it under storage.WithOrgScope, structurally the same as api_keys/principals (000062's
-	// named exclusions) even though 000062's own sweep loop never had to name it — projects has no
-	// project_id to sweep, so it was never a candidate for accidental inclusion in the first place.
-	"projects": true,
-	// secret_refs (000031) — the org-scoped secret store fronting the env-file bridge
-	// (identity.SecretStore.Resolve). Documented in storage/tenant.go's WithOrgScope comment.
+	// secret_refs (000031) — the secret store fronting the env-file bridge (identity.SecretStore.Resolve).
+	// A.2 Task 6's 000066 keys it on the INSTALLATION: with organizations gone and no project_id column,
+	// there is nothing narrower left. TestSecretRefNamesAreInstallationWide is the executable form.
 	"secret_refs": true,
-	// environments, environment_values (000046) — an agent's named env-var groups. Documented in
-	// storage/tenant.go's WithOrgScope comment and automation/agents.go's verifyEnvironment.
+	// environments, environment_values (000046) — an agent's named env-var groups, the same posture and
+	// the same 000066 decision. TestEnvironmentsAreInstallationWide and
+	// TestInstallationWideTablesAreVisibleToEveryTenant assert it in both directions.
 	"environments":       true,
 	"environment_values": true,
+	// projects — NOT installation-wide, and it is on this list because the list's QUESTION is narrower than
+	// its name: the sweep asks "carries organization_id, carries no project_id, so no catalogue-driven rule
+	// could have reached it — was that decided?", and for projects the answer is yes and it is the
+	// TIGHTEST of the four. 000066 keys its policy on its own `id`, which IS the project column under the
+	// name a project's own row gives it, so a project-scoped connection sees exactly its own row where it
+	// used to see every project of its organization. Listed rather than special-cased, because an entry
+	// with its reason is what the sweep exists to force; the moment organization_id leaves this table the
+	// sweep stops finding it and this entry goes with it.
+	"projects": true,
 }
 
 // queryNames runs query against the migration owner — a catalogue read needs no tenant scope, because

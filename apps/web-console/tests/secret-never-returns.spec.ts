@@ -297,10 +297,11 @@ test("the environment picker is a select over the ids the list returned, never a
     "value-key-input",
   ]);
 
-  // AND THE ORG-SCOPE FACT IS ON THE SCREEN (plan §3.6 D12). An environment is org-scoped, matching
-  // secret_refs, so two projects in one organization see the same environments. An operator who believes
-  // otherwise scopes a production credential to a project that does not exist.
-  await expect(page.getByTestId("env-scope-note")).toContainText("organization");
+  // AND THE SCOPE FACT IS ON THE SCREEN (plan §3.6 D12). An environment is INSTALLATION-scoped, matching
+  // secret_refs — it was organization-scoped until A.2 Task 6 removed organizations and migration 000066
+  // keyed both on the installation — so every project on this deployment sees the same environments. An
+  // operator who believes otherwise scopes a production credential to a boundary that does not exist.
+  await expect(page.getByTestId("env-scope-note")).toContainText("installation");
 
   // THE OPTIONS ARE THE API'S OWN LIST — on BOTH profiles. The console does not invent, cache or filter an
   // environment id: what /v1/environments returns is exactly what the dropdown offers, so an operator cannot

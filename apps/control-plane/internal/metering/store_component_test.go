@@ -151,9 +151,12 @@ func TestUsageSummaryTotalsTheCallersScope(t *testing.T) {
 	// project-scoped keys"). So the scenario this half asserted — an org-scoped key with no project
 	// reading both projects' usage — was already unreachable through any real credential before this task
 	// touched the file; A.2 Task 3 only removed the Scope field that let the test keep CONSTRUCTING it by
-	// hand. usage_ledger genuinely still has no installation-wide fallback (000062's header: its
-	// project_id is never ''), so if an org-wide usage view is still wanted, it needs a real seam analogous
-	// to storage.WithOrgScope — a product decision this task does not make unilaterally.
+	// hand. What changed since: A.2 Task 6's 000066 keys usage_ledger's POLICY on the installation (the
+	// project-keyed expression's `project_id = ''` fallback could never fire for it — 000062's header — and
+	// narrowing it would make every installation-wide budget under-count). So the DATABASE no longer stands
+	// in the way of an installation-wide usage view; what is still missing is a SEAM that asks for one. The
+	// narrowing this test pins is the query's, not the policy's, and that is now the only narrowing there
+	// is: delete the predicate and project-A's summary silently swallows project-B's 500.
 }
 
 // TestLedgerPageIsKeysetOrderedAndScoped proves the raw entry page an exporter reads: newest first, no

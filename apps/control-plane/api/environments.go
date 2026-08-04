@@ -148,7 +148,11 @@ func (h *environmentHandler) write(w http.ResponseWriter, r *http.Request, out P
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such environment or key in this scope")
 		return
 	case out.Conflict:
-		middleware.WriteProblem(w, r, http.StatusConflict, "conflict", "an environment with this name already exists in this organization")
+		// "in this installation", not "in this organization": 000065 rebuilt the uniqueness as (name) —
+		// environments carries no project_id and organizations are gone (A.2 Task 6) — so the name a
+		// caller is being refused is held somewhere in the installation, not necessarily in a tenant it
+		// can see. The detail says what is true rather than what used to be.
+		middleware.WriteProblem(w, r, http.StatusConflict, "conflict", "an environment with this name already exists in this installation")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

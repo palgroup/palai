@@ -109,12 +109,14 @@ func (s *SecretStore) RotateSecretRef(ctx context.Context, scope middleware.Scop
 	return s.putVersion(ctx, scope, name, in.Value, true)
 }
 
-// putVersion seals the value and inserts the next version under the caller's org (RLS-scoped). The version
-// is computed and inserted in one transaction; the UNIQUE(organization_id, name, version) constraint is the
-// backstop against a concurrent insert of the same version. requireExisting turns a rotate of a never-created
-// name into a NotFound.
+// putVersion seals the value and inserts the next version. The version is computed and inserted in one
+// transaction; the UNIQUE (name, version) constraint — `(organization_id, name, version)` until A.2 T6's
+// 000065 removed the leading column — is the backstop against a concurrent insert of the same version. A
+// secret ref name is now unique across the INSTALLATION rather than within an organization, which is what
+// 000066's header calls out: secret_refs carries no project_id, so there is nothing narrower to key on.
+// requireExisting turns a rotate of a never-created name into a NotFound.
 func (s *SecretStore) putVersion(ctx context.Context, scope middleware.Scope, name, value string, requireExisting bool) (api.ProvisionResult, error) {
-	scopedCtx, org, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, org, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -175,7 +177,7 @@ func (s *SecretStore) insertVersion(ctx context.Context, tx pgx.Tx, org, name, v
 // ListSecretRefs lists secret-ref METADATA (name/version/updated_at) for the caller's organization — never a
 // value or ciphertext. One row per name, at its latest version.
 func (s *SecretStore) ListSecretRefs(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -202,7 +204,7 @@ func (s *SecretStore) ListSecretRefs(ctx context.Context, scope middleware.Scope
 // GetSecretRef reads one secret's metadata within the caller's organization; a foreign/unknown name is a
 // miss (404).
 func (s *SecretStore) GetSecretRef(ctx context.Context, scope middleware.Scope, name string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -217,14 +219,17 @@ func (s *SecretStore) GetSecretRef(ctx context.Context, scope middleware.Scope, 
 	return api.ProvisionResult{Body: mustJSON(v)}, nil
 }
 
-// Resolve returns the decrypted latest value for (org, name), or ok=false when no such secret exists in that
-// org. It is the DB-backed hook main.go puts in FRONT of the env-file bridge: ok=false means "fall back to
-// the env bridge". The org is server-minted (from the connection/run, never a tenant-forgeable body), so the
-// read is scoped to that org and RLS denies any foreign row — a shared ref name never crosses tenants.
+// Resolve returns the decrypted latest value for name, or ok=false when the installation holds no such
+// secret. It is the DB-backed hook main.go puts in FRONT of the env-file bridge: ok=false means "fall back
+// to the env bridge".
 //
-// storage.WithOrgScope, not storage.WithTenant with an empty project (A.2 Task 1): secret_refs carries no
-// project_id column at all (storage/migrations/000031_secret_refs.up.sql), so this call is one of the
-// named, narrow exceptions to WithTenant's now project-required rule — see WithOrgScope's doc comment.
+// THE SENTENCE THAT USED TO BE HERE IS NO LONGER TRUE, and it is corrected rather than softened. It read:
+// "the read is scoped to that org and RLS denies any foreign row — a shared ref name never crosses
+// tenants." Migration 000066 keys secret_refs' policy on the INSTALLATION, because the table carries no
+// project_id (000031) and organizations are gone, so there is nothing narrower to key on: a ref name is
+// single-occupancy across the whole installation and every caller in it reads the same row. `org` still
+// selects the connection scope, and it no longer selects the row.
+// TestSecretRefNamesAreInstallationWide asserts that directly.
 func (s *SecretStore) Resolve(ctx context.Context, org, name string) ([]byte, bool, error) {
 	if org == "" || name == "" {
 		return nil, false, nil

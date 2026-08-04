@@ -316,13 +316,20 @@ func TestWhereLessQueryIsRejectedByTheDatabase(t *testing.T) {
 	// for a reason that has nothing to do with tenancy.
 	seeded := map[string]int{
 		"runs": 1, "responses": 1, "sessions": 1, "projects": 1, "artifacts": 1,
-		"environments": 1, "environment_values": 1, "tools": 1, "tool_revisions": 1,
+		"tools": 1, "tool_revisions": 1,
 		"tool_set_revisions": 1, "background_tasks": 1, "runner_pools": 1,
 		// The E29 T1 automation trio. `schedules` is 2: the second is a tombstone, and it belongs in this
 		// count because RLS is the layer that decides VISIBILITY while `deleted_at` is the layer that
 		// decides RELEVANCE — a leak here would expose a deleted schedule as readily as a live one.
 		"triggers": 1, "schedules": 2, "hooks": 1,
 	}
+	// environments and environment_values LEFT THIS MAP in A.2 Task 6, and they left with a replacement
+	// rather than a deletion: TestInstallationWideTablesAreVisibleToEveryTenant below asserts the opposite
+	// property on the same two tables and on usage_ledger. Neither carries a project_id (000046), and with
+	// organizations gone 000066 keys them on the installation, so this canary — whose whole claim is that
+	// the caller sees ONE row and the other tenant's zero — would now be asserting something false about
+	// them. Moving them out silently is the failure this comment exists to prevent: the count would drop
+	// from fourteen tables to twelve and read as tidying.
 	for table, want := range seeded {
 		s.asOrg(t, s.orgA, func(tx pgx.Tx) {
 			var foreign int
@@ -341,6 +348,72 @@ func TestWhereLessQueryIsRejectedByTheDatabase(t *testing.T) {
 			}
 			if visible != want {
 				t.Fatalf("%s: own tenant sees %d row(s), want exactly the %d seeded", table, visible, want)
+			}
+		})
+	}
+}
+
+// TestInstallationWideTablesAreVisibleToEveryTenant is the OTHER half of the sweep above, and it exists
+// because A.2 Task 6 removed a boundary rather than moving it. environments, environment_values and
+// secret_refs carry no project_id at all (000046, 000031); usage_ledger carries one but must stay wider
+// than it, or an installation-wide budget sums only the caller's own project and fails OPEN (000062's own
+// header measured that). Migration 000066 keys all four on the INSTALLATION.
+//
+// So the property is asserted in the direction it now holds. A test suite that merely dropped these tables
+// from the confinement canary would leave a reader with the impression the boundary is still there — and
+// would go GREEN if somebody later keyed usage_ledger on project and broke every installation-wide budget.
+//
+// The one guarantee that SURVIVES is the last assertion: a connection that declared no scope still sees
+// nothing, because 000066's expression is `system OR palai.project_id IS NOT NULL`, never `true`.
+func TestInstallationWideTablesAreVisibleToEveryTenant(t *testing.T) {
+	s := newSuite(t)
+	ctx := context.Background()
+
+	// THE DENY-BY-DEFAULT ARM RUNS FIRST, AND THE ORDER IS LOAD-BEARING. A custom GUC never returns to
+	// NULL once any transaction on that connection has set it — not even a TRANSACTION-LOCAL set, measured
+	// against the pinned image:
+	//
+	//	never set                                    -> current_setting(...) IS NULL = t
+	//	BEGIN; set_config('palai.tx1','v',true); COMMIT  -> IS NULL = f, value ''
+	//
+	// s.asOrg publishes exactly that way, so a connection borrowed AFTER the visibility loop below has a
+	// non-NULL project GUC and this policy admits it. Asserted before anything has published, this measures
+	// the world it names; asserted after, it would measure the harness.
+	//
+	// WHAT THAT MAKES THE GUARD WORTH, stated rather than implied: in production storage.OpenPool's
+	// PrepareConn publishes a scope on EVERY acquisition, so no application connection is ever in the state
+	// asserted here after its first use. These four tables are, for the running control plane,
+	// unconditionally readable. The guard is what keeps them under a policy at all — so a project_id column
+	// added later can be keyed on without re-enabling row-level security — and it is what a raw connection
+	// that never declared anything still meets.
+	fresh, err := s.app.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	for _, table := range []string{"environments", "environment_values", "usage_ledger", "secret_refs"} {
+		var visible int
+		if err := fresh.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM %s`, table)).Scan(&visible); err != nil {
+			fresh.Release()
+			t.Fatalf("%s: count from a never-scoped connection: %v", table, err)
+		}
+		if visible != 0 {
+			fresh.Release()
+			t.Fatalf("%s: a connection that never declared a scope saw %d row(s); the installation policy is not deny-by-default", table, visible)
+		}
+	}
+	fresh.Release()
+
+	// And the visibility the epic actually chose: a scoped tenant reads the OTHER tenant's rows.
+	for _, table := range []string{"environments", "environment_values"} {
+		s.asOrg(t, s.orgA, func(tx pgx.Tx) {
+			var foreign int
+			if err := tx.QueryRow(ctx,
+				fmt.Sprintf(`SELECT count(*) FROM %s WHERE organization_id = $1`, table), s.orgB).Scan(&foreign); err != nil {
+				t.Fatalf("%s: count the other tenant's rows: %v", table, err)
+			}
+			if foreign != 1 {
+				t.Fatalf("%s: the other tenant's seeded row count = %d, want 1 — this table is installation-wide "+
+					"after 000066, and a 0 here means it was narrowed again", table, foreign)
 			}
 		})
 	}

@@ -109,10 +109,18 @@ func TestSecretRefWriteResolveRotate(t *testing.T) {
 	}
 }
 
-// TestSecretRefCrossOrgResolveDenied proves a resolver call scoped to org A can never read org B's secret:
-// the store scopes Resolve to the named org, and migration 000031's RLS policy denies the foreign row, so a
-// foreign ref resolves to a clean miss (ok=false) rather than another tenant's bytes.
-func TestSecretRefCrossOrgResolveDenied(t *testing.T) {
+// TestSecretRefNamesAreInstallationWide REPLACES TestSecretRefCrossOrgResolveDenied, and the replacement is
+// the point rather than a rename. That test proved a resolver scoped to org A could never read org B's
+// secret of the same name. A.2 Task 6 removes organizations, and secret_refs carries no project_id at all
+// (000031) — so there is nothing narrower than the installation left for its policy to key on, and
+// migration 000066 keys it there. The boundary is GONE, not moved, and this test exists so that fact is
+// asserted out loud instead of discovered by whoever needs it.
+//
+// It is written as the strongest true statement, not the weakest: a second tenant writing the same NAME
+// does not get its own secret and does not get an error — it appends the next VERSION of the one secret,
+// and every resolver in the installation then reads the newer value. Re-introducing a boundary here means
+// deliberately changing this test, which is exactly the amount of friction that change deserves.
+func TestSecretRefNamesAreInstallationWide(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
 	idstore := identity.New(cs.Pool())
@@ -128,11 +136,27 @@ func TestSecretRefCrossOrgResolveDenied(t *testing.T) {
 		t.Fatalf("CreateSecretRef(b) error = %v", err)
 	}
 
-	// A resolves the SAME ref name; RLS isolates B's row, so A gets a miss, not B's bytes.
-	if got, ok, err := store.Resolve(ctx, aOrg, "shared-name"); err != nil {
-		t.Fatalf("Resolve(a) error = %v", err)
-	} else if ok {
-		t.Fatalf("org A resolved org B's secret (%q) — RLS did not isolate", got)
+	// The other tenant reads it. This is the removed boundary, stated as a value comparison so it cannot
+	// pass on a technicality: a miss would fail here too.
+	got, ok, err := store.Resolve(ctx, aOrg, "shared-name")
+	if err != nil || !ok {
+		t.Fatalf("Resolve(a, shared-name) ok=%v err=%v — a secret ref is installation-wide and must resolve", ok, err)
+	}
+	if string(got) != "sk-b-only" {
+		t.Fatalf("Resolve(a, shared-name) = %q, want the one installation-wide value %q", got, "sk-b-only")
+	}
+
+	// And the name is single-occupancy: the other tenant's write is the NEXT VERSION of the same secret,
+	// so both now read the newer value. Version 2, not a second version 1 and not a duplicate-key error.
+	out, err := store.CreateSecretRef(ctx, middleware.Scope{Project: aProj}, []byte(`{"name":"shared-name","value":"sk-a-wins"}`))
+	if err != nil {
+		t.Fatalf("CreateSecretRef(a, same name) error = %v", err)
+	}
+	if !strings.Contains(string(out.Body), `"version":2`) {
+		t.Fatalf("the second tenant's write rendered %s, want version 2 of the one shared ref", out.Body)
+	}
+	if got, ok, err := store.Resolve(ctx, aOrg, "shared-name"); err != nil || !ok || string(got) != "sk-a-wins" {
+		t.Fatalf("after the second write Resolve = %q ok=%v err=%v, want sk-a-wins", got, ok, err)
 	}
 }
 

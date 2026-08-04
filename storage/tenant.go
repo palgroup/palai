@@ -55,16 +55,24 @@ func WithTenant(ctx context.Context, organization, project string) context.Conte
 }
 
 // WithOrgScope binds ctx to organization alone, with no project — the one deliberate, narrow exception to
-// WithTenant's project-required rule. It exists for the surfaces that still span every project in an
-// organization and predate per-project structure: identity/provisioning's own tables (organizations,
-// api_keys, principals — orgScope in apps/control-plane/internal/identity/store.go), the org-scoped
-// secret_refs store fronting the env-file bridge (identity.SecretStore.Resolve, secret_refs carries no
-// project_id at all — storage/migrations/000031_secret_refs.up.sql), and environments/environment_values
-// (000046, likewise no project_id column). Task 3 of this epic removes the Go-side organization concept
-// and is expected to retire this function along with its callers; until then it keeps those three
-// surfaces working exactly as they do today without reopening WithTenant's contract for every other
-// caller. Like WithSystemScope, it is deliberately greppable: every call site is a place the per-project
-// boundary does NOT apply, so each should stay as narrow as it is today.
+// WithTenant's project-required rule.
+//
+// ITS LIST OF CALLERS IS DOWN TO TWO, and the two that left are why this function is nearly done.
+// identity/provisioning used it for organizations/api_keys/principals/projects; migration 000066 rekeys
+// those to project, under which an empty project GUC matches only rows whose own project_id is '' — so
+// widening by leaving the project blank stopped meaning "the whole organization" and identity now names
+// the widening it wants (identity's provisioningScope: system for the platform, the caller's own project
+// for a tenant).
+//
+// What still uses it reads a table with no project_id at all and no organization boundary left either:
+// identity.SecretStore.Resolve over secret_refs (000031) and automation's verifyEnvironment over
+// environments (000046). 000066 keys both on the INSTALLATION, so what WithOrgScope supplies for them is
+// no longer the boundary — it is only a scope declaration, which those policies still require (they admit
+// `palai.project_id IS NOT NULL`, and set_config with an empty string satisfies that while a context that
+// declared nothing does not). This function goes with the organization field itself, later in this task.
+//
+// Like WithSystemScope, it is deliberately greppable: every call site is a place the per-project boundary
+// does NOT apply, so each should stay as narrow as it is today.
 func WithOrgScope(ctx context.Context, organization string) context.Context {
 	return context.WithValue(ctx, scopeKey{}, scope{organization: organization, orgOnly: true})
 }

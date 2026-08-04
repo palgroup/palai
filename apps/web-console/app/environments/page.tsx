@@ -190,8 +190,8 @@ export default function EnvironmentsPage() {
         <summary>What an environment is scoped to, and who can read these names</summary>
       <p className="muted" data-testid="env-scope-note">
         An environment is a named group of <code>KEY=value</code> pairs an agent&apos;s shell commands
-        receive. It is scoped to the <strong>organization</strong>, not to a project — the same scope{" "}
-        <code>secret_refs</code> has — so every project in this organization sees these environments and an
+        receive. It is scoped to the <strong>whole installation</strong>, not to a project — the same scope{" "}
+        <code>secret_refs</code> has — so every project on this deployment sees these environments and an
         agent in any of them can be bound to one. There is no per-environment permission: any API key that can
         provision can read every key NAME here and write every value.
       </p>
@@ -234,7 +234,7 @@ export default function EnvironmentsPage() {
         <ResourceForm
           title="Create an environment"
           testId="environment-create"
-          note="It starts with no keys — create the group, then fill it. A name must be unique in this organization."
+          note="It starts with no keys — create the group, then fill it. A name must be unique across this whole installation."
           fields={[
             {
               name: "environment-name",

@@ -74,7 +74,7 @@ func (s *SecretStore) CreateEnvironment(ctx context.Context, scope middleware.Sc
 	if strings.TrimSpace(in.Name) == "" {
 		return api.ProvisionResult{MissingField: "name"}, nil
 	}
-	scopedCtx, org, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, org, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -98,7 +98,7 @@ func (s *SecretStore) CreateEnvironment(ctx context.Context, scope middleware.Sc
 
 // ListEnvironments lists the caller's organization's environments with their key COUNTS.
 func (s *SecretStore) ListEnvironments(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
-	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -130,7 +130,7 @@ func (s *SecretStore) ListEnvironments(ctx context.Context, scope middleware.Sco
 //
 // THE VALUES ARE NOT HERE AND THERE IS NO PARAMETER THAT WOULD ADD THEM.
 func (s *SecretStore) GetEnvironment(ctx context.Context, scope middleware.Scope, id string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -210,7 +210,7 @@ func (s *SecretStore) PutEnvironmentValue(ctx context.Context, scope middleware.
 		return api.ProvisionResult{BadField: true}, nil
 	}
 
-	scopedCtx, org, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, org, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -257,7 +257,7 @@ func (s *SecretStore) PutEnvironmentValue(ctx context.Context, scope middleware.
 // and worth stating precisely: nothing names those versions afterwards (the derived name is only ever
 // built from a membership row), and no run receives the key.
 func (s *SecretStore) DeleteEnvironmentValue(ctx context.Context, scope middleware.Scope, id, key string) (api.ProvisionResult, error) {
-	scopedCtx, _, err := orgScope(ctx, s.pool, scope.Project)
+	scopedCtx, _, err := provisioningScope(ctx, s.pool, scope)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}

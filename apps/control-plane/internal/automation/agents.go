@@ -205,13 +205,14 @@ func (s *Store) PublishRevision(ctx context.Context, org, project, revisionID st
 // environment is the no-environment case and always passes — that is every revision that existed before
 // migration 000046, and the column's DEFAULT ” is what makes it representable without a nullable FK.
 //
-// The read is org-scoped (environments carries no project_id — the secret_refs posture, 000031:16), so a
-// foreign environment id is invisible under RLS and refused as absent. That is the intended answer: an
-// operator must not learn from an error message that an id exists in another tenant.
-//
-// storage.WithOrgScope, not storage.WithTenant with an empty project (A.2 Task 1): this is one of the
-// named, narrow exceptions to WithTenant's now project-required rule, for the same reason as the comment
-// above — environments has no project_id to require.
+// THE READ IS INSTALLATION-SCOPED SINCE A.2 T6's 000066, and the previous sentence here is corrected
+// rather than trimmed. It claimed "a foreign environment id is invisible under RLS and refused as absent…
+// an operator must not learn from an error message that an id exists in another tenant". environments
+// carries no project_id (000046, the secret_refs posture of 000031:16) and organizations are gone, so its
+// policy keys on the installation: every environment id in the installation is visible here, and this
+// check answers "does it exist" rather than "does it exist in your tenant". Within one installation those
+// are the same question; across two customers sharing one, they are not — which is why 000066's header
+// names this table as needing a project_id BEFORE such an installation exists.
 func (s *Store) verifyEnvironment(ctx context.Context, org, environment string) error {
 	if environment == "" {
 		return nil
