@@ -1144,10 +1144,18 @@ func modelAuthorityWarning(api *apiClient, get func(string) string) string {
 	if ref != "" {
 		where += " (credential " + ref + ")"
 	}
+	// THIS SENTENCE WAS CORRECTED 2026-08-05, and the correction is the kind this tree keeps paying for:
+	// it said the route "overrides the deployment default this bring-up seeded from the file" and that
+	// "the file's key still serves projects that have no route of their own". Both halves described a
+	// mechanism that had been removed the day before — nothing reads the file secret, and there is no
+	// env-backed deployment default left to override. A run resolves its credential from a connection or
+	// it reaches no provider at all.
 	return fmt.Sprintf("%s in .env.local is NOT what this project's runs use. %s has a PUBLISHED model route: runs resolve "+
-		"through %s on %s, which was configured in the console and overrides the deployment default this bring-up seeded from "+
-		"the file. The file's key still serves projects that have no route of their own. To change what %s runs, use the "+
-		"console's \"Point runs at a connection\" on /registry — editing .env.local will not move it",
+		"through %s on %s, configured in the console. The variable is no longer read by anything: the environment credential "+
+		"path was removed because a value in the process environment is readable by anything running as this user, so a "+
+		"project without a connection now reaches NO provider rather than falling back to it. To change what %s runs, use "+
+		"the console's \"Point runs at a connection\" on /registry — editing .env.local will not move it, and you can delete "+
+		"the variable",
 		credentialEnv, bootstrapProjectID, model, where, bootstrapProjectID)
 }
 
