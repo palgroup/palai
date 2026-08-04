@@ -633,7 +633,7 @@ func (s *Store) LookupToolCall(ctx context.Context, tenant Tenant, callID string
 // T7): the row goes to 'executing' BEFORE the external effect, so a kill between execute and commit is
 // detectable as uncertain. It journals tool_call.executing.v1 on a fresh pre-write. Runs under
 // guardRunActive. Idempotent: a redelivered pre-write advances the fence but does not reopen a resolved row.
-func (s *Store) BeginToolCall(ctx context.Context, tenant Tenant, sessionID, responseID, runID string, fence uint64, callID, name string, arguments []byte, replayClass, requestHash, externalKey, boundary string) error {
+func (s *Store) BeginToolCall(ctx context.Context, tenant Tenant, sessionID, responseID, runID string, fence uint64, callID, name string, arguments []byte, replayClass, requestHash, externalKey, boundary, argumentsSummary string) error {
 	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -654,19 +654,36 @@ func (s *Store) BeginToolCall(ctx context.Context, tenant Tenant, sessionID, res
 		// this very function. A consumer watching the journal could see THAT a tool ran and never WHAT,
 		// so every renderer either labelled the call "tool" or, honestly, said the name was unavailable.
 		//
-		// THE NAME AND ONLY THE NAME. The arguments and the result stay on the ledger and are read
-		// through GET /v1/responses/{id}/tool-calls, because this payload does not stop here:
+		// THE NAME AND A BOUNDED SUMMARY — not the raw arguments, and never the result. E30 T2 put the
+		// name here and left both of the others on the ledger under one measurement, a trivial
+		// `xcodebuild` RESULT at 51,422 bytes on this box. That number is still the reason the RESULT
+		// stays off this frame, and it turned out to be the wrong yardstick for the ARGUMENTS: measured
+		// 2026-08-04 across the operator's own 123 ledger rows, the largest arguments JSON is 216 bytes
+		// and the largest rendered summary 173 chars. Three orders of magnitude separate the two things
+		// that comment held together, and the cost of holding them together was a Slack card that said
+		// "Running a command" eighteen times because the command itself was not in the journal.
+		//
+		// WHY IT IS STILL A SUMMARY AND NOT THE ARGUMENTS THEMSELVES. This payload does not stop here:
 		// automation/webhook_pump.go:328 puts the whole thing in the body it POSTs to every registered
 		// endpoint and STORES that envelope immutably for byte-for-byte redelivery, and packages/audit
-		// hashes it. Measured on this box, a trivial `xcodebuild` build — one print statement — emits
-		// 51,422 bytes, and nothing in this package bounds an event payload. Putting a tool's output
-		// here would ship model-authored megabytes off-box, once per endpoint, forever.
+		// hashes it. Nothing in this package bounds a payload, and an MCP tool's argument schema is a
+		// third party's to write, so raw arguments have no ceiling that anyone here controls.
+		// toolbroker.ArgumentSummary has one (ArgumentSummaryLimit, 256 bytes), selects identifying
+		// fields rather than content fields, redacts secret shapes, and answers "" for any tool it does
+		// not know — so a tool this deployment did not author contributes nothing and the frame is
+		// exactly what it was before.
 		//
-		// The name is safe where they are not: it is short, and it comes from the closed set of tools the
-		// deployment registered (the broker answers ErrUnknownTool for anything else), so it is a label
-		// the operator configured rather than a string the model composed.
+		// The name is safe where the arguments are not: it is short, and it comes from the closed set of
+		// tools the deployment registered (the broker answers ErrUnknownTool for anything else), so it is
+		// a label the operator configured rather than a string the model composed. The summary is the
+		// model's words, which is why it is bounded and redacted and why it is omitted entirely rather
+		// than guessed at when the shape is unknown.
+		payload := map[string]any{"run_id": runID, "tool_call_id": callID, "replay_class": replayClass, "tool_name": name}
+		if argumentsSummary != "" {
+			payload["arguments_summary"] = argumentsSummary
+		}
 		if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, "tool_call.executing.v1",
-			mustMarshal(map[string]any{"run_id": runID, "tool_call_id": callID, "replay_class": replayClass, "tool_name": name})); err != nil {
+			mustMarshal(payload)); err != nil {
 			return err
 		}
 	}

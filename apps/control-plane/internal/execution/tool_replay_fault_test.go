@@ -166,7 +166,7 @@ func TestFaultReversibleReconcileNoDuplicateExternalEffect(t *testing.T) {
 	callID, key := faultID("tc"), "obj-rev-1"
 	// Execute: the durable 'executing' pre-write lands, the effect fires — then the process is KILLED
 	// before CommitToolResult (no commit). The row is stuck 'executing'.
-	if err := cs.BeginToolCall(ctx, tenant, sessionID, "", runID, 1, callID, "http.post", []byte(`{}`), "reversible", "sha256:x", key, ""); err != nil {
+	if err := cs.BeginToolCall(ctx, tenant, sessionID, "", runID, 1, callID, "http.post", []byte(`{}`), "reversible", "sha256:x", key, "", ""); err != nil {
 		t.Fatalf("BeginToolCall error = %v", err)
 	}
 	if err := dest.post(key); err != nil {
@@ -211,7 +211,7 @@ func TestFaultIrreversibleReconcileStopsUncertain(t *testing.T) {
 	defer dest.server.Close()
 
 	callID, key := faultID("tc"), "obj-irr-1"
-	if err := cs.BeginToolCall(ctx, tenant, sessionID, "", runID, 1, callID, "charge", []byte(`{}`), "irreversible", "sha256:x", key, ""); err != nil {
+	if err := cs.BeginToolCall(ctx, tenant, sessionID, "", runID, 1, callID, "charge", []byte(`{}`), "irreversible", "sha256:x", key, "", ""); err != nil {
 		t.Fatalf("BeginToolCall error = %v", err)
 	}
 	if err := dest.post(key); err != nil {

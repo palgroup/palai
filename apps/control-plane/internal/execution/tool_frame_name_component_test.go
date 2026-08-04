@@ -5,8 +5,10 @@ package execution
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
+	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -75,14 +77,24 @@ func TestToolFrameCarriesTheToolName(t *testing.T) {
 	}
 }
 
-// TestToolFrameCarriesNeitherArgumentsNorResult is the OTHER half, and it is the one that stops this
+// TestToolFrameCarriesNoRawArgumentsAndNoResult is the OTHER half, and it is the one that stops this
 // from drifting into "put everything on the frame" the next time somebody wants a field.
 //
 // The measurement behind it: automation/webhook_pump.go:328 puts an event's whole payload in the body it
 // POSTs to every registered endpoint and stores that envelope immutably for byte-for-byte redelivery,
-// and nothing in the coordinator bounds a payload. A tool's arguments and result are model-authored and
-// unbounded — a trivial `xcodebuild` build measured 51,422 bytes — so they must not be here.
-func TestToolFrameCarriesNeitherArgumentsNorResult(t *testing.T) {
+// and nothing in the coordinator bounds a payload. A tool's RESULT is model-authored and unbounded — a
+// trivial `xcodebuild` build measured 51,422 bytes — so it must not be here, and neither must the raw
+// arguments blob, whose schema an MCP server is free to write.
+//
+// WHAT CHANGED, AND WHY THIS TEST DID NOT SIMPLY GET DELETED. A.4 put a BOUNDED, redacted
+// `arguments_summary` on the executing frame, because the cost of the original all-or-nothing rule was
+// a Slack card that said "Running a command" eighteen times. The rule this now pins is the narrower
+// one: a summary that toolbroker built, never the raw blob and never the result.
+//
+// `gatedTool` is `jira.transitionIssue`, which has NO summariser — so this case is also the fail-closed
+// half: a tool whose argument shape this deployment did not author contributes nothing at all, and the
+// argument text must be absent from the frame entirely.
+func TestToolFrameCarriesNoRawArgumentsAndNoResult(t *testing.T) {
 	h := newApprovalHarness(t, gatedTool)
 	armSession(t, h, "key:operator-anna", true, false)
 
@@ -102,12 +114,90 @@ func TestToolFrameCarriesNeitherArgumentsNorResult(t *testing.T) {
 					"51,422 bytes) now fans out to every endpoint and is stored per delivery", eventType)
 			}
 			// And the property rather than the field name, so a differently-spelled field cannot smuggle
-			// the same bytes past this guard.
+			// the same bytes past this guard. An unsummarised tool's argument text appears NOWHERE.
 			raw, _ := json.Marshal(payload)
 			if containsSubstring(string(raw), secret) {
-				t.Fatalf("%s payload contains the call's own argument text: %s", eventType, raw)
+				t.Fatalf("%s payload contains the call's own argument text for a tool with no summariser: %s",
+					eventType, raw)
 			}
 		}
+	}
+}
+
+// dispatchNamed drives one attempt against a tool of the caller's OWN name, which h.dispatch cannot do —
+// it hardcodes `jira.transitionIssue`, and the whole point of the tests below is that the summary is
+// keyed on the tool's name. Fence 1, because these are single-attempt cases.
+func dispatchNamed(t *testing.T, h *approvalHarness, name string, args map[string]any) error {
+	t.Helper()
+	orch, st, _ := ledgerAttempt(h.spine, h.broker(), h.tenant, h.sessionID, h.runID, 1)
+	return orch.dispatchTool(context.Background(), st, toolRequestFrame(h.callID, name, args))
+}
+
+// shellShapedTool is a tool the summariser KNOWS, dispatched without an approval gate exactly as the real
+// `palai.workspace.shell` is: Irreversible, so NeedsPreWrite puts it through BeginToolCall on its own.
+func shellShapedTool() toolbroker.Tool {
+	return toolbroker.Tool{Name: "palai.workspace.shell", ReplayClass: toolbroker.ClassIrreversible}
+}
+
+// TestToolFrameCarriesTheArgumentSummary is the test the operator's complaint asks for: eighteen steps
+// that all read "Running a command" because the command was not in the journal.
+//
+// It reads the JOURNAL rather than a Go value, for the reason the name test states: asserting in-process
+// would prove the dispatcher COULD build a summary, which was never in doubt, rather than that the
+// summary is in the bytes a consumer receives.
+func TestToolFrameCarriesTheArgumentSummary(t *testing.T) {
+	h := newApprovalHarness(t, shellShapedTool())
+
+	argv := []any{"grep", "-rln", "Date of birth", "repo", "--include=*.json"}
+	if err := dispatchNamed(t, h, "palai.workspace.shell", map[string]any{"argv": argv}); err != nil {
+		t.Fatalf("dispatchTool error = %v", err)
+	}
+
+	executing := journalPayloads(t, h, "tool_call.executing.v1")
+	if len(executing) != 1 {
+		t.Fatalf("got %d tool_call.executing.v1 frame(s), want 1", len(executing))
+	}
+	const want = "grep -rln Date of birth repo --include=*.json"
+	if got := executing[0]["arguments_summary"]; got != want {
+		t.Fatalf("arguments_summary = %v, want %q — without it every shell step renders as the same "+
+			"static label and a reader cannot tell eighteen commands apart", got, want)
+	}
+	// The summary is IN ADDITION TO the name, never instead of it: a consumer that titles a card from
+	// tool_name keeps working untouched.
+	if got := executing[0]["tool_name"]; got != "palai.workspace.shell" {
+		t.Fatalf("tool_call.executing.v1 tool_name = %v, want the tool's name", got)
+	}
+}
+
+// TestToolFrameSummaryIsBoundedAndTruncationIsVisible pins the ceiling AT THE JOURNAL, which is the only
+// place it matters — the bound exists because this payload is POSTed to every registered webhook endpoint
+// and stored per delivery, so a bound that held only in a unit test would be worth nothing.
+//
+// Truncation is not silent: the marker is what tells a reader the ledger read has the rest.
+func TestToolFrameSummaryIsBoundedAndTruncationIsVisible(t *testing.T) {
+	h := newApprovalHarness(t, shellShapedTool())
+
+	argv := []any{"grep", "-rn", strings.Repeat("A", 4096), "repo"}
+	if err := dispatchNamed(t, h, "palai.workspace.shell", map[string]any{"argv": argv}); err != nil {
+		t.Fatalf("dispatchTool error = %v", err)
+	}
+
+	executing := journalPayloads(t, h, "tool_call.executing.v1")
+	if len(executing) != 1 {
+		t.Fatalf("got %d tool_call.executing.v1 frame(s), want 1", len(executing))
+	}
+	summary, _ := executing[0]["arguments_summary"].(string)
+	if len(summary) > toolbroker.ArgumentSummaryLimit {
+		t.Fatalf("arguments_summary is %d bytes, want <= %d — an unbounded caption fans out to every "+
+			"registered endpoint and is stored immutably per delivery",
+			len(summary), toolbroker.ArgumentSummaryLimit)
+	}
+	if !strings.HasSuffix(summary, "…") {
+		t.Fatalf("a truncated arguments_summary must say so; got %q", summary)
+	}
+	// And the bytes it dropped are genuinely gone rather than merely off the end of the string.
+	if containsSubstring(summary, strings.Repeat("A", 1024)) {
+		t.Fatalf("arguments_summary still carries 1KiB of the original argument: %q", summary)
 	}
 }
 

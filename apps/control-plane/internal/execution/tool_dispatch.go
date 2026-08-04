@@ -250,8 +250,18 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 		if keyed {
 			externalKey = callID
 		}
+		// THE CAPTION IS COMPUTED HERE, WHERE THE ARGUMENTS ARE, and it is the one thing on the executing
+		// frame that comes from the model rather than from the deployment's own configuration. It is
+		// bounded, shape-redacted, and empty for any tool toolbroker has no summariser for — see
+		// ArgumentSummary for why an allow-list rather than a blocklist of secret-looking key names.
+		//
+		// It cannot run RedactValues, and the reason is the ordering four lines of comment below defend:
+		// env.EnvValues does not exist yet and must not, because resolveEnvValues runs immediately before
+		// Execute so that a call parked on a human approval holds no credential in memory. A caption is
+		// not worth moving that.
 		if err := o.spine.BeginToolCall(ctx, st.tenant, st.sessionID, st.responseID, runID, st.attempt.Fence,
-			callID, name, arguments, string(class), requestHash, externalKey, st.lastModelRequestID); err != nil {
+			callID, name, arguments, string(class), requestHash, externalKey, st.lastModelRequestID,
+			toolbroker.ArgumentSummary(name, arguments)); err != nil {
 			return err
 		}
 	}

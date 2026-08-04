@@ -130,7 +130,7 @@ func TestIrreversibleUncertainNeverAutoReplays(t *testing.T) {
 
 	// Simulate the kill window: the effect ran and the durable 'executing' marker is written, but the
 	// commit never landed (the crash). BeginToolCall is the pre-execute marker dispatchTool writes.
-	if err := cs.BeginToolCall(ctx, tenant, sessionID, "", runID, 1, callID, "effect.irr", []byte(`{}`), "irreversible", "sha256:x", "", ""); err != nil {
+	if err := cs.BeginToolCall(ctx, tenant, sessionID, "", runID, 1, callID, "effect.irr", []byte(`{}`), "irreversible", "sha256:x", "", "", ""); err != nil {
 		t.Fatalf("BeginToolCall error = %v", err)
 	}
 	atomic.AddInt32(&runs, 1) // the external effect fired before the crash
@@ -175,7 +175,7 @@ func TestLateCallbackAfterFenceAdvanceDenied(t *testing.T) {
 	callID := redeliveryID("tc")
 
 	// A reclaiming attempt re-leased the call at fence 5 (the ledger's current fence).
-	if err := cs.BeginToolCall(ctx, tenant, sessionID, "", runID, 5, callID, "effect.irr", []byte(`{}`), "irreversible", "sha256:x", "", ""); err != nil {
+	if err := cs.BeginToolCall(ctx, tenant, sessionID, "", runID, 5, callID, "effect.irr", []byte(`{}`), "irreversible", "sha256:x", "", "", ""); err != nil {
 		t.Fatalf("BeginToolCall(fence 5) error = %v", err)
 	}
 	// A LATE callback from the superseded attempt (fence 2) tries to commit — the fence advanced past it.
