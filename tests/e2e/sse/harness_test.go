@@ -155,10 +155,10 @@ func (h *harness) seedBulkEvents(sessionID string, count, payloadBytes int) {
 	ctx := context.Background()
 	tag := newID("bulk")
 	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx), `
-		INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
-		SELECT 'evt_' || $6 || '_' || lpad(g::text, 9, '0'), $1, $2, $3, g, 'run.running.v1',
-		       jsonb_build_object('pad', repeat('x', $5))
-		FROM generate_series(1, $4) AS g`,
+		INSERT INTO events (id, project_id, session_id, seq, type, payload)
+		SELECT 'evt_' || $5 || '_' || lpad(g::text, 9, '0'), $1, $2, g, 'run.running.v1',
+		       jsonb_build_object('pad', repeat('x', $4))
+		FROM generate_series(1, $3) AS g`,
 		h.tenant.Project, sessionID, count, payloadBytes, tag); err != nil {
 		h.t.Fatalf("seed bulk events error = %v", err)
 	}

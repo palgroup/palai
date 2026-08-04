@@ -22,8 +22,8 @@ func seedAgentRevision(t *testing.T, tenant coordinator.Tenant, cs *coordinator.
 	if publish {
 		pubExpr = "clock_timestamp()"
 	}
-	exec(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, published_at)
-	               VALUES ($1,$2,$3,$4,1,'model-pinned','["file"]', `+pubExpr+`)`,
+	exec(t, pool, `INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, tools, published_at)
+	               VALUES ($1,$2,$3,1,'model-pinned','["file"]', `+pubExpr+`)`,
 		revID, tenant.Project, profileID)
 	return revID
 }

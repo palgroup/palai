@@ -673,9 +673,9 @@ func TestAToolPinnedTwiceRefusesRatherThanCoinFlippingTheGate(t *testing.T) {
 		t.Fatalf("read the tool lineage: %v", err)
 	}
 	rev2, set2 := redeliveryID("trev"), redeliveryID("tsrev")
-	execSQL(t, fx.spine.Pool(), `INSERT INTO tool_revisions (id, organization_id, project_id, tool_id, revision_number,
+	execSQL(t, fx.spine.Pool(), `INSERT INTO tool_revisions (id, project_id, tool_id, revision_number,
 	        executor, description, input_schema, replay_class, digest, executor_config, published_at, approval_required)
-	    SELECT $1,$2,$3,$4,99,executor,description,input_schema,replay_class,'sha256:second',executor_config,clock_timestamp(),false
+	    SELECT $1,$2,$3,99,executor,description,input_schema,replay_class,'sha256:second',executor_config,clock_timestamp(),false
 	    FROM tool_revisions WHERE tool_id=$3 LIMIT 1`, rev2, project, toolID)
 	execSQL(t, fx.spine.Pool(), `INSERT INTO tool_set_revisions (id, project_id, set_name, revision_number, tool_pins, digest, published_at)
 	    VALUES ($1,$2,'jira-second',1,$3::jsonb,'d',clock_timestamp())`,

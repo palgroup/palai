@@ -61,8 +61,8 @@ func seedRunHoldingLease(t *testing.T, cs *coordinator.Store, tenant coordinator
 	// the scope — the same way the run worker scopes a claimed job (migration 000029).
 	ctx := storage.WithTenant(context.Background(), tenant.Project)
 	runID := redeliveryID("run")
-	execSQL(t, cs.Pool(), `INSERT INTO runs (id, organization_id, project_id, session_id, state)
-		SELECT $1, $2, $3, w.session_id, 'running' FROM workspaces w WHERE w.id = (SELECT workspace_id FROM workspace_allocations WHERE id=$4)`,
+	execSQL(t, cs.Pool(), `INSERT INTO runs (id, project_id, session_id, state)
+		SELECT $1, $2, w.session_id, 'running' FROM workspaces w WHERE w.id = (SELECT workspace_id FROM workspace_allocations WHERE id=$3)`,
 		runID, tenant.Project, alloc.ID)
 	if err := cs.AcquireWriterLease(ctx, redeliveryID("lease"), alloc.ID, runID); err != nil {
 		t.Fatalf("seed lease acquire error = %v", err)
