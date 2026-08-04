@@ -232,6 +232,37 @@ var modelStepHeadline = map[string]string{
 	"model_step.created.v1": thinkingHeadline,
 }
 
+// modelStepThinkingEventType is the model's own working, journalled window by window while a step is
+// open (packages/coordinator/mcp_progress.go AppendModelStepThinking). This package's own copy of the
+// name, mirroring rather than importing for the reason runTerminals and ApprovalRequestedEventType
+// already do: the constant is unexported on the other side of that import edge.
+//
+// ITS PAYLOAD KEY IS `thinking` AND NOT `text`, which is not a detail — it is the guard. Every reader of
+// the delta event in this file pulls `data.text`, so a relay that fell through to the generic path would
+// render reasoning as the answer; a differently-named key means such a reader gets nothing instead.
+const modelStepThinkingEventType = "model_step.thinking.v1"
+
+// modelStepEnded are the model_step.* events that CLOSE a step, onto the card vocabulary blocks.go
+// renders — the same shape toolCallStatus has, and for the same reason: a card left `in_progress` by a
+// terminal this map omits renders a finished message as one still working.
+//
+// MEASURED WRITERS (2026-08-05, `grep -rn '"model_step\.<state>\.v1"' --include='*.go' packages apps`
+// minus tests): completed 2, interrupted 2, and **failed 0** — `model_step.failed.v1` is declared in
+// protocols/schemas/execution/event-types.json and journalled by nothing today. It is mapped anyway, on
+// the identical trade toolCallStatus records for `tool_call.failed.v1`: mapping an event that never
+// fires costs nothing, and the reverse — the event starting to fire into a map that does not know it —
+// is a card that spins forever.
+//
+// `interrupted` is `canceled` rather than `failed` because an interrupt is a person's decision and the
+// journal is careful to keep the two apart (execution/events.go: "Distinct from model_step.failed.v1 so
+// the journal never mislabels an interrupt as a failure"). A card that reported it red would put that
+// distinction back.
+var modelStepEnded = map[string]string{
+	"model_step.completed.v1":   "done",
+	"model_step.interrupted.v1": "canceled",
+	"model_step.failed.v1":      "failed",
+}
+
 // Run drains sessionID's event stream into the Slack thread at channel/threadTS: one chat.startStream
 // message, opened before the first event is even read, kept alive by chat.appendStream as
 // model_step.delta.v1 and tool_call.* events arrive, and closed by chat.stopStream the moment a run
@@ -589,6 +620,10 @@ func (o *openStream) handle(ctx context.Context, event palai.Event) {
 	switch event.Type {
 	case "model_step.delta.v1":
 		o.emit(ctx, dataString(event.Data, "text"))
+	case modelStepThinkingEventType:
+		// THE MODEL'S REASONING, and it reaches the CARD and the HEADLINE — never o.emit, which is the
+		// body. See thinkingLeaksIntoTheAnswer for the test that says so by name.
+		o.reasoned(ctx, event.Data)
 	case "tool_call.progress.v1":
 		// Progress adds a line UNDER the step that is running, so a long tool reads as one step reporting
 		// itself rather than a growing pile of rows.
@@ -626,6 +661,10 @@ func (o *openStream) handle(ctx context.Context, event palai.Event) {
 			o.setHeadline(ctx, text)
 			return
 		}
+		if status, ok := modelStepEnded[event.Type]; ok {
+			o.stepThought(ctx, event.Data, status)
+			return
+		}
 		if outcome, ok := runTerminals[event.Type]; ok {
 			o.runEnded(ctx, outcome)
 			return
@@ -660,6 +699,34 @@ func (o *openStream) stepBegan(ctx context.Context, data map[string]any) {
 	}
 	o.setHeadline(ctx, card.live())
 	o.updateCard(ctx, card.task(detail))
+}
+
+// reasoned draws one window of the model's own working: into the step's reasoning card, and into the
+// container headline so the line a collapsed reader sees says what the model is thinking about rather
+// than the single word "Thinking…".
+//
+// THE HEADLINE IS WRITTEN FIRST so that the card and the line above it never disagree about which step
+// is current, matching stepBegan's own order.
+func (o *openStream) reasoned(ctx context.Context, data map[string]any) {
+	card, detail, headline := o.cards.think(data)
+	if card == nil {
+		return
+	}
+	o.setHeadline(ctx, headline)
+	o.updateCard(ctx, card.task(detail))
+}
+
+// stepThought resolves a model step's reasoning card when that step ends.
+//
+// IT IS A NO-OP FOR EVERY STEP THAT DID NOT REASON, which is most of them: the four tool-deciding steps
+// of the measured run emitted no text at all, and a step with no reasoning has no card to resolve. It
+// writes NO HEADLINE for the reason modelStepHeadline gives — whatever the step decided on writes the
+// next one — and it sends no detail, for the reason stepEnded gives about a call's terminal: a card's
+// details APPEND, so a closing line here would grow every reasoning card by a line saying nothing.
+func (o *openStream) stepThought(ctx context.Context, data map[string]any, status string) {
+	if card := o.cards.endThinking(data, status); card != nil {
+		o.updateCard(ctx, card.task(""))
+	}
 }
 
 // stepEnded resolves the call and re-draws the card it belongs to.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/palgroup/palai/adapters/integrations/slack"
 )
@@ -95,6 +96,140 @@ const maxCardLines = 20
 // cardTruncated is the one line that says the list stopped. It ends the details for good.
 const cardTruncated = "…(later steps of this kind are not listed — the count above is the true total)"
 
+// maxCardDetails is the ceiling on ONE card's ACCUMULATED `details`, counted in the bytes that reach
+// Slack — and it is enforced here because SLACK DOES NOT ENFORCE IT. It accepts the write, answers `ok`,
+// and stores nothing at all.
+//
+// MEASURED 2026-08-05 against the live API (workspace T0AMPM5JX8U), one card per message so that a
+// failure names the FIELD rather than the message — the first sweep put five oversized cards in one
+// message, lost all five including a size that had stored intact moments before, and was measuring the
+// message the whole time:
+//
+//	sent 12000 in one chunk               -> ok, stored 12000
+//	sent 12001 in one chunk               -> ok, stored 0        <- the WHOLE field, not the overflow
+//	sent 6 × 2000 = 12000 accumulated     -> ok, stored 12000    <- so the limit is on the ACCUMULATION
+//	sent 12 × 2000 = 24000 accumulated    -> ok, stored 0
+//	sent 12000 bytes of `\*` (6000 shown) -> ok, stored 6000
+//	sent 24000 bytes of `\*` (12000 shown)-> ok, stored 0        <- so it counts what is SENT
+//
+// THREE THINGS FOLLOW AND EACH ONE IS LOAD-BEARING BELOW.
+//
+//  1. The cut has to be OURS. An overflow is not a tail that gets trimmed — it is every line the card
+//     ever wrote going missing, on a call that answered ok, so a card that walks over this line does not
+//     lose its last paragraph, it loses the whole transcript and says nothing about it.
+//  2. The count is taken AFTER the escape (see wireBytes). The last two rows are what settle that: the
+//     same displayed text passes at one length and vanishes at another purely because of what the escape
+//     added, so counting the string this package holds would be counting the wrong string.
+//  3. It is not a thinking-specific guard. A tool progress notification carries up to 4 KiB
+//     (coordinator.maxProgressMessage) and maxCardLines allows twenty of them, so the tool path could
+//     already reach 80 KB and silently blank its own card; nothing had ever measured the wall it was
+//     walking towards.
+//
+// It equals slack.MaxMarkdownText, and that is corroboration rather than coincidence: 12,000 characters
+// is the streaming surface's own documented budget for `markdown_text`, and `details` is measured to
+// share it.
+const maxCardDetails = 12000
+
+// cardDetailBudget is what a card may actually spend, holding back enough room for whichever truncation
+// note it might have to end with. Taking the LONGER of the two notes is what lets either one be written
+// unconditionally once the budget is exhausted.
+//
+// THE `+1` IS THE SEPARATOR AND IT WAS MISSING. A note written into details that already hold something
+// carries a leading newline (cut), so the reserve is the note plus that byte — and the first version
+// here reserved 82 bytes for a note that costs 83. TestTheTruncationNotesFitTheReserve is what found it,
+// which is the whole reason a constant computed from two other constants still gets a test: the arithmetic
+// is invisible, the failure it produces is a card that silently stores NOTHING, and the note that was
+// supposed to make the cut visible is what would have pushed it over.
+var cardDetailBudget = maxCardDetails - 1 - max(wireBytes(cardTruncated), wireBytes(thinkingTruncated))
+
+// wireBytes is what `text` costs against maxCardDetails: its length AFTER the two transformations
+// TaskUpdateChunk applies on the way out (blocks.go — NeutralizeBroadcasts, then EscapeCardDetails).
+//
+// IT CALLS THE REAL RENDERERS RATHER THAN MODELLING THEM. Both rules belong to the adapter, both have
+// been changed there before, and a second copy of "which characters grow" living in this file would be a
+// copy that drifts — measured wrong in one direction it truncates text that would have fitted, and in
+// the other it lets a card blank itself.
+func wireBytes(text string) int {
+	return len(slack.EscapeCardDetails(slack.NeutralizeBroadcasts(text)))
+}
+
+// clipToWire returns the longest rune-aligned prefix of text costing at most budget wire bytes.
+//
+// THE SECOND LOOP IS NOT BELT-AND-BRACES. The per-rune sum in the first loop can UNDERSHOOT the real
+// cost, because NeutralizeBroadcasts is the one transformation here that is not per-character: it
+// rewrites the two-rune sequences `<!` and `<@` as five bytes, which is more than those two runes cost
+// apart. So the prefix is verified against the real function and shortened until it genuinely fits —
+// a loop that iterates at all only for text carrying a broadcast.
+func clipToWire(text string, budget int) string {
+	if budget <= 0 {
+		return ""
+	}
+	end, spent := 0, 0
+	for i, r := range text {
+		cost := wireBytes(string(r))
+		if spent+cost > budget {
+			break
+		}
+		spent += cost
+		end = i + utf8.RuneLen(r)
+	}
+	for end > 0 && wireBytes(text[:end]) > budget {
+		_, size := utf8.DecodeLastRuneInString(text[:end])
+		end -= size
+	}
+	return text[:end]
+}
+
+// THE MODEL'S REASONING, and the three decisions that put it where it is.
+//
+// THE COMPLAINT: "ai thinking blokları da görmem lazım ama o blokları da görmüyorum ki" (2026-08-05).
+// The journal had begun carrying the model's own working as `model_step.thinking.v1` and this relay was
+// skipping it as an unknown type, so the one thing a reader waits through most of a run for was the one
+// thing the card never said.
+//
+//  1. IT IS A CARD, ONE PER MODEL STEP, keyed by the step's `model_request_id`. Not the headline: the
+//     headline is REPLACED by whatever happens next, so reasoning routed there would be visible for the
+//     seconds between one step and its tool call and then gone for good, and the run's story would end
+//     with no record that the model had reasoned at all. Not the body: see thinkingLeaksIntoTheAnswer.
+//  2. IT DOES NOT BREAK A TOOL GROUP. Consecutive calls to one tool share a card (see stepCard), and the
+//     measured runs alternate step/tool/step/tool throughout — so a reasoning card that advanced
+//     openStreamCards.current would split every burst back into a row per call and undo the grouping in
+//     exactly the runs that need it most. think() never touches `current`, and never counts a step
+//     either: "Done · 33 steps" counts the work, not the thinking about it.
+//  3. EVERY WINDOW IS SHOWN, not the last one and not a summary, bounded by the card's own byte budget.
+//     Showing only the newest would show a sentence fragment starting mid-clause — see addThinking for
+//     the measurement that makes that not merely worse but incoherent. The volume this costs is small
+//     and is itself measured: a whole step's reasoning was 505 bytes across three windows here
+//     (2026-08-05), and 348 and 613 bytes in the coordinator's own measurements, because the provider
+//     returns a SUMMARY of the reasoning rather than the raw chain. maxCardDetails is roughly twenty
+//     times the largest of those, so the cut is for a pathological step and not for an ordinary one.
+const (
+	// thinkingCardMark opens the title and the headline, because a reasoning card sits in the same list
+	// as "$ swift build" and a reader has to be able to tell an act from a thought at a glance. It is a
+	// literal emoji rather than a `:thought_balloon:` colon-code: a task title is PLAIN TEXT (measured
+	// 2026-08-04 — backticks and asterisks come back byte-identical), so nothing would expand the code,
+	// and the emoji itself was measured to store byte-identically in a title on 2026-08-05.
+	thinkingCardMark = "💭 "
+	// thinkingCardFallback titles a reasoning card whose lead line is empty. It cannot happen through
+	// think() (a window with no text creates no card) and exists so that a card can never be titled with
+	// the empty string, which Slack rejects.
+	thinkingCardFallback = "Thinking"
+	// thinkingTruncated is the note that says a step's reasoning stopped being shown. It is written into
+	// the card rather than dropped for the reason the coordinator gives its own ceiling the same
+	// treatment: an answer has a second authoritative copy in the model step's terminal event and
+	// REASONING HAS NONE, so a reader who cannot see the cut cannot tell a model that stopped reasoning
+	// from a card that stopped recording it.
+	thinkingTruncated = "…(the rest of this step's reasoning is not shown — the card's own ceiling)"
+)
+
+// thinkingCardTitle renders a reasoning card's headline from its lead line.
+func thinkingCardTitle(lead string) string {
+	if lead == "" {
+		return thinkingCardMark + thinkingCardFallback
+	}
+	return thinkingCardMark + lead
+}
+
 // stepCard is ONE card in the plan: a run of CONSECUTIVE calls to the same tool.
 //
 // WHY CONSECUTIVE AND NOT PER CALL. The operator's run made thirty-three calls and drew thirty-three rows;
@@ -123,12 +258,29 @@ type stepCard struct {
 	// event that renames it having to carry a tool_name (a progress notification does not).
 	phrase string
 
+	// thinking marks a card that renders the model's REASONING for one model step instead of a group of
+	// tool calls. It is a field on this type rather than a second type because everything that decides a
+	// card's FATE is shared — the status pill, the run terminal that resolves whatever is still open, the
+	// details budget — and only the title and the way text is appended differ. A separate type would have
+	// had to be reached through an interface by openStreamCards.all, and a run terminal that forgot to
+	// resolve one kind is exactly the spinning card SLK-P2 is about.
+	thinking bool
+	// thinkingLead is the opening LINE of this step's reasoning: the card's title and the container
+	// headline while the step is running. See openStreamCards.think for why it is grown rather than taken
+	// whole from the first window.
+	thinkingLead string
+	// leadClosed records that thinkingLead has met its newline (or filled a headline) and will not grow
+	// again — which is also what stops the headline being rewritten once per window.
+	leadClosed bool
+
 	calls int
 	// first is the opening call's caption, kept because it lives in the TITLE while the group has one member
 	// and has to move down into the list when a second one arrives.
 	first string
 	// lines counts captions already written into details, against maxCardLines.
 	lines int
+	// detailBytes is what this card has already spent of cardDetailBudget, counted on the wire (wireBytes).
+	detailBytes int
 	// detailed records that details is non-empty, because the field APPENDS with no separator of its own:
 	// Slack stored `$ first` + `$ second` as `$ first$ second` (measured 2026-08-04). Every write after the
 	// first must therefore carry its own newline.
@@ -161,6 +313,9 @@ type stepCard struct {
 // and the caption it was showing moves into the list below. That flip is visible to someone watching, and it
 // is the price of not hiding a lone step's caption behind a possible expand.
 func (c *stepCard) title() string {
+	if c.thinking {
+		return thinkingCardTitle(c.thinkingLead)
+	}
 	if c.calls > 1 {
 		return fmt.Sprintf("%s ×%d", c.phrase, c.calls)
 	}
@@ -187,25 +342,83 @@ func (c *stepCard) status() string {
 }
 
 // addCaption returns what to append to details for a caption, "" when there is nothing to add. It owns the
-// separator and the cap, so no caller can forget either.
+// separator and BOTH caps, so no caller can forget either.
 func (c *stepCard) addCaption(caption string) string {
 	if caption == "" || c.truncated {
 		return ""
 	}
 	if c.lines >= maxCardLines {
-		c.truncated = true
-		return c.separated(cardTruncated)
+		return c.cut(cardTruncated)
 	}
-	c.lines++
-	return c.separated(caption)
-}
-
-func (c *stepCard) separated(line string) string {
+	line := caption
 	if c.detailed {
-		return "\n" + line
+		line = "\n" + line
+	}
+	if !c.spend(line) {
+		return c.cut(cardTruncated)
 	}
 	c.detailed = true
+	c.lines++
 	return line
+}
+
+// addThinking returns what to append to details for ONE reasoning window — RAW, with no separator of its
+// own, which is the opposite of what every other writer here does.
+//
+// THAT IS MEASURED AND IT IS THE WHOLE REASON THIS IS NOT addCaption. The windows are FRAGMENTS OF ONE
+// CONTINUOUS TEXT, not a list of items: the coalescing sink (execution/model_delta_sink.go) flushes on a
+// 500ms ticker, wherever the token stream happens to be. The three windows of a real step on this
+// deployment (2026-08-05, session events seq 5/6/8) were
+//
+//	"…I need to clarify whether the range is inclusive or exclusive…"
+//	"\n\nI'll go with the inclusive interpretation (17 through 23) since that's the more common approach for"
+//	" such problems. The primes are 17, 19, and 23…"
+//
+// — the second ends mid-clause and the third opens with the space that continues it. A newline between
+// them would break the sentence the model wrote; `details` appending with NO separator of its own is
+// exactly what reassembles the stream, and it was verified end to end against the live API on the same
+// day (three fragments sent as three chunks read back as the one continuous sentence).
+//
+// THE OVERFLOW KEEPS WHAT FITS instead of dropping the window. Reasoning has no second authoritative
+// copy anywhere — the coordinator's own ceiling is documented that way, and it is why the note below is
+// written into the card at all rather than the cut being silent.
+func (c *stepCard) addThinking(text string) string {
+	if text == "" || c.truncated {
+		return ""
+	}
+	if c.spend(text) {
+		c.detailed = true
+		return text
+	}
+	kept := clipToWire(text, cardDetailBudget-c.detailBytes)
+	c.detailBytes += wireBytes(kept)
+	c.detailed = c.detailed || kept != ""
+	return kept + c.cut(thinkingTruncated)
+}
+
+// spend books text against the card's details budget, reporting false — and booking nothing — when it
+// does not fit.
+func (c *stepCard) spend(text string) bool {
+	cost := wireBytes(text)
+	if c.detailBytes+cost > cardDetailBudget {
+		return false
+	}
+	c.detailBytes += cost
+	return true
+}
+
+// cut writes the note that says this card's details stopped, exactly once, and closes them for good.
+// The reserve held back by cardDetailBudget is what guarantees the note itself fits.
+func (c *stepCard) cut(note string) string {
+	if c.truncated {
+		return ""
+	}
+	c.truncated = true
+	if c.detailed {
+		note = "\n" + note
+	}
+	c.detailed = true
+	return note
 }
 
 // runOutcome is what ONE run terminal means to the three surfaces that have to agree about it.
@@ -307,6 +520,12 @@ type openStreamCards struct {
 	// byCall maps a tool_call_id to the card that call belongs to, because the events that RESOLVE a call —
 	// and the progress notifications that decorate it — name the call, never the group.
 	byCall map[string]*stepCard
+	// thinkingByStep maps a model step's `model_request_id` to the card holding that step's reasoning. It
+	// is a SECOND index rather than an entry in byCall because the two vocabularies name different
+	// things: a tool_call_id names a call and a model_request_id names the step that decided on it, and
+	// one map holding both would make a collision between two id spaces this package does not mint into
+	// a card silently rendering one thing as the other.
+	thinkingByStep map[string]*stepCard
 	// all is every card drawn, in order, so a run that ends mid-step can resolve the ones still open.
 	all []*stepCard
 	// steps counts tool calls, which is what the closing headline reports.
@@ -314,7 +533,78 @@ type openStreamCards struct {
 }
 
 func newCards() *openStreamCards {
-	return &openStreamCards{byCall: map[string]*stepCard{}}
+	return &openStreamCards{byCall: map[string]*stepCard{}, thinkingByStep: map[string]*stepCard{}}
+}
+
+// think records one reasoning window and answers the card to draw, the detail to append, and the
+// headline the container should now show. A nil card means there is nothing to draw.
+//
+// A WINDOW WITH NO model_request_id DRAWS NOTHING, for the reason begin() gives about a call with no id:
+// an empty id is not a card Slack can advance, and two model steps sharing one would overwrite each
+// other's reasoning, which is worse than the reasoning not being drawn. A window with no text draws
+// nothing either — the coordinator refuses to journal an empty one, so this is a malformed event rather
+// than a step that thought nothing.
+func (s *openStreamCards) think(data map[string]any) (*stepCard, string, string) {
+	id := dataString(data, "model_request_id")
+	text := dataString(data, "thinking")
+	if id == "" || text == "" {
+		return nil, "", ""
+	}
+	card := s.thinkingByStep[id]
+	if card == nil {
+		// inFlight opens at one: the step IS running, and the card is resolved by that step's own
+		// terminal (endThinking) or, failing that, by the run's (runEnded). It is deliberately not drawn
+		// `done` on arrival — a window is a record of reasoning that has happened, but the step it
+		// belongs to has not, and a card that reported itself complete while the model was still
+		// working would be the "Thinking… forever" defect in a new place.
+		card = &stepCard{id: id, thinking: true, inFlight: 1}
+		s.thinkingByStep[id] = card
+		s.all = append(s.all, card)
+	}
+	card.growLead(text)
+	return card, card.addThinking(text), thinkingCardTitle(card.thinkingLead)
+}
+
+// growLead extends the card's lead line — its title, and the container headline while this step runs.
+//
+// IT IS GROWN RATHER THAN TAKEN WHOLE FROM THE FIRST WINDOW because a window is not a sentence: the sink
+// flushes on a timer, so the first one is whatever had streamed in 500ms. It could be a full paragraph
+// (232 bytes, measured 2026-08-05) or three words. Growing until the reasoning's first line actually
+// ENDS is what makes the title say something either way.
+//
+// AND IT STOPS, which is the half that costs money. The headline is written with a chat.appendStream
+// chunk against a shared Tier 4 budget, and setHeadline suppresses a repeat — so a lead that stopped
+// changing is a lead that stops spending. Closing it at the first newline OR at a headline's worth of
+// runes bounds that to about two writes per model step, whatever the provider does with its windows.
+func (c *stepCard) growLead(text string) {
+	if c.leadClosed {
+		return
+	}
+	line, cut := text, false
+	if i := strings.IndexAny(line, "\r\n"); i >= 0 {
+		line, cut = line[:i], true
+	}
+	if c.thinkingLead == "" {
+		line = strings.TrimLeft(line, " \t")
+	}
+	c.thinkingLead += line
+	if cut || len([]rune(c.thinkingLead)) >= maxHeadline {
+		c.leadClosed = true
+	}
+}
+
+// endThinking resolves the reasoning card of a model step that has just ended, or nil when this step
+// produced no reasoning — which is most steps in most runs and is not a failure.
+func (s *openStreamCards) endThinking(data map[string]any, status string) *stepCard {
+	card := s.thinkingByStep[dataString(data, "model_request_id")]
+	if card == nil {
+		return nil
+	}
+	card.inFlight = 0
+	if status != "done" && card.outcome == "" {
+		card.outcome = status
+	}
+	return card
 }
 
 // begin records a call starting and answers the card to draw plus the detail line to append.
