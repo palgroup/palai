@@ -99,7 +99,7 @@ func (f *wakeFixture) spawnAndTerminal(t *testing.T, outcome string) {
 			_ = syscall.Kill(-pgid, syscall.SIGKILL)
 		}
 	})
-	f.orch.dialer = &scriptedDialer{ch: &scriptedChannel{frames: frames}, exec: f.exec}
+	f.orch.dialer = &scriptedDialer{ch: &scriptedChannel{frames: frames}, exec: f.exec, machine: f.machineID}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := f.orch.ExecuteAttempt(ctx, AttemptDescriptor{
@@ -168,10 +168,15 @@ func (f *wakeFixture) secondPlane(t *testing.T) *Orchestrator {
 	t.Cleanup(repo.Close)
 	exec := host.NewExecutor(0)
 	orch := NewOrchestrator(repo, nil, modelbroker.New(modelbroker.Config{}), toolbroker.New(tools.ShellTool(), tools.FileTool()))
-	// Only the BACKGROUND half is process-wide since A.3, and only it is what this plane is for: it
-	// observes and reaps a task the FIRST plane started. A synchronous executor would reach an attempt
-	// through that attempt's channel, and this plane opens no attempt.
-	orch.SetBackgroundRunner(exec)
+	// IT REACHES THE SAME MACHINE BY NAME, WHICH IS THE WHOLE OF WHAT THIS PLANE IS FOR (A.3 T7): it
+	// observes and reaps a task the FIRST plane started, holding none of that plane's memory and none of
+	// its connections. Addressing by name is exactly the capability T7 added — before it, a second plane
+	// could only probe handles with its OWN process's executor, which is how a restart came to answer
+	// about a kernel it had never started anything on.
+	//
+	// No synchronous executor is wired: that one reaches an attempt through the attempt's channel, and
+	// this plane opens no attempt.
+	orch.SetMachineCaller(newHostMachine(f.machineID, exec))
 	return orch
 }
 

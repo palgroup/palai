@@ -59,6 +59,11 @@ type parkFixture struct {
 	// exec is this fixture's machine: since A.3 the synchronous executor rides the attempt's channel,
 	// so every scripted dialer below carries it.
 	exec toolbroker.ShellRunner
+	// machineID names that machine. A.3 T7 moved the SPAWN onto it too, so an attempt that reaches no
+	// machine can no longer start a background task at all — StartBackground's gate refuses it before
+	// anything runs. Every dialer below therefore carries the id as well as the executor, and the
+	// orchestrator is given a caller that answers for it.
+	machineID string
 }
 
 func newParkFixture(t *testing.T) *parkFixture {
@@ -107,20 +112,33 @@ func newParkFixture(t *testing.T) *parkFixture {
 		}
 	}
 
-	// The production orchestrator, with the REAL host executor as both the shell runner and the
-	// background runner — which is exactly what main.go wires on a native posture.
+	// The production orchestrator, with the REAL host executor as the machine's shell runner AND its
+	// detached one — which is exactly what main.go wires on a native posture.
 	exec := host.NewExecutor(0)
 	f.orch = NewOrchestrator(repo, nil, modelbroker.New(modelbroker.Config{}), toolbroker.New(tools.ShellTool(), tools.FileTool()))
-	// The SYNCHRONOUS executor is no longer set here (A.3): it reaches an attempt through that attempt's
-	// own channel, so it is handed to the scripted dialer below. The BACKGROUND one is still
-	// process-wide, which is the asymmetry orchestrator.go names.
+	// NEITHER EXECUTOR IS PROCESS-WIDE ANY MORE, AND BOTH ARRIVE THE WAY PRODUCTION'S DO (A.3 T7). The
+	// synchronous one reaches an attempt through that attempt's own channel, so it is handed to the
+	// scripted dialer below. The DETACHED one is reached by NAME, outside any lease, through the machine
+	// caller — because a background task outlives the attempt that started it, so an attempt's connection
+	// is the wrong lifetime to ask through.
+	//
+	// Wiring only the executor and not the caller is the state this fixture was in when T7 landed: every
+	// spawn below was refused by StartBackground's machine gate, for a reason no claim in this file is
+	// about. What makes the pair correct is that BOTH halves name the same machine — the id the channel
+	// reports is the id the caller answers for — which is exactly what a lease and its gateway guarantee
+	// in production.
 	f.exec = exec
-	// SetBackgroundRunner also wires the cancellation killer onto the orchestrator's OWN spine
-	// (repo.Spine()), which in production is the same *coordinator.Store startDispatch cancels through.
-	// This fixture holds a second handle to the same database for its seeding, so a cancellation proof
-	// must go through f.orch.spine rather than through f.spine — otherwise it would be measuring a store
-	// production never builds.
-	f.orch.SetBackgroundRunner(exec)
+	f.machineID = redeliveryID("mac")
+	// SetMachineCaller also wires the cancellation killer onto the orchestrator's OWN spine (repo.Spine()),
+	// which in production is the same *coordinator.Store startDispatch cancels through. This fixture holds
+	// a second handle to the same database for its seeding, so a cancellation proof must go through
+	// f.orch.spine rather than through f.spine — otherwise it would be measuring a store production never
+	// builds.
+	//
+	// THERE IS NO SetBackgroundRunner CALL HERE AND ITS ABSENCE IS THE T7 CHANGE STATED: the runner this
+	// fixture wants a task started on belongs to the MACHINE, and handing the same value to the
+	// orchestrator would wire a field nothing reads (see the report on Orchestrator.background).
+	f.orch.SetMachineCaller(newHostMachine(f.machineID, exec))
 	return f
 }
 
@@ -159,16 +177,23 @@ func (c *scriptedChannel) Close() error { return nil }
 // the channel it hands back answers exec requests on `exec`, the same way a gatewayChannel answers them
 // on the runner that took the lease. A dialer with no exec yields an attempt with no shell — which is
 // what the tests about a machineless attempt want, so it stays expressible.
+//
+// `machine` is the other half of the same fact and T7 is why it has to be said separately: a machine
+// runs an attempt's commands AND holds the processes that outlive it, and the second is addressed by
+// NAME long after the first connection is gone. A dialer with an exec and no name yields an attempt that
+// can run a command and cannot leave a process behind — also a real shape, and the one StartBackground
+// refuses.
 type scriptedDialer struct {
-	ch   *scriptedChannel
-	exec toolbroker.ShellRunner
+	ch      *scriptedChannel
+	exec    toolbroker.ShellRunner
+	machine string
 }
 
 func (d *scriptedDialer) Dial(context.Context, AttemptDescriptor) (EngineChannel, error) {
 	if d.exec == nil {
 		return d.ch, nil
 	}
-	return hostMachineChannel{EngineChannel: d.ch, exec: d.exec}, nil
+	return hostMachineChannel{EngineChannel: d.ch, exec: d.exec, machineID: d.machine}, nil
 }
 
 func engineFrame(seq int, typ string, data map[string]any) contracts.EngineFrame {
@@ -202,7 +227,7 @@ func (f *parkFixture) runAttempt(t *testing.T, outcome string, background int) e
 	}
 	frames = append(frames, engineFrame(seq, "run.terminal", map[string]any{"outcome": outcome}))
 
-	f.orch.dialer = &scriptedDialer{ch: &scriptedChannel{frames: frames}, exec: f.exec}
+	f.orch.dialer = &scriptedDialer{ch: &scriptedChannel{frames: frames}, exec: f.exec, machine: f.machineID}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	err := f.orch.ExecuteAttempt(ctx, AttemptDescriptor{
@@ -395,7 +420,13 @@ func TestALostOrUnprobeableBackgroundTaskDoesNotParkTheRun(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newParkFixture(t)
-			f.orch.SetBackgroundRunner(&unprovableBackground{inner: host.NewExecutor(0), state: tc.state, err: tc.err})
+			// THE UNPROVABLE PROBE BELONGS TO THE MACHINE, NOT TO THIS PROCESS (A.3 T7). The probe that
+			// decides the park is taken by asking the machine that holds the task, so a runner swapped onto
+			// the orchestrator would answer nobody: the fixture would keep the honest host probe, every
+			// handle would read `running`, and both cases below would park — a green that came from the
+			// wrong side of the seam. The id is the fixture's own, so the attempt still reaches it.
+			f.orch.SetMachineCaller(newHostMachine(f.machineID,
+				&unprovableBackground{inner: host.NewExecutor(0), state: tc.state, err: tc.err}))
 
 			if err := f.runAttempt(t, "completed", 1); err != nil {
 				t.Fatalf("ExecuteAttempt: %v", err)

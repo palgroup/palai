@@ -88,7 +88,11 @@ type backgroundHarness struct {
 	root       string
 	shell      *countingShell
 	background *countingBackground
-	gated      bool // register palai.workspace.shell as approval_required
+	// machineID is the machine both counters belong to. Since A.3 T7 a background task is started BY the
+	// machine, so `background` is reached through a machine caller rather than through a field on the
+	// orchestrator — and the counter only moves if the attempt names this same id.
+	machineID string
+	gated     bool // register palai.workspace.shell as approval_required
 	// orch is built ONCE and reused across every tool call, because that is what production does: main.go
 	// constructs one Orchestrator in startDispatch and every attempt of every run dispatches through it.
 	// The ledger tests in this package deliberately mint a fresh one per attempt to simulate a new process
@@ -118,6 +122,7 @@ func newBackgroundHarness(t *testing.T) *backgroundHarness {
 		root:       t.TempDir(),
 		shell:      &countingShell{inner: exec},
 		background: &countingBackground{inner: exec},
+		machineID:  redeliveryID("mac"),
 	}
 }
 
@@ -129,9 +134,11 @@ func (h *backgroundHarness) attempt(fence uint64) (*Orchestrator, *attemptState,
 		shellTool := tools.ShellTool()
 		shellTool.RequiresApproval = h.gated
 		h.orch = &Orchestrator{spine: h.spine, tools: toolbroker.New(shellTool, tools.FileTool(), tools.BackgroundKillTool())}
-		// Only the BACKGROUND runner is process-wide since A.3. The synchronous one rides the attempt's
-		// channel below, which is where production's comes from too.
-		h.orch.SetBackgroundRunner(h.background)
+		// NEITHER RUNNER IS PROCESS-WIDE SINCE A.3. The synchronous one rides the attempt's channel below;
+		// the detached one is reached by NAME through the machine caller, which is where production's comes
+		// from too (main.go hands the gateway to SetMachineCaller). Wiring `background` onto the
+		// orchestrator instead would leave the counter at zero and every spawn refused by the machine gate.
+		h.orch.SetMachineCaller(newHostMachine(h.machineID, h.background))
 	}
 	ch := &recordingChannel{}
 	orch := h.orch
@@ -147,7 +154,11 @@ func (h *backgroundHarness) attempt(fence uint64) (*Orchestrator, *attemptState,
 	// The attempt's machine, counted by the same countingShell the assertions read: a command reaches it
 	// through the connection now, so wrapping the recording channel is how this harness says "this
 	// attempt landed on a machine that runs commands".
-	st.ch = hostMachineChannel{EngineChannel: ch, exec: h.shell}
+	//
+	// AND THE NAME IS THE SAME ONE THE CALLER ANSWERS FOR (A.3 T7), which is what makes the attempt able
+	// to leave a process behind as well as run one. The two halves must agree: a channel naming a machine
+	// the caller does not hold is refused as unreachable, exactly as a real lease on a revoked machine is.
+	st.ch = hostMachineChannel{EngineChannel: ch, exec: h.shell, machineID: h.machineID}
 	return orch, st, ch
 }
 
@@ -560,8 +571,12 @@ func TestBackgroundIsRefusedRatherThanDowngradedWhenTheFeatureIsDisabled(t *test
 	if err == nil {
 		t.Fatal("background: true was accepted while the feature is disabled")
 	}
-	if !strings.Contains(err.Error(), "background") {
-		t.Fatalf("the refusal does not name what was refused: %v", err)
+	// THE REFUSAL MUST NAME THE KILL SWITCH, not merely the word "background". Both refusals in this path
+	// contain that word — the switch, and A.3 T7's machine gate ("this shell posture cannot start a
+	// background task") — so a Contains("background") check cannot tell them apart, and a harness that
+	// lost its machine would keep this test green while measuring an entirely different refusal.
+	if !strings.Contains(err.Error(), "PALAI_BACKGROUND_DISABLED") {
+		t.Fatalf("the refusal does not name the kill switch, so this may be some other refusal entirely: %v", err)
 	}
 	if n := atomic.LoadInt32(&h.background.starts); n != 0 {
 		t.Fatalf("%d background task(s) started while the feature is disabled, want 0", n)

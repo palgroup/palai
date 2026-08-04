@@ -86,7 +86,10 @@ func (f *reaperFixture) runAttemptWithScript(t *testing.T, outcome, work string)
 		}),
 		engineFrame(3, "run.terminal", map[string]any{"outcome": outcome}),
 	}
-	f.orch.dialer = &scriptedDialer{ch: &scriptedChannel{frames: frames}}
+	// THE ATTEMPT REACHES THIS FIXTURE'S MACHINE, and since A.3 T7 that is what lets it background
+	// anything at all: the spawn crosses to the machine, so a dialer that named none would be refused by
+	// StartBackground's gate before this file's first claim could be measured.
+	f.orch.dialer = &scriptedDialer{ch: &scriptedChannel{frames: frames}, exec: f.exec, machine: f.machineID}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	return f.orch.ExecuteAttempt(ctx, AttemptDescriptor{

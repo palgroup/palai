@@ -163,7 +163,10 @@ func (f *secretFixture) spawnLeakyBuild(t *testing.T) {
 			_ = syscall.Kill(-pgid, syscall.SIGKILL)
 		}
 	})
-	f.orch.dialer = &scriptedDialer{ch: &scriptedChannel{frames: frames}}
+	// THE ATTEMPT REACHES THIS FIXTURE'S MACHINE (A.3 T7). The credential travels to it in cmd.Env, over
+	// the same wire and the same encode production uses — which is the half of this file's claim that
+	// only became measurable once the spawn crossed a machine boundary at all.
+	f.orch.dialer = &scriptedDialer{ch: &scriptedChannel{frames: frames}, exec: f.exec, machine: f.machineID}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := f.orch.ExecuteAttempt(ctx, AttemptDescriptor{
@@ -190,7 +193,13 @@ func (f *secretFixture) dispatch(t *testing.T, withEnv bool, name string, args m
 			RunID: contracts.RunID(f.runID), AttemptID: contracts.AttemptID(redeliveryID("att")),
 			Fence: 2, WorkspaceHostPath: f.root,
 		},
-		tenant: f.tenant, sessionID: f.sessionID, responseID: f.responseID, ch: ch,
+		tenant: f.tenant, sessionID: f.sessionID, responseID: f.responseID,
+		// THE ATTEMPT LANDS ON THIS FIXTURE'S MACHINE, the same one spawnLeakyBuild's dialer reaches. A
+		// bare recordingChannel reaches an engine and no machine, which since A.3 T7 means it can start no
+		// background task at all — and the calls below that expect a REFUSAL would then be refused by the
+		// machine gate rather than by the ceiling they are about, which is the same green-for-the-wrong-
+		// reason the credential claim itself exists to rule out.
+		ch: hostMachineChannel{EngineChannel: ch, exec: f.exec, machineID: f.machineID},
 	}
 	if withEnv {
 		keys, err := f.orch.resolveEnvKeys(ctx, st)
