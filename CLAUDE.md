@@ -25,8 +25,16 @@ Bir rotanın var olması, bir alanın kabul edildiği anlamına gelmez. Ve bir m
 olması, o mekanizmanın hedef platformda **işlediği** anlamına gelmez.
 *Gerekçe (yetenek):* `config_policy.pool` için plan rota tablosuna baktı ve "yazma yolu shipped" dedi;
 `DisallowUnknownFields` o alanı **400**'lüyordu. Aynı hata E23 T2'de `approvers` için de yapılmıştı.
-*Gerekçe (tavan):* plan "aynı uid `ps -E` / `/proc/<pid>/environ` ile değeri okuyabilir" dedi; macOS
-26.3'te `ps -E` **hiçbir ortam ifşa etmiyor** ve `/proc` yok — ve bu epic'in hedefi native bir Mac.
+*Gerekçe (tavan):* plan "aynı uid `ps -E` / `/proc/<pid>/environ` ile değeri okuyabilir" dedi; `/proc`
+yok ve bu epic'in hedefi native bir Mac.
+**~~macOS 26.3'te `ps -E` hiçbir ortam ifşa etmiyor~~ — BU CÜMLE 2026-08-04'TE ÖLÇÜLDÜ VE YANLIŞ
+ÇIKTI.** `Darwin 25.3.0`, aynı uid: `ps -E -p <pid>` **62 çevre değişkenini değerleriyle** listeledi,
+`ps eww <pid>` de aynısını yaptı. Dahası `os.Unsetenv` bunu gizlemiyor — bir sonda ikilisi kendi
+değişkenini sildikten sonra bile `ps` değeri gösterdi, çünkü macOS `ps`'i çekirdeğin başlangıç-ortam
+kopyasından (`KERN_PROCARGS2`) besliyor. **Env'e giren bir sır, o process yaşadığı sürece okunabilir.**
+Kuralı çürütmüyor, *doğruluyor*: burada küçümsenen değil **abartılan** bir tavan vardı, ve bir korumaya
+sahip olduğunu sanan sonraki her karar onun üzerine kuruluyordu. Düzeltmesi `d22b799c` (değer-tabanlı
+redaksiyon), mimarisi palai-cloud `docs/plans/2026-08-04-provider-key-off-the-machine.md`.
 **Bir tavanı abartmak, onu küçümsemek kadar yanlıştır**: operatöre koşturunca çalışmayan bir gösterim
 bırakır ve gerçek riskin yerini kaydırır.
 
