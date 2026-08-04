@@ -51,6 +51,43 @@ The cost is not only latency. The model **plans as though it fanned out**: it ba
 
 ---
 
+## §2.5 — Execution record (2026-08-04): the plan's ORDER was wrong
+
+**Task 1 shipped** (`e91f5b7d`): `toolbroker.Tool.ParallelSafe`, defaulting to false, with all thirteen registered tools classified by name in `parallel_safe_test.go`. `ReplayClass` is confirmed unusable as the signal — `show_media` is `ClassPure` and writes an artifact; `file` and the text editor are `ClassReversible` and multiplex read with write.
+
+**Task 2 is blocked on a protocol gap, and Task 0 was missing entirely.**
+
+### The blocker (Task 2)
+
+The orchestrator cannot group a turn's frames, because it never receives a turn — it receives frames:
+
+```go
+for {
+    frame, err := o.receiveEngineFrame(ctx, st)   // orchestrator.go:820
+    switch frame.Type { case "tool.request": o.dispatchTool(ctx, st, frame) }
+}
+```
+
+Three things have to be true to batch, and none is:
+
+1. **The frame does not identify its turn.** `_tool_request_frame` (`loop.py:222`) carries `{tool_call_id, name, arguments, request_hash}` — no batch size, no index. The engine KNOWS the size (`len(tool_calls)`, `loop.py:207`) and does not write it down.
+2. **The channel cannot be peeked.** `EngineChannel` is `Send`/`Receive`/`Close`, and `Receive(ctx)` blocks. Waiting to see whether a second frame arrives deadlocks the common case — one call, where the engine is waiting on our result.
+3. **Per-frame error classes are turn-ending.** `orchestrator.go:881` returns from the attempt on `errRunParked`, `errToolUncertainWait`, and `errToolAnswerBudget`. What happens to a batch's other results when one parks is a **design decision**, not an implementation detail.
+
+The fix for (1) and (2) is one change: the engine writes `batch_size`/`batch_index` onto each `tool.request`, and the orchestrator collects that many before dispatching. (3) needs a human ruling first.
+
+### Task 0, which this plan should have started with (`8dba4335`, shipped)
+
+**The model was being taught not to make parallel calls in the first place.** `provider_two/adapter.go`'s tool arm built ONE user message per tool result. Anthropic's parallel-tool-use documentation requires every result for a turn to arrive in a single user message and states the consequence of splitting them: it *"silently trains Claude to stop making parallel calls"*.
+
+Measured before the fix: a three-tool turn produced **four** user messages (the question, then three separate results). So concurrency work would have optimised the execution of batches the model had been trained to stop requesting.
+
+Fixed by merging ADJACENT tool results into one turn — adjacency matters, because a user turn between two results means they answered different model turns. Four tests pin it, and removing the merge reproduces the four-message shape.
+
+**Sequence from here:** Task 0 (done) → the protocol change → the parked/uncertain ruling → Task 2 → Task 3.
+
+---
+
 ## §3 — File Structure
 
 | File | Responsibility |
