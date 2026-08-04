@@ -85,16 +85,20 @@ func TestLiveRemoteToolAsyncRoundtrip(t *testing.T) {
 	sessionID, runID := liveID("ses"), liveID("run")
 	profileID, arevID := liveID("aprof"), liveID("arev")
 	execLive(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	execLive(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
-	execLive(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, org, project)
-	execLive(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`, profileID, org, project)
+	execLive(t, pool, `INSERT INTO projects (id) VALUES ($1)`, project)
+	execLive(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, project)
+	execLive(t, pool, `INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,'reviewer')`, profileID, project)
 
 	// The shared HMAC secret (in-process only; never logged). The org-scoped resolver hands it to BOTH the
 	// outbound invoke signer and the inbound callback verifier — the same secret, both directions.
 	secret := []byte("live-remote-tool-hmac-secret")
 	ops := remotehttp.NewOperations(pool)
-	resolver := func(o, ref string) ([]byte, error) {
-		if o == org && ref == "sig-ref" {
+	// THE REF ALONE IS THE KEY NOW. A.2 removed the organization from extensions.SecretResolver, so the
+	// shipped signature is func(ref string). The org comparison this used to make is not moved down to the
+	// project — it is GONE, because the resolver no longer receives a tenant at all and inventing one here
+	// would assert a boundary the production seam does not have.
+	resolver := func(ref string) ([]byte, error) {
+		if ref == "sig-ref" {
 			return secret, nil
 		}
 		return nil, nil
@@ -135,28 +139,28 @@ func TestLiveRemoteToolAsyncRoundtrip(t *testing.T) {
 	// Register the remote_http tool: executor_config carries only the harness URL + self-host flag; the
 	// credential is a secret_ref handle. Pin it into a published set the run's agent revision names.
 	reg := extensions.New(pool)
-	tool, err := reg.CreateTool(ctx, org, project, "acme.remote."+remoteToolShortName)
+	tool, err := reg.CreateTool(ctx, project, "acme.remote."+remoteToolShortName)
 	if err != nil {
 		t.Fatalf("create tool: %v", err)
 	}
 	body := `{"executor":"remote_http","input_schema":{"type":"object"},"output_schema":{"type":"object"},"replay_class":"idempotent","executor_config":{"url":"` + toolServer.URL + `","allow_private":true},"secret_ref":"sig-ref","timeout_ms":15000}`
-	rev, err := reg.CreateToolRevision(ctx, org, project, tool.ID, []byte(body))
+	rev, err := reg.CreateToolRevision(ctx, project, tool.ID, []byte(body))
 	if err != nil {
 		t.Fatalf("create remote_http revision: %v", err)
 	}
-	if _, _, err := reg.PublishToolRevision(ctx, org, project, rev.ID, nil); err != nil {
+	if _, _, err := reg.PublishToolRevision(ctx, project, rev.ID, nil); err != nil {
 		t.Fatalf("publish revision: %v", err)
 	}
-	set, err := reg.CreateToolSetRevision(ctx, org, project, "reviewers", []byte(`{"tools":[{"tool_revision_id":"`+rev.ID+`"}]}`))
+	set, err := reg.CreateToolSetRevision(ctx, project, "reviewers", []byte(`{"tools":[{"tool_revision_id":"`+rev.ID+`"}]}`))
 	if err != nil {
 		t.Fatalf("create set: %v", err)
 	}
-	if _, _, err := reg.PublishToolSetRevision(ctx, org, project, set.ID); err != nil {
+	if _, _, err := reg.PublishToolSetRevision(ctx, project, set.ID); err != nil {
 		t.Fatalf("publish set: %v", err)
 	}
-	execLive(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, published_at, tool_sets)
-	                   VALUES ($1,$2,$3,$4,1,$5,clock_timestamp(),$6::jsonb)`, arevID, org, project, profileID, liveModel(), `["`+set.ID+`"]`)
-	execLive(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, agent_revision_id) VALUES ($1,$2,$3,$4,$5)`, runID, org, project, sessionID, arevID)
+	execLive(t, pool, `INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, published_at, tool_sets)
+	                   VALUES ($1,$2,$3,1,$4,clock_timestamp(),$5::jsonb)`, arevID, project, profileID, liveModel(), `["`+set.ID+`"]`)
+	execLive(t, pool, `INSERT INTO runs (id, project_id, session_id, agent_revision_id) VALUES ($1,$2,$3,$4)`, runID, project, sessionID, arevID)
 
 	// A REAL provider forced tool call for the registered remote tool (the live element — the model CHOOSES
 	// the tool; forcing is the pre-T1 seam, ceiling 1).

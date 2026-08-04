@@ -74,9 +74,9 @@ func TestLiveMCPToolRoundtripSpontaneous(t *testing.T) {
 	sessionID, runID := liveID("ses"), liveID("run")
 	profileID, arevID := liveID("aprof"), liveID("arev")
 	execLive(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	execLive(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
-	execLive(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, org, project)
-	execLive(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,$4)`, profileID, org, project, profileID)
+	execLive(t, pool, `INSERT INTO projects (id) VALUES ($1)`, project)
+	execLive(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, project)
+	execLive(t, pool, `INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,$3)`, profileID, project, profileID)
 
 	// A REAL MCP manager: the stdio transport runs the fixture in a hardened, network-less OCI container.
 	driver, err := oci.NewDockerInteractiveDriver()
@@ -95,28 +95,28 @@ func TestLiveMCPToolRoundtripSpontaneous(t *testing.T) {
 	// Register the connection, discover its tools (draft revisions), publish echo, pin it into a set the
 	// agent revision names, and put the connection in the revision's mcp_connections rider.
 	connBody := []byte(`{"name":"` + mcpConnName + `","transport":"stdio","config":{"image_digest":"` + fixtureImage + `","cmd":["/mcp"]}}`)
-	conn, err := reg.CreateMCPConnection(ctx, org, project, connBody)
+	conn, err := reg.CreateMCPConnection(ctx, project, connBody)
 	if err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
-	if _, err := reg.DiscoverConnection(ctx, org, project, conn.ID); err != nil {
+	if _, err := reg.DiscoverConnection(ctx, project, conn.ID); err != nil {
 		t.Fatalf("discover connection: %v", err)
 	}
 	revID := latestMCPRevisionID(t, pool, org, project, "mcp."+mcpConnName+".echo")
-	if _, _, err := reg.PublishToolRevision(ctx, org, project, revID, nil); err != nil {
+	if _, _, err := reg.PublishToolRevision(ctx, project, revID, nil); err != nil {
 		t.Fatalf("publish echo revision: %v", err)
 	}
-	set, err := reg.CreateToolSetRevision(ctx, org, project, "mcptools", []byte(`{"tools":[{"tool_revision_id":"`+revID+`"}]}`))
+	set, err := reg.CreateToolSetRevision(ctx, project, "mcptools", []byte(`{"tools":[{"tool_revision_id":"`+revID+`"}]}`))
 	if err != nil {
 		t.Fatalf("create set: %v", err)
 	}
-	if _, _, err := reg.PublishToolSetRevision(ctx, org, project, set.ID); err != nil {
+	if _, _, err := reg.PublishToolSetRevision(ctx, project, set.ID); err != nil {
 		t.Fatalf("publish set: %v", err)
 	}
-	execLive(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, published_at, tool_sets, mcp_connections)
-	                   VALUES ($1,$2,$3,$4,1,$5,clock_timestamp(),$6::jsonb,$7::jsonb)`,
-		arevID, org, project, profileID, liveModel(), `["`+set.ID+`"]`, `["`+conn.ID+`"]`)
-	execLive(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, agent_revision_id) VALUES ($1,$2,$3,$4,$5)`, runID, org, project, sessionID, arevID)
+	execLive(t, pool, `INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, published_at, tool_sets, mcp_connections)
+	                   VALUES ($1,$2,$3,1,$4,clock_timestamp(),$5::jsonb,$6::jsonb)`,
+		arevID, project, profileID, liveModel(), `["`+set.ID+`"]`, `["`+conn.ID+`"]`)
+	execLive(t, pool, `INSERT INTO runs (id, project_id, session_id, agent_revision_id) VALUES ($1,$2,$3,$4)`, runID, project, sessionID, arevID)
 
 	// A REAL provider run that ADVERTISES the discovered MCP tool and lets the model choose SPONTANEOUSLY
 	// (no ForceToolCall — the E12 T1 advertising path this task's SchemaResolved fallback makes possible).
@@ -182,8 +182,8 @@ func latestMCPRevisionID(t *testing.T, pool *pgxpool.Pool, org, project, canonic
 	var id string
 	err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT tr.id FROM tools t JOIN tool_revisions tr ON tr.tool_id=t.id
-		 WHERE t.canonical_name=$1 AND t.organization_id=$2 AND t.project_id=$3
-		 ORDER BY tr.revision_number DESC LIMIT 1`, canonical, org, project).Scan(&id)
+		 WHERE t.canonical_name=$1  t.project_id=$2
+		 ORDER BY tr.revision_number DESC LIMIT 1`, canonical, project).Scan(&id)
 	if err != nil {
 		t.Fatalf("read latest revision id for %s: %v", canonical, err)
 	}

@@ -106,7 +106,7 @@ func TestLiveArtifactRetrievalOverAPI(t *testing.T) {
 		t.Fatalf("EnsureBucket() error = %v", err)
 	}
 	pool := repo.Spine().Pool()
-	org, project, runID := seedRun(t, pool)
+	project, runID := seedRun(t, pool)
 	art, err := artifacts.NewWriter(s3, pool).Write(ctx, artifacts.WriteRequest{
 		Project: project, RunID: runID, Content: produced,
 		MediaType: "text/plain", LogicalType: "log",

@@ -124,7 +124,7 @@ func TestLiveArtifactWriteRealProviderRun(t *testing.T) {
 	}
 	pool := repo.Spine().Pool()
 	writer := artifacts.NewWriter(s3, pool)
-	org, project, runID := seedRun(t, pool)
+	project, runID := seedRun(t, pool)
 
 	art, err := writer.Write(ctx, artifacts.WriteRequest{Project: project, RunID: runID, Content: output})
 	if err != nil {
@@ -132,7 +132,7 @@ func TestLiveArtifactWriteRealProviderRun(t *testing.T) {
 	}
 
 	// 3. Read it back from the real object store and prove row + bytes + checksum agree.
-	gotArt, body, found, err := writer.Read(ctx, org, project, art.ID)
+	gotArt, body, found, err := writer.Read(ctx, project, art.ID)
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
@@ -169,17 +169,18 @@ func TestLiveArtifactWriteRealProviderRun(t *testing.T) {
 		safePrefix(res.ProviderRequestID), art.ID, art.SizeBytes, art.Checksum, endpoint)
 }
 
-// seedRun creates org -> project -> session -> run so the artifacts row's foreign keys hold.
-func seedRun(t *testing.T, pool *pgxpool.Pool) (org, project, runID string) {
+// seedRun creates project -> session -> run so the artifacts row's foreign keys hold. A.2 took the
+// organization out of the chain: `projects` no longer carries an organization_id anybody writes, so the
+// organizations row this used to mint referenced nothing and is gone rather than left as an orphan.
+func seedRun(t *testing.T, pool *pgxpool.Pool) (project, runID string) {
 	t.Helper()
-	org, project = newID("org"), newID("prj")
+	project = newID("prj")
 	session := newID("ses")
 	runID = newID("run")
-	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, org, project)
-	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id) VALUES ($1, $2, $3, $4)`, runID, org, project, session)
-	return org, project, runID
+	execSQL(t, pool, `INSERT INTO projects (id) VALUES ($1)`, project)
+	execSQL(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, session, project)
+	execSQL(t, pool, `INSERT INTO runs (id, project_id, session_id) VALUES ($1, $2, $3)`, runID, project, session)
+	return project, runID
 }
 
 func execSQL(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {

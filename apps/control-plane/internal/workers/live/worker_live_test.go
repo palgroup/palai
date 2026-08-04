@@ -73,7 +73,7 @@ const secretMarker = "LIVE-SECRET-do-not-leak-4b7e21"
 
 type fakeSecrets struct{ vals map[string]string }
 
-func (f fakeSecrets) Resolve(_ context.Context, _ string, name string) ([]byte, bool, error) {
+func (f fakeSecrets) Resolve(_ context.Context, name string) ([]byte, bool, error) {
 	v, ok := f.vals[name]
 	return []byte(v), ok, nil
 }
@@ -87,7 +87,7 @@ func seedTenant(t *testing.T, cs *coordinator.Store) workers.Tenant {
 	if _, err := cs.Pool().Exec(ctx, `INSERT INTO organizations (id) VALUES ($1)`, org); err != nil {
 		t.Fatalf("seed org: %v", err)
 	}
-	if _, err := cs.Pool().Exec(ctx, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org); err != nil {
+	if _, err := cs.Pool().Exec(ctx, `INSERT INTO projects (id) VALUES ($1)`, project); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 	return workers.Tenant{Project: project}
