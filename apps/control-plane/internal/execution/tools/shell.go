@@ -26,14 +26,19 @@ func ShellTool() toolbroker.Tool {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"argv":  map[string]any{"description": "command and arguments as a JSON array of strings"},
-				"shell": map[string]any{"description": "run through a shell for pipelines/redirection (default false)"},
+				// THE TYPES ARE DECLARED, NOT DESCRIBED (2026-08-04). Until the broker's validator learned
+				// `array` and `boolean` it REFUSED both — `unsupported schema type` — so these three fields
+				// shipped with no type at all and the sentences below were the only thing standing between
+				// the model and a malformed call. A validator that rejects what it cannot check is right;
+				// the cost of the missing cases landed here instead.
+				"argv":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "command and arguments as a JSON array of strings"},
+				"shell": map[string]any{"type": "boolean", "description": "run through a shell for pipelines/redirection (default false)"},
 				// BACKGROUND IS A PARAMETER, NOT A SECOND TOOL, and that is taken verbatim from the harness
 				// this replicates: "Claude can set run_in_background: true to start the command as a background
 				// task and continue working while it runs" (E26 §3.5 P1). One tool, one extra field, and the
 				// model chooses per call — a separate `shell_background` tool would have made the choice a
 				// question of which tool to reach for rather than one of how long the command takes.
-				"background": map[string]any{"description": "start the command as a background task and return immediately with {task_id, output_path, status} instead of the command's output; read output_path with palai.workspace.file to see how it is going, and palai.workspace.background_kill to stop it (default false)"},
+				"background": map[string]any{"type": "boolean", "description": "start the command as a background task and return immediately with {task_id, output_path, status} instead of the command's output; read output_path with palai.workspace.file to see how it is going, and palai.workspace.background_kill to stop it (default false)"},
 			},
 			"required": []any{"argv"},
 		},

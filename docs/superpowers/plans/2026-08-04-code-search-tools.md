@@ -299,6 +299,17 @@ git commit -m "fix(tools): the shell schema declares its types instead of descri
 
 ---
 
+### Task 2 sweep result (measured 2026-08-04, after the shell fix landed)
+
+`grep -rn 'map\[string\]any{"description"' apps/control-plane/internal/execution/tools/*.go` — seven properties still declare a description and no type, in two tools this plan does not own:
+
+- `pull_request.go:25-26` — `title`, `body`; both plainly `string`.
+- `task.go:35-39` — `action`, `key`, `title`, `status`, `detail`. **`status` is an enum in prose**: its description reads `open | in_progress | done | canceled`, which is now declarable and is exactly the near-miss case the validator's enum arm catches. `detail` is described as "optional metadata object".
+
+Left untouched deliberately: `palai.task`/`palai.todo` are **not registered in `toolbroker.New`** (measured in the default-tool-set plan), so typing their schema changes nothing a model can reach today. Wiring those tools and typing their fields belong together, in whichever task claims them.
+
+---
+
 ## Task 3: `WorkspaceOps.Glob` — protocol, interface, both implementations
 
 A workspace op touches five points. This task does all five for Glob, because a protocol constant with no handler, or an interface method with one implementation, is not shippable in halves.
