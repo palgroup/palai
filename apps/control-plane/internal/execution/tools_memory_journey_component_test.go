@@ -231,6 +231,19 @@ func TestToolsMemoryJourney(t *testing.T) {
 	// The payload is the attack in as few words as it takes: an instruction, a tool it wants advertised, and
 	// a tenant it would rather run in. None of them is a field anything reads — that is the point, and it is
 	// asserted rather than assumed.
+	// The run's identity BEFORE the external result, so the comparison below is against what this run
+	// actually was rather than against a constant. The revision half is read here for a reason: it is
+	// step 4's third claim ("on its own revision") and until 2026-08-04 nothing measured it — the read
+	// after the result scanned agent_revision_id into a variable and never compared it, so a result that
+	// re-pinned the run would have passed.
+	var revisionBefore string
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
+		`SELECT COALESCE(agent_revision_id,'') FROM runs WHERE id=$1`, runID).Scan(&revisionBefore); err != nil {
+		t.Fatalf("read the run's revision before the external result: %v", err)
+	}
+	if revisionBefore == "" {
+		t.Fatal("the run pins no agent revision, so the revision half of step 4 would be vacuous")
+	}
 	extCall := redeliveryID("tc")
 	if err := orch.dispatchTool(ctx, st, toolRequestFrame(extCall, "ext_issue", map[string]any{"key": "PAL-42"})); err != nil {
 		t.Fatalf("dispatch the external tool: %v", err)
@@ -246,14 +259,20 @@ func TestToolsMemoryJourney(t *testing.T) {
 			authorityGained++ // the result ADVERTISED a tool
 		}
 	}
-	var org, project, revision string
+	// THE TENANT IS THE PROJECT — `organization_id` left this SELECT with the column, and nothing is
+	// lost by that: the org half was scanned into a variable this test never compared, while project_id
+	// is the boundary the claim was always about.
+	var project, revision string
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT organization_id, project_id, COALESCE(agent_revision_id,'') FROM runs WHERE id=$1`, runID).
-		Scan(&org, &project, &revision); err != nil {
+		`SELECT project_id, COALESCE(agent_revision_id,'') FROM runs WHERE id=$1`, runID).
+		Scan(&project, &revision); err != nil {
 		t.Fatalf("read the run's identity after the external result: %v", err)
 	}
 	if project != tenant.Project {
 		authorityGained++ // the result chose a tenant
+	}
+	if revision != revisionBefore {
+		authorityGained++ // the result re-pinned the run's agent revision
 	}
 	var approvals int
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),

@@ -75,8 +75,12 @@ func publicationCount(t *testing.T, h *publishHarness) int {
 // credential of its own and the deployment has no App, so there is nothing to publish under.
 func TestPublicationRefusedBeforeAHumanIsAsked(t *testing.T) {
 	h := newPublishHarness(t)
+	// The workspace is BOUND — root and ops both, which is what bound means since A.3 T5. This test is
+	// about the CREDENTIAL precheck, and an env carrying only a root refuses one guard earlier, for the
+	// workspace, so every assertion below would be measuring the wrong refusal.
 	env := toolbroker.ExecEnv{
 		WorkspaceRoot: h.root,
+		Workspace:     tools.LocalWorkspace(h.root),
 		Publications:  prechecked(h, appLessPublisher(t)),
 		Scope: toolbroker.TaskScope{
 			Project:   h.tenant.Project,
@@ -146,6 +150,7 @@ func TestPublicationAcceptedWhenTheBindingCarriesItsOwnCredential(t *testing.T) 
 
 	env := toolbroker.ExecEnv{
 		WorkspaceRoot: h.root,
+		Workspace:     tools.LocalWorkspace(h.root),
 		Publications:  prechecked(h, appLessPublisher(t)),
 		Scope: toolbroker.TaskScope{
 			Project:   h.tenant.Project,

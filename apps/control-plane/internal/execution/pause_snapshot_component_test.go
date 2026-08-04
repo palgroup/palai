@@ -150,8 +150,8 @@ func TestPauseCheckpointCarriesBoundarySnapshot(t *testing.T) {
 	}
 	// A manifest-only snapshot (E09 shape, no bytes) is NOT restorable — the ladder rejects it.
 	manifestOnly := redeliveryID("snap")
-	execSQL(t, pool, `INSERT INTO workspace_snapshots (id, workspace_id, allocation_id, organization_id, project_id, fencing_token, tree_checksum)
-		SELECT $1, a.workspace_id, a.id, a.organization_id, a.project_id, a.fence, 'sha256:x'
+	execSQL(t, pool, `INSERT INTO workspace_snapshots (id, workspace_id, allocation_id, project_id, fencing_token, tree_checksum)
+		SELECT $1, a.workspace_id, a.id, a.project_id, a.fence, 'sha256:x'
 		FROM workspace_allocations a WHERE a.workspace_id=$2 ORDER BY a.fence DESC LIMIT 1`, manifestOnly, workspaceID)
 	if restorable, err := o.workspaceRestorable(ctx, tenant, manifestOnly); err != nil || restorable {
 		t.Fatalf("workspaceRestorable(manifest-only) = %v, %v; want false", restorable, err)

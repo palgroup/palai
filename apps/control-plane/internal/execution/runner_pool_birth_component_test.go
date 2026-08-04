@@ -55,8 +55,7 @@ type birthFixture struct {
 	server *httptest.Server
 	admin  string // provision + approve
 	runKey string // run only — the capability gate's negative side
-	org    string
-	prj    string
+	prj    string // THE tenant id: `org` was removed with the column and the last reader of it below
 }
 
 func newBirthFixture(t *testing.T) *birthFixture {
@@ -516,7 +515,7 @@ func TestPoolBirthIsProvisionGatedAndTenantScoped(t *testing.T) {
 		}
 	}
 
-	// THE FOREIGN TENANT. A second fixture is a second organization with its own key against the SAME
+	// THE FOREIGN TENANT. A second fixture is a second project with its own key against the SAME
 	// database, which is the shape a shared component database makes easy to get wrong: an assertion that
 	// swept every tenant would pass here for the wrong reason, so both directions name the id.
 	stranger := newBirthFixture(t)
@@ -538,14 +537,21 @@ func TestPoolBirthIsProvisionGatedAndTenantScoped(t *testing.T) {
 		t.Fatal("a foreign tenant's PATCH answered 404 and opened the waiting room anyway")
 	}
 	// And a stranger's create lands in the STRANGER's tenant, not in a tenant they named.
+	//
+	// THE TENANT IS THE PROJECT. This read named `organization_id` and compared it to `stranger.org`,
+	// and both halves stopped meaning anything when the organizations table went: the column no longer
+	// exists, and the fixture field had already lost its only assignment — so the comparison's right-hand
+	// side was the empty string. The claim itself is untouched by that removal and is the reason this
+	// test's name ends "AndTenantScoped", so it is re-expressed against the boundary that survives rather
+	// than dropped with the column that carried it.
 	strangerPool := stranger.createPool(t, "mine", "sandboxed-linux", false)
 	var owner string
 	if err := b.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT organization_id FROM runner_pools WHERE id = $1`, strangerPool["id"]).Scan(&owner); err != nil {
+		`SELECT project_id FROM runner_pools WHERE id = $1`, strangerPool["id"]).Scan(&owner); err != nil {
 		t.Fatalf("read the stranger's pool: %v", err)
 	}
-	if owner != stranger.org {
-		t.Fatalf("a create by %s landed in organization %s", stranger.org, owner)
+	if owner == "" || owner != stranger.prj {
+		t.Fatalf("a create by %s landed in project %q, want the creator's own %q", stranger.prj, owner, stranger.prj)
 	}
 }
 

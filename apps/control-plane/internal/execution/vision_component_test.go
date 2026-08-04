@@ -131,25 +131,49 @@ func TestDispatchResolvesAnImageRefIntoTheProviderRequest(t *testing.T) {
 		t.Fatalf("provider requests = %d, want 1", len(routed))
 	}
 	// The system turn is untouched, and the user turn carries the words plus the BYTES.
+	//
+	// THE TURN IS FOUND BY ROLE, NOT BY INDEX, and that is a correction rather than a style choice. This
+	// asserted `len(msgs) == 2` and then read msgs[0]/msgs[1], which made it a test of the message COUNT
+	// as much as of the image — so applyInstructionLayers inserting §25.12's unconditional platform layer
+	// reddened it with a number, for a change that has nothing to do with images. A vision proof must not
+	// be a tripwire on how many system turns the control plane prepends; what it owns is that the system
+	// run stays image-free and the USER turn carries the words and the bytes.
 	msgs := routed[0].Messages
-	if len(msgs) != 2 {
-		t.Fatalf("routed messages = %d (%+v), want 2", len(msgs), msgs)
+	var user *modelbroker.Message
+	users := 0
+	for i := range msgs {
+		switch msgs[i].Role {
+		case "user":
+			users++
+			user = &msgs[i]
+		case "system":
+			if len(msgs[i].Images) != 0 {
+				t.Fatalf("system turn = %+v, want it image-free", msgs[i])
+			}
+		default:
+			t.Fatalf("routed a %q turn (%+v), want only system turns and one user turn", msgs[i].Role, msgs)
+		}
 	}
-	if msgs[0].Content != "kernel instructions" || len(msgs[0].Images) != 0 {
-		t.Fatalf("system turn = %+v, want it unchanged and image-free", msgs[0])
+	if users != 1 {
+		t.Fatalf("routed %d user turns (%+v), want exactly 1", users, msgs)
 	}
-	if msgs[1].Content != "ne yazıyor burada" {
-		t.Fatalf("user content = %q, want the human's words — NOT the serialised array the old path produced", msgs[1].Content)
+	// The engine's own leading system turn passes through verbatim — the instruction layers are inserted
+	// AFTER the leading system run, never in place of it.
+	if msgs[0].Content != "kernel instructions" {
+		t.Fatalf("first system turn = %q, want the engine's own \"kernel instructions\" unchanged", msgs[0].Content)
 	}
-	if len(msgs[1].Images) != 1 {
-		t.Fatalf("user images = %d, want the resolved image", len(msgs[1].Images))
+	if user.Content != "ne yazıyor burada" {
+		t.Fatalf("user content = %q, want the human's words — NOT the serialised array the old path produced", user.Content)
 	}
-	if got := msgs[1].Images[0]; got.MediaType != "image/png" || string(got.Data) != "PNGSCREENSHOT" {
+	if len(user.Images) != 1 {
+		t.Fatalf("user images = %d, want the resolved image", len(user.Images))
+	}
+	if got := user.Images[0]; got.MediaType != "image/png" || string(got.Data) != "PNGSCREENSHOT" {
 		t.Fatalf("routed image = %+v, want the resolved png bytes", got)
 	}
 	// The artifact id must never appear in what the model reads: it is internal scope.
-	if strings.Contains(msgs[1].Content, artifactID) {
-		t.Fatalf("user content %q carries the artifact id", msgs[1].Content)
+	if strings.Contains(user.Content, artifactID) {
+		t.Fatalf("user content %q carries the artifact id", user.Content)
 	}
 
 	// THE TENANT BINDING: the read was scoped to the run's own org/project, taken from the attempt and not
@@ -214,10 +238,23 @@ func TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing(t *testing.T) {
 		t.Fatalf("dispatchModel: %v", err)
 	}
 	routed := adapter.requests()
-	if len(routed) != 1 || len(routed[0].Messages) != 1 {
-		t.Fatalf("routed = %+v, want one message", routed)
+	if len(routed) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(routed))
 	}
-	msg := routed[0].Messages[0]
+	// BY ROLE, NOT BY INDEX — the same correction as the test above: this read Messages[0] behind a
+	// `len(...) != 1` guard, so §25.12's platform instruction layer reddened an image assertion by
+	// occupying the slot it indexed. What this test owns is the USER turn.
+	var msg *modelbroker.Message
+	users := 0
+	for i := range routed[0].Messages {
+		if routed[0].Messages[i].Role == "user" {
+			users++
+			msg = &routed[0].Messages[i]
+		}
+	}
+	if users != 1 {
+		t.Fatalf("routed %d user turns (%+v), want exactly 1", users, routed[0].Messages)
+	}
 	if len(msg.Images) != 0 {
 		t.Fatalf("images = %+v, want none with no reader wired", msg.Images)
 	}

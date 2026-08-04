@@ -271,9 +271,17 @@ func (h *publishHarness) wireSlack(t *testing.T, cs *coordinator.Store) (*extens
 
 // execEnv is the per-call environment the orchestrator hands a tool: this run's scope, this attempt's
 // workspace, and the REAL publication registry.
+//
+// IT CARRIES ITS OWN WorkspaceOps, and the pair is what a bound workspace IS since A.3 T5: a root AND
+// something that can reach it. The production seam picks the second from the attempt's connection
+// (execEnv -> workspaceOpsFor), and this harness holds no connection, so it states the local answer
+// explicitly — the same substitution tools/*_test.go make, and the rule this tree wrote down after four
+// proofs turned out to be properties of their harness. A root alone made all three publication tests
+// here refuse for the WORKSPACE before they reached the claim they exist to make.
 func (h *publishHarness) execEnv() toolbroker.ExecEnv {
 	return toolbroker.ExecEnv{
 		WorkspaceRoot: h.root,
+		Workspace:     tools.LocalWorkspace(h.root),
 		Publications:  newPublicationRegistry(h.spine, nil),
 		Scope: toolbroker.TaskScope{
 			Project:   h.tenant.Project,
