@@ -108,13 +108,24 @@ func TestArgumentSummaryRedactsSecretShapes(t *testing.T) {
 // TestArgumentSummaryRedactsBeforeItTruncates is the ordering guard, and it is the reason the two steps
 // are not interchangeable: truncating first can leave `sk-abc`, a prefix too short for the `{6,}`
 // quantifier to match, and ship a partial credential the redactor would have caught at full length.
+// THE OFFSET IS THE TEST. A first version of this padded to ArgumentSummaryLimit-10 and stayed GREEN
+// under the reversed order, because the cut left TWELVE characters of the secret — `sk-live-abcd`, which
+// `sk-[A-Za-z0-9._-]{6,}` still matches, so the late redactor caught it anyway and the ordering made no
+// difference. The hazard is the surviving prefix that is too SHORT to match: `keep` is chosen so the cut
+// leaves `sk-live`, four characters past `sk-` where the quantifier wants six.
 func TestArgumentSummaryRedactsBeforeItTruncates(t *testing.T) {
-	// A secret positioned so that the cut lands INSIDE it.
-	prefix := strings.Repeat("a", ArgumentSummaryLimit-10)
-	args := `{"argv":["echo","` + prefix + `","sk-live-abcdef0123456789"]}`
+	const keep = 7 // "sk-live" — under the {6,} threshold, so a late redactor cannot see it
+	pad := ArgumentSummaryLimit - len(argumentSummaryEllipsis) - len("echo ") - 1 - keep
+	args := `{"argv":["echo","` + strings.Repeat("a", pad) + `","sk-live-abcdef0123456789"]}`
+
 	got := ArgumentSummary("palai.workspace.shell", []byte(args))
 	if strings.Contains(got, "sk-live") {
-		t.Fatalf("a secret straddling the truncation boundary survived as a prefix: %q", got)
+		t.Fatalf("a secret straddling the truncation boundary survived as an unmatchable prefix: %q", got)
+	}
+	// Non-vacuity: the fixture must actually REACH the boundary, or this proves nothing. Redact-first
+	// collapses the secret to *** and the line lands under the ceiling untruncated.
+	if !strings.Contains(got, "***") {
+		t.Fatalf("the fixture never reached the redactor at all: %q", got)
 	}
 }
 
