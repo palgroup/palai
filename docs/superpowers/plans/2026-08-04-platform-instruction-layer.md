@@ -309,6 +309,22 @@ git commit -m "test(execution): the platform layer's bytes reach the model reque
 
 ---
 
+## §4.5 — Execution record (2026-08-04)
+
+**Shipped in 2 commits: `b1d17575` (layer + text) and `ea637cf0` (the seam test).**
+
+Tasks 1 and 2 landed together rather than separately, because they cannot be split as written: Task 1's own test asserts `layers[0].Text != ""`, so the layer does not compile green without the text Task 2 supplies. The plan's task boundary was wrong; the work was not.
+
+**Where it went:** layer 1 now has two writers, and the file's header says so. The engine keeps `KERNEL_INSTRUCTION` (its identity and protocol rules); the control plane adds `platformInstructions` (how to work). The split is along the line that decides ownership — a second engine carries its own identity and still needs the same discipline.
+
+**Perturbations observed RED, then restored:**
+- A tool name added to the text → `TestThePlatformTextNamesNoTool` failed naming the `palai.*` identifier.
+- The platform layer removed from the resolver → **two** guards failed: the seam test (`got 2 system turns, want the kernel turn + platform + revision`) and the unconditional-presence test (`got 0 layers`).
+
+**Measured after:** `apps/control-plane/internal/execution` and `.../tools` both `ok`. `go vet -tags="component live security" ./...` exits 1 with 10 errors, **zero of them in files this plan touched** — they are the concurrent org/tenancy refactor's tagged callers, down from 17 earlier the same day.
+
+---
+
 ## §5 — Definition of done
 
 - [ ] A `platform` layer resolves **unconditionally**, leads the layer slice, and appears exactly once
