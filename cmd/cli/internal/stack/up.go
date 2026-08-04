@@ -258,9 +258,12 @@ func Bootstrap(envFile string, native bool) error {
 	}
 	// THE WARNING SURVIVES THE WRITE, and it is not belt-and-braces: it reads the server again, so it is
 	// the only thing that speaks when the grant above did NOT land. The grant stands down silently in
-	// three cases — the read failed, the PATCH failed, or the project already grants tools — and in the
-	// first two the baseline is still empty. This check is what tells the operator so, with the command
-	// that fixes it by hand.
+	// three cases — the read failed, the PATCH failed, or the project already grants tools. When the
+	// server can still be read, this check tells the operator the baseline is empty, with the command
+	// that fixes it by hand. When the read itself failed, the baseline's state is unknown rather than
+	// empty — and in the likely-correlated case, an unreachable server, this warning's own read fails the
+	// same way and returns "" by design (see emptyToolBaselineWarning), so nothing tells the operator at
+	// all.
 	warns = appendWarn(warns, api.emptyToolBaselineWarning())
 	// WHAT THE FLEET IS DOING (E24 T6), on the report rather than in a warning: a machine held in a strict
 	// pool's waiting room is a machine an operator will otherwise read as broken.
@@ -1432,7 +1435,7 @@ func policyWithDefaultTools(existing map[string]any, tools []string) map[string]
 //
 // IT JUDGES THE VALUE, NOT THE KEY'S PRESENCE, and that distinction is load-bearing in both directions.
 // `configPolicyInput` marshals its slices without omitempty (apps/control-plane/internal/identity/
-// store.go:559-565), so a policy written for `pool` alone still stores `"default_tools":null` — the key
+// store.go:558-564), so a policy written for `pool` alone still stores `"default_tools":null` — the key
 // is there and grants nothing. And the value arrives from a JSON decode into map[string]any, so a
 // populated list is []any of string and never []string; a type assertion to the Go type would be false
 // on every real policy and overwrite the operator's list on every bring-up.
