@@ -149,6 +149,52 @@ const nativeControllerDNS = "control-plane"
 //
 // The group matters more here than it does for the control plane: since A.3 this process is the one that
 // spawns `xcodebuild`, so a teardown that signalled one pid would leave a compiler running.
+// agentUserEnv names the macOS account the runner — and therefore every tool command — should run as,
+// empty meaning "the same account as everything else" (today's behaviour).
+const agentUserEnv = "PALAI_AGENT_USER"
+
+// runnerArgv builds the argv that starts the runner, wrapping it in `sudo -u` when a separate agent
+// account is configured.
+//
+// WHY THE RUNNER IS THE RIGHT PROCESS TO SPLIT OFF, measured 2026-08-05. A synchronous tool command no
+// longer runs in the control plane — A.3 moved it to the machine holding the attempt's lease, which is
+// this process. And the runner needs remarkably little: PALAI_WORKSPACE_ROOT, its own
+// PALAI_ENROLLMENT_TOKEN_FILE, and PALAI_CONTROLLER_CA (a public certificate). It reads NONE of
+// .palai/api-key, .palai/secrets/master-key or .palai/ca/ca.key. So the uid boundary falls in a place
+// where the two sides genuinely need different things, which is the only place such a boundary holds.
+//
+// WHY A SEPARATE UID AND NOT A SANDBOX. docs/research/macos-isolation-without-accounts.md measured this
+// on this hardware and the answer is closed: CoreSimulatorService is a per-user launchd job, so
+// `simctl spawn` produces a child of launchd with no parent edge to inherit a sandbox along. seatbelt,
+// the App Sandbox and TCC were each escaped that way. The uid is the only boundary on the same axis as
+// the daemon.
+//
+// `sudo -n` — NEVER interactive. A bring-up that stops to ask for a password in the middle of starting
+// a background process is a hang, not a prompt, and the operator would see a stalled command with no
+// explanation. A missing sudoers rule fails fast with the rule that fixes it.
+func runnerArgv(bin string) ([]string, error) {
+	user := strings.TrimSpace(os.Getenv(agentUserEnv))
+	if user == "" {
+		return []string{bin}, nil
+	}
+	// A username is about to become part of a sudo argv. It comes from the operator's own environment
+	// rather than a network, so this is a typo guard rather than a trust boundary — but an argv is
+	// exactly where a typo becomes something else, so the shape is checked before it is used.
+	//
+	// A LEADING DASH IS REFUSED SEPARATELY, and the test found this rather than the author: every
+	// character of "-u" passes the class check below, and a value that reads as a FLAG in the position
+	// where sudo expects a name is the one typo worth naming on its own.
+	if strings.HasPrefix(user, "-") {
+		return nil, fmt.Errorf("%s=%q starts with a dash, which sudo would read as a flag rather than an account", agentUserEnv, user)
+	}
+	for _, r := range user {
+		if !(r == '-' || r == '_' || r == '.' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+			return nil, fmt.Errorf("%s=%q is not a plausible account name (lowercase letters, digits, - . _)", agentUserEnv, user)
+		}
+	}
+	return []string{"sudo", "-n", "-u", user, bin}, nil
+}
+
 func startNativeRunner(cfg Config, p paths, bin string, env []string) (int, error) {
 	if stopped, err := stopNativeRunner(p); err != nil {
 		return 0, err
@@ -160,7 +206,11 @@ func startNativeRunner(cfg Config, p paths, bin string, env []string) (int, erro
 		return 0, fmt.Errorf("open %s: %w", p.nativeRunnerLog, err)
 	}
 	defer log.Close()
-	cmd := exec.Command(bin)
+	argv, err := runnerArgv(bin)
+	if err != nil {
+		return 0, err
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = env
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
