@@ -128,8 +128,22 @@ func assertPublishedCase(t *testing.T, root, file string, r supersededRecord) {
 // assertSymbolGone sweeps the repository's SOURCE for the symbol the superseded reasoning rested on. It is
 // a walk rather than a list, because the thing being proven is an ABSENCE and a list only sees what it
 // already knows to look at.
+//
+// IT ASKS THE FILESYSTEM TOO, AND THAT SECOND QUESTION WAS ADDED BECAUSE A PERTURBATION STAYED GREEN.
+// Pointing `rested_on` at storage/migrations/000001_core.up.sql — a file that plainly exists — did not fail
+// this guard, because a repo-relative path is not a string any source file CONTAINS: embed.go writes it as
+// `migrations/000001_core.up.sql`, without the directory prefix the record uses. A text sweep alone can
+// therefore report "gone" about a file sitting on disk. When the symbol is path-shaped, its absence is a
+// question for the filesystem, and only os.Stat can answer it.
 func assertSymbolGone(t *testing.T, root, file string, r supersededRecord) {
 	t.Helper()
+	// Path-shaped: it names a directory and carries an extension. A Go identifier does neither.
+	if strings.Contains(r.RestedOn, "/") && filepath.Ext(r.RestedOn) != "" {
+		if _, err := os.Stat(filepath.Join(root, r.RestedOn)); err == nil {
+			t.Errorf("%s: claims the path %q is gone, but it exists in the working tree", file, r.RestedOn)
+			return
+		}
+	}
 	skipDir := map[string]bool{
 		".git": true, "node_modules": true, "evidence": true, ".next": true, "dist": true,
 	}
