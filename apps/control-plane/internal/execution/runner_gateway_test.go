@@ -833,7 +833,7 @@ func TestGatewayDrainWaitsForInFlightLease(t *testing.T) {
 		}
 		// Hold the lease until the gateway tears it down (Close), then report completion.
 		<-ctx.Done()
-		_ = lease.Complete(context.Background(), "succeeded", "")
+		_ = lease.Complete(context.Background(), "succeeded", "", "")
 	}()
 	ch, err := f.gateway.Dial(ctx, f.attempt("run_drain", "att_drain", 3))
 	if err != nil {
@@ -976,5 +976,5 @@ func runnerSide(ctx context.Context, session runner.Session) error {
 	if controllerFrame.Type != "run.start" {
 		return errors.New("runner did not receive the relayed run.start")
 	}
-	return lease.Complete(ctx, "succeeded", "sha256:redacted")
+	return lease.Complete(ctx, "succeeded", "", "sha256:redacted")
 }

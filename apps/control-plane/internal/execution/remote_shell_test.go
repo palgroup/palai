@@ -283,7 +283,7 @@ func TestRemoteShellAnswersWhenTheRelayEndsWhileNobodyIsReceiving(t *testing.T) 
 		}
 		// A lease that ends badly rather than a socket that drops: readLoop reports the outcome to the
 		// attempt on its way out, and that report is the send this ordering is about.
-		_ = lease.Complete(ctx, "failed", "sha256:redacted")
+		_ = lease.Complete(ctx, "failed", "the machine gave up on this lease", "sha256:redacted")
 	})
 
 	answered := make(chan error, 1)
@@ -301,6 +301,14 @@ func TestRemoteShellAnswersWhenTheRelayEndsWhileNobodyIsReceiving(t *testing.T) 
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("Run error = %v, want the lease's end rather than a deadline", err)
+		}
+		// AND IT SAYS WHY. Until 2026-08-04 the outcome CLASS was the whole of what crossed this wire, so
+		// an attempt learned `runner reported lease outcome "failed"` and nothing else — measured live, a
+		// stale engine-image pin (`No such image: sha256:8be1ff…`, in the machine's own log at that
+		// instant) reached the operator as advice to check their repository binding. The reason the
+		// machine had in hand must survive the wire, or the far end diagnoses the wrong thing.
+		if !strings.Contains(err.Error(), "the machine gave up on this lease") {
+			t.Fatalf("Run error = %v, want it to carry the machine's own reason for ending the lease", err)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not return when the relay ended — the reader is parked on a receiver that is " +

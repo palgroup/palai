@@ -126,7 +126,7 @@ func TestLeaseSessionRelaysFramesAndReportsOutcome(t *testing.T) {
 		t.Fatalf("relayed controller frame = %+v, want the model.result frame", controllerFrame)
 	}
 
-	if err := lease.Complete(ctx, "completed", "sha256:redacted"); err != nil {
+	if err := lease.Complete(ctx, "completed", "", "sha256:redacted"); err != nil {
 		t.Fatalf("complete lease: %v", err)
 	}
 	select {

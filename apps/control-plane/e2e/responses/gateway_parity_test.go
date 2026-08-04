@@ -327,7 +327,7 @@ func (p *parityGateway) supervise(ctx context.Context, t *testing.T, image strin
 
 	// The controller already terminated the run on the run.terminal engine frame; the
 	// lease.complete is best-effort (the gateway may have torn the socket down first).
-	_ = lease.Complete(ctx, outcomeClass(streamErr), "sha256:parity")
+	_ = lease.Complete(ctx, outcomeClass(streamErr), errorReason(streamErr), "sha256:parity")
 	return gatewayLoopResult{runnerErr: streamErr, frames: recorder.snapshot(), stderr: result.Stderr}
 }
 
@@ -342,6 +342,15 @@ func outcomeClass(err error) string {
 	default:
 		return "failed"
 	}
+}
+
+// errorReason mirrors cmd/runner's reason field on lease.complete: the machine's own sentence about why
+// the lease ended, empty when it ended cleanly.
+func errorReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // parityCA is the in-test control-plane CA for the parity gateway.

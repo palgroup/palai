@@ -267,17 +267,50 @@ func (l *LeaseSession) SendExecResult(ctx context.Context, message contracts.Run
 	return l.write(writeCtx, message.Type, message.Data)
 }
 
-// Complete reports the terminal outcome class and the redacted stderr digest in a
-// lease.complete message, then closes the connection.
-func (l *LeaseSession) Complete(ctx context.Context, outcome string, stderrDigest string) error {
+// Complete reports the terminal outcome class, the machine's own reason for it, and the redacted
+// stderr digest in a lease.complete message, then closes the connection.
+//
+// THE REASON EXISTS BECAUSE THE OUTCOME CLASS IS NOT ONE, and the cost was measured on a live stack on
+// 2026-08-04. A run failed with the control plane telling its operator: "the run's repository workspace
+// could not be prepared: ask the machine to clone the workspace: runner reported lease outcome
+// \"failed\". Check the binding's clone_url and default branch, and whether a private repository needs a
+// connection_ref." Nothing was wrong with the binding. This machine's own log, at the same instant, said
+// `inspect engine image: Error response from daemon: No such image: sha256:8be1ff…` — the pinned engine
+// image had been rebuilt out from under the control plane's PALAI_ENGINE_IMAGE. The sentence that would
+// have ended the investigation existed, on this side of the wire, and the wire carried three words of it.
+//
+// WHAT MAY TRAVEL, stated because the tree's rule is real: this is the RUNNER's own sentence about its own
+// infrastructure — a Docker daemon answer, a bound it enforced, a handshake it timed out — the same class
+// as the git stderr failProvisioning already puts in a problem document. It is NOT engine output and NOT
+// provider text: the engine's own bytes leave here as `stderr_digest`, hashed, exactly as before. It is
+// bounded at maxLeaseReason and flattened to one line HERE rather than at a reader, so no reader can be
+// the one that forgets.
+func (l *LeaseSession) Complete(ctx context.Context, outcome, reason, stderrDigest string) error {
 	// Bound the terminal write so a control plane that stopped reading cannot wedge the
 	// serve loop at completion; the connection is torn down regardless.
 	writeCtx, cancel := context.WithTimeout(ctx, dialHandshakeDeadline)
 	defer cancel()
-	err := l.write(writeCtx, "lease.complete", map[string]any{"outcome": outcome, "stderr_digest": stderrDigest})
+	err := l.write(writeCtx, "lease.complete", map[string]any{
+		"outcome": outcome, "reason": boundedLeaseReason(reason), "stderr_digest": stderrDigest,
+	})
 	_ = l.conn.Close(websocket.StatusNormalClosure, "lease complete")
 	l.transport.CloseIdleConnections()
 	return err
+}
+
+// maxLeaseReason bounds the reason a lease completion carries. A supervisor error is one sentence with a
+// wrapped cause or two; anything longer is a surprise, and the far end puts this into a log line and a
+// problem document that an operator reads in a terminal.
+const maxLeaseReason = 512
+
+// boundedLeaseReason flattens a reason to one bounded line. Empty in, empty out — a succeeded lease has
+// no reason and must not gain a field that reads as a blank one.
+func boundedLeaseReason(reason string) string {
+	flat := strings.Join(strings.Fields(reason), " ")
+	if len(flat) > maxLeaseReason {
+		flat = flat[:maxLeaseReason] + "…"
+	}
+	return flat
 }
 
 // Close tears the lease connection down without reporting an outcome — an aborted lease.

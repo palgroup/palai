@@ -1798,7 +1798,7 @@ func (g *RunnerGateway) readLoop(pr *pendingRunner) {
 			}
 		case "lease.complete":
 			if outcome, _ := message.Data["outcome"].(string); outcome != "succeeded" {
-				gc.failRelay(fmt.Errorf("runner reported lease outcome %q", outcome))
+				gc.failRelay(leaseOutcomeError(outcome, message.Data))
 				return
 			}
 			gc.closeFrames() // succeeded → close frames → Receive sees io.EOF
@@ -1962,6 +1962,25 @@ func (c *gatewayChannel) failRelay(err error) {
 	c.closeAllPending(err)
 	c.emit(relayRead{err: err})
 	c.closeFrames()
+}
+
+// leaseOutcomeError turns a non-succeeded lease.complete into the error every waiter on this lease sees.
+//
+// IT CARRIES THE MACHINE'S OWN SENTENCE WHEN THERE IS ONE, and that is the whole of the change. This
+// error is what a provisioning failure renders into the operator's problem document — measured on a live
+// stack on 2026-08-04, an operator was told "ask the machine to clone the workspace: runner reported
+// lease outcome \"failed\". Check the binding's clone_url…" while the machine's own log said `inspect
+// engine image: … No such image: sha256:8be1ff…`. The binding was fine; the control plane's pinned
+// PALAI_ENGINE_IMAGE had been rebuilt out from under it, and the sentence that says so existed one
+// process away.
+//
+// A runner too old to send `reason` (or one that failed without a sentence) still produces the original
+// wording, so this is additive: the class alone remains a complete, if unhelpful, answer.
+func leaseOutcomeError(outcome string, data map[string]any) error {
+	if reason, _ := data["reason"].(string); reason != "" {
+		return fmt.Errorf("runner reported lease outcome %q: %s", outcome, reason)
+	}
+	return fmt.Errorf("runner reported lease outcome %q", outcome)
 }
 
 // emit hands one read to Receive and NEVER PARKS THIS GOROUTINE (A.3 — see relayBacklog). readLoop is

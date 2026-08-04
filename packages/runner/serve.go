@@ -499,7 +499,7 @@ func serveLease(ctx context.Context, supervisor *StreamSupervisor, leaseSession 
 	// bind-mounts this path into the engine, and a ws.request can arrive the instant the relay starts.
 	if dir, err := openLeaseWorkspace(lease, allocationRoot, allowUnsafeBind); err != nil {
 		logf("reject lease %s: %v", lease.LeaseID, err)
-		if cerr := leaseSession.Complete(ctx, "failed", ""); cerr != nil {
+		if cerr := leaseSession.Complete(ctx, "failed", err.Error(), ""); cerr != nil {
 			logf("report rejected lease completion for run %s: %v", lease.RunID, cerr)
 		}
 		return
@@ -520,7 +520,7 @@ func serveLease(ctx context.Context, supervisor *StreamSupervisor, leaseSession 
 	// guard held.
 	if err := admitWorkspaceMount(lease, allocationRoot, allowUnsafeBind); err != nil {
 		logf("reject lease %s: %v", lease.LeaseID, err)
-		if cerr := leaseSession.Complete(ctx, "failed", ""); cerr != nil {
+		if cerr := leaseSession.Complete(ctx, "failed", err.Error(), ""); cerr != nil {
 			logf("report rejected lease completion for run %s: %v", lease.RunID, cerr)
 		}
 		return
@@ -556,7 +556,12 @@ func serveLease(ctx context.Context, supervisor *StreamSupervisor, leaseSession 
 		WorkspaceReadOnly: lease.WorkspaceReadOnly,
 	}, inbound, sink)
 
-	if err := leaseSession.Complete(ctx, OutcomeClass(streamErr), stderrDigest(result.Stderr)); err != nil {
+	// THE REASON GOES WITH THE OUTCOME, not only into this machine's log. `streamErr` is what the two log
+	// lines below have always printed; until 2026-08-04 the control plane got the outcome CLASS and nothing
+	// else, so a stale engine-image pin reached the operator as "runner reported lease outcome \"failed\""
+	// with advice to check their repository binding. errorReason renders nil as "" — a succeeded lease
+	// carries no reason.
+	if err := leaseSession.Complete(ctx, OutcomeClass(streamErr), errorReason(streamErr), stderrDigest(result.Stderr)); err != nil {
 		logf("report lease completion for run %s: %v", lease.RunID, err)
 		return
 	}
@@ -755,6 +760,16 @@ func OutcomeClass(err error) string {
 	default:
 		return "failed"
 	}
+}
+
+// errorReason is the sentence that goes on the wire beside the outcome class. A nil error renders empty
+// rather than "<nil>": a succeeded lease has no reason, and a reader must be able to tell "it worked"
+// from "it failed and said nothing".
+func errorReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // stderrDigest is the content digest of the already-redacted stderr the runner reports on
