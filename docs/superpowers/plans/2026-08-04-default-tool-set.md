@@ -505,14 +505,15 @@ Reuse the CLI's existing request helper rather than building a fresh HTTP client
 
 - [ ] **Step 5: Keep the warning, and say why**
 
-Do NOT delete the warning at `:1417-1428`. Narrow its comment so a reader knows when it can still fire:
+Do NOT delete the warning. Narrow its comment so a reader knows when it can still fire.
 
-```go
-// THE WARNING SURVIVES THE WRITE, and that is not belt-and-braces: `palai up` writes the baseline for
-// the project it provisions (prj_local), and this check runs against whatever project the key
-// actually writes to. An operator pointed at a project this bring-up did not create still gets told,
-// and still gets the command that fixes it.
-```
+> **CORRECTED 2026-08-04, during execution.** This step originally supplied this comment text:
+>
+> > *"…this check runs against whatever project the key actually writes to. An operator pointed at a project this bring-up did not create still gets told."*
+>
+> **That was false and the implementer refused to write it.** `emptyToolBaselineWarning` contains `if p.ID != "prj_local" { continue }` (`up.go:1496-1499`), so it can never fire for another project. The sentence would have claimed a property the code does not have, on the exact line a reader would audit it — the defect this tree's CLAUDE.md records. Do not restore it.
+>
+> The accurate narrowing, and what the implementer wrote instead: the warning survives because it **re-reads the server after the write**, so it still fires when the grant stood down — the write failed, the project was absent, or an operator's own baseline was left in place.
 
 - [ ] **Step 6: Run the tests and the package**
 
