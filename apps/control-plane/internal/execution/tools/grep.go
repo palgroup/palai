@@ -33,7 +33,8 @@ func GrepTool() toolbroker.Tool {
 			"Results are capped and set `truncated` when the cap dropped entries — narrow the pattern " +
 			"rather than raising the cap. Use this when you know something about a file's CONTENTS; " +
 			"to find files by NAME, use the glob tool.",
-		ReplayClass: toolbroker.ClassPure, // reads contents, changes nothing
+		ReplayClass:  toolbroker.ClassPure,
+		ParallelSafe: true, // reads contents, changes nothing
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

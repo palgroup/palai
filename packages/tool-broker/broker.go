@@ -69,6 +69,16 @@ type Tool struct {
 	InputSchema  map[string]any
 	OutputSchema map[string]any
 	ReplayClass  ReplayClass
+	// ParallelSafe marks a tool that may run CONCURRENTLY with other parallel-safe tools in the same
+	// turn. It is a SEPARATE FIELD FROM ReplayClass on purpose, because that one answers a different
+	// question — what happens on replay — and the two disagree in both directions: `show_media` is
+	// ClassPure and still writes an artifact, while the file tool is ClassReversible (revertible via
+	// snapshot) and must never run beside another write to the same tree. Conflating them would fan
+	// out writes.
+	//
+	// THE ZERO VALUE IS SERIAL, which is the property that matters when a tool is added by someone who
+	// never read this comment.
+	ParallelSafe bool
 	Invoke       func(args map[string]any) (map[string]any, error)
 	Exec         func(ctx context.Context, env ExecEnv, args map[string]any) (map[string]any, error)
 	// ExternalKeyed marks a tool that sends a real EXTERNAL idempotency key for its side effect (the

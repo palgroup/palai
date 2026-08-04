@@ -30,7 +30,8 @@ func GlobTool() toolbroker.Tool {
 			"newest-modified first and capped, with a `truncated` flag when the cap dropped matches — " +
 			"narrow the pattern rather than raising the cap. Use this when you know something about a " +
 			"file's NAME; to search file CONTENTS, use the grep tool.",
-		ReplayClass: toolbroker.ClassPure, // reads names, changes nothing, safe to re-run on replay
+		ReplayClass:  toolbroker.ClassPure,
+		ParallelSafe: true, // reads names, changes nothing, safe to re-run on replay
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
