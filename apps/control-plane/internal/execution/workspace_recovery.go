@@ -167,18 +167,16 @@ func (r *WorkspaceRecovery) RecoverWorkspace(ctx context.Context, tenant coordin
 	return RecoverResult{Allocation: alloc, SnapshotID: snapshotID, Manifest: manifest}, nil
 }
 
-// DestroyInput names the allocation to tear down: its workspace (for the SM transition) and the on-host
-// directory whose bytes must be reclaimed so no tenant residue survives (SAN-007).
+// SessionID is what keys the account release, and it is CARRIED rather than derived from anything:
+// SessionAccounts is defined on the session, Acquire was called with the session, and an identity
+// recovered by parsing a path is the shape this tree keeps finding defeated. An AllocationID field lived
+// here to key that release and was the wrong key for it; with the release corrected to SessionID it had
+// no reader and no writer, so it is gone rather than left as a field a future caller would fill in.
 type DestroyInput struct {
 	WorkspaceID string
 	SessionID   string
 	ResponseID  string
 	HostPath    string
-	// AllocationID names the allocation being torn down, and it is CARRIED rather than derived from
-	// HostPath. filepath.Base(HostPath) is the same string today — provisionFreshAllocation joins the root
-	// and the id — but an identity recovered by parsing a path is the shape this tree keeps finding
-	// defeated, and the thing it would key here is a privileged account deletion. Empty releases nothing.
-	AllocationID string
 }
 
 // DestroyAllocation tears an allocation down: it drives the workspace ready/paused/failed→destroying→
@@ -213,10 +211,17 @@ func (r *WorkspaceRecovery) DestroyAllocation(ctx context.Context, tenant coordi
 	// A FAILURE HERE DOES NOT STOP THE TEARDOWN. The bytes are the tenant data; leaving them because an
 	// account could not be removed would be the worse of the two residues, and mac-sessions.sh's `down`
 	// is the operator's reconciliation for the account that stayed.
+	// KEYED BY SESSION, WHICH IS THE KEY THIS INTERFACE IS DEFINED ON. It read in.AllocationID until
+	// 2026-08-05, and SlotAccounts.slots is `map[string]int // session id -> slot index` populated by
+	// Acquire(ctx, plan.sessionID) — so the lookup missed, hit `if !ok { return nil }`, and reported
+	// success while destroying nothing. The account outlived the allocation and its slot was never
+	// handed back; a Mac runs out of the 99 slots long before it runs out of disk. It was inert only
+	// because DestroyAllocation has no production caller, which is exactly the condition that was about
+	// to change.
 	if r.accounts != nil {
-		if err := r.accounts.Release(ctx, in.AllocationID); err != nil {
-			log.Printf("workspace %s: allocation %s account not released, its slot is held until an operator reconciles: %v",
-				in.WorkspaceID, in.AllocationID, err)
+		if err := r.accounts.Release(ctx, in.SessionID); err != nil {
+			log.Printf("workspace %s: session %s account not released, its slot is held until an operator reconciles: %v",
+				in.WorkspaceID, in.SessionID, err)
 		}
 	}
 	if err := r.remove(in.HostPath); err != nil {

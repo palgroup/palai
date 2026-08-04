@@ -1,0 +1,345 @@
+//go:build component
+
+// Workspace idle-release + resume component tests. A session that goes quiet must hand its machine back
+// WITHOUT closing, and the next message must bring the workspace back — possibly on a different machine —
+// with nothing lost, including work that was never committed.
+//
+// They run in the artifacts package because a release ARCHIVES a real allocation into the object store and
+// a resume RESTORES it back out, so the real object store + Postgres this suite stands up are what the
+// paths need. The suite runs its whole package (`-run "${PALAI_SUITE_RUN:-.}"`), so a test added here is a
+// test that runs — unlike the postgres suite's execution leg, whose -run allow-list would have to name
+// each one.
+
+package artifacts
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/palgroup/palai/apps/control-plane/internal/execution"
+	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
+)
+
+// idleTestTTL is the TTL every test here sweeps with. It is deliberately a REAL five minutes rather than
+// something near zero, because this suite shares one database: a sub-second TTL would make every other
+// test's freshly-seeded workspace an idle candidate and let one test delete another's directory. A
+// candidate is instead created explicitly, by aging its session's run activity past this (ageSession).
+const idleTestTTL = 5 * time.Minute
+
+// seedIdleWorkspace seeds an allocation on disk and puts it in the state an idle sweep looks for: a
+// `ready` workspace (the state a finished run's release leaves behind) whose session has had no run
+// activity for an hour. It also leaves UNCOMMITTED work in the repo, which is what the requirement is
+// really about — no git commit is needed for a release to be lossless.
+func (h *artifactsHarness) seedIdleWorkspace(t *testing.T) (project, session, workspaceID, allocationID, hostPath string) {
+	t.Helper()
+	project, workspaceID, allocationID, hostPath = h.seedAllocationOnDisk(t)
+	session = sessionOf(t, h, workspaceID)
+	// A prior run finished: the workspace is back to ready, still holding its host directory.
+	h.exec(t, `UPDATE workspaces SET state='ready' WHERE id=$1`, workspaceID)
+	h.ageSession(t, session, time.Hour)
+	// Work that exists only on disk: a modified tracked file and an untracked one, neither committed.
+	repo := filepath.Join(hostPath, "repo")
+	if err := os.WriteFile(filepath.Join(repo, "app.go"), []byte("package main\n\n// edited, never committed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "notes.txt"), []byte("uncommitted scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return project, session, workspaceID, allocationID, hostPath
+}
+
+// ageSession backdates every run of a session so the sweep's idle clock — max(runs.updated_at), the same
+// expression the Sessions screen renders as last_activity_at — reads as `by` in the past.
+func (h *artifactsHarness) ageSession(t *testing.T, session string, by time.Duration) {
+	t.Helper()
+	h.exec(t, `UPDATE runs SET updated_at = clock_timestamp() - make_interval(secs => $2) WHERE session_id=$1`,
+		session, by.Seconds())
+}
+
+// touchSession brings a session's run activity back to now, which is what a REAL resume implies: the
+// workspace came back because a new message arrived, and that message's run moves runs.updated_at.
+//
+// It is not bookkeeping. Without it a resumed workspace is left `ready` with an hour-old clock — a
+// candidate the very next sweep releases — while Go's t.TempDir cleanup has already removed the directory
+// underneath it, so that sweep fails trying to archive a path that is gone and takes an unrelated test
+// down with it. Leaving the fixture in a state production never produces is what made the suite's failure
+// point at the wrong test.
+func (h *artifactsHarness) touchSession(t *testing.T, session string) {
+	t.Helper()
+	h.exec(t, `UPDATE runs SET updated_at = clock_timestamp() WHERE session_id=$1`, session)
+}
+
+// workspaceState reads a workspace's lifecycle state directly, so an assertion about it never goes
+// through the code under test.
+func workspaceState(t *testing.T, h *artifactsHarness, workspaceID string) string {
+	t.Helper()
+	var state string
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT state FROM workspaces WHERE id=$1`, workspaceID).Scan(&state); err != nil {
+		t.Fatalf("read workspace state: %v", err)
+	}
+	return state
+}
+
+// recordingAccounts is a SessionAccounts that records which sessions were acquired and released rather
+// than touching a real uid — the privileged half needs root, and the mapping is the part with behaviour.
+type recordingAccounts struct {
+	acquired []string
+	released []string
+}
+
+func (a *recordingAccounts) Acquire(_ context.Context, sessionID string) (string, error) {
+	a.acquired = append(a.acquired, sessionID)
+	return "palai-s01", nil
+}
+
+func (a *recordingAccounts) Release(_ context.Context, sessionID string) error {
+	a.released = append(a.released, sessionID)
+	return nil
+}
+
+// TestAnIdleWorkspaceIsArchivedAndItsMachineHandedBack is the headline behaviour: a session quiet past the
+// TTL loses its ALLOCATION — bytes archived, host directory reclaimed, macOS account slot handed back —
+// while the SESSION itself stays open. The workspace lands in `paused`, which is the state the next
+// message restores from, NOT `destroyed`, which nothing can come back from.
+func TestAnIdleWorkspaceIsArchivedAndItsMachineHandedBack(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	_, session, workspaceID, _, hostPath := h.seedIdleWorkspace(t)
+	accounts := &recordingAccounts{}
+
+	releaser := execution.NewIdleReleaser(h.repo.Spine(), execution.NewSnapshotSink(h.s3, h.repo.Spine()), idleTestTTL).
+		WithSessionAccounts(accounts)
+	if _, err := releaser.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep() error = %v", err)
+	}
+
+	// The machine is back: the allocation's directory is gone.
+	if _, err := os.Stat(hostPath); !os.IsNotExist(err) {
+		t.Fatalf("allocation dir survived the idle release (stat err=%v) — the machine is still held", err)
+	}
+	// The workspace is paused, not destroyed: paused is resumable, destroyed is terminal.
+	if state := workspaceState(t, h, workspaceID); state != "paused" {
+		t.Fatalf("workspace state = %q, want paused", state)
+	}
+	// THE SESSION DID NOT CLOSE. This is the distinction the whole change rests on — the occupancy is the
+	// allocation, the identity is the session, and only the first is reclaimable while the thread lives.
+	var sessionState string
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM sessions WHERE id=$1`, session).Scan(&sessionState); err != nil {
+		t.Fatalf("read session state: %v", err)
+	}
+	if sessionState != "active" {
+		t.Fatalf("session state = %q, want active — an idle release must not end the conversation", sessionState)
+	}
+	// The uid slot was handed back, keyed by SESSION (the key SessionAccounts is defined on).
+	if len(accounts.released) != 1 || accounts.released[0] != session {
+		t.Fatalf("accounts.released = %v, want exactly [%s]", accounts.released, session)
+	}
+	// An archive exists to come back from. Without this the release above is data loss.
+	if _, found, err := h.repo.Spine().LatestRestorableWorkspaceSnapshot(ctx, coordinator.Tenant{Project: projectOf(t, h, workspaceID)}, workspaceID); err != nil || !found {
+		t.Fatalf("LatestRestorableWorkspaceSnapshot() = found %v, err %v; want a byte-archived snapshot", found, err)
+	}
+}
+
+// TestAResumedWorkspaceCarriesUncommittedWorkBack is the requirement in its own terms: "run kapanırken de
+// tüm değişikliklerin commitlenmesi lazım veya başka bir şey olması lazım ki veri kaybı olmasın". The
+// "başka bir şey" is this — the archive is a raw filesystem capture, so uncommitted and untracked work
+// come back without anyone having committed anything.
+//
+// It asserts the ROUND TRIP, not the archive: release, then resume, then read the files off the NEW
+// allocation's disk. An assertion on the snapshot row alone would pass while the restore was broken.
+func TestAResumedWorkspaceCarriesUncommittedWorkBack(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	project, session, workspaceID, oldAlloc, hostPath := h.seedIdleWorkspace(t)
+	tenant := coordinator.Tenant{Project: project}
+	accounts := &recordingAccounts{}
+
+	releaser := execution.NewIdleReleaser(h.repo.Spine(), execution.NewSnapshotSink(h.s3, h.repo.Spine()), idleTestTTL).
+		WithSessionAccounts(accounts)
+	if _, err := releaser.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep() error = %v", err)
+	}
+	if _, err := os.Stat(hostPath); !os.IsNotExist(err) {
+		t.Fatal("the release did not reclaim the directory, so the resume below would prove nothing")
+	}
+
+	// The next message in the thread. The allocation id and path are minted by the caller, exactly as
+	// planRootWorkspace mints them before the dial.
+	newRoot := t.TempDir()
+	if r, err := filepath.EvalSymlinks(newRoot); err == nil {
+		newRoot = r
+	}
+	newAlloc := newID("alloc")
+	newPath := filepath.Join(newRoot, newAlloc)
+	alloc, err := execution.ResumeReleasedWorkspace(ctx, h.repo.Spine(), execution.NewSnapshotSink(h.s3, h.repo.Spine()), accounts, tenant,
+		execution.ResumeInput{
+			WorkspaceID:  workspaceID,
+			SessionID:    session,
+			AllocationID: newAlloc,
+			HostPath:     newPath,
+		})
+	if err != nil {
+		t.Fatalf("ResumeReleasedWorkspace() error = %v", err)
+	}
+	// The message that woke it counts as activity, exactly as a real run would — see touchSession.
+	h.touchSession(t, session)
+
+	// A NEW allocation at a strictly higher fence: the old host's writes are fenced out at the DB.
+	if alloc.ID == oldAlloc {
+		t.Fatalf("resume reused allocation %s; a resume must mint a new one", oldAlloc)
+	}
+	if alloc.Fence <= 1 {
+		t.Fatalf("resumed allocation fence = %d, want strictly greater than the released allocation's 1", alloc.Fence)
+	}
+	if state := workspaceState(t, h, workspaceID); state != "ready" {
+		t.Fatalf("workspace state after resume = %q, want ready", state)
+	}
+
+	// THE WORK IS BACK — the committed file, the uncommitted edit to it, and the untracked file.
+	edited, err := os.ReadFile(filepath.Join(newPath, "repo", "app.go"))
+	if err != nil {
+		t.Fatalf("read restored app.go: %v", err)
+	}
+	if string(edited) != "package main\n\n// edited, never committed\n" {
+		t.Fatalf("restored app.go = %q, want the UNCOMMITTED edit — the session lost work", edited)
+	}
+	untracked, err := os.ReadFile(filepath.Join(newPath, "repo", "notes.txt"))
+	if err != nil {
+		t.Fatalf("read restored notes.txt: %v — an untracked file was lost", err)
+	}
+	if string(untracked) != "uncommitted scratch\n" {
+		t.Fatalf("restored notes.txt = %q, want the untracked scratch file", untracked)
+	}
+	// .git came back too, so the resumed session can still commit and push what it was working on.
+	if _, err := os.Stat(filepath.Join(newPath, "repo", ".git", "HEAD")); err != nil {
+		t.Fatalf("restored repo has no .git/HEAD: %v — the thread cannot commit what it resumes", err)
+	}
+	// The secret staging area is NOT restored, because it was never archived (SAN-005).
+	if _, err := os.Stat(filepath.Join(newPath, "secrets", "token")); !os.IsNotExist(err) {
+		t.Fatalf("a secret survived the archive/restore round trip (stat err=%v)", err)
+	}
+	// The uid was re-acquired for the SAME session — a resumed thread runs as its own user again.
+	if len(accounts.acquired) != 1 || accounts.acquired[0] != session {
+		t.Fatalf("accounts.acquired = %v, want exactly [%s]", accounts.acquired, session)
+	}
+}
+
+// TestABusyWorkspaceIsNotReleased pins the three independent skip reasons. Each is a separate fact and
+// none implies the others, which is why the query tests them separately and so does this: a workspace
+// that is not `ready`, one holding an active writer lease, and one whose session has a live response.run
+// job must all survive a sweep with their bytes intact.
+func TestABusyWorkspaceIsNotReleased(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	releaser := execution.NewIdleReleaser(h.repo.Spine(), execution.NewSnapshotSink(h.s3, h.repo.Spine()), idleTestTTL)
+
+	t.Run("a leased workspace keeps its machine", func(t *testing.T) {
+		_, _, workspaceID, _, hostPath := h.seedIdleWorkspace(t)
+		h.exec(t, `UPDATE workspaces SET state='leased' WHERE id=$1`, workspaceID)
+		if _, err := releaser.Sweep(ctx); err != nil {
+			t.Fatalf("Sweep() error = %v", err)
+		}
+		if _, err := os.Stat(hostPath); err != nil {
+			t.Fatalf("a leased workspace lost its directory: %v", err)
+		}
+		if state := workspaceState(t, h, workspaceID); state != "leased" {
+			t.Fatalf("workspace state = %q, want leased (untouched)", state)
+		}
+	})
+
+	t.Run("a ready workspace with a dangling active lease keeps its machine", func(t *testing.T) {
+		project, _, workspaceID, allocationID, hostPath := h.seedIdleWorkspace(t)
+		h.exec(t, `INSERT INTO workspace_leases (id, workspace_id, allocation_id, project_id, run_id, state, fence)
+			VALUES ($1,$2,$3,$4,$5,'active',1)`,
+			newID("lease"), workspaceID, allocationID, project, runOf(t, h, workspaceID))
+		if _, err := releaser.Sweep(ctx); err != nil {
+			t.Fatalf("Sweep() error = %v", err)
+		}
+		if _, err := os.Stat(hostPath); err != nil {
+			t.Fatalf("a workspace with an active writer lease lost its directory: %v", err)
+		}
+	})
+
+	t.Run("a session with a live response.run job keeps its machine", func(t *testing.T) {
+		project, session, workspaceID, _, hostPath := h.seedIdleWorkspace(t)
+		h.exec(t, `INSERT INTO durable_jobs (id, project_id, kind, payload, status, lease_expires_at)
+			VALUES ($1,$2,'response.run',$3,'running', clock_timestamp() + interval '5 minutes')`,
+			newID("job"), project, `{"run_id":"`+runOf(t, h, workspaceID)+`"}`)
+		if _, err := releaser.Sweep(ctx); err != nil {
+			t.Fatalf("Sweep() error = %v", err)
+		}
+		if _, err := os.Stat(hostPath); err != nil {
+			t.Fatalf("a session still driving a run lost its directory: %v — session %s", err, session)
+		}
+	})
+}
+
+// TestIdleReleaseRefusesWithoutASnapshotSink pins the correctness gate. A releaser with no archive path
+// would delete a session's uncommitted work with nothing to restore from, so a nil sink must make every
+// sweep refuse rather than delete — the composition root's `artStore == nil` check is the first line of
+// that defence and this is the second.
+func TestIdleReleaseRefusesWithoutASnapshotSink(t *testing.T) {
+	h := openArtifactsHarness(t)
+	_, session, _, _, hostPath := h.seedIdleWorkspace(t)
+	// This test deliberately leaves a real candidate behind, and its directory dies with t.TempDir. Hand
+	// the clock back so no later sweep in this shared database tries to archive a path that is gone.
+	t.Cleanup(func() { h.touchSession(t, session) })
+
+	releaser := execution.NewIdleReleaser(h.repo.Spine(), nil, idleTestTTL)
+	if _, err := releaser.Sweep(context.Background()); err == nil {
+		t.Fatal("Sweep() with no snapshot sink returned nil, want an explicit refusal")
+	}
+	if _, err := os.Stat(hostPath); err != nil {
+		t.Fatalf("a sink-less sweep still removed the directory: %v", err)
+	}
+}
+
+// TestResumeRefusesWhenTheArchiveIsGone pins the other end of the same argument: a paused workspace whose
+// archive cannot be found FAILS rather than coming back as an empty tree. Re-cloning the binding would
+// present a session's lost work as a clean checkout, which is the failure this refusal exists to prevent.
+func TestResumeRefusesWhenTheArchiveIsGone(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	project, session, workspaceID, _, _ := h.seedIdleWorkspace(t)
+	// Pause it WITHOUT ever capturing a snapshot — the state a release would leave if its archive were
+	// later reaped out from under it.
+	h.exec(t, `UPDATE workspaces SET state='paused' WHERE id=$1`, workspaceID)
+
+	dir := filepath.Join(t.TempDir(), "alloc")
+	_, err := execution.ResumeReleasedWorkspace(ctx, h.repo.Spine(), execution.NewSnapshotSink(h.s3, h.repo.Spine()), nil,
+		coordinator.Tenant{Project: project},
+		execution.ResumeInput{WorkspaceID: workspaceID, SessionID: session, AllocationID: newID("alloc"), HostPath: dir})
+	if err == nil {
+		t.Fatal("ResumeReleasedWorkspace() with no archive returned nil, want an explicit failure")
+	}
+	if !errors.Is(err, execution.ErrRecoveryImpossible) {
+		t.Fatalf("ResumeReleasedWorkspace() error = %v, want ErrRecoveryImpossible", err)
+	}
+}
+
+// projectOf reads the project a workspace belongs to, for the tenant an assertion needs.
+func projectOf(t *testing.T, h *artifactsHarness, workspaceID string) string {
+	t.Helper()
+	var project string
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT project_id FROM workspaces WHERE id=$1`, workspaceID).Scan(&project); err != nil {
+		t.Fatalf("read workspace project: %v", err)
+	}
+	return project
+}
+
+// runOf reads a run of the workspace's session, for the rows a liveness fixture needs to FK against.
+func runOf(t *testing.T, h *artifactsHarness, workspaceID string) string {
+	t.Helper()
+	var runID string
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT r.id FROM runs r JOIN workspaces w ON w.session_id = r.session_id WHERE w.id=$1 LIMIT 1`, workspaceID).Scan(&runID); err != nil {
+		t.Fatalf("read workspace run: %v", err)
+	}
+	return runID
+}

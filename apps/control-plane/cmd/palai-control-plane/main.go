@@ -399,6 +399,7 @@ func main() {
 	startScheduleTicker(ctx, scheduleStore, supervisor)
 	startRetention(ctx, repo, supervisor, artStore)
 	startOrphanGC(ctx, repo, supervisor, artStore)
+	startIdleRelease(ctx, repo, supervisor, artStore, sessionAccounts)
 
 	log.Printf("palai control-plane listening on %s", addr)
 	serveWithGracefulDrain(srv, gateway)
@@ -1645,6 +1646,44 @@ func startOrphanGC(ctx context.Context, repo *store.Store, supervisor *coordinat
 	interval := envDurationOr("PALAI_ARTIFACT_GC_INTERVAL", time.Hour)
 	gc := artifacts.NewCollector(artStore, repo.Spine().Pool(), grace)
 	go supervisor.Supervise(ctx, "artifact-orphan-gc", func(ctx context.Context) error { return gc.Run(ctx, interval) })
+}
+
+// startIdleRelease launches the workspace idle releaser: a session that stops using its machine has the
+// machine handed back — the allocation archived and its directory reclaimed — WITHOUT the session closing,
+// so the next message in that thread restores it and carries on where it left off.
+//
+// TWO GATES, AND ONLY ONE OF THEM IS A PREFERENCE.
+//
+// PALAI_WORKSPACE_ROOT is the honest one: a deployment that provisions no workspaces has no allocations to
+// release, so the sweep would find nothing on every tick forever.
+//
+// artStore is a CORRECTNESS gate and refusing on it is the whole safety argument. The release deletes a
+// directory holding a session's uncommitted work; the only thing that makes that survivable is the archive
+// written first. With no object store there is no archive, so a releaser here would not be a weaker
+// releaser — it would be data loss on a timer. It refuses loudly rather than degrading.
+//
+// PALAI_WORKSPACE_IDLE_TTL is a knob, not a switch: a deployment that wants workspaces held longer says how
+// much longer. There is deliberately no value that turns the sweep off, because "off" is the state this
+// stack was already in and it is the defect being fixed — 107 allocation directories and 97 uid slots held
+// by sessions that had not run anything for days (measured 2026-08-05).
+func startIdleRelease(ctx context.Context, repo *store.Store, supervisor *coordinator.Supervisor, artStore *artifacts.Store, sessionAccounts *execution.SlotAccounts) {
+	if os.Getenv("PALAI_WORKSPACE_ROOT") == "" {
+		return // no workspaces provisioned here, so no machine to hand back
+	}
+	if artStore == nil {
+		log.Printf("workspace idle release DISABLED: no object store is configured, and releasing a workspace whose bytes were never archived would delete a session's uncommitted work")
+		return
+	}
+	ttl := envDurationOr("PALAI_WORKSPACE_IDLE_TTL", execution.DefaultIdleWorkspaceTTL)
+	releaser := execution.NewIdleReleaser(repo.Spine(), execution.NewSnapshotSink(artStore, repo.Spine()), ttl)
+	// THE SAME INSTANCE THE ACQUIRE HALF HOLDS. SlotAccounts keeps the session→slot map in process, so a
+	// second instance would hold an empty one and release nothing while reporting success — the release
+	// half of the leak this whole function exists to close.
+	if sessionAccounts != nil {
+		releaser = releaser.WithSessionAccounts(sessionAccounts)
+	}
+	log.Printf("workspace idle release enabled: a session's machine is handed back after %s idle, and restored from its archive on the next message", ttl)
+	go supervisor.Supervise(ctx, "workspace-idle-release", func(ctx context.Context) error { return releaser.Run(ctx, 30*time.Second) })
 }
 
 // minArtifactGCGrace floors PALAI_ARTIFACT_GC_GRACE: a typo'd sub-floor value (e.g. "1s")

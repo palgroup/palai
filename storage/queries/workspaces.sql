@@ -168,3 +168,77 @@ WHERE id = $1 AND project_id = $2;
 -- stores the current state, the state machine owns legality.
 UPDATE workspaces SET state = $3
 WHERE id = $1 AND project_id = $2;
+
+-- name: IdleWorkspacesForRelease
+-- The idle sweep's bounded candidate set: workspaces holding a host directory that NOTHING is using and
+-- nothing has used for the configured TTL, so their bytes can be archived and the machine handed back.
+-- $1 is the TTL in milliseconds, $2 the per-pass batch bound. Cross-tenant by construction (a maintenance
+-- sweep, like PurgeExpiredStoreFalse); every row carries its OWN project and every join below is keyed on
+-- it, so a candidate never mixes tenants.
+--
+-- THE IDLE CLOCK IS max(runs.updated_at) OVER THE SESSION, and it is not a new notion: it is the same
+-- expression the Sessions screen already renders as last_activity_at (sessions.sql GetSessionInScope).
+-- Its writer is UpdateRunState, which rewrites updated_at on EVERY run transition — so a queued run, a
+-- run that just streamed a step, and a run that reached terminal all move it. Measuring from a run's own
+-- END would be a different and wrong clock: a session whose newest run is still queued behind a busy
+-- machine has a stale "end" and a fresh start, and releasing under it would pull the workspace out from
+-- under work that is about to begin. COALESCE to the workspace's own created_at covers the workspace
+-- whose session has no runs yet, which would otherwise have no clock at all and be swept on its first tick.
+--
+-- THREE INDEPENDENT REASONS TO SKIP, because "nothing is using it" is not one fact:
+--   1. state = 'ready'. A leased workspace has a live writer; provisioning/preparing/restoring is
+--      mid-flight; paused is already released. Only ready holds bytes with no owner.
+--   2. NO ACTIVE WRITER LEASE. state='ready' with a dangling active lease is REACHABLE — a crash between
+--      acquireWriterLease and the ready->leased transition leaves exactly that — and it is the stuck-lease
+--      reclaim's business, not this sweep's. Skipping it here means the sweep never competes with a
+--      reclaim for the same directory.
+--   3. NO LIVE response.run JOB anywhere in the session, by DATABASE clock. This is the same liveness
+--      proof acquireWriterLease reclaims on (RunHasLiveResponseJob): a process still driving a run of this
+--      session may be between leases, and a lease check alone would not see it.
+-- The allocation joined is the CURRENT (max-fence) one, so the sweep can only ever name the directory the
+-- supervisor would mount; a superseded allocation's path is never a release target.
+--
+-- ORDER BY w.id is a total order over the primary key, so the LIMIT takes a determinate batch rather than
+-- an arbitrary one. It is not a priority: a candidate skipped this pass is a candidate next pass, and the
+-- TTL has already elapsed for every row here.
+SELECT w.id, w.project_id, w.session_id, a.id, a.host_path
+FROM workspaces w
+JOIN workspace_allocations a
+  ON a.workspace_id = w.id
+ AND a.project_id = w.project_id
+ AND a.fence = (SELECT MAX(fence) FROM workspace_allocations x WHERE x.workspace_id = w.id)
+WHERE w.state = 'ready'
+  AND a.host_path <> ''
+  AND NOT EXISTS (
+      SELECT 1 FROM workspace_leases l
+      WHERE l.workspace_id = w.id AND l.state = 'active'
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM durable_jobs j
+      JOIN runs r ON r.id = j.payload->>'run_id' AND r.project_id = j.project_id
+      WHERE j.kind = 'response.run'
+        AND r.session_id = w.session_id
+        AND j.project_id = w.project_id
+        AND j.status = 'running'
+        AND j.lease_expires_at IS NOT NULL
+        AND j.lease_expires_at > clock_timestamp()
+  )
+  AND COALESCE(
+        (SELECT MAX(rn.updated_at) FROM runs rn
+          WHERE rn.session_id = w.session_id AND rn.project_id = w.project_id),
+        w.created_at
+      ) < clock_timestamp() - ($1::bigint * interval '1 millisecond')
+ORDER BY w.id
+LIMIT $2;
+
+-- name: WorkspaceHasActiveLease
+-- Does this workspace hold an ACTIVE writer lease? The idle releaser re-asks after it has claimed the
+-- workspace into snapshotting, because the claim and a racing acquireWriterLease do not serialize on the
+-- same row: the lease insert is guarded by the allocation FENCE, the claim by the workspaces row. A lease
+-- that appeared in between means a run got there first, so the claim is given back (finish_snapshot) and
+-- nothing is archived or deleted. Distinct from WorkspaceLeaseHolder, which is keyed by ALLOCATION and
+-- answers "who holds it" for the reclaim; this answers "is anyone at all holding it" for the sweep.
+SELECT EXISTS (
+    SELECT 1 FROM workspace_leases
+    WHERE workspace_id = $1 AND state = 'active'
+);

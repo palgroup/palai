@@ -70,6 +70,12 @@ const (
 	// a host move + restore succeeded, distinct from the attempt.recovering.v1 the engine-loop recovery
 	// records — this is the WORKSPACE half.
 	eventWorkspaceRestored = "workspace.restored.v1"
+	// eventWorkspacePaused records the idle releaser handing a machine back: a workspace nothing had
+	// used for the TTL was archived and its host directory reclaimed, WITHOUT closing the session. It
+	// carries the snapshot the thread resumes from, so the release and the restore are one traceable
+	// pair in the journal. AdvanceWorkspace updates state without journaling, so this is the only record
+	// that the bytes moved — the state column alone says `paused` and not what to restore.
+	eventWorkspacePaused = "workspace.paused.v1"
 	// eventHostQuarantined records a host poisoned by an allocation-destroy failure (spec §29 SAN-008,
 	// E10 T6): its bytes could not be reclaimed, so no new allocation may be placed there. The doctor
 	// surfaces it; an operator clears it.
@@ -105,6 +111,7 @@ var emittedEventTypes = []string{
 	eventCheckpointMigrated,
 	eventRecoveryProof,
 	eventWorkspaceRestored,
+	eventWorkspacePaused,
 	eventHostQuarantined,
 	eventToolCallProgress,
 	toolCallCompletedEvent,

@@ -26,9 +26,12 @@ func TestWorkspaceBindingTransitions(t *testing.T) {
 		// Snapshot cycle off ready.
 		{WorkspaceReady, WorkspaceCmdSnapshot, WorkspaceSnapshotting, "workspace.snapshotting.v1"},
 		{WorkspaceSnapshotting, WorkspaceCmdFinishSnapshot, WorkspaceReady, "workspace.ready.v1"},
-		// Pause/restore branch from preparing and ready.
+		// Pause/restore branch from preparing and ready — and from SNAPSHOTTING, which is the idle
+		// releaser's commit point: it claims the workspace out of ready, archives it, and pauses from
+		// there, so the release never passes back through the leasable `ready` with its bytes doomed.
 		{WorkspacePreparing, WorkspaceCmdPause, WorkspacePaused, "workspace.paused.v1"},
 		{WorkspaceReady, WorkspaceCmdPause, WorkspacePaused, "workspace.paused.v1"},
+		{WorkspaceSnapshotting, WorkspaceCmdPause, WorkspacePaused, "workspace.paused.v1"},
 		{WorkspacePaused, WorkspaceCmdRestore, WorkspaceRestoring, "workspace.restoring.v1"},
 		{WorkspaceRestoring, WorkspaceCmdMarkReady, WorkspaceReady, "workspace.ready.v1"},
 		// Host loss → recovery → ready or failed.

@@ -362,3 +362,58 @@ func (s *Store) LoadWorkspaceSnapshot(ctx context.Context, tenant Tenant, snapsh
 	}
 	return rec, nil
 }
+
+// IdleWorkspace is one candidate the idle sweep may hand a machine back for: the logical workspace, its
+// tenant, the session whose thread it belongs to, and the CURRENT allocation's id + host directory.
+type IdleWorkspace struct {
+	WorkspaceID  string
+	Project      string
+	SessionID    string
+	AllocationID string
+	HostPath     string
+}
+
+// IdleWorkspacesForRelease returns up to limit workspaces that have held a host directory with nothing
+// using them for ttl. It is a MAINTENANCE read and spans every tenant by construction, like the retention
+// sweep — so it runs under the system scope rather than a tenant one, and each row carries its own project
+// for the per-candidate writes that follow.
+//
+// A NEGATIVE TTL IS REFUSED rather than clamped: it would make clock_timestamp() - ttl a FUTURE instant,
+// which selects every workspace including the one being written to right now. The releaser deletes
+// directories, so the failure mode of a mis-signed knob is not a slow sweep, it is a sweep that archives
+// and removes live work.
+func (s *Store) IdleWorkspacesForRelease(ctx context.Context, ttl time.Duration, limit int) ([]IdleWorkspace, error) {
+	if ttl < 0 {
+		return nil, errors.New("idle workspace TTL must not be negative")
+	}
+	ctx = storage.WithSystemScope(ctx)
+	rows, err := s.pool.Query(ctx, storage.Query("IdleWorkspacesForRelease"), ttl.Milliseconds(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("idle workspaces: %w", err)
+	}
+	defer rows.Close()
+	var out []IdleWorkspace
+	for rows.Next() {
+		var c IdleWorkspace
+		if err := rows.Scan(&c.WorkspaceID, &c.Project, &c.SessionID, &c.AllocationID, &c.HostPath); err != nil {
+			return nil, fmt.Errorf("scan idle workspace: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("idle workspaces: %w", err)
+	}
+	return out, nil
+}
+
+// WorkspaceHasActiveLease answers whether ANY active writer lease exists on a workspace. The idle
+// releaser re-asks after claiming, because the claim (guarded by the workspaces row) and a racing
+// acquireWriterLease (guarded by the allocation fence) do not serialize against each other.
+func (s *Store) WorkspaceHasActiveLease(ctx context.Context, tenant Tenant, workspaceID string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
+	var held bool
+	if err := s.pool.QueryRow(ctx, storage.Query("WorkspaceHasActiveLease"), workspaceID).Scan(&held); err != nil {
+		return false, fmt.Errorf("workspace active lease: %w", err)
+	}
+	return held, nil
+}

@@ -78,6 +78,12 @@ type workspacePlan struct {
 	// requested ref; a reused one is not — a prior run's edits persist and only a new preparation
 	// receipt at the current head is recorded, so this run's changeset diffs from where it starts.
 	fresh bool
+	// resume is the THIRD path: the idle releaser handed this session's machine back, so the allocation
+	// is a new one like `fresh`, but its contents come from the ARCHIVE rather than from a clone. It is a
+	// separate flag and not `fresh` with a wrinkle, because the two differ in the one way that matters —
+	// a fresh allocation may legitimately be empty, and a resumed one that ends up empty has LOST the
+	// session's uncommitted work.
+	resume bool
 }
 
 // planRootWorkspace decides the session's coding workspace for the ROOT run without touching disk or
@@ -98,26 +104,37 @@ func (o *Orchestrator) planRootWorkspace(ctx context.Context, tenant coordinator
 		}
 		return workspacePlan{ws: ws, sessionID: sessionID, allocID: alloc.ID, hostPath: alloc.HostPath}, true, nil
 	case statemachines.WorkspacePaused, statemachines.WorkspaceRestoring:
-		// THE MACHINE WAS HANDED BACK WHILE THE THREAD WAS QUIET. An idle releaser archives the
-		// allocation and reclaims its directory, and a woken thread has to restore it onto a new fenced
-		// allocation — which may well be under a different provision root on a different Mac.
+		// THE MACHINE WAS HANDED BACK WHILE THE THREAD WAS QUIET. The idle releaser archived the
+		// allocation and reclaimed its directory, and this — a woken thread — restores it onto a NEW
+		// fenced allocation, which may well be under a different provision root on a different Mac.
 		//
-		// NOTHING PAUSES A WORKSPACE ON `main` TODAY, and this arm says so rather than pretending
-		// otherwise: the releaser and ResumeReleasedWorkspace live on wip/workspace-idle-release and are
-		// A.4's work. The arm exists because the SWITCH is written once — the parked branch touches these
-		// exact lines — and because falling into `default` here would silently clone a FRESH allocation
-		// over a workspace whose bytes are in an archive, which is the loudest possible way to lose a
-		// user's work quietly. It refuses instead.
-		return workspacePlan{}, false, fmt.Errorf("workspace %s is %s: restoring a released workspace is not wired on this build",
-			ws.WorkspaceID, ws.State)
+		// The allocation is minted HERE rather than inside the resume for the same reason the fresh arm
+		// mints one here: the lease offer carries the path and the machine creates it, so the name has to
+		// exist before the dial. `restoring` re-enters the same way — a restore that died half-way is
+		// re-driven onto a further allocation, and only the highest fence is current.
+		//
+		// Falling into `default` here would silently clone a FRESH allocation over a workspace whose bytes
+		// are in an archive, which is the loudest possible way to lose a user's work quietly.
+		allocID := "alloc_" + randHex16()
+		return workspacePlan{ws: ws, sessionID: sessionID, allocID: allocID,
+			hostPath: filepath.Join(o.provisionRoot, allocID), resume: true}, true, nil
 	case statemachines.WorkspaceSnapshotting:
 		// An idle sweep died between claiming the workspace and finishing with it. The bytes are still on
-		// disk — a releaser deletes them only after reaching `paused` — so the repair is to give the claim
-		// back and reuse the allocation, NOT to restore. Restoring would replace a tree that is present
-		// and current with an archive that may be older than it. The claim-back is A.4's, with the sweep
-		// that makes the claim; until then this refuses rather than reusing a workspace another party
-		// believes it holds.
-		return workspacePlan{}, false, fmt.Errorf("workspace %s is snapshotting: another party holds it", ws.WorkspaceID)
+		// disk — the releaser deletes them only after reaching `paused` — so the repair is to give the
+		// claim back and reuse the allocation, NOT to restore. Restoring would replace a tree that is
+		// present and current with an archive that may be older than it.
+		//
+		// The claim-back is attempted rather than assumed: if it succeeds this run owns a `ready`
+		// workspace and reuses its current allocation. If it does NOT, a live sweep still holds the claim
+		// and is about to delete these bytes, so the run must not be handed them.
+		if err := o.spine.AdvanceWorkspace(ctx, tenant, ws.WorkspaceID, statemachines.WorkspaceCmdFinishSnapshot); err != nil {
+			return workspacePlan{}, false, fmt.Errorf("workspace %s is snapshotting and the claim could not be taken back: %w", ws.WorkspaceID, err)
+		}
+		alloc, err := o.spine.CurrentAllocation(ctx, ws.WorkspaceID)
+		if err != nil {
+			return workspacePlan{}, false, err
+		}
+		return workspacePlan{ws: ws, sessionID: sessionID, allocID: alloc.ID, hostPath: alloc.HostPath}, true, nil
 	default:
 		// requested, or provisioning/preparing left by a crashed/failed clone (blocker 2): (re)provision
 		// fresh and idempotently — a partial allocation from a failed attempt is abandoned, a new one
@@ -163,9 +180,24 @@ func (o *Orchestrator) realizeRootWorkspace(ctx context.Context, ch EngineChanne
 	}
 
 	var alloc coordinator.Allocation
-	if plan.fresh {
+	switch {
+	case plan.resume:
+		// THE THREAD IS WAKING UP ON A MACHINE IT WAS HANDED BACK FROM. The bytes come out of the archive
+		// the idle releaser wrote, not out of a clone — a re-clone here would present a session's lost
+		// uncommitted work as a clean checkout. Layout-then-restore is safe in that order because
+		// workspace.Prepare only MkdirAlls three directories and the restore's checksum verification is
+		// over regular files, of which Prepare writes none.
+		alloc, err = ResumeReleasedWorkspace(ctx, o.spine, o.snapshots, o.sessionAccounts, tenant, ResumeInput{
+			WorkspaceID:  ws.WorkspaceID,
+			SessionID:    plan.sessionID,
+			RunID:        runID,
+			AllocationID: plan.allocID,
+			HostPath:     plan.hostPath,
+			HostID:       o.provisionRoot,
+		})
+	case plan.fresh:
 		alloc, err = o.provisionFreshAllocation(ctx, ops, tenant, plan, runID, fence)
-	} else {
+	default:
 		alloc, err = o.reuseAllocation(ctx, ops, tenant, ws, plan.allocID, runID)
 	}
 	if err != nil {

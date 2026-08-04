@@ -40,7 +40,9 @@ const (
 )
 
 // WorkspaceTable is the Workspace transition table (spec §29.7). ready cycles
-// with leased (lease/release) and with snapshotting (snapshot/finish_snapshot).
+// with leased (lease/release) and with snapshotting (snapshot/finish_snapshot),
+// and snapshotting also PAUSES — the idle releaser's commit, which is why the
+// cycle has an exit as well as a return.
 // preparing and ready pause, then restore through restoring back to ready. A
 // leased workspace that loses its host recovers back to ready or fails. ready,
 // paused, and failed destroy. mark_ready declares readiness from preparing,
@@ -55,6 +57,12 @@ var WorkspaceTable = []Transition[WorkspaceState, WorkspaceCommand]{
 
 	{WorkspaceReady, WorkspaceCmdSnapshot, WorkspaceSnapshotting, "workspace.snapshotting.v1"},
 	{WorkspaceSnapshotting, WorkspaceCmdFinishSnapshot, WorkspaceReady, "workspace.ready.v1"},
+	// snapshotting -> paused is the idle releaser's commit point, and it exists so the release never
+	// passes back through `ready`. The releaser claims a workspace into snapshotting (which nothing can
+	// lease from), archives it, and only then hands the machine back; without this edge it would have to
+	// finish_snapshot to ready and pause from there, and `ready` is leasable — a run acquiring the
+	// workspace in that window would be handed a directory the releaser is about to delete.
+	{WorkspaceSnapshotting, WorkspaceCmdPause, WorkspacePaused, "workspace.paused.v1"},
 
 	{WorkspacePreparing, WorkspaceCmdPause, WorkspacePaused, "workspace.paused.v1"},
 	{WorkspaceReady, WorkspaceCmdPause, WorkspacePaused, "workspace.paused.v1"},
