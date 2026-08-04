@@ -30,15 +30,12 @@ export type {
   ModelRouteCreateParams,
   ModelRouteRevisionCreateParams,
 } from "./resources/model-routes.ts";
-export { Organizations, Projects, ApiKeys } from "./resources/provisioning.ts";
+export { Projects, ApiKeys } from "./resources/provisioning.ts";
 export type {
-  Organization,
-  OrganizationCreated,
   Project,
   ProjectCreated,
   ApiKey,
   ApiKeyCreated,
-  OrganizationCreateParams,
   ProjectCreateParams,
   ProjectPolicyParams,
   ApiKeyCreateParams,

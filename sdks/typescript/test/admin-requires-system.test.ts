@@ -72,11 +72,11 @@ test("PalaiAdmin with a tenant key is refused by the server", async () => {
   assert.ok(created, "a platform key must be accepted");
 });
 
-// The grouping is IDENTITY, not a copy: admin.organizations/projects/apiKeys must be instances of the
-// exact same classes provisioning.ts exports at the root entrypoint — proving Task 3 grouped rather
-// than duplicated a single method.
-test("admin.organizations/projects/apiKeys are the SAME classes as the root entrypoint's", async () => {
-  const { Organizations, Projects, ApiKeys } = await import("../src/resources/provisioning.ts");
+// The grouping is IDENTITY, not a copy: admin.projects/apiKeys must be instances of the exact same classes
+// provisioning.ts exports at the root entrypoint — proving Task 3 grouped rather than duplicated a single
+// method. (`organizations` was a third member until A.2 Task 6 removed the resource with its routes.)
+test("admin.projects/apiKeys are the SAME classes as the root entrypoint's", async () => {
+  const { Projects, ApiKeys } = await import("../src/resources/provisioning.ts");
   const admin = new PalaiAdmin({
     apiKey: "platform-key-with-system",
     baseURL: "http://palai.test",
@@ -84,7 +84,6 @@ test("admin.organizations/projects/apiKeys are the SAME classes as the root entr
       throw new Error("identity test: no network call is expected");
     }) as unknown as typeof fetch,
   });
-  assert.ok(admin.organizations instanceof Organizations);
   assert.ok(admin.projects instanceof Projects);
   assert.ok(admin.apiKeys instanceof ApiKeys);
 });

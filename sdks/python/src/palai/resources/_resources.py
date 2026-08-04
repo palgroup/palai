@@ -326,25 +326,16 @@ class ModelRoutes:
         )
 
 
-class Organizations:
-    """Administers tenants (§39.2). Creation is the one cross-tenant op — it provisions a SECOND tenant
-    with no restart and discloses that tenant's admin key plaintext ONCE. Requires ``provision``."""
-
-    def __init__(self, client: Any) -> None:
-        self._client = client
-
-    def create(self, display_name: str, *, timeout_ms: float | None = None) -> Any:
-        return self._client.request("POST", "/v1/organizations", body={"display_name": display_name}, timeout_ms=timeout_ms)
-
-    def list(self, *, timeout_ms: float | None = None, max_retries: int | None = None) -> Any:
-        return self._client.request("GET", "/v1/organizations", timeout_ms=timeout_ms, max_retries=max_retries)
-
-    def retrieve(self, organization_id: str, *, timeout_ms: float | None = None, max_retries: int | None = None) -> Any:
-        return self._client.request("GET", f"/v1/organizations/{enc(organization_id)}", timeout_ms=timeout_ms, max_retries=max_retries)
+# An ``Organizations`` resource sat here until A.2 Task 6, with create/list/retrieve against
+# /v1/organizations. That task unmounted all three routes, so every method returned 404 — a client method
+# that cannot succeed advertises a capability the server does not have. ``Projects.create`` already does what
+# ``Organizations.create`` did: it opens a tenant and discloses its admin key once. The Go SDK never grew the
+# resource, so removing it here ends a three-SDK asymmetry rather than creating one.
 
 
 class Projects:
-    """Administers projects within the caller's organization, including the §14 config_policy write-path."""
+    """Administers the caller's projects, including the §14 config_policy write-path. ``create`` OPENS a
+    tenant and discloses its admin key plaintext ONCE; it requires ``system`` rather than ``provision``."""
 
     def __init__(self, client: Any) -> None:
         self._client = client

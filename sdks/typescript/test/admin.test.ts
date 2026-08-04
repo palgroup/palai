@@ -49,14 +49,14 @@ function countingNetworkFailure(): { fetch: typeof fetch; attempts: () => number
 test("a network failure on a non-idempotent create is NOT retried — no double-provision", async () => {
   const net = countingNetworkFailure();
   const client = new Palai({ apiKey: "sk-admin", baseURL: "http://palai.test", fetch: net.fetch, maxRetries: 3, backoffBaseMs: 1, backoffMaxMs: 2 });
-  await assert.rejects(client.organizations.create({ display_name: "acme" }), (e: unknown) => e instanceof PalaiConnectionError);
+  await assert.rejects(client.projects.create({ display_name: "acme" }), (e: unknown) => e instanceof PalaiConnectionError);
   assert.equal(net.attempts(), 1, "a connection torn after a create may have committed — do not re-issue the POST");
 });
 
 test("a network failure on an idempotent GET list IS retried (safe method)", async () => {
   const net = countingNetworkFailure();
   const client = new Palai({ apiKey: "sk-admin", baseURL: "http://palai.test", fetch: net.fetch, maxRetries: 2, backoffBaseMs: 1, backoffMaxMs: 2 });
-  await assert.rejects(client.organizations.list(), (e: unknown) => e instanceof PalaiConnectionError);
+  await assert.rejects(client.projects.list(), (e: unknown) => e instanceof PalaiConnectionError);
   assert.equal(net.attempts(), 3, "a GET is safe to re-send: initial attempt + 2 retries");
 });
 
@@ -175,23 +175,14 @@ test("modelRoutes read-back: list/get for connections, routes, and revisions (E1
 
 // --- tenancy provisioning (T2) ------------------------------------------------------
 
-test("organizations.create provisions a second tenant and returns its one-time admin key", async () => {
-  const { fetch: f, calls } = recordingFetch(() =>
-    json(201, {
-      id: "org_2",
-      object: "organization",
-      display_name: "acme",
-      default_project_id: "prj_2",
-      admin_api_key: { id: "key_2", object: "api_key", key: "sk-live-once", scopes: [] },
-    }),
-  );
-  const org = await newClient(f).organizations.create({ display_name: "acme" });
-  assert.equal(org.id, "org_2");
-  assert.equal(org.default_project_id, "prj_2");
-  assert.equal(org.admin_api_key.key, "sk-live-once");
-  assert.ok(calls[0]?.url.endsWith("/v1/organizations"));
-  assert.deepEqual(JSON.parse(calls[0]!.body ?? "{}"), { display_name: "acme" });
-});
+// `organizations.create provisions a second tenant and returns its one-time admin key` WAS HERE. A.2 Task 6
+// unmounted POST /v1/organizations and the resource was removed with it, so there is no surface left for
+// this test to make a claim about. It is not replaced: the test below already proves the same contract on
+// the route that survived — projects.create opens a tenant and discloses its admin key once.
+//
+// Worth recording, because it is why the resource outlived its route: this test passed against a RECORDING
+// FETCH and asserted `calls[0].url.endsWith("/v1/organizations")`. It proved the client formed the request
+// it was written to form. Nothing in it could notice that no server answers that path.
 
 test("projects create/list/get and the config_policy PATCH write-path", async () => {
   const { fetch: f, calls } = recordingFetch((call) =>

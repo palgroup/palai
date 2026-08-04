@@ -3,7 +3,7 @@
 // operator's credential to a customer.
 import { Palai, type PalaiOptions } from "./client.ts";
 import { Fleet } from "./resources/fleet.ts";
-import { ApiKeys, Organizations, Projects } from "./resources/provisioning.ts";
+import { ApiKeys, Projects } from "./resources/provisioning.ts";
 
 // PalaiAdmin is the operator client: it manages the fleet itself (projects, machines), not the
 // per-project resources the API-key client exposes. It takes the same options as Palai and holds
@@ -17,14 +17,12 @@ import { ApiKeys, Organizations, Projects } from "./resources/provisioning.ts";
 export class PalaiAdmin {
   #client: Palai;
   readonly fleet: Fleet;
-  readonly organizations: Organizations;
   readonly projects: Projects;
   readonly apiKeys: ApiKeys;
 
   constructor(options: PalaiOptions = {}) {
     this.#client = new Palai(options);
     this.fleet = new Fleet(this.#client);
-    this.organizations = new Organizations(this.#client);
     this.projects = new Projects(this.#client);
     this.apiKeys = new ApiKeys(this.#client);
   }

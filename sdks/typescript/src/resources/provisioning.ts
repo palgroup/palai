@@ -3,18 +3,6 @@ import { callArgs, enc, type CallOptions, type ListView } from "./shared.ts";
 
 // The tenancy provisioning projections (spec §39.2, E13 T2). No canonical schema generates them, so
 // they are open: identity fields plus an index signature.
-export interface Organization {
-  id: string;
-  object: string;
-  display_name?: string;
-  [key: string]: unknown;
-}
-// OrganizationCreated is the ONE place a fresh tenant's admin key plaintext is disclosed (creation opens
-// a new tenant with its default project + admin key). Every later read renders metadata only.
-export interface OrganizationCreated extends Organization {
-  default_project_id: string;
-  admin_api_key: ApiKeyCreated;
-}
 export interface Project {
   id: string;
   object: string;
@@ -42,9 +30,6 @@ export interface ApiKeyCreated extends ApiKey {
   key: string;
 }
 
-export interface OrganizationCreateParams {
-  display_name: string;
-}
 export interface ProjectCreateParams {
   display_name: string;
 }
@@ -57,30 +42,15 @@ export interface ApiKeyCreateParams {
   expires_at?: string;
 }
 
-// Organizations administers tenants (spec §39.2). Creation is the one cross-tenant op — it provisions a
-// SECOND tenant with no restart. Requires a key with the `provision` capability.
-export class Organizations {
-  #client: Palai;
-  constructor(client: Palai) {
-    this.#client = client;
-  }
-  // create opens a new tenant (201); the response discloses the tenant's admin key plaintext once.
-  async create(params: OrganizationCreateParams, options: CallOptions = {}): Promise<OrganizationCreated> {
-    const r = await this.#client.request<OrganizationCreated>("POST", "/v1/organizations", { body: params, ...callArgs(options) });
-    return r.body;
-  }
-  async list(options: CallOptions = {}): Promise<ListView<Organization>> {
-    const r = await this.#client.request<ListView<Organization>>("GET", "/v1/organizations", callArgs(options));
-    return r.body;
-  }
-  async retrieve(organizationID: string, options: CallOptions = {}): Promise<Organization> {
-    const r = await this.#client.request<Organization>("GET", `/v1/organizations/${enc(organizationID)}`, callArgs(options));
-    return r.body;
-  }
-}
-
-// Projects administers projects within the caller's organization, including the §14 config_policy
-// write-path — the first API that makes the resolver's project layer reachable.
+// Projects administers the caller's projects, including the §14 config_policy write-path — the first API
+// that makes the resolver's project layer reachable.
+//
+// AN `Organizations` RESOURCE SAT ABOVE THIS ONE UNTIL A.2 TASK 6, with create/list/retrieve against
+// /v1/organizations. That task unmounted all three routes, so every one of its methods returned 404 — a
+// client method that cannot succeed is worse than an absent one, because it advertises a capability the
+// server does not have. Projects.create already does what Organizations.create did: it OPENS a tenant and
+// discloses its admin key once. The Go SDK never grew the resource, so removing it here also ends a
+// three-SDK asymmetry rather than creating one.
 export class Projects {
   #client: Palai;
   constructor(client: Palai) {

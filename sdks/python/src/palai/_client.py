@@ -28,7 +28,6 @@ from .resources._resources import (
     Artifacts,
     MCPConnections,
     ModelRoutes,
-    Organizations,
     Projects,
     RepositoryBindings,
     Responses,
@@ -151,7 +150,6 @@ class Palai(_BaseClient):
         self.triggers = Triggers(self)
         self.secret_refs = SecretRefs(self)
         self.model_routes = ModelRoutes(self)
-        self.organizations = Organizations(self)
         self.projects = Projects(self)
         self.api_keys = ApiKeys(self)
 
@@ -275,7 +273,6 @@ class AsyncPalai(_BaseClient):
         self.triggers = Triggers(self)
         self.secret_refs = SecretRefs(self)
         self.model_routes = ModelRoutes(self)
-        self.organizations = Organizations(self)
         self.projects = Projects(self)
         self.api_keys = ApiKeys(self)
 

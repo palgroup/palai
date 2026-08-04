@@ -12,7 +12,7 @@ import { Artifacts } from "./resources/artifacts.ts";
 import { MCPConnections, RepositoryBindings, Tools, Triggers } from "./resources/reads.ts";
 import { SecretRefs } from "./resources/secret-refs.ts";
 import { ModelRoutes } from "./resources/model-routes.ts";
-import { ApiKeys, Organizations, Projects } from "./resources/provisioning.ts";
+import { ApiKeys, Projects } from "./resources/provisioning.ts";
 import type { DownloadOptions } from "./resources/shared.ts";
 
 // APIVersion is the dated contract this SDK speaks; it rides every request (spec §20.13).
@@ -73,7 +73,6 @@ export class Palai implements StreamTransport {
   readonly triggers: Triggers;
   readonly secretRefs: SecretRefs;
   readonly modelRoutes: ModelRoutes;
-  readonly organizations: Organizations;
   readonly projects: Projects;
   readonly apiKeys: ApiKeys;
 
@@ -112,7 +111,6 @@ export class Palai implements StreamTransport {
     this.triggers = new Triggers(this);
     this.secretRefs = new SecretRefs(this);
     this.modelRoutes = new ModelRoutes(this);
-    this.organizations = new Organizations(this);
     this.projects = new Projects(this);
     this.apiKeys = new ApiKeys(this);
   }

@@ -6,7 +6,6 @@ from ._resources import (
     Artifacts,
     MCPConnections,
     ModelRoutes,
-    Organizations,
     Projects,
     RepositoryBindings,
     Responses,
@@ -29,7 +28,6 @@ __all__ = [
     "Triggers",
     "SecretRefs",
     "ModelRoutes",
-    "Organizations",
     "Projects",
     "ApiKeys",
 ]
