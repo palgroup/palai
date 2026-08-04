@@ -148,7 +148,7 @@ type extSetup struct {
 func (h *harness) setupExtensions(t *testing.T, ctx context.Context) *extSetup {
 	t.Helper()
 	pool := h.spine.Pool()
-	org, proj := h.tenant.Project
+	proj := h.tenant.Project
 	reg := extensions.New(pool)
 
 	// The real MCP manager over the killable subprocess driver (no Docker). Breaker trips on the FIRST
@@ -161,24 +161,24 @@ func (h *harness) setupExtensions(t *testing.T, ctx context.Context) *extSetup {
 	reg.SetMCP(manager)
 
 	// (1) A control_plane echo tool (pure) — the registered-tool surface.
-	echoTool, err := reg.CreateTool(ctx, org, proj, "acme.journey.fetch")
+	echoTool, err := reg.CreateTool(ctx, proj, "acme.journey.fetch")
 	if err != nil {
 		t.Fatalf("create echo tool: %v", err)
 	}
-	echoRev, err := reg.CreateToolRevision(ctx, org, proj, echoTool.ID,
+	echoRev, err := reg.CreateToolRevision(ctx, proj, echoTool.ID,
 		[]byte(`{"executor":"control_plane","input_schema":{"type":"object"},"replay_class":"pure"}`))
 	if err != nil {
 		t.Fatalf("create echo revision: %v", err)
 	}
-	if _, _, err := reg.PublishToolRevision(ctx, org, proj, echoRev.ID, nil); err != nil {
+	if _, _, err := reg.PublishToolRevision(ctx, proj, echoRev.ID, nil); err != nil {
 		t.Fatalf("publish echo revision: %v", err)
 	}
 
 	// (2) A signed remote_http tool — the async 202 -> signed-callback surface (the callback proof).
 	secret := []byte("whsec_journey_remote_" + newID("s")) // whsec_ shape: the manifest redaction needles it
 	ops := remotehttp.NewOperations(pool)
-	resolver := func(o, ref string) ([]byte, error) {
-		if o == org && ref == "sig-ref" {
+	resolver := func(ref string) ([]byte, error) {
+		if ref == "sig-ref" {
 			return secret, nil
 		}
 		return nil, nil
@@ -207,16 +207,16 @@ func (h *harness) setupExtensions(t *testing.T, ctx context.Context) *extSetup {
 		go postSignedExtCallback(secret, inv.ToolCallID, inv.Callback.URL, inv.Callback.Token)
 	}))
 	t.Cleanup(toolServer.Close)
-	remoteTool, err := reg.CreateTool(ctx, org, proj, "acme.journey.lookup")
+	remoteTool, err := reg.CreateTool(ctx, proj, "acme.journey.lookup")
 	if err != nil {
 		t.Fatalf("create remote tool: %v", err)
 	}
-	remoteRev, err := reg.CreateToolRevision(ctx, org, proj, remoteTool.ID,
+	remoteRev, err := reg.CreateToolRevision(ctx, proj, remoteTool.ID,
 		[]byte(`{"executor":"remote_http","input_schema":{"type":"object"},"output_schema":{"type":"object"},"replay_class":"idempotent","executor_config":{"url":"`+toolServer.URL+`","allow_private":true},"secret_ref":"sig-ref","timeout_ms":15000}`))
 	if err != nil {
 		t.Fatalf("create remote revision: %v", err)
 	}
-	if _, _, err := reg.PublishToolRevision(ctx, org, proj, remoteRev.ID, nil); err != nil {
+	if _, _, err := reg.PublishToolRevision(ctx, proj, remoteRev.ID, nil); err != nil {
 		t.Fatalf("publish remote revision: %v", err)
 	}
 	executor := remotehttp.NewExecutor(ops, remotehttp.WithCallbackBaseURL(callbackServer.URL))
@@ -224,31 +224,31 @@ func (h *harness) setupExtensions(t *testing.T, ctx context.Context) *extSetup {
 
 	// (3) A discovered MCP tool from the real subprocess fixture — the MCP surface (+ the crash target).
 	connBody := []byte(`{"name":"fixture","transport":"stdio","config":{"image_digest":"sha256:` + hex64() + `","cmd":["/mcp"]}}`)
-	conn, err := reg.CreateMCPConnection(ctx, org, proj, connBody)
+	conn, err := reg.CreateMCPConnection(ctx, proj, connBody)
 	if err != nil {
 		t.Fatalf("create MCP connection: %v", err)
 	}
-	if _, err := reg.DiscoverConnection(ctx, org, proj, conn.ID); err != nil {
+	if _, err := reg.DiscoverConnection(ctx, proj, conn.ID); err != nil {
 		t.Fatalf("discover MCP connection: %v", err)
 	}
 	var mcpRevID string
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT tr.id FROM tools t JOIN tool_revisions tr ON tr.tool_id=t.id
-		 WHERE t.canonical_name=$1 AND t.organization_id=$2 AND t.project_id=$3
-		 ORDER BY tr.revision_number DESC LIMIT 1`, "mcp.fixture.echo", org, proj).Scan(&mcpRevID); err != nil {
+		 WHERE t.canonical_name=$1 AND t.project_id=$2
+		 ORDER BY tr.revision_number DESC LIMIT 1`, "mcp.fixture.echo", proj).Scan(&mcpRevID); err != nil {
 		t.Fatalf("read discovered MCP revision id: %v", err)
 	}
-	if _, _, err := reg.PublishToolRevision(ctx, org, proj, mcpRevID, nil); err != nil {
+	if _, _, err := reg.PublishToolRevision(ctx, proj, mcpRevID, nil); err != nil {
 		t.Fatalf("publish MCP tool revision: %v", err)
 	}
 
 	// Pin all three registered tools into ONE published set the run's revision names.
-	set, err := reg.CreateToolSetRevision(ctx, org, proj, "journeyset",
+	set, err := reg.CreateToolSetRevision(ctx, proj, "journeyset",
 		[]byte(`{"tools":[{"tool_revision_id":"`+echoRev.ID+`"},{"tool_revision_id":"`+remoteRev.ID+`"},{"tool_revision_id":"`+mcpRevID+`"}]}`))
 	if err != nil {
 		t.Fatalf("create tool set: %v", err)
 	}
-	if _, _, err := reg.PublishToolSetRevision(ctx, org, proj, set.ID); err != nil {
+	if _, _, err := reg.PublishToolSetRevision(ctx, proj, set.ID); err != nil {
 		t.Fatalf("publish tool set: %v", err)
 	}
 
@@ -291,17 +291,17 @@ func postSignedExtCallback(secret []byte, toolCallID, callbackURL, token string)
 // tool_sets/mcp_connections/skills are the E12 rider columns; an empty rider is left as the JSON [] literal.
 func (h *harness) seedExtRevision(t *testing.T, ctx context.Context, toolSets, mcpConns, skills string) string {
 	t.Helper()
-	org, proj := h.tenant.Project
+	proj := h.tenant.Project
 	profileID, revID := newID("aprof"), newID("arev")
 	must := func(sql string, args ...any) {
 		if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
-	must(`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,$4)`, profileID, org, proj, profileID)
-	must(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, published_at, tool_sets, mcp_connections, skills)
-	      VALUES ($1,$2,$3,$4,1,'fake',clock_timestamp(),$5::jsonb,$6::jsonb,$7::jsonb)`,
-		revID, org, proj, profileID, toolSets, mcpConns, skills)
+	must(`INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,$3)`, profileID, proj, profileID)
+	must(`INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, published_at, tool_sets, mcp_connections, skills)
+	      VALUES ($1,$2,$3,1,'fake',clock_timestamp(),$4::jsonb,$5::jsonb,$6::jsonb)`,
+		revID, proj, profileID, toolSets, mcpConns, skills)
 	return revID
 }
 
@@ -309,7 +309,7 @@ func (h *harness) seedExtRevision(t *testing.T, ctx context.Context, toolSets, m
 // [palai.workspace.file] so the file tool advertises alongside the pinned set), and returns the ids.
 func (h *harness) seedExtRun(t *testing.T, ctx context.Context, revID, input string) (respID, sessionID, runID string) {
 	t.Helper()
-	org, proj := h.tenant.Project
+	proj := h.tenant.Project
 	sessionID, respID, runID = newID("ses"), newID("resp"), newID("run")
 	must := func(sql string, args ...any) {
 		if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
@@ -319,11 +319,11 @@ func (h *harness) seedExtRun(t *testing.T, ctx context.Context, revID, input str
 	// The project default_tools grant the file tool (skill-body read + the hook-deny target); the pinned set
 	// grants the registered/MCP/remote tools. Idempotent upsert — several runs share the tenant's project.
 	must(`UPDATE projects SET config_policy=$2 WHERE id=$1`, proj, []byte(`{"default_tools":["palai.workspace.file"]}`))
-	must(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, org, proj)
-	must(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued',$5)`,
-		respID, org, proj, sessionID, []byte(`"`+input+`"`))
-	must(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,$5,'queued',$6)`,
-		runID, org, proj, sessionID, respID, revID)
+	must(`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, proj)
+	must(`INSERT INTO responses (id, project_id, session_id, state, input) VALUES ($1,$2,$3,'queued',$4)`,
+		respID, proj, sessionID, []byte(`"`+input+`"`))
+	must(`INSERT INTO runs (id, project_id, session_id, response_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,'queued',$5)`,
+		runID, proj, sessionID, respID, revID)
 	return respID, sessionID, runID
 }
 
@@ -406,7 +406,7 @@ func (h *harness) extOrchestrator(dialer execution.EngineDialer, provider modelb
 // model to "use the push tool" — push is in NO grant layer, so no-authority must hold. Returns the digest.
 func (h *harness) installNoAuthoritySkill(t *testing.T, ctx context.Context) string {
 	t.Helper()
-	org, proj := h.tenant.Project
+	proj := h.tenant.Project
 	q, err := extensions.Quarantine(journeySkillArchive(t))
 	if err != nil {
 		t.Fatalf("quarantine skill: %v", err)
@@ -417,10 +417,10 @@ func (h *harness) installNoAuthoritySkill(t *testing.T, ctx context.Context) str
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
-	must(`INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'publisher')`, skillID, org, proj)
-	must(`INSERT INTO skill_revisions (id, organization_id, project_id, skill_id, revision_number, digest, state, metadata, archive)
-	      VALUES ($1,$2,$3,$4,1,$5,'enabled','{"name":"publisher","description":"publishes changes"}',$6)`,
-		skillRevID, org, proj, skillID, q.Digest, q.Sanitized)
+	must(`INSERT INTO skills (id, project_id, name) VALUES ($1,$2,'publisher')`, skillID, proj)
+	must(`INSERT INTO skill_revisions (id, project_id, skill_id, revision_number, digest, state, metadata, archive)
+	      VALUES ($1,$2,$3,1,$4,'enabled','{"name":"publisher","description":"publishes changes"}',$5)`,
+		skillRevID, proj, skillID, q.Digest, q.Sanitized)
 	return q.Digest
 }
 

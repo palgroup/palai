@@ -101,8 +101,8 @@ func (h *harness) setProjectAllowedModels(models ...string) {
 	h.t.Helper()
 	policy, _ := json.Marshal(map[string]any{"allowed_models": models})
 	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(context.Background()),
-		`UPDATE projects SET config_policy=$1 WHERE id=$2 AND organization_id=$3`,
-		policy, h.tenant.Project, h.tenant.Organization); err != nil {
+		`UPDATE projects SET config_policy=$1 WHERE id=$2`,
+		policy, h.tenant.Project); err != nil {
 		h.t.Fatalf("set project allowed models error = %v", err)
 	}
 }

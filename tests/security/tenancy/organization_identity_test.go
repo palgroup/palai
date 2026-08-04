@@ -334,61 +334,27 @@ func TestNoQueryBindsAnOrganizationIntoAProjectsSlot(t *testing.T) {
 		sites, orgBinds, projectBinds, unnamed)
 }
 
-// TestTenantScopeIsPublishedOrganizationFirst reads the OTHER pair of adjacent strings this epic keeps
-// touching. storage.WithTenant(ctx, project) and ScopeToTenant(ctx, project)
-// publish palai.org_id and palai.project_id, which is what the twelve org-reading policies and every
-// project policy actually enforce — so swapping the two arguments does not narrow a query, it silently
-// scopes the whole connection to the wrong pair, and both parameters are `string`.
+// TestTenantScopeIsPublishedOrganizationFirst WAS HERE, AND A.2 TASK 6 DELETED THE HAZARD IT WATCHED.
 //
-// This is not the query surface the two tests above cover, and it is the surface that survives them: 141
-// of Task 5's 372 tenant.Organization reads are these call sites
-// (`grep -rn 'WithTenant(\|ScopeToTenant(' --include='*.go' . | grep -v _test | grep -c 'tenant\.Organization'`),
-// and they stay until Task 6 removes palai.org_id from the policies.
-func TestTenantScopeIsPublishedOrganizationFirst(t *testing.T) {
-	fset := token.NewFileSet()
-	files := arityParseTree(t, arityRepoRoot, fset)
-
-	var checked, unnamed int
-	for _, pf := range files {
-		ast.Inspect(pf.file, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || (sel.Sel.Name != "WithTenant" && sel.Sel.Name != "ScopeToTenant") {
-				return true
-			}
-			pkg, ok := sel.X.(*ast.Ident)
-			if !ok || pf.imports[pkg.Name] != arityStoragePkg || len(call.Args) != 3 {
-				return true
-			}
-			checked++
-			org, project := identityKind(call.Args[1]), identityKind(call.Args[2])
-			// Only a POSITIVE misplacement fails. An argument this test cannot name is reported, never
-			// assumed wrong: the tree threads these values through parameters called `owner`, `id` and
-			// `scope`, and failing on those would make the test a rename-detector instead of a swap-detector.
-			if org == identityProject || project == identityOrganization {
-				t.Errorf("%s: %s.%s(ctx, %s, %s) — the signature is (ctx, organization, project), and these "+
-					"two arguments are the wrong way round: it would publish palai.org_id from a project id",
-					fset.Position(call.Pos()), pkg.Name, sel.Sel.Name,
-					identityRender(call.Args[1]), identityRender(call.Args[2]))
-			}
-			if org == identityUnknown && project == identityUnknown {
-				unnamed++
-			}
-			return true
-		})
-	}
-	// 312 non-test call sites plus the tests' own, 2026-08-04:
-	//   grep -rn 'WithTenant(\|ScopeToTenant(' --include='*.go' . | grep -v _test | grep -v 'func ' | wc -l
-	const identityScopeFloor = 312
-	if checked < identityScopeFloor {
-		t.Errorf("only %d scope call site(s) were reached, fewer than the %d reached when this floor was set — "+
-			"find what stopped matching before lowering this number", checked, identityScopeFloor)
-	}
-	t.Logf("kimlik: denetlenen kapsam çağrısı: %d; iki argümanı da adlandırılamayan: %d", checked, unnamed)
-}
+// It read the pair of adjacent strings in `storage.WithTenant(ctx, organization, project)` and the same
+// pair in ScopeToTenant, and failed when they were the wrong way round — two `string` parameters, so
+// swapping them scoped the whole connection to the wrong pair with the compiler, `go vet` and the arity
+// guard next door all three silent.
+//
+// Task 6 removed the organization parameter. Both functions now take `(ctx, project)`: ONE string, no
+// adjacent pair, and therefore no order to get wrong. Migration 000066 rekeyed the last policy that read
+// palai.org_id and applyScope stopped writing it, so there is no longer a GUC for a misplaced argument to
+// land in — session_guc_test.go's TestOrgIDGUCIsGone asserts that directly.
+//
+// IT IS DELETED RATHER THAN LEFT TO PASS, because left in place it would have been WORSE than absent. Its
+// matcher required `len(call.Args) != 3` to skip, so against the new signature it would have reached zero
+// call sites — and its own floor (`checked < 312`) exists to catch exactly that collapse. It would have
+// gone red for a rename it was not watching for while its actual claim had become unstateable. A guard
+// whose subject no longer exists cannot be made honest by loosening it.
+//
+// The two tests above are NOT affected and stay: they read bind arguments against the SQL of statements
+// in storage/queries, and the `organizations` table plus provisioning.sql's three statements are still
+// there — that is A.2's remaining work, not this task's.
 
 // identityKind classifies a bind argument by the name it ends in.
 type identityKindOf int

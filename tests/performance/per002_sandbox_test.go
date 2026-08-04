@@ -152,8 +152,7 @@ func requireSandbox(t *testing.T) *sandbox {
 
 	sb := &sandbox{spine: spine, digest: digest, driver: driver,
 		tenant: coordinator.Tenant{Project: newID("prj")}}
-	sb.exec(t, `INSERT INTO organizations (id) VALUES ($1)`, sb.tenant.Organization)
-	sb.exec(t, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, sb.tenant.Project, sb.tenant.Organization)
+	sb.exec(t, `INSERT INTO projects (id) VALUES ($1)`, sb.tenant.Project)
 	return sb
 }
 

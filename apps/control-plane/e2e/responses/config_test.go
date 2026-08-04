@@ -125,8 +125,8 @@ func (p *immediateSwitchProvider) sawAssistantContent(substr string) bool {
 func (h *harness) setProjectPolicy(policy string) {
 	h.t.Helper()
 	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(context.Background()),
-		`UPDATE projects SET config_policy = $1::jsonb WHERE id = $2 AND organization_id = $3`,
-		policy, h.tenant.Project, h.tenant.Organization); err != nil {
+		`UPDATE projects SET config_policy = $1::jsonb WHERE id = $2`,
+		policy, h.tenant.Project); err != nil {
 		h.t.Fatalf("set project policy error = %v", err)
 	}
 }

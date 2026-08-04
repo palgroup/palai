@@ -82,7 +82,7 @@ func newID(prefix string) string {
 	return prefix + "_" + hex.EncodeToString(raw[:])
 }
 
-// seedTenantWithKey creates org -> project -> principal -> api_key; the stored verifier is the hash of
+// seedTenantWithKey creates project -> principal -> api_key; the stored verifier is the hash of
 // token, never token itself.
 func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) coordinator.Tenant {
 	t.Helper()
@@ -94,11 +94,10 @@ func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) coordinat
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
-	exec(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	exec(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`,
+	exec(`INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
+	exec(`INSERT INTO principals (id, project_id, kind) VALUES ($1, $2, 'service')`,
 		principalID, tenant.Project)
-	exec(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4, $5)`,
+	exec(`INSERT INTO api_keys (id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4)`,
 		newID("key"), tenant.Project, principalID, coordinator.HashAPIKey(token))
 	return tenant
 }

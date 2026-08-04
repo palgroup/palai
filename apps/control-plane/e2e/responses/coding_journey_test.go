@@ -512,8 +512,8 @@ func (w *recordingArtifactWriter) WriteArtifact(ctx context.Context, project, ru
 	w.byType[logicalType] = string(content)
 	id := "art_" + newID(logicalType)
 	if _, err := w.h.spine.Pool().Exec(storage.WithSystemScope(ctx),
-		`INSERT INTO artifacts (id, organization_id, project_id, run_id, object_key, size_bytes) VALUES ($1,$2,$3,$4,$5,$6)`,
-		id, org, project, runID, "obj/"+id, len(content)); err != nil {
+		`INSERT INTO artifacts (id, project_id, run_id, object_key, size_bytes) VALUES ($1,$2,$3,$4,$5)`,
+		id, project, runID, "obj/"+id, len(content)); err != nil {
 		return "", err
 	}
 	return id, nil

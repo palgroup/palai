@@ -224,24 +224,27 @@ func TestUnauthorizedAttachIsTenantScoped404WithAuditDenial(t *testing.T) {
 
 	// The denial row is keyed to the actor (tenant B), names only the caller-supplied id, and
 	// discloses nothing about tenant A.
-	var org, project, actor, action, outcome, resource string
+	// organization_id is NOT selected: A.2 Task 6 removed it from audit.sql's INSERT, so the column
+	// survives in the table holding NULL for every row this build writes. Scanning it into a string
+	// would fail on that NULL, and scanning it into a *string would assert nothing.
+	var project, actor, action, outcome, resource string
 	var detail []byte
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT organization_id, project_id, actor, action, outcome, resource, detail
+		`SELECT project_id, actor, action, outcome, resource, detail
 		   FROM audit_events WHERE resource=$1 AND outcome='denied' ORDER BY id DESC LIMIT 1`,
-		sessionA).Scan(&org, &project, &actor, &action, &outcome, &resource, &detail); err != nil {
+		sessionA).Scan(&project, &actor, &action, &outcome, &resource, &detail); err != nil {
 		t.Fatalf("read audit denial error = %v", err)
 	}
-	if org != tenantB.Organization || project != tenantB.Project {
-		t.Fatalf("denial keyed to %s/%s, want the actor's tenant %s/%s", org, project, tenantB.Project)
+	if project != tenantB.Project {
+		t.Fatalf("denial keyed to project %s, want the actor's project %s", project, tenantB.Project)
 	}
 	if action != "session.attach" || outcome != "denied" {
 		t.Fatalf("denial action/outcome = %s/%s, want session.attach/denied", action, outcome)
 	}
 	// Content-free: nothing in the row identifies tenant A (the true owner).
-	leak := string(detail) + org + project + actor
-	if strings.Contains(leak, h.tenant.Organization) || strings.Contains(leak, h.tenant.Project) {
-		t.Fatalf("denial discloses tenant A: detail=%s org=%s project=%s actor=%s", detail, org, project, actor)
+	leak := string(detail) + project + actor
+	if strings.Contains(leak, h.tenant.Project) {
+		t.Fatalf("denial discloses tenant A: detail=%s project=%s actor=%s", detail, project, actor)
 	}
 }
 

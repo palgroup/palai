@@ -104,8 +104,12 @@ func TestListResponsesPagesRealRunHistory(t *testing.T) {
 		if !r.ID.Valid() || r.Object != "response" {
 			t.Fatalf("list row is not a canonical response: %+v", r)
 		}
-		if r.OrganizationID != contracts.OrganizationID(h.tenant.Organization) {
-			t.Fatalf("list row org = %q, want the verified %q", r.OrganizationID, h.tenant.Organization)
+		// The tenant field this asserts moved with A.2 Task 6: contracts.Response carried an
+		// OrganizationID until the type was deleted, and ProjectID is now the only tenant key on the
+		// wire. The claim is unchanged — a listed row is keyed to the tenant the API key VERIFIED,
+		// not to anything the request asked for.
+		if r.ProjectID != contracts.ProjectID(h.tenant.Project) {
+			t.Fatalf("list row project = %q, want the verified %q", r.ProjectID, h.tenant.Project)
 		}
 	}
 }
