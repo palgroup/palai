@@ -20,17 +20,12 @@ import (
 // provisioning route through the real router.
 type fakeProv struct{}
 
-func (fakeProv) CreateOrganization(context.Context, middleware.Scope, []byte) (capi.ProvisionResult, error) {
-	return capi.ProvisionResult{Body: []byte(`{"id":"org_new","object":"organization","display_name":"Acme","default_project_id":"prj_new","admin_api_key":{"id":"key_new","object":"api_key","key":"sk_oneTimeOrgKey"}}`)}, nil
-}
-func (fakeProv) ListOrganizations(context.Context, middleware.Scope) (capi.ProvisionResult, error) {
-	return capi.ProvisionResult{Body: []byte(`{"object":"list","data":[{"id":"org_1","object":"organization"}]}`)}, nil
-}
-func (fakeProv) GetOrganization(context.Context, middleware.Scope, string) (capi.ProvisionResult, error) {
-	return capi.ProvisionResult{Body: []byte(`{"id":"org_1","object":"organization"}`)}, nil
-}
+// CreateProject mirrors identity.Store.CreateProject's REAL body — the project view plus the one-time
+// admin key — because the claim below is that the key is rendered and the bearer is not, and a fake that
+// returned only an id would let that assertion pass without a key ever existing. This is the shape that
+// took over CreateOrganization's job in A.2 Task 6.
 func (fakeProv) CreateProject(context.Context, middleware.Scope, []byte) (capi.ProvisionResult, error) {
-	return capi.ProvisionResult{Body: []byte(`{"id":"prj_new","object":"project"}`)}, nil
+	return capi.ProvisionResult{Body: []byte(`{"id":"prj_new","object":"project","display_name":"P","config_policy":null,"admin_api_key":{"id":"key_new","object":"api_key","project_id":"prj_new","principal_id":"prin_new","scopes":[],"key":"sk_oneTimeProjectKey"}}`)}, nil
 }
 func (fakeProv) ListProjects(context.Context, middleware.Scope) (capi.ProvisionResult, error) {
 	return capi.ProvisionResult{Body: []byte(`{"object":"list","data":[]}`)}, nil
@@ -104,15 +99,15 @@ func TestAdminCLIAgainstRealRouter(t *testing.T) {
 	platformBase := realRouterServer(t, staticVerifier{scope: middleware.Scope{Scopes: []string{middleware.ScopeSystem}}}, &fakeSec{})
 	t.Setenv("PALAI_BASE_URL", platformBase)
 	t.Setenv("PALAI_API_KEY", "platform-key")
-	var orgOut bytes.Buffer
-	if err := Run("org", []string{"create", "--display-name", "Acme"}, &orgOut, strings.NewReader("")); err != nil {
-		t.Fatalf("Run([org create --display-name Acme]): %v", err)
+	var openOut bytes.Buffer
+	if err := Run("project", []string{"create", "--display-name", "Acme"}, &openOut, strings.NewReader("")); err != nil {
+		t.Fatalf("Run([project create --display-name Acme]): %v", err)
 	}
-	if !strings.Contains(orgOut.String(), `"sk_oneTimeOrgKey"`) {
-		t.Errorf("output %q missing %q", orgOut.String(), `"sk_oneTimeOrgKey"`)
+	if !strings.Contains(openOut.String(), `"sk_oneTimeProjectKey"`) {
+		t.Errorf("output %q missing %q", openOut.String(), `"sk_oneTimeProjectKey"`)
 	}
-	if strings.Contains(orgOut.String(), "platform-key") {
-		t.Errorf("output %q leaked the bearer key", orgOut.String())
+	if strings.Contains(openOut.String(), "platform-key") {
+		t.Errorf("output %q leaked the bearer key", openOut.String())
 	}
 
 	sec := &fakeSec{}
@@ -127,9 +122,10 @@ func TestAdminCLIAgainstRealRouter(t *testing.T) {
 		wantNotOut string // substring the output must NOT contain (empty = skip)
 	}
 	steps := []step{
-		{args: []string{"org", "list"}, wantOut: `"org_1"`},
-		{args: []string{"org", "get", "org_1"}, wantOut: `"organization"`},
-		{args: []string{"project", "create", "--display-name", "P"}, wantOut: `"prj_new"`},
+		// `project create` is NOT in this list: it is the tenant-OPENING route and is gated on
+		// middleware.ScopeSystem, which the ordinary admin key driving these steps deliberately lacks. It
+		// is proven above against its own platform-scoped key, where the one-time admin key it returns is
+		// what makes that proof worth having.
 		{args: []string{"project", "list"}, wantOut: `"list"`},
 		{args: []string{"project", "get", "prj_1"}, wantOut: `"prj_1"`},
 		{args: []string{"project", "set-policy", "prj_1", "--allowed-models", "m1,m2"}, wantOut: `"m1"`},
@@ -170,7 +166,7 @@ func TestAdminCLIRealRouterInsufficientScope(t *testing.T) {
 	t.Setenv("PALAI_BASE_URL", base)
 	t.Setenv("PALAI_API_KEY", "run-only-key")
 
-	err := Run("org", []string{"list"}, new(bytes.Buffer), strings.NewReader(""))
+	err := Run("project", []string{"list"}, new(bytes.Buffer), strings.NewReader(""))
 	if err == nil || !strings.Contains(err.Error(), "insufficient_scope") {
 		t.Fatalf("want an insufficient_scope render, got %v", err)
 	}
@@ -183,7 +179,7 @@ func TestAdminCLIRealRouterInvalidToken(t *testing.T) {
 	t.Setenv("PALAI_BASE_URL", base)
 	t.Setenv("PALAI_API_KEY", "bogus-key")
 
-	err := Run("org", []string{"list"}, new(bytes.Buffer), strings.NewReader(""))
+	err := Run("project", []string{"list"}, new(bytes.Buffer), strings.NewReader(""))
 	if err == nil || !strings.Contains(err.Error(), "invalid_token") {
 		t.Fatalf("want an invalid_token render, got %v", err)
 	}

@@ -63,11 +63,13 @@ func TestRemoteHookUsesSignedTransport(t *testing.T) {
 	if invoker.got.SecretRef != "sref_hook" {
 		t.Fatalf("Invocation SecretRef = %q, want sref_hook", invoker.got.SecretRef)
 	}
-	// The secret was resolved FRESH from the org-scoped resolver — not held on the binding.
+	// The secret was resolved FRESH from the resolver — not held on the binding. The resolver is keyed on
+	// the REF ALONE since A.2 Task 6 removed the organization from that seam, so the value it returns is
+	// derived from sref_hook rather than from a tenant id.
 	if resolvedRef != "sref_hook" {
 		t.Fatalf("secret resolved for %q, want sref_hook", resolvedRef)
 	}
-	if string(invoker.got.Secret) != "signing-secret-for-org_1" {
+	if string(invoker.got.Secret) != "signing-secret-for-sref_hook" {
 		t.Fatalf("Invocation Secret = %q, want the freshly resolved bytes", invoker.got.Secret)
 	}
 	// The hook payload rides as the envelope arguments (the point's observable data).

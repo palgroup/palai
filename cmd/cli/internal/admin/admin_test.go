@@ -47,9 +47,6 @@ func TestSubcommandsHitCorrectEndpoint(t *testing.T) {
 		stdin                                string
 		wantMethod, wantPath, wantBodySubstr string
 	}{
-		{"org create", []string{"org", "create", "--display-name", "Acme"}, "", "POST", "/v1/organizations", `"display_name":"Acme"`},
-		{"org list", []string{"org", "list"}, "", "GET", "/v1/organizations", ""},
-		{"org get", []string{"org", "get", "org_1"}, "", "GET", "/v1/organizations/org_1", ""},
 		{"project create", []string{"project", "create", "--display-name", "P"}, "", "POST", "/v1/projects", `"display_name":"P"`},
 		{"project list", []string{"project", "list"}, "", "GET", "/v1/projects", ""},
 		{"project get", []string{"project", "get", "prj_1"}, "", "GET", "/v1/projects/prj_1", ""},
@@ -161,7 +158,7 @@ func TestProblemRender(t *testing.T) {
 	t.Setenv("PALAI_API_KEY", "k")
 
 	var out bytes.Buffer
-	err := Run("org", []string{"list"}, &out, strings.NewReader(""))
+	err := Run("project", []string{"list"}, &out, strings.NewReader(""))
 	if err == nil {
 		t.Fatal("expected an error on 403")
 	}
@@ -173,7 +170,7 @@ func TestProblemRender(t *testing.T) {
 	}
 
 	var jout bytes.Buffer
-	err = Run("org", []string{"list", "--json"}, &jout, strings.NewReader(""))
+	err = Run("project", []string{"list", "--json"}, &jout, strings.NewReader(""))
 	if err == nil {
 		t.Fatal("expected an error on 403 (json)")
 	}
@@ -240,7 +237,7 @@ func TestAPIKeyFileFlagReadsKeyFromFile(t *testing.T) {
 	t.Setenv("PALAI_API_KEY", "env-key")
 
 	var out bytes.Buffer
-	if err := Run("org", []string{"list", "--api-key-file", keyFile}, &out, strings.NewReader("")); err != nil {
+	if err := Run("project", []string{"list", "--api-key-file", keyFile}, &out, strings.NewReader("")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if cap.auth != "Bearer file-borne-key" {

@@ -39,27 +39,27 @@ func TestCATrustReachesHTTPSEdge(t *testing.T) {
 
 	// With --ca the self-signed edge is trusted and the call succeeds.
 	var out bytes.Buffer
-	if err := Run("org", []string{"list", "--ca", caFile}, &out, strings.NewReader("")); err != nil {
-		t.Fatalf("org list --ca should reach the https edge, got: %v", err)
+	if err := Run("project", []string{"list", "--ca", caFile}, &out, strings.NewReader("")); err != nil {
+		t.Fatalf("project list --ca should reach the https edge, got: %v", err)
 	}
 
 	// PALAI_CA_FILE is honored the same as the flag.
 	out.Reset()
 	t.Setenv("PALAI_CA_FILE", caFile)
-	if err := Run("org", []string{"list"}, &out, strings.NewReader("")); err != nil {
-		t.Fatalf("org list with PALAI_CA_FILE should reach the https edge, got: %v", err)
+	if err := Run("project", []string{"list"}, &out, strings.NewReader("")); err != nil {
+		t.Fatalf("project list with PALAI_CA_FILE should reach the https edge, got: %v", err)
 	}
 	os.Unsetenv("PALAI_CA_FILE")
 
 	// WITHOUT a CA the self-signed cert is untrusted — the call must fail (not silently connect).
 	out.Reset()
-	if err := Run("org", []string{"list"}, &out, strings.NewReader("")); err == nil {
-		t.Fatal("org list with no CA must reject the untrusted self-signed edge cert")
+	if err := Run("project", []string{"list"}, &out, strings.NewReader("")); err == nil {
+		t.Fatal("project list with no CA must reject the untrusted self-signed edge cert")
 	}
 
 	// A named-but-unreadable CA is a hard error, never a silent fall-through to the system trust store.
 	out.Reset()
-	if err := Run("org", []string{"list", "--ca", filepath.Join(t.TempDir(), "missing.crt")}, &out, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "read --ca file") {
+	if err := Run("project", []string{"list", "--ca", filepath.Join(t.TempDir(), "missing.crt")}, &out, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "read --ca file") {
 		t.Fatalf("a missing --ca file must be a hard error, got: %v", err)
 	}
 
@@ -68,7 +68,7 @@ func TestCATrustReachesHTTPSEdge(t *testing.T) {
 	if err := os.WriteFile(empty, []byte("not a pem"), 0o600); err != nil {
 		t.Fatalf("write empty ca: %v", err)
 	}
-	if err := Run("org", []string{"list", "--ca", empty}, &out, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "no PEM certificates") {
+	if err := Run("project", []string{"list", "--ca", empty}, &out, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "no PEM certificates") {
 		t.Fatalf("a CA file with no certificates must be a hard error, got: %v", err)
 	}
 }

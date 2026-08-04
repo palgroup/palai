@@ -64,8 +64,15 @@ func nativeRunnerBinary(p paths) (string, error) {
 }
 
 // nativeRunnerEnv is the environment the native runner runs with: what the compose service's
-// `environment:` block gave the container, with every container-side address replaced by one this
-// process can reach.
+// `environment:` block gave the CONTAINER, bridged the way runner-entrypoint.sh bridges it, with every
+// container-side address replaced by one this process can reach.
+//
+// THE BRIDGE IS THE POINT, not a detail under it. The compose/Helm/systemd contract's public variable
+// names (PALAI_RUNNER_CA_CERT among them) are not what cmd/runner's binary reads — mustEnv("PALAI_CONTROLLER_CA")
+// is (main.go:174) — and every other launcher translates one to the other in a shell wrapper before
+// exec'ing the binary (deploy/compose/runner-entrypoint.sh, scripts/package/runner/palai-runner.sh). This
+// process has no wrapper: it calls exec.Command on the binary directly, so THIS function is that bridge,
+// and it has to hand the binary the names the binary actually reads, not the contract's names.
 //
 // THE CONTROLLER IS DIALLED ON LOOPBACK AND VERIFIED BY THE NAME ON ITS CERTIFICATE, and those are two
 // different fields on purpose. certs.go mints ONE SAN — `control-plane` — and packages/runner verifies
@@ -88,15 +95,24 @@ func nativeRunnerEnv(cfg Config, p paths, get func(string) string, engine, root 
 			env[k] = v
 		}
 	}
+	controllerURL := fmt.Sprintf("https://127.0.0.1:%d", cfg.RunnerPort)
 	for k, v := range map[string]string{
-		"PALAI_CONTROLLER_URL": fmt.Sprintf("https://127.0.0.1:%d", cfg.RunnerPort),
+		"PALAI_CONTROLLER_URL": controllerURL,
 		"PALAI_CONTROLLER_DNS": nativeControllerDNS,
-		// The stack CA and the enrollment credential at their REAL paths; the container's /palai/* mounts
-		// name files that do not exist off a container.
-		"PALAI_RUNNER_CA_CERT":        p.caCert,
+		// The stack CA at its REAL path, under the name the binary reads (mustEnv("PALAI_CONTROLLER_CA")) —
+		// the container's /palai/* mounts name files that do not exist off a container, and PALAI_RUNNER_CA_CERT
+		// is a name only the compose/systemd bridge scripts translate, which this process is instead of.
+		"PALAI_CONTROLLER_CA":         p.caCert,
 		"PALAI_ENROLLMENT_TOKEN_FILE": p.runnerToken,
-		"PALAI_ENGINE_IMAGE":          engine,
-		"PALAI_COMPOSE_PROJECT":       cfg.Project,
+		// cmd/runner's own PALAI_CONTROLLER_URL derivation (loadConfig's "one address instead of four")
+		// gets the other three endpoints right for free — joinPath is a plain path append and enroll/renew/
+		// settings stay https — but NOT this one: the session dial is a WEBSOCKET (session.go refuses
+		// anything not prefixed "wss://"), and joinPath never swaps the scheme. Both shipped bridge scripts
+		// special-case exactly this URL for that reason; this process has no bridge script, so it does the
+		// same swap here rather than relying on a derivation path no shipped deployment has ever exercised.
+		"PALAI_SESSION_URL":     "wss://" + strings.TrimPrefix(controllerURL, "https://") + "/v1/runner/connect",
+		"PALAI_ENGINE_IMAGE":    engine,
+		"PALAI_COMPOSE_PROJECT": cfg.Project,
 		// The allocation root, which on this posture is one path on one filesystem: the control plane
 		// mints under it and the runner is on the same machine, so there is no bind to keep in step.
 		"PALAI_WORKSPACE_ROOT": root,

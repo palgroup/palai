@@ -119,9 +119,16 @@ type RunnerPoolCreate struct {
 	StrictEnrollment bool
 }
 
-// ErrRunnerPoolNameTaken is 000045's UNIQUE (organization_id, project_id, name) index rendered as an answer
-// rather than as a 500. It is declared HERE rather than in internal/fleet because the api package is
-// imported BY the stores and cannot import them back — the same direction RunnerListWindow is declared in.
+// ErrRunnerPoolNameTaken is the runner_pools UNIQUE (project_id, name) index rendered as an answer rather
+// than as a 500. It is declared HERE rather than in internal/fleet because the api package is imported BY
+// the stores and cannot import them back — the same direction RunnerListWindow is declared in.
+//
+// 000045 DECLARED THAT INDEX AS (organization_id, project_id, name) and 000065 rebuilt it without the
+// organization; the shape above is the one a reader will find in pg_indexes today
+// (`runner_pools_name_key ON runner_pools USING btree (project_id, name)`). The ERROR did not change
+// meaning: the collision it names was always "this project already has a pool by that name", because a
+// project belonged to exactly one organization — dropping the leading column narrowed the index's text,
+// not the set of rows it rejects.
 var ErrRunnerPoolNameTaken = errors.New("api: a runner pool with that name already exists in this project")
 
 // runnerPoolPostures is the pair migration 000045 declares in its CHECK. Validating on the ROUTE makes a

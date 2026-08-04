@@ -13,12 +13,15 @@ import (
 // never from a request-body field (spec §39.2), and is the only source handlers
 // use to scope writes.
 //
-// NO ORGANIZATION (A.2 Task 3): the request scope resolves a project and nothing above it. Palai is
-// becoming single-tenant per installation (storage/migrations/000062's header), so the HTTP layer no
-// longer needs to know which organization a project belongs to — the handful of call sites that
-// genuinely still need that value (identity's org-wide provisioning listing, a coordinator.Tenant
-// construction, a wire-rendered organization_id) resolve it fresh via storage.OrganizationForProject,
-// keyed off Project, rather than reading it from here.
+// NO ORGANIZATION (A.2 Task 3, completed by Task 6): the request scope resolves a project and nothing
+// above it. Palai is single-tenant per installation (storage/migrations/000062's header), and a project
+// IS the tenant — there is no longer anything above it to resolve.
+//
+// THE CALL SITES THIS PARAGRAPH USED TO SEND ELSEWHERE ARE GONE, not relocated: it named
+// storage.OrganizationForProject as where the handful of remaining readers went for the value, and
+// migration 000067 dropped both the column that statement read and the organizations table it pointed at.
+// The provisioning listing lists projects, coordinator.Tenant holds a project alone, and no response body
+// carries an organization_id.
 type Scope struct {
 	Project   string
 	Principal string

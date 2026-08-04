@@ -98,8 +98,6 @@ func TestProvisioningSurface(t *testing.T) {
 		method, path, body, wantLoc string
 		wantStatus                  int
 	}{
-		{"GET", "/v1/organizations", ``, "", http.StatusOK},
-		{"GET", "/v1/organizations/org_9", ``, "", http.StatusOK},
 		{"GET", "/v1/projects", ``, "", http.StatusOK},
 		{"GET", "/v1/projects/prj_9", ``, "", http.StatusOK},
 		{"PATCH", "/v1/projects/prj_9", `{"config_policy":{"allowed_models":["m"]}}`, "", http.StatusOK},
@@ -121,12 +119,12 @@ func TestProvisioningSurface(t *testing.T) {
 	// The two TENANT-OPENING routes are gated on middleware.ScopeSystem, not on the ordinary admin key
 	// above — their own server, backed by its own system-scoped key, so the shared `admin` verifier stays
 	// exactly what its name says: a tenant admin, which is not enough to open a tenant. POST /v1/projects
-	// joined this pair in A.2 Task 6, when it took over CreateOrganization's job of minting the tenant's
-	// principal and one-time admin key.
+	// took over CreateOrganization's job of minting the tenant's principal and one-time admin key in A.2
+	// Task 6, and is now the ONLY tenant-opening route — POST /v1/organizations was unmounted with the
+	// table behind it, so what was a pair is a single entry.
 	platform := scopedVerifier{middleware.Scope{Project: "prj_1", Scopes: []string{middleware.ScopeSystem}}}
 	platformBase := provisioningTestServer(t, platform, fake)
 	for _, open := range []struct{ path, wantLoc string }{
-		{"/v1/organizations", "/v1/organizations/x_1"},
 		{"/v1/projects", "/v1/projects/x_1"},
 	} {
 		resp := do(t, "POST", platformBase+open.path, `{"display_name":"acme"}`, nil)
@@ -159,17 +157,16 @@ func TestProvisioningSurface(t *testing.T) {
 }
 
 // TestProvisioningRequiresProvisionScope proves the basic-scope gate: a key whose non-empty scopes omit
-// `provision` is refused (403) on every provisioning route, and reaches the store on none of them. The two
-// tenant-OPENING routes in the list (POST /v1/organizations, POST /v1/projects) are refused by the
-// stricter system gate rather than this one — TestProvisioningSurface is where that difference is pinned,
-// because a run-only key fails both and so cannot tell them apart.
+// `provision` is refused (403) on every provisioning route, and reaches the store on none of them. The
+// tenant-OPENING route in the list (POST /v1/projects) is refused by the stricter system gate rather than
+// this one — TestProvisioningSurface is where that difference is pinned, because a run-only key fails both
+// and so cannot tell them apart.
 func TestProvisioningRequiresProvisionScope(t *testing.T) {
 	runOnly := scopedVerifier{middleware.Scope{Project: "prj_1", Scopes: []string{"run"}}}
 	fake := &fakeProvisioning{create: ProvisionResult{Body: []byte(`{"id":"x_1"}`)}, read: ProvisionResult{Body: []byte(`{}`)}}
 	base := provisioningTestServer(t, runOnly, fake)
 
 	for _, route := range []struct{ method, path string }{
-		{"POST", "/v1/organizations"}, {"GET", "/v1/organizations"},
 		{"POST", "/v1/projects"}, {"GET", "/v1/projects"}, {"PATCH", "/v1/projects/prj_1"},
 		{"POST", "/v1/api-keys"}, {"GET", "/v1/api-keys"}, {"POST", "/v1/api-keys/key_1/revoke"},
 	} {
@@ -205,9 +202,15 @@ func TestAPIKeyPlaintextOnlyInCreateResponse(t *testing.T) {
 
 // TestProvisioningRoutesUnmountedWhenNil proves the nil-seam guard: a tier that wires no provisioning API
 // mounts no provisioning route (a POST is 404), so the Docker-free conformance tiers stay unaffected.
+//
+// IT PROBES /v1/projects, AND THE ROUTE IT USED TO PROBE IS WHY. This asked for POST /v1/organizations
+// until A.2 Task 6 unmounted that route entirely — after which the 404 it asserted arrived whether the
+// seam was nil or not, and the test would have passed against a FULLY WIRED router. A nil-seam guard that
+// names a route the router never has is not a weak guard, it is no guard: /v1/projects is 201 when the
+// seam is wired (TestProvisioningSurface drives exactly that), so the 404 here can only come from nil.
 func TestProvisioningRoutesUnmountedWhenNil(t *testing.T) {
 	base := provisioningTestServer(t, scopedVerifier{middleware.Scope{Project: "prj_1"}}, nil)
-	if resp := do(t, "POST", base+"/v1/organizations", `{}`, nil); resp.StatusCode != http.StatusNotFound {
+	if resp := do(t, "POST", base+"/v1/projects", `{}`, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("nil provisioning POST status = %d, want 404 (route unmounted)", resp.StatusCode)
 	}
 }

@@ -27,24 +27,32 @@ import (
 // the whitespace-collapsed statement rather than the file's bytes, so a re-indent is not a failure and a
 // changed value is.
 func TestTheDefaultPoolSeedStatementIsUnchanged(t *testing.T) {
-	const want = "INSERT INTO runner_pools (id, organization_id, project_id, name, posture, strict_enrollment) " +
-		"VALUES ($1, $2, $3, 'default', 'sandboxed-linux', false) ON CONFLICT DO NOTHING;"
+	// A.2 Task 6 removed organization_id from the column list (migration 000067 dropped the column). The
+	// pin moved with it, and what the pin is ABOUT did not: the three LITERALS and the conflict clause are
+	// byte-for-byte what they were. A tenant's birth row is re-pointed by parameterising 'default',
+	// 'sandboxed-linux' or false — never by the statement naming one tenant column instead of two.
+	const want = "INSERT INTO runner_pools (id, project_id, name, posture, strict_enrollment) " +
+		"VALUES ($1, $2, 'default', 'sandboxed-linux', false) ON CONFLICT DO NOTHING;"
 
 	got := collapse(statementBody(storage.Query("InsertDefaultRunnerPool")))
 	if got != want {
-		t.Fatalf("InsertDefaultRunnerPool is now\n  %s\nwant\n  %s\n\nEvery organization alive today was born with the row this statement writes. A parameterised name, a "+
+		t.Fatalf("InsertDefaultRunnerPool is now\n  %s\nwant\n  %s\n\nEvery project alive today was born with the row this statement writes. A parameterised name, a "+
 			"parameterised posture or a strict_enrollment that is not the literal false would re-point that birth — "+
 			"E28 T1 adds a SECOND statement for a created pool and leaves this one alone", got, want)
 	}
 }
 
-// TestTheSeedStatementTakesExactlyThreeParameters is the same claim from the other side, and it is the one
-// that catches the cheap mistake: a fourth placeholder is a value a caller now chooses.
-func TestTheSeedStatementTakesExactlyThreeParameters(t *testing.T) {
+// TestTheSeedStatementTakesExactlyTwoParameters is the same claim from the other side, and it is the one
+// that catches the cheap mistake: a third placeholder is a value a caller now chooses.
+//
+// IT WAS THREE UNTIL A.2 TASK 6 and the bound moved DOWN with the dropped organization_id, which is the
+// direction that needs saying: a guard against "one more parameter" is only as strong as the number it
+// starts from, so leaving it at $4 would have let the statement grow a third id back without a word.
+func TestTheSeedStatementTakesExactlyTwoParameters(t *testing.T) {
 	body := statementBody(storage.Query("InsertDefaultRunnerPool"))
-	for _, placeholder := range []string{"$4", "$5", "$6"} {
+	for _, placeholder := range []string{"$3", "$4", "$5", "$6"} {
 		if strings.Contains(body, placeholder) {
-			t.Errorf("InsertDefaultRunnerPool now takes %s: the tenant-birth statement writes three ids and three literals, and a fourth parameter is a decision moved to a caller", placeholder)
+			t.Errorf("InsertDefaultRunnerPool now takes %s: the tenant-birth statement writes two ids and three literals, and a third parameter is a decision moved to a caller", placeholder)
 		}
 	}
 }

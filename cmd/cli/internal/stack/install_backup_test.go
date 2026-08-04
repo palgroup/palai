@@ -86,8 +86,7 @@ func TestBackupArchiveRoundTrip(t *testing.T) {
 		Version:           backupManifestVersion,
 		Project:           "palai-abcd",
 		MigrationVersion:  32,
-		OrganizationIDs:   []string{"org_a", "org_b"},
-		ProjectIDs:        []string{"prj_a"},
+		ProjectIDs:        []string{"prj_a", "prj_b"},
 		SampleResponseID:  "resp_xyz",
 		DBDumpSHA256:      sha256Hex(dbDump),
 		ObjectStoreSHA256: sha256Hex(objTar),
@@ -112,8 +111,8 @@ func TestBackupArchiveRoundTrip(t *testing.T) {
 	if gotM.MigrationVersion != 32 || gotM.SampleResponseID != "resp_xyz" {
 		t.Fatalf("manifest round-trip mismatch: %+v", gotM)
 	}
-	if len(gotM.OrganizationIDs) != 2 {
-		t.Fatalf("org ids round-trip mismatch: %v", gotM.OrganizationIDs)
+	if len(gotM.ProjectIDs) != 2 {
+		t.Fatalf("project ids round-trip mismatch: %v", gotM.ProjectIDs)
 	}
 }
 
@@ -196,7 +195,7 @@ func TestManifestCarriesNoSecretShaped(t *testing.T) {
 		Kind:             backupKind,
 		Version:          backupManifestVersion,
 		Project:          "palai-abcd",
-		OrganizationIDs:  []string{"org_a"},
+		ProjectIDs:       []string{"prj_a"},
 		SampleResponseID: "resp_xyz",
 		DBDumpSHA256:     sha256Hex([]byte("d")),
 	}

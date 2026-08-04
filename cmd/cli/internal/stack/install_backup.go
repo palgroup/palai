@@ -43,8 +43,16 @@ import (
 )
 
 const (
-	backupKind            = "palai-install-backup"
-	backupManifestVersion = 1
+	backupKind = "palai-install-backup"
+	// v2 (A.2 Task 6): organization_ids left the manifest with the organizations table, and the tenant-id
+	// check moved onto project_ids. The version moves with it rather than the field being quietly
+	// reinterpreted, and InstallRestoreVerify now REFUSES a version it was not written for.
+	//
+	// The refusal is not tidiness. `Version` was written and never read until this commit, so a v1
+	// manifest — which has no project_ids at all — would decode with an EMPTY ProjectIDs slice, and the
+	// tenant check would report "all 0 manifest project id(s) present in restored data" and pass having
+	// compared nothing. A vacuous green on a restore verification is worse than a red one.
+	backupManifestVersion = 2
 
 	// Archive member names (stable — the manifest checksums are keyed to them).
 	memberManifest    = "manifest.json"
@@ -84,10 +92,9 @@ type BackupManifest struct {
 	Kind              string    `json:"kind"`
 	Version           int       `json:"version"`
 	CreatedAt         time.Time `json:"created_at"`
-	Project           string    `json:"project"`           // source stack project — reference only
-	MigrationVersion  int       `json:"migration_version"` // max(schema_migrations.version)
-	OrganizationIDs   []string  `json:"organization_ids"`  // tenant ids captured (RLS-bypassed superuser read)
-	ProjectIDs        []string  `json:"project_ids"`
+	Project           string    `json:"project"`                      // source stack project — reference only
+	MigrationVersion  int       `json:"migration_version"`            // max(schema_migrations.version)
+	ProjectIDs        []string  `json:"project_ids"`                  // tenant ids captured (RLS-bypassed superuser read)
 	SampleResponseID  string    `json:"sample_response_id,omitempty"` // one run id verify re-retrieves
 	DBDumpSHA256      string    `json:"db_dump_sha256"`
 	ObjectStoreSHA256 string    `json:"object_store_sha256"`
@@ -129,10 +136,6 @@ func InstallBackup(outPath string) error {
 	if err != nil {
 		return fmt.Errorf("read migration version: %w", err)
 	}
-	orgIDs, err := pgQueryList(ctx, pg, "SELECT id FROM organizations ORDER BY id")
-	if err != nil {
-		return fmt.Errorf("read organization ids: %w", err)
-	}
 	projIDs, err := pgQueryList(ctx, pg, "SELECT id FROM projects ORDER BY id")
 	if err != nil {
 		return fmt.Errorf("read project ids: %w", err)
@@ -163,7 +166,6 @@ func InstallBackup(outPath string) error {
 		CreatedAt:         time.Now().UTC(),
 		Project:           cfg.Project,
 		MigrationVersion:  migVer,
-		OrganizationIDs:   orgIDs,
 		ProjectIDs:        projIDs,
 		SampleResponseID:  sampleResp,
 		DBDumpSHA256:      sha256Hex(dbDump),
@@ -197,8 +199,8 @@ func InstallBackup(outPath string) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("finalize archive %s: %w", outPath, err)
 	}
-	fmt.Fprintf(os.Stderr, "backup written: migration v%d, %d org(s), %d object-file(s)\n",
-		m.MigrationVersion, len(m.OrganizationIDs), len(m.Objects))
+	fmt.Fprintf(os.Stderr, "backup written: migration v%d, %d project(s), %d object-file(s)\n",
+		m.MigrationVersion, len(m.ProjectIDs), len(m.Objects))
 	fmt.Println(outPath)
 	return nil
 }
@@ -293,8 +295,8 @@ func InstallRestore(archivePath string) error {
 	if err := waitForHealthy(ctx, cp); err != nil {
 		return fmt.Errorf("target did not come back after restore: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "restore complete: migration v%d, %d org(s) loaded into %s\n",
-		m.MigrationVersion, len(m.OrganizationIDs), cfg.Project)
+	fmt.Fprintf(os.Stderr, "restore complete: migration v%d, %d project(s) loaded into %s\n",
+		m.MigrationVersion, len(m.ProjectIDs), cfg.Project)
 	return nil
 }
 
@@ -332,6 +334,17 @@ func InstallRestoreVerify(archivePath string) error {
 
 	pass("archive_checksum", fmt.Sprintf("db+object-store members match manifest (%d object-file(s))", len(m.Objects)))
 
+	// manifest-version match, and it gates the tenant check below rather than merely annotating it: an
+	// older manifest's tenant ids are under a key this build does not read, so every later comparison
+	// would run against an empty list and pass.
+	if m.Version != backupManifestVersion {
+		failf("manifest_version", "manifest v%d, this build reads v%d — its tenant ids are under a key "+
+			"this build does not read, so the checks below would compare nothing and pass",
+			m.Version, backupManifestVersion)
+	} else {
+		pass("manifest_version", fmt.Sprintf("v%d matches this build", m.Version))
+	}
+
 	// migration-version match
 	liveMig, err := pgQueryInt(ctx, pg, "SELECT coalesce(max(version), 0) FROM schema_migrations")
 	switch {
@@ -343,17 +356,22 @@ func InstallRestoreVerify(archivePath string) error {
 		pass("migration_version", fmt.Sprintf("v%d matches manifest", liveMig))
 	}
 
-	// tenant-id match. N8: the backup reads the org ids BEFORE pg_dump, so the dump (a later snapshot)
-	// is a superset — an org created concurrently during a live backup lands in the restored data but
-	// not the manifest. The load-bearing invariant is that NO backed-up tenant went missing, so we
-	// check manifest ⊆ restored rather than strict equality (a concurrent extra org is not a failure).
-	liveOrgs, err := pgQueryList(ctx, pg, "SELECT id FROM organizations ORDER BY id")
+	// tenant-id match, now on PROJECTS — which is what a tenant is since A.2 Task 6, and which this
+	// manifest was already capturing while checking only the organizations beside them. The check moved
+	// rather than being dropped, and it is not weaker: `projects` is the table every other tenant row
+	// keys on, where `organizations` had become a parent nothing pointed at.
+	//
+	// N8: the backup reads the ids BEFORE pg_dump, so the dump (a later snapshot) is a superset — a
+	// project created concurrently during a live backup lands in the restored data but not the manifest.
+	// The load-bearing invariant is that NO backed-up tenant went missing, so we check manifest ⊆
+	// restored rather than strict equality (a concurrent extra project is not a failure).
+	liveProjects, err := pgQueryList(ctx, pg, "SELECT id FROM projects ORDER BY id")
 	if err != nil {
-		failf("tenant_ids", "read live org ids: %v", err)
-	} else if missing := missingFrom(liveOrgs, m.OrganizationIDs); len(missing) > 0 {
-		failf("tenant_ids", "restored data is missing manifest org id(s) %v", missing)
+		failf("tenant_ids", "read live project ids: %v", err)
+	} else if missing := missingFrom(liveProjects, m.ProjectIDs); len(missing) > 0 {
+		failf("tenant_ids", "restored data is missing manifest project id(s) %v", missing)
 	} else {
-		pass("tenant_ids", fmt.Sprintf("all %d manifest org id(s) present in restored data", len(m.OrganizationIDs)))
+		pass("tenant_ids", fmt.Sprintf("all %d manifest project id(s) present in restored data", len(m.ProjectIDs)))
 	}
 
 	// sample run-retrieval — prove the restored tenant data is queryable

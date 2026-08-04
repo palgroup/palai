@@ -1,0 +1,32 @@
+-- 000067 down. It removes this migration's LEDGER ROW and nothing else, and that is a decision with a
+-- reason rather than an omission — 000065's precedent, stated there for the 111 objects it did not put
+-- back, and 000063's before it for the foreign keys.
+--
+-- WHAT A REVERSAL WOULD HAVE TO INVENT. Restoring `organizations` restores a table; restoring its 12 rows
+-- restores nothing, because the ids were deleted with it and no other table still carries one to recover
+-- them from — that is what step 1 of the UP means. Re-adding the 86 columns is mechanical, but every one
+-- of them would come back NULL, so the schema would again declare a tenant key that holds no tenant: the
+-- exact shape this migration exists to remove, rebuilt by the file meant to undo it. A rollback would end
+-- with 000066's down re-creating policies that compare those NULLs to palai.org_id, and a policy comparing
+-- NULL to a GUC admits nothing and raises nothing — every tenant table would read as empty, silently.
+--
+-- And it would all be dropped a few statements later anyway: MigrationDown() is applied as ONE script,
+-- tail-first, and 000001_core.down.sql drops organizations and every table referencing it with CASCADE.
+-- There is no schema state in which the restored column is reachable.
+--
+-- MigrationDown()'s only caller is Store.Rollback, whose only caller is tests/component/postgres.
+-- `palai upgrade rollback` is an APPLICATION rollback — an image swap (stack/upgrade.go) — and never runs
+-- this file.
+--
+-- WHAT A RE-RUN OF THE UP DOES AFTER THIS: everything, from scratch. Its loops select on "still has a
+-- column named organization_id" and on to_regclass, so after a rollback-then-migrate the earlier chain has
+-- rebuilt the table and the columns in their original shape, 000067 finds them again, and drops them
+-- again. The chain is not left half-applied by the absence of a reversal here.
+--
+-- THE ONE THING THAT DOES NOT COME BACK ON ITS OWN is outside SQL: the audit row digest changed with this
+-- migration (packages/audit.ChainedColumns lost a field), so a checkpoint cut before it does not verify
+-- against rows read after it, in either direction. A rollback does not restore the old digest either,
+-- because the Go binary decides that and not the schema. Re-cut the checkpoint, which is what
+-- packages/audit already instructs after any schema change.
+
+DELETE FROM schema_migrations WHERE version = 67;

@@ -114,8 +114,6 @@ func (f *flags) register(fs *flag.FlagSet, resource string) {
 	fs.StringVar(&f.ca, "ca", "", "PEM CA file to trust for an https base URL (else $PALAI_CA_FILE) — e.g. the self-signed edge's ${PALAI_HOME}/ca/ca.crt")
 	fs.BoolVar(&f.json, "json", false, "emit the raw JSON response instead of a human render")
 	switch resource {
-	case "org":
-		fs.StringVar(&f.displayName, "display-name", "", "organization display name (create)")
 	case "project":
 		fs.StringVar(&f.displayName, "display-name", "", "project display name (create)")
 		fs.StringVar(&f.allowedModels, "allowed-models", "", "comma-separated allowed models (set-policy)")
@@ -207,7 +205,6 @@ func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
 // otherwise drop key_2) and, critically, a secret fat-fingered onto argv (`secret create --name x SECRET`),
 // which must fail loudly since the value may now be in shell history.
 var positionalArity = map[string]int{
-	"org/create": 0, "org/list": 0, "org/get": 1,
 	"project/create": 0, "project/list": 0, "project/get": 1, "project/set-policy": 1,
 	"apikey/create": 0, "apikey/list": 0, "apikey/get": 1, "apikey/revoke": 1,
 	"secret/create": 0, "secret/list": 0, "secret/get": 1, "secret/rotate": 1,
@@ -247,15 +244,11 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 		return fmt.Errorf("palai %s %s takes %d positional argument(s), got %d", resource, sub, want, len(pos))
 	}
 	switch resource {
-	case "org":
-		switch sub {
-		case "create":
-			return c.do(http.MethodPost, "/v1/organizations", body(map[string]any{"display_name": f.displayName}))
-		case "list":
-			return c.do(http.MethodGet, "/v1/organizations", nil)
-		case "get":
-			return c.do(http.MethodGet, "/v1/organizations/"+esc(pos[0]), nil)
-		}
+	// `org` WAS HERE, and it is removed rather than left to 404. A.2 Task 6 unmounted /v1/organizations
+	// with the table behind it; a subcommand that reaches a route the server does not serve renders
+	// "request failed (HTTP 404): 404 page not found", which reads to an operator as a broken stack rather
+	// than as a command that no longer exists. `project` took over opening a tenant — it is what `org
+	// create` used to mean.
 	case "project":
 		switch sub {
 		case "create":
@@ -754,7 +747,6 @@ func (c *Client) routeThroughConnection(f *flags) error {
 // usageErr names the subcommands a resource accepts.
 func usageErr(resource string) error {
 	subs := map[string]string{
-		"org":     "create --display-name <n> | list | get <org_id>",
 		"project": "create --display-name <n> | list | get <prj_id> | set-policy <prj_id> [--allowed-models <a,b>] [--approvers <p,q>] [--pool <pool_id>] (set-policy REPLACES the whole policy)",
 		"apikey":  "create --project <prj_id> [--scope <s>]... | list | get <key_id> | revoke <key_id>",
 		"secret":  "create --name <n> (value on stdin) | list | get <name> | rotate <name> (value on stdin)",

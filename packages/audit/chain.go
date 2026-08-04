@@ -33,13 +33,24 @@ import (
 // Algorithm names the chain construction a checkpoint was cut with. A verifier that meets a
 // checkpoint claiming any other algorithm REFUSES rather than comparing incomparable hashes — a
 // future construction gets a new name, never a silent redefinition of this one.
-const Algorithm = "palai-audit-chain-sha256-v1"
+//
+// v1 -> v2 (A.2 Task 6): migration 000067 dropped `events.organization_id`, so the row digest covers
+// nine fields where it covered ten. THE NAME HAD TO MOVE WITH IT. Leaving it at v1 would have left every
+// pre-migration checkpoint comparable-looking and wrong: a verifier would recompute each row without the
+// organization field, find a different head, and report TAMPERING on a journal nobody touched. Under v2
+// the same checkpoint is refused as incomparable instead — report.go:119 already draws that line, and it
+// is the difference between "re-cut your checkpoint" and a false alarm on an audit trail.
+//
+// The old digests are not recoverable and are not meant to be: the column they covered is gone, so no
+// verifier can reconstruct a v1 row even in principle. Re-cut, as packages/audit instructs after any
+// schema change.
+const Algorithm = "palai-audit-chain-sha256-v2"
 
 // ChainedColumns is the `events` column set the row digest covers, in digest order. It is exported so
 // a guard test can assert it equals the table's ACTUAL column set: a migration that adds a column
 // would otherwise leave that column outside the chain, i.e. tamperable without a tamper alert.
 var ChainedColumns = []string{
-	"id", "organization_id", "project_id", "session_id", "response_id",
+	"id", "project_id", "session_id", "response_id",
 	"seq", "journal_id", "type", "payload", "created_at",
 }
 
@@ -51,17 +62,16 @@ var ChainedColumns = []string{
 // then bytes). A major-version upgrade that re-renders jsonb differently invalidates old checkpoints;
 // re-cut a checkpoint after such an upgrade, exactly as after a schema change.
 type Row struct {
-	ID             string
-	OrganizationID string
-	ProjectID      string
-	SessionID      string
-	ResponseID     string
-	HasResponseID  bool
-	Seq            int64
-	JournalID      int64
-	Type           string
-	Payload        string
-	CreatedAt      string
+	ID            string
+	ProjectID     string
+	SessionID     string
+	ResponseID    string
+	HasResponseID bool
+	Seq           int64
+	JournalID     int64
+	Type          string
+	Payload       string
+	CreatedAt     string
 }
 
 // digest hashes one row over length-prefixed fields, so no field's bytes can be shifted into a
@@ -76,7 +86,6 @@ func (r Row) digest() [32]byte {
 		_, _ = h.Write([]byte(s))
 	}
 	field(r.ID)
-	field(r.OrganizationID)
 	field(r.ProjectID)
 	field(r.SessionID)
 	if r.HasResponseID {

@@ -21,7 +21,7 @@ func journal(sessions map[string]int) []audit.Row {
 		for s := int64(1); s <= int64(n); s++ {
 			j++
 			out = append(out, audit.Row{
-				ID: id + "-" + string(rune('a'+s)), OrganizationID: "org_1", ProjectID: "proj_1",
+				ID: id + "-" + string(rune('a'+s)), ProjectID: "proj_1",
 				SessionID: id, Seq: s, JournalID: j, Type: "run.step.v1",
 				Payload:   `{"k": "v", "n": ` + string(rune('0'+s)) + `}`,
 				CreatedAt: "2026-07-25T10:00:0" + string(rune('0'+s)) + ".000000Z",
@@ -38,7 +38,7 @@ func rowsN(session string, n int) []audit.Row {
 	var out []audit.Row
 	for s := int64(1); s <= int64(n); s++ {
 		out = append(out, audit.Row{
-			ID: fmt.Sprintf("%s-%03d", session, s), OrganizationID: "org_1", ProjectID: "proj_1",
+			ID: fmt.Sprintf("%s-%03d", session, s), ProjectID: "proj_1",
 			SessionID: session, Seq: s, JournalID: s, Type: "run.step.v1",
 			Payload:   fmt.Sprintf(`{"step": %d}`, s),
 			CreatedAt: fmt.Sprintf("2026-04-%02dT10:00:00.000000Z", 1+(s%27)),
@@ -174,10 +174,10 @@ func TestRowsAppendedAfterTheCheckpointAreUnanchoredNotAlerts(t *testing.T) {
 	rows := fixture()
 	cp := audit.NewCheckpoint(rows, time.Now())
 	grown := append(append([]audit.Row(nil), rows...), audit.Row{
-		ID: "later", OrganizationID: "org_1", ProjectID: "proj_1", SessionID: "sess_a",
+		ID: "later", ProjectID: "proj_1", SessionID: "sess_a",
 		Seq: 5, JournalID: 99, Type: "run.step.v1", Payload: `{}`, CreatedAt: "2026-07-25T11:00:00.000000Z",
 	}, audit.Row{
-		ID: "newsess", OrganizationID: "org_1", ProjectID: "proj_1", SessionID: "sess_c",
+		ID: "newsess", ProjectID: "proj_1", SessionID: "sess_c",
 		Seq: 1, JournalID: 100, Type: "run.step.v1", Payload: `{}`, CreatedAt: "2026-07-25T11:00:01.000000Z",
 	})
 	rep := audit.Compare(cp, grown)
@@ -464,7 +464,7 @@ func TestARetentionPurgeIsIndistinguishableFromTamper(t *testing.T) {
 // head.
 func TestEveryRowFieldIsInTheDigest(t *testing.T) {
 	base := audit.Row{
-		ID: "evt_1", OrganizationID: "org_1", ProjectID: "proj_1", SessionID: "sess_a",
+		ID: "evt_1", ProjectID: "proj_1", SessionID: "sess_a",
 		ResponseID: "resp_1", HasResponseID: true, Seq: 3, JournalID: 7, Type: "run.step.v1",
 		Payload: `{"k":"v"}`, CreatedAt: "2026-07-25T10:00:00.000000Z",
 	}

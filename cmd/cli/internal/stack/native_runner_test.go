@@ -81,9 +81,23 @@ func TestTheNativeRunnerDialsLoopbackAndVerifiesTheNameOnTheCertificate(t *testi
 			t.Errorf("%s=%s is the CONTAINER's mount path: this process has no /palai", name, v)
 		}
 	}
-	if got["PALAI_RUNNER_CA_CERT"] != p.caCert || got["PALAI_ENROLLMENT_TOKEN_FILE"] != p.runnerToken {
+	// PALAI_CONTROLLER_CA, not PALAI_RUNNER_CA_CERT: cmd/runner's loadConfig calls
+	// mustEnv("PALAI_CONTROLLER_CA") directly (main.go:174). PALAI_RUNNER_CA_CERT is the compose/systemd
+	// CONTRACT name — deploy/compose/runner-entrypoint.sh and scripts/package/runner/palai-runner.sh both
+	// bridge it to PALAI_CONTROLLER_CA before exec'ing the binary. This process has no such bridge script,
+	// so it has to hand the binary the name the binary actually reads.
+	if got["PALAI_CONTROLLER_CA"] != p.caCert || got["PALAI_ENROLLMENT_TOKEN_FILE"] != p.runnerToken {
 		t.Errorf("the CA and the enrollment token are not at their host paths: ca=%q token=%q",
-			got["PALAI_RUNNER_CA_CERT"], got["PALAI_ENROLLMENT_TOKEN_FILE"])
+			got["PALAI_CONTROLLER_CA"], got["PALAI_ENROLLMENT_TOKEN_FILE"])
+	}
+	// The session URL is a WEBSOCKET dial (packages/runner/session.go refuses anything not prefixed
+	// wss://), and cmd/runner's own derivedEnv/joinPath fallback does not do that scheme swap — it just
+	// appends the path onto PALAI_CONTROLLER_URL, which is https://. Both shipped bridge scripts special-case
+	// this one URL for exactly that reason; this process must too, or the runner's own loadConfig hands
+	// Session.Connect an "https://" URL and it refuses before it ever dials.
+	if want := "wss://127.0.0.1:18443/v1/runner/connect"; got["PALAI_SESSION_URL"] != want {
+		t.Errorf("PALAI_SESSION_URL = %q, want %q — cmd/runner's own derivation does not swap https for wss, "+
+			"so this must be set explicitly or the session dial refuses at the prefix check", got["PALAI_SESSION_URL"], want)
 	}
 }
 

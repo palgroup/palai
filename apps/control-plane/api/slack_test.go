@@ -490,8 +490,8 @@ func TestSlackTenantComesOnlyFromTheResolvedConnection(t *testing.T) {
 	if resp.StatusCode/100 != 2 {
 		t.Fatalf("status = %d, want 2xx (the forged fields are IGNORED, not a rejection)", resp.StatusCode)
 	}
-	if len(bridge.scopes) != 1 || bridge.scopes[0] != "org_real/prj_real" {
-		t.Fatalf("admission scopes = %v, want [org_real/prj_real] — the tenant comes from the RESOLVED connection row and from nothing in the payload", bridge.scopes)
+	if len(bridge.scopes) != 1 || bridge.scopes[0] != "prj_real" {
+		t.Fatalf("admission scopes = %v, want [prj_real] — the tenant comes from the RESOLVED connection row and from nothing in the payload", bridge.scopes)
 	}
 }
 

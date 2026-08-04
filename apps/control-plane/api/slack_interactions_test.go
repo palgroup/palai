@@ -348,8 +348,8 @@ func TestSlackInteractionTenantComesOnlyFromTheResolvedConnection(t *testing.T) 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (the forged fields are IGNORED, not a rejection)", resp.StatusCode)
 	}
-	if len(decider.scopes) != 1 || decider.scopes[0] != "org_real/prj_real" {
-		t.Fatalf("decision scopes = %v, want [org_real/prj_real] — the tenant comes from the RESOLVED connection and from nothing in the payload", decider.scopes)
+	if len(decider.scopes) != 1 || decider.scopes[0] != "prj_real" {
+		t.Fatalf("decision scopes = %v, want [prj_real] — the tenant comes from the RESOLVED connection and from nothing in the payload", decider.scopes)
 	}
 }
 
