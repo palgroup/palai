@@ -43,6 +43,9 @@ func TestEveryDefaultToolResolves(t *testing.T) {
 		// purpose: production builds one broker, and a guard that resolved each list against its own
 		// hand-picked set would prove less than it appears to.
 		FileTool(),
+		// And the filename search, granted unconditionally: finding a file by name is what a run does
+		// before it can read one, with or without a repository.
+		GlobTool(),
 		ShellTool(),
 		CommitTool(),
 		// And the fourth (E26 T2): the shell tool's `background` parameter can start a task, so the tool that

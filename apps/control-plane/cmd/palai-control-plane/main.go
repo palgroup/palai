@@ -656,6 +656,7 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		toolBroker := toolbroker.New(
 			toolbroker.ConformanceMathAdd(),
 			tools.FileTool(),
+			tools.GlobTool(), // find files by name before reading any of them
 			tools.ShellTool(),
 			tools.BackgroundKillTool(), // E26 T2: stop a task the shell tool's `background` parameter started
 			// The agent's own way to SHOW a human what it did — a simulator screenshot or a screen

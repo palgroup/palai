@@ -17,6 +17,7 @@ package toolset
 // main.go:656-672) — a name that is not is a tool the model is offered and can never be given.
 var defaultTools = []string{
 	"palai.workspace.file",
+	"palai.workspace.glob",
 	"palai.workspace.shell",
 	"palai.workspace.background_kill",
 	"palai.workspace.show_media",
