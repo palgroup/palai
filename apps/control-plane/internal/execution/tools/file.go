@@ -60,10 +60,13 @@ func fileExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) 
 		// an answer, and a model told this can say so instead of the run never ending.
 		//
 		// BOTH CONDITIONS, AND THE SECOND IS THE A.3 ONE. WorkspaceRoot names where the bytes are;
-		// env.Workspace is the thing that can reach them. An attempt can have the first without the
-		// second — a machine whose lease connection is gone, holding a path that is real on a host this
-		// process cannot open — and reaching for the path anyway is the failure this epic exists to
-		// remove: an edit that silently landed beside the control plane instead of where the run runs.
+		// env.Workspace is the thing that can reach them, and a bound workspace is both.
+		//
+		// THE ORCHESTRATOR ALWAYS SUPPLIES BOTH (tool_dispatch.go execEnv derives the ops from the
+		// attempt's channel, so it is never nil there), which makes this arm a guard for a caller that
+		// builds an ExecEnv BY HAND — every test in this package, and whatever composes one next. It
+		// earns its place by what it turns a mistake into: a forgotten field becomes an answer the model
+		// can act on rather than a nil dereference that takes the control plane down.
 		return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable, "file tool: no workspace bound for this run")
 	}
 	fs := env.Workspace

@@ -127,17 +127,16 @@ func (o *Orchestrator) planRootWorkspace(ctx context.Context, tenant coordinator
 }
 
 // realizeRootWorkspace puts the workspace on the machine and returns the allocation root the tools
-// confine to, the writer lease to release at attempt end, the logical workspace id, and the ops every
-// workspace-touching tool acts through.
+// confine to, the writer lease to release at attempt end, and the logical workspace id.
 //
 // EVERY BYTE IT WRITES GOES THROUGH `ops`, which is the whole of this task at the control plane: for a
 // channel that reaches a machine that is the machine's disk, and for one that does not it is this
 // host's — the deterministic e2e tier, and the hand-built component orchestrators, which have no
-// machine at all. The choice is made once, here, from the connection; nothing downstream re-decides
-// it, and no tool falls back to a filesystem when its ops is missing.
-func (o *Orchestrator) realizeRootWorkspace(ctx context.Context, ch EngineChannel, tenant coordinator.Tenant, plan workspacePlan, runID, jobID string, fence uint64) (hostPath, leaseID, workspaceID string, ops toolbroker.WorkspaceOps, err error) {
+// machine at all. It derives them from the CHANNEL, which is what every later tool call does too
+// (tool_dispatch.go execEnv), so provisioning and the tools cannot end up on two different hosts.
+func (o *Orchestrator) realizeRootWorkspace(ctx context.Context, ch EngineChannel, tenant coordinator.Tenant, plan workspacePlan, runID, jobID string, fence uint64) (hostPath, leaseID, workspaceID string, err error) {
 	ws := plan.ws
-	ops = workspaceOpsFor(ch, plan.hostPath)
+	ops := workspaceOpsFor(ch, plan.hostPath)
 
 	// ASK THE MACHINE WHERE THE ALLOCATION ACTUALLY IS, and record ITS answer rather than the name this
 	// side minted. The runner already laid the directory out when it admitted the lease, so this is
@@ -149,7 +148,7 @@ func (o *Orchestrator) realizeRootWorkspace(ctx context.Context, ch EngineChanne
 	if remote, isRemote := ops.(*RemoteWorkspace); isRemote && plan.fresh {
 		root, oerr := remote.Open(ctx)
 		if oerr != nil {
-			return "", "", "", nil, fmt.Errorf("open allocation on the machine: %w", oerr)
+			return "", "", "", fmt.Errorf("open allocation on the machine: %w", oerr)
 		}
 		plan.hostPath = root
 	}
@@ -161,7 +160,7 @@ func (o *Orchestrator) realizeRootWorkspace(ctx context.Context, ch EngineChanne
 		alloc, err = o.reuseAllocation(ctx, ops, tenant, ws, plan.allocID, runID)
 	}
 	if err != nil {
-		return "", "", "", nil, err
+		return "", "", "", err
 	}
 
 	// Materialize the run's frozen skills into the allocation (spec §28.16, progressive loading half-2):
@@ -172,7 +171,7 @@ func (o *Orchestrator) realizeRootWorkspace(ctx context.Context, ch EngineChanne
 		_, werr := ops.Write(ctx, rel, body)
 		return werr
 	}); err != nil {
-		return "", "", "", nil, fmt.Errorf("materialize run skills: %w", err)
+		return "", "", "", fmt.Errorf("materialize run skills: %w", err)
 	}
 
 	// The single writer lease the root run holds for the whole run (spec §29.8), released at attempt end.
@@ -180,7 +179,7 @@ func (o *Orchestrator) realizeRootWorkspace(ctx context.Context, ch EngineChanne
 	// only on PROOF the holder is dead (E09 T10 devir), never a blind TTL, and never steals a live one.
 	leaseID, err = o.acquireWriterLease(ctx, tenant, alloc.ID, runID, jobID)
 	if err != nil {
-		return "", "", "", nil, err
+		return "", "", "", err
 	}
 	// Drive ready→leased. Any failure would LEAK the just-acquired lease (no TTL until E10 recovery, so
 	// the session bricks forever — blocker 1), because the caller's defer release is not armed until this
@@ -202,21 +201,21 @@ func (o *Orchestrator) realizeRootWorkspace(ctx context.Context, ch EngineChanne
 		scoped := storage.WithTenant(context.Background(), tenant.Project)
 		if !errors.Is(err, statemachines.ErrInvalidState) {
 			_ = o.spine.ReleaseWriterLease(scoped, leaseID)
-			return "", "", "", nil, err
+			return "", "", "", err
 		}
 		state, serr := o.spine.WorkspaceLifecycleState(ctx, tenant, ws.WorkspaceID)
 		if serr != nil {
 			_ = o.spine.ReleaseWriterLease(scoped, leaseID)
-			return "", "", "", nil, serr
+			return "", "", "", serr
 		}
 		if state != string(statemachines.WorkspaceLeased) {
 			_ = o.spine.ReleaseWriterLease(scoped, leaseID)
-			return "", "", "", nil, fmt.Errorf("%w: workspace %s became %s while this attempt was claiming it",
+			return "", "", "", fmt.Errorf("%w: workspace %s became %s while this attempt was claiming it",
 				coordinator.ErrWriterLeaseHeld, ws.WorkspaceID, state)
 		}
 		// Already `leased`: the physical lease we just acquired is the authority, as before.
 	}
-	return alloc.HostPath, leaseID, ws.WorkspaceID, ops, nil
+	return alloc.HostPath, leaseID, ws.WorkspaceID, nil
 }
 
 // workspaceOpsFor derives the filesystem ONE attempt's workspace tools act on, from the connection

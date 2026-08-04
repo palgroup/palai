@@ -96,8 +96,8 @@ func mediaExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any)
 	if env.WorkspaceRoot == "" || env.Workspace == nil {
 		// The same answer the file tool gives, and for the same reason: a run offered a workspace tool with
 		// no workspace bound used to HANG. Nothing ran, so it is an answer the model can act on. Both
-		// conditions for the reason the file tool states: a path without a way to reach it is not a bound
-		// workspace, it is a path on somebody else's disk.
+		// conditions for the reason the file tool states: a bound workspace is a path AND something that
+		// can reach it, and a hand-built ExecEnv that forgot the second should answer rather than panic.
 		return nil, toolbroker.Answer("no_workspace", fmt.Errorf("%s: no workspace bound for this run", mediaToolName))
 	}
 	// NO STORE MEANS NO SHOWING, AND IT SAYS SO. Returning an id-less success would have the model tell

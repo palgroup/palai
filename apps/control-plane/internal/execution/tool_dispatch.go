@@ -483,11 +483,11 @@ func (o *Orchestrator) execEnv(st *attemptState) toolbroker.ExecEnv {
 		WorkspaceRoot: st.attempt.WorkspaceHostPath,
 		ReadOnly:      st.attempt.WorkspaceReadOnly,
 		Shell:         shellFor(st.ch),
-		// The workspace this attempt's coding tools act on, chosen from the same connection shellFor
-		// derives the executor from (A.3 T5) and chosen ONCE, at attempt start. Reading it off the state
-		// rather than re-deriving it here is what keeps the two in step: a file write and a shell command
-		// must land on the same host, and two independent derivations are two things to keep equal.
-		Workspace: st.workspaceOps,
+		// The workspace this attempt's coding tools act on, derived from the SAME connection shellFor
+		// derives the executor from (A.3 T5) and derived the same way, per call. That symmetry is the
+		// reason it is not cached on the attempt: the two must agree about which host they are on, and
+		// the cheapest way to guarantee that is for both to read the one value that decides it.
+		Workspace: workspaceOpsFor(st.ch, st.attempt.WorkspaceHostPath),
 		// The background orchestration, BOUND TO THIS RUN (E26 T2). The run id travels with the seam rather
 		// than being read off an argument, so "kill task X" can be answered safely: a task id belongs to the
 		// run that started it, and a model naming somebody else's id is refused by the lookup itself.

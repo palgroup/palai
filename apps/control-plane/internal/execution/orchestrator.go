@@ -390,13 +390,6 @@ type attemptState struct {
 	// provisioned and its writer lease, released at attempt end. Empty on a run with no attached binding.
 	workspaceID      string
 	workspaceLeaseID string
-	// workspaceOps is the confined file/git surface this attempt's coding tools act through — the disk
-	// of the machine holding the lease when the allocation lives there, this host's when it does not
-	// (workspaceOpsFor). It is chosen ONCE, from the connection, and nothing downstream re-decides it:
-	// a shell command and a file write that disagreed about which host they are on would edit two trees
-	// while reporting one. Nil on an attempt with no workspace, which is what makes a workspace tool
-	// answer `unavailable` instead of reaching for this process's filesystem.
-	workspaceOps toolbroker.WorkspaceOps
 	// Engine handshake identity, captured from engine.ready — the §26.2 checkpoint provenance the
 	// engine's opaque offer does not carry.
 	engineVersion   string
@@ -659,9 +652,8 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	// IT IS BEFORE THE ENGINE IS SPOKEN TO, WHICH IS THE ORDERING THAT MATTERS. The runner started the
 	// engine when it admitted the lease, but the engine says nothing until it is asked and no tool call
 	// can arrive before this returns — so the repository is on disk before anything could look for it.
-	var workspaceOps toolbroker.WorkspaceOps
 	if wsPlanned {
-		hostPath, leaseID, wsID, ops, perr := o.realizeRootWorkspace(ctx, ch, tenant, wsPlan, string(attempt.RunID), attempt.JobID, attempt.Fence)
+		hostPath, leaseID, wsID, perr := o.realizeRootWorkspace(ctx, ch, tenant, wsPlan, string(attempt.RunID), attempt.JobID, attempt.Fence)
 		if perr != nil {
 			// A PROVISIONING FAILURE IS THE PLATFORM'S OWN, AND IT MUST SAY SO. Before this it returned an
 			// error into the retry ladder and the run dead-lettered into the generic terminal — "the run
@@ -680,19 +672,13 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 			log.Printf("run %s: workspace provisioning failed: %v", attempt.RunID, perr)
 			return o.failProvisioning(ctx, tenant, attempt, responseID, perr)
 		}
-		attempt.WorkspaceHostPath, workspaceLeaseID, workspaceID, workspaceOps = hostPath, leaseID, wsID, ops
-	} else if attempt.WorkspaceHostPath != "" {
-		// A CHILD RUN, or a descriptor that arrived with a workspace already resolved for it
-		// (dispatchChild's read-only snapshot / isolated worktree). It provisions nothing, so nothing
-		// above chose its ops — but its tools still need one, and it must be the same choice: the disk of
-		// whatever this attempt's channel reaches.
-		workspaceOps = workspaceOpsFor(ch, attempt.WorkspaceHostPath)
+		attempt.WorkspaceHostPath, workspaceLeaseID, workspaceID = hostPath, leaseID, wsID
 	}
 
 	st := &attemptState{
 		attempt: attempt, tenant: tenant, sessionID: sessionID, responseID: responseID,
 		ch: ch, ledger: runner.NewFrameLedger(),
-		workspaceID: workspaceID, workspaceLeaseID: workspaceLeaseID, workspaceOps: workspaceOps,
+		workspaceID: workspaceID, workspaceLeaseID: workspaceLeaseID,
 		attemptStart: time.Now(),
 	}
 
