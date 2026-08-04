@@ -597,6 +597,26 @@ git commit -m "feat(tools): palai.workspace.grep, so a model can find code by co
 
 ---
 
+## §4.5 — Execution record (2026-08-04)
+
+**Shipped in 6 commits:** `a960d4d6` (validator), `5019e044` (shell types), `ff65767a` + `2de12640` (Glob), `db737d1f` + `5068abb8` (Grep), `c58bf450` + `10f0f0a8` (the two tools).
+
+**The canonical default set went from 6 names to 8.** `palai.workspace.glob` and `palai.workspace.grep` are registered in `toolbroker.New`, in `toolset.Default()`, and in the Slack relay's titles.
+
+**The plan's §1 measurement was contaminated and its answer was wrong.** `rg --version` reported ripgrep 14.1.1 during planning, so Task 5 specified shelling out to `rg --json`. Ripgrep is **not installed**: `rg` is a shell function from the Claude Code shell snapshot, which an exec'd subprocess never sees — `type rg` names the file it comes from, and no PATH directory holds the binary. Grep is implemented in Go instead. **The dialect concern that motivated the original choice does not apply to the substitution**: Go's `regexp` and ripgrep both implement RE2, so patterns behave the same. The corrected form of the check — `env -i PATH="$PATH" sh -c 'command -v rg'` — is in §1.
+
+**Six perturbations observed RED, then restored:**
+- Glob's pattern-escape refusal removed → `../*`, `/etc/*` and `src/../../*` all returned no error.
+- The runner's `glob` handler removed → the remote test failed with `unknown workspace op "glob"`, proving the chain reaches the machine rather than this process's disk.
+- Grep's count total recomputed from the truncated list → `truncated total = 2, want the untruncated 4`.
+- The runner's `grep` handler removed → `unknown workspace op "grep"`.
+
+**A defect this plan avoided by knowing about it:** Claude Code's Grep reported a rejected pattern as "no files found" until v2.1.208, and its `count` total summed only the listed entries when a head limit truncated them. Both are pinned by tests here.
+
+**Measured after:** all six affected packages `ok`, and `go vet -tags="component live security" ./...` exits **0** — the concurrent org/tenancy refactor landed its tagged callers during this work, so the tree is fully green.
+
+---
+
 ## §5 — Definition of done
 
 - [ ] `validate` accepts `array` (with optional `items`), `boolean`, and `enum`, and still **rejects** an unknown type

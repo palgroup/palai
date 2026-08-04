@@ -787,7 +787,13 @@ A fourth false claim — that a bring-up ADDS `Repository()`/`Publish()` — sur
 
 - [ ] **No live `palai up` transcript exists.** The grant's PATCH authorization for the bootstrap key is exercised nowhere. If the server refuses it, the feature stands down silently and only the warning speaks. **The next bring-up must look for the line naming the tools `prj_local` now grants and treat its absence as a bug.**
 - [x] ~~Re-run §5's gate on a compiling tree~~ — **partly done, 2026-08-04, after the refactor landed.** `go build ./...` now exits 0, and all four packages this plan touched pass in isolation (`packages/toolset`, `execution/tools`, `slack-bot/relay`, `cli/stack`). The stale-symbol grep is clean: `slackDefaultTools`/`slackRepositoryTools`/`slackPublishTools` survive ONLY in `tests/uat/` prose, which §5 requires and forbids editing.
-- [ ] **The gate's third leg is still RED, and not from this plan.** `go vet -tags="component live security" ./...` exits **1** with **17** errors — every one of them a tagged test still calling the pre-refactor signatures (`tenant.Organization undefined`, `too many arguments in call to h.writer.Read`). **Zero name a file this plan touched** (checked by grepping the vet output for `toolset|default_set_test|tool_titles_test|up_default_tools_test|config_test`). This is the tree's own recorded trap: a plain `go build` covers the untagged world and leaves tagged tests broken but invisible. Re-run once whoever owns the refactor finishes the tagged callers.
+- [x] ~~The gate's third leg is still RED~~ — **CLOSED 2026-08-04.** The concurrent refactor landed its tagged callers; `go vet -tags="component live security" ./...` now exits **0** with zero errors. All three legs of §5's gate are green on the live tree.
+
+<details><summary>What it looked like while it was red</summary>
+
+**The gate's third leg was RED, and not from this plan.** `go vet -tags="component live security" ./...` exits **1** with **17** errors — every one of them a tagged test still calling the pre-refactor signatures (`tenant.Organization undefined`, `too many arguments in call to h.writer.Read`). **Zero name a file this plan touched** (checked by grepping the vet output for `toolset|default_set_test|tool_titles_test|up_default_tools_test|config_test`). This is the tree's own recorded trap: a plain `go build` covers the untagged world and leaves tagged tests broken but invisible. Re-run once whoever owns the refactor finishes the tagged callers.
+</details>
+
 - [ ] `grantDefaultToolBaseline`'s three stand-down paths have no test; an `httptest` server would cover GET-fail / skip / PATCH-fail. The destructive direction is structurally closed (a shape mismatch 400s and stands down), so this is coverage, not risk.
 
 ---
