@@ -223,11 +223,22 @@ const (
 )
 
 // thinkingCardTitle renders a reasoning card's headline from its lead line.
+//
+// IT IS TRIMMED TO ONE LINE, by the same function the container headline uses, and the number came off a
+// live run rather than out of the air: growLead closes at the first newline OR at maxHeadline runes, and
+// because it closes on a WINDOW boundary it overshoots — the run on 2026-08-05 produced a 128-rune lead
+// from two windows of 63 and 65. A 128-character title is not a title; it is the paragraph, in the field
+// that is supposed to label it.
+//
+// NOTHING IS LOST TO THE TRIM, which is what makes it safe: the whole of that lead is the FIRST thing in
+// the card's details, immediately below. So the title labels and the details carry — and the title now
+// says exactly what the container headline says, which is the same card described in the same words in
+// the two places a reader meets it.
 func thinkingCardTitle(lead string) string {
 	if lead == "" {
 		return thinkingCardMark + thinkingCardFallback
 	}
-	return thinkingCardMark + lead
+	return trimHeadline(thinkingCardMark + lead)
 }
 
 // stepCard is ONE card in the plan: a run of CONSECUTIVE calls to the same tool.

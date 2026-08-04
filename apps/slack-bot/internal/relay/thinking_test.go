@@ -361,6 +361,40 @@ func TestALeadThatArrivesInPiecesStillFillsTheHeadline(t *testing.T) {
 	}
 }
 
+// TestAReasoningCardsTitleIsOneReadableLine, measured from the live run on 2026-08-05: the lead closes on
+// a WINDOW boundary, so it overshoots maxHeadline — two windows of 63 and 65 runes produced a 128-rune
+// lead, and the title is the field that labels a row in a list.
+//
+// The second half is what makes the trim safe rather than lossy, and it is asserted here because a title
+// cut with nothing behind it would be a card that shows less than the model thought.
+func TestAReasoningCardsTitleIsOneReadableLine(t *testing.T) {
+	first := strings.Repeat("checking the range ", 4)  // 76 runes: under the ceiling, so the lead stays open
+	second := strings.Repeat("and then verifying ", 4) // pushes it to 152, on a window boundary
+	fake := runCards(t, []palai.Event{
+		stepCreated(liveStepID),
+		thinkingEvent(liveStepID, first),
+		thinkingEvent(liveStepID, second),
+		stepCompleted(liveStepID),
+		{Type: "run.completed.v1", Data: map[string]any{}},
+	})
+	cards := thinkingCards(fake.tasks)
+	last := cards[len(cards)-1]
+	if runes := []rune(last.Title); len(runes) > maxHeadline {
+		t.Fatalf("the card title runs to %d runes (%q); it labels a row in a list, and the whole lead is in "+
+			"the details right below it", len(runes), last.Title)
+	}
+	if !strings.HasSuffix(last.Title, "…") {
+		t.Fatalf("the title %q was cut without saying so", last.Title)
+	}
+	var details strings.Builder
+	for _, card := range cards {
+		details.WriteString(card.Detail)
+	}
+	if got := details.String(); got != first+second {
+		t.Fatalf("the details hold %q, want the WHOLE lead the title only labels", got)
+	}
+}
+
 // TestAWindowWithNothingToIdentifyItDrawsNothing — the same rule begin() applies to a call with no id,
 // for the same reason: an empty id is not a card Slack can advance, and two steps sharing one would
 // overwrite each other's reasoning.
