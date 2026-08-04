@@ -29,7 +29,7 @@ type ProvisioningAPI interface {
 
 // ProvisionResult is a provisioning projection. Exactly one outcome is set: Body carries the created/read
 // resource (2xx); MissingField marks a required body field absent (400); BadField marks a body outside the
-// strict schema — an unknown field (400); NotFound marks an absent/foreign org, project, key, or a key's
+// strict schema — an unknown field (400); NotFound marks an absent/foreign project, key, or a key's
 // referenced project (404, leaking no cross-tenant existence). The API-key create Body is the ONLY place a
 // key's plaintext appears; every read renders metadata only.
 type ProvisionResult struct {
@@ -207,7 +207,7 @@ func (h *provisioningHandler) write(w http.ResponseWriter, r *http.Request, out 
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body carries an unsupported field")
 		return
 	case out.NotFound:
-		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such organization, project, or API key in this scope")
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such project or API key in this scope")
 		return
 	}
 	if locationPrefix != "" {

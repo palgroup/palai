@@ -137,18 +137,20 @@ func TestBackupArchiveRejectsCorruptedMember(t *testing.T) {
 	}
 }
 
-// The M1 empty-target gate is data-driven over EVERY org-bearing (FORCE-RLS) table, so provisioned
-// data UNDER org_local (projects, api_keys, secret_refs, …) is counted — not just orgs/responses/runs.
-// buildExcessQuery must exclude the 4 boot-seed rows by id, skip the runner-enrollment tables, and
+// The M1 empty-target gate is data-driven over EVERY tenant-scoped (FORCE-RLS) table, so provisioned
+// data beyond the bootstrap seed (projects, api_keys, secret_refs, …) is counted — not just
+// orgs/responses/runs. buildExcessQuery must exclude the 3 seed rows by id, skip bootInfraTables, and
 // count everything else in full.
+//
+// The table list is what the LIVE catalog yields, so `organizations` is not in it: migration 000067
+// dropped the table. Feeding it anyway would assert a branch tenantDataExcess can no longer reach.
 func TestBuildExcessQuery(t *testing.T) {
-	q := buildExcessQuery([]string{"organizations", "projects", "principals", "api_keys", "runners", "runner_leases", "secret_refs", "responses"})
+	q := buildExcessQuery([]string{"projects", "principals", "api_keys", "runners", "runner_leases", "secret_refs", "responses"})
 	mustContain := []string{
-		"FROM organizations WHERE id <> 'org_local'",
 		"FROM projects WHERE id <> 'prj_local'",
 		"FROM principals WHERE id <> 'prin_local'",
 		"FROM api_keys WHERE id <> 'key_local'",
-		"FROM secret_refs", // provisioned-under-org_local data IS counted (the M1 hole)
+		"FROM secret_refs", // provisioned data beyond the seed IS counted (the M1 hole)
 		"FROM responses",
 		"n > 0",
 	}

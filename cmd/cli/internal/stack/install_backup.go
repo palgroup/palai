@@ -69,24 +69,38 @@ const (
 	postgresImageRef = "postgres@" + postgresDigest
 )
 
-// seedRows are the four identity rows a FRESH install is born with (identity/store.go firstOrg/
-// firstProject/firstPrincipal/firstKey). The empty-target gate excludes exactly these by id: any
-// OTHER row in an org-bearing table is provisioned/workload data the restore must not overwrite.
+// seedRows are the THREE identity rows the empty-target gate excludes BY ID (identity/store.go
+// firstProject/firstPrincipal/firstKey). Any OTHER row in a tenant-scoped (FORCE-RLS) table is
+// provisioned/workload data the restore must not overwrite.
+//
+// Three, not four: a fresh install is born with four rows, but seedTenant's fourth is the default
+// runner pool, which lands in `runner_pools` — a table bootInfraTables skips WHOLESALE, so it needs
+// no id here. A fourth entry keyed `organizations` was carried until A.2 Task 6; migration 000067
+// dropped that table, and because tenantDataExcess enumerates FORCE-RLS tables from the LIVE catalog
+// the key was never looked up again — dead rather than broken, which is why nothing failed.
 var seedRows = map[string]string{
-	"organizations": "org_local",
-	"projects":      "prj_local",
-	"principals":    "prin_local",
-	"api_keys":      "key_local",
+	"projects":   "prj_local",
+	"principals": "prin_local",
+	"api_keys":   "key_local",
 }
 
-// bootInfraTables are org-bearing tables a fresh boot fills on its own (the runner enrolls and takes
-// leases). They are NOT tenant data, so the empty-target gate skips them — else a fresh target that
-// has already enrolled its runner would false-positive as "not empty".
+// bootInfraTables are tenant-scoped tables a fresh boot fills on its own, so the empty-target gate
+// skips them — else a fresh target whose runner has already enrolled false-positives as "not empty"
+// and the restore is refused. Exactly three are skipped: `runners` (the runner registers itself),
+// `runner_pools` (seedTenant's default pool), and `runner_leases` (that runner takes a lease). None
+// of the three needs an operator to act.
+//
+// ponytail: `runner_enrollments` is written in the SAME transaction as `runners`
+// (internal/fleet/store.go AppendRunnerEnrollment) and is NOT skipped here, so a fresh target whose
+// runner enrolled reports `runner_enrollments=N` and the restore refuses. That is fail-closed — no
+// data is at risk — but it is a false refusal, and widening this set is a deliberate loosening of a
+// no-clobber gate, so it is recorded here rather than fixed in passing.
 var bootInfraTables = map[string]bool{"runners": true, "runner_pools": true, "runner_leases": true}
 
 // BackupManifest is the machine-readable index inside a backup archive. It records what the
-// backup captured (migration version, the tenant/org + project ids, a sample response id for the
-// run-retrieval verify) and the integrity checksums (whole-member + per-object). It holds NO
+// backup captured (migration version, the tenant ids — which are the PROJECT ids since A.2 Task 6,
+// a sample response id for the run-retrieval verify) and the integrity checksums (whole-member +
+// per-object). It holds NO
 // secret — restore/verify treat it as the source of truth for what a healthy restore must match.
 type BackupManifest struct {
 	Kind              string    `json:"kind"`
@@ -115,7 +129,8 @@ type objectChecksum struct {
 }
 
 // safeID guards the one place a manifest value flows into a SQL literal (the sample-response
-// retrieval): ids are our own (resp_/org_/prj_ + hex), so an id outside this set is skipped
+// retrieval): the only manifest value that reaches it is SampleResponseID, which is our own
+// (resp_ + hex), so an id outside this set is skipped
 // rather than interpolated. Belt-and-suspenders — the manifest is our own output.
 var safeID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
@@ -255,9 +270,9 @@ func InstallRestore(archivePath string) error {
 		return abort(fmt.Errorf("refusing to restore: target schema v%d != backup v%d; bring the target up on the backup's migration version first", liveMig, m.MigrationVersion))
 	}
 
-	// M1 (cardinal no-clobber): fail-closed over EVERY org-bearing (FORCE-RLS) table, so provisioned
-	// data created UNDER org_local (projects, api_keys, secret_refs, model_routes, …) — none of which
-	// the old orgs/responses/runs count caught — refuses the restore instead of being silently wiped.
+	// M1 (cardinal no-clobber): fail-closed over EVERY tenant-scoped (FORCE-RLS) table, so provisioned
+	// data beyond the bootstrap tenant's seed (projects, api_keys, secret_refs, model_routes, …) — none
+	// of which the old orgs/responses/runs count caught — refuses the restore instead of being wiped.
 	excess, err := tenantDataExcess(ctx, pg)
 	if err != nil {
 		return abort(fmt.Errorf("check target is empty: %w", err))
@@ -406,7 +421,7 @@ func InstallRestoreVerify(archivePath string) error {
 		// incomplete on some table. (More policies than forced tables is fine — mig 000029 pattern.)
 		failf("rls_isolation", "tenant_isolation policies (%d) < forced-RLS tables (%d) — isolation is incomplete", policies, forced)
 	default:
-		pass("rls_isolation", fmt.Sprintf("%d org-bearing tables FORCE RLS, %d tenant_isolation policies", forced, policies))
+		pass("rls_isolation", fmt.Sprintf("%d tenant-scoped tables FORCE RLS, %d tenant_isolation policies", forced, policies))
 	}
 
 	// M3: secret canary. Secrets are AES-256-GCM-sealed under the SOURCE stack's master key; a restore
@@ -443,10 +458,11 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// tenantDataExcess reports the org-bearing tables that hold data beyond a fresh install's baseline —
+// tenantDataExcess reports the tenant-scoped tables that hold data beyond a fresh install's baseline —
 // the empty-target gate's evidence. It enumerates the FORCE-RLS (tenant-scoped) tables from the live
-// catalog (so a table a future migration adds is covered automatically, matching mig 000029's intent)
-// and counts each, excluding the 4 boot-seed rows and the runner-enrollment tables. Any returned
+// catalog (so a table a future migration adds is covered automatically, and a table a migration DROPS
+// leaves the sweep silently — which is how the `organizations` seed entry went dead unnoticed) and
+// counts each, excluding the 3 seed rows by id and skipping bootInfraTables. Any returned
 // "table=count" means the target holds provisioned/workload data a restore would clobber.
 func tenantDataExcess(ctx context.Context, container string) ([]string, error) {
 	tables, err := pgQueryList(ctx, container,
@@ -462,8 +478,8 @@ func tenantDataExcess(ctx context.Context, container string) ([]string, error) {
 	return pgQueryList(ctx, container, q)
 }
 
-// buildExcessQuery assembles the per-table count query over the FORCE-RLS tables: the 4 identity
-// tables exclude their seed row by id, the runner-enrollment tables are skipped, everything else is
+// buildExcessQuery assembles the per-table count query over the FORCE-RLS tables: the 3 identity
+// tables in seedRows exclude their seed row by id, bootInfraTables are skipped, everything else is
 // counted in full. Table names come from the catalog and the seed ids are constants, so the built
 // SQL carries no caller input. Returns "" for an empty table list.
 func buildExcessQuery(tables []string) string {
