@@ -50,7 +50,6 @@ import (
 // an operator's route publish, or Anthropic vision in that adapter — neither is this file's, and neither is
 // something this file can detect: nothing in the public API tells a relay what the route can render.
 
-
 // maxImagesPerMessage caps how many images ONE Slack message contributes.
 //
 // Slack allows ten files per message, so this is a REFUSAL of some of them, and the refusal is SAID (see

@@ -19,22 +19,22 @@ import (
 //
 // THE FETCH RULE, and it is deliberately the narrowest one that closes that:
 //
-//	read  ⇔  the event is a REPLY IN A THREAD  ∧  this thread has no session yet  ∧  a leg can attach images
+//		read  ⇔  the event is a REPLY IN A THREAD  ∧  this thread has no session yet  ∧  a leg can attach images
 //
-//   - THE SECOND CLAUSE is inherited whole, and it is the one that keeps this from being expensive and wrong.
-//     A thread this bot already holds (HandleEvent's `correlated`) has its own Palai session, and every image
-//     shared in it while the bot was present was ALREADY attached to the turn it arrived with — the control
-//     plane replays those turns, images included, which is exactly why it caps them (execution.maxRunImages).
-//     Reading history there would re-fetch, re-upload and re-attach pictures the conversation already
-//     carries, spending that cap on duplicates. So a follow-up in a conversation the bot is already in reads
-//     NOTHING, ever.
-//   - THE FIRST CLAUSE is not an optimisation, it is correctness about cost: a top-level mention IS its own
-//     thread root, so conversations.replies would return that one message — the files this relay already has
-//     on ev — and nothing else. Slack's own thread_ts answers it (slack.Event.InThread), the same authority
-//     the run-birth rule uses.
-//   - THE THIRD CLAUSE is what stops a read whose result cannot be used: with no image leg mounted, or one
-//     missing a token or an artifact writer, nothing here can become something the model sees, so the call
-//     would be a Slack round trip paid for nothing.
+//	  - THE SECOND CLAUSE is inherited whole, and it is the one that keeps this from being expensive and wrong.
+//	    A thread this bot already holds (HandleEvent's `correlated`) has its own Palai session, and every image
+//	    shared in it while the bot was present was ALREADY attached to the turn it arrived with — the control
+//	    plane replays those turns, images included, which is exactly why it caps them (execution.maxRunImages).
+//	    Reading history there would re-fetch, re-upload and re-attach pictures the conversation already
+//	    carries, spending that cap on duplicates. So a follow-up in a conversation the bot is already in reads
+//	    NOTHING, ever.
+//	  - THE FIRST CLAUSE is not an optimisation, it is correctness about cost: a top-level mention IS its own
+//	    thread root, so conversations.replies would return that one message — the files this relay already has
+//	    on ev — and nothing else. Slack's own thread_ts answers it (slack.Event.InThread), the same authority
+//	    the run-birth rule uses.
+//	  - THE THIRD CLAUSE is what stops a read whose result cannot be used: with no image leg mounted, or one
+//	    missing a token or an artifact writer, nothing here can become something the model sees, so the call
+//	    would be a Slack round trip paid for nothing.
 //
 // WHAT MAKES THIS READ SCOPED, restated at the point of use because the app holds `channels:history` and a
 // read keyed on an id somebody else chose IS an arbitrary read of the workspace (the confused-deputy shape):
