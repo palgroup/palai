@@ -15,18 +15,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// THE CHAIN IS TWO MIGRATIONS, AND IT USED TO BE SIXTY-SEVEN. It was squashed to a baseline on
+// THE CHAIN OPENS WITH A TWO-FILE BASELINE, AND IT USED TO BE SIXTY-SEVEN FILES. It was squashed on
 // 2026-08-04: fifty of those sixty-seven files built a tenant boundary above the project and the last six
 // took it back out, so a fresh install spent its whole boot constructing a boundary this product does not
-// have and then dismantling it. The two files here are where that chain ARRIVED, derived from a schema
+// have and then dismantling it. 000001 and 000002 are where that chain ARRIVED, derived from a schema
 // dump of a database the shipped binary had migrated — see 000001_core.up.sql's own header for the
-// derivation command and for why every statement in it is idempotent.
+// derivation command and for why every statement in it is idempotent. Everything from 000003 on is
+// ordinary forward work written against that baseline.
 //
-// THE SPLIT IS THE CHAIN'S OWN SEAM, not a preference: a policy can only be applied to a table that
-// exists, which is why the old chain put its row-level-security sweep two thirds of the way along rather
-// than at the start. It also keeps an interrupted boot observable — stopping between the two leaves tables
-// present and unsecured, a state the resume drill (OPS-006) can be ABOUT. A one-file chain has no partway,
-// and squashing to a single file would have retired that proof silently.
+// THE SPLIT BETWEEN THE TWO BASELINE FILES IS THE CHAIN'S OWN SEAM, not a preference: a policy can only be
+// applied to a table that exists, which is why the old chain put its row-level-security sweep two thirds of
+// the way along rather than at the start. It also keeps an interrupted boot observable — stopping between
+// them leaves tables present and unsecured, a state the resume drill (OPS-006) can be ABOUT. A one-file
+// baseline has no partway, and squashing to a single file would have retired that proof silently.
 
 //go:embed migrations/000001_core.up.sql
 var migrationUp string
@@ -39,6 +40,17 @@ var migrationUp2 string
 
 //go:embed migrations/000002_row_level_security.down.sql
 var migrationDown2 string
+
+// The first migration after the baseline (Faz A.4 T1): runner_leases records an OCCUPANCY — the interval
+// in which one session held one machine — so the machine half of what a customer is billed has a durable
+// row at all. It creates no table, which is why it carries no policy call of its own; 000002's sweep
+// already secured runner_leases.
+//
+//go:embed migrations/000003_lease_occupancy.up.sql
+var migrationUp3 string
+
+//go:embed migrations/000003_lease_occupancy.down.sql
+var migrationDown3 string
 
 //go:embed queries/agents.sql
 var agentsSQL string
@@ -87,6 +99,14 @@ var a2aSQL string
 //
 //go:embed queries/runners.sql
 var runnersSQL string
+
+// The machine-occupancy statements (Faz A.4 T1). They live beside their own file rather than inside
+// runners.sql because the registry and the occupancy are different subjects: runners.sql is an INVENTORY
+// of machines, and these five are about an INTERVAL — who held which machine, from when to when, and what
+// of it is billed.
+//
+//go:embed queries/leases.sql
+var leasesSQL string
 
 //go:embed queries/workers.sql
 var workersSQL string
@@ -187,19 +207,20 @@ var knowledgeSQL string
 // MigrationUp is the forward chain, applied in version order. Each file is individually idempotent, so
 // the whole chain is safe to re-run — which it is, in full, on every boot.
 func MigrationUp() string {
-	return migrationUp + "\n" + migrationUp2
+	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3
 }
 
-// MigrationDown reverses MigrationUp in the opposite order: 000002 drops the policies and the procedures
-// that install them, then 000001 drops the tables those policies were on and last the role that held the
-// grants. Store.Rollback runs it, and the component tier leans on that to return a shared database to
-// empty between tests — so "reverses" has to mean NOTHING is left behind, including the role, which is a
-// cluster object the next database in the same cluster would see.
+// MigrationDown reverses MigrationUp in the opposite order: 000003 takes its columns back off
+// runner_leases, 000002 drops the policies and the procedures that install them, then 000001 drops the
+// tables those policies were on and last the role that held the grants. Store.Rollback runs it, and the
+// component tier leans on that to return a shared database to empty between tests — so "reverses" has to
+// mean NOTHING is left behind, including the role, which is a cluster object the next database in the same
+// cluster would see.
 func MigrationDown() string {
-	return migrationDown2 + "\n" + migrationDown
+	return migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
 }
 
-var namedQueries = parseNamedQueries(usageSQL, agentsSQL, jobsSQL, eventsSQL, responsesSQL, identitySQL, provisioningSQL, secretsSQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL, recoverySQL, webhooksSQL, triggersSQL, schedulesSQL, toolsSQL, remoteToolsSQL, mcpSQL, skillsSQL, hooksSQL, modelRoutesSQL, metricsSQL, slackSQL, knowledgeSQL, queuesSQL, a2aSQL, workersSQL, runnersSQL, environmentsSQL, backgroundSQL, deploymentSQL, botsSQL)
+var namedQueries = parseNamedQueries(usageSQL, agentsSQL, jobsSQL, eventsSQL, responsesSQL, identitySQL, provisioningSQL, secretsSQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL, recoverySQL, webhooksSQL, triggersSQL, schedulesSQL, toolsSQL, remoteToolsSQL, mcpSQL, skillsSQL, hooksSQL, modelRoutesSQL, metricsSQL, slackSQL, knowledgeSQL, queuesSQL, a2aSQL, workersSQL, runnersSQL, leasesSQL, environmentsSQL, backgroundSQL, deploymentSQL, botsSQL)
 
 // Query returns the SQL statement labelled "-- name: <name>" in storage/queries.
 // It panics on an unknown name because query names are compile-time constants.

@@ -560,6 +560,29 @@ run_postgres() {
       go test -tags=component -count=1 -v ./apps/control-plane/internal/fleet
     status=$?
   fi
+  # MACHINE OCCUPANCY (Faz A.4 T1) against this same real Postgres: the writer `runner_leases` never had.
+  # `grep -rniE 'INSERT INTO runner_leases' --include='*.go' --include='*.sql' . | grep -v node_modules | wc -l`
+  # answered 0 on 2026-08-04, so the machine half of what a customer is billed had no durable row at all
+  # while the token half has settled into usage_ledger for two epics.
+  #
+  # A NEW PACKAGE IS INVISIBLE FOR A DIFFERENT REASON THAN A NEW TEST NAME, and this leg is the fix for the
+  # first: a test whose name is missing from a -run allow-list does not run, and a package no line here
+  # names does not run either — both report the same green, and the second cannot be found by reading an
+  # allow-list because there is nothing to read. There is deliberately NO -run here, for the reason the
+  # internal/fleet leg above gives: this package holds nothing but these three tests, so an allow-list could
+  # only ever exclude a test somebody adds beside them.
+  #
+  # What they run: one session taking TWO machines is TWO rows and the gap between them is not billed (a
+  # bill is the sum of the holds, never the session's wall clock); an occupancy the reaper closes late is
+  # billed to `last_activity_at` and NOT to `released_at` and NOT to `released_at` minus a fixed TTL — the
+  # reaper is run deliberately late, because a sweep is late by construction and a constant-subtracting
+  # build answers that one case wrong; and a run that PARKS for want of a machine owns no row at all, which
+  # is the fence the tasks that wire acquisition into the dispatch path have to stay behind.
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -v ./tests/component/fleet
+    status=$?
+  fi
   # The E19 last mile: the three *_ref handles a `palai up` registration writes on a REAL
   # slack_connections row redeem to the values stored through the E13 T3 secret store, and each is
   # read off its REAL consumer — a v0 MAC computed longhand, and the two Authorization headers a

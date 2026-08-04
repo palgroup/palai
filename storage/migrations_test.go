@@ -12,8 +12,9 @@ import (
 // per-migration source the boot runner iterates (E15 T1). It also pins the chain head, so the
 // preflight/journal invariant is anchored.
 //
-// THE CHAIN IS TWO LINKS AND IT WAS SIXTY-SEVEN. It was squashed to a baseline on 2026-08-04; the head
-// pinned below is the second of the two, and the "penultimate" is now simply the first.
+// THE CHAIN IS THREE LINKS AND IT WAS SIXTY-SEVEN. It was squashed to a two-file baseline on 2026-08-04;
+// 000003_lease_occupancy (Faz A.4 T1) is the first ordinary forward migration written against it, and it
+// is now the head. The "penultimate" is 000002, the second half of that baseline.
 //
 // THE PIN IS A RENAME GUARD AS MUCH AS A HEAD PIN, and that is why the NAME is pinned beside the number:
 // `git mv` stages the OLD content, so a renumbering whose header edit is never re-added leaves a file
@@ -23,8 +24,8 @@ import (
 //
 // IT ALSO WENT STALE THREE TIMES, which is the other half of the lesson: it still read 000040 while 41 and
 // 42 had landed, and 000062 landed without moving it at all. A head pin nobody updates is a head pin
-// nobody reads. With two links there is far less to keep up with, and adding a third link means editing
-// exactly this assertion.
+// nobody reads. The squashed chain is short enough that keeping up with it is cheap, and adding a link
+// means editing exactly this assertion — which 000003 did.
 func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	migrations := OrderedMigrations()
 	if len(migrations) == 0 {
@@ -54,12 +55,12 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	}
 
 	head := migrations[len(migrations)-1]
-	if head.Version != 2 || head.Name != "row_level_security" {
-		t.Fatalf("chain head = %06d_%s, want 000002_row_level_security", head.Version, head.Name)
+	if head.Version != 3 || head.Name != "lease_occupancy" {
+		t.Fatalf("chain head = %06d_%s, want 000003_lease_occupancy", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 1 || penultimate.Name != "core" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000001_core", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 2 || penultimate.Name != "row_level_security" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000002_row_level_security", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

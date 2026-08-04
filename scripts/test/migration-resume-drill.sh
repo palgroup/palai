@@ -78,7 +78,7 @@ test -n "$head_version" || fail "could not read the chain head from storage/migr
 test "$head_version" -ge 2 || fail "the chain has $head_version migration(s); an interruption needs at least two"
 
 # --- 1. First boot: crash right after the FIRST migration ----------------------------------------------
-# The fault stops the runner between the two links, which is the state worth resuming from rather than
+# The fault stops the runner between 000001 and 000002, which is the state worth resuming from rather than
 # merely a convenient one: every table exists and NOT ONE of them is row-level secured yet.
 set +e
 PALAI_DATABASE_URL="$url" PALAI_MIGRATE_FAULT_AFTER=1 PALAI_DISPATCH_WORKERS=0 \

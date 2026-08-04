@@ -190,8 +190,8 @@ func TestMigrationChainRoundTripsThroughRollback(t *testing.T) {
 	ctx := context.Background()
 	pool := cs.Pool()
 
-	// A table from each of the two links: the journal is 000001's and the policy procedure is 000002's,
-	// so the round trip below is over the WHOLE chain rather than its first half.
+	// A table from each of the two BASELINE links: the journal is 000001's and the policy procedure is
+	// 000002's, so the round trip below is over the whole baseline rather than its first half.
 	if !tableExists(t, pool, "schema_revisions") {
 		t.Fatal("after apply, schema_revisions is missing")
 	}
@@ -257,7 +257,7 @@ func rowLevelSecurityEnabled(t *testing.T, pool *pgxpool.Pool, table string) boo
 // policies that can only be applied to tables that exist — is what keeps that state, and this test, real.
 //
 // THE PARTIAL STATE IS ALSO THE DANGEROUS ONE, which makes it worth witnessing rather than merely
-// resuming from: between the two links every table exists with row-level security not enabled at all.
+// resuming from: between 000001 and 000002 every table exists with row-level security not enabled at all.
 func TestMigrationInterruptionResumes(t *testing.T) {
 	dbURL := freshDatabase(t)
 	ctx := context.Background()
