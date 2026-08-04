@@ -72,6 +72,20 @@ case "$provider/$case_name" in
     run="TestLiveProviderTwoTextStreamToolSchema"
     required_key="ANTROPHIC_API_KEY"
     ;;
+  provider-two/vision-reads-image)
+    # 2026-08-04 (the image leg, SECOND family): the round trip the provider-two adapter's image refusal
+    # named as its own precondition — that guard's comment said the Anthropic image block "would be an
+    # UNPROVEN wire shape" and asked for a real Anthropic round trip in the same change that deleted it.
+    # Renders text nobody told the model — "PALAI 7429", from bitmaps that are in the test source — sends
+    # the PIXELS through the shipped provider-two adapter, and asserts the four digits came back. Runs
+    # against claude-sonnet-5 by default because that is prj_local's published `default` route, so the
+    # proof covers the path an operator's Slack screenshot actually travels. Uses ANTROPHIC_API_KEY; no
+    # docker. Honest ceiling (named in the test): one image on one user turn — a tool_result carrying an
+    # image is a shape no round trip here has exercised, so the adapter marks it rather than guessing.
+    pkg="./tests/live/provider"
+    run="TestLiveProviderTwoReadsTextInAnImage"
+    required_key="ANTROPHIC_API_KEY"
+    ;;
   openai-compatible/capability-probe)
     # E16 Task 5 (MOD-002): the ACTIVE capability probe end to end. Leg 1 LIVE — the probe against the
     # REAL OpenAI endpoint (OpenAI-compatible by definition) observes streaming + tool-calling +

@@ -14,8 +14,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,18 +40,38 @@ const defaultMaxTokens = 4096
 
 const maxSSELineBytes = 1 << 20 // one MiB, matching the engine frame ceiling
 
-// ErrImageUnsupported REFUSES a request carrying image content, and the refusal is the whole point.
+// imageMediaTypes is the EXACT set the Messages API accepts inside an image block's base64 source, and it
+// is a map rather than a comment because it is NARROWER than what reaches this adapter.
 //
-// This family has no image conversion. Anthropic's Messages API does take images (a
-// {"type":"image","source":{"type":"base64",…}} content block), so writing one is a small change — but it
-// would be an UNPROVEN wire shape in a tree whose vision claim rests on a real round trip, and there is no
-// Anthropic round trip behind it. The alternative to refusing is what this code did before the check
-// existed: drop the images and answer the text alone, so the user is told the model cannot see an image it
-// was in fact never shown. That is the silent-wrong-answer shape §27.5 exists to refuse.
+// CONTRACT: https://platform.claude.com/docs/en/build-with-claude/vision (checked 2026-08-04) — "Claude
+// supports JPEG, PNG, GIF, and WebP images (image/jpeg, image/png, image/gif, image/webp)."
 //
-// Upgrade path, named so it is a deliberate act: add the image block to wireMessages and delete this guard
-// in the same change that adds a real Anthropic vision round trip.
-var ErrImageUnsupported = errors.New("image_input_unsupported")
+// WHY THE NARROWNESS MATTERS HERE. execution's resolver admits any media type with an `image/` prefix
+// (model_dispatch.go's imageResolver), and every one of those types was produced by http.DetectContentType,
+// whose sniff table ALSO emits image/bmp and image/vnd.microsoft.icon. Both would reach this adapter and
+// both are outside the set above, so an unaccepted format is a real inbound case rather than a defensive
+// one — see imageContent for what happens to it.
+var imageMediaTypes = map[string]bool{
+	"image/jpeg": true,
+	"image/png":  true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
+// unreadableImageNote stands in for an image whose format this provider does not accept, and
+// unplaceableImageNote for one attached to a turn whose Anthropic shape has nowhere to put an image.
+//
+// THEY EXIST BECAUSE THE ALTERNATIVE IS THE SILENT WRONG ANSWER. Until 2026-08-04 this adapter refused
+// EVERY request carrying an image rather than send one, and the refusal's own reasoning was that dropping
+// the picture and answering the text alone tells a user the model cannot see something it was never shown
+// — the shape §27.5 exists to refuse. Sending images does not retire that reasoning, it narrows what it
+// applies to: an image this family still cannot put on the wire is MARKED, never dropped, so the model
+// reads that something was withheld and can say so. It is the same choice execution already made for the
+// images IT cannot carry (missingImageNote, droppedImageNote, oversizeImageNote).
+const (
+	unreadableImageNote  = "(an image in this conversation is in a format this model cannot read)"
+	unplaceableImageNote = "(an image attached to a non-user turn in this conversation is not shown here)"
+)
 
 // Adapter converts a canonical request into an Anthropic streaming message.
 type Adapter struct {
@@ -66,14 +86,6 @@ func (a Adapter) Execute(ctx context.Context, req modelbroker.Request, secret st
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, req.Deadline)
 		defer cancel()
-	}
-
-	// Refuse BEFORE the credential is used or a request is built: an image this family cannot render must
-	// never become a silent text-only call (see ErrImageUnsupported).
-	for _, m := range req.Messages {
-		if len(m.Images) > 0 {
-			return modelbroker.Result{}, fmt.Errorf("%w: the provider-two adapter has no image conversion, so a run carrying an image is refused rather than answered without it", ErrImageUnsupported)
-		}
 	}
 
 	body, names, err := a.buildBody(req)
@@ -402,17 +414,28 @@ func (a Adapter) buildBody(req modelbroker.Request) ([]byte, map[string]string, 
 // system-role turns collect into the top-level system string; tool-role turns become
 // user messages carrying a tool_result block; assistant tool calls become tool_use
 // content blocks with the wire-encoded name.
+//
+// IMAGES RIDE THE USER TURN AND ONLY THE USER TURN. That is not a shortcut around the other three
+// branches, it is Anthropic's own shape: the top-level `system` field is text, an assistant turn's blocks
+// are what the MODEL produced (writing an image into one would be putting words in its mouth), and a
+// tool_result carrying an image would be a wire shape no round trip in this tree has ever exercised —
+// which is exactly the "unproven shape" this family refused to guess at before it could see anything.
+// Images on those turns are counted and reported once in the system text (unplaceableImageNote); the
+// user turn — the one the operator's screenshot actually arrives on — carries the real blocks.
 func (a Adapter) wireMessages(messages []modelbroker.Message) (string, []map[string]any) {
 	var system strings.Builder
 	out := make([]map[string]any, 0, len(messages))
+	unplaceable := 0
 	for _, m := range messages {
 		switch m.Role {
 		case "system":
+			unplaceable += len(m.Images)
 			if system.Len() > 0 {
 				system.WriteByte('\n')
 			}
 			system.WriteString(m.Content)
 		case "tool":
+			unplaceable += len(m.Images)
 			out = append(out, map[string]any{
 				"role": "user",
 				"content": []map[string]any{{
@@ -422,6 +445,7 @@ func (a Adapter) wireMessages(messages []modelbroker.Message) (string, []map[str
 				}},
 			})
 		case "assistant":
+			unplaceable += len(m.Images)
 			var content []map[string]any
 			if m.Content != "" {
 				content = append(content, map[string]any{"type": "text", "text": m.Content})
@@ -440,13 +464,88 @@ func (a Adapter) wireMessages(messages []modelbroker.Message) (string, []map[str
 			}
 			out = append(out, map[string]any{"role": "assistant", "content": content})
 		default: // "user" and anything else
-			out = append(out, map[string]any{
-				"role":    "user",
-				"content": []map[string]any{{"type": "text", "text": m.Content}},
-			})
+			if len(m.Images) == 0 {
+				// THE REGRESSION GUARD: a turn carrying no image renders exactly as it did before this
+				// family could see one, so every text-only run's request body is byte-identical to the
+				// pre-vision one. It is also why the images ride a separate field rather than a re-typed
+				// Content — this branch cannot tell the difference.
+				out = append(out, map[string]any{
+					"role":    "user",
+					"content": []map[string]any{{"type": "text", "text": m.Content}},
+				})
+				continue
+			}
+			blocks, unreadable := imageContent(m.Images)
+			// IMAGES FIRST, then the words. The vision guide's own advice (checked 2026-08-04): "Claude
+			// works best when images come before text." Text after images still performs well, so this is
+			// a preference rather than a requirement — but it is free to honor.
+			content := blocks
+			text := m.Content
+			if unreadable > 0 {
+				// One note per turn, not per image: repeating an identical sentence four times tells the
+				// model nothing the first one did not.
+				if text != "" {
+					text += "\n"
+				}
+				text += unreadableImageNote
+			}
+			if text != "" {
+				// An empty text block is REJECTED by the endpoint, and an image-only turn is the ordinary
+				// case here — a file shared with no comment. "" says nothing a missing block does not.
+				content = append(content, map[string]any{"type": "text", "text": text})
+			}
+			out = append(out, map[string]any{"role": "user", "content": content})
 		}
 	}
+	if unplaceable > 0 {
+		if system.Len() > 0 {
+			system.WriteByte('\n')
+		}
+		system.WriteString(unplaceableImageNote)
+	}
 	return system.String(), out
+}
+
+// imageContent renders a turn's images as Anthropic image content blocks, returning the blocks plus a
+// COUNT of the images it could not encode, so the caller can say so rather than drop them silently.
+//
+// CONTRACT: https://platform.claude.com/docs/en/build-with-claude/vision (checked 2026-08-04) — an image
+// is {"type":"image","source":{"type":"base64","media_type":<one of imageMediaTypes>,"data":<base64>}}.
+//
+// THE BYTES, NEVER A URL, and that half is security rather than style. The same endpoint also accepts
+// {"type":"url","url":…}, which would make ANTHROPIC dereference an address chosen upstream of us — for a
+// Slack screenshot that means handing a third party a files.slack.com address and whatever credential the
+// address carries. The bytes are already control-plane-side by the time a Message exists (spec §24), so a
+// URL source buys nothing and leaks. Symmetric with provider-one's dataURL for the same reason, and kept
+// local so the two families stay independent.
+//
+// PROVIDER CEILINGS THIS DOES NOT RE-IMPOSE, because execution's are already stricter (measured
+// 2026-08-04 against the vision guide): Anthropic takes 10 MB of BASE64 per image on the first-party API
+// and execution.maxImageBytes caps one image at 5 MiB DECODED, which encodes to ~7.0 MB; Anthropic takes
+// 100 images per request on a 200k-context model (600 on wider ones) and execution.maxRunImages caps a
+// whole conversation at 8, which is also far under the 20-image threshold above which a stricter
+// per-image dimension limit applies. The one provider ceiling nothing here checks is the 8000x8000 px
+// maximum — reading it means decoding a header per image and stdlib has no WebP decoder, and an image
+// past it comes back as a sanitized 400 (invalid_request_error), which is loud rather than wrong.
+func imageContent(images []modelbroker.Image) (blocks []map[string]any, unreadable int) {
+	blocks = make([]map[string]any, 0, len(images))
+	for _, img := range images {
+		if !imageMediaTypes[img.MediaType] {
+			// Counted, not named: MediaType is sniffed from third-party bytes, and echoing it into the
+			// conversation would put attacker-influenced text in front of the model for no gain.
+			unreadable++
+			continue
+		}
+		blocks = append(blocks, map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type":       "base64",
+				"media_type": img.MediaType,
+				"data":       base64.StdEncoding.EncodeToString(img.Data),
+			},
+		})
+	}
+	return blocks, unreadable
 }
 
 // wireToolName encodes a canonical tool name into the provider's allowed charset

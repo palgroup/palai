@@ -31,24 +31,30 @@ import (
 // payload never becomes a fetch, because this app holds `files:read` and a fetch driven by an id somebody
 // else chose is a read primitive over the whole workspace.
 //
-// A CEILING THAT LIVES ENTIRELY OUTSIDE THIS FILE, MEASURED 2026-08-04 AND DATED BECAUSE IT WILL MOVE: an
-// image reaching the model is a property of the MODEL ROUTE, not of this leg, and on this deployment the
-// route refuses one. prj_local's published `default` route is claude-sonnet-5 over a `provider-two`
-// connection, and that adapter refuses ANY request carrying an image
-// (adapters/models/provider_two/adapter.go's ErrImageUnsupported — deliberately, since dropping the picture
-// and answering the text alone is the silent-wrong-answer shape §27.5 exists to refuse). So a Slack turn
-// that attaches a picture today does not get a worse answer, it gets NO answer: the run fails.
+// A CEILING THAT LIVED ENTIRELY OUTSIDE THIS FILE, AND CLOSED ON 2026-08-04. It is recorded rather than
+// deleted because the SHAPE of it is still true even though the instance is not: an image reaching the
+// model is a property of the MODEL ROUTE, not of this leg, and for one week this deployment's route made
+// every picture a failed run. prj_local's published `default` route is claude-sonnet-5 over a
+// `provider-two` connection, and that adapter used to refuse ANY request carrying an image — deliberately,
+// since dropping the picture and answering the text alone is the silent-wrong-answer shape §27.5 exists to
+// refuse. So a Slack turn that attached a picture did not get a worse answer, it got NO answer.
 //
 //	$ psql … -tAc "select rr.config->>'model', c.provider from model_route_revisions rr
 //	    join model_routes r on r.id = rr.route_id join model_connections c
 //	      on c.id = rr.config->>'connection_id'
 //	    where r.project_id = 'prj_local' and r.name = 'default' order by rr.revision desc limit 1"
-//	→ claude-sonnet-5 | provider-two          (2026-08-04)
+//	→ claude-sonnet-5 | provider-two          (2026-08-04, unchanged)
 //
-// The last Slack turns that carried an image and COMPLETED are 2026-07-27, before this route was published;
-// revision 3 of the same route was gpt-4o-mini over `provider-one`, which does convert images. So the fix is
-// an operator's route publish, or Anthropic vision in that adapter — neither is this file's, and neither is
-// something this file can detect: nothing in the public API tells a relay what the route can render.
+// The route is the SAME; what changed is the adapter under it. provider-two now converts images to
+// Anthropic image content blocks, proved by a real round trip against claude-sonnet-5 — the exact model
+// above — in `PROVIDER=provider-two CASE=vision-reads-image scripts/test/live-provider`. Both direct
+// provider families convert images now, so a picture attached in Slack reaches the model on this
+// deployment's own route.
+//
+// WHAT IS STILL TRUE, and is why this paragraph survives: a route is an operator's to publish, and nothing
+// in the public API tells a relay what the route it will land on can render. A future route pointing at a
+// model or a family without vision would put this leg right back where it was, and this file would again be
+// unable to detect it — the images would be uploaded, named, and never looked at.
 
 // maxImagesPerMessage caps how many images ONE Slack message contributes.
 //

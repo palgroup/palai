@@ -71,13 +71,18 @@ var glyphs = map[rune][7]string{
 // scale or a better font, not a bigger one.
 const visionScale = 6
 
-// renderTextPNG draws text as large black blocks on white and encodes it as a PNG. Stdlib only.
-func renderTextPNG(t *testing.T, text string) []byte {
+// renderTextPNGAt draws text as large black blocks on white and encodes it as a PNG. Stdlib only.
+//
+// The scale is a PARAMETER rather than the package constant because each provider's own measured value is
+// the right one for it: provider-one reads this font best at 6 (see visionScale) and Anthropic, which bills
+// and downscales images by an entirely different rule, at 12 (see visionScaleTwo). One shared renderer, one
+// measured number per family.
+func renderTextPNGAt(t *testing.T, text string, scale int) []byte {
 	t.Helper()
 	const glyphW, glyphH, gap = 5, 7, 1
-	pad := visionScale * 2
-	width := len(text)*(glyphW+gap)*visionScale + 2*pad
-	height := glyphH*visionScale + 2*pad
+	pad := scale * 2
+	width := len(text)*(glyphW+gap)*scale + 2*pad
+	height := glyphH*scale + 2*pad
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	for y := range height {
 		for x := range width {
@@ -89,15 +94,15 @@ func renderTextPNG(t *testing.T, text string) []byte {
 		if !ok {
 			t.Fatalf("no glyph for %q — the font covers only the characters visionSecret uses", r)
 		}
-		originX := pad + i*(glyphW+gap)*visionScale
+		originX := pad + i*(glyphW+gap)*scale
 		for row, bits := range rows {
 			for col, bit := range bits {
 				if bit != '1' {
 					continue
 				}
-				for dy := range visionScale {
-					for dx := range visionScale {
-						img.Set(originX+col*visionScale+dx, pad+row*visionScale+dy, color.Black)
+				for dy := range scale {
+					for dx := range scale {
+						img.Set(originX+col*scale+dx, pad+row*scale+dy, color.Black)
 					}
 				}
 			}
@@ -123,7 +128,7 @@ func TestLiveProviderOneReadsTextInAnImage(t *testing.T) {
 		t.Fatalf("%s is unset; the live tier loads it from .env.local at runtime", credentialEnv)
 	}
 
-	pixels := renderTextPNG(t, visionSecret)
+	pixels := renderTextPNGAt(t, visionSecret, visionScale)
 	if len(pixels) < 200 {
 		t.Fatalf("rendered image is %d bytes, which is too small to be a real render", len(pixels))
 	}
