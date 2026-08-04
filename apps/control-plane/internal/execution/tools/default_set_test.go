@@ -27,8 +27,9 @@ import (
 // wires the conditional grant (repository-bound, publication) must not be able to introduce a name the
 // broker cannot produce, and this test would go RED the day one did.
 
-// TestEveryDefaultToolResolves is the guard proper: every name `palai up` binds must be a tool this
-// control plane can actually produce, either from the static broker set or from the Slack-search lookup.
+// TestEveryDefaultToolResolves is the guard proper: every name across the three canonical toolset lists —
+// not just the one `palai up` currently binds — must be a tool this control plane can actually produce,
+// either from the static broker set or from the Slack-search lookup.
 func TestEveryDefaultToolResolves(t *testing.T) {
 	authorities := NewSearchAuthorities()
 	authorities.Grant("run_guard", "T1", "https://slack.test/api", []byte("t"), "act")
@@ -37,9 +38,10 @@ func TestEveryDefaultToolResolves(t *testing.T) {
 	broker := toolbroker.New(
 		ResearchFetchTool(),
 		KnowledgeRetrievalTool(nil),
-		// The coding three, mounted here because E22 T3's bring-up binds them when it bound a repository.
-		// They are in the SAME broker as the read-only three on purpose: production builds one broker, and a
-		// guard that resolved each list against its own hand-picked set would prove less than it appears to.
+		// The coding three: E22 T3 designed them to be bound when a bring-up bound a repository, but nothing
+		// binds them today (see the file header). They are in the SAME broker as the read-only three on
+		// purpose: production builds one broker, and a guard that resolved each list against its own
+		// hand-picked set would prove less than it appears to.
 		FileTool(),
 		ShellTool(),
 		CommitTool(),
@@ -50,9 +52,9 @@ func TestEveryDefaultToolResolves(t *testing.T) {
 		// bound under the same condition as the coding tools because it reads from the same workspace — a
 		// run with no repository has nothing to screenshot.
 		MediaTool(),
-		// And the publish two, which E22 T4's bring-up binds under the same condition. They are in the SAME
-		// broker for the same reason — main.go builds one (main.go:459-467), and a guard that gave each list
-		// its own hand-picked set would prove less than it appears to.
+		// And the publish two: E22 T4 designed them to be bound under the same condition, likewise ungranted
+		// today. They are in the SAME broker for the same reason — main.go builds one (main.go:459-467), and a
+		// guard that gave each list its own hand-picked set would prove less than it appears to.
 		PushTool(),
 		PullRequestTool(),
 		MergeTool(),
@@ -75,9 +77,11 @@ func TestEveryDefaultToolResolves(t *testing.T) {
 // TestThePublishToolsAreTheirOwnListAndNeitherPublishes is the control-plane side of E22 T4, and it holds
 // two things a single merged list would have made unreadable.
 //
-// FIRST, the lists stay SEPARATE. `palai up` adds both under one condition, but the coding half is what an
-// agent does to a workspace nobody else can see and the publish half is what leaves the machine. Keeping the
-// second one nameable is what let T3 ship the first without the second at all.
+// FIRST, the lists stay SEPARATE. E22 T3/T4 designed them to be granted together under one condition, but
+// neither is granted by anything today (see the file header). The coding half is what an agent does to a
+// workspace nobody else can see and the publish half is what leaves the machine — two different grants even
+// on the day something binds them together again. Keeping the second one nameable is what let T3 ship the
+// first without the second at all.
 //
 // SECOND, and this is the invariant the whole task rests on: NEITHER publish tool acts. Each records a
 // pending publication and answers pending_approval, which is why granting them is not granting a push. The
