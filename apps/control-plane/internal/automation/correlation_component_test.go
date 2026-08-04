@@ -19,16 +19,16 @@ import (
 func TestCorrelationModesScopedAndBounded(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 
 	t.Run("per_event opens a fresh session", func(t *testing.T) {
-		triggerID, _ := seedTrigger(t, store, org, project, "per-event", TriggerRevisionInput{CorrelationMode: "per_event"})
-		a, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{}`))
+		triggerID, _ := seedTrigger(t, store, project, "per-event", TriggerRevisionInput{CorrelationMode: "per_event"})
+		a, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{}`))
 		if err != nil {
 			t.Fatalf("first delivery error = %v", err)
 		}
-		b, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{}`))
+		b, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{}`))
 		if err != nil {
 			t.Fatalf("second delivery error = %v", err)
 		}
@@ -38,17 +38,17 @@ func TestCorrelationModesScopedAndBounded(t *testing.T) {
 	})
 
 	t.Run("bounded_key_reuse chains onto the prior session", func(t *testing.T) {
-		triggerID, _ := seedTrigger(t, store, org, project, "bounded", TriggerRevisionInput{
+		triggerID, _ := seedTrigger(t, store, project, "bounded", TriggerRevisionInput{
 			CorrelationMode: "bounded_key_reuse", CorrelationKeyExpr: `{"select":"corr"}`,
 		})
-		first, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"corr":"c1"}`))
+		first, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"corr":"c1"}`))
 		if err != nil {
 			t.Fatalf("first delivery error = %v", err)
 		}
 		// Complete the first run so the chained second delivery is not blocked by one-active-root.
 		completeRun(t, pool, first.RunID)
 
-		second, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"corr":"c1"}`))
+		second, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"corr":"c1"}`))
 		if err != nil {
 			t.Fatalf("second delivery error = %v", err)
 		}
@@ -65,16 +65,16 @@ func TestCorrelationModesScopedAndBounded(t *testing.T) {
 
 	t.Run("named_session appends to an existing session", func(t *testing.T) {
 		// An ongoing session with an active root run — created by a per_event delivery.
-		host, _ := seedTrigger(t, store, org, project, "host", TriggerRevisionInput{CorrelationMode: "per_event"})
-		ongoing, err := store.CreateDelivery(ctx, org, project, principal, host, []byte(`{}`))
+		host, _ := seedTrigger(t, store, project, "host", TriggerRevisionInput{CorrelationMode: "per_event"})
+		ongoing, err := store.CreateDelivery(ctx, project, principal, host, []byte(`{}`))
 		if err != nil {
 			t.Fatalf("host delivery error = %v", err)
 		}
 
-		named, _ := seedTrigger(t, store, org, project, "named", TriggerRevisionInput{
+		named, _ := seedTrigger(t, store, project, "named", TriggerRevisionInput{
 			CorrelationMode: "named_session", CorrelationKeyExpr: `{"select":"target"}`,
 		})
-		del, err := store.CreateDelivery(ctx, org, project, principal, named, []byte(`{"target":"`+ongoing.SessionID+`"}`))
+		del, err := store.CreateDelivery(ctx, project, principal, named, []byte(`{"target":"`+ongoing.SessionID+`"}`))
 		if err != nil {
 			t.Fatalf("named_session delivery error = %v", err)
 		}
@@ -98,14 +98,14 @@ func TestCorrelationModesScopedAndBounded(t *testing.T) {
 	})
 
 	t.Run("reject_if_active rejects a busy session", func(t *testing.T) {
-		triggerID, _ := seedTrigger(t, store, org, project, "reject", TriggerRevisionInput{
+		triggerID, _ := seedTrigger(t, store, project, "reject", TriggerRevisionInput{
 			CorrelationMode: "reject_if_active", CorrelationKeyExpr: `{"select":"corr"}`,
 		})
-		if _, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"corr":"c2"}`)); err != nil {
+		if _, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"corr":"c2"}`)); err != nil {
 			t.Fatalf("first delivery error = %v", err)
 		}
 		// The first delivery's run is queued (active); a same-key delivery is rejected, not queued.
-		second, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"corr":"c2"}`))
+		second, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"corr":"c2"}`))
 		if err != nil {
 			t.Fatalf("second delivery error = %v", err)
 		}

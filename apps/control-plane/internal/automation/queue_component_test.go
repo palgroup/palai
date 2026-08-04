@@ -19,27 +19,27 @@ import (
 func TestQueuePolicyOrdersRunsPerKey(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 	rec := NewDeliveryReconciler(store, time.Hour, time.Hour, 100, nil)
 
-	triggerID, _ := seedTrigger(t, store, org, project, "queued", TriggerRevisionInput{
+	triggerID, _ := seedTrigger(t, store, project, "queued", TriggerRevisionInput{
 		ConcurrencyPolicy: "queue", CorrelationKeyExpr: `{"select":"key"}`,
 	})
 
 	// Three same-key events: the first admits, the next two defer.
-	d1, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`))
+	d1, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`))
 	if err != nil {
 		t.Fatalf("delivery 1 error = %v", err)
 	}
 	if d1.State != "run_created" {
 		t.Fatalf("delivery 1 state = %q, want run_created", d1.State)
 	}
-	d2, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`))
+	d2, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`))
 	if err != nil {
 		t.Fatalf("delivery 2 error = %v", err)
 	}
-	d3, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`))
+	d3, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`))
 	if err != nil {
 		t.Fatalf("delivery 3 error = %v", err)
 	}
@@ -48,7 +48,7 @@ func TestQueuePolicyOrdersRunsPerKey(t *testing.T) {
 	}
 
 	// A DIFFERENT key admits immediately — a busy key does not block a free one.
-	other, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"other"}`))
+	other, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"other"}`))
 	if err != nil {
 		t.Fatalf("other-key delivery error = %v", err)
 	}
@@ -93,15 +93,15 @@ func TestQueuePolicyOrdersRunsPerKey(t *testing.T) {
 func TestReconcilerRecoversStuckMapped(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 	// grace 0 so the just-created remnant is immediately eligible.
 	rec := NewDeliveryReconciler(store, time.Hour, 0, 100, nil)
 
-	triggerID, _ := seedTrigger(t, store, org, project, "stuck", TriggerRevisionInput{ConcurrencyPolicy: "allow"})
+	triggerID, _ := seedTrigger(t, store, project, "stuck", TriggerRevisionInput{ConcurrencyPolicy: "allow"})
 
 	// A delivery frozen in `mapped` (simulating a crash after the map step) with its input stored.
-	deliveryID := insertMappedRemnant(t, pool, org, project, principal, triggerID, store)
+	deliveryID := insertMappedRemnant(t, pool, project, principal, triggerID, store)
 
 	if err := rec.Tick(ctx); err != nil {
 		t.Fatalf("tick error = %v", err)
@@ -119,12 +119,12 @@ func TestReconcilerRecoversStuckMapped(t *testing.T) {
 func TestReconcilerReplayRecordsRealIds(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 	rec := NewDeliveryReconciler(store, time.Hour, 0, 100, nil) // grace 0 → the reset remnant is eligible now
 
-	triggerID, _ := seedTrigger(t, store, org, project, "replay", TriggerRevisionInput{ConcurrencyPolicy: "allow"})
-	del, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{}`))
+	triggerID, _ := seedTrigger(t, store, project, "replay", TriggerRevisionInput{ConcurrencyPolicy: "allow"})
+	del, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{}`))
 	if err != nil || del.State != "run_created" {
 		t.Fatalf("CreateDelivery = %+v, err = %v; want run_created", del, err)
 	}
@@ -159,18 +159,18 @@ func TestReconcilerReplayRecordsRealIds(t *testing.T) {
 
 // insertMappedRemnant creates a trigger delivery frozen in the `mapped` state with a stored mapped_input
 // and an old updated_at, simulating a process crash between mapping and the concurrency decision.
-func insertMappedRemnant(t *testing.T, pool *pgxpool.Pool, org, project, principal, triggerID string, store *TriggerStore) string {
+func insertMappedRemnant(t *testing.T, pool *pgxpool.Pool, project, principal, triggerID string, store *TriggerStore) string {
 	t.Helper()
-	rev, ok, err := store.GetActiveRevision(context.Background(), org, project, triggerID)
+	rev, ok, err := store.GetActiveRevision(context.Background(), project, triggerID)
 	if err != nil || !ok {
 		t.Fatalf("resolve active revision error = %v ok=%v", err, ok)
 	}
 	id := randID("tdel")
 	mustExec(t, pool,
 		`INSERT INTO trigger_deliveries
-		 (id, organization_id, project_id, trigger_id, trigger_revision_id, principal_id, state, mapped_input, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,'mapped','{}'::jsonb, clock_timestamp() - interval '1 minute')`,
-		id, org, project, triggerID, rev.ID, principal)
+		 (id, project_id, trigger_id, trigger_revision_id, principal_id, state, mapped_input, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,'mapped','{}'::jsonb,clock_timestamp() - interval '1 minute')`,
+		id, project, triggerID, rev.ID, principal)
 	return id
 }
 

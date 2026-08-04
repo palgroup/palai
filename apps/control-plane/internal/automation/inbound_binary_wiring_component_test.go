@@ -27,7 +27,7 @@ import (
 // bridge — a FILE PATH, never inline bytes), so the wiring test proves the SAME resolver shape the binary
 // wires, not a bespoke closure.
 func envFileInboundResolver(ref string) ([]byte, error) {
-	path := os.Getenv("PALAI_INBOUND_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
+	path := os.Getenv("PALAI_INBOUND_SECRET_FILE_" + secretEnvKey(ref))
 	if path == "" {
 		return nil, os.ErrNotExist
 	}
@@ -68,7 +68,7 @@ func TestInboundWebhookWiredIntoRunningBinary(t *testing.T) {
 	}
 	pool := repo.Spine().Pool()
 	token := randID("tok")
-	org, proj, principal := seedTenantReturning(t, pool, token)
+	proj, principal := seedTenantReturning(t, pool, token)
 
 	// The secret rides the env-file bridge, exactly as the binary resolves it.
 	secret := []byte("whsec_wired_" + randID("s"))
@@ -77,7 +77,7 @@ func TestInboundWebhookWiredIntoRunningBinary(t *testing.T) {
 	if err := os.WriteFile(secretFile, secret, 0o600); err != nil {
 		t.Fatalf("write secret file error = %v", err)
 	}
-	t.Setenv("PALAI_INBOUND_SECRET_FILE_"+secretEnvKey(org)+"__"+secretEnvKey(ref), secretFile)
+	t.Setenv("PALAI_INBOUND_SECRET_FILE_"+secretEnvKey(ref), secretFile)
 
 	// main.go's OWN wiring: the resolver + gate on the store, the same NewRouter seam list, and the same
 	// supervised "delivery-reconciler".
@@ -141,11 +141,9 @@ func TestInboundWebhookWiredIntoRunningBinary(t *testing.T) {
 	}
 	swept := randID("tdel")
 	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO trigger_deliveries
-	        (id, organization_id, project_id, trigger_id, trigger_revision_id, principal_id,
-	         source, source_tenant, source_event_id, raw_payload, state, received_at, updated_at)
-	      VALUES ($1,$2,$3,$4,$5,$6,'harness','','evt-swept',$7,'received',
-	              clock_timestamp() - interval '5 seconds', clock_timestamp() - interval '5 seconds')`,
-		swept, org, proj, triggerID, rev, principal,
+	        (id, project_id, trigger_id, trigger_revision_id, principal_id, source, source_tenant, source_event_id, raw_payload, state, received_at, updated_at)
+	      VALUES ($1,$2,$3,$4,$5,'harness','','evt-swept',$6,'received',clock_timestamp() - interval '5 seconds',clock_timestamp() - interval '5 seconds')`,
+		swept, proj, triggerID, rev, principal,
 		[]byte(`{"source":"harness","data":{"order":{"id":"o-swept","summary":"swept work"}}}`)); err != nil {
 		t.Fatalf("seed swept row error = %v", err)
 	}

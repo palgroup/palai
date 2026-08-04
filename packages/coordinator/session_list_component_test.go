@@ -44,41 +44,39 @@ import (
 //     no runs has no span at all rather than a zero one.
 func TestSessionListRowCarriesLabelAgentTokensAndSpan(t *testing.T) {
 	cs, ctx := openSessionListStore(t)
-	org := pinTestID("org")
 	project, decoyProject := pinTestID("prj"), pinTestID("prj")
-	mustExecPin(t, cs, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	mustExecPin(t, cs, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
-	mustExecPin(t, cs, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, decoyProject, org)
+	mustExecPin(t, cs, `INSERT INTO projects (id) VALUES ($1)`, project)
+	mustExecPin(t, cs, `INSERT INTO projects (id) VALUES ($1)`, decoyProject)
 
 	profile, revision := pinTestID("agt"), pinTestID("arev")
-	mustExecPin(t, cs, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,$4)`,
-		profile, org, project, "Gece Doğrulama")
-	mustExecPin(t, cs, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, published_at)
-		VALUES ($1,$2,$3,$4,1,clock_timestamp())`, revision, org, project, profile)
+	mustExecPin(t, cs, `INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,$3)`,
+		profile, project, "Gece Doğrulama")
+	mustExecPin(t, cs, `INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, published_at)
+		VALUES ($1,$2,$3,1,clock_timestamp())`, revision, project, profile)
 	template := pinTestID("tmpl")
-	mustExecPin(t, cs, `INSERT INTO run_template_revisions (id, organization_id, project_id, template_name, revision_number, published_at)
-		VALUES ($1,$2,$3,$4,1,clock_timestamp())`, template, org, project, "nightly-template")
+	mustExecPin(t, cs, `INSERT INTO run_template_revisions (id, project_id, template_name, revision_number, published_at)
+		VALUES ($1,$2,$3,1,clock_timestamp())`, template, project, "nightly-template")
 
 	base := time.Now().UTC().Add(-time.Hour)
 	// named: an operator label, one agent-pinned run and one template-pinned run, metered tokens, a span.
-	named := seedSession(t, cs, org, project, base, "Nightly verification")
-	seedRun(t, cs, org, project, named, base, base.Add(90*time.Second), revision, "")
-	seedRun(t, cs, org, project, named, base.Add(2*time.Minute), base.Add(3*time.Minute), "", template)
-	seedLedger(t, cs, org, project, named, "model.input_tokens", 1200)
-	seedLedger(t, cs, org, project, named, "model.output_tokens", 340)
+	named := seedSession(t, cs, project, base, "Nightly verification")
+	seedRun(t, cs, project, named, base, base.Add(90*time.Second), revision, "")
+	seedRun(t, cs, project, named, base.Add(2*time.Minute), base.Add(3*time.Minute), "", template)
+	seedLedger(t, cs, project, named, "model.input_tokens", 1200)
+	seedLedger(t, cs, project, named, "model.output_tokens", 340)
 	// The decoy project's rows carry the SAME session id on purpose: usage_ledger has no FK to sessions
 	// (000032 says so — a settlement must outlive the run it settles), so a query that forgets the
 	// project predicate sums these too.
-	seedLedgerIn(t, cs, org, decoyProject, named, "model.input_tokens", 999999)
+	seedLedgerIn(t, cs, decoyProject, named, "model.input_tokens", 999999)
 
 	// derived: no operator name; its first response was RETRACTED, so the label comes from the second.
-	derived := seedSession(t, cs, org, project, base.Add(time.Minute), "")
-	seedResponse(t, cs, org, project, derived, base.Add(time.Minute), `"the words the human took back"`, true)
-	seedResponse(t, cs, org, project, derived, base.Add(2*time.Minute),
+	derived := seedSession(t, cs, project, base.Add(time.Minute), "")
+	seedResponse(t, cs, project, derived, base.Add(time.Minute), `"the words the human took back"`, true)
+	seedResponse(t, cs, project, derived, base.Add(2*time.Minute),
 		`"`+strings.Repeat("uzun ", 40)+`"`, false)
 
 	// bare: created and never used — no name, no response, no run, no meter.
-	bare := seedSession(t, cs, org, project, base.Add(3*time.Minute), "")
+	bare := seedSession(t, cs, project, base.Add(3*time.Minute), "")
 
 	rows, err := cs.ListSessions(ctx, Tenant{Project: project}, ListParams{Limit: 10})
 	if err != nil {
@@ -150,14 +148,13 @@ func TestSessionListRowCarriesLabelAgentTokensAndSpan(t *testing.T) {
 // performs, and nothing here can manufacture one.
 func TestSessionListPagesTotallyOrderedAcrossAClockTie(t *testing.T) {
 	cs, ctx := openSessionListStore(t)
-	org, project := pinTestID("org"), pinTestID("prj")
-	mustExecPin(t, cs, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	mustExecPin(t, cs, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
+	project := pinTestID("prj")
+	mustExecPin(t, cs, `INSERT INTO projects (id) VALUES ($1)`, project)
 
 	tie := time.Now().UTC().Truncate(time.Microsecond)
 	want := map[string]bool{}
 	for range 3 {
-		want[seedSession(t, cs, org, project, tie, "")] = false
+		want[seedSession(t, cs, project, tie, "")] = false
 	}
 
 	tenant := Tenant{Project: project}
@@ -197,13 +194,12 @@ func TestSessionListPagesTotallyOrderedAcrossAClockTie(t *testing.T) {
 // here would reject a legitimate rename; this test is what would fail if one were ever added.
 func TestSessionRenameIsALabelNotAnIdentity(t *testing.T) {
 	cs, ctx := openSessionListStore(t)
-	org, project := pinTestID("org"), pinTestID("prj")
-	mustExecPin(t, cs, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	mustExecPin(t, cs, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
+	project := pinTestID("prj")
+	mustExecPin(t, cs, `INSERT INTO projects (id) VALUES ($1)`, project)
 
 	now := time.Now().UTC()
-	one := seedSession(t, cs, org, project, now, "")
-	two := seedSession(t, cs, org, project, now.Add(time.Second), "")
+	one := seedSession(t, cs, project, now, "")
+	two := seedSession(t, cs, project, now.Add(time.Second), "")
 	tenant := Tenant{Project: project}
 
 	for _, id := range []string{one, two} {
@@ -260,15 +256,15 @@ func openSessionListStore(t *testing.T) (*Store, context.Context) {
 	return cs, ctx
 }
 
-func seedSession(t *testing.T, cs *Store, org, project string, createdAt time.Time, name string) string {
+func seedSession(t *testing.T, cs *Store, project string, createdAt time.Time, name string) string {
 	t.Helper()
 	id := pinTestID("ses")
-	mustExecPin(t, cs, `INSERT INTO sessions (id, organization_id, project_id, name, created_at) VALUES ($1,$2,$3,$4,$5)`,
-		id, org, project, name, createdAt)
+	mustExecPin(t, cs, `INSERT INTO sessions (id, project_id, name, created_at) VALUES ($1,$2,$3,$4)`,
+		id, project, name, createdAt)
 	return id
 }
 
-func seedRun(t *testing.T, cs *Store, org, project, session string, createdAt, updatedAt time.Time, revision, template string) {
+func seedRun(t *testing.T, cs *Store, project, session string, createdAt, updatedAt time.Time, revision, template string) {
 	t.Helper()
 	var rev, tmpl *string
 	if revision != "" {
@@ -277,43 +273,42 @@ func seedRun(t *testing.T, cs *Store, org, project, session string, createdAt, u
 	if template != "" {
 		tmpl = &template
 	}
-	mustExecPin(t, cs, `INSERT INTO runs (id, organization_id, project_id, session_id, state, created_at, updated_at, agent_revision_id, run_template_revision_id)
-		VALUES ($1,$2,$3,$4,'completed',$5,$6,$7,$8)`,
-		pinTestID("run"), org, project, session, createdAt, updatedAt, rev, tmpl)
+	mustExecPin(t, cs, `INSERT INTO runs (id, project_id, session_id, state, created_at, updated_at, agent_revision_id, run_template_revision_id)
+		VALUES ($1,$2,$3,'completed',$4,$5,$6,$7)`,
+		pinTestID("run"), project, session, createdAt, updatedAt, rev, tmpl)
 }
 
-func seedResponse(t *testing.T, cs *Store, org, project, session string, createdAt time.Time, inputJSON string, retracted bool) {
+func seedResponse(t *testing.T, cs *Store, project, session string, createdAt time.Time, inputJSON string, retracted bool) {
 	t.Helper()
 	var retractedAt *time.Time
 	if retracted {
 		at := createdAt.Add(time.Second)
 		retractedAt = &at
 	}
-	mustExecPin(t, cs, `INSERT INTO responses (id, organization_id, project_id, session_id, state, input, created_at, retracted_at)
-		VALUES ($1,$2,$3,$4,'completed',$5::jsonb,$6,$7)`,
-		pinTestID("resp"), org, project, session, inputJSON, createdAt, retractedAt)
+	mustExecPin(t, cs, `INSERT INTO responses (id, project_id, session_id, state, input, created_at, retracted_at)
+		VALUES ($1,$2,$3,'completed',$4::jsonb,$5,$6)`,
+		pinTestID("resp"), project, session, inputJSON, createdAt, retractedAt)
 }
 
-func seedLedger(t *testing.T, cs *Store, org, project, session, meter string, quantity int64) {
+func seedLedger(t *testing.T, cs *Store, project, session, meter string, quantity int64) {
 	t.Helper()
-	seedLedgerIn(t, cs, org, project, session, meter, quantity)
+	seedLedgerIn(t, cs, project, session, meter, quantity)
 }
 
-func seedLedgerIn(t *testing.T, cs *Store, org, project, session, meter string, quantity int64) {
+func seedLedgerIn(t *testing.T, cs *Store, project, session, meter string, quantity int64) {
 	t.Helper()
-	mustExecPin(t, cs, `INSERT INTO usage_ledger (id, organization_id, project_id, session_id, meter, quantity, unit, dedupe_key)
-		VALUES ($1,$2,$3,$4,$5,$6,'token',$7)`,
-		pinTestID("use"), org, project, session, meter, quantity, pinTestID("dk"))
+	mustExecPin(t, cs, `INSERT INTO usage_ledger (id, project_id, session_id, meter, quantity, unit, dedupe_key)
+		VALUES ($1,$2,$3,$4,$5,'token',$6)`,
+		pinTestID("use"), project, session, meter, quantity, pinTestID("dk"))
 }
 
 // middlewareForeignSession seeds a session in a whole second organization, so a rename addressed at it
 // from the first tenant's scope is refused by RLS rather than by an id-shape check.
 func middlewareForeignSession(t *testing.T, cs *Store) string {
 	t.Helper()
-	org, project := pinTestID("org"), pinTestID("prj")
-	mustExecPin(t, cs, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	mustExecPin(t, cs, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
-	return seedSession(t, cs, org, project, time.Now().UTC(), "")
+	project := pinTestID("prj")
+	mustExecPin(t, cs, `INSERT INTO projects (id) VALUES ($1)`, project)
+	return seedSession(t, cs, project, time.Now().UTC(), "")
 }
 
 var _ = storage.WithSystemScope

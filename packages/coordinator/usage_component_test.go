@@ -89,17 +89,17 @@ func TestExhaustedBudgetNamesTheNarrowestLimitWhicheverRowWasWrittenFirst(t *tes
 	cs, _ := openSessionListStore(t)
 	answers := map[string]string{}
 	for _, arrangement := range limitArrangements() {
-		org, project := seedLimitTenant(t, cs)
+		project := seedLimitTenant(t, cs)
 		writeLimitPair(t, cs, arrangement, func(id, projectID string, limit int) {
-			mustExecPin(t, cs, `INSERT INTO budgets (id, organization_id, project_id, meter_prefix, limit_quantity, period_start)
-				VALUES ($1,$2,$3,'model.',$4,$5)`, id, org, projectID, limit, time.Now().UTC().Add(-time.Hour))
+			mustExecPin(t, cs, `INSERT INTO budgets (id, project_id, meter_prefix, limit_quantity, period_start)
+				VALUES ($1,$2,'model.',$3,$4)`, id, projectID, limit, time.Now().UTC().Add(-time.Hour))
 		}, project)
-		seedLimitSpend(t, cs, org, project)
+		seedLimitSpend(t, cs, project)
 
 		// Repeated on purpose: an ambiguity that resolves one way per plan-cache generation is still an
 		// ambiguity, and a single read cannot tell a stable answer from a lucky one.
 		for attempt := 0; attempt < 8; attempt++ {
-			got := readDurableLimit(t, cs, org, project)
+			got := readDurableLimit(t, cs, project)
 			if got == nil {
 				t.Fatalf("%s: attempt %d reported no exhausted limit; both rows are over their limit (%d of %d, %d of %d)",
 					arrangement.name, attempt, narrowUsed, narrowLimit, wideUsed, wideLimit)
@@ -122,15 +122,15 @@ func TestExhaustedQuotaNamesTheNarrowestLimitWhicheverRowWasWrittenFirst(t *test
 	cs, _ := openSessionListStore(t)
 	answers := map[string]string{}
 	for _, arrangement := range limitArrangements() {
-		org, project := seedLimitTenant(t, cs)
+		project := seedLimitTenant(t, cs)
 		writeLimitPair(t, cs, arrangement, func(id, projectID string, limit int) {
-			mustExecPin(t, cs, `INSERT INTO quotas (id, organization_id, project_id, meter_prefix, limit_quantity, window_seconds)
-				VALUES ($1,$2,$3,'model.',$4,3600)`, id, org, projectID, limit)
+			mustExecPin(t, cs, `INSERT INTO quotas (id, project_id, meter_prefix, limit_quantity, window_seconds)
+				VALUES ($1,$2,'model.',$3,3600)`, id, projectID, limit)
 		}, project)
-		seedLimitSpend(t, cs, org, project)
+		seedLimitSpend(t, cs, project)
 
 		for attempt := 0; attempt < 8; attempt++ {
-			got := readDurableLimit(t, cs, org, project)
+			got := readDurableLimit(t, cs, project)
 			if got == nil {
 				t.Fatalf("%s: attempt %d reported no exhausted limit; both rows are over their limit (%d of %d, %d of %d)",
 					arrangement.name, attempt, narrowUsed, narrowLimit, wideUsed, wideLimit)
@@ -177,7 +177,7 @@ func describeLimit(l LimitExceeded) string {
 
 // readDurableLimit drives the production gate exactly as AdmitResponse does: the tenant-scoped context,
 // a ReadCommitted transaction, and checkDurableLimits itself. Nothing here re-implements the query.
-func readDurableLimit(t *testing.T, cs *Store, org, project string) *LimitExceeded {
+func readDurableLimit(t *testing.T, cs *Store, project string) *LimitExceeded {
 	t.Helper()
 	tenant := Tenant{Project: project}
 	ctx := storage.ScopeToTenant(context.Background(), tenant.Project)
@@ -195,12 +195,11 @@ func readDurableLimit(t *testing.T, cs *Store, org, project string) *LimitExceed
 
 // seedLimitTenant gives each arrangement its own organization, so the four are independent states rather
 // than four readings of one table, and a sibling project whose spend the organization-wide row sums.
-func seedLimitTenant(t *testing.T, cs *Store) (org, project string) {
+func seedLimitTenant(t *testing.T, cs *Store) (project string) {
 	t.Helper()
-	org, project = pinTestID("org"), pinTestID("prj")
-	mustExecPin(t, cs, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	mustExecPin(t, cs, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
-	return org, project
+	project = pinTestID("prj")
+	mustExecPin(t, cs, `INSERT INTO projects (id) VALUES ($1)`, project)
+	return project
 }
 
 // writeLimitPair inserts the organization-wide row and the project row in the arrangement's order, with
@@ -226,14 +225,14 @@ func writeLimitPair(t *testing.T, cs *Store, a limitArrangement, insert func(id,
 
 // seedLimitSpend exhausts BOTH rows and makes them report different numbers: this project spends
 // narrowUsed, a sibling project spends siblingUsed, and only the organization-wide row sums the two.
-func seedLimitSpend(t *testing.T, cs *Store, org, project string) {
+func seedLimitSpend(t *testing.T, cs *Store, project string) {
 	t.Helper()
 	sibling := pinTestID("prj")
-	mustExecPin(t, cs, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, sibling, org)
+	mustExecPin(t, cs, `INSERT INTO projects (id) VALUES ($1)`, sibling)
 	insertSpend := func(projectID string, quantity int) {
-		mustExecPin(t, cs, `INSERT INTO usage_ledger (id, organization_id, project_id, meter, quantity, unit, dedupe_key)
-			VALUES ($1,$2,$3,'model.input_tokens',$4,'token',$5)`,
-			pinTestID("use"), org, projectID, quantity, pinTestID("dk"))
+		mustExecPin(t, cs, `INSERT INTO usage_ledger (id, project_id, meter, quantity, unit, dedupe_key)
+			VALUES ($1,$2,'model.input_tokens',$3,'token',$4)`,
+			pinTestID("use"), projectID, quantity, pinTestID("dk"))
 	}
 	insertSpend(project, narrowUsed)
 	insertSpend(sibling, siblingUsed)

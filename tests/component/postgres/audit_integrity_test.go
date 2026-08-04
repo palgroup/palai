@@ -83,8 +83,8 @@ func TestAuditIntegrityFourArms(t *testing.T) {
 
 	// A small real journal: six events over one session, payloads distinguishable byte-for-byte.
 	for seq := 1; seq <= 6; seq++ {
-		exec(t, pool, `INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
-		               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		exec(t, pool, `INSERT INTO events (id, project_id, session_id, seq, type, payload)
+		               VALUES ($1, $2, $3, $4, $5, $6)`,
 			newID("evt"), tenant.Project, sessionID, seq, "run.step.v1",
 			fmt.Sprintf(`{"step": %d, "note": "payload-%d"}`, seq, seq))
 	}
@@ -209,8 +209,8 @@ func TestAuditVerifyCommandExitsNonZeroOnTamper(t *testing.T) {
 	pool := cs.Pool()
 	tenant, sessionID, _ := seedRun(t, pool)
 	for seq := 1; seq <= 3; seq++ {
-		exec(t, pool, `INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
-		               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		exec(t, pool, `INSERT INTO events (id, project_id, session_id, seq, type, payload)
+		               VALUES ($1, $2, $3, $4, $5, $6)`,
 			newID("evt"), tenant.Project, sessionID, seq, "run.step.v1",
 			fmt.Sprintf(`{"cli": %d}`, seq))
 	}
@@ -305,8 +305,8 @@ func TestAuditReadRefusesARowLevelScopedConnection(t *testing.T) {
 	ctx := storage.WithSystemScope(context.Background())
 	tenant, sessionID, _ := seedRun(t, pool)
 	for seq := 1; seq <= 4; seq++ {
-		exec(t, pool, `INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
-		               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		exec(t, pool, `INSERT INTO events (id, project_id, session_id, seq, type, payload)
+		               VALUES ($1, $2, $3, $4, $5, $6)`,
 			newID("evt"), tenant.Project, sessionID, seq, "run.step.v1", `{"rls": true}`)
 	}
 	// The superuser read the commands are documented to use sees them.
@@ -385,8 +385,8 @@ func TestAuditVerifyReportsCheckpointAgeAndAlertsOnRollback(t *testing.T) {
 	pool := cs.Pool()
 	tenant, sessionID, _ := seedRun(t, pool)
 	for seq := 1; seq <= 3; seq++ {
-		exec(t, pool, `INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
-		               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		exec(t, pool, `INSERT INTO events (id, project_id, session_id, seq, type, payload)
+		               VALUES ($1, $2, $3, $4, $5, $6)`,
 			newID("evt"), tenant.Project, sessionID, seq, "run.step.v1",
 			fmt.Sprintf(`{"age": %d}`, seq))
 	}

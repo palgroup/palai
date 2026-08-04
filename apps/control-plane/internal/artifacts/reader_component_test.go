@@ -23,7 +23,7 @@ import (
 func TestReaderMetadataAndContent(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, runID := h.seedRun(t)
+	project, runID := h.seedRun(t)
 	reader := NewReader(h.s3, h.pool)
 	scope := middleware.Scope{Project: project}
 
@@ -96,8 +96,8 @@ func TestReaderMetadataAndContent(t *testing.T) {
 func TestReaderCrossTenantIsMiss(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	orgA, projectA, runA := h.seedRun(t)
-	_, projectB, _ := h.seedRun(t)
+	projectA, runA := h.seedRun(t)
+	projectB, _ := h.seedRun(t)
 	reader := NewReader(h.s3, h.pool)
 
 	art, err := h.writer.Write(ctx, WriteRequest{Project: projectA, RunID: runA, Content: []byte("secret build log")})
@@ -131,7 +131,7 @@ func TestReaderCrossTenantIsMiss(t *testing.T) {
 func TestReaderListRunArtifacts(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, responseID, runID := h.seedResponseRun(t)
+	project, responseID, runID := h.seedResponseRun(t)
 	reader := NewReader(h.s3, h.pool)
 	scope := middleware.Scope{Project: project}
 
@@ -172,7 +172,7 @@ func TestReaderListRunArtifacts(t *testing.T) {
 func TestReaderContentLengthFallsBackToRowSize(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, runID := h.seedRun(t)
+	project, runID := h.seedRun(t)
 
 	payload := []byte("terminal output with no content-length\n")
 	// A stub S3 that streams the object body WITHOUT a Content-Length (flushing after the header forces
@@ -195,8 +195,8 @@ func TestReaderContentLengthFallsBackToRowSize(t *testing.T) {
 	// pointing at any object key — the stub serves the bytes for any GET.
 	sum := sha256.Sum256(payload)
 	artID := newID("art")
-	h.exec(t, `INSERT INTO artifacts (id, organization_id, project_id, run_id, object_key, size_bytes, checksum) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		artID, org, project, runID, "stub/key", int64(len(payload)), "sha256:"+hex.EncodeToString(sum[:]))
+	h.exec(t, `INSERT INTO artifacts (id, project_id, run_id, object_key, size_bytes, checksum) VALUES ($1, $2, $3, $4, $5, $6)`,
+		artID, project, runID, "stub/key", int64(len(payload)), "sha256:"+hex.EncodeToString(sum[:]))
 
 	reader := NewReader(stubStore, h.pool)
 	cnt, err := reader.OpenArtifactContent(ctx, middleware.Scope{Project: project}, artID)
@@ -221,18 +221,17 @@ func TestReaderContentLengthFallsBackToRowSize(t *testing.T) {
 
 // seedResponseRun creates org -> project -> session -> response -> run (with response_id set), so the
 // response->run resolution the run-scoped list relies on has a row to find.
-func (h *artifactsHarness) seedResponseRun(t *testing.T) (org, project, responseID, runID string) {
+func (h *artifactsHarness) seedResponseRun(t *testing.T) (project, responseID, runID string) {
 	t.Helper()
-	org, project = newID("org"), newID("prj")
+	project = newID("prj")
 	session := newID("ses")
 	responseID = newID("resp")
 	runID = newID("run")
-	h.exec(t, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	h.exec(t, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org)
-	h.exec(t, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, org, project)
-	h.exec(t, `INSERT INTO responses (id, organization_id, project_id, session_id, input) VALUES ($1, $2, $3, $4, '{}'::jsonb)`, responseID, org, project, session)
-	h.exec(t, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id) VALUES ($1, $2, $3, $4, $5)`, runID, org, project, session, responseID)
-	return org, project, responseID, runID
+	h.exec(t, `INSERT INTO projects (id) VALUES ($1)`, project)
+	h.exec(t, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, session, project)
+	h.exec(t, `INSERT INTO responses (id, project_id, session_id, input) VALUES ($1, $2, $3, '{}'::jsonb)`, responseID, project, session)
+	h.exec(t, `INSERT INTO runs (id, project_id, session_id, response_id) VALUES ($1, $2, $3, $4)`, runID, project, session, responseID)
+	return project, responseID, runID
 }
 
 // TestAnUnattachedArtifactIsReadableRatherThan500 pins the NULL run_id case on both read routes.
@@ -251,12 +250,12 @@ func (h *artifactsHarness) seedResponseRun(t *testing.T) (org, project, response
 func TestAnUnattachedArtifactIsReadableRatherThan500(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, _ := h.seedRun(t)
+	project, _ := h.seedRun(t)
 	reader := NewReader(h.s3, h.pool)
 	scope := middleware.Scope{Project: project}
 
 	content := []byte("\x89PNG\r\n\x1a\nnot-a-real-png-but-real-bytes")
-	if err := h.writer.WriteInboundArtifact(ctx, org, project, "art_unattached_read", content, "image/png", map[string]any{
+	if err := h.writer.WriteInboundArtifact(ctx, project, "art_unattached_read", content, "image/png", map[string]any{
 		"source": "api_ingest",
 	}); err != nil {
 		t.Fatalf("WriteInboundArtifact() error = %v", err)

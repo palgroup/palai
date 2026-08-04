@@ -73,7 +73,7 @@ func TestToolSDKServerVariantSignedRoundtrip(t *testing.T) {
 	}
 	pool := cs.Pool()
 
-	org, project := newID("org"), newID("prj")
+	project := newID("prj")
 	mustExec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, project)
 
 	// The shared HMAC secret (in-memory only; never logged). The org-scoped resolver
@@ -81,8 +81,8 @@ func TestToolSDKServerVariantSignedRoundtrip(t *testing.T) {
 	// via env, so a genuine HMAC is enforced on both directions.
 	secret := []byte("tool-sdk-component-hmac-secret")
 	ops := remotehttp.NewOperations(pool)
-	resolver := func(o, ref string) ([]byte, error) {
-		if o == org && ref == "sig-ref" {
+	resolver := func(ref string) ([]byte, error) {
+		if ref == "sig-ref" {
 			return secret, nil
 		}
 		return nil, nil

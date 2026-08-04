@@ -21,23 +21,23 @@ import (
 func TestReplaceDeniedAfterIrreversibleToolCall(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 
 	for _, ledgerState := range []string{"completed", "uncertain"} {
 		t.Run("irreversible/"+ledgerState, func(t *testing.T) {
-			triggerID, _ := seedTrigger(t, store, org, project, "replace-irr-"+ledgerState, TriggerRevisionInput{
+			triggerID, _ := seedTrigger(t, store, project, "replace-irr-"+ledgerState, TriggerRevisionInput{
 				ConcurrencyPolicy: "replace", CorrelationKeyExpr: `{"select":"key"}`,
 			})
-			first, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`))
+			first, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`))
 			if err != nil {
 				t.Fatalf("first delivery error = %v", err)
 			}
 			mustExec(t, pool,
-				`INSERT INTO tool_calls (id, organization_id, project_id, run_id, name, replay_class, state) VALUES ($1,$2,$3,$4,'send_email',$5,$6)`,
-				randID("tc"), org, project, first.RunID, "irreversible", ledgerState)
+				`INSERT INTO tool_calls (id, project_id, run_id, name, replay_class, state) VALUES ($1,$2,$3,'send_email',$4,$5)`,
+				randID("tc"), project, first.RunID, "irreversible", ledgerState)
 
-			second, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`))
+			second, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`))
 			if err != nil {
 				t.Fatalf("second delivery error = %v", err)
 			}
@@ -63,18 +63,18 @@ func TestReplaceDeniedAfterIrreversibleToolCall(t *testing.T) {
 
 	// Control group: a 'pure'-class run does NOT block a replace — the normal cancel+admit still happens.
 	t.Run("pure class allows normal replace", func(t *testing.T) {
-		triggerID, _ := seedTrigger(t, store, org, project, "replace-pure", TriggerRevisionInput{
+		triggerID, _ := seedTrigger(t, store, project, "replace-pure", TriggerRevisionInput{
 			ConcurrencyPolicy: "replace", CorrelationKeyExpr: `{"select":"key"}`,
 		})
-		first, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`))
+		first, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`))
 		if err != nil {
 			t.Fatalf("first delivery error = %v", err)
 		}
 		mustExec(t, pool,
-			`INSERT INTO tool_calls (id, organization_id, project_id, run_id, name, replay_class, state) VALUES ($1,$2,$3,$4,'noop',$5,$6)`,
-			randID("tc"), org, project, first.RunID, "pure", "completed")
+			`INSERT INTO tool_calls (id, project_id, run_id, name, replay_class, state) VALUES ($1,$2,$3,'noop',$4,$5)`,
+			randID("tc"), project, first.RunID, "pure", "completed")
 
-		second, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`))
+		second, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`))
 		if err != nil {
 			t.Fatalf("second delivery error = %v", err)
 		}
@@ -97,21 +97,21 @@ func TestReplaceDeniedAfterIrreversibleToolCall(t *testing.T) {
 func TestCoalesceDeniedAfterIrreversibleToolCall(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 
-	triggerID, _ := seedTrigger(t, store, org, project, "coalesce-irr", TriggerRevisionInput{
+	triggerID, _ := seedTrigger(t, store, project, "coalesce-irr", TriggerRevisionInput{
 		ConcurrencyPolicy: "coalesce", CorrelationKeyExpr: `{"select":"key"}`,
 	})
-	first, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`))
+	first, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`))
 	if err != nil {
 		t.Fatalf("first delivery error = %v", err)
 	}
 	mustExec(t, pool,
-		`INSERT INTO tool_calls (id, organization_id, project_id, run_id, name, replay_class, state) VALUES ($1,$2,$3,$4,'charge_card',$5,$6)`,
-		randID("tc"), org, project, first.RunID, "irreversible", "completed")
+		`INSERT INTO tool_calls (id, project_id, run_id, name, replay_class, state) VALUES ($1,$2,$3,'charge_card',$4,$5)`,
+		randID("tc"), project, first.RunID, "irreversible", "completed")
 
-	second, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`))
+	second, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`))
 	if err != nil {
 		t.Fatalf("second delivery error = %v", err)
 	}

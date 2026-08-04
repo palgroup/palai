@@ -68,7 +68,7 @@ func (f *slackFixture) runInput(t *testing.T) string {
 	t.Helper()
 	var input string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT input::text FROM responses WHERE organization_id=$1 AND project_id=$2`, f.org, f.project).Scan(&input); err != nil {
+		`SELECT input::text FROM responses WHERE  project_id=$1`, f.project).Scan(&input); err != nil {
 		t.Fatalf("read the stored run input: %v", err)
 	}
 	return input
@@ -83,8 +83,7 @@ func (f *slackFixture) runInput(t *testing.T) string {
 func TestSlackContextCannotSelectATenant(t *testing.T) {
 	f := newSlackFixture(t)
 	victim, victimProject := newID("org"), newID("prj")
-	exec(t, f.pool, `INSERT INTO organizations (id) VALUES ($1)`, victim)
-	exec(t, f.pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, victimProject, victim)
+	exec(t, f.pool, `INSERT INTO projects (id) VALUES ($1)`, victimProject)
 
 	body := withContext(t, f.eventText(t, "EvCtxTenant", "app_mention", "Umapped", "C80", "1700000080.000100", "", "<@"+f.botUser+"> ship it"),
 		ctxEntity("slack#/types/channel_id", "C0VICTIM", "T0OTHERWORKSPACE"), // another workspace's channel
@@ -99,7 +98,7 @@ func TestSlackContextCannotSelectATenant(t *testing.T) {
 
 	var stolen int
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(*) FROM runs WHERE organization_id=$1`, victim).Scan(&stolen); err != nil {
+		`SELECT count(*) FROM runs WHERE project_id=$1`, victimProject).Scan(&stolen); err != nil {
 		t.Fatalf("count victim runs: %v", err)
 	}
 	if stolen != 0 {
@@ -136,8 +135,7 @@ func TestSlackContextCannotSelectARunTarget(t *testing.T) {
 
 	var revision string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT COALESCE(agent_revision_id,'') FROM runs WHERE organization_id=$1 AND project_id=$2`,
-		f.org, f.project).Scan(&revision); err != nil {
+		`SELECT COALESCE(agent_revision_id,'') FROM runs WHERE  project_id=$1`, f.project).Scan(&revision); err != nil {
 		t.Fatalf("read the run's pin: %v", err)
 	}
 	if revision != f.revision {
@@ -146,8 +144,7 @@ func TestSlackContextCannotSelectARunTarget(t *testing.T) {
 	// The admission's own principal, read off the reservation the run was born under.
 	var principal string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT principal_id FROM idempotency_records WHERE organization_id=$1 AND project_id=$2`,
-		f.org, f.project).Scan(&principal); err != nil {
+		`SELECT principal_id FROM idempotency_records WHERE  project_id=$1`, f.project).Scan(&principal); err != nil {
 		t.Fatalf("read the reservation's principal: %v", err)
 	}
 	if principal != f.principal {

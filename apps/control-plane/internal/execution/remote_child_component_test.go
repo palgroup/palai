@@ -148,13 +148,13 @@ func newRemoteChildFixture(t *testing.T, peer *fakeRemotePeer, authRef string) *
 	ctx := context.Background()
 
 	sessionID, responseID, runID := pinnedID("ses"), pinnedID("resp"), pinnedID("run")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
+	exec(`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, tenant.Project)
 	// The parent's own input carries the sentinel: a wiring that shipped "the parent's context" instead of
 	// the child's objective would leak it to the remote.
-	exec(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'in_progress',$5)`,
+	exec(`INSERT INTO responses (id, project_id, session_id, state, input) VALUES ($1,$2,$3,'in_progress',$4)`,
 		responseID, tenant.Project, sessionID,
 		[]byte(fmt.Sprintf("%q", "the parent's private plan, keyed with "+parentSentinel)))
-	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'running')`,
+	exec(`INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,'running')`,
 		runID, tenant.Project, sessionID, responseID)
 
 	store := a2a.NewStore(cs.Pool(), func(prefix string) string { return pinnedID(prefix) })
@@ -169,13 +169,15 @@ func newRemoteChildFixture(t *testing.T, peer *fakeRemotePeer, authRef string) *
 		t.Fatalf("RegisterRemoteAgent: %v", err)
 	}
 
-	// The resolver is the SOLE bearer source and is scoped to (org, ref): it refuses any other tenant and
-	// any ref the agent does not name. It has no way to reach the parent's credential — there is no
-	// parameter for one.
+	// The resolver is the SOLE bearer source and is keyed on the REF ALONE: it refuses any ref the agent
+	// does not name. It has no way to reach the parent's credential — there is no parameter for one.
+	//
+	// IT NO LONGER REFUSES BY TENANT, and that is a real narrowing of what this fixture proves. Until A.2
+	// Task 6 the seam was (org, ref) and this closure failed a cross-tenant lookup; the org parameter is
+	// gone from the seam, so the only boundary left here is the ref. What still holds the tenant boundary
+	// is the caller — the resolver is handed refs that came from THIS tenant's binding — and that is a
+	// property of the production wiring, not of this closure.
 	secrets := func(ref string) ([]byte, error) {
-		if org != tenant.Organization {
-			return nil, fmt.Errorf("cross-tenant secret resolution denied")
-		}
 		if ref != authRef || ref == "" {
 			return nil, fmt.Errorf("unknown secret ref %q", ref)
 		}

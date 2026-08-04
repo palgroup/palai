@@ -98,7 +98,7 @@ func TestPendingApprovalApproveProceedsDenyBlocks(t *testing.T) {
 	// A live session + running root run with a response the approve/deny journal scopes to.
 	exec(t, pool, `UPDATE sessions SET state='active' WHERE id=$1`, sessionID)
 	respID := newID("resp")
-	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+	exec(t, pool, `INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'in_progress')`,
 		respID, tenant.Project, sessionID)
 	exec(t, pool, `UPDATE runs SET state='running', response_id=$2 WHERE id=$1`, runID, respID)
 
@@ -169,7 +169,7 @@ func TestMarkPublicationPublishedIdempotent(t *testing.T) {
 	pool := cs.Pool()
 	tenant, sessionID, runID := seedRun(t, pool)
 	respID := newID("resp")
-	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+	exec(t, pool, `INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'in_progress')`,
 		respID, tenant.Project, sessionID)
 
 	pub := requestPushPublication(t, cs, tenant, sessionID, runID, "abc123")
@@ -216,7 +216,7 @@ func TestStaleApprovalHashLeavesPublicationPending(t *testing.T) {
 	tenant, sessionID, runID := seedRun(t, pool)
 	exec(t, pool, `UPDATE sessions SET state='active' WHERE id=$1`, sessionID)
 	respID := newID("resp")
-	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+	exec(t, pool, `INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'in_progress')`,
 		respID, tenant.Project, sessionID)
 	exec(t, pool, `UPDATE runs SET state='running', response_id=$2 WHERE id=$1`, runID, respID)
 
@@ -256,7 +256,7 @@ func TestExpiredApprovalNeverPublishesAndEmitsExpiredEvent(t *testing.T) {
 	pool := cs.Pool()
 	tenant, sessionID, runID := seedRun(t, pool)
 	respID := newID("resp")
-	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+	exec(t, pool, `INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'in_progress')`,
 		respID, tenant.Project, sessionID)
 
 	// Two approved publications; only the first's approval has elapsed.
@@ -334,7 +334,7 @@ func TestExpiredApprovalSweepAndConsumeGuard(t *testing.T) {
 	tenant, sessionID, runID := seedRun(t, pool)
 	exec(t, pool, `UPDATE sessions SET state='active' WHERE id=$1`, sessionID)
 	respID := newID("resp")
-	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+	exec(t, pool, `INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'in_progress')`,
 		respID, tenant.Project, sessionID)
 	exec(t, pool, `UPDATE runs SET state='running', response_id=$2 WHERE id=$1`, runID, respID)
 

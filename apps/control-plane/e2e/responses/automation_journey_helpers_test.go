@@ -351,7 +351,7 @@ func (h *harness) assertSeparateCodingFork(t *testing.T, ctx context.Context) st
 	// to the harness tenant — a distinct authority boundary, the point of this step).
 	var st string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
-		`SELECT state FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		`SELECT state FROM responses WHERE id=$1  project_id=$2`,
 		responseID, tenant2.Project).Scan(&st); err != nil {
 		t.Fatalf("fork: read response state: %v", err)
 	}

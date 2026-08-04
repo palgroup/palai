@@ -139,10 +139,10 @@ func mintScopedKey(t *testing.T, repo *store.Store, cs *coordinator.Store, tenan
 	}
 	principalID, keyID := redeliveryID("prin"), redeliveryID("key")
 	token := "palai_" + redeliveryID("tok")
-	execSQL(t, cs.Pool(), `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`,
+	execSQL(t, cs.Pool(), `INSERT INTO principals (id, project_id, kind) VALUES ($1,$2,'service')`,
 		principalID, tenant.Project)
-	execSQL(t, cs.Pool(), `INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, scopes)
-	                       VALUES ($1,$2,$3,$4,$5,$6)`,
+	execSQL(t, cs.Pool(), `INSERT INTO api_keys (id, project_id, principal_id, key_hash, scopes)
+	                       VALUES ($1,$2,$3,$4,$5)`,
 		keyID, tenant.Project, principalID, coordinator.HashAPIKey(token), scopes)
 
 	scope, err := repo.VerifyAPIKey(context.Background(), token)
@@ -164,8 +164,7 @@ func mintScopedKey(t *testing.T, repo *store.Store, cs *coordinator.Store, tenan
 func seedForeignTenantKey(t *testing.T, repo *store.Store, cs *coordinator.Store) httpApprover {
 	t.Helper()
 	other := coordinator.Tenant{Project: redeliveryID("prj")}
-	execSQL(t, cs.Pool(), `INSERT INTO organizations (id) VALUES ($1)`, other.Organization)
-	execSQL(t, cs.Pool(), `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, other.Project, other.Organization)
+	execSQL(t, cs.Pool(), `INSERT INTO projects (id) VALUES ($1)`, other.Project)
 	return mintScopedKey(t, repo, cs, other, nil)
 }
 
@@ -234,7 +233,7 @@ func (f *httpApprovalFixture) runState(t *testing.T) string {
 
 func (f *httpApprovalFixture) setApprovers(t *testing.T, policy string) {
 	t.Helper()
-	execSQL(t, f.spine.Pool(), `UPDATE projects SET config_policy = $3::jsonb WHERE organization_id = $1 AND id = $2`,
+	execSQL(t, f.spine.Pool(), `UPDATE projects SET config_policy = $2::jsonb WHERE  id = $1`,
 		f.tenant.Project, policy)
 }
 

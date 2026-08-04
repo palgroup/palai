@@ -18,11 +18,11 @@ import (
 // typed collision; a bad transport/config is rejected before any write; and the admin kill-switch disables
 // once. It runs against a real migrated Postgres (the registry_component_test openStore pattern).
 func TestMCPConnectionCreateReadIdempotentMigration(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
 	body := []byte(`{"name":"docs","transport":"stdio","config":{"image_digest":"sha256:` + hex64() + `","cmd":["/mcp"]},"trust_level":"untrusted"}`)
-	conn, err := s.CreateMCPConnection(ctx, org, project, body)
+	conn, err := s.CreateMCPConnection(ctx, project, body)
 	if err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestMCPConnectionCreateReadIdempotentMigration(t *testing.T) {
 	if err := cs.Migrate(ctx); err != nil {
 		t.Fatalf("re-Migrate (idempotency): %v", err)
 	}
-	got, err := s.GetMCPConnection(ctx, org, project, conn.ID)
+	got, err := s.GetMCPConnection(ctx, project, conn.ID)
 	if err != nil {
 		t.Fatalf("get connection after re-migrate: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestMCPConnectionCreateReadIdempotentMigration(t *testing.T) {
 	}
 
 	// A duplicate name is a typed collision.
-	if _, err := s.CreateMCPConnection(ctx, org, project, body); !errors.Is(err, ErrConnectionNameCollision) {
+	if _, err := s.CreateMCPConnection(ctx, project, body); !errors.Is(err, ErrConnectionNameCollision) {
 		t.Fatalf("duplicate name: err = %v, want ErrConnectionNameCollision", err)
 	}
 
@@ -65,12 +65,12 @@ func TestMCPConnectionCreateReadIdempotentMigration(t *testing.T) {
 		"http inline bearer":  `{"name":"f","transport":"http","config":{"url":"https://x","bearer":"sk-live-abc"}}`,
 		"stdio inline token":  `{"name":"g","transport":"stdio","config":{"image_digest":"sha256:` + hex64() + `","cmd":["/mcp"],"token":"sk-live-abc"}}`,
 	} {
-		if _, err := s.CreateMCPConnection(ctx, org, project, []byte(bad)); !errors.Is(err, ErrInvalidConnectionConfig) {
+		if _, err := s.CreateMCPConnection(ctx, project, []byte(bad)); !errors.Is(err, ErrInvalidConnectionConfig) {
 			t.Errorf("%s: create err = %v, want ErrInvalidConnectionConfig (no inline secret / invalid wiring)", name, err)
 		}
 	}
 	// An unknown transport is its own typed reject.
-	if _, err := s.CreateMCPConnection(ctx, org, project, []byte(`{"name":"d","transport":"carrier-pigeon","config":{}}`)); !errors.Is(err, ErrInvalidTransport) {
+	if _, err := s.CreateMCPConnection(ctx, project, []byte(`{"name":"d","transport":"carrier-pigeon","config":{}}`)); !errors.Is(err, ErrInvalidTransport) {
 		t.Errorf("unknown transport: err = %v, want ErrInvalidTransport", err)
 	}
 	// Prove the inline credential never reached the DB: no connection row carries a bearer/token in config.
@@ -84,16 +84,16 @@ func TestMCPConnectionCreateReadIdempotentMigration(t *testing.T) {
 	}
 
 	// An inline credential field is rejected (DisallowUnknownFields — no secret inline).
-	if _, err := s.CreateMCPConnection(ctx, org, project, []byte(`{"name":"e","transport":"http","config":{"url":"https://x"},"credential":"sk-live"}`)); !errors.Is(err, ErrUnknownField) {
+	if _, err := s.CreateMCPConnection(ctx, project, []byte(`{"name":"e","transport":"http","config":{"url":"https://x"},"credential":"sk-live"}`)); !errors.Is(err, ErrUnknownField) {
 		t.Fatalf("inline credential: err = %v, want ErrUnknownField", err)
 	}
 
 	// The admin kill-switch disables once; the connection then reads back disabled.
-	disabled, err := s.DisableMCPConnection(ctx, org, project, conn.ID)
+	disabled, err := s.DisableMCPConnection(ctx, project, conn.ID)
 	if err != nil || !disabled {
 		t.Fatalf("disable = %v err = %v, want disabled", disabled, err)
 	}
-	if got, _ := s.GetMCPConnection(ctx, org, project, conn.ID); !got.Disabled {
+	if got, _ := s.GetMCPConnection(ctx, project, conn.ID); !got.Disabled {
 		t.Fatal("connection did not read back disabled after the kill-switch")
 	}
 }
@@ -103,19 +103,19 @@ func TestMCPConnectionCreateReadIdempotentMigration(t *testing.T) {
 // the widened allowlist nor the oauth block opens an inline-credential door (a client_secret, an internal
 // URL, or a plain-PKCE block is a typed reject).
 func TestMCPConnectionSamplingAuthConfig(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
 	body := []byte(`{"name":"sampled","transport":"http","config":{"url":"https://mcp.example.test/mcp","audience":"https://mcp.example.test","sampling":true,"sampling_max_tokens":50,"oauth":{"code_challenge_method":"S256","redirect_uri":"https://app.example.test/cb"}}}`)
-	conn, err := s.CreateMCPConnection(ctx, org, project, body)
+	conn, err := s.CreateMCPConnection(ctx, project, body)
 	if err != nil {
 		t.Fatalf("create sampling connection: %v", err)
 	}
-	got, err := s.GetMCPConnection(ctx, org, project, conn.ID)
+	got, err := s.GetMCPConnection(ctx, project, conn.ID)
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
-	cc := connConfig(org, got)
+	cc := connConfig(got)
 	if !cc.SamplingEnabled || cc.SamplingMaxTokens != 50 || cc.Audience != "https://mcp.example.test" {
 		t.Fatalf("connConfig = %+v, want sampling on, budget 50, audience bound", cc)
 	}
@@ -131,7 +131,7 @@ func TestMCPConnectionSamplingAuthConfig(t *testing.T) {
 		"oauth not object":      `{"name":"oauthstr","transport":"http","config":{"url":"https://x","oauth":"sk-live-RAW-BEARER"}}`,
 		"oauth endpoint secret": `{"name":"oauthep","transport":"http","config":{"url":"https://x","oauth":{"authorization_endpoint":"sk-live-SECRET","token_endpoint":"https://idp/t","code_challenge_method":"S256","redirect_uri":"https://app.example.test/cb"}}}`,
 	} {
-		if _, err := s.CreateMCPConnection(ctx, org, project, []byte(bad)); !errors.Is(err, ErrInvalidConnectionConfig) {
+		if _, err := s.CreateMCPConnection(ctx, project, []byte(bad)); !errors.Is(err, ErrInvalidConnectionConfig) {
 			t.Errorf("%s: err = %v, want ErrInvalidConnectionConfig", name, err)
 		}
 	}

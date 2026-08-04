@@ -31,8 +31,8 @@ func seedQueuedSendMessage(t *testing.T, cs *coordinator.Store, tenant coordinat
 	t.Helper()
 	cmdID := newID("cmd")
 	exec(t, cs.Pool(),
-		`INSERT INTO commands (id, organization_id, project_id, session_id, run_id, kind, delivery, payload, state)
-		 VALUES ($1, $2, $3, $4, $5, 'send_message', $6, jsonb_build_object('message', $7::text), 'queued')`,
+		`INSERT INTO commands (id, project_id, session_id, run_id, kind, delivery, payload, state)
+		 VALUES ($1, $2, $3, $4, 'send_message', $5, jsonb_build_object('message', $6::text), 'queued')`,
 		cmdID, tenant.Project, sessionID, runID, delivery, message)
 	return cmdID
 }
@@ -48,7 +48,7 @@ func readDeliveredMessage(t *testing.T, cs *coordinator.Store, tenant coordinato
 	var r deliveredRow
 	err := cs.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT coalesce(boundary_request_id, ''), applied_sequence, fold_state
-		 FROM delivered_messages WHERE organization_id = $1 AND project_id = $2 AND command_id = $3`,
+		 FROM delivered_messages WHERE  project_id = $1 AND command_id = $2`,
 		tenant.Project, commandID).Scan(&r.boundary, &r.seq, &r.fold)
 	if err != nil {
 		return deliveredRow{}, false
@@ -203,14 +203,14 @@ func TestQueuedMessageOnTerminalStepNotLost(t *testing.T) {
 	pool := cs.Pool()
 	tenant, sessionID, run1 := seedRun(t, pool)
 	respID := newID("resp")
-	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+	exec(t, pool, `INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'in_progress')`,
 		respID, tenant.Project, sessionID)
 	exec(t, pool, `UPDATE runs SET state='running', response_id=$2 WHERE id=$1`, run1, respID)
 
 	// A message queued mid-run, plus a non-carry command (a pause) that DOES expire on terminal.
 	msgID := seedQueuedSendMessage(t, cs, tenant, sessionID, run1, "queue", "please also do Y")
 	pauseID := newID("cmd")
-	exec(t, pool, `INSERT INTO commands (id, organization_id, project_id, session_id, run_id, kind, state) VALUES ($1,$2,$3,$4,$5,'pause','queued')`,
+	exec(t, pool, `INSERT INTO commands (id, project_id, session_id, run_id, kind, state) VALUES ($1,$2,$3,$4,'pause','queued')`,
 		pauseID, tenant.Project, sessionID, run1)
 
 	// The run terminates on a final step (no boundary pumped the message).
@@ -246,7 +246,7 @@ func TestQueuedMessageOnTerminalStepNotLost(t *testing.T) {
 	// The next response opens a fresh run; the carry re-scopes the queued message to it, so that run's
 	// ordinary pump delivers it at its first input boundary.
 	run2 := newID("run")
-	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'running')`,
+	exec(t, pool, `INSERT INTO runs (id, project_id, session_id, state) VALUES ($1,$2,$3,'running')`,
 		run2, tenant.Project, sessionID)
 	carried, err := cs.CarrySessionSendMessages(ctx, tenant, sessionID, run2)
 	if err != nil {

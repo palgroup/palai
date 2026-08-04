@@ -40,7 +40,7 @@ func TestASurplusWebhookEndpointIsDeletedAndItsTwinSurvives(t *testing.T) {
 	pool := componentPool(t)
 	store := NewWebhookStore(pool)
 	ctx := context.Background()
-	_, project, _ := seedSession(t, pool)
+	project, _ := seedSession(t, pool)
 
 	const url = "https://hooks.example/the-same-address"
 	keep, err := store.CreateEndpoint(ctx, project, defaultEndpoint(url, "ref"))
@@ -100,7 +100,7 @@ func TestDeletingAWebhookEndpointLeavesEveryDeliveryAndAttemptOfItIntact(t *test
 	pool := componentPool(t)
 	store := NewWebhookStore(pool)
 	ctx := context.Background()
-	org, project, session := seedSession(t, pool)
+	project, session := seedSession(t, pool)
 
 	endpoint, err := store.CreateEndpoint(ctx, project, defaultEndpoint("https://hooks.example/audit", "ref"))
 	if err != nil {
@@ -113,9 +113,9 @@ func TestDeletingAWebhookEndpointLeavesEveryDeliveryAndAttemptOfItIntact(t *test
 	for i, state := range []string{"delivered", "dead", "pending"} {
 		id := randID("whd")
 		deliveryIDs = append(deliveryIDs, id)
-		mustExec(t, pool, `INSERT INTO webhook_deliveries (id, organization_id, project_id, endpoint_id, session_id, event_id, event_type, state)
-			VALUES ($1,$2,$3,$4,$5,$6,'run.completed.v1',$7)`,
-			id, org, project, endpoint, session, randID("evt"), state)
+		mustExec(t, pool, `INSERT INTO webhook_deliveries (id, project_id, endpoint_id, session_id, event_id, event_type, state)
+			VALUES ($1,$2,$3,$4,$5,'run.completed.v1',$6)`,
+			id, project, endpoint, session, randID("evt"), state)
 		mustExec(t, pool, `INSERT INTO delivery_attempts (delivery_id, attempt_number, status_code) VALUES ($1,$2,$3)`,
 			id, i+1, 200)
 	}
@@ -259,17 +259,17 @@ func TestAWebhookEndpointPinnedByATriggerRevisionIsRefusedRatherThanOrphaningIt(
 	pool := componentPool(t)
 	store := NewWebhookStore(pool)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
+	project, _ := seedSession(t, pool)
 
 	endpoint, err := store.CreateEndpoint(ctx, project, defaultEndpoint("https://hooks.example/cb", "ref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint() error = %v", err)
 	}
 	trigger, revision := randID("trg"), randID("trv")
-	mustExec(t, pool, `INSERT INTO triggers (id, organization_id, project_id, name, type) VALUES ($1,$2,$3,'nightly','cron')`,
-		trigger, org, project)
-	mustExec(t, pool, `INSERT INTO trigger_revisions (id, organization_id, project_id, trigger_id, revision_number, callback_endpoint_id)
-		VALUES ($1,$2,$3,$4,1,$5)`, revision, org, project, trigger, endpoint)
+	mustExec(t, pool, `INSERT INTO triggers (id, project_id, name, type) VALUES ($1,$2,'nightly','cron')`,
+		trigger, project)
+	mustExec(t, pool, `INSERT INTO trigger_revisions (id, project_id, trigger_id, revision_number, callback_endpoint_id)
+		VALUES ($1,$2,$3,1,$4)`, revision, project, trigger, endpoint)
 
 	deleted, err := store.DeleteEndpoint(ctx, project, endpoint)
 	if !errors.Is(err, ErrEndpointPinned) {
@@ -296,16 +296,16 @@ func TestRedeliveringToADeletedEndpointIsRefusedRatherThanQueuedForever(t *testi
 	pool := componentPool(t)
 	store := NewWebhookStore(pool)
 	ctx := context.Background()
-	org, project, session := seedSession(t, pool)
+	project, session := seedSession(t, pool)
 
 	endpoint, err := store.CreateEndpoint(ctx, project, defaultEndpoint("https://hooks.example/gone", "ref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint() error = %v", err)
 	}
 	delivery := randID("whd")
-	mustExec(t, pool, `INSERT INTO webhook_deliveries (id, organization_id, project_id, endpoint_id, session_id, event_id, event_type, state)
-		VALUES ($1,$2,$3,$4,$5,$6,'run.completed.v1','dead')`,
-		delivery, org, project, endpoint, session, randID("evt"))
+	mustExec(t, pool, `INSERT INTO webhook_deliveries (id, project_id, endpoint_id, session_id, event_id, event_type, state)
+		VALUES ($1,$2,$3,$4,$5,'run.completed.v1','dead')`,
+		delivery, project, endpoint, session, randID("evt"))
 
 	// While the endpoint exists, redelivery is exactly as it was — the non-vacuity half, so a blanket
 	// refusal could not pass this test.
@@ -342,8 +342,8 @@ func TestAForeignTenantsWebhookEndpointIsNeitherReadNorDeleted(t *testing.T) {
 	pool := componentPool(t)
 	store := NewWebhookStore(pool)
 	ctx := context.Background()
-	_, project, _ := seedSession(t, pool)
-	_, otherProject, _ := seedSession(t, pool)
+	project, _ := seedSession(t, pool)
+	otherProject, _ := seedSession(t, pool)
 
 	victim, err := store.CreateEndpoint(ctx, otherProject, defaultEndpoint("https://hooks.example/theirs", "ref"))
 	if err != nil {
@@ -377,7 +377,7 @@ func TestAWebhookEndpointsFixedHeadersReachNoReader(t *testing.T) {
 	pool := componentPool(t)
 	store := NewWebhookStore(pool)
 	ctx := context.Background()
-	_, project, _ := seedSession(t, pool)
+	project, _ := seedSession(t, pool)
 
 	const secretHeader = "Bearer sk-live-not-a-real-credential"
 	create := defaultEndpoint("https://hooks.example/headers", "ref")
@@ -428,7 +428,7 @@ func TestTheEndpointProjectionCarriesTheDeliveryPolicy(t *testing.T) {
 	pool := componentPool(t)
 	store := NewWebhookStore(pool)
 	ctx := context.Background()
-	_, project, _ := seedSession(t, pool)
+	project, _ := seedSession(t, pool)
 
 	create := EndpointCreate{
 		URL: "https://hooks.example/policy", EventFilter: []string{"run.completed.v1"},
@@ -597,7 +597,7 @@ type tiedPair struct {
 func newTiedEndpointPair(t *testing.T, pool *pgxpool.Pool, store *WebhookStore, at time.Time, reversed bool) tiedPair {
 	t.Helper()
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
+	project, _ := seedSession(t, pool)
 
 	first, err := store.CreateEndpoint(ctx, project, defaultEndpoint("https://hooks.example/a", "ref"))
 	if err != nil {
@@ -625,7 +625,7 @@ func newTiedEndpointPair(t *testing.T, pool *pgxpool.Pool, store *WebhookStore, 
 func newTiedDeliveryTriple(t *testing.T, pool *pgxpool.Pool, store *WebhookStore, at time.Time, reversed bool) tiedPair {
 	t.Helper()
 	ctx := context.Background()
-	org, project, session := seedSession(t, pool)
+	project, session := seedSession(t, pool)
 	endpoint, err := store.CreateEndpoint(ctx, project, defaultEndpoint("https://hooks.example/deliveries", "ref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint() error = %v", err)
@@ -635,9 +635,9 @@ func newTiedDeliveryTriple(t *testing.T, pool *pgxpool.Pool, store *WebhookStore
 	for range 3 {
 		id := randID("whd")
 		made = append(made, id)
-		mustExec(t, pool, `INSERT INTO webhook_deliveries (id, organization_id, project_id, endpoint_id, session_id, event_id, event_type, created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,'run.completed.v1',$7)`,
-			id, org, project, endpoint, session, randID("evt"), at)
+		mustExec(t, pool, `INSERT INTO webhook_deliveries (id, project_id, endpoint_id, session_id, event_id, event_type, created_at)
+			VALUES ($1,$2,$3,$4,$5,'run.completed.v1',$6)`,
+			id, project, endpoint, session, randID("evt"), at)
 	}
 	sortDesc(made)
 	p := tiedPair{project: project, high: made[0], mid: made[1], low: made[2]}

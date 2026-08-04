@@ -19,18 +19,18 @@ import (
 func TestDeliveryRunEntersSameAdmissionPath(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 
 	// A published agent revision to pin the triggered run to.
-	agentRev := seedPublishedAgentRevision(t, pool, org, project)
+	agentRev := seedPublishedAgentRevision(t, pool, project)
 
-	triggerID, _ := seedTrigger(t, store, org, project, "orders", TriggerRevisionInput{
+	triggerID, _ := seedTrigger(t, store, project, "orders", TriggerRevisionInput{
 		AgentRevisionID: agentRev,
 		InputMapping:    []byte(`{"fields":{"input":{"select":"order.summary"}},"required":["input"]}`),
 	})
 
-	del, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"order":{"summary":"fulfil order 42"}}`))
+	del, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"order":{"summary":"fulfil order 42"}}`))
 	if err != nil {
 		t.Fatalf("CreateDelivery error = %v", err)
 	}
@@ -41,8 +41,8 @@ func TestDeliveryRunEntersSameAdmissionPath(t *testing.T) {
 	// A response row exists, queued, in the delivery's session (same shape as /v1/responses).
 	var respState, respSession string
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT state, session_id FROM responses WHERE id = $1 AND organization_id = $2 AND project_id = $3`,
-		del.ResponseID, org, project).Scan(&respState, &respSession); err != nil {
+		`SELECT state, session_id FROM responses WHERE id = $1  project_id = $2`,
+		del.ResponseID, project).Scan(&respState, &respSession); err != nil {
 		t.Fatalf("read response error = %v", err)
 	}
 	if respState != "queued" {
@@ -55,8 +55,8 @@ func TestDeliveryRunEntersSameAdmissionPath(t *testing.T) {
 	// The run row exists and pins EXACTLY the trigger's agent revision (AGT-001).
 	var pinnedAgentRev *string
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT agent_revision_id FROM runs WHERE id = $1 AND organization_id = $2 AND project_id = $3`,
-		del.RunID, org, project).Scan(&pinnedAgentRev); err != nil {
+		`SELECT agent_revision_id FROM runs WHERE id = $1  project_id = $2`,
+		del.RunID, project).Scan(&pinnedAgentRev); err != nil {
 		t.Fatalf("read run error = %v", err)
 	}
 	if pinnedAgentRev == nil || *pinnedAgentRev != agentRev {
@@ -67,7 +67,7 @@ func TestDeliveryRunEntersSameAdmissionPath(t *testing.T) {
 	if got := count(t, pool, `SELECT count(*) FROM events WHERE session_id=$1 AND type='run.queued.v1'`, del.SessionID); got != 1 {
 		t.Fatalf("run.queued.v1 events = %d, want 1", got)
 	}
-	if got := count(t, pool, `SELECT count(*) FROM durable_jobs WHERE organization_id=$1 AND kind='response.run'`, org); got < 1 {
+	if got := count(t, pool, `SELECT count(*) FROM durable_jobs WHERE  kind='response.run'`); got < 1 {
 		t.Fatal("no response.run dispatch job enqueued (a triggered run must reach the same workers)")
 	}
 }
@@ -78,16 +78,16 @@ func TestDeliveryRunEntersSameAdmissionPath(t *testing.T) {
 func TestMappingFailureFailedDeliveryNoRunEndToEnd(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 
 	// The mapping requires `input` from order.summary, but the payload supplies no summary.
-	triggerID, _ := seedTrigger(t, store, org, project, "orders", TriggerRevisionInput{
+	triggerID, _ := seedTrigger(t, store, project, "orders", TriggerRevisionInput{
 		InputMapping: []byte(`{"fields":{"input":{"select":"order.summary"}},"required":["input"]}`),
 	})
 
-	before := count(t, pool, `SELECT count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`, org, project)
-	del, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"order":{"id":"o1"}}`))
+	before := count(t, pool, `SELECT count(*) FROM runs WHERE  project_id=$1`, project)
+	del, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"order":{"id":"o1"}}`))
 	if err != nil {
 		t.Fatalf("CreateDelivery error = %v", err)
 	}
@@ -97,7 +97,7 @@ func TestMappingFailureFailedDeliveryNoRunEndToEnd(t *testing.T) {
 	if del.RunID != "" {
 		t.Fatal("a failed delivery must not carry a run")
 	}
-	after := count(t, pool, `SELECT count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`, org, project)
+	after := count(t, pool, `SELECT count(*) FROM runs WHERE  project_id=$1`, project)
 	if after != before {
 		t.Fatalf("runs count changed by %d, want 0 (a failed delivery bills no run)", after-before)
 	}
@@ -115,19 +115,19 @@ func count(t *testing.T, pool *pgxpool.Pool, query string, args ...any) int {
 
 // seedPublishedAgentRevision creates an agent profile + a published revision in scope and returns the
 // revision id — a pin a triggered run can resolve (the admission requires a PUBLISHED revision).
-func seedPublishedAgentRevision(t *testing.T, pool *pgxpool.Pool, org, project string) string {
+func seedPublishedAgentRevision(t *testing.T, pool *pgxpool.Pool, project string) string {
 	t.Helper()
 	ctx := context.Background()
 	agents := New(pool)
-	profileID, err := agents.CreateProfile(ctx, org, project, randID("profile"))
+	profileID, err := agents.CreateProfile(ctx, project, randID("profile"))
 	if err != nil {
 		t.Fatalf("CreateProfile error = %v", err)
 	}
-	rev, err := agents.CreateRevision(ctx, org, project, profileID, []byte(`{"model":"gpt-4o-mini","instructions":"fulfil orders"}`))
+	rev, err := agents.CreateRevision(ctx, project, profileID, []byte(`{"model":"gpt-4o-mini","instructions":"fulfil orders"}`))
 	if err != nil {
 		t.Fatalf("CreateRevision error = %v", err)
 	}
-	if _, _, err := agents.PublishRevision(ctx, org, project, rev.ID); err != nil {
+	if _, _, err := agents.PublishRevision(ctx, project, rev.ID); err != nil {
 		t.Fatalf("PublishRevision error = %v", err)
 	}
 	return rev.ID

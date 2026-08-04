@@ -41,7 +41,7 @@ func TestRestartPreservesTerminalResponseAndEvents(t *testing.T) {
 	var stateAfter string
 	var outputAfter []byte
 	if err := restarted.Spine().Pool().QueryRow(storage.WithSystemScope(ctx),
-		`SELECT state, output FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		`SELECT state, output FROM responses WHERE id=$1  project_id=$2`,
 		responseID, h.tenant.Project).Scan(&stateAfter, &outputAfter); err != nil {
 		t.Fatalf("read response after restart error = %v", err)
 	}

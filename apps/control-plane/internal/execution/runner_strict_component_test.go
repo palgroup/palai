@@ -206,14 +206,13 @@ func TestStrictOffIsBitUnchanged(t *testing.T) {
 func TestStrictIsOffOnEveryPoolThisTreeCreates(t *testing.T) {
 	f := newPlacementFixture(t)
 	ctx := storage.WithSystemScope(context.Background())
-	org, project := poolKeyID("org"), poolKeyID("prj")
+	project := poolKeyID("prj")
 	upgraded, provisioned := poolKeyID("pool"), poolKeyID("pool")
 	for _, stmt := range [][]any{
-		{`INSERT INTO organizations (id) VALUES ($1)`, org},
-		{`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org},
+		{`INSERT INTO projects (id) VALUES ($1)`, project},
 		// No strict_enrollment named: the column's DEFAULT is what every pool row that predates 000045 got.
-		{`INSERT INTO runner_pools (id, organization_id, project_id, name, posture)
-		  VALUES ($1,$2,$3,'upgraded','sandboxed-linux')`, upgraded, org, project},
+		{`INSERT INTO runner_pools (id, project_id, name, posture)
+		  VALUES ($1,$2,'upgraded','sandboxed-linux')`, upgraded, project},
 		{storage.Query("InsertDefaultRunnerPool"), provisioned, org, project},
 	} {
 		if _, err := f.pool.Exec(ctx, stmt[0].(string), stmt[1:]...); err != nil {

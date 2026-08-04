@@ -38,8 +38,7 @@ func TestRepositoryBindingResolveIsTenantScoped(t *testing.T) {
 
 	// A different tenant (distinct org) sees nothing for the same id.
 	other := coordinator.Tenant{Project: newID("prj")}
-	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, other.Organization)
-	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, other.Project, other.Organization)
+	exec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, other.Project)
 	if _, found, err := cs.GetRepositoryBinding(ctx, other, bindingID); err != nil || found {
 		t.Fatalf("GetRepositoryBinding(foreign) found=%v err=%v, want not found (no cross-tenant disclosure)", found, err)
 	}

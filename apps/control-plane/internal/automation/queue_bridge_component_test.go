@@ -39,19 +39,19 @@ import (
 
 // seedQueuePublishedRevision creates and publishes an agent revision in scope — the run target an inbound
 // connection's config must pin (the bridge fails closed without one).
-func seedQueuePublishedRevision(t *testing.T, pool *pgxpool.Pool, org, project string) string {
+func seedQueuePublishedRevision(t *testing.T, pool *pgxpool.Pool, project string) string {
 	t.Helper()
 	ctx := context.Background()
 	agents := New(pool)
-	profileID, err := agents.CreateProfile(ctx, org, project, randID("profile"))
+	profileID, err := agents.CreateProfile(ctx, project, randID("profile"))
 	if err != nil {
 		t.Fatalf("CreateProfile error = %v", err)
 	}
-	rev, err := agents.CreateRevision(ctx, org, project, profileID, []byte(`{"model":"gpt-4o-mini","instructions":"handle the queued message"}`))
+	rev, err := agents.CreateRevision(ctx, project, profileID, []byte(`{"model":"gpt-4o-mini","instructions":"handle the queued message"}`))
 	if err != nil {
 		t.Fatalf("CreateRevision error = %v", err)
 	}
-	if _, _, err := agents.PublishRevision(ctx, org, project, rev.ID); err != nil {
+	if _, _, err := agents.PublishRevision(ctx, project, rev.ID); err != nil {
 		t.Fatalf("PublishRevision error = %v", err)
 	}
 	return rev.ID
@@ -97,22 +97,22 @@ func sweptConn(t *testing.T, store *QueueStore, direction, connID string) (queue
 }
 
 // countRuns counts the responses born in a tenant — the "how many runs did this produce" assertion.
-func countRuns(t *testing.T, pool *pgxpool.Pool, org, project string) int {
+func countRuns(t *testing.T, pool *pgxpool.Pool, project string) int {
 	t.Helper()
 	var n int
-	if err := pool.QueryRow(storage.ScopeToTenant(context.Background(), org, project),
-		`SELECT count(*) FROM responses WHERE organization_id = $1 AND project_id = $2`, org, project).Scan(&n); err != nil {
+	if err := pool.QueryRow(storage.ScopeToTenant(context.Background(), project),
+		`SELECT count(*) FROM responses WHERE  project_id = $1`, project).Scan(&n); err != nil {
 		t.Fatalf("count runs error = %v", err)
 	}
 	return n
 }
 
 // runPinnedRevision reads the agent revision the single run in scope was pinned to.
-func runPinnedRevision(t *testing.T, pool *pgxpool.Pool, org, project string) string {
+func runPinnedRevision(t *testing.T, pool *pgxpool.Pool, project string) string {
 	t.Helper()
 	var rev *string
-	if err := pool.QueryRow(storage.ScopeToTenant(context.Background(), org, project),
-		`SELECT agent_revision_id FROM runs WHERE organization_id = $1 AND project_id = $2`, org, project).Scan(&rev); err != nil {
+	if err := pool.QueryRow(storage.ScopeToTenant(context.Background(), project),
+		`SELECT agent_revision_id FROM runs WHERE  project_id = $1`, project).Scan(&rev); err != nil {
 		t.Fatalf("read run revision error = %v", err)
 	}
 	if rev == nil {
@@ -121,10 +121,10 @@ func runPinnedRevision(t *testing.T, pool *pgxpool.Pool, org, project string) st
 	return *rev
 }
 
-func queueMessageState(t *testing.T, pool *pgxpool.Pool, org, project, connID, key string) string {
+func queueMessageState(t *testing.T, pool *pgxpool.Pool, project, connID, key string) string {
 	t.Helper()
 	var state string
-	if err := pool.QueryRow(storage.ScopeToTenant(context.Background(), org, project),
+	if err := pool.QueryRow(storage.ScopeToTenant(context.Background(), project),
 		`SELECT state FROM queue_messages WHERE queue_connection_id = $1 AND idempotency_key = $2`, connID, key).Scan(&state); err != nil {
 		t.Fatalf("read queue message state error = %v", err)
 	}
@@ -144,13 +144,13 @@ func queueMessageState(t *testing.T, pool *pgxpool.Pool, org, project, connID, k
 func TestQueueBridgeLostAckRedeliversToExactlyOneRun(t *testing.T) {
 	bridge, store, _, pool := wiredQueueBridge(t, QueueBridgeConfig{})
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	revision := seedQueuePublishedRevision(t, pool, org, project)
-	connID := mustCreateQueueConn(t, store, org, project, QueueConnectionInput{
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	revision := seedQueuePublishedRevision(t, pool, project)
+	connID := mustCreateQueueConn(t, store, project, QueueConnectionInput{
 		Name: "orders", Direction: "inbound", Config: inboundConnConfig(revision, principal)})
 
-	q, err := store.InboundQueue(ctx, org, project, connID)
+	q, err := store.InboundQueue(ctx, project, connID)
 	if err != nil {
 		t.Fatalf("InboundQueue error = %v", err)
 	}
@@ -178,7 +178,7 @@ func TestQueueBridgeLostAckRedeliversToExactlyOneRun(t *testing.T) {
 	if n, err := store.inboundQueueFor(c).Consume(ctx, 10, lossy); err != nil || n != 1 {
 		t.Fatalf("first Consume = (%d, %v), want (1, nil)", n, err)
 	}
-	if got := countRuns(t, pool, org, project); got != 1 {
+	if got := countRuns(t, pool, project); got != 1 {
 		t.Fatalf("runs after the first delivery = %d, want 1", got)
 	}
 
@@ -188,13 +188,13 @@ func TestQueueBridgeLostAckRedeliversToExactlyOneRun(t *testing.T) {
 		t.Fatalf("bridge Tick error = %v", err)
 	}
 
-	if got := countRuns(t, pool, org, project); got != 1 {
+	if got := countRuns(t, pool, project); got != 1 {
 		t.Fatalf("runs after the redelivery = %d, want 1 — the redelivery must REPLAY, not admit a second run", got)
 	}
-	if got := queueMessageState(t, pool, org, project, connID, "msg-1"); got != "acked" {
+	if got := queueMessageState(t, pool, project, connID, "msg-1"); got != "acked" {
 		t.Fatalf("message state after the redelivery = %q, want acked", got)
 	}
-	if got := countReceipts(t, pool, org, project, connID, "msg-1"); got != 1 {
+	if got := countReceipts(t, pool, project, connID, "msg-1"); got != 1 {
 		t.Fatalf("idempotency receipts = %d, want 1 (append-only, one per key)", got)
 	}
 }
@@ -206,14 +206,14 @@ func TestQueueBridgeLostAckRedeliversToExactlyOneRun(t *testing.T) {
 func TestQueueBridgeFloodBackpressureNoDropOneRunEach(t *testing.T) {
 	bridge, store, _, pool := wiredQueueBridge(t, QueueBridgeConfig{Batch: 4})
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	revision := seedQueuePublishedRevision(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	revision := seedQueuePublishedRevision(t, pool, project)
 	const capacity = 5
-	connID := mustCreateQueueConn(t, store, org, project, QueueConnectionInput{
+	connID := mustCreateQueueConn(t, store, project, QueueConnectionInput{
 		Name: "flood", Direction: "inbound", Capacity: capacity, Config: inboundConnConfig(revision, principal)})
 
-	q, err := store.InboundQueue(ctx, org, project, connID)
+	q, err := store.InboundQueue(ctx, project, connID)
 	if err != nil {
 		t.Fatalf("InboundQueue error = %v", err)
 	}
@@ -251,7 +251,7 @@ func TestQueueBridgeFloodBackpressureNoDropOneRunEach(t *testing.T) {
 			t.Fatalf("bridge Tick error = %v", err)
 		}
 	}
-	if got := countRuns(t, pool, org, project); got != accepted {
+	if got := countRuns(t, pool, project); got != accepted {
 		t.Fatalf("runs = %d, want %d (one per accepted message: none dropped, none duplicated)", got, accepted)
 	}
 	depth, err = q.Depth(ctx)
@@ -270,13 +270,13 @@ func TestQueueBridgeFloodBackpressureNoDropOneRunEach(t *testing.T) {
 func TestQueueBridgeDeadLettersPoison(t *testing.T) {
 	bridge, store, _, pool := wiredQueueBridge(t, QueueBridgeConfig{})
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	revision := seedQueuePublishedRevision(t, pool, org, project)
-	connID := mustCreateQueueConn(t, store, org, project, QueueConnectionInput{
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	revision := seedQueuePublishedRevision(t, pool, project)
+	connID := mustCreateQueueConn(t, store, project, QueueConnectionInput{
 		Name: "poison", Direction: "inbound", Config: inboundConnConfig(revision, principal)})
 
-	q, err := store.InboundQueue(ctx, org, project, connID)
+	q, err := store.InboundQueue(ctx, project, connID)
 	if err != nil {
 		t.Fatalf("InboundQueue error = %v", err)
 	}
@@ -295,14 +295,14 @@ func TestQueueBridgeDeadLettersPoison(t *testing.T) {
 		t.Fatalf("bridge Tick error = %v", err)
 	}
 	for _, key := range []string{"poison-1", "poison-2"} {
-		if got := queueMessageState(t, pool, org, project, connID, key); got != "dead" {
+		if got := queueMessageState(t, pool, project, connID, key); got != "dead" {
 			t.Fatalf("%s state = %q, want dead (retired on the first delivery, not looped)", key, got)
 		}
 	}
-	if got := queueMessageState(t, pool, org, project, connID, "healthy-1"); got != "acked" {
+	if got := queueMessageState(t, pool, project, connID, "healthy-1"); got != "acked" {
 		t.Fatalf("healthy message state = %q, want acked — poison must not block the stream", got)
 	}
-	if got := countRuns(t, pool, org, project); got != 1 {
+	if got := countRuns(t, pool, project); got != 1 {
 		t.Fatalf("runs = %d, want 1 (only the healthy message admits)", got)
 	}
 }
@@ -314,13 +314,13 @@ func TestQueueBridgeDeadLettersPoison(t *testing.T) {
 func TestQueueBridgeDisabledConnectionAdmitsNothing(t *testing.T) {
 	bridge, store, _, pool := wiredQueueBridge(t, QueueBridgeConfig{})
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	revision := seedQueuePublishedRevision(t, pool, org, project)
-	connID := mustCreateQueueConn(t, store, org, project, QueueConnectionInput{
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	revision := seedQueuePublishedRevision(t, pool, project)
+	connID := mustCreateQueueConn(t, store, project, QueueConnectionInput{
 		Name: "disabled", Direction: "inbound", Config: inboundConnConfig(revision, principal)})
 
-	q, err := store.InboundQueue(ctx, org, project, connID)
+	q, err := store.InboundQueue(ctx, project, connID)
 	if err != nil {
 		t.Fatalf("InboundQueue error = %v", err)
 	}
@@ -337,10 +337,10 @@ func TestQueueBridgeDisabledConnectionAdmitsNothing(t *testing.T) {
 			t.Fatalf("bridge Tick error = %v", err)
 		}
 	}
-	if got := countRuns(t, pool, org, project); got != 0 {
+	if got := countRuns(t, pool, project); got != 0 {
 		t.Fatalf("runs from a disabled connection = %d, want 0", got)
 	}
-	if got := queueMessageState(t, pool, org, project, connID, "msg-disabled"); got != "ready" {
+	if got := queueMessageState(t, pool, project, connID, "msg-disabled"); got != "ready" {
 		t.Fatalf("message state under a disabled connection = %q, want ready (untouched, resumable)", got)
 	}
 }
@@ -353,25 +353,29 @@ func TestQueueBridgeDisabledConnectionAdmitsNothing(t *testing.T) {
 func TestQueueBridgePayloadCannotSelectTenantOrTarget(t *testing.T) {
 	bridge, store, _, pool := wiredQueueBridge(t, QueueBridgeConfig{})
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	revision := seedQueuePublishedRevision(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	revision := seedQueuePublishedRevision(t, pool, project)
 	// The victim: a completely separate tenant with its own published revision.
-	victimOrg, victimProject, _ := seedSession(t, pool)
-	victimRevision := seedQueuePublishedRevision(t, pool, victimOrg, victimProject)
+	victimProject, _ := seedSession(t, pool)
+	victimRevision := seedQueuePublishedRevision(t, pool, victimProject)
 
-	connID := mustCreateQueueConn(t, store, org, project, QueueConnectionInput{
+	connID := mustCreateQueueConn(t, store, project, QueueConnectionInput{
 		Name: "hostile", Direction: "inbound", Config: inboundConnConfig(revision, principal)})
-	q, err := store.InboundQueue(ctx, org, project, connID)
+	q, err := store.InboundQueue(ctx, project, connID)
 	if err != nil {
 		t.Fatalf("InboundQueue error = %v", err)
 	}
 	hostile, _ := json.Marshal(map[string]any{
 		"source":          "orders.v1",
-		"source_tenant":   victimOrg, // the escape attempt: name another tenant
+		"source_tenant":   victimProject, // the escape attempt: name another tenant
 		"source_event_id": "evt-hostile",
 		"data": map[string]any{
-			"organization_id":   victimOrg,
+			// organization_id is kept in the HOSTILE payload deliberately, even though A.2 Task 6 removed
+			// the column: this half of the test is about a field the bridge must IGNORE, and a field the
+			// schema no longer has is the strongest version of that. The value is a literal because there
+			// is no longer any organization to borrow a real id from.
+			"organization_id":   "org_victim",
 			"project_id":        victimProject,
 			"agent_revision_id": victimRevision, // the second escape attempt: pin another tenant's revision
 			"principal_id":      "prin_whatever",
@@ -384,13 +388,13 @@ func TestQueueBridgePayloadCannotSelectTenantOrTarget(t *testing.T) {
 		t.Fatalf("bridge Tick error = %v", err)
 	}
 
-	if got := countRuns(t, pool, org, project); got != 1 {
+	if got := countRuns(t, pool, project); got != 1 {
 		t.Fatalf("runs in the connection's own tenant = %d, want 1", got)
 	}
-	if got := countRuns(t, pool, victimOrg, victimProject); got != 0 {
+	if got := countRuns(t, pool, victimProject); got != 0 {
 		t.Fatalf("runs in the tenant the PAYLOAD named = %d, want 0 — a payload field selected a tenant", got)
 	}
-	if got := runPinnedRevision(t, pool, org, project); got != revision {
+	if got := runPinnedRevision(t, pool, project); got != revision {
 		t.Fatalf("run pinned revision = %q, want the CONNECTION's %q (the payload's pin must be inert)", got, revision)
 	}
 }
@@ -401,42 +405,42 @@ func TestQueueBridgePayloadCannotSelectTenantOrTarget(t *testing.T) {
 func TestQueueBridgeSkipsConnectionWithNoRunTarget(t *testing.T) {
 	bridge, store, _, pool := wiredQueueBridge(t, QueueBridgeConfig{})
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	revision := seedQueuePublishedRevision(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	revision := seedQueuePublishedRevision(t, pool, project)
 	// A principal that belongs to a DIFFERENT tenant: the confused-deputy attempt.
-	foreignOrg, foreignProject, _ := seedSession(t, pool)
-	foreignPrincipal := seedPrincipal(t, pool, foreignOrg, foreignProject)
+	foreignProject, _ := seedSession(t, pool)
+	foreignPrincipal := seedPrincipal(t, pool, foreignProject)
 
 	for _, tc := range []struct {
 		name   string
 		config []byte
 	}{
 		{"no config at all", nil},
-		{"no revision", []byte(fmt.Sprintf(`{"principal_id":%q}`, seedPrincipal(t, pool, org, project)))},
+		{"no revision", []byte(fmt.Sprintf(`{"principal_id":%q}`, seedPrincipal(t, pool, project)))},
 		{"no principal", []byte(fmt.Sprintf(`{"agent_revision_id":%q}`, revision))},
 		{"foreign principal", inboundConnConfig(revision, foreignPrincipal)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			connID := mustCreateQueueConn(t, store, org, project, QueueConnectionInput{
+			connID := mustCreateQueueConn(t, store, project, QueueConnectionInput{
 				Name: randID("badtarget"), Direction: "inbound", Config: tc.config})
-			q, err := store.InboundQueue(ctx, org, project, connID)
+			q, err := store.InboundQueue(ctx, project, connID)
 			if err != nil {
 				t.Fatalf("InboundQueue error = %v", err)
 			}
 			if err := q.Publish(ctx, "k", queueEnvelope("orders.v1", "", "e", `{}`)); err != nil {
 				t.Fatalf("Publish error = %v", err)
 			}
-			before := countRuns(t, pool, org, project)
+			before := countRuns(t, pool, project)
 			if err := bridge.Tick(ctx); err != nil {
 				t.Fatalf("bridge Tick error = %v", err)
 			}
-			if got := countRuns(t, pool, org, project); got != before {
+			if got := countRuns(t, pool, project); got != before {
 				t.Fatalf("runs went %d -> %d, want no admission from a target-less connection", before, got)
 			}
-			if got := queueMessageState(t, pool, org, project, connID, "k"); got != "ready" {
+			if got := queueMessageState(t, pool, project, connID, "k"); got != "ready" {
 				t.Fatalf("message state = %q, want ready (a misconfiguration must not burn the backlog)", got)
 			}
-			if got := countRuns(t, pool, foreignOrg, foreignProject); got != 0 {
+			if got := countRuns(t, pool, foreignProject); got != 0 {
 				t.Fatalf("runs in the foreign principal's tenant = %d, want 0", got)
 			}
 		})
@@ -456,9 +460,9 @@ func TestQueueBridgeSkipsConnectionWithNoRunTarget(t *testing.T) {
 func TestQueueTerminalEnqueuesOutboundLosslessExactlyOnce(t *testing.T) {
 	_, store, spine, pool := wiredQueueBridge(t, QueueBridgeConfig{})
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	connID := mustCreateQueueConn(t, store, org, project, QueueConnectionInput{
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	connID := mustCreateQueueConn(t, store, project, QueueConnectionInput{
 		Name: "results", Direction: "outbound", MaxDeliveries: 5,
 		Config: []byte(`{"destination_url":"https://sink.example.test/queue"}`)})
 
@@ -477,7 +481,7 @@ func TestQueueTerminalEnqueuesOutboundLosslessExactlyOnce(t *testing.T) {
 	}
 
 	// The row exists BEFORE any pump ran: durability is the terminal transaction's, not the pump's.
-	if got := queueDeliveryState(t, pool, org, project, runID, connID); got != "pending" {
+	if got := queueDeliveryState(t, pool, project, runID, connID); got != "pending" {
 		t.Fatalf("delivery state right after the terminal transition = %q, want pending", got)
 	}
 
@@ -489,7 +493,7 @@ func TestQueueTerminalEnqueuesOutboundLosslessExactlyOnce(t *testing.T) {
 	if err := pump.Tick(ctx); err != nil {
 		t.Fatalf("pump Tick (publisher down) error = %v", err)
 	}
-	if got := queueDeliveryState(t, pool, org, project, runID, connID); got != "pending" {
+	if got := queueDeliveryState(t, pool, project, runID, connID); got != "pending" {
 		t.Fatalf("delivery state after a failed attempt = %q, want pending (durable, not lost)", got)
 	}
 
@@ -497,7 +501,7 @@ func TestQueueTerminalEnqueuesOutboundLosslessExactlyOnce(t *testing.T) {
 	if err := pump.Tick(ctx); err != nil {
 		t.Fatalf("pump Tick (publisher recovered) error = %v", err)
 	}
-	if got := queueDeliveryState(t, pool, org, project, runID, connID); got != "delivered" {
+	if got := queueDeliveryState(t, pool, project, runID, connID); got != "delivered" {
 		t.Fatalf("delivery state after recovery = %q, want delivered", got)
 	}
 	// TWO attempts on THIS run's key: the one that failed while the publisher was down, and the one that
@@ -536,12 +540,12 @@ func TestQueueTerminalEnqueuesOutboundLosslessExactlyOnce(t *testing.T) {
 func TestQueueTerminalEnqueuesNothingWithoutAnOutboundConnection(t *testing.T) {
 	_, store, spine, pool := wiredQueueBridge(t, QueueBridgeConfig{})
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 	// An INBOUND connection exists — the direction predicate, not merely "a connection exists", is what
 	// decides. A bug that ignored direction would enqueue results onto a consumer binding.
-	revision := seedQueuePublishedRevision(t, pool, org, project)
-	mustCreateQueueConn(t, store, org, project, QueueConnectionInput{
+	revision := seedQueuePublishedRevision(t, pool, project)
+	mustCreateQueueConn(t, store, project, QueueConnectionInput{
 		Name: "consumer-only", Direction: "inbound", Config: inboundConnConfig(revision, principal)})
 
 	responseID, runID, sessionID := newID("resp"), newID("run"), newID("ses")
@@ -559,7 +563,7 @@ func TestQueueTerminalEnqueuesNothingWithoutAnOutboundConnection(t *testing.T) {
 
 	var n int
 	if err := pool.QueryRow(storage.ScopeToTenant(ctx, project),
-		`SELECT count(*) FROM queue_deliveries WHERE organization_id = $1 AND project_id = $2`, org, project).Scan(&n); err != nil {
+		`SELECT count(*) FROM queue_deliveries WHERE  project_id = $1`, project).Scan(&n); err != nil {
 		t.Fatalf("count deliveries error = %v", err)
 	}
 	if n != 0 {

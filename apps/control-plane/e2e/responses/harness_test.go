@@ -197,7 +197,7 @@ func (h *harness) purgedAt(responseID string) *time.Time {
 	h.t.Helper()
 	var purged *time.Time
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT purged_at FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		`SELECT purged_at FROM responses WHERE id=$1  project_id=$2`,
 		responseID, h.tenant.Project).Scan(&purged); err != nil {
 		h.t.Fatalf("read purged_at error = %v", err)
 	}
@@ -553,7 +553,7 @@ type event struct {
 func (h *harness) events(sessionID string) []event {
 	h.t.Helper()
 	rows, err := h.spine.Pool().Query(storage.WithSystemScope(context.Background()),
-		`SELECT seq, type FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 ORDER BY seq`,
+		`SELECT seq, type FROM events WHERE session_id=$1  project_id=$2 ORDER BY seq`,
 		sessionID, h.tenant.Project)
 	if err != nil {
 		h.t.Fatalf("read events error = %v", err)
@@ -580,7 +580,7 @@ func (h *harness) response(responseID string) (state string, projection response
 	h.t.Helper()
 	var output []byte
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT state, output FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		`SELECT state, output FROM responses WHERE id=$1  project_id=$2`,
 		responseID, h.tenant.Project).Scan(&state, &output); err != nil {
 		h.t.Fatalf("read response error = %v", err)
 	}

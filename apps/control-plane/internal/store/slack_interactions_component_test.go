@@ -311,19 +311,18 @@ func (f *slackFixture) seedApproval(t *testing.T, channel, root string) seededAp
 	if err := f.pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT t.session_id, r.id, COALESCE(r.response_id,'')
 		   FROM slack_thread_sessions t JOIN runs r ON r.session_id = t.session_id
-		  WHERE t.organization_id=$1 AND t.channel_id=$2 AND t.thread_ts=$3`,
-		f.org, channel, root).Scan(&sessionID, &runID, &responseID); err != nil {
+		  WHERE  t.channel_id=$1 AND t.thread_ts=$2`, channel, root).Scan(&sessionID, &runID, &responseID); err != nil {
 		t.Fatalf("read the seeded thread's session/run: %v", err)
 	}
 
 	branch := "agent/" + newID("b")
-	hash := repositories.RequestHash(f.org, f.project, runID, repositories.OpPushBranch, "git@fake:o/r", branch, "main", "c0ffee")
+	hash := repositories.RequestHash(f.project, runID, repositories.OpPushBranch, "git@fake:o/r", branch, "main", "c0ffee")
 	pub, err := f.spine.RequestPublication(ctx, coordinator.Tenant{Project: f.project},
 		coordinator.PublicationRequest{
 			PublicationID: newID("pub"), ApprovalID: newID("apr"), SessionID: sessionID, RunID: runID,
 			ResponseID: responseID, Operation: "push_branch", Remote: "git@fake:o/r", Branch: branch,
 			Base: "main", HeadSHA: "c0ffee",
-			IdempotencyKey: repositories.IdempotencyKey(f.org, f.project, runID, repositories.OpPushBranch, "git@fake:o/r", branch, "main", "c0ffee"),
+			IdempotencyKey: repositories.IdempotencyKey(f.project, runID, repositories.OpPushBranch, "git@fake:o/r", branch, "main", "c0ffee"),
 			RequestHash:    hash,
 			Display:        "push " + branch,
 		})
@@ -379,8 +378,7 @@ func (f *slackFixture) commandCount(t *testing.T, kind string) int {
 	t.Helper()
 	var n int
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(*) FROM commands WHERE organization_id=$1 AND project_id=$2 AND ($3='' OR kind=$3)`,
-		f.org, f.project, kind).Scan(&n); err != nil {
+		`SELECT count(*) FROM commands WHERE  project_id=$1 AND ($2='' OR kind=$2)`, f.project, kind).Scan(&n); err != nil {
 		t.Fatalf("count commands: %v", err)
 	}
 	return n
@@ -390,8 +388,7 @@ func (f *slackFixture) commandState(t *testing.T, kind string) string {
 	t.Helper()
 	var state string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT state FROM commands WHERE organization_id=$1 AND project_id=$2 AND kind=$3`,
-		f.org, f.project, kind).Scan(&state); err != nil {
+		`SELECT state FROM commands WHERE  project_id=$1 AND kind=$2`, f.project, kind).Scan(&state); err != nil {
 		t.Fatalf("read command state: %v", err)
 	}
 	return state
@@ -412,7 +409,7 @@ func (f *slackFixture) threadMessageTS(t *testing.T, channel, root string) strin
 	var ts string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT COALESCE(last_bot_message_ts,'') FROM slack_thread_sessions
-		  WHERE organization_id=$1 AND channel_id=$2 AND thread_ts=$3`, f.org, channel, root).Scan(&ts); err != nil {
+		  WHERE  channel_id=$1 AND thread_ts=$2`, channel, root).Scan(&ts); err != nil {
 		t.Fatalf("read last_bot_message_ts: %v", err)
 	}
 	return ts

@@ -63,10 +63,10 @@ func TestDispatchJournalsStreamedTextAsDeltasBetweenCreatedAndCompleted(t *testi
 	cs, tenant, exec := openPinnedSpine(t)
 	ctx := context.Background()
 	sessionID, responseID, runID := pinnedID("ses"), pinnedID("resp"), pinnedID("run")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
-	exec(`INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'queued')`,
+	exec(`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, tenant.Project)
+	exec(`INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'queued')`,
 		responseID, tenant.Project, sessionID)
-	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'running')`,
+	exec(`INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,'running')`,
 		runID, tenant.Project, sessionID, responseID)
 
 	// Distinct chunk bodies so a dropped or duplicated window changes the concatenation rather than

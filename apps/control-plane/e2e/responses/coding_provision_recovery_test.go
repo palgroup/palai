@@ -43,7 +43,7 @@ func (h *harness) workspaceIDFor(sessionID string) string {
 	h.t.Helper()
 	var id string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT id FROM workspaces WHERE session_id=$1 AND organization_id=$2 AND project_id=$3`,
+		`SELECT id FROM workspaces WHERE session_id=$1  project_id=$2`,
 		sessionID, h.tenant.Project).Scan(&id); err != nil {
 		h.t.Fatalf("read workspace id: %v", err)
 	}

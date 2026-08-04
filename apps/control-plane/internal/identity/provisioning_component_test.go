@@ -47,29 +47,32 @@ func newID(prefix string) string {
 }
 
 // provisionOrg opens a NEW tenant through the identity store's cross-tenant creation path (the engine
-// behind POST /v1/organizations) and returns the organization id, its default project id, and the admin
-// key's plaintext. It is the "second tenant with no restart" primitive (MCI-001).
-func provisionOrg(t *testing.T, idstore *identity.Store, name string) (org, project, plaintext string) {
+// behind POST /v1/projects) and returns the project id and the admin key's plaintext. It is the "second
+// tenant with no restart" primitive (MCI-001).
+//
+// A.2 Task 6 collapsed the two ids it used to return into one: CreateProject replaced
+// CreateOrganization, and a project IS the tenant, so there is no organization id and no
+// default_project_id indirection left.
+func provisionOrg(t *testing.T, idstore *identity.Store, name string) (project, plaintext string) {
 	t.Helper()
-	out, err := idstore.CreateOrganization(context.Background(), middleware.Scope{}, []byte(`{"display_name":"`+name+`"}`))
+	out, err := idstore.CreateProject(context.Background(), middleware.Scope{}, []byte(`{"display_name":"`+name+`"}`))
 	if err != nil {
-		t.Fatalf("CreateOrganization(%s) error = %v", name, err)
+		t.Fatalf("CreateProject(%s) error = %v", name, err)
 	}
 	var r struct {
-		ID               string `json:"id"`
-		DefaultProjectID string `json:"default_project_id"`
-		AdminAPIKey      struct {
+		ID          string `json:"id"`
+		AdminAPIKey struct {
 			ID  string `json:"id"`
 			Key string `json:"key"`
 		} `json:"admin_api_key"`
 	}
 	if err := json.Unmarshal(out.Body, &r); err != nil {
-		t.Fatalf("decode organization body: %v", err)
+		t.Fatalf("decode project body: %v", err)
 	}
-	if r.ID == "" || r.DefaultProjectID == "" || r.AdminAPIKey.Key == "" {
-		t.Fatalf("provisioned organization is incomplete: %s", out.Body)
+	if r.ID == "" || r.AdminAPIKey.Key == "" {
+		t.Fatalf("provisioned project is incomplete: %s", out.Body)
 	}
-	return r.ID, r.DefaultProjectID, r.AdminAPIKey.Key
+	return r.ID, r.AdminAPIKey.Key
 }
 
 // TestProvisionSecondTenantViaAPI proves MCI-001/TEN-003: a running store mints a brand-new tenant whose
@@ -80,10 +83,10 @@ func TestProvisionSecondTenantViaAPI(t *testing.T) {
 	ctx := context.Background()
 	idstore := identity.New(cs.Pool())
 
-	aOrg, aProj, aKey := provisionOrg(t, idstore, "alpha")
-	bOrg, bProj, bKey := provisionOrg(t, idstore, "beta")
-	if aOrg == bOrg {
-		t.Fatal("two CreateOrganization calls produced the same organization id")
+	aProj, aKey := provisionOrg(t, idstore, "alpha")
+	bProj, bKey := provisionOrg(t, idstore, "beta")
+	if aProj == bProj {
+		t.Fatal("two CreateProject calls produced the same project id")
 	}
 
 	scopeA, err := cs.VerifyAPIKey(ctx, aKey)
@@ -135,7 +138,7 @@ func TestCreateProjectOpensAUsableTenant(t *testing.T) {
 	ctx := context.Background()
 	idstore := identity.New(cs.Pool())
 
-	_, parent, _ := provisionOrg(t, idstore, "tenant-opener")
+	parent, _ := provisionOrg(t, idstore, "tenant-opener")
 
 	out, err := idstore.CreateProject(ctx, middleware.Scope{Project: parent}, []byte(`{"display_name":"opened"}`))
 	if err != nil {
@@ -223,7 +226,7 @@ func TestConfigPolicyResolverReachable(t *testing.T) {
 	ctx := context.Background()
 	idstore := identity.New(cs.Pool())
 
-	org, proj, _ := provisionOrg(t, idstore, "gamma")
+	proj, _ := provisionOrg(t, idstore, "gamma")
 	scope := middleware.Scope{Project: proj}
 	if _, err := idstore.UpdateProjectPolicy(ctx, scope, proj,
 		[]byte(`{"config_policy":{"allowed_models":["gpt-x"],"default_tools":["file"]}}`)); err != nil {
@@ -249,7 +252,7 @@ func TestProvisioningStrictDecodeRejectsUnknownField(t *testing.T) {
 	ctx := context.Background()
 	idstore := identity.New(cs.Pool())
 
-	_, proj, _ := provisionOrg(t, idstore, "delta")
+	proj, _ := provisionOrg(t, idstore, "delta")
 	scope := middleware.Scope{Project: proj}
 
 	if r, _ := idstore.CreateProject(ctx, scope, []byte(`{"nope":1}`)); !r.BadField {
@@ -271,8 +274,8 @@ func TestCreateAPIKeyForForeignProjectDenied(t *testing.T) {
 	ctx := context.Background()
 	idstore := identity.New(cs.Pool())
 
-	_, aProj, _ := provisionOrg(t, idstore, "eps-a")
-	_, bProj, _ := provisionOrg(t, idstore, "eps-b")
+	aProj, _ := provisionOrg(t, idstore, "eps-a")
+	bProj, _ := provisionOrg(t, idstore, "eps-b")
 	scopeA := middleware.Scope{Project: aProj}
 
 	if r, _ := idstore.CreateAPIKey(ctx, scopeA, []byte(`{"project_id":"`+bProj+`"}`)); !r.NotFound {
@@ -294,7 +297,7 @@ func TestListAPIKeysMetadataOnly(t *testing.T) {
 	ctx := context.Background()
 	idstore := identity.New(cs.Pool())
 
-	_, proj, _ := provisionOrg(t, idstore, "zeta")
+	proj, _ := provisionOrg(t, idstore, "zeta")
 	scope := middleware.Scope{Project: proj}
 	if _, err := idstore.CreateAPIKey(ctx, scope, []byte(`{"project_id":"`+proj+`"}`)); err != nil {
 		t.Fatalf("CreateAPIKey error = %v", err)
@@ -317,8 +320,8 @@ func TestBootstrapFirstOrgResolvable(t *testing.T) {
 	idstore := identity.New(cs.Pool())
 
 	bootKey := newID("bootsecret")
-	if err := idstore.ProvisionFirstOrg(ctx, bootKey); err != nil {
-		t.Fatalf("ProvisionFirstOrg error = %v", err)
+	if err := idstore.ProvisionFirstTenant(ctx, bootKey); err != nil {
+		t.Fatalf("ProvisionFirstTenant error = %v", err)
 	}
 	scope, err := cs.VerifyAPIKey(ctx, bootKey)
 	if err != nil {
@@ -328,7 +331,7 @@ func TestBootstrapFirstOrgResolvable(t *testing.T) {
 		t.Fatalf("bootstrap key resolved to an incomplete scope: %+v", scope)
 	}
 	// Re-seeding is a clean no-op (ON CONFLICT DO NOTHING), so the key still resolves.
-	if err := idstore.ProvisionFirstOrg(ctx, bootKey); err != nil {
+	if err := idstore.ProvisionFirstTenant(ctx, bootKey); err != nil {
 		t.Fatalf("second ProvisionFirstOrg error = %v", err)
 	}
 	if _, err := cs.VerifyAPIKey(storage.WithSystemScope(ctx), bootKey); err != nil {

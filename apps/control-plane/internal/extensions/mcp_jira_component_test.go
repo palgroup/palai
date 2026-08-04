@@ -191,7 +191,7 @@ func fixtureURL(srv *httptest.Server) string {
 // whose mcp_connections rider names the connection → confirm it is ADVERTISED → have the run CALL it and get
 // the issue back. Each leg is asserted, so a break names the leg that broke.
 func TestJiraMCPConnectionEndToEnd(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
 	fixture := &jiraMCPServer{}
@@ -208,14 +208,14 @@ func TestJiraMCPConnectionEndToEnd(t *testing.T) {
 		"config":     map[string]any{"url": fixtureURL(srv)},
 		"secret_ref": secretRef,
 	})
-	conn, err := s.CreateMCPConnection(ctx, org, project, body)
+	conn, err := s.CreateMCPConnection(ctx, project, body)
 	if err != nil {
 		t.Fatalf("LEG 1 register connection: %v", err)
 	}
 
 	// LEG 2 — discover, over the real transport. Both Atlassian tools materialise as DRAFT revisions under
 	// connection-namespaced names; camelCase must survive the canonical-name validator.
-	result, err := s.DiscoverConnection(ctx, org, project, conn.ID)
+	result, err := s.DiscoverConnection(ctx, project, conn.ID)
 	if err != nil {
 		t.Fatalf("LEG 2 discover: %v", err)
 	}
@@ -224,8 +224,8 @@ func TestJiraMCPConnectionEndToEnd(t *testing.T) {
 	}
 	var modelVisible string
 	if err := s.pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT model_visible_name FROM tools WHERE canonical_name=$1 AND organization_id=$2 AND project_id=$3`,
-		"mcp.jira.getJiraIssue", org, project).Scan(&modelVisible); err != nil {
+		`SELECT model_visible_name FROM tools WHERE canonical_name=$1  project_id=$2`,
+		"mcp.jira.getJiraIssue", project).Scan(&modelVisible); err != nil {
 		t.Fatalf("LEG 2 read discovered lineage: %v", err)
 	}
 	if modelVisible != "jira__getJiraIssue" {
@@ -233,10 +233,10 @@ func TestJiraMCPConnectionEndToEnd(t *testing.T) {
 	}
 
 	// LEG 3+4 — approve (publish the untrusted description) and pin into a published set.
-	setID := publishDiscoveredIntoSet(t, s, org, project, conn.ID, "mcp.jira.getJiraIssue")
+	setID := publishDiscoveredIntoSet(t, s, project, conn.ID, "mcp.jira.getJiraIssue")
 
 	// LEG 5 — grant to a run whose AgentRevision names the connection in its mcp_connections rider.
-	runID := seedRunWithMCPRider(t, s, org, project, setID, `["`+conn.ID+`"]`)
+	runID := seedRunWithMCPRider(t, s, project, setID, `["`+conn.ID+`"]`)
 
 	// LEG 6 — ADVERTISED. This is the seam the orchestrator's advertisedTools uses, so a hit here is what
 	// puts the tool in front of the model.
@@ -284,7 +284,7 @@ func TestJiraMCPConnectionEndToEnd(t *testing.T) {
 	}
 
 	// The credential is nowhere it must not be: not in the stored connection, not in the tool result.
-	stored, err := s.GetMCPConnection(ctx, org, project, conn.ID)
+	stored, err := s.GetMCPConnection(ctx, project, conn.ID)
 	if err != nil {
 		t.Fatalf("read back connection: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestJiraMCPConnectionEndToEnd(t *testing.T) {
 // compromised — or a Jira ticket whose description is written by an attacker — reaches the model only as the
 // result of the ONE tool the operator already approved.
 func TestJiraMCPServerOutputCannotGrantCapability(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
 	// The server answers every tools/call with a payload that tries to grant itself more.
@@ -328,15 +328,15 @@ func TestJiraMCPServerOutputCannotGrantCapability(t *testing.T) {
 		"name": "jira", "transport": "http",
 		"config": map[string]any{"url": fixtureURL(srv)}, "secret_ref": secretRef,
 	})
-	conn, err := s.CreateMCPConnection(ctx, org, project, body)
+	conn, err := s.CreateMCPConnection(ctx, project, body)
 	if err != nil {
 		t.Fatalf("register connection: %v", err)
 	}
-	if _, err := s.DiscoverConnection(ctx, org, project, conn.ID); err != nil {
+	if _, err := s.DiscoverConnection(ctx, project, conn.ID); err != nil {
 		t.Fatalf("discover: %v", err)
 	}
-	setID := publishDiscoveredIntoSet(t, s, org, project, conn.ID, "mcp.jira.getJiraIssue")
-	runID := seedRunWithMCPRider(t, s, org, project, setID, `["`+conn.ID+`"]`)
+	setID := publishDiscoveredIntoSet(t, s, project, conn.ID, "mcp.jira.getJiraIssue")
+	runID := seedRunWithMCPRider(t, s, project, setID, `["`+conn.ID+`"]`)
 
 	broker := brokerWithLookup(s)
 	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: project, RunID: runID}}
@@ -365,8 +365,8 @@ func TestJiraMCPServerOutputCannotGrantCapability(t *testing.T) {
 	}
 
 	// A SECOND connection's tool stays outside this run's ceiling regardless of what the server said.
-	otherID := createStdioConnection(t, s, org, project, "other")
-	if _, found, _ := s.LookupTool(ctx, org, project, runID, "other__echo"); found {
+	otherID := createStdioConnection(t, s, project, "other")
+	if _, found, _ := s.LookupTool(ctx, project, runID, "other__echo"); found {
 		t.Fatalf("a tool from connection %s resolved without being in the run's rider", otherID)
 	}
 }

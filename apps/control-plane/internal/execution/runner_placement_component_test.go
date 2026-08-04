@@ -106,19 +106,18 @@ func newPlacementFixture(t *testing.T) *poolKeyFixture {
 func placementTenant(t *testing.T, f *poolKeyFixture) (coordinator.Tenant, string, string) {
 	t.Helper()
 	ctx := storage.WithSystemScope(context.Background())
-	org, project, poolID := poolKeyID("org"), poolKeyID("prj"), poolKeyID("pool")
+	project, poolID := poolKeyID("prj"), poolKeyID("pool")
 	stmts := [][]any{
-		{`INSERT INTO organizations (id) VALUES ($1)`, org},
-		{`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org},
-		{`INSERT INTO runner_pools (id, organization_id, project_id, name, posture)
-		  VALUES ($1,$2,$3,'default','sandboxed-linux')`, poolID, org, project},
+		{`INSERT INTO projects (id) VALUES ($1)`, project},
+		{`INSERT INTO runner_pools (id, project_id, name, posture)
+		  VALUES ($1,$2,'default','sandboxed-linux')`, poolID, project},
 	}
 	for _, stmt := range stmts {
 		if _, err := f.pool.Exec(ctx, stmt[0].(string), stmt[1:]...); err != nil {
 			t.Fatalf("seed the tenant: %v", err)
 		}
 	}
-	_, key := mintPoolKey(t, f.keys, org, project, poolID, nil)
+	_, key := mintPoolKey(t, f.keys)
 	return coordinator.Tenant{Project: project}, poolID, key
 }
 
@@ -202,11 +201,11 @@ func placementRun(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant) (
 	ctx := storage.WithSystemScope(context.Background())
 	sessionID, responseID, runID = poolKeyID("ses"), poolKeyID("resp"), poolKeyID("run")
 	stmts := [][]any{
-		{`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project},
-		{`INSERT INTO responses (id, organization_id, project_id, session_id, state, input)
-		  VALUES ($1,$2,$3,$4,'queued','"say hello"'::jsonb)`, responseID, tenant.Project, sessionID},
-		{`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state)
-		  VALUES ($1,$2,$3,$4,$5,'queued')`, runID, tenant.Project, sessionID, responseID},
+		{`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, tenant.Project},
+		{`INSERT INTO responses (id, project_id, session_id, state, input)
+		  VALUES ($1,$2,$3,'queued','"say hello"'::jsonb)`, responseID, tenant.Project, sessionID},
+		{`INSERT INTO runs (id, project_id, session_id, response_id, state)
+		  VALUES ($1,$2,$3,$4,'queued')`, runID, tenant.Project, sessionID, responseID},
 	}
 	for _, stmt := range stmts {
 		if _, err := pool.Exec(ctx, stmt[0].(string), stmt[1:]...); err != nil {
@@ -449,8 +448,8 @@ func TestPlacementWakeLeavesEveryOtherWaitingRunAlone(t *testing.T) {
 	sys := storage.WithSystemScope(ctx)
 	for _, stmt := range [][]any{
 		{`UPDATE runs SET state = 'waiting', pool_id = $2 WHERE id = $1`, pausedRun, poolID},
-		{`INSERT INTO attempts (id, organization_id, project_id, run_id, fence, state)
-		  VALUES ($1,$2,$3,$4,1,'assigned')`, poolKeyID("att"), tenant.Project, pausedRun},
+		{`INSERT INTO attempts (id, project_id, run_id, fence, state)
+		  VALUES ($1,$2,$3,1,'assigned')`, poolKeyID("att"), tenant.Project, pausedRun},
 	} {
 		if _, err := f.pool.Exec(sys, stmt[0].(string), stmt[1:]...); err != nil {
 			t.Fatalf("seed the otherwise-waiting run: %v", err)

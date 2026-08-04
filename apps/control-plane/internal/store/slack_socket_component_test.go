@@ -205,8 +205,8 @@ func TestSlackSocketModeAndHTTPShareOneCanonicalIdentity(t *testing.T) {
 		`SELECT COALESCE(r.agent_revision_id,''), COALESCE(i.principal_id,''), i.route, i.idempotency_key
 		   FROM runs r
 		   JOIN idempotency_records i
-		     ON i.organization_id = r.organization_id AND i.project_id = r.project_id
-		  WHERE r.organization_id=$1 AND r.project_id=$2`, f.org, f.project).
+		     ON i.project_id = r.project_id
+		  WHERE  r.project_id=$1`, f.project).
 		Scan(&revision, &principal, &route, &key); err != nil {
 		t.Fatalf("read the socket-born run: %v", err)
 	}
@@ -272,8 +272,7 @@ func assertOneCleanReservation(t *testing.T, f *slackFixture, want int, what str
 	var records, conflicts int
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(*), count(*) FILTER (WHERE status = 'conflict')
-		   FROM idempotency_records WHERE organization_id=$1 AND project_id=$2`,
-		f.org, f.project).Scan(&records, &conflicts); err != nil {
+		   FROM idempotency_records WHERE  project_id=$1`, f.project).Scan(&records, &conflicts); err != nil {
 		t.Fatalf("read reservations: %v", err)
 	}
 	if records != want {
@@ -350,8 +349,8 @@ func TestSlackPanelDMEntersTheSameAdmissionBridge(t *testing.T) {
 		`SELECT COALESCE(r.agent_revision_id,''), COALESCE(i.principal_id,''), i.route, i.idempotency_key
 		   FROM runs r
 		   JOIN idempotency_records i
-		     ON i.organization_id = r.organization_id AND i.project_id = r.project_id
-		  WHERE r.organization_id=$1 AND r.project_id=$2`, f.org, f.project).
+		     ON i.project_id = r.project_id
+		  WHERE  r.project_id=$1`, f.project).
 		Scan(&revision, &principal, &route, &key); err != nil {
 		t.Fatalf("read the panel-born run: %v", err)
 	}

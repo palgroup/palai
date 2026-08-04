@@ -51,7 +51,7 @@ type registrationFixture struct {
 	registry     *extensions.SlackRegistry
 }
 
-func newRegistrationFixture(t *testing.T, repo *store.Store, org, project string) *registrationFixture {
+func newRegistrationFixture(t *testing.T, repo *store.Store, project string) *registrationFixture {
 	t.Helper()
 	registry := extensions.NewSlackRegistry(extensions.New(repo.Spine().Pool()))
 	ts := httptest.NewServer(api.NewRouter(
@@ -104,18 +104,17 @@ func TestSlackRegistrationLandsInTheVerifiedTenantAndRefusesACrossTenantSquat(t 
 	repo := openRegistrationStore(t)
 	pool := repo.Spine().Pool()
 
-	orgA, projectA := newID("org"), newID("prj")
-	orgB, projectB := newID("org"), newID("prj")
-	for _, tenant := range [][2]string{{orgA, projectA}, {orgB, projectB}} {
-		exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, tenant[0])
-		exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, tenant[1], tenant[0])
+	projectA := newID("prj")
+	projectB := newID("prj")
+	for _, project := range []string{projectA, projectB} {
+		exec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, project)
 	}
 	team := strings.ToUpper(newID("T"))
 	body := fmt.Sprintf(`{"team_id":%q,"bot_user_id":"Ubot","signing_secret_ref":"slack/signing",
 		"bot_token_ref":"slack/bot","app_token_ref":"slack/app",
 		"default_policy":{"agent_revision_id":"arev_x","principal_id":"prin_x"}}`, team)
 
-	a := newRegistrationFixture(t, repo, orgA, projectA)
+	a := newRegistrationFixture(t, repo, projectA)
 	resp, raw := a.register(t, body)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("register = %d, want 201; %s", resp.StatusCode, raw)
@@ -127,14 +126,14 @@ func TestSlackRegistrationLandsInTheVerifiedTenantAndRefusesACrossTenantSquat(t 
 
 	// The row is in the CALLER's tenant. Read system-scoped so a wrong tenant would be visible rather than
 	// filtered away by RLS — the assertion has to be able to fail.
-	var gotOrg, gotProject string
+	var gotProject string
 	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT organization_id, project_id FROM slack_connections WHERE id=$1`, created.ID).
-		Scan(&gotOrg, &gotProject); err != nil {
+		`SELECT project_id FROM slack_connections WHERE id=$1`, created.ID).
+		Scan(&gotProject); err != nil {
 		t.Fatalf("read the registered connection: %v", err)
 	}
-	if gotOrg != orgA || gotProject != projectA {
-		t.Fatalf("the connection landed in (%s,%s), want the VERIFIED scope (%s,%s)", gotOrg, gotProject, orgA, projectA)
+	if gotProject != projectA {
+		t.Fatalf("the connection landed in %s, want the VERIFIED scope %s", gotProject, projectA)
 	}
 	// And no credential VALUE reached the row: the table has ref columns only.
 	var valueColumns int
@@ -172,13 +171,13 @@ func TestSlackRegistrationLandsInTheVerifiedTenantAndRefusesACrossTenantSquat(t 
 
 	// THE SQUAT: tenant B tries to bind the SAME Slack workspace, which would give the unauthenticated
 	// team-keyed resolve two candidates for one workspace (E19 T1's hijack).
-	b := newRegistrationFixture(t, repo, orgB, projectB)
+	b := newRegistrationFixture(t, repo, projectB)
 	squat, squatRaw := b.register(t, body)
 	if squat.StatusCode != http.StatusConflict {
 		t.Fatalf("a cross-tenant squat = %d, want 409 — a refused hijack must not read as a transient failure; %s",
 			squat.StatusCode, squatRaw)
 	}
-	for _, leak := range []string{orgA, projectA, created.ID} {
+	for _, leak := range []string{projectA, created.ID} {
 		if strings.Contains(squatRaw, leak) {
 			t.Fatalf("the refusal body names the holding tenant (%q): %s — the registering admin must not learn that another customer exists", leak, squatRaw)
 		}

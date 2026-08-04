@@ -27,7 +27,7 @@ import (
 func TestHostMoveKeepsLogicalIdNewFencedAllocation(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, workspaceID, oldAllocID, hostPath := h.seedAllocationOnDisk(t)
+	project, workspaceID, oldAllocID, hostPath := h.seedAllocationOnDisk(t)
 	tenant := coordinator.Tenant{Project: project}
 	sink := execution.NewSnapshotSink(h.s3, h.repo.Spine())
 
@@ -111,7 +111,7 @@ func TestHostMoveKeepsLogicalIdNewFencedAllocation(t *testing.T) {
 func TestOldHostAuthoritativeFramesDeniedDiagnosticsAllowed(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, workspaceID, oldAllocID, hostPath := h.seedAllocationOnDisk(t)
+	project, workspaceID, oldAllocID, hostPath := h.seedAllocationOnDisk(t)
 	tenant := coordinator.Tenant{Project: project}
 	sink := execution.NewSnapshotSink(h.s3, h.repo.Spine())
 	session := sessionOf(t, h, workspaceID)
@@ -165,7 +165,7 @@ func recoveryEventCount(t *testing.T, h *artifactsHarness, session string) int {
 func TestRecoveringFailsExplicitlyWhenRestoreImpossible(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, workspaceID, _, _ := h.seedAllocationOnDisk(t)
+	project, workspaceID, _, _ := h.seedAllocationOnDisk(t)
 	tenant := coordinator.Tenant{Project: project}
 	sink := execution.NewSnapshotSink(h.s3, h.repo.Spine())
 
@@ -194,7 +194,7 @@ func TestRecoveringFailsExplicitlyWhenRestoreImpossible(t *testing.T) {
 func TestAllocationReuseLeavesNoTenantResidue(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, workspaceID, _, hostPath := h.seedAllocationOnDisk(t)
+	project, workspaceID, _, hostPath := h.seedAllocationOnDisk(t)
 	tenant := coordinator.Tenant{Project: project}
 	// The prior tenant left a credential in the allocation's secrets staging area.
 	credential := filepath.Join(hostPath, "secrets", "token")
@@ -237,7 +237,7 @@ func TestAllocationReuseLeavesNoTenantResidue(t *testing.T) {
 func TestFailedDestroyQuarantinesHost(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, workspaceID, _, hostPath := h.seedAllocationOnDisk(t)
+	project, workspaceID, _, hostPath := h.seedAllocationOnDisk(t)
 	tenant := coordinator.Tenant{Project: project}
 	if err := h.repo.Spine().AdvanceWorkspace(ctx, tenant, workspaceID, "release"); err != nil {
 		t.Fatalf("release workspace: %v", err)

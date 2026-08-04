@@ -171,9 +171,9 @@ func (sb *sandbox) measureAssignment(t *testing.T, run *Run, phase, mode string,
 	ctx := storage.WithTenant(context.Background(), sb.tenant.Project)
 
 	sessionID, runID := newID("ses"), newID("run")
-	sb.exec(t, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`,
+	sb.exec(t, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`,
 		sessionID, sb.tenant.Project)
-	sb.exec(t, `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`,
+	sb.exec(t, `INSERT INTO runs (id, project_id, session_id, state) VALUES ($1, $2, $3, 'running')`,
 		runID, sb.tenant.Project, sessionID)
 
 	hostPath := t.TempDir()

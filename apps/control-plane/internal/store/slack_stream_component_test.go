@@ -90,8 +90,7 @@ type bornRun struct{ id, responseID, sessionID string }
 func (f *slackFixture) runsInOrder(t *testing.T) []bornRun {
 	t.Helper()
 	rows, err := f.pool.Query(storage.WithSystemScope(context.Background()),
-		`SELECT id, response_id, session_id FROM runs WHERE organization_id=$1 AND project_id=$2 ORDER BY created_at`,
-		f.org, f.project)
+		`SELECT id, response_id, session_id FROM runs WHERE  project_id=$1 ORDER BY created_at`, f.project)
 	if err != nil {
 		t.Fatalf("read runs: %v", err)
 	}

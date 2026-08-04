@@ -55,8 +55,8 @@ func TestHookWorkerBeforeToolDenyAndAllow(t *testing.T) {
 	defer worker.Close()
 	// A remote before_tool policy hook pointing at the local worker (allow_private for the loopback fixture).
 	execSQL(t, pool,
-		`INSERT INTO hooks (id, organization_id, project_id, name, hook_point, category, executor, config, secret_ref)
-		 VALUES ($1,$2,$3,'guard','before_tool','policy','remote_http', jsonb_build_object('url',$4::text,'allow_private',true), 'sref_hook')`,
+		`INSERT INTO hooks (id, project_id, name, hook_point, category, executor, config, secret_ref)
+		 VALUES ($1,$2,'guard','before_tool','policy','remote_http',jsonb_build_object('url',$3::text,'allow_private',true),'sref_hook')`,
 		redeliveryID("hook"), tenant.Project, worker.URL)
 
 	ext := extensions.New(pool)

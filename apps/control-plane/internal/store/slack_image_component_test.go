@@ -142,7 +142,7 @@ func (r *recordingInboundArtifacts) ReadRunArtifact(_ context.Context, project, 
 	if r.readErr != nil {
 		return nil, 0, false, r.readErr
 	}
-	art, ok := r.runArtifacts[org+"/"+project+"/"+artifactID]
+	art, ok := r.runArtifacts[project+"/"+artifactID]
 	if !ok || art.runID != runID {
 		return nil, 0, false, nil // unknown, another tenant's, or another run's: one indistinguishable miss
 	}
@@ -157,13 +157,13 @@ func (r *recordingInboundArtifacts) ReadRunArtifact(_ context.Context, project, 
 }
 
 // putRunArtifact seeds one artifact a run produced.
-func (r *recordingInboundArtifacts) putRunArtifact(org, project, runID, artifactID string, content []byte, size int64) {
+func (r *recordingInboundArtifacts) putRunArtifact(project, runID, artifactID string, content []byte, size int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.runArtifacts == nil {
 		r.runArtifacts = map[string]runArtifact{}
 	}
-	r.runArtifacts[org+"/"+project+"/"+artifactID] = runArtifact{runID: runID, content: content, size: size}
+	r.runArtifacts[project+"/"+artifactID] = runArtifact{runID: runID, content: content, size: size}
 }
 
 // readIDs reports which artifact ids the upload leg asked for, so a test can prove it asked for NONE.
@@ -209,8 +209,7 @@ func (f *slackFixture) storedInput(t *testing.T) string {
 	t.Helper()
 	var input string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT input::text FROM responses WHERE organization_id=$1 AND project_id=$2 ORDER BY created_at LIMIT 1`,
-		f.org, f.project).Scan(&input); err != nil {
+		`SELECT input::text FROM responses WHERE  project_id=$1 ORDER BY created_at LIMIT 1`, f.project).Scan(&input); err != nil {
 		t.Fatalf("read the stored run input: %v", err)
 	}
 	return input
@@ -270,7 +269,7 @@ func TestSlackSharedImageBecomesAnImageRefInTheRunInput(t *testing.T) {
 	}
 	var bornRun string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT id FROM runs WHERE organization_id=$1 AND project_id=$2`, f.org, f.project).Scan(&bornRun); err != nil {
+		`SELECT id FROM runs WHERE  project_id=$1`, f.project).Scan(&bornRun); err != nil {
 		t.Fatalf("read the born run: %v", err)
 	}
 	if attaches[w.id] != bornRun {

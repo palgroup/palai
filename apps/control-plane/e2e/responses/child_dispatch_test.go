@@ -39,7 +39,7 @@ func (finalOnlyProvider) Execute(_ context.Context, req modelbroker.Request, _ s
 func (h *harness) childRunOf(parentRunID string) (runID, responseID string) {
 	h.t.Helper()
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT id, response_id FROM runs WHERE parent_run_id=$1 AND organization_id=$2 AND project_id=$3`,
+		`SELECT id, response_id FROM runs WHERE parent_run_id=$1  project_id=$2`,
 		parentRunID, h.tenant.Project).Scan(&runID, &responseID); err != nil {
 		h.t.Fatalf("read child run of %s error = %v", parentRunID, err)
 	}
@@ -51,7 +51,7 @@ func (h *harness) modelOfRun(responseID string) string {
 	h.t.Helper()
 	var model *string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT output->>'model' FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		`SELECT output->>'model' FROM responses WHERE id=$1  project_id=$2`,
 		responseID, h.tenant.Project).Scan(&model); err != nil {
 		h.t.Fatalf("read model of %s error = %v", responseID, err)
 	}
@@ -66,7 +66,7 @@ func (h *harness) childRunsLink(responseID string) []string {
 	h.t.Helper()
 	var raw []byte
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT output->'child_runs' FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		`SELECT output->'child_runs' FROM responses WHERE id=$1  project_id=$2`,
 		responseID, h.tenant.Project).Scan(&raw); err != nil {
 		h.t.Fatalf("read child_runs of %s error = %v", responseID, err)
 	}
@@ -85,7 +85,7 @@ func (h *harness) childEffectiveBudget(childRunID string) int {
 	h.t.Helper()
 	var budget *int
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT (delegation->'spec'->>'budget')::int FROM runs WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		`SELECT (delegation->'spec'->>'budget')::int FROM runs WHERE id=$1  project_id=$2`,
 		childRunID, h.tenant.Project).Scan(&budget); err != nil {
 		h.t.Fatalf("read child budget %s error = %v", childRunID, err)
 	}

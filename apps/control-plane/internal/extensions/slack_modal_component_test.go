@@ -85,15 +85,15 @@ func TestSlackApprovalModalReadsTheLedgerAndWritesNothing(t *testing.T) {
 
 	org, project := seedOrgProject(t, store)
 	tenant := coordinator.Tenant{Project: project}
-	sessionID := seedSession(t, store, org, project)
+	sessionID := seedSession(t, store)
 	respID, runID := testID("resp"), testID("run")
 	mustSystemExec(t, pool, `UPDATE sessions SET state='active' WHERE id=$1`, sessionID)
-	mustSystemExec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
-		respID, org, project, sessionID)
-	mustSystemExec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'running')`,
-		runID, org, project, sessionID, respID)
+	mustSystemExec(t, pool, `INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'in_progress')`,
+		respID, project, sessionID)
+	mustSystemExec(t, pool, `INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,'running')`,
+		runID, project, sessionID, respID)
 
-	conn, err := store.CreateSlackConnection(ctx, org, project, []byte(`{
+	conn, err := store.CreateSlackConnection(ctx, project, []byte(`{
 		"team_id":"`+team+`","bot_user_id":"Ubot2344",
 		"signing_secret_ref":"slack/modal/signing","bot_token_ref":"slack/modal/bot",
 		"scopes":"app_mentions:read chat:write","allowed_users":["`+mapped+`"]}`))
@@ -102,8 +102,8 @@ func TestSlackApprovalModalReadsTheLedgerAndWritesNothing(t *testing.T) {
 	}
 	// The thread correlation the click will resolve through. Seeded directly — what this test proves is the
 	// modal, not SLK-003, which slack_component_test.go already proves against this same schema.
-	mustSystemExec(t, pool, `INSERT INTO slack_thread_sessions (id, organization_id, project_id, connection_id, team_id, channel_id, thread_ts, session_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, testID("slkt"), org, project, conn.ID, team, channel, threadTS, sessionID)
+	mustSystemExec(t, pool, `INSERT INTO slack_thread_sessions (id, project_id, connection_id, team_id, channel_id, thread_ts, session_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`, testID("slkt"), project, conn.ID, team, channel, threadTS, sessionID)
 
 	// A REAL parked call, through T1's own production entry point. The arguments carry a nested object, a
 	// number and a broadcast token, so the assertions below are about a screen a human might actually meet.

@@ -45,10 +45,9 @@ import (
 func stuckRunTenantWithoutAPool(t *testing.T, pool *pgxpool.Pool) coordinator.Tenant {
 	t.Helper()
 	ctx := storage.WithSystemScope(context.Background())
-	org, project := poolKeyID("org"), poolKeyID("prj")
+	project := poolKeyID("prj")
 	for _, stmt := range [][]any{
-		{`INSERT INTO organizations (id) VALUES ($1)`, org},
-		{`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org},
+		{`INSERT INTO projects (id) VALUES ($1)`, project},
 	} {
 		if _, err := pool.Exec(ctx, stmt[0].(string), stmt[1:]...); err != nil {
 			t.Fatalf("seed a tenant with no pool: %v", err)
@@ -109,7 +108,7 @@ func TestPlacementNeverParksARunWhereItsOwnWakeCannotFindIt(t *testing.T) {
 		var owned int
 		if err := f.pool.QueryRow(storage.WithSystemScope(ctx),
 			`SELECT count(*) FROM runner_pools
-			  WHERE id = $1 AND organization_id = $2 AND (project_id IS NULL OR project_id = $3)`,
+			  WHERE id = $1  (project_id IS NULL OR project_id = $2)`,
 			*poolID, tenant.Project).Scan(&owned); err != nil {
 			t.Fatalf("check the parked pool belongs to the tenant: %v", err)
 		}
@@ -168,8 +167,8 @@ func TestPlacementAWokenRunDoesNotGetAFreshRetryBudget(t *testing.T) {
 	const spent = 5
 	spentJobID := poolKeyID("job")
 	if _, err := f.pool.Exec(storage.WithSystemScope(ctx),
-		`INSERT INTO durable_jobs (id, organization_id, project_id, kind, status, attempt_count, payload)
-		 VALUES ($1,$2,$3,'response.run','completed',$4, jsonb_build_object('run_id', $5::text))`,
+		`INSERT INTO durable_jobs (id, project_id, kind, status, attempt_count, payload)
+		 VALUES ($1,$2,'response.run','completed',$3,jsonb_build_object('run_id', $4::text))`,
 		spentJobID, tenant.Project, spent, runID); err != nil {
 		t.Fatalf("seed the exhausted job the park completed: %v", err)
 	}

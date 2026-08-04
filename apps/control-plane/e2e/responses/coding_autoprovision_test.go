@@ -60,7 +60,7 @@ func TestCodingAutoProvisionDeterministic(t *testing.T) {
 	var wsState, wsBinding, wsRef string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
 		`SELECT state, repository_binding_id, requested_ref FROM workspaces
-		 WHERE session_id=$1 AND organization_id=$2 AND project_id=$3`,
+		 WHERE session_id=$1  project_id=$2`,
 		sessionID, h.tenant.Project).Scan(&wsState, &wsBinding, &wsRef); err != nil {
 		t.Fatalf("admit did not attach a session workspace: %v", err)
 	}
@@ -120,7 +120,7 @@ func (h *harness) allocationRootFor(sessionID string) string {
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT a.host_path FROM workspace_allocations a
 		 JOIN workspaces w ON w.id = a.workspace_id
-		 WHERE w.session_id = $1 AND w.organization_id = $2 AND w.project_id = $3
+		 WHERE w.session_id = $1  w.project_id = $2
 		 ORDER BY a.fence DESC LIMIT 1`,
 		sessionID, h.tenant.Project).Scan(&hostPath); err != nil {
 		h.t.Fatalf("read allocation host path: %v", err)

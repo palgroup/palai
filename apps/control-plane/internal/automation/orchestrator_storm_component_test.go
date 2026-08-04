@@ -36,14 +36,14 @@ func workflowIdempotencyKey(workflowID string) string {
 func TestOrchestratorRetryStormSingleRun(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 
 	// A per_event / allow trigger: it dedupes NOTHING on its own, so any collapse is the idempotency key's
 	// doing, not a trigger-configured dedupe.
 	mapping := []byte(`{"fields":{"input":{"const":"orchestrated work"}}}`)
-	noKeyTrigger, _ := seedTrigger(t, store, org, project, "storm-nokey", TriggerRevisionInput{InputMapping: mapping})
-	keyedTrigger, _ := seedTrigger(t, store, org, project, "storm-keyed", TriggerRevisionInput{InputMapping: mapping})
+	noKeyTrigger, _ := seedTrigger(t, store, project, "storm-nokey", TriggerRevisionInput{InputMapping: mapping})
+	keyedTrigger, _ := seedTrigger(t, store, project, "storm-keyed", TriggerRevisionInput{InputMapping: mapping})
 
 	const storm = 16
 	body := []byte(`{"order":"o-1"}`)
@@ -51,7 +51,7 @@ func TestOrchestratorRetryStormSingleRun(t *testing.T) {
 	// --- RED baseline: WITHOUT idempotency the storm multiplies into N distinct runs ---------------
 	noKeyRuns := make(map[string]struct{}, storm)
 	for i := 0; i < storm; i++ {
-		del, err := store.CreateDelivery(ctx, org, project, principal, noKeyTrigger, body)
+		del, err := store.CreateDelivery(ctx, project, principal, noKeyTrigger, body)
 		if err != nil {
 			t.Fatalf("no-key replay %d CreateDelivery error = %v", i, err)
 		}

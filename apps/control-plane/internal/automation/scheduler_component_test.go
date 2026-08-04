@@ -28,14 +28,14 @@ func wiredScheduleStore(t *testing.T) (*ScheduleStore, *TriggerStore, *pgxpool.P
 
 // seedCronTrigger creates a type='cron' trigger pinned to a freshly published AgentRevision, with a const
 // input mapping — everything a scheduled firing needs to admit a run.
-func seedCronTrigger(t *testing.T, ts *TriggerStore, pool *pgxpool.Pool, org, project string) string {
+func seedCronTrigger(t *testing.T, ts *TriggerStore, pool *pgxpool.Pool, project string) string {
 	t.Helper()
 	ctx := context.Background()
 	triggerID, err := ts.CreateTrigger(ctx, project, "", randID("cron-trg"), "cron")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
-	revID := seedPublishedAgentRevision(t, pool, org, project)
+	revID := seedPublishedAgentRevision(t, pool, project)
 	if _, err := ts.ReviseTrigger(ctx, project, triggerID, TriggerRevisionInput{
 		AgentRevisionID: revID,
 		InputMapping:    []byte(`{"fields":{"input":{"const":"scheduled work"}}}`),
@@ -47,14 +47,13 @@ func seedCronTrigger(t *testing.T, ts *TriggerStore, pool *pgxpool.Pool, org, pr
 
 // seedScheduleRow inserts a schedule row with full control of next_fire_at / policy / jitter — the ticker
 // tests need a schedule already DUE (a past next_fire_at) which CreateSchedule never produces.
-func seedScheduleRow(t *testing.T, pool *pgxpool.Pool, org, project, triggerID, principal, cronExpr, tz string, nextFireAt time.Time, policy string, maxCatchUp, jitterSeconds int) string {
+func seedScheduleRow(t *testing.T, pool *pgxpool.Pool, project, triggerID, principal, cronExpr, tz string, nextFireAt time.Time, policy string, maxCatchUp, jitterSeconds int) string {
 	t.Helper()
 	id := randID("sch")
 	mustExec(t, pool,
-		`INSERT INTO schedules (id, organization_id, project_id, name, trigger_id, created_by, kind, cron_expr,
-		 timezone, misfire_policy, misfire_grace_seconds, max_catch_up, jitter_seconds, next_fire_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,'cron',$7,$8,$9,60,$10,$11,$12)`,
-		id, org, project, randID("name"), triggerID, principal, cronExpr, tz, policy, maxCatchUp, jitterSeconds, nextFireAt.UTC())
+		`INSERT INTO schedules (id, project_id, name, trigger_id, created_by, kind, cron_expr, timezone, misfire_policy, misfire_grace_seconds, max_catch_up, jitter_seconds, next_fire_at)
+		 VALUES ($1,$2,$3,$4,$5,'cron',$6,$7,$8,60,$9,$10,$11)`,
+		id, project, randID("name"), triggerID, principal, cronExpr, tz, policy, maxCatchUp, jitterSeconds, nextFireAt.UTC())
 	return id
 }
 
@@ -102,13 +101,13 @@ func countRunCreated(t *testing.T, pool *pgxpool.Pool, triggerID string) int {
 func TestOccurrenceDurableBeforeRunCreated(t *testing.T) {
 	ss, ts, pool := wiredScheduleStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	triggerID := seedCronTrigger(t, ts, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	triggerID := seedCronTrigger(t, ts, pool, project)
 
 	planned := time.Date(2026, 7, 22, 6, 0, 0, 0, time.UTC)
 	now := planned.Add(30 * time.Second) // within grace → a normal single fire
-	schID := seedScheduleRow(t, pool, org, project, triggerID, principal, "* * * * *", "UTC", planned, "fire_once_now", 0, 0)
+	schID := seedScheduleRow(t, pool, project, triggerID, principal, "* * * * *", "UTC", planned, "fire_once_now", 0, 0)
 
 	// Phase 1 — fire: the occurrence is durably 'pending' BEFORE any delivery/run.
 	if err := ss.fireDueSchedules(ctx, now, 100, t.Logf); err != nil {
@@ -163,18 +162,17 @@ func TestOccurrenceDurableBeforeRunCreated(t *testing.T) {
 func TestOneTimeScheduleFiresAndExhausts(t *testing.T) {
 	ss, ts, pool := wiredScheduleStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	triggerID := seedCronTrigger(t, ts, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	triggerID := seedCronTrigger(t, ts, pool, project)
 
 	fireAt := time.Now().UTC().Truncate(time.Minute).Add(-2 * time.Minute)
 	now := fireAt.Add(30 * time.Second) // within grace → a normal single fire
 	id := randID("sch")
 	mustExec(t, pool,
-		`INSERT INTO schedules (id, organization_id, project_id, name, trigger_id, created_by, kind, timezone,
-		 misfire_policy, misfire_grace_seconds, one_time_at, next_fire_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,'one_time','UTC','fire_once_now',300,$7,$7)`,
-		id, org, project, randID("name"), triggerID, principal, fireAt.UTC())
+		`INSERT INTO schedules (id, project_id, name, trigger_id, created_by, kind, timezone, misfire_policy, misfire_grace_seconds, one_time_at, next_fire_at)
+		 VALUES ($1,$2,$3,$4,$5,'one_time','UTC','fire_once_now',300,$6,$6)`,
+		id, project, randID("name"), triggerID, principal, fireAt.UTC())
 
 	if err := ss.fireDueSchedules(ctx, now, 100, t.Logf); err != nil {
 		t.Fatalf("fireDueSchedules error = %v", err)
@@ -213,13 +211,13 @@ func TestOneTimeScheduleFiresAndExhausts(t *testing.T) {
 func TestResumeAfterFailRecomputesNextFire(t *testing.T) {
 	ss, ts, pool := wiredScheduleStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	triggerID := seedCronTrigger(t, ts, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	triggerID := seedCronTrigger(t, ts, pool, project)
 
 	base := time.Now().UTC().Truncate(time.Minute).Add(-10 * time.Minute)
 	now := base.Add(5 * time.Minute) // several instants missed → policy=fail freezes
-	schID := seedScheduleRow(t, pool, org, project, triggerID, principal, "* * * * *", "UTC", base, "fail", 0, 0)
+	schID := seedScheduleRow(t, pool, project, triggerID, principal, "* * * * *", "UTC", base, "fail", 0, 0)
 
 	if err := ss.fireDueSchedules(ctx, now, 100, t.Logf); err != nil {
 		t.Fatalf("fireDueSchedules error = %v", err)
@@ -265,13 +263,13 @@ func TestResumeAfterFailRecomputesNextFire(t *testing.T) {
 func TestTwoSchedulerReplicasSingleCanonicalOccurrence(t *testing.T) {
 	ss, ts, pool := wiredScheduleStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	triggerID := seedCronTrigger(t, ts, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	triggerID := seedCronTrigger(t, ts, pool, project)
 
 	planned := time.Date(2026, 7, 22, 7, 0, 0, 0, time.UTC)
 	now := planned.Add(10 * time.Second)
-	schID := seedScheduleRow(t, pool, org, project, triggerID, principal, "* * * * *", "UTC", planned, "fire_once_now", 0, 0)
+	schID := seedScheduleRow(t, pool, project, triggerID, principal, "* * * * *", "UTC", planned, "fire_once_now", 0, 0)
 
 	// Two replicas share one clock so they compute the identical plan and genuinely race the claim.
 	fixed := func() time.Time { return now }
@@ -308,16 +306,16 @@ func TestTwoSchedulerReplicasSingleCanonicalOccurrence(t *testing.T) {
 func TestMisfirePoliciesMaterialized(t *testing.T) {
 	ss, ts, pool := wiredScheduleStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 
 	base := time.Date(2026, 7, 22, 8, 0, 0, 0, time.UTC)
 	now := base.Add(10 * time.Minute) // 11 per-minute instants missed (08:00..08:10)
 
 	// fire_once_now: one firing occurrence (08:10) + ONE windowed-skip row (08:00..08:09).
 	{
-		triggerID := seedCronTrigger(t, ts, pool, org, project)
-		schID := seedScheduleRow(t, pool, org, project, triggerID, principal, "* * * * *", "UTC", base, "fire_once_now", 0, 0)
+		triggerID := seedCronTrigger(t, ts, pool, project)
+		schID := seedScheduleRow(t, pool, project, triggerID, principal, "* * * * *", "UTC", base, "fire_once_now", 0, 0)
 		if err := ss.fireDueSchedules(ctx, now, 100, t.Logf); err != nil {
 			t.Fatalf("fireDueSchedules error = %v", err)
 		}
@@ -341,8 +339,8 @@ func TestMisfirePoliciesMaterialized(t *testing.T) {
 
 	// skip: zero firing occurrences + ONE windowed-skip row; next_fire_at advances future.
 	{
-		triggerID := seedCronTrigger(t, ts, pool, org, project)
-		schID := seedScheduleRow(t, pool, org, project, triggerID, principal, "* * * * *", "UTC", base, "skip", 0, 0)
+		triggerID := seedCronTrigger(t, ts, pool, project)
+		schID := seedScheduleRow(t, pool, project, triggerID, principal, "* * * * *", "UTC", base, "skip", 0, 0)
 		if err := ss.fireDueSchedules(ctx, now, 100, t.Logf); err != nil {
 			t.Fatalf("fireDueSchedules error = %v", err)
 		}
@@ -361,8 +359,8 @@ func TestMisfirePoliciesMaterialized(t *testing.T) {
 
 	// fail: nothing fires, the schedule is frozen 'failed' with a reason.
 	{
-		triggerID := seedCronTrigger(t, ts, pool, org, project)
-		schID := seedScheduleRow(t, pool, org, project, triggerID, principal, "* * * * *", "UTC", base, "fail", 0, 0)
+		triggerID := seedCronTrigger(t, ts, pool, project)
+		schID := seedScheduleRow(t, pool, project, triggerID, principal, "* * * * *", "UTC", base, "fail", 0, 0)
 		if err := ss.fireDueSchedules(ctx, now, 100, t.Logf); err != nil {
 			t.Fatalf("fireDueSchedules error = %v", err)
 		}
@@ -384,13 +382,13 @@ func TestMisfirePoliciesMaterialized(t *testing.T) {
 func TestCatchUpBoundedOldestFirst(t *testing.T) {
 	ss, ts, pool := wiredScheduleStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	triggerID := seedCronTrigger(t, ts, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	triggerID := seedCronTrigger(t, ts, pool, project)
 
 	base := time.Date(2026, 7, 22, 9, 0, 0, 0, time.UTC)
 	now := base.Add(10 * time.Minute) // 11 missed instants
-	schID := seedScheduleRow(t, pool, org, project, triggerID, principal, "* * * * *", "UTC", base, "catch_up", 3, 0)
+	schID := seedScheduleRow(t, pool, project, triggerID, principal, "* * * * *", "UTC", base, "catch_up", 3, 0)
 
 	if err := ss.fireDueSchedules(ctx, now, 100, t.Logf); err != nil {
 		t.Fatalf("fireDueSchedules error = %v", err)
@@ -425,16 +423,16 @@ func TestCatchUpBoundedOldestFirst(t *testing.T) {
 func TestJitterGatesAdmission(t *testing.T) {
 	ss, ts, pool := wiredScheduleStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	triggerID := seedCronTrigger(t, ts, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	triggerID := seedCronTrigger(t, ts, pool, project)
 
 	// A real-past minute-aligned instant: the tick's `now` is injected (drives the jitter GATE), but
 	// admitted_at is stamped by the DB clock (real time), so planned must sit in the real past for the
 	// planned_at-vs-admitted_at lateness assertion to hold.
 	planned := time.Now().UTC().Truncate(time.Minute).Add(-3 * time.Minute)
 	const jitter = 120
-	schID := seedScheduleRow(t, pool, org, project, triggerID, principal, "* * * * *", "UTC", planned, "fire_once_now", 0, jitter)
+	schID := seedScheduleRow(t, pool, project, triggerID, principal, "* * * * *", "UTC", planned, "fire_once_now", 0, jitter)
 
 	// Claim the occurrence at a `now` within grace so exactly one fires.
 	if err := ss.fireDueSchedules(ctx, planned.Add(30*time.Second), 100, t.Logf); err != nil {
@@ -479,15 +477,15 @@ func TestJitterGatesAdmission(t *testing.T) {
 func TestPauseAndDeleteStopAdmission(t *testing.T) {
 	ss, ts, pool := wiredScheduleStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	triggerID := seedCronTrigger(t, ts, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	triggerID := seedCronTrigger(t, ts, pool, project)
 
 	planned := time.Date(2026, 7, 22, 11, 0, 0, 0, time.UTC)
 	now := planned.Add(30 * time.Second)
 
 	// Paused: the due-scan skips it → zero occurrences.
-	paused := seedScheduleRow(t, pool, org, project, triggerID, principal, "* * * * *", "UTC", planned, "fire_once_now", 0, 0)
+	paused := seedScheduleRow(t, pool, project, triggerID, principal, "* * * * *", "UTC", planned, "fire_once_now", 0, 0)
 	if ok, err := ss.SetPaused(ctx, project, paused, true); err != nil || !ok {
 		t.Fatalf("SetPaused = (%v, %v), want (true, nil)", ok, err)
 	}
@@ -499,7 +497,7 @@ func TestPauseAndDeleteStopAdmission(t *testing.T) {
 	}
 
 	// Deleted (soft): a fired-then-deleted schedule keeps its occurrence rows queryable, but admits no new one.
-	deleted := seedScheduleRow(t, pool, org, project, triggerID, principal, "* * * * *", "UTC", planned, "fire_once_now", 0, 0)
+	deleted := seedScheduleRow(t, pool, project, triggerID, principal, "* * * * *", "UTC", planned, "fire_once_now", 0, 0)
 	if err := ss.fireDueSchedules(ctx, now, 100, t.Logf); err != nil {
 		t.Fatalf("fireDueSchedules (pre-delete) error = %v", err)
 	}

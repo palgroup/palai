@@ -108,8 +108,8 @@ func newBackgroundHarness(t *testing.T) *backgroundHarness {
 	// tool surface, it is a gap in the fixture.
 	responseID := redeliveryID("resp")
 	if _, err := cs.Pool().Exec(storage.WithSystemScope(context.Background()),
-		`INSERT INTO responses (id, organization_id, project_id, session_id, state, input)
-		 VALUES ($1,$2,$3,$4,'in_progress','"go"'::jsonb)`,
+		`INSERT INTO responses (id, project_id, session_id, state, input)
+		 VALUES ($1,$2,$3,'in_progress','"go"'::jsonb)`,
 		responseID, tenant.Project, sessionID); err != nil {
 		t.Fatalf("seed the response: %v", err)
 	}

@@ -45,7 +45,6 @@ type readHolesFixture struct {
 	pool    *pgxpool.Pool
 	base    string
 	a, b    *client
-	orgA    string
 	projA   string
 	trigger string
 }
@@ -65,7 +64,7 @@ func newReadHolesFixture(t *testing.T) *readHolesFixture {
 	pool := repo.Spine().Pool()
 
 	tokenA, tokenB := randID("tok"), randID("tok")
-	orgA, projA := seedScopedTenant(t, pool, tokenA)
+	projA := seedScopedTenant(t, pool, tokenA)
 	seedScopedTenant(t, pool, tokenB)
 
 	// main.go's own seam list, with the hooks seam wired (repo implements api.HookAPI through
@@ -85,7 +84,6 @@ func newReadHolesFixture(t *testing.T) *readHolesFixture {
 		base:  srv.URL,
 		a:     &client{t: t, base: srv.URL, token: tokenA},
 		b:     &client{t: t, base: srv.URL, token: tokenB},
-		orgA:  orgA,
 		projA: projA,
 	}
 	f.trigger = f.a.createCronTrigger()

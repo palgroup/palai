@@ -44,7 +44,7 @@ func TestScheduleTickerWiredIntoRunningBinary(t *testing.T) {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 	token := randID("tok")
-	org, project := seedScopedTenant(t, repo.Spine().Pool(), token)
+	project := seedScopedTenant(t, repo.Spine().Pool(), token)
 
 	// main.go's OWN wiring: the same NewRouter seam list + the same NewScheduleStore + supervised
 	// "schedule-ticker" (a fast interval for the test, the T2 binary-wiring precedent).
@@ -66,7 +66,7 @@ func TestScheduleTickerWiredIntoRunningBinary(t *testing.T) {
 
 	// A published AgentRevision + a type='cron' trigger pinned to it (the run target). Seeded via the
 	// automation package's own management API (in scope), then pinned through the real trigger route.
-	revID := seedPublishedRevision(t, pool, org, project)
+	revID := seedPublishedRevision(t, pool, project)
 	triggerID := c.createCronTrigger()
 	c.reviseTrigger(triggerID, `{"agent_revision_id":"`+revID+`","input_mapping":{"fields":{"input":{"const":"scheduled work"}}}}`)
 
@@ -152,19 +152,19 @@ func (c *client) scheduleOccurrences(scheduleID string) []map[string]any {
 }
 
 // seedPublishedRevision creates + publishes an AgentRevision in scope via the automation management API.
-func seedPublishedRevision(t *testing.T, pool *pgxpool.Pool, org, project string) string {
+func seedPublishedRevision(t *testing.T, pool *pgxpool.Pool, project string) string {
 	t.Helper()
 	ctx := context.Background()
 	agents := automation.New(pool)
-	profileID, err := agents.CreateProfile(ctx, org, project, randID("profile"))
+	profileID, err := agents.CreateProfile(ctx, project, randID("profile"))
 	if err != nil {
 		t.Fatalf("CreateProfile error = %v", err)
 	}
-	rev, err := agents.CreateRevision(ctx, org, project, profileID, []byte(`{"model":"gpt-4o-mini","instructions":"do the scheduled work"}`))
+	rev, err := agents.CreateRevision(ctx, project, profileID, []byte(`{"model":"gpt-4o-mini","instructions":"do the scheduled work"}`))
 	if err != nil {
 		t.Fatalf("CreateRevision error = %v", err)
 	}
-	if _, _, err := agents.PublishRevision(ctx, org, project, rev.ID); err != nil {
+	if _, _, err := agents.PublishRevision(ctx, project, rev.ID); err != nil {
 		t.Fatalf("PublishRevision error = %v", err)
 	}
 	return rev.ID
@@ -172,21 +172,20 @@ func seedPublishedRevision(t *testing.T, pool *pgxpool.Pool, org, project string
 
 // seedScopedTenant creates org → project → principal → api_key (the token's stored verifier is its hash),
 // returning the org/project the schedule + revision are seeded under.
-func seedScopedTenant(t *testing.T, pool *pgxpool.Pool, token string) (org, project string) {
+func seedScopedTenant(t *testing.T, pool *pgxpool.Pool, token string) (project string) {
 	t.Helper()
 	ctx := context.Background()
-	org, project, principal := randID("org"), randID("prj"), randID("prin")
+	project, principal := randID("prj"), randID("prin")
 	exec := func(sql string, args ...any) {
 		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
-	exec(`INSERT INTO organizations (id) VALUES ($1)`, org)
-	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org)
-	exec(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`, principal, org, project)
-	exec(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4, $5)`,
-		randID("key"), org, project, principal, coordinator.HashAPIKey(token))
-	return org, project
+	exec(`INSERT INTO projects (id) VALUES ($1)`, project)
+	exec(`INSERT INTO principals (id, project_id, kind) VALUES ($1, $2, 'service')`, principal, project)
+	exec(`INSERT INTO api_keys (id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4)`,
+		randID("key"), project, principal, coordinator.HashAPIKey(token))
+	return project
 }
 
 // envOrSkip returns the component PG url or skips.

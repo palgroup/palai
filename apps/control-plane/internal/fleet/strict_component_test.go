@@ -60,23 +60,23 @@ func setApprovers(t *testing.T, project, document string) {
 // and the machine would be taking work.
 func TestApprovalRefusesAPrincipalOutsideTheProjectsApproverList(t *testing.T) {
 	pool := openPool(t)
-	org, project, poolID := strictTenantFixture(t)
+	project, poolID := strictTenantFixture(t)
 	registry := fleet.NewStore(pool, newID, nil)
 	row := strictPoolFixture(t, registry, poolID)
 	setApprovers(t, project, `{"approvers":["key:ak_allowed"]}`)
 
-	if _, err := registry.Approve(context.Background(), org, project, row.ID, "key:ak_stranger"); !errors.Is(err, coordinator.ErrApproverNotAuthorized) {
+	if _, err := registry.Approve(context.Background(), project, row.ID, "key:ak_stranger"); !errors.Is(err, coordinator.ErrApproverNotAuthorized) {
 		t.Fatalf("Approve by a principal outside the list = %v, want ErrApproverNotAuthorized", err)
 	}
 	if got := stateOf(t, pool, row.ID); got != "pending" {
 		t.Fatalf("runners.state = %q after a REFUSED approval, want pending — a refusal that still admits the machine is not a refusal", got)
 	}
 	// An unidentified caller decides nothing even against a list that happens to carry an empty entry.
-	if _, err := registry.Approve(context.Background(), org, project, row.ID, ""); !errors.Is(err, coordinator.ErrApproverNotAuthorized) {
+	if _, err := registry.Approve(context.Background(), project, row.ID, ""); !errors.Is(err, coordinator.ErrApproverNotAuthorized) {
 		t.Fatalf("Approve by an unresolved principal = %v, want ErrApproverNotAuthorized", err)
 	}
 
-	admission, err := registry.Approve(context.Background(), org, project, row.ID, "key:ak_allowed")
+	admission, err := registry.Approve(context.Background(), project, row.ID, "key:ak_allowed")
 	if err != nil || !admission.Found || !admission.Admitted {
 		t.Fatalf("Approve by the principal the list names: %+v err=%v", admission, err)
 	}
@@ -91,11 +91,11 @@ func TestApprovalRefusesAPrincipalOutsideTheProjectsApproverList(t *testing.T) {
 // existed anywhere.
 func TestApprovalWithNoApproverListIsBitUnchanged(t *testing.T) {
 	pool := openPool(t)
-	org, project, poolID := strictTenantFixture(t)
+	project, poolID := strictTenantFixture(t)
 	registry := fleet.NewStore(pool, newID, nil)
 	row := strictPoolFixture(t, registry, poolID)
 
-	admission, err := registry.Approve(context.Background(), org, project, row.ID, "key:ak_anybody")
+	admission, err := registry.Approve(context.Background(), project, row.ID, "key:ak_anybody")
 	if err != nil || !admission.Found || !admission.Admitted {
 		t.Fatalf("Approve with no approver list configured: %+v err=%v — an unconfigured deployment must behave as it did", admission, err)
 	}
@@ -103,7 +103,7 @@ func TestApprovalWithNoApproverListIsBitUnchanged(t *testing.T) {
 	// `pool` and `default_tools` are both written through the same document.
 	other := strictPoolFixture(t, registry, poolID)
 	setApprovers(t, project, `{"pool":"`+poolID+`","default_tools":["palai.workspace.shell"]}`)
-	if admission, err := registry.Approve(context.Background(), org, project, other.ID, "key:ak_anybody"); err != nil || !admission.Admitted {
+	if admission, err := registry.Approve(context.Background(), project, other.ID, "key:ak_anybody"); err != nil || !admission.Admitted {
 		t.Fatalf("Approve against a policy with no approvers key: %+v err=%v", admission, err)
 	}
 }
@@ -113,15 +113,15 @@ func TestApprovalWithNoApproverListIsBitUnchanged(t *testing.T) {
 // not count their confidence as fleet history.
 func TestApprovalIsIdempotentAndJournalledOnce(t *testing.T) {
 	pool := openPool(t)
-	org, project, poolID := strictTenantFixture(t)
+	project, poolID := strictTenantFixture(t)
 	registry := fleet.NewStore(pool, newID, nil)
 	row := strictPoolFixture(t, registry, poolID)
 
-	first, err := registry.Approve(context.Background(), org, project, row.ID, "key:ak_operator")
+	first, err := registry.Approve(context.Background(), project, row.ID, "key:ak_operator")
 	if err != nil || !first.Admitted {
 		t.Fatalf("first approve: %+v err=%v", first, err)
 	}
-	second, err := registry.Approve(context.Background(), org, project, row.ID, "key:ak_operator")
+	second, err := registry.Approve(context.Background(), project, row.ID, "key:ak_operator")
 	if err != nil || !second.Found {
 		t.Fatalf("second approve: %+v err=%v — an approve an operator cannot repeat is an approve they cannot confirm", second, err)
 	}
@@ -147,31 +147,31 @@ func TestApprovalIsIdempotentAndJournalledOnce(t *testing.T) {
 // enrolment is exactly what an operator does with a machine they did not order.
 func TestApprovalCannotBeReachedByAnotherTenantOrByTheLifecycleVerbs(t *testing.T) {
 	pool := openPool(t)
-	org, project, poolID := strictTenantFixture(t)
+	project, poolID := strictTenantFixture(t)
 	registry := fleet.NewStore(pool, newID, nil)
 	row := strictPoolFixture(t, registry, poolID)
 
-	otherOrg, otherProject, _ := tenantFixture(t, pool, "sandboxed-linux")
-	if admission, err := registry.Approve(context.Background(), otherOrg, otherProject, row.ID, "key:ak_intruder"); err != nil || admission.Found {
+	otherProject, _ := tenantFixture(t, pool, "sandboxed-linux")
+	if admission, err := registry.Approve(context.Background(), otherProject, row.ID, "key:ak_intruder"); err != nil || admission.Found {
 		t.Fatalf("another tenant approved machine %s: %+v err=%v", row.ID, admission, err)
 	}
 
 	for _, action := range []string{"resume", "cordon"} {
-		if _, found, err := registry.SetState(context.Background(), org, project, row.ID, action); err != nil || found {
+		if _, found, err := registry.SetState(context.Background(), project, row.ID, action); err != nil || found {
 			t.Fatalf("SetState(%q) on a PENDING machine: found=%v err=%v — a verb with no approver check on it must not open the waiting room", action, found, err)
 		}
 		if got := stateOf(t, pool, row.ID); got != "pending" {
 			t.Fatalf("runners.state = %q after %s on a pending machine, want pending", got, action)
 		}
 	}
-	if _, found, err := registry.SetState(context.Background(), org, project, row.ID, "revoke"); err != nil || !found {
+	if _, found, err := registry.SetState(context.Background(), project, row.ID, "revoke"); err != nil || !found {
 		t.Fatalf("revoke a PENDING machine: found=%v err=%v — refusing an enrolment is what an operator does with a machine they did not order", found, err)
 	}
 	if got := stateOf(t, pool, row.ID); got != "revoked" {
 		t.Fatalf("runners.state = %q after revoking a pending machine, want revoked", got)
 	}
 	// And an approval must not resurrect it.
-	if admission, err := registry.Approve(context.Background(), org, project, row.ID, "key:ak_operator"); err != nil || admission.Found {
+	if admission, err := registry.Approve(context.Background(), project, row.ID, "key:ak_operator"); err != nil || admission.Found {
 		t.Fatalf("a REVOKED machine was approved: %+v err=%v", admission, err)
 	}
 }
@@ -188,13 +188,13 @@ func stateOf(t *testing.T, pool *pgxpool.Pool, id string) string {
 }
 
 // strictTenantFixture is tenantFixture with strict_enrollment on the pool.
-func strictTenantFixture(t *testing.T) (org, project, poolID string) {
+func strictTenantFixture(t *testing.T) (project, poolID string) {
 	t.Helper()
 	pool := openPool(t)
-	org, project, poolID = tenantFixture(t, pool, "sandboxed-linux")
+	_, poolID := tenantFixture(t, pool, "sandboxed-linux")
 	if _, err := pool.Exec(storage.WithSystemScope(context.Background()),
 		`UPDATE runner_pools SET strict_enrollment = true WHERE id = $1`, poolID); err != nil {
 		t.Fatalf("make pool %s strict: %v", poolID, err)
 	}
-	return org, project, poolID
+	return project, poolID
 }

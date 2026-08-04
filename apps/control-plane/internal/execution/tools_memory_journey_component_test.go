@@ -80,19 +80,19 @@ func TestToolsMemoryJourney(t *testing.T) {
 	// fold is measured over what the database holds rather than over a fixture in memory. That matters: the
 	// SQL has no LIMIT, which is exactly why the budget has to live above it.
 	historySession := redeliveryID("ses")
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`,
+	execSQL(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`,
 		historySession, tenant.Project)
 	const turns, turnChars = 200, 1000
 	for i := range turns {
 		question, _ := json.Marshal(fmt.Sprintf("turn %d: %s", i, strings.Repeat("q", turnChars)))
 		answer, _ := json.Marshal(map[string]any{"output": []map[string]any{
 			{"type": "message", "content": fmt.Sprintf("answer %d: %s", i, strings.Repeat("a", turnChars))}}})
-		execSQL(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state, input, output)
-		                  VALUES ($1,$2,$3,$4,'completed',$5,$6)`,
+		execSQL(t, pool, `INSERT INTO responses (id, project_id, session_id, state, input, output)
+		                  VALUES ($1,$2,$3,'completed',$4,$5)`,
 			fmt.Sprintf("%s_%04d", historySession, i), tenant.Project, historySession, question, answer)
 	}
 	// The CURRENT turn, whose run.start the fold is assembled for.
-	execSQL(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'queued')`,
+	execSQL(t, pool, `INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'queued')`,
 		historySession+"_now", tenant.Project, historySession)
 
 	prior, err := cs.SessionHistory(ctx, tenant, historySession, historySession+"_now")
@@ -252,12 +252,12 @@ func TestToolsMemoryJourney(t *testing.T) {
 		Scan(&org, &project, &revision); err != nil {
 		t.Fatalf("read the run's identity after the external result: %v", err)
 	}
-	if org != tenant.Organization || project != tenant.Project {
+	if project != tenant.Project {
 		authorityGained++ // the result chose a tenant
 	}
 	var approvals int
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM commands WHERE organization_id=$1 AND project_id=$2`,
+		`SELECT count(*) FROM commands WHERE  project_id=$1`,
 		tenant.Project).Scan(&approvals); err != nil {
 		t.Fatalf("count commands after the external result: %v", err)
 	}
@@ -429,22 +429,20 @@ func (toolsMemoryRemote) Invoke(context.Context, remotehttp.Invocation) (map[str
 func addExternalToolToRun(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant, runID, name, description string) {
 	t.Helper()
 	pool := cs.Pool()
-	org, project := tenant.Project
+	project := tenant.Project
 	toolID, trevID := redeliveryID("tool"), redeliveryID("trev")
-	execSQL(t, pool, `INSERT INTO tools (id, organization_id, project_id, canonical_name, model_visible_name)
-	                  VALUES ($1,$2,$3,$4,$5)`, toolID, org, project, "ext."+name, name)
-	execSQL(t, pool, `INSERT INTO tool_revisions (id, organization_id, project_id, tool_id, revision_number,
-	                      executor, description, input_schema, replay_class, digest, secret_ref, executor_config, published_at)
-	                  VALUES ($1,$2,$3,$4,1,'remote_http',$5,'{"type":"object"}'::jsonb,'pure',$6,'sec_tlm_journey',
-	                          '{"url":"https://jira.invalid/rest/api/PAL-42"}'::jsonb,clock_timestamp())`,
-		trevID, org, project, toolID, description, "sha256:"+trevID)
+	execSQL(t, pool, `INSERT INTO tools (id, project_id, canonical_name, model_visible_name)
+	                  VALUES ($1,$2,$3,$4)`, toolID, project, "ext."+name, name)
+	execSQL(t, pool, `INSERT INTO tool_revisions (id, project_id, tool_id, revision_number, executor, description, input_schema, replay_class, digest, secret_ref, executor_config, published_at)
+	                  VALUES ($1,$2,$3,1,'remote_http',$4,'{"type":"object"}'::jsonb,'pure',$5,'sec_tlm_journey','{"url":"https://jira.invalid/rest/api/PAL-42"}'::jsonb,clock_timestamp())`,
+		trevID, project, toolID, description, "sha256:"+trevID)
 	// Append the pin to the run's existing published set rather than minting a second one: the run's
 	// revision names ONE set, and a tool nobody's set pins is a tool the model never sees.
 	execSQL(t, pool, `UPDATE tool_set_revisions SET tool_pins = tool_pins || $1::jsonb
-	                  WHERE organization_id=$2 AND project_id=$3
+	                  WHERE  project_id=$2
 	                    AND id = (SELECT (tool_sets->>0) FROM agent_revisions
-	                              WHERE id = (SELECT agent_revision_id FROM runs WHERE id=$4))`,
-		`[{"tool_revision_id":"`+trevID+`"}]`, org, project, runID)
+	                              WHERE id = (SELECT agent_revision_id FROM runs WHERE id=$3))`,
+		`[{"tool_revision_id":"`+trevID+`"}]`, project, runID)
 }
 
 // persistedSurface is everything this run WROTE DOWN, as one JSON document the sweep can walk. The three

@@ -48,18 +48,17 @@ func TestA2ARealAdmitterBirthsRun(t *testing.T) {
 	}
 	pool := repo.Spine().Pool()
 
-	org, project := newID("org"), newID("prj")
+	project := newID("prj")
 	principalID := newID("prin")
 	profileID, revID := newID("aprof"), newID("arev")
-	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
-	exec(t, pool, `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`,
-		principalID, org, project)
-	exec(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,$4)`,
-		profileID, org, project, newID("name"))
-	exec(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, published_at)
-	               VALUES ($1,$2,$3,$4,1,'model-pinned','["file"]', clock_timestamp())`,
-		revID, org, project, profileID)
+	exec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, project)
+	exec(t, pool, `INSERT INTO principals (id, project_id, kind) VALUES ($1,$2,'service')`,
+		principalID, project)
+	exec(t, pool, `INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,$3)`,
+		profileID, project, newID("name"))
+	exec(t, pool, `INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, tools, published_at)
+	               VALUES ($1,$2,$3,1,'model-pinned','["file"]',clock_timestamp())`,
+		revID, project, profileID)
 
 	// Publish an A2A interface pinning the published revision (a SAFE card projection).
 	a2aStore := a2a.NewStore(pool, newID)
@@ -115,7 +114,7 @@ func TestA2ARealAdmitterBirthsRun(t *testing.T) {
 	// A GENUINE run was born under the tenant scope: exactly one run row exists for this tenant.
 	var runCount int
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`, org, project).Scan(&runCount); err != nil {
+		`SELECT count(*) FROM runs WHERE  project_id=$1`, project).Scan(&runCount); err != nil {
 		t.Fatalf("count runs: %v", err)
 	}
 	if runCount != 1 {

@@ -34,21 +34,20 @@ import (
 // runPoolFixtureRun seeds a tenant, optionally that tenant's own pool, and a queued run.
 func runPoolFixtureRun(t *testing.T, cs *Store, withOwnPool bool) (tenant Tenant, ownPool, runID string) {
 	t.Helper()
-	org, project := pinTestID("org"), pinTestID("prj")
-	mustExecPin(t, cs, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	mustExecPin(t, cs, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
+	project := pinTestID("prj")
+	mustExecPin(t, cs, `INSERT INTO projects (id) VALUES ($1)`, project)
 	if withOwnPool {
 		ownPool = pinTestID("pool")
-		mustExecPin(t, cs, `INSERT INTO runner_pools (id, organization_id, project_id, name, posture)
-		                     VALUES ($1,$2,$3,'default','sandboxed-linux')`, ownPool, org, project)
+		mustExecPin(t, cs, `INSERT INTO runner_pools (id, project_id, name, posture)
+		                     VALUES ($1,$2,'default','sandboxed-linux')`, ownPool, project)
 	}
 	session, response := pinTestID("ses"), pinTestID("resp")
 	runID = pinTestID("run")
-	mustExecPin(t, cs, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, session, org, project)
-	mustExecPin(t, cs, `INSERT INTO responses (id, organization_id, project_id, session_id, state, input)
-	                     VALUES ($1,$2,$3,$4,'queued','"hi"'::jsonb)`, response, org, project, session)
-	mustExecPin(t, cs, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state)
-	                     VALUES ($1,$2,$3,$4,$5,'queued')`, runID, org, project, session, response)
+	mustExecPin(t, cs, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, session, project)
+	mustExecPin(t, cs, `INSERT INTO responses (id, project_id, session_id, state, input)
+	                     VALUES ($1,$2,$3,'queued','"hi"'::jsonb)`, response, project, session)
+	mustExecPin(t, cs, `INSERT INTO runs (id, project_id, session_id, response_id, state)
+	                     VALUES ($1,$2,$3,$4,'queued')`, runID, project, session, response)
 	return Tenant{Project: project}, ownPool, runID
 }
 
@@ -61,10 +60,9 @@ func TestRecordRunPoolRefusesToBeASilentNoOp(t *testing.T) {
 	// fleet.ResolvePool's constant fallback hands every project that has configured nothing.
 	foreign := Tenant{Project: pinTestID("prj")}
 	foreignPool := pinTestID("pool")
-	mustExecPin(t, cs, `INSERT INTO organizations (id) VALUES ($1)`, foreign.Organization)
-	mustExecPin(t, cs, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, foreign.Project, foreign.Organization)
-	mustExecPin(t, cs, `INSERT INTO runner_pools (id, organization_id, project_id, name, posture)
-	                     VALUES ($1,$2,$3,'default','sandboxed-linux')`, foreignPool, foreign.Project)
+	mustExecPin(t, cs, `INSERT INTO projects (id) VALUES ($1)`, foreign.Project)
+	mustExecPin(t, cs, `INSERT INTO runner_pools (id, project_id, name, posture)
+	                     VALUES ($1,$2,'default','sandboxed-linux')`, foreignPool, foreign.Project)
 
 	tenant, _, runID := runPoolFixtureRun(t, cs, false)
 	switch got, err := cs.RecordRunPool(ctx, tenant, runID, foreignPool); {
@@ -98,8 +96,8 @@ func TestRecordRunPoolRefusesToBeASilentNoOp(t *testing.T) {
 	// A second call writes nothing — the statement's `pool_id IS NULL` excludes the row — and must
 	// report the pool the run already carries, because a resume returns to the SAME pool.
 	second := pinTestID("pool")
-	mustExecPin(t, cs, `INSERT INTO runner_pools (id, organization_id, project_id, name, posture)
-	                     VALUES ($1,$2,$3,'second','sandboxed-linux')`, second, owner.Project)
+	mustExecPin(t, cs, `INSERT INTO runner_pools (id, project_id, name, posture)
+	                     VALUES ($1,$2,'second','sandboxed-linux')`, second, owner.Project)
 	again, err := cs.RecordRunPool(ctx, owner, ownRun, second)
 	if err != nil {
 		t.Fatalf("a second RecordRunPool on an already-placed run returned %v, want nil — write-once is a requirement, not a failure", err)

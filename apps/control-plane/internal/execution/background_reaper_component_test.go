@@ -146,7 +146,7 @@ func (f *reaperFixture) runningRowCountOfTenant(t *testing.T) int {
 	t.Helper()
 	var n int
 	if err := f.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(*) FROM background_tasks WHERE state = 'running' AND organization_id = $1 AND project_id = $2`,
+		`SELECT count(*) FROM background_tasks WHERE state = 'running'  project_id = $1`,
 		f.tenant.Project).Scan(&n); err != nil {
 		t.Fatalf("count this tenant's running background tasks: %v", err)
 	}

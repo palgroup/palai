@@ -29,8 +29,8 @@ import (
 func TestOutputMappingBoundedSameLanguageAsInput(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 
 	webhooks := NewWebhookStore(pool)
 	endpointID, err := webhooks.CreateEndpoint(ctx, project, defaultEndpoint("https://cb.example/hook", "cbref"))
@@ -74,7 +74,7 @@ func TestOutputMappingBoundedSameLanguageAsInput(t *testing.T) {
 
 	// SECURITY (the planner's catch): a callback_endpoint_id belonging to ANOTHER tenant is a not-found
 	// reject — the global FK alone would let a run result be delivered to a foreign tenant's URL.
-	_, otherProject, _ := seedSession(t, pool)
+	otherProject, _ := seedSession(t, pool)
 	foreignEndpoint, err := webhooks.CreateEndpoint(ctx, otherProject, defaultEndpoint("https://evil.example/steal", "evilref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint(foreign) error = %v", err)
@@ -89,15 +89,15 @@ func TestOutputMappingBoundedSameLanguageAsInput(t *testing.T) {
 // callbackTrigger seeds a trigger whose revision shapes the run output through outputMapping and delivers
 // the shaped callback to endpointID, admits one delivery, and pushes its response to a terminal completed
 // with output — returning the admitted delivery.
-func callbackTrigger(t *testing.T, store *TriggerStore, org, project, principal, name, endpointID, outputMapping, output string) DeliveryResult {
+func callbackTrigger(t *testing.T, store *TriggerStore, project, principal, name, endpointID, outputMapping, output string) DeliveryResult {
 	t.Helper()
 	ctx := context.Background()
-	triggerID, _ := seedTrigger(t, store, org, project, name, TriggerRevisionInput{
+	triggerID, _ := seedTrigger(t, store, project, name, TriggerRevisionInput{
 		InputMapping:       []byte(`{"fields":{"input":{"const":"do the work"}}}`),
 		OutputMapping:      json.RawMessage(outputMapping),
 		CallbackEndpointID: endpointID,
 	})
-	del, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{}`))
+	del, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{}`))
 	if err != nil {
 		t.Fatalf("CreateDelivery error = %v", err)
 	}
@@ -114,15 +114,15 @@ func callbackTrigger(t *testing.T, store *TriggerStore, org, project, principal,
 func TestCallbackEnqueuedOnRunTerminal(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 	webhooks := NewWebhookStore(pool)
 	endpointID, err := webhooks.CreateEndpoint(ctx, project, defaultEndpoint("https://cb.example/hook", "cbref"))
 	if err != nil {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
 
-	del := callbackTrigger(t, store, org, project, principal, "enqueue", endpointID,
+	del := callbackTrigger(t, store, project, principal, "enqueue", endpointID,
 		`{"fields":{"result":{"select":"output"}},"required":["result"]}`, `[{"type":"output_text","text":"done"}]`)
 
 	if err := store.sweepCallbacks(ctx, 100, nil); err != nil {
@@ -175,8 +175,8 @@ func TestCallbackEnqueuedOnRunTerminal(t *testing.T) {
 func TestCallbackDeliveredOncePerDeliveryAcrossRetries(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 	secret := []byte("whsec_callback_once")
 
 	var semanticCallbacks int32
@@ -200,7 +200,7 @@ func TestCallbackDeliveredOncePerDeliveryAcrossRetries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
-	del := callbackTrigger(t, store, org, project, principal, "deliver-once", endpointID,
+	del := callbackTrigger(t, store, project, principal, "deliver-once", endpointID,
 		`{"fields":{"result":{"select":"status"}}}`, `[]`)
 
 	if err := store.sweepCallbacks(ctx, 100, nil); err != nil {
@@ -239,8 +239,8 @@ func TestCallbackDeliveredOncePerDeliveryAcrossRetries(t *testing.T) {
 func TestCallbackFailureLeavesRunTerminalIntact(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 	secret := []byte("whsec_callback_dead")
 
 	srv, certs, _, _ := tlsReceiver(t, secret, func(int) int { return http.StatusInternalServerError })
@@ -251,7 +251,7 @@ func TestCallbackFailureLeavesRunTerminalIntact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
-	del := callbackTrigger(t, store, org, project, principal, "dead-letter", endpointID,
+	del := callbackTrigger(t, store, project, principal, "dead-letter", endpointID,
 		`{"fields":{"result":{"select":"output"}}}`, `[{"type":"output_text","text":"canonical"}]`)
 
 	if err := store.sweepCallbacks(ctx, 100, nil); err != nil {
@@ -292,7 +292,7 @@ func TestCallbackFailureLeavesRunTerminalIntact(t *testing.T) {
 
 	// Sub-case: an output-mapping that fails at callback time dead-letters WITHOUT enqueuing a delivery,
 	// leaving the run intact.
-	del2 := callbackTrigger(t, store, org, project, principal, "map-fail", endpointID,
+	del2 := callbackTrigger(t, store, project, principal, "map-fail", endpointID,
 		`{"fields":{"result":{"select":"missing"}},"required":["result"]}`, `[]`) // required field absent → Apply fails
 	if err := store.sweepCallbacks(ctx, 100, nil); err != nil {
 		t.Fatalf("map-fail sweepCallbacks error = %v", err)

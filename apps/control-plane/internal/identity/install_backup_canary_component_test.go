@@ -31,7 +31,7 @@ func TestInstallRestoreSecretCanaryTwoMasterKeys(t *testing.T) {
 	keyA := masterKey(t)
 	keyB := masterKey(t) // a DIFFERENT per-host master key — the restore-to-a-fresh-stack case
 
-	org, project, _ := provisionOrg(t, idstore, "sec-canary")
+	project, _ := provisionOrg(t, idstore, "sec-canary")
 	scope := middleware.Scope{Project: project}
 
 	// Seal a secret under master key A (the source stack's key).
@@ -52,11 +52,11 @@ func TestInstallRestoreSecretCanaryTwoMasterKeys(t *testing.T) {
 	// subject is master-key interop. This tree already records an unordered LIMIT 1 deciding two security
 	// outcomes; this is the same defect surviving because a policy was holding it up.
 	var ctHex string
-	// secret_refs carries no project_id (000031); WithOrgScope is the named exception WithTenant no
+	// secret_refs carries no tenant column at all since A.2 Task 6; WithInstallationScope is the exception WithTenant no
 	// longer allows for an empty project (A.2 Task 1).
-	if err := cs.Pool().QueryRow(storage.WithOrgScope(ctx, org),
-		"SELECT encode(ciphertext, 'hex') FROM secret_refs WHERE organization_id = $1 AND name = $2 ORDER BY version DESC LIMIT 1",
-		org, canaryName).Scan(&ctHex); err != nil {
+	if err := cs.Pool().QueryRow(storage.WithInstallationScope(ctx),
+		"SELECT encode(ciphertext, 'hex') FROM secret_refs WHERE name = $1 ORDER BY version DESC LIMIT 1",
+		canaryName).Scan(&ctHex); err != nil {
 		t.Fatalf("read ciphertext: %v", err)
 	}
 	sealed, err := hex.DecodeString(ctHex)
@@ -75,7 +75,7 @@ func TestInstallRestoreSecretCanaryTwoMasterKeys(t *testing.T) {
 
 	// And the control-plane's own resolver fails closed with ErrSecretDecrypt under the wrong key —
 	// the silent-death symptom the canary exists to catch before the first provider call.
-	if _, ok, err := identity.NewSecretStore(cs.Pool(), keyB).Resolve(ctx, org, canaryName); ok || !errors.Is(err, identity.ErrSecretDecrypt) {
+	if _, ok, err := identity.NewSecretStore(cs.Pool(), keyB).Resolve(ctx, canaryName); ok || !errors.Is(err, identity.ErrSecretDecrypt) {
 		t.Fatalf("Resolve under a mismatched master key must be ErrSecretDecrypt, got ok=%v err=%v", ok, err)
 	}
 }

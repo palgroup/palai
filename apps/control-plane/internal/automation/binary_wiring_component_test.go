@@ -185,29 +185,28 @@ func (c *client) get(path string) *http.Response {
 
 // seedTenantWithKey creates org -> project -> principal -> api_key; the stored verifier is the hash of
 // token, never token itself. It returns the org + project so a test can seed scope-owned rows directly.
-func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) (org, project string) {
+func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) (project string) {
 	t.Helper()
-	org, project, _ = seedTenantReturning(t, pool, token)
-	return org, project
+	project, _ = seedTenantReturning(t, pool, token)
+	return project
 }
 
-// seedTenantReturning is seedTenantWithKey that also returns the minted org/project/principal ids, for
+// seedTenantReturning is seedTenantWithKey that also returns the minted project/principal ids, for
 // tests that must assert principal-scoped state (e.g. inbound created_by).
-func seedTenantReturning(t *testing.T, pool *pgxpool.Pool, token string) (org, project, principal string) {
+func seedTenantReturning(t *testing.T, pool *pgxpool.Pool, token string) (project, principal string) {
 	t.Helper()
 	ctx := context.Background()
-	org, project, principal = randID("org"), randID("prj"), randID("prin")
+	project, principal = randID("prj"), randID("prin")
 	exec := func(sql string, args ...any) {
 		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
-	exec(`INSERT INTO organizations (id) VALUES ($1)`, org)
-	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org)
-	exec(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`, principal, org, project)
-	exec(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4, $5)`,
-		randID("key"), org, project, principal, coordinator.HashAPIKey(token))
-	return org, project, principal
+	exec(`INSERT INTO projects (id) VALUES ($1)`, project)
+	exec(`INSERT INTO principals (id, project_id, kind) VALUES ($1, $2, 'service')`, principal, project)
+	exec(`INSERT INTO api_keys (id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4)`,
+		randID("key"), project, principal, coordinator.HashAPIKey(token))
+	return project, principal
 }
 
 func mustExec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {

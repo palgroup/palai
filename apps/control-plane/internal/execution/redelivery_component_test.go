@@ -111,10 +111,9 @@ func newRedeliveryHarness(t *testing.T, delivery string) *redeliveryHarness {
 		message:   "also do Y",
 	}
 	pool := cs.Pool()
-	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, h.tenant.Organization)
-	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, h.tenant.Project, h.tenant.Organization)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, h.sessionID, h.tenant.Project)
-	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, h.runID, h.tenant.Project, h.sessionID)
+	execSQL(t, pool, `INSERT INTO projects (id) VALUES ($1)`, h.tenant.Project)
+	execSQL(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, h.sessionID, h.tenant.Project)
+	execSQL(t, pool, `INSERT INTO runs (id, project_id, session_id, state) VALUES ($1, $2, $3, 'running')`, h.runID, h.tenant.Project, h.sessionID)
 	h.commandID = h.enqueue(t, delivery, h.message)
 	return h
 }
@@ -125,8 +124,8 @@ func (h *redeliveryHarness) enqueue(t *testing.T, delivery, message string) stri
 	t.Helper()
 	id := redeliveryID("cmd")
 	execSQL(t, h.orch.spine.Pool(),
-		`INSERT INTO commands (id, organization_id, project_id, session_id, run_id, kind, delivery, payload, state)
-		 VALUES ($1, $2, $3, $4, $5, 'send_message', $6, jsonb_build_object('message', $7::text), 'queued')`,
+		`INSERT INTO commands (id, project_id, session_id, run_id, kind, delivery, payload, state)
+		 VALUES ($1, $2, $3, $4, 'send_message', $5, jsonb_build_object('message', $6::text), 'queued')`,
 		id, h.tenant.Project, h.sessionID, h.runID, delivery, message)
 	return id
 }

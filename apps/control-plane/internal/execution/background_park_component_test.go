@@ -92,15 +92,14 @@ func newParkFixture(t *testing.T) *parkFixture {
 	// default pool and records it before the dial, so a fixture without one fails on the FK rather than
 	// on anything this file is about.
 	stmts := [][]any{
-		{`INSERT INTO organizations (id) VALUES ($1)`, f.tenant.Organization},
-		{`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, f.tenant.Project, f.tenant.Organization},
-		{`INSERT INTO runner_pools (id, organization_id, project_id, name, posture)
-		  VALUES ($1,$2,$3,'default','unsandboxed-host')`, redeliveryID("pool"), f.tenant.Project},
-		{`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, f.sessionID, f.tenant.Project},
-		{`INSERT INTO responses (id, organization_id, project_id, session_id, state, input)
-		  VALUES ($1,$2,$3,$4,'queued','"build it"'::jsonb)`, f.responseID, f.tenant.Project, f.sessionID},
-		{`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state)
-		  VALUES ($1,$2,$3,$4,$5,'queued')`, f.runID, f.tenant.Project, f.sessionID, f.responseID},
+		{`INSERT INTO projects (id) VALUES ($1)`, f.tenant.Project},
+		{`INSERT INTO runner_pools (id, project_id, name, posture)
+		  VALUES ($1,$2,'default','unsandboxed-host')`, redeliveryID("pool"), f.tenant.Project},
+		{`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, f.sessionID, f.tenant.Project},
+		{`INSERT INTO responses (id, project_id, session_id, state, input)
+		  VALUES ($1,$2,$3,'queued','"build it"'::jsonb)`, f.responseID, f.tenant.Project, f.sessionID},
+		{`INSERT INTO runs (id, project_id, session_id, response_id, state)
+		  VALUES ($1,$2,$3,$4,'queued')`, f.runID, f.tenant.Project, f.sessionID, f.responseID},
 	}
 	for _, stmt := range stmts {
 		if _, err := cs.Pool().Exec(sys, stmt[0].(string), stmt[1:]...); err != nil {

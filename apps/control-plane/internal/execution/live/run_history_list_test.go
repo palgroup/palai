@@ -64,7 +64,7 @@ func TestLiveRunHistoryListCrossTenantCursor(t *testing.T) {
 		respA2, tenantA.Project, sessionA); err != nil {
 		t.Fatalf("seed org-A second response: %v", err)
 	}
-	tokenB, _ := seedTenantWithKey(t, pool, "org-B")
+	_ := seedTenantWithKey(t, pool, "org-B")
 
 	// Drive org-A's run to a terminal completion on the REAL provider — the listed run is genuine.
 	broker := modelbroker.New(modelbroker.Config{

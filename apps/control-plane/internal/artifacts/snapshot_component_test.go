@@ -27,12 +27,12 @@ import (
 // secret) and seeds the workspace + allocation rows a snapshot FKs, returning the tenant scope, ids, and
 // the on-host allocation path. The allocation is the workspace's only (max-fence) one, so a snapshot the
 // sink records passes the fence-currency guard.
-func (h *artifactsHarness) seedAllocationOnDisk(t *testing.T) (org, project, workspaceID, allocationID, hostPath string) {
+func (h *artifactsHarness) seedAllocationOnDisk(t *testing.T) (project, workspaceID, allocationID, hostPath string) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git not found: %v", err)
 	}
-	org, project, runID := h.seedRun(t)
+	project, runID := h.seedRun(t)
 	// The session id the run belongs to (workspaces.session_id FKs sessions).
 	var sessionID string
 	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT session_id FROM runs WHERE id=$1`, runID).Scan(&sessionID); err != nil {
@@ -70,11 +70,11 @@ func (h *artifactsHarness) seedAllocationOnDisk(t *testing.T) (org, project, wor
 
 	workspaceID = newID("ws")
 	allocationID = newID("alloc")
-	h.exec(t, `INSERT INTO workspaces (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'leased')`,
-		workspaceID, org, project, sessionID)
-	h.exec(t, `INSERT INTO workspace_allocations (id, workspace_id, organization_id, project_id, fence, host_path, state)
-		VALUES ($1,$2,$3,$4,1,$5,'active')`, allocationID, workspaceID, org, project, hostPath)
-	return org, project, workspaceID, allocationID, hostPath
+	h.exec(t, `INSERT INTO workspaces (id, project_id, session_id, state) VALUES ($1,$2,$3,'leased')`,
+		workspaceID, project, sessionID)
+	h.exec(t, `INSERT INTO workspace_allocations (id, workspace_id, project_id, fence, host_path, state)
+		VALUES ($1,$2,$3,1,$4,'active')`, allocationID, workspaceID, project, hostPath)
+	return project, workspaceID, allocationID, hostPath
 }
 
 // TestSnapshotObjectsSurviveOrphanGC (T6-CONSTRAINT / SAN-005 durability): a captured snapshot's
@@ -85,7 +85,7 @@ func (h *artifactsHarness) seedAllocationOnDisk(t *testing.T) (org, project, wor
 func TestSnapshotObjectsSurviveOrphanGC(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, workspaceID, allocationID, hostPath := h.seedAllocationOnDisk(t)
+	project, workspaceID, allocationID, hostPath := h.seedAllocationOnDisk(t)
 	sink := execution.NewSnapshotSink(h.s3, h.repo.Spine())
 
 	snapID := newID("snap")
@@ -128,7 +128,7 @@ func TestSnapshotObjectsSurviveOrphanGC(t *testing.T) {
 func TestSnapshotRestoreRoundTripsThroughStore(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, workspaceID, allocationID, hostPath := h.seedAllocationOnDisk(t)
+	project, workspaceID, allocationID, hostPath := h.seedAllocationOnDisk(t)
 	sink := execution.NewSnapshotSink(h.s3, h.repo.Spine())
 	tenant := coordinator.Tenant{Project: project}
 

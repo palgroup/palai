@@ -20,16 +20,16 @@ import (
 func TestDuplicateDeliveryLinksOriginalSingleAction(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 
 	// A trigger whose dedupe key is the source order id.
-	triggerID, _ := seedTrigger(t, store, org, project, "orders", TriggerRevisionInput{
+	triggerID, _ := seedTrigger(t, store, project, "orders", TriggerRevisionInput{
 		DedupeKeyExpr: `{"select":"order.id"}`,
 	})
 
 	payload := []byte(`{"order":{"id":"o1"}}`)
-	first, err := store.CreateDelivery(ctx, org, project, principal, triggerID, payload)
+	first, err := store.CreateDelivery(ctx, project, principal, triggerID, payload)
 	if err != nil {
 		t.Fatalf("first CreateDelivery error = %v", err)
 	}
@@ -41,7 +41,7 @@ func TestDuplicateDeliveryLinksOriginalSingleAction(t *testing.T) {
 		t.Fatal("canonical delivery produced no run")
 	}
 
-	second, err := store.CreateDelivery(ctx, org, project, principal, triggerID, payload)
+	second, err := store.CreateDelivery(ctx, project, principal, triggerID, payload)
 	if err != nil {
 		t.Fatalf("second CreateDelivery error = %v", err)
 	}
@@ -71,7 +71,7 @@ func TestDuplicateDeliveryLinksOriginalSingleAction(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = store.CreateDelivery(ctx, org, project, principal, triggerID, racePayload)
+			_, errs[i] = store.CreateDelivery(ctx, project, principal, triggerID, racePayload)
 		}(i)
 	}
 	wg.Wait()

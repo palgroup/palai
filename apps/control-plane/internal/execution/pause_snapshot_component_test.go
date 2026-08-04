@@ -90,11 +90,10 @@ func TestPauseCheckpointCarriesBoundarySnapshot(t *testing.T) {
 	// Workspace/lease reads are keyed by opaque ids rather than a tenant, so the CONTEXT carries
 	// the scope — the same way the run worker scopes a claimed job (migration 000029).
 	ctx = storage.WithTenant(ctx, tenant.Project)
-	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Project)
-	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, runID, tenant.Project, sessionID)
-	execSQL(t, pool, `INSERT INTO attempts (id, organization_id, project_id, run_id, fence, state) VALUES ($1, $2, $3, $4, 1, 'assigned')`, attemptID, tenant.Project, runID)
+	execSQL(t, pool, `INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
+	execSQL(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, sessionID, tenant.Project)
+	execSQL(t, pool, `INSERT INTO runs (id, project_id, session_id, state) VALUES ($1, $2, $3, 'running')`, runID, tenant.Project, sessionID)
+	execSQL(t, pool, `INSERT INTO attempts (id, project_id, run_id, fence, state) VALUES ($1, $2, $3, 1, 'assigned')`, attemptID, tenant.Project, runID)
 
 	// A real allocation on disk + its workspace/allocation rows.
 	workspaceID := seedLeasedWorkspace(t, cs, tenant, sessionID, runID)
@@ -259,11 +258,10 @@ func TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator(t *testing.T) {
 	// Workspace/lease reads are keyed by opaque ids rather than a tenant, so the CONTEXT carries
 	// the scope — the same way the run worker scopes a claimed job (migration 000029).
 	ctx = storage.WithTenant(ctx, tenant.Project)
-	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Project)
-	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, runID, tenant.Project, sessionID)
-	execSQL(t, pool, `INSERT INTO attempts (id, organization_id, project_id, run_id, fence, state) VALUES ($1, $2, $3, $4, 1, 'assigned')`, attemptID, tenant.Project, runID)
+	execSQL(t, pool, `INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
+	execSQL(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, sessionID, tenant.Project)
+	execSQL(t, pool, `INSERT INTO runs (id, project_id, session_id, state) VALUES ($1, $2, $3, 'running')`, runID, tenant.Project, sessionID)
+	execSQL(t, pool, `INSERT INTO attempts (id, project_id, run_id, fence, state) VALUES ($1, $2, $3, 1, 'assigned')`, attemptID, tenant.Project, runID)
 	workspaceID := seedLeasedWorkspace(t, cs, tenant, sessionID, runID)
 	hostPath := seedAllocationDir(t, cs, tenant, workspaceID)
 

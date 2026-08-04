@@ -133,8 +133,8 @@ func wireSlackForSession(t *testing.T, spine *coordinator.Store, tenant coordina
 	// The thread↔session correlation an app_mention writes (SLK-003). It is what makes a click able to
 	// decide THIS session's approval and no other.
 	execSQL(t, spine.Pool(), `INSERT INTO slack_thread_sessions
-	                            (id, organization_id, project_id, connection_id, team_id, channel_id, thread_ts, session_id)
-	                          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+	                            (id, project_id, connection_id, team_id, channel_id, thread_ts, session_id)
+	                          VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		redeliveryID("sts"), tenant.Project, conn.ID, team, channel, thread, sessionID)
 
 	var calls []slackCall
@@ -147,9 +147,6 @@ func wireSlackForSession(t *testing.T, spine *coordinator.Store, tenant coordina
 	t.Cleanup(slackAPI.Close)
 
 	secrets := func(ref string) ([]byte, error) {
-		if org != tenant.Organization {
-			return nil, fmt.Errorf("no secret bridge for %q/%q", org, ref)
-		}
 		switch ref {
 		case botRef:
 			return botToken, nil
@@ -471,7 +468,7 @@ func TestSlackToolApprovalRefusesAnUnauthorizedClicker(t *testing.T) {
 	// 2. Now the PROJECT's approver list names somebody else. Uapprover is still in the connection's
 	// allowed_users, so this refusal can only come from config_policy.approvers — the T2 list, applied to a
 	// tool call and not only to a publication.
-	execSQL(t, h.spine.Pool(), `UPDATE projects SET config_policy = $3::jsonb WHERE organization_id = $1 AND id = $2`,
+	execSQL(t, h.spine.Pool(), `UPDATE projects SET config_policy = $2::jsonb WHERE  id = $1`,
 		h.tenant.Project, `{"approvers":["slack:OTHERTEAM:Usomebodyelse"]}`)
 	if got := h.click("Uapprover", "approve", hash); got.Rejected == "" {
 		t.Fatalf("a clicker outside the PROJECT's approver list decided a gated tool call: %+v", got)
@@ -485,7 +482,7 @@ func TestSlackToolApprovalRefusesAnUnauthorizedClicker(t *testing.T) {
 
 	// 3. And the same principal, once the list names them, decides. Without this leg the two refusals above
 	// would also pass on a build where NOTHING can ever decide — which is precisely the bug being fixed.
-	execSQL(t, h.spine.Pool(), `UPDATE projects SET config_policy = $3::jsonb WHERE organization_id = $1 AND id = $2`,
+	execSQL(t, h.spine.Pool(), `UPDATE projects SET config_policy = $2::jsonb WHERE  id = $1`,
 		h.tenant.Project,
 		fmt.Sprintf(`{"approvers":["slack:%s:Uapprover"]}`, h.team))
 	if got := h.click("Uapprover", "approve", hash); got.Rejected != "" {
@@ -508,33 +505,28 @@ const registeredGatedToolLabel = "the shared service account may move tickets, a
 func seedRegisteredGatedRun(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant, modelName string) (sessionID, runID string) {
 	t.Helper()
 	pool := cs.Pool()
-	org, project := tenant.Project
+	project := tenant.Project
 	toolID, trevID := redeliveryID("tool"), redeliveryID("trev")
 	setID, profileID, arevID := redeliveryID("tsrev"), redeliveryID("aprof"), redeliveryID("arev")
 	sessionID, runID = redeliveryID("ses"), redeliveryID("run")
 
-	execSQL(t, pool, `INSERT INTO tools (id, organization_id, project_id, canonical_name, model_visible_name)
-	                  VALUES ($1,$2,$3,$4,$5)`, toolID, org, project, "reg."+modelName, modelName)
+	execSQL(t, pool, `INSERT INTO tools (id, project_id, canonical_name, model_visible_name)
+	                  VALUES ($1,$2,$3,$4)`, toolID, project, "reg."+modelName, modelName)
 	// approval_required + approval_label are 000044 R3's columns, set exactly where the operator sets them.
-	execSQL(t, pool, `INSERT INTO tool_revisions (id, organization_id, project_id, tool_id, revision_number,
-	                      executor, description, input_schema, replay_class, digest, published_at,
-	                      approval_required, approval_label)
-	                  VALUES ($1,$2,$3,$4,1,'control_plane',$5,'{"type":"object"}'::jsonb,'irreversible',$6,
-	                          clock_timestamp(), true, $7)`,
-		trevID, org, project, toolID, "moves a ticket", "sha256:"+trevID, registeredGatedToolLabel)
-	execSQL(t, pool, `INSERT INTO tool_set_revisions (id, organization_id, project_id, set_name, revision_number,
-	                      tool_pins, digest, published_at)
-	                  VALUES ($1,$2,$3,$4,1,$5::jsonb,'d',clock_timestamp())`,
-		setID, org, project, "set-"+modelName, `[{"tool_revision_id":"`+trevID+`"}]`)
-	execSQL(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,$4)`,
-		profileID, org, project, profileID)
-	execSQL(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number,
-	                      model, published_at, tool_sets, mcp_connections)
-	                  VALUES ($1,$2,$3,$4,1,'model-x',clock_timestamp(),$5::jsonb,'[]'::jsonb)`,
-		arevID, org, project, profileID, `["`+setID+`"]`)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, org, project)
-	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, agent_revision_id, state)
-	                  VALUES ($1,$2,$3,$4,$5,'running')`, runID, org, project, sessionID, arevID)
+	execSQL(t, pool, `INSERT INTO tool_revisions (id, project_id, tool_id, revision_number, executor, description, input_schema, replay_class, digest, published_at, approval_required, approval_label)
+	                  VALUES ($1,$2,$3,1,'control_plane',$4,'{"type":"object"}'::jsonb,'irreversible',$5,clock_timestamp(),true,$6)`,
+		trevID, project, toolID, "moves a ticket", "sha256:"+trevID, registeredGatedToolLabel)
+	execSQL(t, pool, `INSERT INTO tool_set_revisions (id, project_id, set_name, revision_number, tool_pins, digest, published_at)
+	                  VALUES ($1,$2,$3,1,$4::jsonb,'d',clock_timestamp())`,
+		setID, project, "set-"+modelName, `[{"tool_revision_id":"`+trevID+`"}]`)
+	execSQL(t, pool, `INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,$3)`,
+		profileID, project, profileID)
+	execSQL(t, pool, `INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, published_at, tool_sets, mcp_connections)
+	                  VALUES ($1,$2,$3,1,'model-x',clock_timestamp(),$4::jsonb,'[]'::jsonb)`,
+		arevID, project, profileID, `["`+setID+`"]`)
+	execSQL(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, project)
+	execSQL(t, pool, `INSERT INTO runs (id, project_id, session_id, agent_revision_id, state)
+	                  VALUES ($1,$2,$3,$4,'running')`, runID, project, sessionID, arevID)
 	return sessionID, runID
 }
 

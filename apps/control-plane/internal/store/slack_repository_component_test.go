@@ -28,13 +28,13 @@ import (
 // for the same reason scopeToChannels is an UPDATE: the registration write-path (POST /v1/repository-bindings)
 // is proven in apps/control-plane/api and e2e; what is under test HERE is whether an admission carries a
 // binding that already exists.
-func (f *slackFixture) bindRepository(t *testing.T, org, project string) string {
+func (f *slackFixture) bindRepository(t *testing.T, project string) string {
 	t.Helper()
 	id := newID("repo")
 	exec(t, f.pool, `INSERT INTO repository_bindings
-	                   (id, organization_id, project_id, provider, repository_identity, clone_url, default_branch)
-	                 VALUES ($1,$2,$3,'github','acme/widgets','https://github.com/acme/widgets.git','dev')`,
-		id, org, project)
+	                   (id, project_id, provider, repository_identity, clone_url, default_branch)
+	                 VALUES ($1,$2,'github','acme/widgets','https://github.com/acme/widgets.git','dev')`,
+		id, project)
 	return id
 }
 
@@ -45,9 +45,9 @@ func (f *slackFixture) bindRepository(t *testing.T, org, project string) string 
 func (f *slackFixture) useRepository(t *testing.T, bindingID string) {
 	t.Helper()
 	exec(t, f.pool, `UPDATE slack_connections SET default_policy=$1::jsonb
-	                  WHERE organization_id=$2 AND project_id=$3`,
+	                  WHERE  project_id=$2`,
 		fmt.Sprintf(`{"agent_revision_id":%q,"principal_id":%q,"repository_binding_id":%q}`,
-			f.revision, f.principal, bindingID), f.org, f.project)
+			f.revision, f.principal, bindingID), f.project)
 }
 
 // sessionWorkspace reads the coding workspace the admission attached to this tenant's session, if any.
@@ -57,7 +57,7 @@ func (f *slackFixture) sessionWorkspace(t *testing.T) (bindingID, ref string, fo
 	t.Helper()
 	rows, err := f.pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT repository_binding_id, requested_ref FROM workspaces
-		  WHERE organization_id=$1 AND project_id=$2`, f.org, f.project)
+		  WHERE  project_id=$1`, f.project)
 	if err != nil {
 		t.Fatalf("read the session workspace: %v", err)
 	}
@@ -143,9 +143,8 @@ func TestSlackConnectionWithoutARepositoryIsBitUnchanged(t *testing.T) {
 // pull it three more times.
 func TestSlackRefusesAnotherTenantsRepositoryBinding(t *testing.T) {
 	f := newSlackFixture(t)
-	foreignOrg, foreignProject := newID("org"), newID("prj")
-	exec(t, f.pool, `INSERT INTO organizations (id) VALUES ($1)`, foreignOrg)
-	exec(t, f.pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, foreignProject, foreignOrg)
+	foreignProject := newID("prj")
+	exec(t, f.pool, `INSERT INTO projects (id) VALUES ($1)`, foreignProject)
 	foreign := f.bindRepository(t, foreignOrg, foreignProject)
 	f.useRepository(t, foreign)
 

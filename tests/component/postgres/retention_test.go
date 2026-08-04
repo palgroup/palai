@@ -21,8 +21,8 @@ func seedTerminalResponse(t *testing.T, pool *pgxpool.Pool, tenant coordinator.T
 	t.Helper()
 	respID := newID("resp")
 	exec(t, pool,
-		`INSERT INTO responses (id, organization_id, project_id, session_id, state, input, output, store, updated_at)
-		 VALUES ($1, $2, $3, $4, 'completed', $5, $6, $7, clock_timestamp() - $8::bigint * interval '1 millisecond')`,
+		`INSERT INTO responses (id, project_id, session_id, state, input, output, store, updated_at)
+		 VALUES ($1, $2, $3, 'completed', $4, $5, $6, clock_timestamp() - $7::bigint * interval '1 millisecond')`,
 		respID, tenant.Project, sessionID,
 		[]byte(`{"prompt":"secret input"}`),
 		[]byte(`{"output":[{"type":"message","content":"secret output"}],"usage":{"total_tokens":9}}`),
@@ -95,15 +95,15 @@ func TestPurgeKeepsTombstoneRequestHashAndFingerprint(t *testing.T) {
 
 	tenant, sessionID, _ := seedRun(t, pool)
 	principal := newID("prin")
-	exec(t, pool, `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'api_key')`,
+	exec(t, pool, `INSERT INTO principals (id, project_id, kind) VALUES ($1, $2, 'api_key')`,
 		principal, tenant.Project)
 
 	respID := seedTerminalResponse(t, pool, tenant, sessionID, false, time.Hour)
 	const requestHash = "req-hash-abc123"
 	exec(t, pool,
 		`INSERT INTO idempotency_records
-		   (organization_id, project_id, principal_id, method, route, idempotency_key, request_hash, status, response_body)
-		 VALUES ($1, $2, $3, 'POST', '/v1/responses', $4, $5, 'completed', $6)`,
+		   (project_id, principal_id, method, route, idempotency_key, request_hash, status, response_body)
+		 VALUES ($1, $2, 'POST', '/v1/responses', $3, $4, 'completed', $5)`,
 		tenant.Project, principal, newID("idem"), requestHash,
 		[]byte(`{"id":"`+respID+`","status":"completed","output":[{"type":"message","content":"secret output"}]}`))
 
@@ -148,8 +148,8 @@ func TestPurgeKeepsTombstoneRequestHashAndFingerprint(t *testing.T) {
 func seedEvent(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, sessionID, responseID string, seq int, payload string) {
 	t.Helper()
 	exec(t, pool,
-		`INSERT INTO events (id, organization_id, project_id, session_id, response_id, seq, type, payload)
-		 VALUES ($1, $2, $3, $4, $5, $6, 'output.item.v1', $7)`,
+		`INSERT INTO events (id, project_id, session_id, response_id, seq, type, payload)
+		 VALUES ($1, $2, $3, $4, $5, 'output.item.v1', $6)`,
 		newID("evt"), tenant.Project, sessionID, responseID, seq, []byte(payload))
 }
 

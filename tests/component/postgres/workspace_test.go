@@ -103,8 +103,8 @@ func TestSingleWriterLeaseRejectsSecondWriter(t *testing.T) {
 	// rejected: the workspace already has an active writer lease.
 	childRun := newID("run")
 	exec(t, pool,
-		`INSERT INTO runs (id, organization_id, project_id, session_id, state, parent_run_id, depth)
-		 VALUES ($1, $2, $3, $4, 'running', $5, 1)`,
+		`INSERT INTO runs (id, project_id, session_id, state, parent_run_id, depth)
+		 VALUES ($1, $2, $3, 'running', $4, 1)`,
 		childRun, tenant.Project, sessionID, rootRun)
 	if err := cs.AcquireWriterLease(ctx, newID("wls"), alloc.ID, childRun); !errors.Is(err, coordinator.ErrWriterLeaseHeld) {
 		t.Fatalf("second writer lease = %v, want ErrWriterLeaseHeld", err)
@@ -113,8 +113,8 @@ func TestSingleWriterLeaseRejectsSecondWriter(t *testing.T) {
 	// The reject is at the SQLSTATE level: a raw second active-lease insert is 23505, so the
 	// single-writer invariant is the partial unique index, not an app check-then-insert race.
 	_, rawErr := pool.Exec(storage.WithSystemScope(ctx),
-		`INSERT INTO workspace_leases (id, workspace_id, allocation_id, organization_id, project_id, run_id, state, fence)
-		 VALUES ($1, $2, $3, $4, $5, $6, 'active', $7)`,
+		`INSERT INTO workspace_leases (id, workspace_id, allocation_id, project_id, run_id, state, fence)
+		 VALUES ($1, $2, $3, $4, $5, 'active', $6)`,
 		newID("wls"), wsID, alloc.ID, tenant.Project, childRun, alloc.Fence)
 	if got := pgCode(rawErr); got != "23505" {
 		t.Fatalf("raw second active lease code = %q, want 23505 unique_violation", got)

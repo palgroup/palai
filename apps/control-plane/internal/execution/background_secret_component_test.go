@@ -88,8 +88,8 @@ func newSecretFixture(t *testing.T) *secretFixture {
 		// INSTALLATION in A.2 T6's 000065 (it was `(organization_id, name)`, and organizations are gone), and
 		// this suite shares one database across dozens of harnesses — so a literal 'production' collides with
 		// every other fixture that wanted the same obvious name.
-		`INSERT INTO environments (id, organization_id, name) VALUES ($1,$2,$3)`,
-		f.envID, f.tenant.Organization, "production-"+f.envID); err != nil {
+		`INSERT INTO environments (id, name) VALUES ($1,$2)`,
+		f.envID, "production-"+f.envID); err != nil {
 		t.Fatalf("seed the environment: %v", err)
 	}
 	// The write path is the REAL one: PutEnvironmentValue seals into secret_refs under the derived name
@@ -102,12 +102,12 @@ func newSecretFixture(t *testing.T) *secretFixture {
 
 	profileID, revID := redeliveryID("aprof"), redeliveryID("arev")
 	stmts := [][]any{
-		{`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'deployer')`,
+		{`INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,'deployer')`,
 			profileID, f.tenant.Project},
 		// tools stays NULL: a revision's tools column is a CEILING that INTERSECTS when it is non-nil
 		// (config.go), so a fixture that named one would silently take the shell tool away from the run.
-		{`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, environment, published_at)
-		  VALUES ($1,$2,$3,$4,1,$5, clock_timestamp())`,
+		{`INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, environment, published_at)
+		  VALUES ($1,$2,$3,1,$4,clock_timestamp())`,
 			revID, f.tenant.Project, profileID, f.envID},
 		{`UPDATE runs SET agent_revision_id = $2 WHERE id = $1`, f.runID, revID},
 	}
@@ -119,7 +119,7 @@ func newSecretFixture(t *testing.T) *secretFixture {
 
 	f.orch.SetEnvironmentSecrets(func(ref string) ([]byte, error) {
 		atomic.AddInt32(&f.resolves, 1)
-		v, ok, err := secrets.Resolve(ctx, org, ref)
+		v, ok, err := secrets.Resolve(ctx, ref)
 		if err != nil {
 			return nil, err
 		}

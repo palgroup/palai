@@ -16,19 +16,19 @@ import (
 func TestBoundedKeyReuseActiveConflictDefers(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 	rec := NewDeliveryReconciler(store, time.Hour, time.Hour, 100, nil)
 
-	triggerID, _ := seedTrigger(t, store, org, project, "chain", TriggerRevisionInput{
+	triggerID, _ := seedTrigger(t, store, project, "chain", TriggerRevisionInput{
 		CorrelationMode: "bounded_key_reuse", CorrelationKeyExpr: `{"select":"corr"}`,
 	})
-	first, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"corr":"c1"}`))
+	first, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"corr":"c1"}`))
 	if err != nil || first.State != "run_created" {
 		t.Fatalf("first delivery = %+v, err = %v; want run_created", first, err)
 	}
 	// The prior session's run is still active → a same-key chain must defer, not 500.
-	second, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"corr":"c1"}`))
+	second, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"corr":"c1"}`))
 	if err != nil {
 		t.Fatalf("chained delivery onto an active session errored instead of deferring: %v", err)
 	}
@@ -51,16 +51,16 @@ func TestBoundedKeyReuseActiveConflictDefers(t *testing.T) {
 func TestReconcilerSweepSkipsPoisonRow(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 	rec := NewDeliveryReconciler(store, time.Hour, time.Hour, 100, nil)
 
-	triggerID, revID := seedTrigger(t, store, org, project, "poison", TriggerRevisionInput{ConcurrencyPolicy: "queue"})
+	triggerID, revID := seedTrigger(t, store, project, "poison", TriggerRevisionInput{ConcurrencyPolicy: "queue"})
 
 	// A poison deferred delivery: a NON-EXISTENT principal → admission FKs principal_id → resume errors.
-	poison := insertDeferredDelivery(t, pool, org, project, "prin_ghost_does_not_exist", triggerID, revID, "poisonhash", `{}`)
+	poison := insertDeferredDelivery(t, pool, project, "prin_ghost_does_not_exist", triggerID, revID, "poisonhash", `{}`)
 	// A healthy deferred delivery in a DIFFERENT key group, gate open.
-	healthy := insertDeferredDelivery(t, pool, org, project, principal, triggerID, revID, "healthyhash", `{}`)
+	healthy := insertDeferredDelivery(t, pool, project, principal, triggerID, revID, "healthyhash", `{}`)
 
 	if err := rec.Tick(ctx); err != nil {
 		t.Fatalf("tick returned an error (a poison row wedged the sweep): %v", err)
@@ -75,13 +75,13 @@ func TestReconcilerSweepSkipsPoisonRow(t *testing.T) {
 
 // insertDeferredDelivery inserts a delivery frozen in `deferred` with a stored mapped_input + hash,
 // simulating a delivery the concurrency gate parked for the reconciler.
-func insertDeferredDelivery(t *testing.T, pool *pgxpool.Pool, org, project, principal, triggerID, revisionID, hash, mappedInput string) string {
+func insertDeferredDelivery(t *testing.T, pool *pgxpool.Pool, project, principal, triggerID, revisionID, hash, mappedInput string) string {
 	t.Helper()
 	id := randID("tdel")
 	mustExec(t, pool,
 		`INSERT INTO trigger_deliveries
-		 (id, organization_id, project_id, trigger_id, trigger_revision_id, principal_id, state, mapped_input, correlation_key_hash)
-		 VALUES ($1,$2,$3,$4,$5,$6,'deferred',$7::jsonb,$8)`,
-		id, org, project, triggerID, revisionID, principal, mappedInput, hash)
+		 (id, project_id, trigger_id, trigger_revision_id, principal_id, state, mapped_input, correlation_key_hash)
+		 VALUES ($1,$2,$3,$4,$5,'deferred',$6::jsonb,$7)`,
+		id, project, triggerID, revisionID, principal, mappedInput, hash)
 	return id
 }

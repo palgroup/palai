@@ -40,7 +40,7 @@ func (f *slackFixture) scopeToChannels(t *testing.T, channels ...string) {
 		list += `]`
 	}
 	exec(t, f.pool, `UPDATE slack_connections SET allowed_channels=$1::jsonb
-	                  WHERE organization_id=$2 AND project_id=$3`, list, f.org, f.project)
+	                  WHERE  project_id=$2`, list, f.project)
 }
 
 // TestSlackChannelAllowListRefusesAnEventOutsideIt is the guarantee the dead field claimed and did not have:
@@ -81,7 +81,7 @@ func TestSlackChannelAllowListRefusesAnEventOutsideIt(t *testing.T) {
 	}
 	var reservations int
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(*) FROM idempotency_records WHERE organization_id=$1 AND project_id=$2`, f.org, f.project).Scan(&reservations); err != nil {
+		`SELECT count(*) FROM idempotency_records WHERE  project_id=$1`, f.project).Scan(&reservations); err != nil {
 		t.Fatalf("count reservations: %v", err)
 	}
 	if reservations != 1 {
@@ -122,15 +122,15 @@ func TestSlackEmptyAllowListsMeanOppositeThingsOnPurpose(t *testing.T) {
 	// Users: empty ⇒ nobody. The SAME connection, its approver list emptied, refuses the approver it just had.
 	ext := extensions.New(f.pool)
 	connID := f.connRef(t).ID
-	policy, err := ext.SlackAuthorizationPolicyFor(context.Background(), f.org, f.project, connID)
+	policy, err := ext.SlackAuthorizationPolicyFor(context.Background(), f.project, connID)
 	if err != nil {
 		t.Fatalf("read the policy: %v", err)
 	}
 	if !policy.ApproverAuthorized("Umapped") {
 		t.Fatalf("the seeded approver is not authorized; the fixture, not the asymmetry, is broken")
 	}
-	exec(t, f.pool, `UPDATE slack_connections SET allowed_users='[]'::jsonb WHERE organization_id=$1 AND project_id=$2`, f.org, f.project)
-	emptied, err := ext.SlackAuthorizationPolicyFor(context.Background(), f.org, f.project, connID)
+	exec(t, f.pool, `UPDATE slack_connections SET allowed_users='[]'::jsonb WHERE  project_id=$1`, f.project)
+	emptied, err := ext.SlackAuthorizationPolicyFor(context.Background(), f.project, connID)
 	if err != nil {
 		t.Fatalf("re-read the policy: %v", err)
 	}
@@ -270,10 +270,10 @@ func TestSlackDMIsExemptFromTheConfiguredChannelAllowList(t *testing.T) {
 		`SELECT COALESCE(r.agent_revision_id,''), COALESCE(i.principal_id,''), COALESCE(resp.input::text,'')
 		   FROM runs r
 		   JOIN idempotency_records i
-		     ON i.organization_id = r.organization_id AND i.project_id = r.project_id
+		     ON i.project_id = r.project_id
 		   JOIN responses resp
-		     ON resp.organization_id = r.organization_id AND resp.project_id = r.project_id
-		  WHERE r.organization_id=$1 AND r.project_id=$2`, f.org, f.project).
+		     ON resp.project_id = r.project_id
+		  WHERE  r.project_id=$1`, f.project).
 		Scan(&revision, &principal, &input); err != nil {
 		t.Fatalf("read the DM-born run: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestSlackPanelSurfaceEventsBirthNoRun(t *testing.T) {
 	}
 	var reservations int
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(*) FROM idempotency_records WHERE organization_id=$1 AND project_id=$2`, f.org, f.project).Scan(&reservations); err != nil {
+		`SELECT count(*) FROM idempotency_records WHERE  project_id=$1`, f.project).Scan(&reservations); err != nil {
 		t.Fatalf("count reservations: %v", err)
 	}
 	if reservations != 0 {
@@ -374,8 +374,7 @@ func TestSlackPanelConversationKeepsOneSession(t *testing.T) {
 	// The row count alone proves nothing (the claim is ON CONFLICT DO NOTHING): assert the RUNS share a session.
 	var sessions, runs int
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(DISTINCT session_id), count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`,
-		f.org, f.project).Scan(&sessions, &runs); err != nil {
+		`SELECT count(DISTINCT session_id), count(*) FROM runs WHERE  project_id=$1`, f.project).Scan(&sessions, &runs); err != nil {
 		t.Fatalf("count the panel's runs: %v", err)
 	}
 	if runs != 2 || sessions != 1 {
@@ -383,8 +382,8 @@ func TestSlackPanelConversationKeepsOneSession(t *testing.T) {
 	}
 	var correlated, ran string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT (SELECT session_id FROM slack_thread_sessions WHERE organization_id=$1 AND channel_id=$2 AND thread_ts=$3),
-		        (SELECT DISTINCT session_id FROM runs WHERE organization_id=$1)`, f.org, dmChannel, root).Scan(&correlated, &ran); err != nil {
+		`SELECT (SELECT session_id FROM slack_thread_sessions WHERE project_id=$1 AND channel_id=$2 AND thread_ts=$3),
+		        (SELECT DISTINCT session_id FROM runs WHERE project_id=$1)`, f.project, dmChannel, root).Scan(&correlated, &ran); err != nil {
 		t.Fatalf("compare the panel thread's correlated session to its runs': %v", err)
 	}
 	if correlated != ran {

@@ -147,13 +147,12 @@ func newPublishHarness(t *testing.T) *publishHarness {
 	h.branch = "agent/" + h.sessionID + "/" + h.runID
 
 	pool := cs.Pool()
-	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, h.tenant.Organization)
-	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, h.tenant.Project, h.tenant.Organization)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id, state) VALUES ($1,$2,$3,'active')`,
+	execSQL(t, pool, `INSERT INTO projects (id) VALUES ($1)`, h.tenant.Project)
+	execSQL(t, pool, `INSERT INTO sessions (id, project_id, state) VALUES ($1,$2,'active')`,
 		h.sessionID, h.tenant.Project)
-	execSQL(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+	execSQL(t, pool, `INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'in_progress')`,
 		h.respID, h.tenant.Project, h.sessionID)
-	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'running')`,
+	execSQL(t, pool, `INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,'running')`,
 		h.runID, h.tenant.Project, h.sessionID, h.respID)
 
 	// The binding. default_branch is what a pull request will target, and NOTHING else decides it.
@@ -232,8 +231,8 @@ func (h *publishHarness) wireSlack(t *testing.T, cs *coordinator.Store) (*extens
 	// proven in internal/store; what is needed here is that the click's thread owns THIS session, because
 	// that correlation is what makes a click able to decide this publication and no other.
 	execSQL(t, cs.Pool(), `INSERT INTO slack_thread_sessions
-	                         (id, organization_id, project_id, connection_id, team_id, channel_id, thread_ts, session_id)
-	                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+	                         (id, project_id, connection_id, team_id, channel_id, thread_ts, session_id)
+	                       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		redeliveryID("sts"), h.tenant.Project, conn.ID, h.team, h.channel, h.thread, h.sessionID)
 
 	var calls []slackCall
@@ -253,9 +252,6 @@ func (h *publishHarness) wireSlack(t *testing.T, cs *coordinator.Store) (*extens
 	t.Cleanup(slackAPI.Close)
 
 	secrets := func(ref string) ([]byte, error) {
-		if org != h.tenant.Organization {
-			return nil, fmt.Errorf("no secret bridge for %q/%q", org, ref)
-		}
 		switch ref {
 		case botRef:
 			return botToken, nil

@@ -12,15 +12,15 @@ import (
 // kill-switch (and a re-disable is a no-op reporting the hook still exists), and a duplicate name in the same
 // project is a typed collision.
 func TestHookCRUDRoundtrip(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
 	body := `{"name":"guard","hook_point":"before_tool","category":"policy","executor":"remote_http","config":{"url":"https://hooks.example/deny"},"secret_ref":"sref_hook"}`
-	created, err := s.CreateHook(ctx, org, project, []byte(body))
+	created, err := s.CreateHook(ctx, project, []byte(body))
 	if err != nil {
 		t.Fatalf("CreateHook() error = %v", err)
 	}
-	got, err := s.GetHook(ctx, org, project, created.ID)
+	got, err := s.GetHook(ctx, project, created.ID)
 	if err != nil {
 		t.Fatalf("GetHook() error = %v", err)
 	}
@@ -34,24 +34,24 @@ func TestHookCRUDRoundtrip(t *testing.T) {
 		t.Fatal("fresh hook reads back disabled")
 	}
 
-	existed, err := s.DisableHook(ctx, org, project, created.ID)
+	existed, err := s.DisableHook(ctx, project, created.ID)
 	if err != nil || !existed {
 		t.Fatalf("DisableHook() = (%v, %v), want (true, nil)", existed, err)
 	}
 	// A re-disable is a no-op but still reports the hook exists (disambiguated from unknown).
-	if existed, err := s.DisableHook(ctx, org, project, created.ID); err != nil || !existed {
+	if existed, err := s.DisableHook(ctx, project, created.ID); err != nil || !existed {
 		t.Fatalf("re-DisableHook() = (%v, %v), want (true, nil)", existed, err)
 	}
-	if reread, err := s.GetHook(ctx, org, project, created.ID); err != nil || !reread.Disabled {
+	if reread, err := s.GetHook(ctx, project, created.ID); err != nil || !reread.Disabled {
 		t.Fatalf("after disable GetHook disabled = %v (err %v), want true", reread.Disabled, err)
 	}
 	// An unknown id reports not-existing (not an error).
-	if existed, err := s.DisableHook(ctx, org, project, "hook_missing"); err != nil || existed {
+	if existed, err := s.DisableHook(ctx, project, "hook_missing"); err != nil || existed {
 		t.Fatalf("DisableHook(unknown) = (%v, %v), want (false, nil)", existed, err)
 	}
 
 	// A duplicate name in the same project is a typed collision.
-	if _, err := s.CreateHook(ctx, org, project, []byte(body)); err == nil {
+	if _, err := s.CreateHook(ctx, project, []byte(body)); err == nil {
 		t.Fatal("duplicate hook name accepted, want ErrHookNameCollision")
 	}
 }
@@ -61,11 +61,11 @@ func TestHookCRUDRoundtrip(t *testing.T) {
 // in sequence at before_tool come back in that exact order; a disabled hook is skipped; a hook at a different
 // point is not returned.
 func TestHookOrderDeterministicRegistrationOrder(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
 	mk := func(name string) string {
-		h, err := s.CreateHook(ctx, org, project,
+		h, err := s.CreateHook(ctx, project,
 			[]byte(`{"name":"`+name+`","hook_point":"before_tool","category":"observer","executor":"platform_inline","config":{"handler":"note"}}`))
 		if err != nil {
 			t.Fatalf("CreateHook(%s) error = %v", name, err)
@@ -77,12 +77,12 @@ func TestHookOrderDeterministicRegistrationOrder(t *testing.T) {
 	third := mk("h3")
 
 	// A hook at a DIFFERENT point must not appear in the before_tool load.
-	if _, err := s.CreateHook(ctx, org, project,
+	if _, err := s.CreateHook(ctx, project,
 		[]byte(`{"name":"other","hook_point":"on_terminal","category":"observer","executor":"platform_inline","config":{"handler":"note"}}`)); err != nil {
 		t.Fatalf("CreateHook(other point) error = %v", err)
 	}
 
-	loaded, err := s.loadHooks(ctx, org, project, "before_tool")
+	loaded, err := s.loadHooks(ctx, project, "before_tool")
 	if err != nil {
 		t.Fatalf("loadHooks() error = %v", err)
 	}
@@ -95,10 +95,10 @@ func TestHookOrderDeterministicRegistrationOrder(t *testing.T) {
 	}
 
 	// A disabled hook is skipped by the dispatch load.
-	if _, err := s.DisableHook(ctx, org, project, second); err != nil {
+	if _, err := s.DisableHook(ctx, project, second); err != nil {
 		t.Fatalf("DisableHook() error = %v", err)
 	}
-	loaded, err = s.loadHooks(ctx, org, project, "before_tool")
+	loaded, err = s.loadHooks(ctx, project, "before_tool")
 	if err != nil {
 		t.Fatalf("loadHooks() after disable error = %v", err)
 	}

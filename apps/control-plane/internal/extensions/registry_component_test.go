@@ -23,7 +23,7 @@ import (
 
 // openStore opens a migrated spine, seeds an org+project, and returns the extensions store scoped to it.
 // The store reserves the built-in short name "file" so the reserved-collision leg has a target.
-func openStore(t *testing.T) (*Store, string, string) {
+func openStore(t *testing.T) (*Store, string) {
 	t.Helper()
 	url := os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
 	if url == "" {
@@ -38,15 +38,12 @@ func openStore(t *testing.T) (*Store, string, string) {
 	if err := cs.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
-	org, project := testID("org"), testID("prj")
+	project := testID("prj")
 	pool := cs.Pool()
-	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO organizations (id) VALUES ($1)`, org); err != nil {
-		t.Fatalf("seed org: %v", err)
-	}
-	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO projects (id) VALUES ($1)`, project); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	return New(pool, "file"), org, project
+	return New(pool, "file"), project
 }
 
 func testID(prefix string) string {
@@ -73,15 +70,15 @@ func rawRevisionRow(t *testing.T, s *Store, revisionID string) string {
 // revision's config + digest are frozen — a revise creates a NEW revision, the published row is
 // byte-for-byte unchanged, and identical config yields an identical digest. Publish is a once-only flip.
 func TestToolRevisionImmutableAndDigestPinned(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
-	tool, err := s.CreateTool(ctx, org, project, "acme.search.fetch")
+	tool, err := s.CreateTool(ctx, project, "acme.search.fetch")
 	if err != nil {
 		t.Fatalf("create tool: %v", err)
 	}
 	body := []byte(`{"executor":"control_plane","description":"v1","input_schema":{"type":"object"},"replay_class":"pure"}`)
-	v1, err := s.CreateToolRevision(ctx, org, project, tool.ID, body)
+	v1, err := s.CreateToolRevision(ctx, project, tool.ID, body)
 	if err != nil {
 		t.Fatalf("create v1: %v", err)
 	}
@@ -89,19 +86,19 @@ func TestToolRevisionImmutableAndDigestPinned(t *testing.T) {
 		t.Fatalf("first revision number = %d, want 1", v1.RevisionNumber)
 	}
 	// An identical body produces an identical digest (content address, not row identity).
-	v1b, _ := s.CreateToolRevision(ctx, org, project, tool.ID, body)
+	v1b, _ := s.CreateToolRevision(ctx, project, tool.ID, body)
 	if v1b.Digest != v1.Digest {
 		t.Fatalf("identical config produced different digests: %s vs %s", v1.Digest, v1b.Digest)
 	}
 
-	published, _, err := s.PublishToolRevision(ctx, org, project, v1.ID, nil)
+	published, _, err := s.PublishToolRevision(ctx, project, v1.ID, nil)
 	if err != nil || !published {
 		t.Fatalf("publish v1 = %v err = %v, want published", published, err)
 	}
 	rawBefore := rawRevisionRow(t, s, v1.ID)
 
 	// A revise is a NEW revision with different config; v1's row is untouched.
-	v2, err := s.CreateToolRevision(ctx, org, project, tool.ID, []byte(`{"executor":"control_plane","description":"v2","input_schema":{"type":"object","x":1},"replay_class":"idempotent"}`))
+	v2, err := s.CreateToolRevision(ctx, project, tool.ID, []byte(`{"executor":"control_plane","description":"v2","input_schema":{"type":"object","x":1},"replay_class":"idempotent"}`))
 	if err != nil {
 		t.Fatalf("revise -> v2: %v", err)
 	}
@@ -113,7 +110,7 @@ func TestToolRevisionImmutableAndDigestPinned(t *testing.T) {
 	}
 
 	// Publish is once-only: re-publishing v1 is a no-op, never a re-stamp.
-	again, _, err := s.PublishToolRevision(ctx, org, project, v1.ID, nil)
+	again, _, err := s.PublishToolRevision(ctx, project, v1.ID, nil)
 	if err != nil {
 		t.Fatalf("re-publish v1: %v", err)
 	}
@@ -126,20 +123,20 @@ func TestToolRevisionImmutableAndDigestPinned(t *testing.T) {
 // in the project is a typed collision reject, and a malformed canonical name (≠3 segments, non-ASCII) is
 // rejected before any write (spec §28.2).
 func TestCanonicalNamespaceCollisionRejected(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
-	if _, err := s.CreateTool(ctx, org, project, "acme.search.fetch"); err != nil {
+	if _, err := s.CreateTool(ctx, project, "acme.search.fetch"); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
-	if _, err := s.CreateTool(ctx, org, project, "acme.search.fetch"); !errors.Is(err, ErrNameCollision) {
+	if _, err := s.CreateTool(ctx, project, "acme.search.fetch"); !errors.Is(err, ErrNameCollision) {
 		t.Fatalf("duplicate canonical name: err = %v, want ErrNameCollision", err)
 	}
 	for name, canonical := range map[string]string{
 		"two segments": "acme.fetch",
 		"non-ascii":    "acme.search.fetché",
 	} {
-		if _, err := s.CreateTool(ctx, org, project, canonical); !errors.Is(err, ErrInvalidCanonicalName) {
+		if _, err := s.CreateTool(ctx, project, canonical); !errors.Is(err, ErrInvalidCanonicalName) {
 			t.Errorf("%s (%q): err = %v, want ErrInvalidCanonicalName", name, canonical, err)
 		}
 	}
@@ -149,18 +146,18 @@ func TestCanonicalNamespaceCollisionRejected(t *testing.T) {
 // deterministic last segment with NO auto-suffix: a second tool whose last segment repeats an existing
 // one in the project is rejected, and a tool whose short name shadows a code-defined built-in is rejected.
 func TestModelVisibleShortNameDeterministicCollisionChecked(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
-	if _, err := s.CreateTool(ctx, org, project, "acme.search.fetch"); err != nil {
+	if _, err := s.CreateTool(ctx, project, "acme.search.fetch"); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
 	// A different canonical name whose LAST segment is the same short name collides (no auto-suffix).
-	if _, err := s.CreateTool(ctx, org, project, "acme.other.fetch"); !errors.Is(err, ErrNameCollision) {
+	if _, err := s.CreateTool(ctx, project, "acme.other.fetch"); !errors.Is(err, ErrNameCollision) {
 		t.Fatalf("second *.fetch: err = %v, want ErrNameCollision (deterministic short name, no suffix)", err)
 	}
 	// A short name shadowing a reserved built-in (the store reserves "file") is rejected before any write.
-	if _, err := s.CreateTool(ctx, org, project, "acme.workspace.file"); !errors.Is(err, ErrModelNameReserved) {
+	if _, err := s.CreateTool(ctx, project, "acme.workspace.file"); !errors.Is(err, ErrModelNameReserved) {
 		t.Fatalf("built-in shadow: err = %v, want ErrModelNameReserved", err)
 	}
 }
@@ -170,36 +167,36 @@ func TestModelVisibleShortNameDeterministicCollisionChecked(t *testing.T) {
 // override above the declared timeout is rejected while one at/below it is accepted, and the set revision
 // is itself immutable + publishable once.
 func TestToolSetPinsExactRevisionsApprovalOnlyStricter(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
-	tool, err := s.CreateTool(ctx, org, project, "acme.search.fetch")
+	tool, err := s.CreateTool(ctx, project, "acme.search.fetch")
 	if err != nil {
 		t.Fatalf("create tool: %v", err)
 	}
-	rev, err := s.CreateToolRevision(ctx, org, project, tool.ID, []byte(`{"executor":"control_plane","description":"d","input_schema":{"type":"object"},"replay_class":"pure","timeout_ms":1000}`))
+	rev, err := s.CreateToolRevision(ctx, project, tool.ID, []byte(`{"executor":"control_plane","description":"d","input_schema":{"type":"object"},"replay_class":"pure","timeout_ms":1000}`))
 	if err != nil {
 		t.Fatalf("create rev: %v", err)
 	}
 
 	// A pin of a DRAFT revision is rejected (only published revisions may be pinned).
-	if _, err := s.CreateToolSetRevision(ctx, org, project, "reviewers", pins(rev.ID, nil)); !errors.Is(err, ErrRevisionNotPublished) {
+	if _, err := s.CreateToolSetRevision(ctx, project, "reviewers", pins(rev.ID, nil)); !errors.Is(err, ErrRevisionNotPublished) {
 		t.Fatalf("draft pin: err = %v, want ErrRevisionNotPublished", err)
 	}
 	// An unknown pin is rejected.
-	if _, err := s.CreateToolSetRevision(ctx, org, project, "reviewers", pins("trev_missing", nil)); !errors.Is(err, ErrUnknownToolRevision) {
+	if _, err := s.CreateToolSetRevision(ctx, project, "reviewers", pins("trev_missing", nil)); !errors.Is(err, ErrUnknownToolRevision) {
 		t.Fatalf("unknown pin: err = %v, want ErrUnknownToolRevision", err)
 	}
 
-	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID, nil); err != nil {
+	if _, _, err := s.PublishToolRevision(ctx, project, rev.ID, nil); err != nil {
 		t.Fatalf("publish rev: %v", err)
 	}
 
 	// An override above the declared timeout (1000) is rejected; at/below is accepted.
-	if _, err := s.CreateToolSetRevision(ctx, org, project, "reviewers", pins(rev.ID, map[string]any{"timeout_ms": 2000})); !errors.Is(err, ErrOverrideNotStricter) {
+	if _, err := s.CreateToolSetRevision(ctx, project, "reviewers", pins(rev.ID, map[string]any{"timeout_ms": 2000})); !errors.Is(err, ErrOverrideNotStricter) {
 		t.Fatalf("widening override: err = %v, want ErrOverrideNotStricter", err)
 	}
-	set, err := s.CreateToolSetRevision(ctx, org, project, "reviewers", pins(rev.ID, map[string]any{"timeout_ms": 500}))
+	set, err := s.CreateToolSetRevision(ctx, project, "reviewers", pins(rev.ID, map[string]any{"timeout_ms": 500}))
 	if err != nil {
 		t.Fatalf("stricter override rejected: %v", err)
 	}
@@ -208,11 +205,11 @@ func TestToolSetPinsExactRevisionsApprovalOnlyStricter(t *testing.T) {
 	}
 
 	// The set revision is publishable once.
-	published, _, err := s.PublishToolSetRevision(ctx, org, project, set.ID)
+	published, _, err := s.PublishToolSetRevision(ctx, project, set.ID)
 	if err != nil || !published {
 		t.Fatalf("publish set = %v err = %v, want published", published, err)
 	}
-	again, _, err := s.PublishToolSetRevision(ctx, org, project, set.ID)
+	again, _, err := s.PublishToolSetRevision(ctx, project, set.ID)
 	if err != nil {
 		t.Fatalf("re-publish set: %v", err)
 	}
@@ -237,45 +234,45 @@ func pins(revisionID string, overrides map[string]any) []byte {
 // the broker's per-tenant lookup and runs the SAME fenced path, while (3) a second registered+published
 // tool that is NOT pinned appears in NEITHER — the effective set nor the broker lookup.
 func TestRegistryToolsLoadIntoBrokerEffectiveSet(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 	pool := s.pool
 
 	// A published control_plane echo tool.
-	tool, err := s.CreateTool(ctx, org, project, "acme.search.fetch")
+	tool, err := s.CreateTool(ctx, project, "acme.search.fetch")
 	if err != nil {
 		t.Fatalf("create tool: %v", err)
 	}
-	rev, err := s.CreateToolRevision(ctx, org, project, tool.ID, []byte(`{"executor":"control_plane","input_schema":{"type":"object"},"replay_class":"pure"}`))
+	rev, err := s.CreateToolRevision(ctx, project, tool.ID, []byte(`{"executor":"control_plane","input_schema":{"type":"object"},"replay_class":"pure"}`))
 	if err != nil {
 		t.Fatalf("create rev: %v", err)
 	}
-	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID, nil); err != nil {
+	if _, _, err := s.PublishToolRevision(ctx, project, rev.ID, nil); err != nil {
 		t.Fatalf("publish rev: %v", err)
 	}
 	// A second published tool, NOT pinned into any set.
-	tool2, _ := s.CreateTool(ctx, org, project, "acme.other.lookup")
-	rev2, _ := s.CreateToolRevision(ctx, org, project, tool2.ID, []byte(`{"executor":"control_plane","input_schema":{"type":"object"}}`))
-	if _, _, err := s.PublishToolRevision(ctx, org, project, rev2.ID, nil); err != nil {
+	tool2, _ := s.CreateTool(ctx, project, "acme.other.lookup")
+	rev2, _ := s.CreateToolRevision(ctx, project, tool2.ID, []byte(`{"executor":"control_plane","input_schema":{"type":"object"}}`))
+	if _, _, err := s.PublishToolRevision(ctx, project, rev2.ID, nil); err != nil {
 		t.Fatalf("publish rev2: %v", err)
 	}
 	// A published set pinning ONLY the first tool.
-	set, err := s.CreateToolSetRevision(ctx, org, project, "reviewers", pins(rev.ID, nil))
+	set, err := s.CreateToolSetRevision(ctx, project, "reviewers", pins(rev.ID, nil))
 	if err != nil {
 		t.Fatalf("create set: %v", err)
 	}
-	if _, _, err := s.PublishToolSetRevision(ctx, org, project, set.ID); err != nil {
+	if _, _, err := s.PublishToolSetRevision(ctx, project, set.ID); err != nil {
 		t.Fatalf("publish set: %v", err)
 	}
 
 	// A session + run pinned to an agent revision whose tool_sets names the published set.
 	sessionID, runID := testID("ses"), testID("run")
 	profileID, arevID := testID("aprof"), testID("arev")
-	mustExec(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, org, project)
-	mustExec(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`, profileID, org, project)
-	mustExec(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, published_at, tool_sets)
-	                   VALUES ($1,$2,$3,$4,1,'model-x',clock_timestamp(),$5::jsonb)`, arevID, org, project, profileID, `["`+set.ID+`"]`)
-	mustExec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, agent_revision_id) VALUES ($1,$2,$3,$4,$5)`, runID, org, project, sessionID, arevID)
+	mustExec(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, project)
+	mustExec(t, pool, `INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,'reviewer')`, profileID, project)
+	mustExec(t, pool, `INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, published_at, tool_sets)
+	                   VALUES ($1,$2,$3,1,'model-x',clock_timestamp(),$4::jsonb)`, arevID, project, profileID, `["`+set.ID+`"]`)
+	mustExec(t, pool, `INSERT INTO runs (id, project_id, session_id, agent_revision_id) VALUES ($1,$2,$3,$4)`, runID, project, sessionID, arevID)
 
 	// (1) The effective set: the run's pinned tool_sets contribute "fetch", never the unpinned "lookup".
 	cs, err := coordinator.Open(ctx, os.Getenv("PALAI_COMPONENT_POSTGRES_URL"))
@@ -332,43 +329,43 @@ func (f *fakeInvoker) Invoke(_ context.Context, in remotehttp.Invocation) (map[s
 // (broker per-call), and the secret resolved fresh from the org-scoped resolver. Without an invoker wired
 // the same row stays binder-less (the T2 posture), so a remote tool is never advertised half-built.
 func TestRemoteHTTPToolResolvesThroughRegistryLookup(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
 	// A published remote_http tool: executor_config carries only non-secret wiring; the credential is a
 	// secret_ref handle. Pin it into a published set the run names.
-	tool, err := s.CreateTool(ctx, org, project, "acme.remote.lookup")
+	tool, err := s.CreateTool(ctx, project, "acme.remote.lookup")
 	if err != nil {
 		t.Fatalf("create tool: %v", err)
 	}
 	body := []byte(`{"executor":"remote_http","input_schema":{"type":"object"},"output_schema":{"type":"object"},"replay_class":"idempotent","executor_config":{"url":"https://tool.example.com/invoke","allow_private":false},"secret_ref":"sig-ref","timeout_ms":2500}`)
-	rev, err := s.CreateToolRevision(ctx, org, project, tool.ID, body)
+	rev, err := s.CreateToolRevision(ctx, project, tool.ID, body)
 	if err != nil {
 		t.Fatalf("create remote_http rev: %v", err)
 	}
-	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID, nil); err != nil {
+	if _, _, err := s.PublishToolRevision(ctx, project, rev.ID, nil); err != nil {
 		t.Fatalf("publish rev: %v", err)
 	}
-	set, err := s.CreateToolSetRevision(ctx, org, project, "reviewers", pins(rev.ID, nil))
+	set, err := s.CreateToolSetRevision(ctx, project, "reviewers", pins(rev.ID, nil))
 	if err != nil {
 		t.Fatalf("create set: %v", err)
 	}
-	if _, _, err := s.PublishToolSetRevision(ctx, org, project, set.ID); err != nil {
+	if _, _, err := s.PublishToolSetRevision(ctx, project, set.ID); err != nil {
 		t.Fatalf("publish set: %v", err)
 	}
-	runID := seedRunPinnedToSet(t, s, org, project, set.ID)
+	runID := seedRunPinnedToSet(t, s, project, set.ID)
 
 	// Without an invoker wired, the row stays binder-less (creatable but not resolvable — the T2 posture).
-	if _, found, err := s.LookupTool(ctx, org, project, runID, "lookup"); err != nil || found {
+	if _, found, err := s.LookupTool(ctx, project, runID, "lookup"); err != nil || found {
 		t.Fatalf("binder-less lookup = found:%v err:%v, want found=false before the invoker is wired", found, err)
 	}
 
 	// Wire the signed executor (a fake) + an org-scoped resolver, then resolve + run through the broker.
 	inv := &fakeInvoker{result: map[string]any{"echoed": true}}
-	var resolvedOrg, resolvedRef string
-	s.SetRemoteInvoker(inv, func(o, ref string) ([]byte, error) {
-		resolvedOrg, resolvedRef = o, ref
-		return []byte("resolved-secret-" + o), nil
+	var resolvedRef string
+	s.SetRemoteInvoker(inv, func(ref string) ([]byte, error) {
+		resolvedRef = ref
+		return []byte("resolved-secret-" + ref), nil
 	})
 
 	broker := toolbroker.New()
@@ -394,8 +391,8 @@ func TestRemoteHTTPToolResolvesThroughRegistryLookup(t *testing.T) {
 	if inv.last.TimeoutMS != 2500 || inv.last.SecretRef != "sig-ref" {
 		t.Fatalf("invocation wiring = timeout:%d ref:%q, want 2500/sig-ref", inv.last.TimeoutMS, inv.last.SecretRef)
 	}
-	if resolvedOrg != org || resolvedRef != "sig-ref" || string(inv.last.Secret) != "resolved-secret-"+org {
-		t.Fatalf("secret resolution = org:%q ref:%q secret:%q, want org-scoped resolve of sig-ref", resolvedOrg, resolvedRef, inv.last.Secret)
+	if resolvedRef != "sig-ref" || string(inv.last.Secret) != "resolved-secret-sig-ref" {
+		t.Fatalf("secret resolution = ref:%q secret:%q, want a resolve of sig-ref", resolvedRef, inv.last.Secret)
 	}
 }
 
@@ -417,33 +414,33 @@ func contains(xs []string, x string) bool {
 
 // publishEcho registers a control_plane echo tool with the given canonical name and returns its published
 // revision id.
-func publishEcho(t *testing.T, s *Store, org, project, canonical string) string {
+func publishEcho(t *testing.T, s *Store, project, canonical string) string {
 	t.Helper()
 	ctx := context.Background()
-	tool, err := s.CreateTool(ctx, org, project, canonical)
+	tool, err := s.CreateTool(ctx, project, canonical)
 	if err != nil {
 		t.Fatalf("create tool %s: %v", canonical, err)
 	}
-	rev, err := s.CreateToolRevision(ctx, org, project, tool.ID, []byte(`{"executor":"control_plane","input_schema":{"type":"object"},"replay_class":"pure"}`))
+	rev, err := s.CreateToolRevision(ctx, project, tool.ID, []byte(`{"executor":"control_plane","input_schema":{"type":"object"},"replay_class":"pure"}`))
 	if err != nil {
 		t.Fatalf("create rev %s: %v", canonical, err)
 	}
-	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID, nil); err != nil {
+	if _, _, err := s.PublishToolRevision(ctx, project, rev.ID, nil); err != nil {
 		t.Fatalf("publish rev %s: %v", canonical, err)
 	}
 	return rev.ID
 }
 
 // seedRunPinnedToSet seeds a session + agent profile/revision (tool_sets = [setID]) + run, and returns the runID.
-func seedRunPinnedToSet(t *testing.T, s *Store, org, project, setID string) string {
+func seedRunPinnedToSet(t *testing.T, s *Store, project, setID string) string {
 	t.Helper()
 	sessionID, runID := testID("ses"), testID("run")
 	profileID, arevID := testID("aprof"), testID("arev")
-	mustExec(t, s.pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, org, project)
-	mustExec(t, s.pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`, profileID, org, project)
-	mustExec(t, s.pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, published_at, tool_sets)
-	                     VALUES ($1,$2,$3,$4,1,'model-x',clock_timestamp(),$5::jsonb)`, arevID, org, project, profileID, `["`+setID+`"]`)
-	mustExec(t, s.pool, `INSERT INTO runs (id, organization_id, project_id, session_id, agent_revision_id) VALUES ($1,$2,$3,$4,$5)`, runID, org, project, sessionID, arevID)
+	mustExec(t, s.pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, project)
+	mustExec(t, s.pool, `INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,'reviewer')`, profileID, project)
+	mustExec(t, s.pool, `INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, published_at, tool_sets)
+	                     VALUES ($1,$2,$3,1,'model-x',clock_timestamp(),$4::jsonb)`, arevID, project, profileID, `["`+setID+`"]`)
+	mustExec(t, s.pool, `INSERT INTO runs (id, project_id, session_id, agent_revision_id) VALUES ($1,$2,$3,$4)`, runID, project, sessionID, arevID)
 	return runID
 }
 
@@ -452,21 +449,21 @@ func seedRunPinnedToSet(t *testing.T, s *Store, org, project, setID string) stri
 // ConfigSnapshot.Hash is stable across reads (no spurious checkpoint/config-hash divergence for a
 // multi-tool set). Two tools are created in reverse-sorted order to prove the read is not insertion order.
 func TestPinnedRunConfigToolOrderStable(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
 	// Create "zebra" first, "apple" second — insertion order is the REVERSE of sorted order.
-	revZebra := publishEcho(t, s, org, project, "acme.a.zebra")
-	revApple := publishEcho(t, s, org, project, "acme.a.apple")
-	set, err := s.CreateToolSetRevision(ctx, org, project, "reviewers",
+	revZebra := publishEcho(t, s, project, "acme.a.zebra")
+	revApple := publishEcho(t, s, project, "acme.a.apple")
+	set, err := s.CreateToolSetRevision(ctx, project, "reviewers",
 		[]byte(`{"tools":[{"tool_revision_id":"`+revZebra+`"},{"tool_revision_id":"`+revApple+`"}]}`))
 	if err != nil {
 		t.Fatalf("create set: %v", err)
 	}
-	if _, _, err := s.PublishToolSetRevision(ctx, org, project, set.ID); err != nil {
+	if _, _, err := s.PublishToolSetRevision(ctx, project, set.ID); err != nil {
 		t.Fatalf("publish set: %v", err)
 	}
-	runID := seedRunPinnedToSet(t, s, org, project, set.ID)
+	runID := seedRunPinnedToSet(t, s, project, set.ID)
 
 	cs, err := coordinator.Open(ctx, os.Getenv("PALAI_COMPONENT_POSTGRES_URL"))
 	if err != nil {
@@ -490,25 +487,24 @@ func TestPinnedRunConfigToolOrderStable(t *testing.T) {
 // TestLookupToolIsTenantIsolated proves L5: a run in tenant A cannot resolve a tool registered + pinned
 // in tenant B — the lookup and PinnedRunConfig joins are tenant-pinned, so no cross-tenant tool leaks.
 func TestLookupToolIsTenantIsolated(t *testing.T) {
-	s, orgA, projectA := openStore(t)
+	s, projectA := openStore(t)
 	ctx := context.Background()
 
 	// Tenant B (a second org/project on the same pool) registers + pins an echo tool.
-	orgB, projectB := testID("org"), testID("prj")
-	mustExec(t, s.pool, `INSERT INTO organizations (id) VALUES ($1)`, orgB)
-	mustExec(t, s.pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, projectB, orgB)
-	revB := publishEcho(t, s, orgB, projectB, "acme.search.fetch")
-	setB, _ := s.CreateToolSetRevision(ctx, orgB, projectB, "reviewers", []byte(`{"tools":[{"tool_revision_id":"`+revB+`"}]}`))
-	if _, _, err := s.PublishToolSetRevision(ctx, orgB, projectB, setB.ID); err != nil {
+	projectB := testID("prj")
+	mustExec(t, s.pool, `INSERT INTO projects (id) VALUES ($1)`, projectB)
+	revB := publishEcho(t, s, projectB, "acme.search.fetch")
+	setB, _ := s.CreateToolSetRevision(ctx, projectB, "reviewers", []byte(`{"tools":[{"tool_revision_id":"`+revB+`"}]}`))
+	if _, _, err := s.PublishToolSetRevision(ctx, projectB, setB.ID); err != nil {
 		t.Fatalf("publish set B: %v", err)
 	}
 
 	// Tenant A has a run pinned to a set of its own (empty of B's tool). Even naming B's set id in A's
 	// agent revision resolves nothing — the join is pinned to A's tenant, and setB is not in A's scope.
-	runA := seedRunPinnedToSet(t, s, orgA, projectA, setB.ID)
+	runA := seedRunPinnedToSet(t, s, projectA, setB.ID)
 
 	// A's lookup for B's tool name resolves nothing (tenant isolation).
-	if _, found, err := s.LookupTool(ctx, orgA, projectA, runA, "fetch"); err != nil || found {
+	if _, found, err := s.LookupTool(ctx, projectA, runA, "fetch"); err != nil || found {
 		t.Fatalf("tenant A lookup of B's tool = found:%v err:%v, want found=false (tenant-isolated)", found, err)
 	}
 	// And A's effective set carries none of B's tools.

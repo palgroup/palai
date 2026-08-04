@@ -74,7 +74,7 @@ func dbSecretResolver(t *testing.T, secrets *identity.SecretStore) SecretResolve
 // seedSlackWorkspace stores the three values and registers a connection naming them, exactly as
 // `palai up` does: the handle written on the row and the name the value is stored under are the
 // same string, which is the pairing the whole task exists to establish.
-func seedSlackWorkspace(t *testing.T, s *Store, org, project string) (*identity.SecretStore, api.SlackConnectionRef) {
+func seedSlackWorkspace(t *testing.T, s *Store, project string) (*identity.SecretStore, api.SlackConnectionRef) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -106,7 +106,7 @@ func seedSlackWorkspace(t *testing.T, s *Store, org, project string) (*identity.
 	reg := fmt.Sprintf(`{"team_id":%q,"bot_user_id":"Ubot",
 		"signing_secret_ref":"slack-signing-%s","bot_token_ref":"slack-bot-%s","app_token_ref":"slack-app-%s",
 		"default_policy":{"agent_revision_id":"agr_1","principal_id":"prn_1"}}`, team, team, team, team)
-	if _, err := s.CreateSlackConnection(ctx, org, project, []byte(reg)); err != nil {
+	if _, err := s.CreateSlackConnection(ctx, project, []byte(reg)); err != nil {
 		t.Fatalf("register the workspace: %v", err)
 	}
 
@@ -124,8 +124,8 @@ func seedSlackWorkspace(t *testing.T, s *Store, org, project string) (*identity.
 // consumer and reads the credential back off the wire (or off a MAC), so a handle that resolved to
 // nothing — the state on main — fails it with the consumer's own symptom.
 func TestSlackHandlesRedeemToTheStoredValues(t *testing.T) {
-	s, org, project := openStore(t)
-	secrets, conn := seedSlackWorkspace(t, s, org, project)
+	s, project := openStore(t)
+	secrets, conn := seedSlackWorkspace(t, s)
 	resolve := dbSecretResolver(t, secrets)
 
 	for _, want := range []struct{ what, ref string }{
@@ -207,13 +207,13 @@ func TestSlackHandlesRedeemToTheStoredValues(t *testing.T) {
 // companion — without it "the token reached the wire" could be satisfied by a loop that dials with
 // an empty bearer.
 func TestSlackSocketRefusesToDialOnAnUnredeemableHandle(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
 	team := testID("T")
 	reg := fmt.Sprintf(`{"team_id":%q,"bot_user_id":"Ubot","signing_secret_ref":"slack-signing-%s","app_token_ref":"slack-app-%s",
 		"default_policy":{"agent_revision_id":"agr_1","principal_id":"prn_1"}}`, team, team, team)
-	if _, err := s.CreateSlackConnection(ctx, org, project, []byte(reg)); err != nil {
+	if _, err := s.CreateSlackConnection(ctx, project, []byte(reg)); err != nil {
 		t.Fatalf("register the workspace: %v", err)
 	}
 

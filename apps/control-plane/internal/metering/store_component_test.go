@@ -48,29 +48,28 @@ func newID(prefix string) string {
 
 // tenant seeds an organization with two projects, so every test can prove the intra-organization
 // narrowing the SQL (not RLS) is responsible for.
-func tenant(t *testing.T, cs *coordinator.Store) (org, projectA, projectB string) {
+func tenant(t *testing.T, cs *coordinator.Store) (projectA, projectB string) {
 	t.Helper()
 	ctx := storage.WithSystemScope(context.Background())
-	org, projectA, projectB = newID("org"), newID("prj"), newID("prj")
+	projectA, projectB = newID("prj"), newID("prj")
 	stmts := [][]any{
-		{`INSERT INTO organizations (id) VALUES ($1)`, org},
-		{`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, projectA, org},
-		{`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, projectB, org},
+		{`INSERT INTO projects (id) VALUES ($1)`, projectA},
+		{`INSERT INTO projects (id) VALUES ($1)`, projectB},
 	}
 	for _, stmt := range stmts {
 		if _, err := cs.Pool().Exec(ctx, stmt[0].(string), stmt[1:]...); err != nil {
 			t.Fatalf("seed tenant: %v", err)
 		}
 	}
-	return org, projectA, projectB
+	return projectA, projectB
 }
 
-func settle(t *testing.T, cs *coordinator.Store, org, project, meter, unit string, quantity float64) {
+func settle(t *testing.T, cs *coordinator.Store, project, meter, unit string, quantity float64) {
 	t.Helper()
 	if _, err := cs.Pool().Exec(storage.WithSystemScope(context.Background()),
-		`INSERT INTO usage_ledger (id, organization_id, project_id, run_id, meter, quantity, unit, dedupe_key)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $1)`,
-		newID("use"), org, project, newID("run"), meter, quantity, unit); err != nil {
+		`INSERT INTO usage_ledger (id, project_id, run_id, meter, quantity, unit, dedupe_key)
+		 VALUES ($1, $2, $3, $4, $5, $6, $1)`,
+		newID("use"), project, newID("run"), meter, quantity, unit); err != nil {
 		t.Fatalf("settle %s: %v", meter, err)
 	}
 }
@@ -82,7 +81,7 @@ func TestSetLimitIsAnUpsertScopedToTheCaller(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
 	store := metering.New(cs.Pool())
-	_, projectA, _ := tenant(t, cs)
+	projectA, _ := tenant(t, cs)
 	scope := middleware.Scope{Project: projectA}
 
 	first, err := store.SetBudget(ctx, scope, []byte(`{"meter_prefix":"model.","limit_quantity":1000}`))
@@ -126,11 +125,11 @@ func TestUsageSummaryTotalsTheCallersScope(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
 	store := metering.New(cs.Pool())
-	org, projectA, projectB := tenant(t, cs)
+	projectA, projectB := tenant(t, cs)
 
-	settle(t, cs, org, projectA, "model.input_tokens", "token", 30)
-	settle(t, cs, org, projectA, "model.output_tokens", "token", 12)
-	settle(t, cs, org, projectB, "model.output_tokens", "token", 500)
+	settle(t, cs, projectA, "model.input_tokens", "token", 30)
+	settle(t, cs, projectA, "model.output_tokens", "token", 12)
+	settle(t, cs, projectB, "model.output_tokens", "token", 500)
 	if _, err := store.SetBudget(ctx, middleware.Scope{Project: projectA},
 		[]byte(`{"meter_prefix":"model.","limit_quantity":1000}`)); err != nil {
 		t.Fatalf("SetBudget error = %v", err)
@@ -165,11 +164,11 @@ func TestLedgerPageIsKeysetOrderedAndScoped(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
 	store := metering.New(cs.Pool())
-	org, projectA, projectB := tenant(t, cs)
+	projectA, projectB := tenant(t, cs)
 	for i := range 5 {
-		settle(t, cs, org, projectA, "model.output_tokens", "token", float64(i+1))
+		settle(t, cs, projectA, "model.output_tokens", "token", float64(i+1))
 	}
-	settle(t, cs, org, projectB, "model.output_tokens", "token", 999)
+	settle(t, cs, projectB, "model.output_tokens", "token", 999)
 	scope := middleware.Scope{Project: projectA}
 
 	// Page one asks for 3 (2 + the has_more over-fetch the handler adds).
@@ -255,12 +254,12 @@ func mustDecode(t *testing.T, body []byte, v any) {
 // settleForSession is settle with a session attached. The plain helper leaves session_id NULL, which is
 // exactly the row a session filter must NOT return — so both shapes have to exist in the fixture for the
 // filter to be shown to discriminate rather than merely to run.
-func settleForSession(t *testing.T, cs *coordinator.Store, org, project, session, meter, unit string, quantity float64) {
+func settleForSession(t *testing.T, cs *coordinator.Store, project, session, meter, unit string, quantity float64) {
 	t.Helper()
 	if _, err := cs.Pool().Exec(storage.WithSystemScope(context.Background()),
-		`INSERT INTO usage_ledger (id, organization_id, project_id, session_id, run_id, meter, quantity, unit, dedupe_key)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $1)`,
-		newID("use"), org, project, session, newID("run"), meter, quantity, unit); err != nil {
+		`INSERT INTO usage_ledger (id, project_id, session_id, run_id, meter, quantity, unit, dedupe_key)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $1)`,
+		newID("use"), project, session, newID("run"), meter, quantity, unit); err != nil {
 		t.Fatalf("settle %s for session: %v", meter, err)
 	}
 }
@@ -282,14 +281,14 @@ func TestLedgerNarrowsBySessionAndMeterAndLeavesTheUnfilteredPageWhole(t *testin
 	cs := openHarness(t)
 	ctx := context.Background()
 	store := metering.New(cs.Pool())
-	org, project, _ := tenant(t, cs)
+	project, _ := tenant(t, cs)
 	scope := middleware.Scope{Project: project}
 
 	wanted, other := newID("ses"), newID("ses")
-	settleForSession(t, cs, org, project, wanted, "model.input_tokens", "token", 10)
-	settleForSession(t, cs, org, project, wanted, "model.output_tokens", "token", 20)
-	settleForSession(t, cs, org, project, other, "model.input_tokens", "token", 30)
-	settle(t, cs, org, project, "run.admitted", "run", 1) // no session at all — session_id NULL
+	settleForSession(t, cs, project, wanted, "model.input_tokens", "token", 10)
+	settleForSession(t, cs, project, wanted, "model.output_tokens", "token", 20)
+	settleForSession(t, cs, project, other, "model.input_tokens", "token", 30)
+	settle(t, cs, project, "run.admitted", "run", 1) // no session at all — session_id NULL
 
 	all, err := store.ListUsageLedger(ctx, scope, api.ListQuery{Limit: 50})
 	if err != nil {
@@ -337,12 +336,12 @@ func TestLedgerNarrowsBySessionAndMeterAndLeavesTheUnfilteredPageWhole(t *testin
 // settleAt is `settle` with an explicit occurred_at. The bucketing tests need to place rows inside
 // KNOWN buckets, which clock_timestamp() cannot do — every row would land in the current hour and the
 // series would be one bucket wide no matter what the SQL did.
-func settleAt(t *testing.T, cs *coordinator.Store, org, project, meter, unit string, quantity float64, at time.Time) {
+func settleAt(t *testing.T, cs *coordinator.Store, project, meter, unit string, quantity float64, at time.Time) {
 	t.Helper()
 	if _, err := cs.Pool().Exec(storage.WithSystemScope(context.Background()),
-		`INSERT INTO usage_ledger (id, organization_id, project_id, run_id, meter, quantity, unit, dedupe_key, occurred_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $1, $8)`,
-		newID("use"), org, project, newID("run"), meter, quantity, unit, at); err != nil {
+		`INSERT INTO usage_ledger (id, project_id, run_id, meter, quantity, unit, dedupe_key, occurred_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $1, $7)`,
+		newID("use"), project, newID("run"), meter, quantity, unit, at); err != nil {
 		t.Fatalf("settle %s at %s: %v", meter, at, err)
 	}
 }
@@ -382,19 +381,19 @@ type seriesEnvelope struct {
 func TestUsageSeriesBucketsZeroFillsAndOrdersTotally(t *testing.T) {
 	cs := openHarness(t)
 	store := metering.New(cs.Pool())
-	org, projectA, projectB := tenant(t, cs)
+	projectA, projectB := tenant(t, cs)
 
 	// A fixed instant, not time.Now(): the buckets a series returns must be the same on every run and at
 	// every hour of the day, and a relative seed would make this test's expectations drift with the clock.
 	base := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
-	settleAt(t, cs, org, projectA, "model.input_tokens", "token", 100, base)
-	settleAt(t, cs, org, projectA, "model.input_tokens", "token", 50, base.Add(10*time.Minute))
-	settleAt(t, cs, org, projectA, "model.output_tokens", "token", 7, base.Add(10*time.Minute))
-	settleAt(t, cs, org, projectA, "run.admitted", "run", 1, base.Add(10*time.Minute))
+	settleAt(t, cs, projectA, "model.input_tokens", "token", 100, base)
+	settleAt(t, cs, projectA, "model.input_tokens", "token", 50, base.Add(10*time.Minute))
+	settleAt(t, cs, projectA, "model.output_tokens", "token", 7, base.Add(10*time.Minute))
+	settleAt(t, cs, projectA, "run.admitted", "run", 1, base.Add(10*time.Minute))
 	// 11:00 is deliberately EMPTY — the zero-fill is what has to invent it.
-	settleAt(t, cs, org, projectA, "model.input_tokens", "token", 20, base.Add(2*time.Hour))
+	settleAt(t, cs, projectA, "model.input_tokens", "token", 20, base.Add(2*time.Hour))
 	// A sibling project, inside the window, on a meter project A also uses.
-	settleAt(t, cs, org, projectB, "model.input_tokens", "token", 9999, base)
+	settleAt(t, cs, projectB, "model.input_tokens", "token", 9999, base)
 
 	q := api.UsageSeriesQuery{Bucket: "hour", Start: base, End: base.Add(2 * time.Hour)}
 	got := readSeries(t, store, middleware.Scope{Project: projectA}, q)
@@ -455,10 +454,10 @@ func TestUsageSeriesBucketsZeroFillsAndOrdersTotally(t *testing.T) {
 func TestUsageSeriesEmptyWindowIsAnEmptyChartNotAZeroChart(t *testing.T) {
 	cs := openHarness(t)
 	store := metering.New(cs.Pool())
-	org, projectA, _ := tenant(t, cs)
+	projectA, _ := tenant(t, cs)
 
 	base := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
-	settleAt(t, cs, org, projectA, "model.input_tokens", "token", 100, base)
+	settleAt(t, cs, projectA, "model.input_tokens", "token", 100, base)
 
 	// A window that ends before the only row exists.
 	out, err := store.UsageSeries(context.Background(), middleware.Scope{Project: projectA},
@@ -488,11 +487,11 @@ func TestUsageSeriesDayBucketsTruncateInUTCNotTheSessionTimezone(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
 	store := metering.New(cs.Pool())
-	org, projectA, _ := tenant(t, cs)
+	projectA, _ := tenant(t, cs)
 
 	// 22:30 UTC on the 30th is already the 31st in Asia/Kathmandu (+05:45) and still the 30th in UTC.
 	at := time.Date(2026, 7, 30, 22, 30, 0, 0, time.UTC)
-	settleAt(t, cs, org, projectA, "model.input_tokens", "token", 5, at)
+	settleAt(t, cs, projectA, "model.input_tokens", "token", 5, at)
 
 	if _, err := cs.Pool().Exec(storage.WithSystemScope(ctx), `SET TIME ZONE 'Asia/Kathmandu'`); err != nil {
 		t.Fatalf("SET TIME ZONE: %v", err)
@@ -556,7 +555,7 @@ func readSeries(t *testing.T, store *metering.Store, scope middleware.Scope, q a
 func TestUsageSeriesOrdersTotallyWithinABucket(t *testing.T) {
 	cs := openHarness(t)
 	store := metering.New(cs.Pool())
-	org, projectA, _ := tenant(t, cs)
+	projectA, _ := tenant(t, cs)
 
 	base := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
 	// Eight meters in ONE bucket. The names are deliberately not the four the coordinator settles: the
@@ -567,7 +566,7 @@ func TestUsageSeriesOrdersTotallyWithinABucket(t *testing.T) {
 		{"m.mid", "x"}, {"model.input_tokens", "token"}, {"step.interrupted", "step"}, {"b.beta", "x"},
 	}
 	for i, s := range seeded {
-		settleAt(t, cs, org, projectA, s.meter, s.unit, float64(i+1), base.Add(time.Duration(i)*time.Minute))
+		settleAt(t, cs, projectA, s.meter, s.unit, float64(i+1), base.Add(time.Duration(i)*time.Minute))
 	}
 
 	q := api.UsageSeriesQuery{Bucket: "hour", Start: base, End: base.Add(30 * time.Minute)}

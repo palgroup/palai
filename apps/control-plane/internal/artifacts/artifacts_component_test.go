@@ -73,18 +73,17 @@ func openArtifactsHarness(t *testing.T) *artifactsHarness {
 	return &artifactsHarness{repo: repo, pool: pool, s3: s3, writer: NewWriter(s3, pool)}
 }
 
-// seedRun creates org -> project -> session -> run and returns the tenant scope and run
+// seedRun creates project -> session -> run and returns the tenant scope and run
 // id an artifact must reference (the artifacts row FKs projects and runs).
-func (h *artifactsHarness) seedRun(t *testing.T) (org, project, runID string) {
+func (h *artifactsHarness) seedRun(t *testing.T) (project, runID string) {
 	t.Helper()
-	org, project = newID("org"), newID("prj")
+	project = newID("prj")
 	session := newID("ses")
 	runID = newID("run")
-	h.exec(t, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	h.exec(t, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org)
-	h.exec(t, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, org, project)
-	h.exec(t, `INSERT INTO runs (id, organization_id, project_id, session_id) VALUES ($1, $2, $3, $4)`, runID, org, project, session)
-	return org, project, runID
+	h.exec(t, `INSERT INTO projects (id) VALUES ($1)`, project)
+	h.exec(t, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, session, project)
+	h.exec(t, `INSERT INTO runs (id, project_id, session_id) VALUES ($1, $2, $3)`, runID, project, session)
+	return project, runID
 }
 
 func (h *artifactsHarness) exec(t *testing.T, sql string, args ...any) {
@@ -100,7 +99,7 @@ func (h *artifactsHarness) exec(t *testing.T, sql string, args ...any) {
 func TestArtifactPutRecordsRowAndBytes(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, runID := h.seedRun(t)
+	project, runID := h.seedRun(t)
 
 	content := []byte("terminal output: build passed in 3.2s\n")
 	art, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: runID, Content: content})
@@ -127,8 +126,8 @@ func TestArtifactPutRecordsRowAndBytes(t *testing.T) {
 		checksum  string
 	)
 	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT run_id, object_key, size_bytes, checksum FROM artifacts WHERE id = $1 AND organization_id = $2 AND project_id = $3`,
-		art.ID, org, project).Scan(&gotRun, &objectKey, &size, &checksum); err != nil {
+		`SELECT run_id, object_key, size_bytes, checksum FROM artifacts WHERE id = $1  project_id = $2`,
+		art.ID, project).Scan(&gotRun, &objectKey, &size, &checksum); err != nil {
 		t.Fatalf("read artifacts row error = %v", err)
 	}
 	if gotRun != runID || objectKey != art.ObjectKey || size != art.SizeBytes || checksum != art.Checksum {
@@ -161,7 +160,7 @@ func TestArtifactPutRecordsRowAndBytes(t *testing.T) {
 func TestArtifactReadIsTenantScoped(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, runID := h.seedRun(t)
+	project, runID := h.seedRun(t)
 
 	content := []byte("tenant A private artifact bytes")
 	art, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: runID, Content: content})
@@ -170,7 +169,7 @@ func TestArtifactReadIsTenantScoped(t *testing.T) {
 	}
 
 	// The owner reads it back: found, with the exact bytes and object key.
-	gotArt, body, found, err := h.writer.Read(ctx, org, project, art.ID)
+	gotArt, body, found, err := h.writer.Read(ctx, project, art.ID)
 	if err != nil {
 		t.Fatalf("owner Read() error = %v", err)
 	}
@@ -182,8 +181,8 @@ func TestArtifactReadIsTenantScoped(t *testing.T) {
 	}
 
 	// A second tenant asking for the SAME artifact id gets a miss: no bytes, no error.
-	otherOrg, otherProject := newID("org"), newID("prj")
-	_, foreignBody, foreignFound, err := h.writer.Read(ctx, otherOrg, otherProject, art.ID)
+	otherProject := newID("prj")
+	_, foreignBody, foreignFound, err := h.writer.Read(ctx, otherProject, art.ID)
 	if err != nil {
 		t.Fatalf("foreign Read() error = %v, want a clean miss", err)
 	}
@@ -192,7 +191,7 @@ func TestArtifactReadIsTenantScoped(t *testing.T) {
 	}
 
 	// A truly-missing id for the owner returns the identical miss shape.
-	_, _, missingFound, err := h.writer.Read(ctx, org, project, "art_does_not_exist")
+	_, _, missingFound, err := h.writer.Read(ctx, project, "art_does_not_exist")
 	if err != nil {
 		t.Fatalf("missing Read() error = %v, want a clean miss", err)
 	}
@@ -204,21 +203,20 @@ func TestArtifactReadIsTenantScoped(t *testing.T) {
 // seedExpiredStoreFalseRun creates org -> project -> session -> store:false terminal
 // response (aged an hour, so any sub-hour TTL reaps it) -> run keyed to that response,
 // and returns the scope and run id an artifact produced by the run must reference.
-func (h *artifactsHarness) seedExpiredStoreFalseRun(t *testing.T) (org, project, runID string) {
+func (h *artifactsHarness) seedExpiredStoreFalseRun(t *testing.T) (project, runID string) {
 	t.Helper()
-	org, project = newID("org"), newID("prj")
+	project = newID("prj")
 	session := newID("ses")
 	respID := newID("resp")
 	runID = newID("run")
-	h.exec(t, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	h.exec(t, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org)
-	h.exec(t, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, org, project)
-	h.exec(t, `INSERT INTO responses (id, organization_id, project_id, session_id, state, input, store, updated_at)
-		VALUES ($1, $2, $3, $4, 'completed', '{}', false, clock_timestamp() - interval '1 hour')`,
-		respID, org, project, session)
-	h.exec(t, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state)
-		VALUES ($1, $2, $3, $4, $5, 'completed')`, runID, org, project, session, respID)
-	return org, project, runID
+	h.exec(t, `INSERT INTO projects (id) VALUES ($1)`, project)
+	h.exec(t, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, session, project)
+	h.exec(t, `INSERT INTO responses (id, project_id, session_id, state, input, store, updated_at)
+		VALUES ($1, $2, $3, 'completed', '{}', false, clock_timestamp() - interval '1 hour')`,
+		respID, project, session)
+	h.exec(t, `INSERT INTO runs (id, project_id, session_id, response_id, state)
+		VALUES ($1, $2, $3, $4, 'completed')`, runID, project, session, respID)
+	return project, runID
 }
 
 // TestStoreFalsePurgeDeletesArtifactBytes proves the retention sweep genuinely erases the
@@ -229,7 +227,7 @@ func (h *artifactsHarness) seedExpiredStoreFalseRun(t *testing.T) (org, project,
 func TestStoreFalsePurgeDeletesArtifactBytes(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, runID := h.seedExpiredStoreFalseRun(t)
+	project, runID := h.seedExpiredStoreFalseRun(t)
 
 	content := []byte("store:false run terminal output — must not survive retention")
 	art, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: runID, Content: content})
@@ -262,8 +260,8 @@ func TestStoreFalsePurgeDeletesArtifactBytes(t *testing.T) {
 		size      int64
 	)
 	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT object_key, size_bytes FROM artifacts WHERE id = $1 AND organization_id = $2 AND project_id = $3`,
-		art.ID, org, project).Scan(&objectKey, &size); err != nil {
+		`SELECT object_key, size_bytes FROM artifacts WHERE id = $1  project_id = $2`,
+		art.ID, project).Scan(&objectKey, &size); err != nil {
 		t.Fatalf("read artifact row error = %v", err)
 	}
 	if objectKey != "" || size != 0 {
@@ -278,7 +276,7 @@ func TestStoreFalsePurgeDeletesArtifactBytes(t *testing.T) {
 func TestPatchArtifactWrittenToObjectStore(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, session, runID, root := h.seedChangesetScenario(t)
+	project, session, runID, root := h.seedChangesetScenario(t)
 
 	rec, compiled, err := execution.CompileChangeset(ctx, h.repo.Spine(), h.writer, execution.ChangesetInput{
 		Tenant: coordinator.Tenant{Project: project}, SessionID: session, RunID: runID, AllocationRoot: root,
@@ -291,14 +289,14 @@ func TestPatchArtifactWrittenToObjectStore(t *testing.T) {
 	}
 
 	// The patch artifact: row carries logical_type=patch, and its S3 bytes are the real diff.
-	h.assertArtifact(t, org, project, rec.PatchArtifactID, "patch", "text/x-diff", "added.go")
+	h.assertArtifact(t, project, rec.PatchArtifactID, "patch", "text/x-diff", "added.go")
 	// The test-log artifact: logical_type=test-result, bytes carry the checks transcript.
-	h.assertArtifact(t, org, project, rec.TestLogArtifactID, "test-result", "text/plain", "go test")
+	h.assertArtifact(t, project, rec.TestLogArtifactID, "test-result", "text/plain", "go test")
 
 	// The changeset row is recorded with its content hash.
 	var contentHash string
-	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT content_hash FROM changesets WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		rec.ID, org, project).Scan(&contentHash); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT content_hash FROM changesets WHERE id=$1  project_id=$2`,
+		rec.ID, project).Scan(&contentHash); err != nil {
 		t.Fatalf("read changeset row: %v", err)
 	}
 	if contentHash != rec.ContentHash || contentHash == "" {
@@ -307,12 +305,12 @@ func TestPatchArtifactWrittenToObjectStore(t *testing.T) {
 }
 
 // assertArtifact checks an artifact's row classification and that its S3 bytes contain want.
-func (h *artifactsHarness) assertArtifact(t *testing.T, org, project, id, wantLogical, wantMedia, wantSubstr string) {
+func (h *artifactsHarness) assertArtifact(t *testing.T, project, id, wantLogical, wantMedia, wantSubstr string) {
 	t.Helper()
 	var objectKey, logical, media string
 	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT object_key, logical_type, media_type FROM artifacts WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
-		id, org, project).Scan(&objectKey, &logical, &media); err != nil {
+		`SELECT object_key, logical_type, media_type FROM artifacts WHERE id=$1  project_id=$2`,
+		id, project).Scan(&objectKey, &logical, &media); err != nil {
 		t.Fatalf("read artifact %s row: %v", id, err)
 	}
 	if logical != wantLogical || media != wantMedia {
@@ -329,26 +327,25 @@ func (h *artifactsHarness) assertArtifact(t *testing.T, org, project, id, wantLo
 
 // seedChangesetRun creates org -> project -> session -> run, a repository binding, and a preparation
 // receipt pinning base, so CompileChangeset resolves the run's base commit. Returns the scope + ids.
-func (h *artifactsHarness) seedChangesetRun(t *testing.T, base string) (org, project, session, runID string) {
+func (h *artifactsHarness) seedChangesetRun(t *testing.T, base string) (project, session, runID string) {
 	t.Helper()
-	org, project = newID("org"), newID("prj")
+	project = newID("prj")
 	session = newID("ses")
 	runID = newID("run")
 	binding := newID("rbn")
-	h.exec(t, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	h.exec(t, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org)
-	h.exec(t, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, org, project)
-	h.exec(t, `INSERT INTO runs (id, organization_id, project_id, session_id) VALUES ($1, $2, $3, $4)`, runID, org, project, session)
-	h.exec(t, `INSERT INTO repository_bindings (id, organization_id, project_id, provider, repository_identity, clone_url)
-		VALUES ($1,$2,$3,'test','id','file:///tmp/x')`, binding, org, project)
-	h.exec(t, `INSERT INTO preparation_receipts (id, repository_binding_id, organization_id, project_id, run_id, base_commit, tree_hash)
-		VALUES ($1,$2,$3,$4,$5,$6,'sha256:tree')`, newID("prep"), binding, org, project, runID, base)
-	return org, project, session, runID
+	h.exec(t, `INSERT INTO projects (id) VALUES ($1)`, project)
+	h.exec(t, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, session, project)
+	h.exec(t, `INSERT INTO runs (id, project_id, session_id) VALUES ($1, $2, $3)`, runID, project, session)
+	h.exec(t, `INSERT INTO repository_bindings (id, project_id, provider, repository_identity, clone_url)
+		VALUES ($1,$2,'test','id','file:///tmp/x')`, binding, project)
+	h.exec(t, `INSERT INTO preparation_receipts (id, repository_binding_id, project_id, run_id, base_commit, tree_hash)
+		VALUES ($1,$2,$3,$4,$5,'sha256:tree')`, newID("prep"), binding, project, runID, base)
+	return project, session, runID
 }
 
 // seedChangesetScenario builds a full changeset-compile scenario: a real <root>/repo git repo with a
 // base commit + a working-tree edit, the run + preparation receipt, and the file+shell tool ledger.
-func (h *artifactsHarness) seedChangesetScenario(t *testing.T) (org, project, session, runID, root string) {
+func (h *artifactsHarness) seedChangesetScenario(t *testing.T) (project, session, runID, root string) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git not found: %v", err)
@@ -382,17 +379,17 @@ func (h *artifactsHarness) seedChangesetScenario(t *testing.T) (org, project, se
 		t.Fatal(err)
 	}
 
-	org, project, session, runID = h.seedChangesetRun(t, base)
-	h.exec(t, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, name, arguments, result)
-		VALUES ($1,$2,$3,$4,'palai.workspace.file',$5,$6)`,
-		newID("tc"), org, project, runID,
+	project, session, runID = h.seedChangesetRun(t, base)
+	h.exec(t, `INSERT INTO tool_calls (id, project_id, run_id, name, arguments, result)
+		VALUES ($1,$2,$3,'palai.workspace.file',$4,$5)`,
+		newID("tc"), project, runID,
 		`{"op":"write","path":"repo/added.go","content":"package main\n"}`,
 		`{"path":"repo/added.go","before_hash":"","after_hash":"sha256:aa","created":true}`)
-	h.exec(t, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, name, arguments, result)
-		VALUES ($1,$2,$3,$4,'palai.workspace.shell',$5,$6)`,
-		newID("tc"), org, project, runID,
+	h.exec(t, `INSERT INTO tool_calls (id, project_id, run_id, name, arguments, result)
+		VALUES ($1,$2,$3,'palai.workspace.shell',$4,$5)`,
+		newID("tc"), project, runID,
 		`{"argv":["go","test","./..."]}`, `{"exit_code":0,"stdout":"PASS\n"}`)
-	return org, project, session, runID, root
+	return project, session, runID, root
 }
 
 // TestChangesetRecompileIsIdempotent proves the content-addressed id makes a re-compile idempotent
@@ -401,7 +398,7 @@ func (h *artifactsHarness) seedChangesetScenario(t *testing.T) (org, project, se
 func TestChangesetRecompileIsIdempotent(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, session, runID, root := h.seedChangesetScenario(t)
+	project, session, runID, root := h.seedChangesetScenario(t)
 	in := execution.ChangesetInput{
 		Tenant: coordinator.Tenant{Project: project}, SessionID: session, RunID: runID, AllocationRoot: root,
 	}
@@ -419,8 +416,8 @@ func TestChangesetRecompileIsIdempotent(t *testing.T) {
 	}
 
 	var rows int
-	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM changesets WHERE run_id=$1 AND organization_id=$2 AND project_id=$3`,
-		runID, org, project).Scan(&rows); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM changesets WHERE run_id=$1  project_id=$2`,
+		runID, project).Scan(&rows); err != nil {
 		t.Fatalf("count changesets: %v", err)
 	}
 	if rows != 1 {

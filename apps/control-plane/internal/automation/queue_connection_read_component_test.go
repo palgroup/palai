@@ -28,14 +28,14 @@ func TestQueueConnectionSingularReadIsTenantScopedAndMatchesTheList(t *testing.T
 	store := NewQueueStore(pool)
 	ctx := context.Background()
 
-	org, project, _ := seedSession(t, pool)
-	_, strangerProject, _ := seedSession(t, pool)
+	project, _ := seedSession(t, pool)
+	strangerProject, _ := seedSession(t, pool)
 
 	config, err := json.Marshal(map[string]string{"agent_revision_id": "arev_1", "principal_id": "prin_1"})
 	if err != nil {
 		t.Fatalf("marshal config: %v", err)
 	}
-	connID := mustCreateQueueConn(t, store, org, project, QueueConnectionInput{
+	connID := mustCreateQueueConn(t, store, project, QueueConnectionInput{
 		Name: "orders", Direction: "inbound", Visibility: 45 * time.Second, MaxDeliveries: 7, Config: config,
 	})
 

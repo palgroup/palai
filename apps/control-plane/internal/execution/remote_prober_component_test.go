@@ -32,7 +32,7 @@ func TestLateCallbackAfterDeadlineEntersReconciliationNotSilentCommit(t *testing
 	secret := []byte("remote-tool-late-secret")
 
 	resolver := func(ref string) ([]byte, error) {
-		if org == tenant.Organization && ref == "sig-ref" {
+		if ref == "sig-ref" {
 			return secret, nil
 		}
 		return nil, nil
@@ -47,8 +47,8 @@ func TestLateCallbackAfterDeadlineEntersReconciliationNotSilentCommit(t *testing
 	// reconcile derives session/response from the run row (session_id is set; response_id coalesces to '').
 	callID := redeliveryID("tc")
 	execSQL(t, pool,
-		`INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
-		 VALUES ($1,$2,$3,$4,5,'uncertain','remote.lookup','{}','reversible','reconciling')`,
+		`INSERT INTO tool_calls (id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
+		 VALUES ($1,$2,$3,5,'uncertain','remote.lookup','{}','reversible','reconciling')`,
 		callID, tenant.Project, runID)
 	_ = sessionID
 	operationID := redeliveryID("rop")

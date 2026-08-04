@@ -44,10 +44,9 @@ func openLedgerSpine(t *testing.T) (*coordinator.Store, coordinator.Tenant, stri
 	tenant := coordinator.Tenant{Project: redeliveryID("prj")}
 	sessionID, runID := redeliveryID("ses"), redeliveryID("run")
 	pool := cs.Pool()
-	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Project)
-	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, runID, tenant.Project, sessionID)
+	execSQL(t, pool, `INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
+	execSQL(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, sessionID, tenant.Project)
+	execSQL(t, pool, `INSERT INTO runs (id, project_id, session_id, state) VALUES ($1, $2, $3, 'running')`, runID, tenant.Project, sessionID)
 	return cs, tenant, sessionID, runID
 }
 
@@ -253,12 +252,12 @@ func TestRecoveryProofCarriesClassLabeledReplay(t *testing.T) {
 	ctx := context.Background()
 	cs, tenant, sessionID, runID := openLedgerSpine(t)
 	respID := redeliveryID("resp")
-	execSQL(t, cs.Pool(), `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+	execSQL(t, cs.Pool(), `INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'in_progress')`,
 		respID, tenant.Project, sessionID)
 	// Two resolved tool_calls with distinct classes — the reused set a reconstruction replays.
-	execSQL(t, cs.Pool(), `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class) VALUES ($1,$2,$3,$4,1,'completed','pure_add','{}','pure')`,
+	execSQL(t, cs.Pool(), `INSERT INTO tool_calls (id, project_id, run_id, fence, state, name, arguments, replay_class) VALUES ($1,$2,$3,1,'completed','pure_add','{}','pure')`,
 		"tc_pure", tenant.Project, runID)
-	execSQL(t, cs.Pool(), `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class) VALUES ($1,$2,$3,$4,2,'reconciled_completed','push','{}','idempotent')`,
+	execSQL(t, cs.Pool(), `INSERT INTO tool_calls (id, project_id, run_id, fence, state, name, arguments, replay_class) VALUES ($1,$2,$3,2,'reconciled_completed','push','{}','idempotent')`,
 		"tc_idem", tenant.Project, runID)
 
 	orch := &Orchestrator{spine: cs}
@@ -385,7 +384,7 @@ func TestStaleCommitOnReclaimerParkedRowRejected(t *testing.T) {
 		callID := redeliveryID("tc")
 		// The reclaimer's ledger row, parked in a resolved/uncertain state (our stale attempt executed
 		// before this and now tries to commit).
-		execSQL(t, cs.Pool(), `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class) VALUES ($1,$2,$3,$4,2,$5,'effect','{}','reversible')`,
+		execSQL(t, cs.Pool(), `INSERT INTO tool_calls (id, project_id, run_id, fence, state, name, arguments, replay_class) VALUES ($1,$2,$3,2,$4,'effect','{}','reversible')`,
 			callID, tenant.Project, runID, parked)
 		_, err := cs.CommitToolResult(ctx, tenant, sessionID, "", runID, 2, callID, "effect",
 			[]byte(`{}`), []byte(`{"fresh":true}`), "reversible", "sha256:x", "tool_call.completed.v1", []byte(`{}`))
@@ -396,7 +395,7 @@ func TestStaleCommitOnReclaimerParkedRowRejected(t *testing.T) {
 
 	// A plain completed row is still a benign idempotent re-drive (nil, no error) — the durable result stands.
 	completedID := redeliveryID("tc")
-	execSQL(t, cs.Pool(), `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, result) VALUES ($1,$2,$3,$4,2,'completed','effect','{}','pure','{"done":true}')`,
+	execSQL(t, cs.Pool(), `INSERT INTO tool_calls (id, project_id, run_id, fence, state, name, arguments, replay_class, result) VALUES ($1,$2,$3,2,'completed','effect','{}','pure','{"done":true}')`,
 		completedID, tenant.Project, runID)
 	if _, err := cs.CommitToolResult(ctx, tenant, sessionID, "", runID, 2, completedID, "effect",
 		[]byte(`{}`), []byte(`{"done":true}`), "pure", "sha256:x", "tool_call.completed.v1", []byte(`{}`)); err != nil {

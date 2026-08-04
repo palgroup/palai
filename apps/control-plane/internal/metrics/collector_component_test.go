@@ -54,10 +54,10 @@ func TestMetricsScrapeAggregatesAllTenantsWithoutLeak(t *testing.T) {
 	// scan of the output would find their ids. The metric must instead show ONE count per lifecycle state.
 	orgA, projA := "org_metrics_A", "proj_metrics_A"
 	orgB, projB := "org_metrics_B", "proj_metrics_B"
-	seedTenantWithRuns(t, ctx, pool, orgA, projA, map[string]int{"running": 2, "completed": 1})
-	seedTenantWithRuns(t, ctx, pool, orgB, projB, map[string]int{"completed": 1, "failed": 1})
+	seedTenantWithRuns(t, ctx, pool, projA, map[string]int{"running": 2, "completed": 1})
+	seedTenantWithRuns(t, ctx, pool, projB, map[string]int{"completed": 1, "failed": 1})
 	// A claimable queued job for tenant B, so the queue-depth query counts it.
-	exec(t, ctx, pool, `INSERT INTO durable_jobs (id, organization_id, project_id) VALUES ($1,$2,$3)`, "job_metrics_1", orgB, projB)
+	exec(t, ctx, pool, `INSERT INTO durable_jobs (id, project_id) VALUES ($1,$2)`, "job_metrics_1", projB)
 
 	after := scrapeMetrics(t, collector)
 
@@ -122,10 +122,9 @@ func scalarValue(t *testing.T, out, name string) float64 {
 	return v
 }
 
-func seedTenantWithRuns(t *testing.T, ctx context.Context, pool *pgxpool.Pool, org, project string, statesByCount map[string]int) {
+func seedTenantWithRuns(t *testing.T, ctx context.Context, pool *pgxpool.Pool, project string, statesByCount map[string]int) {
 	t.Helper()
-	exec(t, ctx, pool, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	exec(t, ctx, pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
+	exec(t, ctx, pool, `INSERT INTO projects (id) VALUES ($1)`, project)
 	// One session per run: runs_one_active_root_per_session forbids two active root runs sharing a
 	// session, and the aggregate counts runs, not sessions, so a session apiece keeps the seed honest.
 	i := 0
@@ -134,9 +133,9 @@ func seedTenantWithRuns(t *testing.T, ctx context.Context, pool *pgxpool.Pool, o
 			i++
 			suffix := state + string(rune('a'+i))
 			session := project + "_sess_" + suffix
-			exec(t, ctx, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, session, org, project)
-			exec(t, ctx, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,$5)`,
-				project+"_run_"+suffix, org, project, session, state)
+			exec(t, ctx, pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, session, project)
+			exec(t, ctx, pool, `INSERT INTO runs (id, project_id, session_id, state) VALUES ($1,$2,$3,$4)`,
+				project+"_run_"+suffix, project, session, state)
 		}
 	}
 }

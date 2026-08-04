@@ -216,8 +216,56 @@ func TestSanitizesHTTPError(t *testing.T) {
 	if res.Error.Code != "rate_limit_error" {
 		t.Errorf("error code = %q, want the stable provider type surfaced", res.Error.Code)
 	}
-	if strings.Contains(res.Error.Message, "rate limit reached") || strings.Contains(res.Error.Message, "sk-ant") {
-		t.Errorf("sanitized error leaked provider free-text: %q", res.Error.Message)
+	// THE CONTRACT CHANGED ON 2026-08-04, AND IN THE DIRECTION THAT MATTERS. This used to assert that NO
+	// provider free text survived. That policy cost an hour of live debugging: an image run failed with
+	// `invalid_request_error` once a second, forever, while Anthropic's body named the exact invalid field
+	// and this adapter dropped the sentence. "No information" was never the safe choice — it moved the cost
+	// from a hypothetical leak to a certain outage.
+	//
+	// So the assertion is now the one that was actually load-bearing all along: the CREDENTIAL must not
+	// survive. The explanation may, and must, because the deployment's operator is who reads it.
+	if !strings.Contains(res.Error.Message, "rate limit reached") {
+		t.Errorf("message = %q, want the provider's own explanation carried through", res.Error.Message)
+	}
+	if strings.Contains(res.Error.Message, "sk-ant") {
+		t.Errorf("sanitized error leaked a credential token: %q", res.Error.Message)
+	}
+	// The needle the fake echoed is a PREFIX of nothing we hold, so it is caught by the sk- rule. The
+	// credential-fragment rule is proved separately, against a body echoing the real secret.
+	if strings.Contains(res.Error.Message, sentinelSecret) {
+		t.Errorf("sanitized error leaked the credential value: %q", res.Error.Message)
+	}
+}
+
+// A provider that echoes a FRAGMENT of the real credential must still be redacted. This is the half an
+// exact-match comparison would sail past: providers quote a key PREFIX ("...for key sk-ant-api03-Xy7…"),
+// never the whole thing, so the redaction scans every 8-character window of the credential this call used.
+func TestSanitizeRedactsAnEchoedCredentialFragment(t *testing.T) {
+	// A MIDDLE slice, deliberately: a fragment starting "sk-" would be caught by the sk- token rule and
+	// this test would pass while proving nothing about the credential-window rule it exists for.
+	fragment := sentinelSecret[8:26]
+	if strings.Contains(fragment, "sk-") {
+		t.Fatalf("fragment %q starts with the sk- marker; this test would not exercise the window rule", fragment)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key: `+fragment+` is not valid"}}`)
+	}))
+	defer srv.Close()
+
+	res, err := providertwo.Adapter{BaseURL: srv.URL}.Execute(context.Background(), toolSchemaRequest(), sentinelSecret, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res.Error == nil {
+		t.Fatal("Result.Error = nil, want a sanitized 401")
+	}
+	if strings.Contains(res.Error.Message, fragment) {
+		t.Fatalf("an echoed credential FRAGMENT survived redaction: %q", res.Error.Message)
+	}
+	if !strings.Contains(res.Error.Message, "invalid x-api-key") {
+		t.Errorf("message = %q, want the surrounding explanation kept", res.Error.Message)
 	}
 }
 

@@ -67,14 +67,14 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 	pool := cs.Pool()
-	org, project, session, runID := newID("org"), newID("prj"), newID("ses"), newID("run")
+	project, session, runID := newID("prj"), newID("ses"), newID("run")
 	exec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, project)
 	exec(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, session, project)
 	exec(t, pool, `INSERT INTO runs (id, project_id, session_id) VALUES ($1,$2,$3)`, runID, project, session)
 
 	ops := remotehttp.NewOperations(pool)
-	resolver := func(o, ref string) ([]byte, error) {
-		if o == org && ref == testSecretRef {
+	resolver := func(ref string) ([]byte, error) {
+		if ref == testSecretRef {
 			return testSecret, nil
 		}
 		return nil, nil // an unresolvable ref -> generic 404

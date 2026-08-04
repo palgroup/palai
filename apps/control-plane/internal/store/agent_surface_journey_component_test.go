@@ -392,7 +392,7 @@ func (f *slackFixture) reservedSourceEvents(t *testing.T, route string) []string
 	t.Helper()
 	rows, err := f.pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT idempotency_key FROM idempotency_records
-		  WHERE organization_id=$1 AND project_id=$2 AND route=$3 ORDER BY id`, f.org, f.project, route)
+		  WHERE  project_id=$1 AND route=$2 ORDER BY id`, f.project, route)
 	if err != nil {
 		t.Fatalf("read reservations under %s: %v", route, err)
 	}
@@ -424,8 +424,7 @@ func (f *slackFixture) contextEntitiesThatGainedAuthority(t *testing.T, runID st
 	var foreignPrincipals int
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(*) FROM idempotency_records
-		  WHERE organization_id=$1 AND project_id=$2 AND route=$3 AND principal_id <> $4`,
-		f.org, f.project, uat.AgentSurfaceAdmissionRoute, f.principal).Scan(&foreignPrincipals); err != nil {
+		  WHERE  project_id=$1 AND route=$2 AND principal_id <> $3`, f.project, uat.AgentSurfaceAdmissionRoute, f.principal).Scan(&foreignPrincipals); err != nil {
 		t.Fatalf("count reservations taken under a foreign principal: %v", err)
 	}
 	gained := foreignPrincipals

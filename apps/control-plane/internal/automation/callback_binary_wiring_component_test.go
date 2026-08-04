@@ -43,7 +43,7 @@ func TestCallbackWiredIntoRunningBinary(t *testing.T) {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 	token := randID("tok")
-	_, project := seedTenantWithKey(t, repo.Spine().Pool(), token)
+	project := seedTenantWithKey(t, repo.Spine().Pool(), token)
 
 	// A real local TLS receiver that verifies the HMAC server-side (a sham verifier would not prove the
 	// contract) and records the callback it accepts.

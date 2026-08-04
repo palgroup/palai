@@ -38,9 +38,9 @@ func assertCount(t *testing.T, pool interface {
 func TestOrchestratorRetrySameIdempotencyKeySingleEverything(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	triggerID, _ := seedTrigger(t, store, org, project, "orders", TriggerRevisionInput{
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	triggerID, _ := seedTrigger(t, store, project, "orders", TriggerRevisionInput{
 		InputMapping: []byte(`{"fields":{"input":{"const":"do the work"}}}`),
 	})
 
@@ -100,9 +100,9 @@ func TestOrchestratorRetrySameIdempotencyKeySingleEverything(t *testing.T) {
 func TestSameIdempotencyKeyDifferentBodyConflict409(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	triggerID, _ := seedTrigger(t, store, org, project, "conflict", TriggerRevisionInput{
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	triggerID, _ := seedTrigger(t, store, project, "conflict", TriggerRevisionInput{
 		InputMapping: []byte(`{"fields":{"input":{"const":"x"}}}`),
 	})
 
@@ -121,9 +121,9 @@ func TestSameIdempotencyKeyDifferentBodyConflict409(t *testing.T) {
 func TestRetryAfterTriggerDisabledReplaysWinner(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	triggerID, _ := seedTrigger(t, store, org, project, "disable-replay", TriggerRevisionInput{
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	triggerID, _ := seedTrigger(t, store, project, "disable-replay", TriggerRevisionInput{
 		InputMapping: []byte(`{"fields":{"input":{"const":"x"}}}`),
 	})
 
@@ -161,9 +161,9 @@ func TestRetryAfterTriggerDisabledReplaysWinner(t *testing.T) {
 func TestOrchestratorRetryDifferentKeySameDedupeSingleAction(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	triggerID, _ := seedTrigger(t, store, org, project, "dedupe", TriggerRevisionInput{
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	triggerID, _ := seedTrigger(t, store, project, "dedupe", TriggerRevisionInput{
 		InputMapping:  []byte(`{"fields":{"input":{"const":"x"}}}`),
 		DedupeKeyExpr: `{"select":"order.id"}`,
 	})

@@ -292,7 +292,7 @@ var _ = coordinator.AutoApprove{}
 func seedResponseForRun(t *testing.T, h *approvalHarness) string {
 	t.Helper()
 	respID := redeliveryID("resp")
-	execSQL(t, h.spine.Pool(), `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+	execSQL(t, h.spine.Pool(), `INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'in_progress')`,
 		respID, h.tenant.Project, h.sessionID)
 	execSQL(t, h.spine.Pool(), `UPDATE runs SET response_id = $1 WHERE id = $2`, respID, h.runID)
 	return respID

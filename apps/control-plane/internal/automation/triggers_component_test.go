@@ -49,16 +49,16 @@ func wiredTriggerStore(t *testing.T) (*TriggerStore, *pgxpool.Pool) {
 
 // seedPrincipal creates a service principal in scope and returns its id — the principal a manual/API
 // delivery admits AS (the §20.9 idempotency record FKs principals).
-func seedPrincipal(t *testing.T, pool *pgxpool.Pool, org, project string) string {
+func seedPrincipal(t *testing.T, pool *pgxpool.Pool, project string) string {
 	t.Helper()
 	id := randID("prin")
-	mustExec(t, pool, `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`, id, org, project)
+	mustExec(t, pool, `INSERT INTO principals (id, project_id, kind) VALUES ($1,$2,'service')`, id, project)
 	return id
 }
 
 // seedTrigger creates a trigger with one initial revision and returns (triggerID, revisionID). The
 // caller supplies the revision input (mapping/policy/pin) it needs.
-func seedTrigger(t *testing.T, s *TriggerStore, org, project, name string, in TriggerRevisionInput) (string, string) {
+func seedTrigger(t *testing.T, s *TriggerStore, project, name string, in TriggerRevisionInput) (string, string) {
 	t.Helper()
 	ctx := context.Background()
 	triggerID, err := s.CreateTrigger(ctx, project, "", name, "manual_api")
@@ -78,7 +78,7 @@ func seedTrigger(t *testing.T, s *TriggerStore, org, project, name string, in Tr
 func TestRevisionValidationRejectsBadCombos(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	_, project, _ := seedSession(t, pool)
+	project, _ := seedSession(t, pool)
 	triggerID, err := store.CreateTrigger(ctx, project, "", "validate", "manual_api")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
@@ -111,11 +111,11 @@ func TestRevisionValidationRejectsBadCombos(t *testing.T) {
 func TestMalformedPayloadRejectedFromReceived(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
-	triggerID, _ := seedTrigger(t, store, org, project, "malformed", TriggerRevisionInput{})
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
+	triggerID, _ := seedTrigger(t, store, project, "malformed", TriggerRevisionInput{})
 
-	del, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`"not an object"`))
+	del, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`"not an object"`))
 	if err != nil {
 		t.Fatalf("CreateDelivery error = %v", err)
 	}
@@ -133,13 +133,13 @@ func TestMalformedPayloadRejectedFromReceived(t *testing.T) {
 func TestAcceptedDeliveryPinsExactRevision(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
+	project, _ := seedSession(t, pool)
 
-	principal := seedPrincipal(t, pool, org, project)
-	triggerID, rev1 := seedTrigger(t, store, org, project, "nightly", TriggerRevisionInput{})
+	principal := seedPrincipal(t, pool, project)
+	triggerID, rev1 := seedTrigger(t, store, project, "nightly", TriggerRevisionInput{})
 
 	// The active revision is rev1; a delivery pins it.
-	del, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"order":{"id":"o1"}}`))
+	del, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"order":{"id":"o1"}}`))
 	if err != nil {
 		t.Fatalf("CreateDelivery error = %v", err)
 	}
@@ -152,7 +152,7 @@ func TestAcceptedDeliveryPinsExactRevision(t *testing.T) {
 	if rev2.ID == rev1 || rev2.RevisionNumber != 2 {
 		t.Fatalf("revise produced revision %+v, want a new id at number 2", rev2)
 	}
-	active, _, err := store.GetActiveRevision(ctx, org, project, triggerID)
+	active, _, err := store.GetActiveRevision(ctx, project, triggerID)
 	if err != nil {
 		t.Fatalf("GetActiveRevision error = %v", err)
 	}

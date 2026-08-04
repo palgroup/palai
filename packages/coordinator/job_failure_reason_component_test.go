@@ -60,12 +60,11 @@ func TestADeadJobRecordsWhyEachOfItsAttemptsFailed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	org, project := pinTestID("org"), pinTestID("prj")
-	mustExecPin(t, cs, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	mustExecPin(t, cs, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
+	project := pinTestID("prj")
+	mustExecPin(t, cs, `INSERT INTO projects (id) VALUES ($1)`, project)
 	jobID := pinTestID("job")
-	mustExecPin(t, cs, `INSERT INTO durable_jobs (id, organization_id, project_id, kind, payload)
-	                     VALUES ($1,$2,$3,'response.run','{}'::jsonb)`, jobID, org, project)
+	mustExecPin(t, cs, `INSERT INTO durable_jobs (id, project_id, kind, payload)
+	                     VALUES ($1,$2,'response.run','{}'::jsonb)`, jobID, project)
 
 	// The sentence a person needs, and the one nothing kept. It is deliberately distinctive so a test
 	// that found the word 'failed' somewhere could not pass by accident.
@@ -142,13 +141,12 @@ func TestASucceedingJobRecordsNoFailureReason(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	org, project := pinTestID("org"), pinTestID("prj")
-	mustExecPin(t, cs, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	mustExecPin(t, cs, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
+	project := pinTestID("prj")
+	mustExecPin(t, cs, `INSERT INTO projects (id) VALUES ($1)`, project)
 
 	jobID := pinTestID("job")
-	mustExecPin(t, cs, `INSERT INTO durable_jobs (id, organization_id, project_id, kind, payload)
-	                     VALUES ($1,$2,$3,'response.run','{}'::jsonb)`, jobID, org, project)
+	mustExecPin(t, cs, `INSERT INTO durable_jobs (id, project_id, kind, payload)
+	                     VALUES ($1,$2,'response.run','{}'::jsonb)`, jobID, project)
 
 	worker := NewWorker(cs, WorkerConfig{
 		Owner: "component-failure-reason-ok", Lease: 5 * time.Second, Heartbeat: time.Second,

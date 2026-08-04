@@ -41,32 +41,29 @@ import (
 func seedToolSurfaceRun(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant, executor, modelName, description, riders string) string {
 	t.Helper()
 	pool := cs.Pool()
-	org, project := tenant.Project
+	project := tenant.Project
 	toolID, trevID := redeliveryID("tool"), redeliveryID("trev")
 	setID, profileID, arevID := redeliveryID("tsrev"), redeliveryID("aprof"), redeliveryID("arev")
 	sessionID, runID := redeliveryID("ses"), redeliveryID("run")
 
-	execSQL(t, pool, `INSERT INTO tools (id, organization_id, project_id, canonical_name, model_visible_name)
-	                  VALUES ($1,$2,$3,$4,$5)`, toolID, org, project, "reg."+modelName, modelName)
+	execSQL(t, pool, `INSERT INTO tools (id, project_id, canonical_name, model_visible_name)
+	                  VALUES ($1,$2,$3,$4)`, toolID, project, "reg."+modelName, modelName)
 	// published_at is what makes a revision advertisable: a draft carries an unapproved, tenant-written
 	// description and is deliberately never offered to a model (EXT-006).
-	execSQL(t, pool, `INSERT INTO tool_revisions (id, organization_id, project_id, tool_id, revision_number,
-	                      executor, description, input_schema, replay_class, digest, published_at)
-	                  VALUES ($1,$2,$3,$4,1,$5,$6,'{"type":"object"}'::jsonb,'pure',$7,clock_timestamp())`,
-		trevID, org, project, toolID, executor, description, "sha256:"+trevID)
-	execSQL(t, pool, `INSERT INTO tool_set_revisions (id, organization_id, project_id, set_name, revision_number,
-	                      tool_pins, digest, published_at)
-	                  VALUES ($1,$2,$3,$4,1,$5::jsonb,'d',clock_timestamp())`,
-		setID, org, project, "set-"+modelName, `[{"tool_revision_id":"`+trevID+`"}]`)
-	execSQL(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,$4)`,
-		profileID, org, project, profileID)
-	execSQL(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number,
-	                      model, published_at, tool_sets, mcp_connections)
-	                  VALUES ($1,$2,$3,$4,1,'model-x',clock_timestamp(),$5::jsonb,$6::jsonb)`,
-		arevID, org, project, profileID, `["`+setID+`"]`, riders)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, org, project)
-	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, agent_revision_id, state)
-	                  VALUES ($1,$2,$3,$4,$5,'running')`, runID, org, project, sessionID, arevID)
+	execSQL(t, pool, `INSERT INTO tool_revisions (id, project_id, tool_id, revision_number, executor, description, input_schema, replay_class, digest, published_at)
+	                  VALUES ($1,$2,$3,1,$4,$5,'{"type":"object"}'::jsonb,'pure',$6,clock_timestamp())`,
+		trevID, project, toolID, executor, description, "sha256:"+trevID)
+	execSQL(t, pool, `INSERT INTO tool_set_revisions (id, project_id, set_name, revision_number, tool_pins, digest, published_at)
+	                  VALUES ($1,$2,$3,1,$4::jsonb,'d',clock_timestamp())`,
+		setID, project, "set-"+modelName, `[{"tool_revision_id":"`+trevID+`"}]`)
+	execSQL(t, pool, `INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,$3)`,
+		profileID, project, profileID)
+	execSQL(t, pool, `INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, published_at, tool_sets, mcp_connections)
+	                  VALUES ($1,$2,$3,1,'model-x',clock_timestamp(),$4::jsonb,$5::jsonb)`,
+		arevID, project, profileID, `["`+setID+`"]`, riders)
+	execSQL(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, project)
+	execSQL(t, pool, `INSERT INTO runs (id, project_id, session_id, agent_revision_id, state)
+	                  VALUES ($1,$2,$3,$4,'running')`, runID, project, sessionID, arevID)
 	return runID
 }
 

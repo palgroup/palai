@@ -65,11 +65,8 @@ func TestEveryFleetRouteRefusesATenantKey(t *testing.T) {
 	// assertion below (checks only for 401/403) would never catch — proving nothing about systemOnly and
 	// everything about a missing fixture row instead.
 	sys := storage.WithSystemScope(ctx)
-	if _, err := repo.Spine().Pool().Exec(sys, `INSERT INTO organizations (id) VALUES ($1)`, "org_fleet_system"); err != nil {
-		t.Fatalf("seed org_fleet_system: %v", err)
-	}
-	if _, err := repo.Spine().Pool().Exec(sys, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`,
-		"prj_fleet_system", "org_fleet_system"); err != nil {
+	if _, err := repo.Spine().Pool().Exec(sys, `INSERT INTO projects (id) VALUES ($1)`,
+		"prj_fleet_system"); err != nil {
 		t.Fatalf("seed prj_fleet_system: %v", err)
 	}
 

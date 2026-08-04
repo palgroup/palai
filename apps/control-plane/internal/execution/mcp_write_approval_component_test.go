@@ -283,16 +283,16 @@ func newJiraWriteFixture(t *testing.T, ticket map[string]any) *jiraWriteFixture 
 		DefaultTimeout: 15 * time.Second,
 	}))
 
-	org, project := tenant.Project
+	project := tenant.Project
 	body, _ := json.Marshal(map[string]any{
 		"name": "jira", "transport": "http",
 		"config": map[string]any{"url": jiraWritePeerURL(srv)}, "secret_ref": secretRef,
 	})
-	conn, err := registry.CreateMCPConnection(ctx, org, project, body)
+	conn, err := registry.CreateMCPConnection(ctx, project, body)
 	if err != nil {
 		t.Fatalf("register the Jira connection: %v", err)
 	}
-	result, err := registry.DiscoverConnection(ctx, org, project, conn.ID)
+	result, err := registry.DiscoverConnection(ctx, project, conn.ID)
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
@@ -305,25 +305,25 @@ func newJiraWriteFixture(t *testing.T, ticket map[string]any) *jiraWriteFixture 
 	fx := &jiraWriteFixture{peer: peer, srv: srv, spine: cs, registry: registry, tenant: tenant, revisionOf: map[string]string{}}
 	var pins []map[string]any
 	for _, canonical := range []string{"mcp.jira.getJiraIssue", "mcp.jira.transitionIssue", "mcp.jira.addCommentToJiraIssue"} {
-		revID := draftRevisionOf(t, cs, org, project, canonical)
+		revID := draftRevisionOf(t, cs, project, canonical)
 		publishBody := []byte(nil)
 		if jiraWriteGated[canonical] {
 			publishBody, _ = json.Marshal(extensions.ToolPublishInput{
 				ApprovalRequired: true, ApprovalLabel: operatorApprovalLabel,
 			})
 		}
-		if _, _, err := registry.PublishToolRevision(ctx, org, project, revID, publishBody); err != nil {
+		if _, _, err := registry.PublishToolRevision(ctx, project, revID, publishBody); err != nil {
 			t.Fatalf("publish %s: %v", canonical, err)
 		}
 		fx.revisionOf[canonical] = revID
 		pins = append(pins, map[string]any{"tool_revision_id": revID})
 	}
 	setBody, _ := json.Marshal(map[string]any{"tools": pins})
-	set, err := registry.CreateToolSetRevision(ctx, org, project, "jira", setBody)
+	set, err := registry.CreateToolSetRevision(ctx, project, "jira", setBody)
 	if err != nil {
 		t.Fatalf("create the tool set: %v", err)
 	}
-	if _, _, err := registry.PublishToolSetRevision(ctx, org, project, set.ID); err != nil {
+	if _, _, err := registry.PublishToolSetRevision(ctx, project, set.ID); err != nil {
 		t.Fatalf("publish the tool set: %v", err)
 	}
 	fx.setID, fx.rider = set.ID, `["`+conn.ID+`"]`
@@ -344,13 +344,13 @@ func (fx *jiraWriteFixture) newRun(t *testing.T) (sessionID, runID string) {
 }
 
 // draftRevisionOf reads the single draft revision discovery minted for a canonical tool name.
-func draftRevisionOf(t *testing.T, cs *coordinator.Store, org, project, canonical string) string {
+func draftRevisionOf(t *testing.T, cs *coordinator.Store, project, canonical string) string {
 	t.Helper()
 	var id string
 	if err := cs.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT tr.id FROM tools t JOIN tool_revisions tr ON tr.tool_id = t.id
-		 WHERE t.canonical_name=$1 AND t.organization_id=$2 AND t.project_id=$3`,
-		canonical, org, project).Scan(&id); err != nil {
+		 WHERE t.canonical_name=$1  t.project_id=$2`,
+		canonical, project).Scan(&id); err != nil {
 		t.Fatalf("read the discovered revision for %s: %v", canonical, err)
 	}
 	return id
@@ -362,18 +362,17 @@ func draftRevisionOf(t *testing.T, cs *coordinator.Store, org, project, canonica
 func seedMCPGrantedRun(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant, setID, riders string) (sessionID, runID string) {
 	t.Helper()
 	pool := cs.Pool()
-	org, project := tenant.Project
+	project := tenant.Project
 	profileID, arevID := redeliveryID("aprof"), redeliveryID("arev")
 	sessionID, runID = redeliveryID("ses"), redeliveryID("run")
-	execSQL(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,$4)`,
-		profileID, org, project, profileID)
-	execSQL(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number,
-	                      model, published_at, tool_sets, mcp_connections)
-	                  VALUES ($1,$2,$3,$4,1,'model-x',clock_timestamp(),$5::jsonb,$6::jsonb)`,
-		arevID, org, project, profileID, `["`+setID+`"]`, riders)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, org, project)
-	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, agent_revision_id, state)
-	                  VALUES ($1,$2,$3,$4,$5,'running')`, runID, org, project, sessionID, arevID)
+	execSQL(t, pool, `INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,$3)`,
+		profileID, project, profileID)
+	execSQL(t, pool, `INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, published_at, tool_sets, mcp_connections)
+	                  VALUES ($1,$2,$3,1,'model-x',clock_timestamp(),$4::jsonb,$5::jsonb)`,
+		arevID, project, profileID, `["`+setID+`"]`, riders)
+	execSQL(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, project)
+	execSQL(t, pool, `INSERT INTO runs (id, project_id, session_id, agent_revision_id, state)
+	                  VALUES ($1,$2,$3,$4,'running')`, runID, project, sessionID, arevID)
 	return sessionID, runID
 }
 
@@ -411,7 +410,7 @@ func (fx *jiraWriteFixture) approvalGates(t *testing.T) map[string]string {
 	rows, err := fx.spine.Pool().Query(storage.WithSystemScope(context.Background()),
 		`SELECT t.canonical_name, tr.approval_required, tr.approval_label
 		 FROM tools t JOIN tool_revisions tr ON tr.tool_id = t.id
-		 WHERE t.organization_id=$1 AND t.project_id=$2`, fx.tenant.Project)
+		 WHERE  t.project_id=$1`, fx.tenant.Project)
 	if err != nil {
 		t.Fatalf("read the tenant's approval declarations: %v", err)
 	}
@@ -663,26 +662,24 @@ func TestApprovedMCPArgumentsReachThePeerByteForByte(t *testing.T) {
 func TestAToolPinnedTwiceRefusesRatherThanCoinFlippingTheGate(t *testing.T) {
 	ctx := context.Background()
 	fx := newJiraWriteFixture(t, nil)
-	org, project := fx.tenant.Project
+	project := fx.tenant.Project
 
 	// A SECOND published revision of the same discovered tool — UNGATED — pinned by a second published set
 	// the run's revision also names. SQL, because the point is a state the shipped API can reach and this
 	// test is about what the LOOKUP does with it, not about how it got there.
 	var toolID string
 	if err := fx.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
-		`SELECT id FROM tools WHERE canonical_name='mcp.jira.transitionIssue' AND organization_id=$1 AND project_id=$2`,
-		org, project).Scan(&toolID); err != nil {
+		`SELECT id FROM tools WHERE canonical_name='mcp.jira.transitionIssue'  project_id=$1`, project).Scan(&toolID); err != nil {
 		t.Fatalf("read the tool lineage: %v", err)
 	}
 	rev2, set2 := redeliveryID("trev"), redeliveryID("tsrev")
 	execSQL(t, fx.spine.Pool(), `INSERT INTO tool_revisions (id, organization_id, project_id, tool_id, revision_number,
 	        executor, description, input_schema, replay_class, digest, executor_config, published_at, approval_required)
 	    SELECT $1,$2,$3,$4,99,executor,description,input_schema,replay_class,'sha256:second',executor_config,clock_timestamp(),false
-	    FROM tool_revisions WHERE tool_id=$4 LIMIT 1`, rev2, org, project, toolID)
-	execSQL(t, fx.spine.Pool(), `INSERT INTO tool_set_revisions (id, organization_id, project_id, set_name,
-	        revision_number, tool_pins, digest, published_at)
-	    VALUES ($1,$2,$3,'jira-second',1,$4::jsonb,'d',clock_timestamp())`,
-		set2, org, project, `[{"tool_revision_id":"`+rev2+`"}]`)
+	    FROM tool_revisions WHERE tool_id=$3 LIMIT 1`, rev2, project, toolID)
+	execSQL(t, fx.spine.Pool(), `INSERT INTO tool_set_revisions (id, project_id, set_name, revision_number, tool_pins, digest, published_at)
+	    VALUES ($1,$2,'jira-second',1,$3::jsonb,'d',clock_timestamp())`,
+		set2, project, `[{"tool_revision_id":"`+rev2+`"}]`)
 	execSQL(t, fx.spine.Pool(), `UPDATE agent_revisions SET tool_sets = $1::jsonb
 	    WHERE id = (SELECT agent_revision_id FROM runs WHERE id=$2)`, `["`+fx.setID+`","`+set2+`"]`, fx.runID)
 
@@ -691,12 +688,12 @@ func TestAToolPinnedTwiceRefusesRatherThanCoinFlippingTheGate(t *testing.T) {
 	var candidates int
 	if err := fx.spine.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM runs r
 	    LEFT JOIN agent_revisions ar ON ar.id = r.agent_revision_id
-	    JOIN tool_set_revisions tsr ON tsr.organization_id = r.organization_id AND tsr.project_id = r.project_id
+	    JOIN tool_set_revisions tsr ON tsr.project_id = r.project_id
 	        AND tsr.published_at IS NOT NULL
 	        AND tsr.id IN (SELECT jsonb_array_elements_text(COALESCE(ar.tool_sets, '[]'::jsonb)))
 	    CROSS JOIN LATERAL jsonb_array_elements(tsr.tool_pins) AS pin
 	    JOIN tool_revisions trv ON trv.id = (pin->>'tool_revision_id')
-	        AND trv.organization_id = r.organization_id AND trv.project_id = r.project_id
+	        AND trv.project_id = r.project_id
 	    JOIN tools t ON t.id = trv.tool_id AND t.model_visible_name = 'jira__transitionIssue'
 	    WHERE r.id = $1`, fx.runID).Scan(&candidates); err != nil {
 		t.Fatalf("count the candidate bindings: %v", err)

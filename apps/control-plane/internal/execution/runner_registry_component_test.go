@@ -132,13 +132,12 @@ func TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool(t *testing.T) {
 	// row this seeds is the row that path would have written.
 	bootstrapKey := "e24t1-bootstrap-key"
 	for _, stmt := range [][]any{
-		{`INSERT INTO organizations (id) VALUES ('org_local')`},
-		{`INSERT INTO projects (id, organization_id) VALUES ('prj_local','org_local')`},
-		{`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ('prin_local','org_local','prj_local','service')`},
-		{`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, scopes)
-		  VALUES ('key_local','org_local','prj_local','prin_local',$1,$2)`, coordinator.HashAPIKey(bootstrapKey), []string{}},
-		{`INSERT INTO sessions (id, organization_id, project_id) VALUES ('ses_e24t1','org_local','prj_local')`},
-		{`INSERT INTO runs (id, organization_id, project_id, session_id) VALUES ($1,'org_local','prj_local','ses_e24t1')`, runID},
+		{`INSERT INTO projects (id) VALUES ('prj_local')`},
+		{`INSERT INTO principals (id, project_id, kind) VALUES ('prin_local','prj_local','service')`},
+		{`INSERT INTO api_keys (id, project_id, principal_id, key_hash, scopes)
+		  VALUES ('key_local','prj_local','prin_local',$1,$2)`, coordinator.HashAPIKey(bootstrapKey), []string{}},
+		{`INSERT INTO sessions (id, project_id) VALUES ('ses_e24t1','prj_local')`},
+		{`INSERT INTO runs (id, project_id, session_id) VALUES ($1,'prj_local','ses_e24t1')`, runID},
 	} {
 		if _, err := stopped.Pool().Exec(sys, stmt[0].(string), stmt[1:]...); err != nil {
 			t.Fatalf("seed the pre-upgrade install (%s): %v", stmt[0], err)
@@ -219,8 +218,7 @@ func TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool(t *testing.T) {
 	}
 	var bornPools int
 	if err := spine.Pool().QueryRow(sys,
-		`SELECT count(*) FROM runner_pools WHERE organization_id = $1 AND project_id = $2 AND posture = 'sandboxed-linux'`,
-		born.ID, born.DefaultProjectID).Scan(&bornPools); err != nil {
+		`SELECT count(*) FROM runner_pools WHERE  project_id = $1 AND posture = 'sandboxed-linux'`, born.DefaultProjectID).Scan(&bornPools); err != nil {
 		t.Fatalf("count the new tenant's pools: %v", err)
 	}
 	if bornPools != 1 {

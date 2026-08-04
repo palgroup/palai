@@ -68,7 +68,7 @@ func TestLiveEdgeAdmissionBurstRateLimited(t *testing.T) {
 	pool := repo.Spine().Pool()
 
 	// --- Part 1: the per-API-key request-rate token bucket sheds a rapid burst ---
-	rateToken, _ := seedTenantWithKey(t, pool, "edge-rate")
+	_ := seedTenantWithKey(t, pool, "edge-rate")
 	rateSrv := httptest.NewServer(api.NewRouter(repo, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		nil, nil, api.SSEConfig{}, nil, nil, api.WithEdgeLimits(api.EdgeLimits{RequestRatePerSec: 0.001, RequestBurst: 2})))
 	t.Cleanup(rateSrv.Close)
@@ -92,7 +92,7 @@ func TestLiveEdgeAdmissionBurstRateLimited(t *testing.T) {
 
 	// --- Part 2: the per-project queued-run bound sheds a burst with no run lost or duplicated ---
 	// No worker drains the queue here, so every accepted run stays queued and the bound bites deterministically.
-	capToken, capTenant := seedTenantWithKey(t, pool, "edge-cap")
+	capTenant := seedTenantWithKey(t, pool, "edge-cap")
 	capSrv := httptest.NewServer(api.NewRouter(repo, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		nil, nil, api.SSEConfig{}, nil, nil, api.WithEdgeLimits(api.EdgeLimits{MaxQueuedRuns: 3})))
 	t.Cleanup(capSrv.Close)

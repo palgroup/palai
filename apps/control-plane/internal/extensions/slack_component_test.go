@@ -15,7 +15,7 @@ import (
 // inline credential field is rejected before any write; and the row is invisible across the tenant boundary
 // (RLS org/project scoping) — a foreign tenant's scope reads zero and the WHERE-less count sees only its own.
 func TestSlackConnectionCreateReadRLS(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
 	// The team id is generated, not a literal: a workspace may be bound in exactly ONE tenant installation-wide
@@ -23,7 +23,7 @@ func TestSlackConnectionCreateReadRLS(t *testing.T) {
 	// or any earlier run against the same database — that happened to pick the same string.
 	team := testID("T")
 	body := []byte(`{"team_id":"` + team + `","bot_user_id":"Ubot","signing_secret_ref":"slack/signing","bot_token_ref":"slack/bot","scopes":"app_mentions:read chat:write","allowed_users":["U1"]}`)
-	conn, err := s.CreateSlackConnection(ctx, org, project, body)
+	conn, err := s.CreateSlackConnection(ctx, project, body)
 	if err != nil {
 		t.Fatalf("create slack connection: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestSlackConnectionCreateReadRLS(t *testing.T) {
 		t.Fatalf("created connection = %+v, want %s/slack-signing/Ubot", conn, team)
 	}
 
-	got, err := s.GetSlackConnection(ctx, org, project, conn.ID)
+	got, err := s.GetSlackConnection(ctx, project, conn.ID)
 	if err != nil {
 		t.Fatalf("get slack connection: %v", err)
 	}
@@ -40,18 +40,18 @@ func TestSlackConnectionCreateReadRLS(t *testing.T) {
 	}
 
 	// A duplicate workspace binding in the project is a typed collision.
-	if _, err := s.CreateSlackConnection(ctx, org, project, body); !errors.Is(err, ErrSlackConnectionExists) {
+	if _, err := s.CreateSlackConnection(ctx, project, body); !errors.Is(err, ErrSlackConnectionExists) {
 		t.Fatalf("duplicate workspace: err = %v, want ErrSlackConnectionExists", err)
 	}
 
 	// An INLINE signing secret VALUE (not a ref) is rejected before any write — a credential can only be a
 	// *_ref handle.
-	if _, err := s.CreateSlackConnection(ctx, org, project,
+	if _, err := s.CreateSlackConnection(ctx, project,
 		[]byte(`{"team_id":"T222","signing_secret_ref":"r","signing_secret":"8f742231b10e"}`)); !errors.Is(err, ErrUnknownField) {
 		t.Fatalf("inline secret: err = %v, want ErrUnknownField", err)
 	}
 	// A missing team id / signing ref is a typed config reject.
-	if _, err := s.CreateSlackConnection(ctx, org, project, []byte(`{"team_id":"T333"}`)); !errors.Is(err, ErrInvalidSlackConfig) {
+	if _, err := s.CreateSlackConnection(ctx, project, []byte(`{"team_id":"T333"}`)); !errors.Is(err, ErrInvalidSlackConfig) {
 		t.Fatalf("no signing ref: err = %v, want ErrInvalidSlackConfig", err)
 	}
 
@@ -67,9 +67,9 @@ func TestSlackConnectionCreateReadRLS(t *testing.T) {
 		t.Fatalf("slack_connections has %d raw-secret column(s); credentials must be secret_ref handles only", leaked)
 	}
 
-	// RLS: a second tenant cannot see the first tenant's connection. Seed org B and read under its scope.
-	orgB, projectB := seedOrgProject(t, s)
-	foreign, err := s.GetSlackConnection(ctx, orgB, projectB, conn.ID)
+	// RLS: a second tenant cannot see the first tenant's connection. Seed project B and read under its scope.
+	projectB := seedOrgProject(t, s)
+	foreign, err := s.GetSlackConnection(ctx, projectB, conn.ID)
 	if !errors.Is(err, ErrSlackConnectionNotFound) {
 		t.Fatalf("cross-tenant get = %+v err = %v, want ErrSlackConnectionNotFound", foreign, err)
 	}
@@ -88,56 +88,53 @@ func TestSlackConnectionCreateReadRLS(t *testing.T) {
 // the same one), and a different thread gets its own session. A concurrent race collapses at the unique
 // index to a single session.
 func TestSlackThreadSessionCorrelation(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
 	team := testID("T") // generated, not a literal — see TestSlackConnectionCreateReadRLS
-	conn, err := s.CreateSlackConnection(ctx, org, project,
+	conn, err := s.CreateSlackConnection(ctx, project,
 		[]byte(`{"team_id":"`+team+`","signing_secret_ref":"r"}`))
 	if err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
-	sess1 := seedSession(t, s, org, project)
-	sess2 := seedSession(t, s, org, project)
+	sess1 := seedSession(t, s, project)
+	sess2 := seedSession(t, s, project)
 
 	// First event in the thread claims sess1 as canonical.
-	got, created, err := s.CorrelateThreadSession(ctx, org, project, conn.ID, team, "C1", "100.0", sess1)
+	got, created, err := s.CorrelateThreadSession(ctx, project, conn.ID, team, "C1", "100.0", sess1)
 	if err != nil || !created || got != sess1 {
 		t.Fatalf("first correlate = (%q,%v,%v), want (%q,true,nil)", got, created, err, sess1)
 	}
 	// A second event in the SAME thread, offering a DIFFERENT session, must REUSE the first (one session
 	// per thread) — the offered sess2 is discarded.
-	got, created, err = s.CorrelateThreadSession(ctx, org, project, conn.ID, team, "C1", "100.0", sess2)
+	got, created, err = s.CorrelateThreadSession(ctx, project, conn.ID, team, "C1", "100.0", sess2)
 	if err != nil || created || got != sess1 {
 		t.Fatalf("second correlate = (%q,%v,%v), want (%q,false,nil) — thread reuse", got, created, err, sess1)
 	}
 	// A different thread gets its own session.
-	got, created, err = s.CorrelateThreadSession(ctx, org, project, conn.ID, team, "C1", "200.0", sess2)
+	got, created, err = s.CorrelateThreadSession(ctx, project, conn.ID, team, "C1", "200.0", sess2)
 	if err != nil || !created || got != sess2 {
 		t.Fatalf("other-thread correlate = (%q,%v,%v), want (%q,true,nil)", got, created, err, sess2)
 	}
 }
 
 // seedOrgProject seeds a fresh org+project (owner-scoped) so a cross-tenant negative has a second tenant.
-func seedOrgProject(t *testing.T, s *Store) (string, string) {
+func seedOrgProject(t *testing.T, s *Store) string {
 	t.Helper()
 	ctx := storage.WithSystemScope(context.Background())
-	org, project := testID("org"), testID("prj")
-	if _, err := s.pool.Exec(ctx, `INSERT INTO organizations (id) VALUES ($1)`, org); err != nil {
-		t.Fatalf("seed org: %v", err)
-	}
-	if _, err := s.pool.Exec(ctx, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org); err != nil {
+	project := testID("prj")
+	if _, err := s.pool.Exec(ctx, `INSERT INTO projects (id) VALUES ($1)`, project); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	return org, project
+	return project
 }
 
 // seedSession seeds a session row the thread-correlation FK can reference.
-func seedSession(t *testing.T, s *Store, org, project string) string {
+func seedSession(t *testing.T, s *Store, project string) string {
 	t.Helper()
 	ctx := storage.WithSystemScope(context.Background())
 	id := testID("ses")
-	if _, err := s.pool.Exec(ctx, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, id, org, project); err != nil {
+	if _, err := s.pool.Exec(ctx, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, id, project); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
 	return id

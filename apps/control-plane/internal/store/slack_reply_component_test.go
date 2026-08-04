@@ -41,8 +41,7 @@ func (f *slackFixture) terminate(t *testing.T, runID string, commands ...statema
 func (f *slackFixture) runAndResponse(t *testing.T) (runID, responseID, sessionID string) {
 	t.Helper()
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT id, response_id, session_id FROM runs WHERE organization_id=$1 AND project_id=$2`,
-		f.org, f.project).Scan(&runID, &responseID, &sessionID); err != nil {
+		`SELECT id, response_id, session_id FROM runs WHERE  project_id=$1`, f.project).Scan(&runID, &responseID, &sessionID); err != nil {
 		t.Fatalf("read the born run: %v", err)
 	}
 	return runID, responseID, sessionID
@@ -237,20 +236,20 @@ func TestSlackReplyFailureNeverCorruptsTheRun(t *testing.T) {
 func TestSlackDisabledConnectionPostsNothing(t *testing.T) {
 	f := newSlackFixture(t)
 
-	exec(t, f.pool, `UPDATE slack_connections SET disabled = true WHERE organization_id=$1 AND project_id=$2`, f.org, f.project)
+	exec(t, f.pool, `UPDATE slack_connections SET disabled = true WHERE  project_id=$1`, f.project)
 	// The event path refuses a disabled connection outright, so the run is created directly against the
 	// correlated thread instead — the point under test is the POSTER, not the receiver.
 	sessionID := newID("ses")
-	exec(t, f.pool, `INSERT INTO sessions (id, organization_id, project_id, state) VALUES ($1,$2,$3,'active')`,
-		sessionID, f.org, f.project)
+	exec(t, f.pool, `INSERT INTO sessions (id, project_id, state) VALUES ($1,$2,'active')`,
+		sessionID, f.project)
 	var connID string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT id FROM slack_connections WHERE organization_id=$1 AND project_id=$2`, f.org, f.project).Scan(&connID); err != nil {
+		`SELECT id FROM slack_connections WHERE  project_id=$1`, f.project).Scan(&connID); err != nil {
 		t.Fatalf("read the connection: %v", err)
 	}
-	exec(t, f.pool, `INSERT INTO slack_thread_sessions (id, organization_id, project_id, connection_id, team_id, channel_id, thread_ts, session_id)
-	                 VALUES ($1,$2,$3,$4,$5,'C93','1700000093.000100',$6)`,
-		newID("sthr"), f.org, f.project, connID, f.team, sessionID)
+	exec(t, f.pool, `INSERT INTO slack_thread_sessions (id, project_id, connection_id, team_id, channel_id, thread_ts, session_id)
+	                 VALUES ($1,$2,$3,$4,'C93','1700000093.000100',$5)`,
+		newID("sthr"), f.project, connID, f.team, sessionID)
 
 	if posted, err := extensions.NewSlackReplyPump(f.bridge).Tick(context.Background()); err != nil || posted != 0 {
 		t.Fatalf("a disabled connection posted %d replies (err %v), want 0", posted, err)

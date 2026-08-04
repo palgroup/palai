@@ -95,15 +95,14 @@ func newTerminalPublishFixture(t *testing.T) *terminalPublishFixture {
 
 	sys := storage.WithSystemScope(ctx)
 	for _, stmt := range [][]any{
-		{`INSERT INTO organizations (id) VALUES ($1)`, f.tenant.Organization},
-		{`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, f.tenant.Project, f.tenant.Organization},
-		{`INSERT INTO runner_pools (id, organization_id, project_id, name, posture)
-		  VALUES ($1,$2,$3,'default','unsandboxed-host')`, redeliveryID("pool"), f.tenant.Project},
-		{`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, f.sessionID, f.tenant.Project},
-		{`INSERT INTO responses (id, organization_id, project_id, session_id, state, input)
-		  VALUES ($1,$2,$3,$4,'queued','"ship it"'::jsonb)`, f.responseID, f.tenant.Project, f.sessionID},
-		{`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state)
-		  VALUES ($1,$2,$3,$4,$5,'queued')`, f.runID, f.tenant.Project, f.sessionID, f.responseID},
+		{`INSERT INTO projects (id) VALUES ($1)`, f.tenant.Project},
+		{`INSERT INTO runner_pools (id, project_id, name, posture)
+		  VALUES ($1,$2,'default','unsandboxed-host')`, redeliveryID("pool"), f.tenant.Project},
+		{`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, f.sessionID, f.tenant.Project},
+		{`INSERT INTO responses (id, project_id, session_id, state, input)
+		  VALUES ($1,$2,$3,'queued','"ship it"'::jsonb)`, f.responseID, f.tenant.Project, f.sessionID},
+		{`INSERT INTO runs (id, project_id, session_id, response_id, state)
+		  VALUES ($1,$2,$3,$4,'queued')`, f.runID, f.tenant.Project, f.sessionID, f.responseID},
 	} {
 		if _, err := cs.Pool().Exec(sys, stmt[0].(string), stmt[1:]...); err != nil {
 			t.Fatalf("seed %v: %v", stmt[0], err)
@@ -130,8 +129,8 @@ func newTerminalPublishFixture(t *testing.T) *terminalPublishFixture {
 	f.orch = NewOrchestrator(repo, nil, modelbroker.New(modelbroker.Config{}), toolbroker.New())
 	f.orch.SetPublisher(&RepositoryPublisher{
 		ConnectionSecrets: func(ref string) ([]byte, error) {
-			if org != f.tenant.Organization || ref != "demo-local-token" {
-				t.Errorf("resolver asked for (org=%q ref=%q), want the binding's own", org, ref)
+			if ref != "demo-local-token" {
+				t.Errorf("resolver asked for ref=%q, want the binding's own", ref)
 			}
 			return []byte("tenant-provisioned-token"), nil
 		},

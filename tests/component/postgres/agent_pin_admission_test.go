@@ -16,7 +16,7 @@ func seedAgentRevision(t *testing.T, tenant coordinator.Tenant, cs *coordinator.
 	t.Helper()
 	pool := cs.Pool()
 	profileID, revID := newID("aprof"), newID("arev")
-	exec(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,$4)`,
+	exec(t, pool, `INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,$3)`,
 		profileID, tenant.Project, newID("name"))
 	pubExpr := "NULL"
 	if publish {
@@ -91,8 +91,8 @@ func TestRunTemplateRevisionStartsProfileFreeRun(t *testing.T) {
 	pool := cs.Pool()
 
 	templateRev := newID("rtr")
-	exec(t, pool, `INSERT INTO run_template_revisions (id, organization_id, project_id, template_name, revision_number, model, tools, published_at)
-	               VALUES ($1,$2,$3,'nightly',1,'template-model','["shell"]', clock_timestamp())`,
+	exec(t, pool, `INSERT INTO run_template_revisions (id, project_id, template_name, revision_number, model, tools, published_at)
+	               VALUES ($1,$2,'nightly',1,'template-model','["shell"]',clock_timestamp())`,
 		templateRev, tenant.Project)
 
 	in := admissionInput(principalID, newID("key"), "hash-tmpl", `{"id":"r","object":"response","status":"queued"}`)
@@ -115,7 +115,7 @@ func TestRunTemplateRevisionStartsProfileFreeRun(t *testing.T) {
 			pinned.RevisionID, pinned.Model, pinned.Tools, templateRev)
 	}
 	var profiles int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM agent_profiles WHERE organization_id=$1 AND project_id=$2`,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM agent_profiles WHERE  project_id=$1`,
 		tenant.Project).Scan(&profiles); err != nil {
 		t.Fatalf("count agent_profiles: %v", err)
 	}

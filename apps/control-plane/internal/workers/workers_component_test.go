@@ -62,11 +62,8 @@ func newID(prefix string) string {
 func seedTenant(t *testing.T, cs *coordinator.Store) workers.Tenant {
 	t.Helper()
 	ctx := storage.WithSystemScope(context.Background())
-	org, project := newID("org"), newID("prj")
-	if _, err := cs.Pool().Exec(ctx, `INSERT INTO organizations (id) VALUES ($1)`, org); err != nil {
-		t.Fatalf("seed org: %v", err)
-	}
-	if _, err := cs.Pool().Exec(ctx, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org); err != nil {
+	project := newID("prj")
+	if _, err := cs.Pool().Exec(ctx, `INSERT INTO projects (id) VALUES ($1)`, project); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 	return workers.Tenant{Project: project}
@@ -82,7 +79,7 @@ func newStore(cs *coordinator.Store, secrets workers.SecretResolver, now func() 
 // marker so a leak is unmissable.
 type fakeSecrets struct{ vals map[string]string }
 
-func (f fakeSecrets) Resolve(_ context.Context, _ string, name string) ([]byte, bool, error) {
+func (f fakeSecrets) Resolve(_ context.Context, name string) ([]byte, bool, error) {
 	v, ok := f.vals[name]
 	return []byte(v), ok, nil
 }

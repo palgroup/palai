@@ -271,8 +271,8 @@ func TestWiringJourney(t *testing.T) {
 	if err := f.pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT r.id, r.session_id, COALESCE(r.response_id,''), i.route, i.idempotency_key
 		   FROM runs r JOIN idempotency_records i
-		     ON i.organization_id = r.organization_id AND i.project_id = r.project_id
-		  WHERE r.organization_id=$1 AND r.project_id=$2`, f.org, f.project).
+		     ON i.project_id = r.project_id
+		  WHERE  r.project_id=$1`, f.project).
 		Scan(&runID, &sessionID, &responseID, &admissionRoute, &idemKey); err != nil {
 		t.Fatalf("read the socket-born run and its reservation: %v", err)
 	}

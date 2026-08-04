@@ -45,7 +45,7 @@ func (failingDeleter) Delete(context.Context, string) error {
 func TestGCDeletesUnreferencedObjectAfterGrace(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, runID := h.seedRun(t)
+	project, runID := h.seedRun(t)
 
 	art, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: runID,
 		Content: []byte("orphaned by a purge-crash between the DB scrub and the byte-delete")})
@@ -77,10 +77,10 @@ func TestGCDeletesUnreferencedObjectAfterGrace(t *testing.T) {
 func TestGCDeletesWriteSideOrphan(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, runID := h.seedRun(t)
+	project, runID := h.seedRun(t)
 
 	// The object the write-path would have PUT, with no row insert following it.
-	key := objectKey(org, project, runID, newArtifactID())
+	key := objectKey(project, runID, newArtifactID())
 	if _, _, err := h.s3.Put(ctx, key, []byte("bytes PUT before a row insert that failed")); err != nil {
 		t.Fatalf("Put() error = %v", err)
 	}
@@ -107,7 +107,7 @@ func TestGCDeletesWriteSideOrphan(t *testing.T) {
 func TestGCSweepsFailedRetentionDelete(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, runID := h.seedExpiredStoreFalseRun(t)
+	project, runID := h.seedExpiredStoreFalseRun(t)
 
 	art, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: runID,
 		Content: []byte("store:false bytes whose retention delete fails")})
@@ -149,14 +149,14 @@ func TestGCSweepsFailedRetentionDelete(t *testing.T) {
 func TestGCNeverDeletesReferencedOrInGraceObject(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, runID := h.seedRun(t)
+	project, runID := h.seedRun(t)
 
 	referenced, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: runID,
 		Content: []byte("a live, referenced artifact — must never be reclaimed")})
 	if err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
-	freshOrphanKey := objectKey(org, project, runID, newArtifactID())
+	freshOrphanKey := objectKey(project, runID, newArtifactID())
 	if _, _, err := h.s3.Put(ctx, freshOrphanKey, []byte("an orphan still inside the grace window")); err != nil {
 		t.Fatalf("Put() error = %v", err)
 	}
@@ -197,7 +197,7 @@ func TestGCNeverDeletesReferencedOrInGraceObject(t *testing.T) {
 func TestGCNeverDeletesLiveCheckpointObject(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, _, runID, attemptID := h.seedRunWithAttempt(t)
+	project, _, runID, attemptID := h.seedRunWithAttempt(t)
 	sink := execution.NewCheckpointSink(h.s3, recovery.New(h.pool))
 
 	meta := execution.CheckpointMeta{

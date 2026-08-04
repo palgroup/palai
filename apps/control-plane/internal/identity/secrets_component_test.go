@@ -44,7 +44,7 @@ func TestSecretRefWriteResolveRotate(t *testing.T) {
 	idstore := identity.New(cs.Pool())
 	store := identity.NewSecretStore(cs.Pool(), masterKey(t))
 
-	org, project, _ := provisionOrg(t, idstore, "sec-alpha")
+	project, _ := provisionOrg(t, idstore, "sec-alpha")
 	scope := middleware.Scope{Project: project}
 
 	// Per-run, because 000065 made the ref name unique across the INSTALLATION: a literal shared with any
@@ -59,7 +59,7 @@ func TestSecretRefWriteResolveRotate(t *testing.T) {
 	}
 
 	// Resolve is the resolver-chain hook main.go puts in front of the env-file bridge. It decrypts.
-	got, ok, err := store.Resolve(ctx, org, name)
+	got, ok, err := store.Resolve(ctx, name)
 	if err != nil || !ok {
 		t.Fatalf("Resolve(v1) ok=%v err=%v", ok, err)
 	}
@@ -75,7 +75,7 @@ func TestSecretRefWriteResolveRotate(t *testing.T) {
 	if strings.Contains(string(rotated.Body), "sk-live-v2") {
 		t.Fatalf("rotate projection disclosed the value: %s", rotated.Body)
 	}
-	got2, ok, err := store.Resolve(ctx, org, name)
+	got2, ok, err := store.Resolve(ctx, name)
 	if err != nil || !ok {
 		t.Fatalf("Resolve(v2) ok=%v err=%v", ok, err)
 	}
@@ -100,11 +100,12 @@ func TestSecretRefWriteResolveRotate(t *testing.T) {
 	// tenant-scoped — an unscoped context sees zero rows under RLS (migration 000031), which is itself the
 	// isolation guarantee, so scope to the org to actually inspect the stored bytes.
 	var cipher []byte
-	// secret_refs carries no project_id (000031); WithOrgScope is the named exception WithTenant no
-	// longer allows for an empty project (A.2 Task 1).
-	if err := cs.Pool().QueryRow(storage.WithOrgScope(ctx, org),
-		"SELECT ciphertext FROM secret_refs WHERE organization_id = $1 AND name = $2 ORDER BY version DESC LIMIT 1",
-		org, name).Scan(&cipher); err != nil {
+	// secret_refs carries NO tenant column at all: 000031 gave it only an organization_id and A.2 Task 6
+	// removed that, so since 000066 a secret NAME is installation-wide. WithInstallationScope is the named
+	// exception WithTenant no longer allows for an empty project (A.2 Task 1).
+	if err := cs.Pool().QueryRow(storage.WithInstallationScope(ctx),
+		"SELECT ciphertext FROM secret_refs WHERE name = $1 ORDER BY version DESC LIMIT 1",
+		name).Scan(&cipher); err != nil {
 		t.Fatalf("read stored ciphertext: %v", err)
 	}
 	if strings.Contains(string(cipher), "sk-live-v2") {
@@ -129,12 +130,8 @@ func TestSecretRefNamesAreInstallationWide(t *testing.T) {
 	idstore := identity.New(cs.Pool())
 	store := identity.NewSecretStore(cs.Pool(), masterKey(t))
 
-	_, aProj, _ := provisionOrg(t, idstore, "sec-b-a")
-	aOrg, err := storage.OrganizationForProject(ctx, cs.Pool(), aProj)
-	if err != nil {
-		t.Fatalf("resolve org A: %v", err)
-	}
-	_, bProj, _ := provisionOrg(t, idstore, "sec-b-b")
+	aProj, _ := provisionOrg(t, idstore, "sec-b-a")
+	bProj, _ := provisionOrg(t, idstore, "sec-b-b")
 	// Per-run, for the reason the test is about: the name is unique across the INSTALLATION, so a literal
 	// would pass once against a retained database and then be somebody's version 2 forever after.
 	sharedName := "shared-name-" + newID("sec")
@@ -144,7 +141,7 @@ func TestSecretRefNamesAreInstallationWide(t *testing.T) {
 
 	// The other tenant reads it. This is the removed boundary, stated as a value comparison so it cannot
 	// pass on a technicality: a miss would fail here too.
-	got, ok, err := store.Resolve(ctx, aOrg, sharedName)
+	got, ok, err := store.Resolve(ctx, sharedName)
 	if err != nil || !ok {
 		t.Fatalf("Resolve(a, shared-name) ok=%v err=%v — a secret ref is installation-wide and must resolve", ok, err)
 	}
@@ -161,7 +158,7 @@ func TestSecretRefNamesAreInstallationWide(t *testing.T) {
 	if !strings.Contains(string(out.Body), `"version":2`) {
 		t.Fatalf("the second tenant's write rendered %s, want version 2 of the one shared ref", out.Body)
 	}
-	if got, ok, err := store.Resolve(ctx, aOrg, sharedName); err != nil || !ok || string(got) != "sk-a-wins" {
+	if got, ok, err := store.Resolve(ctx, sharedName); err != nil || !ok || string(got) != "sk-a-wins" {
 		t.Fatalf("after the second write Resolve = %q ok=%v err=%v, want sk-a-wins", got, ok, err)
 	}
 }
@@ -175,7 +172,7 @@ func TestSecretRefResolveWrongKeyIsDecryptError(t *testing.T) {
 	ctx := context.Background()
 	idstore := identity.New(cs.Pool())
 
-	org, project, _ := provisionOrg(t, idstore, "sec-wrongkey")
+	project, _ := provisionOrg(t, idstore, "sec-wrongkey")
 	writer := identity.NewSecretStore(cs.Pool(), masterKey(t))
 	if _, err := writer.CreateSecretRef(ctx, middleware.Scope{Project: project}, []byte(`{"name":"k","value":"sk-under-key-a"}`)); err != nil {
 		t.Fatalf("CreateSecretRef error = %v", err)
@@ -184,7 +181,7 @@ func TestSecretRefResolveWrongKeyIsDecryptError(t *testing.T) {
 	// A DIFFERENT store (different master key) reading the same row: the row exists, so this is a decrypt
 	// failure, not a miss.
 	reader := identity.NewSecretStore(cs.Pool(), masterKey(t))
-	got, ok, err := reader.Resolve(ctx, org, "k")
+	got, ok, err := reader.Resolve(ctx, "k")
 	if ok || got != nil {
 		t.Fatalf("Resolve with wrong key returned ok=%v got=%q, want a decrypt error", ok, got)
 	}
@@ -201,7 +198,7 @@ func TestSecretRefRotateUnknownIsNotFound(t *testing.T) {
 	idstore := identity.New(cs.Pool())
 	store := identity.NewSecretStore(cs.Pool(), masterKey(t))
 
-	_, project, _ := provisionOrg(t, idstore, "sec-gamma")
+	project, _ := provisionOrg(t, idstore, "sec-gamma")
 	scope := middleware.Scope{Project: project}
 
 	if r, _ := store.RotateSecretRef(ctx, scope, "never-created", []byte(`{"value":"x"}`)); !r.NotFound {
@@ -220,7 +217,7 @@ func TestSecretRefStrictDecode(t *testing.T) {
 	idstore := identity.New(cs.Pool())
 	store := identity.NewSecretStore(cs.Pool(), masterKey(t))
 
-	_, project, _ := provisionOrg(t, idstore, "sec-delta")
+	project, _ := provisionOrg(t, idstore, "sec-delta")
 	scope := middleware.Scope{Project: project}
 
 	if r, _ := store.CreateSecretRef(ctx, scope, []byte(`{"name":"x","value":"y","nope":1}`)); !r.BadField {

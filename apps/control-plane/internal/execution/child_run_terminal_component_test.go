@@ -85,23 +85,22 @@ func newChildTerminalHarness(t *testing.T, childState, childResponseState string
 		childResponseInitial: childResponseState,
 	}
 	pool := cs.Pool()
-	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, h.tenant.Organization)
-	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, h.tenant.Project, h.tenant.Organization)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, h.sessionID, h.tenant.Project)
+	execSQL(t, pool, `INSERT INTO projects (id) VALUES ($1)`, h.tenant.Project)
+	execSQL(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, h.sessionID, h.tenant.Project)
 	// The child carries parent_run_id and depth 1, exactly as dispatchChild writes it — and not only for
 	// realism: `runs_one_active_root_per_session` is UNIQUE on session_id for non-terminal rows WHERE
 	// parent_run_id IS NULL, so a fixture that seeded two roots in one session could not exist at all.
-	execSQL(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state, input)
-	                   VALUES ($1,$2,$3,$4,'in_progress','"go"'::jsonb)`,
+	execSQL(t, pool, `INSERT INTO responses (id, project_id, session_id, state, input)
+	                   VALUES ($1,$2,$3,'in_progress','"go"'::jsonb)`,
 		h.parentResponseID, h.tenant.Project, h.sessionID)
-	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state)
-	                   VALUES ($1,$2,$3,$4,$5,'running')`,
+	execSQL(t, pool, `INSERT INTO runs (id, project_id, session_id, response_id, state)
+	                   VALUES ($1,$2,$3,$4,'running')`,
 		h.parentRunID, h.tenant.Project, h.sessionID, h.parentResponseID)
-	execSQL(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state, input)
-	                   VALUES ($1,$2,$3,$4,$5,'"go"'::jsonb)`,
+	execSQL(t, pool, `INSERT INTO responses (id, project_id, session_id, state, input)
+	                   VALUES ($1,$2,$3,$4,'"go"'::jsonb)`,
 		h.childResponseID, h.tenant.Project, h.sessionID, childResponseState)
-	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, parent_run_id, depth)
-	                   VALUES ($1,$2,$3,$4,$5,$6,$7,1)`,
+	execSQL(t, pool, `INSERT INTO runs (id, project_id, session_id, response_id, state, parent_run_id, depth)
+	                   VALUES ($1,$2,$3,$4,$5,$6,1)`,
 		h.childRunID, h.tenant.Project, h.sessionID, h.childResponseID, childState, h.parentRunID)
 	return h
 }

@@ -60,13 +60,12 @@ func newApprovalPumpHarness(t *testing.T) *approvalPumpHarness {
 		respID:    redeliveryID("resp"),
 	}
 	pool := cs.Pool()
-	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, h.tenant.Organization)
-	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, h.tenant.Project, h.tenant.Organization)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id, state) VALUES ($1, $2, $3, 'active')`,
+	execSQL(t, pool, `INSERT INTO projects (id) VALUES ($1)`, h.tenant.Project)
+	execSQL(t, pool, `INSERT INTO sessions (id, project_id, state) VALUES ($1, $2, 'active')`,
 		h.sessionID, h.tenant.Project)
-	execSQL(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+	execSQL(t, pool, `INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'in_progress')`,
 		h.respID, h.tenant.Project, h.sessionID)
-	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'running')`,
+	execSQL(t, pool, `INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,'running')`,
 		h.runID, h.tenant.Project, h.sessionID, h.respID)
 	h.pub = h.requestPush(t, "abc123")
 	return h

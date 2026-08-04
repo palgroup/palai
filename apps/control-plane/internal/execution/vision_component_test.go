@@ -57,7 +57,7 @@ type stubImageReader struct {
 func (r *stubImageReader) ReadImageArtifact(_ context.Context, project, id string) (string, []byte, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.scopes = append(r.scopes, org+"/"+project+"/"+id)
+	r.scopes = append(r.scopes, project+"/"+id)
 	got, ok := r.table[id]
 	if !ok {
 		return "", nil, false, nil
@@ -80,10 +80,10 @@ func TestDispatchResolvesAnImageRefIntoTheProviderRequest(t *testing.T) {
 	cs, tenant, exec := openPinnedSpine(t)
 	ctx := context.Background()
 	sessionID, responseID, runID := pinnedID("ses"), pinnedID("resp"), pinnedID("run")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
-	exec(`INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'queued')`,
+	exec(`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, tenant.Project)
+	exec(`INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'queued')`,
 		responseID, tenant.Project, sessionID)
-	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'running')`,
+	exec(`INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,'running')`,
 		runID, tenant.Project, sessionID, responseID)
 
 	const artifactID = "art_component_vision"
@@ -157,7 +157,7 @@ func TestDispatchResolvesAnImageRefIntoTheProviderRequest(t *testing.T) {
 	images.mu.Lock()
 	scopes := append([]string(nil), images.scopes...)
 	images.mu.Unlock()
-	want := tenant.Organization + "/" + tenant.Project + "/" + artifactID
+	want := tenant.Project + "/" + artifactID
 	if len(scopes) != 1 || scopes[0] != want {
 		t.Fatalf("resolver was asked for %v, want exactly [%s]", scopes, want)
 	}
@@ -182,10 +182,10 @@ func TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing(t *testing.T) {
 	cs, tenant, exec := openPinnedSpine(t)
 	ctx := context.Background()
 	sessionID, responseID, runID := pinnedID("ses"), pinnedID("resp"), pinnedID("run")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
-	exec(`INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'queued')`,
+	exec(`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, tenant.Project)
+	exec(`INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'queued')`,
 		responseID, tenant.Project, sessionID)
-	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'running')`,
+	exec(`INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,'running')`,
 		runID, tenant.Project, sessionID, responseID)
 
 	adapter := &recordingAdapter{out: "I cannot see an image"}

@@ -238,10 +238,17 @@ func TestMigrationInterruptionResumes(t *testing.T) {
 
 	// Seed rows between the crash and the resume; their checksum must survive the resumed chain (which
 	// includes the destructive 000034 contract) unchanged — the "data intact" half of the claim.
-	org1, org2 := newID("org"), newID("org")
-	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, org1)
-	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, org2)
-	before := orgDigest(t, pool)
+	//
+	// THE SEEDED TABLE IS `projects` SINCE A.2 TASK 6. It used to be `organizations`, whose rows this
+	// build no longer writes; leaving the digest pointed at it would have checksummed an EMPTY table
+	// before and after, and "" == "" is a comparison that can never fail.
+	prj1, prj2 := newID("prj"), newID("prj")
+	exec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, prj1)
+	exec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, prj2)
+	before := seededRowDigest(t, pool)
+	if before == "" {
+		t.Fatal("the pre-migration digest is empty — nothing was seeded, so the comparison below is vacuous")
+	}
 
 	// Restart with no fault: the chain resumes to the head.
 	t.Setenv("PALAI_MIGRATE_FAULT_AFTER", "")
@@ -258,7 +265,7 @@ func TestMigrationInterruptionResumes(t *testing.T) {
 	if tableExists(t, pool, "usage_events") {
 		t.Fatal("usage_events survived the resumed chain, but 000034 should have dropped it")
 	}
-	if after := orgDigest(t, pool); after != before {
+	if after := seededRowDigest(t, pool); after != before {
 		t.Fatalf("seeded rows changed across the resumed migration: %q -> %q (data not intact)", before, after)
 	}
 }
@@ -346,14 +353,17 @@ func TestMigrationPreflightFailsClosedOnBadGateVars(t *testing.T) {
 	}
 }
 
-// orgDigest is a stable md5 over the organizations table's ids — the pre/post "row-checksum" the
+// seededRowDigest is a stable md5 over the projects table's ids — the pre/post "row-checksum" the
 // interruption/resume drill compares to prove the resumed chain left seeded data intact.
-func orgDigest(t *testing.T, pool *pgxpool.Pool) string {
+//
+// It reads `projects` rather than `organizations` (A.2 Task 6): a digest over a table nothing writes is
+// "" on both sides of the migration and would report "intact" whatever the chain did.
+func seededRowDigest(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 	var digest string
 	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT coalesce(md5(string_agg(id, '|' ORDER BY id)), '') FROM organizations`).Scan(&digest); err != nil {
-		t.Fatalf("compute organizations digest: %v", err)
+		`SELECT coalesce(md5(string_agg(id, '|' ORDER BY id)), '') FROM projects`).Scan(&digest); err != nil {
+		t.Fatalf("compute projects digest: %v", err)
 	}
 	return digest
 }

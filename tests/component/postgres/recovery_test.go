@@ -21,7 +21,7 @@ import (
 func seedAttempt(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, runID string) string {
 	t.Helper()
 	id := newID("att")
-	exec(t, pool, `INSERT INTO attempts (id, organization_id, project_id, run_id, fence, state) VALUES ($1,$2,$3,$4,$5,'assigned')`,
+	exec(t, pool, `INSERT INTO attempts (id, project_id, run_id, fence, state) VALUES ($1,$2,$3,$4,'assigned')`,
 		id, tenant.Project, runID, 1)
 	return id
 }
@@ -88,14 +88,14 @@ func TestCheckpointCarriesPendingOperations(t *testing.T) {
 	attemptID := seedAttempt(t, pool, tenant, runID)
 
 	// A completed op (resolved — must NOT appear), an uncertain op, and an escalated one (both unresolved).
-	exec(t, pool, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class)
-		VALUES ($1,$2,$3,$4,1,'completed','pure_add','{}','pure')`, newID("tc"), tenant.Project, runID)
+	exec(t, pool, `INSERT INTO tool_calls (id, project_id, run_id, fence, state, name, arguments, replay_class)
+		VALUES ($1,$2,$3,1,'completed','pure_add','{}','pure')`, newID("tc"), tenant.Project, runID)
 	uncertainID := newID("tc")
-	exec(t, pool, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
-		VALUES ($1,$2,$3,$4,2,'uncertain','http_post','{}','irreversible','reconciling')`, uncertainID, tenant.Project, runID)
+	exec(t, pool, `INSERT INTO tool_calls (id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
+		VALUES ($1,$2,$3,2,'uncertain','http_post','{}','irreversible','reconciling')`, uncertainID, tenant.Project, runID)
 	escalatedID := newID("tc")
-	exec(t, pool, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
-		VALUES ($1,$2,$3,$4,3,'manual_resolution','charge','{}','irreversible','manual_resolution')`, escalatedID, tenant.Project, runID)
+	exec(t, pool, `INSERT INTO tool_calls (id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
+		VALUES ($1,$2,$3,3,'manual_resolution','charge','{}','irreversible','manual_resolution')`, escalatedID, tenant.Project, runID)
 
 	// The CP-side resolver collects only the two unresolved ops, class-labelled.
 	pendingJSON, err := cs.PendingToolOperations(ctx, tenant, runID)

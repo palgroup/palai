@@ -55,7 +55,7 @@ func TestEnvironmentWriteResolveRotateAndUnbind(t *testing.T) {
 	idstore := identity.New(cs.Pool())
 	store := identity.NewSecretStore(cs.Pool(), masterKey(t))
 
-	org, project, _ := provisionOrg(t, idstore, "env-alpha")
+	project, _ := provisionOrg(t, idstore, "env-alpha")
 	scope := middleware.Scope{Project: project}
 
 	// Per-run: 000065 made the environment name unique across the INSTALLATION, so a literal is a 409 the
@@ -107,16 +107,16 @@ func TestEnvironmentWriteResolveRotateAndUnbind(t *testing.T) {
 	// what makes RunEnvironmentKeys' `'env:' || environment_id || ':' || key` construction correct; if the
 	// two disagreed, every run would resolve nothing and fail closed silently.
 	derived := "env:" + envID + ":JIRA_TOKEN"
-	value, ok, err := store.Resolve(ctx, org, derived)
+	value, ok, err := store.Resolve(ctx, derived)
 	if err != nil || !ok {
 		t.Fatalf("Resolve(%q) ok=%v err=%v — the derived name the orchestrator builds does not address the stored value", derived, ok, err)
 	}
 	if string(value) != sentinelValue {
 		t.Fatalf("Resolve returned %q, want the sentinel", value)
 	}
-	// And NOT by the bare key name, which is the collision an org-wide flat namespace would have produced:
-	// two environments each holding JIRA_TOKEN must not share one secret.
-	if _, ok, _ := store.Resolve(ctx, org, "JIRA_TOKEN"); ok {
+	// And NOT by the bare key name, which is the collision an installation-wide flat namespace would have
+	// produced: two environments each holding JIRA_TOKEN must not share one secret.
+	if _, ok, _ := store.Resolve(ctx, "JIRA_TOKEN"); ok {
 		t.Fatal("the bare key name resolves a value — the environment id is not part of the secret's address, so two environments would share one credential")
 	}
 
@@ -129,7 +129,7 @@ func TestEnvironmentWriteResolveRotateAndUnbind(t *testing.T) {
 	if !strings.Contains(string(rotated.Body), `"version":2`) {
 		t.Fatalf("a rotation did not move the version: %s", rotated.Body)
 	}
-	if v, _, _ := store.Resolve(ctx, org, derived); string(v) != sentinelValue+"-v2" {
+	if v, _, _ := store.Resolve(ctx, derived); string(v) != sentinelValue+"-v2" {
 		t.Fatalf("Resolve after rotate = %q, want the v2 value", v)
 	}
 
@@ -155,7 +155,7 @@ func TestEnvironmentWriteResolveRotateAndUnbind(t *testing.T) {
 	}
 	// The sealed versions are STILL THERE. Nothing names them — the derived name is only ever built from a
 	// membership row — but they were not deleted, because secret_refs grants no DELETE.
-	if v, ok, _ := store.Resolve(ctx, org, derived); !ok || string(v) != sentinelValue+"-v2" {
+	if v, ok, _ := store.Resolve(ctx, derived); !ok || string(v) != sentinelValue+"-v2" {
 		t.Fatalf("removing the binding DELETED the stored versions (ok=%v) — secret_refs is supposed to be append-only, and the API's own message tells the operator the bytes are retained", ok)
 	}
 
@@ -179,7 +179,7 @@ func TestEnvironmentRefusesReservedAndMalformedKeyNames(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
 	store := identity.NewSecretStore(cs.Pool(), masterKey(t))
-	_, project, _ := provisionOrg(t, identity.New(cs.Pool()), "env-keys")
+	project, _ := provisionOrg(t, identity.New(cs.Pool()), "env-keys")
 	scope := middleware.Scope{Project: project}
 	envID := createEnvironment(t, store, scope, "keyrules-"+newID("env"))
 
@@ -226,8 +226,8 @@ func TestEnvironmentsAreInstallationWide(t *testing.T) {
 	idstore := identity.New(cs.Pool())
 	store := identity.NewSecretStore(cs.Pool(), masterKey(t))
 
-	orgA, projectA, _ := provisionOrg(t, idstore, "env-tenant-a")
-	_, projectB, _ := provisionOrg(t, idstore, "env-tenant-b")
+	projectA, _ := provisionOrg(t, idstore, "env-tenant-a")
+	projectB, _ := provisionOrg(t, idstore, "env-tenant-b")
 	scopeA := middleware.Scope{Project: projectA}
 	scopeB := middleware.Scope{Project: projectB}
 
@@ -261,7 +261,7 @@ func TestEnvironmentsAreInstallationWide(t *testing.T) {
 	if err != nil || put.NotFound {
 		t.Fatalf("PutEnvironmentValue as B notFound=%v err=%v", put.NotFound, err)
 	}
-	if v, ok, _ := store.Resolve(ctx, orgA, "env:"+envA+":INJECTED"); !ok || string(v) != "b-controlled" {
+	if v, ok, _ := store.Resolve(ctx, "env:"+envA+":INJECTED"); !ok || string(v) != "b-controlled" {
 		t.Fatalf("the other project's write is not readable as A (ok=%v) — the claim above would be untested", ok)
 	}
 

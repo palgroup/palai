@@ -44,21 +44,20 @@ func enrollment(poolID, label string) fleet.Registration {
 }
 
 // tenantFixture seeds an organization, a project and a runner pool, and returns the three ids.
-func tenantFixture(t *testing.T, pool *pgxpool.Pool, posture string) (org, project, poolID string) {
+func tenantFixture(t *testing.T, pool *pgxpool.Pool, posture string) (project, poolID string) {
 	t.Helper()
 	ctx := storage.WithSystemScope(context.Background())
-	org, project, poolID = newID("org"), newID("prj"), newID("pool")
+	project, poolID = newID("prj"), newID("pool")
 	exec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, sql, args...); err != nil {
 			t.Fatalf("exec %q: %v", sql, err)
 		}
 	}
-	exec(`INSERT INTO organizations (id) VALUES ($1)`, org)
-	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org)
-	exec(`INSERT INTO runner_pools (id, organization_id, project_id, name, posture) VALUES ($1,$2,$3,$4,$5)`,
-		poolID, org, project, newID("pool-name"), posture)
-	return org, project, poolID
+	exec(`INSERT INTO projects (id) VALUES ($1)`, project)
+	exec(`INSERT INTO runner_pools (id, project_id, name, posture) VALUES ($1,$2,$3,$4)`,
+		poolID, project, newID("pool-name"), posture)
+	return project, poolID
 }
 
 func openPool(t *testing.T) *pgxpool.Pool {
@@ -81,7 +80,7 @@ func openPool(t *testing.T) *pgxpool.Pool {
 // rows, two server-minted ids, and two journal entries.
 func TestRegistryRecordsEachMachineOnceWithItsOwnJournalEntry(t *testing.T) {
 	pool := openPool(t)
-	org, project, poolID := tenantFixture(t, pool, "unsandboxed-host")
+	project, poolID := tenantFixture(t, pool, "unsandboxed-host")
 	registry := fleet.NewStore(pool, newID, nil)
 	ctx := context.Background()
 
@@ -110,8 +109,8 @@ func TestRegistryRecordsEachMachineOnceWithItsOwnJournalEntry(t *testing.T) {
 		}
 	}
 	// The tenant came off the POOL, not off anything the machine sent — the machine sends no tenant.
-	if first.Organization != org || first.Project != project {
-		t.Fatalf("runner tenant = (%q,%q), want the pool's (%q,%q)", first.Project, org, project)
+	if first.Project != project {
+		t.Fatalf("runner project = %q, want the pool's %q", first.Project, project)
 	}
 	// A pool IS a posture, so its members inherit it. A runner that could declare its own would be a
 	// runner that could ask to be placed somewhere it is not.
@@ -182,7 +181,7 @@ func TestRegisterRefusesAnUnknownPool(t *testing.T) {
 // apart, and the refusal is asserted here in all three shapes it can arrive in.
 func TestRegisterRefusesAnIdentityItsDNSDoesNotName(t *testing.T) {
 	pool := openPool(t)
-	_, _, poolID := tenantFixture(t, pool, "sandboxed-linux")
+	_, poolID := tenantFixture(t, pool, "sandboxed-linux")
 	registry := fleet.NewStore(pool, newID, nil)
 	ctx := context.Background()
 
@@ -219,7 +218,7 @@ func TestRegisterRefusesAnIdentityItsDNSDoesNotName(t *testing.T) {
 // would break §2's bit-unchanged rule.
 func TestRecordSeenAdvancesLivenessAndReportsAnUnknownCertificate(t *testing.T) {
 	pool := openPool(t)
-	_, _, poolID := tenantFixture(t, pool, "sandboxed-linux")
+	_, poolID := tenantFixture(t, pool, "sandboxed-linux")
 	registry := fleet.NewStore(pool, newID, nil)
 	ctx := context.Background()
 
@@ -263,8 +262,8 @@ func TestRecordSeenAdvancesLivenessAndReportsAnUnknownCertificate(t *testing.T) 
 // never learns whether the id exists elsewhere.
 func TestReadsAreConfinedToTheCallersTenant(t *testing.T) {
 	pool := openPool(t)
-	orgA, projectA, poolA := tenantFixture(t, pool, "sandboxed-linux")
-	orgB, projectB, poolB := tenantFixture(t, pool, "unsandboxed-host")
+	projectA, poolA := tenantFixture(t, pool, "sandboxed-linux")
+	projectB, poolB := tenantFixture(t, pool, "unsandboxed-host")
 	registry := fleet.NewStore(pool, newID, nil)
 	ctx := context.Background()
 
@@ -277,10 +276,10 @@ func TestReadsAreConfinedToTheCallersTenant(t *testing.T) {
 		t.Fatalf("register B: %v", err)
 	}
 
-	if _, found, err := registry.Get(ctx, orgA, projectA, theirs.ID); err != nil || found {
+	if _, found, err := registry.Get(ctx, projectA, theirs.ID); err != nil || found {
 		t.Fatalf("tenant A read tenant B's runner (found=%v, %v)", found, err)
 	}
-	if _, found, err := registry.Get(ctx, orgA, projectA, mine.ID); err != nil || !found {
+	if _, found, err := registry.Get(ctx, projectA, mine.ID); err != nil || !found {
 		t.Fatalf("tenant A could not read its OWN runner (found=%v, %v)", found, err)
 	}
 
@@ -288,14 +287,14 @@ func TestReadsAreConfinedToTheCallersTenant(t *testing.T) {
 	// other component leg, so "the list has exactly one row" would be an assertion about whatever else
 	// ran, not about this test — the shape that defeated an E19 T6 outbound assertion and an E21 T7
 	// migration test on a shared fixture.
-	page, err := registry.List(ctx, orgA, projectA, fleet.ListWindow{Limit: 50})
+	page, err := registry.List(ctx, projectA, fleet.ListWindow{Limit: 50})
 	if err != nil {
 		t.Fatalf("list A: %v", err)
 	}
 	if len(page) != 1 || page[0].ID != mine.ID {
 		t.Fatalf("tenant A's page = %d row(s) %v, want exactly its own runner %s", len(page), ids(page), mine.ID)
 	}
-	page, err = registry.List(ctx, orgB, projectB, fleet.ListWindow{Limit: 50})
+	page, err = registry.List(ctx, projectB, fleet.ListWindow{Limit: 50})
 	if err != nil {
 		t.Fatalf("list B: %v", err)
 	}
@@ -331,7 +330,7 @@ func ids(rows []fleet.Runner) []string {
 // produces the wrong artefact.
 func TestEnrollingWithADeclaredPostureThePoolDoesNotHaveIsRefused(t *testing.T) {
 	pool := openPool(t)
-	_, _, poolID := tenantFixture(t, pool, "sandboxed-linux")
+	_, poolID := tenantFixture(t, pool, "sandboxed-linux")
 	registry := fleet.NewStore(pool, newID, nil)
 	ctx := context.Background()
 
@@ -386,12 +385,12 @@ func TestEnrollingWithADeclaredPostureThePoolDoesNotHaveIsRefused(t *testing.T) 
 // every other component leg, so a count is an assertion about whatever else ran.
 func TestListPoolsIsTenantScoped(t *testing.T) {
 	db := openPool(t)
-	orgA, projectA, poolA := tenantFixture(t, db, "unsandboxed-host")
-	orgB, projectB, poolB := tenantFixture(t, db, "sandboxed-linux")
+	projectA, poolA := tenantFixture(t, db, "unsandboxed-host")
+	projectB, poolB := tenantFixture(t, db, "sandboxed-linux")
 	registry := fleet.NewStore(db, newID, nil)
 	ctx := context.Background()
 
-	page, err := registry.ListPools(ctx, orgA, projectA, fleet.ListWindow{Limit: 50})
+	page, err := registry.ListPools(ctx, projectA, fleet.ListWindow{Limit: 50})
 	if err != nil {
 		t.Fatalf("list A's pools: %v", err)
 	}
@@ -404,7 +403,7 @@ func TestListPoolsIsTenantScoped(t *testing.T) {
 	if page[0].CreatedAt.IsZero() {
 		t.Fatal("a listed pool carries no created_at; the pagination cursor would be minted from the zero time")
 	}
-	page, err = registry.ListPools(ctx, orgB, projectB, fleet.ListWindow{Limit: 50})
+	page, err = registry.ListPools(ctx, projectB, fleet.ListWindow{Limit: 50})
 	if err != nil {
 		t.Fatalf("list B's pools: %v", err)
 	}

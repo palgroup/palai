@@ -80,7 +80,7 @@ func TestForeignSessionIsNotFound(t *testing.T) {
 	other := seedTenantWithKey(t, h.spine.Pool(), newID("other-tok"))
 	otherSession := newID("ses")
 	if _, err := h.spine.Pool().Exec(storage.WithTenant(t.Context(), other.Project),
-		`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`,
+		`INSERT INTO sessions (id, project_id) VALUES ($1, $2)`,
 		otherSession, other.Project); err != nil {
 		t.Fatalf("seed foreign session error = %v", err)
 	}

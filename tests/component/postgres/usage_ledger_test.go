@@ -97,11 +97,10 @@ func TestMeteringPolicyStaysWiderThanTheProjectAcrossReboots(t *testing.T) {
 		t.Fatalf("re-Migrate() error = %v", err)
 	}
 
-	orgA, orgB := newID("org"), newID("org")
-	projectA, projectB := newID("prj"), newID("prj")
-	seedLedgerRow(t, pool, orgA, projectA, "model.output_tokens", 40)
-	seedLedgerRow(t, pool, orgA, projectB, "model.output_tokens", 2)
-	seedLedgerRow(t, pool, orgB, newID("prj"), "model.output_tokens", 900)
+	projectA, projectB, projectC := newID("prj"), newID("prj"), newID("prj")
+	seedLedgerRow(t, pool, projectA, "model.output_tokens", 40)
+	seedLedgerRow(t, pool, projectB, "model.output_tokens", 2)
+	seedLedgerRow(t, pool, projectC, "model.output_tokens", 900)
 
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
@@ -112,29 +111,36 @@ func TestMeteringPolicyStaysWiderThanTheProjectAcrossReboots(t *testing.T) {
 		t.Fatalf("SET ROLE palai_app error = %v", err)
 	}
 	defer func() { _, _ = conn.Exec(ctx, `RESET ROLE`) }()
-	// The scope a run's admission publishes: org-A, narrowed to project-B. The connection was acquired
-	// under the seeding system scope, so palai.system is cleared first — otherwise every policy admits
-	// and the assertions below would pass vacuously.
-	if _, err := conn.Exec(ctx, `SELECT set_config('palai.system', '', false), set_config('palai.org_id', $1, false), set_config('palai.project_id', $2, false)`, orgA, projectB); err != nil {
+	// The scope a run's admission publishes: narrowed to project-B. The connection was acquired under
+	// the seeding system scope, so palai.system is cleared first — otherwise every policy admits and the
+	// assertions below would pass vacuously. palai.org_id is NOT published: A.2 Task 6 removed the GUC
+	// along with its last reader, so setting it here would be scenery.
+	if _, err := conn.Exec(ctx, `SELECT set_config('palai.system', '', false), set_config('palai.project_id', $1, false)`, projectB); err != nil {
 		t.Fatalf("publish scope: %v", err)
 	}
 
-	var orgTotal float64
-	if err := conn.QueryRow(ctx, `SELECT coalesce(sum(quantity), 0) FROM usage_ledger WHERE organization_id = $1`, orgA).Scan(&orgTotal); err != nil {
-		t.Fatalf("sum org-A ledger: %v", err)
+	// The whole claim, stated on the project axis now that there is no wider one: a connection narrowed
+	// to project-B sums a row belonging to project-A. 40 + 2 = 42, and the 40 is the part that could only
+	// arrive by reading past this connection's own project.
+	var wideTotal float64
+	if err := conn.QueryRow(ctx,
+		`SELECT coalesce(sum(quantity), 0) FROM usage_ledger WHERE project_id = ANY($1)`,
+		[]string{projectA, projectB}).Scan(&wideTotal); err != nil {
+		t.Fatalf("sum across projects A and B: %v", err)
 	}
-	if orgTotal != 42 {
-		t.Fatalf("org-A ledger total from a project-B-narrowed connection = %v, want 42 (the org-level metering policy did not survive the 000029 sweep)", orgTotal)
+	if wideTotal != 42 {
+		t.Fatalf("cross-project ledger total from a project-B-narrowed connection = %v, want 42 (the "+
+			"wider-than-project metering policy did not survive the 000029/000066 sweeps)", wideTotal)
 	}
 
-	// The other seeded tenant's rows are now VISIBLE, and that is asserted rather than left unmentioned:
-	// a test that simply stopped looking would read as if the boundary were still there.
+	// A third project's rows are VISIBLE too, and that is asserted rather than left unmentioned: a test
+	// that simply stopped looking would read as if a boundary were still there.
 	var other int
-	if err := conn.QueryRow(ctx, `SELECT count(*) FROM usage_ledger WHERE organization_id = $1`, orgB).Scan(&other); err != nil {
-		t.Fatalf("count the other tenant's ledger: %v", err)
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM usage_ledger WHERE project_id = $1`, projectC).Scan(&other); err != nil {
+		t.Fatalf("count the third project's ledger: %v", err)
 	}
 	if other != 1 {
-		t.Fatalf("the other tenant's ledger row count = %d, want 1 — usage_ledger is installation-wide after 000066", other)
+		t.Fatalf("the third project's ledger row count = %d, want 1 — usage_ledger is installation-wide after 000066", other)
 	}
 
 	// THE DENY-BY-DEFAULT HALF IS NOT ASSERTED HERE, and the reason is a measured property rather than an
@@ -146,17 +152,16 @@ func TestMeteringPolicyStaysWiderThanTheProjectAcrossReboots(t *testing.T) {
 	// TestInstallationWideTablesAreVisibleToEveryTenant (these four by name).
 }
 
-// seedLedgerRow writes one settled ledger row as the migration owner, creating its organization and
-// project first so the ledger's tenant foreign key holds.
-func seedLedgerRow(t *testing.T, pool *pgxpool.Pool, org, project, meter string, quantity int) {
+// seedLedgerRow writes one settled ledger row as the migration owner, creating its project first so the
+// ledger's tenant foreign key holds.
+func seedLedgerRow(t *testing.T, pool *pgxpool.Pool, project, meter string, quantity int) {
 	t.Helper()
 	ctx := storage.WithSystemScope(context.Background())
 	stmts := []struct {
 		sql  string
 		args []any
 	}{
-		{`INSERT INTO organizations (id) VALUES ($1) ON CONFLICT DO NOTHING`, []any{org}},
-		{`INSERT INTO projects (id, organization_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, []any{project, org}},
+		{`INSERT INTO projects (id) VALUES ($1) ON CONFLICT DO NOTHING`, []any{project, org}},
 		{`INSERT INTO usage_ledger (id, organization_id, project_id, meter, quantity, unit, dedupe_key)
 		  VALUES ($1, $2, $3, $4, $5, 'token', $1)`, []any{newID("use"), org, project, meter, quantity}},
 	}
@@ -228,7 +233,7 @@ func TestAdmissionRejectsWhenTheDurableBudgetIsExhausted(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
 	tenant, principalID := seedTenantWithKey(t, cs.Pool(), "tok-budget")
-	exec(t, cs.Pool(), `INSERT INTO budgets (id, organization_id, project_id, meter_prefix, limit_quantity) VALUES ($1, $2, $3, 'model.', 100)`,
+	exec(t, cs.Pool(), `INSERT INTO budgets (id, project_id, meter_prefix, limit_quantity) VALUES ($1, $2, 'model.', 100)`,
 		newID("bdg"), tenant.Project)
 
 	// Under the limit: the run admits normally.
@@ -242,8 +247,8 @@ func TestAdmissionRejectsWhenTheDurableBudgetIsExhausted(t *testing.T) {
 	}
 
 	// The run settles past the budget, exactly as a real completion would.
-	exec(t, cs.Pool(), `INSERT INTO usage_ledger (id, organization_id, project_id, run_id, meter, quantity, unit, dedupe_key)
-	     VALUES ($1, $2, $3, $4, 'model.output_tokens', 140, 'token', $1)`,
+	exec(t, cs.Pool(), `INSERT INTO usage_ledger (id, project_id, run_id, meter, quantity, unit, dedupe_key)
+	     VALUES ($1, $2, $3, 'model.output_tokens', 140, 'token', $1)`,
 		newID("use"), tenant.Project, first.RunID)
 
 	second := admissionInput(principalID, "key-b2", "hash-A", `{"id":"resp_b2"}`)
@@ -263,7 +268,7 @@ func TestAdmissionRejectsWhenTheDurableBudgetIsExhausted(t *testing.T) {
 	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM runs WHERE project_id=$1`, tenant.Project)
 	assertCount(t, cs.Pool(), 0, `SELECT count(*) FROM idempotency_records WHERE idempotency_key='key-b2' AND project_id=$1`, tenant.Project)
 
-	exec(t, cs.Pool(), `UPDATE budgets SET limit_quantity = 1000 WHERE organization_id=$1`, tenant.Organization)
+	exec(t, cs.Pool(), `UPDATE budgets SET limit_quantity = 1000 WHERE project_id=$1`, tenant.Project)
 	if adm, err = cs.AdmitResponse(ctx, tenant, second); err != nil || adm.LimitExceeded != nil {
 		t.Fatalf("after raising the budget, AdmitResponse = %+v err = %v, want an admit", adm.LimitExceeded, err)
 	}
@@ -277,8 +282,8 @@ func TestAdmissionRejectsWhenTheRollingQuotaIsExhausted(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
 	tenant, principalID := seedTenantWithKey(t, cs.Pool(), "tok-quota")
-	exec(t, cs.Pool(), `INSERT INTO quotas (id, organization_id, project_id, meter_prefix, limit_quantity, window_seconds)
-	     VALUES ($1, $2, $3, 'run.', 1, 3600)`, newID("quo"), tenant.Project)
+	exec(t, cs.Pool(), `INSERT INTO quotas (id, project_id, meter_prefix, limit_quantity, window_seconds)
+	     VALUES ($1, $2, 'run.', 1, 3600)`, newID("quo"), tenant.Project)
 
 	if adm, err := cs.AdmitResponse(ctx, tenant, admissionInput(principalID, "key-q1", "hash-A", `{"id":"resp_q1"}`)); err != nil || adm.LimitExceeded != nil {
 		t.Fatalf("first admission = %+v err = %v, want an admit (the quota allows one run)", adm.LimitExceeded, err)
@@ -308,8 +313,8 @@ func TestExhaustedLimitStillReplaysAnAcceptedRequest(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
 	tenant, principalID := seedTenantWithKey(t, cs.Pool(), "tok-replay")
-	exec(t, cs.Pool(), `INSERT INTO quotas (id, organization_id, project_id, meter_prefix, limit_quantity, window_seconds)
-	     VALUES ($1, $2, $3, 'run.', 1, 3600)`, newID("quo"), tenant.Project)
+	exec(t, cs.Pool(), `INSERT INTO quotas (id, project_id, meter_prefix, limit_quantity, window_seconds)
+	     VALUES ($1, $2, 'run.', 1, 3600)`, newID("quo"), tenant.Project)
 
 	in := admissionInput(principalID, "key-replay", "hash-A", `{"id":"resp_replay"}`)
 	first, err := cs.AdmitResponse(ctx, tenant, in)
@@ -396,19 +401,19 @@ func TestBudgetScopeNarrowingAcrossSiblingProjects(t *testing.T) {
 	ctx := context.Background()
 	tenant, principalID := seedTenantWithKey(t, cs.Pool(), "tok-scope")
 	sibling := newID("prj")
-	exec(t, cs.Pool(), `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, sibling, tenant.Organization)
+	exec(t, cs.Pool(), `INSERT INTO projects (id) VALUES ($1)`, sibling)
 	// The sibling has spent 140 tokens; our project has spent none.
-	exec(t, cs.Pool(), `INSERT INTO usage_ledger (id, organization_id, project_id, meter, quantity, unit, dedupe_key)
-	     VALUES ($1, $2, $3, 'model.output_tokens', 140, 'token', $1)`, newID("use"), tenant.Organization, sibling)
+	exec(t, cs.Pool(), `INSERT INTO usage_ledger (id, project_id, meter, quantity, unit, dedupe_key)
+	     VALUES ($1, $2, 'model.output_tokens', 140, 'token', $1)`, newID("use"), sibling)
 
 	// Every budget below opens its period BEFORE that spend. Without this the spend would sit outside the
 	// period a just-created budget starts (correct behaviour — a new budget does not retroactively charge
 	// history) and all three assertions would pass vacuously, pinning nothing.
 	setBudget := func(project string, limit int) {
 		t.Helper()
-		exec(t, cs.Pool(), `INSERT INTO budgets (id, organization_id, project_id, meter_prefix, limit_quantity, period_start)
-		     VALUES ($1, $2, $3, 'model.', $4, now() - interval '1 hour')`,
-			newID("bdg"), tenant.Organization, project, limit)
+		exec(t, cs.Pool(), `INSERT INTO budgets (id, project_id, meter_prefix, limit_quantity, period_start)
+		     VALUES ($1, $2, 'model.', $3, now() - interval '1 hour')`,
+			newID("bdg"), project, limit)
 	}
 
 	admit := func(t *testing.T, key string) *coordinator.LimitExceeded {
@@ -448,7 +453,11 @@ func TestBudgetScopeNarrowingAcrossSiblingProjects(t *testing.T) {
 		`SELECT coalesce(sum(quantity), 0) FROM usage_ledger WHERE meter LIKE 'model.%'`).Scan(&baseline); err != nil {
 		t.Fatalf("read the installation-wide model.* baseline: %v", err)
 	}
-	exec(t, cs.Pool(), `DELETE FROM budgets WHERE organization_id = $1`, tenant.Organization)
+	// Clear only the two budgets THIS test set, so the installation-wide one below is the only limit in
+	// play. It is keyed by project rather than by the tenant's organization (gone with Task 6), and it
+	// deliberately does NOT delete the '' installation-wide rows: those are shared with every other test
+	// against this database, and a blanket DELETE here would reach into them.
+	exec(t, cs.Pool(), `DELETE FROM budgets WHERE project_id = ANY($1)`, []string{tenant.Project, sibling})
 	setBudget("", 100)
 	limit := admit(t, "scope-c")
 	if limit == nil {

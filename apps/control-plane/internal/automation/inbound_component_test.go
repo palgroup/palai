@@ -89,14 +89,11 @@ func newInboundHarness(t *testing.T, maxInflight, backlogMax int) *inboundHarnes
 	}
 	pool := repo.Spine().Pool()
 	token := randID("tok")
-	org, proj, principal := seedTenantReturning(t, pool, token)
+	proj, principal := seedTenantReturning(t, pool, token)
 
 	secret := []byte("whsec_inbound_" + randID("s"))
 	secretsByRef := map[string][]byte{inboundSecretRef: secret}
-	resolver := func(o, ref string) ([]byte, error) {
-		if o != org {
-			return nil, os.ErrNotExist
-		}
+	resolver := func(ref string) ([]byte, error) {
 		if b, ok := secretsByRef[ref]; ok {
 			return b, nil
 		}
@@ -381,11 +378,9 @@ func (h *inboundHarness) seedInboundRow(triggerID, eventID, envelope, state stri
 	rev := h.activeRevision(triggerID)
 	if _, err := h.pool.Exec(storage.WithSystemScope(context.Background()),
 		`INSERT INTO trigger_deliveries
-		   (id, organization_id, project_id, trigger_id, trigger_revision_id, principal_id,
-		    source, source_tenant, source_event_id, raw_payload, state, received_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,'harness','',$7,$8,$9,
-		         clock_timestamp() - make_interval(secs => $10), clock_timestamp() - make_interval(secs => $10))`,
-		id, h.org, h.proj, triggerID, rev, h.principal, eventID, []byte(envelope), state, ageSeconds); err != nil {
+		   (id, project_id, trigger_id, trigger_revision_id, principal_id, source, source_tenant, source_event_id, raw_payload, state, received_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,'harness','',$6,$7,$8,clock_timestamp() - make_interval(secs => $9),clock_timestamp() - make_interval(secs => $9))`,
+		id, h.proj, triggerID, rev, h.principal, eventID, []byte(envelope), state, ageSeconds); err != nil {
 		h.t.Fatalf("seed inbound row error = %v", err)
 	}
 	return id

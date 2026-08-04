@@ -239,7 +239,7 @@ func (h *harness) runState(runID string) string {
 	h.t.Helper()
 	var state string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT state FROM runs WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		`SELECT state FROM runs WHERE id=$1  project_id=$2`,
 		runID, h.tenant.Project).Scan(&state); err != nil {
 		h.t.Fatalf("read run state error = %v", err)
 	}

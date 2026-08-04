@@ -207,10 +207,10 @@ func TestBeforeRepositoryPublishDenyRejects(t *testing.T) {
 
 	// Seed a binding + preparation receipt so RunPublicationTarget resolves a destination for the run.
 	bindingID := redeliveryID("repo")
-	execSQL(t, pool, `INSERT INTO repository_bindings (id, organization_id, project_id, provider, repository_identity, clone_url, default_branch)
-		VALUES ($1,$2,$3,'github','o/r','git@h:o/r.git','main')`, bindingID, tenant.Project)
-	execSQL(t, pool, `INSERT INTO preparation_receipts (id, repository_binding_id, organization_id, project_id, base_commit, tree_hash, branch, run_id)
-		VALUES ($1,$2,$3,$4,'basecommit','treehash','agent/work',$5)`,
+	execSQL(t, pool, `INSERT INTO repository_bindings (id, project_id, provider, repository_identity, clone_url, default_branch)
+		VALUES ($1,$2,'github','o/r','git@h:o/r.git','main')`, bindingID, tenant.Project)
+	execSQL(t, pool, `INSERT INTO preparation_receipts (id, repository_binding_id, project_id, base_commit, tree_hash, branch, run_id)
+		VALUES ($1,$2,$3,'basecommit','treehash','agent/work',$4)`,
 		redeliveryID("prcpt"), bindingID, tenant.Project, runID)
 
 	firer := &denyingFirer{point: extensions.HookPointBeforeRepositoryPublish, hookID: "hook_pub", reason: "publishing is disabled in this project"}

@@ -20,8 +20,7 @@ import (
 func seedRoutedProject(t *testing.T, cs *coordinator.Store, exec func(string, ...any), model, secretRef string) coordinator.Tenant {
 	t.Helper()
 	tenant := coordinator.Tenant{Project: pinnedID("prj")}
-	exec(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
+	exec(`INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
 	if model == "" {
 		return tenant
 	}
@@ -66,8 +65,8 @@ func TestProjectModelRouteRoutesPerProject(t *testing.T) {
 
 	state := func(tenant coordinator.Tenant) *attemptState {
 		sessionID, runID := pinnedID("ses"), pinnedID("run")
-		exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
-		exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'running')`,
+		exec(`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, tenant.Project)
+		exec(`INSERT INTO runs (id, project_id, session_id, state) VALUES ($1,$2,$3,'running')`,
 			runID, tenant.Project, sessionID)
 		return &attemptState{
 			attempt:   AttemptDescriptor{RunID: contracts.RunID(runID), AttemptID: contracts.AttemptID(pinnedID("att"))},
@@ -91,7 +90,7 @@ func TestProjectModelRouteRoutesPerProject(t *testing.T) {
 	if routeA.Secret == routeB.Secret {
 		t.Fatalf("both projects redeemed the SAME credential ref %q — a per-project route must carry a per-project credential", routeA.Secret)
 	}
-	if routeA.Secret != TenantSecretRef(projectA.Organization, "openai-a") {
+	if routeA.Secret != TenantSecretRef("openai-a") {
 		t.Fatalf("project A ref = %q, want the tenant-qualified handle for its own connection", routeA.Secret)
 	}
 	if routeA.RevisionID == "" || routeB.RevisionID == "" {
@@ -139,10 +138,10 @@ func TestProviderErrorFailsTheModelStep(t *testing.T) {
 	cs, tenant, exec := openPinnedSpine(t)
 	ctx := context.Background()
 	sessionID, responseID, runID := pinnedID("ses"), pinnedID("resp"), pinnedID("run")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
-	exec(`INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'queued')`,
+	exec(`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, tenant.Project)
+	exec(`INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'queued')`,
 		responseID, tenant.Project, sessionID)
-	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'running')`,
+	exec(`INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,'running')`,
 		runID, tenant.Project, sessionID, responseID)
 
 	broker := modelbroker.New(modelbroker.Config{

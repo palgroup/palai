@@ -38,9 +38,8 @@ func openLeaseHarness(t *testing.T) (*coordinator.Store, coordinator.Tenant, str
 	tenant := coordinator.Tenant{Project: redeliveryID("prj")}
 	sessionID := redeliveryID("ses")
 	pool := cs.Pool()
-	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Project)
+	execSQL(t, pool, `INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
+	execSQL(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, sessionID, tenant.Project)
 	wsID := redeliveryID("wsp")
 	if err := cs.CreateWorkspace(ctx, tenant, coordinator.WorkspaceInput{WorkspaceID: wsID, SessionID: sessionID, State: "leased"}); err != nil {
 		t.Fatalf("CreateWorkspace() error = %v", err)
@@ -118,8 +117,8 @@ func TestStuckWriterLeaseReclaimedAfterCrash(t *testing.T) {
 func freshRun(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant) string {
 	t.Helper()
 	sessionID, runID := redeliveryID("ses"), redeliveryID("run")
-	execSQL(t, cs.Pool(), `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Project)
-	execSQL(t, cs.Pool(), `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, runID, tenant.Project, sessionID)
+	execSQL(t, cs.Pool(), `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, sessionID, tenant.Project)
+	execSQL(t, cs.Pool(), `INSERT INTO runs (id, project_id, session_id, state) VALUES ($1, $2, $3, 'running')`, runID, tenant.Project, sessionID)
 	return runID
 }
 
@@ -129,8 +128,8 @@ func freshRun(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant) st
 func seedRunWithLiveJob(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant, alloc coordinator.Allocation) string {
 	t.Helper()
 	runID := seedRunHoldingLease(t, cs, tenant, alloc)
-	execSQL(t, cs.Pool(), `INSERT INTO durable_jobs (id, organization_id, project_id, kind, status, lease_owner, lease_expires_at, payload)
-		VALUES ($1, $2, $3, 'response.run', 'running', $4, clock_timestamp() + interval '10 minutes', jsonb_build_object('run_id', $5::text))`,
+	execSQL(t, cs.Pool(), `INSERT INTO durable_jobs (id, project_id, kind, status, lease_owner, lease_expires_at, payload)
+		VALUES ($1, $2, 'response.run', 'running', $3, clock_timestamp() + interval '10 minutes', jsonb_build_object('run_id', $4::text))`,
 		redeliveryID("job"), tenant.Project, redeliveryID("owner"), runID)
 	return runID
 }
@@ -145,7 +144,7 @@ func TestProvisioningInterruptedMidStateRecovers(t *testing.T) {
 
 	for _, stuck := range []string{"requested", "provisioning", "preparing"} {
 		sessionID := redeliveryID("ses")
-		execSQL(t, cs.Pool(), `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Project)
+		execSQL(t, cs.Pool(), `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, sessionID, tenant.Project)
 		wsID := redeliveryID("wsp")
 		if err := cs.CreateWorkspace(ctx, tenant, coordinator.WorkspaceInput{WorkspaceID: wsID, SessionID: sessionID, State: stuck}); err != nil {
 			t.Fatalf("CreateWorkspace(%s) error = %v", stuck, err)

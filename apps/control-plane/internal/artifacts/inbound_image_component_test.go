@@ -32,10 +32,10 @@ var pngHeader = []byte{
 func TestArtifactInboundImageWriteIsIdempotentAtACallerChosenID(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, runID := h.seedRun(t)
+	project, runID := h.seedRun(t)
 	const artifactID = "art_deadbeefdeadbeefdeadbeefdeadbeef"
 
-	if err := h.writer.WriteInboundArtifact(ctx, org, project, artifactID, pngHeader, "image/png",
+	if err := h.writer.WriteInboundArtifact(ctx, project, artifactID, pngHeader, "image/png",
 		map[string]any{"source": "slack", "slack_file_id": "F1"}); err != nil {
 		t.Fatalf("WriteInboundArtifact() error = %v", err)
 	}
@@ -44,8 +44,8 @@ func TestArtifactInboundImageWriteIsIdempotentAtACallerChosenID(t *testing.T) {
 	var storedRun *string
 	var mediaType, logicalType string
 	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT run_id, media_type, logical_type FROM artifacts WHERE id = $1 AND organization_id = $2 AND project_id = $3`,
-		artifactID, org, project).Scan(&storedRun, &mediaType, &logicalType); err != nil {
+		`SELECT run_id, media_type, logical_type FROM artifacts WHERE id = $1  project_id = $2`,
+		artifactID, project).Scan(&storedRun, &mediaType, &logicalType); err != nil {
 		t.Fatalf("read inbound artifact row error = %v", err)
 	}
 	if storedRun != nil {
@@ -56,7 +56,7 @@ func TestArtifactInboundImageWriteIsIdempotentAtACallerChosenID(t *testing.T) {
 	}
 
 	// (2) a redelivery re-derives the same id and must not fail.
-	if err := h.writer.WriteInboundArtifact(ctx, org, project, artifactID, pngHeader, "image/png", nil); err != nil {
+	if err := h.writer.WriteInboundArtifact(ctx, project, artifactID, pngHeader, "image/png", nil); err != nil {
 		t.Fatalf("second WriteInboundArtifact() (a redelivery) error = %v, want a silent no-op", err)
 	}
 	var rows int
@@ -69,10 +69,10 @@ func TestArtifactInboundImageWriteIsIdempotentAtACallerChosenID(t *testing.T) {
 	}
 
 	// The attach binds it to the run and is itself idempotent.
-	if err := h.writer.AttachArtifactRun(ctx, org, project, artifactID, runID); err != nil {
+	if err := h.writer.AttachArtifactRun(ctx, project, artifactID, runID); err != nil {
 		t.Fatalf("AttachArtifactRun() error = %v", err)
 	}
-	if err := h.writer.AttachArtifactRun(ctx, org, project, artifactID, runID); err != nil {
+	if err := h.writer.AttachArtifactRun(ctx, project, artifactID, runID); err != nil {
 		t.Fatalf("second AttachArtifactRun() error = %v, want idempotent", err)
 	}
 	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
@@ -90,17 +90,17 @@ func TestArtifactInboundImageWriteIsIdempotentAtACallerChosenID(t *testing.T) {
 func TestArtifactAttachCannotRepointAnArtifactAtAnotherRun(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, runID := h.seedRun(t)
-	_, _, otherRun := h.seedRun(t)
+	project, runID := h.seedRun(t)
+	_, otherRun := h.seedRun(t)
 	const artifactID = "art_00000000000000000000000000000001"
 
-	if err := h.writer.WriteInboundArtifact(ctx, org, project, artifactID, pngHeader, "image/png", nil); err != nil {
+	if err := h.writer.WriteInboundArtifact(ctx, project, artifactID, pngHeader, "image/png", nil); err != nil {
 		t.Fatalf("WriteInboundArtifact() error = %v", err)
 	}
-	if err := h.writer.AttachArtifactRun(ctx, org, project, artifactID, runID); err != nil {
+	if err := h.writer.AttachArtifactRun(ctx, project, artifactID, runID); err != nil {
 		t.Fatalf("AttachArtifactRun() error = %v", err)
 	}
-	if err := h.writer.AttachArtifactRun(ctx, org, project, artifactID, otherRun); err != nil {
+	if err := h.writer.AttachArtifactRun(ctx, project, artifactID, otherRun); err != nil {
 		t.Fatalf("re-attach error = %v, want a silent no-op", err)
 	}
 	var storedRun string
@@ -123,17 +123,17 @@ func TestArtifactAttachCannotRepointAnArtifactAtAnotherRun(t *testing.T) {
 func TestReadImageArtifactIsTenantScopedAndSurvivesRetention(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, runID := h.seedRun(t)
+	project, runID := h.seedRun(t)
 	const artifactID = "art_00000000000000000000000000000002"
 
-	if err := h.writer.WriteInboundArtifact(ctx, org, project, artifactID, pngHeader, "image/png", nil); err != nil {
+	if err := h.writer.WriteInboundArtifact(ctx, project, artifactID, pngHeader, "image/png", nil); err != nil {
 		t.Fatalf("WriteInboundArtifact() error = %v", err)
 	}
-	if err := h.writer.AttachArtifactRun(ctx, org, project, artifactID, runID); err != nil {
+	if err := h.writer.AttachArtifactRun(ctx, project, artifactID, runID); err != nil {
 		t.Fatalf("AttachArtifactRun() error = %v", err)
 	}
 
-	mediaType, content, found, err := h.writer.ReadImageArtifact(ctx, org, project, artifactID)
+	mediaType, content, found, err := h.writer.ReadImageArtifact(ctx, project, artifactID)
 	if err != nil || !found {
 		t.Fatalf("owner ReadImageArtifact() = found %v err %v, want the owner's own image", found, err)
 	}
@@ -143,13 +143,13 @@ func TestReadImageArtifactIsTenantScopedAndSurvivesRetention(t *testing.T) {
 
 	// A foreign tenant, and a missing id, are the same miss.
 	for _, tc := range []struct {
-		name             string
-		org, project, id string
+		name        string
+		project, id string
 	}{
-		{"a foreign tenant asking for the same id", newID("org"), newID("prj"), artifactID},
-		{"the owner asking for an id that does not exist", org, project, "art_does_not_exist"},
+		{"a foreign tenant asking for the same id", newID("prj"), artifactID},
+		{"the owner asking for an id that does not exist", project, "art_does_not_exist"},
 	} {
-		_, body, gotFound, err := h.writer.ReadImageArtifact(ctx, tc.org, tc.project, tc.id)
+		_, body, gotFound, err := h.writer.ReadImageArtifact(ctx, tc.project, tc.id)
 		if err != nil {
 			t.Fatalf("%s: err = %v, want a clean miss", tc.name, err)
 		}
@@ -163,7 +163,7 @@ func TestReadImageArtifactIsTenantScopedAndSurvivesRetention(t *testing.T) {
 		`UPDATE artifacts SET object_key = '', size_bytes = 0, checksum = '' WHERE id = $1`, artifactID); err != nil {
 		t.Fatalf("scrub row error = %v", err)
 	}
-	if _, _, gotFound, err := h.writer.ReadImageArtifact(ctx, org, project, artifactID); err != nil || gotFound {
+	if _, _, gotFound, err := h.writer.ReadImageArtifact(ctx, project, artifactID); err != nil || gotFound {
 		t.Fatalf("scrubbed ReadImageArtifact() = found %v err %v, want a miss", gotFound, err)
 	}
 }
@@ -176,22 +176,22 @@ func TestReadImageArtifactIsTenantScopedAndSurvivesRetention(t *testing.T) {
 func TestInboundImageIsReachedByRetentionOnlyOnceAttached(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, runID := h.seedExpiredStoreFalseRun(t)
+	project, runID := h.seedExpiredStoreFalseRun(t)
 	const attachedID = "art_00000000000000000000000000000003"
 	const orphanID = "art_00000000000000000000000000000004"
 
 	for _, id := range []string{attachedID, orphanID} {
-		if err := h.writer.WriteInboundArtifact(ctx, org, project, id, pngHeader, "image/png", nil); err != nil {
+		if err := h.writer.WriteInboundArtifact(ctx, project, id, pngHeader, "image/png", nil); err != nil {
 			t.Fatalf("WriteInboundArtifact(%s) error = %v", id, err)
 		}
 	}
-	if err := h.writer.AttachArtifactRun(ctx, org, project, attachedID, runID); err != nil {
+	if err := h.writer.AttachArtifactRun(ctx, project, attachedID, runID); err != nil {
 		t.Fatalf("AttachArtifactRun() error = %v", err)
 	}
 
 	// Precondition: both sets of bytes are really in the object store before the sweep.
-	attachedObject := objectKey(org, project, inboundObjectKeyPrefix, attachedID)
-	orphanObject := objectKey(org, project, inboundObjectKeyPrefix, orphanID)
+	attachedObject := objectKey(project, inboundObjectKeyPrefix, attachedID)
+	orphanObject := objectKey(project, inboundObjectKeyPrefix, orphanID)
 	for _, key := range []string{attachedObject, orphanObject} {
 		if _, found, err := h.s3.Get(ctx, key); err != nil || !found {
 			t.Fatalf("precondition: %q absent before the purge (found=%v err=%v)", key, found, err)
@@ -239,9 +239,9 @@ func TestInboundImageIsReachedByRetentionOnlyOnceAttached(t *testing.T) {
 func TestReadRunArtifactRefusesForeignRunsForeignTenantsAndOversize(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, runID := h.seedRun(t)
-	_, _, otherRun := h.seedRun(t)
-	otherOrg, otherProject, _ := h.seedRun(t)
+	project, runID := h.seedRun(t)
+	_, otherRun := h.seedRun(t)
+	otherProject, _ := h.seedRun(t)
 
 	content := []byte("** BUILD SUCCEEDED **\n")
 	mine, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: runID, Content: content})
@@ -254,7 +254,7 @@ func TestReadRunArtifactRefusesForeignRunsForeignTenantsAndOversize(t *testing.T
 	}
 
 	// The run's OWN artifact comes back whole.
-	body, size, found, err := h.writer.ReadRunArtifact(ctx, org, project, runID, mine.ID, 8<<20)
+	body, size, found, err := h.writer.ReadRunArtifact(ctx, project, runID, mine.ID, 8<<20)
 	if err != nil || !found {
 		t.Fatalf("ReadRunArtifact(own) = (found %v, err %v), want the bytes", found, err)
 	}
@@ -265,14 +265,14 @@ func TestReadRunArtifactRefusesForeignRunsForeignTenantsAndOversize(t *testing.T
 	// EVERY REFUSAL IS THE SAME MISS. A caller cannot tell "another run's" from "does not exist", which is the
 	// §22.6 non-disclosure rule applied to a lookup key an outsider chose.
 	for _, tc := range []struct {
-		name                        string
-		org, project, run, artefact string
+		name                   string
+		project, run, artefact string
 	}{
-		{"another run's artifact", org, project, runID, theirs.ID},
-		{"another tenant reading ours", otherOrg, otherProject, runID, mine.ID},
-		{"an id that does not exist", org, project, runID, "art_00000000000000000000000000000000"},
+		{"another run's artifact", project, runID, theirs.ID},
+		{"another tenant reading ours", otherProject, runID, mine.ID},
+		{"an id that does not exist", project, runID, "art_00000000000000000000000000000000"},
 	} {
-		body, _, found, err := h.writer.ReadRunArtifact(ctx, tc.org, tc.project, tc.run, tc.artefact, 8<<20)
+		body, _, found, err := h.writer.ReadRunArtifact(ctx, tc.project, tc.run, tc.artefact, 8<<20)
 		if err != nil || found || body != nil {
 			t.Fatalf("%s: ReadRunArtifact = (%d bytes, found %v, err %v), want one indistinguishable miss",
 				tc.name, len(body), found, err)
@@ -282,7 +282,7 @@ func TestReadRunArtifactRefusesForeignRunsForeignTenantsAndOversize(t *testing.T
 	// THE CEILING IS CHECKED ON THE ROW. The refusal names the size — which the caller turns into an honest
 	// sentence — and returns no bytes, so an artifact far larger than the control plane's memory is refused
 	// for the cost of one SELECT.
-	body, size, found, err = h.writer.ReadRunArtifact(ctx, org, project, runID, mine.ID, 4)
+	body, size, found, err = h.writer.ReadRunArtifact(ctx, project, runID, mine.ID, 4)
 	if err != nil {
 		t.Fatalf("an over-ceiling read errored (%v); it is a documented ANSWER, not a failure", err)
 	}

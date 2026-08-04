@@ -71,8 +71,7 @@ func (f *slackFixture) repliesCalls(t *testing.T) []url.Values {
 func (f *slackFixture) inputs(t *testing.T) []string {
 	t.Helper()
 	rows, err := f.pool.Query(storage.WithSystemScope(context.Background()),
-		`SELECT input::text FROM responses WHERE organization_id=$1 AND project_id=$2 ORDER BY created_at, id`,
-		f.org, f.project)
+		`SELECT input::text FROM responses WHERE  project_id=$1 ORDER BY created_at, id`, f.project)
 	if err != nil {
 		t.Fatalf("read the stored run inputs: %v", err)
 	}
@@ -332,8 +331,7 @@ func TestSlackThreadHistoryRedeliveryStillReplays(t *testing.T) {
 	var records int
 	var status string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(*), COALESCE(max(status),'') FROM idempotency_records WHERE organization_id=$1 AND project_id=$2`,
-		f.org, f.project).Scan(&records, &status); err != nil {
+		`SELECT count(*), COALESCE(max(status),'') FROM idempotency_records WHERE  project_id=$1`, f.project).Scan(&records, &status); err != nil {
 		t.Fatalf("read the reservation: %v", err)
 	}
 	if records != 1 {

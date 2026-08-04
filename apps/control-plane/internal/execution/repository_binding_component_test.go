@@ -80,12 +80,12 @@ func newBindingSecretHarness(t *testing.T) *bindingSecretHarness {
 func (h *bindingSecretHarness) resolver(calls *int) SecretResolver {
 	return func(ref string) ([]byte, error) {
 		*calls++
-		v, ok, err := h.secrets.Resolve(context.Background(), org, ref)
+		v, ok, err := h.secrets.Resolve(context.Background(), ref)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
-			return nil, fmt.Errorf("no secret ref provisioned under org %q for repository connection %q", org, ref)
+			return nil, fmt.Errorf("no secret ref provisioned for repository connection %q", ref)
 		}
 		return v, nil
 	}
@@ -98,10 +98,9 @@ func (h *bindingSecretHarness) seedTenant(t *testing.T) (coordinator.Tenant, str
 	tenant := coordinator.Tenant{Project: redeliveryID("prj")}
 	sessionID, runID := redeliveryID("ses"), redeliveryID("run")
 	pool := h.spine.Pool()
-	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Project)
-	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, runID, tenant.Project, sessionID)
+	execSQL(t, pool, `INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
+	execSQL(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, sessionID, tenant.Project)
+	execSQL(t, pool, `INSERT INTO runs (id, project_id, session_id, state) VALUES ($1, $2, $3, 'running')`, runID, tenant.Project, sessionID)
 	return tenant, runID
 }
 

@@ -172,19 +172,19 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 	// proves (the Slack mapping is), so it is seeded directly — the seedRun idiom.
 	org, project := seedOrgProject(t, store)
 	tenant := coordinator.Tenant{Project: project}
-	sessionID, otherSessionID := seedSession(t, store, org, project), seedSession(t, store, org, project)
+	otherSessionID := seedSession(t, store), seedSession(t, store)
 	respID, runID := testID("resp"), testID("run")
 	mustSystemExec(t, pool, `UPDATE sessions SET state='active' WHERE id=$1`, sessionID)
-	mustSystemExec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
-		respID, org, project, sessionID)
-	mustSystemExec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'running')`,
-		runID, org, project, sessionID, respID)
+	mustSystemExec(t, pool, `INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'in_progress')`,
+		respID, project, sessionID)
+	mustSystemExec(t, pool, `INSERT INTO runs (id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,'running')`,
+		runID, project, sessionID, respID)
 	principal := testID("prin")
-	mustSystemExec(t, pool, `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`, principal, org, project)
+	mustSystemExec(t, pool, `INSERT INTO principals (id, project_id, kind) VALUES ($1,$2,'service')`, principal, project)
 
 	// ---- 1. install the integration in a (fake) workspace -------------------------------------------
 	// Credentials are secret_ref HANDLES; an inline value is refused by the store (SLK-004's write half).
-	conn, err := store.CreateSlackConnection(ctx, org, project, []byte(`{
+	conn, err := store.CreateSlackConnection(ctx, project, []byte(`{
 		"team_id":"`+team+`","bot_user_id":"`+botUser+`",
 		"signing_secret_ref":"slack/journey/signing","bot_token_ref":"slack/journey/bot",
 		"scopes":"app_mentions:read chat:write","allowed_users":["`+mapped+`"]}`))
@@ -236,7 +236,7 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: MapEvent: %v", transport, err)
 		}
-		session, _, err := store.CorrelateThreadSession(ctx, org, project, conn.ID, ev.TeamID, ev.ChannelID, ev.ThreadTS, sessionID)
+		session, _, err := store.CorrelateThreadSession(ctx, project, conn.ID, ev.TeamID, ev.ChannelID, ev.ThreadTS, sessionID)
 		if err != nil {
 			t.Fatalf("%s: correlate thread session: %v", transport, err)
 		}
@@ -244,7 +244,7 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 			"event_id": ev.SourceEventID, "session_id": session, "team_id": ev.TeamID,
 			"channel": ev.ChannelID, "thread_ts": ev.ThreadTS, "user": ev.UserID, "kind": string(ev.Kind),
 		}})
-		res, err := triggers.CreateDelivery(ctx, org, project, principal, triggerID, payload)
+		res, err := triggers.CreateDelivery(ctx, project, principal, triggerID, payload)
 		if err != nil {
 			t.Fatalf("%s: CreateDelivery: %v", transport, err)
 		}
@@ -286,7 +286,7 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 
 	// ---- 5. the web console attaches to the SAME session --------------------------------------------
 	// An attach OFFERS its own session; the thread's canonical one wins (SLK-003).
-	attached, created, err := store.CorrelateThreadSession(ctx, org, project, conn.ID, team, channel, threadTS, otherSessionID)
+	attached, created, err := store.CorrelateThreadSession(ctx, project, conn.ID, team, channel, threadTS, otherSessionID)
 	if err != nil || created || attached != sessionID {
 		t.Fatalf("step 5: web attach resolved (%q,created=%v,%v), want the SAME canonical session %q", attached, created, err, sessionID)
 	}

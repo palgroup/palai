@@ -28,10 +28,9 @@ func TestMCPProgressEmitsAdvisoryToolCallProgressEvent(t *testing.T) {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 
-	org, project, session := pinTestID("org"), pinTestID("prj"), pinTestID("ses")
-	mustExecPin(t, cs, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	mustExecPin(t, cs, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
-	mustExecPin(t, cs, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, session, org, project)
+	project, session := pinTestID("prj"), pinTestID("ses")
+	mustExecPin(t, cs, `INSERT INTO projects (id) VALUES ($1)`, project)
+	mustExecPin(t, cs, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, session, project)
 
 	tenant := Tenant{Project: project}
 	if err := cs.AppendToolProgress(ctx, tenant, session, "", "tc_progress_1", 2, 5, "halfway"); err != nil {

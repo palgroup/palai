@@ -41,10 +41,10 @@ func TestToolsMigration(t *testing.T) {
 	// Usable shape: a tool lineage row + a draft revision; publish flips once, a second publish is a no-op.
 	tenant, _, _ := seedRun(t, pool)
 	toolID, revID := newID("tool"), newID("trev")
-	exec(t, pool, `INSERT INTO tools (id, organization_id, project_id, canonical_name, model_visible_name) VALUES ($1,$2,$3,'acme.search.fetch','fetch')`,
+	exec(t, pool, `INSERT INTO tools (id, project_id, canonical_name, model_visible_name) VALUES ($1,$2,'acme.search.fetch','fetch')`,
 		toolID, tenant.Project)
-	exec(t, pool, `INSERT INTO tool_revisions (id, organization_id, project_id, tool_id, revision_number, executor, input_schema, digest)
-	               VALUES ($1,$2,$3,$4,1,'control_plane','{"type":"object"}','sha256:abc')`,
+	exec(t, pool, `INSERT INTO tool_revisions (id, project_id, tool_id, revision_number, executor, input_schema, digest)
+	               VALUES ($1,$2,$3,1,'control_plane','{"type":"object"}','sha256:abc')`,
 		revID, tenant.Project, toolID)
 
 	tag, err := pool.Exec(storage.WithSystemScope(ctx), `UPDATE tool_revisions SET published_at = clock_timestamp() WHERE id=$1 AND published_at IS NULL`, revID)
@@ -58,25 +58,25 @@ func TestToolsMigration(t *testing.T) {
 
 	// A duplicate canonical name in the same project is rejected (the UNIQUE lineage key).
 	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
-		`INSERT INTO tools (id, organization_id, project_id, canonical_name, model_visible_name) VALUES ($1,$2,$3,'acme.search.fetch','fetch2')`,
+		`INSERT INTO tools (id, project_id, canonical_name, model_visible_name) VALUES ($1,$2,'acme.search.fetch','fetch2')`,
 		newID("tool"), tenant.Project))); got != "23505" {
 		t.Fatalf("duplicate canonical_name code = %q, want 23505 unique_violation", got)
 	}
 	// A duplicate model_visible_name in the same project is rejected (the deterministic short-name guard).
 	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
-		`INSERT INTO tools (id, organization_id, project_id, canonical_name, model_visible_name) VALUES ($1,$2,$3,'acme.other.fetch','fetch')`,
+		`INSERT INTO tools (id, project_id, canonical_name, model_visible_name) VALUES ($1,$2,'acme.other.fetch','fetch')`,
 		newID("tool"), tenant.Project))); got != "23505" {
 		t.Fatalf("duplicate model_visible_name code = %q, want 23505 unique_violation", got)
 	}
 
 	// A tool_set_revision pins revisions by JSON id list; a second row for the same (set, number) is rejected.
 	setRevID := newID("tsrev")
-	exec(t, pool, `INSERT INTO tool_set_revisions (id, organization_id, project_id, set_name, revision_number, tool_pins, digest)
-	               VALUES ($1,$2,$3,'reviewers',1,'[{"tool_revision_id":"trev_x"}]','sha256:def')`,
+	exec(t, pool, `INSERT INTO tool_set_revisions (id, project_id, set_name, revision_number, tool_pins, digest)
+	               VALUES ($1,$2,'reviewers',1,'[{"tool_revision_id":"trev_x"}]','sha256:def')`,
 		setRevID, tenant.Project)
 	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
-		`INSERT INTO tool_set_revisions (id, organization_id, project_id, set_name, revision_number, tool_pins, digest)
-		 VALUES ($1,$2,$3,'reviewers',1,'[]','sha256:ghi')`,
+		`INSERT INTO tool_set_revisions (id, project_id, set_name, revision_number, tool_pins, digest)
+		 VALUES ($1,$2,'reviewers',1,'[]','sha256:ghi')`,
 		newID("tsrev"), tenant.Project))); got != "23505" {
 		t.Fatalf("duplicate (set_name, revision_number) code = %q, want 23505 unique_violation", got)
 	}

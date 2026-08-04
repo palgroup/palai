@@ -15,11 +15,11 @@ import (
 func TestConcurrentSameKeyGateAdmitsExactlyOne(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 
 	// singleton: the gate is trigger-wide, so all concurrent deliveries contend on ONE gate.
-	triggerID, _ := seedTrigger(t, store, org, project, "race", TriggerRevisionInput{ConcurrencyPolicy: "singleton"})
+	triggerID, _ := seedTrigger(t, store, project, "race", TriggerRevisionInput{ConcurrencyPolicy: "singleton"})
 
 	const n = 8
 	var wg sync.WaitGroup
@@ -31,7 +31,7 @@ func TestConcurrentSameKeyGateAdmitsExactlyOne(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start // release all at once to maximize the race window
-			del, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{}`))
+			del, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{}`))
 			results[i], errs[i] = del.State, err
 		}(i)
 	}
@@ -56,9 +56,9 @@ func TestConcurrentSameKeyGateAdmitsExactlyOne(t *testing.T) {
 	}
 
 	// A DIFFERENT trigger's key is unaffected — the lock is per gate scope, not global.
-	other, _ := seedTrigger(t, store, org, project, "race-other", TriggerRevisionInput{ConcurrencyPolicy: "queue", CorrelationKeyExpr: `{"select":"k"}`})
-	a, _ := store.CreateDelivery(ctx, org, project, principal, other, []byte(`{"k":"x"}`))
-	b, _ := store.CreateDelivery(ctx, org, project, principal, other, []byte(`{"k":"y"}`))
+	other, _ := seedTrigger(t, store, project, "race-other", TriggerRevisionInput{ConcurrencyPolicy: "queue", CorrelationKeyExpr: `{"select":"k"}`})
+	a, _ := store.CreateDelivery(ctx, project, principal, other, []byte(`{"k":"x"}`))
+	b, _ := store.CreateDelivery(ctx, project, principal, other, []byte(`{"k":"y"}`))
 	if a.State != "run_created" || b.State != "run_created" {
 		t.Fatalf("different keys did not run in parallel: %q, %q", a.State, b.State)
 	}

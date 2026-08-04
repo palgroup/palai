@@ -15,7 +15,7 @@ import (
 )
 
 // openStore opens a migrated spine, seeds an org+project, and returns the automation store scoped to it.
-func openStore(t *testing.T) (*Store, string, string) {
+func openStore(t *testing.T) (*Store, string) {
 	t.Helper()
 	url := os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
 	if url == "" {
@@ -30,15 +30,12 @@ func openStore(t *testing.T) (*Store, string, string) {
 	if err := cs.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
-	org, project := testID("org"), testID("prj")
+	project := testID("prj")
 	pool := cs.Pool()
-	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO organizations (id) VALUES ($1)`, org); err != nil {
-		t.Fatalf("seed org: %v", err)
-	}
-	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO projects (id) VALUES ($1)`, project); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	return New(pool), org, project
+	return New(pool), project
 }
 
 func testID(prefix string) string {
@@ -65,14 +62,14 @@ func rawRevisionRow(t *testing.T, s *Store, revisionID string) string {
 // is frozen — a "revise" (a PATCH in API terms) creates a NEW draft revision, and the published row's
 // config is byte-for-byte unchanged. Publish itself is a once-only flip: a second publish is a no-op.
 func TestAgentRevisionPublishIsImmutable(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
-	profileID, err := s.CreateProfile(ctx, org, project, "reviewer")
+	profileID, err := s.CreateProfile(ctx, project, "reviewer")
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
-	v1, err := s.CreateRevision(ctx, org, project, profileID, []byte(`{"model":"model-a","tools":["file"],"instructions":"v1"}`))
+	v1, err := s.CreateRevision(ctx, project, profileID, []byte(`{"model":"model-a","tools":["file"],"instructions":"v1"}`))
 	if err != nil {
 		t.Fatalf("create v1: %v", err)
 	}
@@ -81,11 +78,11 @@ func TestAgentRevisionPublishIsImmutable(t *testing.T) {
 	}
 
 	// Publish v1, then snapshot its committed config.
-	published, _, err := s.PublishRevision(ctx, org, project, v1.ID)
+	published, _, err := s.PublishRevision(ctx, project, v1.ID)
 	if err != nil || !published {
 		t.Fatalf("publish v1 = %v err = %v, want published", published, err)
 	}
-	before, ok, err := s.GetRevision(ctx, org, project, v1.ID)
+	before, ok, err := s.GetRevision(ctx, project, v1.ID)
 	if err != nil || !ok || !before.Published {
 		t.Fatalf("get v1 after publish = %+v ok=%v err=%v, want published", before, ok, err)
 	}
@@ -93,14 +90,14 @@ func TestAgentRevisionPublishIsImmutable(t *testing.T) {
 	rawBefore := rawRevisionRow(t, s, v1.ID)
 
 	// A "PATCH" is a new draft revision, NOT an edit of v1. v2 carries different config and is unpublished.
-	v2, err := s.CreateRevision(ctx, org, project, profileID, []byte(`{"model":"model-b","tools":["file","shell"],"instructions":"v2"}`))
+	v2, err := s.CreateRevision(ctx, project, profileID, []byte(`{"model":"model-b","tools":["file","shell"],"instructions":"v2"}`))
 	if err != nil {
 		t.Fatalf("revise -> v2: %v", err)
 	}
 	if v2.ID == v1.ID || v2.RevisionNumber != 2 {
 		t.Fatalf("revise produced id=%s number=%d, want a NEW revision 2", v2.ID, v2.RevisionNumber)
 	}
-	v2get, _, _ := s.GetRevision(ctx, org, project, v2.ID)
+	v2get, _, _ := s.GetRevision(ctx, project, v2.ID)
 	if v2get.Published {
 		t.Fatal("a revise must produce a DRAFT, but v2 came back published")
 	}
@@ -112,7 +109,7 @@ func TestAgentRevisionPublishIsImmutable(t *testing.T) {
 	}
 
 	// Publish is once-only: re-publishing v1 is a no-op (already published), never a re-stamp.
-	again, _, err := s.PublishRevision(ctx, org, project, v1.ID)
+	again, _, err := s.PublishRevision(ctx, project, v1.ID)
 	if err != nil {
 		t.Fatalf("re-publish v1: %v", err)
 	}
@@ -126,14 +123,14 @@ func TestAgentRevisionPublishIsImmutable(t *testing.T) {
 // hooks stores each as a JSONB array. This is the conflict-shield persistence half — wave-2 stores its
 // field through this same insert without touching the code again.
 func TestAgentRevisionPersistsExtensionFields(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
-	profileID, err := s.CreateProfile(ctx, org, project, "reviewer")
+	profileID, err := s.CreateProfile(ctx, project, "reviewer")
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
-	rev, err := s.CreateRevision(ctx, org, project, profileID,
+	rev, err := s.CreateRevision(ctx, project, profileID,
 		[]byte(`{"model":"m","tool_sets":["tsrev_a"],"mcp_connections":["mcpc_a"],"skills":["skill_a"],"hooks":["hook_a"]}`))
 	if err != nil {
 		t.Fatalf("create revision with E12 fields: %v", err)
@@ -164,18 +161,18 @@ func TestAgentRevisionPersistsExtensionFields(t *testing.T) {
 // Listing it is additive: no field changes meaning, and the rider is a list of connection IDS, not secrets
 // (the credential lives on the connection row's secret_ref and never here).
 func TestAgentRevisionListCarriesTheMCPRider(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
-	profileID, err := s.CreateProfile(ctx, org, project, "slack-agent")
+	profileID, err := s.CreateProfile(ctx, project, "slack-agent")
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
-	if _, err := s.CreateRevision(ctx, org, project, profileID,
+	if _, err := s.CreateRevision(ctx, project, profileID,
 		[]byte(`{"model":"m","tools":["palai.research.fetch"],"mcp_connections":["mcpc_jira"]}`)); err != nil {
 		t.Fatalf("create revision: %v", err)
 	}
-	revs, err := s.ListRevisions(ctx, org, project, profileID, ListWindow{Limit: 10})
+	revs, err := s.ListRevisions(ctx, project, profileID, ListWindow{Limit: 10})
 	if err != nil || len(revs) != 1 {
 		t.Fatalf("ListRevisions err=%v len=%d, want 1", err, len(revs))
 	}
@@ -193,20 +190,20 @@ func TestAgentRevisionListCarriesTheMCPRider(t *testing.T) {
 // a template revision publishes and resolves like an agent revision but rejects identity/delegation
 // fields — it must not impersonate an agent identity (spec §32.2).
 func TestRunTemplateRevisionRejectsIdentityAndDelegation(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
-	if _, err := s.CreateTemplateRevision(ctx, org, project, "nightly", []byte(`{"model":"m","delegation":{"emit":["child"]}}`)); err == nil {
+	if _, err := s.CreateTemplateRevision(ctx, project, "nightly", []byte(`{"model":"m","delegation":{"emit":["child"]}}`)); err == nil {
 		t.Fatal("template accepted a delegation field, want it rejected (a template is not an agent)")
 	}
-	tr, err := s.CreateTemplateRevision(ctx, org, project, "nightly", []byte(`{"model":"m","tools":["file"],"instructions":"run nightly"}`))
+	tr, err := s.CreateTemplateRevision(ctx, project, "nightly", []byte(`{"model":"m","tools":["file"],"instructions":"run nightly"}`))
 	if err != nil {
 		t.Fatalf("create template revision: %v", err)
 	}
 	if tr.RevisionNumber != 1 {
 		t.Fatalf("template revision number = %d, want 1", tr.RevisionNumber)
 	}
-	published, _, err := s.PublishTemplateRevision(ctx, org, project, tr.ID)
+	published, _, err := s.PublishTemplateRevision(ctx, project, tr.ID)
 	if err != nil || !published {
 		t.Fatalf("publish template = %v err = %v, want published", published, err)
 	}

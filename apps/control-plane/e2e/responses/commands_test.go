@@ -205,7 +205,7 @@ func (h *harness) submitCommand(sessionID, body string) contracts.Command {
 func (h *harness) commandRow(commandID string) (state string, appliedSeq *int64) {
 	h.t.Helper()
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT state, applied_sequence FROM commands WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		`SELECT state, applied_sequence FROM commands WHERE id=$1  project_id=$2`,
 		commandID, h.tenant.Project).Scan(&state, &appliedSeq); err != nil {
 		h.t.Fatalf("read command %s error = %v", commandID, err)
 	}
@@ -402,7 +402,7 @@ func TestDuplicateCommandIDReturnsOriginalResult(t *testing.T) {
 		t.Fatalf("duplicate command diverged: first %+v, second %+v", first, second)
 	}
 	// Exactly one durable row — the table's own unique deduped, not a second insert.
-	if n := h.count(`SELECT count(*) FROM commands WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+	if n := h.count(`SELECT count(*) FROM commands WHERE id=$1  project_id=$2`,
 		commandID, h.tenant.Project); n != 1 {
 		t.Fatalf("commands rows for %s = %d, want 1", commandID, n)
 	}
@@ -444,14 +444,14 @@ func TestCancelWithUncertainSideEffectTerminalizesUncertain(t *testing.T) {
 		}
 	}
 	// An irreversible tool_call left uncertain by a kill mid-effect (its outcome unknown).
-	mustExec(`INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
-		VALUES ($1,$2,$3,$4,1,'uncertain','charge','{}','irreversible','reconciling')`,
+	mustExec(`INSERT INTO tool_calls (id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
+		VALUES ($1,$2,$3,1,'uncertain','charge','{}','irreversible','reconciling')`,
 		newID("tc"), h.tenant.Project, runID)
 	// A child run of this run, to prove cancel-propagation still fires on the reconciled path.
 	childRun, childResp := newID("run"), newID("resp")
-	mustExec(`INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+	mustExec(`INSERT INTO responses (id, project_id, session_id, state) VALUES ($1,$2,$3,'in_progress')`,
 		childResp, h.tenant.Project, sessionID)
-	mustExec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, parent_run_id, depth, response_id) VALUES ($1,$2,$3,$4,'running',$5,1,$6)`,
+	mustExec(`INSERT INTO runs (id, project_id, session_id, state, parent_run_id, depth, response_id) VALUES ($1,$2,$3,'running',$4,1,$5)`,
 		childRun, h.tenant.Project, sessionID, runID, childResp)
 
 	h.cancelResponse(respID, h.token).Body.Close()

@@ -20,11 +20,11 @@ import (
 // none does not stop: `curl` succeeds anonymously, `gh` reads the public repository, a deploy script writes
 // to the default target. That is a wrong answer that looks like a right one, and it is worth one query.
 
-func seedEnvironment(t *testing.T, s *Store, org string) string {
+func seedEnvironment(t *testing.T, s *Store) string {
 	t.Helper()
 	id := testID("env")
 	if _, err := s.pool.Exec(storage.WithSystemScope(context.Background()),
-		`INSERT INTO environments (id, organization_id, name) VALUES ($1,$2,$3)`, id, org, testID("name")); err != nil {
+		`INSERT INTO environments (id, name) VALUES ($1,$2)`, id, testID("name")); err != nil {
 		t.Fatalf("seed environment: %v", err)
 	}
 	return id
@@ -36,28 +36,28 @@ func seedEnvironment(t *testing.T, s *Store, org string) string {
 // run that had none — and it is the single throat every revision passes through, whichever surface created
 // it.
 func TestARevisionNamingAnUnknownEnvironmentIsRefusedAtCreateAndAtPublish(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
-	profileID, err := s.CreateProfile(ctx, org, project, "deployer")
+	profileID, err := s.CreateProfile(ctx, project, "deployer")
 	if err != nil {
 		t.Fatalf("CreateProfile: %v", err)
 	}
 
 	// CREATE with an environment id that does not exist.
-	if _, err := s.CreateRevision(ctx, org, project, profileID, []byte(`{"model":"m","environment":"env_does_not_exist"}`)); !errors.Is(err, ErrEnvironmentNotFound) {
+	if _, err := s.CreateRevision(ctx, project, profileID, []byte(`{"model":"m","environment":"env_does_not_exist"}`)); !errors.Is(err, ErrEnvironmentNotFound) {
 		t.Fatalf("CreateRevision with an unknown environment = %v, want ErrEnvironmentNotFound", err)
 	}
 
 	// A REAL environment is accepted, so the refusal above is not "every create fails".
-	envID := seedEnvironment(t, s, org)
-	rev, err := s.CreateRevision(ctx, org, project, profileID, []byte(`{"model":"m","environment":"`+envID+`"}`))
+	envID := seedEnvironment(t, s)
+	rev, err := s.CreateRevision(ctx, project, profileID, []byte(`{"model":"m","environment":"`+envID+`"}`))
 	if err != nil {
 		t.Fatalf("CreateRevision with a real environment: %v", err)
 	}
 	if rev.Environment != envID {
 		t.Fatalf("the created revision reports environment %q, want %q — the column is written but not read back", rev.Environment, envID)
 	}
-	if published, exists, err := s.PublishRevision(ctx, org, project, rev.ID); err != nil || !published || !exists {
+	if published, exists, err := s.PublishRevision(ctx, project, rev.ID); err != nil || !published || !exists {
 		t.Fatalf("publishing a revision with a real environment = (%v, %v, %v)", published, exists, err)
 	}
 
@@ -66,12 +66,12 @@ func TestARevisionNamingAnUnknownEnvironmentIsRefusedAtCreateAndAtPublish(t *tes
 	// path, a CLI, an import, a hand-edit). That is exactly the case this check exists for.
 	dangling := testID("arev")
 	if _, err := s.pool.Exec(storage.WithSystemScope(ctx),
-		`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, environment)
-		 VALUES ($1,$2,$3,$4,99,'m','env_vanished')`,
-		dangling, org, project, profileID); err != nil {
+		`INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, environment)
+		 VALUES ($1,$2,$3,99,'m','env_vanished')`,
+		dangling, project, profileID); err != nil {
 		t.Fatalf("seed a dangling revision: %v", err)
 	}
-	published, exists, err := s.PublishRevision(ctx, org, project, dangling)
+	published, exists, err := s.PublishRevision(ctx, project, dangling)
 	if !errors.Is(err, ErrEnvironmentNotFound) {
 		t.Fatalf("PublishRevision on a dangling environment = %v, want ErrEnvironmentNotFound", err)
 	}
@@ -96,14 +96,14 @@ func TestARevisionNamingAnUnknownEnvironmentIsRefusedAtCreateAndAtPublish(t *tes
 
 	// A revision naming NO environment publishes exactly as it always did. This is the bit-unchanged leg,
 	// and it is every revision in every deployment before migration 000046.
-	bare, err := s.CreateRevision(ctx, org, project, profileID, []byte(`{"model":"m"}`))
+	bare, err := s.CreateRevision(ctx, project, profileID, []byte(`{"model":"m"}`))
 	if err != nil {
 		t.Fatalf("CreateRevision with no environment: %v", err)
 	}
 	if bare.Environment != "" {
 		t.Fatalf("a revision with no environment reports %q", bare.Environment)
 	}
-	if published, _, err := s.PublishRevision(ctx, org, project, bare.ID); err != nil || !published {
+	if published, _, err := s.PublishRevision(ctx, project, bare.ID); err != nil || !published {
 		t.Fatalf("publishing an environment-less revision = (%v, %v)", published, err)
 	}
 }
@@ -113,21 +113,17 @@ func TestARevisionNamingAnUnknownEnvironmentIsRefusedAtCreateAndAtPublish(t *tes
 // invisible rather than forbidden, and reported as absent. That is the intended answer: an operator must
 // not learn from an error message that an id exists in another tenant.
 func TestARevisionCannotNameAnotherOrganizationsEnvironment(t *testing.T) {
-	s, orgA, projectA := openStore(t)
+	s, projectA := openStore(t)
 	ctx := context.Background()
 
-	// A second organization in the same database, with its own environment.
-	orgB := testID("org")
-	if _, err := s.pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO organizations (id) VALUES ($1)`, orgB); err != nil {
-		t.Fatalf("seed org B: %v", err)
-	}
-	envB := seedEnvironment(t, s, orgB)
+	// A second environment in the same installation, owned by nobody this agent is bound to.
+	envB := seedEnvironment(t, s)
 
-	profileID, err := s.CreateProfile(ctx, orgA, projectA, "deployer")
+	profileID, err := s.CreateProfile(ctx, projectA, "deployer")
 	if err != nil {
 		t.Fatalf("CreateProfile: %v", err)
 	}
-	if _, err := s.CreateRevision(ctx, orgA, projectA, profileID, []byte(`{"model":"m","environment":"`+envB+`"}`)); !errors.Is(err, ErrEnvironmentNotFound) {
-		t.Fatalf("A's revision naming B's environment = %v, want ErrEnvironmentNotFound — an agent in one org must not be bound to another's credentials", err)
+	if _, err := s.CreateRevision(ctx, projectA, profileID, []byte(`{"model":"m","environment":"`+envB+`"}`)); !errors.Is(err, ErrEnvironmentNotFound) {
+		t.Fatalf("A's revision naming B's environment = %v, want ErrEnvironmentNotFound — an agent must not be bound to an environment it does not name", err)
 	}
 }

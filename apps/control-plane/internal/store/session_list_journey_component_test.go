@@ -152,8 +152,7 @@ func newSessionListFixture(t *testing.T) *sessionListFixture {
 	}
 	f := &sessionListFixture{repo: repo, project: newID("prj")}
 	pool := repo.Spine().Pool()
-	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, f.org)
-	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, f.project, f.org)
+	exec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, f.project)
 
 	scope := middleware.Scope{Project: f.project, Principal: newID("prin")}
 	ts := httptest.NewServer(api.NewRouter(
@@ -241,23 +240,23 @@ func (f *sessionListFixture) seedAgentRun(t *testing.T, session, agent string, s
 	t.Helper()
 	pool := f.repo.Spine().Pool()
 	profile, revision := newID("aprof"), newID("arev")
-	exec(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,$4)`,
-		profile, f.org, f.project, agent)
-	exec(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, published_at)
-	               VALUES ($1,$2,$3,$4,1,clock_timestamp())`, revision, f.org, f.project, profile)
+	exec(t, pool, `INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,$3)`,
+		profile, f.project, agent)
+	exec(t, pool, `INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, published_at)
+	               VALUES ($1,$2,$3,1,clock_timestamp())`, revision, f.project, profile)
 	start := time.Now().UTC().Add(-time.Hour)
-	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state, created_at, updated_at, agent_revision_id)
-	               VALUES ($1,$2,$3,$4,'completed',$5,$6,$7)`,
-		newID("run"), f.org, f.project, session, start, start.Add(span), revision)
+	exec(t, pool, `INSERT INTO runs (id, project_id, session_id, state, created_at, updated_at, agent_revision_id)
+	               VALUES ($1,$2,$3,'completed',$4,$5,$6)`,
+		newID("run"), f.project, session, start, start.Add(span), revision)
 }
 
 func (f *sessionListFixture) seedTokens(t *testing.T, session string, in, out int64) {
 	t.Helper()
 	pool := f.repo.Spine().Pool()
 	for meter, quantity := range map[string]int64{"model.input_tokens": in, "model.output_tokens": out} {
-		exec(t, pool, `INSERT INTO usage_ledger (id, organization_id, project_id, session_id, meter, quantity, unit, dedupe_key)
-		               VALUES ($1,$2,$3,$4,$5,$6,'token',$7)`,
-			newID("use"), f.org, f.project, session, meter, quantity, newID("dk"))
+		exec(t, pool, `INSERT INTO usage_ledger (id, project_id, session_id, meter, quantity, unit, dedupe_key)
+		               VALUES ($1,$2,$3,$4,$5,'token',$6)`,
+			newID("use"), f.project, session, meter, quantity, newID("dk"))
 	}
 }
 
@@ -267,8 +266,8 @@ func (f *sessionListFixture) seedPrompt(t *testing.T, session, prompt string) {
 	if err != nil {
 		t.Fatalf("encode prompt: %v", err)
 	}
-	exec(t, f.repo.Spine().Pool(), `INSERT INTO responses (id, organization_id, project_id, session_id, state, input)
-	     VALUES ($1,$2,$3,$4,'completed',$5::jsonb)`, newID("resp"), f.org, f.project, session, string(encoded))
+	exec(t, f.repo.Spine().Pool(), `INSERT INTO responses (id, project_id, session_id, state, input)
+	     VALUES ($1,$2,$3,'completed',$4::jsonb)`, newID("resp"), f.project, session, string(encoded))
 }
 
 func pageJSON(t *testing.T, v any) string {

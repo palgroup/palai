@@ -27,19 +27,18 @@ import (
 
 // seedRunWithAttempt creates org -> project -> session -> run -> attempt and returns the ids a
 // checkpoint FKs (the checkpoint references the fenced attempt that authored it).
-func (h *artifactsHarness) seedRunWithAttempt(t *testing.T) (org, project, session, runID, attemptID string) {
+func (h *artifactsHarness) seedRunWithAttempt(t *testing.T) (project, session, runID, attemptID string) {
 	t.Helper()
-	org, project = newID("org"), newID("prj")
+	project = newID("prj")
 	session = newID("ses")
 	runID = newID("run")
 	attemptID = newID("att")
-	h.exec(t, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	h.exec(t, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org)
-	h.exec(t, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, org, project)
-	h.exec(t, `INSERT INTO runs (id, organization_id, project_id, session_id) VALUES ($1, $2, $3, $4)`, runID, org, project, session)
-	h.exec(t, `INSERT INTO attempts (id, organization_id, project_id, run_id, fence, state) VALUES ($1, $2, $3, $4, 1, 'assigned')`,
-		attemptID, org, project, runID)
-	return org, project, session, runID, attemptID
+	h.exec(t, `INSERT INTO projects (id) VALUES ($1)`, project)
+	h.exec(t, `INSERT INTO sessions (id, project_id) VALUES ($1, $2)`, session, project)
+	h.exec(t, `INSERT INTO runs (id, project_id, session_id) VALUES ($1, $2, $3)`, runID, project, session)
+	h.exec(t, `INSERT INTO attempts (id, project_id, run_id, fence, state) VALUES ($1, $2, $3, 1, 'assigned')`,
+		attemptID, project, runID)
+	return project, session, runID, attemptID
 }
 
 // offerFrameData builds the data map an engine checkpoint.offer carries: format + format_version +
@@ -60,7 +59,7 @@ func offerFrameData(rawState []byte) map[string]any {
 func TestCheckpointOfferPersistsImmutableRowAndBytes(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, _, runID, attemptID := h.seedRunWithAttempt(t)
+	project, _, runID, attemptID := h.seedRunWithAttempt(t)
 	sink := execution.NewCheckpointSink(h.s3, recovery.New(h.pool))
 
 	rawState := []byte(`{"state":"awaiting_model","step":2,"pending_tools":[]}`)
@@ -77,8 +76,8 @@ func TestCheckpointOfferPersistsImmutableRowAndBytes(t *testing.T) {
 	var objectKey, checksum string
 	var size int64
 	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT object_key, content_checksum, size_bytes FROM checkpoints WHERE run_id=$1 AND organization_id=$2 AND project_id=$3`,
-		runID, org, project).Scan(&objectKey, &checksum, &size); err != nil {
+		`SELECT object_key, content_checksum, size_bytes FROM checkpoints WHERE run_id=$1  project_id=$2`,
+		runID, project).Scan(&objectKey, &checksum, &size); err != nil {
 		t.Fatalf("read checkpoint row: %v", err)
 	}
 	wantSum := sha256.Sum256(rawState)
@@ -125,7 +124,7 @@ func TestCheckpointOfferPersistsImmutableRowAndBytes(t *testing.T) {
 func TestCheckpointMigrationPreservesOriginalWithProvenance(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, session, runID, attemptID := h.seedRunWithAttempt(t)
+	project, session, runID, attemptID := h.seedRunWithAttempt(t)
 	sink := execution.NewCheckpointSink(h.s3, recovery.New(h.pool))
 	tenant := coordinator.Tenant{Project: project}
 
@@ -238,7 +237,7 @@ func TestCheckpointMigrationPreservesOriginalWithProvenance(t *testing.T) {
 func TestCheckpointRejectsEmptyState(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, _, runID, attemptID := h.seedRunWithAttempt(t)
+	project, _, runID, attemptID := h.seedRunWithAttempt(t)
 	sink := execution.NewCheckpointSink(h.s3, recovery.New(h.pool))
 	meta := execution.CheckpointMeta{
 		Project: project, RunID: runID, AttemptID: attemptID, OfferSequence: 3,
@@ -265,7 +264,7 @@ func TestCheckpointRejectsEmptyState(t *testing.T) {
 func TestCheckpointMetadataCarriesSpecFields(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	org, project, session, runID, attemptID := h.seedRunWithAttempt(t)
+	project, session, runID, attemptID := h.seedRunWithAttempt(t)
 	sink := execution.NewCheckpointSink(h.s3, recovery.New(h.pool))
 
 	// A real effective ConfigSnapshot — its content-addressed hash is what the boundary records.
@@ -273,9 +272,9 @@ func TestCheckpointMetadataCarriesSpecFields(t *testing.T) {
 
 	// A real journal: append events, then take the boundary at the current max seq.
 	for seq := 1; seq <= 3; seq++ {
-		h.exec(t, `INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
-		           VALUES ($1, $2, $3, $4, $5, 'output.item.v1', '{}')`,
-			newID("evt"), org, project, session, seq)
+		h.exec(t, `INSERT INTO events (id, project_id, session_id, seq, type, payload)
+		           VALUES ($1, $2, $3, $4, 'output.item.v1', '{}')`,
+			newID("evt"), project, session, seq)
 	}
 	var journalSeq int64
 	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT max(seq) FROM events WHERE session_id=$1`, session).Scan(&journalSeq); err != nil {

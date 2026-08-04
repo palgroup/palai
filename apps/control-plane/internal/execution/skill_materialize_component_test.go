@@ -66,8 +66,7 @@ func TestSkillBodyMaterializedAndReadableViaFileTool(t *testing.T) {
 			t.Fatalf("exec %q: %v", sql, err)
 		}
 	}
-	exec(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
+	exec(`INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
 
 	const bodyMarker = "Use conventional commits with a scope."
 	skillMD := []byte("---\nname: commit-convention\ndescription: write commits\n---\n" + bodyMarker + "\n")
@@ -78,18 +77,18 @@ func TestSkillBodyMaterializedAndReadableViaFileTool(t *testing.T) {
 
 	sessionID, profileID, revID, runID := pinnedID("ses"), pinnedID("aprof"), pinnedID("arev"), pinnedID("run")
 	skillID, skillRevID := pinnedID("skill"), pinnedID("skillrev")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
-	exec(`INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'commit-convention')`,
+	exec(`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, tenant.Project)
+	exec(`INSERT INTO skills (id, project_id, name) VALUES ($1,$2,'commit-convention')`,
 		skillID, tenant.Project)
-	exec(`INSERT INTO skill_revisions (id, organization_id, project_id, skill_id, revision_number, digest, state, metadata, archive)
-	      VALUES ($1,$2,$3,$4,1,$5,'enabled','{"name":"commit-convention","description":"write commits"}',$6)`,
+	exec(`INSERT INTO skill_revisions (id, project_id, skill_id, revision_number, digest, state, metadata, archive)
+	      VALUES ($1,$2,$3,1,$4,'enabled','{"name":"commit-convention","description":"write commits"}',$5)`,
 		skillRevID, tenant.Project, skillID, q.Digest, q.Sanitized)
-	exec(`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`,
+	exec(`INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,'reviewer')`,
 		profileID, tenant.Project)
-	exec(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, skills, published_at)
-	      VALUES ($1,$2,$3,$4,1,'m','["file"]','["commit-convention"]', clock_timestamp())`,
+	exec(`INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, tools, skills, published_at)
+	      VALUES ($1,$2,$3,1,'m','["file"]','["commit-convention"]',clock_timestamp())`,
 		revID, tenant.Project, profileID)
-	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,'running',$5)`,
+	exec(`INSERT INTO runs (id, project_id, session_id, state, agent_revision_id) VALUES ($1,$2,$3,'running',$4)`,
 		runID, tenant.Project, sessionID, revID)
 
 	if err := st.PinRunSkills(ctx, tenant, runID); err != nil {
@@ -146,8 +145,7 @@ func TestSkillMaterializationRefusesEscapingName(t *testing.T) {
 			t.Fatalf("exec %q: %v", sql, err)
 		}
 	}
-	exec(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
+	exec(`INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
 
 	// A real sanitized archive stored under a digest the malicious pin references.
 	q, err := extensions.Quarantine(buildSkillTGZ(t, "SKILL.md", []byte("---\nname: x\n---\nbody\n")))
@@ -155,12 +153,12 @@ func TestSkillMaterializationRefusesEscapingName(t *testing.T) {
 		t.Fatalf("Quarantine: %v", err)
 	}
 	sessionID, skillID, skillRevID, runID := pinnedID("ses"), pinnedID("skill"), pinnedID("skillrev"), pinnedID("run")
-	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Project)
-	exec(`INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'ok')`, skillID, tenant.Project)
-	exec(`INSERT INTO skill_revisions (id, organization_id, project_id, skill_id, revision_number, digest, state, metadata, archive)
-	      VALUES ($1,$2,$3,$4,1,$5,'enabled','{"name":"ok"}',$6)`,
+	exec(`INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, sessionID, tenant.Project)
+	exec(`INSERT INTO skills (id, project_id, name) VALUES ($1,$2,'ok')`, skillID, tenant.Project)
+	exec(`INSERT INTO skill_revisions (id, project_id, skill_id, revision_number, digest, state, metadata, archive)
+	      VALUES ($1,$2,$3,1,$4,'enabled','{"name":"ok"}',$5)`,
 		skillRevID, tenant.Project, skillID, q.Digest, q.Sanitized)
-	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'running')`,
+	exec(`INSERT INTO runs (id, project_id, session_id, state) VALUES ($1,$2,$3,'running')`,
 		runID, tenant.Project, sessionID)
 
 	// Inject a pin whose name escapes the skills root (bypassing CreateSkill validation via a raw write).

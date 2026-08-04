@@ -62,28 +62,27 @@ type birthFixture struct {
 func newBirthFixture(t *testing.T) *birthFixture {
 	t.Helper()
 	f := newPlacementFixture(t)
-	org, prj := poolKeyID("org"), poolKeyID("prj")
+	prj := poolKeyID("prj")
 	sys := storage.WithSystemScope(context.Background())
 	admin, runOnly := "sk_birth_admin_"+poolKeyID("v"), "sk_birth_run_"+poolKeyID("v")
 	principal := "prin_birth_" + org
 	stmts := [][]any{
-		{`INSERT INTO organizations (id) VALUES ($1)`, org},
-		{`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, prj, org},
-		{`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`, principal, org, prj},
+		{`INSERT INTO projects (id) VALUES ($1)`, prj},
+		{`INSERT INTO principals (id, project_id, kind) VALUES ($1,$2,'service')`, principal, prj},
 		// The operator's key carries every capability the routes below check and neither is the empty
 		// set: an empty `scopes` means every ordinary capability (api/middleware/auth.go:30), but
 		// `system` is deliberately excluded from that rule (Faz A.1 Task 3 — HasSystem never treats an
 		// empty set as unrestricted), so it must be named explicitly alongside `provision`/`approve` or
 		// the fleet's systemOnly gate refuses this key before any of the assertions below are reached.
-		{`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, scopes)
-		  VALUES ($1,$2,$3,$4,$5,$6)`, "key_birth_adm_" + org, org, prj, principal,
+		{`INSERT INTO api_keys (id, project_id, principal_id, key_hash, scopes)
+		  VALUES ($1,$2,$3,$4,$5)`, "key_birth_adm_" + org, prj, principal,
 			coordinator.HashAPIKey(admin), []string{middleware.ScopeSystem, "provision", "approve"}},
 		// This key still carries `system` — it must clear the fleet's systemOnly gate to REACH the
 		// `provision` check TestPoolBirthIsProvisionGatedAndTenantScoped is actually about. Without
 		// `system` it would be refused at the outer gate for the wrong reason and the test would pass
 		// without ever exercising the capability it names.
-		{`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, scopes)
-		  VALUES ($1,$2,$3,$4,$5,$6)`, "key_birth_run_" + org, org, prj, principal,
+		{`INSERT INTO api_keys (id, project_id, principal_id, key_hash, scopes)
+		  VALUES ($1,$2,$3,$4,$5)`, "key_birth_run_" + org, prj, principal,
 			coordinator.HashAPIKey(runOnly), []string{middleware.ScopeSystem, "run"}},
 	}
 	for _, stmt := range stmts {

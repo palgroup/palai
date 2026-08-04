@@ -53,11 +53,8 @@ func openHookFaultStore(t *testing.T) (*Store, *pgxpool.Pool, string, string) {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 	pool := cs.Pool()
-	org, project := faultID("org"), faultID("prj")
-	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO organizations (id) VALUES ($1)`, org); err != nil {
-		t.Fatalf("seed org: %v", err)
-	}
-	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org); err != nil {
+	project := faultID("prj")
+	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO projects (id) VALUES ($1)`, project); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 	s := New(pool)
@@ -74,12 +71,12 @@ func openHookFaultStore(t *testing.T) (*Store, *pgxpool.Pool, string, string) {
 // insertRemoteFaultHook writes a remote_http hook row DIRECTLY (bypassing the create-time egress gate, which
 // would reject a localhost fixture URL): config carries allow_private so the dispatch reaches the local
 // httptest worker. Distinct points keep two hooks isolated in the per-point dispatch load.
-func insertRemoteFaultHook(t *testing.T, pool *pgxpool.Pool, org, project, name, point, workerURL string) {
+func insertRemoteFaultHook(t *testing.T, pool *pgxpool.Pool, project, name, point, workerURL string) {
 	t.Helper()
 	_, err := pool.Exec(storage.WithSystemScope(context.Background()),
-		`INSERT INTO hooks (id, organization_id, project_id, name, hook_point, category, executor, config, secret_ref)
-		 VALUES ($1,$2,$3,$4,$5,'policy','remote_http', jsonb_build_object('url',$6::text,'allow_private',true), 'sref_hook')`,
-		faultID("hook"), org, project, name, point, workerURL)
+		`INSERT INTO hooks (id, project_id, name, hook_point, category, executor, config, secret_ref)
+		 VALUES ($1,$2,$3,$4,'policy','remote_http',jsonb_build_object('url',$5::text,'allow_private',true),'sref_hook')`,
+		faultID("hook"), project, name, point, workerURL)
 	if err != nil {
 		t.Fatalf("insert remote hook %s: %v", name, err)
 	}
@@ -106,8 +103,8 @@ func TestHookWorkerDownFailsClosedTripsBreakerControlPlaneUp(t *testing.T) {
 	}))
 	defer up.Close()
 
-	insertRemoteFaultHook(t, pool, org, project, "down_guard", HookPointBeforeTool, down.URL)
-	insertRemoteFaultHook(t, pool, org, project, "up_guard", HookPointBeforeModel, up.URL)
+	insertRemoteFaultHook(t, pool)
+	insertRemoteFaultHook(t, pool)
 
 	beforeTool := func() HookOutcome {
 		out, err := s.Fire(ctx, HookEvent{
@@ -138,7 +135,7 @@ func TestHookWorkerDownFailsClosedTripsBreakerControlPlaneUp(t *testing.T) {
 
 	// The control plane is UP: the store keeps serving reads after the trips (a missing id is a clean
 	// ErrHookNotFound, not a panic/hang — the pool is alive).
-	if _, err := s.GetHook(ctx, org, project, "hook_missing"); err == nil {
+	if _, err := s.GetHook(ctx, project, "hook_missing"); err == nil {
 		t.Fatal("GetHook(missing) returned no error, want ErrHookNotFound")
 	}
 

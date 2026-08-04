@@ -18,18 +18,18 @@ import (
 func TestConcurrencyPoliciesDocumentedOutcomes(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
-	org, project, _ := seedSession(t, pool)
-	principal := seedPrincipal(t, pool, org, project)
+	project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, project)
 	rec := NewDeliveryReconciler(store, time.Hour, time.Hour, 100, nil)
 
 	t.Run("drop_if_running skips while the key runs", func(t *testing.T) {
-		triggerID, _ := seedTrigger(t, store, org, project, "drop", TriggerRevisionInput{
+		triggerID, _ := seedTrigger(t, store, project, "drop", TriggerRevisionInput{
 			ConcurrencyPolicy: "drop_if_running", CorrelationKeyExpr: `{"select":"key"}`,
 		})
-		if _, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`)); err != nil {
+		if _, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`)); err != nil {
 			t.Fatalf("first delivery error = %v", err)
 		}
-		dropped, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`))
+		dropped, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`))
 		if err != nil {
 			t.Fatalf("second delivery error = %v", err)
 		}
@@ -45,12 +45,12 @@ func TestConcurrencyPoliciesDocumentedOutcomes(t *testing.T) {
 	})
 
 	t.Run("singleton keeps one active trigger-wide", func(t *testing.T) {
-		triggerID, _ := seedTrigger(t, store, org, project, "singleton", TriggerRevisionInput{ConcurrencyPolicy: "singleton"})
-		first, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{}`))
+		triggerID, _ := seedTrigger(t, store, project, "singleton", TriggerRevisionInput{ConcurrencyPolicy: "singleton"})
+		first, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{}`))
 		if err != nil {
 			t.Fatalf("first delivery error = %v", err)
 		}
-		second, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{}`))
+		second, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{}`))
 		if err != nil {
 			t.Fatalf("second delivery error = %v", err)
 		}
@@ -68,19 +68,19 @@ func TestConcurrencyPoliciesDocumentedOutcomes(t *testing.T) {
 	})
 
 	t.Run("coalesce collapses a burst into the latest survivor", func(t *testing.T) {
-		triggerID, _ := seedTrigger(t, store, org, project, "coalesce", TriggerRevisionInput{
+		triggerID, _ := seedTrigger(t, store, project, "coalesce", TriggerRevisionInput{
 			ConcurrencyPolicy: "coalesce", CorrelationKeyExpr: `{"select":"key"}`,
 		})
-		first, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`))
+		first, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`))
 		if err != nil {
 			t.Fatalf("first delivery error = %v", err)
 		}
 		// Two more events burst in while the first runs → both defer.
-		mid, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`))
+		mid, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`))
 		if err != nil {
 			t.Fatalf("mid delivery error = %v", err)
 		}
-		last, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`))
+		last, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`))
 		if err != nil {
 			t.Fatalf("last delivery error = %v", err)
 		}
@@ -109,14 +109,14 @@ func TestConcurrencyPoliciesDocumentedOutcomes(t *testing.T) {
 	})
 
 	t.Run("replace cancels the active run and admits the new event", func(t *testing.T) {
-		triggerID, _ := seedTrigger(t, store, org, project, "replace", TriggerRevisionInput{
+		triggerID, _ := seedTrigger(t, store, project, "replace", TriggerRevisionInput{
 			ConcurrencyPolicy: "replace", CorrelationKeyExpr: `{"select":"key"}`,
 		})
-		first, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`))
+		first, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`))
 		if err != nil {
 			t.Fatalf("first delivery error = %v", err)
 		}
-		second, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"key":"k"}`))
+		second, err := store.CreateDelivery(ctx, project, principal, triggerID, []byte(`{"key":"k"}`))
 		if err != nil {
 			t.Fatalf("second delivery error = %v", err)
 		}

@@ -56,7 +56,7 @@ func serveSkill(t *testing.T, archive []byte) *httptest.Server {
 }
 
 func TestSkillInstallByURLQuarantinesComputesDigestParsesMetadata(t *testing.T) {
-	store, org, project := openStore(t)
+	store, project := openStore(t)
 	ctx := context.Background()
 
 	archive := buildTGZ(t, tgzEntry{name: "SKILL.md", body: []byte(
@@ -64,11 +64,11 @@ func TestSkillInstallByURLQuarantinesComputesDigestParsesMetadata(t *testing.T) 
 	srv := serveSkill(t, archive)
 	defer srv.Close()
 
-	skill, err := store.CreateSkill(ctx, org, project, "commit-convention")
+	skill, err := store.CreateSkill(ctx, project, "commit-convention")
 	if err != nil {
 		t.Fatalf("CreateSkill: %v", err)
 	}
-	rev, err := store.InstallSkillRevisionFromURL(ctx, org, project, skill.ID, "https://example.com/commit.tgz",
+	rev, err := store.InstallSkillRevisionFromURL(ctx, project, skill.ID, "https://example.com/commit.tgz",
 		WithSkillResolver(publicSkillResolver()), WithSkillDialContext(skillDial(srv.Listener.Addr().String())), WithSkillTLSConfig(trustSkillServer(srv)))
 	if err != nil {
 		t.Fatalf("InstallSkillRevisionFromURL: %v", err)
@@ -86,72 +86,72 @@ func TestSkillInstallByURLQuarantinesComputesDigestParsesMetadata(t *testing.T) 
 		t.Fatalf("required_tools = %v, want [push] (a REQUEST, not a grant)", rev.Metadata.RequiredTools)
 	}
 	// The digest addresses the sanitized archive: the stored bytes are loadable and re-quarantine equal.
-	stored, err := store.LoadSkillArchive(ctx, org, project, rev.Digest)
+	stored, err := store.LoadSkillArchive(ctx, project, rev.Digest)
 	if err != nil || len(stored) == 0 {
 		t.Fatalf("LoadSkillArchive(%s) = %d bytes, %v; want the sanitized tar", rev.Digest, len(stored), err)
 	}
 }
 
 func TestScanFailureBlocksEnable(t *testing.T) {
-	store, org, project := openStore(t)
+	store, project := openStore(t)
 	ctx := context.Background()
 
 	// Clean skill → approved → enable succeeds.
 	clean := buildTGZ(t, tgzEntry{name: "SKILL.md", body: []byte("---\nname: clean\ndescription: fine\n---\nprose\n")})
-	cs, _ := store.CreateSkill(ctx, org, project, "clean")
-	cleanRev, err := store.InstallSkillRevision(ctx, org, project, cs.ID, clean, "")
+	cs, _ := store.CreateSkill(ctx, project, "clean")
+	cleanRev, err := store.InstallSkillRevision(ctx, project, cs.ID, clean, "")
 	if err != nil {
 		t.Fatalf("install clean: %v", err)
 	}
 	if cleanRev.State != "approved" {
 		t.Fatalf("clean state = %q, want approved", cleanRev.State)
 	}
-	if exists, err := store.EnableSkillRevision(ctx, org, project, cleanRev.ID); err != nil || !exists {
+	if exists, err := store.EnableSkillRevision(ctx, project, cleanRev.ID); err != nil || !exists {
 		t.Fatalf("EnableSkillRevision(clean) = exists=%v err=%v, want enabled", exists, err)
 	}
 
 	// Skill with a committed secret in SKILL.md → quarantined, findings, enable REFUSED.
 	dirty := buildTGZ(t, tgzEntry{name: "SKILL.md", body: []byte("---\nname: dirty\ndescription: leaks\n---\ntoken: sk-ABCDEF0123456789\n")})
-	ds, _ := store.CreateSkill(ctx, org, project, "dirty")
-	dirtyRev, err := store.InstallSkillRevision(ctx, org, project, ds.ID, dirty, "")
+	ds, _ := store.CreateSkill(ctx, project, "dirty")
+	dirtyRev, err := store.InstallSkillRevision(ctx, project, ds.ID, dirty, "")
 	if err != nil {
 		t.Fatalf("install dirty: %v", err)
 	}
 	if dirtyRev.State != "quarantined" || len(dirtyRev.Findings) == 0 {
 		t.Fatalf("dirty rev = state %q findings %v, want quarantined with a finding", dirtyRev.State, dirtyRev.Findings)
 	}
-	switch _, err := store.EnableSkillRevision(ctx, org, project, dirtyRev.ID); {
+	switch _, err := store.EnableSkillRevision(ctx, project, dirtyRev.ID); {
 	case errors.Is(err, ErrScanFindingsBlockEnable):
 		// correct: scan FAIL blocks enable
 	default:
 		t.Fatalf("EnableSkillRevision(dirty) err = %v, want ErrScanFindingsBlockEnable", err)
 	}
 	// Confirm it never left quarantined.
-	after, _, _ := store.GetSkillRevision(ctx, org, project, dirtyRev.ID)
+	after, _, _ := store.GetSkillRevision(ctx, project, dirtyRev.ID)
 	if after.State != "quarantined" {
 		t.Fatalf("dirty rev after enable attempt = %q, want still quarantined", after.State)
 	}
 }
 
 func TestModelCannotInstallSkill(t *testing.T) {
-	store, org, project := openStore(t)
+	store, project := openStore(t)
 	ctx := context.Background()
 
 	// Install + enable a skill named after a tool verb — a prompt-injection would love this.
 	archive := buildTGZ(t, tgzEntry{name: "SKILL.md", body: []byte("---\nname: push\ndescription: pretends to be a tool\n---\nuse the push tool\n")})
-	sk, _ := store.CreateSkill(ctx, org, project, "push")
-	rev, err := store.InstallSkillRevision(ctx, org, project, sk.ID, archive, "")
+	sk, _ := store.CreateSkill(ctx, project, "push")
+	rev, err := store.InstallSkillRevision(ctx, project, sk.ID, archive, "")
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if _, err := store.EnableSkillRevision(ctx, org, project, rev.ID); err != nil {
+	if _, err := store.EnableSkillRevision(ctx, project, rev.ID); err != nil {
 		t.Fatalf("enable: %v", err)
 	}
 	// Enabling a skill creates ZERO tool rows — a skill is NOT a tool (TOL-011). The model's only surface
 	// is the tool broker; a skill never becomes a broker-dispatchable tool, and install is a scope-gated
 	// admin Store method with no ExecEnv, so no model-reachable path installs one.
 	var toolCount int
-	if err := store.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM tools WHERE organization_id=$1 AND project_id=$2`, org, project).Scan(&toolCount); err != nil {
+	if err := store.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM tools WHERE  project_id=$1`, project).Scan(&toolCount); err != nil {
 		t.Fatalf("count tools: %v", err)
 	}
 	if toolCount != 0 {

@@ -52,26 +52,26 @@ func envURL(t *testing.T) string {
 	return url
 }
 
-// provisionTenant opens a new org+default project through the identity store (the engine behind
-// POST /v1/organizations) and returns the scope a knowledge caller uses.
+// provisionTenant opens a new project through the identity store (the engine behind POST /v1/projects)
+// and returns the scope a knowledge caller uses. A.2 Task 6 replaced CreateOrganization with
+// CreateProject: a project IS the tenant now, so there is no default-project indirection left to follow.
 func provisionTenant(t *testing.T, cs *coordinator.Store, name string) middleware.Scope {
 	t.Helper()
 	idstore := identity.New(cs.Pool())
-	out, err := idstore.CreateOrganization(context.Background(), middleware.Scope{}, []byte(`{"display_name":"`+name+`"}`))
+	out, err := idstore.CreateProject(context.Background(), middleware.Scope{}, []byte(`{"display_name":"`+name+`"}`))
 	if err != nil {
-		t.Fatalf("CreateOrganization(%s) error = %v", name, err)
+		t.Fatalf("CreateProject(%s) error = %v", name, err)
 	}
 	var r struct {
-		ID               string `json:"id"`
-		DefaultProjectID string `json:"default_project_id"`
+		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(out.Body, &r); err != nil {
-		t.Fatalf("decode organization: %v", err)
+		t.Fatalf("decode project: %v", err)
 	}
-	if r.ID == "" || r.DefaultProjectID == "" {
+	if r.ID == "" {
 		t.Fatalf("incomplete tenant: %s", out.Body)
 	}
-	return middleware.Scope{Project: r.DefaultProjectID}
+	return middleware.Scope{Project: r.ID}
 }
 
 // createKB provisions a knowledge base and returns its id.
@@ -336,7 +336,7 @@ func assertAppendOnly(t *testing.T, cs *coordinator.Store, scope middleware.Scop
 	// "" for organization is harmless here: migration 000062 keys the knowledge tables' RLS on project_id
 	// alone, and this scope only needs to publish palai.project_id for the REVOKE probe below to run
 	// inside the tenant that owns the row.
-	ctx := storage.WithTenant(context.Background(), "", scope.Project)
+	ctx := storage.WithTenant(context.Background(), scope.Project)
 	_, updErr := cs.Pool().Exec(ctx, "UPDATE "+table+" SET checksum = 'tampered' WHERE id = $1", id)
 	if !isPrivilegeError(updErr) {
 		t.Fatalf("UPDATE %s was not refused by the append-only REVOKE: err = %v", table, updErr)

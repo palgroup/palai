@@ -68,7 +68,7 @@ const jiraTicketAttackerRemote = "https://github.com/attacker/evil.git"
 // DESCRIBED as untrusted data that is never an instruction. Being fooled anyway is survivable because of
 // the five zeros, not because the model is immune.
 func TestJiraTicketBodyCannotInstructTheAgent(t *testing.T) {
-	s, org, project := openStore(t)
+	s, project := openStore(t)
 	ctx := context.Background()
 
 	// ---- 0. THE POSITION CLAIM: the ticket text leads, the human's words close ------------------------
@@ -113,22 +113,22 @@ func TestJiraTicketBodyCannotInstructTheAgent(t *testing.T) {
 		"name": "jira", "transport": "http",
 		"config": map[string]any{"url": fixtureURL(srv)}, "secret_ref": secretRef,
 	})
-	conn, err := s.CreateMCPConnection(ctx, org, project, body)
+	conn, err := s.CreateMCPConnection(ctx, project, body)
 	if err != nil {
 		t.Fatalf("register the Jira connection: %v", err)
 	}
-	setID := publishDiscoveredIntoSet(t, s, org, project, conn.ID, "mcp.jira.getJiraIssue")
-	runID := seedRunWithMCPRider(t, s, org, project, setID, `["`+conn.ID+`"]`)
+	setID := publishDiscoveredIntoSet(t, s, project, conn.ID, "mcp.jira.getJiraIssue")
+	runID := seedRunWithMCPRider(t, s, project, setID, `["`+conn.ID+`"]`)
 
 	// The run is a CODING run: a binding whose base branch is `dev` plus a preparation receipt, so a
 	// publication destination genuinely RESOLVES. Without it R5 would be a zero nothing could have moved.
 	const boundRemote, boundBase, workBranch = "https://github.com/owner/repo.git", "dev", "agent/pal-42"
 	bindingID := testID("repo")
-	mustExec(t, s.pool, `INSERT INTO repository_bindings (id, organization_id, project_id, provider, repository_identity, clone_url, default_branch)
-	                     VALUES ($1,$2,$3,'github','owner/repo',$4,$5)`, bindingID, org, project, boundRemote, boundBase)
-	mustExec(t, s.pool, `INSERT INTO preparation_receipts (id, repository_binding_id, organization_id, project_id, base_commit, tree_hash, branch, run_id)
-	                     VALUES ($1,$2,$3,$4,'basecommit','treehash',$5,$6)`,
-		testID("prcpt"), bindingID, org, project, workBranch, runID)
+	mustExec(t, s.pool, `INSERT INTO repository_bindings (id, project_id, provider, repository_identity, clone_url, default_branch)
+	                     VALUES ($1,$2,'github','owner/repo',$3,$4)`, bindingID, project, boundRemote, boundBase)
+	mustExec(t, s.pool, `INSERT INTO preparation_receipts (id, repository_binding_id, project_id, base_commit, tree_hash, branch, run_id)
+	                     VALUES ($1,$2,$3,'basecommit','treehash',$4,$5)`,
+		testID("prcpt"), bindingID, project, workBranch, runID)
 
 	broker := brokerWithLookup(s)
 	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: project, RunID: runID}}
@@ -147,8 +147,8 @@ func TestJiraTicketBodyCannotInstructTheAgent(t *testing.T) {
 	}
 
 	// BEFORE: the run's resolvable surface and its identity, recomputed from the database.
-	surfaceBefore := resolvableToolNames(t, s, org, project, runID)
-	orgBefore, projectBefore, revisionBefore := runIdentity(t, s, runID)
+	surfaceBefore := resolvableToolNames(t, s, project, runID)
+	projectBefore, revisionBefore := runIdentity(t, s, runID)
 
 	// ---- the call: the ticket body reaches the model --------------------------------------------------
 	out, err := broker.Execute(ctx, contracts.ToolCallID("tc_jira_ticket"), "jira__getJiraIssue",
@@ -176,24 +176,24 @@ func TestJiraTicketBodyCannotInstructTheAgent(t *testing.T) {
 
 	// R2 — IT CANNOT WIDEN THE EFFECTIVE SET. Every tool row in the tenant is re-resolved against this
 	// run, so a widening anywhere in the surface is caught, not just at the name the ticket happened to say.
-	surfaceAfter := resolvableToolNames(t, s, org, project, runID)
+	surfaceAfter := resolvableToolNames(t, s, project, runID)
 	if strings.Join(surfaceBefore, ",") != strings.Join(surfaceAfter, ",") {
 		t.Errorf("R2: the run's resolvable set moved: %v -> %v", surfaceBefore, surfaceAfter)
 		authorityGained++
 	}
 
 	// R3 — IT CANNOT CHOOSE A TENANT OR RUN TARGET.
-	orgAfter, projectAfter, revisionAfter := runIdentity(t, s, runID)
-	if orgAfter != orgBefore || projectAfter != projectBefore || revisionAfter != revisionBefore {
-		t.Errorf("R3: the run's identity moved: (%s,%s,%s) -> (%s,%s,%s)",
-			orgBefore, projectBefore, revisionBefore, orgAfter, projectAfter, revisionAfter)
+	projectAfter, revisionAfter := runIdentity(t, s, runID)
+	if projectAfter != projectBefore || revisionAfter != revisionBefore {
+		t.Errorf("R3: the run's identity moved: (%s,%s) -> (%s,%s)",
+			projectBefore, revisionBefore, projectAfter, revisionAfter)
 		authorityGained++
 	}
 
 	// R4 — IT CANNOT TRIGGER AN APPROVAL. Counted across all three tables an approval touches, because
 	// "no approval happened" is a claim about every one of them.
 	for _, table := range []string{"commands", "approvals", "publications"} {
-		if n := countRows(t, s, table, org, project); n != 0 {
+		if n := countRows(t, s, table, project); n != 0 {
 			t.Errorf("R4: %d row(s) in %s after the ticket asked for an approval", n, table)
 			authorityGained += n
 		}
@@ -259,11 +259,11 @@ func TestJiraTicketBodyCannotInstructTheAgent(t *testing.T) {
 // the SHIPPED per-tenant resolver against this run. Recomputing it (rather than trusting a count) is what
 // makes "the effective set did not widen" a measurement — a tool that became reachable anywhere in the
 // tenant shows up here even if nothing named it.
-func resolvableToolNames(t *testing.T, s *Store, org, project, runID string) []string {
+func resolvableToolNames(t *testing.T, s *Store, project, runID string) []string {
 	t.Helper()
 	ctx := context.Background()
 	rows, err := s.pool.Query(storage.WithSystemScope(ctx),
-		`SELECT model_visible_name FROM tools WHERE organization_id=$1 AND project_id=$2`, org, project)
+		`SELECT model_visible_name FROM tools WHERE  project_id=$1`, project)
 	if err != nil {
 		t.Fatalf("list the tenant's tools: %v", err)
 	}
@@ -284,7 +284,7 @@ func resolvableToolNames(t *testing.T, s *Store, org, project, runID string) []s
 	}
 	var resolvable []string
 	for _, name := range names {
-		if _, found, err := s.LookupTool(ctx, org, project, runID, name); err != nil {
+		if _, found, err := s.LookupTool(ctx, project, runID, name); err != nil {
 			t.Fatalf("resolve %s for the run: %v", name, err)
 		} else if found {
 			resolvable = append(resolvable, name)
@@ -295,20 +295,20 @@ func resolvableToolNames(t *testing.T, s *Store, org, project, runID string) []s
 }
 
 // runIdentity re-reads the tenant and pinned revision a run executes under.
-func runIdentity(t *testing.T, s *Store, runID string) (org, project, revision string) {
+func runIdentity(t *testing.T, s *Store, runID string) (project, revision string) {
 	t.Helper()
 	if err := s.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT organization_id, project_id, COALESCE(agent_revision_id,'') FROM runs WHERE id=$1`, runID).
-		Scan(&org, &project, &revision); err != nil {
+		`SELECT project_id, COALESCE(agent_revision_id,'') FROM runs WHERE id=$1`, runID).
+		Scan(&project, &revision); err != nil {
 		t.Fatalf("read the run's identity: %v", err)
 	}
-	return org, project, revision
+	return project, revision
 }
 
-func countRows(t *testing.T, s *Store, table, org, project string) int {
+func countRows(t *testing.T, s *Store, table, project string) int {
 	t.Helper()
 	return countLike(t, s,
-		`SELECT count(*) FROM `+table+` WHERE organization_id=$1 AND project_id=$2`, org, project)
+		`SELECT count(*) FROM `+table+` WHERE project_id=$1`, project)
 }
 
 func countLike(t *testing.T, s *Store, query string, args ...any) int {

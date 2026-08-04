@@ -181,7 +181,7 @@ func TestAConsoleWrittenEnvironmentReachesTheShellOfARunItPinned(t *testing.T) {
 	}
 	// AND IT LEFT NOTHING BEHIND. The console tells the operator "no run and no session were created"; this
 	// is that sentence, counted.
-	if runs := countRows(t, cs, `SELECT count(*) FROM runs WHERE organization_id = $1`, tenant.Organization); runs != 0 {
+	if runs := countRows(t, cs, `SELECT count(*) FROM runs WHERE project_id = $1`, tenant.Project); runs != 0 {
 		t.Fatalf("the refused admission left %d run(s) behind", runs)
 	}
 
@@ -210,7 +210,7 @@ func TestAConsoleWrittenEnvironmentReachesTheShellOfARunItPinned(t *testing.T) {
 	orch := &Orchestrator{
 		spine: cs,
 		envSecrets: func(ref string) ([]byte, error) {
-			v, ok, err := secrets.Resolve(ctx, org, ref)
+			v, ok, err := secrets.Resolve(ctx, ref)
 			if err != nil {
 				return nil, err
 			}

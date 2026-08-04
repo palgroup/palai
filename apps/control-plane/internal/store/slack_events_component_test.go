@@ -310,22 +310,21 @@ func newSlackFixture(t *testing.T) *slackFixture {
 		slack: &fakeSlackWebAPI{},
 	}
 	profileID := newID("aprof")
-	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, f.org)
-	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, f.project, f.org)
-	exec(t, pool, `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`,
-		f.principal, f.org, f.project)
-	exec(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,$4)`,
-		profileID, f.org, f.project, newID("name"))
-	exec(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, published_at)
-	               VALUES ($1,$2,$3,$4,1,'model-pinned','["file"]', clock_timestamp())`,
-		f.revision, f.org, f.project, profileID)
+	exec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, f.project)
+	exec(t, pool, `INSERT INTO principals (id, project_id, kind) VALUES ($1,$2,'service')`,
+		f.principal, f.project)
+	exec(t, pool, `INSERT INTO agent_profiles (id, project_id, name) VALUES ($1,$2,$3)`,
+		profileID, f.project, newID("name"))
+	exec(t, pool, `INSERT INTO agent_revisions (id, project_id, profile_id, revision_number, model, tools, published_at)
+	               VALUES ($1,$2,$3,1,'model-pinned','["file"]',clock_timestamp())`,
+		f.revision, f.project, profileID)
 
 	ext := extensions.New(pool)
 	const signingRef, botRef, appRef = "slack/component/signing", "slack/component/bot", "slack/component/app"
 	// app_token_ref is E19 T3's: Socket Mode's only authentication is the app-level token at connect. It is
 	// registered here rather than in a second fixture so the SAME workspace binding serves all three transports
 	// — which is the point of the transport-invariance proof in slack_socket_component_test.go.
-	if _, err := ext.CreateSlackConnection(ctx, f.org, f.project, []byte(fmt.Sprintf(
+	if _, err := ext.CreateSlackConnection(ctx, f.project, []byte(fmt.Sprintf(
 		`{"team_id":%q,"bot_user_id":%q,"signing_secret_ref":%q,"bot_token_ref":%q,"app_token_ref":%q,
 		  "allowed_users":["Umapped"],
 		  "default_policy":{"agent_revision_id":%q,"principal_id":%q}}`,
@@ -341,9 +340,9 @@ func newSlackFixture(t *testing.T) *slackFixture {
 		f.org + "/" + appRef:     f.appToken,
 	}
 	secrets := func(ref string) ([]byte, error) {
-		secret, ok := f.secrets[org+"/"+ref]
+		secret, ok := f.secrets[ref]
 		if !ok {
-			return nil, fmt.Errorf("no secret bridge for %q/%q", org, ref)
+			return nil, fmt.Errorf("no secret bridge for %q", ref)
 		}
 		return secret, nil
 	}
@@ -476,9 +475,8 @@ func (f *slackFixture) eventText(_ *testing.T, eventID, innerType, user, channel
 func (f *slackFixture) answerRuns(t *testing.T, text string) {
 	t.Helper()
 	f.terminateRuns(t)
-	exec(t, f.pool, `UPDATE responses SET state='completed', output=$3::jsonb
-	                 WHERE organization_id=$1 AND project_id=$2 AND output IS NULL`,
-		f.org, f.project, `{"output":[{"type":"message","content":`+strconv.Quote(text)+`}]}`)
+	exec(t, f.pool, `UPDATE responses SET state='completed', output=$2::jsonb
+	                 WHERE  project_id=$1 AND output IS NULL`, f.project, `{"output":[{"type":"message","content":`+strconv.Quote(text)+`}]}`)
 }
 
 // threadSessionID is the canonical session the fixture's single correlated thread resolved to.
@@ -486,8 +484,7 @@ func (f *slackFixture) threadSessionID(t *testing.T) string {
 	t.Helper()
 	var session string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT session_id FROM slack_thread_sessions WHERE organization_id=$1 AND project_id=$2`,
-		f.org, f.project).Scan(&session); err != nil {
+		`SELECT session_id FROM slack_thread_sessions WHERE  project_id=$1`, f.project).Scan(&session); err != nil {
 		t.Fatalf("read the thread's session: %v", err)
 	}
 	return session
@@ -497,8 +494,7 @@ func (f *slackFixture) threadSessionID(t *testing.T) string {
 func (f *slackFixture) responseIDs(t *testing.T) (ids, inputs []string) {
 	t.Helper()
 	rows, err := f.pool.Query(storage.WithSystemScope(context.Background()),
-		`SELECT id, input::text FROM responses WHERE organization_id=$1 AND project_id=$2 ORDER BY created_at, id`,
-		f.org, f.project)
+		`SELECT id, input::text FROM responses WHERE  project_id=$1 ORDER BY created_at, id`, f.project)
 	if err != nil {
 		t.Fatalf("read responses: %v", err)
 	}
@@ -534,7 +530,7 @@ func (f *slackFixture) runCount(t *testing.T) int {
 	t.Helper()
 	var n int
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`, f.org, f.project).Scan(&n); err != nil {
+		`SELECT count(*) FROM runs WHERE  project_id=$1`, f.project).Scan(&n); err != nil {
 		t.Fatalf("count runs: %v", err)
 	}
 	return n
@@ -544,7 +540,7 @@ func (f *slackFixture) sessionCount(t *testing.T) int {
 	t.Helper()
 	var n int
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(*) FROM slack_thread_sessions WHERE organization_id=$1 AND project_id=$2`, f.org, f.project).Scan(&n); err != nil {
+		`SELECT count(*) FROM slack_thread_sessions WHERE  project_id=$1`, f.project).Scan(&n); err != nil {
 		t.Fatalf("count thread sessions: %v", err)
 	}
 	return n
@@ -572,8 +568,8 @@ func TestSlackEventBirthsARealRunThroughTheRealAdmitter(t *testing.T) {
 		`SELECT COALESCE(r.agent_revision_id,''), COALESCE(i.principal_id,'')
 		   FROM runs r
 		   LEFT JOIN idempotency_records i
-		     ON i.organization_id = r.organization_id AND i.project_id = r.project_id AND i.route = '/v1/slack/events'
-		  WHERE r.organization_id=$1 AND r.project_id=$2`, f.org, f.project).Scan(&revision, &principal); err != nil {
+		     ON i.project_id = r.project_id AND i.route = '/v1/slack/events'
+		  WHERE  r.project_id=$1`, f.project).Scan(&revision, &principal); err != nil {
 		t.Fatalf("read the born run: %v", err)
 	}
 	if revision != f.revision {
@@ -586,8 +582,7 @@ func TestSlackEventBirthsARealRunThroughTheRealAdmitter(t *testing.T) {
 	// never collide with a Slack event_id.
 	var route, key string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT route, idempotency_key FROM idempotency_records WHERE organization_id=$1 AND project_id=$2`,
-		f.org, f.project).Scan(&route, &key); err != nil {
+		`SELECT route, idempotency_key FROM idempotency_records WHERE  project_id=$1`, f.project).Scan(&route, &key); err != nil {
 		t.Fatalf("read the idempotency reservation: %v", err)
 	}
 	if route != "/v1/slack/events" || key != f.team+":Ev1" {
@@ -625,8 +620,7 @@ func TestSlackRetryStormRunsTheEffectOnce(t *testing.T) {
 	var records int
 	var status string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(*), COALESCE(max(status),'') FROM idempotency_records WHERE organization_id=$1 AND project_id=$2`,
-		f.org, f.project).Scan(&records, &status); err != nil {
+		`SELECT count(*), COALESCE(max(status),'') FROM idempotency_records WHERE  project_id=$1`, f.project).Scan(&records, &status); err != nil {
 		t.Fatalf("read reservations: %v", err)
 	}
 	if records != 1 {
@@ -668,8 +662,7 @@ func TestSlackThreadCorrelatesToOneSession(t *testing.T) {
 	}
 	var sessions int
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(DISTINCT session_id) FROM runs WHERE organization_id=$1 AND project_id=$2`,
-		f.org, f.project).Scan(&sessions); err != nil {
+		`SELECT count(DISTINCT session_id) FROM runs WHERE  project_id=$1`, f.project).Scan(&sessions); err != nil {
 		t.Fatalf("count distinct run sessions: %v", err)
 	}
 	if sessions != 1 {
@@ -677,8 +670,8 @@ func TestSlackThreadCorrelatesToOneSession(t *testing.T) {
 	}
 	var correlated, ran string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT (SELECT session_id FROM slack_thread_sessions WHERE organization_id=$1 AND thread_ts=$2),
-		        (SELECT DISTINCT session_id FROM runs WHERE organization_id=$1)`, f.org, root).Scan(&correlated, &ran); err != nil {
+		`SELECT (SELECT session_id FROM slack_thread_sessions WHERE project_id=$1 AND thread_ts=$2),
+		        (SELECT DISTINCT session_id FROM runs WHERE project_id=$1)`, f.project, root).Scan(&correlated, &ran); err != nil {
 		t.Fatalf("compare the correlated session to the run's: %v", err)
 	}
 	if correlated != ran {
@@ -842,7 +835,7 @@ func TestSlackUnauthenticatedAndPoisonDeliveriesWriteNothing(t *testing.T) {
 	}
 	var reservations int
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(*) FROM idempotency_records WHERE organization_id=$1 AND project_id=$2`, f.org, f.project).Scan(&reservations); err != nil {
+		`SELECT count(*) FROM idempotency_records WHERE  project_id=$1`, f.project).Scan(&reservations); err != nil {
 		t.Fatalf("count reservations: %v", err)
 	}
 	if reservations != 0 {
@@ -879,8 +872,7 @@ func TestSlackURLVerificationHandshakeOnTheRealRoute(t *testing.T) {
 func TestSlackTenantIsNeverPayloadSelectable(t *testing.T) {
 	f := newSlackFixture(t)
 	victim, victimProject := newID("org"), newID("prj")
-	exec(t, f.pool, `INSERT INTO organizations (id) VALUES ($1)`, victim)
-	exec(t, f.pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, victimProject, victim)
+	exec(t, f.pool, `INSERT INTO projects (id) VALUES ($1)`, victimProject)
 
 	forged, _ := json.Marshal(map[string]any{
 		"type": "event_callback", "team_id": f.team, "event_id": "Ev11",
@@ -898,7 +890,7 @@ func TestSlackTenantIsNeverPayloadSelectable(t *testing.T) {
 
 	var stolen int
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(*) FROM runs WHERE organization_id=$1`, victim).Scan(&stolen); err != nil {
+		`SELECT count(*) FROM runs WHERE project_id=$1`, victimProject).Scan(&stolen); err != nil {
 		t.Fatalf("count victim runs: %v", err)
 	}
 	if stolen != 0 {
@@ -910,7 +902,7 @@ func TestSlackTenantIsNeverPayloadSelectable(t *testing.T) {
 	// The pin is the connection's, not the payload's.
 	var revision string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT COALESCE(agent_revision_id,'') FROM runs WHERE organization_id=$1`, f.org).Scan(&revision); err != nil {
+		`SELECT COALESCE(agent_revision_id,'') FROM runs WHERE project_id=$1`, f.project).Scan(&revision); err != nil {
 		t.Fatalf("read pin: %v", err)
 	}
 	if revision != f.revision {
@@ -937,18 +929,17 @@ func TestSlackWorkspaceCannotBeSquattedByAnotherTenant(t *testing.T) {
 	ctx := context.Background()
 
 	// A second tenant with an ordinary project admin's powers and nothing more.
-	squatOrg, squatProject := newID("org"), newID("prj")
-	exec(t, f.pool, `INSERT INTO organizations (id) VALUES ($1)`, squatOrg)
-	exec(t, f.pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, squatProject, squatOrg)
+	squatProject := newID("prj")
+	exec(t, f.pool, `INSERT INTO projects (id) VALUES ($1)`, squatProject)
 	squatPrincipal := newID("prin")
-	exec(t, f.pool, `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`,
-		squatPrincipal, squatOrg, squatProject)
+	exec(t, f.pool, `INSERT INTO principals (id, project_id, kind) VALUES ($1,$2,'service')`,
+		squatPrincipal, squatProject)
 	const squatRef = "slack/squatter/signing"
 	squatSecret := []byte("the-squatter-signs-with-its-own-secret-not-the-victims")
-	f.secrets[squatOrg+"/"+squatRef] = squatSecret
+	f.secrets[squatRef] = squatSecret
 
 	// It registers the VICTIM's workspace under its own tenant, with a signing secret it controls.
-	_, err := extensions.New(f.pool).CreateSlackConnection(ctx, squatOrg, squatProject, []byte(fmt.Sprintf(
+	_, err := extensions.New(f.pool).CreateSlackConnection(ctx, squatProject, []byte(fmt.Sprintf(
 		`{"team_id":%q,"signing_secret_ref":%q,"default_policy":{"agent_revision_id":"arev_squat","principal_id":%q}}`,
 		f.team, squatRef, squatPrincipal)))
 	if !errors.Is(err, extensions.ErrSlackWorkspaceBoundElsewhere) {
@@ -974,7 +965,7 @@ func TestSlackWorkspaceCannotBeSquattedByAnotherTenant(t *testing.T) {
 	}
 	var stolen int
 	if err := f.pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM runs WHERE organization_id=$1`, squatOrg).Scan(&stolen); err != nil {
+		`SELECT count(*) FROM runs WHERE project_id=$1`, squatProject).Scan(&stolen); err != nil {
 		t.Fatalf("count squatter runs: %v", err)
 	}
 	if stolen != 0 {
@@ -993,14 +984,13 @@ func TestSlackWorkspaceCannotBeSquattedByAnotherTenant(t *testing.T) {
 func TestSlackAmbiguousWorkspaceBindingIsRefusedRepairably(t *testing.T) {
 	f := newSlackFixture(t)
 
-	otherOrg, otherProject := newID("org"), newID("prj")
-	exec(t, f.pool, `INSERT INTO organizations (id) VALUES ($1)`, otherOrg)
-	exec(t, f.pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, otherProject, otherOrg)
+	otherProject := newID("prj")
+	exec(t, f.pool, `INSERT INTO projects (id) VALUES ($1)`, otherProject)
 	// Written with raw SQL ON PURPOSE: these are the rows the database already accepts (the unique index is
 	// per-tenant), i.e. exactly what a pre-guard deployment can be holding right now.
-	exec(t, f.pool, `INSERT INTO slack_connections (id, organization_id, project_id, team_id, signing_secret_ref)
-	                 VALUES ($1,$2,$3,$4,$5)`,
-		newID("slkc"), otherOrg, otherProject, f.team, "slack/other/signing")
+	exec(t, f.pool, `INSERT INTO slack_connections (id, project_id, team_id, signing_secret_ref)
+	                 VALUES ($1,$2,$3,$4)`,
+		newID("slkc"), otherProject, f.team, "slack/other/signing")
 
 	resp := f.deliver(t, f.event("EvAmb1", "app_mention", "Umapped", "C21", "1700000022.000100", ""), time.Now(), "", "")
 	defer resp.Body.Close()
@@ -1060,8 +1050,7 @@ func TestSlackConcurrentFirstEventsNeverSplitAThread(t *testing.T) {
 	}
 	var sessions int
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(DISTINCT session_id) FROM runs WHERE organization_id=$1 AND project_id=$2`,
-		f.org, f.project).Scan(&sessions); err != nil {
+		`SELECT count(DISTINCT session_id) FROM runs WHERE  project_id=$1`, f.project).Scan(&sessions); err != nil {
 		t.Fatalf("count distinct run sessions: %v", err)
 	}
 	if sessions > 1 {
@@ -1070,8 +1059,8 @@ func TestSlackConcurrentFirstEventsNeverSplitAThread(t *testing.T) {
 	// And the surviving run really is in the session the thread points at.
 	var correlated, ran string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT (SELECT session_id FROM slack_thread_sessions WHERE organization_id=$1 AND thread_ts=$2),
-		        (SELECT DISTINCT session_id FROM runs WHERE organization_id=$1)`, f.org, root).Scan(&correlated, &ran); err != nil {
+		`SELECT (SELECT session_id FROM slack_thread_sessions WHERE project_id=$1 AND thread_ts=$2),
+		        (SELECT DISTINCT session_id FROM runs WHERE project_id=$1)`, f.project, root).Scan(&correlated, &ran); err != nil {
 		t.Fatalf("compare the correlated session to the run's: %v", err)
 	}
 	if correlated != ran {
@@ -1101,7 +1090,7 @@ func TestSlackClosedSessionDoesNotBrickTheThread(t *testing.T) {
 		t.Fatalf("the first event correlated %d threads, want 1", n)
 	}
 	f.terminateRuns(t)
-	exec(t, f.pool, `UPDATE sessions SET state='closed' WHERE organization_id=$1 AND project_id=$2`, f.org, f.project)
+	exec(t, f.pool, `UPDATE sessions SET state='closed' WHERE  project_id=$1`, f.project)
 
 	// A BARE follow-up, with no mention: the case the run-birth rule would turn away if the repair had let the
 	// thread stop being ours.
@@ -1124,7 +1113,7 @@ func TestSlackClosedSessionDoesNotBrickTheThread(t *testing.T) {
 	var state string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT s.state FROM slack_thread_sessions t JOIN sessions s ON s.id = t.session_id
-		  WHERE t.organization_id=$1 AND t.thread_ts=$2`, f.org, root).Scan(&state); err != nil {
+		  WHERE  t.thread_ts=$1`, root).Scan(&state); err != nil {
 		t.Fatalf("read the repaired correlation: %v", err)
 	}
 	if state != "active" {
@@ -1173,7 +1162,7 @@ func TestSlackMessageDuringALiveRunNeverBirthsASecondRun(t *testing.T) {
 	// And nothing partial was left behind: the refused admission rolled back whole.
 	var reservations int
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT count(*) FROM idempotency_records WHERE organization_id=$1 AND project_id=$2`, f.org, f.project).Scan(&reservations); err != nil {
+		`SELECT count(*) FROM idempotency_records WHERE  project_id=$1`, f.project).Scan(&reservations); err != nil {
 		t.Fatalf("count reservations: %v", err)
 	}
 	if reservations != 1 {
@@ -1187,7 +1176,7 @@ func TestSlackMessageDuringALiveRunNeverBirthsASecondRun(t *testing.T) {
 // execution: it writes the terminal state directly rather than driving a run to completion.
 func (f *slackFixture) terminateRuns(t *testing.T) {
 	t.Helper()
-	exec(t, f.pool, `UPDATE runs SET state='completed' WHERE organization_id=$1 AND project_id=$2`, f.org, f.project)
+	exec(t, f.pool, `UPDATE runs SET state='completed' WHERE  project_id=$1`, f.project)
 }
 
 func assertNoRetry(t *testing.T, resp *http.Response, want int, what string) {
@@ -1217,8 +1206,7 @@ func TestSlackEventStoresTheHumanMessageAsTheRunInput(t *testing.T) {
 
 	var input string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT resp.input::text FROM responses resp WHERE resp.organization_id=$1 AND resp.project_id=$2`,
-		f.org, f.project).Scan(&input); err != nil {
+		`SELECT resp.input::text FROM responses resp WHERE  resp.project_id=$1`, f.project).Scan(&input); err != nil {
 		t.Fatalf("read the stored run input: %v", err)
 	}
 	if input != `"merhaba"` {
