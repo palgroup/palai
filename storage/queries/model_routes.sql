@@ -116,7 +116,7 @@ WHERE id = $1 AND route_id = $2;
 -- ORDER BY is fully determined (revision, then id) so selection is deterministic even if an alias were ever
 -- to name two lineages.
 -- name: ResolveProjectModelRoute
-SELECT rev.id, rev.revision, rev.config->>'model', conn.provider, conn.secret_ref, conn.base_url
+SELECT rev.id, rev.revision, rev.config->>'model', conn.provider, conn.secret_ref, conn.base_url, rev.config->>'thinking'
 FROM model_routes r
 JOIN model_route_revisions rev ON rev.route_id = r.id
 LEFT JOIN model_connections conn

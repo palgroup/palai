@@ -119,6 +119,7 @@ components:
         - host.quarantined.v1
         - model_step.created.v1
         - model_step.delta.v1
+        - model_step.thinking.v1
         - model_step.completed.v1
         - model_step.failed.v1
         - model_step.interrupted.v1

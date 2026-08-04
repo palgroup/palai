@@ -114,6 +114,7 @@ func (o *Orchestrator) effectiveRoute(ctx context.Context, st *attemptState) (Mo
 			BaseURL:    target.BaseURL,
 			RevisionID: target.RevisionID,
 			Revision:   target.Revision,
+			Thinking:   modelbroker.ThinkingMode(target.Thinking),
 		}
 	}
 	st.route, st.routeResolved = route, true

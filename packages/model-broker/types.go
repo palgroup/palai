@@ -50,6 +50,38 @@ type Message struct {
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
+// ThinkingMode is what the CALLER wants done with the model's reasoning, stated in the canonical
+// vocabulary rather than any provider's. It names an intent — "let a human see the reasoning" — and each
+// adapter decides what that costs on its own wire, or that its family cannot do it at all.
+//
+// IT IS DELIBERATELY NOT A BUDGET, AND THAT IS THE WHOLE POINT OF THE TYPE. Anthropic's own budget shape
+// (`thinking: {type: "enabled", budget_tokens: N}`) is REJECTED by the model this deployment routes to —
+// measured 2026-08-04 against the live API with claude-sonnet-5:
+//
+//	400 invalid_request_error: "thinking.type.enabled" is not supported for this model.
+//	  Use "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.
+//
+// A canonical `BudgetTokens int` would therefore have carried a number that cannot be sent, and the field
+// would have read as a capability the tree does not have. What travels instead is the intent; the wire
+// shape that satisfies it belongs to the adapter, where it can change when the provider changes it.
+type ThinkingMode string
+
+const (
+	// ThinkingDefault asks for NOTHING: the request carries no thinking field at all and the provider does
+	// whatever it does by default. It is the zero value, so every request built before this field existed
+	// keeps producing a byte-identical provider body — the same regression discipline the Images field kept.
+	//
+	// It does NOT mean "the model does not think". Measured 2026-08-04 on claude-sonnet-5 with no thinking
+	// field on the request: the response carried a `thinking` content block and
+	// `usage.output_tokens_details.thinking_tokens` of 649/1198/802 across three runs. The model reasons
+	// and the deployment is billed for it; this mode only declines to be shown it.
+	ThinkingDefault ThinkingMode = ""
+	// ThinkingVisible asks the provider to return the model's reasoning in a form fit to show a person.
+	// An adapter whose family cannot do that IGNORES this — it is a request, never a guarantee, and the
+	// honest signal that it was honored is a Result that actually carries Thinking.
+	ThinkingVisible ThinkingMode = "visible"
+)
+
 // ToolSchema is a function tool the model may call; Parameters is a JSON Schema.
 type ToolSchema struct {
 	Name string `json:"name"`
@@ -97,6 +129,10 @@ type Request struct {
 	Messages      []Message     `json:"messages"`
 	Tools         []ToolSchema  `json:"tools,omitempty"`
 	ForceToolCall bool          `json:"force_tool_call,omitempty"`
+	// Thinking is whether this call should return the model's reasoning where a person can read it.
+	// Empty (ThinkingDefault) on every request that did not ask, which keeps such a request's provider
+	// body byte-identical to the pre-thinking one.
+	Thinking ThinkingMode `json:"thinking,omitempty"`
 	OutputSchema  *OutputSchema `json:"output_schema,omitempty"`
 	Deadline      time.Time     `json:"deadline"`
 	Privacy       PrivacyFlags  `json:"privacy,omitempty"`
@@ -123,9 +159,20 @@ type ToolCallDelta struct {
 	ArgumentsFragment string `json:"arguments_fragment,omitempty"`
 }
 
-// Delta is one streamed increment: either a text fragment or a tool-call fragment.
+// Delta is one streamed increment: a text fragment, a tool-call fragment, or a reasoning fragment.
+//
+// THINKING IS A SEPARATE FIELD FROM TEXT, NEVER A PREFIX OR A MARKER INSIDE IT. Every consumer of a text
+// delta in this tree appends it straight into the answer a person reads — the Slack relay does
+// `o.emit(ctx, dataString(event.Data, "text"))` (apps/slack-bot/internal/relay/relay.go:352) and the
+// example app does the same. Reasoning folded into Text would therefore not be "shown alongside the
+// answer"; it would BE the answer, with the real one appended to it. Two fields is what makes the two
+// separable by a consumer that has never heard of thinking: it reads Text and gets exactly what it got
+// before.
 type Delta struct {
-	Text     string         `json:"text,omitempty"`
+	Text string `json:"text,omitempty"`
+	// Thinking is a fragment of the model's REASONING, not of its answer. It is the model's working, and
+	// a caller that shows it to a person should mark it as such.
+	Thinking string         `json:"thinking,omitempty"`
 	ToolCall *ToolCallDelta `json:"tool_call,omitempty"`
 }
 
@@ -146,7 +193,13 @@ type Result struct {
 	ProviderRequestID string                   `json:"provider_request_id"`
 	Model             string                   `json:"model"`
 	Output            string                   `json:"output,omitempty"`
-	ToolCalls         []ToolCall               `json:"tool_calls,omitempty"`
+	// Thinking is the model's reasoning for this call, accumulated from the streamed fragments. It is
+	// EMPTY unless the request asked for it AND the provider chose to think AND the family can return it,
+	// and those are three different facts — see ThinkingVisible. An empty Thinking on a request that asked
+	// for it is therefore not an error: measured 2026-08-04, claude-sonnet-5 answers a simple arithmetic
+	// prompt with no thinking block at all, because an adaptive model decides per request whether to think.
+	Thinking  string     `json:"thinking,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 	Deltas            []Delta                  `json:"deltas,omitempty"`
 	Usage             contracts.Usage          `json:"usage"`
 	FinishReason      string                   `json:"finish_reason,omitempty"`
@@ -171,8 +224,12 @@ func (r Result) Validate() error {
 		return fmt.Errorf("result: total_tokens %d is below input+output", r.Usage.TotalTokens)
 	}
 	for i, d := range r.Deltas {
-		if d.Text == "" && d.ToolCall == nil {
-			return fmt.Errorf("result: delta %d carries neither text nor a tool-call fragment", i)
+		// A reasoning fragment counts as content. It has to: a step that streamed thinking and then
+		// requested a tool produces deltas that carry ONLY Thinking, and before this arm every one of them
+		// failed the canonical contract — the conformance assertion would have called a correct live
+		// result invalid, which is the loudest possible way to be wrong about a shape that works.
+		if d.Text == "" && d.Thinking == "" && d.ToolCall == nil {
+			return fmt.Errorf("result: delta %d carries neither text, reasoning, nor a tool-call fragment", i)
 		}
 	}
 	if r.Error != nil {

@@ -53,6 +53,17 @@ type ModelRouteTarget struct {
 	// BaseURL is the CONNECTION's endpoint (000049), empty meaning the family's own. It is what makes a
 	// custom OpenAI-compatible provider a per-project property rather than a deployment-wide env var.
 	BaseURL string
+	// Thinking is whether runs on this route ask the provider to return the model's reasoning where a
+	// person can read it — the canonical modelbroker.ThinkingMode vocabulary, empty for "do not ask".
+	//
+	// IT LIVES ON THE REVISION BECAUSE ITS VALIDITY IS A FUNCTION OF THE MODEL, and the revision is the
+	// only durable record that names one. Measured 2026-08-04 against the live Anthropic API: asking for
+	// reasoning succeeds on claude-sonnet-5 and claude-opus-4-6 and is a 400 ("adaptive thinking is not
+	// supported on this model") on claude-sonnet-4-5, claude-haiku-4-5 and claude-opus-4-5. A deployment
+	// env var would have made one stack unable to serve two models; a per-request flag would have let a
+	// caller pair the ask with a model that rejects it. Choosing the model and choosing to see its
+	// reasoning are one decision, so they are revised together and published together.
+	Thinking string
 }
 
 // ModelRouteRevision is a created/published revision's projection. CreatedAt is populated only by a
@@ -62,8 +73,10 @@ type ModelRouteRevision struct {
 	Revision     int
 	Model        string
 	ConnectionID string
-	Published    bool
-	CreatedAt    time.Time
+	// Thinking is the reasoning preference this revision pinned; empty when it pinned none.
+	Thinking  string
+	Published bool
+	CreatedAt time.Time
 }
 
 // ModelConnectionRecord is a connection's read-back projection. It carries the secret REFERENCE name
@@ -98,9 +111,12 @@ func (s *Store) ProjectModelRoute(ctx context.Context, tenant Tenant) (ModelRout
 	// All three are LEFT-JOIN columns and therefore NULLable: a revision naming a connection that no longer
 	// resolves in this tenant returns a row with NULLs rather than no row, which is what makes the failure
 	// below FAIL CLOSED instead of falling through to the deployment credential (§27.7).
-	var provider, secretRef, baseURL *string
+	// thinking is NULLable for a different reason than the three above: it is absent from every revision
+	// written before the key existed, which is all of them. A missing key reads as "do not ask", so every
+	// route already in the tree keeps producing a byte-identical provider request.
+	var provider, secretRef, baseURL, thinking *string
 	err := s.pool.QueryRow(ctx, storage.Query("ResolveProjectModelRoute"), tenant.Project, DefaultModelRouteAlias).
-		Scan(&target.RevisionID, &target.Revision, &target.Model, &provider, &secretRef, &baseURL)
+		Scan(&target.RevisionID, &target.Revision, &target.Model, &provider, &secretRef, &baseURL, &thinking)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ModelRouteTarget{}, false, nil
 	}
@@ -114,6 +130,9 @@ func (s *Store) ProjectModelRoute(ctx context.Context, tenant Tenant) (ModelRout
 	target.Provider, target.SecretRef = *provider, *secretRef
 	if baseURL != nil {
 		target.BaseURL = *baseURL
+	}
+	if thinking != nil {
+		target.Thinking = *thinking
 	}
 	return target, true, nil
 }
@@ -334,7 +353,9 @@ func (s *Store) CreateModelRoute(ctx context.Context, tenant Tenant, name string
 // CreateModelRouteRevision adds a DRAFT revision to a route (the E11 immutable-revision shape): a revise is
 // always a NEW revision, never an edit of a published one. The route and the connection are both verified
 // in scope first, so a revision can neither attach to a foreign route nor bind a foreign credential.
-func (s *Store) CreateModelRouteRevision(ctx context.Context, tenant Tenant, routeID, model, connectionID string) (ModelRouteRevision, error) {
+// thinking is the ModelRouteTarget.Thinking value this revision pins; empty means "do not ask the
+// provider for reasoning", which is what every revision written before the key existed resolves to.
+func (s *Store) CreateModelRouteRevision(ctx context.Context, tenant Tenant, routeID, model, connectionID, thinking string) (ModelRouteRevision, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	if err := s.requireModelRoute(ctx, tenant, routeID); err != nil {
 		return ModelRouteRevision{}, err
@@ -351,11 +372,18 @@ func (s *Store) CreateModelRouteRevision(ctx context.Context, tenant Tenant, rou
 		return ModelRouteRevision{}, fmt.Errorf("next model route revision: %w", err)
 	}
 	id := newModelRoutingID("mrev")
-	config, _ := json.Marshal(map[string]string{"model": model, "connection_id": connectionID})
+	fields := map[string]string{"model": model, "connection_id": connectionID}
+	// The key is written only when it was asked for, so a revision that pins no reasoning preference has
+	// a config blob byte-identical to one written before this key existed — and ResolveProjectModelRoute's
+	// `config->>'thinking'` returns SQL NULL for both, which is the same thing to every reader.
+	if thinking != "" {
+		fields["thinking"] = thinking
+	}
+	config, _ := json.Marshal(fields)
 	if _, err := s.pool.Exec(ctx, storage.Query("InsertModelRouteRevision"), id, routeID, number, config); err != nil {
 		return ModelRouteRevision{}, fmt.Errorf("insert model route revision: %w", err)
 	}
-	return ModelRouteRevision{ID: id, Revision: number, Model: model, ConnectionID: connectionID}, nil
+	return ModelRouteRevision{ID: id, Revision: number, Model: model, ConnectionID: connectionID, Thinking: thinking}, nil
 }
 
 // PublishModelRouteRevision makes a draft revision routable. Publish is the ONE legitimate mutation of a

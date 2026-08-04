@@ -84,6 +84,11 @@ type ModelRoute struct {
 	// empty RevisionID means this is the deployment default, which pins no revision.
 	RevisionID string
 	Revision   int
+	// Thinking is whether runs on this route ask the provider for the model's reasoning. Empty on the
+	// deployment default and on every revision that did not pin it, which is what keeps such a run's
+	// provider request byte-identical to the pre-reasoning one. See coordinator.ModelRouteTarget.Thinking
+	// for why the decision belongs to the revision and not to a deployment env var or a per-request flag.
+	Thinking modelbroker.ThinkingMode
 }
 
 var defaultModelRoute = ModelRoute{Provider: "fake", Model: "fake", Secret: modelbroker.SecretRef("model")}
@@ -228,10 +233,25 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		_ = o.spine.AppendModelStepDelta(dctx, st.tenant, st.sessionID, st.responseID,
 			string(st.attempt.RunID), requestID, text)
 	})
+	// The REASONING stream gets its own sink and its own event type. It reuses deltaSink because the
+	// coalescing problem is identical — onDelta runs inside the provider's read loop, so neither stream
+	// may write to Postgres inline — but it must not share the text sink's BUFFER: two streams in one
+	// builder would interleave the model's working with its answer and neither could be recovered.
+	//
+	// It is deliberately NOT accumulated into `partial`. That builder exists so an interrupt can record
+	// the answer produced so far as the §25.16 partial item, and reasoning is not an answer: folding it in
+	// would make an interrupted run report the model's private working as the text it had written.
+	thinking := newDeltaSink(ctx, func(dctx context.Context, text string) {
+		_ = o.spine.AppendModelStepThinking(dctx, st.tenant, st.sessionID, st.responseID,
+			string(st.attempt.RunID), requestID, text)
+	})
 	onDelta := func(d modelbroker.Delta) {
 		if d.Text != "" {
 			partial.WriteString(d.Text)
 			deltas.add(d.Text)
+		}
+		if d.Thinking != "" {
+			thinking.add(d.Thinking)
 		}
 	}
 
@@ -264,12 +284,19 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		// connection, in which case each adapter dials exactly where it did before this field existed.
 		BaseURL:       route.BaseURL,
 		RouteRevision: route.Revision,
+		// The route revision's reasoning preference. Empty on the deployment default and on every
+		// revision that pinned none, in which case the adapter sends no thinking field at all.
+		Thinking: route.Thinking,
 	}, onDelta)
 	cancelModel()
 	// Flush the last window BEFORE this step's terminal event is journalled. close() is synchronous for
 	// that reason: a delta that landed after its own model_step.completed.v1 would put a client's
 	// transcript out of order, which is a worse failure than a delta that never arrived at all.
 	deltas.close()
+	// Closed BEFORE the terminal event for the same ordering reason as the text sink, and closed even when
+	// the step failed: reasoning that arrived before a provider error is exactly the reasoning worth
+	// having. close() must run exactly once, and there is no early return between the two constructors.
+	thinking.close()
 	// Provider call/error counters (E14 Task 6): count the call, count an error only for an UPSTREAM
 	// failure (see providerCallOutcome — config/budget/interrupt do not count).
 	metrics.RecordProviderCall(providerCallOutcome(err, result))

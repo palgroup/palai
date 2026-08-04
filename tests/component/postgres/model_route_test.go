@@ -47,7 +47,7 @@ func TestProjectModelRouteResolvesPublishedRevisionOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateModelRoute() error = %v", err)
 	}
-	draft, err := cs.CreateModelRouteRevision(ctx, tenant, routeID, "model-draft", connID)
+	draft, err := cs.CreateModelRouteRevision(ctx, tenant, routeID, "model-draft", connID, "")
 	if err != nil {
 		t.Fatalf("CreateModelRouteRevision() error = %v", err)
 	}
@@ -71,7 +71,7 @@ func TestProjectModelRouteResolvesPublishedRevisionOnly(t *testing.T) {
 
 	// A second published revision supersedes the first (a revise is a NEW revision; the config bytes of
 	// the earlier one are never rewritten).
-	next, err := cs.CreateModelRouteRevision(ctx, tenant, routeID, "model-next", connID)
+	next, err := cs.CreateModelRouteRevision(ctx, tenant, routeID, "model-next", connID, "")
 	if err != nil {
 		t.Fatalf("CreateModelRouteRevision(2) error = %v", err)
 	}
@@ -101,7 +101,7 @@ func TestProjectModelRouteResolvesPublishedRevisionOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateModelConnection(orphan) error = %v", err)
 	}
-	orphanRev, err := cs.CreateModelRouteRevision(ctx, orphan, orphanRoute, "model-orphan", orphanConn)
+	orphanRev, err := cs.CreateModelRouteRevision(ctx, orphan, orphanRoute, "model-orphan", orphanConn, "")
 	if err != nil {
 		t.Fatalf("CreateModelRouteRevision(orphan) error = %v", err)
 	}
@@ -132,14 +132,14 @@ func TestModelRouteReadsAreTenantScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateModelRoute() error = %v", err)
 	}
-	published, err := cs.CreateModelRouteRevision(ctx, owner, routeID, "model-owner", connID)
+	published, err := cs.CreateModelRouteRevision(ctx, owner, routeID, "model-owner", connID, "")
 	if err != nil {
 		t.Fatalf("CreateModelRouteRevision(published) error = %v", err)
 	}
 	if err := cs.PublishModelRouteRevision(ctx, owner, routeID, published.ID); err != nil {
 		t.Fatalf("PublishModelRouteRevision() error = %v", err)
 	}
-	draft, err := cs.CreateModelRouteRevision(ctx, owner, routeID, "model-draft", connID)
+	draft, err := cs.CreateModelRouteRevision(ctx, owner, routeID, "model-draft", connID, "")
 	if err != nil {
 		t.Fatalf("CreateModelRouteRevision(draft) error = %v", err)
 	}
@@ -222,16 +222,16 @@ func TestModelRouteWritesAreTenantScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateModelRoute() error = %v", err)
 	}
-	rev, err := cs.CreateModelRouteRevision(ctx, owner, routeID, "model-owner", connID)
+	rev, err := cs.CreateModelRouteRevision(ctx, owner, routeID, "model-owner", connID, "")
 	if err != nil {
 		t.Fatalf("CreateModelRouteRevision() error = %v", err)
 	}
 
 	// The intruder naming the owner's route id gets the SAME answer as for an id that never existed.
-	if _, err := cs.CreateModelRouteRevision(ctx, intruder, routeID, "hijack", connID); !errors.Is(err, coordinator.ErrModelRouteNotFound) {
+	if _, err := cs.CreateModelRouteRevision(ctx, intruder, routeID, "hijack", connID, ""); !errors.Is(err, coordinator.ErrModelRouteNotFound) {
 		t.Fatalf("cross-tenant revise error = %v, want ErrModelRouteNotFound (non-disclosing 404)", err)
 	}
-	if _, err := cs.CreateModelRouteRevision(ctx, intruder, "mroute_does_not_exist", "hijack", connID); !errors.Is(err, coordinator.ErrModelRouteNotFound) {
+	if _, err := cs.CreateModelRouteRevision(ctx, intruder, "mroute_does_not_exist", "hijack", connID, ""); !errors.Is(err, coordinator.ErrModelRouteNotFound) {
 		t.Fatalf("unknown-route revise error = %v, want ErrModelRouteNotFound", err)
 	}
 	if err := cs.PublishModelRouteRevision(ctx, intruder, routeID, rev.ID); !errors.Is(err, coordinator.ErrModelRouteNotFound) {
@@ -243,7 +243,7 @@ func TestModelRouteWritesAreTenantScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateModelConnection(intruder) error = %v", err)
 	}
-	if _, err := cs.CreateModelRouteRevision(ctx, owner, routeID, "steal", intruderConn); !errors.Is(err, coordinator.ErrModelConnectionNotFound) {
+	if _, err := cs.CreateModelRouteRevision(ctx, owner, routeID, "steal", intruderConn, ""); !errors.Is(err, coordinator.ErrModelConnectionNotFound) {
 		t.Fatalf("foreign-connection revise error = %v, want ErrModelConnectionNotFound", err)
 	}
 
@@ -278,7 +278,7 @@ func TestProjectModelRouteCarriesThePerConnectionEndpoint(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateModelRoute() error = %v", err)
 		}
-		rev, err := cs.CreateModelRouteRevision(ctx, tenant, routeID, model, connID)
+		rev, err := cs.CreateModelRouteRevision(ctx, tenant, routeID, model, connID, "")
 		if err != nil {
 			t.Fatalf("CreateModelRouteRevision() error = %v", err)
 		}
@@ -335,7 +335,7 @@ func TestModelConnectionVerificationStampIsACacheNotAGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateModelRoute() error = %v", err)
 	}
-	rev, err := cs.CreateModelRouteRevision(ctx, tenant, routeID, "gpt-4o-mini", connID)
+	rev, err := cs.CreateModelRouteRevision(ctx, tenant, routeID, "gpt-4o-mini", connID, "")
 	if err != nil {
 		t.Fatalf("CreateModelRouteRevision() error = %v", err)
 	}

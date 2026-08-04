@@ -37,7 +37,7 @@ func seedRoutedProject(t *testing.T, cs *coordinator.Store, exec func(string, ..
 	if err != nil {
 		t.Fatalf("CreateModelRoute: %v", err)
 	}
-	rev, err := cs.CreateModelRouteRevision(ctx, tenant, routeID, model, connID)
+	rev, err := cs.CreateModelRouteRevision(ctx, tenant, routeID, model, connID, "")
 	if err != nil {
 		t.Fatalf("CreateModelRouteRevision: %v", err)
 	}

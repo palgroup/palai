@@ -98,6 +98,85 @@ func (s *Store) AppendModelStepDelta(ctx context.Context, tenant Tenant, session
 	return nil
 }
 
+// maxThinkingText caps one journalled reasoning window, and the number is MEASURED rather than inherited
+// from maxDeltaText next door.
+//
+// WHAT WAS MEASURED (2026-08-04, claude-sonnet-5, adaptive+summarized, a deliberately hard induction
+// proof chosen to make the model think as long as it reasonably would): the whole reasoning stream for
+// one model step was 348 bytes over 6 fragments, and 613 bytes over 10 with effort:high. That is small
+// because `display: "summarized"` returns a SUMMARY of the reasoning, not the raw chain of thought — the
+// same step billed 773 and 869 thinking TOKENS respectively, so the text a client receives is roughly a
+// tenth of what the model actually produced.
+//
+// 16 KiB therefore sits about 26x above the largest window observed, which is the point: a ceiling that
+// truncates in ordinary use would defeat the feature it bounds, while one this size still stops a single
+// pathological step from bloating the journal. It matches maxDeltaText deliberately — the two write rows
+// to the same table and a reader comparing them should not have to remember two numbers.
+const maxThinkingText = 16 * 1024
+
+// thinkingTruncatedNote is appended when a window is cut, because a SILENT truncation of reasoning is the
+// failure this whole surface exists to prevent: a reader cannot tell a model that stopped reasoning from
+// a journal that stopped recording it. maxDeltaText above trims silently and that is defensible for an
+// answer, whose authoritative copy is the model step's own terminal event — reasoning has no such second
+// copy anywhere, so the cut has to be visible in the only record there is.
+const thinkingTruncatedNote = "\n…(reasoning truncated at the journal's per-event ceiling)"
+
+// AppendModelStepThinking journals ONE advisory model_step.thinking.v1 event: the model's REASONING
+// during an open model step, coalesced into a window by the caller.
+//
+// IT IS A SEPARATE EVENT TYPE FROM model_step.delta.v1, AND THE REASON IS THE FAN-OUT BOUNDARY. The
+// journal is delivered to every registered webhook endpoint by ReadJournalForEndpoint, whose filter is
+// `cardinality($3::text[]) = 0 OR type = ANY ($3::text[])` (storage/queries/webhooks.sql) — so an
+// endpoint's subscription is expressed in event TYPES and nothing else, and each delivery stores the
+// payload in a webhook_deliveries row that outlives the run. Had reasoning ridden as a FIELD on
+// model_step.delta.v1, no endpoint could have subscribed to the model's answers without also receiving,
+// and durably storing, its private working. As a type it is opt-in: an endpoint that lists the types it
+// wants simply does not list this one. (Measured 2026-08-04 on the live deployment: 0 enabled endpoints
+// and 0 delivery rows, so the blast radius today is zero — the mechanism is real, the exposure is not
+// yet, which is exactly when it is cheap to get right.)
+//
+// The second reason is that reasoning and answer are different streams inside one step — the provider
+// closes the thinking block before it opens the text one — and a consumer that coalesces by event type
+// keeps them apart for free, without having to know this field exists. Every current reader of
+// model_step.delta.v1 reads `data.text` and skips unknown types (apps/slack-bot/internal/relay/relay.go),
+// so this event changes nothing for anything already shipped.
+//
+// IT IS ADVISORY, exactly like AppendModelStepDelta and AppendToolProgress: it advances no state machine,
+// touches no model_requests row, folds no delivered message, and is run-active-guarded. A failure to
+// journal reasoning must never fail the model step that produced it.
+func (s *Store) AppendModelStepThinking(ctx context.Context, tenant Tenant, sessionID, responseID, runID, requestID, text string) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
+	if sessionID == "" {
+		return fmt.Errorf("model step thinking needs a session id")
+	}
+	if text == "" {
+		return nil // an empty window is not an event
+	}
+	if len(text) > maxThinkingText {
+		text = text[:maxThinkingText-len(thinkingTruncatedNote)] + thinkingTruncatedNote
+	}
+	payload := mustMarshal(map[string]any{
+		"run_id":           runID,
+		"model_request_id": requestID,
+		"thinking":         text,
+	})
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin model step thinking: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := guardRunActive(ctx, tx, tenant, runID); err != nil {
+		return err
+	}
+	if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, "model_step.thinking.v1", payload); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit model step thinking: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) AppendToolProgress(ctx context.Context, tenant Tenant, sessionID, responseID, callID string, progress, total float64, message string) error {
 	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	if sessionID == "" {

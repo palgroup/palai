@@ -24,6 +24,18 @@ const (
 	// client saw created -> completed with the answer arriving whole. The declared event was real; the
 	// writer was the missing half.
 	eventModelStepDelta = "model_step.delta.v1"
+	// eventModelStepThinking is the model's REASONING during an open model step, coalesced into windows by
+	// the same sink shape the text deltas use. Like model_step.delta.v1 it advances no state machine and is
+	// emitted through an advisory append (coordinator.AppendModelStepThinking), best-effort.
+	//
+	// IT IS A SEPARATE TYPE FROM THE TEXT DELTA ON PURPOSE — the journal fans out to webhook endpoints that
+	// subscribe by event TYPE, so this is the only shape in which a client can take the answer without the
+	// model's private working. AppendModelStepThinking carries the full argument.
+	//
+	// Its payload key is `thinking`, NOT `text`: a consumer that reads `data.text` off whatever event it is
+	// handed — which is how every current reader of the delta event is written — receives nothing here
+	// rather than silently rendering reasoning as the answer.
+	eventModelStepThinking = "model_step.thinking.v1"
 	// eventModelStepInterrupted is the partial record of an interrupt-aborted provider call: a
 	// user-initiated partial, NOT a failure (spec §25.11: "its outcome is recorded as partial",
 	// spec §9.2 interrupt). Distinct from model_step.failed.v1 so the journal never mislabels an
@@ -81,6 +93,7 @@ var emittedEventTypes = []string{
 	eventModelStepCreated,
 	eventModelStepCompleted,
 	eventModelStepDelta,
+	eventModelStepThinking,
 	eventModelStepInterrupted,
 	eventConfigRevised,
 	eventWarningRaised,

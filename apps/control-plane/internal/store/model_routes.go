@@ -190,6 +190,13 @@ func (s *Store) CreateModelRouteRevision(ctx context.Context, scope middleware.S
 	var in struct {
 		Model        string `json:"model"`
 		ConnectionID string `json:"connection_id"`
+		// Thinking asks runs on this route to return the model's reasoning. It has to be DECLARED here,
+		// not merely stored: strictDecodeBody is DisallowUnknownFields, so until this field existed a
+		// caller sending `{"thinking":"visible"}` got a 400 and the value never reached the config blob it
+		// would otherwise have ridden into. That is the shape this tree has been bitten by before
+		// (config_policy.pool, approvers) — a field that is durable, routed and readable everywhere except
+		// at the one boundary a client actually posts to.
+		Thinking string `json:"thinking"`
 	}
 	if err := strictDecodeBody(body, &in); err != nil {
 		return api.ProvisionResult{BadField: true}, nil
@@ -200,11 +207,17 @@ func (s *Store) CreateModelRouteRevision(ctx context.Context, scope middleware.S
 	if in.ConnectionID == "" {
 		return api.ProvisionResult{MissingField: "connection_id"}, nil
 	}
+	// Only the canonical vocabulary is accepted. An unrecognised value is REFUSED rather than stored and
+	// ignored: a route that silently drops "visable" would render as a model that chose not to think, and
+	// the operator would go looking at the model.
+	if in.Thinking != "" && in.Thinking != string(modelbroker.ThinkingVisible) {
+		return api.ProvisionResult{BadField: true}, nil
+	}
 	_tenant, _terr := s.tenantOf(ctx, scope)
 	if _terr != nil {
 		return api.ProvisionResult{}, _terr
 	}
-	rev, err := s.spine.CreateModelRouteRevision(ctx, _tenant, routeID, in.Model, in.ConnectionID)
+	rev, err := s.spine.CreateModelRouteRevision(ctx, _tenant, routeID, in.Model, in.ConnectionID, in.Thinking)
 	switch {
 	case errors.Is(err, coordinator.ErrModelRouteNotFound), errors.Is(err, coordinator.ErrModelConnectionNotFound):
 		return api.ProvisionResult{NotFound: true}, nil
@@ -247,6 +260,12 @@ func modelRouteRevisionView(routeID string, rev coordinator.ModelRouteRevision, 
 	}
 	if rev.ConnectionID != "" {
 		out["connection_id"] = rev.ConnectionID
+	}
+	// Rendered for the same reason base_url is (see modelConnectionView): it is a choice the operator
+	// made and must be able to check. A route that is quietly not asking for reasoning is indistinguishable
+	// from a model that quietly chose not to reason, and only this field tells them apart.
+	if rev.Thinking != "" {
+		out["thinking"] = rev.Thinking
 	}
 	if !rev.CreatedAt.IsZero() {
 		out["created_at"] = rev.CreatedAt

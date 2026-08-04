@@ -73,6 +73,12 @@ const (
 	unplaceableImageNote = "(an image attached to a non-user turn in this conversation is not shown here)"
 )
 
+// redactedThinkingNote stands in for reasoning the provider returned SAFETY-REDACTED. The block arrives
+// as a `redacted_thinking` content block whose payload is an encrypted blob carrying no readable text, so
+// there is genuinely nothing to show — and saying nothing at all would render as a model that answered
+// without thinking. See the content_block_start arm in consume for why it is marked rather than dropped.
+const redactedThinkingNote = "(part of this model's reasoning was withheld by the provider)"
+
 // Adapter converts a canonical request into an Anthropic streaming message.
 type Adapter struct {
 	BaseURL   string       // defaults to DefaultBaseURL
@@ -158,6 +164,8 @@ func (a Adapter) maxTokens() int {
 func (a Adapter) consume(req modelbroker.Request, r io.Reader, names map[string]string, onDelta func(modelbroker.Delta)) (modelbroker.Result, error) {
 	res := modelbroker.Result{ModelRequestID: req.ModelRequestID, Attempts: 1}
 	var output strings.Builder
+	var thinking strings.Builder
+	redacted := 0
 	tools := newToolAccumulator()
 	var inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens int
 
@@ -200,6 +208,14 @@ func (a Adapter) consume(req modelbroker.Request, r io.Reader, names map[string]
 			if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
 				tools.start(ev.Index, ev.ContentBlock.ID, canonicalName(names, ev.ContentBlock.Name))
 			}
+			// A SAFETY-REDACTED reasoning block is COUNTED, not skipped, for the same reason an image this
+			// family cannot read is marked rather than dropped (unreadableImageNote): the alternative is a
+			// transcript that shows a model answering with no visible reasoning, which reads as "it did not
+			// think" when what happened is "its thinking was withheld". Its `data` field is an encrypted
+			// blob with no text in it, so there is nothing to render and nothing to stream — only the fact.
+			if ev.ContentBlock != nil && ev.ContentBlock.Type == "redacted_thinking" {
+				redacted++
+			}
 		case "content_block_delta":
 			if ev.Delta == nil {
 				continue
@@ -207,6 +223,30 @@ func (a Adapter) consume(req modelbroker.Request, r io.Reader, names map[string]
 			if ev.Delta.Type == "text_delta" && ev.Delta.Text != "" {
 				output.WriteString(ev.Delta.Text)
 				delta := modelbroker.Delta{Text: ev.Delta.Text}
+				res.Deltas = append(res.Deltas, delta)
+				if onDelta != nil {
+					onDelta(delta)
+				}
+			}
+			// THE REASONING STREAM. It arrives on its own content block, ahead of the answer's, and it is
+			// kept on its own canonical field the whole way down — never folded into `output`, which is
+			// what a client renders as the model's reply.
+			//
+			// CONTRACT: https://platform.claude.com/docs/en/build-with-claude/streaming (checked
+			// 2026-08-04) — reasoning arrives as `{"type":"thinking_delta","thinking":"…"}`, and a single
+			// `signature_delta` closes the block. Verified on the wire the same day (claude-sonnet-5,
+			// adaptive+summarized): content_block_start {"type":"thinking","thinking":"","signature":""},
+			// then 6-16 thinking_delta events, then one signature_delta, then the text block opens.
+			//
+			// THE SIGNATURE IS DELIBERATELY NOT CARRIED, and that is a decision rather than an oversight.
+			// Its only use is passing the block back on the NEXT request of a tool-use turn, and nothing
+			// in this tree can do that: the conversation is assembled by the pinned engine image and
+			// reaches the adapter as plain role/content/tool_calls (execution's decodeMessages), which has
+			// nowhere to put a signed block. A field carried to no reader is the dead weight this tree
+			// keeps finding; the ceiling is recorded in the live test instead, where it can be re-measured.
+			if ev.Delta.Type == "thinking_delta" && ev.Delta.Thinking != "" {
+				thinking.WriteString(ev.Delta.Thinking)
+				delta := modelbroker.Delta{Thinking: ev.Delta.Thinking}
 				res.Deltas = append(res.Deltas, delta)
 				if onDelta != nil {
 					onDelta(delta)
@@ -250,6 +290,15 @@ func (a Adapter) consume(req modelbroker.Request, r io.Reader, names map[string]
 	}
 
 	res.Output = output.String()
+	res.Thinking = thinking.String()
+	if redacted > 0 {
+		// Said once per message rather than once per block: repeating an identical sentence tells a reader
+		// nothing the first one did not (the same choice unreadableImageNote makes on the request side).
+		if res.Thinking != "" {
+			res.Thinking += "\n"
+		}
+		res.Thinking += redactedThinkingNote
+	}
 	res.ToolCalls = tools.result()
 	// Anthropic reports input/output separately and never a total; the canonical
 	// contract carries a consistent total (Result.Validate), so derive it.
@@ -289,8 +338,11 @@ type event struct {
 		Name string `json:"name"`
 	} `json:"content_block"`
 	Delta *struct {
-		Type        string `json:"type"`
-		Text        string `json:"text"`
+		Type string `json:"type"`
+		Text string `json:"text"`
+		// Thinking carries a reasoning fragment on a thinking_delta. It is a DIFFERENT key from `text`
+		// on the wire, not a re-use of it, so the two streams cannot be confused by decoding alone.
+		Thinking    string `json:"thinking"`
 		PartialJSON string `json:"partial_json"`
 		StopReason  string `json:"stop_reason"`
 	} `json:"delta"`
@@ -410,6 +462,44 @@ func (a Adapter) buildBody(req modelbroker.Request) ([]byte, map[string]string, 
 			// equivalent of OpenAI tool_choice:"required").
 			body["tool_choice"] = map[string]any{"type": "any"}
 		}
+	}
+	// THE REASONING REQUEST, and the shape is measured rather than remembered. A caller that asked to see
+	// the model's reasoning gets `thinking: {type:"adaptive", display:"summarized"}` and NOTHING ELSE —
+	// no budget, no effort, no beta header.
+	//
+	// CONTRACT: https://platform.claude.com/docs/en/build-with-claude/thinking (checked 2026-08-04) —
+	// "On Claude Opus 5, Claude Sonnet 5, Claude Fable 5 … thinking is already on: no configuration
+	// needed … `display` defaults to `"omitted"` there. Opt in with
+	// `thinking: {"type": "adaptive", "display": "summarized"}`."
+	//
+	// THE OTHER SHAPE IS A 400, WHICH IS WHY THIS ONE IS NOT GUESSED. The older documented form,
+	// `{type:"enabled", budget_tokens:N}`, is what a model trained before 2026 reaches for, and it is
+	// REJECTED by the model this deployment actually routes to. Measured against the live API on
+	// 2026-08-04 with claude-sonnet-5:
+	//
+	//	{"type":"error","error":{"type":"invalid_request_error","message":"\"thinking.type.enabled\" is
+	//	  not supported for this model. Use \"thinking.type.adaptive\" and \"output_config.effort\" …"}}
+	//
+	// AND WHY IT IS NOT SENT UNCONDITIONALLY. `type:"adaptive"` is itself a 400 on the whole 4.5
+	// generation, which this same adapter serves. Measured the same day, one request per model:
+	//
+	//	claude-sonnet-4-5 → 400 "adaptive thinking is not supported on this model"
+	//	claude-haiku-4-5  → 400 "adaptive thinking is not supported on this model"
+	//	claude-opus-4-5   → 400 "adaptive thinking is not supported on this model"
+	//	claude-opus-4-6   → 200
+	//	claude-sonnet-5   → 200
+	//
+	// So the key must ride an explicit request and never a default: whether this key is valid is a
+	// function of the MODEL, and the only thing that names both is the route revision that chose them
+	// together (packages/coordinator's ModelRouteTarget.Thinking). Sending it by default would break
+	// every 4.5-generation run in the tree.
+	//
+	// NO MODEL-NAME TABLE DOES THIS JOB. It is tempting, since the provider's own models list publishes
+	// `capabilities.thinking.types.adaptive.supported` per model — but reading it here would put a second
+	// network call in the dispatch path, and hardcoding the mapping is the substring table this package
+	// already refuses for exactly the reason it would rot (see modelbroker.ListedScope).
+	if req.Thinking == modelbroker.ThinkingVisible {
+		body["thinking"] = map[string]any{"type": "adaptive", "display": "summarized"}
 	}
 	if req.OutputSchema != nil {
 		// Structured output is Anthropic's output_config.format (the deprecated
