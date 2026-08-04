@@ -275,16 +275,16 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 	runID := middleware.NewID("run")
 	sessionID := middleware.NewID("ses")
 	projection := contracts.Response{
-		ID:             contracts.ResponseID(responseID),
-		Object:         "response",
-		Status:         "queued",
-		CreatedAt:      time.Now().UTC().Format(time.RFC3339Nano),
-		Model:          req.Model,
-		Output:         []contracts.ContentItem{},
-		Usage:          contracts.Usage{},
-		SessionID:      contracts.SessionID(sessionID),
-		RunID:          contracts.RunID(runID),
-		ProjectID:      contracts.ProjectID(scope.Project),
+		ID:        contracts.ResponseID(responseID),
+		Object:    "response",
+		Status:    "queued",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Model:     req.Model,
+		Output:    []contracts.ContentItem{},
+		Usage:     contracts.Usage{},
+		SessionID: contracts.SessionID(sessionID),
+		RunID:     contracts.RunID(runID),
+		ProjectID: contracts.ProjectID(scope.Project),
 	}
 	body, err := json.Marshal(projection)
 	if err != nil {

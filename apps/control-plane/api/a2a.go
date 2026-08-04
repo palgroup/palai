@@ -106,15 +106,15 @@ func (a a2aRuns) Admit(ctx context.Context, req a2a.RunRequest) (a2a.RunResult, 
 		return a2a.RunResult{}, fmt.Errorf("hash a2a request: %w", err)
 	}
 	body, err := json.Marshal(contracts.Response{
-		ID:             contracts.ResponseID(responseID),
-		Object:         "response",
-		Status:         "queued",
-		CreatedAt:      time.Now().UTC().Format(time.RFC3339Nano),
-		Output:         []contracts.ContentItem{},
-		Usage:          contracts.Usage{},
-		SessionID:      contracts.SessionID(sessionID),
-		RunID:          contracts.RunID(runID),
-		ProjectID:      contracts.ProjectID(req.Project),
+		ID:        contracts.ResponseID(responseID),
+		Object:    "response",
+		Status:    "queued",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Output:    []contracts.ContentItem{},
+		Usage:     contracts.Usage{},
+		SessionID: contracts.SessionID(sessionID),
+		RunID:     contracts.RunID(runID),
+		ProjectID: contracts.ProjectID(req.Project),
 	})
 	if err != nil {
 		return a2a.RunResult{}, fmt.Errorf("marshal a2a projection: %w", err)
