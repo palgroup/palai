@@ -174,6 +174,13 @@ func (a *Approvals) List(ctx context.Context, params ListApprovalsParams, opts .
 // is decided its row falls out of that lookup entirely and a repeat decide answers 404 "no such
 // approval" instead — indistinguishable from an id that never existed.
 //
+// A PUBLICATION approval has one further 409, and it is Approve's alone: 409 approval_run_ended, when
+// the run the publication belongs to has already reached a terminal state. Nothing would ever carry the
+// write out — an approved publication is drained by the boundary pump from inside a live attempt — so
+// the server refuses rather than minting a row that claims a human authorized a push that will not
+// happen. It is distinct from approval_not_decidable because the approval is STILL OPEN and Deny still
+// answers 200 on it, which is the caller's remedy. Deny never returns this code.
+//
 // It is still marked idempotent for transport retry on both kinds: 409 and 404 are not retryable
 // statuses (isRetryableStatus) and the request body is marshaled once, outside the retry loop, so a
 // resend after a torn connection can never double-apply — worst case it surfaces as that kind's
