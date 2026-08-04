@@ -86,6 +86,18 @@ case "$provider/$case_name" in
     run="TestLiveProviderTwoReadsTextInAnImage"
     required_key="ANTROPHIC_API_KEY"
     ;;
+  provider-two/wrapped-message-array)
+    # 2026-08-04: the live proof for the message-array input form. NOT a provider-tier case by mistake —
+    # the defect was in execution's decoder, not in the adapter, so a test that hand-builds a
+    # modelbroker.Request cannot see it. This drives the REAL decodeMessages over the REAL engine wrap
+    # (engines/reference/.../context.py appends the whole input as one user turn) and hands the result to
+    # the shipped provider-two adapter against the REAL Anthropic API. Reproduces
+    # resp_76e1d12c45f584ce9dd99c686f29e750, which failed 400 invalid_request_error once a second forever
+    # because the wrap left the turn with no text and no image. Uses ANTROPHIC_API_KEY; no docker.
+    pkg="./apps/control-plane/internal/execution"
+    run="TestLiveWrappedMessageArrayReachesTheModel"
+    required_key="ANTROPHIC_API_KEY"
+    ;;
   openai-compatible/capability-probe)
     # E16 Task 5 (MOD-002): the ACTIVE capability probe end to end. Leg 1 LIVE — the probe against the
     # REAL OpenAI endpoint (OpenAI-compatible by definition) observes streaming + tool-calling +

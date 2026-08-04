@@ -128,6 +128,32 @@ func TestDecodeMessagesLeavesAMixedArrayAlone(t *testing.T) {
 	}
 }
 
+// An object carrying BOTH a `type` and a `role` is not a message, and this pins the `type` half of the
+// discriminator. It exists because a perturbation deleting that half stayed GREEN: for every ordinary
+// content item the `role` check already refuses the array, so the two guards overlap everywhere except
+// here. The property held under that perturbation — but nothing was asserting this branch, so nothing
+// would have noticed if it stopped holding.
+func TestDecodeMessagesTreatsATypedObjectAsAContentItem(t *testing.T) {
+	raw := []any{map[string]any{
+		"role": "user",
+		"content": []any{
+			map[string]any{"type": "input_text", "role": "user", "content": "x", "text": "gerçek metin"},
+		},
+	}}
+
+	messages, err := decodeMessages(raw, resolveOne(t))
+	if err != nil {
+		t.Fatalf("decodeMessages: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("messages = %+v, want the turn left alone", messages)
+	}
+	if messages[0].Content != "gerçek metin" {
+		t.Fatalf("content = %q, want the item decoded as the content item its `type` declares it to be",
+			messages[0].Content)
+	}
+}
+
 // A permanent provider rejection must be classified so the run loop can end the run instead of feeding
 // the retry ladder a request the provider has already answered. Measured live: a 400 repeated once a
 // second, forever, and the run never left in_progress.
