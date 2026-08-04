@@ -23,7 +23,7 @@ const maxFileReadBytes = 1 << 20
 // likely-secret read is refused. It runs behind the broker's sandbox-backed Exec seam.
 func FileTool() toolbroker.Tool {
 	return toolbroker.Tool{
-		Name:        "palai.workspace.file",
+		Name: "palai.workspace.file",
 		Description: "List, stat, or checksum files within the run's sandboxed workspace, and read or " +
 			"write whole files when you need the content hashes a changeset records. To READ part of a " +
 			"file or EDIT one, prefer the text editor — it views by line range and replaces an exact " +

@@ -24,7 +24,7 @@ const (
 	// surface and returns the same {path, before_hash, after_hash, created} report, so its rows belong
 	// in the changeset exactly as the file tool's do.
 	editorToolName = "str_replace_based_edit_tool"
-	shellToolName = "palai.workspace.shell"
+	shellToolName  = "palai.workspace.shell"
 )
 
 // changesetSummaryType is the §22.6 logical type of the changeset's machine-readable summary — the
