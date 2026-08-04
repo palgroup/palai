@@ -19,12 +19,28 @@
 //  2. There is no slack.Interaction type. The real output of a verified interactivity payload is
 //     slack.ApprovalIntent, produced by slack.MapInteractiveApproval — OnButton takes that instead.
 //
-// THE THIRD THING THE BRIEF GOT RIGHT AND WORTH RESTATING HERE: ToolApprovalMessage mints a THIRD
-// button, "Show arguments" (slack.ActionShowArguments), that opens a modal via views.open. This file
-// does not wire a handler for it — OnButton only ever branches on approve/deny — so that button will
-// render on every message this file posts and do nothing observable when clicked. It decides nothing
-// (MapInteractiveApproval's own doc: "It decides nothing"), so leaving it unhandled is not a security
-// gap, only an incomplete affordance; wiring views.open is out of this task's scope.
+// THE THIRD BUTTON IS NOW WIRED, and what that took was not a handler. ToolApprovalMessage mints
+// "Show arguments" (slack.ActionShowArguments), which opens a modal through views.open; this file used to
+// record that as an "incomplete affordance", meaning a button that rendered on every message it posted and
+// did nothing observable when clicked. Two things were wrong with that description.
+//
+// The smaller one is that a button which does nothing is not a neutral omission — it is the affordance
+// lying, at the moment a human is trying to find out more before authorizing something.
+//
+// The larger one is that the modal it was supposed to open COULD NOT HAVE OPENED. Driven at the real
+// views.open on 2026-08-05, slack.ToolApprovalModal's body was refused four ways at once: a `markdown`
+// block a view does not accept, an alert whose `text` was a string where an object is required, and two
+// table cells typed `raw_number`, which the live API refuses on both surfaces. So "wiring is out of scope"
+// had been resting on a builder nobody had ever driven. The shapes are fixed where they are built
+// (adapters/integrations/slack — each with its measurement), and OnShowArguments below is the caller.
+//
+// WHY WIRE IT RATHER THAN DELETE THE BUTTON, since a dead affordance could equally have been removed: the
+// modal shows STRICTLY MORE than the message it is opened from. The channel table is
+// ApprovalArgumentRows — one row per top-level argument, with nested values compacted into a single cell —
+// and the modal is ApprovalArgumentLeaves, one row per LEAF addressed by the path that reaches it
+// (`fields.assignee`, `fields.labels[0]`), plus the alerts that say the arguments were cut or that the
+// approval expires. For a call whose arguments nest, the channel message alone cannot show a human what
+// they are authorizing.
 package relay
 
 import (
@@ -33,6 +49,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	slack "github.com/palgroup/palai/adapters/integrations/slack"
 	"github.com/palgroup/palai/apps/slack-bot/internal/store"
@@ -97,6 +114,11 @@ type ApprovalSlack interface {
 	// UpdateMessage repairs the message body already names (channel + ts baked in by
 	// slack.UpdateMessage) — the SLK-006 single-repair pattern.
 	UpdateMessage(ctx context.Context, body []byte) error
+	// OpenView sends body (built by slack.ToolApprovalModal) to views.open. It is a THIRD method rather
+	// than a second use of PostMessage because the two calls have opposite failure economics: a message
+	// that does not post is a question nobody is ever asked, worth retrying and worth reporting loudly,
+	// while a view that does not open is a document a human can ask for again by clicking again.
+	OpenView(ctx context.Context, body []byte) error
 }
 
 // webAPIApprovalSlack is ApprovalSlack over the real Slack Web API, mirroring channelSlackStream
@@ -125,6 +147,18 @@ func (s *webAPIApprovalSlack) PostMessage(ctx context.Context, body []byte) (str
 func (s *webAPIApprovalSlack) UpdateMessage(ctx context.Context, body []byte) error {
 	_, err := slack.PostMessage(ctx, s.doer,
 		slack.PostRequest{MethodURL: s.apiBase + "/chat.update", Token: s.token, Body: body}, slack.PostOptions{})
+	return err
+}
+
+// OpenView calls views.open with NO retry budget, deliberately — the same decision the control plane's own
+// modal path made and for the same measured reason. The trigger this body carries "will expire 3 seconds
+// after it's sent to your app" (https://docs.slack.dev/surfaces/modals/), so a retry after a Retry-After
+// would land after the trigger is dead: a 429 here is a modal that does not open rather than one that
+// opens late. views.open needs no scopes and is Tier 4
+// (https://docs.slack.dev/reference/methods/views.open/, re-checked 2026-08-05).
+func (s *webAPIApprovalSlack) OpenView(ctx context.Context, body []byte) error {
+	_, err := slack.PostMessage(ctx, s.doer,
+		slack.PostRequest{MethodURL: s.apiBase + "/views.open", Token: s.token, Body: body}, slack.PostOptions{})
 	return err
 }
 
@@ -583,6 +617,93 @@ func OnButton(ctx context.Context, deps ApprovalDeps, click slack.ApprovalIntent
 
 	return deps.Slack.UpdateMessage(ctx, slack.UpdateMessage(click.ChannelID, click.MessageTS,
 		fmt.Sprintf("Decision recorded: %s.", result.Decision), click.UserID))
+}
+
+// OnShowArguments turns one decoded, already-authenticated Show-arguments click into the modal listing
+// that call's arguments in full.
+//
+// IT PASSES THE SAME GATES AS A DECISION, MINUS THE DECISION, and that is not caution for its own sake:
+// opening this document shows one human another human's pending command — the arguments a run assembled, a
+// branch name, a ticket id — so the allow-list check runs first and runs BEFORE deps.Palai is ever called,
+// exactly as OnButton's does and for the identical reason. A version that listed approvals first and
+// checked the clicker on the way out would let an unauthorized click reach the server on every attempt.
+//
+// THREE SECONDS IS THE SHAPE OF THIS FUNCTION. The trigger dies three seconds after Slack sends it, and
+// the Socket Mode envelope carrying the click was acknowledged before this ran (internal/socket: "no
+// published ack budget can be missed by code that answers first"), so the only deadline left is the
+// trigger's. That is why this does exactly one read and one write and holds no lock: findPendingApproval
+// against the control plane, then views.open. It writes NOTHING durable — no claim, no delivery row —
+// because a row written here is a lock taken here, and a lock taken here is a trigger that expired while
+// we waited for it.
+//
+// A REFUSAL OPENS NOTHING AND TELLS THE CLICKER NOTHING, which matches the ceiling dispatch.go already
+// records for a refused decision: repairing the message would take a chat.update, and this bridge repairs
+// only messages whose decision it made. So an unlisted clicker sees nothing happen. The error is returned
+// so the process can say it in the log; the property that matters is that the arguments did not open.
+func OnShowArguments(ctx context.Context, deps ApprovalDeps, click slack.ShowArgumentsIntent) error {
+	if err := deps.validate(); err != nil {
+		return err
+	}
+	if !allowed(deps.AllowedApprovers, click.UserID) {
+		return fmt.Errorf("relay: %w: %s", ErrApproverNotAllowed, click.UserID)
+	}
+	if click.TriggerID == "" {
+		// Refused before the round trip rather than after it: views.open without a trigger is a request
+		// Slack rejects, and spending the three seconds discovering that is worse than not spending them.
+		return errors.New("relay: a show-arguments click with no trigger_id can open nothing")
+	}
+
+	// The button this bridge minted carries approvalActionValue's composite, not a bare hash — see
+	// OnButton's doc for why, and for why that convention is private to this file's own buttons.
+	approvalID, requestHash, ok := parseApprovalActionValue(click.RequestHash)
+	if !ok {
+		return fmt.Errorf("relay: button value %q is not a bound approval/request-hash pair", click.RequestHash)
+	}
+
+	// THE HASH IS WHAT PINS THE CALL, and the lookup is over the OPEN approvals only (GET /v1/approvals
+	// returns pending rows). An approval that has already been decided therefore opens nothing — which is
+	// correct rather than unfortunate: the arguments a human is being shown are the ones they are being
+	// asked to authorize, and once the answer is in there is nothing left to authorize.
+	approval, err := findPendingApproval(ctx, deps, requestHash)
+	if err != nil {
+		return fmt.Errorf("relay: show the arguments of approval %s: %w", approvalID, err)
+	}
+	if approval.ID != approvalID {
+		// The two halves of the button's value disagree. Nothing in Slack could produce that from a button
+		// this bridge minted, so it is a forged or mangled value and it opens nothing.
+		return fmt.Errorf("relay: the click's approval id %q does not match the approval carrying its request hash (%q)",
+			approvalID, approval.ID)
+	}
+
+	return deps.Slack.OpenView(ctx, slack.ToolApprovalModal(click.TriggerID, showArgumentsRequest(approval)))
+}
+
+// showArgumentsRequest renders the approval row as the modal's input.
+//
+// IT REUSES buildApprovalMessage's DERIVATION rather than repeating it, because the whole claim of the two
+// surfaces is that they cannot disagree: the message and the modal are built from the same row through the
+// same DeriveApprovalDisplay, so a description that leaked into only one of them would be as much of a
+// breach as one that leaked into both. The one deliberate difference is the RequestHash — the modal's
+// private_metadata carries the binding, and nothing clicks out of a modal in this bot, so it carries the
+// bare pair rather than a button value.
+func showArgumentsRequest(approval palai.Approval) slack.ApprovalRequest {
+	req := slack.ApprovalRequest{
+		ApprovalID:    approval.ID,
+		RequestHash:   approval.RequestHash,
+		Identity:      approval.Identity,
+		OperatorLabel: approval.OperatorLabel,
+		Arguments:     []byte(approval.Arguments),
+	}
+	if approval.Kind == "publication" {
+		req.OperatorLabel, req.Destination = publicationScreen(approval)
+	}
+	// GET /v1/approvals answers `expires_at` as a STRING, and an unparsable one leaves the modal without
+	// its expiry alert rather than without a modal: a deadline this bot could not read is a line it must
+	// not invent, and every other thing on the screen is still worth showing.
+	if at, err := time.Parse(time.RFC3339, approval.ExpiresAt); err == nil {
+		req.ExpiresAt = at
+	}
+	return req
 }
 
 // allowed reports whether userID is one of this bot's configured approvers: an exact,

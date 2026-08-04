@@ -432,7 +432,9 @@ func ToolApprovalModal(triggerID string, req ApprovalRequest) []byte {
 	budget := MaxMarkdownText
 
 	blocks := []any{
-		markdownBlock("**Approval requested**\n`"+display.Identity+"`\n"+display.OperatorLabel, &budget),
+		// NOT markdownBlock: a view refuses a `markdown` block outright, which is what made every
+		// views.open this function could have sent fail with invalid_arguments. See modalTextBlock.
+		modalTextBlock("Approval requested", display.Identity, display.OperatorLabel, &budget),
 	}
 	if display.Truncated {
 		blocks = append(blocks, alertBlock("warning",

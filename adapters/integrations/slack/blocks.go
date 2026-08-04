@@ -769,38 +769,42 @@ func taskBlocks(result Result) []any {
 	return []any{map[string]any{"type": "plan", "title": title, "tasks": cards}}
 }
 
-// cell types one table cell by WHAT IT IS, which is M14's whole (small, real) win: a cell that is a number is
-// declared as one, and Slack then right-aligns the column and sorts it numerically instead of alphabetically.
+// cell renders one table cell, and it renders EVERY cell as raw_text — including a cell that is a number.
 //
-// CONTRACT: https://docs.slack.dev/reference/block-kit/blocks/table-block/ (checked 2026-07-27) — cells are
-// rich_text, raw_text or raw_number, and "raw_number support numeric values"; "if a column contains cells all
-// of type raw_number, a numeric sort will be performed instead of the default alphabetical sort".
+// IT USED TO MINT `raw_number` AND THAT SHAPE DOES NOT EXIST ON THE LIVE API. The version this replaces
+// declared a numeric cell as `{"type":"raw_number","text":"600"}` for the reason the reference gives:
+// "Table cells can have a type of rich_text, raw_text, or raw_number", plus a numeric sort. It also named
+// its own unconfirmed row out loud — *"if a live leg answers invalid_blocks on a numeric table, `value` is
+// the suspect"*. That live leg has now been run, and the suspect was innocent: the type is.
 //
-// ONLY `type` AND `text` ARE SENT, and that is a decision with two reasons rather than an omission. The table
-// block's own page prints NO schema for raw_number. The sibling
-// https://docs.slack.dev/reference/block-kit/blocks/data-table-block/ (same date) does, and it gives the cell
-// a `value` of JSON type number beside its `text` — but it is a DIFFERENT BLOCK and its schema names no
-// required set, so "raw_number needs a value" is an inference across two pages, not a contract. The second
-// reason is ours and it is not a preference: a `value` KEY IS WHAT OUR OWN ACTIONABLE-ELEMENT SWEEP LOOKS FOR
-// (tests/uat/evidence.go SweepActionableElements, blocks_test.go sweepActionable — a button's `value` is the
-// payload it dispatches). A numeric cell carrying one would register as a forged interaction in every
-// evidence bundle, and the only way to make that green again is to weaken the sweep. A right-aligned column
-// is not worth a hole in the defence this renderer exists for.
+// MEASURED 2026-08-05 (workspace T0AMPM5JX8U), every form, on BOTH surfaces:
 //
-// SO THE UNCONFIRMED IS NAMED: if a live leg answers invalid_blocks on a numeric table, `value` is the
-// suspect — and adding it is a question for the sweep before it is a question for the renderer.
+//	views.open  {"type":"raw_number","text":"600"}  -> invalid_arguments: must be a valid enum value …/type
+//	views.open  {"type":"raw_number","value":600}   -> invalid_arguments: must be a valid enum value …/type
+//	views.open  {"type":"raw_number","value":"600"} -> invalid_arguments: must be a valid enum value …/type
+//	views.open  {"type":"raw_text","text":"600"}    -> invalid_trigger_id  (i.e. the BODY was accepted)
+//	chat.postMessage, same table, raw_number        -> invalid_blocks
+//	chat.postMessage, same table, raw_text          -> ok
 //
-// raw_text stays the DEFAULT and that is a security choice as much as a simplicity one: the documentation
-// describes raw_text as "basic text characters" while rich_text is the type that carries mentions and links.
-// A model's bytes go in the type with the least interpretation, and they are defused on the way in regardless.
+// The accompanying "missing required field: value" is the schema union reporting on its OTHER members, not
+// on raw_number: supply `value` and it asks for `text` instead. There is no form of this cell the API takes.
 //
-// The decode IS the type test: encoding/json accepts exactly the JSON number grammar, so `1.5s`, `NaN`,
-// `0x1f`, `007 ` and a quoted `"42"` all stay raw_text rather than being coerced into numbers they are not.
+// WHAT IT COST, MEASURED ON THE SHIPPED RENDERER AND NOT INFERRED. slack.ToolApprovalMessage, driven at the
+// real chat.postMessage with a real gated call:
+//
+//	{"command":"swift build"}                        -> ok
+//	{"command":"swift build","timeout_seconds":600}  -> invalid_blocks
+//
+// So a gated tool call carrying ANY plain numeric argument — a timeout, a line count, a port — posted no
+// approval message at all. The run parks server-side waiting for a human, the message with the buttons never
+// arrives, and the bot logs "NOBODY WAS ASKED". The defect was invisible because the fixtures that pin this
+// renderer all pass string arguments.
+//
+// raw_text was already the default for every other value, and the documentation's own description of it —
+// "basic text characters", against rich_text which carries mentions and links — is why: a model's bytes go
+// in the type with the least interpretation. What is lost is a right-aligned, numerically sorted column,
+// which was never rendered by anything because the block carrying it was refused.
 func cell(text string) map[string]any {
-	var number json.Number
-	if err := json.Unmarshal([]byte(text), &number); err == nil {
-		return map[string]any{"type": "raw_number", "text": text}
-	}
 	return map[string]any{"type": "raw_text", "text": text}
 }
 
@@ -903,6 +907,20 @@ const MaxAlertText = 200
 // alertBlock is the WARNING a modal is allowed to carry — "these arguments were cut", "this approval
 // expires in twelve minutes". Both are things a human deciding needs and neither is a thing they should
 // have to infer from an absence.
+//
+// `text` IS A TEXT OBJECT AND NOT A STRING, which is measured rather than read off the page: the alert
+// block's reference gives `text` as "the text to display" with no type beside it, and this block was
+// written — like every other block here — before anything in this tree could open a modal to send one to.
+// Driven at the live views.open on 2026-08-05 (workspace T0AMPM5JX8U):
+//
+//	{"type":"alert","level":"info","text":"expires soon"}                          -> invalid_arguments:
+//	                                                            "must provide an object [/view/blocks/0/text]"
+//	{"type":"alert","level":"info","text":{"type":"plain_text","text":"expires soon"}} -> invalid_trigger_id
+//	{"type":"alert","level":"info","text":{"type":"mrkdwn","text":"expires soon"}}     -> invalid_trigger_id
+//
+// plain_text is the one chosen of the two the API accepts, and for the reason this whole screen exists: an
+// alert says "these arguments were CUT" or "this expires at 14:32", and a text type that consumes
+// characters to make them bold is the wrong carrier for a sentence a human is about to act on.
 func alertBlock(level, text string) any {
 	if !AlertLevels[level] {
 		level = "default"
@@ -911,7 +929,42 @@ func alertBlock(level, text string) any {
 	if runes := []rune(text); len(runes) > MaxAlertText {
 		text = string(runes[:MaxAlertText-len([]rune(truncationMarker))]) + truncationMarker
 	}
-	return map[string]any{"type": "alert", "level": level, "text": text}
+	return map[string]any{"type": "alert", "level": level,
+		"text": map[string]any{"type": "plain_text", "text": text}}
+}
+
+// modalTextBlock is the modal's prose block — the one the channel message writes with `markdown`.
+//
+// A VIEW DOES NOT TAKE A `markdown` BLOCK, and that single word is what made every views.open this tree
+// could ever have sent fail. Measured 2026-08-05 against the live API, with a bogus trigger so that an
+// error about the body is about the body and an accepted body gets as far as the trigger:
+//
+//	{"type":"markdown","text":"**Approval requested**"}                       -> invalid_arguments:
+//	                                        "unsupported type: markdown [/view/blocks/0/type]"
+//	{"type":"section","text":{"type":"mrkdwn","text":"*Approval requested*"}} -> invalid_trigger_id
+//	{"type":"section","text":{"type":"plain_text","text":"Approval requested"}} -> invalid_trigger_id
+//
+// `mrkdwn` is chosen over `plain_text` because this block carries the tool's identity in a code span and
+// the header in bold, and a screen that showed its own backticks and asterisks would be harder to read,
+// not more exact. The exactness lives one block down: the ARGUMENTS are table cells, which are raw_text and
+// are not markdown-parsed at all, so nothing a model wrote passes through a formatter on this screen.
+//
+// mrkdwn is NOT the same dialect as the `markdown` block: bold is `*one*` asterisk here, not `**two**`.
+// That is why this takes the already-composed pieces rather than a pre-written markdown string — a caller
+// that handed it the channel message's text would render `**Approval requested**` with its asterisks
+// showing, and it would look like a bug in the escape rather than a dialect mismatch.
+func modalTextBlock(header, identity, label string, budget *int) any {
+	text := "*" + NeutralizeBroadcasts(header) + "*\n`" + NeutralizeBroadcasts(identity) + "`\n" +
+		NeutralizeBroadcasts(label)
+	runes := []rune(text)
+	if len(runes) > *budget {
+		marker := []rune(truncationMarker)
+		keep := max(*budget-len(marker), 0)
+		runes = append(runes[:keep:keep], marker...)
+		text = string(runes)
+	}
+	*budget -= len(runes)
+	return map[string]any{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": text}}
 }
 
 // ApprovalArgument is one row of the approval screen's argument table: the argument's name and the exact

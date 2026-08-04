@@ -68,9 +68,14 @@ func (f *fakeApprovalsPalai) DenyApproval(ctx context.Context, id string, p pala
 type fakeApprovalSlack struct {
 	posted  [][]byte
 	updated [][]byte
+	// opened are the views.open bodies, kept apart from posted and updated for the reason those two are
+	// kept apart from each other: a test asserting that a human was SHOWN a document must not be
+	// satisfiable by a message that was posted into the channel instead.
+	opened [][]byte
 
 	postErr   error
 	updateErr error
+	openErr   error
 }
 
 func (f *fakeApprovalSlack) PostMessage(ctx context.Context, body []byte) (string, error) {
@@ -84,6 +89,11 @@ func (f *fakeApprovalSlack) PostMessage(ctx context.Context, body []byte) (strin
 func (f *fakeApprovalSlack) UpdateMessage(ctx context.Context, body []byte) error {
 	f.updated = append(f.updated, body)
 	return f.updateErr
+}
+
+func (f *fakeApprovalSlack) OpenView(ctx context.Context, body []byte) error {
+	f.opened = append(f.opened, body)
+	return f.openErr
 }
 
 // newTestApprovalDeps builds an ApprovalDeps wired to fresh fakes, with one approver configured — a test that

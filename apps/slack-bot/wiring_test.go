@@ -13,6 +13,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -322,11 +323,15 @@ type fakeApprovalsPalai struct {
 	approved []string
 	denied   []string
 	hashes   []string
+	// listed counts the round trips to GET /v1/approvals, so a test can assert that a refused click never
+	// made one — the ORDER of the allow-list check, which is the property, not just its outcome.
+	listed int
 }
 
 func (f *fakeApprovalsPalai) ListApprovals(context.Context, palai.ListApprovalsParams) (*palai.Page[palai.Approval], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.listed++
 	return &palai.Page[palai.Approval]{Data: append([]palai.Approval(nil), f.open...)}, nil
 }
 
@@ -352,6 +357,9 @@ type fakeApprovalSlack struct {
 	mu      sync.Mutex
 	posted  [][]byte
 	updated [][]byte
+	// opened are the views.open bodies — the third surface this bot writes to, kept apart from the other
+	// two so a test about the modal cannot be satisfied by a message.
+	opened [][]byte
 }
 
 func (f *fakeApprovalSlack) PostMessage(_ context.Context, body []byte) (string, error) {
@@ -365,6 +373,13 @@ func (f *fakeApprovalSlack) UpdateMessage(_ context.Context, body []byte) error 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.updated = append(f.updated, body)
+	return nil
+}
+
+func (f *fakeApprovalSlack) OpenView(_ context.Context, body []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.opened = append(f.opened, body)
 	return nil
 }
 
@@ -563,17 +578,81 @@ func TestAnUnlistedClickerDecidesNothing(t *testing.T) {
 	}
 }
 
-// The third button ToolApprovalMessage mints — "Show arguments" — opens a modal this bot does not wire.
-// It must decide nothing rather than fall through into a decision branch.
-func TestTheShowArgumentsButtonDecidesNothing(t *testing.T) {
-	d, _, _, ap, _ := testBot(t, []string{"U_HUMAN"}, nil)
+// The third button ToolApprovalMessage mints — "Show arguments" — opens a MODAL and must decide nothing
+// on the way: it is the one non-decision this dispatcher acts on, and the two must not be reachable from
+// each other.
+//
+// THIS IS THE WHOLE WIRING, from the envelope a click arrives as to the views.open body. Before it, the
+// button was inert in two independent ways — nothing routed the payload, and the body it would have sent
+// was refused by the live API four ways at once — and neither of those was visible from either end alone.
+func TestTheShowArgumentsButtonOpensTheModalAndDecidesNothing(t *testing.T) {
+	d, _, _, ap, as := testBot(t, []string{"U_HUMAN"}, nil)
+	ap.open = []palai.Approval{{
+		ID: "apr_1", RequestHash: "rh_1", SessionID: "ses_1",
+		Identity: "palai.workspace.shell", OperatorLabel: "Run a shell command",
+		Arguments: `{"command":"swift build","timeout_seconds":600}`,
+	}}
 
-	d.OnInteractive(context.Background(), blockActionsPayload("U_HUMAN", slack.ActionShowArguments, "apr_1|rh_1"))
+	d.OnInteractive(context.Background(),
+		showArgumentsPayload("U_HUMAN", "apr_1|rh_1", "9999999999.888888.trigger"))
 
 	ap.mu.Lock()
-	defer ap.mu.Unlock()
-	if len(ap.approved) != 0 || len(ap.denied) != 0 {
+	decided := len(ap.approved) + len(ap.denied)
+	ap.mu.Unlock()
+	if decided != 0 {
 		t.Fatalf("the show-arguments button decided something: approved=%v denied=%v", ap.approved, ap.denied)
+	}
+
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	if len(as.opened) != 1 {
+		t.Fatalf("views.open was called %d time(s), want exactly one — the click is routed nowhere else",
+			len(as.opened))
+	}
+	if len(as.posted) != 0 {
+		t.Fatalf("the click posted %d message(s) into the channel; a Show-arguments click opens a view and "+
+			"writes nothing anybody else can see", len(as.posted))
+	}
+	var view struct {
+		TriggerID string `json:"trigger_id"`
+		View      struct {
+			Blocks []map[string]any `json:"blocks"`
+		} `json:"view"`
+	}
+	if err := json.Unmarshal(as.opened[0], &view); err != nil {
+		t.Fatalf("decode the views.open body: %v (%s)", err, as.opened[0])
+	}
+	if view.TriggerID != "9999999999.888888.trigger" {
+		t.Fatalf("views.open carried trigger %q, want the click's own — a trigger from anywhere else opens "+
+			"nothing and burns the three seconds finding out", view.TriggerID)
+	}
+	// The argument that only the MODAL shows: the channel table compacts, the modal lists leaves.
+	if !bytes.Contains(as.opened[0], []byte("timeout_seconds")) {
+		t.Fatalf("the modal does not name the call's arguments: %s", as.opened[0])
+	}
+}
+
+// An unlisted clicker cannot open the document either, and — as with a decision — is refused BEFORE the
+// control plane is called. Opening is a smaller act than deciding, but it still shows one human another
+// human's pending command.
+func TestAnUnlistedClickerSeesNoArguments(t *testing.T) {
+	d, _, _, ap, as := testBot(t, []string{"U_ALLOWED"}, nil)
+	ap.open = []palai.Approval{{ID: "apr_1", RequestHash: "rh_1", Identity: "palai.workspace.shell",
+		Arguments: `{"command":"swift build"}`}}
+
+	d.OnInteractive(context.Background(),
+		showArgumentsPayload("U_STRANGER", "apr_1|rh_1", "9999999999.888888.trigger"))
+
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	if len(as.opened) != 0 {
+		t.Fatalf("an unlisted click opened %d view(s)", len(as.opened))
+	}
+	ap.mu.Lock()
+	defer ap.mu.Unlock()
+	if ap.listed != 0 {
+		t.Fatalf("an unlisted click reached the control plane %d time(s); the allow-list check has to run "+
+			"BEFORE the lookup, not on the way out of it", ap.listed)
 	}
 }
 
@@ -610,6 +689,17 @@ func blockActionsPayload(userID, actionID, value string) json.RawMessage {
 		"team":{"id":"T1"},"user":{"id":%q,"team_id":"T1"},
 		"channel":{"id":"C1"},"message":{"ts":"ts_approval","thread_ts":"100.001"},
 		"actions":[{"action_id":%q,"value":%q}]}`, userID, actionID, value))
+}
+
+// showArgumentsPayload is the same envelope WITH a trigger_id, which the decision payload above has no
+// reason to carry. It is a separate helper rather than a parameter on that one because the field is not
+// decoration here: MapShowArgumentsClick refuses a payload without it, so a Show-arguments test written
+// over blockActionsPayload would be green on the refusal path while claiming to measure the modal.
+func showArgumentsPayload(userID, value, triggerID string) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"type":"block_actions","trigger_id":%q,
+		"team":{"id":"T1"},"user":{"id":%q,"team_id":"T1"},
+		"channel":{"id":"C1"},"message":{"ts":"ts_approval","thread_ts":"100.001"},
+		"actions":[{"action_id":%q,"value":%q}]}`, triggerID, userID, slack.ActionShowArguments, value))
 }
 
 // ---------------------------------------------------------------------------------------------------

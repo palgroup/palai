@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // THE TEST THAT IS THE POINT OF E20 T4 (plan §2): a model must never be able to put an actionable element in
@@ -603,10 +604,19 @@ func TestTheStopStreamPathCarriesNoMarkdownBlock(t *testing.T) {
 	}
 }
 
-// M14 — the table's one cheap enrichment. A cell that IS a number is typed as one, which is what makes Slack
-// right-align it (and sort the column numerically). Everything else stays raw_text, the type with the least
-// interpretation.
-func TestNumericTableCellsAreRawNumber(t *testing.T) {
+// M14 WAS WRONG AND THE LIVE API SAYS SO. This test used to require that a numeric cell be typed
+// `raw_number`, on the reference's word that a cell may be "rich_text, raw_text, or raw_number". Driven at
+// the real API on 2026-08-05 that type is refused in every form it can be written — views.open answers
+// `invalid_arguments: must be a valid enum value …/type` for `text`, for a numeric `value` and for a string
+// `value`, and chat.postMessage answers `invalid_blocks` for the same table. See cell() for the full grid.
+//
+// WHAT THE OLD TEST COST is the reason this one is worded as a REFUSAL rather than merely retyped: the
+// shipped ToolApprovalMessage, driven at the real chat.postMessage, posted fine for
+// `{"command":"swift build"}` and answered `invalid_blocks` for
+// `{"command":"swift build","timeout_seconds":600}`. A gated call with a plain numeric argument put no
+// approval question in front of anybody at all — and the green test above was one of the reasons nobody
+// looked.
+func TestATableCellIsNeverTypedRawNumber(t *testing.T) {
 	blocks := RenderBlocks([]Result{{Type: ResultTable,
 		Columns: []string{"suite", "failures"},
 		Rows:    [][]string{{"slack", "0"}, {"render", "12"}, {"total", "1.5s"}},
@@ -621,32 +631,87 @@ func TestNumericTableCellsAreRawNumber(t *testing.T) {
 	if len(rows) != 4 {
 		t.Fatalf("rendered %d rows, want the header plus three: %s", len(rows), blocks)
 	}
-	for _, cell := range []map[string]any{rows[0][0], rows[0][1], rows[1][0], rows[3][1]} {
-		if cell["type"] != "raw_text" {
-			t.Fatalf("cell %v is typed %v; a cell that is not a number stays raw_text", cell["text"], cell["type"])
-		}
-	}
-	for _, cell := range []map[string]any{rows[1][1], rows[2][1]} {
-		if cell["type"] != "raw_number" {
-			t.Fatalf("numeric cell %v is typed %v, want raw_number", cell["text"], cell["type"])
-		}
-		// NO `value` KEY, and this is a guard rather than a shape preference: a button's `value` is the
-		// payload it dispatches, so `value` is one of the two field names the actionable sweep hunts for
-		// (SweepActionableElements, sweepActionable). A numeric cell carrying one would count as a forged
-		// interaction in every evidence bundle, and the only way to green that again is to weaken the sweep.
-		if _, ok := cell["value"]; ok {
-			t.Fatalf("a raw_number cell carries a `value` key, which the actionable sweep reads as a dispatchable element: %v", cell)
-		}
-		if cell["text"] == "" {
-			t.Fatalf("a raw_number cell lost the text Slack draws: %v", cell)
+	for _, row := range rows {
+		for _, cell := range row {
+			if cell["type"] != "raw_text" {
+				t.Fatalf("cell %v is typed %v; the live API accepts raw_text and refuses raw_number on BOTH "+
+					"surfaces, so a table carrying one posts nothing at all", cell["text"], cell["type"])
+			}
+			// NO `value` KEY: a button's `value` is the payload it dispatches, so `value` is one of the two
+			// field names the actionable sweep hunts for (SweepActionableElements, sweepActionable). A cell
+			// carrying one would count as a forged interaction in every evidence bundle.
+			if _, ok := cell["value"]; ok {
+				t.Fatalf("a table cell carries a `value` key, which the actionable sweep reads as a dispatchable element: %v", cell)
+			}
 		}
 	}
 	if fmt.Sprint(rows[2][1]["text"]) != "12" {
-		t.Fatalf("the raw_number cell draws %v, want the cell's own digits", rows[2][1]["text"])
+		t.Fatalf("the numeric cell draws %v, want the cell's own digits", rows[2][1]["text"])
 	}
 	// The sweep must stay CLEAN over a numeric table — the collision above, asserted where it would bite.
 	if found := sweepJSON(t, "numeric table", blocks); len(found) != 0 {
 		t.Fatalf("a numeric table registered %d actionable element(s): %v", len(found), found)
+	}
+}
+
+// TestTheModalCarriesNoShapeTheLiveAPIRefuses is the standing guard over the four shapes measured wrong on
+// 2026-08-05, asserted on the bytes ToolApprovalModal actually produces.
+//
+// IT IS A STRUCTURAL TEST AND IT IS NOT THE PROOF — the proof is the live leg (approval_screen_live_test.go
+// TestTheModalBodyIsAcceptedByTheLiveViewsOpen), which drives this same body at views.open and requires the
+// only complaint left to be about the trigger. This one exists so the regression is caught by `go test`
+// rather than by an operator clicking a button that opens nothing.
+func TestTheModalCarriesNoShapeTheLiveAPIRefuses(t *testing.T) {
+	req := ApprovalRequest{
+		ApprovalID: "apr_1", RequestHash: "rh_1", Identity: "palai.workspace.shell",
+		OperatorLabel: "Run a shell command",
+		Arguments:     []byte(`{"command":"swift build","timeout_seconds":600}`),
+		ExpiresAt:     time.Now().Add(time.Hour),
+	}
+	var body struct {
+		View struct {
+			Blocks []map[string]any `json:"blocks"`
+		} `json:"view"`
+	}
+	if err := json.Unmarshal(ToolApprovalModal("trigger.1", req), &body); err != nil {
+		t.Fatalf("decode the modal: %v", err)
+	}
+	if len(body.View.Blocks) < 4 {
+		t.Fatalf("the modal drew %d blocks, want the header, the expiry alert, the table and the reason input",
+			len(body.View.Blocks))
+	}
+	var sawAlert, sawTable bool
+	for i, block := range body.View.Blocks {
+		switch block["type"] {
+		case "markdown":
+			t.Fatalf("block %d is a `markdown` block; a VIEW refuses that type outright "+
+				"(\"unsupported type: markdown\") and every views.open carrying one fails", i)
+		case "alert":
+			sawAlert = true
+			if _, isString := block["text"].(string); isString {
+				t.Fatalf("block %d is an alert whose `text` is a string; the live API answers "+
+					"\"must provide an object\" and refuses the whole view", i)
+			}
+		case "table":
+			sawTable = true
+			rows, _ := block["rows"].([]any)
+			for r, row := range rows {
+				cells, _ := row.([]any)
+				for c, raw := range cells {
+					cell, _ := raw.(map[string]any)
+					if cell["type"] != "raw_text" {
+						t.Fatalf("modal table cell [%d][%d] is typed %v; only raw_text is accepted", r, c, cell["type"])
+					}
+				}
+			}
+		}
+	}
+	if !sawAlert {
+		t.Fatal("the modal drew no alert block, so the alert assertion above measured nothing — this fixture " +
+			"sets ExpiresAt precisely to make one")
+	}
+	if !sawTable {
+		t.Fatal("the modal drew no argument table, so the cell assertion above measured nothing")
 	}
 }
 

@@ -81,10 +81,11 @@ func (d *dispatcher) OnInteractive(ctx context.Context, payload json.RawMessage)
 	intent, err := slack.MapInteractiveApproval(payload)
 	switch {
 	case errors.Is(err, slack.ErrNotApproval):
-		// Includes the third button slack.ToolApprovalMessage mints, "Show arguments": it opens a modal
-		// through views.open, which this bot does not wire (see approvals.go's file doc). It decides
-		// nothing, so ignoring it is an incomplete affordance rather than a gap.
-		d.log("slack-bot: ignored a non-approval interaction")
+		// NOT A DECISION IS NOT NOTHING. The third button slack.ToolApprovalMessage mints, "Show
+		// arguments", lands here by construction — MapInteractiveApproval's switch matches only
+		// approve/deny, which is asserted from both directions in the adapter's own tests — and it is the
+		// one non-decision this bot acts on. Anything that is neither goes on being ignored.
+		d.onShowArguments(ctx, payload)
 		return
 	case err != nil:
 		d.log("slack-bot: a malformed interactive envelope arrived: %v", err)
@@ -92,6 +93,26 @@ func (d *dispatcher) OnInteractive(ctx context.Context, payload json.RawMessage)
 	}
 	if err := relay.OnButton(ctx, d.approvals, intent); err != nil {
 		d.log("slack-bot: the %s click by %s in %s was not applied: %v", intent.Decision, intent.UserID, intent.ChannelID, err)
+	}
+}
+
+// onShowArguments serves a click on the third button: open the modal listing that call's arguments in
+// full, inside the three seconds the trigger lives.
+//
+// AN UNMAPPABLE PAYLOAD IS SILENT AND EVERYTHING ELSE IS LOGGED. slack.ErrNotShowArguments covers every
+// interaction that is neither a decision nor this button — a future element, a payload from another app's
+// message — and a log line per one of those is noise. A click that DID map and then did not open is worth
+// a line, because a human pressed something and watched nothing happen, and this process is the only place
+// that fact exists: the modal is not repaired in Slack (relay.OnShowArguments's own ceiling), so silence
+// here is silence everywhere.
+func (d *dispatcher) onShowArguments(ctx context.Context, payload json.RawMessage) {
+	click, err := slack.MapShowArgumentsClick(payload)
+	if err != nil {
+		return
+	}
+	if err := relay.OnShowArguments(ctx, d.approvals, click); err != nil {
+		d.log("slack-bot: the Show-arguments click by %s in %s opened nothing — they pressed the button and "+
+			"saw no modal, and nothing in Slack tells them why: %v", click.UserID, click.ChannelID, err)
 	}
 }
 
