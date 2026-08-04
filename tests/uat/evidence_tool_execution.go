@@ -127,8 +127,9 @@ type ToolExecutionProof struct {
 	UnameLegsOutstanding int             `json:"uname_legs_outstanding"`
 
 	// (f) The seven tasks' own ceilings, carried into the record.
-	CeilingLedger   json.RawMessage `json:"ceiling_ledger"`
-	CeilingsCarried int             `json:"ceilings_carried"`
+	CeilingLedger     json.RawMessage `json:"ceiling_ledger"`
+	CeilingsCarried   int             `json:"ceilings_carried"`
+	CeilingsStillOpen int             `json:"ceilings_still_open"`
 
 	// (g) The PUBLISHED ceilings this phase invalidated.
 	SupersededLedger   json.RawMessage `json:"superseded_ledger"`
@@ -191,6 +192,13 @@ type toolExecutionCeilingRow struct {
 	Task    string `json:"task"`
 	Source  string `json:"source"`
 	Ceiling string `json:"ceiling"`
+	// ClosedBy is the commit that closed this ceiling, empty while it stands. It exists because
+	// OVERSTATING A CEILING IS AS WRONG AS UNDERSTATING ONE, and this release proved it on itself: the
+	// acceptance gate found A3-C11, the lead fixed it in `4d84ab0e` before this bundle was cut, and a
+	// ledger with no closure field would have shipped a record claiming an open defect that was already
+	// shut. Carrying the row WITH its closure is better than deleting it — the finding is part of what
+	// this phase's acceptance did — but a reader must never have to guess which rows still bite.
+	ClosedBy string `json:"closed_by"`
 }
 
 // toolExecutionSupersededRow is one PUBLISHED ceiling this phase invalidated.
@@ -320,22 +328,25 @@ func SweepToolExecutionUname(raw json.RawMessage) (measured, outstanding int, er
 }
 
 // SweepToolExecutionCeilings re-derives (f) from the ledger bytes.
-func SweepToolExecutionCeilings(raw json.RawMessage) ([]string, error) {
+func SweepToolExecutionCeilings(raw json.RawMessage) (ids []string, open int, err error) {
 	var rows []toolExecutionCeilingRow
 	if err := json.Unmarshal(raw, &rows); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	ids := make([]string, 0, len(rows))
+	ids = make([]string, 0, len(rows))
 	for _, r := range rows {
 		if r.ID == "" || r.Task == "" || r.Source == "" || r.Ceiling == "" {
-			return nil, errToolExecution("a ceiling row names no id, no task, no source or no ceiling")
+			return nil, 0, errToolExecution("a ceiling row names no id, no task, no source or no ceiling")
 		}
 		if slices.Contains(ids, r.ID) {
-			return nil, errToolExecution("a ceiling id appears twice: " + r.ID)
+			return nil, 0, errToolExecution("a ceiling id appears twice: " + r.ID)
 		}
 		ids = append(ids, r.ID)
+		if r.ClosedBy == "" {
+			open++
+		}
 	}
-	return ids, nil
+	return ids, open, nil
 }
 
 // SweepToolExecutionSuperseded re-derives (g) from the ledger bytes.
@@ -525,8 +536,9 @@ const ToolExecutionCeilingLedger = `[
    "ceiling":"rows that predate the machine column settle as 'lost' on the first sweep even if their process is genuinely running. The direction is safe (a lost handle is never signalled) but it is not silent: that run's model sees a task it was told is gone"},
   {"id":"A3-C10","task":"T7","source":"packages/runner/session.go, the park loop",
    "ceiling":"the park now reads NON-LEASE traffic, which is a surface widening. A control plane can keep a parked machine busy by writing to it; no rate limit and no concurrency ceiling were designed"},
-  {"id":"A3-C11","task":"T7","source":"apps/control-plane/internal/execution/background.go:604",
-   "ceiling":"the doc comment above probeOnMachine still documents 'reachesMachine' — a symbol commit 70a615f7 deleted — and asserts 'there is no protocol by which one control plane probes another machine's process group'. The function beneath it calls callMachine, which IS that protocol. Found by this acceptance gate; the comment claims an ABSENCE the code no longer has, at the exact line a reader would audit it"},
+  {"id":"A3-C11","task":"T7 / found by the A.3 acceptance gate","source":"apps/control-plane/internal/execution/background.go, corrected at :604 by 4d84ab0e",
+   "closed_by":"4d84ab0e",
+   "ceiling":"FOUND OPEN AND CLOSED WITHIN THIS PHASE, and it is carried rather than deleted because the finding is part of what this acceptance did. The doc comment above probeOnMachine documented 'reachesMachine' — a symbol 70a615f7 deleted — and asserted 'there is no protocol by which one control plane probes another machine's process group', while the function beneath it called callMachine, which IS that protocol. A comment claiming an ABSENCE the code no longer has, at the exact line a reader would audit it. It was true of the ROUTING seam T6 landed and false the moment T7 landed the bg.* verbs. The correction COUNTED THE BRANCHES rather than writing an unqualified clean sentence — a machine that answers gives its real state, a machine that cannot be addressed is lost, and a row naming no machine is lost for a separate reason — which is this tree's own rule for repairing a comment"},
   {"id":"A3-C12","task":"T4 / E24 inherited","source":"docs/operations/known-gaps-1.0.md FLT-P2, and the RC's open §6 leg 2",
    "ceiling":"'linux/amd64' is STILL unverified, and a declared posture is COMPARED rather than attested — so an 'unsandboxed-host' pool does not stop a Linux container calling itself one. A.3 moved WHERE a command runs; it added no attestation of WHAT the machine is"}
 ]`
@@ -601,12 +613,16 @@ var ToolExecutionContracts = []ContractRequirement{
 	},
 	{
 		Divergence: "A3-D6",
-		SourceURL:  "apps/control-plane/internal/execution/background.go:604 (read 2026-08-04)",
-		Requirement: "A COMMENT MAY NOT ASSERT AN ABSENCE THE CODE NO LONGER HAS. The doc comment above " +
-			"`probeOnMachine` still names `reachesMachine` — deleted by 70a615f7 — and states there is no " +
-			"protocol by which one control plane probes another machine's process group, while the function " +
-			"beneath it calls `callMachine`, which is that protocol. Carried as ceiling A3-C11 rather than " +
-			"silently fixed, because the acceptance gate's job is to record what it found",
+		SourceURL:  "apps/control-plane/internal/execution/background.go (found at :604 on 2026-08-04, corrected by 4d84ab0e the same day)",
+		Requirement: "A COMMENT MAY NOT ASSERT AN ABSENCE THE CODE NO LONGER HAS — FOUND BY THIS GATE AND " +
+			"CLOSED BEFORE THIS BUNDLE WAS CUT. The doc comment above `probeOnMachine` named `reachesMachine`, " +
+			"deleted by 70a615f7, and stated there is no protocol by which one control plane probes another " +
+			"machine's process group, while the function beneath it calls `callMachine`, which is that " +
+			"protocol. AND THE SECOND HALF OF THIS ROW IS THE ONE THAT COST THIS RELEASE SOMETHING: the first " +
+			"version of this bundle carried A3-C11 as an OPEN ceiling and was already stale when it shipped, " +
+			"because the repair landed between the two. OVERSTATING A CEILING IS AS WRONG AS UNDERSTATING " +
+			"ONE, so the ceiling ledger gained a `closed_by` field and the proof now re-derives OPEN ceilings " +
+			"separately from carried ones — a bundle can no longer report a defect that is already shut",
 	},
 }
 
@@ -678,8 +694,8 @@ func (p ToolExecutionProof) Complete() bool {
 	}
 
 	// (f) The tasks' ceilings.
-	ceilings, err := SweepToolExecutionCeilings(p.CeilingLedger)
-	if err != nil || len(ceilings) < 1 || p.CeilingsCarried != len(ceilings) {
+	ceilings, openCeilings, err := SweepToolExecutionCeilings(p.CeilingLedger)
+	if err != nil || len(ceilings) < 1 || p.CeilingsCarried != len(ceilings) || p.CeilingsStillOpen != openCeilings {
 		return false
 	}
 
