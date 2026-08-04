@@ -129,7 +129,7 @@ func (h *harness) recoveryEventLevels(sessionID string) []string {
 func (h *harness) eventLevels(sessionID, typ string) []string {
 	h.t.Helper()
 	rows, err := h.spine.Pool().Query(storage.WithSystemScope(context.Background()),
-		`SELECT payload FROM events WHERE session_id=$1  project_id=$2 AND type=$3 ORDER BY seq`,
+		`SELECT payload FROM events WHERE session_id=$1 AND project_id=$2 AND type=$3 ORDER BY seq`,
 		sessionID, h.tenant.Project, typ)
 	if err != nil {
 		h.t.Fatalf("read %s events error = %v", typ, err)
@@ -155,7 +155,7 @@ func (h *harness) recoveryProof(sessionID string) (recovery.RecoveryProof, bool)
 	h.t.Helper()
 	var payload []byte
 	err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT payload FROM events WHERE session_id=$1  project_id=$2 AND type='recovery.proof.v1' ORDER BY seq DESC LIMIT 1`,
+		`SELECT payload FROM events WHERE session_id=$1 AND project_id=$2 AND type='recovery.proof.v1' ORDER BY seq DESC LIMIT 1`,
 		sessionID, h.tenant.Project).Scan(&payload)
 	if err != nil {
 		return recovery.RecoveryProof{}, false
@@ -365,7 +365,7 @@ func (h *harness) deliveredBoundary(runID, commandID string) string {
 	h.t.Helper()
 	var b string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT boundary_request_id FROM delivered_messages WHERE run_id=$1 AND command_id=$2  project_id=$3`,
+		`SELECT boundary_request_id FROM delivered_messages WHERE run_id=$1 AND command_id=$2 AND project_id=$3`,
 		runID, commandID, h.tenant.Project).Scan(&b); err != nil {
 		h.t.Fatalf("read delivered boundary for %s: %v", commandID, err)
 	}
@@ -473,7 +473,7 @@ func TestFreshCommandsNotDrainedAtReplayedBoundary(t *testing.T) {
 }
 
 func (h *harness) committedModelSteps(runID string) int {
-	return h.count(`SELECT count(*) FROM model_requests WHERE run_id=$1  project_id=$2 AND state='completed'`,
+	return h.count(`SELECT count(*) FROM model_requests WHERE run_id=$1 AND project_id=$2 AND state='completed'`,
 		runID, h.tenant.Project)
 }
 
@@ -569,7 +569,7 @@ func runID2resp(t *testing.T, h *harness, runID string) string {
 	t.Helper()
 	var respID string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT response_id FROM runs WHERE id=$1  project_id=$2`,
+		`SELECT response_id FROM runs WHERE id=$1 AND project_id=$2`,
 		runID, h.tenant.Project).Scan(&respID); err != nil {
 		t.Fatalf("resolve response for run: %v", err)
 	}

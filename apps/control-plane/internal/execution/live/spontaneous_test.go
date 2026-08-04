@@ -157,7 +157,7 @@ func responseState(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, 
 	t.Helper()
 	var state string
 	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT state FROM responses WHERE id=$1  project_id=$2`,
+		`SELECT state FROM responses WHERE id=$1 AND project_id=$2`,
 		respID, tenant.Project).Scan(&state); err != nil {
 		t.Fatalf("read response state: %v", err)
 	}
@@ -168,7 +168,7 @@ func responseState(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, 
 func distinctProviderIDs(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, runID string) []string {
 	t.Helper()
 	rows, err := pool.Query(storage.WithSystemScope(context.Background()),
-		`SELECT result FROM model_requests WHERE run_id=$1  project_id=$2 AND state='completed'`,
+		`SELECT result FROM model_requests WHERE run_id=$1 AND project_id=$2 AND state='completed'`,
 		runID, tenant.Project)
 	if err != nil {
 		t.Fatalf("read model results: %v", err)
@@ -200,7 +200,7 @@ func distinctProviderIDs(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Te
 func firstResultHasToolCalls(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, runID string) bool {
 	t.Helper()
 	rows, err := pool.Query(storage.WithSystemScope(context.Background()),
-		`SELECT result FROM model_requests WHERE run_id=$1  project_id=$2 AND state='completed' ORDER BY updated_at ASC`,
+		`SELECT result FROM model_requests WHERE run_id=$1 AND project_id=$2 AND state='completed' ORDER BY updated_at ASC`,
 		runID, tenant.Project)
 	if err != nil {
 		t.Fatalf("read model results: %v", err)
@@ -232,7 +232,7 @@ func dumpRunDiagnostics(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Ten
 		runID, tenant.Project).Scan(&output)
 	t.Logf("diagnostic: response output = %s", string(output))
 	rows, err := pool.Query(storage.WithSystemScope(context.Background()),
-		`SELECT type, payload FROM events WHERE session_id=$1  project_id=$2 ORDER BY seq DESC LIMIT 12`,
+		`SELECT type, payload FROM events WHERE session_id=$1 AND project_id=$2 ORDER BY seq DESC LIMIT 12`,
 		sessionID, tenant.Project)
 	if err != nil {
 		return
@@ -246,7 +246,7 @@ func dumpRunDiagnostics(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Ten
 		}
 	}
 	mrows, err := pool.Query(storage.WithSystemScope(context.Background()),
-		`SELECT state, result FROM model_requests WHERE run_id=$1  project_id=$2 ORDER BY updated_at ASC`,
+		`SELECT state, result FROM model_requests WHERE run_id=$1 AND project_id=$2 ORDER BY updated_at ASC`,
 		runID, tenant.Project)
 	if err == nil {
 		defer mrows.Close()
@@ -259,7 +259,7 @@ func dumpRunDiagnostics(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Ten
 		}
 	}
 	trows, err := pool.Query(storage.WithSystemScope(context.Background()),
-		`SELECT name, state, request_hash FROM tool_calls WHERE run_id=$1  project_id=$2`,
+		`SELECT name, state, request_hash FROM tool_calls WHERE run_id=$1 AND project_id=$2`,
 		runID, tenant.Project)
 	if err == nil {
 		defer trows.Close()

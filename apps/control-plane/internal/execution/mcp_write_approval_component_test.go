@@ -349,7 +349,7 @@ func draftRevisionOf(t *testing.T, cs *coordinator.Store, project, canonical str
 	var id string
 	if err := cs.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT tr.id FROM tools t JOIN tool_revisions tr ON tr.tool_id = t.id
-		 WHERE t.canonical_name=$1  t.project_id=$2`,
+		 WHERE t.canonical_name=$1 AND t.project_id=$2`,
 		canonical, project).Scan(&id); err != nil {
 		t.Fatalf("read the discovered revision for %s: %v", canonical, err)
 	}
@@ -669,7 +669,7 @@ func TestAToolPinnedTwiceRefusesRatherThanCoinFlippingTheGate(t *testing.T) {
 	// test is about what the LOOKUP does with it, not about how it got there.
 	var toolID string
 	if err := fx.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
-		`SELECT id FROM tools WHERE canonical_name='mcp.jira.transitionIssue'  project_id=$1`, project).Scan(&toolID); err != nil {
+		`SELECT id FROM tools WHERE canonical_name='mcp.jira.transitionIssue' AND project_id=$1`, project).Scan(&toolID); err != nil {
 		t.Fatalf("read the tool lineage: %v", err)
 	}
 	rev2, set2 := redeliveryID("trev"), redeliveryID("tsrev")

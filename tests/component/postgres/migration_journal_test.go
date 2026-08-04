@@ -242,9 +242,18 @@ func TestMigrationInterruptionResumes(t *testing.T) {
 	// THE SEEDED TABLE IS `projects` SINCE A.2 TASK 6. It used to be `organizations`, whose rows this
 	// build no longer writes; leaving the digest pointed at it would have checksummed an EMPTY table
 	// before and after, and "" == "" is a comparison that can never fail.
+	//
+	// organization_id IS SUPPLIED HERE, AND ONLY HERE, because of WHERE in the chain this runs: the drill
+	// has stopped at version 33, and 000063 (which makes the column nullable) and 000067 (which drops it)
+	// are still ahead. At this instant projects.organization_id is NOT NULL with a foreign key to
+	// organizations, so a project cannot be written without one. Both are gone by the time the resumed
+	// chain reaches its head — which is the point: the digest below is over `id`, and it must survive a
+	// chain that deletes the columns beside it.
+	org := newID("org")
+	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, org)
 	prj1, prj2 := newID("prj"), newID("prj")
-	exec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, prj1)
-	exec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, prj2)
+	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, prj1, org)
+	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, prj2, org)
 	before := seededRowDigest(t, pool)
 	if before == "" {
 		t.Fatal("the pre-migration digest is empty — nothing was seeded, so the comparison below is vacuous")

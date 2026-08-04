@@ -76,7 +76,7 @@ func TestCheckpointOfferPersistsImmutableRowAndBytes(t *testing.T) {
 	var objectKey, checksum string
 	var size int64
 	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT object_key, content_checksum, size_bytes FROM checkpoints WHERE run_id=$1  project_id=$2`,
+		`SELECT object_key, content_checksum, size_bytes FROM checkpoints WHERE run_id=$1 AND project_id=$2`,
 		runID, project).Scan(&objectKey, &checksum, &size); err != nil {
 		t.Fatalf("read checkpoint row: %v", err)
 	}

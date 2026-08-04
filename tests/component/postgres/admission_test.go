@@ -102,7 +102,7 @@ func TestAdmitResponseIsIdempotentAndAtomic(t *testing.T) {
 	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM responses WHERE  project_id=$1`, tenant.Project)
 	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM runs WHERE  project_id=$1`, tenant.Project)
 	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM sessions WHERE  project_id=$1`, tenant.Project)
-	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM events WHERE type='run.queued.v1'  project_id=$1`, tenant.Project)
+	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM events WHERE type='run.queued.v1' AND project_id=$1`, tenant.Project)
 	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM outbox WHERE topic='run.queued.v1' AND project_id=$1`, tenant.Project)
 	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM idempotency_records WHERE idempotency_key='key-1' AND project_id=$1`, tenant.Project)
 	// Admission enqueues exactly one response.run dispatch job, whose payload run_id
@@ -153,7 +153,7 @@ func TestAdmitResponseEnforcesPerProjectRunCaps(t *testing.T) {
 			t.Fatalf("admission %d rejected under a slack cap: %+v", i, out)
 		}
 	}
-	assertCount(t, cs.Pool(), 2, `SELECT count(*) FROM runs WHERE state='queued'  project_id=$1`, tenant.Project)
+	assertCount(t, cs.Pool(), 2, `SELECT count(*) FROM runs WHERE state='queued' AND project_id=$1`, tenant.Project)
 
 	// A third admission under a queued bound of 2 is rejected — the backlog is full.
 	over := admissionInput(principalID, "q-3", "h-q-3", `{"id":"resp"}`)

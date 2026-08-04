@@ -26,8 +26,13 @@ import (
 )
 
 // allTables is every relation the core migration must create (brief Step 3).
+//
+// `organizations` LEFT THIS LIST WITH A.2 TASK 6 (migration 000067 drops it). It is named here rather
+// than silently absent because this list is read in BOTH directions — every table must exist after apply
+// AND be gone after rollback — so a removal that was a mistake would look exactly like a removal that was
+// a decision.
 var allTables = []string{
-	"organizations", "projects", "principals", "api_keys",
+	"projects", "principals", "api_keys",
 	"idempotency_records",
 	"sessions", "responses", "messages", "runs", "attempts",
 	"session_sequences", "events", "commands",
@@ -2147,16 +2152,20 @@ func TestMigration45RunnerFleet(t *testing.T) {
 		t.Fatalf("a run was placed into a pool that does not exist (code %q, want 23503)", got)
 	}
 
-	// R6: the bootstrap tenant's default pool. seedRun's org is a fresh one, so this reads the row the
-	// migration seeded for org_local/prj_local — the population an UPGRADE from 000044 is.
+	// R6: the bootstrap tenant's default pool. seedRun's project is a fresh one, so this reads the row the
+	// migration seeded for prj_local — the population an UPGRADE from 000044 is. It is keyed on the id
+	// alone now: A.2 Task 6's 000067 dropped organization_id, and 'pool_default' was always the seed's
+	// fixed id (the ON CONFLICT target), so the id IS the identity of the row this asks about.
 	var seeded int
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM runner_pools WHERE id = 'pool_default' AND organization_id = 'org_local'`).Scan(&seeded); err != nil {
+		`SELECT count(*) FROM runner_pools WHERE id = 'pool_default'`).Scan(&seeded); err != nil {
 		t.Fatalf("count the seeded default pool: %v", err)
 	}
-	// The harness migrates a database with no identity bootstrap, so org_local does not exist and the
+	// The harness migrates a database with no identity bootstrap, so prj_local does not exist and the
 	// guarded SELECT correctly seeds nothing. What must hold either way is that it never seeded a
-	// SECOND one — the ON CONFLICT half, across the two boots above.
+	// SECOND one — the ON CONFLICT half, across the two boots above. Since A.2 Task 6 the seed is also
+	// skipped outright on the second boot (000067 drops projects.organization_id, and the seed's own
+	// guard reads that column's presence), which makes "at most 1" true for one more reason than before.
 	if seeded > 1 {
 		t.Fatalf("the default pool was seeded %d times across two boots, want at most 1", seeded)
 	}

@@ -224,7 +224,7 @@ func TestJiraMCPConnectionEndToEnd(t *testing.T) {
 	}
 	var modelVisible string
 	if err := s.pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT model_visible_name FROM tools WHERE canonical_name=$1  project_id=$2`,
+		`SELECT model_visible_name FROM tools WHERE canonical_name=$1 AND project_id=$2`,
 		"mcp.jira.getJiraIssue", project).Scan(&modelVisible); err != nil {
 		t.Fatalf("LEG 2 read discovered lineage: %v", err)
 	}

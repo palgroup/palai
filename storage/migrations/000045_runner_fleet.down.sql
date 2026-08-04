@@ -21,8 +21,29 @@ DROP TABLE IF EXISTS runner_enrollments;
 -- dependency and leaves the table secured for every instant in between.
 DO $$
 BEGIN
-    IF to_regclass('public.runners') IS NOT NULL THEN
+    IF to_regclass('public.runners') IS NULL THEN
+        RETURN;
+    END IF;
+    -- A.2 TASK 6 SPLIT THIS INTO TWO CASES, and the second one is new. Re-keying onto organization_id is
+    -- only possible while that column exists; rolling back past 000067 it does not, and 000067's own down
+    -- does not restore it (see its header — restoring 86 all-NULL columns rebuilds the shape the migration
+    -- existed to remove). So there is no tenant column left to re-key ONTO, and the policy is dropped
+    -- instead: the dependency has to go either way or the DROP COLUMN below aborts with 2BP01 and takes
+    -- MigrationDown() for the whole chain with it.
+    --
+    -- WHAT THAT COSTS, said plainly rather than left to be discovered: between here and 000029's down the
+    -- table is NOT row-level secured, where the org-keyed branch leaves it secured for every instant. That
+    -- is acceptable only because of who runs this — MigrationDown()'s single caller is Store.Rollback, and
+    -- its single caller is tests/component/postgres. `palai upgrade rollback` is an image swap and never
+    -- reaches this file. It would NOT be acceptable on a path an operator can run against live data.
+    IF EXISTS (SELECT 1 FROM pg_attribute att
+                 JOIN pg_class cls ON cls.oid = att.attrelid
+                 JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'public' AND cls.relname = 'runners'
+                  AND att.attname = 'organization_id' AND att.attnum > 0 AND NOT att.attisdropped) THEN
         CALL palai_apply_tenant_policy('runners', 'organization_id', false);
+    ELSE
+        DROP POLICY IF EXISTS tenant_isolation ON runners;
     END IF;
 END
 $$;

@@ -137,7 +137,7 @@ func (h *harness) completedStepModels(runID string) []string {
 	h.t.Helper()
 	rows, err := h.spine.Pool().Query(storage.WithSystemScope(context.Background()),
 		`SELECT result->>'model' FROM model_requests
-		 WHERE run_id=$1  project_id=$2 AND state='completed'
+		 WHERE run_id=$1 AND project_id=$2 AND state='completed'
 		 ORDER BY created_at`,
 		runID, h.tenant.Project)
 	if err != nil {
@@ -162,7 +162,7 @@ func (h *harness) eventPayloadOf(sessionID, typ string) map[string]any {
 	h.t.Helper()
 	var payload []byte
 	err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT payload FROM events WHERE session_id=$1  project_id=$2 AND type=$3 ORDER BY seq LIMIT 1`,
+		`SELECT payload FROM events WHERE session_id=$1 AND project_id=$2 AND type=$3 ORDER BY seq LIMIT 1`,
 		sessionID, h.tenant.Project, typ).Scan(&payload)
 	if err != nil {
 		return nil
@@ -336,7 +336,7 @@ func TestDeniedToolChangeIsTypedRejection(t *testing.T) {
 	}
 
 	// No silent fallback: the denial created no config revision.
-	if n := h.count(`SELECT count(*) FROM config_revisions WHERE session_id=$1  project_id=$2`,
+	if n := h.count(`SELECT count(*) FROM config_revisions WHERE session_id=$1 AND project_id=$2`,
 		sessionID, h.tenant.Project); n != 0 {
 		t.Fatalf("config revisions after a denied change = %d, want 0 (no silent fallback)", n)
 	}

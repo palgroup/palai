@@ -205,7 +205,7 @@ func (h *harness) submitCommand(sessionID, body string) contracts.Command {
 func (h *harness) commandRow(commandID string) (state string, appliedSeq *int64) {
 	h.t.Helper()
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT state, applied_sequence FROM commands WHERE id=$1  project_id=$2`,
+		`SELECT state, applied_sequence FROM commands WHERE id=$1 AND project_id=$2`,
 		commandID, h.tenant.Project).Scan(&state, &appliedSeq); err != nil {
 		h.t.Fatalf("read command %s error = %v", commandID, err)
 	}
@@ -402,7 +402,7 @@ func TestDuplicateCommandIDReturnsOriginalResult(t *testing.T) {
 		t.Fatalf("duplicate command diverged: first %+v, second %+v", first, second)
 	}
 	// Exactly one durable row — the table's own unique deduped, not a second insert.
-	if n := h.count(`SELECT count(*) FROM commands WHERE id=$1  project_id=$2`,
+	if n := h.count(`SELECT count(*) FROM commands WHERE id=$1 AND project_id=$2`,
 		commandID, h.tenant.Project); n != 1 {
 		t.Fatalf("commands rows for %s = %d, want 1", commandID, n)
 	}

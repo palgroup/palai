@@ -175,7 +175,7 @@ func TestExtensibilityJourneyDeterministic(t *testing.T) {
 		t.Fatal("run 3 never reached the control-plane after the crash — the process did not stay up")
 	}
 	// The before_tool policy hook denied the file tool: a real control-plane deny fired, and the tool never ran.
-	if n := h.count(`SELECT count(*) FROM events WHERE session_id=$1  project_id=$2 AND type='policy.denied.v1'`,
+	if n := h.count(`SELECT count(*) FROM events WHERE session_id=$1 AND project_id=$2 AND type='policy.denied.v1'`,
 		session3, h.tenant.Project); n < 1 {
 		t.Fatalf("run 3: no policy.denied.v1 journaled — the before_tool hook deny never fired")
 	}

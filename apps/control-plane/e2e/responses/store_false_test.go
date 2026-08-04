@@ -38,7 +38,7 @@ func reapUntilPurged(t *testing.T, h *harness, reaper *execution.Reaper, respons
 func (h *harness) eventPayloads(sessionID string) []string {
 	h.t.Helper()
 	rows, err := h.spine.Pool().Query(storage.WithSystemScope(context.Background()),
-		`SELECT payload::text FROM events WHERE session_id=$1  project_id=$2 ORDER BY seq`,
+		`SELECT payload::text FROM events WHERE session_id=$1 AND project_id=$2 ORDER BY seq`,
 		sessionID, h.tenant.Project)
 	if err != nil {
 		h.t.Fatalf("read event payloads error = %v", err)

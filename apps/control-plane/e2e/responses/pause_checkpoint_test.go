@@ -153,7 +153,7 @@ func TestPauseProducesValidCheckpointBeforeComputeRelease(t *testing.T) {
 
 	// The in-flight tool.request was DRAINED, not dispatched: no tool_call committed for THIS run
 	// (run-scoped, so a leaked sibling run's tool cannot mask the drain).
-	if n := h.count(`SELECT count(*) FROM tool_calls WHERE run_id=$1  project_id=$2`, f.runID, h.tenant.Project); n != 0 {
+	if n := h.count(`SELECT count(*) FROM tool_calls WHERE run_id=$1 AND project_id=$2`, f.runID, h.tenant.Project); n != 0 {
 		t.Fatalf("tool_calls committed during pause = %d, want 0 (the drained request never commits)", n)
 	}
 
@@ -171,7 +171,7 @@ func TestPauseProducesValidCheckpointBeforeComputeRelease(t *testing.T) {
 	if st, _ := h.commandRow(f.msgID); st != "queued" {
 		t.Fatalf("queued message state = %q, want queued (pre-empted for resume)", st)
 	}
-	if n := h.count(`SELECT count(*) FROM delivered_messages WHERE run_id=$1  project_id=$2`, f.runID, h.tenant.Project); n != 0 {
+	if n := h.count(`SELECT count(*) FROM delivered_messages WHERE run_id=$1 AND project_id=$2`, f.runID, h.tenant.Project); n != 0 {
 		t.Fatalf("delivered_messages for the run before resume = %d, want 0 (pause pre-empted delivery)", n)
 	}
 }
@@ -202,7 +202,7 @@ func TestResumeRestoresFromValidCheckpoint(t *testing.T) {
 	// The engine re-derived the pending tool.request: the drained counting tool ran for the FIRST
 	// time on the restored attempt — exactly one committed recovery.count for THIS run (run-scoped,
 	// so a shared-worker sibling run cannot inflate the count).
-	if n := h.count(`SELECT count(*) FROM tool_calls WHERE run_id=$1 AND name='recovery.count'  project_id=$2`, f.runID, h.tenant.Project); n != 1 {
+	if n := h.count(`SELECT count(*) FROM tool_calls WHERE run_id=$1 AND name='recovery.count' AND project_id=$2`, f.runID, h.tenant.Project); n != 1 {
 		t.Fatalf("recovery.count executions for the run = %d, want 1 (first run on resume, re-derived from the checkpoint)", n)
 	}
 
@@ -211,7 +211,7 @@ func TestResumeRestoresFromValidCheckpoint(t *testing.T) {
 	if !f.provider.foldedMessage() {
 		t.Fatal("the pre-empted queued message did not fold into the resumed run")
 	}
-	if n := h.count(`SELECT count(*) FROM delivered_messages WHERE run_id=$1 AND command_id=$2  project_id=$3`, f.runID, f.msgID, h.tenant.Project); n != 1 {
+	if n := h.count(`SELECT count(*) FROM delivered_messages WHERE run_id=$1 AND command_id=$2 AND project_id=$3`, f.runID, f.msgID, h.tenant.Project); n != 1 {
 		t.Fatalf("delivered_messages rows for the queued message = %d, want exactly 1", n)
 	}
 	if st, seq := h.commandRow(f.msgID); st != "applied" || seq == nil {

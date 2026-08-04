@@ -165,7 +165,7 @@ func TestLiveDetachedChildConversationRealProvider(t *testing.T) {
 	}
 	// Exactly one child (rebind, not clone), and it ran on the real provider with its own chatcmpl id.
 	var childRun string
-	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT id FROM runs WHERE parent_run_id=$1  project_id=$2`,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT id FROM runs WHERE parent_run_id=$1 AND project_id=$2`,
 		runID, tenant.Project).Scan(&childRun); err != nil {
 		t.Fatalf("read child run: %v", err)
 	}
@@ -186,7 +186,7 @@ func awaitState(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, res
 	var last string
 	for time.Now().Before(deadline) {
 		if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
-			`SELECT state FROM responses WHERE id=$1  project_id=$2`,
+			`SELECT state FROM responses WHERE id=$1 AND project_id=$2`,
 			responseID, tenant.Project).Scan(&last); err == nil && last == want {
 			return
 		}

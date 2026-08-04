@@ -60,7 +60,7 @@ func TestCodingAutoProvisionDeterministic(t *testing.T) {
 	var wsState, wsBinding, wsRef string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
 		`SELECT state, repository_binding_id, requested_ref FROM workspaces
-		 WHERE session_id=$1  project_id=$2`,
+		 WHERE session_id=$1 AND project_id=$2`,
 		sessionID, h.tenant.Project).Scan(&wsState, &wsBinding, &wsRef); err != nil {
 		t.Fatalf("admit did not attach a session workspace: %v", err)
 	}

@@ -65,7 +65,7 @@ func seedRun(t *testing.T, pool *pgxpool.Pool) (coordinator.Tenant, string, stri
 func lastProviderRequestID(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, runID string) string {
 	t.Helper()
 	rows, err := pool.Query(storage.WithSystemScope(context.Background()),
-		`SELECT result FROM model_requests WHERE run_id=$1  project_id=$2 AND state='completed' ORDER BY updated_at DESC`,
+		`SELECT result FROM model_requests WHERE run_id=$1 AND project_id=$2 AND state='completed' ORDER BY updated_at DESC`,
 		runID, tenant.Project)
 	if err != nil {
 		t.Fatalf("read model results: %v", err)
@@ -92,7 +92,7 @@ func latestRecoveryLevel(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Te
 	t.Helper()
 	var payload []byte
 	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT payload FROM events WHERE session_id=$1  project_id=$2 AND type='attempt.recovering.v1' ORDER BY seq DESC LIMIT 1`,
+		`SELECT payload FROM events WHERE session_id=$1 AND project_id=$2 AND type='attempt.recovering.v1' ORDER BY seq DESC LIMIT 1`,
 		sessionID, tenant.Project).Scan(&payload); err != nil {
 		t.Fatalf("read attempt.recovering.v1: %v", err)
 	}
@@ -108,7 +108,7 @@ func recoveryProof(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, 
 	t.Helper()
 	var payload []byte
 	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT payload FROM events WHERE session_id=$1  project_id=$2 AND type='recovery.proof.v1' ORDER BY seq DESC LIMIT 1`,
+		`SELECT payload FROM events WHERE session_id=$1 AND project_id=$2 AND type='recovery.proof.v1' ORDER BY seq DESC LIMIT 1`,
 		sessionID, tenant.Project).Scan(&payload); err != nil {
 		t.Fatalf("read recovery.proof.v1: %v", err)
 	}

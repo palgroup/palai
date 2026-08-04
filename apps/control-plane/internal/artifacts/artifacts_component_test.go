@@ -295,7 +295,7 @@ func TestPatchArtifactWrittenToObjectStore(t *testing.T) {
 
 	// The changeset row is recorded with its content hash.
 	var contentHash string
-	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT content_hash FROM changesets WHERE id=$1  project_id=$2`,
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT content_hash FROM changesets WHERE id=$1 AND project_id=$2`,
 		rec.ID, project).Scan(&contentHash); err != nil {
 		t.Fatalf("read changeset row: %v", err)
 	}
@@ -309,7 +309,7 @@ func (h *artifactsHarness) assertArtifact(t *testing.T, project, id, wantLogical
 	t.Helper()
 	var objectKey, logical, media string
 	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT object_key, logical_type, media_type FROM artifacts WHERE id=$1  project_id=$2`,
+		`SELECT object_key, logical_type, media_type FROM artifacts WHERE id=$1 AND project_id=$2`,
 		id, project).Scan(&objectKey, &logical, &media); err != nil {
 		t.Fatalf("read artifact %s row: %v", id, err)
 	}
@@ -416,7 +416,7 @@ func TestChangesetRecompileIsIdempotent(t *testing.T) {
 	}
 
 	var rows int
-	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM changesets WHERE run_id=$1  project_id=$2`,
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM changesets WHERE run_id=$1 AND project_id=$2`,
 		runID, project).Scan(&rows); err != nil {
 		t.Fatalf("count changesets: %v", err)
 	}

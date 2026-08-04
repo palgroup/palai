@@ -61,7 +61,7 @@ func latestRevisionID(t *testing.T, s *Store, project, canonical string) string 
 	var id string
 	err := s.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT tr.id FROM tools t JOIN tool_revisions tr ON tr.tool_id=t.id
-		 WHERE t.canonical_name=$1  t.project_id=$2
+		 WHERE t.canonical_name=$1 AND t.project_id=$2
 		 ORDER BY tr.revision_number DESC LIMIT 1`, canonical, project).Scan(&id)
 	if err != nil {
 		t.Fatalf("read latest revision id for %s: %v", canonical, err)

@@ -17,7 +17,7 @@ func (h *harness) sessionState(sessionID string) string {
 	h.t.Helper()
 	var state string
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
-		`SELECT state FROM sessions WHERE id=$1  project_id=$2`,
+		`SELECT state FROM sessions WHERE id=$1 AND project_id=$2`,
 		sessionID, h.tenant.Project).Scan(&state); err != nil {
 		h.t.Fatalf("read session state %s error = %v", sessionID, err)
 	}
@@ -27,7 +27,7 @@ func (h *harness) sessionState(sessionID string) string {
 // responseCount counts a session's response rows within the tenant scope.
 func (h *harness) responseCount(sessionID string) int {
 	h.t.Helper()
-	return h.count(`SELECT count(*) FROM responses WHERE session_id=$1  project_id=$2`,
+	return h.count(`SELECT count(*) FROM responses WHERE session_id=$1 AND project_id=$2`,
 		sessionID, h.tenant.Project)
 }
 
@@ -108,7 +108,7 @@ func (h *harness) awaitRunState(runID, want string, within time.Duration) {
 // generation is one job, so a resume that opens a fresh attempt on the same run adds a second.
 func (h *harness) responseRunJobCount(runID string) int {
 	h.t.Helper()
-	return h.count(`SELECT count(*) FROM durable_jobs WHERE payload->>'run_id'=$1 AND kind='response.run'  project_id=$2`,
+	return h.count(`SELECT count(*) FROM durable_jobs WHERE payload->>'run_id'=$1 AND kind='response.run' AND project_id=$2`,
 		runID, h.tenant.Project)
 }
 
