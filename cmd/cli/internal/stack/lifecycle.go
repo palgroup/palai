@@ -116,15 +116,46 @@ func ensureSecretSlots(p paths) error {
 	return nil
 }
 
-// Up builds the images, mints a fresh runner enrollment token, brings the four services up with
-// compose --wait, and blocks until the API answers. The token is re-minted every Up so a repeated boot
+// Up is `palai local up`: the compose bring-up, and then the repository binding a session codes
+// against.
+//
+// THE BINDING USED TO BE `palai up`'s ALONE, AND THAT WAS A GAP RATHER THAN A DIVISION OF LABOUR.
+// Measured 2026-08-04:
+//
+//	grep -rn "resolveRepository" --include='*.go' cmd/ | grep -v _test   -> up.go:229 only
+//	grep -c  "resolveRepository" cmd/cli/internal/stack/lifecycle.go     -> 0
+//
+// and `palai up` REFUSES the deterministic adapter by name (resolveProvider), pointing the operator
+// at `palai local up` — so the one bring-up that serves a credential-less stack was also the one
+// that could not give it a repository. A local stack that cannot name a repository cannot clone,
+// edit or commit, and nothing said why.
+//
+// It calls the SAME resolveRepository `palai up` does rather than deriving a binding a second time:
+// two composition roots deriving one thing is how they end up disagreeing, which is the defect A.3
+// T3 consolidated the shell posture to fix. What differs is only the reporting — `palai up` folds
+// the outcome into its own report, so it drives composeUp below and resolves the binding itself.
+func Up() error {
+	if err := composeUp(); err != nil {
+		return err
+	}
+	cfg, p, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	// os.Getenv, not a dotenv reader: `palai local up` has never read .env.local (composeEnv is
+	// os.Environ plus six keys), so the two values arrive the way every other one on this path does.
+	return reportRepositoryBinding(cfg, p, os.Getenv)
+}
+
+// composeUp builds the images, mints a fresh runner enrollment token, brings the four services up with
+// compose --wait, and blocks until the API answers. The token is re-minted every boot so a repeated one
 // never inherits the previous boot's credential (LP-012).
 //
 // THE TOKEN IS NOT ONE-USE, AND THIS COMMENT USED TO SAY IT WAS (§3.6 D4, corrected in E24 T3): the
 // control plane admits it once per issued-certificate lifetime and the runner re-presents it to recover
 // an identity that has already expired, which is the only path back for a machine that missed its
 // renewal window. See execution.FileEnrollmentTokens.
-func Up() error {
+func composeUp() error {
 	cfg, p, err := loadConfig()
 	if err != nil {
 		return err

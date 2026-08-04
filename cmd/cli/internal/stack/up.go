@@ -147,7 +147,10 @@ func Bootstrap(envFile string, native bool) error {
 		}
 	} else {
 		fmt.Fprintln(os.Stderr, "[3/5] stack     docker compose up (this builds on a first run)")
-		if err := Up(); err != nil {
+		// composeUp, not Up: Up resolves the repository binding and prints it, and this command folds
+		// that same outcome into its own report below (resolveRepository, one call site each). Driving
+		// Up here would bind twice and say so twice.
+		if err := composeUp(); err != nil {
 			return err
 		}
 	}
@@ -156,11 +159,10 @@ func Bootstrap(envFile string, native bool) error {
 	if err != nil {
 		return err
 	}
-	key, err := readTrimmed(p.apiKey)
+	api, err := apiClientFor(cfg, p)
 	if err != nil {
-		return fmt.Errorf("read api key: %w", err)
+		return err
 	}
-	api := &apiClient{baseURL: cfg.BaseURL, key: key, http: &http.Client{Timeout: 30 * time.Second}}
 
 	// [4/5] Health, from doctor's OWN checks — no second set of thresholds. A still-red check is
 	// reported and CARRIED, not swallowed and not fatal: the live proof below is the real verdict,
@@ -688,6 +690,81 @@ func resolveRepository(api *apiClient, get func(string) string) repositoryBindin
 		resolved: fmt.Sprintf("repository: %s %s for %s (clone %s, base branch %s — a pull request against this "+
 			"binding targets %s, and no model chooses that)", verb, id, identity, cloneURL, branch, branch),
 	}
+}
+
+// reportRepositoryBinding resolves this stack's repository binding and prints what it did, for a
+// bring-up that has no report of its own to fold the outcome into (`palai local up`). Bootstrap calls
+// resolveRepository directly and collects the same two strings into printReport instead.
+//
+// A FAILURE HERE DOES NOT FAIL THE BRING-UP, and that is deliberate rather than lenient: the stack is
+// already up and serving by the time this runs, so returning an error would report a working stack as a
+// failed one over a piece of configuration. Every way this can go wrong already comes back as
+// repositoryBinding.warn, which is printed.
+func reportRepositoryBinding(cfg Config, p paths, get func(string) string) error {
+	api, err := apiClientFor(cfg, p)
+	if err != nil {
+		return err
+	}
+	repo := resolveRepository(api, get)
+	if repo.resolved != "" {
+		fmt.Fprintf(os.Stderr, "        %s\n", repo.resolved)
+	}
+	if w := workspacelessBindingWarning(api, repo); w != "" {
+		fmt.Fprintf(os.Stderr, "        WARNING %s\n", w)
+	}
+	if repo.warn != "" {
+		fmt.Fprintf(os.Stderr, "        WARNING %s\n", repo.warn)
+	}
+	return nil
+}
+
+// workspacelessBindingWarning fires when this deployment BOUND a repository it can never mount, and it
+// exists because the binding on its own reads as "you can code now" while nothing else says otherwise.
+//
+// A run reaches a repository through an allocation under PALAI_WORKSPACE_ROOT, and MEASURED 2026-08-04:
+//
+//	grep -c PALAI_WORKSPACE_ROOT deploy/compose/compose.yaml                        -> 0
+//	docker inspect <live compose control-plane> <live compose runner> | grep -c ...  -> 0
+//
+// The variable is not merely unset there, it is absent from both `environment:` blocks — so on the
+// compose posture it cannot be set at all, and every workspace tool answers "no workspace bound for this
+// run" however completely the repository was configured. deploy/compose/native-control-plane.yml is the
+// one shipped file that passes it (to the control plane AND the runner, which need it for two different
+// jobs — see packages/runner's workspaceUnderRoot).
+//
+// IT ASKS THE SERVER RATHER THAN READING THE FILE. `workspaces` in GET /v1/capabilities DERIVES from the
+// same env the provisioner is gated on (api/capabilities.go workspacesCapability), so this is the
+// deployment's own report of what it can serve, not this command's guess about it. A read that fails
+// says nothing: a warning that cannot tell "cannot mount" from "could not ask" is the shape that gets
+// learned and ignored.
+func workspacelessBindingWarning(api *apiClient, repo repositoryBinding) string {
+	if repo.id == "" {
+		return ""
+	}
+	caps, err := api.capabilities()
+	if err != nil || caps["workspaces"] != "unavailable" {
+		// A failed read and an ABSENT key both land here, which is the same silence on purpose: the
+		// only word this warning may act on is the server's own "unavailable".
+		return ""
+	}
+	return "this stack bound a repository it CANNOT MOUNT: GET /v1/capabilities reports workspaces " +
+		"`unavailable`, which is how the control plane says PALAI_WORKSPACE_ROOT is unset — so a run " +
+		"carrying this binding still answers \"no workspace bound for this run\" and cannot clone, edit " +
+		"or commit. The binding itself is real and durable (a session, agent or bot can reference it). " +
+		"deploy/compose/compose.yaml passes that variable to NEITHER service, so it cannot be set on this " +
+		"posture; deploy/compose/native-control-plane.yml is the shipped file that does, and " +
+		"`palai up --native` drives it."
+}
+
+// apiClientFor builds the bearer-authenticated client for this stack's own API, from the bootstrap key
+// on disk. One writing, because two bring-ups reach the same server: Bootstrap for its proof and its
+// report, `palai local up` for the repository binding.
+func apiClientFor(cfg Config, p paths) (*apiClient, error) {
+	key, err := readTrimmed(p.apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("read api key: %w", err)
+	}
+	return &apiClient{baseURL: cfg.BaseURL, key: key, http: &http.Client{Timeout: 30 * time.Second}}, nil
 }
 
 // repositoryIdentityFrom derives owner/repo from a clone URL. A best-effort fallback for the operator who

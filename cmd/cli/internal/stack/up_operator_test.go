@@ -81,7 +81,8 @@ func TestMasterKeyPointerIsNotInterpolatedFromTheInvokingShell(t *testing.T) {
 // control-plane can parse, or `palai local up` boots into a crash loop.
 //
 // ensureSecretSlots is the right home because it is the ONE funnel every compose bring-up routes
-// through: Up() calls it, and Bootstrap (`palai up`) calls Up().
+// through: composeUp() calls it, `palai local up` reaches it through Up(), and Bootstrap (`palai up`)
+// drives composeUp() directly.
 func TestEveryBringUpLeavesABootableMasterKey(t *testing.T) {
 	p := tempPaths(t)
 	if err := ensureSecretSlots(p); err != nil {
