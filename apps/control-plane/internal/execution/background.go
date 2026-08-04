@@ -601,10 +601,16 @@ func (o *Orchestrator) observeBackgroundTask(ctx context.Context, task coordinat
 	return coordinator.BackgroundOutcome{State: state, ExitCode: status.ExitCode, Tail: tail, TailNote: note}, true, nil
 }
 
-// reachesMachine reports whether THIS process's background runner can probe a handle that machine
-// started. It is the whole of the routing, and it is deliberately a comparison rather than a dial:
-// there is no protocol by which one control plane probes another machine's process group, so every
-// machine that is not this one is unreachable — and unreachable is `lost`.
+// probeOnMachine asks the machine that STARTED a task what became of it, over the same lease-free
+// channel `callMachine` opens (A.3 T7). It dials; it does not compare.
+//
+// THIS COMMENT USED TO SAY THE OPPOSITE, AND THE CORRECTION IS WORTH KEEPING. It documented a
+// `reachesMachine` helper — since deleted — and said "there is no protocol by which one control plane
+// probes another machine's process group, so every machine that is not this one is unreachable". That
+// was true of the routing seam T6 landed and FALSE the moment T7 landed the `bg.*` verbs, which is
+// the function this sentence was sitting on top of. Three branches are true now and the count is the
+// point: a machine that answers gives its real state, a machine that cannot be addressed is `lost`,
+// and a row that names no machine is `lost` for the separate reason below.
 //
 // AN EMPTY MACHINE ON THE ROW IS UNREACHABLE, INCLUDING WHEN THIS PLANE IS ALSO UNNAMED. Two unknowns
 // are not a match: a row written before the column existed says nothing about where it ran, and a
