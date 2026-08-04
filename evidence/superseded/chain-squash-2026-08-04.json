@@ -1,0 +1,9 @@
+[
+  {"release":"self-host-0.2.0",
+   "case":"OPS-006",
+   "clause":"the migration_journal_proof records journal_head 000034 and interrupted_at 000034 — the head the schema_revisions journal reported after a control plane was killed mid-chain and resumed, and the migration the injected fault hit",
+   "now_false":"NOT THE MEASUREMENT, WHICH STANDS — a chain WAS interrupted, it DID resume to its head, and the pre/post row checksum DID match. What is false is any reading of these two identifiers as names of migrations that exist. On 2026-08-04 the chain was squashed from sixty-seven files to a two-link baseline (000001_core, 000002_row_level_security), so there is no 000033 to be interrupted after and no 000034 to resume to. A reader who greps this tree for either finds nothing, and a reader who re-runs the drill expecting 34 gets 2. The equivalent proof on today's chain is journal_head 000002, interrupted_at 000001.",
+   "rested_on":"storage/migrations/000034_contract_usage_events.up.sql",
+   "rested_on_gone":true,
+   "evidence":"ls storage/migrations/*.up.sql | wc -l -> 2 (2026-08-04 20:44), and the two are 000001_core.up.sql and 000002_row_level_security.up.sql. The replacement measurement was taken on the shipped binary, not asserted: `make migration-resume-drill` -> migration_resume_drill=PASS journal_head=2 applied_by=09c195b99fc7-dirty data_intact=yes. The drill derives the head from storage/migrations rather than from a literal, so it re-measures instead of restating this row."}
+]
