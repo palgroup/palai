@@ -43,6 +43,7 @@ type Client struct {
 	Sessions    *Sessions
 	Approvals   *Approvals
 	Bots        *Bots
+	Artifacts   *Artifacts
 }
 
 // Option configures a Client (functional options — the idiomatic Go equivalent of the TS options
@@ -93,6 +94,7 @@ func New(opts ...Option) (*Client, error) {
 	c.Sessions = &Sessions{client: c}
 	c.Approvals = &Approvals{client: c}
 	c.Bots = &Bots{client: c}
+	c.Artifacts = &Artifacts{client: c}
 	return c, nil
 }
 
@@ -105,7 +107,14 @@ func (c *Client) GoString() string { return c.String() }
 
 // requestOptions are the per-call transport controls a resource method threads through.
 type requestOptions struct {
-	body           any
+	body any
+	// rawBody is a body sent VERBATIM under rawContentType, for the one route whose payload is not JSON
+	// (POST /v1/artifacts takes image bytes). It is separate from body rather than a special case inside
+	// it because `any` cannot distinguish "these bytes ARE the body" from "marshal this []byte to a
+	// base64 JSON string", which is what json.Marshal does to a []byte and would silently corrupt every
+	// upload. When set, body is ignored.
+	rawBody        []byte
+	rawContentType string
 	idempotencyKey string
 	maxRetries     *int
 	timeout        *time.Duration
@@ -120,7 +129,11 @@ type requestOptions struct {
 // nil to discard). A non-2xx becomes a typed *APIError; a torn connection becomes *ConnectionError.
 func (c *Client) doJSON(ctx context.Context, method, path string, opt requestOptions, out any) error {
 	var bodyBytes []byte
-	if opt.body != nil {
+	contentType := "application/json"
+	switch {
+	case opt.rawBody != nil:
+		bodyBytes, contentType = opt.rawBody, opt.rawContentType
+	case opt.body != nil:
 		b, err := json.Marshal(opt.body)
 		if err != nil {
 			return err
@@ -158,7 +171,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, opt requestOpt
 			req.Header.Set("Idempotency-Key", opt.idempotencyKey)
 		}
 		if bodyBytes != nil {
-			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Type", contentType)
 		}
 
 		resp, err := c.httpClient.Do(req)

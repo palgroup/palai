@@ -80,6 +80,18 @@ type AdmitRequest struct {
 	PreviousResponseID *string
 	Input              []byte
 	Body               []byte
+	// InboundArtifactIDs are the artifacts this request's input NAMES (every `image_ref`'s artifact_id).
+	// The admission attaches each one to the run it is inserting, in the SAME transaction, which is what
+	// brings an ingested artifact inside retention's reach — the §22.2 purge finds an artifact through
+	// `artifacts JOIN runs`, so a row whose run_id stays NULL is a row no sweep can see.
+	//
+	// IT IS NOT AN AUTHORIZATION INPUT and cannot be used as one. The attach is tenant-scoped and only ever
+	// widens NULL -> a run (storage/queries/artifacts.sql's AttachArtifactRun), so the worst a client can do
+	// by naming an id here is bind ONE OF ITS OWN not-yet-attached artifacts to ONE OF ITS OWN runs — which
+	// makes the bytes MORE reachable by deletion, never less, and never touches another tenant's row. An id
+	// that is unknown, foreign, or already attached updates nothing and is silently a no-op, which is also
+	// what makes it safe to derive this from untrusted request content at all.
+	InboundArtifactIDs []string
 	// Store is the resolved §8.3 retention flag (default true) persisted on the response.
 	Store bool
 	// Delegations is the root run's required-delegation JSON ({"emit":[...],"budget":N}) or nil
@@ -299,6 +311,7 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 
 	out, err := h.admitter.AdmitResponse(r.Context(), AdmitRequest{
 		Scope:                 scope,
+		InboundArtifactIDs:    inboundArtifactIDs(req.Input),
 		IdempotencyKey:        middleware.IdempotencyKey(r.Context()),
 		Method:                http.MethodPost,
 		Route:                 createRoute,
@@ -565,6 +578,57 @@ func resolveOutputContract(raw map[string]any) ([]byte, error) {
 		"schema": contract.Schema,
 		"strict": contract.Strict,
 	})
+}
+
+// maxInboundArtifactRefs bounds how many artifact ids ONE request may name for attachment. It is not a
+// policy about how many images a run may carry — execution.maxRunImages owns that, and does it by dropping
+// a marker into the conversation rather than by refusing — it is a bound on the WORK this walk hands the
+// admission, so a request carrying a hundred thousand `image_ref` items cannot turn one admission into a
+// hundred thousand UPDATEs inside a transaction other requests are waiting behind.
+const maxInboundArtifactRefs = 64
+
+// inboundArtifactIDs collects the artifact ids a request's input names in `image_ref` items, so the
+// admission can attach them to the run it creates (see AdmitRequest.InboundArtifactIDs for why that is
+// safe, and internal/artifacts' CreateInboundArtifact for why it is necessary).
+//
+// IT WALKS THE WHOLE VALUE RATHER THAN A KNOWN SHAPE, and that is deliberate. `input` is `any` on the wire:
+// a bare string, an array of content items, an array of messages each holding a content array — all three
+// are accepted today, and §25.10's shape has grown before. A walk that understood only one of them would
+// silently attach nothing for the others, which is the failure this whole change exists to remove and the
+// kind that is invisible until retention is measured months later. The walk is therefore structural: any
+// object anywhere carrying {"type":"image_ref"} contributes its artifact_id.
+//
+// Depth is bounded because the input is untrusted and json.Unmarshal will happily build a deeply nested
+// value; without a limit a hostile body could recurse this walk until the stack ends.
+func inboundArtifactIDs(input any) []string {
+	var ids []string
+	seen := map[string]bool{}
+	var walk func(v any, depth int)
+	walk = func(v any, depth int) {
+		if depth > 32 || len(ids) >= maxInboundArtifactRefs {
+			return
+		}
+		switch t := v.(type) {
+		case map[string]any:
+			if contracts.ContentItem(t).Type() == "image_ref" {
+				// Only a non-empty STRING is taken. A number or an object here is not an id, and passing one
+				// on would send a value of the wrong shape into a query parameter.
+				if id, ok := t["artifact_id"].(string); ok && id != "" && !seen[id] {
+					seen[id] = true
+					ids = append(ids, id)
+				}
+			}
+			for _, child := range t {
+				walk(child, depth+1)
+			}
+		case []any:
+			for _, child := range t {
+				walk(child, depth+1)
+			}
+		}
+	}
+	walk(input, 0)
+	return ids
 }
 
 // validateCreate enforces the two request invariants a malformed body can violate

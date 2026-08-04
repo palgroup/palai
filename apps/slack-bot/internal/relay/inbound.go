@@ -212,6 +212,14 @@ type InboundDeps struct {
 	AgentRevisionID     string
 	RepositoryBindingID string
 
+	// Images is the optional image leg (images.go). NIL IS A SUPPORTED DEPLOYMENT, unlike every field
+	// above it: with no leg the relay behaves exactly as it did before images existed, so validate() does
+	// not require one. What it must never do is fail quietly — see ImageLeg.Ready and its boot line.
+	Images *ImageLeg
+	// Logf is where the image leg's per-file refusals go. Optional; nil discards them, which is what a
+	// test that is not asserting on logs wants.
+	Logf func(string, ...any)
+
 	state *inboundState
 }
 
@@ -232,6 +240,25 @@ func NewInboundDeps(
 		BotID: botID, BotUserID: botUserID,
 		AgentRevisionID: agentRevisionID, RepositoryBindingID: repositoryBindingID,
 		state: newInboundState(),
+	}
+}
+
+// WithImages mounts the image leg (images.go) and the log sink its per-file refusals go to.
+//
+// IT IS A BUILDER RATHER THAN TWO MORE PARAMETERS ON NewInboundDeps, and the reason is the one the old
+// in-process bridge's WithFileFetch gave for the same shape: this half is genuinely optional, so a
+// constructor that demanded it would force every caller that does not fetch images — every test of the
+// text path, and any deployment without the leg — to pass two nils to say "as before".
+func (deps InboundDeps) WithImages(leg *ImageLeg, logf func(string, ...any)) InboundDeps {
+	deps.Images, deps.Logf = leg, logf
+	return deps
+}
+
+// logf is the image leg's log sink, defaulted to a discard so a caller that set none does not crash inside
+// a fetch failure — which would turn "one image did not attach" into "the whole turn was lost".
+func (deps InboundDeps) logf(format string, args ...any) {
+	if deps.Logf != nil {
+		deps.Logf(format, args...)
 	}
 }
 
@@ -398,11 +425,23 @@ func HandleEvent(ctx context.Context, deps InboundDeps, ev slack.Event) error {
 	//   - KindCorrection (SLK-005): message_changed supersedes a prior turn rather than starting a new
 	//     one — the human revised what they already said, they did not say something new.
 	//   - KindTombstone (SLK-005): message_deleted retracts a turn — again nothing new was said.
-	//   - KindFileShare: adapters/integrations/slack/inbound.go's own Kind doc says a bare file share
-	//     gets "a scoped fetch+scan ... control-plane-side" — a separate pathway this file does not own
-	//     or duplicate.
 	//   - KindOther: anything MapEvent did not classify as a conversational turn at all.
-	if ev.Kind != slack.KindMessage {
+	//
+	// KindFileShare IS ADMITTED, and only when it actually carries files. It used to be dropped here with
+	// the others, on the reading that a bare file share was handled "control-plane-side" — which was true
+	// of the OLD in-process bridge and is not true of this process, so the drop had become a silent hole:
+	// a screenshot uploaded into a DM (Slack's `message.im` with subtype `file_share`) reached this line
+	// and stopped, and the person who dropped it in got no answer at all.
+	//
+	// A file share IS a message with an attachment — Slack's subtype is how a client renders it, not a
+	// different kind of turn — so it takes the same path. The `len(ev.Files) > 0` guard is what keeps this
+	// from being a wider change than it says: a file_share with nothing on it admits nothing new.
+	//
+	// It cannot double-answer the ordinary case. An @mention carrying an attachment arrives as
+	// `app_mention` with NO subtype (KindMessage) and its `message.channels` twin arrives as file_share;
+	// both carry the same message ts, so the dedupe above collapses them exactly as it already collapses
+	// the twin of a text-only mention — whichever lands first becomes the turn, and both carry Files.
+	if ev.Kind != slack.KindMessage && !(ev.Kind == slack.KindFileShare && len(ev.Files) > 0) {
 		return nil
 	}
 
@@ -425,7 +464,13 @@ func HandleEvent(ctx context.Context, deps InboundDeps, ev slack.Event) error {
 	}
 
 	if deps.state.isActive(tk) {
-		_, err := deps.Palai.Steer(ctx, sessionID, palai.SteerParams{Message: ev.Text})
+		// A steer carries a STRING, so a picture attached to it cannot ride along; the text says so rather
+		// than the file vanishing. See steerImageNote for the contract that makes this a ceiling.
+		steerText := ev.Text
+		if len(ev.Files) > 0 {
+			steerText += steerImageNote
+		}
+		_, err := deps.Palai.Steer(ctx, sessionID, palai.SteerParams{Message: steerText})
 		switch {
 		case err == nil:
 			return nil // delivered into the still-open run
@@ -515,13 +560,28 @@ func (deps InboundDeps) rebindOrphan(ctx context.Context, tk threadKey, oldSessi
 // rebindOrphan handles for Steer, reached here when NO run was active in this process, e.g. a restart)
 // recovers the same way: a fresh session, rebound, retried once.
 func (deps InboundDeps) startRun(ctx context.Context, tk threadKey, sessionID string, ev slack.Event) error {
-	_, err := deps.createResponse(ctx, sessionID, ev.Text)
+	// The images are fetched and uploaded ONCE, before the create, and the resulting input is reused on the
+	// orphan retry below. Fetching inside the retry instead would pay Slack twice and — worse — mint a
+	// SECOND set of artifacts for one message, leaving the first set attached to nothing.
+	//
+	// THE ARTIFACTS ARE WRITTEN BEFORE THE RUN IS CREATED, which is forced rather than tidy: the input has
+	// to NAME them, so they must have ids by the time it is built. The control plane closes the other half
+	// — it attaches every artifact the input names inside the same transaction that inserts the run, so
+	// there is no window where the bytes exist attached to nothing (see coordinator.AdmitResponse).
+	var artifactIDs []string
+	var skipped int
+	if len(ev.Files) > 0 {
+		artifactIDs, skipped = deps.Images.attach(ctx, ev.Files, deps.logf)
+	}
+	input := runInput(ev.Text, artifactIDs, skipped)
+
+	_, err := deps.createResponse(ctx, sessionID, input)
 	if isNotFound(err) {
 		sessionID, err = deps.rebindOrphan(ctx, tk, sessionID)
 		if err != nil {
 			return err
 		}
-		_, err = deps.createResponse(ctx, sessionID, ev.Text)
+		_, err = deps.createResponse(ctx, sessionID, input)
 	}
 	if err != nil {
 		return fmt.Errorf("relay: create response for session %s: %w", sessionID, err)
@@ -580,9 +640,13 @@ func (deps InboundDeps) startRun(ctx context.Context, tk threadKey, sessionID st
 // this file's doc comment describes. AgentRevisionID/Repository are omitted (not sent as empty
 // strings) when the bot's row does not carry them, so a caller inspecting the wire body sees an
 // absent field, matching what "the server's own comment" (types.go) says an absence means.
-func (deps InboundDeps) createResponse(ctx context.Context, sessionID, text string) (*palai.Response, error) {
+//
+// input is `any` because §25.10 makes it two shapes: a bare string for a text-only turn (what this relay
+// has always sent) and a content array when the turn carries images. runInput decides which; this call
+// stays indifferent to it.
+func (deps InboundDeps) createResponse(ctx context.Context, sessionID string, input any) (*palai.Response, error) {
 	req := palai.ResponseCreateRequest{
-		Input:     text,
+		Input:     input,
 		SessionID: &sessionID,
 	}
 	if deps.AgentRevisionID != "" {

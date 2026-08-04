@@ -232,13 +232,28 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("POST /v1/api-keys/{key_id}/revoke", ph.revokeAPIKey)
 	}
 
-	// The artifact retrieval surface (spec §22.6, E13 Task 5, DAT-006/MCI-004): the never-opened READ half
-	// of the E09 write-path — an artifact's metadata, its authenticated streaming byte download, and a
-	// response's run-scoped artifact list. Read-only, so no Idempotency-Key. Every route is tenant-scoped
-	// by the verified key and renders a wrong-tenant/unknown id as a non-disclosing 404. nil in tiers with
-	// no object store configured (the Docker-free conformance tiers), so the routes stay unmounted.
+	// The artifact surface (spec §22.6, E13 Task 5, DAT-006/MCI-004): the once-never-opened READ half of
+	// the E09 write-path — an artifact's metadata, its authenticated streaming byte download, and a
+	// response's run-scoped artifact list — plus the image INGEST that opens the write half.
+	//
+	// THE POST IS WHY AN `image_ref` IS REACHABLE FROM OUTSIDE THIS PROCESS AT ALL. The content contract has
+	// declared `image_ref` (protocols/schemas/execution/content.json) and execution.decodeContentParts has
+	// resolved it to bytes for as long as both have existed, but every writer of that row lived INSIDE the
+	// control plane (internal/extensions' Slack bridge). A client that consumes Palai over `/v1` — which is
+	// what an integration relay is — could name an artifact in a run's input and could read one back, and
+	// had no verb anywhere that could make one. This is that verb, and it is the whole reason a screenshot
+	// pasted at a bot can now reach a model.
+	//
+	// It carries no Idempotency-Key, matching POST /v1/bots and for the same reason: the id is server-minted
+	// and the resource is inert, so the cost of a duplicated create is a stored object, not a second run.
+	//
+	// Every route is tenant-scoped by the verified key and renders a wrong-tenant/unknown id as a
+	// non-disclosing 404. nil in tiers with no object store configured (the Docker-free conformance tiers),
+	// so the routes stay unmounted — INCLUDING the ingest, which cannot store bytes with no store to put
+	// them in.
 	if artifacts != nil {
 		ah := &artifactHandler{artifacts: artifacts}
+		mux.HandleFunc("POST /v1/artifacts", ah.create)
 		mux.HandleFunc("GET /v1/artifacts/{artifact_id}", ah.get)
 		mux.HandleFunc("GET /v1/artifacts/{artifact_id}/content", ah.content)
 		mux.HandleFunc("GET /v1/responses/{response_id}/artifacts", ah.listForResponse)

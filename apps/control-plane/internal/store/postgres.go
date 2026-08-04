@@ -118,6 +118,7 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 			RequestedSessionID:    req.RequestedSessionID,
 			PreviousResponseID:    req.PreviousResponseID,
 			Input:                 req.Input,
+			InboundArtifactIDs:    req.InboundArtifactIDs,
 			Body:                  req.Body,
 			Store:                 req.Store,
 			Delegations:           req.Delegations,

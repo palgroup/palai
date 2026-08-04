@@ -160,7 +160,24 @@ func run(ctx context.Context) error {
 		d.onApprovalRequested,
 		d.onRunFailed,
 		bot.ID, slackCfg.BotUserID, bot.AgentRevisionID, bot.RepositoryBindingID,
-	)
+	).WithImages(&relay.ImageLeg{
+		// A SEPARATE Doer FROM THE STREAMING CLIENT'S IS NOT NEEDED — this one talks to files.slack.com
+		// rather than the Web API, but http.DefaultClient serves both and neither holds per-host state.
+		Doer:      http.DefaultClient,
+		Token:     creds.botToken,
+		Artifacts: relay.NewArtifactCreator(client),
+	}, log.Printf)
+
+	// SAID AT BOOT, ONCE, because the alternative is how this capability died the last time it was built:
+	// mounted behind a nil check in a deployment that never configured it, with the only evidence anywhere
+	// sitting inside a run's own prompt — an operator had to read a model's input to find out that shared
+	// screenshots were being dropped. A line per message would bury a permanent configuration fact under
+	// traffic; a line at boot is where an operator already looks.
+	if d.inbound.Images.Ready() {
+		log.Printf("slack-bot: image leg ready — a screenshot shared with a message is fetched and attached to the turn")
+	} else {
+		log.Printf("slack-bot: image leg NOT ready — a screenshot shared with a message will be relayed as a note saying it could not be attached")
+	}
 
 	log.Printf("slack-bot: opening Socket Mode")
 	socketErr := socket.Run(ctx, socket.Config{

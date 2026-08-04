@@ -636,6 +636,10 @@ type AdmissionInput struct {
 	RequestedSessionID *string
 	PreviousResponseID *string
 	Input              []byte
+	// InboundArtifactIDs are the artifacts Input NAMES (its `image_ref` items' artifact_ids), attached to
+	// the run inside THIS transaction. See the attach step in AdmitResponse for why it belongs here and
+	// not after the commit.
+	InboundArtifactIDs []string
 	Body               []byte
 	// Store is the §8.3 retention flag persisted on the response. It defaults true
 	// (persistent); the caller resolves an absent request field to true before admission.
@@ -927,6 +931,28 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 			return Admission{ActiveRunConflict: true}, nil
 		}
 		return Admission{}, fmt.Errorf("insert run: %w", err)
+	}
+
+	// Bind the artifacts this request's input NAMES to the run being inserted — the `image_ref` items a
+	// caller ingested through POST /v1/artifacts before it could name them here.
+	//
+	// IN THIS TRANSACTION IS THE WHOLE POINT, and it closes a ceiling the in-process Slack bridge wrote
+	// down and could not close. That path is three steps — write the artifact run-less, admit, then attach
+	// — because it attaches from OUTSIDE the admission, so a process that dies between step two and step
+	// three leaves bytes attached to nothing. §22.2 reaches an artifact only through
+	// `artifacts JOIN runs ON artifacts.run_id = runs.id`, so an unattached row is a row no retention
+	// sweep can ever see, and its comment says exactly that ("its bytes outlive the response's purge").
+	// Attaching HERE removes the window rather than shrinking it: the run and its artifacts' run_id are
+	// one commit, so either both are durable or neither is.
+	//
+	// AttachArtifactRun is tenant-scoped and only ever widens NULL -> a run, so this is a no-op for an id
+	// that is unknown, foreign, or already bound. That is what lets it run over ids taken from untrusted
+	// request content without a preceding existence check — an ownership probe would report nothing this
+	// does not already refuse, and a check-then-update would be a race where this is a single statement.
+	for _, artifactID := range in.InboundArtifactIDs {
+		if _, err := tx.Exec(ctx, storage.Query("AttachArtifactRun"), artifactID, tenant.Project, in.RunID); err != nil {
+			return Admission{}, fmt.Errorf("attach inbound artifact to run: %w", err)
+		}
 	}
 
 	// The run's reservation in the ledger (E13 T6): recorded in the SAME transaction as the run, so the

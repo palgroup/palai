@@ -26,12 +26,53 @@ import (
 type Reader struct {
 	store *Store
 	pool  *pgxpool.Pool
+	// writer serves the ONE write verb on the public surface (CreateInboundArtifact). It is built from the
+	// same two halves this struct already holds rather than passed in, because there is nothing a caller
+	// could legitimately vary between them: an ingest that stored bytes in one object store and indexed
+	// them against another pool would write rows pointing at objects that are not there.
+	writer *Writer
 }
 
 // NewReader binds the object store and the durable pool the retrieval read-path reads over — the same two
 // halves the write-path Writer ties together.
 func NewReader(store *Store, pool *pgxpool.Pool) *Reader {
-	return &Reader{store: store, pool: pool}
+	return &Reader{store: store, pool: pool, writer: NewWriter(store, pool)}
+}
+
+// CreateInboundArtifact persists bytes an API client supplied, run-less, under a freshly minted id.
+//
+// IT IS RUN-LESS BECAUSE THE RUN DOES NOT EXIST YET, and that ordering is forced rather than chosen: the
+// client's next call is the one that CREATES the run, naming this id in its input, so there is nothing to
+// attach to here. What binds the row to a run — and therefore brings it inside retention's reach, since the
+// §22.2 purge reaches an artifact through `artifacts JOIN runs` — is the admission itself, which attaches
+// every artifact its input names inside the SAME transaction that inserts the run (coordinator.AdmitResponse).
+//
+// THAT IS A CEILING THE IN-PROCESS PATH NAMED AND COULD NOT CLOSE. internal/extensions' Slack bridge writes
+// the row, admits, and then attaches in a THIRD step, so a process that dies in the middle leaves bytes no
+// retention sweep can see. Attaching at admission removes the window entirely: the run and its artifacts'
+// run_id commit together or neither does. What remains — and it is a genuinely smaller thing — is an ingest
+// whose client never goes on to create a run at all, which leaves an unattached row exactly as an abandoned
+// multipart upload leaves a part. Those are reaped by object-store lifecycle, not by §22.2.
+//
+// The provenance is written HERE and names only what the server knows: the ingest surface, the principal
+// that presented the key, and the sniffed type. NOTHING FROM THE REQUEST BODY REACHES IT — provenance is
+// read back by operators and served over the retrieval API, so a field a client could write would be
+// untrusted text on an operator's screen (the E17 T10 "relay renders untrusted bytes" finding).
+func (rd *Reader) CreateInboundArtifact(ctx context.Context, scope middleware.Scope, content []byte, mediaType string) (api.ArtifactIngestResult, error) {
+	org, err := storage.OrganizationForProject(ctx, rd.pool, scope.Project)
+	if err != nil {
+		return api.ArtifactIngestResult{}, err
+	}
+	id := newArtifactID()
+	if err := rd.writer.WriteInboundArtifact(ctx, org, scope.Project, id, content, mediaType, map[string]any{
+		"source":     "api_ingest",
+		"principal":  scope.Principal,
+		"media_type": mediaType,
+		"size_bytes": len(content),
+	}); err != nil {
+		return api.ArtifactIngestResult{}, err
+	}
+	return api.ArtifactIngestResult{ID: id}, nil
 }
 
 // GetArtifact reads one artifact's metadata within the tenant scope. An unknown or foreign id returns no
