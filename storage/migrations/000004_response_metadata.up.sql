@@ -1,0 +1,42 @@
+-- 000004 (response metadata): `responses` gains the column that makes the published `metadata` field
+-- mean something. Both halves of that field were already contracted and neither was connected:
+--
+--     protocols/schemas/execution/response-create.json   "metadata": {"type":"object","maxProperties":64}
+--     protocols/schemas/execution/response.json          "metadata": {"type":"object","maxProperties":64}
+--     packages/contracts/response.gen.go:9               Metadata map[string]any `json:"metadata,omitempty"`
+--
+--     docker exec palai-a1e00dad-postgres-1 psql -U palai -d palai -tAc \
+--       "select count(*) from information_schema.columns
+--         where table_name='responses' and column_name='metadata'"
+--     -> 0   (2026-08-05, immediately before this file)
+--
+-- So a caller could POST metadata, receive 200 with an id, GET that id, and read `metadata: null` —
+-- accepted, dropped, and advertised on the way back out. This is the same shape as `instructions` and
+-- `output_contract` before their migrations, and it is fixed the same way: give the field a writer.
+--
+-- WHY `responses` AND NOT `runs`, which is where instructions and output_contract went. Those two are
+-- EXECUTION inputs — model dispatch reads them once per step — so they belong to the thing that
+-- executes. This one is never read by execution at all. It is caller-supplied correlation that has to
+-- come back out of GET /v1/responses/{id}, so it belongs to the resource the caller names, and a
+-- response is that resource. Storing it on the run would put it one join away from its only reader.
+--
+-- IT IS A COLUMN AND NOT A KEY IN THE PROJECTION BLOB, and that is the load-bearing choice. The blob in
+-- `responses.output` is REWRITTEN on every terminal path (FinalizeResponse, TimeoutQueuedIfExpired,
+-- timeOutOneCapacityPark, cancel), each building its own projection. A field carried only in the blob
+-- survives exactly as long as every one of those writers remembers to re-copy it, and this tree's record
+-- on "N writers must all remember" is that one of them eventually does not. GetResponse rebuilds the
+-- projection from COLUMNS and reads only output/usage/model/error out of the blob, so a column has one
+-- reader and no writer can drop it.
+--
+-- NOT NULL DEFAULT '{}' rather than nullable: a response that named no metadata has an empty object, not
+-- an unknown one, and `omitempty` on the contract keeps `{}` off the wire. Every existing row backfills
+-- to the default in place, so this applies to a populated database without a rewrite of live rows
+-- (Postgres stores the default in the catalogue for ADD COLUMN ... DEFAULT since 11).
+--
+-- This file CREATES NO TABLE, so it owes no policy call and no grant of its own — the rule in
+-- storage/tenant.go binds a migration that creates a table carrying project_id. 000002's catalogue sweep
+-- already secured `responses` (its tenant_isolation policy is FORCE ROW LEVEL SECURITY and covers every
+-- column added here), and 000001's table-level GRANT covers it too, table grants not being per-column.
+ALTER TABLE responses ADD COLUMN IF NOT EXISTS metadata jsonb DEFAULT '{}'::jsonb NOT NULL;
+
+INSERT INTO schema_migrations (version) VALUES (4) ON CONFLICT DO NOTHING;
