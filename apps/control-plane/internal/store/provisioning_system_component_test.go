@@ -213,3 +213,83 @@ func postJSON(t *testing.T, base, token, path, body string) *http.Response {
 	t.Cleanup(func() { resp.Body.Close() })
 	return resp
 }
+
+// TestAnInstallationSeededBeforeTheScopeChangeIsRepairedOnBoot drives the UPGRADE path.
+//
+// A stack bootstrapped before 4155709a has `key_local` with an EMPTY scope set. Empty satisfies
+// HasScope for every ordinary capability but never HasSystem, so that operator cannot reach any platform
+// surface — and once a key stopped being able to grant a capability it does not hold, the mint-yourself-
+// one workaround closed too. Bootstrap's `count > 0` early return meant nothing ever repaired it.
+//
+// The old shape is RECREATED here rather than assumed, so this test measures the transition instead of
+// whatever state the database happened to be in.
+func TestAnInstallationSeededBeforeTheScopeChangeIsRepairedOnBoot(t *testing.T) {
+	url := os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
+	if url == "" {
+		t.Skip("PALAI_COMPONENT_POSTGRES_URL is required; run make test-component TEST=postgres")
+	}
+	ctx := context.Background()
+	repo, err := Open(ctx, url)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(repo.Close)
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := repo.Bootstrap(ctx, "component-bootstrap-key"); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	sys := storage.WithSystemScope(ctx)
+
+	// Restore whatever key_local had, so this test does not decide another test's fixture.
+	var original []string
+	if err := repo.Spine().Pool().QueryRow(sys, `SELECT scopes FROM api_keys WHERE id = 'key_local'`).Scan(&original); err != nil {
+		t.Fatalf("read key_local: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = repo.Spine().Pool().Exec(context.Background(),
+			`UPDATE api_keys SET scopes = $1 WHERE id = 'key_local'`, original)
+	})
+
+	// THE PRE-4155709a SHAPE.
+	if _, err := repo.Spine().Pool().Exec(sys,
+		`UPDATE api_keys SET scopes = '{}' WHERE id = 'key_local'`); err != nil {
+		t.Fatalf("recreate the old empty-scope seed: %v", err)
+	}
+
+	// A boot against that stack. count > 0, so no tenant is provisioned — the reconciliation is the only
+	// thing that may act.
+	if err := repo.Bootstrap(ctx, "component-bootstrap-key"); err != nil {
+		t.Fatalf("re-boot: %v", err)
+	}
+
+	var got []string
+	if err := repo.Spine().Pool().QueryRow(sys, `SELECT scopes FROM api_keys WHERE id = 'key_local'`).Scan(&got); err != nil {
+		t.Fatalf("read key_local after boot: %v", err)
+	}
+	want := identity.FirstTenantScopes()
+	if len(got) != len(want) {
+		t.Fatalf("key_local kapsamı %v, beklenen %v — eski kurulum onarılmadı", got, want)
+	}
+	repaired := middleware.Scope{Scopes: got}
+	if !repaired.HasSystem() {
+		t.Fatalf("onarımdan sonra bile HasSystem false: %v — bu kurulum platform yüzeylerine hâlâ ulaşamıyor", got)
+	}
+
+	// AND IT DOES NOT TOUCH A DELIBERATE SET. A non-empty scope list was chosen by somebody; re-widening
+	// it would be this reconciliation quietly granting the platform capability to a narrowed key.
+	if _, err := repo.Spine().Pool().Exec(sys,
+		`UPDATE api_keys SET scopes = '{provision}' WHERE id = 'key_local'`); err != nil {
+		t.Fatalf("set a deliberate narrow scope: %v", err)
+	}
+	if err := repo.Bootstrap(ctx, "component-bootstrap-key"); err != nil {
+		t.Fatalf("re-boot over a narrowed key: %v", err)
+	}
+	if err := repo.Spine().Pool().QueryRow(sys, `SELECT scopes FROM api_keys WHERE id = 'key_local'`).Scan(&got); err != nil {
+		t.Fatalf("read key_local: %v", err)
+	}
+	if len(got) != 1 || got[0] != "provision" {
+		t.Fatalf("kasıtlı olarak daraltılmış kapsam değiştirildi: %v — yalnız BOŞ küme onarılmalı", got)
+	}
+}

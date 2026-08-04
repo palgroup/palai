@@ -125,6 +125,14 @@ func (s *Store) provisionTenant(ctx context.Context, seed tenantSeed) error {
 	})
 }
 
+// FirstTenantScopes is the scope set the bootstrap key is born with, in ONE place because two things
+// need it: ProvisionFirstTenant seeds it on a fresh install, and store.reconcileBootstrapScopes grants it
+// to an installation that predates the seed carrying any scopes at all. If those two ever disagreed, an
+// upgraded stack and a new one would end up with different operators.
+func FirstTenantScopes() []string {
+	return []string{middleware.ScopeSystem, "provision", "approve"}
+}
+
 // ProvisionFirstTenant seeds the single bootstrap tenant and its admin key from bootstrapKey, reusing
 // the same tenant-creation path the API uses for every later tenant. Only the key's hash is stored.
 // The caller (store.Bootstrap) guards this with an api_keys-empty check, so it runs once per fresh stack.
@@ -153,7 +161,7 @@ func (s *Store) ProvisionFirstTenant(ctx context.Context, bootstrapKey string) e
 		principalID: firstPrincipal,
 		keyID:       firstKey,
 		keyHash:     coordinator.HashAPIKey(bootstrapKey),
-		scopes:      []string{middleware.ScopeSystem, "provision", "approve"},
+		scopes:      FirstTenantScopes(),
 		// The fixed bootstrap pool id, in the same spirit as the four ids above: stable so a re-boot
 		// against a retained volume is a no-op. It was once shared with a migration that seeded the same
 		// id for an install upgrading into the fleet tables, so the two populations could not end up with
