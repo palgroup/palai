@@ -95,7 +95,9 @@ func (r *IdleReleaser) SetTeardown(remove func(string) error) { r.remove = remov
 // Sweep runs one idle pass and returns the number of workspaces released. A failure on one candidate is
 // logged and the pass continues to the next: one workspace whose archive will not upload must not stop
 // every other machine from being handed back. The first error is returned so a caller can surface that
-// the pass was not clean.
+// the pass was not clean; a repeat offender (e.g. an allocation over MaxSnapshotArchiveBytes) logs and is
+// retried every tick, so a SWEEP-LEVEL summary is what tells an operator "2 stuck" apart from "2 of 32
+// stuck" — the per-candidate lines above name them but never say how many candidates there were.
 func (r *IdleReleaser) Sweep(ctx context.Context) (released int, err error) {
 	if r.snapshots == nil {
 		return 0, errors.New("idle release refused: no snapshot sink, so a release would delete unarchived work")
@@ -104,9 +106,11 @@ func (r *IdleReleaser) Sweep(ctx context.Context) (released int, err error) {
 	if lerr != nil {
 		return 0, lerr
 	}
+	var failed int
 	for _, c := range candidates {
 		switch done, rerr := r.release(ctx, c); {
 		case rerr != nil:
+			failed++
 			log.Printf("idle release of workspace %s: %v", c.WorkspaceID, rerr)
 			if err == nil {
 				err = rerr
@@ -114,6 +118,9 @@ func (r *IdleReleaser) Sweep(ctx context.Context) (released int, err error) {
 		case done:
 			released++
 		}
+	}
+	if failed > 0 {
+		log.Printf("idle release sweep: %d of %d candidates failed and stay ready, retried next tick; %d released", failed, len(candidates), released)
 	}
 	return released, err
 }
@@ -190,7 +197,33 @@ func (r *IdleReleaser) release(ctx context.Context, c coordinator.IdleWorkspace)
 		}
 	}
 
-	if err := r.remove(c.HostPath); err != nil {
+	removeErr := r.remove(c.HostPath)
+
+	// 6. THE MACHINE IS HANDED BACK, SO THE OCCUPANCY IS OVER AND ITS MINUTES ARE SETTLED (A.4 T4).
+	//
+	// IT IS PLACED AFTER THE ACCOUNT AND AFTER THE BYTES ON PURPOSE, and the reason is the same one that
+	// puts the capture first: a step that can FAIL must not be able to abort a release that already
+	// happened. A meter that refused would leave the archive written, the uid handed back and the
+	// directory gone, with a workspace whose hold is still open — that is a worse failure than a late row,
+	// and a late row is recoverable because the hold is still there to settle.
+	//
+	// IT RUNS EVEN THOUGH `remove` FAILED, and this is the branch the whole task turns on. The two failure
+	// points on this path read alike (`err != nil`) and mean OPPOSITE things:
+	//
+	//	capture failed  -> returnClaim -> finish_snapshot -> `ready`, released=false, bytes untouched.
+	//	                   THE MACHINE IS STILL THIS SESSION'S. The hold continues; billing it here would
+	//	                   charge for a hold that has not ended. That branch returns above and never
+	//	                   reaches this line, which is the only reason this line needs no test for it.
+	//	remove failed   -> the archive EXISTS and the workspace is `paused`. The machine IS handed back —
+	//	                   the next allocation is a fresh directory and nothing will be placed on these
+	//	                   bytes. The hold ENDED, so it is closed and billed, and what is left over is a
+	//	                   leaked directory, not an open occupancy.
+	//
+	// Collapsing them into one arm would give the wrong answer to one of them, and which one is only
+	// visible on a customer's invoice.
+	billErr := r.settleOccupancy(ctx, tenant, c.SessionID)
+
+	if removeErr != nil {
 		// THE HOST IS NOT QUARANTINED HERE, and the difference from DestroyAllocation is deliberate.
 		// There, a directory that could not be removed may be inherited by a later allocation, so the host
 		// stops taking tenants (SAN-008). Here the workspace is already paused and its next allocation is
@@ -198,7 +231,12 @@ func (r *IdleReleaser) release(ctx context.Context, c coordinator.IdleWorkspace)
 		// is this tenant's own data in a path nobody will read. Quarantining the machine for that would
 		// take a Mac out of service over a leak that cannot cross a boundary. It is reported, and the
 		// release stands: the archive is the authority for what resumes.
-		return true, fmt.Errorf("idle release left %s on disk (workspace %s is paused and restorable): %w", c.HostPath, c.WorkspaceID, err)
+		return true, errors.Join(
+			fmt.Errorf("idle release left %s on disk (workspace %s is paused and restorable): %w", c.HostPath, c.WorkspaceID, removeErr),
+			billErr)
+	}
+	if billErr != nil {
+		return true, billErr
 	}
 
 	payload, _ := json.Marshal(map[string]any{
@@ -211,6 +249,38 @@ func (r *IdleReleaser) release(ctx context.Context, c coordinator.IdleWorkspace)
 		return true, fmt.Errorf("journal idle release of workspace %s: %w", c.WorkspaceID, err)
 	}
 	return true, nil
+}
+
+// settleOccupancy closes the session's open hold on a machine and settles its machine minutes, in the one
+// transaction SettleOccupancy runs — so a hold that is closed is a hold that is billed, and a crash cannot
+// leave one without the other.
+//
+// A SESSION WITH NO OPEN HOLD IS NOT AN ERROR, and there are two ordinary ways to be one. This build has
+// been releasing machines since T2/T3 while acquisition only lands with T4, so every workspace already
+// paused when this ships has no row to close; and a session whose attempts ran on a channel that reaches
+// no machine (the deterministic tiers) never opened one. Both are "nothing to bill", which is the honest
+// answer rather than a failure.
+//
+// THE REASON IS ALWAYS 'idle' HERE, and it is the one word the billed interval branches on: this sweep is
+// the idle reaper, so its holds bill to `last_activity_at` and the quiet tail between the customer's last
+// activity and this sweep is the platform's cost of keeping the machine warm. What is subtracted is that
+// COLUMN and never r.ttl — a TTL is a setting so it changes, and a sweep fires late by however long its
+// tick is, and both errors are paid by the customer.
+func (r *IdleReleaser) settleOccupancy(ctx context.Context, tenant coordinator.Tenant, sessionID string) error {
+	if sessionID == "" {
+		return nil
+	}
+	held, found, err := r.spine.OpenOccupancy(ctx, tenant, sessionID)
+	if err != nil {
+		return fmt.Errorf("read the open occupancy of session %s: %w", sessionID, err)
+	}
+	if !found {
+		return nil
+	}
+	if _, err := r.spine.SettleOccupancy(ctx, tenant, held.ID, coordinator.ReleaseReasonIdle); err != nil {
+		return fmt.Errorf("settle occupancy %s of session %s: %w", held.ID, sessionID, err)
+	}
+	return nil
 }
 
 // returnClaim gives a claimed workspace back to ready with its bytes untouched (snapshotting →

@@ -605,6 +605,10 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	// offer carries that path and the runner both bind-mounts it and, since this task, CREATES it. The
 	// half that puts anything on a disk runs below, on the connection the dial handed back.
 	var workspaceID, workspaceLeaseID string
+	// machineOccupancyID names this session's hold on the machine this attempt lands on, so the hold's
+	// last-activity stamp — which is where an idle-closed bill STOPS — can be moved as the attempt ends.
+	// Empty whenever there is no machine to occupy, which is every deterministic tier.
+	var machineOccupancyID string
 	var wsPlan workspacePlan
 	var wsPlanned bool
 	if depth == 0 && attempt.WorkspaceHostPath == "" && o.provisionRoot != "" && o.provisionBroker != nil {
@@ -620,7 +624,33 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	}
 	// Release the writer lease + return the workspace to ready on EVERY exit (terminal, error, pause):
 	// a fresh attempt (resume) re-leases the same allocation, and edits persist across runs.
-	defer o.releaseWorkspace(tenant, workspaceID, workspaceLeaseID)
+	//
+	// THE CLOSURE IS LOAD-BEARING AND IT IS A REPAIR (A.4 T4). A deferred call evaluates its ARGUMENTS at
+	// the `defer` statement, not at the exit — so `defer o.releaseWorkspace(tenant, workspaceID,
+	// workspaceLeaseID)` passed the two EMPTY strings these variables hold here, and releaseWorkspace
+	// returns immediately on an empty lease id. It was correct when it was written (E09 T10 assigned both
+	// four lines ABOVE the defer) and stopped being correct when A.3 T5 moved provisioning after the dial
+	// — the assignment now happens ~80 lines BELOW. Nothing failed: the workspace simply never went
+	// leased→ready, and the next attempt's acquireWriterLease reclaimed the dangling lease and carried on.
+	//
+	// MEASURED ON THE RUNNING STACK, 2026-08-05, which is how it was found at all:
+	//
+	//	select state, max(created_at), count(*) from workspaces group by 1;
+	//	  ready  34, newest 2026-08-04 07:21Z   <- all of them predate c025c9aa (2026-08-04 10:38Z)
+	//	  leased 17, newest 2026-08-04 22:12Z   <- every workspace created since, and none has a live run
+	//
+	// WHAT IT COST IS THIS WHOLE PHASE. `IdleWorkspacesForRelease` selects `state = 'ready'` AND no active
+	// writer lease, so a build where nothing releases has NO idle candidate, ever: the releaser T2/T3
+	// shipped could not fire, no machine was ever handed back, and the occupancy this task settles could
+	// never close. TestExecuteAttemptDefersReadTheirArgumentsAtExit is the fence, and it reads the
+	// syntax rather than the behaviour because the behaviour is a no-op that logs nothing.
+	defer func() { o.releaseWorkspace(tenant, workspaceID, workspaceLeaseID) }()
+	// The occupancy's last-activity stamp moves at the attempt's END as well as at its start, and without
+	// this the bill is short by the length of every run: an idle-closed hold is billed to
+	// `last_activity_at`, so a two-hour run whose only stamp was written when it STARTED would have its
+	// machine time thrown away the moment the reaper closed the hold. Same closure discipline as the line
+	// above, and for the same reason — the id is assigned below.
+	defer func() { o.keepMachineHeld(tenant, machineOccupancyID) }()
 
 	// WHERE this attempt runs, decided here and recorded (E24 T4). It resolves the pool, carries the
 	// tenant onto the descriptor — the runner plane had no tenant on it at all (§3.6 D8) — and orders the
@@ -693,6 +723,14 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 			return o.failProvisioning(ctx, tenant, attempt, responseID, perr)
 		}
 		attempt.WorkspaceHostPath, workspaceLeaseID, workspaceID = hostPath, leaseID, wsID
+		// THE MACHINE OCCUPANCY OPENS HERE (A.4 T4) — the first line that knows both WHICH machine and
+		// that the session's allocation is really on it. Before the realize there is no machine's disk
+		// involved yet, and after it the hold is a durable fact somebody is paying for.
+		//
+		// It is INSIDE the `wsPlanned` arm because the occupancy is the ALLOCATION's hold: the idle
+		// releaser is what ends it, and the releaser is driven by workspaces. Opening one for a run with
+		// no workspace would open a hold nothing can ever close (machine_occupancy.go names that ceiling).
+		machineOccupancyID = o.holdMachine(ctx, tenant, sessionID, ch)
 	}
 
 	st := &attemptState{

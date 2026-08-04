@@ -93,10 +93,34 @@ const (
 	// Its own prefix and its own unit are load-bearing: folding a step COUNT into a `model.` meter would
 	// corrupt the token total the budget gate reads.
 	meterInterruptedStep = "step.interrupted"
+	// meterMachineMinutes counts the wall time a session OCCUPIED a machine — the OTHER half of what this
+	// platform sells, and the half that had no row anywhere until A.4. Its subject is the OCCUPANCY, not
+	// the session and not the run: a session holds N machines over its life and one hold serves many runs,
+	// so neither of those identifies the interval (see packages/coordinator/occupancy.go). It is settled by
+	// SettleOccupancy, keyed "lease:<id>:machine.minutes", so a redelivered or repeated release settles
+	// once (BIL-001).
+	//
+	// THE PREFIX IS NEW AND THAT WAS MEASURED, not assumed. Every meter this tree had settled sat under
+	// `model.`, `run.` or `step.`:
+	//
+	//	grep -rhoE 'meter[A-Za-z]+ += +"[a-z._]+"' packages/coordinator/usage.go
+	//	→ run.admitted, model.input_tokens, model.output_tokens, model.cache_read_tokens,
+	//	  model.cache_write_tokens, step.interrupted           (2026-08-05, before this constant)
+	//
+	// A new prefix rather than an extension of one of those, because budgets and quotas match by PREFIX: a
+	// `model.` budget is denominated in tokens and a `machine.` one in minutes, and folding machine time
+	// under an existing prefix would add minutes to a token cap.
+	//
+	// THE QUANTITY IS MINUTES AND THEY ARE FRACTIONAL. A hold of forty seconds is 0.666… and not 0 — an
+	// integer-minute quantity would round every sub-minute hold to zero, settleUsage SKIPS a zero quantity,
+	// and the resulting absence is indistinguishable from a release that never settled at all. That is why
+	// usageEntry.quantity is a float64 rather than the int64 the token meters only ever needed.
+	meterMachineMinutes = "machine.minutes"
 
-	unitToken = "token"
-	unitRun   = "run"
-	unitStep  = "step"
+	unitToken  = "token"
+	unitRun    = "run"
+	unitStep   = "step"
+	unitMinute = "minute"
 )
 
 // interruptedStepEntry is the ledger record for a model step aborted mid-flight. It is keyed on the
@@ -123,7 +147,13 @@ type usageEntry struct {
 	meter     string
 	unit      string
 	dedupeKey string
-	quantity  int64
+	// quantity is FLOAT64 and the column behind it has always been `numeric`, read back as a float by
+	// metering.ledgerEntryView. Every meter before A.4 counted whole things — tokens, runs, steps — so an
+	// int64 was enough and said so. machine.minutes is the first quantity that is genuinely fractional, and
+	// widening the field is what keeps ONE settlement path: a second writer that could take a fraction
+	// would be a second, unsynchronized way into a table whose whole value is being the single record.
+	// The integer meters are unaffected — every value they settle is exact in a float64.
+	quantity float64
 	// modelRequestID names the TURN this settlement is attributed to, and is empty for the meters that
 	// do not describe one (run.admitted is the admission reservation, settled before any model call
 	// exists). It is not new information — the dedupe keys below have always been built from this same
@@ -170,7 +200,7 @@ func modelUsageEntries(sessionID, runID, requestID string, usage contracts.Usage
 	entry := func(meter string, quantity int) usageEntry {
 		return usageEntry{
 			sessionID: sessionID, runID: runID, meter: meter, unit: unitToken,
-			dedupeKey: "mreq:" + requestID + ":" + meter, quantity: int64(quantity),
+			dedupeKey: "mreq:" + requestID + ":" + meter, quantity: float64(quantity),
 			modelRequestID: requestID,
 		}
 	}
