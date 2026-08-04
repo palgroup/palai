@@ -18,6 +18,7 @@ package toolset
 var defaultTools = []string{
 	"palai.workspace.file",
 	"palai.workspace.glob",
+	"palai.workspace.grep",
 	"palai.workspace.shell",
 	"palai.workspace.background_kill",
 	"palai.workspace.show_media",

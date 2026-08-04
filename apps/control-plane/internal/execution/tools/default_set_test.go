@@ -46,6 +46,7 @@ func TestEveryDefaultToolResolves(t *testing.T) {
 		// And the filename search, granted unconditionally: finding a file by name is what a run does
 		// before it can read one, with or without a repository.
 		GlobTool(),
+		GrepTool(),
 		ShellTool(),
 		CommitTool(),
 		// And the fourth (E26 T2): the shell tool's `background` parameter can start a task, so the tool that

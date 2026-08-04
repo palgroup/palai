@@ -515,6 +515,7 @@ func (o *openStream) updateTask(ctx context.Context, data map[string]any, status
 var toolTitles = map[string]string{
 	"palai.workspace.file":             "Reading files",
 	"palai.workspace.glob":             "Finding files",
+	"palai.workspace.grep":             "Searching the code",
 	"palai.workspace.shell":            "Running a command",
 	"palai.workspace.commit":           "Committing changes",
 	"palai.workspace.background_kill":  "Stopping a background task",
