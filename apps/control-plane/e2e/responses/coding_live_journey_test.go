@@ -165,7 +165,7 @@ func TestCodingLiveJourney(t *testing.T) {
 	var pushRemoteSHA, prURL string
 	for _, pub := range approved {
 		receipt, err := publisher.Publish(ctx, execution.PublishTarget{
-			Publication: pub, WorkspaceRoot: alloc, Org: h.tenant.Organization, Project: h.tenant.Project, AttemptFence: 1,
+			Publication: pub, WorkspaceRoot: alloc, Project: h.tenant.Project, AttemptFence: 1,
 		})
 		if err != nil {
 			t.Fatalf("publish %s: %v", pub.Operation, err)

@@ -29,7 +29,7 @@ func TestReaderMetadataAndContent(t *testing.T) {
 
 	content := []byte("diff --git a/main.go b/main.go\n+ // fixed\n")
 	art, err := h.writer.Write(ctx, WriteRequest{
-		Organization: org, Project: project, RunID: runID, Content: content,
+		Project: project, RunID: runID, Content: content,
 		MediaType: "text/x-diff", LogicalType: "patch",
 	})
 	if err != nil {
@@ -100,7 +100,7 @@ func TestReaderCrossTenantIsMiss(t *testing.T) {
 	_, projectB, _ := h.seedRun(t)
 	reader := NewReader(h.s3, h.pool)
 
-	art, err := h.writer.Write(ctx, WriteRequest{Organization: orgA, Project: projectA, RunID: runA, Content: []byte("secret build log")})
+	art, err := h.writer.Write(ctx, WriteRequest{Project: projectA, RunID: runA, Content: []byte("secret build log")})
 	if err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
@@ -136,7 +136,7 @@ func TestReaderListRunArtifacts(t *testing.T) {
 	scope := middleware.Scope{Project: project}
 
 	for _, c := range [][]byte{[]byte("patch bytes"), []byte("test log bytes")} {
-		if _, err := h.writer.Write(ctx, WriteRequest{Organization: org, Project: project, RunID: runID, Content: c}); err != nil {
+		if _, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: runID, Content: c}); err != nil {
 			t.Fatalf("Write() error = %v", err)
 		}
 	}

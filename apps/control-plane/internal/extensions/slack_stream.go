@@ -147,7 +147,7 @@ func (a *SlackAdmitter) WithStreaming(events api.EventReader, sup *coordinator.S
 // slackStreamTarget is one run to follow: where to write, which journal to tail, and which handle redeems the
 // bot token. The token VALUE is not on it — it is resolved inside the follower and lives only there.
 type slackStreamTarget struct {
-	org, project        string
+	project             string
 	sessionID, runID    string
 	channel, threadTS   string
 	recipientUser, team string
@@ -173,7 +173,7 @@ func (f *SlackStreamFollower) follow(ctx context.Context, conn api.SlackConnecti
 		return
 	}
 	target := slackStreamTarget{
-		org: conn.Org, project: conn.Project, sessionID: sessionID, runID: runID,
+		project: conn.Project, sessionID: sessionID, runID: runID,
 		channel: ev.ChannelID, threadTS: ev.ThreadTS,
 		// S9: chat.startStream needs BOTH recipient ids when it writes to a channel, and both are already on
 		// the event. Absent, StartStream refuses without calling and the run goes undecorated.

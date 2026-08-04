@@ -35,7 +35,6 @@ type CheckpointObjectStore interface {
 // so a retransmitted offer re-derives the same id and is rejected by the immutable-row guard rather
 // than duplicated.
 type CheckpointMeta struct {
-	Organization        string
 	Project             string
 	RunID               string
 	AttemptID           string
@@ -95,7 +94,6 @@ func (s *CheckpointSink) Persist(ctx context.Context, meta CheckpointMeta, offer
 	return s.objects.Persist(ctx, recovery.PersistInput{
 		CheckpointID:        checkpointID,
 		BoundaryID:          boundaryID,
-		Organization:        meta.Organization,
 		Project:             meta.Project,
 		RunID:               meta.RunID,
 		AttemptID:           meta.AttemptID,

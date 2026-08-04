@@ -28,18 +28,18 @@ func (c *captureInvoker) Invoke(_ context.Context, in remotehttp.Invocation) (ma
 // enforces (TestUpstreamTokenNeverForwarded's sibling).
 func TestRemoteHookUsesSignedTransport(t *testing.T) {
 	invoker := &captureInvoker{resp: map[string]any{"decision": "deny", "reason": "the push tool is not permitted"}}
-	var resolvedOrg, resolvedRef string
+	var resolvedRef string
 	s := New(nil)
 	s.SetRemoteInvoker(invoker, func(ref string) ([]byte, error) {
-		resolvedOrg, resolvedRef = org, ref
-		return []byte("signing-secret-for-" + org), nil
+		resolvedRef = ref
+		return []byte("signing-secret-for-" + ref), nil
 	})
 
 	hook := loadedHook{
 		ID: "hook_r", Point: HookPointBeforeTool, Category: HookCategoryPolicy, Executor: HookExecutorRemote,
 		URL: "https://hooks.example/before-tool", SecretRef: "sref_hook",
 	}
-	ev := HookEvent{Org: "org_1", Project: "prj_1", RunID: "run_9", Point: HookPointBeforeTool,
+	ev := HookEvent{Project: "prj_1", RunID: "run_9", Point: HookPointBeforeTool,
 		Payload: map[string]any{"tool_name": "push", "arguments": map[string]any{"branch": "main"}}}
 
 	out, err := s.fireLoaded(context.Background(), ev, []loadedHook{hook})
@@ -57,15 +57,15 @@ func TestRemoteHookUsesSignedTransport(t *testing.T) {
 	if invoker.got.ToolRevision != "hook@hook_r" {
 		t.Fatalf("Invocation ToolRevision = %q, want hook@hook_r", invoker.got.ToolRevision)
 	}
-	if invoker.got.Org != "org_1" || invoker.got.Project != "prj_1" || invoker.got.RunID != "run_9" {
+	if invoker.got.Project != "prj_1" || invoker.got.RunID != "run_9" {
 		t.Fatalf("Invocation scope mismatch: %+v", invoker.got)
 	}
 	if invoker.got.SecretRef != "sref_hook" {
 		t.Fatalf("Invocation SecretRef = %q, want sref_hook", invoker.got.SecretRef)
 	}
 	// The secret was resolved FRESH from the org-scoped resolver — not held on the binding.
-	if resolvedOrg != "org_1" || resolvedRef != "sref_hook" {
-		t.Fatalf("secret resolved for (%q,%q), want (org_1, sref_hook)", resolvedOrg, resolvedRef)
+	if resolvedRef != "sref_hook" {
+		t.Fatalf("secret resolved for %q, want sref_hook", resolvedRef)
 	}
 	if string(invoker.got.Secret) != "signing-secret-for-org_1" {
 		t.Fatalf("Invocation Secret = %q, want the freshly resolved bytes", invoker.got.Secret)
@@ -84,7 +84,7 @@ func TestRemoteTransformHookStrictDecodesPatch(t *testing.T) {
 	good := &captureInvoker{resp: map[string]any{"arguments": map[string]any{"path": "/redacted"}}}
 	s.SetRemoteInvoker(good, func(ref string) ([]byte, error) { return []byte("sec"), nil })
 	hook := loadedHook{ID: "hook_tr", Point: HookPointBeforeTool, Category: HookCategoryTransform, Executor: HookExecutorRemote, URL: "https://hooks.example/x", SecretRef: "sref"}
-	ev := HookEvent{Org: "o", Project: "p", RunID: "r", Point: HookPointBeforeTool, Payload: map[string]any{"tool_name": "file", "arguments": map[string]any{"path": "/etc/secret"}}}
+	ev := HookEvent{Project: "p", RunID: "r", Point: HookPointBeforeTool, Payload: map[string]any{"tool_name": "file", "arguments": map[string]any{"path": "/etc/secret"}}}
 	out, err := s.fireLoaded(context.Background(), ev, []loadedHook{hook})
 	if err != nil || out.Denied {
 		t.Fatalf("good remote transform = (%+v, %v), want applied", out, err)

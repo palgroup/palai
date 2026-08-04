@@ -569,10 +569,9 @@ func newWorkspaceID() (string, error) {
 // (E13 T2); empty means unrestricted (the ConfigPolicy §9.3 idiom), and the provisioning surface reads it
 // to gate tenancy administration.
 type Identity struct {
-	Organization string
-	Project      string
-	Principal    string
-	Scopes       []string
+	Project   string
+	Principal string
+	Scopes    []string
 	// APIKeyID is the id of the key that authenticated, distinct from the principal behind it: several
 	// keys may share one principal (api_keys.principal_id has no UNIQUE), so the key is the finer and the
 	// revocable identity. E23 T2's approver principal names it.
@@ -599,11 +598,11 @@ func (s *Store) VerifyAPIKey(ctx context.Context, token string) (Identity, error
 	var id Identity
 	var project *string
 	// The one read that CANNOT be tenant-scoped: it is what establishes the tenant, so there is no
-	// palai.org_id to publish yet. It runs under the system scope, keyed by the credential hash — a
+	// palai.project_id to publish yet. It runs under the system scope, keyed by the credential hash — a
 	// caller can only reach the row whose secret they already hold.
 	ctx = storage.WithSystemScope(ctx)
 	err := s.pool.QueryRow(ctx, storage.Query("VerifyAPIKey"), HashAPIKey(token)).
-		Scan(&id.APIKeyID, &id.Organization, &project, &id.Principal, &id.Scopes)
+		Scan(&id.APIKeyID, &project, &id.Principal, &id.Scopes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Identity{}, ErrInvalidToken
 	}

@@ -248,7 +248,6 @@ func (s *Store) SlackAuthorizationPolicyFor(ctx context.Context, project, id str
 // a tenant: the org/project it belongs to and the secret_ref handles the caller verifies + replies under.
 type ResolvedSlackConnection struct {
 	ID               string
-	Org              string
 	Project          string
 	SigningSecretRef string
 	BotTokenRef      string
@@ -279,7 +278,7 @@ func (s *Store) ResolveSlackConnectionByTeam(ctx context.Context, teamID, enterp
 	var resolved []ResolvedSlackConnection
 	for rows.Next() {
 		var r ResolvedSlackConnection
-		if err := rows.Scan(&r.ID, &r.Org, &r.Project, &r.SigningSecretRef, &r.BotTokenRef, &r.AppTokenRef,
+		if err := rows.Scan(&r.ID, &r.Project, &r.SigningSecretRef, &r.BotTokenRef, &r.AppTokenRef,
 			&r.BotUserID, &r.Disabled, &r.DefaultPolicy); err != nil {
 			return ResolvedSlackConnection{}, false, fmt.Errorf("scan slack connection: %w", err)
 		}

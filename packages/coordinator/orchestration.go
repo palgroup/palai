@@ -370,7 +370,7 @@ func (s *Store) CancelRunReconciled(ctx context.Context, tenant Tenant, response
 	// then would clobber the completion's output (run/response divergence + lost output). Read the run's
 	// actual terminal and skip the finalize when it completed/failed — leave the completion's projection.
 	var runState string
-	if err := s.pool.QueryRow(ctx, `SELECT state FROM runs WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+	if err := s.pool.QueryRow(ctx, `SELECT state FROM runs WHERE id=$1 AND project_id=$2`,
 		runID, tenant.Project).Scan(&runState); err != nil {
 		return "", fmt.Errorf("read run state for cancel finalize: %w", err)
 	}
@@ -383,7 +383,7 @@ func (s *Store) CancelRunReconciled(ctx context.Context, tenant Tenant, response
 	}
 	// Return the ACTUAL response terminal (whatever won), so a racing completion is reflected honestly.
 	var actual string
-	if err := s.pool.QueryRow(ctx, `SELECT state FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+	if err := s.pool.QueryRow(ctx, `SELECT state FROM responses WHERE id=$1 AND project_id=$2`,
 		responseID, tenant.Project).Scan(&actual); err != nil {
 		return "", fmt.Errorf("read terminal response state: %w", err)
 	}

@@ -119,7 +119,7 @@ func (a *DeterministicVectorAdapter) Search(_ context.Context, scope VectorScope
 	}
 	var hits []scored
 	for _, sv := range a.recs {
-		if sv.rec.Organization != scope.Organization || sv.rec.Project != scope.Project ||
+		if sv.rec.Project != scope.Project ||
 			sv.rec.KnowledgeBaseID != scope.KnowledgeBaseID || sv.rec.IndexRevisionID != scope.IndexRevisionID {
 			continue
 		}

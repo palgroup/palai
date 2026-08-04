@@ -68,7 +68,7 @@ func (f *fakeRegistry) Register(_ context.Context, reg fleet.Registration) (flee
 		return fleet.Runner{}, fleet.ErrPostureMismatch
 	}
 	row := &fleet.Runner{
-		ID: reg.ID, Organization: fakeRegistryOrg, Project: fakeRegistryProject,
+		ID: reg.ID, Project: fakeRegistryProject,
 		PoolID: reg.PoolID, Label: reg.Label, DNS: reg.DNS, PublicKeySHA256: reg.PublicKeySHA256,
 		State: "active", OS: reg.OS, Arch: reg.Arch, Posture: posture, Capacity: reg.Capacity,
 		EnrolledAt: time.Now(), LastSeenAt: time.Now(),
@@ -104,28 +104,28 @@ func (f *fakeRegistry) Pool(_ context.Context, poolID string) (fleet.Pool, bool,
 		return fleet.Pool{}, false, nil
 	}
 	return fleet.Pool{
-		ID: poolID, Organization: fakeRegistryOrg, Project: fakeRegistryProject,
+		ID: poolID, Project: fakeRegistryProject,
 		Name: "default", Posture: posture,
 	}, true, nil
 }
 
-func (f *fakeRegistry) Get(_ context.Context, org, project, id string) (fleet.Runner, bool, error) {
+func (f *fakeRegistry) Get(_ context.Context, project, id string) (fleet.Runner, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, row := range f.rows {
-		if row.ID == id && row.Organization == org && row.Project == project {
+		if row.ID == id && row.Project == project {
 			return *row, true, nil
 		}
 	}
 	return fleet.Runner{}, false, nil
 }
 
-func (f *fakeRegistry) List(_ context.Context, org, project string, _ fleet.ListWindow) ([]fleet.Runner, error) {
+func (f *fakeRegistry) List(_ context.Context, project string, _ fleet.ListWindow) ([]fleet.Runner, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := []fleet.Runner{}
 	for _, row := range f.rows {
-		if row.Organization == org && row.Project == project {
+		if row.Project == project {
 			out = append(out, *row)
 		}
 	}

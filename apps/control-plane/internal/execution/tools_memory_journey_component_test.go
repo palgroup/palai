@@ -162,7 +162,7 @@ func TestToolsMemoryJourney(t *testing.T) {
 	addExternalToolToRun(t, cs, tenant, runID, "ext_issue", "reads an issue from Jira")
 
 	registry := extensions.New(pool)
-	registry.SetRemoteInvoker(toolsMemoryRemote{}, func(string, string) ([]byte, error) { return []byte("signing"), nil })
+	registry.SetRemoteInvoker(toolsMemoryRemote{}, func(string) ([]byte, error) { return []byte("signing"), nil })
 	adapter := &recordingAdapter{out: "ok"}
 	broker := toolbroker.New(toolbroker.ConformanceMathAdd())
 	// The search tool is chained AHEAD of the registry exactly as main.go:488 chains it.

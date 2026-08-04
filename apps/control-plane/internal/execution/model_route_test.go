@@ -44,32 +44,33 @@ func TestResolveLayersProjectRouteAboveDeployment(t *testing.T) {
 	}
 }
 
-// TestTenantSecretRefIsTenantQualified proves a route's credential handle carries the org that owns it,
-// so the broker's redemption is scoped to the run's own tenant and one tenant's ref name can never
-// redeem another's credential. The ref is a HANDLE — it must never carry a credential value.
-func TestTenantSecretRefIsTenantQualified(t *testing.T) {
-	ref := TenantSecretRef("org_a", "openai")
-	org, name, ok := SplitTenantSecretRef(ref)
-	if !ok || org != "org_a" || name != "openai" {
-		t.Fatalf("SplitTenantSecretRef(%q) = (%q, %q, %v), want (org_a, openai, true)", ref, org, name, ok)
+// TestTenantSecretRefMarksARouteMintedHandle proves the ONE distinction the ref still draws after A.2
+// Task 6: a handle a project's route minted redeems through the DB store, a bare handle through the
+// deployment env bridge. The org path segment is GONE — see TenantSecretRef for why it was removed
+// rather than replaced by a project. The ref is a HANDLE and never carries a credential value.
+func TestTenantSecretRefMarksARouteMintedHandle(t *testing.T) {
+	ref := TenantSecretRef("openai")
+	name, ok := SplitTenantSecretRef(ref)
+	if !ok || name != "openai" {
+		t.Fatalf("SplitTenantSecretRef(%q) = (%q, %v), want (openai, true)", ref, name, ok)
 	}
 	// An env deployment-default ref is NOT tenant-qualified and must stay untouched.
-	if _, _, ok := SplitTenantSecretRef(modelbroker.SecretRef("provider-one")); ok {
+	if _, ok := SplitTenantSecretRef(modelbroker.SecretRef("provider-one")); ok {
 		t.Fatal("the env deployment-default ref must not parse as tenant-qualified")
 	}
 }
 
 // TestRouteSecretResolverScopesAndFailsClosed proves the broker-side redemption rules:
-//  1. a tenant-qualified ref (minted by a DB route) redeems through the T3 secret store under ITS OWN org;
+//  1. a route-minted ref redeems through the T3 secret store;
 //  2. a plain ref (the env deployment default) still redeems through the env fallback, unchanged;
 //  3. a tenant-qualified ref the store MISSES fails closed — it must never fall back to the deployment
 //     credential, or one tenant's run would silently bill and authenticate as the deployment default.
 func TestRouteSecretResolverScopesAndFailsClosed(t *testing.T) {
-	var askedOrg, askedName string
+	var askedName string
 	resolver := RouteSecretResolver{
 		Lookup: func(name string) ([]byte, bool, error) {
-			askedOrg, askedName = org, name
-			if org == "org_a" && name == "openai" {
+			askedName = name
+			if name == "openai" {
 				return []byte("tenant-credential"), true, nil
 			}
 			return nil, false, nil
@@ -77,19 +78,19 @@ func TestRouteSecretResolverScopesAndFailsClosed(t *testing.T) {
 		Fallback: modelbroker.StaticResolver{"provider-one": "env-credential"},
 	}
 
-	got, err := resolver.Redeem(TenantSecretRef("org_a", "openai"))
+	got, err := resolver.Redeem(TenantSecretRef("openai"))
 	if err != nil || got != "tenant-credential" {
 		t.Fatalf("Redeem(tenant ref) = (%q, %v), want the tenant's own credential", got, err)
 	}
-	if askedOrg != "org_a" || askedName != "openai" {
-		t.Fatalf("store was asked for (%q, %q), want (org_a, openai)", askedOrg, askedName)
+	if askedName != "openai" {
+		t.Fatalf("store was asked for %q, want openai", askedName)
 	}
 
 	if got, err := resolver.Redeem(modelbroker.SecretRef("provider-one")); err != nil || got != "env-credential" {
 		t.Fatalf("Redeem(env ref) = (%q, %v), want the env deployment-default credential", got, err)
 	}
 
-	if _, err := resolver.Redeem(TenantSecretRef("org_b", "openai")); !errors.Is(err, modelbroker.ErrUnknownSecret) {
+	if _, err := resolver.Redeem(TenantSecretRef("unprovisioned")); !errors.Is(err, modelbroker.ErrUnknownSecret) {
 		t.Fatalf("Redeem(missing tenant ref) error = %v, want ErrUnknownSecret (fail closed, never the env credential)", err)
 	}
 }

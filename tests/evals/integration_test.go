@@ -306,8 +306,8 @@ func a2aOutOfOrder(t *testing.T) cellResult {
 func a2aIdentity(t *testing.T) cellResult {
 	// A forged tenant in message metadata is IGNORED — the authenticated bearer scope governs (§38.6).
 	msg := a2a.Message{Metadata: map[string]any{"organization": "orgEVIL", "project": "projEVIL"}}
-	org, proj := a2a.GovernIdentity("orgA", "projA", msg)
-	if org != "orgA" || proj != "projA" {
+	proj := a2a.GovernIdentity("projA", msg)
+	if proj != "projA" {
 		return failCell("A2A metadata overrode the governing tenant identity")
 	}
 	return pass()

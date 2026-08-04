@@ -26,7 +26,6 @@ const (
 // sensitiveSource carries distinctive markers that must NEVER surface on a rendered card, threaded through
 // the REAL projection so the HTTP-layer no-leak assertion is not vacuous.
 var sensitiveSource = RevisionSource{
-	Organization: testOrg,
 	Project:      testProject,
 	Model:        "provider-model-CONFIDENTIAL-x1",
 	Tools:        []string{"internal_shell_TOOL", "db_admin_TOOL"},
@@ -177,7 +176,7 @@ func TestA2AConformance_SendReturnsTaskWithExternalCanonicalSeparation(t *testin
 	if task.ID == "run_canon_1" || task.ContextID == "ses_canon_1" {
 		t.Fatalf("A2A task/context id replaced the canonical run/session id: id=%s context=%s", task.ID, task.ContextID)
 	}
-	ref, ok, _ := tasks.GetRef(nil, testOrg, testProject, testIfaceID, task.ID)
+	ref, ok, _ := tasks.GetRef(nil, testProject, testIfaceID, task.ID)
 	if !ok {
 		t.Fatalf("no task ref persisted for %s", task.ID)
 	}
@@ -200,8 +199,8 @@ func TestA2AConformance_ForgedMetadataIdentityIsIgnored(t *testing.T) {
 		t.Fatalf("send status = %d; %s", status, body)
 	}
 	got := runs.lastAdmit()
-	if got.Org != testOrg || got.Project != testProject {
-		t.Fatalf("forged metadata governed the run: admitted under org=%q project=%q, want %s/%s", got.Org, got.Project, testOrg, testProject)
+	if got.Project != testProject {
+		t.Fatalf("forged metadata governed the run: admitted under project=%q, want %s", got.Project, testProject)
 	}
 }
 

@@ -149,7 +149,7 @@ func TestLiveMCPToolRoundtripSpontaneous(t *testing.T) {
 	// MCP server via the connection rider, and completed through the fenced path (canonical completion).
 	tb := toolbroker.New()
 	tb.SetLookup(func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
-		return reg.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
+		return reg.LookupTool(ctx, env.Scope.Project, env.Scope.RunID, name)
 	})
 	var args map[string]any
 	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil || args == nil {
@@ -159,7 +159,7 @@ func TestLiveMCPToolRoundtripSpontaneous(t *testing.T) {
 	if callID == "" {
 		callID = "tc_live_mcp_echo"
 	}
-	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: org, Project: project, SessionID: sessionID, RunID: runID}}
+	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: project, SessionID: sessionID, RunID: runID}}
 	out, err := tb.Execute(ctx, contracts.ToolCallID(callID), mcpEchoShortName, args, 1, env)
 	if err != nil {
 		t.Fatalf("execute the MCP tool through the sandboxed lookup: %v", err)

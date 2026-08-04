@@ -54,7 +54,7 @@ func TestLateCallbackAfterDeadlineEntersReconciliationNotSilentCommit(t *testing
 	operationID := redeliveryID("rop")
 	token := redeliveryID("tok")
 	opened, err := ops.Open(ctx, remotehttp.OpenOperation{
-		OperationID: operationID, Org: tenant.Organization, Project: tenant.Project, ToolCallID: callID,
+		OperationID: operationID, Project: tenant.Project, ToolCallID: callID,
 		SecretRef: "sig-ref", TokenHash: remotehttp.HashToken(token),
 		Deadline: time.Now().Add(-time.Minute), Fence: 5, // deadline already passed -> a callback is LATE
 	})

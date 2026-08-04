@@ -288,11 +288,11 @@ func TestPublishUnderABindingCredentialNeverFallsBackToTheDeploymentApp(t *testi
 	pump := newFakePump(pub)
 
 	// The binding names its own credential and the store cannot produce it.
-	var askedOrg, askedRef string
+	var askedRef string
 	publisher := &RepositoryPublisher{
 		Broker: repositories.NewAnonymousBroker(), // the deployment-global broker, which MUST NOT be used
 		ConnectionSecrets: func(ref string) ([]byte, error) {
-			askedOrg, askedRef = org, ref
+			askedRef = ref
 			return nil, errors.New("no such secret ref")
 		},
 	}
@@ -306,9 +306,9 @@ func TestPublishUnderABindingCredentialNeverFallsBackToTheDeploymentApp(t *testi
 	if err != nil {
 		t.Fatalf("publishApproved() error = %v", err)
 	}
-	if askedRef != "rcon_tenant_pat" || askedOrg != "org" {
-		t.Fatalf("the publisher resolved (org=%q ref=%q); want the BINDING's own ref under the run's org — "+
-			"a publisher that never asks is a publisher using the deployment App", askedOrg, askedRef)
+	if askedRef != "rcon_tenant_pat" {
+		t.Fatalf("the publisher resolved ref=%q; want the BINDING's own ref — "+
+			"a publisher that never asks is a publisher using the deployment App", askedRef)
 	}
 	if _, published := pump.published["pub_conn"]; published {
 		t.Fatal("a publication whose binding credential did not resolve was PUBLISHED — it fell back to the " +

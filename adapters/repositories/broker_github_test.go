@@ -60,7 +60,7 @@ func TestGitHubAppBrokerMintsScopedTokenAndRevokes(t *testing.T) {
 		t.Fatalf("NewGitHubAppBroker() error = %v", err)
 	}
 
-	cred, err := broker.Mint(context.Background(), ScopeRead, Audience{Organization: "org_x", Run: "run_y", ToolCall: "tcall_z"})
+	cred, err := broker.Mint(context.Background(), ScopeRead, Audience{Run: "run_y", ToolCall: "tcall_z"})
 	if err != nil {
 		t.Fatalf("Mint() error = %v", err)
 	}

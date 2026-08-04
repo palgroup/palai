@@ -60,7 +60,7 @@ func TestHookSecurityRemoteHookGetsNoPlatformAuthority(t *testing.T) {
 		return []byte("hook-own-secret-" + ref), nil
 	})
 	hook := loadedHook{ID: "hook_x", Point: HookPointBeforeTool, Category: HookCategoryPolicy, Executor: HookExecutorRemote, URL: "https://hooks.example/x", SecretRef: "sref_hook"}
-	ev := HookEvent{Org: "org_1", Project: "prj_1", RunID: "run_1", Point: HookPointBeforeTool, Payload: map[string]any{"tool_name": "push"}}
+	ev := HookEvent{Project: "prj_1", RunID: "run_1", Point: HookPointBeforeTool, Payload: map[string]any{"tool_name": "push"}}
 
 	if _, err := s.fireLoaded(context.Background(), ev, []loadedHook{hook}); err != nil {
 		t.Fatalf("fireLoaded() error = %v", err)

@@ -73,7 +73,7 @@ func (s *stubSlackDecider) VerifySignature(_ context.Context, _ SlackConnectionR
 func (s *stubSlackDecider) Decide(ctx context.Context, conn SlackConnectionRef, intent slack.ApprovalIntent) (SlackDecisionOutcome, error) {
 	s.calls = append(s.calls, "decide")
 	s.intents = append(s.intents, intent)
-	s.scopes = append(s.scopes, conn.Org+"/"+conn.Project)
+	s.scopes = append(s.scopes, conn.Project)
 	if s.hang {
 		<-ctx.Done() // a stuck dependency: the route still owes Slack an answer inside the budget
 		return SlackDecisionOutcome{}, ctx.Err()
@@ -84,7 +84,7 @@ func (s *stubSlackDecider) Decide(ctx context.Context, conn SlackConnectionRef, 
 func (s *stubSlackDecider) OpenApprovalArguments(ctx context.Context, conn SlackConnectionRef, intent slack.ShowArgumentsIntent) (string, error) {
 	s.calls = append(s.calls, "open")
 	s.opens = append(s.opens, intent)
-	s.scopes = append(s.scopes, conn.Org+"/"+conn.Project)
+	s.scopes = append(s.scopes, conn.Project)
 	deadline, _ := ctx.Deadline()
 	s.openDeadlines = append(s.openDeadlines, deadline)
 	if s.openHang {
@@ -96,7 +96,7 @@ func (s *stubSlackDecider) OpenApprovalArguments(ctx context.Context, conn Slack
 
 func newSlackDecider(secret []byte) *stubSlackDecider {
 	return &stubSlackDecider{
-		conn:   SlackConnectionRef{ID: "slkc_1", Org: "org_real", Project: "prj_real", TeamID: "T100", BotUserID: "Ubot"},
+		conn:   SlackConnectionRef{ID: "slkc_1", Project: "prj_real", TeamID: "T100", BotUserID: "Ubot"},
 		found:  true,
 		secret: secret,
 	}

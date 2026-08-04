@@ -90,7 +90,7 @@ func TestSnapshotObjectsSurviveOrphanGC(t *testing.T) {
 
 	snapID := newID("snap")
 	if _, err := sink.Capture(ctx, execution.SnapshotCaptureInput{
-		SnapshotID: snapID, Organization: org, Project: project,
+		SnapshotID: snapID, Project: project,
 		WorkspaceID: workspaceID, AllocationID: allocationID, HostPath: hostPath, Reason: "test",
 	}); err != nil {
 		t.Fatalf("Capture() error = %v", err)
@@ -134,7 +134,7 @@ func TestSnapshotRestoreRoundTripsThroughStore(t *testing.T) {
 
 	snapID := newID("snap")
 	if _, err := sink.Capture(ctx, execution.SnapshotCaptureInput{
-		SnapshotID: snapID, Organization: org, Project: project,
+		SnapshotID: snapID, Project: project,
 		WorkspaceID: workspaceID, AllocationID: allocationID, HostPath: hostPath, Reason: "pause",
 	}); err != nil {
 		t.Fatalf("Capture() error = %v", err)

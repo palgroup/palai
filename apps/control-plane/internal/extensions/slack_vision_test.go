@@ -175,7 +175,7 @@ func TestSlackRunInputWithImagesCarriesNoScopeOrFileMetadata(t *testing.T) {
 // bytes" surface (E17 T10).
 func TestSlackImageProvenanceCarriesNoCredentialOrUploaderText(t *testing.T) {
 	prov := slackImageProvenance(
-		api.SlackConnectionRef{ID: "sc_1", Org: "org_1", Project: "proj_1", BotTokenRef: "slack/bot/sc_1"},
+		api.SlackConnectionRef{ID: "sc_1", Project: "proj_1", BotTokenRef: "slack/bot/sc_1"},
 		slack.Event{TeamID: "T1", SourceEventID: "EvF"},
 		slack.SharedFile{ID: "F1", Name: "<img src=x onerror=alert(1)>.png", DownloadURL: "https://files.slack.com/files-pri/T1-F1/download/x.png?t=xoxe-secret"},
 		slack.FetchedImage{MediaType: "image/png", Content: []byte("PNG")},

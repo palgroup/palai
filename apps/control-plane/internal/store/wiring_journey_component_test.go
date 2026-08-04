@@ -147,7 +147,7 @@ func newWiringFixture(t *testing.T) *wiringFixture {
 	a2aStore := a2a.NewStore(pool, newID)
 	a2aServer := api.NewA2AServer(repo, a2aStore, a2aStore, api.AdmissionLimits{}, "https://cp.test", pusher)
 	a2aServer.ScopeFunc = func(*http.Request) (a2a.Scope, bool) {
-		return a2a.Scope{Organization: base.org, Project: base.project, Principal: base.principal}, true
+		return a2a.Scope{Project: base.project, Principal: base.principal}, true
 	}
 
 	queues := automation.NewQueueStore(pool)
@@ -410,7 +410,7 @@ func (f *wiringFixture) driveA2APush(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	iface := a2a.ProjectInterface(f.revision,
-		a2a.RevisionSource{Organization: f.org, Project: f.project, Model: "model-pinned"},
+		a2a.RevisionSource{Project: f.project, Model: "model-pinned"},
 		a2a.PublishMeta{Name: "Wiring Planner", Version: "1", AuthScheme: "bearer",
 			PushNotifications: true,
 			InputModes:        []string{"text/plain"}, OutputModes: []string{"application/json"}})

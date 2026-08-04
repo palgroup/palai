@@ -27,8 +27,8 @@ func (s stubIfaceStore) ResolvePublic(_ context.Context, id string) (a2a.Publish
 	return a2a.PublishedInterface{}, false, nil
 }
 
-func (s stubIfaceStore) Get(_ context.Context, org, project, id string) (a2a.PublishedInterface, bool, error) {
-	if id == s.iface.ID && org == s.iface.Organization && project == s.iface.Project {
+func (s stubIfaceStore) Get(_ context.Context, project, id string) (a2a.PublishedInterface, bool, error) {
+	if id == s.iface.ID && project == s.iface.Project {
 		return s.iface, true, nil
 	}
 	return a2a.PublishedInterface{}, false, nil
@@ -51,7 +51,7 @@ func (stubOrgResolver) ResolveOrganization(context.Context, string) (string, err
 // this is a live-wiring proof, not dead code.
 func TestA2ARouterWiringEnforcesAuthBoundary(t *testing.T) {
 	iface := a2a.PublishedInterface{
-		ID: "a2aif_wire", Organization: "org_1", Project: "prj_1",
+		ID: "a2aif_wire", Project: "prj_1",
 		Name: "Wired", Version: "1", Streaming: true, ExtendedCard: true, AuthScheme: "bearer",
 	}
 	srv := &a2a.Server{
@@ -84,7 +84,7 @@ func TestA2ARouterWiringEnforcesAuthBoundary(t *testing.T) {
 // mounted the backing surface. A binary that wires no A2A store advertises no `a2a` capability, so the
 // discovery lie (advertise a2a while every A2A route 404s) cannot recur.
 func TestA2ACapabilityAdvertisedOnlyWhenMounted(t *testing.T) {
-	iface := a2a.PublishedInterface{ID: "a2aif_wire", Organization: "org_1", Project: "prj_1", Name: "Wired", Version: "1"}
+	iface := a2a.PublishedInterface{ID: "a2aif_wire", Project: "prj_1", Name: "Wired", Version: "1"}
 	srv := &a2a.Server{Interfaces: stubIfaceStore{iface: iface}, ScopeFunc: newA2AScopeFunc(stubOrgResolver{}), BaseURL: "https://cp.test"}
 
 	mounted := NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil,
@@ -148,7 +148,7 @@ func get(t *testing.T, url, auth string) int {
 // the SUP-2 rule applied to an interface comparison.
 func TestA2APushSurfaceStaysUnmountedWithoutAConfiguredPusher(t *testing.T) {
 	iface := a2a.PublishedInterface{
-		ID: "a2aif_wire", Organization: "org_1", Project: "prj_1",
+		ID: "a2aif_wire", Project: "prj_1",
 		Name: "Wired", Version: "1", PushNotifications: true, AuthScheme: "bearer",
 	}
 	srv := NewA2AServer(nil, stubIfaceStore{iface: iface}, nil, AdmissionLimits{}, "https://cp.test", nil)
@@ -183,7 +183,7 @@ func TestA2APushSurfaceStaysUnmountedWithoutAConfiguredPusher(t *testing.T) {
 // dishonest as the reverse, and both directions now derive from the same condition.
 func TestA2APushMountsOnlyWithAConfiguredPusher(t *testing.T) {
 	iface := a2a.PublishedInterface{
-		ID: "a2aif_wire", Organization: "org_1", Project: "prj_1",
+		ID: "a2aif_wire", Project: "prj_1",
 		Name: "Wired", Version: "1", PushNotifications: true, AuthScheme: "bearer",
 	}
 	pusher := a2a.NewWebhookPusher(webhook.NewSender(), a2a.PushPolicy{AllowedHosts: []string{"sink.example.test"}})
@@ -234,16 +234,16 @@ func TestA2APushMountsOnlyWithAConfiguredPusher(t *testing.T) {
 // stubTasks is an empty Tasks store: every lookup misses, which is enough to prove the ROUTE is mounted.
 type stubTasks struct{}
 
-func (stubTasks) Put(context.Context, string, string, a2a.TaskRef) error { return nil }
-func (stubTasks) GetRef(context.Context, string, string, string, string) (a2a.TaskRef, bool, error) {
+func (stubTasks) Put(context.Context, string, a2a.TaskRef) error { return nil }
+func (stubTasks) GetRef(context.Context, string, string, string) (a2a.TaskRef, bool, error) {
 	return a2a.TaskRef{}, false, nil
 }
-func (stubTasks) GetRefByRun(context.Context, string, string, string, string) (a2a.TaskRef, bool, error) {
+func (stubTasks) GetRefByRun(context.Context, string, string, string) (a2a.TaskRef, bool, error) {
 	return a2a.TaskRef{}, false, nil
 }
-func (stubTasks) List(context.Context, string, string, string, int) ([]a2a.TaskRef, error) {
+func (stubTasks) List(context.Context, string, string, int) ([]a2a.TaskRef, error) {
 	return nil, nil
 }
-func (stubTasks) SetPushConfigs(context.Context, string, string, string, string, []a2a.PushNotificationConfig) error {
+func (stubTasks) SetPushConfigs(context.Context, string, string, string, []a2a.PushNotificationConfig) error {
 	return nil
 }

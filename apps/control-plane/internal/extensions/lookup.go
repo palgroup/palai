@@ -171,7 +171,6 @@ func (s *Store) remoteExec(name, canonical string, revisionNumber int, configJSO
 			AttemptID:   fmt.Sprintf("%s#%d", env.Scope.RunID, env.Fence),
 			RequestHash: toolbroker.RequestHash(name, args),
 			Arguments:   args,
-			Org:         env.Scope.Org,
 			Project:     env.Scope.Project,
 			SecretRef:   ref,
 			Fence:       env.Fence,
@@ -220,7 +219,7 @@ func (s *Store) mcpTool(ctx context.Context, project, runID, name, description s
 		ReplayClass:  toolbroker.ReplayClass(replayClass),
 		Exec: func(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
 			return s.mcp.Call(ctx, mcp.CallScope{
-				Org: env.Scope.Org, Project: env.Scope.Project,
+				Project: env.Scope.Project,
 				SessionID: env.Scope.SessionID, ResponseID: env.Scope.ResponseID,
 				RunID: env.Scope.RunID, CallID: string(env.CallID),
 			}, cc, remoteName, args)

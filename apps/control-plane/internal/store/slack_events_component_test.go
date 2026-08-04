@@ -305,7 +305,7 @@ func newSlackFixture(t *testing.T) *slackFixture {
 		repo: repo, pool: pool, secret: []byte("component-signing-secret-not-a-credential"),
 		botToken: []byte("xoxb-component-fake-not-a-credential"),
 		appToken: []byte("xapp-1-component-fake-not-a-credential"),
-		org:      newID("org"), project: newID("prj"), principal: newID("prin"),
+		project: newID("prj"), principal: newID("prin"),
 		revision: newID("arev"), team: strings.ToUpper(newID("T")), botUser: newID("Ubot"),
 		slack: &fakeSlackWebAPI{},
 	}

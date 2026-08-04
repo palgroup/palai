@@ -37,7 +37,6 @@ var (
 // on_terminal {outcome}; before_repository_publish {operation, branch, ...}. The org/project scope selects the
 // project's hooks; run/session/response identify the journal a deny is recorded on.
 type HookEvent struct {
-	Org        string
 	Project    string
 	SessionID  string
 	ResponseID string

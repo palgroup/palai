@@ -73,7 +73,6 @@ const (
 // connection read or the resolve itself becomes an amplification surface (storage/queries/slack.sql says so).
 type SlackConnectionRef struct {
 	ID           string
-	Org          string
 	Project      string
 	TeamID       string
 	EnterpriseID string

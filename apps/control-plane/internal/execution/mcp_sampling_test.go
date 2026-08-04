@@ -71,7 +71,7 @@ const samplingParams = `{"messages":[{"role":"user","content":{"type":"text","te
 // actually CUTS OFF at Admit when the sampling call runs past the connection's budget.
 func TestSamplingEnabledRoutesBrokeredBudgetedVisibleStep(t *testing.T) {
 	ctx := context.Background()
-	scope := mcp.CallScope{Org: "org", Project: "proj", SessionID: "sess", ResponseID: "resp", RunID: "run", CallID: "call"}
+	scope := mcp.CallScope{Project: "proj", SessionID: "sess", ResponseID: "resp", RunID: "run", CallID: "call"}
 
 	// Within budget: the step is routed and both events are visible + tagged, and the result carries the
 	// provider's completion text.
@@ -135,7 +135,7 @@ func TestSamplingEnabledRoutesBrokeredBudgetedVisibleStep(t *testing.T) {
 // the denial rather than claim a completion.
 func TestSamplingProviderErrorIsNotACompletion(t *testing.T) {
 	ctx := context.Background()
-	scope := mcp.CallScope{Org: "org", Project: "proj", SessionID: "sess", ResponseID: "resp", RunID: "run", CallID: "call"}
+	scope := mcp.CallScope{Project: "proj", SessionID: "sess", ResponseID: "resp", RunID: "run", CallID: "call"}
 	broker := modelbroker.New(modelbroker.Config{
 		Adapters: map[string]modelbroker.ModelAdapter{"fake": fake.Adapter{Script: fake.Script{
 			Model: "fake-sampling-model",

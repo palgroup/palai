@@ -47,7 +47,6 @@ func NewWebhookStore(pool *pgxpool.Pool) *WebhookStore { return &WebhookStore{po
 
 type endpointCursor struct {
 	ID          string
-	Org         string
 	Project     string
 	Filter      []string
 	APIRevision string
@@ -64,7 +63,6 @@ type journalEvent struct {
 
 type deliveryInsert struct {
 	ID         string
-	Org        string
 	Project    string
 	EndpointID string
 	SessionID  string
@@ -75,7 +73,6 @@ type deliveryInsert struct {
 
 type dueDelivery struct {
 	ID                 string
-	Org                string
 	Project            string
 	SessionID          string
 	EndpointID         string
@@ -113,7 +110,7 @@ func (s *WebhookStore) FanOutEndpoints(ctx context.Context) ([]endpointCursor, e
 	var out []endpointCursor
 	for rows.Next() {
 		var e endpointCursor
-		if err := rows.Scan(&e.ID, &e.Org, &e.Project, &e.Filter, &e.APIRevision, &e.Cursor); err != nil {
+		if err := rows.Scan(&e.ID, &e.Project, &e.Filter, &e.APIRevision, &e.Cursor); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -148,7 +145,7 @@ func (s *WebhookStore) ReadJournalForEndpoint(ctx context.Context, project strin
 // InsertDelivery materializes a delivery (idempotent on (endpoint, event)).
 func (s *WebhookStore) InsertDelivery(ctx context.Context, d deliveryInsert) error {
 	_, err := s.pool.Exec(ctx, storage.Query("InsertDelivery"),
-		d.ID, d.Org, d.Project, d.EndpointID, d.SessionID, d.EventID, d.EventType, d.Payload)
+		d.ID, d.Project, d.EndpointID, d.SessionID, d.EventID, d.EventType, d.Payload)
 	return err
 }
 
@@ -170,7 +167,7 @@ func (s *WebhookStore) DueDeliveries(ctx context.Context, limit int) ([]dueDeliv
 		var d dueDelivery
 		var fixedHeaders []byte
 		if err := rows.Scan(
-			&d.ID, &d.Org, &d.Project, &d.SessionID, &d.EndpointID, &d.EventID, &d.EventType,
+			&d.ID, &d.Project, &d.SessionID, &d.EndpointID, &d.EventID, &d.EventType,
 			&d.Payload, &d.AttemptCount, &d.FirstAttemptAt,
 			&d.URL, &d.AllowPrivate, &d.TimeoutMS, &d.MaxAttempts, &d.RetryWindowSeconds,
 			&d.SecretRef, &d.SecretRefNext, &fixedHeaders, &d.APIRevision,

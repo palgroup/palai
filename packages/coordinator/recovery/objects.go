@@ -51,7 +51,6 @@ func New(pool *pgxpool.Pool) *Objects {
 type PersistInput struct {
 	CheckpointID        string
 	BoundaryID          string
-	Organization        string
 	Project             string
 	RunID               string
 	AttemptID           string

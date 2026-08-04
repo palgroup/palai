@@ -156,7 +156,7 @@ func scanQueueConnectionItem(rows pgx.Rows) (QueueConnectionItem, error) {
 // not re-read them.
 type queueConn struct {
 	id            string
-	org, project  string
+	project       string
 	capacity      int
 	visibility    time.Duration
 	maxDeliveries int
@@ -173,7 +173,7 @@ func (s *QueueStore) loadConn(ctx context.Context, project, connID string) (queu
 	var enabled bool
 	var visSecs int
 	if err := s.pool.QueryRow(ctx, storage.Query("GetQueueConnection"), connID, project).Scan(
-		&c.id, &c.org, &c.project, &name, &kind, &direction, &c.capacity, &visSecs, &c.maxDeliveries, &enabled, &c.config,
+		&c.id, &c.project, &name, &kind, &direction, &c.capacity, &visSecs, &c.maxDeliveries, &enabled, &c.config,
 	); err != nil {
 		return queueConn{}, fmt.Errorf("load queue connection %s: %w", connID, err)
 	}
@@ -198,7 +198,7 @@ func (s *QueueStore) sweepConnections(ctx context.Context, direction string) ([]
 	for rows.Next() {
 		var c queueConn
 		var visSecs int
-		if err := rows.Scan(&c.id, &c.org, &c.project, &c.capacity, &visSecs, &c.maxDeliveries, &c.config); err != nil {
+		if err := rows.Scan(&c.id, &c.project, &c.capacity, &visSecs, &c.maxDeliveries, &c.config); err != nil {
 			return nil, err
 		}
 		c.visibility = time.Duration(visSecs) * time.Second
@@ -246,7 +246,7 @@ func (q *PGQueue) Publish(ctx context.Context, idempotencyKey string, body []byt
 		return queue.ErrQueueFull
 	}
 	if _, err := q.store.pool.Exec(ctx, storage.Query("EnqueueQueueMessage"),
-		newID("qmsg"), q.conn.org, q.conn.project, q.conn.id, idempotencyKey, body); err != nil {
+		newID("qmsg"), q.conn.project, q.conn.id, idempotencyKey, body); err != nil {
 		return fmt.Errorf("enqueue queue message: %w", err)
 	}
 	return nil
@@ -355,7 +355,7 @@ func (o *PGOutbox) Enqueue(ctx context.Context, destinationKey string, payload [
 	}
 	ctx = storage.ScopeToTenant(ctx, o.conn.project)
 	tag, err := o.store.pool.Exec(ctx, storage.Query("EnqueueQueueDelivery"),
-		newID("qdel"), o.conn.org, o.conn.project, o.conn.id, destinationKey, payload, maxAttempts)
+		newID("qdel"), o.conn.project, o.conn.id, destinationKey, payload, maxAttempts)
 	if err != nil {
 		return false, fmt.Errorf("enqueue queue delivery: %w", err)
 	}

@@ -262,7 +262,7 @@ func newTestSocket(t *testing.T, p *fakeSocketPeer, sink *fakeSocketSink) (*Slac
 	var lines []string
 	s := &SlackSocket{
 		sink:    sink,
-		secrets: func(_, ref string) ([]byte, error) { return []byte(fakeAppToken), nil },
+		secrets: func(ref string) ([]byte, error) { return []byte(fakeAppToken), nil },
 		doer:    p.srv.Client(),
 		apiBase: p.srv.URL,
 		teamID:  sink.conn.TeamID,
@@ -282,7 +282,7 @@ func newTestSocket(t *testing.T, p *fakeSocketPeer, sink *fakeSocketSink) (*Slac
 
 func testConnRef() api.SlackConnectionRef {
 	return api.SlackConnectionRef{
-		ID: "slkc_test", Org: "org_test", Project: "proj_test",
+		ID: "slkc_test", Project: "proj_test",
 		TeamID: "T0SOCKET", BotUserID: "Ubot", AppTokenRef: "slack/app", RunPolicy: []byte(`{}`),
 	}
 }

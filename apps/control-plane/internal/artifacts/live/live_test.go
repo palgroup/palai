@@ -126,7 +126,7 @@ func TestLiveArtifactWriteRealProviderRun(t *testing.T) {
 	writer := artifacts.NewWriter(s3, pool)
 	org, project, runID := seedRun(t, pool)
 
-	art, err := writer.Write(ctx, artifacts.WriteRequest{Organization: org, Project: project, RunID: runID, Content: output})
+	art, err := writer.Write(ctx, artifacts.WriteRequest{Project: project, RunID: runID, Content: output})
 	if err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}

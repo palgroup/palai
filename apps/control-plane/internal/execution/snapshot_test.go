@@ -39,7 +39,7 @@ func TestSnapshotCaptureRejectsOversizeBeforePut(t *testing.T) {
 	store := &countingStore{}
 	sink := NewSnapshotSink(store, nil) // nil spine: the overflow returns before any spine call
 	_, err := sink.Capture(context.Background(), SnapshotCaptureInput{
-		SnapshotID: "snap_x", Organization: "o", Project: "p", WorkspaceID: "w", AllocationID: "a", HostPath: dir,
+		SnapshotID: "snap_x", Project: "p", WorkspaceID: "w", AllocationID: "a", HostPath: dir,
 	})
 	if err == nil {
 		t.Fatal("Capture(oversize) returned nil, want the size-bound rejection")

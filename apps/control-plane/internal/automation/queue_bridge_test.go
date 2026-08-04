@@ -92,7 +92,7 @@ func TestQueueHTTPSinkRefusesUnvettedDestinations(t *testing.T) {
 //     the run carries;
 //   - an unmappable body is an error the caller turns into a dead-letter, never a run.
 func TestQueueRunInputIsAPureFunctionOfTheMessage(t *testing.T) {
-	c := queueConn{id: "qconn_1", org: "org_own", project: "prj_own"}
+	c := queueConn{id: "qconn_1", project: "prj_own"}
 	body := []byte(`{"source":"orders.v1","source_tenant":"org_victim","source_event_id":"evt-1","data":{"n":1}}`)
 
 	first, err := queueRunInput(c, queue.Message{Handle: "h1", IdempotencyKey: "k1", Body: body, Attempt: 1})

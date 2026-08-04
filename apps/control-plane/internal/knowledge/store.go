@@ -317,7 +317,7 @@ func (s *Store) runBuild(ctx context.Context, project string, kb knowledgeBaseRo
 		return buildResult{}, fmt.Errorf("next document version: %w", err)
 	}
 	docRevID := middleware.NewID("kdoc")
-	objectKey := fmt.Sprintf("%s/%s/%s/%s/%d", project, kb.id, src.id, docVersion)
+	objectKey := fmt.Sprintf("%s/%s/%s/%d", project, kb.id, src.id, docVersion)
 	if _, err := tx.Exec(ctx, storage.Query("InsertDocumentRevision"),
 		docRevID, project, kb.id, src.id, docVersion, checksum,
 		len(content), objectKey, content, src.parser, provenanceJSON(src, docVersion)); err != nil {

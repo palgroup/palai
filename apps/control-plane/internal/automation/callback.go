@@ -21,7 +21,6 @@ import (
 // callbackDue is one run-terminal delivery whose callback is not yet armed — the sweep's unit of work.
 type callbackDue struct {
 	deliveryID    string
-	org           string
 	project       string
 	sessionID     string
 	responseID    string
@@ -68,7 +67,7 @@ func (s *TriggerStore) armDueCallbacks(ctx context.Context, limit int, log func(
 	var due []callbackDue
 	for rows.Next() {
 		var d callbackDue
-		if err := rows.Scan(&d.deliveryID, &d.org, &d.project, &d.sessionID, &d.responseID, &d.runID,
+		if err := rows.Scan(&d.deliveryID, &d.project, &d.sessionID, &d.responseID, &d.runID,
 			&d.triggerID, &d.endpointID, &d.outputMapping, &d.status, &d.output); err != nil {
 			rows.Close()
 			return err
@@ -132,7 +131,7 @@ func (s *TriggerStore) armCallback(ctx context.Context, d callbackDue) error {
 	// down, which stalls the whole sweep, not just this callback. Add terminal-error classification here only
 	// if a reachable non-retryable enqueue error ever appears.
 	if _, err := tx.Exec(ctx, storage.Query("InsertDelivery"),
-		newID("whd"), d.org, d.project, d.endpointID, d.sessionID, "cb:"+d.deliveryID, "trigger.callback.v1", envelope); err != nil {
+		newID("whd"), d.project, d.endpointID, d.sessionID, "cb:"+d.deliveryID, "trigger.callback.v1", envelope); err != nil {
 		return fmt.Errorf("enqueue callback delivery: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("ArmDeliveryCallback"), d.deliveryID, d.project); err != nil {

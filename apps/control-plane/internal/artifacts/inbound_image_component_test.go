@@ -244,11 +244,11 @@ func TestReadRunArtifactRefusesForeignRunsForeignTenantsAndOversize(t *testing.T
 	otherOrg, otherProject, _ := h.seedRun(t)
 
 	content := []byte("** BUILD SUCCEEDED **\n")
-	mine, err := h.writer.Write(ctx, WriteRequest{Organization: org, Project: project, RunID: runID, Content: content})
+	mine, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: runID, Content: content})
 	if err != nil {
 		t.Fatalf("write this run's artifact: %v", err)
 	}
-	theirs, err := h.writer.Write(ctx, WriteRequest{Organization: org, Project: project, RunID: otherRun, Content: content})
+	theirs, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: otherRun, Content: content})
 	if err != nil {
 		t.Fatalf("write the other run's artifact: %v", err)
 	}

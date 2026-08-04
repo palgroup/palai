@@ -138,7 +138,7 @@ func (p *WebhookPump) fanOut(ctx context.Context) error {
 		for _, ev := range events {
 			body := buildEnvelope(ev, ep)
 			if err := p.store.InsertDelivery(ctx, deliveryInsert{
-				ID: newID("whd"), Org: ep.Org, Project: ep.Project, EndpointID: ep.ID,
+				ID: newID("whd"), Project: ep.Project, EndpointID: ep.ID,
 				SessionID: ev.SessionID, EventID: ev.EventID, EventType: ev.Type, Payload: body,
 			}); err != nil {
 				return fmt.Errorf("insert delivery: %w", err)

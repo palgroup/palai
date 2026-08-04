@@ -198,7 +198,7 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 	// The AUTHORIZATION policy the step-7 decision is checked against, read through the production seam
 	// (SLK-004 promised this enforcement wiring to T11): the allow-list was written at install and is now
 	// READABLE, so a decision can be refused before any command is enqueued.
-	policy, err := store.SlackAuthorizationPolicyFor(ctx, resolved.Org, resolved.Project, conn.ID)
+	policy, err := store.SlackAuthorizationPolicyFor(ctx, resolved.Project, conn.ID)
 	if err != nil {
 		t.Fatalf("step 1: read authorization policy: %v", err)
 	}

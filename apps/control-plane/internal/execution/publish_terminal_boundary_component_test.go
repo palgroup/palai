@@ -148,7 +148,7 @@ func (f *terminalPublishFixture) approvedPush(t *testing.T) string {
 	ctx := context.Background()
 	reg := newPublicationRegistry(f.spine, f.orch.canPublish)
 	out, err := reg.RequestPublication(ctx, toolbroker.TaskScope{
-		Org: f.tenant.Organization, Project: f.tenant.Project,
+		Project:   f.tenant.Project,
 		SessionID: f.sessionID, RunID: f.runID, ResponseID: f.responseID,
 	}, map[string]any{"operation": "push_branch", "head_sha": f.head})
 	if err != nil {

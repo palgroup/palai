@@ -59,7 +59,7 @@ func newRegistrationFixture(t *testing.T, repo *store.Store, org, project string
 		repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		api.SSEConfig{}, nil, nil, api.WithSlackConnections(registry)))
 	t.Cleanup(ts.Close)
-	return &registrationFixture{url: ts.URL, org: org, project: project, registry: registry}
+	return &registrationFixture{url: ts.URL, project: project, registry: registry}
 }
 
 func (f *registrationFixture) register(t *testing.T, body string) (*http.Response, string) {

@@ -110,7 +110,7 @@ func newHarness(t *testing.T) *harness {
 	}); err != nil {
 		t.Fatalf("ReviseTrigger error = %v", err)
 	}
-	return &harness{pool: pool, store: automation.NewScheduleStore(pool, triggers), org: org, proj: proj, principal: principal, triggerID: triggerID}
+	return &harness{pool: pool, store: automation.NewScheduleStore(pool, triggers), proj: proj, principal: principal, triggerID: triggerID}
 }
 
 // seedSchedule inserts a per-minute cron schedule already due at `nextFireAt`.

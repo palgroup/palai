@@ -43,7 +43,6 @@ import (
 // Tenant is the org/project a worker and its jobs are scoped to. It comes from the enrolling worker's
 // verified enrollment scope, never from anything the worker sends over the wire.
 type Tenant struct {
-	Organization string
 	Project      string
 }
 

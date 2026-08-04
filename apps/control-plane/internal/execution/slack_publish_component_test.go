@@ -280,7 +280,7 @@ func (h *publishHarness) execEnv() toolbroker.ExecEnv {
 		WorkspaceRoot: h.root,
 		Publications:  newPublicationRegistry(h.spine, nil),
 		Scope: toolbroker.TaskScope{
-			Org: h.tenant.Organization, Project: h.tenant.Project,
+			Project:   h.tenant.Project,
 			SessionID: h.sessionID, RunID: h.runID, ResponseID: h.respID,
 		},
 	}

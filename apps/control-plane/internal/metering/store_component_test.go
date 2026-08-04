@@ -144,7 +144,7 @@ func TestUsageSummaryTotalsTheCallersScope(t *testing.T) {
 		t.Fatalf("project-A summary carried %d budget(s), want the 1 that binds it", budgets)
 	}
 	// THE ORG-WIDE HALF THIS TEST ONCE ASSERTED HERE IS GONE, AND NOT BY THIS TASK'S CHOICE. It drove
-	// middleware.Scope{Organization: org, Project: ""} directly into the store, bypassing HTTP — but
+	// middleware.Scope{Project: ""} directly into the store, bypassing HTTP — but
 	// storage.OpenPool's PrepareConn has refused a non-orgOnly, empty-project acquisition since A.2 Task 1
 	// (ErrProjectRequired, storage/tenant.go), and coordinator.Store.VerifyAPIKey has rejected a
 	// projectless key even earlier ("A key with no project is rejected: the LP-0 surface only admits

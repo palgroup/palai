@@ -13,7 +13,6 @@ import "context"
 // are session-scoped (they outlive a run, spec §11); primitive fields keep the broker free of the
 // coordinator's tenant type.
 type TaskScope struct {
-	Org        string
 	Project    string
 	SessionID  string
 	RunID      string

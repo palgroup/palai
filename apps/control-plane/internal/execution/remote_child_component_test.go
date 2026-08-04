@@ -159,7 +159,7 @@ func newRemoteChildFixture(t *testing.T, peer *fakeRemotePeer, authRef string) *
 
 	store := a2a.NewStore(cs.Pool(), func(prefix string) string { return pinnedID(prefix) })
 	agentID, err := store.RegisterRemoteAgent(ctx, a2a.RemoteAgent{
-		Organization: tenant.Organization, Project: tenant.Project, Name: "remote-specialist",
+		Project: tenant.Project, Name: "remote-specialist",
 		CardURL: peer.cardURL(), Endpoint: peer.endpoint(), ProtocolVersion: a2a.ProtocolVersion,
 		AuthConnectionRef: authRef, DataPolicy: "minimum", TimeoutMS: 5000, MaxOutputBytes: 1 << 20,
 		AllowedInputModes: []string{"text/plain"}, AllowedOutputModes: []string{"text/plain"},

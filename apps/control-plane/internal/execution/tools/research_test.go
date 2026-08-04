@@ -238,7 +238,7 @@ type fakeResearchArtifactWriter struct {
 	logicalType string
 }
 
-func (f *fakeResearchArtifactWriter) WriteArtifact(_ context.Context, _, _, _ string, content []byte, mediaType, logicalType string, _ map[string]any) (string, error) {
+func (f *fakeResearchArtifactWriter) WriteArtifact(_ context.Context, _, _ string, content []byte, mediaType, logicalType string, _ map[string]any) (string, error) {
 	f.content = append([]byte(nil), content...)
 	f.mediaType, f.logicalType = mediaType, logicalType
 	return "art_research_1", nil
@@ -264,7 +264,7 @@ func TestResearchLargeBodyBoundedExcerptPlusArtifact(t *testing.T) {
 
 	// --- With an artifact store: bounded excerpt + full body persisted, hash pins the persisted bytes. ---
 	aw := &fakeResearchArtifactWriter{}
-	env := toolbroker.ExecEnv{Artifacts: aw, Scope: toolbroker.TaskScope{Org: "o", Project: "p", RunID: "run_1"}}
+	env := toolbroker.ExecEnv{Artifacts: aw, Scope: toolbroker.TaskScope{Project: "p", RunID: "run_1"}}
 	out, err := tool.Exec(context.Background(), env, map[string]any{"url": "https://example.com/"})
 	if err != nil {
 		t.Fatalf("research fetch (large) = %v, want success", err)

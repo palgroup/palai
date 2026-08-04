@@ -69,7 +69,7 @@ func TestLiveRepositoryCloneCredentialAbsent(t *testing.T) {
 		SecretsDir:    secrets,
 		WorkBranch:    "agent/live_ses/live_run",
 		Audience: repositories.Audience{
-			Organization: "org_live", Project: "prj_live", Run: "run_live", AttemptFence: 1, ToolCall: "tcall_live",
+			Project: "prj_live", Run: "run_live", AttemptFence: 1, ToolCall: "tcall_live",
 		},
 	})
 	if err != nil {
@@ -230,7 +230,7 @@ func TestLiveSlackBoundRepositoryClonesAtItsBaseBranch(t *testing.T) {
 		SecretsDir:    t.TempDir(),
 		WorkBranch:    "agent/live_ses_e22t3/live_run_e22t3",
 		Audience: repositories.Audience{
-			Organization: "org_live", Project: "prj_live", Run: "run_live_e22t3", AttemptFence: 1, ToolCall: "provision",
+			Project: "prj_live", Run: "run_live_e22t3", AttemptFence: 1, ToolCall: "provision",
 		},
 	})
 	if err != nil {
@@ -342,7 +342,7 @@ func TestLiveApprovedPushAndDraftPullRequest(t *testing.T) {
 	target := t.TempDir()
 	repoDir := filepath.Join(target, "repo")
 	audience := repositories.Audience{
-		Organization: "org_live", Project: "prj_live", Run: run, AttemptFence: 1, ToolCall: "publish",
+		Project: "prj_live", Run: run, AttemptFence: 1, ToolCall: "publish",
 	}
 	if _, err := repositories.Prepare(ctx, broker, repositories.Request{
 		CloneURL: cloneURL, RequestedRef: "", DefaultBranch: base, TargetDir: repoDir,
@@ -494,7 +494,7 @@ func TestLiveApprovedMergeRefusesAMovedHead(t *testing.T) {
 	target := t.TempDir()
 	repoDir := filepath.Join(target, "repo")
 	audience := repositories.Audience{
-		Organization: "org_live", Project: "prj_live", Run: run, AttemptFence: 1, ToolCall: "merge",
+		Project: "prj_live", Run: run, AttemptFence: 1, ToolCall: "merge",
 	}
 	if _, err := repositories.Prepare(ctx, broker, repositories.Request{
 		CloneURL: cloneURL, RequestedRef: "", DefaultBranch: base, TargetDir: repoDir,

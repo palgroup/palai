@@ -212,7 +212,7 @@ func TestCodingJourneyDeterministic(t *testing.T) {
 		for _, pub := range approved {
 			receipt, err := publisher.Publish(ctx, execution.PublishTarget{
 				Publication: pub, WorkspaceRoot: alloc,
-				Org: h.tenant.Organization, Project: h.tenant.Project, AttemptFence: 1,
+				Project: h.tenant.Project, AttemptFence: 1,
 			})
 			if err != nil {
 				t.Fatalf("publish %s: %v", pub.Operation, err)

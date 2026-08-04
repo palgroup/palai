@@ -611,7 +611,7 @@ func newTiedEndpointPair(t *testing.T, pool *pgxpool.Pool, store *WebhookStore, 
 	// disturbed relative to the other by the fixture itself.
 	mustExec(t, pool, `UPDATE webhook_endpoints SET created_at = $1 WHERE id = ANY($2)`, at, []string{first, second})
 
-	pair := tiedPair{org: org, project: project, high: max2(first, second), low: min2(first, second)}
+	pair := tiedPair{project: project, high: max2(first, second), low: min2(first, second)}
 	if reversed {
 		// Rewrite the pair so the id that sorts HIGH was inserted SECOND. Deleting and re-creating would mint
 		// new ids, so the physical order is changed by rewriting the row that has to move to the end.
@@ -640,7 +640,7 @@ func newTiedDeliveryTriple(t *testing.T, pool *pgxpool.Pool, store *WebhookStore
 			id, org, project, endpoint, session, randID("evt"), at)
 	}
 	sortDesc(made)
-	p := tiedPair{org: org, project: project, high: made[0], mid: made[1], low: made[2]}
+	p := tiedPair{project: project, high: made[0], mid: made[1], low: made[2]}
 	if reversed {
 		mustExec(t, pool, `UPDATE webhook_deliveries SET event_type = event_type WHERE id = ANY($1)`,
 			[]string{p.high, p.mid})

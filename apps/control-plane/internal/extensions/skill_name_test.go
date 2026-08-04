@@ -18,7 +18,7 @@ func TestCreateSkillRejectsUnsafeName(t *testing.T) {
 		"a\x00b", "bad\nname",
 	}
 	for _, name := range bad {
-		if _, err := s.CreateSkill(context.Background(), "org", "prj", name); !errors.Is(err, ErrInvalidSkillName) {
+		if _, err := s.CreateSkill(context.Background(), "prj", name); !errors.Is(err, ErrInvalidSkillName) {
 			t.Errorf("CreateSkill(%q) err = %v, want ErrInvalidSkillName", name, err)
 		}
 	}

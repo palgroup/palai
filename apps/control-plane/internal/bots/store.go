@@ -27,7 +27,6 @@ import (
 // Bot is one registered row.
 type Bot struct {
 	ID                  string
-	Organization        string
 	Project             string
 	Name                string
 	Kind                string

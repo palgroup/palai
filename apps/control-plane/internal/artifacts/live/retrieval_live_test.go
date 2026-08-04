@@ -108,7 +108,7 @@ func TestLiveArtifactRetrievalOverAPI(t *testing.T) {
 	pool := repo.Spine().Pool()
 	org, project, runID := seedRun(t, pool)
 	art, err := artifacts.NewWriter(s3, pool).Write(ctx, artifacts.WriteRequest{
-		Organization: org, Project: project, RunID: runID, Content: produced,
+		Project: project, RunID: runID, Content: produced,
 		MediaType: "text/plain", LogicalType: "log",
 	})
 	if err != nil {

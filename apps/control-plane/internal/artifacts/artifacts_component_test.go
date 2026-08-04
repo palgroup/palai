@@ -103,7 +103,7 @@ func TestArtifactPutRecordsRowAndBytes(t *testing.T) {
 	org, project, runID := h.seedRun(t)
 
 	content := []byte("terminal output: build passed in 3.2s\n")
-	art, err := h.writer.Write(ctx, WriteRequest{Organization: org, Project: project, RunID: runID, Content: content})
+	art, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: runID, Content: content})
 	if err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
@@ -164,7 +164,7 @@ func TestArtifactReadIsTenantScoped(t *testing.T) {
 	org, project, runID := h.seedRun(t)
 
 	content := []byte("tenant A private artifact bytes")
-	art, err := h.writer.Write(ctx, WriteRequest{Organization: org, Project: project, RunID: runID, Content: content})
+	art, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: runID, Content: content})
 	if err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
@@ -232,7 +232,7 @@ func TestStoreFalsePurgeDeletesArtifactBytes(t *testing.T) {
 	org, project, runID := h.seedExpiredStoreFalseRun(t)
 
 	content := []byte("store:false run terminal output — must not survive retention")
-	art, err := h.writer.Write(ctx, WriteRequest{Organization: org, Project: project, RunID: runID, Content: content})
+	art, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: runID, Content: content})
 	if err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}

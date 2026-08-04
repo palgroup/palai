@@ -63,7 +63,6 @@ func (s *Store) runRemoteHook(ctx context.Context, h loadedHook, ev HookEvent) (
 		AttemptID:   ev.RunID,
 		RequestHash: toolbroker.RequestHash(ev.Point, ev.Payload),
 		Arguments:   ev.Payload,
-		Org:         ev.Org,
 		Project:     ev.Project,
 		SecretRef:   h.SecretRef,
 		TimeoutMS:   int(hookTimeout(h.Category, h.TimeoutMS) / time.Millisecond),

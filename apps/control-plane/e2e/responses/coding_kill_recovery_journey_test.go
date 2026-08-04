@@ -184,7 +184,7 @@ func TestCodingJourneyWithKillRecoveryDeterministic(t *testing.T) {
 		for _, pub := range approved {
 			receipt, err := publisher.Publish(ctx, execution.PublishTarget{
 				Publication: pub, WorkspaceRoot: alloc,
-				Org: h.tenant.Organization, Project: h.tenant.Project, AttemptFence: 2,
+				Project: h.tenant.Project, AttemptFence: 2,
 			})
 			if err != nil {
 				t.Fatalf("publish %s: %v", pub.Operation, err)

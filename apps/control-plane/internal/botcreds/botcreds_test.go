@@ -51,8 +51,8 @@ type fakeSecrets struct {
 	err    error
 }
 
-func (f *fakeSecrets) Resolve(_ context.Context, org, name string) ([]byte, bool, error) {
-	f.asked, f.org = append(f.asked, name), org
+func (f *fakeSecrets) Resolve(_ context.Context, name string) ([]byte, bool, error) {
+	f.asked = append(f.asked, name)
 	if f.err != nil {
 		return nil, false, f.err
 	}
@@ -61,10 +61,6 @@ func (f *fakeSecrets) Resolve(_ context.Context, org, name string) ([]byte, bool
 		return nil, false, nil
 	}
 	return []byte(v), true, nil
-}
-
-func orgAlways(org string) OrganizationFor {
-	return func(context.Context, string) (string, error) { return org, nil }
 }
 
 func scope() middleware.Scope { return middleware.Scope{Project: "prj_1", Principal: "prin_1"} }
@@ -85,7 +81,7 @@ func TestOnlyTopLevelRefKeysAreResolved(t *testing.T) {
 	secrets := &fakeSecrets{sealed: map[string]string{
 		"slack-app-T1": "xapp-live", "slack-bot-T1": "xoxb-live", "anthropic-key": "sk-ant-SECRET",
 	}}
-	r := New(orgAlways("org_1"), registry, secrets)
+	r := New(registry, secrets)
 
 	out, err := r.ResolveBotCredentials(context.Background(), scope(), "bot_1")
 	if err != nil {
@@ -110,7 +106,7 @@ func TestOnlyTopLevelRefKeysAreResolved(t *testing.T) {
 func TestAForeignBotNeverReachesTheSecretStore(t *testing.T) {
 	registry := &fakeRegistry{missing: true}
 	secrets := &fakeSecrets{sealed: map[string]string{"slack-app-T1": "xapp-live"}}
-	r := New(orgAlways("org_1"), registry, secrets)
+	r := New(registry, secrets)
 
 	out, err := r.ResolveBotCredentials(context.Background(), scope(), "bot_someone_elses")
 	if err != nil {
@@ -139,7 +135,7 @@ func TestAnUnsealedOrUnusableHandleIsNamedRatherThanDropped(t *testing.T) {
 		"weird_ref":{"not":"a name"}
 	}`}
 	secrets := &fakeSecrets{sealed: map[string]string{"slack-app-T1": "xapp-live"}}
-	r := New(orgAlways("org_1"), registry, secrets)
+	r := New(registry, secrets)
 
 	out, err := r.ResolveBotCredentials(context.Background(), scope(), "bot_1")
 	if err != nil {
@@ -164,7 +160,7 @@ func TestAnUnsealedOrUnusableHandleIsNamedRatherThanDropped(t *testing.T) {
 // shuffle between calls, which turns any assertion a caller writes about it into a flake.
 func TestTheAnswerIsDeterministic(t *testing.T) {
 	registry := &fakeRegistry{config: `{"c_ref":"c","a_ref":"a","b_ref":"b","d_ref":"d"}`}
-	r := New(orgAlways("org_1"), registry, &fakeSecrets{})
+	r := New(registry, &fakeSecrets{})
 	want := []string{"a_ref", "b_ref", "c_ref", "d_ref"}
 	for i := 0; i < 8; i++ {
 		out, err := r.ResolveBotCredentials(context.Background(), scope(), "bot_1")
@@ -182,8 +178,7 @@ func TestTheAnswerIsDeterministic(t *testing.T) {
 func TestARowWithNoHandlesAnswersEmpty(t *testing.T) {
 	registry := &fakeRegistry{config: `{"team_id":"T1","allowed_approvers":["U1"]}`}
 	secrets := &fakeSecrets{}
-	orgCalls := 0
-	r := New(func(context.Context, string) (string, error) { orgCalls++; return "org_1", nil }, registry, secrets)
+	r := New(registry, secrets)
 
 	out, err := r.ResolveBotCredentials(context.Background(), scope(), "bot_1")
 	if err != nil {
@@ -195,40 +190,25 @@ func TestARowWithNoHandlesAnswersEmpty(t *testing.T) {
 	if len(out.Values) != 0 || len(out.Unresolved) != 0 {
 		t.Fatalf("values=%v unresolved=%v, want both empty", out.Values, out.Unresolved)
 	}
-	if orgCalls != 0 || len(secrets.asked) != 0 {
-		t.Fatalf("orgCalls=%d asked=%v, want neither touched", orgCalls, secrets.asked)
+	if len(secrets.asked) != 0 {
+		t.Fatalf("asked=%v, want the secret store untouched", secrets.asked)
 	}
 }
 
-// The organization comes from the caller's own verified project and is what the store is scoped by.
-// SecretStore.Resolve is org-keyed while the request scope no longer carries one, so this is the bridge
-// and getting it wrong would read another tenant's secrets under the right name.
-func TestTheSecretStoreIsScopedByTheCallersOwnOrganization(t *testing.T) {
-	registry := &fakeRegistry{config: `{"app_token_ref":"slack-app-T1"}`}
-	secrets := &fakeSecrets{sealed: map[string]string{"slack-app-T1": "xapp-live"}}
-	var gotProject string
-	r := New(func(_ context.Context, project string) (string, error) {
-		gotProject = project
-		return "org_from_" + project, nil
-	}, registry, secrets)
-
-	if _, err := r.ResolveBotCredentials(context.Background(), scope(), "bot_1"); err != nil {
-		t.Fatalf("ResolveBotCredentials: %v", err)
-	}
-	if gotProject != "prj_1" {
-		t.Fatalf("the organization was resolved for project %q, want the verified scope's prj_1", gotProject)
-	}
-	if secrets.org != "org_from_prj_1" {
-		t.Fatalf("the store was scoped to %q, want the caller's own organization", secrets.org)
-	}
-}
+// A.2 Task 6 DELETED TestTheSecretStoreIsScopedByTheCallersOwnOrganization, and this note replaces it
+// rather than the test being quietly dropped. It asserted that the resolver bridged the caller's project
+// to an ORGANIZATION and scoped the secret store by it. Migration 000066 keys secret_refs on the
+// INSTALLATION (the table carries no tenant column), so SecretStore.Resolve takes a name and nothing
+// else: there is no scoping argument left to get wrong, and a test that pinned one would be asserting a
+// boundary the deployment does not have. tests/security/tenancy's
+// TestSecretRefNamesAreInstallationWide is where that reach is now stated, in the honest direction.
 
 // A store failure is an error and never a partial answer: half a credential set is exactly the
 // half-configured start this whole path exists to prevent.
 func TestAStoreFailureIsAnErrorAndNotAPartialAnswer(t *testing.T) {
 	registry := &fakeRegistry{config: `{"app_token_ref":"slack-app-T1","bot_token_ref":"slack-bot-T1"}`}
 	secrets := &fakeSecrets{err: errors.New("decrypt secret ref: master key rotated")}
-	r := New(orgAlways("org_1"), registry, secrets)
+	r := New(registry, secrets)
 
 	out, err := r.ResolveBotCredentials(context.Background(), scope(), "bot_1")
 	if err == nil {

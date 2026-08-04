@@ -86,7 +86,7 @@ func TestLiveMCPSamplingBudgetedCutoff(t *testing.T) {
 		SamplingMaxTokens: 1,
 		TimeoutMS:         60_000,
 	}
-	scope := mcpclient.CallScope{Org: liveID("org"), Project: liveID("prj"), SessionID: liveID("ses"), ResponseID: liveID("rsp"), RunID: liveID("run"), CallID: liveID("cal")}
+	scope := mcpclient.CallScope{Project: liveID("prj"), SessionID: liveID("ses"), ResponseID: liveID("rsp"), RunID: liveID("run"), CallID: liveID("cal")}
 
 	out, err := manager.Call(ctx, scope, conn, "sample", map[string]any{"message": "Say hello in one short sentence."})
 	if err != nil {

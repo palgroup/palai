@@ -143,9 +143,9 @@ func TestExtensibilityJourneyDeterministic(t *testing.T) {
 	ext.driver.setCrash(false)
 	probeBroker := toolbroker.New()
 	probeBroker.SetLookup(func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
-		return ext.reg.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
+		return ext.reg.LookupTool(ctx, env.Scope.Project, env.Scope.RunID, name)
 	})
-	probeEnv := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: h.tenant.Organization, Project: h.tenant.Project, RunID: run2}}
+	probeEnv := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: h.tenant.Project, RunID: run2}}
 	_, probeErr := probeBroker.Execute(ctx, contracts.ToolCallID("tc_breaker_probe"), ext.mcpShort, map[string]any{"message": "shed"}, 2, probeEnv)
 	breakerTripped := errors.Is(probeErr, mcpclient.ErrToolUnavailable)
 	if !breakerTripped {

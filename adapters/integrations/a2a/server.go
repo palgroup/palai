@@ -21,7 +21,7 @@ const pathPrefix = "/v1/a2a/interfaces/"
 // bearer identity the outer auth middleware established — NEVER from anything the A2A client supplies (§38.6).
 // Principal is the verified key's principal; admission needs it (the idempotency record references it), so it
 // is carried here from the authenticated identity, never a message field.
-type Scope struct{ Organization, Project, Principal string }
+type Scope struct{ Project, Principal string }
 
 // ScopeFunc extracts the authenticated tenant from a request. Production wires it to middleware.ScopeFrom;
 // tests wire a deterministic one. It returns ok=false when the request is unauthenticated (401 on authed
@@ -40,7 +40,7 @@ type InterfaceStore interface {
 // and invents NO run identity (§38.2, §34.1): RunResult.RunID/SessionID are the platform-minted canonical
 // ids, returned here, never supplied by the A2A client.
 type RunRequest struct {
-	Org, Project    string
+	Project         string
 	Principal       string
 	Input           string
 	IdempotencyKey  string

@@ -62,7 +62,7 @@ func TestHookWorkerBeforeToolDenyAndAllow(t *testing.T) {
 	ext := extensions.New(pool)
 	ext.SetRemoteInvoker(
 		remotehttp.NewExecutor(remotehttp.NewOperations(pool)),
-		func(_, _ string) ([]byte, error) { return []byte("component-hook-secret"), nil },
+		func(_ string) ([]byte, error) { return []byte("component-hook-secret"), nil },
 	)
 
 	var pushRuns, fileRuns int32

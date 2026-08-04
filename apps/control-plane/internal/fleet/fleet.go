@@ -79,7 +79,6 @@ const DefaultPoolID = "pool_default"
 // both call themselves "runner-local" are two rows and two certificates.
 type Runner struct {
 	ID           string
-	Organization string
 	Project      string
 	PoolID       string
 	// Label is what the enrolling machine called itself (PALAI_RUNNER_ID). It is operator-facing

@@ -19,7 +19,7 @@ func TestBrokerMintMaterializeRevoke(t *testing.T) {
 	b := NewFixtureBrokerWithToken(token)
 	dir := t.TempDir()
 
-	cred, err := b.Mint(context.Background(), ScopeRead, Audience{Organization: "org_x", Run: "run_y", ToolCall: "tcall_z"})
+	cred, err := b.Mint(context.Background(), ScopeRead, Audience{Run: "run_y", ToolCall: "tcall_z"})
 	if err != nil {
 		t.Fatalf("Mint() error = %v", err)
 	}
@@ -82,7 +82,7 @@ func TestTokenBrokerMaterializesSuppliedCredential(t *testing.T) {
 	const token = "palai-REPMARK-binding-token-xx77"
 	b := NewTokenBroker(token)
 
-	cred, err := b.Mint(context.Background(), ScopeRead, Audience{Organization: "org_x", Run: "run_y"})
+	cred, err := b.Mint(context.Background(), ScopeRead, Audience{Run: "run_y"})
 	if err != nil {
 		t.Fatalf("Mint() error = %v", err)
 	}

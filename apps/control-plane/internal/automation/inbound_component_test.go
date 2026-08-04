@@ -129,7 +129,7 @@ func newInboundHarness(t *testing.T, maxInflight, backlogMax int) *inboundHarnes
 	t.Cleanup(srv.Close)
 
 	return &inboundHarness{t: t, pool: pool, store: ts, srv: srv, audit: audit, secret: secret,
-		secretsByRef: secretsByRef, org: org, proj: proj, principal: principal, token: token, triggerID: triggerID}
+		secretsByRef: secretsByRef, proj: proj, principal: principal, token: token, triggerID: triggerID}
 }
 
 // post signs body under the given secret + event id and POSTs it to the UNAUTHENTICATED inbound route.

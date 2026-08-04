@@ -70,7 +70,7 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 		strict                              bool
 	}
 	err = tx.QueryRow(ctx, storage.Query("ResolveRunnerPool"), reg.PoolID).
-		Scan(&pool.id, &pool.org, &pool.project, &pool.posture, &pool.os, &pool.arch, &pool.strict)
+		Scan(&pool.id, &pool.project, &pool.posture, &pool.os, &pool.arch, &pool.strict)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Runner{}, ErrUnknownPool
 	}
@@ -117,7 +117,7 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 	// for a human would have to re-enrol, and the operator's approval would be spent on a row nothing can
 	// reach. `pending` is what keeps it out of the rendezvous, not the absence of an identity.
 	row := Runner{
-		ID: reg.ID, Organization: pool.org, Project: pool.project, PoolID: pool.id,
+		ID: reg.ID, Project: pool.project, PoolID: pool.id,
 		Label: reg.Label, DNS: reg.DNS, PublicKeySHA256: reg.PublicKeySHA256,
 		State: "active", OS: reg.OS, Arch: reg.Arch, Posture: pool.posture, Capacity: reg.Capacity,
 	}

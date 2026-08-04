@@ -94,9 +94,9 @@ func TestABindingsOwnCredentialPublishesWithNoGitHubApp(t *testing.T) {
 	// The one thing a unit test cannot provide is the secret store's bytes (repositoryConnectionSecret is
 	// DB-only by design). Everything else below is what production built.
 	const token = "demo-local-token-value"
-	var askedOrg, askedRef string
+	var askedRef string
 	repo.ConnectionSecrets = func(ref string) ([]byte, error) {
-		askedOrg, askedRef = org, ref
+		askedRef = ref
 		return []byte(token), nil
 	}
 
@@ -108,15 +108,14 @@ func TestABindingsOwnCredentialPublishesWithNoGitHubApp(t *testing.T) {
 			ID: "pub_appless", RunID: "run_1", Operation: "push_branch",
 			Remote: bare, Branch: "agent/ses/appless", HeadSHA: head, State: "approved",
 		},
-		WorkspaceRoot: root, Org: "org_local", Project: "prj_local", AttemptFence: 7,
+		WorkspaceRoot: root, Project: "prj_local", AttemptFence: 7,
 		ConnectionRef: "demo-local-token", Identity: "local/demo-target",
 	})
 	if err != nil {
 		t.Fatalf("an approved push under the binding's own credential failed on an App-less deployment: %v", err)
 	}
-	if askedRef != "demo-local-token" || askedOrg != "org_local" {
-		t.Fatalf("the publisher resolved (org=%q ref=%q); want the BINDING's own ref under the run's org",
-			askedOrg, askedRef)
+	if askedRef != "demo-local-token" {
+		t.Fatalf("the publisher resolved ref=%q; want the BINDING's own ref", askedRef)
 	}
 	if receipt["remote_sha"] != head {
 		t.Fatalf("receipt remote_sha = %v, want the approved head %q", receipt["remote_sha"], head)

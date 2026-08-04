@@ -18,7 +18,7 @@ func scopeFromHeader(r *http.Request) (Scope, bool) {
 	if org == "" {
 		return Scope{}, false
 	}
-	return Scope{Organization: org, Project: r.Header.Get("X-Scope-Project")}, true
+	return Scope{Project: r.Header.Get("X-Scope-Project")}, true
 }
 
 type fakeInterfaces struct {
@@ -30,9 +30,9 @@ func (f *fakeInterfaces) ResolvePublic(_ context.Context, id string) (PublishedI
 	return iface, ok, nil
 }
 
-func (f *fakeInterfaces) Get(_ context.Context, org, project, id string) (PublishedInterface, bool, error) {
+func (f *fakeInterfaces) Get(_ context.Context, project, id string) (PublishedInterface, bool, error) {
 	iface, ok := f.byID[id]
-	if !ok || iface.Organization != org || iface.Project != project {
+	if !ok || iface.Project != project {
 		return PublishedInterface{}, false, nil // foreign scope is an indistinguishable miss
 	}
 	return iface, true, nil
@@ -41,7 +41,7 @@ func (f *fakeInterfaces) Get(_ context.Context, org, project, id string) (Publis
 // admitCall records exactly what identity a run was admitted under — the endpoint-level identity-override
 // assertion reads it to prove metadata never governed.
 type admitCall struct {
-	Org, Project, Input, IdempotencyKey, AgentRevisionID string
+	Project, Input, IdempotencyKey, AgentRevisionID string
 }
 
 type fakeRuns struct {
@@ -56,7 +56,7 @@ type fakeRuns struct {
 func (f *fakeRuns) Admit(_ context.Context, req RunRequest) (RunResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.admits = append(f.admits, admitCall{req.Org, req.Project, req.Input, req.IdempotencyKey, req.AgentRevisionID})
+	f.admits = append(f.admits, admitCall{req.Project, req.Input, req.IdempotencyKey, req.AgentRevisionID})
 	res := f.result
 	if f.byRun == nil {
 		f.byRun = map[string]RunResult{}
@@ -65,14 +65,14 @@ func (f *fakeRuns) Admit(_ context.Context, req RunRequest) (RunResult, error) {
 	return res, nil
 }
 
-func (f *fakeRuns) Get(_ context.Context, _, _, runID string) (RunResult, bool, error) {
+func (f *fakeRuns) Get(_ context.Context, _, runID string) (RunResult, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	res, ok := f.byRun[runID]
 	return res, ok, nil
 }
 
-func (f *fakeRuns) Cancel(_ context.Context, _, _, runID string) (RunResult, CancelReport, error) {
+func (f *fakeRuns) Cancel(_ context.Context, _, runID string) (RunResult, CancelReport, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.byRun[runID] = f.cancelTo
@@ -99,7 +99,7 @@ type fakeTasks struct {
 
 func taskKey(interfaceID, a2aTaskID string) string { return interfaceID + "\x00" + a2aTaskID }
 
-func (f *fakeTasks) Put(_ context.Context, _, _ string, ref TaskRef) error {
+func (f *fakeTasks) Put(_ context.Context, _ string, ref TaskRef) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.byID == nil {
@@ -109,14 +109,14 @@ func (f *fakeTasks) Put(_ context.Context, _, _ string, ref TaskRef) error {
 	return nil
 }
 
-func (f *fakeTasks) GetRef(_ context.Context, _, _, interfaceID, a2aTaskID string) (TaskRef, bool, error) {
+func (f *fakeTasks) GetRef(_ context.Context, _, interfaceID, a2aTaskID string) (TaskRef, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	ref, ok := f.byID[taskKey(interfaceID, a2aTaskID)]
 	return ref, ok, nil
 }
 
-func (f *fakeTasks) GetRefByRun(_ context.Context, _, _, interfaceID, runID string) (TaskRef, bool, error) {
+func (f *fakeTasks) GetRefByRun(_ context.Context, _, interfaceID, runID string) (TaskRef, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, ref := range f.byID {
@@ -127,7 +127,7 @@ func (f *fakeTasks) GetRefByRun(_ context.Context, _, _, interfaceID, runID stri
 	return TaskRef{}, false, nil
 }
 
-func (f *fakeTasks) List(_ context.Context, _, _, interfaceID string, _ int) ([]TaskRef, error) {
+func (f *fakeTasks) List(_ context.Context, _, interfaceID string, _ int) ([]TaskRef, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []TaskRef
@@ -139,7 +139,7 @@ func (f *fakeTasks) List(_ context.Context, _, _, interfaceID string, _ int) ([]
 	return out, nil
 }
 
-func (f *fakeTasks) SetPushConfigs(_ context.Context, _, _, interfaceID, a2aTaskID string, cfgs []PushNotificationConfig) error {
+func (f *fakeTasks) SetPushConfigs(_ context.Context, _, interfaceID, a2aTaskID string, cfgs []PushNotificationConfig) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	k := taskKey(interfaceID, a2aTaskID)
@@ -154,7 +154,7 @@ type fakeFiles struct {
 	ingested []FilePart
 }
 
-func (f *fakeFiles) Ingest(_ context.Context, _, _, _ string, p FilePart) (string, error) {
+func (f *fakeFiles) Ingest(_ context.Context, _, _ string, p FilePart) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ingested = append(f.ingested, p)

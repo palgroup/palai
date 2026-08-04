@@ -169,7 +169,7 @@ func TestSlackHandlesRedeemToTheStoredValues(t *testing.T) {
 			TeamID: conn.TeamID, UserID: "U1", Decision: "approve", ActionID: "approve",
 			ChannelID: "C1", ThreadTS: "1.1", MessageTS: "1.2",
 		}
-		scoped := storage.ScopeToTenant(context.Background(), conn.Org, conn.Project)
+		scoped := storage.ScopeToTenant(context.Background(), conn.Project)
 		if !a.repairDecisionMessage(scoped, conn, intent, "", coordinator.Publication{Display: "a decision"}) {
 			t.Fatalf("the visible message was not repaired: the bot token behind %q resolved to nothing, so the decision stands but Slack is never told", conn.BotTokenRef)
 		}

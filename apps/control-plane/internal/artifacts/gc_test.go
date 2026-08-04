@@ -47,7 +47,7 @@ func TestGCDeletesUnreferencedObjectAfterGrace(t *testing.T) {
 	ctx := context.Background()
 	org, project, runID := h.seedRun(t)
 
-	art, err := h.writer.Write(ctx, WriteRequest{Organization: org, Project: project, RunID: runID,
+	art, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: runID,
 		Content: []byte("orphaned by a purge-crash between the DB scrub and the byte-delete")})
 	if err != nil {
 		t.Fatalf("Write() error = %v", err)
@@ -109,7 +109,7 @@ func TestGCSweepsFailedRetentionDelete(t *testing.T) {
 	ctx := context.Background()
 	org, project, runID := h.seedExpiredStoreFalseRun(t)
 
-	art, err := h.writer.Write(ctx, WriteRequest{Organization: org, Project: project, RunID: runID,
+	art, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: runID,
 		Content: []byte("store:false bytes whose retention delete fails")})
 	if err != nil {
 		t.Fatalf("Write() error = %v", err)
@@ -151,7 +151,7 @@ func TestGCNeverDeletesReferencedOrInGraceObject(t *testing.T) {
 	ctx := context.Background()
 	org, project, runID := h.seedRun(t)
 
-	referenced, err := h.writer.Write(ctx, WriteRequest{Organization: org, Project: project, RunID: runID,
+	referenced, err := h.writer.Write(ctx, WriteRequest{Project: project, RunID: runID,
 		Content: []byte("a live, referenced artifact — must never be reclaimed")})
 	if err != nil {
 		t.Fatalf("Write() error = %v", err)
@@ -201,7 +201,7 @@ func TestGCNeverDeletesLiveCheckpointObject(t *testing.T) {
 	sink := execution.NewCheckpointSink(h.s3, recovery.New(h.pool))
 
 	meta := execution.CheckpointMeta{
-		Organization: org, Project: project, RunID: runID, AttemptID: attemptID, OfferSequence: 7,
+		Project: project, RunID: runID, AttemptID: attemptID, OfferSequence: 7,
 	}
 	if err := sink.Persist(ctx, meta, offerFrameData([]byte(`{"state":"awaiting_model","step":2}`))); err != nil {
 		t.Fatalf("Persist() error = %v", err)

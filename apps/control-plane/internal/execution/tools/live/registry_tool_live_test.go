@@ -125,7 +125,7 @@ func TestLiveRegistryToolRoundtripForcedPreT1(t *testing.T) {
 	// Execute the forced call through the broker's per-tenant registry lookup — the fenced round-trip.
 	tb := toolbroker.New()
 	tb.SetLookup(func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
-		return reg.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
+		return reg.LookupTool(ctx, env.Scope.Project, env.Scope.RunID, name)
 	})
 	var args map[string]any
 	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil || args == nil {
@@ -135,7 +135,7 @@ func TestLiveRegistryToolRoundtripForcedPreT1(t *testing.T) {
 	if callID == "" {
 		callID = "tc_live_fetch"
 	}
-	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: org, Project: project, RunID: runID}}
+	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: project, RunID: runID}}
 	out, err := tb.Execute(ctx, contracts.ToolCallID(callID), registryEchoShortName, args, 1, env)
 	if err != nil {
 		t.Fatalf("execute registered echo through the broker lookup: %v", err)

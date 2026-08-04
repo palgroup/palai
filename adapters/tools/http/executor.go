@@ -130,7 +130,6 @@ type Invocation struct {
 	AttemptID    string
 	RequestHash  string
 	Arguments    map[string]any
-	Org          string
 	Project      string
 	SecretRef    string
 	Fence        uint64
@@ -194,7 +193,7 @@ func (e *Executor) Invoke(ctx context.Context, in Invocation) (map[string]any, e
 	// (opened=false) does not re-POST — it polls the existing row (a killed pure re-drive, spec §26.7).
 	// ponytail: DB-poll the operation ~pollEvery; a LISTEN/NOTIFY wake is a later upgrade if latency bites.
 	opened, err := e.ledger.Open(ctx, OpenOperation{
-		OperationID: operationID, Org: in.Org, Project: in.Project, ToolCallID: in.ToolCallID,
+		OperationID: operationID, Project: in.Project, ToolCallID: in.ToolCallID,
 		SecretRef: in.SecretRef, TokenHash: tokenHash, Deadline: deadline, Fence: in.Fence,
 	})
 	if err != nil {

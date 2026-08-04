@@ -35,7 +35,7 @@ func ReadRows(ctx context.Context, q Querier) ([]Row, error) {
 	for rows.Next() {
 		var r Row
 		var responseID *string
-		if err := rows.Scan(&r.ID, &r.OrganizationID, &r.ProjectID, &r.SessionID, &responseID,
+		if err := rows.Scan(&r.ID, &r.ProjectID, &r.SessionID, &responseID,
 			&r.Seq, &r.JournalID, &r.Type, &r.Payload, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("audit: scan journal row: %w", err)
 		}

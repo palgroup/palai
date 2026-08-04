@@ -32,7 +32,6 @@ type VectorAdapter interface {
 // isolation: a search result that does not resolve back to a chunk_revisions row under the caller's RLS
 // scope is discarded.
 type VectorRecord struct {
-	Organization     string
 	Project          string
 	KnowledgeBaseID  string
 	DocumentRevision string
@@ -47,7 +46,6 @@ type VectorRecord struct {
 // or empty set admits nothing (fail-closed): a lookup miss drops the chunk, so a store with no admitted set
 // never ranks the whole index.
 type VectorScope struct {
-	Organization     string
 	Project          string
 	KnowledgeBaseID  string
 	IndexRevisionID  string

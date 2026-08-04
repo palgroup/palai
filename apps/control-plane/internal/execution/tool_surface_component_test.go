@@ -160,7 +160,7 @@ func TestAnExternalToolIsAdvertisedAsUntrustedToTheModel(t *testing.T) {
 	orch, st, adapter, _ := toolSurfaceOrchestrator(cs, tenant, sessionOf(t, cs, runID), runID)
 	// remote_http stays binder-less without an invoker, so wire the seam the production path wires.
 	registry := extensions.New(cs.Pool())
-	registry.SetRemoteInvoker(stubRemoteInvoker{}, func(string, string) ([]byte, error) { return nil, nil })
+	registry.SetRemoteInvoker(stubRemoteInvoker{}, func(string) ([]byte, error) { return nil, nil })
 	broker := toolbroker.New()
 	broker.SetLookup(registryLookup(registry))
 	orch.tools = broker
@@ -278,7 +278,7 @@ func frameTypes(fs []contracts.EngineFrame) []string {
 // scope comes off the ExecEnv, which is what keeps resolution tenant-bound.
 func registryLookup(registry *extensions.Store) toolbroker.LookupFunc {
 	return func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
-		return registry.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
+		return registry.LookupTool(ctx, env.Scope.Project, env.Scope.RunID, name)
 	}
 }
 

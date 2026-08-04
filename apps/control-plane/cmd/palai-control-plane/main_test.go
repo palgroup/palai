@@ -21,82 +21,43 @@ import (
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
-// TestWebhookSecretResolverIsOrgScoped pins F2: the env-key namespace is scoped by org, so a tenant's
-// SigningSecretRef can only reach a secret provisioned under its OWN org — naming another org's ref
-// resolves to no env var (no cross-tenant HMAC-forgery oracle). The org prefix is server-minted, so it
-// is a hard tenant boundary.
-func TestWebhookSecretResolverIsOrgScoped(t *testing.T) {
+// TestSecretResolverNamespacesAreNonInterchangeable REPLACES the three org-scoped resolver tests A.2
+// Task 6 could no longer state, and the direction is REVERSED rather than the coverage dropped.
+//
+// What left: the env-file bridge keyed PALAI_<KIND>_SECRET_FILE_<ORG>__<REF>, so a tenant's ref could
+// only reach a secret provisioned under its own organization, and an org whose normalized key carried
+// "__" was rejected as ambiguous. With organizations gone the key is PALAI_<KIND>_SECRET_FILE_<REF>:
+// there is no org segment to scope by, no delimiter to be ambiguous about, and every endpoint in this
+// installation naming "shared" reaches the SAME file. The DB half says the same thing for the same
+// reason (migration 000066 keys secret_refs on the installation).
+//
+// What SURVIVES and is asserted here: the five namespaces are still DISTINCT, so a webhook-bridged ref
+// cannot satisfy a remote-tool lookup. That was the other half of the original test and it is the half
+// this deployment still has.
+func TestSecretResolverNamespacesAreNonInterchangeable(t *testing.T) {
 	dir := t.TempDir()
 	secretFile := filepath.Join(dir, "b.secret")
-	if err := os.WriteFile(secretFile, []byte("whsec_org_b"), 0o600); err != nil {
+	if err := os.WriteFile(secretFile, []byte("rtsec_shared"), 0o600); err != nil {
 		t.Fatalf("write secret file: %v", err)
 	}
-	// Only org_b's "shared" ref is bridged.
-	t.Setenv("PALAI_WEBHOOK_SECRET_FILE_"+secretEnvKey("org_b")+"__"+secretEnvKey("shared"), secretFile)
+	t.Setenv("PALAI_REMOTE_TOOL_SECRET_FILE_"+secretEnvKey("sig-ref"), secretFile)
+	t.Setenv("PALAI_WEBHOOK_SECRET_FILE_"+secretEnvKey("only-webhook"), secretFile)
 
-	// org_a naming the same ref resolves nothing — it cannot reach org_b's secret.
-	if _, err := webhookSecretResolver("org_a", "shared"); err == nil {
-		t.Fatal("org_a resolved a secret bridged only under org_b — env namespace is not org-scoped")
-	}
-	// org_b resolves its own secret.
-	got, err := webhookSecretResolver("org_b", "shared")
-	if err != nil {
-		t.Fatalf("org_b failed to resolve its own secret: %v", err)
-	}
-	if string(got) != "whsec_org_b" {
-		t.Fatalf("resolved secret = %q, want whsec_org_b", got)
-	}
-}
-
-// TestRemoteToolSecretResolverIsOrgScoped pins the E12 T4 secret hygiene: the remote-tool HMAC secret
-// (which signs the outbound invoke AND verifies the inbound callback) is bridged as a FILE PATH under an
-// org-scoped, namespace-DISTINCT env key. A tenant's secret_ref can only reach a secret provisioned under
-// its OWN org, and the remote-tool namespace never collides with the webhook/inbound ones — the three
-// secret sets are non-interchangeable. The raw secret is never an env value, argument, or log line.
-func TestRemoteToolSecretResolverIsOrgScoped(t *testing.T) {
-	dir := t.TempDir()
-	secretFile := filepath.Join(dir, "b.secret")
-	if err := os.WriteFile(secretFile, []byte("rtsec_org_b"), 0o600); err != nil {
-		t.Fatalf("write secret file: %v", err)
-	}
-	// Only org_b's "sig-ref" is bridged, under the remote-tool namespace.
-	t.Setenv("PALAI_REMOTE_TOOL_SECRET_FILE_"+secretEnvKey("org_b")+"__"+secretEnvKey("sig-ref"), secretFile)
-
-	// org_a naming the same ref resolves nothing — it cannot reach org_b's secret.
-	if _, err := remoteToolSecretResolver("org_a", "sig-ref"); err == nil {
-		t.Fatal("org_a resolved a remote-tool secret bridged only under org_b — env namespace is not org-scoped")
-	}
-	// A webhook/inbound bridge for the SAME (org, ref) does NOT satisfy the remote-tool resolver (distinct
-	// namespaces) — the three secret sets are non-interchangeable.
-	t.Setenv("PALAI_WEBHOOK_SECRET_FILE_"+secretEnvKey("org_b")+"__"+secretEnvKey("only-webhook"), secretFile)
-	if _, err := remoteToolSecretResolver("org_b", "only-webhook"); err == nil {
+	if _, err := remoteToolSecretResolver("only-webhook"); err == nil {
 		t.Fatal("the remote-tool resolver read a WEBHOOK-namespaced secret — namespaces must be non-interchangeable")
 	}
-	// org_b resolves its own remote-tool secret from the file (a PATH, never inline bytes).
-	got, err := remoteToolSecretResolver("org_b", "sig-ref")
+	if _, err := webhookSecretResolver("sig-ref"); err == nil {
+		t.Fatal("the webhook resolver read a REMOTE-TOOL-namespaced secret — namespaces must be non-interchangeable")
+	}
+	got, err := remoteToolSecretResolver("sig-ref")
 	if err != nil {
-		t.Fatalf("org_b failed to resolve its own remote-tool secret: %v", err)
+		t.Fatalf("the remote-tool resolver failed on its own bridged ref: %v", err)
 	}
-	if string(got) != "rtsec_org_b" {
-		t.Fatalf("resolved secret = %q, want rtsec_org_b", got)
+	if string(got) != "rtsec_shared" {
+		t.Fatalf("resolved secret = %q, want rtsec_shared", got)
 	}
-}
-
-// TestSecretResolverRejectsAmbiguousOrgKey pins a belt-and-braces guard (E11 T4 residual): an org whose
-// normalized env-key form contains the "__" org/ref delimiter would make PALAI_..._SECRET_FILE_<ORG>__<REF>
-// ambiguous with a different (org, ref) split, so BOTH secret resolvers reject it rather than resolve a
-// colliding key. The org is server-minted (never tenant-forgeable), so this is defence-in-depth on top of
-// the org-scoping tenant boundary, not the primary control.
-func TestSecretResolverRejectsAmbiguousOrgKey(t *testing.T) {
-	const ambiguous = "acme__evil" // normalizes to ACME__EVIL — carries the "__" org/ref delimiter
-	for name, resolver := range map[string]func(string, string) ([]byte, error){
-		"webhook":     webhookSecretResolver,
-		"inbound":     inboundSecretResolver,
-		"remote-tool": remoteToolSecretResolver,
-	} {
-		if _, err := resolver(ambiguous, "shared"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
-			t.Fatalf("%s resolver on an ambiguous org key: err = %v, want an 'ambiguous' rejection", name, err)
-		}
+	if _, err := remoteToolSecretResolver("never-bridged"); err == nil {
+		t.Fatal("an unbridged ref must fail rather than resolve something else")
 	}
 }
 
@@ -122,11 +83,11 @@ func TestArtifactGCGraceFloorsTinyValue(t *testing.T) {
 // names a ref resolves NOTHING — and that is an error, never a silent fall-back to the deployment-global
 // GitHub App credential the tenant did not choose.
 func TestRepositoryConnectionSecretFailsClosed(t *testing.T) {
-	if _, err := repositoryConnectionSecret("org_a", "github-conn"); err == nil {
+	if _, err := repositoryConnectionSecret("github-conn"); err == nil {
 		t.Fatal("resolved a connection ref with no secret store configured; want fail-closed")
 	}
-	if _, err := repositoryConnectionSecret("", ""); err == nil {
-		t.Fatal("resolved an empty org/ref; want an error")
+	if _, err := repositoryConnectionSecret(""); err == nil {
+		t.Fatal("resolved an empty ref; want an error")
 	}
 }
 

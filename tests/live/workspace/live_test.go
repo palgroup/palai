@@ -323,7 +323,7 @@ func TestLiveSlackBoundRepositoryLandsWhereTheWorkspaceToolsLook(t *testing.T) {
 		SecretsDir:    filepath.Join(allocDir, "secrets"),
 		WorkBranch:    "agent/live_ses_e22t3/live_run_e22t3",
 		Audience: repositories.Audience{
-			Organization: "org_live", Project: "prj_live", Run: "run_live_e22t3", AttemptFence: 1, ToolCall: "provision",
+			Project: "prj_live", Run: "run_live_e22t3", AttemptFence: 1, ToolCall: "provision",
 		},
 	})
 	if err != nil {

@@ -64,7 +64,7 @@ func TestA2ARealAdmitterBirthsRun(t *testing.T) {
 	// Publish an A2A interface pinning the published revision (a SAFE card projection).
 	a2aStore := a2a.NewStore(pool, newID)
 	iface := a2a.ProjectInterface(revID,
-		a2a.RevisionSource{Organization: org, Project: project, Model: "model-pinned"},
+		a2a.RevisionSource{Project: project, Model: "model-pinned"},
 		a2a.PublishMeta{Name: "Real Planner", Version: "1", AuthScheme: "bearer",
 			InputModes: []string{"text/plain"}, OutputModes: []string{"application/json"}})
 	ifaceID, err := a2aStore.PublishInterface(ctx, iface)
@@ -77,7 +77,7 @@ func TestA2ARealAdmitterBirthsRun(t *testing.T) {
 	// middleware.Auth -> ScopeFrom plumbing is separately proven by the api-package wiring test). The point
 	// here is that the REAL admission births a run under exactly this scope — never a client-supplied one.
 	srv.ScopeFunc = func(*http.Request) (a2a.Scope, bool) {
-		return a2a.Scope{Organization: org, Project: project, Principal: principalID}, true
+		return a2a.Scope{Project: project, Principal: principalID}, true
 	}
 	ts := httptest.NewServer(srv)
 	defer ts.Close()

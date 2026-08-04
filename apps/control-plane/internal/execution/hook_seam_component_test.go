@@ -215,7 +215,7 @@ func TestBeforeRepositoryPublishDenyRejects(t *testing.T) {
 
 	firer := &denyingFirer{point: extensions.HookPointBeforeRepositoryPublish, hookID: "hook_pub", reason: "publishing is disabled in this project"}
 	reg := &publicationRegistry{store: cs, hooks: firer}
-	scope := toolbroker.TaskScope{Org: tenant.Organization, Project: tenant.Project, SessionID: sessionID, RunID: runID}
+	scope := toolbroker.TaskScope{Project: tenant.Project, SessionID: sessionID, RunID: runID}
 
 	result, err := reg.RequestPublication(ctx, scope, map[string]any{"operation": "push_branch", "head_sha": "deadbeef"})
 	if err != nil {

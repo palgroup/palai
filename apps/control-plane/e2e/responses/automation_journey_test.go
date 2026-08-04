@@ -317,7 +317,7 @@ func TestScheduledInvestigationJourneyDeterministic(t *testing.T) {
 		t.Fatalf("reconciler tick (arm callback): %v", err)
 	}
 	pump := automation.NewWebhookPump(h.webhooks, webhook.NewSender(),
-		func(_, ref string) ([]byte, error) {
+		func(ref string) ([]byte, error) {
 			if ref == "cbref" {
 				return callbackSecret, nil
 			}

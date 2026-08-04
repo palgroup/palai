@@ -122,7 +122,7 @@ func (a *SlackAdmitter) ResolveConnection(ctx context.Context, teamID, enterpris
 		return api.SlackConnectionRef{}, false, err
 	}
 	return api.SlackConnectionRef{
-		ID: conn.ID, Org: conn.Org, Project: conn.Project,
+		ID: conn.ID, Project: conn.Project,
 		TeamID: teamID, EnterpriseID: enterpriseID, BotUserID: conn.BotUserID, Disabled: conn.Disabled,
 		SigningSecretRef: conn.SigningSecretRef, BotTokenRef: conn.BotTokenRef, AppTokenRef: conn.AppTokenRef,
 		RunPolicy: conn.DefaultPolicy,
@@ -656,7 +656,7 @@ func (a *SlackAdmitter) repairDeadCorrelation(ctx context.Context, conn api.Slac
 // a collision costs one retryable refusal, never a wrong session — and the alternative is a wider key type
 // nothing needs yet.
 func slackThreadLockText(conn api.SlackConnectionRef, ev slack.Event) string {
-	return "slack-thread:" + conn.Org + ":" + conn.Project + ":" + ev.TeamID + ":" + ev.ChannelID + ":" + ev.ThreadTS
+	return "slack-thread:" + conn.Project + ":" + ev.TeamID + ":" + ev.ChannelID + ":" + ev.ThreadTS
 }
 
 // lockThread takes the thread's advisory lock on a dedicated connection and returns the release. locked=false
@@ -732,7 +732,7 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 	}
 	// The principal must live in the connection's OWN tenant — see SlackRunPrincipalInScope.
 	switch err := a.store.pool.QueryRow(storage.ScopeToTenant(ctx, conn.Project),
-		storage.Query("SlackRunPrincipalInScope"), policy.PrincipalID, conn.Org, conn.Project).Scan(new(int)); {
+		storage.Query("SlackRunPrincipalInScope"), policy.PrincipalID, conn.Project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return slackRunTarget{}, ErrSlackForeignPrincipal
 	case err != nil:

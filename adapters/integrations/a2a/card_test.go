@@ -13,7 +13,6 @@ import (
 // both rendered cards are asserted to contain none of them.
 func TestAgentCardNeverLeaksInternalDetail(t *testing.T) {
 	src := RevisionSource{
-		Organization: "org_SECRETTENANT",
 		Project:      "proj_SECRETTENANT",
 		Model:        "provider-model-CONFIDENTIAL-x1",
 		Tools:        []string{"internal_shell_TOOL", "db_admin_TOOL"},
@@ -89,10 +88,7 @@ func TestGovernIdentityIgnoresForgedMetadata(t *testing.T) {
 			"project":      "proj_VICTIM",
 		},
 	}
-	org, project := GovernIdentity("org_REAL", "proj_REAL", msg)
-	if org != "org_REAL" {
-		t.Errorf("forged metadata overrode organization: got %q, want org_REAL", org)
-	}
+	project := GovernIdentity("proj_REAL", msg)
 	if project != "proj_REAL" {
 		t.Errorf("forged metadata overrode project: got %q, want proj_REAL", project)
 	}

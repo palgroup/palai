@@ -131,7 +131,7 @@ func TestJiraTicketBodyCannotInstructTheAgent(t *testing.T) {
 		testID("prcpt"), bindingID, org, project, workBranch, runID)
 
 	broker := brokerWithLookup(s)
-	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: org, Project: project, RunID: runID}}
+	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: project, RunID: runID}}
 
 	// The tool that carries the ticket reaches the model DESCRIBED as untrusted data. This is the control
 	// plane's own half of the tool-result path, and it is written ahead of every message in the request.

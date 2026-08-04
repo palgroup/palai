@@ -139,7 +139,7 @@ func (s *stubSlackBridge) VerifySignature(_ context.Context, _ SlackConnectionRe
 func (s *stubSlackBridge) Admit(_ context.Context, conn SlackConnectionRef, ev slack.Event) (SlackAdmitOutcome, error) {
 	s.calls = append(s.calls, "admit")
 	s.admitted = append(s.admitted, ev)
-	s.scopes = append(s.scopes, conn.Org+"/"+conn.Project)
+	s.scopes = append(s.scopes, conn.Project)
 	return s.outcome, s.admitErr
 }
 
@@ -155,7 +155,7 @@ func slackPeerAgainst(t *testing.T, bridge SlackEventsAPI, secret []byte) (fakeS
 
 func newSlackBridge(secret []byte) *stubSlackBridge {
 	return &stubSlackBridge{
-		conn:    SlackConnectionRef{ID: "slkc_1", Org: "org_real", Project: "prj_real", TeamID: "T100", BotUserID: "Ubot"},
+		conn:    SlackConnectionRef{ID: "slkc_1", Project: "prj_real", TeamID: "T100", BotUserID: "Ubot"},
 		found:   true,
 		secret:  secret,
 		outcome: SlackAdmitOutcome{ResponseID: "resp_1", SessionID: "ses_1"},

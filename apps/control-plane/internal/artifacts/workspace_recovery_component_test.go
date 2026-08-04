@@ -34,7 +34,7 @@ func TestHostMoveKeepsLogicalIdNewFencedAllocation(t *testing.T) {
 	// Capture the boundary snapshot on the current (old) allocation, then simulate the host loss.
 	snapID := newID("snap")
 	if _, err := sink.Capture(ctx, execution.SnapshotCaptureInput{
-		SnapshotID: snapID, Organization: org, Project: project,
+		SnapshotID: snapID, Project: project,
 		WorkspaceID: workspaceID, AllocationID: oldAllocID, HostPath: hostPath, Reason: "boundary",
 	}); err != nil {
 		t.Fatalf("Capture() error = %v", err)
@@ -118,7 +118,7 @@ func TestOldHostAuthoritativeFramesDeniedDiagnosticsAllowed(t *testing.T) {
 
 	snapID := newID("snap")
 	if _, err := sink.Capture(ctx, execution.SnapshotCaptureInput{
-		SnapshotID: snapID, Organization: org, Project: project,
+		SnapshotID: snapID, Project: project,
 		WorkspaceID: workspaceID, AllocationID: oldAllocID, HostPath: hostPath, Reason: "boundary",
 	}); err != nil {
 		t.Fatalf("Capture() error = %v", err)

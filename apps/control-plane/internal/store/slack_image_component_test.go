@@ -98,7 +98,7 @@ type recordingInboundArtifacts struct {
 	readErr      error
 }
 
-func (r *recordingInboundArtifacts) WriteInboundArtifact(_ context.Context, org, project, id string, content []byte, mediaType string, provenance map[string]any) error {
+func (r *recordingInboundArtifacts) WriteInboundArtifact(_ context.Context, project, id string, content []byte, mediaType string, provenance map[string]any) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.failNext {
@@ -106,11 +106,11 @@ func (r *recordingInboundArtifacts) WriteInboundArtifact(_ context.Context, org,
 		return fmt.Errorf("object store is unavailable")
 	}
 	r.order = append(r.order, "write:"+id)
-	r.writes = append(r.writes, inboundWrite{org: org, project: project, id: id, mediaType: mediaType, size: len(content), provenance: provenance})
+	r.writes = append(r.writes, inboundWrite{project: project, id: id, mediaType: mediaType, size: len(content), provenance: provenance})
 	return nil
 }
 
-func (r *recordingInboundArtifacts) AttachArtifactRun(_ context.Context, _, _, artifactID, runID string) error {
+func (r *recordingInboundArtifacts) AttachArtifactRun(_ context.Context, _, artifactID, runID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.attaches == nil {
@@ -135,7 +135,7 @@ type runArtifact struct {
 // ReadRunArtifact stands in for artifacts.Writer.ReadRunArtifact and enforces the same three keys: the
 // tenant, the run, and the ceiling. The guard against a REAL Postgres row lives in the artifacts component
 // suite; this fake exists so the Slack suite can prove the PUMP's behaviour without an object store.
-func (r *recordingInboundArtifacts) ReadRunArtifact(_ context.Context, org, project, runID, artifactID string, maxBytes int64) ([]byte, int64, bool, error) {
+func (r *recordingInboundArtifacts) ReadRunArtifact(_ context.Context, project, runID, artifactID string, maxBytes int64) ([]byte, int64, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.reads = append(r.reads, artifactID)

@@ -290,7 +290,7 @@ func (k *PoolEnrollmentKeys) RedeemPoolKey(ctx context.Context, presented, runne
 		strict                                          bool
 	}
 	err = tx.QueryRow(ctx, storage.Query("ResolveRunnerPoolKey"), digest).Scan(
-		&row.id, &row.org, &row.project, &row.poolID, &row.storedDigest,
+		&row.id, &row.project, &row.poolID, &row.storedDigest,
 		&row.revokedAt, &row.expiresAt, &row.posture, &row.strict)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PoolGrant{}, ErrUnknownPoolKey

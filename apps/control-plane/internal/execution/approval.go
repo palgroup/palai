@@ -170,7 +170,6 @@ type Publisher interface {
 type PublishTarget struct {
 	Publication   coordinator.Publication
 	WorkspaceRoot string // the attempt's workspace allocation root (the repo lives at WorkspaceRoot/repo)
-	Org           string
 	Project       string
 	AttemptFence  uint64 // binds the minted push credential to this attempt (§28.11)
 	// ConnectionRef is the binding's own credential handle, empty for a binding that takes the
@@ -309,8 +308,8 @@ type RepositoryPublisher struct {
 func (p *RepositoryPublisher) Publish(ctx context.Context, target PublishTarget) (map[string]any, error) {
 	pub := target.Publication
 	audience := repositories.Audience{
-		Organization: target.Org, Project: target.Project,
-		Run: pub.RunID, AttemptFence: target.AttemptFence, ToolCall: pub.ID,
+		Project: target.Project,
+		Run:     pub.RunID, AttemptFence: target.AttemptFence, ToolCall: pub.ID,
 	}
 
 	broker, prClient, err := p.credentialFor(target)

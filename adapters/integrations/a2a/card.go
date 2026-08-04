@@ -8,7 +8,6 @@ import "strings"
 // (A2A-001). It exists as the projection's INPUT so the no-leak guarantee is a property of ProjectInterface,
 // tested against the real sensitive values rather than asserted vacuously.
 type RevisionSource struct {
-	Organization string
 	Project      string
 	Model        string   // provider model name — MUST NOT leak
 	Tools        []string // internal tool inventory — MUST NOT leak
@@ -51,7 +50,6 @@ type AgentSkill struct {
 // is stored for provenance but is NEVER rendered onto a card.
 type PublishedInterface struct {
 	ID                string
-	Organization      string
 	Project           string
 	Name              string
 	Description       string
@@ -81,7 +79,6 @@ func ProjectInterface(revisionID string, src RevisionSource, meta PublishMeta) P
 		Name:              meta.Name,
 		Description:       strings.TrimSpace(meta.Description),
 		Version:           meta.Version,
-		Organization:      src.Organization, // stored for tenant scoping only; never rendered
 		Project:           src.Project,
 		AgentRevisionID:   revisionID, // provenance pin; never rendered
 		Streaming:         meta.Streaming,

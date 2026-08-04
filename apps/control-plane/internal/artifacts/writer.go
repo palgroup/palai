@@ -41,7 +41,6 @@ const notScanned = "not_scanned"
 // MediaType/LogicalType/Provenance are optional — a caller with no classification leaves
 // them zero and the row stores the empty defaults.
 type WriteRequest struct {
-	Organization string
 	Project      string
 	RunID        string
 	Content      []byte
@@ -68,11 +67,11 @@ func NewWriter(store *Store, pool *pgxpool.Pool) *Writer {
 // artifacts rows and reclaims any object no non-empty object_key row references — not a
 // correctness break either way, the row is the index.
 func (w *Writer) Write(ctx context.Context, req WriteRequest) (Artifact, error) {
-	if req.Organization == "" || req.Project == "" || req.RunID == "" {
-		return Artifact{}, errors.New("artifacts: write requires organization, project, and run")
+	if req.Project == "" || req.RunID == "" {
+		return Artifact{}, errors.New("artifacts: write requires a project and a run")
 	}
 	// Scope the INSERT to the row's own tenant so migration 000029's FORCE ROW LEVEL SECURITY admits it
-	// (its WITH CHECK reads palai.org_id / palai.project_id). ScopeToTenant defers to an already-scoped
+	// (its WITH CHECK reads palai.project_id). ScopeToTenant defers to an already-scoped
 	// context, so the production path (a request, or WriteArtifact, which scopes before calling Write) is
 	// unchanged; a direct caller with an unscoped context — the write-path's own tests — is scoped to the
 	// tenant it is writing for, exactly as Read and WriteArtifact already do.
@@ -312,10 +311,11 @@ func (w *Writer) ReadRunArtifact(ctx context.Context, project, runID, artifactID
 }
 
 // objectKey lays out the S3 key tenant-first so keys never collide across tenants and a
-// bucket listing groups an org's objects together. The DB read is the authoritative
-// tenant gate; this layout is defense in depth.
+// bucket listing groups a project's objects together. The DB read is the authoritative
+// tenant gate; this layout is defense in depth. A.2 Task 6 dropped the organization
+// segment; every read goes through the key the row already stores, never a re-derived one.
 func objectKey(project, runID, artifactID string) string {
-	return fmt.Sprintf("%s/%s/%s/%s", project, runID, artifactID)
+	return fmt.Sprintf("%s/%s/%s", project, runID, artifactID)
 }
 
 // newArtifactID mints a random, unguessable artifact id. TEXT primary key, no format

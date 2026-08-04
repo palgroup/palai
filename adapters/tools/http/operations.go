@@ -23,7 +23,6 @@ import (
 // tool_revision handle the callback endpoint re-resolves to verify the callback signature.
 type OpenOperation struct {
 	OperationID string
-	Org         string
 	Project     string
 	ToolCallID  string
 	SecretRef   string
@@ -51,7 +50,7 @@ func (o *Operations) Open(ctx context.Context, in OpenOperation) (opened bool, e
 		return false, fmt.Errorf("sweep expired remote operation: %w", err)
 	}
 	tag, err := o.pool.Exec(ctx, storage.Query("OpenRemoteOperation"),
-		in.OperationID, in.Org, in.Project, in.ToolCallID, in.SecretRef, in.TokenHash, in.Deadline, int64(in.Fence))
+		in.OperationID, in.Project, in.ToolCallID, in.SecretRef, in.TokenHash, in.Deadline, int64(in.Fence))
 	if err != nil {
 		return false, fmt.Errorf("open remote operation: %w", err)
 	}
@@ -95,7 +94,6 @@ func (o *Operations) Timeout(ctx context.Context, operationID string) error {
 
 // CallbackRow is the verify-before-persist inputs the callback endpoint reads for an operation id.
 type CallbackRow struct {
-	Org        string
 	SecretRef  string
 	TokenHash  string
 	State      string
@@ -108,7 +106,7 @@ func (o *Operations) ForCallback(ctx context.Context, operationID string) (Callb
 	ctx = storage.WithSystemScope(ctx) // callback/prober path: keyed by opaque operation id, tenant not yet established (auth is the HMAC token)
 	var row CallbackRow
 	err := o.pool.QueryRow(ctx, storage.Query("RemoteOperationForCallback"), operationID).
-		Scan(&row.Org, &row.SecretRef, &row.TokenHash, &row.State, &row.ResultHash)
+		Scan(&row.SecretRef, &row.TokenHash, &row.State, &row.ResultHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CallbackRow{}, false, nil
 	}

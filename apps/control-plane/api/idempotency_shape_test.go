@@ -89,11 +89,11 @@ func TestTheStoredProjectionDropsOrganizationAndStillReadsTheOnesThatCarriedIt(t
 	}
 
 	// 3. And the absence itself decodes, which is what every body written from now on will look like.
+	// contracts.Response no longer DECLARES an organization_id (A.2 Task 6 removed it from the schema),
+	// so the assertion moved from "the field reads as the zero value" to "an old body still decodes and
+	// the unknown key is dropped" — checked at step 2 above, on the byte-for-byte legacy body.
 	var current contracts.Response
 	if err := json.Unmarshal(fresh, &current); err != nil {
 		t.Fatalf("decode a body written without organization_id: %v", err)
-	}
-	if current.OrganizationID != "" {
-		t.Errorf("an absent organization_id decoded to %q, not the zero value", current.OrganizationID)
 	}
 }

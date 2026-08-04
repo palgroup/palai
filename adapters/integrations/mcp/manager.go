@@ -34,7 +34,6 @@ type ConnConfig struct {
 	ID          string
 	Name        string
 	Transport   string // "stdio" | "http"
-	Org         string // for the tenant-scoped secret env-key
 	ImageDigest string // stdio
 	Cmd         []string
 	URL         string // http
@@ -52,7 +51,7 @@ type ConnConfig struct {
 // the tool-broker's ExecEnv into this adapter. SessionID/ResponseID scope the advisory progress event to the
 // right journal.
 type CallScope struct {
-	Org, Project, SessionID, ResponseID, RunID, CallID string
+	Project, SessionID, ResponseID, RunID, CallID string
 }
 
 // ProgressSink receives advisory progress notifications during a tools/call. The compose wiring appends a

@@ -44,7 +44,7 @@ func TestRetrievalToolQuarantinesUntrustedContent(t *testing.T) {
 	fr := &fakeRetriever{respJSON: string(respJSON)}
 	tool := KnowledgeRetrievalTool(fr)
 
-	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: "org1", Project: "prj1", RunID: "run1"}}
+	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: "prj1", RunID: "run1"}}
 	out, err := tool.Exec(context.Background(), env, map[string]any{"knowledge_base_id": "kb1", "query": "onboarding"})
 	if err != nil {
 		t.Fatalf("Exec error = %v", err)
@@ -98,7 +98,7 @@ func TestRetrievalToolCitesWithOffsets(t *testing.T) {
 	resp := `{"object":"retrieval_result","strategy":"keyword","index_revision_id":"kidx_1","freshness":"fresh",
 		"data":[{"citation_ref":"kdoc_1:5-12","document_revision_id":"kdoc_1","byte_start":5,"byte_end":12,"checksum":"sha256:x","score":0.5,"content":"widgets"}]}`
 	tool := KnowledgeRetrievalTool(&fakeRetriever{respJSON: resp})
-	out, err := tool.Exec(context.Background(), toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: "o", Project: "p"}},
+	out, err := tool.Exec(context.Background(), toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: "p"}},
 		map[string]any{"knowledge_base_id": "kb1", "query": "widgets"})
 	if err != nil {
 		t.Fatalf("Exec error = %v", err)

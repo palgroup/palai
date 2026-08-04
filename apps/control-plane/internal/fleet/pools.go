@@ -41,7 +41,6 @@ var ErrPostureMismatch = errors.New("fleet: declared posture is not the pool's")
 // name that is unique within its project.
 type Pool struct {
 	ID           string
-	Organization string
 	Project      string
 	Name         string
 	Posture      string

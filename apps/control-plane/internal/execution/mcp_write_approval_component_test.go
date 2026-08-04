@@ -271,7 +271,7 @@ func newJiraWriteFixture(t *testing.T, ticket map[string]any) *jiraWriteFixture 
 	pool.AddCert(srv.Certificate())
 	registry := extensions.New(cs.Pool())
 	registry.SetMCP(mcpclient.NewManager(mcpclient.Config{
-		Secrets: func(_, ref string) ([]byte, error) {
+		Secrets: func(ref string) ([]byte, error) {
 			if ref != secretRef {
 				t.Errorf("secret resolver asked for ref %q, want the connection's own %q", ref, secretRef)
 			}
@@ -446,7 +446,7 @@ func (fx *jiraWriteFixture) screenFor(t *testing.T, callID string) ToolApprovalD
 	broker := toolbroker.New()
 	broker.SetLookup(registryLookup(fx.registry))
 	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{
-		Org: fx.tenant.Organization, Project: fx.tenant.Project, RunID: fx.runID,
+		Project: fx.tenant.Project, RunID: fx.runID,
 	}}
 	required, label, err := broker.RequiresApprovalResolved(ctx, env, parked.ToolName)
 	if err != nil {
@@ -708,7 +708,7 @@ func TestAToolPinnedTwiceRefusesRatherThanCoinFlippingTheGate(t *testing.T) {
 
 	broker := toolbroker.New()
 	broker.SetLookup(registryLookup(fx.registry))
-	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: org, Project: project, RunID: fx.runID}}
+	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: project, RunID: fx.runID}}
 
 	// EVERY ENTRY POINT REFUSES, because they all route through the one lookup — which is the reason the
 	// guard is there and not in each caller. A refusal at dispatch with an open advertisement would be a
@@ -924,7 +924,7 @@ func TestAJiraTicketBodyCannotApproveItself(t *testing.T) {
 	broker := toolbroker.New()
 	broker.SetLookup(registryLookup(fx.registry))
 	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{
-		Org: fx.tenant.Organization, Project: fx.tenant.Project, RunID: fx.runID,
+		Project: fx.tenant.Project, RunID: fx.runID,
 	}}
 	flagsHeld := true
 	for name, wantGated := range map[string]bool{

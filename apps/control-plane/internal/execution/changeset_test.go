@@ -41,7 +41,7 @@ type recordedWrite struct {
 
 type fakeArtifactWriter struct{ writes []recordedWrite }
 
-func (f *fakeArtifactWriter) WriteArtifact(_ context.Context, _, _, _ string, content []byte, mediaType, logicalType string, _ map[string]any) (string, error) {
+func (f *fakeArtifactWriter) WriteArtifact(_ context.Context, _, _ string, content []byte, mediaType, logicalType string, _ map[string]any) (string, error) {
 	f.writes = append(f.writes, recordedWrite{content: string(content), mediaType: mediaType, logicalType: logicalType})
 	return "art_" + logicalType, nil
 }

@@ -104,11 +104,10 @@ func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) coordinat
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
-	exec(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
-	exec(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`,
+	exec(`INSERT INTO projects (id) VALUES ($1)`, tenant.Project)
+	exec(`INSERT INTO principals (id, project_id, kind) VALUES ($1, $2, 'service')`,
 		principalID, tenant.Project)
-	exec(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4, $5)`,
+	exec(`INSERT INTO api_keys (id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4)`,
 		newID("key"), tenant.Project, principalID, coordinator.HashAPIKey(token))
 	return tenant
 }
@@ -119,7 +118,7 @@ func (h *harness) seedSession() string {
 	h.t.Helper()
 	sessionID := newID("ses")
 	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(context.Background()),
-		`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`,
+		`INSERT INTO sessions (id, project_id) VALUES ($1, $2)`,
 		sessionID, h.tenant.Project); err != nil {
 		h.t.Fatalf("seed session error = %v", err)
 	}
@@ -133,8 +132,8 @@ func (h *harness) seedEvent(sessionID string, seq int, typ, payloadJSON string) 
 	ctx := context.Background()
 	id := newID("evt")
 	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx),
-		`INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+		`INSERT INTO events (id, project_id, session_id, seq, type, payload)
+		 VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
 		id, h.tenant.Project, sessionID, seq, typ, payloadJSON); err != nil {
 		h.t.Fatalf("seed event error = %v", err)
 	}
@@ -164,8 +163,8 @@ func (h *harness) seedBulkEvents(sessionID string, count, payloadBytes int) {
 		h.t.Fatalf("seed bulk events error = %v", err)
 	}
 	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx), `
-		INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
-		VALUES ('evt_' || $5 || '_terminal', $1, $2, $3, $4, 'run.completed.v1', '{}'::jsonb)`,
+		INSERT INTO events (id, project_id, session_id, seq, type, payload)
+		VALUES ('evt_' || $4 || '_terminal', $1, $2, $3, 'run.completed.v1', '{}'::jsonb)`,
 		h.tenant.Project, sessionID, count+1, tag); err != nil {
 		h.t.Fatalf("seed terminal event error = %v", err)
 	}

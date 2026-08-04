@@ -40,7 +40,7 @@ func authorizedRun(t *testing.T) (*SearchAuthorities, *fakeSlack, toolbroker.Exe
 	auth := NewSearchAuthorities()
 	auth.interval = 0 // the pacer's arithmetic is asserted on its own below; six real seconds per call is not
 	auth.Grant("run_1", "T123", "https://slack.test/api", []byte("xoxb-secret"), "act_tok_secret")
-	return auth, &fakeSlack{}, toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: "org", Project: "prj", RunID: "run_1"}}
+	return auth, &fakeSlack{}, toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: "prj", RunID: "run_1"}}
 }
 
 // THE ADVERTISING GATE. A run with no action_token must not be OFFERED the tool: a tool that is advertised

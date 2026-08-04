@@ -26,19 +26,19 @@ func TestPushToProtectedDefaultBranchDenied(t *testing.T) {
 // two runs never collide.
 func TestIdempotencyKeyIsOperationSpecific(t *testing.T) {
 	push := func(head string) string {
-		return IdempotencyKey("org", "prj", "run1", OpPushBranch, "git@h:o/r", "agent/s/r", "main", head)
+		return IdempotencyKey("prj", "run1", OpPushBranch, "git@h:o/r", "agent/s/r", "main", head)
 	}
 	if push("aaa") == push("bbb") {
 		t.Fatal("push idempotency key must change with the head SHA (a new head is a new push, not a force)")
 	}
 	pr := func(head string) string {
-		return IdempotencyKey("org", "prj", "run1", OpOpenPullRequest, "git@h:o/r", "agent/s/r", "main", head)
+		return IdempotencyKey("prj", "run1", OpOpenPullRequest, "git@h:o/r", "agent/s/r", "main", head)
 	}
 	if pr("aaa") != pr("bbb") {
 		t.Fatal("pull-request idempotency key must NOT depend on the head SHA (a PR tracks the branch → one PR, REP-008)")
 	}
 	// Run-scoped: a different run is a different key even for the same branch+head.
-	if push("aaa") == IdempotencyKey("org", "prj", "run2", OpPushBranch, "git@h:o/r", "agent/s/r", "main", "aaa") {
+	if push("aaa") == IdempotencyKey("prj", "run2", OpPushBranch, "git@h:o/r", "agent/s/r", "main", "aaa") {
 		t.Fatal("idempotency key must be run-scoped")
 	}
 }
@@ -48,7 +48,7 @@ func TestIdempotencyKeyIsOperationSpecific(t *testing.T) {
 // yields a different request hash — the prior approval no longer matches and the action is denied.
 func TestRequestHashBindsHeadForApproval(t *testing.T) {
 	at := func(op PublishOperation, head string) string {
-		return RequestHash("org", "prj", "run1", op, "git@h:o/r", "agent/s/r", "main", head)
+		return RequestHash("prj", "run1", op, "git@h:o/r", "agent/s/r", "main", head)
 	}
 	if at(OpPushBranch, "aaa") == at(OpPushBranch, "bbb") {
 		t.Fatal("request hash must bind the head SHA for a push")

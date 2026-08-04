@@ -81,7 +81,6 @@ const (
 // credential — the parent/platform token is DELIBERATELY not a field here (A2A-005/SUB-007: no inheritance).
 type RemoteAgent struct {
 	ID                   string
-	Organization         string
 	Project              string
 	Name                 string
 	CardURL              string

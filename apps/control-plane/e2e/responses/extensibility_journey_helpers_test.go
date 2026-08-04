@@ -393,7 +393,7 @@ func (h *harness) extOrchestrator(dialer execution.EngineDialer, provider modelb
 	})
 	tb := toolbroker.New(toolbroker.ConformanceMathAdd(), tools.FileTool())
 	tb.SetLookup(func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
-		return reg.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
+		return reg.LookupTool(ctx, env.Scope.Project, env.Scope.RunID, name)
 	})
 	orch := execution.NewOrchestrator(h.repo, dialer, models, tb)
 	orch.SetHookFirer(reg)

@@ -54,7 +54,7 @@ type stubImageReader struct {
 	scopes []string // every (org, project, id) the resolver asked for, so the tenant binding is assertable
 }
 
-func (r *stubImageReader) ReadImageArtifact(_ context.Context, org, project, id string) (string, []byte, bool, error) {
+func (r *stubImageReader) ReadImageArtifact(_ context.Context, project, id string) (string, []byte, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.scopes = append(r.scopes, org+"/"+project+"/"+id)

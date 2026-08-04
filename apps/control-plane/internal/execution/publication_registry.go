@@ -107,7 +107,7 @@ func (r *publicationRegistry) RequestPublication(ctx context.Context, scope tool
 	// publication is rejected, no pending approval recorded. No-op when no firer is wired.
 	if r.hooks != nil {
 		outcome, herr := r.hooks.Fire(ctx, extensions.HookEvent{
-			Org: scope.Org, Project: scope.Project, SessionID: scope.SessionID, ResponseID: scope.ResponseID,
+			Project: scope.Project, SessionID: scope.SessionID, ResponseID: scope.ResponseID,
 			RunID: scope.RunID, Point: extensions.HookPointBeforeRepositoryPublish,
 			Payload: map[string]any{
 				"operation": operation, "remote": target.Remote, "branch": target.Branch,

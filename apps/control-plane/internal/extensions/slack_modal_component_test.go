@@ -130,11 +130,11 @@ func TestSlackApprovalModalReadsTheLedgerAndWritesNothing(t *testing.T) {
 	doer := &recordingDoer{}
 	// The bot token is a HANDLE resolved at call time, exactly as the decision path resolves it; the
 	// resolver is the fixture's, so no credential is anywhere near the outbound body it produces.
-	secrets := func(_, ref string) ([]byte, error) { return []byte("xoxb-fixture-not-a-credential-" + ref), nil }
+	secrets := func(ref string) ([]byte, error) { return []byte("xoxb-fixture-not-a-credential-" + ref), nil }
 	admitter := NewSlackAdmitter(roStore, nil, secrets, api.AdmissionLimits{}).
 		WithDecisions(roCS, doer, "https://slack.invalid/api")
 	connRef := api.SlackConnectionRef{
-		ID: conn.ID, Org: org, Project: project, TeamID: team, BotTokenRef: "slack/modal/bot",
+		ID: conn.ID, Project: project, TeamID: team, BotTokenRef: "slack/modal/bot",
 	}
 	intent := slack.ShowArgumentsIntent{
 		TeamID: team, UserID: mapped, RequestHash: requestHash, TriggerID: "tr.2344",

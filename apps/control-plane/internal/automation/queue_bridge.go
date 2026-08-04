@@ -311,7 +311,7 @@ func (b *QueueBridge) runTarget(ctx context.Context, c queueConn) (queueRunTarge
 	// The principal must live in the connection's OWN tenant. Without this a connection could name any
 	// principal id in the deployment and run as it — the confused deputy the Slack path closes the same way.
 	switch err := b.store.pool.QueryRow(storage.ScopeToTenant(ctx, c.project),
-		storage.Query("QueueRunPrincipalInScope"), cfg.PrincipalID, c.org, c.project).Scan(new(int)); {
+		storage.Query("QueueRunPrincipalInScope"), cfg.PrincipalID, c.project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return queueRunTarget{}, ErrQueueForeignPrincipal
 	case err != nil:

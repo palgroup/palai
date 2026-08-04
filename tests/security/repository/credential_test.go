@@ -48,7 +48,7 @@ func TestBrokeredCredentialAbsentFromAllSurfaces(t *testing.T) {
 		SecretsDir:    secrets,
 		WorkBranch:    "agent/ses_x/run_y",
 		Audience: repositories.Audience{
-			Organization: "org_x", Project: "prj_x", Run: "run_y", AttemptFence: 1, ToolCall: "tcall_z",
+			Project: "prj_x", Run: "run_y", AttemptFence: 1, ToolCall: "tcall_z",
 		},
 	})
 	if err != nil {
@@ -106,7 +106,7 @@ func TestReadCredentialRevokedAfterPreparation(t *testing.T) {
 		TargetDir:     filepath.Join(target, "repo"),
 		SecretsDir:    secrets,
 		WorkBranch:    "agent/ses_x/run_y",
-		Audience:      repositories.Audience{Organization: "org_x", Project: "prj_x", Run: "run_y", AttemptFence: 1, ToolCall: "tcall_z"},
+		Audience:      repositories.Audience{Project: "prj_x", Run: "run_y", AttemptFence: 1, ToolCall: "tcall_z"},
 	}); err != nil {
 		t.Fatalf("Prepare() error = %v", err)
 	}

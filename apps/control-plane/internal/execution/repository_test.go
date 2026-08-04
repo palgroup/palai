@@ -112,22 +112,22 @@ func TestPrepareRepositoryResolvesBindingConnectionRef(t *testing.T) {
 		return err
 	}
 
-	// A named ref is resolved under the run's organization and the binding's ref.
-	var gotOrg, gotRef string
+	// A named ref is resolved by the binding's ref alone (A.2 Task 6: secret_refs is installation-wide).
+	var gotRef string
 	calls := 0
 	if err := prepare(t, "git-conn", func(ref string) ([]byte, error) {
-		calls, gotOrg, gotRef = calls+1, org, ref
+		calls, gotRef = calls+1, ref
 		return []byte("palai-REPMARK-binding-token"), nil
 	}); err != nil {
 		t.Fatalf("PrepareRepository(connection_ref) error = %v", err)
 	}
-	if calls != 1 || gotOrg != tenant.Organization || gotRef != "git-conn" {
-		t.Fatalf("resolver calls=%d org=%q ref=%q, want 1 / %q / git-conn", calls, gotOrg, gotRef, tenant.Organization)
+	if calls != 1 || gotRef != "git-conn" {
+		t.Fatalf("resolver calls=%d ref=%q, want 1 / git-conn", calls, gotRef)
 	}
 
 	// A ref-less binding takes the global broker unchanged: the resolver is never consulted.
 	if err := prepare(t, "", func(ref string) ([]byte, error) {
-		t.Fatalf("ref-less binding consulted the secret resolver for (%q, %q)", org, ref)
+		t.Fatalf("ref-less binding consulted the secret resolver for %q", ref)
 		return nil, nil
 	}); err != nil {
 		t.Fatalf("PrepareRepository(ref-less) error = %v", err)
@@ -142,7 +142,7 @@ func TestPrepareRepositoryResolvesBindingConnectionRef(t *testing.T) {
 
 	// A resolver failure fails CLOSED — it must not silently fall back to the deployment-global
 	// credential — and the message names the ref, never the value.
-	err := prepare(t, "git-conn", func(string, string) ([]byte, error) {
+	err := prepare(t, "git-conn", func(string) ([]byte, error) {
 		return []byte("palai-REPMARK-binding-token"), errors.New("secret ref exists but could not be decrypted")
 	})
 	if err == nil {
@@ -153,7 +153,7 @@ func TestPrepareRepositoryResolvesBindingConnectionRef(t *testing.T) {
 	}
 
 	// An empty resolved credential is a misconfiguration, not an anonymous clone.
-	if err := prepare(t, "git-conn", func(string, string) ([]byte, error) { return nil, nil }); err == nil {
+	if err := prepare(t, "git-conn", func(string) ([]byte, error) { return nil, nil }); err == nil {
 		t.Fatal("PrepareRepository with an empty resolved credential returned nil error, want fail-closed")
 	}
 }

@@ -193,7 +193,7 @@ func baseInvocation(h *harness, url string) Invocation {
 		URL: url, AllowPrivate: true, Secret: h.secret,
 		ToolCallID: "tc_remote_1", ToolRevision: "pub.ns.tool@3", RunID: "run_1", AttemptID: "att_1",
 		RequestHash: "sha256:abc", Arguments: map[string]any{"q": "x"},
-		Org: "org_1", Project: "prj_1", SecretRef: "sig-ref", Fence: 5, TimeoutMS: 2000,
+		Project: "prj_1", SecretRef: "sig-ref", Fence: 5, TimeoutMS: 2000,
 	}
 }
 

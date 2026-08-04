@@ -110,11 +110,11 @@ const (
 // token. The token VALUE is never on this struct — it is resolved at call time and lives only inside the
 // post, the inboundSecretResolver discipline the rest of this bridge follows.
 type slackApprovalOrder struct {
-	id, org, project, connectionID string
-	runID                          string
-	channelID, threadTS            string
-	attempt, maxAttempts           int
-	botTokenRef                    string
+	id, project, connectionID string
+	runID                     string
+	channelID, threadTS       string
+	attempt, maxAttempts      int
+	botTokenRef               string
 	// kind is the discriminator, straight out of the claim that matched. deliver() switches on it and
 	// refuses anything else rather than falling through to a default screen.
 	kind string
@@ -189,7 +189,7 @@ func (p *SlackApprovalPump) claimPublications(ctx context.Context) ([]slackAppro
 	var orders []slackApprovalOrder
 	for rows.Next() {
 		var o slackApprovalOrder
-		if err := rows.Scan(&o.id, &o.org, &o.project, &o.connectionID, &o.runID,
+		if err := rows.Scan(&o.id, &o.project, &o.connectionID, &o.runID,
 			&o.channelID, &o.threadTS, &o.attempt, &o.maxAttempts, &o.botTokenRef,
 			&o.requestHash, &o.display, &o.state, &o.kind); err != nil {
 			return nil, fmt.Errorf("scan due approval message: %w", err)
@@ -218,7 +218,7 @@ func (p *SlackApprovalPump) claimToolCalls(ctx context.Context) ([]slackApproval
 			o    slackApprovalOrder
 			args string
 		)
-		if err := rows.Scan(&o.id, &o.org, &o.project, &o.connectionID, &o.runID,
+		if err := rows.Scan(&o.id, &o.project, &o.connectionID, &o.runID,
 			&o.channelID, &o.threadTS, &o.attempt, &o.maxAttempts, &o.botTokenRef,
 			&o.requestHash, &o.approvalID, &args, &o.toolName, &o.state, &o.kind); err != nil {
 			return nil, fmt.Errorf("scan due tool approval message: %w", err)
@@ -300,7 +300,7 @@ func (p *SlackApprovalPump) deliver(ctx context.Context, o slackApprovalOrder) b
 	// handle: a decision that arrives without a message ts still edits THIS message in place. Best-effort —
 	// the message landed either way, and the click itself carries the ts in the ordinary case.
 	if _, err := a.store.pool.Exec(scoped, storage.Query("UpdateThreadMessageTS"),
-		o.project, slackTeamOf(ctx, a, o.org, o.project, o.connectionID), o.channelID, o.threadTS, res.MessageTS); err != nil {
+		o.project, slackTeamOf(ctx, a, o.project, o.connectionID), o.channelID, o.threadTS, res.MessageTS); err != nil {
 		log.Printf("slack: the approval question for run %s landed but its ts could not be recorded on the thread: %v", o.runID, err)
 	}
 	return true

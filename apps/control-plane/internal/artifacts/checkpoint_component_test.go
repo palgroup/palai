@@ -65,7 +65,7 @@ func TestCheckpointOfferPersistsImmutableRowAndBytes(t *testing.T) {
 
 	rawState := []byte(`{"state":"awaiting_model","step":2,"pending_tools":[]}`)
 	meta := execution.CheckpointMeta{
-		Organization: org, Project: project, RunID: runID, AttemptID: attemptID, OfferSequence: 12,
+		Project: project, RunID: runID, AttemptID: attemptID, OfferSequence: 12,
 		EngineVersion: "0.1.0", ProtocolVersion: "engine.v1",
 	}
 
@@ -132,7 +132,7 @@ func TestCheckpointMigrationPreservesOriginalWithProvenance(t *testing.T) {
 	// Persist the v1 checkpoint.
 	v1Bytes := []byte(`{"pending_tools":["tcall_x"],"state":"awaiting_tools","step":1}`)
 	metaV1 := execution.CheckpointMeta{
-		Organization: org, Project: project, RunID: runID, AttemptID: attemptID, OfferSequence: 10,
+		Project: project, RunID: runID, AttemptID: attemptID, OfferSequence: 10,
 		EngineVersion: "0.1.0", ProtocolVersion: "engine.v1",
 	}
 	if err := sink.Persist(ctx, metaV1, offerFrameData(v1Bytes)); err != nil {
@@ -241,7 +241,7 @@ func TestCheckpointRejectsEmptyState(t *testing.T) {
 	org, project, _, runID, attemptID := h.seedRunWithAttempt(t)
 	sink := execution.NewCheckpointSink(h.s3, recovery.New(h.pool))
 	meta := execution.CheckpointMeta{
-		Organization: org, Project: project, RunID: runID, AttemptID: attemptID, OfferSequence: 3,
+		Project: project, RunID: runID, AttemptID: attemptID, OfferSequence: 3,
 	}
 
 	// An offer with no "state" field has nothing to persist.
@@ -283,7 +283,7 @@ func TestCheckpointMetadataCarriesSpecFields(t *testing.T) {
 	}
 
 	meta := execution.CheckpointMeta{
-		Organization: org, Project: project, RunID: runID, AttemptID: attemptID, OfferSequence: 5,
+		Project: project, RunID: runID, AttemptID: attemptID, OfferSequence: 5,
 		EngineDigest: "sha256:enginedigest", EngineVersion: "0.1.0", ProtocolVersion: "engine.v1",
 		ConfigSnapshotHash: snap.Hash, TranscriptSequence: journalSeq,
 	}

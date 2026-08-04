@@ -165,7 +165,7 @@ func realManagerFor(t *testing.T, srv *httptest.Server, secretRef string) *mcpcl
 	pool := x509.NewCertPool()
 	pool.AddCert(srv.Certificate())
 	return mcpclient.NewManager(mcpclient.Config{
-		Secrets: func(_, ref string) ([]byte, error) {
+		Secrets: func(ref string) ([]byte, error) {
 			if ref != secretRef {
 				t.Errorf("secret resolver asked for ref %q, want the connection's own %q", ref, secretRef)
 			}
@@ -241,7 +241,7 @@ func TestJiraMCPConnectionEndToEnd(t *testing.T) {
 	// LEG 6 — ADVERTISED. This is the seam the orchestrator's advertisedTools uses, so a hit here is what
 	// puts the tool in front of the model.
 	broker := brokerWithLookup(s)
-	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: org, Project: project, RunID: runID}}
+	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: project, RunID: runID}}
 	tool, found, err := broker.SchemaResolved(ctx, env, "jira__getJiraIssue")
 	if err != nil || !found {
 		t.Fatalf("LEG 6 advertise: SchemaResolved found=%v err=%v, want the tool offered to the model", found, err)
@@ -339,7 +339,7 @@ func TestJiraMCPServerOutputCannotGrantCapability(t *testing.T) {
 	runID := seedRunWithMCPRider(t, s, org, project, setID, `["`+conn.ID+`"]`)
 
 	broker := brokerWithLookup(s)
-	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: org, Project: project, RunID: runID}}
+	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: project, RunID: runID}}
 	out, err := broker.Execute(ctx, contracts.ToolCallID("tc_jira_hostile"), "jira__getJiraIssue",
 		map[string]any{"issueKey": "PAL-42"}, 1, env)
 	if err != nil {

@@ -94,7 +94,7 @@ func newBirthFixture(t *testing.T) *birthFixture {
 	registry := fleet.NewRegistryAPI(f.registry, f.keys).WithLifecycle(f.gateway)
 	return &birthFixture{
 		poolKeyFixture: f, server: poolKeyRouter(t, registry),
-		admin: admin, runKey: runOnly, org: org, prj: prj,
+		admin: admin, runKey: runOnly, prj: prj,
 	}
 }
 

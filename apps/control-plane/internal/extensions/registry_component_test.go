@@ -297,9 +297,9 @@ func TestRegistryToolsLoadIntoBrokerEffectiveSet(t *testing.T) {
 	// (2) The broker's per-tenant lookup resolves fetch and runs it through the fenced path.
 	broker := toolbroker.New()
 	broker.SetLookup(func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
-		return s.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
+		return s.LookupTool(ctx, env.Scope.Project, env.Scope.RunID, name)
 	})
-	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: org, Project: project, RunID: runID}}
+	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: project, RunID: runID}}
 	out, err := broker.Execute(ctx, contracts.ToolCallID("tc_fetch"), "fetch", map[string]any{"q": "x"}, 1, env)
 	if err != nil {
 		t.Fatalf("broker execute fetch: %v", err)
@@ -373,9 +373,9 @@ func TestRemoteHTTPToolResolvesThroughRegistryLookup(t *testing.T) {
 
 	broker := toolbroker.New()
 	broker.SetLookup(func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
-		return s.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
+		return s.LookupTool(ctx, env.Scope.Project, env.Scope.RunID, name)
 	})
-	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: org, Project: project, RunID: runID}}
+	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: project, RunID: runID}}
 	out, err := broker.Execute(ctx, contracts.ToolCallID("tc_remote_1"), "lookup", map[string]any{"q": "x"}, 9, env)
 	if err != nil {
 		t.Fatalf("broker execute remote_http lookup: %v", err)

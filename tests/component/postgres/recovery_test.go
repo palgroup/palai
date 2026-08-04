@@ -30,7 +30,7 @@ func seedAttempt(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, ru
 func baseCheckpointInput(tenant coordinator.Tenant, runID, attemptID string) recovery.PersistInput {
 	return recovery.PersistInput{
 		CheckpointID: newID("chk"), BoundaryID: newID("bnd"),
-		Organization: tenant.Organization, Project: tenant.Project,
+		Project: tenant.Project,
 		RunID: runID, AttemptID: attemptID,
 		EngineVersion: "0.1.0", ProtocolVersion: "engine.v1",
 		Format: "reference-kernel", FormatVersion: 1,

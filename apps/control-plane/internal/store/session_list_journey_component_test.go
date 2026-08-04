@@ -150,7 +150,7 @@ func newSessionListFixture(t *testing.T) *sessionListFixture {
 	if err := repo.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	f := &sessionListFixture{repo: repo, org: newID("org"), project: newID("prj")}
+	f := &sessionListFixture{repo: repo, project: newID("prj")}
 	pool := repo.Spine().Pool()
 	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, f.org)
 	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, f.project, f.org)

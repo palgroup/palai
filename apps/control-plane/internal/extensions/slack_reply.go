@@ -81,12 +81,12 @@ func (p *SlackReplyPump) Run(ctx context.Context) error {
 // bot token. The token VALUE is never on this struct — it is resolved at call time and lives only inside
 // the post, the inboundSecretResolver discipline the rest of this bridge follows.
 type slackReplyOrder struct {
-	id, org, project, connectionID string
-	runID, responseID              string
-	channelID, threadTS            string
-	runState                       string
-	attempt, maxAttempts           int
-	botTokenRef                    string
+	id, project, connectionID string
+	runID, responseID         string
+	channelID, threadTS       string
+	runState                  string
+	attempt, maxAttempts      int
+	botTokenRef               string
 	// requesterUserID is the person this run's answer can address (E21 T3, 000043), frozen at enqueue like
 	// the destination above. EMPTY is the fail-closed value every pre-000043 row carries: the answer goes out
 	// with no mention rather than with an invented one.
@@ -112,7 +112,7 @@ func (p *SlackReplyPump) Tick(ctx context.Context) (int, error) {
 	var orders []slackReplyOrder
 	for rows.Next() {
 		var o slackReplyOrder
-		if err := rows.Scan(&o.id, &o.org, &o.project, &o.connectionID, &o.runID, &o.responseID,
+		if err := rows.Scan(&o.id, &o.project, &o.connectionID, &o.runID, &o.responseID,
 			&o.channelID, &o.threadTS, &o.runState, &o.attempt, &o.maxAttempts, &o.botTokenRef,
 			&o.requesterUserID); err != nil {
 			rows.Close()
@@ -261,7 +261,7 @@ func (p *SlackReplyPump) deliver(ctx context.Context, o slackReplyOrder) bool {
 	// The answer is now the newest visible bot message in the thread, so it becomes the SLK-006 repair
 	// handle. Best-effort: the message landed either way.
 	if _, err := a.store.pool.Exec(scoped, storage.Query("UpdateThreadMessageTS"),
-		o.project, slackTeamOf(ctx, a, o.org, o.project, o.connectionID), o.channelID, o.threadTS, res.MessageTS); err != nil {
+		o.project, slackTeamOf(ctx, a, o.project, o.connectionID), o.channelID, o.threadTS, res.MessageTS); err != nil {
 		log.Printf("slack: reply for run %s landed but its ts could not be recorded on the thread: %v", o.runID, err)
 	}
 	return true
@@ -290,11 +290,11 @@ func (p *SlackReplyPump) spine() *coordinator.Store { return p.bridge.spine }
 // channel, thread) and a delivery row carries the connection rather than the team, so this is one lookup
 // on a row RLS already confines. A failure yields "" — which simply matches no thread and skips the handle
 // update, never a wrong one. Shared with the approval pump, which owns the other kind of delivery row.
-func slackTeamOf(ctx context.Context, a *SlackAdmitter, org, project, connectionID string) string {
+func slackTeamOf(ctx context.Context, a *SlackAdmitter, project, connectionID string) string {
 	var team string
 	if err := a.store.pool.QueryRow(storage.ScopeToTenant(ctx, project),
-		`SELECT team_id FROM slack_connections WHERE id = $1 AND organization_id = $2 AND project_id = $3`,
-		connectionID, org, project).Scan(&team); err != nil {
+		`SELECT team_id FROM slack_connections WHERE id = $1 AND project_id = $2`,
+		connectionID, project).Scan(&team); err != nil {
 		return ""
 	}
 	return team

@@ -47,8 +47,8 @@ func (s *Store) mintID(prefix string) string {
 // only ever run operations that exist. The returned Worker carries fence 1; a later health/capability change
 // bumps it, cutting any lease held under the old fence.
 func (s *Store) Enroll(ctx context.Context, tenant Tenant, spec WorkerSpec) (Worker, error) {
-	if tenant.Organization == "" || tenant.Project == "" {
-		return Worker{}, errors.New("workers: enrollment requires an org and project scope")
+	if tenant.Project == "" {
+		return Worker{}, errors.New("workers: enrollment requires a project scope")
 	}
 	if !KnownCapability(spec.Capability) {
 		return Worker{}, ErrUnknownCapability

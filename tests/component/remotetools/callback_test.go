@@ -68,10 +68,9 @@ func newHarness(t *testing.T) *harness {
 	}
 	pool := cs.Pool()
 	org, project, session, runID := newID("org"), newID("prj"), newID("ses"), newID("run")
-	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
-	exec(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, session, org, project)
-	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id) VALUES ($1,$2,$3,$4)`, runID, org, project, session)
+	exec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, project)
+	exec(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, session, project)
+	exec(t, pool, `INSERT INTO runs (id, project_id, session_id) VALUES ($1,$2,$3)`, runID, project, session)
 
 	ops := remotehttp.NewOperations(pool)
 	resolver := func(o, ref string) ([]byte, error) {
@@ -85,7 +84,7 @@ func newHarness(t *testing.T) *harness {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	return &harness{ops: ops, pool: pool, server: server, org: org, project: project, runID: runID}
+	return &harness{ops: ops, pool: pool, server: server, project: project, runID: runID}
 }
 
 // openOperation seeds a tool_call (the FK target) + a pending operation and returns its id + raw token.
@@ -93,13 +92,13 @@ func (h *harness) openOperation(t *testing.T, deadline time.Time, fence uint64) 
 	t.Helper()
 	callID := newID("tcall")
 	exec(t, h.pool,
-		`INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments)
-		 VALUES ($1,$2,$3,$4,$5,'executing','remote.lookup','{}')`,
-		callID, h.org, h.project, h.runID, int64(fence))
+		`INSERT INTO tool_calls (id, project_id, run_id, fence, state, name, arguments)
+		 VALUES ($1,$2,$3,$4,'executing','remote.lookup','{}')`,
+		callID, h.project, h.runID, int64(fence))
 	operationID = newID("rop")
 	token = newID("tok")
 	opened, err := h.ops.Open(context.Background(), remotehttp.OpenOperation{
-		OperationID: operationID, Org: h.org, Project: h.project, ToolCallID: callID,
+		OperationID: operationID, Project: h.project, ToolCallID: callID,
 		SecretRef: testSecretRef, TokenHash: remotehttp.HashToken(token), Deadline: deadline, Fence: fence,
 	})
 	if err != nil || !opened {

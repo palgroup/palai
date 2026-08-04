@@ -18,7 +18,7 @@ import (
 // the UNTRUSTED direction — the sandbox response streamed back to the client — not the request.
 func TestPreviewProxyIsolatesUntrustedContentAndBoundsResponse(t *testing.T) {
 	tenant := coordinator.Tenant{Project: "proj_a"}
-	hdr := http.Header{"X-Palai-Org": {tenant.Organization}, "X-Palai-Project": {tenant.Project}}
+	hdr := http.Header{"X-Palai-Project": {tenant.Project}}
 	now := time.Now()
 
 	// Hostile sandbox content on an HTML content-type — the classic stored-XSS payload.
@@ -89,7 +89,7 @@ func TestPreviewProxyIsolatesUntrustedContentAndBoundsResponse(t *testing.T) {
 // — a preview must not become a cookie-injection vector; CSP does not stop a response header cookie).
 func TestPreviewProxyStripsSandboxSetCookie(t *testing.T) {
 	tenant := coordinator.Tenant{Project: "proj_a"}
-	hdr := http.Header{"X-Palai-Org": {tenant.Organization}, "X-Palai-Project": {tenant.Project}}
+	hdr := http.Header{"X-Palai-Project": {tenant.Project}}
 	now := time.Now()
 	hostile := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Add("Set-Cookie", "session=attacker; Path=/; HttpOnly")
@@ -139,7 +139,7 @@ func TestPreviewRouteDeniesExpiredAndWrongTenant(t *testing.T) {
 
 	// The caller identity is asserted per connection from a header the gateway sets after auth.
 	caller := func(tenant coordinator.Tenant) http.Header {
-		return http.Header{"X-Palai-Org": []string{tenant.Organization}, "X-Palai-Project": []string{tenant.Project}}
+		return http.Header{"X-Palai-Project": []string{tenant.Project}}
 	}
 
 	grant := authz.Grant(PreviewGrant{

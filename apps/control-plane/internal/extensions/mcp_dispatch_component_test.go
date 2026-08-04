@@ -110,7 +110,7 @@ func publishDiscoveredIntoSet(t *testing.T, s *Store, org, project, connID, cano
 func brokerWithLookup(s *Store) *toolbroker.Broker {
 	broker := toolbroker.New()
 	broker.SetLookup(func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
-		return s.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
+		return s.LookupTool(ctx, env.Scope.Project, env.Scope.RunID, name)
 	})
 	return broker
 }
@@ -132,7 +132,7 @@ func TestMCPCallFlowsThroughStandardDispatch(t *testing.T) {
 	// A run whose rider INCLUDES the connection resolves + executes the tool through the fenced broker path.
 	runID := seedRunWithMCPRider(t, s, org, project, setID, `["`+connID+`"]`)
 	broker := brokerWithLookup(s)
-	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: org, Project: project, RunID: runID}}
+	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: project, RunID: runID}}
 	out, err := broker.Execute(ctx, contracts.ToolCallID("tc_mcp1"), "docs__echo", map[string]any{"message": "hi"}, 1, env)
 	if err != nil {
 		t.Fatalf("dispatch mcp tool: %v", err)
@@ -146,7 +146,7 @@ func TestMCPCallFlowsThroughStandardDispatch(t *testing.T) {
 
 	// A run whose rider is EMPTY cannot resolve the same tool — the connection is outside its ceiling.
 	runNoRider := seedRunWithMCPRider(t, s, org, project, setID, `[]`)
-	envNo := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: org, Project: project, RunID: runNoRider}}
+	envNo := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: project, RunID: runNoRider}}
 	if _, err := broker.Execute(ctx, contracts.ToolCallID("tc_mcp2"), "docs__echo", map[string]any{}, 1, envNo); !errors.Is(err, toolbroker.ErrUnknownTool) {
 		t.Fatalf("rider-excluded mcp tool err = %v, want ErrUnknownTool (capability ceiling)", err)
 	}
@@ -247,7 +247,7 @@ func TestMCPDiscoveredToolAdvertisedOnlyWhenPublishedAndPinned(t *testing.T) {
 	broker := brokerWithLookup(s)
 	// A run with the rider but NO published set: the draft is not pinnable, so not advertised.
 	draftRun := seedRunWithMCPRider(t, s, org, project, "tsrev_none", `["`+connID+`"]`)
-	envDraft := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: org, Project: project, RunID: draftRun}}
+	envDraft := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: project, RunID: draftRun}}
 	if _, found, err := broker.SchemaResolved(ctx, envDraft, "docs__echo"); err != nil || found {
 		t.Fatalf("draft mcp tool SchemaResolved found=%v err=%v, want NOT advertised (unapproved)", found, err)
 	}
@@ -255,7 +255,7 @@ func TestMCPDiscoveredToolAdvertisedOnlyWhenPublishedAndPinned(t *testing.T) {
 	// Publish + pin + rider → now it resolves and advertises with its schema.
 	setID := publishDiscoveredIntoSet(t, s, org, project, connID, "mcp.docs.echo")
 	pubRun := seedRunWithMCPRider(t, s, org, project, setID, `["`+connID+`"]`)
-	envPub := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: org, Project: project, RunID: pubRun}}
+	envPub := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: project, RunID: pubRun}}
 	tool, found, err := broker.SchemaResolved(ctx, envPub, "docs__echo")
 	if err != nil || !found {
 		t.Fatalf("published+pinned mcp tool SchemaResolved found=%v err=%v, want advertised", found, err)

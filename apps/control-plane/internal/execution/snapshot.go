@@ -52,7 +52,6 @@ func NewSnapshotSink(store SnapshotObjectStore, spine *coordinator.Store) *Snaps
 // allocation ids, the on-host allocation directory to archive, and the reason (e.g. a pause boundary).
 type SnapshotCaptureInput struct {
 	SnapshotID   string
-	Organization string
 	Project      string
 	WorkspaceID  string
 	AllocationID string

@@ -66,7 +66,7 @@ func openHookFaultStore(t *testing.T) (*Store, *pgxpool.Pool, string, string) {
 	// verifies the HMAC; here the point is the down worker + the breaker).
 	s.SetRemoteInvoker(
 		remotehttp.NewExecutor(remotehttp.NewOperations(pool)),
-		func(_, _ string) ([]byte, error) { return []byte("fault-signing-secret"), nil },
+		func(_ string) ([]byte, error) { return []byte("fault-signing-secret"), nil },
 	)
 	return s, pool, org, project
 }
@@ -111,7 +111,7 @@ func TestHookWorkerDownFailsClosedTripsBreakerControlPlaneUp(t *testing.T) {
 
 	beforeTool := func() HookOutcome {
 		out, err := s.Fire(ctx, HookEvent{
-			Org: org, Project: project, RunID: faultID("run"), Point: HookPointBeforeTool,
+			Project: project, RunID: faultID("run"), Point: HookPointBeforeTool,
 			Payload: map[string]any{"tool_name": "push"},
 		})
 		if err != nil {
@@ -145,7 +145,7 @@ func TestHookWorkerDownFailsClosedTripsBreakerControlPlaneUp(t *testing.T) {
 	// A DIFFERENT hook (different id ⇒ different breaker key) on a healthy worker still FLOWS — one hook's
 	// trip never sheds another.
 	beforeModel, err := s.Fire(ctx, HookEvent{
-		Org: org, Project: project, RunID: faultID("run"), Point: HookPointBeforeModel,
+		Project: project, RunID: faultID("run"), Point: HookPointBeforeModel,
 		Payload: map[string]any{"tool_count": 1},
 	})
 	if err != nil {

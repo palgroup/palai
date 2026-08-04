@@ -74,8 +74,7 @@ func TestToolSDKServerVariantSignedRoundtrip(t *testing.T) {
 	pool := cs.Pool()
 
 	org, project := newID("org"), newID("prj")
-	mustExec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, org)
-	mustExec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
+	mustExec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, project)
 
 	// The shared HMAC secret (in-memory only; never logged). The org-scoped resolver
 	// hands it to the callback endpoint verifier; the SAME bytes reach the TS server
@@ -107,7 +106,6 @@ func TestToolSDKServerVariantSignedRoundtrip(t *testing.T) {
 		AttemptID:    newID("att"),
 		RequestHash:  "sha256:component",
 		Arguments:    map[string]any{"query": "weather"},
-		Org:          org,
 		Project:      project,
 		SecretRef:    "sig-ref",
 		Fence:        1,
