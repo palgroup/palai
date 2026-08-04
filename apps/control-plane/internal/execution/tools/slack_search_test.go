@@ -248,11 +248,11 @@ func TestThePacerIsWorkspaceWideAndPacesTheSecondCall(t *testing.T) {
 	auth.Grant("run_b", "T_SAME", "https://slack.test/api", []byte("t"), "act")
 	auth.Grant("run_c", "T_OTHER", "https://slack.test/api", []byte("t"), "act")
 
-	if _, wait, err := auth.take("run_a"); err != nil || wait != 0 {
+	if _, wait, err := auth.take("run_a", ""); err != nil || wait != 0 {
 		t.Fatalf("the first call to a workspace waited %v (err=%v), want none", wait, err)
 	}
 	// A DIFFERENT RUN in the SAME workspace must still be paced: the limit is the team's.
-	_, wait, err := auth.take("run_b")
+	_, wait, err := auth.take("run_b", "")
 	if err != nil {
 		t.Fatalf("take run_b: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestThePacerIsWorkspaceWideAndPacesTheSecondCall(t *testing.T) {
 			"per-channel pacer would have let it straight through", wait, searchWorkspaceInterval)
 	}
 	// A different workspace is unaffected; the ceiling is not global to this process.
-	if _, wait, err := auth.take("run_c"); err != nil || wait != 0 {
+	if _, wait, err := auth.take("run_c", ""); err != nil || wait != 0 {
 		t.Fatalf("a call to a DIFFERENT workspace waited %v (err=%v), want none", wait, err)
 	}
 }
@@ -281,5 +281,91 @@ func TestTheSearchToolsOutputIsDeclaredUnretained(t *testing.T) {
 	if !tool.Unretained {
 		t.Fatal("the search tool does not declare Unretained, so the dispatcher will commit its results to " +
 			"tool_calls.result — a stored copy of Slack data, which the API's own terms of use forbid (M5)")
+	}
+}
+
+// A RELAY OUTSIDE THIS PROCESS GRANTS AGAINST THE SESSION, because it cannot key by run: it learns a run id
+// only from the response POST /v1/responses returns, by which time the run has already asked the broker what
+// tools it may have. This is the advertising question asked the way the relay's runs ask it — a run id the
+// authority store has never seen, in a session it has.
+func TestASessionGrantAuthorisesARunTheStoreHasNeverSeen(t *testing.T) {
+	auth := NewSearchAuthorities()
+	auth.GrantSession("sess_1", "T1", "https://slack.test/api", []byte("bot"), "act-1")
+
+	if !auth.authorized("run_never_granted", "sess_1") {
+		t.Fatal("a run in a granted session was refused the tool: a relay-born run can never be granted by " +
+			"run id, so this is the only key it has")
+	}
+	if auth.authorized("run_never_granted", "sess_other") {
+		t.Fatal("a run in a DIFFERENT session was offered the tool: the grant is not session-scoped at all")
+	}
+}
+
+// THE TOKENLESS TURN REVOKES, and this is the property that keeps search a per-turn power rather than a
+// standing one. It is derived from a live measurement rather than from the vendor's prose (2026-08-04, team
+// T0AMPM5JX8U): an addressed message carried an action_token on BOTH the app_mention and the message.channels
+// it produced, while a human's thread REPLY in the same thread carried none, as did a file_share, an edit and
+// every bot-authored message.
+//
+// So the dangerous state is not "no token" — it is a token from the PREVIOUS turn still sitting under the
+// session key when a later, tokenless message arrives. Without the revoke the thread's first @mention would
+// hand every subsequent reply a search power that reply's own message never granted.
+func TestATokenlessTurnWithdrawsTheSessionsSearchAuthority(t *testing.T) {
+	auth := NewSearchAuthorities()
+	auth.GrantSession("sess_1", "T1", "https://slack.test/api", []byte("bot"), "act-1")
+	if !auth.authorized("run_1", "sess_1") {
+		t.Fatal("the addressed turn's grant did not take effect")
+	}
+
+	// The next message in the thread carries no action_token. The relay calls the SAME method with what it
+	// has, which is nothing.
+	auth.GrantSession("sess_1", "T1", "https://slack.test/api", []byte("bot"), "")
+
+	if auth.authorized("run_2", "sess_1") {
+		t.Fatal("a tokenless turn kept the PREVIOUS turn's authority: the session is now a standing search " +
+			"power, which is exactly what binding the search to the message that authorised it prevents")
+	}
+	if _, _, err := auth.take("run_2", "sess_1"); err == nil {
+		t.Fatal("take still handed out a withdrawn authority")
+	}
+}
+
+// A LATER TURN REPLACES THE EARLIER TOKEN rather than accumulating one. An action_token's lifetime is
+// undocumented, so the freshest one is the only one worth holding.
+func TestASecondAddressedTurnReplacesTheSessionsToken(t *testing.T) {
+	auth := NewSearchAuthorities()
+	auth.GrantSession("sess_1", "T1", "https://slack.test/api", []byte("bot"), "act-old")
+	auth.GrantSession("sess_1", "T1", "https://slack.test/api", []byte("bot"), "act-new")
+
+	got, _, err := auth.take("run_1", "sess_1")
+	if err != nil {
+		t.Fatalf("take: %v", err)
+	}
+	if got.ActionToken != "act-new" {
+		t.Fatalf("the search would be made with %q, want the newest token; a stale action_token fails with "+
+			"invalid_action_token and the model reads it as an empty workspace", got.ActionToken)
+	}
+}
+
+// THE PER-RUN BUDGET STILL BINDS a session-granted run. The ceiling is the run's, not the grant's, so a
+// relay-born run gets the same four searches an in-process one does — otherwise moving the grant to the
+// session would quietly have removed the budget with it.
+func TestASessionGrantedRunStillSpendsThePerRunBudget(t *testing.T) {
+	auth := NewSearchAuthorities()
+	auth.interval = 0 // pacing is not what this test is about
+	auth.GrantSession("sess_1", "T1", "https://slack.test/api", []byte("bot"), "act")
+
+	for i := 0; i < maxSearchesPerRun; i++ {
+		if _, _, err := auth.take("run_1", "sess_1"); err != nil {
+			t.Fatalf("search %d of the budget was refused: %v", i+1, err)
+		}
+	}
+	if _, _, err := auth.take("run_1", "sess_1"); err == nil {
+		t.Fatalf("a session-granted run made more than its %d searches: the budget is keyed on the run, and "+
+			"moving the grant to the session must not carry the ceiling away with it", maxSearchesPerRun)
+	}
+	// A DIFFERENT run in the same session gets its own budget, which is what "per run" means.
+	if _, _, err := auth.take("run_2", "sess_1"); err != nil {
+		t.Fatalf("a second run in the same session was refused its own budget: %v", err)
 	}
 }

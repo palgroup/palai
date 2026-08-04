@@ -63,8 +63,24 @@ type SearchAuthority struct {
 type SearchAuthorities struct {
 	mu    sync.Mutex
 	byRun map[string]SearchAuthority
-	spent map[string]int
-	last  map[string]time.Time // per TEAM, not per run: the rate limit is the workspace's
+	// bySession is the SAME authority reached by the other admission route, and it exists because the two
+	// routes learn the run id at different moments. In-process admission (extensions/slack_admit.go) mints
+	// the run itself, so it can key by run. A RELAY running outside this control plane cannot: it learns a
+	// run id only from the response POST/v1/responses returns, and by then the run has started and already
+	// asked the broker which tools it may have — a grant arriving after that races the advertisement and
+	// loses. The relay therefore grants against the SESSION it is about to create the response in, which it
+	// knows first, and the lookup below reads whichever key is populated.
+	//
+	// IT IS NOT A STANDING POWER, and the distinction is the whole design. Measured live on 2026-08-04
+	// against team T0AMPM5JX8U: an `app_mention` and the `message.channels` of the SAME addressed message
+	// each carried an action_token (inner level, 62 chars), while a human's THREAD REPLY, a `file_share`,
+	// an edit (`message_changed`) and every bot-authored message carried none. So authority exists on the
+	// turn the app is ADDRESSED and on no other, and a session entry left behind from an earlier turn would
+	// hand a later tokenless turn a power its own message never granted. GrantSession is therefore also the
+	// REVOKE: an empty action token clears the entry rather than leaving the previous one standing.
+	bySession map[string]SearchAuthority
+	spent     map[string]int
+	last      map[string]time.Time // per TEAM, not per run: the rate limit is the workspace's
 	// interval is searchWorkspaceInterval in production. It is a field rather than the constant so a test can
 	// assert the pacer's DECISION without spending six real seconds per call to observe it.
 	interval time.Duration
@@ -72,10 +88,11 @@ type SearchAuthorities struct {
 
 func NewSearchAuthorities() *SearchAuthorities {
 	return &SearchAuthorities{
-		byRun:    map[string]SearchAuthority{},
-		spent:    map[string]int{},
-		last:     map[string]time.Time{},
-		interval: searchWorkspaceInterval,
+		byRun:     map[string]SearchAuthority{},
+		bySession: map[string]SearchAuthority{},
+		spent:     map[string]int{},
+		last:      map[string]time.Time{},
+		interval:  searchWorkspaceInterval,
 	}
 }
 
@@ -96,6 +113,37 @@ func (s *SearchAuthorities) Grant(runID, teamID, apiBase string, botToken []byte
 	s.byRun[runID] = SearchAuthority{TeamID: teamID, APIBase: apiBase, BotToken: botToken, ActionToken: actionToken}
 }
 
+// GrantSession records the authority the NEXT run in a session may search with, and — when actionToken is
+// empty — withdraws it. Both directions are this one method on purpose: a relay calls it once per turn with
+// whatever the message carried, so the tokenless turn that must REVOKE is the same call as the one that
+// grants, and there is no second method a caller can forget to make.
+//
+// The revoke half is not defensive tidying, it is the property that keeps the authority per-turn. See
+// bySession: a thread reply carries no action_token, so without this a session's first addressed message
+// would leave a token behind that every later reply in that thread could spend.
+func (s *SearchAuthorities) GrantSession(sessionID, teamID, apiBase string, botToken []byte, actionToken string) {
+	if s == nil || sessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if actionToken == "" {
+		delete(s.bySession, sessionID)
+		return
+	}
+	s.bySession[sessionID] = SearchAuthority{TeamID: teamID, APIBase: apiBase, BotToken: botToken, ActionToken: actionToken}
+}
+
+// ReleaseSession drops a session's authority.
+func (s *SearchAuthorities) ReleaseSession(sessionID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.bySession, sessionID)
+}
+
 // Release drops a finished run's authority. The token is short-lived and unstorable; keeping it past the run
 // buys nothing and holds a credential for no reason.
 func (s *SearchAuthorities) Release(runID string) {
@@ -110,10 +158,13 @@ func (s *SearchAuthorities) Release(runID string) {
 
 // take reserves one search for a run: it returns the authority, or a refusal naming WHICH limit stopped it.
 // The wait it returns is how long the caller must pace before calling Slack.
-func (s *SearchAuthorities) take(runID string) (SearchAuthority, time.Duration, error) {
+func (s *SearchAuthorities) take(runID, sessionID string) (SearchAuthority, time.Duration, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a, ok := s.byRun[runID]
+	if !ok && sessionID != "" {
+		a, ok = s.bySession[sessionID]
+	}
 	if !ok {
 		return SearchAuthority{}, 0, fmt.Errorf("this run carries no Slack search authorisation: the search is " +
 			"authorised by the message that started the run, and this run either did not start from one or was " +
@@ -154,7 +205,7 @@ func SlackSearchLookup(doer slack.Doer, authorities *SearchAuthorities,
 	tool := SlackSearchTool(doer, authorities)
 	return func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
 		if name == slackSearchToolName {
-			if authorities.authorized(env.Scope.RunID) {
+			if authorities.authorized(env.Scope.RunID, env.Scope.SessionID) {
 				return tool, true, nil
 			}
 			// Not an error: a miss means "this run has no such tool", which is exactly true.
@@ -170,13 +221,21 @@ func SlackSearchLookup(doer slack.Doer, authorities *SearchAuthorities,
 // authorized reports whether a run may search at all — the advertising question, asked before any budget is
 // spent. Budget exhaustion is deliberately NOT checked here: a tool that vanished from the model's list
 // halfway through a conversation would be stranger than one that answers "I have used my searches".
-func (s *SearchAuthorities) authorized(runID string) bool {
-	if s == nil || runID == "" {
+func (s *SearchAuthorities) authorized(runID, sessionID string) bool {
+	if s == nil {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, ok := s.byRun[runID]
+	if runID != "" {
+		if _, ok := s.byRun[runID]; ok {
+			return true
+		}
+	}
+	if sessionID == "" {
+		return false
+	}
+	_, ok := s.bySession[sessionID]
 	return ok
 }
 
@@ -227,7 +286,7 @@ func SlackSearchTool(doer slack.Doer, authorities *SearchAuthorities) toolbroker
 			if n, ok := args["limit"].(float64); ok && n >= 1 && n <= float64(slack.MaxSearchLimit) {
 				limit = int(n)
 			}
-			authority, wait, err := authorities.take(env.Scope.RunID)
+			authority, wait, err := authorities.take(env.Scope.RunID, env.Scope.SessionID)
 			if err != nil {
 				return nil, err
 			}
