@@ -287,6 +287,14 @@ func nativeEnv(cfg Config, p paths, get func(string) string, engine, listen, roo
 	if budget := strings.TrimSpace(get("PALAI_TOOL_ERROR_BUDGET")); budget != "" {
 		env["PALAI_TOOL_ERROR_BUDGET"] = budget
 	}
+	// AND SO DOES THE SCRIPTED EXCHANGE, for the same reason and with the same consequence. It names a
+	// JSON file the deterministic adapter replays, which is how a stack with no provider credential drives
+	// a run that calls a tool — the native posture's whole point, since the machine the tool runs on is
+	// this one. Written in .env.local and not named here, it would reach nothing and the run would answer
+	// the built-in "ok" without calling anything, which is exactly the belief the seam exists to prevent.
+	if script := strings.TrimSpace(get("PALAI_FAKE_SCRIPT_FILE")); script != "" {
+		env["PALAI_FAKE_SCRIPT_FILE"] = script
+	}
 	out := make([]string, 0, len(env))
 	for k, v := range env {
 		out = append(out, k+"="+v)

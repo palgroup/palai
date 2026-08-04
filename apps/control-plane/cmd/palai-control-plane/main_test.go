@@ -543,7 +543,10 @@ func firstParagraphAfterTitle(doc string) string {
 // an unresolvable secret ref stops the call one step past the assertion this test makes.
 func TestModelBrokerSpeaksEveryProviderFamilyOnABootstrapDeployment(t *testing.T) {
 	t.Setenv("PALAI_MODEL_PROVIDER", "") // a self-host that has configured nothing
-	broker, route := modelBrokerFromEnv()
+	broker, route, err := modelBrokerFromEnv()
+	if err != nil {
+		t.Fatalf("modelBrokerFromEnv on a bootstrap deployment = %v, want no error", err)
+	}
 
 	// The DEPLOYMENT DEFAULT is unchanged: a stack that configured no provider still runs the
 	// deterministic fake, and no existing deployment moves.
@@ -836,4 +839,123 @@ func TestEveryShippedControlPlaneBringUpBindsARunnerListener(t *testing.T) {
 			t.Fatalf("%s no longer carries %q: a shipped bring-up that stops binding a runner listener now REFUSES to dispatch, and its runs sit in `queued` with the reason only in the log", f.path, f.want)
 		}
 	}
+}
+
+// THE DEPLOYMENT SEAM FOR THE DETERMINISTIC ADAPTER, driven through the reader production calls.
+//
+// IT EXISTS BECAUSE A STACK WITH NO CREDENTIAL COULD PROVE NO TOOL PATH AT ALL. The shipped fake answers
+// a fixed script with no tool calls and nothing could point it elsewhere, so every end-to-end proof that a
+// tool ran on a machine needed a provider key — and this tree exposes no tools to a real provider, so the
+// key would not have produced a tool call either.
+//
+// All three legs go through modelBrokerFromEnv and then through broker.Route, because the claim is about
+// what a RUN gets, and a run gets the adapter the broker dispatches to. Building a fake.Adapter here would
+// assert the package, not the deployment.
+func TestTheDeploymentCanRouteTheDeterministicAdapterAScript(t *testing.T) {
+	// LEG 1 — UNROUTED: byte-for-byte what every deployment that has ever existed answers. `fake-local`
+	// and `ok` are read back out of committed model steps by the wiring and UAT receipts, so this is the
+	// leg that must not move.
+	t.Run("unset replays the built-in script", func(t *testing.T) {
+		t.Setenv("PALAI_MODEL_PROVIDER", "")
+		t.Setenv(fakeScriptFileEnv, "")
+		broker, route, err := modelBrokerFromEnv()
+		if err != nil {
+			t.Fatalf("modelBrokerFromEnv = %v, want the bootstrap deployment", err)
+		}
+		res, err := broker.Route(context.Background(), route.Provider, modelbroker.Request{
+			ModelRequestID: "mreq_default", Secret: route.Secret,
+		}, nil)
+		if err != nil {
+			t.Fatalf("Route = %v, want the built-in script", err)
+		}
+		if res.Output != "ok" || res.ProviderRequestID != "fake-local" || res.Model != "fake" {
+			t.Fatalf("the unrouted answer moved: output=%q provider_request_id=%q model=%q, want ok/fake-local/fake",
+				res.Output, res.ProviderRequestID, res.Model)
+		}
+		if len(res.ToolCalls) != 0 {
+			t.Fatalf("the unrouted answer now calls %d tool(s); every deployment that set nothing must answer "+
+				"without reaching one", len(res.ToolCalls))
+		}
+	})
+
+	// LEG 2 — ROUTED: a file on disk, and a run that calls a tool and then answers with what it learned.
+	t.Run("a routed file drives a tool call and its answer", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "uname.json")
+		if err := os.WriteFile(path, []byte(`{
+		  "provider_request_id": "scripted-uname",
+		  "model": "fake",
+		  "tool_calls": [{"id": "call_uname", "name": "palai.workspace.shell", "arguments": "{\"command\":\"uname\"}"}],
+		  "then": [{"provider_request_id": "scripted-answer", "model": "fake", "output": "Darwin"}]
+		}`), 0o600); err != nil {
+			t.Fatalf("write script: %v", err)
+		}
+		t.Setenv("PALAI_MODEL_PROVIDER", "")
+		t.Setenv(fakeScriptFileEnv, path)
+
+		broker, route, err := modelBrokerFromEnv()
+		if err != nil {
+			t.Fatalf("modelBrokerFromEnv = %v, want the routed script accepted", err)
+		}
+		first, err := broker.Route(context.Background(), route.Provider, modelbroker.Request{
+			ModelRequestID: "mreq_1", Secret: route.Secret,
+			Tools:    []modelbroker.ToolSchema{{Name: "palai.workspace.shell"}},
+			Messages: []modelbroker.Message{{Role: "user", Content: "which kernel?"}},
+		}, nil)
+		if err != nil {
+			t.Fatalf("first step = %v, want the scripted tool call", err)
+		}
+		if len(first.ToolCalls) != 1 || first.ToolCalls[0].Name != "palai.workspace.shell" ||
+			first.ToolCalls[0].Arguments != `{"command":"uname"}` {
+			t.Fatalf("first step tool calls = %+v, want the shell call the file scripts: a credential-less "+
+				"stack still cannot drive a tool", first.ToolCalls)
+		}
+
+		second, err := broker.Route(context.Background(), route.Provider, modelbroker.Request{
+			ModelRequestID: "mreq_2", Secret: route.Secret,
+			Tools: []modelbroker.ToolSchema{{Name: "palai.workspace.shell"}},
+			Messages: []modelbroker.Message{
+				{Role: "user", Content: "which kernel?"},
+				{Role: "assistant", ToolCalls: first.ToolCalls},
+				{Role: "tool", ToolCallID: "call_uname", Content: "Darwin"},
+			},
+		}, nil)
+		if err != nil {
+			t.Fatalf("second step = %v, want the scripted answer", err)
+		}
+		if second.Output != "Darwin" || len(second.ToolCalls) != 0 || second.ProviderRequestID != "scripted-answer" {
+			t.Fatalf("second step output=%q tool_calls=%d id=%q, want the follow-up turn's answer",
+				second.Output, len(second.ToolCalls), second.ProviderRequestID)
+		}
+	})
+
+	// LEG 3 — REFUSED: a routing that cannot be honoured stops the boot instead of quietly leaving the
+	// built-in script in place. A silent fallback is an operator watching a run that calls nothing while
+	// believing their file is driving it — which is the belief this whole seam exists to make impossible.
+	t.Run("a routing that cannot be honoured refuses", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "no-such-script.json")
+		empty := filepath.Join(t.TempDir(), "empty.json")
+		if err := os.WriteFile(empty, []byte(`{}`), 0o600); err != nil {
+			t.Fatalf("write script: %v", err)
+		}
+		for _, c := range []struct{ name, provider, path, want string }{
+			{"a path with no file behind it", "", missing, "read scripted exchange"},
+			{"a script that answers nothing", "", empty, "answers nothing"},
+			// The deterministic adapter is reachable ONLY as the deployment default — no connection can
+			// name the family — so a script routed into a live deployment is replayed by nothing at all.
+			{"a live deployment", "provider-one", empty, "PALAI_MODEL_PROVIDER"},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				t.Setenv("PALAI_MODEL_PROVIDER", c.provider)
+				t.Setenv(fakeScriptFileEnv, c.path)
+				broker, _, err := modelBrokerFromEnv()
+				if err == nil {
+					t.Fatalf("modelBrokerFromEnv accepted %s and returned a broker (%p): the deployment would "+
+						"run the built-in script while its operator believes the routed one is driving", c.name, broker)
+				}
+				if !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), fakeScriptFileEnv) {
+					t.Fatalf("refusal = %v, want it to name %s and %q", err, fakeScriptFileEnv, c.want)
+				}
+			})
+		}
+	})
 }

@@ -1,8 +1,10 @@
 package registry
 
 import (
+	"context"
 	"testing"
 
+	fake "github.com/palgroup/palai/adapters/models/fake"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 )
 
@@ -87,5 +89,63 @@ func TestTheFakeFamilyIsUnreachableFromAConnectionAndThereforeNeedsNoInspector(t
 	}
 	if _, ok := Inspectors()[FakeFamily]; ok {
 		t.Fatalf("%q has an inspector but no connection can name it: a code path nothing can reach", FakeFamily)
+	}
+}
+
+// AN UNROUTED DEPLOYMENT ANSWERS EXACTLY WHAT IT ALWAYS DID, and this asserts it by DRIVING the
+// adapter the map actually holds rather than by comparing the struct the map was built from. Every
+// deployment that exists is this one — no PALAI_FAKE_SCRIPT_FILE, so Options.FakeScript is nil — and
+// a great many proofs in this tree read `fake-local` and `ok` back out of a committed model step.
+func TestAnUnroutedDeploymentReplaysTheBuiltInScript(t *testing.T) {
+	adapter, ok := Adapters(Options{})[FakeFamily]
+	if !ok {
+		t.Fatalf("no %q adapter is registered", FakeFamily)
+	}
+	res, err := adapter.Execute(context.Background(), modelbroker.Request{ModelRequestID: "mreq_default"}, "unused", nil)
+	if err != nil {
+		t.Fatalf("Execute = %v, want the built-in script", err)
+	}
+	if res.Output != "ok" || res.ProviderRequestID != "fake-local" || res.Model != "fake" {
+		t.Fatalf("built-in answer moved: output=%q provider_request_id=%q model=%q, want %q/%q/%q",
+			res.Output, res.ProviderRequestID, res.Model, "ok", "fake-local", "fake")
+	}
+	if len(res.ToolCalls) != 0 || res.FinishReason != "stop" {
+		t.Fatalf("built-in answer now calls %d tool(s) and finishes %q: a stack that configured nothing "+
+			"must still answer without reaching a tool", len(res.ToolCalls), res.FinishReason)
+	}
+}
+
+// A ROUTED SCRIPT REACHES THE ADAPTER THE BROKER DISPATCHES THROUGH — the whole point of the Options
+// field, and the half that would be a dead setting if the map kept building the built-in script.
+func TestARoutedScriptIsWhatTheFakeAdapterReplays(t *testing.T) {
+	routed := fake.Script{
+		ProviderRequestID: "scripted-uname", Model: "fake",
+		ToolCalls: []modelbroker.ToolCall{{ID: "call_uname", Name: "palai.workspace.shell", Arguments: `{"command":"uname"}`}},
+		Then:      []fake.Script{{ProviderRequestID: "scripted-answer", Model: "fake", Output: "Darwin"}},
+	}
+	adapter := Adapters(Options{FakeScript: &routed})[FakeFamily]
+
+	first, err := adapter.Execute(context.Background(), modelbroker.Request{ModelRequestID: "mreq_1"}, "unused", nil)
+	if err != nil {
+		t.Fatalf("Execute = %v, want the routed script's first turn", err)
+	}
+	if len(first.ToolCalls) != 1 || first.ToolCalls[0].Name != "palai.workspace.shell" {
+		t.Fatalf("routed first turn called %v; a deployment that routed a script still got no tool call", first.ToolCalls)
+	}
+
+	second, err := adapter.Execute(context.Background(), modelbroker.Request{
+		ModelRequestID: "mreq_2",
+		Messages:       []modelbroker.Message{{Role: "assistant", ToolCalls: first.ToolCalls}, {Role: "tool", ToolCallID: "call_uname", Content: "Darwin"}},
+	}, "unused", nil)
+	if err != nil {
+		t.Fatalf("Execute = %v, want the routed script's second turn", err)
+	}
+	if second.Output != "Darwin" {
+		t.Fatalf("routed second turn output = %q, want the scripted answer", second.Output)
+	}
+
+	// And the built-in script is untouched by any of it: the routed one is a parameter, not a mutation.
+	if FakeScript.Output != "ok" || FakeScript.ProviderRequestID != "fake-local" || len(FakeScript.ToolCalls) != 0 {
+		t.Fatalf("the package-level FakeScript was mutated by routing one in: %+v", FakeScript)
 	}
 }

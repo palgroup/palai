@@ -26,6 +26,7 @@ import (
 	"github.com/palgroup/palai/adapters/integrations/a2a"
 	mcpclient "github.com/palgroup/palai/adapters/integrations/mcp"
 	"github.com/palgroup/palai/adapters/integrations/webhook"
+	fake "github.com/palgroup/palai/adapters/models/fake"
 	"github.com/palgroup/palai/adapters/models/registry"
 	"github.com/palgroup/palai/adapters/repositories"
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
@@ -646,7 +647,10 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 	// the right value and the sweep is then a no-op.
 	var backgroundObserver coordinator.BackgroundObserver
 	if gateway != nil {
-		broker, route := modelBrokerFromEnv()
+		broker, route, err := modelBrokerFromEnv()
+		if err != nil {
+			log.Fatalf("model broker: %v", err) // a routed script that cannot be replayed stops the boot
+		}
 		// Register the real coding tools alongside the conformance math tool: the workspace file and
 		// shell tools (spec §28.7-28.8) that E09's real tool round-trip dispatches. The file tool
 		// confines to the attempt's workspace; the shell tool runs on the MACHINE holding the attempt's
@@ -915,7 +919,12 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 // project without one runs on what this function returns. The broker's resolver reflects that split —
 // a tenant-qualified ref (minted by a DB route) redeems from the T3 secret store under that tenant's own
 // organization, and an unqualified ref redeems from the env bridge below.
-func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute) {
+//
+// The fake adapter's EXCHANGE is a deployment setting too, and PALAI_FAKE_SCRIPT_FILE is it: unset — every
+// deployment that exists — replays registry.FakeScript unchanged, and a file lets a stack with no
+// credential drive a run that calls a tool and reads its result. It is the only reason this function can
+// fail: see fakeScriptFromEnv.
+func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute, error) {
 	// THE ADAPTER MAP IS BUILT UNCONDITIONALLY, AND THAT IS THE FIX E29 EXISTS FOR.
 	//
 	// It used to be built INSIDE the `PALAI_MODEL_PROVIDER == "provider-one"` branch below. The comment
@@ -936,8 +945,16 @@ func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute) {
 	// PALAI_OPENAI_COMPATIBLE_BASE_URL survives as the deployment-wide fallback endpoint for the custom
 	// family, so a deployment that set it keeps working unchanged; a connection carrying its own base URL
 	// (migration 000049) wins over it, per request.
+	live := os.Getenv("PALAI_MODEL_PROVIDER") == liveModelProvider
+	// The deployment-routed exchange for the deterministic adapter, if this deployment routed one.
+	// It is read BEFORE anything is built, because an unreadable one has to stop the boot.
+	script, err := fakeScriptFromEnv(os.Getenv(fakeScriptFileEnv), live)
+	if err != nil {
+		return nil, execution.ModelRoute{}, err
+	}
 	adapters := registry.Adapters(registry.Options{
 		OpenAICompatibleBaseURL: os.Getenv("PALAI_OPENAI_COMPATIBLE_BASE_URL"),
+		FakeScript:              script,
 	})
 	// The credential resolver is the same in both branches: a tenant-qualified ref (minted by a DB route)
 	// redeems from the T3 secret store under that tenant's own organization, and an unqualified ref redeems
@@ -959,16 +976,52 @@ func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute) {
 		},
 	}})
 
-	if os.Getenv("PALAI_MODEL_PROVIDER") == "provider-one" {
+	if live {
 		model := os.Getenv("PALAI_MODEL")
 		if model == "" {
 			model = "gpt-4o-mini"
 		}
-		return broker, execution.ModelRoute{Provider: "provider-one", Model: model, Secret: modelbroker.SecretRef("provider-one")}
+		return broker, execution.ModelRoute{Provider: liveModelProvider, Model: model, Secret: modelbroker.SecretRef(liveModelProvider)}, nil
 	}
 	// No configured provider: the deployment default stays the deterministic fake adapter, exactly as
 	// before, and every existing deployment's runs are bit-unchanged.
-	return broker, execution.ModelRoute{Provider: registry.FakeFamily, Model: "fake", Secret: modelbroker.SecretRef("fake")}
+	return broker, execution.ModelRoute{Provider: registry.FakeFamily, Model: "fake", Secret: modelbroker.SecretRef("fake")}, nil
+}
+
+// liveModelProvider is the ONE value of PALAI_MODEL_PROVIDER that selects a live provider. Every other
+// value, including the unset one, leaves the deployment default on the deterministic adapter.
+const liveModelProvider = "provider-one"
+
+// fakeScriptFileEnv names a JSON file holding the exchange the deterministic adapter replays
+// (fake.LoadScript). Unset — which is every deployment that has ever existed — leaves registry.FakeScript
+// in place and nothing about a run changes.
+const fakeScriptFileEnv = "PALAI_FAKE_SCRIPT_FILE"
+
+// fakeScriptFromEnv resolves that file into the script the adapter map is built with. nil means "the
+// built-in one", and it is returned for exactly one input: an unset variable.
+//
+// A SCRIPT ROUTED INTO A LIVE DEPLOYMENT IS REFUSED, and that refusal is the whole reason this is a
+// function rather than a call to fake.LoadScript. The deterministic adapter is reachable ONLY as the
+// deployment default — no model connection can name the family (registry.FakeFamily), so with
+// PALAI_MODEL_PROVIDER=provider-one the script would be loaded, installed, and replayed by nothing. An
+// operator would run their proof, watch a live model answer with no tool call, and have no way to tell
+// that the file they wrote was never consulted. That is the same "declared, and nothing happens" defect
+// the seam exists to close, so it is named here instead.
+func fakeScriptFromEnv(path string, live bool) (*fake.Script, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, nil
+	}
+	if live {
+		return nil, fmt.Errorf("%s names %s, but PALAI_MODEL_PROVIDER=%s routes this deployment to a live provider "+
+			"and no run can reach the deterministic adapter the script is for: unset one of the two",
+			fakeScriptFileEnv, path, liveModelProvider)
+	}
+	script, err := fake.LoadScript(path)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", fakeScriptFileEnv, err)
+	}
+	return &script, nil
 }
 
 // connectionProbers adapts the adapter registry's probers to the store's seam. It is a conversion rather

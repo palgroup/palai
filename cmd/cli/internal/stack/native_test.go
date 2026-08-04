@@ -410,3 +410,56 @@ func TestTheContainerPostureAlsoCarriesTheToolErrorBudget(t *testing.T) {
 			"documented in docs/operations/tool-errors.md would be unsettable on a container stack")
 	}
 }
+
+// TestTheScriptedExchangeReachesBothPostures is the same two-posture claim for PALAI_FAKE_SCRIPT_FILE —
+// the file the deterministic adapter replays, and the only way a stack with no provider credential drives
+// a run that calls a tool. A variable that lives in .env.local and is named in neither posture's
+// environment reaches nothing, and the run it was written to drive answers the built-in "ok" and calls
+// nothing at all. That is not a visible failure: it is a proof that looks like it ran.
+func TestTheScriptedExchangeReachesBothPostures(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PALAI_HOME", home)
+	// Genuinely absent from this process, so the value can only arrive through the dotenv reader (see
+	// the budget test above for why t.Setenv(k, "") would not be absent).
+	t.Setenv("PALAI_FAKE_SCRIPT_FILE", "sentinel")
+	if err := os.Unsetenv("PALAI_FAKE_SCRIPT_FILE"); err != nil {
+		t.Fatalf("unset: %v", err)
+	}
+	p, err := resolvePaths()
+	if err != nil {
+		t.Fatalf("resolve paths: %v", err)
+	}
+	if err := os.MkdirAll(p.secretsDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(p.pgPassword, []byte("hunter2"), 0o600); err != nil {
+		t.Fatalf("write pg password: %v", err)
+	}
+	cfg := Config{Project: "palai-test", APIPort: 18080, RunnerPort: 18443, PgPort: 15432, S3Port: 18333}
+
+	env, err := nativeEnv(cfg, p, getFrom(map[string]string{"PALAI_FAKE_SCRIPT_FILE": "/tmp/uname.json"}), "sha256:x", ":18443", "/tmp/w")
+	if err != nil {
+		t.Fatalf("nativeEnv: %v", err)
+	}
+	if got := envMapOf(env)["PALAI_FAKE_SCRIPT_FILE"]; got != "/tmp/uname.json" {
+		t.Fatalf("PALAI_FAKE_SCRIPT_FILE = %q, want the path from .env.local", got)
+	}
+	// Unset stays unset: an empty value is a path, and the control plane refuses a path it cannot read.
+	env, err = nativeEnv(cfg, p, getFrom(nil), "sha256:x", ":18443", "/tmp/w")
+	if err != nil {
+		t.Fatalf("nativeEnv: %v", err)
+	}
+	if _, set := envMapOf(env)["PALAI_FAKE_SCRIPT_FILE"]; set {
+		t.Fatal("an unrouted script was passed as an empty variable; unset must stay unset so the built-in script applies")
+	}
+
+	// The container posture, whose environment is a compose block rather than a Go map.
+	raw, err := os.ReadFile(filepath.Join(moduleRoot(t), "deploy", "compose", "compose.yaml"))
+	if err != nil {
+		t.Fatalf("read compose.yaml: %v", err)
+	}
+	if !strings.Contains(string(raw), "PALAI_FAKE_SCRIPT_FILE: ${PALAI_FAKE_SCRIPT_FILE:-}") {
+		t.Fatal("compose.yaml does not pass PALAI_FAKE_SCRIPT_FILE to the control plane: a scripted " +
+			"exchange would be settable on a Mac and do nothing in Docker")
+	}
+}

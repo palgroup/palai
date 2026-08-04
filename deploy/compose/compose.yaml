@@ -101,6 +101,16 @@ services:
       # never rides this environment block.
       PALAI_MODEL_PROVIDER: ${PALAI_MODEL_PROVIDER:-fake}
       PALAI_MODEL: ${PALAI_MODEL:-}
+      # The exchange the deterministic adapter replays, as a path to a JSON file (fake.LoadScript).
+      # Unset — every deployment that exists — replays the built-in fixed script, so nothing about an
+      # existing stack's runs changes. Set, it lets a stack with NO provider credential drive a run that
+      # calls a tool and answers with its result, which is otherwise unprovable here: this tree exposes
+      # no tools to a real provider, so a key would not produce a tool call either.
+      #
+      # THE PATH IS READ INSIDE THE CONTAINER, so a host file needs a bind mount onto this service. It is
+      # not a silent miss if you forget: the control plane refuses to boot and names the path it could
+      # not read.
+      PALAI_FAKE_SCRIPT_FILE: ${PALAI_FAKE_SCRIPT_FILE:-}
       # E15 T2: overrides the baked version stamp (§48.2 window / applied_by). Unset = the image's stamp.
       PALAI_VERSION: ${PALAI_VERSION:-}
       PALAI_RETENTION_STORE_FALSE_TTL: ${PALAI_RETENTION_STORE_FALSE_TTL:-}

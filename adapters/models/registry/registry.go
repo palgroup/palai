@@ -31,8 +31,14 @@ import (
 // registered because it is the deployment default for a stack that has configured no provider.
 const FakeFamily = "fake"
 
-// FakeScript is the script the deterministic adapter answers with. It is the needle every shipped-binary
-// wiring proof looks for: a terminal projection carrying model "fake" means the run never left the process.
+// FakeScript is the script the deterministic adapter answers with when the deployment routes none of its
+// own (Options.FakeScript). It is the needle every shipped-binary wiring proof looks for: a terminal
+// projection carrying model "fake" means the run never left the process.
+//
+// IT DOES NOT MOVE. `fake-local` is read back out of a committed model step by the UAT's live-round-trip
+// receipt and by every wiring proof that asserts a run stayed in-process, so this value is a constant those
+// proofs already hold a copy of — a deployment that needs a different exchange routes one in and leaves
+// this one exactly where every existing stack's runs already found it.
 var FakeScript = fake.Script{ProviderRequestID: "fake-local", Model: "fake", Output: "ok"}
 
 // Options parametrizes the families whose endpoint a DEPLOYMENT may still pin. It is the compatibility
@@ -44,6 +50,14 @@ type Options struct {
 	OpenAICompatibleBaseURL string
 	// Client, when set, replaces the adapters' HTTP client. Only a test sets it.
 	Client *http.Client
+	// FakeScript, when non-nil, REPLACES FakeScript as the exchange the deterministic adapter
+	// replays — the deployment-routed script (fake.LoadScript). It arrives here already read and
+	// already validated, because this package reads no environment and returns no error: a script
+	// that cannot be replayed has to stop the BOOT, and the boot is main's.
+	//
+	// nil is what every caller but the composition root passes, and it leaves the built-in FakeScript
+	// in place byte for byte.
+	FakeScript *fake.Script
 }
 
 // Adapters builds the map Broker.Route dispatches through: every canonical family, plus the fake. It takes
@@ -52,13 +66,17 @@ type Options struct {
 func Adapters(opts Options) map[string]modelbroker.ModelAdapter {
 	one := providerone.Adapter{Client: opts.Client}
 	two := providertwo.Adapter{Client: opts.Client}
+	script := FakeScript
+	if opts.FakeScript != nil {
+		script = *opts.FakeScript
+	}
 	return map[string]modelbroker.ModelAdapter{
 		"provider-one": one,
 		"provider-two": two,
 		"openai-compatible": openaicompatible.Adapter{
 			Adapter: providerone.Adapter{BaseURL: opts.OpenAICompatibleBaseURL, Client: opts.Client},
 		},
-		FakeFamily: fake.Adapter{Script: FakeScript},
+		FakeFamily: fake.Adapter{Script: script},
 	}
 }
 
