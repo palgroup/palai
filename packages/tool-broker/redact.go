@@ -1,6 +1,7 @@
 package toolbroker
 
 import (
+	"os"
 	"regexp"
 	"strings"
 )
@@ -56,4 +57,51 @@ func RedactValues(s string, values []string) string {
 		s = strings.ReplaceAll(s, v, "***")
 	}
 	return s
+}
+
+// sensitiveHostEnvNames matches the NAME of a host environment variable whose VALUE must never
+// survive in tool output. It is deliberately a name test rather than a value test: the value is
+// whatever the operator's deployment happens to carry, and no shape scanner recognises a Postgres
+// password or a base64 blob.
+var sensitiveHostEnvNames = regexp.MustCompile(`(?i)(SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|_KEY$|APIKEY|API_KEY|DSN|CONNECTION_STRING)`)
+
+// HostSecretValues returns the VALUES of this process's own secret-named environment variables, for
+// RedactValues.
+//
+// WHY THIS EXISTS, measured on a live native stack 2026-08-04. The shell tool's child environment is
+// an allow-list of three names, so an agent cannot inherit a secret — that hole was already closed.
+// It can still READ one, because it runs as the same uid as the control plane:
+//
+//	ps -E -p <control-plane pid>   → 62 variables, values included
+//
+// and `os.Unsetenv` does NOT help, which was measured rather than assumed: macOS serves `ps` from the
+// kernel's copy of the process's initial environment (KERN_PROCARGS2), so a value that ever entered
+// the environment stays visible for the life of the process. The same reachability covers reading
+// `.palai/api-key` off disk — correct 0600 permissions are no barrier to the same uid.
+//
+// So the defence has to act on the VALUE wherever it appears, which is what this feeds. It catches
+// every shape secretPatterns cannot: Slack `xoxb-`, a PEM block, a `postgres://user:pass@` DSN, an
+// operator's own database password.
+//
+// TWO CEILINGS, both real, neither hidden. (1) This redacts OUTPUT. An agent that reads a value and
+// writes it to a file, or sends it over the network, is not stopped — that needs the credential off
+// the machine entirely (a gateway) and the agent under a different uid. (2) A value shorter than four
+// bytes is skipped by RedactValues, so a trivially short secret is not masked; that bound is the
+// existing one and is deliberate, since masking every "1" in the output would destroy it.
+func HostSecretValues() []string {
+	var out []string
+	for _, entry := range os.Environ() {
+		name, value, found := strings.Cut(entry, "=")
+		if !found || value == "" || !sensitiveHostEnvNames.MatchString(name) {
+			continue
+		}
+		// A PATH-like value that merely lives under a secret-named variable would mask harmless text
+		// everywhere it appears. Only values that are plausibly opaque are worth masking; a filesystem
+		// path is a POINTER to a secret, not the secret, and masking it makes error messages unreadable.
+		if strings.HasPrefix(value, "/") {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
 }

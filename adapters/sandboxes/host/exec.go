@@ -166,8 +166,16 @@ func (e *Executor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (toolbr
 	// tokens) and the value-based one (this attempt's own environment values). Both, because neither sees
 	// what the other does — RedactSecrets cannot recognise an operator's database password, and
 	// RedactValues cannot recognise a token the agent obtained some other way.
+	//
+	// AND A THIRD SOURCE, which is not about this attempt at all: the control plane's OWN secret-named
+	// environment values. The child environment is a three-name allow-list, so an agent cannot INHERIT a
+	// secret — but on this posture it runs as the same uid as the control plane and can READ one.
+	// Measured 2026-08-04: `ps -E -p <control-plane pid>` served 62 variables with values, and
+	// `os.Unsetenv` does not remove them (macOS answers `ps` from the kernel's copy of the initial
+	// environment). Masking the value closes every path that carries it, `cat .palai/api-key` included.
 	redact := func(s string) string {
-		return toolbroker.RedactValues(toolbroker.RedactSecrets(s), envValues)
+		s = toolbroker.RedactValues(toolbroker.RedactSecrets(s), envValues)
+		return toolbroker.RedactValues(s, toolbroker.HostSecretValues())
 	}
 
 	start := time.Now()

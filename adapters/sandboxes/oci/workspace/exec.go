@@ -399,6 +399,13 @@ func shellEnv() []string {
 // output. Both functions live in the broker package beside ShellResult (packages/tool-broker/redact.go)
 // so the host executor masks the SAME shapes and the SAME values: redaction is a property of the result,
 // not of the container.
+// HostSecretValues is the third source and the one that is NOT about this attempt: the control plane's
+// own secret-named environment values. An agent cannot inherit them (the child environment is a
+// three-name allow-list) but it can READ them — `ps -E -p <control-plane pid>` served 62 variables with
+// their values on a live stack, and `os.Unsetenv` does not remove them because macOS answers `ps` from
+// the kernel's copy of the initial environment. Masking the VALUE closes every path that carries it,
+// including reading a credential file off disk, and catches the shapes secretPatterns cannot.
 func redactSecrets(s string, envValues []string) string {
-	return toolbroker.RedactValues(toolbroker.RedactSecrets(s), envValues)
+	s = toolbroker.RedactValues(toolbroker.RedactSecrets(s), envValues)
+	return toolbroker.RedactValues(s, toolbroker.HostSecretValues())
 }
