@@ -201,10 +201,57 @@ func retryAfter(header string, max time.Duration) time.Duration {
 // approval message is the same as losing it. So the pacing is the documented steady rate, not the burst.
 const SpecialTierPerChannel = time.Second
 
-// ChannelPacer holds outbound writes to the documented per-channel rate. It is the missing half of the 429
-// repair above: PostMessage recovers AFTER Slack refuses, while this keeps coalesced updates from asking to
-// be refused in the first place — an update loop that edits a message twice in one instant is exactly the
-// traffic the Special Tier exists to shed.
+// ChannelPacer holds outbound writes to SpecialTierPerChannel, and its callers are the two live smokes and
+// one unit test — NOT production. That is a measured decision, re-measured 2026-08-05, and the paragraphs
+// below are the measurement rather than an intention.
+//
+//	grep -rn "ChannelPacer" --include='*.go' . | grep -v _test   -> 2 (its own declaration; one comment)
+//	grep -rn "pacer.Wait"   --include='*.go' .                   -> 8, every one of them in a test
+//
+// The scope of that first search is the point. A grep confined to apps/slack-bot/ answers ZERO and reads as
+// dead code; the callers are in tests/live/slack and in this package's own interactions_test.go. It is not
+// unreferenced — it is referenced from nowhere a production wiring would be.
+//
+// # WHY IT IS NOT WIRED: THE CONSTANT NAMES ONE METHOD AND THE BURST BELONGS TO ANOTHER
+//
+// SpecialTierPerChannel is chat.postMessage's limit. The relay's high-frequency traffic is
+// chat.appendStream, which https://docs.slack.dev/reference/methods/chat.appendStream/ (checked 2026-08-05)
+// puts in TIER 4 — "100+ per minute". Pacing appendStream at one second per channel would enforce
+// 60/minute against a documented 100+/minute: the wrong limit, tighter than the real one, on the method
+// that actually moves.
+//
+// And the shape differs, not only the number. This holds a MINIMUM INTERVAL BETWEEN WRITES, which is
+// exactly what the Special Tier's own wording is ("generally allows posting one message per second per
+// channel"). A numbered tier is a per-minute allowance that documents burst tolerance; converting it into a
+// per-write floor delays traffic the budget would have taken. slack_search.go reached the same conclusion
+// from the other side — it needed a per-WORKSPACE interval and wrote its own rather than bending this one.
+//
+// # THE TRAFFIC, MEASURED ON THE LIVE DEPLOYMENT (2026-08-05, three days of real Slack use)
+//
+// Against Tier 4, the method that bursts:
+//
+//	SELECT per_min, count(*) FROM (SELECT session_id, date_trunc('minute',created_at) m, count(*) per_min
+//	  FROM events WHERE created_at > '2026-08-02Z' GROUP BY 1,2) t GROUP BY 1 ORDER BY 1 DESC LIMIT 1;
+//	-> 86 — one session's busiest calendar minute, against Tier 4's 100+. Never crossed, and NOT
+//	   comfortable: a run half again as long would cross it. That is the case for pacing appendStream one
+//	   day, and it is a case for a TIER 4 pacer, not for this one.
+//
+// Against SpecialTierPerChannel, the method this type describes — the approval message and the
+// stopped-stream fallback are the only two chat.postMessage senders the bot has:
+//
+//	SELECT ... FROM events WHERE type='approval.requested.v1' GROUP BY session_id, second;
+//	-> six one-second buckets in total, every one of them holding exactly ONE post; the closest two
+//	   approvals in one thread were 31.5 seconds apart. Thirty-one times under the limit this paces to.
+//
+// And the refusals it exists to prevent:
+//
+//	grep -ril '429\|rate.limit\|ratelimited\|retry-after' <every bot log in the scratch tree>
+//	-> zero real hits. The three matches are the substring "429" inside a Slack message ts.
+//
+// So a production wiring at this constant would sit on the one path that has never come near the limit,
+// and a wiring on the path that does burst would apply a limit that is not that path's. Both are worse
+// than nothing, which is why the code that exists is exercised where its constant is TRUE: the live
+// approval smoke posts twice into one channel back to back, and holds this interval between them.
 //
 // Per CHANNEL, deliberately: the documented limit is per channel, and pacing globally would throttle
 // unrelated conversations against a limit they are not near.
