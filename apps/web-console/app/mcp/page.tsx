@@ -1,7 +1,12 @@
 "use client";
 
+import { useRef, useState } from "react";
+
 import { NameCell, Panel, type Column } from "@/components/Panel";
+import { ResourceForm } from "@/components/ResourceForm";
+import { SecretField, takeSecret } from "@/components/SecretField";
 import { CopyButton, shortId, Stamp } from "@/components/Session";
+import { apiSend, RelayError } from "@/lib/api";
 
 // THE MISSING LINK, AND ONLY ONE OF THREE WAS MISSING.
 //
@@ -88,22 +93,159 @@ const columns: Column<ConnectionRow>[] = [
   },
 ];
 
+/** detail pulls the server's own sentence out of a relay error, falling back to `fallback`. */
+function detail(err: unknown, fallback: string): string {
+  if (err instanceof RelayError && err.problem.detail !== "") return err.problem.detail;
+  return fallback;
+}
+
 export default function MCPPage() {
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const [secretRefName, setSecretRefName] = useState("");
+  // THE CREDENTIAL IS A DOM NODE AND NOTHING ELSE. No useState, deliberately — see SecretField's header.
+  const secretRef = useRef<HTMLInputElement | null>(null);
+  const [createError, setCreateError] = useState("");
+  const [createStatus, setCreateStatus] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  // createConnection seals the credential, then names it — two calls reported SEPARATELY because they fail
+  // separately. A refused secret write is a name problem; a refused connection is a URL problem. One merged
+  // "could not create" sends an operator to re-read the wrong field.
+  async function createConnection() {
+    setCreating(true);
+    setCreateError("");
+    setCreateStatus("");
+
+    // Read and CLEAR in one call, before any await: the value exists as one local for the duration of one
+    // fetch and is copied nowhere — not into state, not into a status message, not into a log.
+    const value = takeSecret(secretRef);
+    const wantsCredential = value !== "" || secretRefName !== "";
+    if (wantsCredential && (value === "" || secretRefName === "")) {
+      setCreateError(
+        "a credential needs BOTH a ref name and a value — the name is what the connection stores, the value is what is sealed behind it.",
+      );
+      setCreating(false);
+      return;
+    }
+    if (wantsCredential) {
+      try {
+        await apiSend<{ name?: string; version?: number }>("POST", "/secret-refs", { name: secretRefName, value });
+      } catch (err: unknown) {
+        setCreateError(`the credential could not be sealed: ${detail(err, "the secret ref was refused")}`);
+        setCreating(false);
+        return;
+      }
+    }
+
+    try {
+      const body = await apiSend<ConnectionRow>("POST", "/mcp-connections", {
+        name,
+        // HTTP ONLY, and the omission is the decision. A stdio connection starts a PROCESS on the machine
+        // holding the run's lease — a different threat surface, and one the ecosystem is moving off:
+        // Anthropic names streamable HTTP the recommended remote transport and marks SSE deprecated.
+        // Existing stdio rows still list and still work; this form does not mint new ones.
+        transport: "http",
+        config: { url },
+        ...(wantsCredential ? { secret_ref: secretRefName } : {}),
+      });
+      setCreateStatus(
+        `Connection ${String(body.id ?? "?")} now points at ${url}` +
+          (wantsCredential ? ` with the credential sealed under ${secretRefName}` : " with no credential") +
+          ". It grants nothing yet: name it on an agent's revision to let that agent's runs call it.",
+      );
+      setName("");
+      setUrl("");
+      setSecretRefName("");
+      setReloadKey((n) => n + 1);
+    } catch (err: unknown) {
+      // THE CREDENTIAL SURVIVES THIS FAILURE and the operator is told so. The secret was sealed before the
+      // connection was refused, so the bytes now sit under a name that binds nothing — reporting only
+      // "creation failed" would leave a live credential the operator does not know exists.
+      setCreateError(
+        `${detail(err, "the connection was refused")}` +
+          (wantsCredential
+            ? ` — the credential was already sealed under ${secretRefName}, so fix the field above and submit again with the same ref name (it will be versioned, not duplicated).`
+            : ""),
+      );
+    } finally {
+      setCreating(false);
+    }
+  }
+
   return (
-    <Panel<ConnectionRow>
-      title="MCP connections"
-      testId="panel-mcp-connections"
-      fetchPath="/mcp-connections"
-      // THE NOTE CARRIES THE ONE FACT NO CELL CAN SHOW: a connection on this screen grants nothing by
-      // itself. A run reaches a server only when the agent revision it is pinned to NAMES that connection,
-      // which is done on the agent's own screen — so an operator who creates one here and expects a run to
-      // pick it up would otherwise wait for something that is working exactly as designed.
-      note="A connection is a definition, not a grant: a run can call a server only when its agent revision names this connection (set that on the agent's screen). The credential is a REF — the value is written server-side and readable through no route, this console included."
-      columns={columns}
-      // The empty state is the reason this screen shipped before its create form. A deployment with no
-      // connections already renders an empty picker on the agent screen and says nothing; naming the gap is
-      // the part that stops it being a silent skip.
-      emptyNote="No MCP connections yet. An MCP server gives an agent tools it does not ship with — an issue tracker, a wiki, an internal API. Define one here, then name it on an agent's revision to let that agent's runs call it."
-    />
+    <>
+      <ResourceForm
+        title="Add an MCP server"
+        testId="mcp-create-form"
+        caveat={{
+          summary: "what this does and does not grant",
+          body: (
+            <p>
+              A connection is a <strong>definition</strong>, not a grant. A run reaches this server only when
+              the agent revision it is pinned to names this connection — set that on the agent&apos;s own
+              screen. Until then it is configuration nothing dispatches to.
+            </p>
+          ),
+        }}
+        fields={[
+          {
+            name: "mcp-name",
+            label: "Name",
+            required: true,
+            value: name,
+            onChange: setName,
+            hint: "What this server is called here. It also namespaces its tools, so a `search` tool from `jira` reaches the model as `jira__search` and cannot collide with another server's.",
+            testId: "mcp-name-input",
+          },
+          {
+            name: "mcp-url",
+            label: "URL",
+            required: true,
+            value: url,
+            onChange: setUrl,
+            hint: "The server's streamable-HTTP endpoint, e.g. https://mcp.example.com/mcp. It is vetted before the row exists: an internal address, an http downgrade, or a URL carrying a credential is refused.",
+            testId: "mcp-url-input",
+          },
+          {
+            name: "mcp-secret-ref",
+            label: "Credential ref name",
+            value: secretRefName,
+            onChange: setSecretRefName,
+            hint: "Leave both this and the field below empty for a server that needs no credential. This name — never the value — is what the connection stores and every screen shows.",
+            testId: "mcp-secret-ref-input",
+          },
+        ]}
+        submitLabel="Add server"
+        submittingLabel="Adding…"
+        submitTestId="mcp-create-button"
+        submitting={creating}
+        error={createError}
+        status={createStatus}
+        onSubmit={createConnection}
+      >
+        <SecretField
+          inputRef={secretRef}
+          id="field-mcp-secret"
+          label="Credential"
+          testId="mcp-secret-input"
+          hint="The bearer token this server expects, if it expects one. It is sealed server-side and read back by no route, this console included. The field clears when you submit."
+        />
+      </ResourceForm>
+
+      <Panel<ConnectionRow>
+        title="MCP connections"
+        testId="panel-mcp-connections"
+        fetchPath="/mcp-connections"
+        reloadKey={reloadKey}
+        // THE NOTE CARRIES THE ONE FACT NO CELL CAN SHOW: a connection grants nothing by itself. An operator
+        // who creates one here and expects a run to pick it up would otherwise be waiting for something
+        // working exactly as designed.
+        note="A connection is a definition, not a grant: a run can call a server only when its agent revision names this connection (set that on the agent's screen). The credential is a REF — the value is written server-side and readable through no route, this console included."
+        columns={columns}
+        emptyNote="No MCP connections yet. An MCP server gives an agent tools it does not ship with — an issue tracker, a wiki, an internal API. Define one above, then name it on an agent's revision to let that agent's runs call it."
+      />
+    </>
   );
 }
