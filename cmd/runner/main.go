@@ -79,7 +79,7 @@ func main() {
 		// that started it, so the sweep that probes it finds this machine between leases. The executor is
 		// the detached half of the same posture the shell tool runs on, so a machine that cannot detach
 		// answers a refusal rather than falling silent.
-		Background: runner.NewBackgroundServer(posture.BackgroundRunnerFor(shellRunnerFromEnv())),
+		Background: runner.NewBackgroundServer(posture.BackgroundRunnerFor(shellRunner(installed))),
 		// Advertise this runner build's stamp so the control-plane enforces the §48.2 support window
 		// (OPS-008): a runner more than two minors behind is rejected at connect with the hop message.
 		Version: version.Resolve(),
@@ -171,7 +171,7 @@ func main() {
 		AllowUnsafeBind: os.Getenv("PALAI_WORKSPACE_UNSAFE_BIND") == "1",
 		// The executor an exec.request runs on. nil on every deployment that has not declared a posture,
 		// which is all of them today — see shellRunnerFromEnv.
-		Shell: shellRunnerFromEnv(),
+		Shell: shellRunner(installed),
 	}.Serve(ctx)
 }
 
@@ -374,7 +374,10 @@ func installedBootstrap(installed *device.Installation) (bootstrap runner.Bootst
 		log.Fatalf("read enrolment key: %v", err)
 	}
 	base := strings.TrimRight(installed.Config.ControllerURL, "/")
-	controllerDNS = hostOf(base)
+	// The identity the certificate must carry, which is not always the address dialled — see
+	// device.Config.ServerName. Derived by the same function `enroll` used, so a machine cannot verify
+	// against one name at install and another at every start after it.
+	controllerDNS = controllerIdentity(base, installed.Config.ServerName)
 	if controllerDNS == "" {
 		log.Fatalf("%s names controller_url %q, which has no host", installed.Paths.ConfigFile, installed.Config.ControllerURL)
 	}
@@ -601,6 +604,21 @@ func shellRunnerFromEnv() toolbroker.ShellRunner {
 		log.Fatalf("shell posture: %v", err)
 	}
 	return shell
+}
+
+// shellRunner is the executor a leased command runs on: the posture package answers it, from what the
+// machine measured on an installed device and from the environment everywhere else. This function only
+// chooses which question to ask — building an executor here is what
+// posture.TestNeitherCompositionRootBuildsItsOwnExecutor forbids, and it caught the first draft.
+func shellRunner(installed *device.Installation) toolbroker.ShellRunner {
+	if installed != nil {
+		shell, err := posture.RunnerForInstalledDevice(runtime.GOOS)
+		if err != nil {
+			log.Fatalf("shell posture: %v", err)
+		}
+		return shell
+	}
+	return shellRunnerFromEnv()
 }
 
 // workspaceRoot is the directory every leased session's workspace is allocated under.

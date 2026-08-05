@@ -25,6 +25,17 @@ type Config struct {
 	// file can be 0600-and-readable-by-the-agent while the key stays whatever the provisioner made it:
 	// a rotation replaces one file, and no stale copy survives in a config nobody re-reads.
 	EnrollmentKeyFile string `json:"enrollment_key_file"`
+	// ServerName is the identity on the controller's certificate, when it differs from the address.
+	//
+	// ‼️ THE ADDRESS AND THE IDENTITY ARE DIFFERENT QUESTIONS, and a self-hosted plane is where they come
+	// apart: the device is reachable at 127.0.0.1 or at an internal IP, while the certificate names the
+	// service. Verifying against the name lets the runner keep its strictest rule — the certificate names
+	// exactly this controller and nobody else — instead of admitting a second identity to make an address
+	// fit, which is a rule that can no longer tell a sibling name from an attacker's.
+	//
+	// EMPTY IS THE NORMAL CASE. A publicly trusted gateway is reached at the name on its certificate, so
+	// there is nothing to say and nothing to keep in step.
+	ServerName string `json:"server_name,omitempty"`
 	// ControllerCAFile is the additional trust anchor for a PRIVATE deployment, and empty is the normal
 	// case rather than a degraded one. A publicly trusted runner gateway needs nothing here: the system
 	// roots verify it, which is DoD item 2 and the reason PALAI_CONTROLLER_CA stopped being required.

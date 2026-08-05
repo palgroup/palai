@@ -54,10 +54,11 @@ func runEnroll(ctx context.Context, args []string, out io.Writer) error {
 	url := flags.String("url", "", "runner gateway address, e.g. https://runner.example.com:8443")
 	keyFile := flags.String("key-file", "", "path to the file holding the pool enrolment key (rpk_...), or - to read it from stdin")
 	caFile := flags.String("ca-file", "", "additional trust anchor for a private deployment; omit for a publicly trusted gateway")
+	serverName := flags.String("server-name", "", "identity on the controller's certificate when it differs from the address; omit when the URL host IS the certified name")
 	configPath := flags.String("config", "", "where to write the agent config; defaults to this platform's standard path")
 	skipService := flags.Bool("no-service", false, "enrol and write the identity, but do not install or start a service")
 	flags.Usage = func() {
-		fmt.Fprint(out, "usage: palai enroll --url <controller> --key-file <path> [--ca-file <path>]\n\n"+
+		fmt.Fprint(out, "usage: palai enroll --url <controller> --key-file <path> [--ca-file <path>] [--server-name <name>]\n\n"+
 			"Runs once per machine. Writes this device's configuration and identity, installs the\n"+
 			"service that runs the agent, and returns. There is no --key: a secret on argv is readable\n"+
 			"by every process on the machine.\n\n")
@@ -141,7 +142,7 @@ func runEnroll(ctx context.Context, args []string, out io.Writer) error {
 		EnrollmentToken: key,
 		EnrollmentURL:   strings.TrimRight(*url, "/") + "/v1/runner/enroll",
 		ControllerCAs:   cas,
-		ControllerDNS:   hostOf(*url),
+		ControllerDNS:   controllerIdentity(*url, *serverName),
 		Now:             time.Now,
 		Posture:         declaredPosture(),
 		DeviceKey:       deviceKey.Signer(),
@@ -164,6 +165,7 @@ func runEnroll(ctx context.Context, args []string, out io.Writer) error {
 		ControllerURL:     strings.TrimRight(*url, "/"),
 		EnrollmentKeyFile: keyPathForConfig,
 		ControllerCAFile:  *caFile,
+		ServerName:        *serverName,
 	}
 	if err := config.Save(paths.ConfigFile); err != nil {
 		return fmt.Errorf("write agent config: %w", err)
@@ -308,4 +310,14 @@ func shortFingerprint(fingerprint string) string {
 		return fingerprint[:12]
 	}
 	return fingerprint
+}
+
+// controllerIdentity is the name the controller's certificate must carry: the operator's --server-name
+// when the address is not the certified name, and the URL host otherwise. One function so the enrol path
+// and the agent path cannot disagree about which of the two a machine verifies against.
+func controllerIdentity(url, serverName string) string {
+	if serverName != "" {
+		return serverName
+	}
+	return hostOf(url)
 }

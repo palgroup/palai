@@ -125,6 +125,36 @@ func RunnerFromEnv() (toolbroker.ShellRunner, error) {
 	return workspace.NewShellExecutor(driver, image, Limits()), nil
 }
 
+// RunnerForInstalledDevice is RunnerFromEnv for a machine that was ENROLLED rather than configured by an
+// environment.
+//
+// ‼️ A MAC DEVICE READING THE ENVIRONMENT HAD NO SHELL AT ALL. PALAI_SHELL_NATIVE is what selects the host
+// executor; an installed device has no environment to read it from; and RunnerFromEnv answers (nil, nil)
+// for that — a legitimate configuration meaning "this deployment declares no shell posture", which on a
+// fleet Mac means `palai.workspace.shell` has no runner and every command is refused. Measured
+// 2026-08-06: the Milestone A0 chain did not catch it, because the stack's own compose runner served the
+// session while the enrolled device sat parked beside it.
+//
+// THE MACHINE ALREADY KNOWS. `user` and `accounts` both mean a session's commands run on this host — the
+// difference between them is WHICH uid, not whether there is a container — so a darwin device that
+// measured either is native by construction, and asking an operator to restate it is asking them to
+// re-declare a fact the binary established.
+//
+// IT LIVES HERE AND NOT IN cmd/runner FOR THE REASON THIS PACKAGE EXISTS, and a guard says so:
+// TestNeitherCompositionRootBuildsItsOwnExecutor forbids either composition root from constructing an
+// executor or spelling the bounds one is built from. The first draft of this did exactly that in
+// cmd/runner and the guard caught it — a posture assembled in two places is a containment nobody can
+// reason about, because nothing on the machine names which one applied.
+//
+// On any other platform the environment still answers: the container posture needs an image and the pool
+// profile does not carry one yet (device plan T3).
+func RunnerForInstalledDevice(goos string) (toolbroker.ShellRunner, error) {
+	if goos == "darwin" {
+		return host.NewExecutor(WallTime()), nil
+	}
+	return RunnerFromEnv()
+}
+
 // BackgroundRunnerFor reports the DETACHED runner for a wired posture, or nil when that posture cannot
 // start a command that outlives the attempt (E26 T1).
 //
