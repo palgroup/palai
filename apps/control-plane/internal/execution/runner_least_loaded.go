@@ -3,11 +3,14 @@ package execution
 // WHICH MACHINE, from inside the pool (Faz A.5 T6).
 //
 // placement.go decides WHICH POOL an attempt waits on and stops there. Which MACHINE in that pool serves it
-// was, until this file, whichever one happened to sit at the head of the queue's parked list — measured
-// immediately before it:
+// was, until this file, whichever one happened to sit at the head of the queue's parked list: nothing in the
+// tree compared one machine to another at all. The claim is recorded as a command that STAYS checkable
+// rather than as the one it was first measured with — that one grepped for "least" and "emptiest", words
+// this file now contains, so it would answer differently forever after and prove nothing to the next reader:
 //
-//	grep -rn 'least\|emptiest\|openLeases\|ORDER BY count' --include='*.go' --include='*.sql' \
-//	  apps/control-plane packages storage   -> 0 hits about placement (2026-08-05)
+//	grep -rln 'emptiestFirst\|machineWeight\|PoolMachineLoads' --include='*.go' . \
+//	  | grep -v node_modules | grep -v _test
+//	-> 3 (2026-08-05): this file, the Dial that consults it, and the store read they share. It was 0.
 //
 // That was invisible for as long as a Mac pool held one machine, and it is the owner's sentence that makes
 // it matter: "ten Macs, a session request arrives, open the session on the EMPTIEST Mac". With one machine
