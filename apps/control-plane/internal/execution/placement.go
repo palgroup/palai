@@ -104,17 +104,30 @@ func (o *Orchestrator) place(ctx context.Context, tenant coordinator.Tenant, att
 	return nil
 }
 
-// parkForCapacity releases the run's compute because there is no machine to run it on, following E23
+// parkForCapacity releases the run's compute because there is no machine that will run it, following E23
 // T1's choreography and adding no second parking mechanism — two parking paths mean two waking bugs.
 //
+// TWO CONDITIONS REACH IT AND THEY ARE NOT THE SAME QUESTION (Faz A.4 T6). The first is the pool holding
+// no machine of this tenant at all (ErrPoolHasNoRunner, E24 T4): nobody is there. The second is a machine
+// that IS there, took the dial, and then refused the hold because its open occupancies already fill the
+// `runners.capacity` it declared: somebody is there and has no room. Both are transient answers that
+// become untrue when a machine arrives or a hold settles, and both have the same honest response — stand
+// down, hold no compute, and let the wake re-enter the run. They differ only in which event will wake it,
+// and both events call the same waker.
+//
+// IT CARRIES THE ATTEMPT'S JOB so the park can REFUND the attempt its claim consumed. A park is neither
+// progress nor a failure, and until T6 it was billed as a failure: five waits dead-lettered a run that
+// had never failed at anything (ParkRunForCapacity names the measurement). Empty for a direct-drive
+// attempt with no claimed job, which spent nothing and is owed nothing.
+//
 // IT CAPTURES NO CHECKPOINT, and that is a deliberate departure from parkRun, which takes one
-// when a sink is wired. An approval parks at a boundary an engine REACHED; this parks at the dial,
-// before any engine exists, so there is no boundary to capture and nothing that could offer one.
+// when a sink is wired. An approval parks at a boundary an engine REACHED; this parks before the engine
+// has been spoken to, so there is no boundary to capture and nothing that could offer one.
 // Recovery is ladder rung 2 — the woken attempt replays the committed transcript — which is always
 // available, and requiring a checkpoint here would make the park unavailable on every deployment
 // without object storage, which is most of them.
 func (o *Orchestrator) parkForCapacity(ctx context.Context, tenant coordinator.Tenant, attempt AttemptDescriptor) error {
-	if err := o.spine.ParkRunForCapacity(ctx, tenant, string(attempt.RunID), string(attempt.AttemptID)); err != nil {
+	if err := o.spine.ParkRunForCapacity(ctx, tenant, string(attempt.RunID), string(attempt.AttemptID), attempt.JobID); err != nil {
 		return err
 	}
 	return errRunAwaitingCapacity

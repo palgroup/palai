@@ -730,7 +730,35 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		// It is INSIDE the `wsPlanned` arm because the occupancy is the ALLOCATION's hold: the idle
 		// releaser is what ends it, and the releaser is driven by workspaces. Opening one for a run with
 		// no workspace would open a hold nothing can ever close (machine_occupancy.go names that ceiling).
-		machineOccupancyID = o.holdMachine(ctx, tenant, sessionID, ch)
+		//
+		// A MACHINE AT ITS DECLARED CAPACITY PARKS THE RUN (A.4 T6), which is the second of the two
+		// conditions parkForCapacity answers and the later of them: the first is a pool with nobody in it,
+		// this one is a machine that took the dial and then said it has no room. Running anyway — what this
+		// line did between T5 and T6 — puts a session on a Mac that declared it would not take one, and
+		// opens no row, so the overrun is invisible on the bill as well as over the ceiling.
+		//
+		// THE REALIZE ABOVE HAS ALREADY HAPPENED, AND THAT COST IS PAID RATHER THAN DESIGNED AWAY. The
+		// refusal is only knowable once a machine is chosen, and the one place that judges it without a
+		// race is the acquire's own INSERT (leases.sql) — a cheaper pre-check after the dial would be a
+		// second ceiling, weaker than the real one and disagreeing with it under contention.
+		//
+		// SO A PARKED ATTEMPT LEAVES ITS ALLOCATION ON THE MACHINE THAT REFUSED IT, and what that costs is
+		// stated rather than assumed: the deferred releaseWorkspace drives the workspace back to `ready`,
+		// and `ready` is planRootWorkspace's REUSE arm — the woken attempt is planned against that SAME
+		// allocation. Landing on the same machine, it reuses it. Landing elsewhere, it meets the
+		// workspace-affinity ceiling A.3 T5 already named and reuseAllocation already fails loudly on
+		// (provision.go: a reused allocation whose machine is not the one this attempt dialed has no
+		// repository to read). That ceiling is not new here — every retry and every resume has had it
+		// since provisioning moved after the dial — but a capacity park is a new way to MEET it, because
+		// the wake is keyed on the pool and not on the machine whose slot freed.
+		occupancyID, herr := o.holdMachine(ctx, tenant, sessionID, ch)
+		if errors.Is(herr, coordinator.ErrMachineAtCapacity) {
+			if perr := o.parkForCapacity(ctx, tenant, attempt); !errors.Is(perr, errRunAwaitingCapacity) {
+				return perr
+			}
+			return nil
+		}
+		machineOccupancyID = occupancyID
 	}
 
 	st := &attemptState{

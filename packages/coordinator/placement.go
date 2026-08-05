@@ -143,18 +143,27 @@ func (s *Store) RecordRunPool(ctx context.Context, tenant Tenant, runID, poolID 
 	return recorded, nil
 }
 
-// ParkRunForCapacity releases a run whose pool holds no machine: running->waiting plus the attempt's
-// `awaiting_capacity` marker, in ONE transaction. The atomicity is the whole of it — a run left waiting
-// without the marker is a run no wake can ever find, and a marker without the transition would wake a
-// run that never parked.
+// ParkRunForCapacity releases a run that has no machine to run on: running->waiting, the attempt's
+// `awaiting_capacity` marker, and the REFUND of the attempt this park consumed, in ONE transaction. The
+// atomicity is the whole of it — a run left waiting without the marker is a run no wake can ever find, a
+// marker without the transition would wake a run that never parked, and a park whose refund landed
+// separately would charge the run for waiting whenever the second write was the one that died.
+//
+// THE REFUND IS WHAT MAKES WAITING FREE (Faz A.4 T6), and it is the half E24 T4 could not add because
+// nothing yet parked on a full machine. ClaimJob raises `attempt_count` when the attempt is claimed; the
+// attempt then finds no machine and parks; EnqueueWokenRunJob correctly carries what the run has spent —
+// and so the run paid one attempt for having waited. Five waits dead-lettered a run that had never failed
+// at anything, on a platform whose whole point is that a Mac may take six to twenty minutes to arrive. A
+// park is neither progress nor a failure. jobID is empty for a direct-drive attempt with no claimed job
+// (the test tiers), and then nothing was spent and nothing is returned.
 //
 // It follows E23 T1's choreography and writes NO second parking mechanism, which is a correctness
 // decision rather than a saving: two parking paths mean two waking bugs. What it deliberately does NOT
 // do is capture a checkpoint. parkRun takes one when a sink is wired because it parks at a
-// boundary an engine reached; this parks at the DIAL, before any engine exists, so there is no boundary
-// to capture and nothing that could offer one. Recovery is rung 2 — the woken attempt replays the
-// committed transcript — which is always available.
-func (s *Store) ParkRunForCapacity(ctx context.Context, tenant Tenant, runID, attemptID string) error {
+// boundary an engine reached; this parks at the DIAL or at the machine's refusal, before any engine has
+// been spoken to, so there is no boundary to capture and nothing that could offer one. Recovery is rung 2
+// — the woken attempt replays the committed transcript — which is always available.
+func (s *Store) ParkRunForCapacity(ctx context.Context, tenant Tenant, runID, attemptID, jobID string) error {
 	ctx = storage.ScopeToTenant(ctx, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -168,6 +177,12 @@ func (s *Store) ParkRunForCapacity(ctx context.Context, tenant Tenant, runID, at
 	if _, err := tx.Exec(ctx, storage.Query("MarkAttemptAwaitingCapacity"),
 		attemptID, tenant.Project); err != nil {
 		return fmt.Errorf("mark attempt awaiting capacity: %w", err)
+	}
+	if jobID != "" {
+		if _, err := tx.Exec(ctx, storage.Query("RefundCapacityParkAttempt"),
+			jobID, tenant.Project); err != nil {
+			return fmt.Errorf("refund the attempt this capacity park consumed: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit capacity park: %w", err)
@@ -274,19 +289,27 @@ func (s *Store) timeOutOneCapacityPark(ctx context.Context, tenant Tenant, runID
 // its response.run job in the SAME transaction, so the job becomes claimable only once the wake is
 // durable: nothing dispatches before commit. It reports the run it woke, or "" when the pool had none.
 //
-// IT WAKES ONE RUN PER CALL, AND IT DOES NOT RESERVE THE MACHINE THAT CALLED IT. The caller is a
-// machine joining the pool, so one machine's arrival re-enters one run; the woken run then dials like
-// any other and may lose that machine to a different run, in which case it parks again. That race is
-// benign and the alternative is worse: reserving would be a second, parallel notion of "assigned to"
-// living next to the durable one the job queue already is.
+// TWO EVENTS REACH IT, AND UNTIL Faz A.4 T6 THERE WAS ONLY ONE. A machine JOINING the pool calls it
+// through the gateway's handleConnect; a HOLD ENDING calls it through SettleOccupancy. The second is the
+// one a ceiling needs: a fleet whose machines are all connected and all full gains no members, so the
+// first event never fires and a run parked for want of a slot would wait for a reconnect that says
+// nothing about whether a slot exists.
+//
+// IT WAKES ONE RUN PER CALL, AND IT DOES NOT RESERVE THE MACHINE THAT CALLED IT. One arrival, or one
+// settled hold, re-enters one run; the woken run then dials like any other and may lose that machine to a
+// different run, in which case it parks again. That race is benign and the alternative is worse:
+// reserving would be a second, parallel notion of "assigned to" living next to the durable one the job
+// queue already is. What makes it benign is measurable rather than asserted — a park REFUNDS the attempt
+// it consumed (RefundCapacityParkAttempt), so a wake that ends in another park costs the run nothing.
 //
 // FOR UPDATE SKIP LOCKED with a TOTAL order (created_at, id) — not LIMIT 1 on its own, which has
 // decided a security outcome in this tree twice. SKIP LOCKED is what makes two machines arriving at
 // once wake two DIFFERENT runs instead of contending for one.
 //
 // ponytail: the predicate has no index and this task cannot add one (E24's only migration is T1's), so
-// it is a filtered scan of `runs` once per runner connect — cheap at self-host scale, not at fleet
-// scale. The upgrade path is a partial index and is named in the statement's own comment.
+// it is a filtered scan of `runs` once per runner connect and once per settled hold — cheap at self-host
+// scale, not at fleet scale. The upgrade path is a partial index and is named in the statement's own
+// comment.
 func (s *Store) WakeRunAwaitingCapacity(ctx context.Context, tenant Tenant, poolID string) (string, error) {
 	if poolID == "" {
 		return "", nil
@@ -298,17 +321,35 @@ func (s *Store) WakeRunAwaitingCapacity(ctx context.Context, tenant Tenant, pool
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
+	runID, err := wakeRunAwaitingCapacityTx(ctx, tx, tenant, poolID)
+	if err != nil || runID == "" {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("commit capacity wake: %w", err)
+	}
+	return runID, nil
+}
+
+// wakeRunAwaitingCapacityTx is the wake's body, taken out of the method so BOTH events that announce
+// capacity run the identical statements against their own transaction. A second, hand-copied wake beside
+// this one is how the two would come to disagree about which runs are candidates — which in this file's
+// history is not a hypothetical: the park wrote two of the three facts a wake needs and two runs sat
+// unreachable for thirty-one hours.
+//
+// It returns "" with a nil error when the pool had nothing parked, which is the ordinary outcome for both
+// callers and never an error for either.
+func wakeRunAwaitingCapacityTx(ctx context.Context, tx pgx.Tx, tenant Tenant, poolID string) (string, error) {
 	var runID string
 	switch err := tx.QueryRow(ctx, storage.Query("OldestRunAwaitingCapacity"),
 		tenant.Project, poolID).Scan(&runID); {
 	case errors.Is(err, pgx.ErrNoRows):
-		return "", nil // the pool gained a machine and nothing was waiting on it
+		return "", nil // capacity appeared on the pool and nothing was waiting on it
 	case err != nil:
 		return "", fmt.Errorf("select run awaiting capacity: %w", err)
 	}
-	// The wake body is wakeParkedRunTx's, reached through the same transition + enqueue pair: waiting ->
-	// running under the run lock (single-winner, so two machines cannot re-enter one run) and the job
-	// that makes a worker open a fresh attempt.
+	// The transition + enqueue pair: waiting -> running under the run lock (single-winner, so two
+	// announcements cannot re-enter one run) and the job that makes a worker open a fresh attempt.
 	if _, err := applyRunTransitionTx(ctx, tx, tenant, runID, statemachines.RunCmdResume); err != nil {
 		return "", err
 	}
@@ -319,13 +360,11 @@ func (s *Store) WakeRunAwaitingCapacity(ctx context.Context, tenant Tenant, pool
 	// The woken job carries the budget the run already spent (EnqueueWokenRunJob). A plain EnqueueJob
 	// starts at attempt_count 0, which made every park→wake cycle a fresh five-attempt ladder — so a run
 	// failing for a reason that has nothing to do with capacity was retried without bound and reached a
-	// terminal only by coincidence. A park is not progress.
+	// terminal only by coincidence. A park is not progress; it is also not a failure, which is the half
+	// RefundCapacityParkAttempt adds at the park itself.
 	if _, err := tx.Exec(ctx, storage.Query("EnqueueWokenRunJob"),
 		jobID, tenant.Project, []byte(fmt.Sprintf(`{"run_id":%q}`, runID)), runID); err != nil {
 		return "", fmt.Errorf("enqueue capacity wake job: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return "", fmt.Errorf("commit capacity wake: %w", err)
 	}
 	return runID, nil
 }

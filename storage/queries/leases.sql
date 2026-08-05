@@ -107,6 +107,22 @@ SELECT count(*)
  WHERE runner_id = $1 AND project_id = $2
    AND released_at IS NULL;
 
+-- name: MachinePool
+-- Which pool does this machine belong to? Read when a hold on it SETTLES, because that is the moment a
+-- slot frees and the runs waiting for one are keyed by POOL (Faz A.4 T6).
+--
+-- IT CARRIES THE PROJECT FOR THE REASON AcquireLease's OWN JOIN DOES, and the two predicates are
+-- deliberately the same one: a hold can only have been opened on a machine this tenant could see under
+-- `r.project_id = $2`, so asking the same question back is asking about the machine that was really held.
+-- A read that leaned on row-level security alone would change meaning the day a maintenance sweep called
+-- it under a system scope — which is exactly the caller settleStranded is.
+--
+-- NO ROW IS NOT AN ERROR AT THE CALLER: a machine that has been deleted since the hold opened frees a slot
+-- on a pool nobody can name, and the honest answer is to announce nothing rather than to guess a pool.
+SELECT pool_id
+  FROM runners
+ WHERE id = $1 AND project_id = $2;
+
 -- name: TouchLease
 -- Move the occupancy's last activity to now. ONE WRITER, TWO READERS: the idle reaper reads this column to
 -- know when to fire, and the bill reads it to know where to stop.

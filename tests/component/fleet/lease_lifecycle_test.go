@@ -334,7 +334,10 @@ func TestAParkedRunTakesNoLeaseAndIsNeverBilled(t *testing.T) {
 	env.exec(t, `INSERT INTO attempts (id, project_id, run_id, fence, state)
 	             VALUES ($1, $2, $3, 1, 'assigned')`, attemptID, env.tenant.Project, runID)
 
-	if err := env.cs.ParkRunForCapacity(ctx, env.tenant, runID, attemptID); err != nil {
+	// The empty job id is this attempt's honest one: nothing claimed a durable job for it, so the park has
+	// no attempt to refund (A.4 T6). What a CLAIMED attempt is owed back is measured where a real claim
+	// exists — TestARunParkedForCapacityDoesNotSpendItsRetryBudgetWaiting.
+	if err := env.cs.ParkRunForCapacity(ctx, env.tenant, runID, attemptID, ""); err != nil {
 		t.Fatalf("ParkRunForCapacity() error = %v", err)
 	}
 

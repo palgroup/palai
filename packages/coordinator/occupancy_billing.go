@@ -36,6 +36,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -182,6 +183,14 @@ func (s *Store) HoldMachine(ctx context.Context, tenant Tenant, sessionID, runne
 // nothing only dilutes the ledger. Say it out loud because it makes an absence ambiguous: "no ledger row"
 // means EITHER not settled OR settled zero, and a test that asserts an absence has to make the hold long
 // enough that the two are different.
+//
+// AND A CLOSED HOLD ANNOUNCES THE SLOT IT FREED (Faz A.4 T6). This is the one function in the tree that
+// ends an occupancy — measured, not assumed: `released_at` is moved by exactly one statement
+// (storage/queries/leases.sql ReleaseLease), and its only two Go callers are this and the bare
+// `ReleaseLease`, which has no production caller on purpose. Its own three callers are the idle release's
+// timely settle, the recovery sweep for the settle that failed, and HoldMachine's "lost" arm. Waking here
+// therefore covers all three STRUCTURALLY, where three hand-wired call sites would have covered whichever
+// two somebody remembered — and the one most easily forgotten, the lost arm, is the one no sweep watches.
 func (s *Store) SettleOccupancy(ctx context.Context, tenant Tenant, leaseID, reason string) (bool, error) {
 	if leaseID == "" || reason == "" {
 		return false, errors.New("an occupancy id and a release reason are required")
@@ -224,5 +233,47 @@ func (s *Store) SettleOccupancy(ctx context.Context, tenant Tenant, leaseID, rea
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("commit settled occupancy %s: %w", leaseID, err)
 	}
+	s.announceFreedSlot(ctx, tenant, leaseID, closed.RunnerID)
 	return true, nil
+}
+
+// announceFreedSlot re-enters the oldest run parked on this machine's pool, because a hold just ended and
+// that is the only event a capacity ceiling makes room by.
+//
+// IT RUNS AFTER THE COMMIT AND IT SWALLOWS ITS ERRORS, which is the same stance the gateway's own
+// wakeParkedRun takes and it is a priority statement rather than laziness. Closing and BILLING a hold is
+// the settle's job; announcing it is work done on the side. Inside the transaction, a wake that could not
+// answer would roll back a settlement that had already succeeded — a machine left occupied and a customer
+// left unbilled because some other tenant's parked run could not be read. What a post-commit wake costs
+// instead is a crash in the window: the slot is free and nothing announced it. That is recoverable by
+// construction and by three different events — the next hold to settle on the pool, the machine's next
+// connect (a runner re-dials after every lease), and PALAI_FLEET_PARK_TTL where an operator set one.
+//
+// THE POOL IS READ RATHER THAN CARRIED because an occupancy names a MACHINE and a park names a POOL, and
+// nothing in between stores both. A machine deleted since the hold opened answers no row, and then this
+// announces nothing: guessing a pool would re-enter a run somewhere no machine of its tenant will come.
+//
+// IT IS POOL-KEYED AND NOT MACHINE-KEYED, and that is a decision with a cost that was measured rather
+// than waved through. The freed slot is on ONE machine; the wake re-enters the pool's oldest parked run,
+// which may dial a different machine of that pool and find it full. The alternative — a wake that
+// reserved this machine for that run — would be a second notion of "assigned to" beside the durable one
+// the job queue already is. What makes the cheap version correct is that a park REFUNDS the attempt it
+// consumed, so a wake that ends in another park costs the run nothing at all; without that refund this
+// would have to be machine-keyed, because every spurious wake would be a step toward a dead letter.
+func (s *Store) announceFreedSlot(ctx context.Context, tenant Tenant, leaseID, runnerID string) {
+	if runnerID == "" {
+		return
+	}
+	var poolID string
+	switch err := s.pool.QueryRow(ctx, storage.Query("MachinePool"), runnerID, tenant.Project).Scan(&poolID); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return // the machine is gone; a slot on a pool nobody can name announces nothing
+	case err != nil:
+		log.Printf("occupancy %s settled but the pool of machine %s could not be read, so no parked run was woken: %v",
+			leaseID, runnerID, err)
+		return
+	}
+	if _, err := s.WakeRunAwaitingCapacity(ctx, tenant, poolID); err != nil {
+		log.Printf("occupancy %s freed a slot on pool %s and no parked run was woken: %v", leaseID, poolID, err)
+	}
 }

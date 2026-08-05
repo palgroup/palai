@@ -34,6 +34,35 @@ SELECT $1, $2, 'response.run', $3,
                   ORDER BY j.created_at DESC, j.id DESC
                   LIMIT 1), 0);
 
+-- name: RefundCapacityParkAttempt
+-- Give back the attempt a CAPACITY PARK consumed, on the job whose claim paid for it (Faz A.4 T6).
+--
+-- IT IS THE OTHER HALF OF EnqueueWokenRunJob ABOVE, AND WITHOUT IT THAT STATEMENT IS A RUN KILLER. The
+-- carry is right — a park must not hand a failing run a fresh ladder — but carrying alone also charged the
+-- run for the parking attempt itself: ClaimJob raises attempt_count when the attempt is claimed, the
+-- attempt then discovers there is no machine, and the wake seeds the raised number. Five waits therefore
+-- dead-lettered a run that had never failed at anything, while AWS documents a Mac host taking six to
+-- twenty minutes to start. A PARK IS NEITHER PROGRESS NOR A FAILURE: what the run has spent must come out
+-- of the wake exactly as it went into the park.
+--
+-- AND IT IS WHAT MAKES A POOL-KEYED WAKE SAFE. A slot freeing on one machine re-enters the pool's oldest
+-- parked run, which may then dial a DIFFERENT machine of that pool and find it full too. With this
+-- statement that round trip costs nothing and the run simply waits again; without it every such wake is a
+-- step toward a dead letter, and the wake would have to be keyed on the machine instead.
+--
+-- THE JOB IS NAMED BY THE CALLER, never re-derived here. The attempt knows which claim it is running
+-- under (AttemptDescriptor.JobID); asking the database for "this run's live job" instead would re-resolve
+-- against a table that may have moved, which is how a repair credits something it never looked at. An
+-- attempt with no claimed job — every direct-drive orchestrator in the test tiers — passes "" and refunds
+-- nothing, which is correct: nothing was spent.
+--
+-- `greatest(..., 0)` because a floor is cheaper than an argument: a refund that drove the count negative
+-- would hand the run an extra attempt on the NEXT ladder rather than merely returning the one it took.
+UPDATE durable_jobs
+   SET attempt_count = greatest(attempt_count - 1, 0),
+       updated_at = clock_timestamp()
+ WHERE id = $1 AND project_id = $2 AND kind = 'response.run';
+
 -- name: ClaimJob
 WITH claimable AS (
     SELECT id

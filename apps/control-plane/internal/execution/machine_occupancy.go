@@ -39,7 +39,7 @@ import (
 )
 
 // holdMachine records that this session is occupying this attempt's machine, and returns the occupancy id
-// to keep alive at attempt end. It returns "" when there is nothing to record — no machine on this
+// to keep alive at attempt end. It returns ("", nil) when there is nothing to record — no machine on this
 // connection, or a store that refused — and every caller treats that as "no occupancy", never as an error.
 //
 // A FAILURE HERE MUST NOT FAIL THE ATTEMPT, and that is a billing decision made deliberately in the
@@ -50,59 +50,71 @@ import (
 // — HoldMachine opens a row whenever the session has none, so the loss is bounded by one attempt rather
 // than by the life of the session.
 //
-// A CAPACITY REFUSAL IS NOT ONE OF THOSE FAILURES AND IS LOGGED AS ITSELF (Faz A.4 T5). Every other error
-// here means the metering could not be WRITTEN; ErrMachineAtCapacity means it was REFUSED — the machine is
-// already holding as many sessions as `runners.capacity` allows, and this attempt is about to be the one
-// over. Reporting it under the same sentence as a database blip would send the next reader to look for a
-// database blip, which is the failure this tree keeps recording as an assertion pointing at the wrong file.
+// A CAPACITY REFUSAL IS NOT ONE OF THOSE FAILURES AND IS RETURNED RATHER THAN LOGGED AWAY (Faz A.4 T5/T6).
+// Every other error here means the metering could not be WRITTEN; ErrMachineAtCapacity means it was
+// REFUSED — the machine is already holding as many sessions as `runners.capacity` allows, and this attempt
+// is about to be the one over. Collapsing the two would send the next reader to look for a database blip,
+// which is the failure this tree keeps recording as an assertion pointing at the wrong file; and it would
+// also decide the attempt's fate wrongly, because these two have OPPOSITE right answers. A metering row
+// that will not write is the customer's gain and the attempt proceeds. A machine that says it is full is a
+// placement fact, and running anyway puts a session on a Mac that had declared it would not take it — over
+// the ceiling, and unbilled, so the overrun appears in no row at all.
 //
-// A CAPACITY REFUSAL IS LOGGED UNDER ITS OWN NAME AND THE ATTEMPT STILL RUNS, and that is a ceiling held
-// deliberately rather than an unfinished branch (Faz A.4 T5). It reads like the wrong answer — the machine
-// said no and the work happens anyway, unmetered — so the two reasons it is the right one today are written
-// here, and NEITHER may be closed alone:
+// WHAT THE CALLER DOES WITH THE REFUSAL: it parks the run (ExecuteAttempt). What is parked is precisely
+// what has a wake — see the record below.
 //
-//   - NOTHING WAKES A RUN WHEN A SLOT FREES. The only capacity wake is WakeRunAwaitingCapacity, fired from
-//     the gateway's handleConnect when a machine CONNECTS. A run parked for a full machine would wake on
-//     that machine's next connect, dial the same full machine, and park again — and because
-//     EnqueueWokenRunJob carries the budget already spent, the loop ends in a dead-letter, not a machine.
+// AND A SESSION ALREADY ON THIS MACHINE IS NEVER PARKED, WHATEVER THE MACHINE'S COUNT SAYS. HoldMachine is
+// open-or-keep-alive: a session whose open hold names this machine is TOUCHED and never reaches
+// AcquireLease, so the ceiling is not consulted for it at all. That is the right answer and not a gap —
+// the ceiling counts how many DIFFERENT sessions a machine carries at once, and a conversation already on
+// a Mac is not a new one arriving. Parking it would evict a thread from the machine holding its
+// allocation, which is the opposite of what a ceiling is for.
 //
-//   - A HOLD CAN BE SLOW TO CLOSE, so a ceiling that ENDED attempts would still be a run killer, though no
-//     longer one with an unbounded fuse. The thing that closes an open hold is the idle releaser, and it
-//     only ever releases a workspace that came back to `ready`: measured 2026-08-05 on the live stack,
-//     `ready` was ZERO of 84 workspaces (19 leased, 22 preparing, 10 requested, 33 paused), so it had no
-//     candidate at all. A declared fleet would therefore fill up while every hold on it was live, and
-//     killing the attempt would turn that into an outage.
+// ---
 //
-//     THE PERMANENT HALF OF THAT IS CLOSED. This paragraph used to end "a settle that fails leaves a hold
-//     nothing can ever reach again", and that was true: release() moves the workspace to `paused` before it
-//     settles, and no route back to an open hold survived the move. IdleReleaser.settleStranded is that
-//     route — an open hold on a handed-back workspace is now settled on the next tick — so what is left is
-//     a delay bounded by the sweep interval, not a slot lost for good.
+// THE RECORD, 2026-08-05: BETWEEN A.4 T5 AND T6 THIS FUNCTION LOGGED THE REFUSAL AND RAN THE ATTEMPT
+// ANYWAY, and that was a ceiling held deliberately rather than an unfinished branch. It is written down as
+// a DATE rather than as a ceiling because all three of its reasons have since closed, and a ceiling
+// sentence that outlives its reasons is read as live guidance by the next person:
 //
-// So the order is: the waker (park + wake on a settling occupancy), and only then may a refusal decide what
-// happens to the attempt. Until both, the honest cost is an unmetered attempt on an over-subscribed
-// machine, logged where an operator can find it.
+//   - NOTHING WOKE A RUN WHEN A SLOT FREED. The only capacity wake fired from the gateway's handleConnect,
+//     when a machine CONNECTS — an event that says nothing about whether a slot exists, and one a fleet
+//     whose machines stay connected may not produce for hours. CLOSED by T6: SettleOccupancy announces the
+//     slot it freed, and every closer in the tree goes through it (its own comment carries the grep).
+//   - A PARK COST THE RUN AN ATTEMPT, so a run woken onto a still-full pool walked toward a dead letter
+//     five waits at a time. CLOSED by T6: ParkRunForCapacity refunds the attempt its claim consumed.
+//   - A HOLD COULD BE SLOW TO CLOSE, and a settle that FAILED left one open with no route back at all —
+//     so a declared fleet lost a slot per failed settle, permanently. CLOSED before T6 by
+//     IdleReleaser.settleStranded (the recovery sweep) and by lease_reclaim.go's dangling-lease sweep;
+//     what remains is a delay bounded by the sweep interval.
 //
-// AND TODAY IT CANNOT FIRE AT ALL. No machine declares a capacity — the runner sends the field only when an
-// operator configures one — so `runners.capacity` is 0 everywhere, the ceiling in leases.sql never binds,
-// every hold succeeds, and every attempt is metered exactly as it was. This branch exists for the first
-// deployment that opts in, and it must not be the thing that breaks it.
-func (o *Orchestrator) holdMachine(ctx context.Context, tenant coordinator.Tenant, sessionID string, ch EngineChannel) string {
+// AND TODAY THE REFUSAL STILL CANNOT FIRE ON ANY SHIPPED DEPLOYMENT, which is a live ceiling and not a
+// date. No machine declares a capacity — the runner sends the field only when an operator configures one —
+// so `runners.capacity` is 0 everywhere, the ceiling in leases.sql never binds, every hold succeeds, and
+// every attempt is metered exactly as it was. This branch exists for the first deployment that opts in.
+//
+// AND IT IS REACHED ONLY FOR A RUN THAT HAS A WORKSPACE, which is an honest limit on the ceiling itself
+// rather than on this branch. The occupancy is the ALLOCATION's hold, so ExecuteAttempt calls this inside
+// its `wsPlanned` arm; a run whose session has no repository binding occupies a machine for the length of
+// its attempt, opens no hold, and therefore cannot be parked by a full machine either. That is the same
+// unmetered-attempt ceiling this file has named since A.4 T4, and the alternative — opening a hold at the
+// dial — would open holds the idle releaser can never close, because the releaser is driven by workspaces.
+func (o *Orchestrator) holdMachine(ctx context.Context, tenant coordinator.Tenant, sessionID string, ch EngineChannel) (string, error) {
 	machine := machineOf(ch)
 	if machine == "" || sessionID == "" {
-		return ""
+		return "", nil
 	}
 	occupancyID, err := o.spine.HoldMachine(ctx, tenant, sessionID, machine)
 	switch {
 	case errors.Is(err, coordinator.ErrMachineAtCapacity):
-		log.Printf("session %s: machine %s already holds the capacity it declared; this attempt runs on it unmetered: %v",
+		log.Printf("session %s: machine %s already holds the capacity it declared; this run parks until a slot frees: %v",
 			sessionID, machine, err)
-		return ""
+		return "", err
 	case err != nil:
 		log.Printf("session %s: machine %s is being occupied unmetered: %v", sessionID, machine, err)
-		return ""
+		return "", nil
 	}
-	return occupancyID
+	return occupancyID, nil
 }
 
 // keepMachineHeld moves the occupancy's last-activity stamp as an attempt ends.
