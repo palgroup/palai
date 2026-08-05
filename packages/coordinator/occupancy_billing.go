@@ -78,6 +78,54 @@ func (s *Store) OpenOccupancy(ctx context.Context, tenant Tenant, sessionID stri
 	return out, found, nil
 }
 
+// StrandedOccupancy names a hold whose closer never ran: open, on a machine its session has demonstrably
+// handed back. It carries its own project because the read that produces it spans every tenant.
+type StrandedOccupancy struct {
+	ID        string
+	Project   string
+	SessionID string
+}
+
+// StrandedOccupancies returns up to limit holds that are still open on a machine that was handed back.
+//
+// IT IS THE SECOND HALF OF A ONE-WAY DOOR, and without it the first half is a permanent leak. The idle
+// release moves the workspace to `paused` BEFORE it settles, so a settle that fails leaves a hold that
+// nothing can reach: the idle candidate query wants `ready`, the writer-lease reclaim answers a different
+// question about a different table, and ReleaseLease has no production caller on purpose. This read is what
+// makes that failure cost a tick instead of a machine slot. The predicate, and why each half of it is
+// there, is in storage/queries/leases.sql.
+//
+// A MAINTENANCE READ SPANNING EVERY TENANT, like IdleWorkspacesForRelease and AbandonedWriterLeases — so it
+// runs under the system scope rather than a tenant one, and each row carries its own project for the
+// tenant-scoped settle that follows.
+//
+// A NON-POSITIVE LIMIT IS REFUSED rather than clamped, for the reason the sibling maintenance reads refuse
+// a negative interval: a caller that passed one meant something, and silently returning nothing would read
+// as "no holds are stranded" — the one answer this function must never give when it did not look.
+func (s *Store) StrandedOccupancies(ctx context.Context, limit int) ([]StrandedOccupancy, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("stranded occupancy batch must be positive, got %d", limit)
+	}
+	ctx = storage.WithSystemScope(ctx)
+	rows, err := s.pool.Query(ctx, storage.Query("StrandedOccupancies"), limit)
+	if err != nil {
+		return nil, fmt.Errorf("read stranded occupancies: %w", err)
+	}
+	defer rows.Close()
+	var out []StrandedOccupancy
+	for rows.Next() {
+		var c StrandedOccupancy
+		if err := rows.Scan(&c.ID, &c.Project, &c.SessionID); err != nil {
+			return nil, fmt.Errorf("scan stranded occupancy: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read stranded occupancies: %w", err)
+	}
+	return out, nil
+}
+
 // HoldMachine records that this session is on this machine right now, and returns the occupancy id.
 //
 // IT IS OPEN-OR-KEEP-ALIVE AND NOT PLAIN ACQUIRE, because an occupancy is not an attempt. A session's hold

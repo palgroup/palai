@@ -1,6 +1,7 @@
 -- MACHINE OCCUPANCY (Faz A.4 T1, migration 000003_lease_occupancy). One row of runner_leases is one
--- interval in which one session held one machine, and these seven statements are its whole life: order the
--- contenders, take, keep alive, give back, read one, read a session's, and say why a take was refused.
+-- interval in which one session held one machine, and these eight statements are its whole life: order the
+-- contenders, take, keep alive, give back, read one, read a session's, say why a take was refused, and find
+-- the holds whose closer never ran.
 --
 -- WHY THE ROW IS PER OCCUPANCY AND NOT PER SESSION. A session is closed for idleness, its machine account
 -- is destroyed, and the next approval resumes it on whichever machine is free — so one session holds N
@@ -157,6 +158,64 @@ SELECT id, runner_id, session_id, started_at, last_activity_at, released_at,
            - started_at))::double precision
   FROM runner_leases
  WHERE id = $1 AND project_id = $2;
+
+-- name: StrandedOccupancies
+-- The holds whose closer never ran: still open, on a machine that was demonstrably handed back. $1 bounds
+-- one pass. A MAINTENANCE read spanning every tenant, like IdleWorkspacesForRelease, so it runs under the
+-- system scope and every row carries its own project for the settle that follows.
+--
+-- WHY THIS EXISTS AT ALL — A ONE-WAY DOOR. release() hands the machine back BEFORE it settles: the
+-- workspace moves to `paused` (idle_release.go:183) and the meter runs after (idle_release.go:224). That
+-- order is right and stays, because a meter that could abort a release would leave an archived, deleted
+-- workspace whose hold is still open. But it made the meter's failure PERMANENT: every route back to an
+-- open hold ran through the workspace, and the pause had already moved it out of every one. The candidate
+-- query above this one selects `state = 'ready'` (workspaces.sql), so a paused workspace is never an idle
+-- candidate again; the writer-lease reclaim sweeps workspace_leases, a different table answering a
+-- different question; and ReleaseLease has no production caller by design, so a hold cannot close unbilled.
+-- One machine slot leaked per failed settle, for good.
+--
+-- `paused` IS THE WHOLE SIGNAL, AND IT IS TRUSTWORTHY BECAUSE IT HAS EXACTLY ONE WRITER:
+--
+--     grep -rn 'WorkspaceCmdPause' --include='*.go' . | grep -v node_modules | grep -v _test
+--     -> 1   (2026-08-05: apps/control-plane/internal/execution/idle_release.go:183)
+--
+-- The state machine declares three arms into `paused` (preparing, ready, snapshotting) and only the
+-- snapshotting one has a driver, so in this build a paused workspace means one thing and one thing only:
+-- the idle releaser archived it and handed its machine back. If a second writer ever appears — a run that
+-- pauses its own workspace while staying on the machine — this statement starts closing live holds, and
+-- that is the reason the signal is named here rather than assumed.
+--
+-- `released_at IS NULL` IS NOT A FILTER, IT IS THE EXACTLY-ONCE PROPERTY. Selecting on the workspace alone
+-- would re-settle every hold the release path already closed, because a released workspace stays `paused`
+-- forever — the recovery would bill the customer a second time for the same occupancy of the same machine,
+-- and it would do so on the ordinary path rather than on the failure one. Reclaimable and billed-twice are
+-- one edit apart.
+--
+-- BOTH HALVES OF THE WORKSPACE TEST ARE LOAD-BEARING AND NEITHER IMPLIES THE OTHER. EXISTS(paused) alone
+-- would close the hold of a session that has a paused workspace AND a live one, which is a machine it is
+-- still on. NOT EXISTS(not-paused) alone is vacuously true for a session with NO workspace at all — a hold
+-- opened while its workspace was still being planned — and closing that one settles an occupancy that has
+-- barely begun. Together they say the only safe thing: every workspace this session has, it has handed back.
+--
+-- `destroyed` is deliberately NOT accepted here even though it means the machine went back too, because
+-- DestroyAllocation has no production caller (workspace_recovery.go:219) — an arm for a state nothing can
+-- reach would be an untested branch claiming a coverage it never has.
+--
+-- ORDER BY l.id is a total order over the primary key, so the LIMIT takes a determinate batch rather than
+-- an arbitrary one. It is not a priority: a hold skipped this pass is a hold next pass.
+SELECT l.id, l.project_id, l.session_id
+  FROM runner_leases l
+ WHERE l.released_at IS NULL
+   AND EXISTS (
+       SELECT 1 FROM workspaces w
+        WHERE w.session_id = l.session_id AND w.project_id = l.project_id
+          AND w.state = 'paused')
+   AND NOT EXISTS (
+       SELECT 1 FROM workspaces w
+        WHERE w.session_id = l.session_id AND w.project_id = l.project_id
+          AND w.state <> 'paused')
+ ORDER BY l.id
+ LIMIT $1;
 
 -- name: SessionOccupancies
 -- Every machine this session has held, oldest first — which is what a bill for the session IS, and the

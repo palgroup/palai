@@ -29,6 +29,11 @@ const DefaultIdleWorkspaceTTL = 5 * time.Minute
 // goroutine. A candidate skipped this pass is a candidate on the next one — its TTL only grows.
 const idleReleaseBatch = 32
 
+// strandedSettleBatch bounds the recovery pass. It is generous next to idleReleaseBatch because the work is
+// not comparable: a release archives a tree and deletes a directory, a recovery is one small transaction.
+// A hold skipped this pass is a hold next pass.
+const strandedSettleBatch = 64
+
 // IdleReleaser hands a machine back when a session stops using it, WITHOUT ending the session.
 //
 // THE SESSION IS THE THREAD'S IDENTITY AND IT DOES NOT CLOSE. What closes is the physical claim on a
@@ -122,7 +127,73 @@ func (r *IdleReleaser) Sweep(ctx context.Context) (released int, err error) {
 	if failed > 0 {
 		log.Printf("idle release sweep: %d of %d candidates failed and stay ready, retried next tick; %d released", failed, len(candidates), released)
 	}
+	// THE SECOND PHASE IS THE RECOVERY FOR THE FIRST ONE'S ONE-WAY DOOR, and it runs unconditionally —
+	// including after a pass that released nothing and after a pass that failed. Its candidates are holds
+	// left open by EARLIER ticks (and by earlier processes), so gating it on this pass's outcome would make
+	// the recovery reachable only when a release happened to succeed, which is the opposite of when it is
+	// needed. Its error joins this pass's rather than replacing it: both are "the sweep was not clean".
+	if serr := r.settleStranded(ctx); serr != nil && err == nil {
+		err = serr
+	}
 	return released, err
+}
+
+// settleStranded closes the holds whose closer never ran: open occupancies on machines that were handed
+// back. It returns the number settled and the first failure, in the shape Sweep's own loop uses.
+//
+// WHAT IT REPAIRS, AND WHY IT IS A SWEEP RATHER THAN A REORDERING. release() commits to `paused` before it
+// settles, so a settle that fails leaves an archived, deleted, handed-back workspace whose hold is still
+// open — and open holds are what AcquireLease's ceiling counts. Until this existed there was no route back
+// to such a hold at all, so a deployment that declared a capacity would lose a slot per failed settle,
+// permanently, and start refusing real work for a reason nothing logged.
+//
+// THE ORDER IN release() IS NOT REVERSED, AND THAT IS THE CHOICE THIS FUNCTION IS THE CONSEQUENCE OF.
+// Settling first would close the hold before the machine is actually handed back, so a pause that then
+// failed would leave a machine holding a session's directory while `released_at IS NULL` — the count
+// AcquireLease's ceiling reads — says it is free. That trades a billing leak for capacity
+// OVER-subscription, on exactly the axis a declared capacity exists to protect. Settling late instead
+// over-counts the machine as occupied for at most one tick, which refuses rather than over-admits.
+//
+// A LATE SETTLE COSTS THE CUSTOMER NOTHING EXTRA, which is what makes "recover on the next tick" an honest
+// answer rather than a deferred bug. The reason is ReleaseReasonIdle here as on the timely path, and an
+// idle-closed hold bills `last_activity_at - started_at` (the CASE in storage/queries/leases.sql) — a
+// column, not the moment of the settle. So a hold closed a tick late bills exactly what it would have
+// billed closed on time.
+//
+// THE HONEST CEILING — A WORKSPACE STUCK IN `snapshotting` IS NOT REACHED. returnClaim runs on a fresh
+// context precisely so a dying sweep still gives the claim back, but a hard process death mid-capture
+// leaves the workspace in `snapshotting`, which nothing sweeps and whose hold this does not select.
+// `snapshotting` is genuinely ambiguous — a release may be capturing right now — so accepting it here would
+// race a live release. That workspace is stuck for reasons wider than billing, and it is named rather than
+// quietly folded into a predicate that would look total and not be.
+func (r *IdleReleaser) settleStranded(ctx context.Context) error {
+	stranded, err := r.spine.StrandedOccupancies(ctx, strandedSettleBatch)
+	if err != nil {
+		return err
+	}
+	var first error
+	for _, held := range stranded {
+		tenant := coordinator.Tenant{Project: held.Project}
+		// Keyed by the occupancy's OWN id rather than by its session, so this settles the row the read
+		// selected. Going back through the session would re-resolve "the open hold" against a database that
+		// may have moved since, which is how a recovery closes something it never looked at.
+		settled, serr := r.spine.SettleOccupancy(ctx, tenant, held.ID, coordinator.ReleaseReasonIdle)
+		if serr != nil {
+			log.Printf("settle stranded occupancy %s of session %s: %v", held.ID, held.SessionID, serr)
+			if first == nil {
+				first = serr
+			}
+			continue
+		}
+		if !settled {
+			// Somebody else closed it between the read and the write — the release path's own settle landing
+			// late, or another process's sweep. Ordinary, and its bill belongs to the call that closed it.
+			continue
+		}
+		log.Printf("settled a stranded occupancy: session %s held machine time on a workspace that was already handed back (occupancy %s)",
+			held.SessionID, held.ID)
+	}
+	return first
 }
 
 // release archives one idle workspace and reclaims its machine. It returns false with no error when the
@@ -204,8 +275,13 @@ func (r *IdleReleaser) release(ctx context.Context, c coordinator.IdleWorkspace)
 	// IT IS PLACED AFTER THE ACCOUNT AND AFTER THE BYTES ON PURPOSE, and the reason is the same one that
 	// puts the capture first: a step that can FAIL must not be able to abort a release that already
 	// happened. A meter that refused would leave the archive written, the uid handed back and the
-	// directory gone, with a workspace whose hold is still open — that is a worse failure than a late row,
-	// and a late row is recoverable because the hold is still there to settle.
+	// directory gone, with a workspace whose hold is still open — that is a worse failure than a late row.
+	//
+	// AND A LATE ROW IS RECOVERABLE BECAUSE settleStranded EXISTS, which is a correction to what this
+	// comment said when the ordering shipped. It said the hold "is still there to settle" and treated that
+	// as sufficient; being there is not the same as being reachable, and it was not reachable. This line
+	// moves the workspace out of every route back to its own hold — the idle candidate query wants `ready`
+	// — so until the recovery pass was added, a settle that failed here leaked a machine slot for good.
 	//
 	// IT RUNS EVEN THOUGH `remove` FAILED, and this is the branch the whole task turns on. The two failure
 	// points on this path read alike (`err != nil`) and mean OPPOSITE things:

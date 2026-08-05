@@ -65,17 +65,23 @@ import (
 //     the gateway's handleConnect when a machine CONNECTS. A run parked for a full machine would wake on
 //     that machine's next connect, dial the same full machine, and park again — and because
 //     EnqueueWokenRunJob carries the budget already spent, the loop ends in a dead-letter, not a machine.
-//   - OCCUPANCIES LEAK, so a ceiling that ENDED attempts would be a run killer with a delay fuse. The only
-//     thing that closes an open hold is the idle releaser, and it only ever sees a workspace that came back
-//     to `ready`: measured 2026-08-05 on the live stack, `ready` was ZERO of 84 workspaces (19 leased, 22
-//     preparing, 10 requested, 33 paused), so it had no candidate at all. Worse, release() moves the
-//     workspace to `paused` BEFORE it settles, so a settle that fails leaves a hold nothing can ever reach
-//     again. A declared fleet would therefore lose a slot at a time, permanently, and start refusing real
-//     work for a reason nobody could see. Killing the attempt would turn a silent leak into a silent outage.
 //
-// So the order is: close the leak, then the waker (park + wake on a settling occupancy), and only then may
-// a refusal decide what happens to the attempt. Until all three, the honest cost is an unmetered attempt on
-// an over-subscribed machine, logged where an operator can find it.
+//   - A HOLD CAN BE SLOW TO CLOSE, so a ceiling that ENDED attempts would still be a run killer, though no
+//     longer one with an unbounded fuse. The thing that closes an open hold is the idle releaser, and it
+//     only ever releases a workspace that came back to `ready`: measured 2026-08-05 on the live stack,
+//     `ready` was ZERO of 84 workspaces (19 leased, 22 preparing, 10 requested, 33 paused), so it had no
+//     candidate at all. A declared fleet would therefore fill up while every hold on it was live, and
+//     killing the attempt would turn that into an outage.
+//
+//     THE PERMANENT HALF OF THAT IS CLOSED. This paragraph used to end "a settle that fails leaves a hold
+//     nothing can ever reach again", and that was true: release() moves the workspace to `paused` before it
+//     settles, and no route back to an open hold survived the move. IdleReleaser.settleStranded is that
+//     route — an open hold on a handed-back workspace is now settled on the next tick — so what is left is
+//     a delay bounded by the sweep interval, not a slot lost for good.
+//
+// So the order is: the waker (park + wake on a settling occupancy), and only then may a refusal decide what
+// happens to the attempt. Until both, the honest cost is an unmetered attempt on an over-subscribed
+// machine, logged where an operator can find it.
 //
 // AND TODAY IT CANNOT FIRE AT ALL. No machine declares a capacity — the runner sends the field only when an
 // operator configures one — so `runners.capacity` is 0 everywhere, the ceiling in leases.sql never binds,
