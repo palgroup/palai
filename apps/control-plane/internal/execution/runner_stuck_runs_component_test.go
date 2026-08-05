@@ -67,7 +67,13 @@ func stuckRunPoolID(t *testing.T, pool *pgxpool.Pool, runID string) *string {
 	return out
 }
 
-// TestPlacementNeverParksARunWhereItsOwnWakeCannotFindIt is RED (unwakeable park).
+// TestPlacementNeverParksARunWhereItsOwnWakeCannotFindIt WAS RED (unwakeable park) AND IS GREEN AS OF
+// 2026-08-05 — re-measured, not assumed, by the shipped selector quoted at the state read below.
+//
+// WHICH ARM MAKES IT GREEN IS THE PART TO CARRY, because the test accepts two different answers and only
+// one of them happens: the run SETTLES (`failed`) instead of parking. The park arm — a parked run must
+// carry a wakeable pool id — is therefore not exercised by anything today. It stays, because it states
+// what must hold if a park becomes reachable again, which is the regression this test exists to catch.
 //
 // A run whose tenant owns no pool resolves to the CONSTANT default pool, which belongs to somebody
 // else. `RecordRunPool` correctly refuses to record another tenant's pool — its EXISTS excludes the
@@ -97,6 +103,19 @@ func TestPlacementNeverParksARunWhereItsOwnWakeCannotFindIt(t *testing.T) {
 	}
 
 	state := placementRunState(t, f.pool, runID)
+	// THE `waiting` ARM BELOW IS NOT ENTERED TODAY, measured 2026-08-05 rather than assumed:
+	//
+	//	PALAI_SUITE_RUN='TestPlacementNeverParksARunWhereItsOwnWakeCannotFindIt' \
+	//	PALAI_SUITE_PKG=./apps/control-plane/internal/execution TEST=postgres scripts/test/component
+	//	-> run state = "failed", --- PASS
+	//
+	// The tenant-with-no-pool case now settles terminal instead of parking, so the test passes through
+	// the switch below. That is the fix this test was written RED against, not a reason to delete the
+	// arm: the arm states what must hold IF a park happens, and a park becoming reachable again is
+	// exactly the regression it exists to catch. It is kept, and its SQL is kept CORRECT — an arm that
+	// nothing reaches is the one place a defect can sit unmeasured, which is how the missing AND below
+	// survived. The state is logged so the next reader re-measures instead of trusting this comment.
+	t.Logf("bu ağaçta havuzsuz kiracının run durumu: %q (park kolu girilmiyor)", state)
 	if state == "waiting" {
 		// Parked. Then the wake must be able to find it, and the wake reads exactly this column.
 		poolID := stuckRunPoolID(t, f.pool, runID)
@@ -108,7 +127,7 @@ func TestPlacementNeverParksARunWhereItsOwnWakeCannotFindIt(t *testing.T) {
 		var owned int
 		if err := f.pool.QueryRow(storage.WithSystemScope(ctx),
 			`SELECT count(*) FROM runner_pools
-			  WHERE id = $1  (project_id IS NULL OR project_id = $2)`,
+			  WHERE id = $1 AND (project_id IS NULL OR project_id = $2)`,
 			*poolID, tenant.Project).Scan(&owned); err != nil {
 			t.Fatalf("check the parked pool belongs to the tenant: %v", err)
 		}
@@ -138,7 +157,16 @@ func TestPlacementNeverParksARunWhereItsOwnWakeCannotFindIt(t *testing.T) {
 	}
 }
 
-// TestPlacementAWokenRunDoesNotGetAFreshRetryBudget is RED (the ladder the park resets).
+// TestPlacementAWokenRunDoesNotGetAFreshRetryBudget WAS RED (the ladder the park resets) AND IS GREEN AS
+// OF 2026-08-05: the carry it demands is shipped, so the wake's new job starts at the spent count rather
+// than at zero. Re-measured with the same selector as its sibling above, not assumed:
+//
+//	PALAI_SUITE_RUN='TestPlacementAWokenRunDoesNotGetAFreshRetryBudget' \
+//	PALAI_SUITE_PKG=./apps/control-plane/internal/execution TEST=postgres scripts/test/component
+//	-> --- PASS (1.32s)
+//
+// Unlike its sibling this one drives its whole path: the park, the enrolment, the wake and the carry are
+// all reached, so its green is the property's and not an arm's absence.
 //
 // A capacity park ends its attempt with nil, so the worker COMPLETES the job — which is right, the
 // attempt did not fail. The wake then mints a NEW job (placement.go's `newJobID()` + `EnqueueJob`),
