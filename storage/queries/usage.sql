@@ -25,13 +25,33 @@ ON CONFLICT (project_id, dedupe_key) DO NOTHING;
 -- ExhaustedBudget returns the caller's first budget whose cumulative settled usage since period_start
 -- has reached its limit, or no row when every budget still has headroom.
 --
--- meter_prefix is matched with LIKE, so a `%` or `_` a tenant puts in its OWN prefix behaves as a SQL
--- wildcard rather than a literal (documented, not escaped: it can only widen or narrow that tenant's own
--- limit, never reach another tenant's rows, and `_` only ever makes a limit match MORE meters — it fails
--- closed). Escape it if meter prefixes ever become anything but the fixed vocabulary this phase writes. A budget row with project_id=''
--- covers the whole installation (it sums every project's rows); a concrete project narrows both the
--- budget and the sum to that project. meter_prefix matches by prefix, so 'model.' caps every model
--- meter and '' caps everything.
+-- THE PREFIX IS COMPARED AS A PREFIX — `left(l.meter, length(b.meter_prefix)) = b.meter_prefix`, not
+-- `LIKE b.meter_prefix || '%'` — and the column is why: meter_prefix is CALLER TEXT. POST /v1/budgets and
+-- POST /v1/quotas take it from the request body verbatim (internal/metering, SetBudget/SetQuota); only the
+-- SCOPE comes from the verified identity. Under LIKE that text was a pattern with THREE metacharacters,
+-- not the two the earlier version of this paragraph named: `%` matched every meter, `_` matched any single
+-- character (so a limit written for 'model_' also governed 'model.input_tokens'), and `\` was LIKE's own
+-- escape, so 'model\.' matched 'model.' as well. For a meter vocabulary containing no backslash — which is
+-- every meter this tree settles (packages/coordinator/usage.go) — the LIKE form matched a SUPERSET of the
+-- literal prefix, so a wildcard made a cap bite SOONER and no limit was ever escaped by one. What was
+-- wrong is that the value did not mean what the API calls it, and that the old form left every later
+-- reader owing LIKE's escape rules. left() owes them nothing: there is no pattern to escape.
+--
+-- MEASURED, because the literal form cannot use a prefix index and the LIKE form is the one that looks
+-- like it could. 200k ledger rows, the pinned postgres 16.14, en_US.utf8, 2026-08-05: the plan is the SAME
+-- either way — Bitmap Index Scan on usage_ledger_tenant_keyset_idx (Index Cond: occurred_at >=
+-- b.period_start), then this predicate as a Heap-Scan Filter, `Buffers: shared hit=4146` in both. Neither
+-- form ever drove an index on `meter`, because the pattern is a per-row column expression rather than a
+-- plan-time constant (and a control query with a CONSTANT 'model.%' chose a Parallel Seq Scan too — a
+-- prefix range under this collation would need text_pattern_ops). Execution: 88.9/90.2 ms under LIKE,
+-- 96.8/100.1 ms under left(). ~8% on the filter, no plan change, no extra buffers, nothing given up.
+--
+-- A budget row with project_id='' covers the whole installation (it sums every project's rows); a concrete
+-- project narrows both the budget and the sum to that project. 'model.' caps every model meter, and the
+-- EMPTY prefix still caps everything — that is the contract these tables shipped with rather than a side
+-- effect, and it survives the change because left(m, 0) = '' holds on every row exactly as `LIKE '%'` did.
+-- tests/security/tenancy/quota_prefix_test.go drives all five cases against BOTH queries: the three
+-- metacharacters, a literal underscore that must still match itself, and this empty-prefix contract.
 --
 -- The join is LEFT so a budget with zero usage still evaluates (and trivially fails the HAVING).
 --
@@ -66,7 +86,7 @@ SELECT b.meter_prefix, b.limit_quantity, coalesce(sum(l.quantity), 0), b.period_
 FROM budgets b
 LEFT JOIN usage_ledger l
        ON (b.project_id = '' OR l.project_id = b.project_id)
-      AND l.meter LIKE b.meter_prefix || '%'
+      AND left(l.meter, length(b.meter_prefix)) = b.meter_prefix
       AND l.occurred_at >= b.period_start
 WHERE b.project_id IN ('', $1)
 GROUP BY b.id, b.meter_prefix, b.limit_quantity, b.period_start
@@ -83,12 +103,17 @@ LIMIT 1;
 -- half of it shipped: quotas carries the SAME UNIQUE (project_id, meter_prefix), the
 -- same WHERE takes both scopes, and `ORDER BY q.meter_prefix` was equally non-total. Narrowest first
 -- (`q.project_id = ''` sorts last), q.id last so the ordering is TOTAL.
+--
+-- THAT ARGUMENT NOW HAS A SECOND INSTANCE, which is why it is stated as a rule rather than as a note about
+-- the ordering: the prefix predicate below is ExhaustedBudget's too, for the same reason and with the same
+-- measurement, and the wildcard defect it closes was shipped in BOTH queries. The security corpus runs
+-- every case against both for exactly this reason.
 -- name: ExhaustedQuota
 SELECT q.meter_prefix, q.limit_quantity, coalesce(sum(l.quantity), 0), q.window_seconds, min(l.occurred_at)
 FROM quotas q
 LEFT JOIN usage_ledger l
        ON (q.project_id = '' OR l.project_id = q.project_id)
-      AND l.meter LIKE q.meter_prefix || '%'
+      AND left(l.meter, length(q.meter_prefix)) = q.meter_prefix
       AND l.occurred_at >= now() - make_interval(secs => q.window_seconds)
 WHERE q.project_id IN ('', $1)
 GROUP BY q.id, q.meter_prefix, q.limit_quantity, q.window_seconds
