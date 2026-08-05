@@ -297,12 +297,19 @@ grep -rln 'palai-runner\|native runner' --include='*_test.go' --include='*.sh' c
 `tests/uat/stable-release/bundle_test.go`, `tests/uat/kubernetes/kind-smoke.sh`,
 `scripts/test/runner-engine.sh`, `scripts/package/runner/splitvm-proof.sh`.
 
-Two of those are **UAT bundles**, which carry checksums and regenerate in cascade order — this tree has
-recorded twice that a new or renamed artifact reddens the shipped RC through them. So the cut is one
-sweep: delete the build path, move `palai up --native` onto an INSTALLED agent (refusing with the install
-command when there is none, the way it already refuses for `palai-agentd`), update the two scripts and
-`kind-smoke.sh`, then regenerate the bundles in order and re-run the release gate. It is not started
-until it can be finished in one pass.
+**AND THAT LIST WAS WRONG — THE GREP MATCHED SUBSTRINGS OF UNRELATED NAMES (corrected 2026-08-06).**
+Read one by one: the tool-execution bundle mentions *"the native runner builds"* in **prose**, inside a
+claim string; the stable-release bundle checksums `palai-runner-host-*.tar.gz`, which is the host
+**package** from `scripts/package/runner`; `runner-engine.sh` builds `palai-runner-engine` from
+`tests/sandboxes/engine`; `splitvm-proof.sh` and `kind-smoke.sh` use that host package too. **None of
+them depends on this build path.** The UAT cascade priced above does not exist, and the deferral it
+justified was a deferral bought with a number that did not measure what it claimed — the same defect
+this plan corrected in DoD 17 an hour earlier, committed again while writing about it.
+
+**DONE (`8f24e234`, 2026-08-06).** `palai up --native` no longer builds an agent. A stack with no agent
+beside it is a CORRECT stack and prints the two commands that give it capacity — `install.sh`, then
+`palai enroll --url … --server-name …`. `PALAI_RUNNER_BIN` remains the only way a bring-up starts one,
+which is a checkout or CI naming a build deliberately rather than a path conjuring one.
 
 **The compatibility window applies to Compose deployments that exist today, not to the device path.** T3
 may keep a reader for an existing self-host stack for one release; it does not keep one for the packaged
