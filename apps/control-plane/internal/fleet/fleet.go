@@ -93,6 +93,10 @@ type RunnerLifecycle interface {
 	// RunnerActiveLeases is how many leases that machine is serving right now — the answer to the question
 	// a cordon exists to let an operator ask, which is whether the Mac can be taken away yet.
 	RunnerActiveLeases(runnerID string) int64
+	// RunnerConnections is how many live sessions that machine holds RIGHT NOW — the authoritative
+	// answer to "is it connected", which last_seen_at is not: a durable timestamp says when a machine
+	// last spoke, not whether it is there.
+	RunnerConnections(runnerID string) int64
 	// Waiting is how many attempts are queued for a POOL with no machine free to take them (E28 T1's rider,
 	// closing `FLT-P14`). It is on this interface because this is already the seam through which a stored
 	// fact meets a live one, and the gateway already had the method — what it had never had was a reader.

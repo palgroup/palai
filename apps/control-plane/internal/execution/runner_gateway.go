@@ -566,6 +566,32 @@ func (g *RunnerGateway) evict(runnerID string) {
 	}
 }
 
+// RunnerConnections reports how many live sessions ONE machine is holding on this gateway right now.
+//
+// ‼️ IT IS THE AUTHORITATIVE "IS THIS MACHINE CONNECTED", and it exists because `last_seen_at` is not
+// one. A durable timestamp answers "when did this machine last say something", which is a different
+// question from "is it there now" — and on a Mac that was unplugged four minutes ago the two answers
+// disagree in the direction that matters to an operator deciding whether to send it work.
+//
+// ONE MACHINE IS ONE MACHINE HOWEVER MANY LOOPS IT PARKS. A runner keeps one session per concurrent
+// lease (PALAI_RUNNER_CONCURRENCY), so this counts the sessions belonging to a single runner id rather
+// than the runners belonging to a session set. The panel renders the state from >0 and the count beside
+// it: two connections is one online machine with room for two leases, not two machines.
+func (g *RunnerGateway) RunnerConnections(runnerID string) int64 {
+	if runnerID == "" {
+		return 0
+	}
+	g.machinesMu.RLock()
+	defer g.machinesMu.RUnlock()
+	var n int64
+	for pr := range g.sessions {
+		if pr.runnerID == runnerID {
+			n++
+		}
+	}
+	return n
+}
+
 // RunnerActiveLeases reports how many leases ONE machine is currently serving — the answer to the
 // question a cordon exists to let an operator ask, which is "can I take this Mac away yet?". It is the
 // per-runner half of the counter Drain sums.

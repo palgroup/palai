@@ -48,6 +48,7 @@ type RunnerItem struct {
 	CreatedAt       time.Time
 	AgentVersion    string
 	IsolationModes  string
+	Connections     *int64
 	// ActiveLeases is how many leases this machine is serving RIGHT NOW, and it is the one field here that
 	// is not a stored fact — the gateway holding the sessions is the only thing that knows (E24 T5). It is
 	// on the single read rather than the listing because it is a live value: a page of them would be a page
@@ -688,6 +689,21 @@ func runnerView(it RunnerItem) map[string]any {
 	// listing does not set it — see RunnerItem.ActiveLeases — so a page carries no such field at all.
 	if it.ActiveLeases != nil {
 		view["active_leases"] = *it.ActiveLeases
+	}
+	// CONNECTION STATE, FROM THE GATEWAY AND NOT FROM A TIMESTAMP. last_seen_at answers when a machine
+	// last spoke; this answers whether it is there now, and on a Mac unplugged four minutes ago the two
+	// disagree in the direction that decides whether an operator sends it work. Rendered only on the
+	// reads that consulted the gateway — a listing that did not ask must not render "offline", which an
+	// operator would read as an answer.
+	if it.Connections != nil {
+		state := "offline"
+		if *it.Connections > 0 {
+			state = "online"
+		}
+		view["connection_state"] = state
+		// Beside the state because they are different facts: one machine parking two loops is ONE online
+		// machine with room for two leases.
+		view["connections"] = *it.Connections
 	}
 	// THE CONFIGURATION REPORT IS RENDERED ONLY WHEN THE MACHINE HAS MADE ONE, and the absence is the
 	// message: a machine that has never reported is one this control plane has never confirmed is running

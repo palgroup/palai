@@ -222,6 +222,8 @@ func (a *RegistryAPI) decorate(row Runner) api.RunnerItem {
 	if a.live != nil {
 		leases := a.live.RunnerActiveLeases(row.ID)
 		item.ActiveLeases = &leases
+		connections := a.live.RunnerConnections(row.ID)
+		item.Connections = &connections
 	}
 	return item
 }
