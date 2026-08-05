@@ -85,12 +85,58 @@ var unreachableWithAFiledGap = map[string]string{
 // value, and an entry added later owes the call site that consumes it.
 var reachedAsAFunctionValue = map[string]string{}
 
+// knownNamesakeCallers is false-positive shape 5, found by 607cf84f: a DIFFERENT symbol sharing a target's
+// bare name. `collectProductionCallSites` matches a `*ast.SelectorExpr` by its LAST identifier only — it has
+// no type information, so `x.WallTime()` registers as reach for the target "WallTime" whatever `x` is. Before
+// 607cf84f the only other `WallTime` in the tree was the FIELD shape 4's comment already names
+// (oci.Limits.WallTime, a value position, kept out of `byCall`). 607cf84f added a THIRD, call-position one:
+// `posture.WallTime()`, a package-level FUNCTION that reads the CONFIGURED bound from the environment — not
+// `(*host.Executor).WallTime()`, the METHOD CON-P9 is about, which reads back what an ALREADY-BUILT executor
+// was actually wired with. The two do different jobs (one computes an input, the other reports an output) and
+// share nothing but a name.
+//
+// Each entry is HAND-VERIFIED rather than pattern-matched, the same discipline `declaringFiles` uses: grep for
+// `.WallTime()` in each listed file finds exactly one hit, and it is `posture.WallTime()` (main.go, qualified)
+// or the bare `WallTime()` self-call inside the posture package's own body (posture.go) — neither file
+// constructs or holds a *host.Executor to call the real target on. If either file EVER gains a genuine
+// host.Executor.WallTime() call, that call sits beside an unrelated one this map hides, so an entry here is
+// dated at the commit that added it and re-verified by hand rather than carried forward blind.
+var knownNamesakeCallers = map[string][]string{
+	"WallTime": {
+		// 607cf84f (2026-08-04): posture.WallTime()'s own declaration and its one production caller.
+		"adapters/sandboxes/posture/posture.go",
+		"apps/control-plane/cmd/palai-control-plane/main.go",
+	},
+}
+
+// withoutKnownNamesakes returns files with the known-namesake call sites removed for symbol, so a target's
+// reach is judged on evidence the AST can actually attribute to it.
+func withoutKnownNamesakes(symbol string, files []string) []string {
+	namesakes := knownNamesakeCallers[symbol]
+	if len(namesakes) == 0 {
+		return files
+	}
+	out := make([]string, 0, len(files))
+	for _, f := range files {
+		if !slices.Contains(namesakes, f) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // TestEveryE25ExportedSurfaceHasAProductionCaller is the sweep. A symbol with no production reach fails with
 // the epic task that added it named, because "which task shipped this unreachable" is the first question a
 // reader asks.
 func TestEveryE25ExportedSurfaceHasAProductionCaller(t *testing.T) {
 	root := repoRoot(t)
 	callers, values := collectProductionCallSites(t, root)
+	// Shape 5 (see knownNamesakeCallers): subtract call sites the AST can attribute to a DIFFERENT symbol of
+	// the same bare name before either judgement below reads `callers`, so both the staleness check and the
+	// per-target loop see the same, correctly-attributed evidence.
+	for symbol := range knownNamesakeCallers {
+		callers[symbol] = withoutKnownNamesakes(symbol, callers[symbol])
+	}
 
 	// The exception list is checked FIRST and in the direction that can go stale: a symbol listed here that
 	// HAS gained reach must be removed, or the list becomes a place where a fixed gap goes on being reported

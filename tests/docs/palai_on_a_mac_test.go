@@ -96,7 +96,15 @@ func TestPalaiOnAMacCitesTestsThatExist(t *testing.T) {
 // worse than no page: the operator's stack fails to boot and the page says it should have worked.
 func TestPalaiOnAMacQuotesThePostureTheBinaryParses(t *testing.T) {
 	doc := readDoc(t, macHostDoc)
-	main := readDoc(t, "apps/control-plane/cmd/palai-control-plane/main.go")
+	// 607cf84f moved posture derivation out of main.go so BOTH binaries (control plane and runner) read
+	// one answer instead of two: main.go's own shellPostureNative became `= posture.Native`, a reference
+	// rather than a literal, and posture.Native is itself `string(toolbroker.PostureUnsandboxedHost)` —
+	// so the literal "unsandboxed-host" now lives in packages/tool-broker/background.go, the one place
+	// both postures compare against. PALAI_SHELL_NATIVE/PALAI_SANDBOX_IMAGE/PALAI_WORKSPACE_ROOT are
+	// still read by os.Getenv directly in main.go. "main" is the union of wherever each literal is
+	// actually declared today, not a claim that one file holds all four.
+	main := readDoc(t, "apps/control-plane/cmd/palai-control-plane/main.go") +
+		readDoc(t, "packages/tool-broker/background.go")
 
 	for _, literal := range []string{"PALAI_SHELL_NATIVE", "unsandboxed-host", "PALAI_SANDBOX_IMAGE", "PALAI_WORKSPACE_ROOT"} {
 		if !strings.Contains(doc, literal) {
