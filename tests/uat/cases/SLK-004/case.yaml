@@ -1,6 +1,6 @@
 id: SLK-004
 name: unmapped-user-is-a-constrained-actor-cannot-approve
-proof_class: component-real
+proof_class: unit
 provider: fake
 input: "an unmapped/unauthorized Slack user is a constrained integration actor that cannot approve, change the model, or inject content. LOCAL proof (T1): the approval mapping carries the clicking user + workspace so the control-plane allow-list check (slack_connections.allowed_users, stored + RLS-scoped in the component test) can reject a non-mapped approver, AND a decision can ONLY come from a signed minted button — never from message text — so an unauthorized user's chat cannot authorize anything. WIRED (E19 T2): ApproverAuthorized has its FIRST production caller — the shipped POST /v1/slack/interactions route — so the ENFORCEMENT the E17 T11 note called an UNWIRED DECISION PATH is now proven end to end: an unmapped clicker on a correctly minted button enqueues ZERO commands and makes ZERO outbound calls, while the mapped approver's identical click decides. A stale request hash and a foreign thread likewise decide nothing. §6 leg 1: a REAL Slack workspace external receipt is operator work and is NEVER claimed here — the local seam is the FAKE Slack peer, so `slack` closes PREVIEW, not stable."
 expect_status: rejected
@@ -17,3 +17,10 @@ proof:
   #   - apps/control-plane/internal/extensions/slack_component_test.go:TestSlackConnectionCreateReadRLS
   #   - apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackUnauthorizedClickEnqueuesNothing
   #   - apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackStaleHashAndForeignThreadDecideNothing
+  #
+  # TIER LOWERED TO `unit` 2026-08-05, which the withdrawal above should have carried and did not. The two
+  # surviving proofs are the MAPPING, which is pure. The case text's WIRED paragraph is about the
+  # ENFORCEMENT — "the shipped POST /v1/slack/interactions route" — and that route is deleted. Approvals are
+  # decided by apps/slack-bot over `/v1` now and its delivery store proves a post is claimed exactly once,
+  # but that is a different surface from the one this case describes and it is deliberately NOT borrowed to
+  # hold this tier up: a case's class must be supported by the proofs the case itself lists.

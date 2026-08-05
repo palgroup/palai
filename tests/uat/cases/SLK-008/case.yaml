@@ -1,6 +1,6 @@
 id: SLK-008
 name: bot-and-self-events-are-ignored-no-loop
-proof_class: component-real
+proof_class: unit
 provider: fake
 input: "an event carrying a bot_id, or one from the app's OWN bot user, is dropped BEFORE a run can be born — INCLUDING a message_changed/message_deleted whose bot identity is nested (the app's own SLK-006 chat.update edit re-enters as one), so the app never answers its own posted reply or its own repair — the infinite-loop guard (SLK-008). The event is acked (2xx) but produces no run. WIRED (E19 T1/T3): the guard is asserted on BOTH shipped transports against real PostgreSQL — a self event over the HTTP callback and one over a Socket Mode envelope each birth zero runs, and the socket envelope is still acknowledged (an unacknowledged envelope is one Slack goes on retrying). LOCAL proof of the mapping itself: the bot/self drop unit tests, top-level and nested-subtype. §6 leg 1: a REAL Slack workspace external receipt is operator work and is NEVER claimed here — the local seam is the FAKE Slack peer, so `slack` closes PREVIEW, not stable."
 expect_status: accepted
@@ -16,3 +16,12 @@ proof:
   # contracts digest), so withdrawing a proof cannot move a committed checksum.
   #   - apps/control-plane/internal/store/slack_events_component_test.go:TestSlackBotSelfEventBirthsNothing
   #   - apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModeSelfEventBirthsNothing
+  #
+  # TIER LOWERED TO `unit` 2026-08-05, which the withdrawal above should have carried and did not — and this
+  # is the one where the lowering costs the argument the case was built on. The catalog's note read: the
+  # self-loop guard lives in the pure MapEvent, so it HOLDS on every transport — "but 'it should' is not
+  # evidence, and a bot event that opened a run over a WebSocket would be a loop nobody notices." The two
+  # withdrawn proofs above are what turned that into evidence, on both transports, against real PostgreSQL.
+  # With them gone the case is back to exactly the position that note refused to accept: the DROP is proven
+  # and the fact that no run is BORN is not. It is recorded as `unit` rather than dressed up, and the gap is
+  # named here so the next component birth proof in apps/slack-bot knows which claim it closes.

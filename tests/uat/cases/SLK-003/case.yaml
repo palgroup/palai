@@ -11,6 +11,16 @@ proof:
   - adapters/integrations/slack/history_test.go:TestThreadRepliesTypesTheAPIRefusal
   - adapters/integrations/slack/history_test.go:TestThreadRepliesDoesNotRetryARateLimit
   - adapters/integrations/slack/inbound_test.go:TestMapEventCarriesTheAffectedMessageTS
+  # RE-EARNED 2026-08-05, and this case is the ONLY one of the six whose `component-real` tier survives the
+  # cutover. The thread↔session correlation moved to apps/slack-bot's own store, and the successor covers
+  # all three halves the text above claims, against real PostgreSQL: two events in one thread resolve the
+  # SAME session, a different key gets its OWN session (the old slack_thread_sessions table had no bot_id
+  # column, so two bots in one thread could never have been told apart there), and a concurrent race
+  # collapses at the unique index to a single session. The first of them names this case at its own line.
+  # The file carries `//go:build component`; its suite is `TEST=slack-bot scripts/test/component`.
+  - apps/slack-bot/internal/store/threads_test.go:TestASecondEventInTheSameThreadReusesTheSession
+  - apps/slack-bot/internal/store/threads_test.go:TestTwoBotsInOneThreadDoNotShareASession
+  - apps/slack-bot/internal/store/threads_test.go:TestRebindThreadConcurrentCallersOnlyOneWins
   # WITHDRAWN 2026-08-05 — the Slack cutover. The proofs below named files that were deleted with the
   # control plane's in-process Slack bridge (extensions/slack_*, api/slack*, the store's slack_*
   # component suites). Slack is served by apps/slack-bot now, a separate process that reaches this

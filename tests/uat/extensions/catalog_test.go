@@ -126,12 +126,28 @@ var expectedExtensionsCatalog = map[string]struct {
 	class  string
 	proofs []string
 }{
-	// E19 T3 moved SLK-001 from `unit` to `component-real` and it is an EARNED upgrade, not a relabel: the
-	// transport-invariance claim is now asserted by the shipped Socket Mode connect loop driving the real
-	// admission bridge against real Postgres, in both transport orders. The protocol half stays untagged on
-	// purpose (a fake WSS server over httptest needs no service), so it runs under a plain `go test` rather
-	// than hiding behind a Postgres skip.
-	"SLK-001": {"component-real", []string{
+	// SIX OF THE SLK CASES DECLARED A TIER THEIR PROOFS NO LONGER SUPPORT, and the tier is the one thing
+	// `14558797` did not finish. That commit trimmed every Docker-bound proof out of this map when the
+	// cutover deleted the control plane's slack_* component suites, and its own message names exactly which
+	// classes it lowered — "SLK-009..012 and CAS-001 drop to proof_class: unit". These six were not in that
+	// list and kept `component-real` with nothing carrying the `component` tag behind it. The gate that says
+	// so is in this file and it was RED from that commit onward; nothing ran it, because `make verify` was
+	// stopping at lint (see `d039105c`).
+	//
+	// EACH WAS MEASURED BEFORE IT WAS MOVED, because "drop it to unit" is the cheap answer and it is wrong
+	// whenever the proof merely relocated. The sweep: every `//go:build component` file in the tree,
+	// filtered to those naming Slack. Two survive the cutover — apps/slack-bot/internal/store/threads_test.go
+	// and delivery_test.go — and exactly ONE case's claim is inside them. That one keeps its tier and is
+	// re-pointed; the other five are lowered, each with the reason at its own line rather than a shared
+	// sentence, because they are not lowered for the same reason.
+
+	// LOWERED TO unit 2026-08-05. The claim is TWO transports normalizing to one identity, and there is only
+	// one transport now: the Events API HTTP callback was deleted whole in the cutover, and with it the
+	// component proof that drove socket-then-HTTP and HTTP-then-socket against real Postgres. What survives
+	// is the frame decoding and the mapping, which are pure and genuinely `unit` — so this is not a case
+	// whose evidence moved, it is a case whose SECOND HALF has no subject. The E19 T3 note that used to
+	// stand here called the upgrade EARNED, and it was; what earned it is gone.
+	"SLK-001": {"unit", []string{
 		"adapters/integrations/slack/inbound_test.go:TestMapEventNormalizesToCanonicalIdentity",
 		"adapters/integrations/slack/inbound_test.go:TestUnwrapSocketFrameFeedsTheSameMapping",
 		"adapters/integrations/slack/socket_test.go:TestSocketFrameCarriesAcceptsResponsePayload",
@@ -150,6 +166,13 @@ var expectedExtensionsCatalog = map[string]struct {
 	// thread without one is read exactly once. Both halves are listed, because the negative is the kind of claim
 	// that rots into a vacuous green — drop the "does not fetch twice" leg and the remaining one is satisfied by
 	// a build that fetches on every single message.
+	// THE ONE THAT KEEPS ITS TIER, and it keeps it on evidence rather than on inertia. The thread↔session
+	// correlation moved to apps/slack-bot's own store, where the successor is not merely equivalent — it
+	// covers all three halves this case's text claims, against real Postgres: two events in one thread
+	// resolve the SAME session, a different key gets its OWN session, and a concurrent race collapses at the
+	// unique index to a single session. The first of them says so itself at its own line ("SLK-003's own
+	// test"), which is how the relocation was found rather than guessed. The proof file carries
+	// `//go:build component` and its suite is `TEST=slack-bot scripts/test/component`.
 	"SLK-003": {"component-real", []string{
 		"adapters/integrations/slack/history_test.go:TestThreadRepliesCarriesTheDocumentedArguments",
 		"adapters/integrations/slack/history_test.go:TestThreadRepliesRefusesAnUnboundedOrUnaddressedRead",
@@ -157,10 +180,17 @@ var expectedExtensionsCatalog = map[string]struct {
 		"adapters/integrations/slack/history_test.go:TestThreadRepliesTypesTheAPIRefusal",
 		"adapters/integrations/slack/history_test.go:TestThreadRepliesDoesNotRetryARateLimit",
 		"adapters/integrations/slack/inbound_test.go:TestMapEventCarriesTheAffectedMessageTS",
+		"apps/slack-bot/internal/store/threads_test.go:TestASecondEventInTheSameThreadReusesTheSession",
+		"apps/slack-bot/internal/store/threads_test.go:TestTwoBotsInOneThreadDoNotShareASession",
+		"apps/slack-bot/internal/store/threads_test.go:TestRebindThreadConcurrentCallersOnlyOneWins",
 	}},
-	// E19 T2 gave ApproverAuthorized its FIRST production caller, which is what earns deleting E17 T11's
-	// "UNWIRED DECISION PATH" note: the allow-list is now enforced on the shipped interactivity route.
-	"SLK-004": {"component-real", []string{
+	// LOWERED TO unit 2026-08-05. E19 T2's note that used to stand here said the allow-list had its FIRST
+	// production caller — POST /v1/slack/interactions — and that route is deleted. The mapping below is real
+	// and pure; what is no longer proven at the component tier is the ENFORCEMENT, which is the half the
+	// note was about. E17 T11's "UNWIRED DECISION PATH" is not thereby reinstated: apps/slack-bot decides
+	// approvals over `/v1` and its own delivery store proves the claim exactly once, but that is a DIFFERENT
+	// surface from the one this case's text describes, so it is not silently borrowed to hold this tier up.
+	"SLK-004": {"unit", []string{
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace",
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse",
 	}},
@@ -180,11 +210,21 @@ var expectedExtensionsCatalog = map[string]struct {
 		"apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestArtifactInboundImageWriteIsIdempotentAtACallerChosenID",
 		"apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestInboundImageIsReachedByRetentionOnlyOnceAttached",
 	}},
-	"SLK-006": {"component-real", []string{
+	// LOWERED TO unit 2026-08-05, and this is the one whose text is furthest from the tree. The case claims
+	// coalesced updates are "PACED PER CHANNEL (the D10 Special Tier requirement)", which the component
+	// proof drove on the shipped decision path. That proof is deleted AND the pacer has no production
+	// caller: `dfceb769` reported it in its own commit message — ChannelPacer is complete and correct, and
+	// ChannelPacer.Wait is called by none of the actual chat.postMessage/appendStream call sites (the 429
+	// repair inside PostMessage runs; nothing paces AHEAD of a call). The bounded repair below is real and
+	// is a unit claim; the pacing half is not evidence at any tier right now.
+	"SLK-006": {"unit", []string{
 		"adapters/integrations/slack/ratelimit_test.go:TestPostMessageRepairsA429Once",
 		"adapters/integrations/slack/ratelimit_test.go:TestPostMessageBoundedRepairThenRateLimited",
-		// E20 T1 extended this case rather than opening an id: the streaming calls ride the SAME retry owner
-		// and the SAME pacer, so "one repair, no second layer" is now asserted on the stream cadence too.
+		// E20 T1 extended this case rather than opening an id: the streaming calls ride the SAME retry owner,
+		// so "one repair, no second layer" is asserted on the stream cadence too. THE SENTENCE USED TO SAY
+		// "and the SAME pacer" AND THAT HALF IS NOT TRUE — counting which half survives rather than deleting
+		// the line: the retry owner is shared and asserted; the pacer is instantiated by nothing, so the
+		// streaming calls share it only in the sense that neither path calls it.
 		"adapters/integrations/slack/stream_test.go:TestStreamCallsTruncateTheirOwnText",
 	}},
 	// E20 T4 extended this case rather than opening an id — the same move T1 made on SLK-006, and for the same
@@ -193,7 +233,14 @@ var expectedExtensionsCatalog = map[string]struct {
 	// "foreign button" this case refuses downstream never reaches a human upstream either. (SLK-012, the id
 	// the T4 seam names, lands with T5: cataloging a NEW case regenerates extensions-0.1.0, and governing it
 	// grows CapabilityClaims["slack"], which three committed manifests and the 1.0 RC recompute from.)
-	"SLK-007": {"component-real", []string{
+	// LOWERED TO unit 2026-08-05. The E20 T4 extension above is unaffected and is why this case is still
+	// strong: the SUPPLY side — a model's forged approve button falls to inert text — is a pure renderer
+	// claim and was always `unit`. What went is the CLICK side the case's WIRED paragraph describes: "a
+	// signed form body enters POST /v1/slack/interactions, the raw-body v0 verify passes", proven against
+	// real PostgreSQL for both approve and deny. That route is deleted and VerifySignature with it (Socket
+	// Mode carries no form-encoded interactivity body and nothing to verify), so the durable transition is
+	// no longer asserted anywhere this case points.
+	"SLK-007": {"unit", []string{
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace",
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalDenyIsMapped",
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse",
@@ -201,9 +248,14 @@ var expectedExtensionsCatalog = map[string]struct {
 		"adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement",
 		"adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement",
 	}},
-	// The self-loop guard lives in the pure MapEvent, so it holds on every transport — but "it should" is
-	// not evidence, and a bot event that opened a run over a WebSocket would be a loop nobody notices.
-	"SLK-008": {"component-real", []string{
+	// LOWERED TO unit 2026-08-05, and the note that used to stand here is the reason this hurts most of the
+	// six. It said: the self-loop guard lives in the pure MapEvent so it HOLDS on every transport — "but 'it
+	// should' is not evidence, and a bot event that opened a run over a WebSocket would be a loop nobody
+	// notices." Both component proofs that turned that argument into evidence were deleted with the store's
+	// slack_* suites, so the case is back to exactly the position that note refused to accept: the mapping
+	// is proven, the BIRTH is not. It is recorded as `unit` rather than dressed up, and the gap is named
+	// here so the next person to give apps/slack-bot a component birth proof knows which claim it closes.
+	"SLK-008": {"unit", []string{
 		"adapters/integrations/slack/inbound_test.go:TestMapEventDropsBotAndSelfEvents",
 		"adapters/integrations/slack/inbound_test.go:TestMapEventDropsNestedBotEdit",
 	}},
