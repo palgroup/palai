@@ -83,9 +83,9 @@ func TestAConsoleWrittenEnvironmentReachesTheShellOfARunItPinned(t *testing.T) {
 
 	// 1. THE ENVIRONMENTS SCREEN. An environment and two keys, through the routes the form posts to. The
 	// values never leave this function and are never a path segment or an argument.
-	// The name is unique per run: 000065 made environments.name unique across the INSTALLATION, and this
-	// suite shares one database, so a literal "production" is a 409 the moment any sibling fixture asks
-	// for it too.
+	// The name is unique per run: environments_name_key is UNIQUE (project_id, name) and this suite shares
+	// one database, so a literal "production" is a 409 the moment any sibling fixture in the same project
+	// asks for it too.
 	env := client.post(201, "/v1/environments", map[string]any{"name": "production-" + pinnedID("con"), "description": "written from the console"})
 	envID, _ := env["id"].(string)
 	if envID == "" {

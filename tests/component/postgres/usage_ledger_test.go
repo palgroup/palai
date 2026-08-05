@@ -6,7 +6,7 @@
 // without them (main.go re-runs the whole chain on every boot):
 //
 //  1. the append-only grant, which 000001's and 000029's blanket `GRANT ... ON ALL TABLES` re-hand on
-//     boot #2 now that the table exists (the 000015/000031 precedent);
+//     boot #2 now that the table exists (the same precedent the secret_refs REVOKE sets);
 //  2. the org-level RLS policy, which 000029's catalogue sweep re-derives as PROJECT-aware on boot #2
 //     because usage_ledger carries a project_id column — and a project-narrowed policy would make an
 //     organization-wide budget silently under-count.
@@ -75,14 +75,14 @@ func TestMigration32UsageLedgerAppendOnlyAcrossReboots(t *testing.T) {
 }
 
 // TestMeteringPolicyStaysWiderThanTheProjectAcrossReboots proves the deliberate exception 000032 made and
-// A.2 Task 6's 000066 carried forward: usage_ledger is secured WIDER than the project even though it
+// Carried forward: usage_ledger is secured WIDER than the project even though it
 // carries a project_id column, so an installation-wide budget can be summed from the project-narrowed
 // connection that admits a run. Narrowing it would make that sum miss every sibling project, and a budget
 // that under-counts fails OPEN, silently — which is why the exception exists at all.
 //
 // The second half of the old claim IS GONE, and it is removed rather than weakened. This test used to end
 // by asserting that org-A's connection saw zero of org-B's ledger rows — "the tenant boundary leaked".
-// 000066 keys usage_ledger on the INSTALLATION, because keying it on project is exactly what would break
+// `palai_apply_installation_policy('usage_ledger')` keys it on the INSTALLATION, because keying it on project is exactly what would break
 // the first half and there is no organization left to key it on: within one installation every project
 // now reads every ledger row. What survives, and is asserted below, is that a connection which declared
 // NO scope still sees nothing.
@@ -130,7 +130,7 @@ func TestMeteringPolicyStaysWiderThanTheProjectAcrossReboots(t *testing.T) {
 	}
 	if wideTotal != 42 {
 		t.Fatalf("cross-project ledger total from a project-B-narrowed connection = %v, want 42 (the "+
-			"wider-than-project metering policy did not survive the 000029/000066 sweeps)", wideTotal)
+			"wider-than-project metering policy did not survive the tenant-policy sweeps)", wideTotal)
 	}
 
 	// A third project's rows are VISIBLE too, and that is asserted rather than left unmentioned: a test
@@ -140,7 +140,7 @@ func TestMeteringPolicyStaysWiderThanTheProjectAcrossReboots(t *testing.T) {
 		t.Fatalf("count the third project's ledger: %v", err)
 	}
 	if other != 1 {
-		t.Fatalf("the third project's ledger row count = %d, want 1 — usage_ledger is installation-wide after 000066", other)
+		t.Fatalf("the third project's ledger row count = %d, want 1 — usage_ledger is installation-wide by policy", other)
 	}
 
 	// THE DENY-BY-DEFAULT HALF IS NOT ASSERTED HERE, and the reason is a measured property rather than an
@@ -445,7 +445,7 @@ func TestBudgetScopeNarrowingAcrossSiblingProjects(t *testing.T) {
 	//
 	// THE EXPECTED TOTAL IS MEASURED, NOT WRITTEN DOWN, and A.2 Task 6 is why. This used to assert
 	// `Used == 140` exactly, which held while usage_ledger was secured per ORGANIZATION and the fixture
-	// owned its own. 000066 keys it on the INSTALLATION, and this suite shares ONE database across dozens
+	// owned its own. Its policy keys on the INSTALLATION, and this suite shares ONE database across dozens
 	// of openHarness calls, so an installation-wide budget legitimately sums every other test's model.*
 	// rows too (1264 when this was first re-run, and a number that moves whenever a test is added). The
 	// claim being pinned is the SIBLING's contribution, so the baseline is read first and the assertion is

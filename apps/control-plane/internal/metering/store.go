@@ -4,11 +4,14 @@
 // are committed (packages/coordinator), not here — a metering package that could also write the ledger
 // would be a second, unsynchronized path into a table whose whole value is being the single record.
 //
-// SCOPING: every method is bound to the identity the caller was verified as. Migration 000032 secured
-// these tables at the ORGANIZATION level on purpose (so a wide limit could be summed from the
-// project-narrowed connection that admits a run) and 000066 rekeyed them to the INSTALLATION, so the
-// project narrowing is done explicitly in SQL here rather than by RLS — a `system` key sees the whole
-// installation, a project-scoped key sees the installation-wide limits plus its own project's.
+// SCOPING: every method is bound to the identity the caller was verified as. These tables are secured
+// WIDER than the project on purpose, so a wide limit can still be summed from the project-narrowed
+// connection that admits a run — `palai_apply_installation_policy('usage_ledger')` and its neighbours in
+// storage/migrations/000002_row_level_security.up.sql, which is the name to grep rather than a chain
+// number that a squash can retire. The consequence is the load-bearing part: the project narrowing is
+// done explicitly in SQL here rather than by RLS, so a missing predicate is not caught by the database.
+// A `system` key sees the whole installation, a project-scoped key sees the installation-wide limits
+// plus its own project's.
 //
 // HONEST CEILING — METERING ONLY: no price revision, no invoice, no compensating adjustment, no
 // BYOK platform/provider split, and no billing exporter (BIL-004/005/006 → E13-H/SaaS). What is here is

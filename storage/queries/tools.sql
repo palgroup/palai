@@ -2,8 +2,8 @@
 -- are the management surface (create/revise/publish); reads back the immutable-check + the per-tenant
 -- broker lookup's pin-chain resolution. A revise always INSERTs a new revision — no statement here ever
 -- rewrites a revision's config columns, so a published revision is immutable by discipline (the only
--- UPDATE is the publish flip). Every statement is tenant-scoped by project_id (000062 rekeyed the
--- policy, 000065 rebuilt the uniqueness: tools is UNIQUE on (project_id, canonical_name) and on
+-- UPDATE is the publish flip). Every statement is tenant-scoped by project_id (`tenant_isolation` keys
+-- on it, and the uniqueness: tools is UNIQUE on (project_id, canonical_name) and on
 -- (project_id, model_visible_name), tool_set_revisions on (project_id, set_name, revision_number)).
 
 -- name: InsertTool

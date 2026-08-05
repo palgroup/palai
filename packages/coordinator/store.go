@@ -1172,7 +1172,7 @@ func (s *Store) PinnedExecConfig(ctx context.Context, tenant Tenant, runID strin
 }
 
 // RunEnvironmentKeys resolves a run's environment KEY NAMES and the derived secret_refs name each value is
-// stored under (E25 T3, migration 000046). NAMES ONLY — nothing here reads or returns a value, and there is
+// stored under (E25 T3, the `environments`/`environment_values` pair). NAMES ONLY — nothing here reads or returns a value, and there is
 // no query in storage/queries that could (storage/ciphertext_sweep_test.go pins that to two names, neither
 // of them this one).
 //

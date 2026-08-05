@@ -26,8 +26,15 @@ import (
 // only reach a secret provisioned under its own organization, and an org whose normalized key carried
 // "__" was rejected as ambiguous. With organizations gone the key is PALAI_<KIND>_SECRET_FILE_<REF>:
 // there is no org segment to scope by, no delimiter to be ambiguous about, and every endpoint in this
-// installation naming "shared" reaches the SAME file. The DB half says the same thing for the same
-// reason (migration 000066 keys secret_refs on the installation).
+// installation naming "shared" reaches the SAME file.
+//
+// THE DB HALF NO LONGER SAYS THE SAME THING, and this sentence used to claim it did. secret_refs carries
+// project_id under `tenant_isolation` keyed on it, with secret_refs_name_version_key UNIQUE (project_id,
+// name, version) — so in the database a ref written under that constraint is its project's. What is
+// asserted below is the ENV-FILE bridge, which has no project segment in its key at all, so the two
+// halves have diverged and only the file half is pinned here. Two branches on the DB side, because one
+// sentence cannot cover both: a row written since the boundary belongs to its project, while a legacy
+// row whose project_id is the empty string stays readable to every scope by 000002's contract.
 //
 // What SURVIVES and is asserted here: the five namespaces are still DISTINCT, so a webhook-bridged ref
 // cannot satisfy a remote-tool lookup. That was the other half of the original test and it is the half

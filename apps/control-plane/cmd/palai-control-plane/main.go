@@ -1183,11 +1183,19 @@ func dbSecret(tenant coordinator.Tenant, ref string) ([]byte, bool, error) {
 // provisioned over POST /v1/secret-refs and rotated there with no restart. A MISS is an error: a binding
 // that deliberately names its own credential must never silently clone under the deployment-global App.
 //
-// THERE IS NO TENANT SCOPING ON THIS READ, and saying so is the point: this line claimed "the org is
-// server-minted from the run, so the store scopes the read to it and RLS denies any foreign row". dbSecret
-// resolves under WithInstallationScope (000066 keys secret_refs on the installation), so a connection_ref
-// names the same row for every project. What still holds is that the ref comes from the BINDING row and
-// never from tenant request input — a caller cannot ask for an arbitrary name here.
+// THIS READ IS TENANT-SCOPED AGAIN, and this paragraph has now been wrong in BOTH directions, which is
+// the reason it is this long. It first claimed the read was org-scoped; when the org column went it was
+// corrected to "there is no tenant scoping on this read — dbSecret resolves under WithInstallationScope,
+// so a connection_ref names the same row for every project", and that was true for one phase. It stopped
+// being true 25 lines above: 000006 gave secret_refs a project_id, dbSecret takes `tenant` and forwards
+// it to Resolve, and dbSecret's own header records the change. A comment that contradicts the function it
+// calls, in the same file, is the shape this tree keeps paying for.
+//
+// TWO THINGS STILL HOLD and neither depends on the scoping. The ref comes from the BINDING row and never
+// from tenant request input, so a caller cannot ask for an arbitrary name here. And a row written before
+// 000006 carries an empty project_id, which 000002's contract leaves readable to every scope — so on an
+// installation with pre-existing refs, this read can still reach a shared row. The narrowing binds what
+// is provisioned over the API from now on, which is dbSecret's own stated ceiling.
 //
 // HONEST CEILING: there is no per-tenant GitHub App ONBOARDING surface (installing an App per tenant and
 // capturing its installation credential is product/SaaS work). This resolves whatever token the tenant
@@ -1247,7 +1255,8 @@ func environmentValueSecret(tenant coordinator.Tenant, ref string) ([]byte, erro
 // <REF> is secretEnvKey(ref) — the ref upper-cased with every non-alphanumeric byte replaced by `_`, and
 // NOTHING ELSE. It said <ORG>__<REF> until A.2 Task 6, and that was an operator-facing env var name this
 // binary could not produce. The org segment is gone from the key AND from the property: a ref name is
-// single-occupancy across the installation (000066), so there is no per-tenant namespace here to enforce.
+// single-occupancy across the installation — the env-var key has no project segment — so there is no
+// per-tenant namespace here to enforce. (The DB half diverged in 000006 and is scoped; see dbSecret.)
 // See identity.SecretStore.Resolve, which records the same correction for the DB half.
 func mcpSecretResolver(tenant coordinator.Tenant, ref string) ([]byte, error) {
 	if ref == "" {
@@ -1498,7 +1507,8 @@ func startScheduleTicker(ctx context.Context, store *automation.ScheduleStore, s
 // It read "<ORG>__<REF> … a tenant's SigningSecretRef can only name a secret provisioned under its OWN
 // org — a foreign ref resolves to no env var (F2)". secretEnvKey takes the ref ALONE, so that env var name
 // never existed after A.2 Task 6, and the boundary it described does not either: a ref name is
-// installation-wide (000066). An unresolved ref still fails the attempt (a retry), never an unsigned
+// installation-wide, because the env-var key has no project segment. An unresolved ref still fails the
+// attempt (a retry), never an unsigned
 // delivery — that half was always about resolution, not about tenancy, and it still holds.
 func webhookSecretResolver(tenant coordinator.Tenant, ref string) ([]byte, error) {
 	if ref == "" {
@@ -1519,7 +1529,7 @@ func webhookSecretResolver(tenant coordinator.Tenant, ref string) ([]byte, error
 // inboundSecretResolver is the receiver-side sibling of webhookSecretResolver (E11 Task 5): it bridges a
 // trigger's inbound source-secret ref to bytes via PALAI_INBOUND_SECRET_FILE_<REF> (a FILE PATH, never
 // inline; E13 seals the file at rest). The <ORG>__ segment left with A.2 Task 6 along with the boundary it
-// claimed — secretEnvKey keys on the ref alone and a ref name is installation-wide (000066). What DOES
+// claimed — secretEnvKey keys on the ref alone, so an env-bridged ref name is installation-wide. What DOES
 // still hold is the other half: the inbound namespace is DISTINCT from the outbound
 // PALAI_WEBHOOK_SECRET_FILE_ one, so the two secret sets remain non-interchangeable — that separation is
 // carried by the PREFIX, which no tenant ever supplied.
@@ -1545,7 +1555,7 @@ func inboundSecretResolver(tenant coordinator.Tenant, ref string) ([]byte, error
 // PALAI_REMOTE_TOOL_SECRET_FILE_<REF> (a FILE PATH, never inline; E13 seals the file at rest). The SAME
 // secret signs the outbound invoke and verifies the inbound callback. The <ORG>__ segment and the
 // per-tenant boundary it claimed both left with A.2 Task 6: secretEnvKey keys on the ref alone and a ref
-// name is installation-wide (000066). The remote-tool namespace is still DISTINCT from the
+// name is installation-wide, the env-var key having no project segment. The remote-tool namespace is still DISTINCT from the
 // webhook/inbound ones — three PREFIXES, so the three secret sets stay non-interchangeable. An unresolved
 // ref fails the invoke (a retry) / a generic-404 callback, never an unsigned request or accept.
 func remoteToolSecretResolver(tenant coordinator.Tenant, ref string) ([]byte, error) {
@@ -1571,7 +1581,7 @@ func remoteToolSecretResolver(tenant coordinator.Tenant, ref string) ([]byte, er
 // it bridges an a2a_remote_agents.auth_connection_ref handle to the REMOTE CONNECTION'S OWN bearer via
 // PALAI_A2A_REMOTE_SECRET_FILE_<REF> (a FILE PATH, never inline). The <ORG>__ segment and the per-tenant
 // boundary it claimed both left with A.2 Task 6: secretEnvKey keys on the ref alone and a ref name is
-// installation-wide (000066). The A2A-remote namespace is still DISTINCT from the
+// installation-wide, the env-var key having no project segment. The A2A-remote namespace is still DISTINCT from the
 // webhook/inbound/remote-tool/Slack ones — five PREFIXES, so the five secret sets stay
 // non-interchangeable. This is the ONLY bearer a remote child dial can carry: an unresolved ref FAILS
 // the dispatch (an honest child failure), it never falls back to the platform's or the parent's credential.

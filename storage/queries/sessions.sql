@@ -137,7 +137,7 @@ WHERE s.id = $1 AND s.project_id = $2;
 -- The usage_ledger lateral filters project_id EXPLICITLY, and that is not defence-in-depth here — it
 -- is the only narrowing there is. 000032 secured usage_ledger at the ORGANIZATION level with
 -- has_project=false on purpose (so a wide budget could be summed from a project-narrowed connection) and
--- 000066 rekeyed it to the INSTALLATION, which narrows even less; usage_ledger carries no FK to sessions
+-- `palai_apply_installation_policy('usage_ledger')` narrows even less; usage_ledger carries no FK to sessions
 -- either, so a sibling project holding rows under the
 -- same session id would be summed straight into this row.
 -- name: ListSessions

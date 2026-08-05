@@ -280,7 +280,7 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("POST /v1/secret-refs/{secret_name}/rotate", sh.rotate)
 	}
 
-	// The ENVIRONMENT surface (E25 T3, migration 000046): a named group of key→value pairs an agent's
+	// The ENVIRONMENT surface (E25 T3, the `environments` table): a named group of key→value pairs an agent's
 	// shell receives at exec time. Five routes, all `provision`-gated, all in the ProvisionResult
 	// envelope. Mounted via WithEnvironments beside WithSecretRefs and from the same store, because an
 	// environment value IS a secret_refs version under the derived name `env:<environment_id>:<key>` —

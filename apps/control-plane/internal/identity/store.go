@@ -4,7 +4,7 @@
 // tenant — so a second tenant is opened by exactly the same code path, over the API, with no process
 // restart and no manual SQL.
 //
-// SCOPING (the load-bearing rule, migrations 000029 and 000066). TENANT CREATION runs under the system
+// SCOPING (the load-bearing rule; `tenant_isolation` is the policy name to grep). TENANT CREATION runs under the system
 // scope, because it establishes a tenant before one exists — the deliberate, greppable escape hatch,
 // exactly like bootstrap and VerifyAPIKey. Every other operation runs under provisioningScope, which
 // answers a two-way question rather than widening: a key holding `system` is the PLATFORM and administers
@@ -177,7 +177,7 @@ func (s *Store) ProvisionFirstTenant(ctx context.Context, bootstrapKey string) e
 //
 // It replaces orgScope, and the replacement is forced rather than chosen. Until A.2 Task 6 this widened to
 // an organization-only scope — organization set, project empty — which worked because api_keys, principals and
-// projects were the three tables 000062 deliberately left keyed on organization_id. Migration 000066 rekeys
+// projects were the three tables the first sweep deliberately left keyed on organization_id. The next rekeys
 // all three to project, and under that rule an empty project GUC matches only rows whose own project_id is
 // ” — which no api_keys row ever has. Widening by leaving the project blank stops meaning "the whole
 // organization" the moment the organization is not the key.

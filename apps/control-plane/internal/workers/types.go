@@ -12,7 +12,7 @@
 //   - Fenced jobs (§31.6): a lease is fenced at the dispatch fence AND the worker's enrollment fence; a
 //     result or redeem under a superseded fence is REJECTED (a re-dispatch or a health/capability change cuts
 //     the lease). An append-only journal (migration 000039) makes the fence tamper-evident.
-//   - Job-scoped short-lived secret HANDLES: a handle names a secret_ref (000031), is scoped to exactly its
+//   - Job-scoped short-lived secret HANDLES: a handle names a secret_refs row, is scoped to exactly its
 //     job, expires with the job deadline, and its VALUE never lands in a receipt, a log, or an evidence
 //     bundle.
 //

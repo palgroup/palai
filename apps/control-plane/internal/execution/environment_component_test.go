@@ -57,8 +57,9 @@ func TestAnEnvironmentReachesARunsShellAndItsValueEntersNoDurableRow(t *testing.
 	// The environment, and its two keys, written through the REAL store — so the bytes under test are
 	// bytes the API path sealed, not a fixture INSERT.
 	envID := pinnedID("env")
-	// The name carries the fixture's own id: 000065 made environments.name unique across the INSTALLATION,
-	// and this suite shares one database, so a literal 'production' collides with every sibling fixture.
+	// The name carries the fixture's own id: environments_name_key is UNIQUE (project_id, name) and this
+	// INSERT writes no project_id, so this row lands in the empty-project bucket with every other fixture
+	// that does the same — a literal 'production' collides with all of them.
 	exec(`INSERT INTO environments (id, name) VALUES ($1,$2)`, envID, "production-"+envID)
 	scope := middleware.Scope{Project: tenant.Project}
 	for _, body := range []string{

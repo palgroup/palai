@@ -55,7 +55,7 @@ func TestHookSecurityCapabilityEscalationDenied(t *testing.T) {
 func TestHookSecurityRemoteHookGetsNoPlatformAuthority(t *testing.T) {
 	capture := &captureInvoker{resp: map[string]any{"decision": "allow"}}
 	s := New(nil)
-	// The resolver returns the HOOK's org-scoped secret. A platform bearer would be a DIFFERENT value the
+	// The resolver returns the HOOK's OWN secret. A platform bearer would be a DIFFERENT value the
 	// binding must never thread; there is no field on the Invocation for one.
 	s.SetRemoteInvoker(capture, func(_ coordinator.Tenant, ref string) ([]byte, error) {
 		return []byte("hook-own-secret-" + ref), nil

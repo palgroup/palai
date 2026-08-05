@@ -46,11 +46,24 @@ func TestSignTrimsSecretWhitespace(t *testing.T) {
 // boundary that used to be there.
 //
 // The old test pinned F2: SigningSecretRef is tenant input, so resolution was scoped by the endpoint's
-// ORG and one endpoint naming another tenant's ref failed. A.2 Task 6 removed the organization, and
-// migration 000066 keys secret_refs on the INSTALLATION (the table carries no tenant column), so the
-// resolver takes a ref and nothing else. Every endpoint in this installation that names "shared"
-// therefore signs with the SAME secret — which is what this asserts, so the day that stops being
-// acceptable the assertion is here to break.
+// ORG and one endpoint naming another tenant's ref failed. A.2 Task 6 removed the organization, leaving
+// secret_refs reachable by every scope in the installation, so the resolver took a ref and nothing else.
+//
+// THE DATABASE HAS SINCE MOVED AND THIS TEST DID NOT NOTICE, which is worth stating plainly because the
+// comment above used to end "the day that stops being acceptable the assertion is here to break" — and
+// that day came without the assertion breaking. secret_refs now carries project_id under
+// `tenant_isolation` keyed on it (secret_refs_name_version_key UNIQUE (project_id, name, version)), so a
+// ref named by two projects no longer resolves to one row for rows written under that constraint.
+//
+// The assertion below did not break because it never reached the database: `resolver` here is a literal
+// func, so what this test pins is the SEAM's shape — signing resolves by ref alone, with no tenant
+// discriminator available to it — not the store's answer. That is still the honest claim for this file,
+// and the DB-level boundary is proven where the DB is real (identity's secret component tests).
+//
+// TWO BRANCHES, because one sentence cannot cover both: a ref written since the project boundary
+// resolves within its project, while a legacy row whose project_id is the empty string stays readable to every
+// scope by 000002's contract — so on an installation with pre-existing secrets, two endpoints naming
+// "shared" can still reach the same bytes.
 func TestSignResolvesSecretByRefAlone(t *testing.T) {
 	resolver := func(_ coordinator.Tenant, ref string) ([]byte, error) {
 		if ref == "shared" {
@@ -69,7 +82,7 @@ func TestSignResolvesSecretByRefAlone(t *testing.T) {
 		t.Fatalf("endpoint B failed to resolve the installation's secret: %v", err)
 	}
 	if a.dst.Headers["Webhook-Signature"] != b.dst.Headers["Webhook-Signature"] {
-		t.Fatal("two endpoints naming the same ref signed differently — the ref is installation-wide since 000066")
+		t.Fatal("two endpoints naming the same ref signed differently — this seam resolves by ref alone, with no tenant discriminator reaching it")
 	}
 	if _, err := p.sign(dueDelivery{EndpointID: "whe_a", SecretRef: "absent", Payload: []byte("{}")}, time.Now(), 1); err == nil {
 		t.Fatal("an unprovisioned ref must fail the attempt, never sign with something else")

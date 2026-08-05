@@ -1,5 +1,5 @@
 // This file adds the ENVIRONMENT surface to the identity package (E25 T3): a named group of key→value
-// pairs an agent's shell receives. (It arrived in the old chain's 000046; the 2026-08-04 squash folded
+// pairs an agent's shell receives. (It arrived in the old chain's environments migration; the 2026-08-04 squash folded
 // that file into 000001_core, so the number is not cited — a migration this tree no longer has is one a
 // reader cannot go and check.)
 //

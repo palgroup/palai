@@ -43,7 +43,7 @@ import (
 // the list SHRANK is the evidence it did its job — an allowlist entry is a recorded debt, not a permanent
 // exemption, and this is what paying one looks like.
 // parentResolved are the tables the same sweep finds secured with no project_id of their own, whose
-// policy resolves their PARENT's project through an EXISTS instead (000029 wrote them that way, 000066
+// policy resolves their PARENT's project through an EXISTS instead (`palai_apply_child_policy` writes them that way,
 // re-keyed them onto project). They are NOT installation-wide and must not be listed as such — every one
 // of them is confined to exactly one project, just transitively.
 //
@@ -72,7 +72,7 @@ var installationWideOnly = map[string]bool{
 	// projects — NOT installation-wide, and it is on this list because the list's QUESTION is narrower than
 	// its name: the sweep asks "carries organization_id, carries no project_id, so no catalogue-driven rule
 	// could have reached it — was that decided?", and for projects the answer is yes and it is the
-	// TIGHTEST of the four. 000066 keys its policy on its own `id`, which IS the project column under the
+	// TIGHTEST of the four. Its policy keys on its own `id`, which IS the project column under the
 	// name a project's own row gives it, so a project-scoped connection sees exactly its own row where it
 	// used to see every project of its organization. Listed rather than special-cased, because an entry
 	// with its reason is what the sweep exists to force; the moment organization_id leaves this table the

@@ -1,7 +1,7 @@
 //go:build component
 
 // MCI-007 (E13 Task 9): the repository_bindings.connection_ref resolver seam, proven against a REAL
-// Postgres (the durable binding + the envelope-encrypted secret-ref store, migration 000031), REAL git,
+// Postgres (the durable binding + the envelope-encrypted secret-ref store, the `secret_refs` table), REAL git,
 // and a REAL authenticated HTTP git remote. The remote answers 401 to anything but the exact token the
 // tenant provisioned, so a successful clone is proof that the BINDING-SCOPED credential — not the
 // deployment-global broker — authenticated it: the fallback broker handed to PrepareRepository here mints
@@ -208,7 +208,8 @@ func TestBindingConnectionRefClonesUnderTenantCredential(t *testing.T) {
 	}
 
 	// Case 3: a SECOND tenant with a secret of the SAME name resolves its own value (RLS, migration
-	// 000031), which the first tenant's remote refuses — a binding can never redeem another org's secret.
+	// the secret_refs store), which the first tenant's remote refuses — a binding can never redeem another
+	// project's secret.
 	other, _ := h.seedTenant(t)
 	h.putSecret(t, other.Project, "github-conn", "palai-REPMARK-other-tenant-token")
 	otherBinding := h.bind(t, other, remote.url, "github-conn")

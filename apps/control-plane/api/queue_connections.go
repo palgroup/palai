@@ -40,7 +40,7 @@ type queueConnectionHandler struct {
 // queueConfigFields are the ONLY keys a connection's config may carry, per direction. The decode is STRICT
 // (an unknown key is a 400) and that is a security property rather than tidiness: config is tenant-supplied
 // JSONB that the bridge reads a run target out of, so an open shape is an invitation to park a bearer token
-// or a second "tenant" field in it. Secret material lives in secret_refs (000031); this column never holds
+// or a second "tenant" field in it. Secret material lives in secret_refs; this column never holds
 // a credential, and a strict shape is how that stays true without anyone having to remember it.
 //
 // Note what is NOT here: no organization_id, no project_id, no session id. A connection cannot describe a

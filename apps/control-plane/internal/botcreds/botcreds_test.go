@@ -205,7 +205,7 @@ func TestARowWithNoHandlesAnswersEmpty(t *testing.T) {
 
 // A.2 Task 6 DELETED TestTheSecretStoreIsScopedByTheCallersOwnOrganization, and this note replaces it
 // rather than the test being quietly dropped. It asserted that the resolver bridged the caller's project
-// to an ORGANIZATION and scoped the secret store by it. Migration 000066 keys secret_refs on the
+// to an ORGANIZATION and scoped the secret store by it. secret_refs was then keyed on the
 // INSTALLATION (the table carries no tenant column), so SecretStore.Resolve takes a name and nothing
 // else: there is no scoping argument left to get wrong, and a test that pinned one would be asserting a
 // boundary the deployment does not have. tests/security/tenancy's

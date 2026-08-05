@@ -8,7 +8,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 )
 
-// EnvironmentAPI is the store seam for the environment surface (E25 T3, migration 000046): a named group
+// EnvironmentAPI is the store seam for the environment surface (E25 T3, the `environments` table): a named group
 // of key→value pairs an agent's shell receives. The Postgres-backed internal/identity SecretStore
 // implements it — the SAME object that implements SecretRefAPI, because an environment value IS a
 // secret_refs version under the derived name `env:<environment_id>:<key>`. Production wires it via
@@ -148,11 +148,18 @@ func (h *environmentHandler) write(w http.ResponseWriter, r *http.Request, out P
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such environment or key in this scope")
 		return
 	case out.Conflict:
-		// "in this installation", not "in this organization": 000065 rebuilt the uniqueness as (name) —
-		// environments carries no project_id and organizations are gone (A.2 Task 6) — so the name a
-		// caller is being refused is held somewhere in the installation, not necessarily in a tenant it
-		// can see. The detail says what is true rather than what used to be.
-		middleware.WriteProblem(w, r, http.StatusConflict, "conflict", "an environment with this name already exists in this installation")
+		// THE DETAIL NAMES THE SCOPE THE CONSTRAINT ACTUALLY HOLDS, and it has been wrong twice for the
+		// same reason: the sentence outlived the index. It once said "in this organization"; when the org
+		// column went it was corrected to "in this installation", which was true while environments
+		// carried no project column. It carries one now, under environments_name_key UNIQUE (project_id,
+		// name), so a name is claimable per project and the honest word is "project".
+		//
+		// ONE BRANCH SURVIVES THE OLD WORDING and it is why this comment is longer than the line: rows
+		// that predate the column sit at the empty project_id, so two callers who write without one
+		// still collide with each other across the installation. A caller reaching this route always has
+		// a project, so what IT is being refused is its own project's name — which is what the message
+		// says. Grep environments_name_key, not a migration number, to check this sentence.
+		middleware.WriteProblem(w, r, http.StatusConflict, "conflict", "an environment with this name already exists in this project")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

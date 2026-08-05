@@ -119,8 +119,10 @@ func TestSetLimitIsAnUpsertScopedToTheCaller(t *testing.T) {
 }
 
 // TestUsageSummaryTotalsTheCallersScope proves the summary reports the caller's own consumption: a
-// project-scoped key sees its project's meters (never its sibling's), an org-scoped key sees the whole
-// organization, and both see the limits their totals are measured against.
+// project-scoped key sees its project's meters, never its sibling's, and sees the limits its totals are
+// measured against. The second half this sentence used to promise — "an org-scoped key sees the whole
+// organization" — describes a caller no credential can construct any more, and the comment inside the
+// test says so at the point where that half used to be asserted.
 func TestUsageSummaryTotalsTheCallersScope(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
@@ -150,9 +152,9 @@ func TestUsageSummaryTotalsTheCallersScope(t *testing.T) {
 	// project-scoped keys"). So the scenario this half asserted — an org-scoped key with no project
 	// reading both projects' usage — was already unreachable through any real credential before this task
 	// touched the file; A.2 Task 3 only removed the Scope field that let the test keep CONSTRUCTING it by
-	// hand. What changed since: A.2 Task 6's 000066 keys usage_ledger's POLICY on the installation (the
-	// project-keyed expression's `project_id = ''` fallback could never fire for it — 000062's header — and
-	// narrowing it would make every installation-wide budget under-count). So the DATABASE no longer stands
+	// hand. What changed since: usage_ledger's POLICY is keyed on the installation —
+	// `palai_apply_installation_policy('usage_ledger')`, the authority to grep for, not a chain number —
+	// and narrowing it would make every installation-wide budget under-count. So the DATABASE no longer stands
 	// in the way of an installation-wide usage view; what is still missing is a SEAM that asks for one. The
 	// narrowing this test pins is the query's, not the policy's, and that is now the only narrowing there
 	// is: delete the predicate and project-A's summary silently swallows project-B's 500.
@@ -375,9 +377,12 @@ type seriesEnvelope struct {
 //   - TOTAL ORDER: three meters share every bucket, so `ORDER BY bucket_start` alone is a PARTIAL order
 //     and the points within a bucket could arrive in any order. The assertion below is the exact
 //     sequence, so an untied ordering is a failure rather than a coin flip.
-//   - SCOPE: a sibling project's row inside the same window must not reach a project-scoped caller,
-//     and MUST reach an org-scoped one. usage_ledger is secured at the ORGANIZATION level (000032), so
-//     the project narrowing is the query's own job — RLS will not catch its absence.
+//   - SCOPE: a sibling project's row inside the same window must not reach a project-scoped caller.
+//     usage_ledger is secured at the INSTALLATION level — `palai_apply_installation_policy('usage_ledger')`
+//     in 000002_row_level_security.up.sql, deliberately WIDER than the project so an installation-wide
+//     budget cannot under-count — so the project narrowing is the QUERY's own job and RLS will not catch
+//     its absence. The "and MUST reach an org-scoped one" half of this line is gone with organizations;
+//     no credential can construct that caller (see TestUsageSummaryTotalsTheCallersScope).
 func TestUsageSeriesBucketsZeroFillsAndOrdersTotally(t *testing.T) {
 	cs := openHarness(t)
 	store := metering.New(cs.Pool())

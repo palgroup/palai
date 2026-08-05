@@ -21,7 +21,7 @@ INSERT INTO api_keys (id, project_id, principal_id, key_hash, scopes, expires_at
 VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING;
 
 -- ListProjects returns every project the caller's scope admits (the projects policy is keyed on the
--- project's own id since 000066).
+-- project's own id: the projects policy compares `id` to palai.project_id).
 -- name: ListProjects
 SELECT id, display_name, config_policy, created_at
 FROM projects
@@ -33,7 +33,7 @@ FROM projects
 WHERE id = $1;
 
 -- UpdateProjectConfigPolicy writes the §14 project-layer policy the resolver reads. RLS scopes the row to
--- the caller's OWN project — since 000066 the projects policy compares `id` to palai.project_id — so a
+-- the caller's OWN project — the projects policy compares `id` to palai.project_id — so a
 -- foreign/unknown id updates zero rows (rendered NotFound, no oracle). That is narrower than the
 -- organization-wide reach this said before A.2: a caller can no longer write a sibling project's policy,
 -- because there is no sibling relation left to be inside of.
@@ -43,7 +43,7 @@ WHERE id = $1
 RETURNING id;
 
 -- ListAPIKeys returns key METADATA only — never key_hash. Under RLS this lists every key whose
--- project_id is the caller's own (the api_keys policy since 000066); a system-scoped caller sees all of
+-- project_id is the caller's own (the api_keys `tenant_isolation` policy); a system-scoped caller sees all of
 -- them, which is the one path that still reaches across projects.
 -- name: ListAPIKeys
 SELECT id, project_id, principal_id, scopes, expires_at, created_at, revoked_at

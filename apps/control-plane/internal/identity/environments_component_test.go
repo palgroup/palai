@@ -1,7 +1,7 @@
 //go:build component
 
-// The real-PostgreSQL component proofs for the ENVIRONMENT surface (E25 T3, migration 000046). They run
-// only under `make test-component TEST=postgres`.
+// The real-PostgreSQL component proofs for the ENVIRONMENT surface (E25 T3). They run only under
+// `make test-component TEST=postgres`.
 //
 // What they prove, against a real database with real RLS and the real append-only grants:
 //
@@ -9,12 +9,16 @@
 //  2. A value written through the API is resolvable by the DERIVED secret name and by nothing else — which
 //     is what makes the orchestrator's read (RunEnvironmentKeys) able to find it.
 //  3. Create-and-rotate are one operation, and a rotation moves the version.
-//  4. Removing a key removes the BINDING and the sealed versions SURVIVE — the property migration 000046's
-//     asymmetric grants exist to produce, asserted rather than described.
-//  5. Every one of those five paths is INSTALLATION-WIDE after A.2 Task 6. It used to read "a FOREIGN
-//     tenant cannot read or write another organization's environment, on all five paths"; environments
-//     carries no project_id and organizations are gone, so 000066 keys its policy on the installation.
-//     TestEnvironmentsAreInstallationWide carries the whole argument.
+//  4. Removing a key removes the BINDING and the sealed versions SURVIVE — the property the environment
+//     tables' asymmetric grants exist to produce, asserted rather than described.
+//  5. Every one of those five paths REFUSES a foreign project, and this line has now been wrong in both
+//     directions. It first said "another organization's environment"; when the org column went it was
+//     rewritten to say the paths were INSTALLATION-WIDE and pointed at a test called
+//     TestEnvironmentsAreInstallationWide. Both are dead: environments and environment_values each carry
+//     project_id again, `tenant_isolation` is keyed on it, and no function by that name exists anywhere
+//     in the tree. The proof is TestAForeignProjectCannotReachAnotherProjectsEnvironment below, whose own
+//     header records all three phases — read that, not this summary, and note it explicitly predicts a
+//     stale sentence like the one this bullet used to be.
 package identity_test
 
 import (
@@ -74,12 +78,14 @@ func TestEnvironmentWriteResolveRotateAndUnbind(t *testing.T) {
 	project, _ := provisionOrg(t, idstore, "env-alpha")
 	scope := middleware.Scope{Project: project}
 
-	// Per-run: 000065 made the environment name unique across the INSTALLATION, so a literal is a 409 the
-	// second time this suite runs against a retained database.
+	// Per-run, and the reason moved even though the workaround did not: environments_name_key is UNIQUE
+	// (project_id, name). These fixtures write no project_id, so they all land in the empty-project bucket
+	// and collide with each other there — a literal is still a 409 the second time this suite runs against
+	// a retained database.
 	envID := createEnvironment(t, store, scope, "production-"+newID("env"))
 
 	// A keyless environment LISTS. This is the whole reason `environments` is a table rather than a naming
-	// convention over secret_refs (migration 000046's header), so it is asserted rather than assumed.
+	// convention over secret_refs, so it is asserted rather than assumed.
 	listed, err := store.ListEnvironments(ctx, scope)
 	if err != nil {
 		t.Fatalf("ListEnvironments error = %v", err)
@@ -150,7 +156,7 @@ func TestEnvironmentWriteResolveRotateAndUnbind(t *testing.T) {
 	}
 
 	// REMOVING A KEY REMOVES THE BINDING AND NOT THE BYTES, and both halves are asserted because the
-	// asymmetry is the point of migration 000046's grants. A "delete" that silently kept the credential
+	// asymmetry is the point of the environment tables' append-only grants. A "delete" that silently kept the credential
 	// would be worse than no delete; a doc comment claiming it kept them is not evidence.
 	removed, err := store.DeleteEnvironmentValue(ctx, scope, envID, "JIRA_TOKEN")
 	if err != nil {

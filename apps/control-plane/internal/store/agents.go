@@ -164,7 +164,7 @@ func revisionBody(rev automation.Revision, object, parent string) []byte {
 		"model": rev.Model, "tools": rev.Tools, "instructions": rev.Instructions, "status": "draft",
 	}
 	// The environment id, on an AGENT revision only (E25 T3). A run template has no environment column:
-	// migration 000046 bonds an environment to an AGENT, because a template is profile-free.
+	// the `environment` column bonds an environment to an AGENT, because a template is profile-free.
 	if object != "run_template_revision" {
 		m["environment"] = rev.Environment
 	}

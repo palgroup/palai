@@ -74,7 +74,7 @@ func newID(prefix string) string {
 // seedTenant creates the project and returns the scope. A durable job's tenant column
 // references projects (id), so the queue cannot hold a job for a tenant that does not
 // exist. A.2 took the organization out of that key: `projects.organization_id` is now
-// NULLABLE (000063 and 000065 both DROP NOT NULL — confirmed against the live schema at
+// NULLABLE (confirmed against the live schema at
 // revision 66, where information_schema reports is_nullable=YES with no default), so the
 // row is written with the project alone and no organization row has to exist first.
 //

@@ -326,7 +326,7 @@ func (f *fakeInvoker) Invoke(_ context.Context, in remotehttp.Invocation) (map[s
 // TestRemoteHTTPToolResolvesThroughRegistryLookup proves the T4 binder wiring: a published remote_http
 // tool pinned into a run's set resolves through the broker's per-tenant lookup to an EXEC-bound tool that
 // reaches the injected signed executor — carrying the executor_config URL, the tool_call_id + live fence
-// (broker per-call), and the secret resolved fresh from the org-scoped resolver. Without an invoker wired
+// (broker per-call), and the secret resolved fresh from the (tenant, ref) resolver. Without an invoker wired
 // the same row stays binder-less (the T2 posture), so a remote tool is never advertised half-built.
 func TestRemoteHTTPToolResolvesThroughRegistryLookup(t *testing.T) {
 	s, project := openStore(t)
@@ -360,7 +360,7 @@ func TestRemoteHTTPToolResolvesThroughRegistryLookup(t *testing.T) {
 		t.Fatalf("binder-less lookup = found:%v err:%v, want found=false before the invoker is wired", found, err)
 	}
 
-	// Wire the signed executor (a fake) + an org-scoped resolver, then resolve + run through the broker.
+	// Wire the signed executor (a fake) + a (tenant, ref) resolver, then resolve + run through the broker.
 	inv := &fakeInvoker{result: map[string]any{"echoed": true}}
 	var resolvedRef string
 	s.SetRemoteInvoker(inv, func(_ coordinator.Tenant, ref string) ([]byte, error) {
@@ -381,7 +381,7 @@ func TestRemoteHTTPToolResolvesThroughRegistryLookup(t *testing.T) {
 		t.Fatalf("remote result = %v, want the invoker's result", out.Result)
 	}
 	// The binder built the invocation from the executor_config + per-call identity, and resolved the secret
-	// fresh from the org-scoped resolver (never held in the closure).
+	// fresh from the (tenant, ref) resolver (never held in the closure).
 	if inv.last.URL != "https://tool.example.com/invoke" {
 		t.Fatalf("invocation URL = %q, want the executor_config url", inv.last.URL)
 	}

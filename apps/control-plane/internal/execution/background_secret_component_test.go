@@ -85,10 +85,10 @@ func newSecretFixture(t *testing.T) *secretFixture {
 
 	f.envID = redeliveryID("env")
 	if _, err := f.spine.Pool().Exec(sys,
-		// THE NAME CARRIES THE FIXTURE'S OWN ID. `environments.name` became unique across the whole
-		// INSTALLATION in A.2 T6's 000065 (it was `(organization_id, name)`, and organizations are gone), and
-		// this suite shares one database across dozens of harnesses — so a literal 'production' collides with
-		// every other fixture that wanted the same obvious name.
+		// THE NAME CARRIES THE FIXTURE'S OWN ID. environments_name_key is UNIQUE (project_id, name), and this
+		// INSERT names no project_id — so the row lands in the empty-project bucket shared by every other
+		// fixture that also writes none, across a database dozens of harnesses share. A literal 'production'
+		// collides with all of them.
 		`INSERT INTO environments (id, name) VALUES ($1,$2)`,
 		f.envID, "production-"+f.envID); err != nil {
 		t.Fatalf("seed the environment: %v", err)

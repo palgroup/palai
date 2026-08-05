@@ -216,7 +216,7 @@ func TestNoQueryBindsAnOrganizationIntoAProjectsSlot(t *testing.T) {
 // guard next door all three silent.
 //
 // Task 6 removed the organization parameter. Both functions now take `(ctx, project)`: ONE string, no
-// adjacent pair, and therefore no order to get wrong. Migration 000066 rekeyed the last policy that read
+// adjacent pair, and therefore no order to get wrong. The last policy that read
 // palai.org_id and applyScope stopped writing it, so there is no longer a GUC for a misplaced argument to
 // land in — session_guc_test.go's TestOrgIDGUCIsGone asserts that directly.
 //

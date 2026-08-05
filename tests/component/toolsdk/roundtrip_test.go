@@ -76,7 +76,7 @@ func TestToolSDKServerVariantSignedRoundtrip(t *testing.T) {
 	project := newID("prj")
 	mustExec(t, pool, `INSERT INTO projects (id) VALUES ($1)`, project)
 
-	// The shared HMAC secret (in-memory only; never logged). The org-scoped resolver
+	// The shared HMAC secret (in-memory only; never logged). The (tenant, ref) resolver
 	// hands it to the callback endpoint verifier; the SAME bytes reach the TS server
 	// via env, so a genuine HMAC is enforced on both directions.
 	secret := []byte("tool-sdk-component-hmac-secret")

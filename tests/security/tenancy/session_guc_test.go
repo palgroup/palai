@@ -101,13 +101,29 @@ func TestSystemScopeStillOpensWithNoProject(t *testing.T) {
 
 // TestInstallationScopeStillOpensWithNoProject proves the one deliberate, narrow exception to the
 // project-required rule survives. A.2 Task 6 replaced storage.WithOrgScope with
-// storage.WithInstallationScope, which takes NO id at all — its two production callers read tables that
-// carry no project column (secret_refs via identity.SecretStore.Resolve, environments via automation's
-// verifyEnvironment), and migration 000066 keyed both on the installation.
+// storage.WithInstallationScope, which takes NO id at all.
 //
-// What it asserts is therefore weaker than the org-scoped test it replaces, and deliberately so: the
-// connection opens, and it publishes an EMPTY palai.project_id rather than being refused. There is no
-// second GUC left to check — palai.org_id went with Task 6, applyScope having been its only writer.
+// THE JUSTIFICATION THIS COMMENT USED TO GIVE HAS BEEN FALSIFIED, and it is restated rather than dropped
+// because the exception is still here and still needs one. It said the two production callers read
+// tables carrying no project column — secret_refs via identity.SecretStore.Resolve, environments via
+// automation's verifyEnvironment. Both halves stopped being true:
+//
+//   - the TABLES gained the column. secret_refs and environments each carry project_id now, under
+//     `tenant_isolation` keyed on it, with secret_refs_name_version_key UNIQUE (project_id, name,
+//     version) and environments_name_key UNIQUE (project_id, name).
+//   - the CALLERS went with it. The only production caller left is the host quarantine
+//     (packages/coordinator/workspace.go: QuarantineHost, IsHostQuarantined, ListQuarantinedHosts), and
+//     host_quarantine really does carry no project column, because a machine belongs to no tenant.
+//     storage/tenant.go's own scope struct says exactly that, and is the authority to check against.
+//
+// The one thing that did NOT change is what this test asserts, which is why it stays: the connection
+// opens and publishes an EMPTY palai.project_id rather than being refused. There is no second GUC left
+// to check — palai.org_id went with Task 6, applyScope having been its only writer.
+//
+// A CAVEAT THE NEW SENTENCE MUST CARRY, or it is as wrong as the old one: "keyed on project_id" is the
+// rule for rows written from now on. Rows that predate it keep an EMPTY project_id, which 000002's own
+// contract makes readable to every scope — so an installation with legacy secrets still resolves those
+// installation-wide, and nothing in this test or that column name says otherwise.
 func TestInstallationScopeStillOpensWithNoProject(t *testing.T) {
 	pool := openApplicationPool(t)
 	ctx := storage.WithInstallationScope(context.Background())
@@ -128,7 +144,7 @@ func TestInstallationScopeStillOpensWithNoProject(t *testing.T) {
 // carrying a stale value from whatever the pooled connection published last.
 //
 // current_setting(..., true) answers NULL for a GUC nothing has set, which is why this scans into a
-// *string and asserts nil rather than comparing to "": a set_config('palai.org_id', ”, false) would
+// *string and asserts nil rather than comparing to the empty string: a set_config of an empty palai.org_id would
 // answer the empty string and pass a comparison, and that is exactly the residue being forbidden.
 func TestOrgIDGUCIsGone(t *testing.T) {
 	pool := openApplicationPool(t)

@@ -87,7 +87,7 @@ type RevisionInput struct {
 	Skills         []string `json:"skills"`
 	Hooks          []string `json:"hooks"`
 	// Environment is the id of the environment whose key→value pairs this agent's shell commands receive
-	// (E25 T3, migration 000046). Empty means no environment, which is every existing revision. Unlike the
+	// (E25 T3, the `environment` column on agent_revisions). Empty means no environment, which is every existing revision. Unlike the
 	// four fields above this one IS reference-checked at create and at publish — see ErrEnvironmentNotFound
 	// for why a credential is not a capability.
 	Environment string `json:"environment"`

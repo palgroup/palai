@@ -95,7 +95,7 @@ func TestARevisionNamingAnUnknownEnvironmentIsRefusedAtCreateAndAtPublish(t *tes
 	}
 
 	// A revision naming NO environment publishes exactly as it always did. This is the bit-unchanged leg,
-	// and it is every revision in every deployment before migration 000046.
+	// and it is every revision written before agent_revisions gained the `environment` column.
 	bare, err := s.CreateRevision(ctx, project, profileID, []byte(`{"model":"m"}`))
 	if err != nil {
 		t.Fatalf("CreateRevision with no environment: %v", err)

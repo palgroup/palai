@@ -23,9 +23,9 @@ func (c *captureInvoker) Invoke(_ context.Context, in remotehttp.Invocation) (ma
 }
 
 // TestRemoteHookUsesSignedTransport proves a remote_http hook reuses the T4 signed transport (spec §28.17):
-// the binding builds a tool-http.v1 Invocation carrying the hook's url + the FRESH org-scoped secret (never a
+// the binding builds a tool-http.v1 Invocation carrying the hook's url + the hook's OWN secret, resolved fresh (never a
 // held closure) + the hook identity, and a policy deny response is interpreted as a fail-closed deny. The
-// secret is resolved per-invoke through the org-scoped resolver — the same posture the remote-tool executor
+// secret is resolved per-invoke through the (tenant, ref) resolver — the same posture the remote-tool executor
 // enforces (TestUpstreamTokenNeverForwarded's sibling).
 func TestRemoteHookUsesSignedTransport(t *testing.T) {
 	invoker := &captureInvoker{resp: map[string]any{"decision": "deny", "reason": "the push tool is not permitted"}}

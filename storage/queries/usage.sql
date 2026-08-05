@@ -2,7 +2,7 @@
 -- it (spec §43, E13 Task 6, migration 000032). Metering ONLY — no price, no invoice, no adjustment
 -- (E13-H/SaaS). Every statement here filters project_id explicitly, and that has outlived its original
 -- reason: 000032 secured these three tables at the ORGANIZATION level on purpose (so an org-wide limit
--- could be summed from a project-narrowed admission connection), and 000066 rekeyed them to the
+-- could be summed from a project-narrowed admission connection), and `palai_apply_installation_policy` keys them on the
 -- INSTALLATION, which is wider still. Either way RLS does not narrow to a project, so the narrowing is
 -- this file's job — a statement here that forgot its project_id predicate would read every project's
 -- rows, not be denied.
@@ -60,7 +60,7 @@ ON CONFLICT (project_id, dedupe_key) DO NOTHING;
 --
 -- `ORDER BY meter_prefix` alone was NOT a total ordering, and the tie was not an accident: the schema's
 -- own scope model guarantees it. budgets is UNIQUE on (project_id, meter_prefix)
--- (000032, rebuilt by 000065), so an installation-wide row (project_id = '') and a project row on the SAME meter_prefix are
+-- (the UNIQUE index over (project_id, meter_prefix)), so an installation-wide row (project_id = '') and a project row on the SAME meter_prefix are
 -- both legal and both live; the WHERE above takes BOTH; the HAVING can exhaust BOTH; and meter_prefix is
 -- EQUAL for the two. `LIMIT 1` then picked one, and nothing here said which. Measured 2026-08-01 on the
 -- pinned postgres 16.14: the plan is Limit -> Sort(meter_prefix) -> GroupAggregate(Group Key: b.id), so

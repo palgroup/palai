@@ -100,7 +100,7 @@ var allTables = []string{
 	// APPEND-ONLY issuance journal (self-re-asserting REVOKE). These two ARE new; runner_pools and
 	// runners above are not.
 	"runner_pool_keys", "runner_enrollments",
-	// The E25 T3 environment tables (000046): the grouping identity and the key MEMBERSHIP rows. Neither
+	// The E25 T3 environment tables: the grouping identity and the key MEMBERSHIP rows. Neither
 	// holds a credential — the values are secret_refs versions under the derived name
 	// `env:<environment_id>:<key>` — which is why there is no third table here.
 	"environments", "environment_values",
@@ -1515,7 +1515,7 @@ func TestMigration30APIKeyScope(t *testing.T) {
 // SECOND boot (E13 Task 3). secret_refs is the first table created after 000029's blanket
 // `GRANT ... ON ALL TABLES`, so on boot #2 both 000001 and 000029's blanket grants re-run and — now that the
 // table exists — hand palai_app UPDATE+DELETE it must never hold (silent ciphertext replacement / version
-// deletion). 000031's REVOKE (it runs LAST in the chain, self-re-asserting every boot) is what keeps them
+// deletion). The secret_refs REVOKE (it runs LAST in the chain, self-re-asserting every boot) is what keeps them
 // withheld — the load-bearing half the 000015 precedent documents. This test migrates TWICE, then proves as
 // the runtime role that SELECT+INSERT are held but UPDATE+DELETE are denied (42501). It FAILS without the
 // REVOKE line and PASSES with it; the RLS-catalogue gate checks policies, not grants, so this class needs
@@ -2124,13 +2124,13 @@ func TestMigration45RunnerFleet(t *testing.T) {
 	}
 }
 
-// TestMigration46EnvironmentsGrantsAreAsymmetricAcrossReboots pins the ONE thing migration 000046's design
+// TestEnvironmentGrantsAreAsymmetricAcrossReboots pins the ONE thing the environment tables' design
 // rests on, and it is a set of GRANTS rather than a schema: `environment_values` may be DELETEd and
 // `environments` may not, both after a SECOND boot.
 //
-// WHY THE ASYMMETRY IS THE WHOLE FEATURE. secret_refs can never lose a row (000031's REVOKE re-asserts on
+// WHY THE ASYMMETRY IS THE WHOLE FEATURE. secret_refs can never lose a row (its REVOKE re-asserts on
 // every boot, on purpose — version history is retained for audit). So "remove the JIRA_TOKEN key from the
-// production environment" cannot mean "delete the bytes". 000046 splits MEMBERSHIP from BYTES precisely so
+// production environment" cannot mean "delete the bytes". The schema splits MEMBERSHIP from BYTES precisely so
 // that the removal has something real to remove: the binding goes, the sealed versions stay, and nothing
 // names them afterwards because the derived name `env:<environment_id>:<key>` is only ever built from a
 // membership row. A delete button that deletes something other than what it says is worse than no button,
@@ -2140,7 +2140,7 @@ func TestMigration45RunnerFleet(t *testing.T) {
 // and every harness in this repository migrates more than once — so a grant eroded by the blanket
 // `GRANT ... ON ALL TABLES` in 000001/000029 re-running on boot #2 is invisible to every other tier. This
 // migrates TWICE and then asks the runtime role directly.
-func TestMigration46EnvironmentsGrantsAreAsymmetricAcrossReboots(t *testing.T) {
+func TestEnvironmentGrantsAreAsymmetricAcrossReboots(t *testing.T) {
 	cs := openHarness(t)
 	ctx := storage.WithSystemScope(context.Background())
 	pool := cs.Pool()
@@ -2158,7 +2158,7 @@ func TestMigration46EnvironmentsGrantsAreAsymmetricAcrossReboots(t *testing.T) {
 			t.Fatalf("has_table_privilege(%s, %s) error = %v", table, priv, err)
 		}
 		if got != want {
-			t.Fatalf("palai_app %s on %s = %v, want %v (000046's grants eroded across reboots)", priv, table, got, want)
+			t.Fatalf("palai_app %s on %s = %v, want %v (the environment tables' grants eroded across reboots)", priv, table, got, want)
 		}
 	}
 	// environments: append-only. An environment id is embedded in every derived secret name it groups, so
@@ -2202,7 +2202,7 @@ func TestMigration46EnvironmentsGrantsAreAsymmetricAcrossReboots(t *testing.T) {
 		t.Fatalf("environment_values DELETE was refused (%v) — removing a key BINDING is the one deletion this pair exists to allow", err)
 	}
 
-	// The `environment` column 000046 adds to agent_revisions, with its honest default. Asserted here
+	// The `environment` column on agent_revisions, with its honest default. Asserted here
 	// because the column lands in the same change as the code that reads it (000019's own rule against
 	// storing dead config), so a rollback that dropped one and not the other would be silent.
 	var dflt, nullable string

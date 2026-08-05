@@ -2,7 +2,7 @@
 -- management surface (create/revise/publish); reads are admission validation and execution pin
 -- resolution. A revise always INSERTs a new draft — no statement here ever rewrites a revision's
 -- config columns, so a published revision is immutable by discipline (the only UPDATE is the publish
--- flip). Every statement is tenant-scoped by project_id (000062 rekeyed the policy, 000065 rebuilt the
+-- flip). Every statement is tenant-scoped by project_id (`tenant_isolation` keys on it, and the
 -- uniqueness: agent_profiles is UNIQUE (project_id, name), run_template_revisions
 -- (project_id, template_name, revision_number)).
 
