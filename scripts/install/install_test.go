@@ -137,7 +137,7 @@ func TestTheInstallerPlacesTheBinaryAndReportsWhatItInstalled(t *testing.T) {
 func TestAnArchiveThatDoesNotMatchTheManifestInstallsNOTHING(t *testing.T) {
 	archive := fakeArchive(t, testVersion)
 	tampered := append(append([]byte{}, archive...), 'x') // same name, different bytes
-	srv := server(t, tampered, honestManifest(archive))    // manifest still describes the ORIGINAL
+	srv := server(t, tampered, honestManifest(archive))   // manifest still describes the ORIGINAL
 	prefix := t.TempDir()
 
 	out, err := run(t, installerPath(t), srv.URL, prefix, "")
