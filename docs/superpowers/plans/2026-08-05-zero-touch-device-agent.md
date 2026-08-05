@@ -279,13 +279,30 @@ device path is a **cut-over**, and these are the things that stop existing rathe
 
 | Deleted | Why it cannot survive as a fallback |
 |---|---|
-| The CLI compiling and launching the agent (`cmd/cli/internal/stack/native_runner.go` runs `go build -o … ./cmd/runner`) | It makes a source checkout and a Go toolchain part of the device contract. A packaged device has neither, so a fallback here means the packaged path is never the one exercised |
+| The CLI compiling and launching the agent (`cmd/cli/internal/stack/native_runner.go` runs `go build -o … ./cmd/runner`) | It makes a source checkout and a Go toolchain part of the device contract. A packaged device has neither, so a fallback here means the packaged path is never the one exercised — **measured 2026-08-06: it hid a real defect.** The Milestone A0 session was served by this conjured runner while the enrolled device sat parked beside it, so nobody noticed the device had no shell executor at all |
 | `palai up` / `palai local up` as anything a device runs | It starts a control plane, a database and an object store beside the agent. A machine that runs its own control plane is not a member of a fleet |
 | Every admin/server command in the device artifact — pool, provider, secret, environment, backup, restore, doctor-for-the-stack | DoD 4 and 5 already require their absence from the package; this row makes the absence a deletion rather than a packaging filter, because a filtered binary still carries the code |
 | 23 of the 26 device-side `PALAI_` variables | Each one is an operator input that the key, the binary or the admin plane already knows. Keeping a reader "for one release" keeps the machine configurable from the machine, which is the thing being removed |
 | Per-device identity inputs: `PALAI_RUNNER_ID`, `PALAI_RUNNER_DNS`, `PALAI_RUNNER_PRIVATE_KEY` | Identity becomes the device key (§3.4). A client-supplied id is exactly the trust this design removes |
 | Pre-enrolment placement inputs: `PALAI_RUNNER_POOL`, `PALAI_RUNNER_POSTURE`, `PALAI_RUNNER_CAPACITY` | The key chooses the pool, the binary measures the shape, the admin plane sets concurrency (§3.3, §3.6) |
 | Four derived URLs: `PALAI_ENROLLMENT_URL`, `PALAI_SESSION_URL`, `PALAI_RENEW_URL`, `PALAI_CONTROLLER_DNS` | Already derived from one address today; keeping the overrides keeps four ways to point a device at four different planes |
+
+**BLAST RADIUS OF THE FIRST ROW, MEASURED BEFORE CUTTING (2026-08-06), because it is not a one-file
+deletion and a half-done cascade is worse than an un-started one:**
+
+```bash
+grep -rln 'palai-runner\|native runner' --include='*_test.go' --include='*.sh' cmd/cli tests scripts
+```
+→ `cmd/cli/internal/stack/native_runner_test.go`, `tests/uat/tool-execution/bundle_test.go`,
+`tests/uat/stable-release/bundle_test.go`, `tests/uat/kubernetes/kind-smoke.sh`,
+`scripts/test/runner-engine.sh`, `scripts/package/runner/splitvm-proof.sh`.
+
+Two of those are **UAT bundles**, which carry checksums and regenerate in cascade order — this tree has
+recorded twice that a new or renamed artifact reddens the shipped RC through them. So the cut is one
+sweep: delete the build path, move `palai up --native` onto an INSTALLED agent (refusing with the install
+command when there is none, the way it already refuses for `palai-agentd`), update the two scripts and
+`kind-smoke.sh`, then regenerate the bundles in order and re-run the release gate. It is not started
+until it can be finished in one pass.
 
 **The compatibility window applies to Compose deployments that exist today, not to the device path.** T3
 may keep a reader for an existing self-host stack for one release; it does not keep one for the packaged
