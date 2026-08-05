@@ -17,8 +17,14 @@
   cgo: every release build is CGO_ENABLED=0 and CI is ubuntu-24.04, so a cgo daemon is a daemon CI
   never compiles. What is kept: launchd starts this at boot, restarts it when it dies, and "is it up?"
   stops being a question. What is lost: the socket does not exist until the daemon has bound it, so a
-  caller racing a cold boot gets ECONNREFUSED rather than a queued connection — which is why Task 2
-  probes the socket before enrolling a machine rather than assuming it.
+  caller racing a cold boot gets ECONNREFUSED rather than a queued connection.
+
+  ‼️ AND THAT WINDOW IS WHY TASK 2's PROBE RETRIES RATHER THAN ASKING ONCE. The window opens exactly on
+  a freshly booted cloud Mac — which is the zero-touch path itself, the one nobody is watching. A
+  single-shot probe there reads "no daemon" and keeps the machine out of the pool: fail-closed is the
+  right direction, but triggered by the wrong cause, and a machine that is fine would be refused for
+  being early. So the probe backs off a bounded number of times and refuses where the retries run out.
+  The window is a ceiling; it is not an UNCLOSED one, and the thing that closes it is Task 2.
 
   THE SOCKET IS THE CREDENTIAL. There is no password, no token and no TTY between a caller and root
   here: membership of group `palai` is the entire authorisation. The daemon therefore refuses to serve
