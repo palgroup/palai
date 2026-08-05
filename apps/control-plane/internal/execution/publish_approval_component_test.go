@@ -4,6 +4,7 @@ package execution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -237,9 +238,14 @@ func TestPublicationTargetsTheBindingsBaseBranch(t *testing.T) {
 func TestPublicationParksTheRunSoTheApproveLands(t *testing.T) {
 	h := newPublishHarness(t)
 
+	// A PARKED ATTEMPT ENDS ON errRunParked, NOT ON nil: the dispatcher's contract for "the model is given
+	// nothing to continue on" is an error the attempt loop recognises and swallows (orchestrator.go's two
+	// errors.Is(err, errRunParked) arms), never a clean return — ExecuteAttempt only reads it as "not a
+	// failure", it does not disappear. A caller here that expected nil would never observe a park at all.
 	ch, err := h.dispatch(tools.PushTool(), "call_park", 1, nil)
-	if err != nil {
-		t.Fatalf("dispatchTool: %v", err)
+	if !errors.Is(err, errRunParked) {
+		t.Fatalf("dispatchTool error = %v, want the park — a run that answers here is a run whose approval "+
+			"can no longer be applied", err)
 	}
 	for _, f := range ch.sent {
 		if f.Type == "tool.result" {
@@ -272,8 +278,9 @@ func TestPublicationParksTheRunSoTheApproveLands(t *testing.T) {
 func TestPublicationDenyWakesTheParkedRunAndPublishesNothing(t *testing.T) {
 	h := newPublishHarness(t)
 
-	if _, err := h.dispatch(tools.PushTool(), "call_deny", 1, nil); err != nil {
-		t.Fatalf("dispatchTool: %v", err)
+	// Same contract as the approve half above: a parked attempt ends on errRunParked, not on nil.
+	if _, err := h.dispatch(tools.PushTool(), "call_deny", 1, nil); !errors.Is(err, errRunParked) {
+		t.Fatalf("dispatchTool error = %v, want the park", err)
 	}
 	if got := h.runState(); got != "waiting" {
 		t.Fatalf("the run is %q before the deny, want waiting", got)

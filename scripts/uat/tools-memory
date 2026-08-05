@@ -141,9 +141,16 @@ else
   # matched nothing at all. `-run` against the wrong package is silent — it is not an error, it is an empty
   # test set that exits 0. Caught by grepping the run's own log for `=== RUN` per named test, which is the
   # only check that distinguishes "passed" from "was never there".
+  #
+  # THE STORE-PACKAGE ENTRY WAS HERE AND IS GONE (cutover, 2026-08-05): `TestSlack|TestAgentSurfaceJourney`
+  # against ./apps/control-plane/internal/store. Both names are permanently deleted (81aada0f) — the whole
+  # store package now carries zero TestSlack* tests — so this entry matched NOTHING and exited 0 in silence,
+  # which is the exact green-by-skip shape the paragraph above already paid for once in this same script.
+  # TLM-003's claim moved with it: "the requester id survives" is now proven by
+  # adapters/integrations/slack/mention_test.go (step [2/4], Docker-free) plus TestMigration43SlackRequester
+  # below, which already ran here before this entry did and needed it for nothing.
   suites=(
     "./apps/control-plane/internal/execution|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney"
-    "./apps/control-plane/internal/store|TestSlack|TestAgentSurfaceJourney"
     "./tests/component/postgres|TestClearSession|TestMigration43SlackRequester"
   )
   status=0

@@ -28,14 +28,18 @@
 #        and reports `ok` over five skips without one). E20 adds FOUR case.yaml files, so neither is optional.
 #
 #   Journey tier (Docker, no credential — SKIP_JOURNEYS=1 to opt out):
-#     5. against a throwaway Postgres: the E20 T5 JOURNEY (the panel opens and births nothing -> a panel DM
-#        with its own app_context births a run through the unchanged admission bridge -> the same event over
-#        Socket Mode births nothing -> a channel mention over Socket Mode births a second run and its HTTP
-#        redelivery births nothing -> a third run requests a publication, an unauthorized click decides
-#        nothing and an authorized click approves durably -> the run STREAMS and closes with the renderer's
-#        blocks while the model's forged button arrives as characters -> the context named a channel and
-#        nothing ever read it), plus the Slack component suite in FULL and the TENANCY corpus, which needs
-#        this tier's real Postgres to run at all.
+#     5. against a throwaway Postgres: the TENANCY corpus, which needs this tier's real Postgres to run at
+#        all (a Docker-free tier reports `ok` over five skips without one — see [4/4] above).
+#
+#     THE E20 T5 JOURNEY (TestAgentSurfaceJourney, apps/control-plane/internal/store) IS GONE, permanently
+#     (81aada0f, 2026-08-05): it drove the panel/DM/Socket-Mode admission bridge, the HTTP-redelivery twin
+#     and the approval click against the in-process Slack bridge, which this control plane no longer has.
+#     SLK-009..012 moved WITH it: their case.yaml proof lists are now entirely `proof_class: unit` against
+#     adapters/integrations/slack, which is step [2/4] above (Docker-free) — so this tier's store-package
+#     Slack sub-step backed nothing SLK-009..012 still claims, and `-run 'TestSlack|TestAgentSurfaceJourney'`
+#     against that package matched ZERO tests (both names are gone) and exited 0 in silence — this repeats
+#     the family's signature failure inside the very script written to catch it, and is removed rather than
+#     left running as a no-op.
 #
 #   Live tier (credentials from .env.local — `make uat-agent-surface-live`):
 #     6. every leg in uat.WiringLiveLegs, unchanged, INCLUDING E20's four. Each SKIPS with the name of the
@@ -69,7 +73,7 @@ go test -count=1 ./tests/uat/automation/...
 # below, against the throwaway Postgres that tier already stands up.
 
 # ---- the journey tier: real PostgreSQL, no credential -------------------------------------------------------
-journeys="the E20 journey + the Slack backing suite CO-RUN green"
+journeys="the tenancy corpus (real Postgres) green"
 if [ "${SKIP_JOURNEYS:-0}" = "1" ]; then
   # Said plainly, because the closing line must never imply a tier that did not run.
   echo "uat-agent-surface: the Docker-bound tier is SKIPPED (SKIP_JOURNEYS=1) — the journey and the backing" >&2
@@ -106,46 +110,30 @@ else
 
   url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
   # A DEAD Postgres for the fault knob: reachable-looking, connects to nothing. PALAI_SURFACE_FAULT_SUITE
-  # points ONE backing suite at it so tests/uat/agent-surface TestARedBackingSuiteFailsTheSurfaceGate can
+  # points the tenancy corpus at it so tests/uat/agent-surface TestARedBackingSuiteFailsTheSurfaceGate can
   # prove a red backing suite makes this target exit non-zero — the guarantee the whole co-run rests on.
+  # (Before 2026-08-05 this knob also had a second target, the store package's Slack sub-step; that step is
+  # gone — see the header comment above — so the tenancy corpus is now the only real Postgres user left in
+  # this tier and the only thing left for the knob to point at.)
   dead_url="postgres://postgres:$password@127.0.0.1:1/palai?sslmode=disable"
-
-  # The BACKING suite, with the E20 journey and every Slack component test in it. The -run selector is the
-  # SHIPPED one from scripts/test/component, verbatim: the store package also holds suites this epic does
-  # not own, and running them here would make the gate's runtime somebody else's problem.
-  # The TENANCY corpus, against the real Postgres — the half of the re-verify rule a Docker-free tier
-  # cannot honestly run (see [4/4] above). E20 adds four case.yaml files, so it is not optional.
-  echo "uat-agent-surface: [journey] the tenancy corpus against real PostgreSQL" >&2
-  set +e
-  PALAI_SECURITY_POSTGRES_URL="$url" go test -tags=security -count=1 -v ./tests/security/tenancy
-  tenancy_status=$?
-  set -e
-  if test "$tenancy_status" -ne 0; then
-    echo "uat-agent-surface: the tenancy corpus FAILED — a new case.yaml must re-run it" >&2
-    cleanup; trap - EXIT
-    exit "$tenancy_status"
+  tenancy_url="$url"
+  if [ "${PALAI_SURFACE_FAULT_SUITE:-}" = "./tests/security/tenancy" ]; then
+    tenancy_url="$dead_url"
+    echo "uat-agent-surface: FAULT INJECTED — ./tests/security/tenancy points at a DEAD Postgres; this run MUST fail" >&2
   fi
 
-  suites=("./apps/control-plane/internal/store")
-  status=0
-  for suite in "${suites[@]}"; do
-    suite_url="$url"
-    if [ "${PALAI_SURFACE_FAULT_SUITE:-}" = "$suite" ]; then
-      suite_url="$dead_url"
-      echo "uat-agent-surface: FAULT INJECTED — $suite points at a DEAD Postgres; this run MUST fail" >&2
-    fi
-    echo "uat-agent-surface: [journey] backing suite $suite" >&2
-    set +e
-    PALAI_COMPONENT_POSTGRES_URL="$suite_url" \
-      go test -tags=component -count=1 -v -run 'TestSlack|TestAgentSurfaceJourney' "$suite"
-    status=$?
-    set -e
-    if test "$status" -ne 0; then
-      echo "uat-agent-surface: backing suite $suite FAILED — the bundle's authored PASS for its cases is not honest" >&2
-      docker logs "$container" >&2 || true
-      break
-    fi
-  done
+  # The TENANCY corpus, against the real Postgres — the half of the re-verify rule a Docker-free tier cannot
+  # honestly run (see [4/4] above). E20 adds four case.yaml files, so it is not optional. It is also the ONLY
+  # thing left in this journey tier that needs a real Postgres: the E20 T5 store-package journey is gone
+  # (header comment above), and SLK-009..012 prove entirely in the Docker-free unit tier now.
+  echo "uat-agent-surface: [journey] the tenancy corpus against real PostgreSQL" >&2
+  set +e
+  PALAI_SECURITY_POSTGRES_URL="$tenancy_url" go test -tags=security -count=1 -v ./tests/security/tenancy
+  status=$?
+  set -e
+  if test "$status" -ne 0; then
+    echo "uat-agent-surface: the tenancy corpus FAILED — a new case.yaml must re-run it" >&2
+  fi
 
   cleanup
   trap - EXIT

@@ -73,7 +73,31 @@ var arityDBVerbs = map[string]bool{"Exec": true, "Query": true, "QueryRow": true
 //	packages/coordinator/store.go                  43 -> 44     (+1)  a statement added since
 //
 // -1 -3 +1 = -3, which is the whole of 609 -> 606. Nothing else in the tree changed its count.
-const arityKnownUses = 606
+//
+// IT MOVED DOWN BY 26 MORE with the Slack cutover, 2026-08-05 (81aada0f and its companions), and it is the
+// largest single drop this floor has recorded — because it is the largest deletion: apps/control-plane/
+// {api,internal/extensions}/slack*.go and the store's slack_*_component_test.go files, 10,800+ lines, are
+// gone rather than merely no longer matched.
+//
+//	diff <(git grep -c 'storage\.Query(' a1a7362b^ -- '*.go' | sed 's/^a1a7362b\^://' | sort) \
+//	     <(git grep -c 'storage\.Query(' HEAD      -- '*.go' | sed 's/^HEAD://'      | sort)
+//
+//	extensions/slack.go                              9 -> gone  (-9)  file deleted, in-process bridge
+//	extensions/slack_admit.go                        5 -> gone  (-5)  file deleted
+//	extensions/slack_approval_post.go                5 -> gone  (-5)  file deleted
+//	extensions/slack_decision.go                     2 -> gone  (-2)  file deleted
+//	extensions/slack_registry.go                     4 -> gone  (-4)  file deleted
+//	extensions/slack_reply.go                        5 -> gone  (-5)  file deleted
+//	packages/coordinator/approvals.go               20 -> 19    (-1)  EnqueueApprovalMessage, sole caller gone
+//	packages/coordinator/publication.go             16 -> 15    (-1)  a Slack-only insert, sole caller gone
+//	packages/coordinator/store.go                   44 -> 43    (-1)  EnqueueTerminalSlackReply, sole caller gone
+//
+// -9 -5 -5 -2 -4 -5 -1 -1 -1 = -33 raw grep hits; the AST-walked checked+skipped total moved 606 -> 580 (-26),
+// the gap explained by non-call occurrences the raw grep also counts (comments, format strings) inside the
+// same deleted files. go files parsed fell 1299 -> 1261 in step, and the unauditable count did NOT grow
+// (26 -> 25) — this floor's own signal that coverage shrank because there was less tree to cover, not
+// because a match was lost. Re-measured at HEAD (git archive, isolated from any uncommitted tree): 580.
+const arityKnownUses = 580
 
 // aritySkip is a report line for a storage.Query use this test does not audit. Every one of them is
 // logged: the guard's VALUE to Task 5 is its coverage, and a hole nobody can see is a false assurance.

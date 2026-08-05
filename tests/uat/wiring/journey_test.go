@@ -2,15 +2,21 @@
 
 // The E19 T9 EXIT-gate journey entry point. Like the E15 T6 / E16 T8 / E17 T11 gates before it, this file
 // is an ORCHESTRATOR rather than a reimplementation: it drives `scripts/uat/wiring`, which stands up a
-// throwaway Postgres and runs the journey where its seams already live —
+// throwaway Postgres and runs the FULL backing suites (store, extensions, automation — no -run filter) where
+// their seams already live.
 //
-//	the E19 wiring journey   apps/control-plane/internal/store   TestWiringJourney
+// THE SINGLE E19 JOURNEY (TestWiringJourney, apps/control-plane/internal/store) IS GONE, permanently
+// (81aada0f, 2026-08-05, "carry the publication-approval evidence off Slack, and delete the two exit
+// journeys"): it drove four Slack surfaces that no longer mount in this control plane. Slack is
+// apps/slack-bot now, reaching this one over the same /v1 any other client uses, and the deletion commit's
+// own words are the ceiling here too: "neither can be re-earned against a bridge that is gone." What this
+// file still proves is that the SURVIVING suites in those three packages ran clean in one invocation
+// (`err != nil` below) plus the one cross-surface outbound claim named explicitly further down.
 //
-// It lives there because it needs the api package AND three packages under apps/control-plane/internal at
-// once (Go's internal rule means only a package rooted there can import them), and because a journey that
-// re-implemented the Slack store / queue outbox / A2A server would be proving its own copy rather than the
-// shipped code. This file gives it its canonical `tests/uat/wiring` home; the Docker-free gates in this same
-// package (bundle, mount refusals, promote, live inventory) are what `make verify` rides.
+// It lives here because it needs the api package AND three packages under apps/control-plane/internal at
+// once (Go's internal rule means only a package rooted there can import them). This file gives it its
+// canonical `tests/uat/wiring` home; the Docker-free gates in this same package (bundle, mount refusals,
+// promote, live inventory) are what `make verify` rides.
 //
 // HONEST CEILING (plan §6): every counterparty is a documented FAKE. No socket reaches slack.com, no foreign
 // A2A peer is contacted, no broker product is started, and no deployed console gets a screen-reader pass.
@@ -45,18 +51,20 @@ func TestWiringJourneyRunsThroughTheOperatorEntryPoint(t *testing.T) {
 		t.Fatalf("the E19 wiring gate failed: %v", err)
 	}
 
-	// The journey must have RUN, not skipped. A silent skip (an unset Postgres URL) would leave the exit
-	// gate reporting green over nothing — this family's signature failure, nine findings deep.
-	if !strings.Contains(string(out), "--- PASS: TestWiringJourney") {
-		t.Error("TestWiringJourney did not report PASS — a skipped journey is not a green exit gate")
-	}
-	// And the BACKING suites must each have run in FULL. The bundle's per-case status is authored data, so
-	// what makes a PASS for SLK-00x / AUT-00x honest is that its suite ran in this very invocation.
+	// TestWiringJourney ITSELF IS GONE, permanently (81aada0f, 2026-08-05): it drove four Slack surfaces
+	// (Socket Mode admission, the HTTP twin's silence, an authorized click, the registration route) that no
+	// longer mount in this control plane at all — Slack is apps/slack-bot now, a separate process reaching
+	// this one over the same /v1 any other client uses. The commit's own words: "neither can be re-earned
+	// against a bridge that is gone." So this co-run no longer checks for a single super-journey; it checks
+	// that the FULL backing suites below (no -run filter — see scripts/uat/wiring) ran and stayed green,
+	// which `err != nil` above already establishes, plus the one cross-surface claim that DID survive.
+	//
+	// SLK-001/SLK-007/the T9 registration route are WITHDRAWN from this gate along with TestWiringJourney —
+	// their case.yaml proof lists moved off this package (see tests/uat/cases/SLK-001, SLK-007). What is
+	// still this gate's to prove is AUT-010: a queue outbound delivery is still lossless and exactly-once,
+	// and it never depended on Slack at all.
 	for _, backing := range []string{
-		"TestSlackAuthorizedClickApprovesThroughTheWholeChain",   // SLK-007
-		"TestSlackSocketModeAndHTTPShareOneCanonicalIdentity",    // SLK-001 transport invariance
-		"TestQueueTerminalEnqueuesOutboundLosslessExactlyOnce",   // AUT-010 outbound
-		"TestSlackRegistrationLandsInTheVerifiedTenantAndRefuse", // the T9 registration surface
+		"TestQueueTerminalEnqueuesOutboundLosslessExactlyOnce", // AUT-010 outbound
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+backing) {
 			t.Errorf("%s did not report PASS — the co-run of the suite that BACKS its case did not happen, so the bundle's authored PASS for it is unbacked", backing)

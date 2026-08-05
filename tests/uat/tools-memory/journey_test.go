@@ -8,10 +8,16 @@
 //
 // It lives THERE rather than in the store package because the compaction fold is `historyMessages`, which is
 // unexported: a journey that re-implemented the window would be asserting its own copy rather than the
-// shipped code, which is exactly the shape of proof this family exists to refuse. The Slack half of the
-// narrative — that the requester id survives admission, the enqueue freeze and a RESTARTED reply pump — is
-// the store tier's TestSlackTerminalRunMentionsTheRequesterAndOnlyTheRequester, and this file asserts the
-// script CO-RAN it rather than assuming it.
+// shipped code, which is exactly the shape of proof this family exists to refuse.
+//
+// THE SLACK HALF OF THE NARRATIVE MOVED, 2026-08-05: TLM-003 used to rest on the store tier's
+// TestSlackTerminalRunMentionsTheRequesterAndOnlyTheRequester (that the requester id survives admission, the
+// enqueue freeze and a RESTARTED reply pump), which is permanently deleted with the in-process Slack bridge
+// (81aada0f). What TLM-003 claims today is narrower and lives elsewhere: the requester id is neutralised and
+// mentioned correctly by adapters/integrations/slack/mention_test.go (Docker-free, step [2/4] of
+// scripts/uat/tools-memory), and migration 000043's column survives a restart via
+// TestMigration43SlackRequester (./tests/component/postgres, still co-run below). Neither is a store-package
+// journey any more, and this file's checks follow that move rather than the old name.
 //
 // HONEST CEILING (plan §6): every counterparty is a documented FAKE. No socket reaches slack.com and no MCP
 // server exists. The journey proves the surface is CORRECT AGAINST THE PUBLISHED CONTRACT — nothing more,
@@ -58,7 +64,7 @@ func TestToolsMemoryJourneyRunsThroughTheOperatorEntryPoint(t *testing.T) {
 	// journey tier, which is why it is not in this list — its compose-tier proof is `e2e` and is not run here.
 	for _, backing := range []struct{ test, why string }{
 		{"TestClearSessionEmptiesHistoryAndKeepsTheSessionAlive", "TLM-001 — the durable half of `clear`"},
-		{"TestSlackTerminalRunMentionsTheRequesterAndOnlyTheRequester", "TLM-003 — the identity survives a restarted pump"},
+		{"TestMigration43SlackRequester", "TLM-003 — the requester column survives a restart (the mention-mint half is Docker-free, step [2/4])"},
 		{"TestARegistryToolDispatchesThroughTheRealOrchestratorAndTheResultReachesTheEngine", "TLM-004 — committed, then delivered"},
 		{"TestToolsMemoryJourney", "TLM-005 — the stored-search-byte sweep over what the run persisted"},
 	} {

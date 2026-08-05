@@ -146,11 +146,29 @@ else
   # THE FIRST ENTRY NEEDS NO POSTGRES and that is deliberate: the native-shell posture is the one component
   # suite in this repository that must not require a container, because what it proves is that the control
   # plane reaches the HOST's toolchain.
+  #
+  # THE STORE-PACKAGE ENTRY WAS HERE AND IS GONE (cutover, 2026-08-05): eight TestSlack* names, ALL of them
+  # permanently deleted with the in-process Slack bridge (81aada0f), so the entry matched ZERO tests and
+  # exited 0 in silence — this repository's signature failure, inside the very script written to name it.
+  # CAS-001/CAS-002/CAS-004's claims moved with it, and each is checked here for where it actually landed:
+  #   - CAS-001's repository binding is now cmd/cli/internal/stack/up_repository_test.go, which is UNTAGGED
+  #     (no `component` build tag, no Postgres — httptest fakes) and already rides plain `go test` under
+  #     `make verify`, so it needs no entry in this Docker-bound tier.
+  #   - CAS-002's approval chain RE-EARNED off Slack: TestPublicationFromSlack* renamed to TestPublication*
+  #     in the SAME file (apps/control-plane/internal/execution/publish_approval_component_test.go), which
+  #     the second entry below already selects.
+  #   - CAS-004's artifact-scoping claim is TestReadRunArtifactRefusesForeignRunsForeignTenantsAndOversize,
+  #     apps/control-plane/internal/artifacts, and it is NOT added below on purpose: openArtifactsHarness
+  #     (artifacts_component_test.go) requires BOTH PALAI_COMPONENT_POSTGRES_URL and PALAI_S3_ENDPOINT, and
+  #     t.Skip's cleanly on either being absent — this journey tier stands up Postgres alone. Naming it here
+  #     without the SeaweedFS container this package's own doc comment requires would make it SKIP rather
+  #     than run, reporting green over nothing exactly like the entry this comment replaces. Its real home is
+  #     `make test-component TEST=artifacts`, a DIFFERENT gate this UAT target does not re-run; recorded here
+  #     as an honest ceiling rather than a silent SKIP.
   suites=(
     "./apps/control-plane/internal/execution/tools|TestNativeShellPostureRunsTheHostsOwnToolchain|TestNativeShellPostureSeparatesConcurrentSessionsOnOneMac|TestShellToolStillFailsCleanlyWithNoPostureConfigured"
-    "./apps/control-plane/internal/execution|TestPublicationFromSlack"
-    "./apps/control-plane/internal/extensions|TestSlackJourneyOnFakePeer|TestJiraTicketBodyCannotInstructTheAgent"
-    "./apps/control-plane/internal/store|TestSlackRunCarriesTheConnectionsRepositoryBinding|TestSlackConnectionWithoutARepositoryIsBitUnchanged|TestSlackRefusesAnotherTenantsRepositoryBinding|TestSlackRunArtifactReachesTheThreadAsAFile|TestSlackUploadRefusesAnArtifactFromAnotherRun|TestSlackUploadFailureLeavesTheAnswerAndTheRunAlone|TestSlackOrdinaryAnswerUploadsNothing|TestSlackUnauthorizedClickEnqueuesNothing"
+    "./apps/control-plane/internal/execution|TestPublication"
+    "./apps/control-plane/internal/extensions|TestJiraTicketBodyCannotInstructTheAgent"
   )
   status=0
   for entry in "${suites[@]}"; do

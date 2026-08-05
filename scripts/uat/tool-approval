@@ -151,10 +151,18 @@ else
   # `TestToolWithoutApprovalDeclared...`), so the one test proving an ungated tool is bit-unchanged never
   # ran in the component tier at all. Every selector below was checked by RUNNING it and reading `=== RUN`,
   # not by reading the string.
+  #
+  # THE OTHER TWO ENTRIES WERE HERE AND ARE GONE (cutover, 2026-08-05): `-run TestSlackApprovalModal` against
+  # ./apps/control-plane/internal/extensions and `-run TestSlackApprover` against
+  # ./apps/control-plane/internal/store, both permanently deleted with the in-process Slack bridge (81aada0f).
+  # HIL-004's "unauthorized click decides nothing" claim already reads TestApprover (execution package,
+  # selected below) for its surviving HTTP half; HIL-002's "modal reads and writes nothing" has no
+  # control-plane successor at all — the modal is apps/slack-bot's now — and is withdrawn rather than
+  # replaced (see tests/uat/cases/HIL-002/case.yaml). `TestSlackToolApproval` is replaced by
+  # `TestHTTPToolApproval`, its RE-EARNED equivalent in THIS package (same file family, generic decision
+  # surface instead of a Slack click) — carried in 81aada0f alongside the publication evidence.
   suites=(
-    "./apps/control-plane/internal/execution|TestToolApproval|TestSlackToolApproval|TestExpiredToolApproval|TestToolWithoutApprovalDeclared|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestPublicationFromSlack"
-    "./apps/control-plane/internal/extensions|TestSlackApprovalModal"
-    "./apps/control-plane/internal/store|TestSlackApprover"
+    "./apps/control-plane/internal/execution|TestToolApproval|TestHTTPToolApproval|TestExpiredToolApproval|TestToolWithoutApprovalDeclared|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestPublication"
   )
   status=0
   for entry in "${suites[@]}"; do

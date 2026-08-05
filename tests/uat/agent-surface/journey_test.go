@@ -2,20 +2,23 @@
 
 // The E20 T5 EXIT-gate journey entry point. Like the E15 T6 / E16 T8 / E17 T11 / E19 T9 gates before it,
 // this file is an ORCHESTRATOR rather than a reimplementation: it drives `scripts/uat/agent-surface`, which
-// stands up a throwaway Postgres and runs the journey where its seams already live —
+// stands up a throwaway Postgres and runs the tenancy corpus, the one thing left in that tier that needs it.
 //
-//	the E20 agent-surface journey   apps/control-plane/internal/store   TestAgentSurfaceJourney
+// THE E20 T5 JOURNEY (TestAgentSurfaceJourney, apps/control-plane/internal/store) IS GONE, permanently
+// (81aada0f, 2026-08-05, "carry the publication-approval evidence off Slack, and delete the two exit
+// journeys"): it drove the panel/DM/Socket-Mode admission bridge, the HTTP-redelivery twin and an approval
+// click against the in-process Slack bridge, which this control plane no longer has — "neither can be
+// re-earned against a bridge that is gone" is the deletion commit's own ceiling and it applies here too.
+// SLK-009..012 moved with it: their case.yaml proof lists are now entirely `proof_class: unit` against
+// adapters/integrations/slack (the Docker-free step scripts/uat/agent-surface already runs), so nothing this
+// gate still certifies was backed by the deleted journey.
 //
-// It lives there because it needs the api package AND two packages under apps/control-plane/internal at once
-// (Go's internal rule means only a package rooted there can import them), and because a journey that
-// re-implemented the Slack admission bridge, the run follower and the reply pump would be proving its own
-// copy rather than the shipped code. This file gives it its canonical `tests/uat/agent-surface` home; the
-// Docker-free gates in this same package (bundle, refusal matrix, promote, catalog, live inventory) are what
-// `make verify` rides.
+// This file gives the tenancy corpus its canonical `tests/uat/agent-surface` home; the Docker-free gates in
+// this same package (bundle, refusal matrix, promote, catalog, live inventory) are what `make verify` rides.
 //
 // HONEST CEILING (plan §6): every counterparty is a documented FAKE. No socket reaches slack.com. The
-// journey proves the surface is CORRECT AGAINST THE PUBLISHED CONTRACT and funnelled through ONE admission —
-// nothing more, and the tier recompute turns that ceiling into a mechanical outcome rather than a promise.
+// journey proves the surface is CORRECT AGAINST THE PUBLISHED CONTRACT — nothing more, and the tier
+// recompute turns that ceiling into a mechanical outcome rather than a promise.
 package agentsurface
 
 import (
@@ -45,18 +48,15 @@ func TestAgentSurfaceJourneyRunsThroughTheOperatorEntryPoint(t *testing.T) {
 		t.Fatalf("the E20 agent-surface gate failed: %v", err)
 	}
 
-	// The journey must have RUN, not skipped. A silent skip (an unset Postgres URL) would leave the exit
-	// gate reporting green over nothing — this family's signature failure, eleven findings deep.
-	if !strings.Contains(string(out), "--- PASS: TestAgentSurfaceJourney") {
-		t.Error("TestAgentSurfaceJourney did not report PASS — a skipped journey is not a green exit gate")
-	}
-	// And the BACKING tests must each have run in FULL. The bundle's per-case status is authored data, so
-	// what makes a PASS for SLK-009..012 honest is that the suite backing it ran in this very invocation.
+	// TestAgentSurfaceJourney and its four SLK-009..012 backing legs are GONE (see the header comment) and
+	// are not checked for any more. What replaces them: the tenancy corpus must have RUN, not skipped. A
+	// silent skip (an unset Postgres URL) would leave the exit gate reporting green over nothing — this
+	// family's signature failure, eleven findings deep — and the store package's Slack sub-step already fell
+	// into exactly that trap once this session (a `-run` matching zero deleted tests, exiting 0 in silence)
+	// before scripts/uat/agent-surface removed it.
 	for _, backing := range []string{
-		"TestSlackStreamShowsTheRunWorkingThenClosesWithTheAnswer",  // SLK-009
-		"TestSlackDMIsExemptFromTheConfiguredChannelAllowList",      // SLK-010
-		"TestSlackContextNeverBecomesAFetchTarget",                  // SLK-011
-		"TestSlackStopStreamCarriesRenderedBlocksAndNoForgedButton", // SLK-012
+		"TestEveryTenantTableIsRowLevelSecured", // every RLS table, re-walked after the Slack table drops
+		"TestConnectionWithoutTenantContextSeesNoTenantRows",
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+backing) {
 			t.Errorf("%s did not report PASS — the co-run of the suite that BACKS its case did not happen, so the bundle's authored PASS for it is unbacked", backing)
@@ -66,7 +66,8 @@ func TestAgentSurfaceJourneyRunsThroughTheOperatorEntryPoint(t *testing.T) {
 
 // TestARedBackingSuiteFailsTheSurfaceGate is the load-bearing negative: the co-run is only worth anything if
 // a RED backing suite actually fails this target. It re-runs the operator entry point with
-// PALAI_SURFACE_FAULT_SUITE pointing the store suite (which holds the journey) at a DEAD Postgres — a
+// PALAI_SURFACE_FAULT_SUITE pointing the tenancy corpus — the only real-Postgres user left in this tier
+// since the store package's Slack sub-step was removed (see the header comment) — at a DEAD Postgres: a
 // genuinely red suite, its tests failing on connect, not a stubbed-out command — and asserts a NON-ZERO exit.
 //
 // Without this, "the gate co-runs the suites" would be a claim about the script's TEXT rather than its
@@ -82,16 +83,16 @@ func TestARedBackingSuiteFailsTheSurfaceGate(t *testing.T) {
 	cmd := exec.CommandContext(ctx, "scripts/uat/agent-surface")
 	cmd.Dir = repoRoot(t)
 	cmd.Env = append(cmd.Environ(), "SKIP_JOURNEYS=0",
-		"PALAI_SURFACE_FAULT_SUITE=./apps/control-plane/internal/store")
+		"PALAI_SURFACE_FAULT_SUITE=./tests/security/tenancy")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
-		t.Fatalf("the gate PASSED with the store backing suite pointed at a dead Postgres — a red backing suite must fail this target, or the co-run certifies nothing\n%s", out)
+		t.Fatalf("the gate PASSED with the tenancy corpus pointed at a dead Postgres — a red backing suite must fail this target, or the co-run certifies nothing\n%s", out)
 	}
 	if !strings.Contains(string(out), "FAULT INJECTED") {
 		t.Errorf("the run does not report the injected fault, so the non-zero exit may be unrelated:\n%s", out)
 	}
-	if !strings.Contains(string(out), "backing suite ./apps/control-plane/internal/store FAILED") {
-		t.Errorf("the failure is not attributed to the faulted backing suite:\n%s", out)
+	if !strings.Contains(string(out), "the tenancy corpus FAILED") {
+		t.Errorf("the failure is not attributed to the faulted tenancy corpus:\n%s", out)
 	}
 	t.Logf("a red backing suite failed the gate as required: %v", err)
 }

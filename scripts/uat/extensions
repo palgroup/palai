@@ -139,13 +139,19 @@ else
 
   # The BACKING suites, in FULL (no -run filter) — a red case anywhere in knowledge / workers / automation
   # fails this gate instead of being reported around by an authored "PASS" in the bundle. The three §T11
-  # journeys live inside the first three entries; the §63.3 Slack journey is selected out of the extensions
-  # package because that package's other component suites belong to E12, not this gate.
+  # journeys live inside the first three entries.
+  #
+  # THE FOURTH ENTRY WAS HERE AND IS GONE (cutover, 2026-08-05): `-run TestSlackJourneyOnFakePeer` against
+  # ./apps/control-plane/internal/extensions, selected out of that package's OTHER component suites (which
+  # belong to E12, not this gate) for the sake of one test. That test — the spec §63.3 Slack journey — is
+  # permanently deleted with the in-process Slack bridge (81aada0f) and nothing in evidence/releases or any
+  # case.yaml names it, so this entry matched ZERO tests and exited 0 in silence: the exact green-by-skip
+  # shape this script's own comment warns about, and no replacement is owed because no surviving claim rests
+  # on it.
   suites=(
     "./apps/control-plane/internal/knowledge|"
     "./apps/control-plane/internal/workers|"
     "./apps/control-plane/internal/automation|"
-    "./apps/control-plane/internal/extensions|TestSlackJourneyOnFakePeer"
   )
   status=0
   for entry in "${suites[@]}"; do

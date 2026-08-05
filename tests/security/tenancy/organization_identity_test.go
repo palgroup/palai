@@ -330,9 +330,20 @@ func TestNoQueryBindsAnOrganizationIntoAProjectsSlot(t *testing.T) {
 	// quiet. That is the shape this tree has shipped before: a sweep reporting a cleaner result because it
 	// stopped looking.
 	//
+	// MOVED DOWN, 2026-08-05, attributed to a DELETION rather than to a use the walk stopped reaching: the
+	// Slack cutover (81aada0f and its companions) deleted apps/control-plane/{api,internal/extensions}/
+	// slack*.go and the store's slack_*_component_test.go files outright — 10,800+ lines carrying their own
+	// storage.Query/Exec/QueryRow call sites and project-naming binds — plus one bind each from
+	// packages/coordinator/{approvals,publication,store}.go's Slack-only enqueue statements, which went with
+	// their sole callers. `git grep -c 'storage\.Query(' a1a7362b^ -- '*.go'` vs the same at HEAD shows
+	// exactly those files vanish and nothing else move down; go files parsed fell 1299 -> 1261 in step. The
+	// unauditable count did NOT grow (26 -> 25), which is this floor's own signal that coverage did not
+	// shrink by losing a match — it shrank because there was less to match.
+	//
 	// 407 project-naming bind arguments over 585 reached call sites, 2026-08-04 — measured by this test,
-	// not chosen: the first run of it reported the number this constant now holds.
-	const identityProjectFloor = 407
+	// not chosen: the first run of it reported the number this constant now holds. Re-measured after the
+	// cutover at 390 over 555 (git archive HEAD, isolated from any uncommitted tree), which is this floor.
+	const identityProjectFloor = 390
 	if projectBinds < identityProjectFloor {
 		t.Errorf("only %d bind argument(s) were recognised as naming a project, fewer than the %d recognised "+
 			"when this floor was set: identityKind has stopped matching a spelling it used to, and every "+

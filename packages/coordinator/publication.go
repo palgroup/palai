@@ -433,13 +433,19 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 		if err := wakeParkedRunTx(ctx, tx, tenant, runID); err != nil {
 			return 0, err
 		}
-		return settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID)
+		if _, err := settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
+			return 0, err
+		}
+		return 0, nil
 	}
 
 	// A stale one-shot token (the head moved -> a new pending approval carries a new hash, or the args
 	// were edited) authorizes nothing: settle the command without transitioning the publication.
 	if requestHash != "" && requestHash != pendingHash {
-		return settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID)
+		if _, err := settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
+			return 0, err
+		}
+		return 0, nil
 	}
 
 	newState, event := "approved", approvalApprovedEvent
@@ -458,10 +464,22 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 		}
 		return 0, fmt.Errorf("%w: run %s is %s, so an approved publication would never be published", ErrRunTerminal, runID, runState)
 	}
-	if _, err := tx.Exec(ctx, storage.Query("SetPublicationState"),
-		pubID, tenant.Project, newState, "pending_approval"); err != nil {
+	// THE RETURNED COUNT USED TO BE A SEQUENCE NUMBER, NOT A ROW COUNT — measured live 2026-08-05 by the
+	// gate this bug was hiding behind: every exit of this function used to return either an explicit 0 or
+	// applyCommandInTx's event-journal sequence number, so a stale-hash refusal reported "applied 3" and a
+	// genuine approve reported "applied 6" — whatever the session's next journal sequence happened to be.
+	// No production caller noticed (command_pump.go, auto_approve.go and store/approvals.go all discard
+	// this return value and check only the error), but the callers THIS function was written for — a
+	// caller asserting a refusal as 0 "rather than reading it off an error string" — could not: every
+	// refusal path already returns an explicit 0 or forwards one (unauthorized, terminal-run), so the
+	// missing half was the SUCCESS path, now the actual rows the transition applied (0 or 1, never a
+	// journal position).
+	transitionTag, err := tx.Exec(ctx, storage.Query("SetPublicationState"),
+		pubID, tenant.Project, newState, "pending_approval")
+	if err != nil {
 		return 0, fmt.Errorf("transition publication: %w", err)
 	}
+	applied := transitionTag.RowsAffected()
 	// WHO DECIDED, AND THIS COLUMN USED TO HOLD THE WRONG THING. It was passed `commandID`, so every
 	// publication approval this system has ever recorded answered "who authorized this write" with a
 	// `cmd_…` id — while the query's own comment said "records who decided an approval (audit)" and
@@ -481,8 +499,7 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 		mustMarshal(map[string]any{"publication_id": pubID, "command_id": commandID})); err != nil {
 		return 0, err
 	}
-	seq, err := applyCommandInTx(ctx, tx, tenant, sessionID, responseID, commandID)
-	if err != nil {
+	if _, err := applyCommandInTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
 		return 0, err
 	}
 	// THE WAKE (E23 T3), and it belongs HERE rather than in Slack's Decide for the reason the approver check
@@ -498,7 +515,7 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit apply approval: %w", err)
 	}
-	return seq, nil
+	return applied, nil
 }
 
 // approverAuthorizedTx is THE approver check (E23 T2), and it is a function rather than two copies of two

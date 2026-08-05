@@ -5,17 +5,26 @@
 // `scripts/uat/code-and-ship`, which stands up a throwaway Postgres and runs the narrative where its seams
 // already live —
 //
-//	a thread reaches a repository        apps/control-plane/internal/store    TestSlackRunCarriesTheConnectionsRepositoryBinding
 //	the ticket body earns five refusals  apps/control-plane/internal/extensions  TestJiraTicketBodyCannotInstructTheAgent
 //	the host answers `Xcode 26.6`        apps/control-plane/internal/execution/tools  TestNativeShellPostureRunsTheHostsOwnToolchain
-//	nothing publishes without an approve apps/control-plane/internal/execution  TestPublicationFromSlackWaitsForAnApproveAndThenPublishes
-//	a deny prevents the effect           apps/control-plane/internal/execution  TestPublicationFromSlackDenialPreventsThePushEntirely
-//	the artifact arrives as a FILE       apps/control-plane/internal/store    TestSlackRunArtifactReachesTheThreadAsAFile
+//	nothing publishes without an approve apps/control-plane/internal/execution  TestPublicationWaitsForAnApproveAndThenPublishes
+//	a deny prevents the effect           apps/control-plane/internal/execution  TestPublicationDenialPreventsThePushEntirely
 //
 // THE NARRATIVE IS THE CO-RUN RATHER THAN A SEVENTH TEST, and that is a deliberate choice with a reason: each
 // leg above drives the SHIPPED path at the seam that owns it, against real PostgreSQL, and a journey that
 // re-implemented any of them would be asserting its own copy — exactly the shape of proof this family exists
 // to refuse. What this file adds is the thing a co-run cannot give itself: the assertion that every leg RAN.
+//
+// TWO ROWS LEFT THIS TABLE, 2026-08-05 (81aada0f): "a thread reaches a repository" and "the artifact arrives
+// as a FILE" were TestSlackRunCarriesTheConnectionsRepositoryBinding and
+// TestSlackRunArtifactReachesTheThreadAsAFile, apps/control-plane/internal/store, both permanently deleted
+// with the in-process Slack bridge. CAS-001's claim moved to cmd/cli/internal/stack/up_repository_test.go,
+// which is UNTAGGED and already rides plain `go test` under `make verify` — it needs no co-run here. CAS-004's
+// claim moved to TestReadRunArtifactRefusesForeignRunsForeignTenantsAndOversize
+// (apps/control-plane/internal/artifacts), which needs a SeaweedFS container this script does not stand up
+// (see scripts/uat/code-and-ship's own comment) — its real home is `make test-component TEST=artifacts`, a
+// different gate, and it is named here as an honest ceiling rather than checked for a PASS this tier cannot
+// produce.
 //
 // HONEST CEILING (plan §6): every counterparty is a documented FAKE. No socket reaches slack.com, no GitHub
 // App exists, no MCP server is dialled and no Apple signing identity is engaged. The one claim no
@@ -56,16 +65,12 @@ func TestCodeAndShipJourneyRunsThroughTheOperatorEntryPoint(t *testing.T) {
 	// wrong package matches nothing at all and exits 0 in silence, which is how this repository has shipped
 	// green-by-omission more than a dozen times.
 	for _, leg := range []struct{ test, why string }{
-		{"TestSlackRunCarriesTheConnectionsRepositoryBinding", "CAS-001 — a thread reaches a repository, and the binding is the operator's"},
-		{"TestSlackRefusesAnotherTenantsRepositoryBinding", "CAS-001 — and another tenant's ref is not found"},
 		{"TestJiraTicketBodyCannotInstructTheAgent", "CAS-003 — the ticket body earns five refusals, each re-derived"},
 		{"TestNativeShellPostureRunsTheHostsOwnToolchain", "CAS-005 — the host answers where the container says `not found`"},
 		{"TestNativeShellPostureSeparatesConcurrentSessionsOnOneMac", "CAS-005 — two concurrent runs, disjoint session directories"},
-		{"TestPublicationFromSlackWaitsForAnApproveAndThenPublishes", "CAS-002 — nothing publishes until a human presses Approve"},
-		{"TestPublicationFromSlackDenialPreventsThePushEntirely", "CAS-002 — a deny PREVENTS the effect rather than recording a verdict"},
-		{"TestPublicationFromSlackTargetsTheBindingsBaseBranch", "CAS-002 — `dev` is a binding value, not a code constant"},
-		{"TestSlackRunArtifactReachesTheThreadAsAFile", "CAS-004 — the artifact arrives as real bytes, not a link"},
-		{"TestSlackOrdinaryAnswerUploadsNothing", "CAS-004 — and a run with no artifact uploads nothing at all"},
+		{"TestPublicationWaitsForAnApproveAndThenPublishes", "CAS-002 — nothing publishes until a human presses Approve"},
+		{"TestPublicationDenialPreventsThePushEntirely", "CAS-002 — a deny PREVENTS the effect rather than recording a verdict"},
+		{"TestPublicationTargetsTheBindingsBaseBranch", "CAS-002 — `dev` is a binding value, not a code constant"},
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+leg.test) {
 			t.Errorf("%s did not report PASS (%s) — the co-run of the suite that BACKS its case did not happen, so the bundle's authored PASS for it is unbacked", leg.test, leg.why)
