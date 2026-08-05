@@ -122,46 +122,41 @@ func liveShellSchema() modelbroker.ToolSchema {
 	}
 }
 
-// liveCodingBroker returns the Git broker: a REAL GitHub App installation-token broker when the App env is
-// present (installation token > user PAT, §30.2), else the local broker over the clean PALAI_GIT_REPO URL.
+// liveCodingBroker returns the Git broker: a REAL token broker when a binding credential is present, else
+// the local broker over the clean PALAI_GIT_REPO URL.
+//
+// IT USED TO BUILD A GITHUB APP INSTALLATION-TOKEN BROKER, and this file did not compile after
+// `9ad0665d refactor(publish)!: delete the deployment-global GitHub App` removed NewGitHubAppBroker and
+// GitHubAppConfig — because `go vet -tags="component live security"` never builds the e2e tier, so the
+// break was invisible to the sweep that would otherwise have caught it. A credential is PER BINDING now:
+// one App could mint only for the repositories one installation covered, and its owner/repo came from an
+// environment variable, so a deployment serving several bindings published every pull request to one of
+// them. PALAI_LIVE_REPO_TOKEN stands in here for what a binding's connection_ref resolves to on a live
+// stack, exactly as it does in tests/live/repository.
 func liveCodingBroker(t *testing.T) (repositories.Broker, string) {
 	t.Helper()
-	appID, installID, keyFile := os.Getenv("PALAI_GITHUB_APP_ID"), os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID"), os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE")
-	if appID != "" && installID != "" && keyFile != "" {
-		pem, err := os.ReadFile(keyFile)
-		if err != nil {
-			t.Fatalf("read GitHub App private key: %v", err)
-		}
-		var repos []string
-		if r := os.Getenv("PALAI_GITHUB_APP_REPO"); r != "" {
-			repos = []string{r}
-		}
-		broker, err := repositories.NewGitHubAppBroker(repositories.GitHubAppConfig{AppID: appID, InstallationID: installID, PrivateKeyPEM: pem, Repositories: repos})
-		if err != nil {
-			t.Fatalf("NewGitHubAppBroker: %v", err)
-		}
-		return broker, "github-app-installation-token (real)"
+	if token := strings.TrimSpace(os.Getenv("PALAI_LIVE_REPO_TOKEN")); token != "" {
+		return repositories.NewTokenBroker(token), "binding connection_ref token (real)"
 	}
-	return repositories.NewAnonymousBroker(), "local-broker (PALAI_GIT_REPO, no App env)"
+	return repositories.NewAnonymousBroker(), "local-broker (PALAI_GIT_REPO, no PALAI_LIVE_REPO_TOKEN)"
 }
 
-// liveCodingPRClient returns a real GitHub pull-request client when the App env + PALAI_GITHUB_REPO
-// (owner/repo) are set, else nil — a push-only live run opens no PR.
+// liveCodingPRClient returns a real GitHub pull-request client when a binding credential and
+// PALAI_GIT_REPO (owner/repo) are both set, else nil — a push-only live run opens no PR.
+//
+// PALAI_GITHUB_REPO went with the App (`9ad0665d`): it was the deployment-wide answer to a per-binding
+// question, and PALAI_GIT_REPO is the slug the rest of this tier already reads.
 func liveCodingPRClient(t *testing.T) repositories.PullRequestClient {
 	t.Helper()
-	appID, installID, keyFile := os.Getenv("PALAI_GITHUB_APP_ID"), os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID"), os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE")
-	slug := os.Getenv("PALAI_GITHUB_REPO")
+	token := strings.TrimSpace(os.Getenv("PALAI_LIVE_REPO_TOKEN"))
+	slug := os.Getenv("PALAI_GIT_REPO")
 	i := strings.IndexByte(slug, '/')
-	if appID == "" || installID == "" || keyFile == "" || i <= 0 {
+	if token == "" || i <= 0 {
 		return nil
 	}
-	pem, err := os.ReadFile(keyFile)
+	client, err := repositories.NewTokenPullRequestClient(token, "", slug[:i], slug[i+1:])
 	if err != nil {
-		t.Fatalf("read GitHub App private key: %v", err)
-	}
-	client, err := repositories.NewGitHubPullRequestClient(repositories.GitHubAppConfig{AppID: appID, InstallationID: installID, PrivateKeyPEM: pem}, slug[:i], slug[i+1:])
-	if err != nil {
-		t.Fatalf("NewGitHubPullRequestClient: %v", err)
+		t.Fatalf("NewTokenPullRequestClient: %v", err)
 	}
 	return client
 }

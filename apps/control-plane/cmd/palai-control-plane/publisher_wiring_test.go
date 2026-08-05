@@ -145,9 +145,14 @@ func TestAnAppLessDeploymentRefusesABindingWithNoCredential(t *testing.T) {
 		t.Fatal("a binding with NO connection_ref was accepted on a deployment with no GitHub App: there is " +
 			"no credential this publication could be made under, so approving it authorizes nothing")
 	}
-	// The refusal has to be actionable. It names both routes out, because an operator on a single-tenant
-	// stack wants the connection_ref one and an operator running a fleet wants the App one.
-	for _, want := range []string{"PALAI_GITHUB_APP_ID", "connection_ref"} {
+	// The refusal has to be actionable, and since 2026-08-05 there is exactly ONE route out to name. This
+	// loop used to demand "PALAI_GITHUB_APP_ID" beside connection_ref, on the reading that an operator
+	// running a fleet wanted the App route — and `9ad0665d refactor(publish)!: delete the
+	// deployment-global GitHub App` removed that route, so the assertion outlived its subject and went
+	// red against a message that is BETTER than the one it was written for. It now pins the route that
+	// exists, end to end: the API call that mints the credential and the field that carries it. That is
+	// the same pair execution/publish_identity_test.go asserts on the same message.
+	for _, want := range []string{"connection_ref", "/v1/secret-refs"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("the refusal does not name %q, so it does not say what to do about it: %v", want, err)
 		}
@@ -161,10 +166,24 @@ func TestAnAppLessDeploymentRefusesABindingWithNoCredential(t *testing.T) {
 	}
 }
 
-// TestTheAppPathIsUnchangedWhenAnAppIsConfigured pins the direction this change must NOT alter. The App
-// path is the right answer for a fleet, where handing a run a tenant PAT would hand it that account's
-// whole reach, and it stays exactly as it was for the bindings that name no credential of their own.
-func TestTheAppPathIsUnchangedWhenAnAppIsConfigured(t *testing.T) {
+// TestTheAppVariablesAreInertAndReOpenNothing replaces a test that asserted the OPPOSITE of this one.
+//
+// It was TestTheAppPathIsUnchangedWhenAnAppIsConfigured, and it pinned the App path as the right answer
+// for a fleet. `9ad0665d refactor(publish)!: delete the deployment-global GitHub App` removed that path
+// on the measured ground that one App could mint only for the repositories one installation covered
+// while its owner/repo came from an environment variable — so a deployment serving many bindings opened
+// every pull request against whichever repository that variable named. The old test's SUBJECT is gone,
+// so it is not repaired and not merely deleted: it is inverted into the guard the removal needs.
+//
+// WHY A GUARD RATHER THAN A DELETION. The three variables still appear in this tree — in compose prose,
+// in .env.example, in two operator pages — so an operator can still SET them, and a future reader could
+// reasonably wire them back as a "fallback" for the bindings that carry no credential. That fallback is
+// exactly the shape that was removed. This test drives the real wiring with all three set and requires
+// that NOTHING changes: no deployment-global broker, no deployment-global pull-request client, and above
+// all no re-opening of the ref-less publication. The last one is the security half — before the removal
+// these variables made CanPublish("") succeed, and if they ever do so again a binding nobody gave a
+// credential to would publish under an identity nobody chose.
+func TestTheAppVariablesAreInertAndReOpenNothing(t *testing.T) {
 	appLessEnv(t)
 	key := filepath.Join(t.TempDir(), "app.pem")
 	if err := os.WriteFile(key, testAppPEM(t), 0o600); err != nil {
@@ -179,25 +198,29 @@ func TestTheAppPathIsUnchangedWhenAnAppIsConfigured(t *testing.T) {
 	if !ok {
 		t.Fatal("repositoryPublisher() built no *execution.RepositoryPublisher")
 	}
-	if repo.Broker == nil {
-		t.Fatal("a configured GitHub App built no deployment-global broker: every binding without its own " +
-			"credential now has none")
+	if repo.Broker != nil {
+		t.Fatal("the App variables built a deployment-global broker again: one installation's reach would " +
+			"back every binding that carries no credential of its own")
 	}
-	if repo.PRClient == nil {
-		t.Fatal("a configured App with PALAI_GIT_REPO=owner/repo built no pull-request client: an approved " +
-			"pull request would answer 'no pull-request client wired'")
+	if repo.PRClient != nil {
+		t.Fatal("the App variables built a deployment-global pull-request client again: PALAI_GIT_REPO would " +
+			"decide the destination for bindings that never named it")
 	}
-	if err := repo.CanPublish(""); err != nil {
-		t.Fatalf("a ref-less binding was refused on a deployment WITH an App: %v", err)
+	// THE SECURITY HALF. A ref-less binding is refused on an App-less deployment; setting these variables
+	// must not turn that refusal back into an acceptance.
+	if err := repo.CanPublish(""); err == nil {
+		t.Fatal("setting the App variables re-opened the ref-less publication: a binding nobody gave a " +
+			"credential would publish under an identity nobody chose")
 	}
 	if err := repo.CanPublish("rcon_tenant_pat"); err != nil {
-		t.Fatalf("a ref-carrying binding was refused on a deployment with an App: %v", err)
+		t.Fatalf("a ref-carrying binding was refused while the App variables were set: %v — the variables are "+
+			"inert, which means they must not break the path that works either", err)
 	}
-	// AND THE CONNECTION HALF SURVIVES THE APP BEING PRESENT. The two paths are independent in BOTH
-	// directions: this is the assertion that would have caught the fix being written as a second gate.
+	// AND THE CONNECTION HALF IS STILL WIRED. Without this leg the assertions above are satisfied by a
+	// publisher with nothing wired at all, which would be a worse defect wearing a passing test.
 	if repo.ConnectionSecrets == nil || repo.PRClientFor == nil {
-		t.Fatal("configuring a GitHub App removed the per-binding credential path: a tenant that provisioned " +
-			"its own credential would silently publish as the deployment App")
+		t.Fatal("the per-binding credential path is not wired: every publication would refuse, and the " +
+			"assertions above would pass for the wrong reason")
 	}
 }
 

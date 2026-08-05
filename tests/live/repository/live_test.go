@@ -295,8 +295,18 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 // App is not asked for, and a test that quietly deletes a pull request is worse than one that leaves a
 // visible artifact named after itself.
 func TestLiveApprovedPushAndDraftPullRequest(t *testing.T) {
-	for _, name := range []string{"PALAI_GITHUB_APP_ID", "PALAI_GITHUB_APP_INSTALLATION_ID",
-		"PALAI_GITHUB_APP_PRIVATE_KEY_FILE", "PALAI_GIT_CLONE_URL", "PALAI_GIT_BASE_BRANCH", "PALAI_GIT_REPO"} {
+	// THE GATE NAMES THE CREDENTIAL THAT ACTUALLY PUSHES. Until 2026-08-05 it demanded the three
+	// PALAI_GITHUB_APP_* variables, and when `9ad0665d refactor(publish)!: delete the deployment-global
+	// GitHub App` removed the App those variables lost every reader in the tree — including this test's
+	// own body, which now goes through liveBroker. A gate on a variable nothing reads cannot be satisfied
+	// by an operator who has a working credential, so this leg (§6 leg 5) would have skipped forever
+	// while reading, to anyone scanning the file, as a leg merely waiting for infrastructure.
+	//
+	// PALAI_LIVE_REPO_TOKEN is required rather than optional here: liveBroker falls back to an ANONYMOUS
+	// broker without it, and an anonymous broker cannot push to a real remote — so its absence would turn
+	// the one claim no fake can answer into a failure about credentials.
+	for _, name := range []string{"PALAI_LIVE_REPO_TOKEN", "PALAI_GIT_CLONE_URL", "PALAI_GIT_BASE_BRANCH",
+		"PALAI_GIT_REPO"} {
 		if os.Getenv(name) == "" {
 			t.Skipf("%s is required for the live push + draft-PR leg (E22 §0.2)", name)
 		}
@@ -434,8 +444,11 @@ func TestLiveApprovedMergeRefusesAMovedHead(t *testing.T) {
 	if os.Getenv("PALAI_GIT_LIVE_MERGE") != "1" {
 		t.Skip("PALAI_GIT_LIVE_MERGE=1 is required for the live merge leg: it can change a real repository")
 	}
-	for _, name := range []string{"PALAI_GITHUB_APP_ID", "PALAI_GITHUB_APP_INSTALLATION_ID",
-		"PALAI_GITHUB_APP_PRIVATE_KEY_FILE", "PALAI_GIT_CLONE_URL", "PALAI_GIT_BASE_BRANCH", "PALAI_GIT_REPO"} {
+	// Same correction as the push leg above: the App variables this used to demand have had no reader
+	// anywhere in the tree since `9ad0665d`, so the gate could not be satisfied by the only credential
+	// that exists. A binding's token is what merges now.
+	for _, name := range []string{"PALAI_LIVE_REPO_TOKEN", "PALAI_GIT_CLONE_URL", "PALAI_GIT_BASE_BRANCH",
+		"PALAI_GIT_REPO"} {
 		if os.Getenv(name) == "" {
 			t.Skipf("%s is required for the live merge leg (E23 §0.3)", name)
 		}
