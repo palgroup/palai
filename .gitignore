@@ -35,5 +35,10 @@ __pycache__/
 # Accidental bare-name build output of ./tests/sandboxes/mcp
 /mcp
 
+# Same for ./cmd/palai-agentd, and this one is worth naming: it is a 3.8 MB Mach-O, and the residue
+# scans this tree runs use `grep`, which is ugrep here and SKIPS BINARIES — so a stray build of it
+# sits in an evidence sweep's blind spot while the sweep reports clean.
+/palai-agentd
+
 # Karsilastirma ekran goruntuleri (referans vs bizimki). Uretilir, versiyonlanmaz.
 .shots/
