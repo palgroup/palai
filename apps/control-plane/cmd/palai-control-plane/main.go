@@ -625,6 +625,11 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		mcpManager := mcpManagerFromEnv(spine, broker, route)
 		toolRegistry.SetMCP(mcpManager)
 		repo.SetMCP(mcpManager)
+		// The SAME flag the manager dials with, given to the create-time vet. Read once, here, because a
+		// registry that read the environment itself would be a second place deciding deployment posture.
+		allowPrivateMCP := os.Getenv("PALAI_MCP_ALLOW_PRIVATE") == "1"
+		// Only the extensions registry vets a create; repo.SetMCP above binds the same client for discovery.
+		toolRegistry.SetMCPAllowPrivate(allowPrivateMCP)
 		startMCPOrphanSweep(ctx, supervisor)
 		// Wire the E12 T8 hooks (spec §28.17): the registry fires a run's registered hooks at the five pinned
 		// dispatch points. platform_inline hooks dispatch to the code-defined handler table (deny-all is the
@@ -1108,6 +1113,18 @@ func mcpManagerFromEnv(spine *coordinator.Store, broker *modelbroker.Broker, rou
 		Sink:           execution.NewMCPProgressSink(spine),
 		Sampling:       sampling,
 		DefaultTimeout: envDurationOr("PALAI_MCP_TIMEOUT", 30*time.Second),
+		// PALAI_MCP_ALLOW_PRIVATE opens loopback and RFC1918 to MCP dials, default CLOSED.
+		//
+		// IT MIRRORS PALAI_A2A_PUSH_ALLOW_PRIVATE rather than inventing a posture: the same question was
+		// answered for the A2A push sender, and two spellings of "may this deployment reach its own
+		// network" is how a stack ends up in a posture nobody declared.
+		//
+		// WHY IT EXISTS AT ALL. A self-hosted deployment's MCP server is frequently ON its own network —
+		// a Jira behind a VPN, an internal wiki, a service on the same host. Without this the only
+		// reachable servers are public ones, which for a private deployment is the wrong default in the
+		// other direction. The flag is opt-in, and the pinned dialer stays the connect-time authority
+		// either way: this widens what VetURL admits, it does not remove the vet.
+		AllowPrivate: os.Getenv("PALAI_MCP_ALLOW_PRIVATE") == "1",
 	})
 }
 

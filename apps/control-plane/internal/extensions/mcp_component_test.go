@@ -145,3 +145,34 @@ func componentURL(t *testing.T) string {
 	t.Helper()
 	return os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
 }
+
+// TestAPrivateMCPURLIsRefusedUnlessTheDeploymentAllowsIt pins BOTH halves of one decision, and the
+// pairing is the point rather than two separate facts.
+//
+// A self-hosted deployment's MCP server is frequently on its own network — a Jira behind a VPN, a
+// service on the same host — so "private addresses are always refused" is the wrong default in one
+// direction and "always allowed" is wrong in the other. The flag decides, and it must decide the SAME
+// WAY in two places: the create-time egress vet here, and the manager's dial. A deployment where the two
+// disagree gets a shape nobody asked for — a connection that registers and can never be dialled, or one
+// that dials somewhere the vet would have refused.
+//
+// The default is CLOSED, asserted first, because a flag whose absence is permissive is not a flag.
+func TestAPrivateMCPURLIsRefusedUnlessTheDeploymentAllowsIt(t *testing.T) {
+	s, project := openStore(t)
+	body := []byte(`{"name":"local-probe","transport":"http","config":{"url":"http://127.0.0.1:8977/mcp"}}`)
+
+	if _, err := s.CreateMCPConnection(context.Background(), project, body); err == nil {
+		t.Fatal("a loopback MCP URL was accepted with no deployment flag set: private addresses must be " +
+			"refused by default, or an SSRF is one create call away")
+	}
+
+	s.SetMCPAllowPrivate(true)
+	conn, err := s.CreateMCPConnection(context.Background(), project, body)
+	if err != nil {
+		t.Fatalf("a loopback MCP URL was refused WITH the flag set: %v — a self-hosted deployment whose "+
+			"server is on its own network then has no way to reach it", err)
+	}
+	if conn.ID == "" {
+		t.Fatal("the connection was created with no id")
+	}
+}

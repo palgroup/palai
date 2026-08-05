@@ -70,7 +70,7 @@ func (s *Store) CreateMCPConnection(ctx context.Context, project string, raw []b
 	if !isASCIIName(in.Name) || in.Name == "" || len(in.Name) > maxSegmentLen {
 		return Connection{}, fmt.Errorf("%w: got %q", ErrInvalidConnectionName, in.Name)
 	}
-	if err := validateConnectionConfig(in.Transport, in.Config); err != nil {
+	if err := validateConnectionConfig(in.Transport, in.Config, s.mcpAllowPrivate); err != nil {
 		return Connection{}, err
 	}
 	// Fail-fast SSRF gate at REGISTRATION (E12 T6 step 4): resolve-vet the http URL + audience through the
@@ -164,7 +164,7 @@ func decodeMCPConnectionInput(raw []byte) (MCPConnectionInput, error) {
 // sha256 image digest and a non-empty argv; an http connection must carry a url. It also ALLOWLISTS the keys
 // per transport, so a credential can never land inline in the connection JSONB (e.g. {"bearer":"sk-.."}) —
 // the secret_ref handle is the ONLY credential path (spec §28.4). An unknown/credential-shaped key is a reject.
-func validateConnectionConfig(transport string, config map[string]any) error {
+func validateConnectionConfig(transport string, config map[string]any, allowPrivate bool) error {
 	switch transport {
 	case "stdio":
 		digest, _ := config["image_digest"].(string)
@@ -186,7 +186,7 @@ func validateConnectionConfig(transport string, config map[string]any) error {
 		// Static egress gate at REGISTRATION: an internal literal IP, an http downgrade, or a URL embedding a
 		// credential is rejected here (the resolve-vet fail-fast half is Manager.VetConnection, wired into
 		// create/discover). The pinned dialer stays the authoritative connect-time gate.
-		if err := egress.VetURL(url, false); err != nil {
+		if err := egress.VetURL(url, allowPrivate); err != nil {
 			return fmt.Errorf("%w: %v", ErrInvalidConnectionConfig, err)
 		}
 		// A declared oauth block is validated passively (PKCE S256 + exact https redirect; no inline secret).

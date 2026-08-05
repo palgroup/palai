@@ -28,6 +28,13 @@ type MCPClient interface {
 // creatable but not discoverable/executable (the binder-less posture, symmetric with T2's remote_http).
 func (s *Store) SetMCP(client MCPClient) { s.mcp = client }
 
+// SetMCPAllowPrivate widens the CREATE-time egress vet to loopback and RFC1918, and it must be given the
+// SAME value the manager dials with. Two spellings of "may this deployment reach its own network" is how a
+// stack ends up registering a connection it can never dial, or dialling one it should have refused.
+//
+// The composition root owns the decision (PALAI_MCP_ALLOW_PRIVATE); this package only carries it.
+func (s *Store) SetMCPAllowPrivate(allow bool) { s.mcpAllowPrivate = allow }
+
 // DiscoverResult reports one discovery pass: the tools that produced a new draft revision, the ones already
 // current (digest unchanged — no churn), and the ones REJECTED by a model-visible collision (a colliding
 // single tool is a visible reject; discovery continues past it — spec §28.13 namespacing).
