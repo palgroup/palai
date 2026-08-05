@@ -34,6 +34,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/storage"
@@ -164,44 +165,100 @@ func TestASettledOccupancyFreesTheSlotItHeld(t *testing.T) {
 	}
 }
 
+// contenderSettle is how long the two contenders are given to reach the machine before the test lets go of
+// it. It cannot flake: every build blocks here until the lock is RELEASED (see the note below on WHERE each
+// one blocks), so no amount of waiting makes this pass or fail by accident — it only has to be long enough
+// for two goroutines to issue a query, which is microseconds.
+const contenderSettle = 300 * time.Millisecond
+
 // TestTwoSessionsRacingForTheLastSlotProduceExactlyOneWinner — THE DECISION IS IN THE WRITE, SO A TIE HAS
-// A LOSER.
+// A LOSER, AND THE TIE IS STAGED RATHER THAN HOPED FOR.
 //
 // A ceiling that COUNTS and then INSERTS is not a ceiling: under READ COMMITTED two transactions take
 // their snapshots before either commits, both see the machine one short of full, and both write. The
 // machine ends up over the capacity it declared and nothing ever reports an error — the failure is
-// invisible precisely because every caller was told yes.
+// invisible precisely because every caller was told yes. What prevents it is AcquireLease taking the
+// MACHINE's row `FOR UPDATE` before it writes, so contenders queue instead of overlapping.
 //
-// TWO SESSIONS ARE STARTED TOGETHER AND BOTH ANSWERS ARE COLLECTED, so this cannot pass by one of them
-// merely finishing first: whatever the order, exactly one must hold ErrMachineAtCapacity, and the table
-// must carry exactly the capacity the machine declared.
+// THE FIRST VERSION OF THIS TEST JUST STARTED TWO GOROUTINES AT ONCE, AND IT WAS WORTHLESS. Deleting the
+// `FOR UPDATE` from LockMachineForPlacement — which genuinely breaks the property — left it GREEN three
+// runs out of three: the window between one acquire's snapshot and its commit is microseconds wide, and
+// two goroutines released from a channel do not reliably land inside it. A test that cannot fail when the
+// property breaks is not a weak test, it is a defeated assertion.
+//
+// SO THE WINDOW IS HELD OPEN BY THE TEST, which takes the machine's row lock itself before starting the
+// contenders. With the lock staged this way the perturbation fails three runs out of three.
+//
+// WHERE EACH BUILD BLOCKS IS THE WHOLE MECHANISM, AND IT IS NOT WHERE IT LOOKS. Both builds block — that
+// was measured, not assumed. `runner_leases.runner_id` references `runners`, so the INSERT's foreign-key
+// check takes a KEY SHARE lock on the machine's row, and KEY SHARE conflicts with the FOR UPDATE this test
+// holds. What differs is WHEN, relative to the count:
+//
+//	with the lock    : the acquire blocks in LockMachineForPlacement, BEFORE its INSERT is issued. Its
+//	                   INSERT is then a new statement with a new snapshot, taken after the winner committed,
+//	                   so the loser counts a FULL machine and is refused.
+//	without the lock : the acquire blocks INSIDE its INSERT, at the foreign-key check — after that
+//	                   statement's snapshot was taken and its count subquery already answered "one free".
+//	                   Both were told yes before either could see the other, and both write.
+//
+// So the assertion that catches it is the WINNER COUNT and not the blocked check: the blocked check passes
+// either way, and it is here to stage the tie rather than to judge it.
 func TestTwoSessionsRacingForTheLastSlotProduceExactlyOneWinner(t *testing.T) {
 	env := newFleetEnv(t)
 	ctx := context.Background()
 	machine := env.seedMachineWithCapacity(t, 2)
 	env.mustAcquire(t, env.seedSession(t), machine) // one of the two slots is gone
 
+	// The test holds the machine, so both contenders below must wait on it.
+	blocker, err := env.cs.Pool().Begin(storage.WithSystemScope(ctx))
+	if err != nil {
+		t.Fatalf("begin the blocking transaction: %v", err)
+	}
+	defer func() { _ = blocker.Rollback(context.Background()) }()
+	if _, err := blocker.Exec(storage.WithSystemScope(ctx),
+		`SELECT capacity FROM runners WHERE id = $1 FOR UPDATE`, machine); err != nil {
+		t.Fatalf("hold the machine row: %v", err)
+	}
+
+	type outcome struct {
+		lease string
+		err   error
+	}
 	contenders := []string{env.seedSession(t), env.seedSession(t)}
-	start := make(chan struct{})
-	errs := make(chan error, len(contenders))
+	done := make(chan outcome, len(contenders))
 	for _, session := range contenders {
 		go func(session string) {
-			<-start
-			_, err := env.cs.AcquireLease(ctx, env.tenant, session, machine)
-			errs <- err
+			lease, err := env.cs.AcquireLease(ctx, env.tenant, session, machine)
+			done <- outcome{lease, err}
 		}(session)
 	}
-	close(start)
+
+	// BOTH ARE WAITING ON THE MACHINE. This STAGES the tie rather than judging it — see the note above:
+	// every build blocks here, so this passing says only that the contenders really did reach the machine
+	// and the window below is genuinely a contended one. An acquire that finished anyway would mean it
+	// never touched the machine's row at all, which is a different defect and worth its own sentence.
+	time.Sleep(contenderSettle)
+	select {
+	case got := <-done:
+		t.Fatalf("a contender finished (lease %q, err %v) while the test still held the machine's row — it reached neither the row lock nor the foreign key, so the tie below was never staged",
+			got.lease, got.err)
+	default:
+	}
+
+	// Release, and let the queue drain.
+	if err := blocker.Rollback(ctx); err != nil {
+		t.Fatalf("release the machine row: %v", err)
+	}
 
 	var won, refused int
 	for range contenders {
-		switch err := <-errs; {
-		case err == nil:
+		switch got := <-done; {
+		case got.err == nil:
 			won++
-		case errors.Is(err, coordinator.ErrMachineAtCapacity):
+		case errors.Is(got.err, coordinator.ErrMachineAtCapacity):
 			refused++
 		default:
-			t.Fatalf("a contender for the last slot failed for an unrelated reason: %v", err)
+			t.Fatalf("a contender for the last slot failed for an unrelated reason: %v", got.err)
 		}
 	}
 	if won != 1 || refused != 1 {

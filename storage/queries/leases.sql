@@ -84,7 +84,14 @@ RETURNING id;
 -- about to free.
 --
 -- It is read INSIDE the acquire's transaction, while LockMachineForPlacement still holds the machine's row,
--- so the number it reports is the number the INSERT just judged against and not a later one.
+-- so no other writer can move the number between the judgement and the explanation.
+--
+-- IT CARRIES THE SAME `released_at IS NULL` AS THE CEILING ABOVE, AND THAT IS A COUPLING RATHER THAN A
+-- COINCIDENCE. These two are the only copies of "what counts as occupied", and if they ever disagree the
+-- refusal is still correct while its REASON becomes wrong. Measured by perturbing exactly that on
+-- 2026-08-05: with the liveness predicate dropped from the ceiling and left here, a machine that was
+-- genuinely full refused the acquire and the caller was told "machine is not one this tenant can occupy" —
+-- an answer that sends the next reader to look at tenancy for a capacity problem. Change one, change both.
 SELECT count(*)
   FROM runner_leases
  WHERE runner_id = $1 AND project_id = $2
