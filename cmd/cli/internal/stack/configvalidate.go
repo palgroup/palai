@@ -40,10 +40,15 @@ var optionalEnv = map[string]bool{
 	"PALAI_RETENTION_STORE_FALSE_TTL": true,
 	"PALAI_RUNNER_CERT_TTL":           true,
 	"PALAI_RUNNER_CONCURRENCY":        true,
-	"PALAI_METRICS_DISK_PATH":         true,
-	"PALAI_PROM_PORT":                 true,
-	"PALAI_GRAFANA_PORT":              true,
-	"PALAI_GRAFANA_ADMIN_PASSWORD":    true,
+	// The machine's declared session ceiling. It joins this map the moment compose interpolates it:
+	// a key the base profile reads but neither set names is reported as "unknown env (typo?)" and
+	// FAILS the check, so leaving it out would have `palai config validate` accusing an operator of a
+	// typo on a variable the product reads.
+	"PALAI_RUNNER_CAPACITY":        true,
+	"PALAI_METRICS_DISK_PATH":      true,
+	"PALAI_PROM_PORT":              true,
+	"PALAI_GRAFANA_PORT":           true,
+	"PALAI_GRAFANA_ADMIN_PASSWORD": true,
 	// The edge's own TLS pair. Unset, the overlay mounts ${PALAI_HOME}/ca/server.* exactly as it
 	// always did; set, the edge carries the operator's real-domain certificate while the runner
 	// gateway keeps the single-SAN identity it pins (deploy/compose/production.yml, install.md §7).

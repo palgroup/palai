@@ -804,6 +804,17 @@ var unreportedSettings = map[string]string{
 	"PALAI_CONTROLLER_URL":  "runner-scoped: the address the RUNNER dials this control plane on. This process holds no copy.",
 	"PALAI_CONTROLLER_DNS":  "runner-scoped: the SAN the RUNNER pins its gateway connection to. This process holds no copy.",
 	"PALAI_COMPOSE_PROJECT": "runner-scoped: the compose project label the RUNNER tags engine sandboxes with. This process holds no copy.",
+	// IT IS NOT A CATALOGUE ENTRY, AND THE DIFFERENCE FROM ITS SIBLING IS THE WHOLE REASON. The runner-plane
+	// row above (PALAI_RUNNER_CONCURRENCY) earned its place when the plane gained a way to SEND the value:
+	// handleEnroll answers a machine its pool's document and cmd/runner takes the number from it. That path
+	// cannot carry this one. The document arrives in the enrolment RESPONSE, and this value has to be in the
+	// enrolment REQUEST — a ceiling delivered by the answer cannot bound the question that asked for it. So
+	// cmd/runner reads it from the machine's own environment, and a `runner_pool` row here would tell an
+	// operator to type it into a panel where it would do nothing.
+	"PALAI_RUNNER_CAPACITY": "runner-scoped: how many sessions the MACHINE declares it can hold at once. " +
+		"This process holds no copy, and the pool document cannot carry it either — it is read from the machine's " +
+		"own environment at ENROLMENT, before any document reaches it. The number a machine actually declared is " +
+		"on its runners row (GET /v1/runners, `capacity`), which is where an operator reads it back.",
 }
 
 // nonDesiredReason names every catalogued setting the panel may NOT write, with the reason. It is the

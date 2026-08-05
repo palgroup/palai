@@ -224,6 +224,15 @@ services:
       # Concurrent lease slots on this runner. Default 1 (LP-0 + existing stacks unchanged); the
       # delegation smoke sets 2 so a run's parent and its inline child each hold an engine (§25.18).
       PALAI_RUNNER_CONCURRENCY: ${PALAI_RUNNER_CONCURRENCY:-1}
+      # How many sessions this machine says it can hold AT ONCE — the ceiling coordinator.AcquireLease
+      # enforces (Faz A.4 T5). UNSET DECLARES NOTHING AND IS THE DEFAULT: `${VAR:-}` leaves an empty
+      # string, cmd/runner reads that as no declaration, and the enrolment body stays byte-identical —
+      # so every stack built before this line enrols with no ceiling exactly as it did.
+      #
+      # It has no `:-1` like the slot count above, and that asymmetry is the point: a default here
+      # would cap every container runner at a number no operator chose, which is the clamp
+      # 000005_capacity_declaration deleted for exactly that reason.
+      PALAI_RUNNER_CAPACITY: ${PALAI_RUNNER_CAPACITY:-}
       # The compose project this runner belongs to; it labels every engine sandbox it
       # launches so `palai local down` reaps exactly this stack's orphaned engines (H4).
       PALAI_COMPOSE_PROJECT: ${PALAI_COMPOSE_PROJECT}
