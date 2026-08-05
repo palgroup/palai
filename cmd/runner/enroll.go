@@ -49,14 +49,33 @@ import (
 // (KERN_PROCARGS2). argv is at least as exposed as the environment. The key is read once, spent, and
 // never copied into the config — the config records the PATH.
 func runEnroll(ctx context.Context, args []string, out io.Writer) error {
+	return enrol(ctx, args, out, enrolSeams{})
+}
+
+// enrolSeams are the two boundaries a test substitutes so it drives THIS function rather than a copy of
+// it: where the device's files go, and what installs the service.
+//
+// ‼️ THEY ARE FIELDS AND NOT FLAGS, and that is the whole point of the shape. `--config` and
+// `--no-service` used to exist for exactly this, and each had ONE consumer: the test. A product surface
+// that exists for a test is a product surface an operator can reach, and `--no-service` in particular
+// could leave a machine enrolled with nothing to bring it back after a power cycle — the state DoD 20
+// forbids. The seam belongs where every other boundary in this tree lives: injected, defaulted to the
+// real thing, invisible from the command line.
+type enrolSeams struct {
+	// Paths overrides where the config, key, identity and service unit go. Zero means this host's own.
+	Paths *device.Paths
+	// InstallService replaces the platform service installation. Zero means device.Install, which shells
+	// out to launchctl or systemctl — the thing a test must not do to the machine running it.
+	InstallService func(device.Paths, device.ServiceSpec) (device.InstalledService, error)
+}
+
+func enrol(ctx context.Context, args []string, out io.Writer, seams enrolSeams) error {
 	flags := flag.NewFlagSet("palai enroll", flag.ContinueOnError)
 	flags.SetOutput(out)
 	url := flags.String("url", "", "runner gateway address, e.g. https://runner.example.com:8443")
 	keyFile := flags.String("key-file", "", "path to the file holding the pool enrolment key (rpk_...), or - to read it from stdin")
 	caFile := flags.String("ca-file", "", "additional trust anchor for a private deployment; omit for a publicly trusted gateway")
 	serverName := flags.String("server-name", "", "identity on the controller's certificate when it differs from the address; omit when the URL host IS the certified name")
-	configPath := flags.String("config", "", "where to write the agent config; defaults to this platform's standard path")
-	skipService := flags.Bool("no-service", false, "enrol and write the identity, but do not install or start a service")
 	flags.Usage = func() {
 		fmt.Fprint(out, "usage: palai enroll --url <controller> --key-file <path> [--ca-file <path>] [--server-name <name>]\n\n"+
 			"Runs once per machine. Writes this device's configuration and identity, installs the\n"+
@@ -79,8 +98,8 @@ func runEnroll(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("resolve device paths: %w", err)
 	}
-	if *configPath != "" {
-		paths.ConfigFile = *configPath
+	if seams.Paths != nil {
+		paths = *seams.Paths
 	}
 
 	// STEP 1 — PERMISSIONS, BEFORE THE NETWORK. ReadEnrollmentKey checks the mode before it reads the
@@ -183,16 +202,16 @@ func runEnroll(ctx context.Context, args []string, out io.Writer) error {
 	fmt.Fprintf(out, "config    %s\n", paths.ConfigFile)
 	fmt.Fprintf(out, "identity  %s\n", paths.IdentityFile)
 
-	if *skipService {
-		fmt.Fprintf(out, "service   not installed (--no-service); run this agent with: %s --config %s\n",
-			executablePath(), paths.ConfigFile)
-		return nil
-	}
-
 	// STEP 7 — THE SERVICE. What is claimed on success is exactly "written, loaded, running". Whether it
 	// comes back after a power cycle is what the unit's RunAtLoad/WantedBy is FOR and it is NOT measured
 	// here — plan Milestone A0 owns that leg and it needs a machine that can be powered off.
-	installed, err := device.Install(runtime.GOOS, paths, device.ServiceSpec{
+	installService := seams.InstallService
+	if installService == nil {
+		installService = func(p device.Paths, spec device.ServiceSpec) (device.InstalledService, error) {
+			return device.Install(runtime.GOOS, p, spec)
+		}
+	}
+	installed, err := installService(paths, device.ServiceSpec{
 		Executable: executablePath(),
 		ConfigFile: paths.ConfigFile,
 		LogFile:    paths.LogFile,

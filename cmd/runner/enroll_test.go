@@ -194,6 +194,7 @@ func (s *enrollStub) sentBodies() []string {
 // enrollFixture is one throwaway machine: a home directory, a key file and a CA file.
 type enrollFixture struct {
 	home, keyFile, caFile, configPath string
+	servicesInstalled                 int
 	stub                              *enrollStub
 }
 
@@ -226,9 +227,24 @@ func (f *enrollFixture) args(extra ...string) []string {
 		"--url", f.stub.url,
 		"--key-file", f.keyFile,
 		"--ca-file", f.caFile,
-		"--config", f.configPath,
-		"--no-service",
 	}, extra...)
+}
+
+// seams point every device file at this fixture's directory and replace the service installation, so
+// these tests drive the SHIPPED enrol function without shelling out to launchctl or systemctl on the
+// machine running them. They are fields rather than the `--config` and `--no-service` flags that used to
+// carry them: a product surface that exists for a test is one an operator can reach, and `--no-service`
+// could leave a machine enrolled with nothing to bring it back after a power cycle.
+func (f *enrollFixture) seams() enrolSeams {
+	paths := device.DefaultPaths(runtime.GOOS, f.home, func(string) string { return "" })
+	paths.ConfigFile = f.configPath
+	return enrolSeams{
+		Paths: &paths,
+		InstallService: func(p device.Paths, spec device.ServiceSpec) (device.InstalledService, error) {
+			f.servicesInstalled++
+			return device.InstalledService{Path: p.ServiceFile, Loaded: true, Started: true}, nil
+		},
+	}
 }
 
 // TestEnrollWritesTheMachineAndKeepsItsIdentityAcrossRuns is the command's whole contract in one
@@ -245,7 +261,7 @@ func TestEnrollWritesTheMachineAndKeepsItsIdentityAcrossRuns(t *testing.T) {
 	defer cancel()
 
 	var out strings.Builder
-	if err := runEnroll(ctx, f.args(), &out); err != nil {
+	if err := enrol(ctx, f.args(), &out, f.seams()); err != nil {
 		t.Fatalf("enroll: %v\n%s", err, out.String())
 	}
 
@@ -269,7 +285,7 @@ func TestEnrollWritesTheMachineAndKeepsItsIdentityAcrossRuns(t *testing.T) {
 
 	// SECOND RUN — the operator re-running the installer.
 	out.Reset()
-	if err := runEnroll(ctx, f.args(), &out); err != nil {
+	if err := enrol(ctx, f.args(), &out, f.seams()); err != nil {
 		t.Fatalf("second enroll: %v\n%s", err, out.String())
 	}
 	secondIdentity := readIdentity(t, paths.IdentityFile)
@@ -298,6 +314,15 @@ func TestEnrollWritesTheMachineAndKeepsItsIdentityAcrossRuns(t *testing.T) {
 	if strings.Contains(bodies[0], "recover_runner_id") {
 		t.Fatalf("the FIRST request claimed an identity it did not hold:\n%s", bodies[0])
 	}
+	// ‼️ THE SERVICE IS INSTALLED, AND SAYING SO IS WHY `--no-service` IS GONE. That flag let this test
+	// skip the step, which meant nothing measured whether enrolling a machine also gave it something to
+	// bring it back — the state DoD 20 forbids. The seam substitutes the platform call; it does not skip
+	// it, so removing the install from enrol reddens this line.
+	// TWO runs, so two installs: re-running the installer must leave the machine with a service, not
+	// take one away. Zero is the failure this guards.
+	if f.servicesInstalled != 2 {
+		t.Fatalf("enrol installed %d services across two runs, want 2: a machine enrolled with nothing to start it does not come back from a power cycle", f.servicesInstalled)
+	}
 }
 
 // TestAnUnsafeKeyIsRefusedBeforeTheGatewayIsCalled is plan §T2's fourth RED with the word that makes it
@@ -316,7 +341,7 @@ func TestAnUnsafeKeyIsRefusedBeforeTheGatewayIsCalled(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out strings.Builder
-	err := runEnroll(ctx, f.args(), &out)
+	err := enrol(ctx, f.args(), &out, f.seams())
 	if err == nil {
 		t.Fatal("a world-readable pool key was accepted")
 	}
@@ -352,7 +377,7 @@ func TestTheKeyIsNeverOnArgvInTheEnvironmentOrInAnythingWrittenIsTheLeakScan(t *
 
 	var out strings.Builder
 	args := f.args()
-	if err := runEnroll(ctx, args, &out); err != nil {
+	if err := enrol(ctx, args, &out, f.seams()); err != nil {
 		t.Fatalf("enroll: %v\n%s", err, out.String())
 	}
 	paths := devicePathsFor(t, f.home)
