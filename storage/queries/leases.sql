@@ -58,9 +58,21 @@ SELECT capacity
 -- in this statement. Written as a bare `count(*) < r.capacity`, zero would compare as "no room at all" and
 -- a machine that simply never said anything would refuse EVERY session — the exact inversion of what an
 -- absent declaration means. Until 000005_capacity_declaration the column's CHECK refused zero and the
--- registry clamped every enrolment to 1, so nothing could reach this arm; now nothing BUT this arm is
--- reached, because no machine in any deployment declares a capacity yet. The ceiling is opt-in, and this
+-- registry clamped every enrolment to 1, so nothing could reach this arm. The ceiling is opt-in, and this
 -- is where the opt is read.
+--
+-- THE SENTENCE THAT STOOD HERE SAID "nothing BUT this arm is reached, because no machine in any deployment
+-- declares a capacity yet", AND IT WAS TRUE UNTIL 05822d86. Counting which halves survived rather than
+-- writing "now it works":
+--   * "the ceiling is opt-in, and zero admits everything" — STILL TRUE, and it is the whole guard above.
+--   * "no machine declares a capacity" — NO LONGER TRUE, and it was the operative half. The column was
+--     declarable on the wire, read by the enrolment handler and written by the store, but cmd/runner's
+--     loadConfig never filled it and no environment variable existed, so every machine in every deployment
+--     enrolled at 0 and this arm was the only reachable one. Measured then: 47 machines, one distinct
+--     capacity, 0. cmd/runner now reads PALAI_RUNNER_CAPACITY (compose interpolates it in 16e723da), and a
+--     machine declaring 1 was read back from the database on a live stack — so the OTHER arm, the one this
+--     subquery exists for, is REACHABLE. Reachable is the claim; whether a live run has yet been refused
+--     by it is a separate measurement and is not asserted here.
 --
 -- WHAT IS COUNTED IS `released_at IS NULL` — the OPEN holds, not the holds ever taken. A machine whose
 -- ceiling counted history would be placeable until its first few sessions ended and unplaceable forever
