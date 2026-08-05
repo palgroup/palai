@@ -109,15 +109,61 @@ RETURNING id;
 -- so no other writer can move the number between the judgement and the explanation.
 --
 -- IT CARRIES THE SAME `released_at IS NULL` AS THE CEILING ABOVE, AND THAT IS A COUPLING RATHER THAN A
--- COINCIDENCE. These two are the only copies of "what counts as occupied", and if they ever disagree the
--- refusal is still correct while its REASON becomes wrong. Measured by perturbing exactly that on
--- 2026-08-05: with the liveness predicate dropped from the ceiling and left here, a machine that was
--- genuinely full refused the acquire and the caller was told "machine is not one this tenant can occupy" —
--- an answer that sends the next reader to look at tenancy for a capacity problem. Change one, change both.
+-- COINCIDENCE. These were the only two copies of "what counts as occupied" until PoolMachineOccupancies
+-- below made a third, and if they ever disagree the refusal is still correct while its REASON becomes
+-- wrong. Measured by perturbing exactly that on 2026-08-05: with the liveness predicate dropped from the
+-- ceiling and left here, a machine that was genuinely full refused the acquire and the caller was told
+-- "machine is not one this tenant can occupy" — an answer that sends the next reader to look at tenancy for
+-- a capacity problem. Change one, change all three.
 SELECT count(*)
   FROM runner_leases
  WHERE runner_id = $1 AND project_id = $2
    AND released_at IS NULL;
+
+-- name: PoolMachineOccupancies
+-- Every machine in one pool with the two numbers a PLACEMENT PREFERENCE needs: how many holds are open on
+-- it right now, and the ceiling it declared. Read once per dial, and only when the gateway has more than
+-- one machine actually free to choose between.
+--
+-- WHY IT EXISTS. Until Faz A.5 T6 the pool was chosen and the MACHINE was not: `fleet.ResolvePool` decided
+-- which queue an attempt waited on, and the queue then handed over whichever machine happened to be at the
+-- head of its parked list. That was invisible while every Mac pool held one machine. On a fleet it means a
+-- Mac carrying three idle allocations and a Mac carrying none are the same candidate.
+--
+-- IT IS A PREFERENCE AND NEVER A REFUSAL, which is the whole reason it can be a plain read outside any
+-- transaction while AcquireLease's own count has to be inside the write. Nothing here decides whether a
+-- hold opens: by the time the caller acts on this answer it is already stale, and the statement that judges
+-- the machine takes that machine's row `FOR UPDATE` first. What this buys is which machine is TRIED.
+--
+-- `capacity` IS RETURNED RAW, ZERO AND ALL, and the caller reads zero exactly as AcquireLease does —
+-- declared nothing, therefore no ceiling, therefore always room. A statement that filtered full machines
+-- out here would be a SECOND ceiling: weaker than the real one, disagreeing with it under contention, and
+-- reading a machine that simply never declared anything as permanently full, which is the one real trap in
+-- this column and is nailed down by a test.
+--
+-- NO STATE FILTER, AND THE OMISSION IS DELIBERATE. The caller ranks only the machines parked on its queue
+-- at that moment, so a decommissioned machine is not a candidate to begin with. A filter here could
+-- therefore only DROP a parked machine from the answer — and a machine missing from the answer is read as
+-- "nothing is known about it", which ranks it as EMPTY. `state <> 'active'` would make a cordoned machine
+-- that is still parked look like the emptiest Mac on the fleet.
+--
+-- THE OPEN COUNT IS THE THIRD COPY OF `released_at IS NULL` (see MachineOpenOccupancies above). If this one
+-- drifts from the ceiling's, nothing is over-allocated — the ceiling still refuses — but every run is sent
+-- to the machine most likely to refuse it, so the failure is a placement that reliably picks the wrong Mac
+-- rather than a placement that overfills one.
+--
+-- ORDER BY r.id makes the result total. The caller folds these rows into a map keyed by machine, so this
+-- order decides nothing today; it is here so a reader who turns them into a slice does not inherit an
+-- arbitrary one.
+SELECT r.id, r.capacity,
+       (SELECT count(*)
+          FROM runner_leases l
+         WHERE l.runner_id = r.id
+           AND l.project_id = r.project_id
+           AND l.released_at IS NULL)
+  FROM runners r
+ WHERE r.project_id = $1 AND r.pool_id = $2
+ ORDER BY r.id;
 
 -- name: MachinePool
 -- Which pool does this machine belong to? Read when a hold on it SETTLES, because that is the moment a

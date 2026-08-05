@@ -163,10 +163,12 @@ func (s *Store) AcquireLease(ctx context.Context, tenant Tenant, sessionID, runn
 		if rerr := tx.QueryRow(ctx, storage.Query("MachineOpenOccupancies"), runnerID, tenant.Project).Scan(&open); rerr != nil {
 			return "", fmt.Errorf("read the open occupancies of machine %s: %w", runnerID, rerr)
 		}
-		// `capacity > 0` is repeated from the statement's own guard rather than left implicit: a machine
-		// that declared nothing has no ceiling, so it can never be the reason, and `open >= 0` would name
-		// it as one for every refusal.
-		if capacity > 0 && open >= capacity {
+		// The statement's own guard, ASKED rather than restated: a machine that declared nothing has no
+		// ceiling, so it can never be the reason a row was refused, and a bare `open >= capacity` would name
+		// it as one for every refusal. It goes through HasRoom because that predicate now has a second
+		// reader (the placement preference), and two hand-written copies of a rule this narrow is how the
+		// two come to disagree about what "full" means.
+		if !(PoolMachineLoad{Open: open, Capacity: capacity}).HasRoom() {
 			return "", fmt.Errorf("%w: machine %s holds %d of %d", ErrMachineAtCapacity, runnerID, open, capacity)
 		}
 		return "", fmt.Errorf("%w: session %s", ErrMachineUnavailable, sessionID)
@@ -177,6 +179,69 @@ func (s *Store) AcquireLease(ctx context.Context, tenant Tenant, sessionID, runn
 		return "", fmt.Errorf("commit acquire lease on %s: %w", runnerID, err)
 	}
 	return stored, nil
+}
+
+// PoolMachineLoad is one machine's placement weight: the holds open on it right now, and the ceiling it
+// declared. `Capacity` is the column's raw value, so ZERO means the machine declared nothing and has no
+// ceiling at all — never "full". Reading it the other way round is the one real trap in this column and is
+// the reason it is carried here rather than folded into a single "has room" bool by the query.
+type PoolMachineLoad struct {
+	RunnerID string
+	Open     int
+	Capacity int
+}
+
+// HasRoom reports whether this machine can still take a session it is not already carrying.
+//
+// IT IS THE ONE PLACE THE ZERO RULE IS WRITTEN IN GO, and it exists because the rule had started to be
+// copied. `r.capacity = 0 OR count < r.capacity` is AcquireLease's own guard, this method is what the
+// refusal arm below and the placement preference in
+// apps/control-plane/internal/execution/runner_least_loaded.go both ask instead of restating it, and a
+// fourth copy is what would eventually rank an undeclared machine as permanently full — which, since no
+// machine in any shipped deployment declares a capacity, would read the ENTIRE fleet as full.
+//
+// `Capacity <= 0` rather than `== 0` so the negation is exactly the `capacity > 0` the acquire's arm has
+// always used. Nothing can store a negative anyway (migration 000005 left `CHECK (capacity >= 0)`), so the
+// two agree on every value that exists; the form is chosen so a reader diffing them finds no difference.
+func (l PoolMachineLoad) HasRoom() bool {
+	return l.Capacity <= 0 || l.Open < l.Capacity
+}
+
+// PoolMachineLoads reports how loaded each machine in one pool is, so a placement can PREFER the emptiest
+// one. It is the read behind "open the session on the emptiest Mac".
+//
+// IT DECIDES NOTHING AND MUST NOT, which is why it is a plain read outside any transaction while
+// AcquireLease's count of the very same rows is a subquery inside the write. Two callers ranking a fleet
+// from this answer at the same moment both see the same emptiest machine and both go for it; the one that
+// loses is refused by the ceiling, not by anything here. A version of this that took a lock and reserved a
+// slot would be a second ceiling — weaker than the real one and disagreeing with it under contention, which
+// is the shape apps/control-plane/internal/execution/orchestrator.go names and refuses.
+//
+// AN UNKNOWN MACHINE IS ABSENT FROM THE ANSWER RATHER THAN ZERO, and the caller has to decide what absence
+// means. Nothing is invented here for a machine the tenant cannot see: a pool with no rows answers empty,
+// which is the honest thing for a stack whose gateway has no registry behind it.
+func (s *Store) PoolMachineLoads(ctx context.Context, tenant Tenant, poolID string) ([]PoolMachineLoad, error) {
+	if tenant.Project == "" || poolID == "" {
+		return nil, errors.New("a tenant and a pool are required to weigh a pool's machines")
+	}
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("PoolMachineOccupancies"), tenant.Project, poolID)
+	if err != nil {
+		return nil, fmt.Errorf("read the machine loads of pool %s: %w", poolID, err)
+	}
+	defer rows.Close()
+	var out []PoolMachineLoad
+	for rows.Next() {
+		var load PoolMachineLoad
+		if err := rows.Scan(&load.RunnerID, &load.Capacity, &load.Open); err != nil {
+			return nil, fmt.Errorf("scan a machine load of pool %s: %w", poolID, err)
+		}
+		out = append(out, load)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the machine loads of pool %s: %w", poolID, err)
+	}
+	return out, nil
 }
 
 // TouchLease records that this session is still using the machine. It is a no-op on an occupancy that has

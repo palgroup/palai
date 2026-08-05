@@ -168,6 +168,10 @@ type RunnerGateway struct {
 	// every wire proof — parks machines and serves leases and wakes nothing, because in that posture
 	// there are no durable runs to wake.
 	wake CapacityWaker
+	// loads weighs a pool's machines so a handover can prefer the EMPTIEST one (Faz A.5 T6). Nil leaves
+	// Dial taking the head of the parked list, which is what every deployment did before it. See
+	// runner_least_loaded.go, which owns every line that touches this.
+	loads MachineLoadView
 }
 
 // CapacityWaker re-enters the oldest run parked on a pool for want of a machine. *coordinator.Store is
@@ -378,6 +382,15 @@ func (g *RunnerGateway) Revoked() bool  { return g.revoked.Load() }
 // later be softened into "close enough" by somebody debugging an idle Mac at 3am. It is also the cheaper
 // one — a comparison inside the handover would need the queue to consult per-runner state under its own
 // lock, and a resume would then need a way to re-run the match.
+//
+// A.5 T6 PUT A PER-RUNNER COMPARISON IN THE HANDOVER AFTER ALL, and the sentence above survives it rather
+// than being quietly contradicted by the code beneath it. Two things keep them apart. The comparison it
+// added ranks and never excludes: an ELIGIBILITY rule cannot be expressed by ranking (a preferred machine
+// that goes away must leave the rest reachable) and a PREFERENCE cannot be expressed by removal (there
+// would be nothing left to fall back to), so neither can be written in the other's shape. And the cost
+// argument holds literally: the queue still consults no per-runner state of its own — the weights are read
+// before its lock is taken and handed in finished, which is exactly what the second half of the sentence
+// asks for. See runner_least_loaded.go.
 //
 // `changed` is the broadcast: it is CLOSED and REPLACED on every transition, so any number of watchers
 // (a machine parks one session per concurrent lease) wake on one write without a condition variable and
@@ -1396,7 +1409,13 @@ func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (En
 		queuedAt = g.now()
 	}
 	queue := g.queueFor(attempt.Tenant, attempt.PoolID)
-	waiter := queue.wait(queuedAt)
+	// WHICH MACHINE IN THE POOL, and it is a preference rather than a decision (A.5 T6). The pool was
+	// already chosen — placement.go did that before the attempt got here — and until this line the machine
+	// was whichever one sat at the head of the parked list. The weights are read BEFORE the queue's lock is
+	// taken, so the queue consults no per-runner state of its own, and nil (no view, no tenant, nothing to
+	// choose between, or a read that failed) leaves the handover exactly as it was.
+	prefer := g.emptiestFirst(ctx, attempt.Tenant, attempt.PoolID, queue.parkedMachines())
+	waiter := queue.wait(queuedAt, prefer)
 	select {
 	case pr := <-waiter.ch:
 		pr.markTaken()
@@ -1664,6 +1683,11 @@ func (q *poolQueue) depth() int {
 }
 
 // park hands pr to the OLDEST waiting attempt, or holds it until one arrives.
+//
+// NOTHING IS CHOSEN ON THIS SIDE AND THERE IS NOTHING TO CHOOSE (A.5 T6). A machine parking into a queue
+// that already has waiters is the case where every OTHER machine is busy — it is the only candidate, so
+// preferring the emptiest is not a question that arises. The choice belongs to wait(), which is the moment
+// several machines really are free at once.
 func (q *poolQueue) park(pr *pendingRunner) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -1697,16 +1721,64 @@ func (q *poolQueue) unpark(pr *pendingRunner) bool {
 	return false
 }
 
-// wait registers an attempt on this pool. A machine already parked is handed over at once; otherwise
-// the waiter takes its place in the queue by age.
-func (q *poolQueue) wait(queuedAt time.Time) *poolWaiter {
+// parkedMachines is the DISTINCT machines with a session parked here right now — the candidates a handover
+// has to choose between, and nothing else. It is read before the preference is built (A.5 T6) so that the
+// decision whether to weigh anything at all costs one lock and no query: one machine parking three loops
+// (PALAI_RUNNER_CONCURRENCY) is three entries and still no choice.
+//
+// The set can change between this read and the wait below, and that is harmless by construction: what it
+// feeds is a PREFERENCE, so a machine that arrived in between is merely not preferred, and one that left is
+// simply not there to be chosen.
+func (q *poolQueue) parkedMachines() []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	seen := make(map[string]struct{}, len(q.parked))
+	out := make([]string, 0, len(q.parked))
+	for _, pr := range q.parked {
+		if _, already := seen[pr.runnerID]; already {
+			continue
+		}
+		seen[pr.runnerID] = struct{}{}
+		out = append(out, pr.runnerID)
+	}
+	return out
+}
+
+// takeParked removes and returns the parked machine this handover should use: the one the preference ranks
+// first, or the head of the list when there is no preference. Callers hold q.mu, and q.parked is non-empty.
+//
+// THE SCAN IS IN PARK ORDER AND THE COMPARISON IS STRICT, which together ARE the tie-break: equally empty
+// machines never displace the one already winning, so the machine that has been parked longest takes the
+// run. An unordered choice between equals would make this file's own proof a coin toss, and this tree has
+// recorded twice what an unordered pick decides when nobody names the order.
+//
+// ponytail: linear over the parked machines of ONE pool, once per dial, next to a workspace realize that
+// clones a repository. A heap when a pool is big enough for anyone to measure it.
+func (q *poolQueue) takeParked(prefer machinePreference) *pendingRunner {
+	best := 0
+	if prefer != nil {
+		bestWeight := prefer(q.parked[0].runnerID)
+		for i := 1; i < len(q.parked); i++ {
+			if weight := prefer(q.parked[i].runnerID); weight.better(bestWeight) {
+				best, bestWeight = i, weight
+			}
+		}
+	}
+	pr := q.parked[best]
+	q.parked = append(q.parked[:best], q.parked[best+1:]...)
+	return pr
+}
+
+// wait registers an attempt on this pool. A machine already parked is handed over at once — the one
+// `prefer` ranks first, which is A.5 T6's whole change and is nil for every caller that has nothing to
+// choose with; otherwise the waiter takes its place in the queue by age.
+func (q *poolQueue) wait(queuedAt time.Time, prefer machinePreference) *poolWaiter {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.seq++
 	w := &poolWaiter{queuedAt: queuedAt, seq: q.seq, ch: make(chan *pendingRunner, 1)}
 	if len(q.parked) > 0 {
-		pr := q.parked[0]
-		q.parked = q.parked[1:]
+		pr := q.takeParked(prefer)
 		pr.markTaken() // under the queue lock — see park() for why this is where it happens
 		w.ch <- pr
 		return w

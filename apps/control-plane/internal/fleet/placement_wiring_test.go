@@ -95,6 +95,30 @@ func TestTheCapacityWakerIsWiredIntoTheGateway(t *testing.T) {
 	}
 }
 
+// TestTheMachineLoadViewIsWiredIntoTheGateway pins Faz A.5 T6's one composition-root line, and it is here
+// because that task's failure mode is this file's whole subject in its purest form. The preference is a
+// SETTER on the gateway: unset, `Dial` hands over the head of the parked list exactly as it always did, so
+// a binary that never calls this line is not broken in any way anything can observe — every wire proof
+// constructs its own gateway and wires the view itself, and every component test drives the read directly.
+// The feature would be built, tested, documented and absent, which is the shape this repository has now
+// shipped five times.
+//
+// AND ITS ABSENCE IS SILENT WHERE THE WAKER'S IS LOUD, which is why it needs a fence more and not less. A
+// missing wake leaves runs parked forever and somebody notices within the hour; a missing preference leaves
+// a ten-Mac fleet quietly sending most of its work to whichever machine reconnected first, which looks
+// exactly like a fleet that is simply busy.
+func TestTheMachineLoadViewIsWiredIntoTheGateway(t *testing.T) {
+	const mainFile = "../../cmd/palai-control-plane/main.go"
+	found := callsMade(t, mainFile, map[string]string{
+		"SetMachineLoadView": "a run is placed on the machine holding the fewest open occupancies",
+	})
+	for name, wired := range found {
+		if !wired {
+			t.Errorf("%s: nothing calls %s — every dial then takes the machine at the head of its pool's queue, and a fleet's work piles onto whichever Mac happened to park first", mainFile, name)
+		}
+	}
+}
+
 // TestTheMachineLifecycleIsWiredIntoTheCompositionRoot is E24 T5's fence, and it is the one this task
 // exists for. §3.6 D15 measured `Revoke()` — SAN-011's hard stop, written for a compromised runner —
 // implemented, tested, registered in the UAT catalogue, and CALLED BY NOTHING. This repository has now

@@ -141,7 +141,7 @@ func main() {
 	// whose certificate has already expired.
 	runnerPoolKeys := fleet.NewPoolEnrollmentKeys(repo.Spine().Pool(), middleware.NewID, nil)
 
-	gateway := startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"), runnerRegistry, runnerPoolKeys, repo.Spine(), repo)
+	gateway := startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"), runnerRegistry, runnerPoolKeys, repo.Spine(), repo, repo.Spine())
 
 	// The kind-agnostic bot registry (2026-08-03 plan Task 4): a project's registered bots, one row per
 	// relay process the console can create. It rides the same durable spine's pool as every other admin
@@ -1746,7 +1746,7 @@ func withSupervisorStatus(next http.Handler, supervisor *coordinator.Supervisor,
 // itself. It returns the gateway so startDispatch can drive the production exec-path over it
 // as the orchestrator's EngineDialer. addr empty disables the gateway (returns nil) — the
 // public router carries a nil runner handler and dispatch stays assignment-only.
-func startRunnerGateway(addr string, registry fleet.Registry, poolKeys execution.PoolEnrollment, waker execution.CapacityWaker, poolSettings execution.PoolSettings) *execution.RunnerGateway {
+func startRunnerGateway(addr string, registry fleet.Registry, poolKeys execution.PoolEnrollment, waker execution.CapacityWaker, poolSettings execution.PoolSettings, loads execution.MachineLoadView) *execution.RunnerGateway {
 	if strings.TrimSpace(addr) == "" {
 		return nil
 	}
@@ -1791,6 +1791,11 @@ func startRunnerGateway(addr string, registry fleet.Registry, poolKeys execution
 	// run placed in an empty pool waits forever instead of ~2.5 minutes, which is a worse bug than the
 	// one it replaces — so it is fenced by name in a test, for the reason T3 fenced three call sites.
 	gateway.SetCapacityWaker(waker)
+	// The placement preference (Faz A.5 T6): with more than one machine free in a pool, the run goes to the
+	// one holding the FEWEST open occupancies instead of the one at the head of the queue. Wired here for
+	// the reason every line above it is — this is the only place a gateway meets a database — and this line
+	// is the whole difference between a fleet that balances and ten Macs where one does all the work.
+	gateway.SetMachineLoadView(loads)
 	// The runner-plane desired-configuration reader (E29's second plane). Until this line the plane existed
 	// in the document's key and in migration 000053's CHECK, and the write path refused it BY NAME because
 	// "a row written here would be a setting no machine ever sees" — the reader was a second binary and
