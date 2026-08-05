@@ -6,6 +6,7 @@ import { NameCell, Panel, type Column } from "@/components/Panel";
 import { ResourceForm } from "@/components/ResourceForm";
 import { SecretField, takeSecret } from "@/components/SecretField";
 import { CopyButton, shortId, Stamp } from "@/components/Session";
+import { Button } from "@/components/ui/Button";
 import { apiSend, RelayError } from "@/lib/api";
 
 // THE MISSING LINK, AND ONLY ONE OF THREE WAS MISSING.
@@ -36,7 +37,11 @@ interface ConnectionRow extends Record<string, unknown> {
   created_at?: string;
 }
 
-const columns: Column<ConnectionRow>[] = [
+function connectionColumns(
+  onDiscover: (id: string) => void,
+  discovering: string,
+): Column<ConnectionRow>[] {
+  return [
   {
     header: "Name",
     sort: (r) => String(r.name ?? ""),
@@ -86,12 +91,28 @@ const columns: Column<ConnectionRow>[] = [
       </span>
     ),
   },
-  {
-    header: "Created",
-    sort: (r) => String(r.created_at ?? ""),
-    render: (r) => <Stamp iso={String(r.created_at ?? "")} />,
-  },
-];
+    {
+      header: "Created",
+      sort: (r) => String(r.created_at ?? ""),
+      render: (r) => <Stamp iso={String(r.created_at ?? "")} />,
+    },
+    {
+      // THE ACTION THAT DIALS. It sits in the row rather than above the table because it acts on ONE
+      // connection, and an operator with several needs to see which one they are about to exercise.
+      header: "Tools",
+      render: (r) => (
+        <Button
+          variant="secondary"
+          onClick={() => onDiscover(String(r.id ?? ""))}
+          disabled={discovering !== ""}
+          testId="mcp-discover-button"
+        >
+          {discovering === String(r.id ?? "") ? "Discovering…" : "Discover tools"}
+        </Button>
+      ),
+    },
+  ];
+}
 
 /** detail pulls the server's own sentence out of a relay error, falling back to `fallback`. */
 function detail(err: unknown, fallback: string): string {
@@ -109,6 +130,45 @@ export default function MCPPage() {
   const [createStatus, setCreateStatus] = useState("");
   const [creating, setCreating] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+
+  // DISCOVERY IS A SEPARATE, DELIBERATE ACT — it dials the server. Creating a connection writes a row and
+  // reaches nothing; this is the first moment the URL and the credential are actually exercised, which is
+  // why its verdict is worth a line of its own rather than being folded into "created".
+  const [discovering, setDiscovering] = useState("");
+  const [discoverStatus, setDiscoverStatus] = useState("");
+  const [discoverError, setDiscoverError] = useState("");
+
+  async function discover(id: string) {
+    setDiscovering(id);
+    setDiscoverStatus("Asking the server what it offers…");
+    setDiscoverError("");
+    try {
+      const body = await apiSend<{ new_revisions?: string[]; unchanged?: string[]; rejected?: string[] }>(
+        "POST",
+        `/mcp-connections/${encodeURIComponent(id)}/discover`,
+      );
+      const fresh = body.new_revisions ?? [];
+      const same = body.unchanged ?? [];
+      const refused = body.rejected ?? [];
+      // THE REJECTED ARE NAMED, and they are the reason this reports three numbers instead of one. A tool
+      // the platform refused is not a tool the operator can assign, and a summary that only counted
+      // successes would leave them looking for it on the agent screen.
+      setDiscoverStatus(
+        `${fresh.length} new, ${same.length} unchanged, ${refused.length} refused.` +
+          (fresh.length > 0 ? ` New: ${fresh.join(", ")}.` : "") +
+          (refused.length > 0 ? ` Refused: ${refused.join(", ")} — these cannot be assigned.` : "") +
+          " A discovered tool still reaches a run only through an agent revision that names this connection.",
+      );
+      setReloadKey((n) => n + 1);
+    } catch (err: unknown) {
+      // The dial is where a wrong URL, an unreachable host or a rejected credential ACTUALLY surfaces, so
+      // the server's own sentence is carried rather than replaced with a generic failure.
+      setDiscoverError(detail(err, "the server could not be reached"));
+      setDiscoverStatus("");
+    } finally {
+      setDiscovering("");
+    }
+  }
 
   // createConnection seals the credential, then names it — two calls reported SEPARATELY because they fail
   // separately. A refused secret write is a name problem; a refused connection is a URL problem. One merged
@@ -234,6 +294,20 @@ export default function MCPPage() {
         />
       </ResourceForm>
 
+      {discoverStatus === "" ? null : (
+        <p className="form-status" data-testid="mcp-discover-status">
+          <span className="glyph" aria-hidden="true">
+            ✔
+          </span>{" "}
+          {discoverStatus}
+        </p>
+      )}
+      {discoverError === "" ? null : (
+        <p className="form-error" role="alert" data-testid="mcp-discover-error">
+          {discoverError}
+        </p>
+      )}
+
       <Panel<ConnectionRow>
         title="MCP connections"
         testId="panel-mcp-connections"
@@ -243,7 +317,7 @@ export default function MCPPage() {
         // who creates one here and expects a run to pick it up would otherwise be waiting for something
         // working exactly as designed.
         note="A connection is a definition, not a grant: a run can call a server only when its agent revision names this connection (set that on the agent's screen). The credential is a REF — the value is written server-side and readable through no route, this console included."
-        columns={columns}
+        columns={connectionColumns(discover, discovering)}
         emptyNote="No MCP connections yet. An MCP server gives an agent tools it does not ship with — an issue tracker, a wiki, an internal API. Define one above, then name it on an agent's revision to let that agent's runs call it."
       />
     </>

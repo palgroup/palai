@@ -394,8 +394,11 @@ export default function AgentPage() {
               hint: "The CEILING, not the grant: a run may only reach connections its revision names. An MCP tool needs BOTH this and the tool set above — each one missing fails quietly, and differently.",
               emptyNote: (
                 <>
-                  <strong>Register an MCP connection first.</strong> <a href="/tools">Go to Tools</a>. Without
-                  one an MCP tool resolves to nothing even when it is advertised.
+                  {/* IT POINTED AT /tools AND THE CONTROL IS NOT THERE. An MCP connection is created on
+                      /mcp — that screen did not exist when this note was written, so the sentence sent an
+                      operator to a page with no such control and left them hunting for it. */}
+                  <strong>Register an MCP connection first.</strong> <a href="/mcp">Go to MCP</a>. Without one
+                  an MCP tool resolves to nothing even when it is advertised.
                 </>
               ),
             },
