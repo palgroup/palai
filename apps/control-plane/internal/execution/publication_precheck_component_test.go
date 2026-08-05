@@ -103,7 +103,20 @@ func TestPublicationRefusedBeforeAHumanIsAsked(t *testing.T) {
 			"still executing, the ledger classifies it uncertain, and the run is retried into the same "+
 			"refusal three times before it dead-letters", err)
 	}
-	for _, want := range []string{"PALAI_GITHUB_APP_ID", "connection_ref"} {
+	// IT MUST NAME THE REMEDY, and the remedy is now one thing rather than two. This list used to require
+	// "PALAI_GITHUB_APP_ID" as well, because a ref-less binding had a second way to publish — the
+	// deployment-global GitHub App, deleted by 9ad0665d (2026-08-05). Naming a variable nothing reads would
+	// send an operator to configure something that cannot help them.
+	//
+	// THE SAME LIST AS TestARefLessPublicationIsWarnedRatherThanSkipped, deliberately: these two are twins
+	// across one seam — that one is the warning the PUMP writes after an approval, this one is the refusal
+	// the TOOL gives before a human is ever asked — and a reader comparing them must not have to work out
+	// whether two different lists mean two different remedies.
+	//
+	// AND THIS TWIN IS WHY THE REMOVAL LOOKED CLEAN: 9ad0665d reconciled the untagged sibling and left this
+	// one red for three hours, because it carries `//go:build component` and neither `go build`, nor
+	// `go vet -tags=...` (which COMPILES a tier without running it), nor `make verify` runs this tier.
+	for _, want := range []string{"connection_ref", "/v1/secret-refs"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("the refusal does not name %q, so neither the model nor the operator learns what to do "+
 				"about it: %v", want, err)
