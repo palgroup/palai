@@ -33,6 +33,12 @@ var ErrUnknownPool = errors.New("fleet: no such runner pool")
 // suffix, so the DNS contract stays where the CA and the runner already agree on it.
 var ErrIdentityMismatch = errors.New("fleet: runner DNS is not derived from the runner id")
 
+// ErrCapacityNotDeclarable is returned by Register for a NEGATIVE declared capacity (Faz A.4 T5). Zero is
+// legal and means "declared nothing"; a positive number is a ceiling. A negative one is neither, and the
+// column's CHECK would refuse it anyway — refusing it here turns a constraint violation the operator
+// cannot read into a refusal that names what they got wrong.
+var ErrCapacityNotDeclarable = errors.New("fleet: declared capacity cannot be negative")
+
 // ErrUnknownLifecycleAction is returned by SetState for a verb that is not cordon/resume/revoke. The
 // action reaches the store from a URL path segment and `runners.state` is CHECK-constrained, so an
 // unmapped verb has to be refused by the surface that took it rather than by Postgres.
@@ -78,9 +84,9 @@ const DefaultPoolID = "pool_default"
 // registry rests on: the client-supplied name is Label and decides nothing, so two machines that
 // both call themselves "runner-local" are two rows and two certificates.
 type Runner struct {
-	ID           string
-	Project      string
-	PoolID       string
+	ID      string
+	Project string
+	PoolID  string
 	// Label is what the enrolling machine called itself (PALAI_RUNNER_ID). It is operator-facing
 	// information only — never an identity, never a lookup key, never unique.
 	Label string

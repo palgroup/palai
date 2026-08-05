@@ -56,40 +56,47 @@ import (
 // over. Reporting it under the same sentence as a database blip would send the next reader to look for a
 // database blip, which is the failure this tree keeps recording as an assertion pointing at the wrong file.
 //
-// WHAT IT DOES NOT DO IS PARK THE RUN, and that is a ceiling rather than an oversight, measured
-// 2026-08-05. Two facts make the park the wrong move today, and both have to change together:
+// A CAPACITY REFUSAL ENDS THE ATTEMPT RATHER THAN RUNNING IT UNMETERED, and the distinction from the
+// paragraph above is the whole of this function (Faz A.4 T5). Running anyway would re-open exactly the hole
+// T4 closed: a machine held, work done on it, and no row saying so. "The metering row would not write" and
+// "this machine is not allowed to take this session" are opposite facts, and only one of them is the
+// customer's benefit of the doubt.
 //
-//   - NOTHING WAKES ON A SLOT FREEING. The only capacity wake is WakeRunAwaitingCapacity, and the gateway
-//     fires it from handleConnect — when a machine CONNECTS. A run parked because a machine was FULL would
-//     wake on the machine's next connect, dial into the same full machine, and park again, and because
-//     EnqueueWokenRunJob carries the budget already spent, that loop ends in a dead-letter rather than in a
-//     machine. The slot it is waiting for is freed by the idle releaser, which nothing notifies.
-//   - NO MACHINE DECLARES A CAPACITY. The one production `fleet.Registration` (runner_gateway.go) sets no
-//     Capacity field, `packages/runner` never sends one, and storage/queries/runners.sql has no UPDATE for
-//     the column — so the 1 every machine carries is store.go's clamp of an absent value, not a statement
-//     any operator made. Enforcing a placement outcome on it would cap every deployment at one session per
-//     machine on the strength of a default nobody chose.
+// WHAT IT DOES NOT DO IS PARK THE RUN. A park is a promise that something will come, and nothing today
+// wakes a run when a SLOT FREES: the only capacity wake is WakeRunAwaitingCapacity, fired from the
+// gateway's handleConnect when a machine CONNECTS. A run parked for a full machine would wake on that
+// machine's next connect, dial the same full machine, and park again — and because EnqueueWokenRunJob
+// carries the budget already spent, the loop ends in a dead-letter rather than in a machine. The waker keyed
+// on a settling occupancy is its own task; until it exists, the honest answer is an ended attempt with a
+// reason, not a promise that cannot be kept.
 //
-// So the refusal is durable and single-winner where it is decided — the occupancy table can never show a
-// machine over its declared capacity — and the attempt still runs, unmetered, with the reason on the record
-// under its own name.
-func (o *Orchestrator) holdMachine(ctx context.Context, tenant coordinator.Tenant, sessionID string, ch EngineChannel) string {
+// AND TODAY IT CANNOT FIRE AT ALL, which is why this is safe to ship ahead of that waker. No machine
+// declares a capacity — the runner sends the field only when an operator configures one — so
+// `runners.capacity` is 0 everywhere, the ceiling in leases.sql is not enforced, and every attempt takes
+// its occupancy exactly as it did before. This branch exists for the deployment that opts in.
+func (o *Orchestrator) holdMachine(ctx context.Context, tenant coordinator.Tenant, sessionID string, ch EngineChannel) (string, error) {
 	machine := machineOf(ch)
 	if machine == "" || sessionID == "" {
-		return ""
+		return "", nil
 	}
 	occupancyID, err := o.spine.HoldMachine(ctx, tenant, sessionID, machine)
 	switch {
 	case errors.Is(err, coordinator.ErrMachineAtCapacity):
-		log.Printf("session %s: machine %s is over the capacity it declared and this attempt runs on it unmetered: %v",
+		log.Printf("session %s: machine %s already holds the capacity it declared; this attempt is refused rather than run unmetered: %v",
 			sessionID, machine, err)
-		return ""
+		return "", errMachineAtCapacity
 	case err != nil:
 		log.Printf("session %s: machine %s is being occupied unmetered: %v", sessionID, machine, err)
-		return ""
+		return "", nil
 	}
-	return occupancyID
+	return occupancyID, nil
 }
+
+// errMachineAtCapacity ends an attempt whose machine is already holding every session it declared it could.
+// It is a FAILURE and not a park, for the reason holdMachine gives: a park needs a waker that fires when a
+// slot frees, and the only capacity wake in this tree fires when a machine connects. The attempt rides the
+// existing retry ladder, which is also what the gateway does today when every machine in a pool is leased.
+var errMachineAtCapacity = errors.New("run_machine_at_capacity")
 
 // keepMachineHeld moves the occupancy's last-activity stamp as an attempt ends.
 //

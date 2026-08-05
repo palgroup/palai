@@ -67,6 +67,15 @@ type BootstrapConfig struct {
 	// Empty declares nothing and inherits the key's pool, which is what every runner built before E24
 	// sends — hence omitempty, so an unconfigured machine's request body is unchanged to the byte.
 	PoolID string
+	// Capacity is how many sessions this machine can hold AT ONCE (Faz A.4 T5). It is a declaration in the
+	// same sense Posture is — the control plane records it and enforces it, and cannot verify it.
+	//
+	// ZERO DECLARES NOTHING AND NO CEILING IS ENFORCED, which is the shipped posture and not a fallback.
+	// Before this field the column existed, refused zero, and was filled by a clamp in the control plane:
+	// every machine in every deployment carried a 1 that no operator had chosen. Enforcing that would have
+	// capped every Mac at one session on the strength of an artefact. So the ceiling exists only where
+	// somebody typed a number, and an unconfigured machine's request body is unchanged to the byte.
+	Capacity int
 }
 
 type enrollmentRequest struct {
@@ -74,6 +83,11 @@ type enrollmentRequest struct {
 	PublicKey string `json:"public_key"`
 	Posture   string `json:"posture,omitempty"`
 	PoolID    string `json:"pool_id,omitempty"`
+	// Capacity is how many sessions this machine says it can hold at once (Faz A.4 T5). Zero declares
+	// NOTHING and `omitempty` keeps it off the wire entirely, so a machine that was not configured with one
+	// sends the same bytes it always sent — the same rule Posture and PoolID follow above, and the reason
+	// the placement ceiling is opt-in rather than a number the control plane invents.
+	Capacity int `json:"capacity,omitempty"`
 }
 
 type enrollmentResponse struct {
@@ -123,6 +137,7 @@ func Enroll(ctx context.Context, config BootstrapConfig) (Identity, error) {
 		PublicKey: base64.StdEncoding.EncodeToString(publicDER),
 		Posture:   config.Posture,
 		PoolID:    config.PoolID,
+		Capacity:  config.Capacity,
 	})
 	if err != nil {
 		return Identity{}, fmt.Errorf("encode enrollment request: %w", err)

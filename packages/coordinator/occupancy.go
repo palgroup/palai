@@ -163,7 +163,10 @@ func (s *Store) AcquireLease(ctx context.Context, tenant Tenant, sessionID, runn
 		if rerr := tx.QueryRow(ctx, storage.Query("MachineOpenOccupancies"), runnerID, tenant.Project).Scan(&open); rerr != nil {
 			return "", fmt.Errorf("read the open occupancies of machine %s: %w", runnerID, rerr)
 		}
-		if open >= capacity {
+		// `capacity > 0` is repeated from the statement's own guard rather than left implicit: a machine
+		// that declared nothing has no ceiling, so it can never be the reason, and `open >= 0` would name
+		// it as one for every refusal.
+		if capacity > 0 && open >= capacity {
 			return "", fmt.Errorf("%w: machine %s holds %d of %d", ErrMachineAtCapacity, runnerID, open, capacity)
 		}
 		return "", fmt.Errorf("%w: session %s", ErrMachineUnavailable, sessionID)

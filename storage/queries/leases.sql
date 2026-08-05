@@ -47,11 +47,19 @@ SELECT capacity
 -- all and the caller reads the empty result as a refusal.
 --
 -- THE CAPACITY CEILING IS THE SUBQUERY, AND IT IS IN THE WRITE RATHER THAN IN FRONT OF IT (Faz A.4 T5).
--- `runners.capacity` has existed since 000001 with a `capacity > 0` CHECK, and until this statement NO Go
--- expression and no other statement compared it to anything — it was written at enrolment, read back for
--- display, and that was all. A caller that counted the open holds and then inserted would be correct only
--- until two callers did it at once; here the count is evaluated by the same command that writes, so a
--- machine that is full matches no row and the caller reads the empty result as the refusal it is.
+-- `runners.capacity` has existed since 000001, and until this statement NO Go expression and no other
+-- statement compared it to anything — it was written at enrolment, read back for display, and that was
+-- all. A caller that counted the open holds and then inserted would be correct only until two callers did
+-- it at once; here the count is evaluated by the same command that writes, so a machine that is full
+-- matches no row and the caller reads the empty result as the refusal it is.
+--
+-- `r.capacity = 0` MEANS UNDECLARED AND ADMITS EVERYTHING, and getting that backwards is the one real trap
+-- in this statement. Written as a bare `count(*) < r.capacity`, zero would compare as "no room at all" and
+-- a machine that simply never said anything would refuse EVERY session — the exact inversion of what an
+-- absent declaration means. Until 000005_capacity_declaration the column's CHECK refused zero and the
+-- registry clamped every enrolment to 1, so nothing could reach this arm; now nothing BUT this arm is
+-- reached, because no machine in any deployment declares a capacity yet. The ceiling is opt-in, and this
+-- is where the opt is read.
 --
 -- WHAT IS COUNTED IS `released_at IS NULL` — the OPEN holds, not the holds ever taken. A machine whose
 -- ceiling counted history would be placeable until its first few sessions ended and unplaceable forever
@@ -66,11 +74,12 @@ SELECT $1, $2, r.id, s.id, clock_timestamp(), clock_timestamp()
   FROM runners r, sessions s
  WHERE r.id = $3 AND r.project_id = $2
    AND s.id = $4 AND s.project_id = $2
-   AND (SELECT count(*)
-          FROM runner_leases l
-         WHERE l.runner_id = r.id
-           AND l.project_id = r.project_id
-           AND l.released_at IS NULL) < r.capacity
+   AND (r.capacity = 0
+        OR (SELECT count(*)
+              FROM runner_leases l
+             WHERE l.runner_id = r.id
+               AND l.project_id = r.project_id
+               AND l.released_at IS NULL) < r.capacity)
 RETURNING id;
 
 -- name: MachineOpenOccupancies

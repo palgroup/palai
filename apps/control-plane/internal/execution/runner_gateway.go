@@ -682,6 +682,13 @@ type enrollRequest struct {
 	// key REFUSES the enrolment rather than being silently widened or silently overridden. Absent
 	// declares nothing and inherits the key's pool.
 	PoolID string `json:"pool_id,omitempty"`
+	// Capacity is how many sessions the machine says it can hold AT ONCE (Faz A.4 T5), and it is the
+	// second declared field that decides something: coordinator.AcquireLease refuses a hold that would put
+	// the machine over it. ABSENT (or 0) declares nothing and NO ceiling is enforced — which is what every
+	// runner sends today, so the shipped behaviour is unchanged. Before this field the column was filled
+	// by a clamp in the registry, so every machine carried a 1 no operator had chosen; enforcing that
+	// would have been enforcing an artefact.
+	Capacity int `json:"capacity,omitempty"`
 }
 
 type enrollResponse struct {
@@ -754,13 +761,19 @@ func (g *RunnerGateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		if _, err := reg.Register(r.Context(), fleet.Registration{
 			ID: runnerID, PoolID: grant.PoolID, Label: request.RunnerID, DNS: runnerDNS(runnerID),
 			PublicKeySHA256: publicKeyFingerprint(publicDER), OS: request.OS, Arch: request.Arch,
-			Posture: request.Posture, KeyID: grant.KeyID,
+			Posture: request.Posture, Capacity: request.Capacity, KeyID: grant.KeyID,
 		}); err != nil {
 			// A posture the pool does not have is the machine's mistake and it is told so — an operator
 			// who has handed a Mac the Linux pool's credential needs to read that, not a 503. Every other
 			// failure is the control plane's and stays deliberately unspecific to the caller.
 			if errors.Is(err, fleet.ErrPostureMismatch) {
 				http.Error(w, "declared posture is not this pool's", http.StatusConflict)
+				return
+			}
+			// A negative declared capacity is the machine's mistake and it is told so, for the reason the
+			// posture mismatch is: an operator who typed one needs to read that, not a 503.
+			if errors.Is(err, fleet.ErrCapacityNotDeclarable) {
+				http.Error(w, "declared capacity cannot be negative", http.StatusBadRequest)
 				return
 			}
 			// A registry that cannot record the machine must not issue it an identity — that is the

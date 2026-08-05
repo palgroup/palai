@@ -53,8 +53,15 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 	if reg.ID == "" || reg.DNS == "" || !strings.HasPrefix(reg.DNS, reg.ID+".") {
 		return Runner{}, ErrIdentityMismatch
 	}
-	if reg.Capacity <= 0 {
-		reg.Capacity = 1
+	// A MACHINE THAT DECLARES NOTHING STORES NOTHING (Faz A.4 T5). This used to clamp <=0 to 1, and since
+	// no enrolment has ever carried a capacity — the handler above set every other field — that clamp was
+	// the sole author of every value in the column: 44 machines, one distinct value, on the stack it was
+	// measured on. A placement ceiling reading that would have enforced a number nobody chose. Zero now
+	// means "undeclared" and is storable (000005_capacity_declaration relaxed the CHECK that refused it),
+	// and only a positive number binds. Negative is refused rather than clamped, because a machine asking
+	// for a nonsense ceiling is a machine an operator has misconfigured and should hear about.
+	if reg.Capacity < 0 {
+		return Runner{}, ErrCapacityNotDeclarable
 	}
 	// System scope: the enrolment carries no tenant, so the pool is what resolves one (see the type
 	// comment). Every statement below still names its own predicate.
