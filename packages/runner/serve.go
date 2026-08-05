@@ -39,9 +39,22 @@ type ServeConfig struct {
 	// renewal-over-mTLS is impossible for the same reason it was needed. nil disables it (the
 	// pre-recovery behaviour: an expired identity is terminal until the process is restarted).
 	Reenroll func(ctx context.Context) (Identity, error)
-	Now      func() time.Time
-	Log      func(format string, args ...any)
-	Backoff  time.Duration // between a failed dial/renewal and the next attempt; zero = 1s
+	// PersistIdentity is called with every identity this loop obtains after the first — each renewal and
+	// each recovery — so a device can write the new certificate beside its durable key.
+	//
+	// ‼️ IT EXISTS BECAUSE AN UNPERSISTED RENEWAL IS INVISIBLE UNTIL A RESTART, AND THEN EXPENSIVE. The
+	// runner rolls its certificate forward in memory; without this hook the disk keeps the certificate
+	// the machine enrolled with, so a restart after that one expires takes the RECOVERY path and spends a
+	// pool key to be issued something the machine had already been issued. On a machine whose key file
+	// was removed after installation — a provisioner that deleted it, which is a reasonable thing to do —
+	// there is no recovery path at all and the machine is simply out of the fleet.
+	//
+	// nil is every runner built before this field, and it costs them nothing: they had no disk identity
+	// to keep in step.
+	PersistIdentity func(Identity) error
+	Now             func() time.Time
+	Log             func(format string, args ...any)
+	Backoff         time.Duration // between a failed dial/renewal and the next attempt; zero = 1s
 	// Concurrency is how many leases the runner parks at once on its shared enrolled identity.
 	// Zero or one is the sequential one-lease-at-a-time default (LP-0 unchanged); >1 lets a
 	// delegating run's parent hold its engine while an inline child dials its own on the same
@@ -385,6 +398,17 @@ func (cfg ServeConfig) renewLoop(ctx context.Context, state *serveState, now fun
 			continue
 		}
 		state.replace(renewed)
+		// ‼️ PERSISTED BEFORE IT IS ANNOUNCED, and the ordering is the whole value of the hook. A machine
+		// that renewed and then restarted before the new certificate reached disk would come back holding
+		// the OLD one, and if the restart outlasted its expiry it would take the recovery path — spending a
+		// pool key for a certificate it had already been issued. The persist is best-effort by design: a
+		// disk that cannot be written must not stop a runner that is currently serving leases, and the
+		// machine still has a valid certificate in memory. It is logged so the failure is not silent.
+		if cfg.PersistIdentity != nil {
+			if err := cfg.PersistIdentity(renewed); err != nil {
+				logf("could not persist the renewed identity, so a restart will fall back to the previous one: %v", err)
+			}
+		}
 		logf("runner certificate valid until %s", renewed.NotAfter.UTC().Format(time.RFC3339))
 	}
 }

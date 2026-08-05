@@ -702,6 +702,29 @@ type enrollRequest struct {
 	// by a clamp in the registry, so every machine carried a 1 no operator had chosen; enforcing that
 	// would have been enforcing an artefact.
 	Capacity int `json:"capacity,omitempty"`
+	// CSR is a base64 PKCS#10 and it is the PROOF OF POSSESSION this endpoint did not have. Until it,
+	// the request carried a bare public key and packages/runner said so in a comment — "no CSR
+	// proof-of-possession" — so a party holding a pool key could have a certificate minted for a public
+	// key whose private half was somebody else's, and the resulting identity would have been unusable by
+	// the enroller and usable by whoever held that private half.
+	//
+	// ABSENT FALLS BACK TO PublicKey, which is what every runner built before this sends. Present and
+	// UNVERIFIABLE is a refusal — never a fall-back to the public key inside it, which would make the
+	// proof optional by simply corrupting the signature.
+	CSR string `json:"csr,omitempty"`
+	// RecoverRunnerID is the identity the enrolling machine says it ALREADY HOLDS (plan §3.4). It
+	// authorises nothing: the fingerprint decides, and a claim that disagrees with the fingerprint is
+	// refused rather than honoured. Absent asks for a new identity.
+	RecoverRunnerID string `json:"recover_runner_id,omitempty"`
+	// Version is the agent build. Inventory, like OS and Arch — the support window is enforced at
+	// connect (Session.Version), not here.
+	Version string `json:"version,omitempty"`
+	// IsolationModes is what the machine MEASURED it can provide ("user", "accounts", "container"). It is
+	// the one field on this request that was measured rather than declared, and it is checked against the
+	// pool's requirement BEFORE an identity is issued, so a machine that cannot execute never becomes
+	// ready capacity (DoD 9). Absent declares nothing and a pool with no requirement admits it, which is
+	// every pool that exists today.
+	IsolationModes []string `json:"isolation_modes,omitempty"`
 }
 
 type enrollResponse struct {
@@ -752,9 +775,9 @@ func (g *RunnerGateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid enrollment request", http.StatusBadRequest)
 		return
 	}
-	publicDER, err := base64.StdEncoding.DecodeString(request.PublicKey)
+	publicDER, err := enrollmentPublicKey(request)
 	if err != nil {
-		http.Error(w, "invalid public key", http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -770,12 +793,20 @@ func (g *RunnerGateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), status)
 		return
 	}
+	// THE ID THE CERTIFICATE IS SIGNED FOR COMES FROM THE REGISTRY'S ANSWER, NOT FROM THE MINT ABOVE, and
+	// that is the whole of "a restart is the same machine". Register RECOVERS a row whose device-key
+	// fingerprint it already holds and returns that row's id; the minted one is then a value nobody used.
+	// Signing the minted id regardless would have produced a certificate naming a machine no row records
+	// — the identity/DNS split this file's Register comment already documents, arriving one layer later.
 	if reg := g.registry; reg != nil {
-		if _, err := reg.Register(r.Context(), fleet.Registration{
+		row, err := reg.Register(r.Context(), fleet.Registration{
 			ID: runnerID, PoolID: grant.PoolID, Label: request.RunnerID, DNS: runnerDNS(runnerID),
 			PublicKeySHA256: publicKeyFingerprint(publicDER), OS: request.OS, Arch: request.Arch,
 			Posture: request.Posture, Capacity: request.Capacity, KeyID: grant.KeyID,
-		}); err != nil {
+			Version: request.Version, IsolationModes: request.IsolationModes,
+			RecoverRunnerID: request.RecoverRunnerID,
+		})
+		if err != nil {
 			// A posture the pool does not have is the machine's mistake and it is told so — an operator
 			// who has handed a Mac the Linux pool's credential needs to read that, not a 503. Every other
 			// failure is the control plane's and stays deliberately unspecific to the caller.
@@ -789,11 +820,36 @@ func (g *RunnerGateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "declared capacity cannot be negative", http.StatusBadRequest)
 				return
 			}
+			// A REVOKED MACHINE CANNOT COME BACK, and it is told exactly that. A live pool key on the box
+			// is not a way around a decommissioning: the device key's fingerprint is what the revocation
+			// named, so re-presenting it recovers the revoked row and is refused rather than minting a
+			// second identity for the same hardware.
+			if errors.Is(err, fleet.ErrRunnerRevoked) {
+				http.Error(w, "this device's identity has been revoked", http.StatusForbidden)
+				return
+			}
+			// A CLAIMED IDENTITY THAT THE FINGERPRINT DOES NOT SUPPORT. Two shapes reach this: a machine
+			// whose disk kept an identity file and lost its device key (re-imaging), and a machine
+			// presenting somebody else's id. They are answered identically on the wire because the server
+			// cannot tell them apart, and the journal carries which row was involved.
+			if errors.Is(err, fleet.ErrIdentityNotRecoverable) {
+				http.Error(w, "the claimed runner identity does not belong to this device key", http.StatusConflict)
+				return
+			}
+			// A MACHINE THAT CANNOT ISOLATE A SESSION THE POOL'S WAY IS REFUSED BEFORE IT HAS AN IDENTITY
+			// (DoD 9). This is the one refusal on this path built on a MEASURED fact rather than a
+			// declared one, and refusing here rather than at placement is the point: a machine that
+			// cannot execute must never appear as ready capacity.
+			if errors.Is(err, fleet.ErrIsolationUnsupported) {
+				http.Error(w, "this machine does not support the isolation mode this pool requires", http.StatusConflict)
+				return
+			}
 			// A registry that cannot record the machine must not issue it an identity — that is the
 			// whole point of writing first. The refusal is deliberately unspecific to the caller.
 			http.Error(w, "enrollment could not be recorded", http.StatusServiceUnavailable)
 			return
 		}
+		runnerID = row.ID
 	}
 
 	certDER, err := g.issuer.SignRunnerCertificate(publicDER, runnerDNS(runnerID))
@@ -894,6 +950,47 @@ func (g *RunnerGateway) mintRunnerID() string {
 		return middleware.NewID("rnr")
 	}
 	return g.newID("rnr")
+}
+
+// enrollmentPublicKey resolves the key this enrolment will certify, and it is where proof of possession
+// is either proved or absent.
+//
+// ‼️ ORDER IS THE SECURITY PROPERTY. A CSR is preferred over the bare public key, and a CSR that is
+// present and does not verify is a REFUSAL — it never falls back to `public_key`, and it never falls
+// back to the key inside the CSR itself. Either fallback would make the proof optional: an attacker
+// wanting a certificate for a key it does not hold would corrupt one byte of the signature and get the
+// old behaviour back.
+//
+// AN ABSENT CSR IS STILL ACCEPTED and that is the compatibility half rather than a hole with a nice
+// name. Every runner built before packages/device sends `public_key` alone; refusing them would refuse
+// every machine in every deployment that exists on the day this ships. What the fallback costs is
+// stated plainly: on that path the gateway certifies a key the caller has not proved it holds, exactly
+// as it always did, and the caller has still had to present a live pool key to get there. The path
+// closes when the device package is the only enroller, which is T7's cut of the artifacts.
+func enrollmentPublicKey(request enrollRequest) ([]byte, error) {
+	if request.CSR != "" {
+		der, err := base64.StdEncoding.DecodeString(request.CSR)
+		if err != nil {
+			return nil, errors.New("invalid certificate request encoding")
+		}
+		csr, err := x509.ParseCertificateRequest(der)
+		if err != nil {
+			return nil, errors.New("invalid certificate request")
+		}
+		if err := csr.CheckSignature(); err != nil {
+			return nil, errors.New("certificate request signature does not verify")
+		}
+		publicDER, err := x509.MarshalPKIXPublicKey(csr.PublicKey)
+		if err != nil {
+			return nil, errors.New("unsupported public key in certificate request")
+		}
+		return publicDER, nil
+	}
+	publicDER, err := base64.StdEncoding.DecodeString(request.PublicKey)
+	if err != nil {
+		return nil, errors.New("invalid public key")
+	}
+	return publicDER, nil
 }
 
 // publicKeyFingerprint is the sha256 of the enrolling machine's PUBLIC key DER, recorded so an

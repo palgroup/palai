@@ -263,6 +263,30 @@ func (c *stdinConn) Close() error {
 	return nil
 }
 
+// DaemonAvailable reports whether a Docker daemon actually ANSWERS on this machine.
+//
+// ‼️ IT PINGS, AND CONSTRUCTING A CLIENT DOES NOT. `client.New(client.FromEnv,
+// client.WithAPIVersionNegotiation())` succeeds on a machine with no Docker installed at all — the
+// negotiation is deferred to the first request — so a caller that read "the driver was created" as
+// "containers can run here" would be reading a struct being allocated. That distinction is what makes
+// this function exist rather than a `err == nil` on the constructor: DoD 9 requires that a machine which
+// cannot execute never appears as ready capacity, and a machine whose only evidence is an allocation has
+// measured nothing.
+//
+// THE TIMEOUT IS THE CALLER'S FLOOR AND THIS ONE IS SHORT ON PURPOSE. It is called during enrolment,
+// where the alternative to a bounded answer is an install that hangs on a stalled Docker Desktop.
+func DaemonAvailable(ctx context.Context) bool {
+	apiClient, err := client.New(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		return false
+	}
+	defer func() { _ = apiClient.Close() }()
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	_, err = apiClient.Ping(ctx, client.PingOptions{})
+	return err == nil
+}
+
 // interface assertions.
 var (
 	_ InteractiveDriver = (*dockerDriver)(nil)

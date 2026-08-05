@@ -12,10 +12,11 @@ import (
 // per-migration source the boot runner iterates (E15 T1). It also pins the chain head, so the
 // preflight/journal invariant is anchored.
 //
-// THE CHAIN IS SIX LINKS AND IT WAS SIXTY-SEVEN. It was squashed to a two-file baseline on 2026-08-04;
+// THE CHAIN IS SEVEN LINKS AND IT WAS SIXTY-SEVEN. It was squashed to a two-file baseline on 2026-08-04;
 // 000003_lease_occupancy (Faz A.4 T1) was the first ordinary forward migration written against it, then
-// 000004_response_metadata, 000005_capacity_declaration (Faz A.4 T5), and
-// 000006_project_scoped_secrets_and_environments (Faz A.6 T0) is now the head.
+// 000004_response_metadata, 000005_capacity_declaration (Faz A.4 T5),
+// 000006_project_scoped_secrets_and_environments (Faz A.6 T0), and
+// 000007_device_identity_and_pool_isolation (zero-touch device agent, T2) is now the head.
 //
 // THE PIN IS A RENAME GUARD AS MUCH AS A HEAD PIN, and that is why the NAME is pinned beside the number:
 // `git mv` stages the OLD content, so a renumbering whose header edit is never re-added leaves a file
@@ -28,7 +29,9 @@ import (
 // while this still pinned 000003 — so `go test ./storage/` was RED on main, in the one tier CI actually
 // runs, until 000005 came to update it. A head pin nobody updates is a head pin nobody reads. The squashed
 // chain is short enough that keeping up with it is cheap, and adding a link means editing exactly this
-// assertion — which 000003, 000005 and 000006 did and 000004 did not.
+// assertion — which 000003, 000005, 000006 and 000007 did and 000004 did not. 000007 was written by an
+// agent that ran `go test ./storage/` and read this exact failure, which is the pin doing its job for the
+// fifth time.
 func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	migrations := OrderedMigrations()
 	if len(migrations) == 0 {
@@ -58,12 +61,12 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	}
 
 	head := migrations[len(migrations)-1]
-	if head.Version != 6 || head.Name != "project_scoped_secrets_and_environments" {
-		t.Fatalf("chain head = %06d_%s, want 000006_project_scoped_secrets_and_environments", head.Version, head.Name)
+	if head.Version != 7 || head.Name != "device_identity_and_pool_isolation" {
+		t.Fatalf("chain head = %06d_%s, want 000007_device_identity_and_pool_isolation", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 5 || penultimate.Name != "capacity_declaration" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000005_capacity_declaration", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 6 || penultimate.Name != "project_scoped_secrets_and_environments" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000006_project_scoped_secrets_and_environments", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

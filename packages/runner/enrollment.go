@@ -3,11 +3,13 @@ package runner
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -43,9 +45,15 @@ type BootstrapConfig struct {
 	RunnerDNS       string
 	EnrollmentToken string
 	EnrollmentURL   string
-	ControllerCAs   *x509.CertPool
-	ControllerDNS   string
-	Now             func() time.Time
+	// ControllerCAs is the ADDITIONAL trust anchor for a private deployment, and NIL IS NOW A NORMAL
+	// VALUE rather than a refusal: a publicly trusted runner gateway is verified by the host's own root
+	// store, which is DoD item 2 and the reason `PALAI_CONTROLLER_CA` stopped being a required input.
+	//
+	// Nil means "the system roots decide". A non-nil pool means "these roots and only these", which is
+	// what every deployment built before this sent and what a self-signed self-host still needs.
+	ControllerCAs *x509.CertPool
+	ControllerDNS string
+	Now           func() time.Time
 	// Posture is what this machine SAYS it is: "sandboxed-linux" (a container runner) or
 	// "unsandboxed-host" (a rented Mac). The control plane compares it with the pool's and refuses the
 	// enrolment on a disagreement (E24 T2) — it does NOT verify it, and cannot.
@@ -76,6 +84,32 @@ type BootstrapConfig struct {
 	// capped every Mac at one session on the strength of an artefact. So the ceiling exists only where
 	// somebody typed a number, and an unconfigured machine's request body is unchanged to the byte.
 	Capacity int
+	// DeviceKey is the machine's DURABLE keypair (packages/device). When it is set, Enroll signs a CSR
+	// with it and generates nothing — which is the whole of "a restart is the same machine": the
+	// registry keys a row on this key's fingerprint, so the id follows the key and the key follows the
+	// disk (plan §3.4).
+	//
+	// NIL KEEPS THE OLD BEHAVIOUR — a fresh keypair per call, no CSR, the raw public key on the wire —
+	// because every control plane and every test built before this sends exactly that, and a package
+	// that could only enrol the new way would be a package no existing deployment can use.
+	DeviceKey crypto.Signer
+	// RecoverRunnerID is the id this machine ALREADY HOLDS, read from its own disk, presented so the
+	// control plane reissues that identity instead of minting a second one. Empty asks for a new
+	// identity, which is what a machine enrolling for the first time is doing.
+	//
+	// IT AUTHORISES NOTHING. The fingerprint of DeviceKey is what proves who this machine is; this field
+	// is a claim, and a claim that disagrees with the fingerprint is REFUSED rather than honoured — that
+	// is what stops a device holding a stolen identity file from becoming the machine it names.
+	RecoverRunnerID string
+	// The MEASURED facts (plan §3.3, DoD 9): what this binary was compiled for, what version it is, and
+	// which session-isolation modes this machine can actually provide. The gateway checks them against
+	// the key's pool BEFORE issuing an identity, so a machine that cannot execute never becomes ready
+	// capacity. All are omitempty on the wire: a runner that measures nothing sends the bytes it has
+	// always sent.
+	OS             string
+	Arch           string
+	Version        string
+	IsolationModes []string
 }
 
 type enrollmentRequest struct {
@@ -88,6 +122,25 @@ type enrollmentRequest struct {
 	// sends the same bytes it always sent — the same rule Posture and PoolID follow above, and the reason
 	// the placement ceiling is opt-in rather than a number the control plane invents.
 	Capacity int `json:"capacity,omitempty"`
+	// CSR is the base64 PKCS#10 whose SIGNATURE proves this machine holds the private half of the key it
+	// is asking to have certified. Before it, the enrolment sent a bare public key and the comment ten
+	// lines below said so — "no CSR proof-of-possession" — which meant a party holding a pool key could
+	// enrol ANY public key, including one whose private half belonged to somebody else.
+	//
+	// `omitempty` and the PublicKey field above coexist deliberately: a control plane too old to verify a
+	// CSR reads PublicKey, and a runner too old to send one is still accepted. The gateway prefers the
+	// CSR when both are present and refuses a CSR whose signature does not check.
+	CSR string `json:"csr,omitempty"`
+	// RecoverRunnerID is the identity this machine already holds. It is a CLAIM checked against the
+	// fingerprint, never an authorisation — see BootstrapConfig.RecoverRunnerID.
+	RecoverRunnerID string `json:"recover_runner_id,omitempty"`
+	// The measured facts. OS and Arch have been on this wire since E24 (the gateway's enrollRequest
+	// declares them); Version and IsolationModes are new and are what let the gateway refuse a machine
+	// that cannot execute before it becomes ready capacity.
+	OS             string   `json:"os,omitempty"`
+	Arch           string   `json:"arch,omitempty"`
+	Version        string   `json:"version,omitempty"`
+	IsolationModes []string `json:"isolation_modes,omitempty"`
 }
 
 type enrollmentResponse struct {
@@ -112,32 +165,61 @@ type enrollmentResponse struct {
 // local key form the identity. The token is presented and discarded — it is not one-use, so a
 // machine whose certificate expired may re-present it, but nothing here retains it.
 func Enroll(ctx context.Context, config BootstrapConfig) (Identity, error) {
+	// ControllerCAs IS NO LONGER IN THIS LIST. Nil now means "verify against the host's own root store",
+	// which is what a publicly trusted runner gateway needs and what DoD item 2 makes the default; a
+	// private deployment still passes a pool and still gets exactly that pool. Requiring it was the last
+	// thing that made a CA file a mandatory input on every device.
 	if config.RunnerID == "" || config.RunnerDNS == "" || config.EnrollmentToken == "" ||
-		config.ControllerCAs == nil || config.ControllerDNS == "" || config.Now == nil {
-		return Identity{}, errors.New("enrollment requires runner identity, bootstrap token, controller trust, DNS and clock")
+		config.ControllerDNS == "" || config.Now == nil {
+		return Identity{}, errors.New("enrollment requires runner identity, bootstrap token, controller DNS and clock")
 	}
 	if !strings.HasPrefix(config.EnrollmentURL, "https://") {
 		return Identity{}, errors.New("enrollment URL must be outbound https")
 	}
 
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	// THE KEY IS THE CALLER'S WHEN THE CALLER HAS ONE. A device passes its durable key and this function
+	// generates nothing, so the fingerprint the registry keys on is the same on every start. Without one
+	// it mints a fresh key per call, which is the pre-device behaviour every existing deployment relies on
+	// — and which is exactly why a machine used to arrive as a new row after every reboot.
+	privateKey, err := enrollmentKey(config)
 	if err != nil {
-		return Identity{}, fmt.Errorf("generate runner key: %w", err)
+		return Identity{}, err
 	}
-	publicDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	publicDER, err := x509.MarshalPKIXPublicKey(privateKey.Public())
 	if err != nil {
 		return Identity{}, fmt.Errorf("marshal runner public key: %w", err)
 	}
 
-	// ponytail: no CSR proof-of-possession — the one-use token over server-authenticated
-	// TLS is the enrollment boundary for the local-live proof; add a PoP CSR when the
-	// enrollment PKI gate lands (ADR-0003 defers PKI).
+	// PROOF OF POSSESSION, which this request had none of until now. The comment that stood here said
+	// so — "ponytail: no CSR proof-of-possession" — and the consequence was concrete: anyone holding a
+	// pool key could have a certificate minted for a public key whose private half was somebody else's.
+	// A device signs a PKCS#10 with its durable key and the gateway checks the signature; a caller with
+	// no device key sends none and the gateway falls back to the bare public key, so no existing
+	// deployment's request body changes.
+	var csr string
+	if config.DeviceKey != nil {
+		der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+			Subject:            pkix.Name{CommonName: config.RunnerID},
+			SignatureAlgorithm: x509.ECDSAWithSHA256,
+		}, config.DeviceKey)
+		if err != nil {
+			return Identity{}, fmt.Errorf("build certificate request: %w", err)
+		}
+		csr = base64.StdEncoding.EncodeToString(der)
+	}
+
 	body, err := json.Marshal(enrollmentRequest{
-		RunnerID:  config.RunnerID,
-		PublicKey: base64.StdEncoding.EncodeToString(publicDER),
-		Posture:   config.Posture,
-		PoolID:    config.PoolID,
-		Capacity:  config.Capacity,
+		RunnerID:        config.RunnerID,
+		PublicKey:       base64.StdEncoding.EncodeToString(publicDER),
+		Posture:         config.Posture,
+		PoolID:          config.PoolID,
+		Capacity:        config.Capacity,
+		CSR:             csr,
+		RecoverRunnerID: config.RecoverRunnerID,
+		OS:              config.OS,
+		Arch:            config.Arch,
+		Version:         config.Version,
+		IsolationModes:  config.IsolationModes,
 	})
 	if err != nil {
 		return Identity{}, fmt.Errorf("encode enrollment request: %w", err)
@@ -190,16 +272,48 @@ func Enroll(ctx context.Context, config BootstrapConfig) (Identity, error) {
 	}, nil
 }
 
+// enrollmentKey answers which private key this enrolment certifies: the device's durable one when the
+// caller has it, a fresh one otherwise.
+//
+// THE FRESH BRANCH IS THE OLD BEHAVIOUR AND IT IS NOT DEAD. Every control plane test, the conformance
+// harness and every deployment that has not been re-enrolled with `palai enroll` reaches it, and each
+// of those genuinely wants a per-process key. What made it a defect was being the ONLY branch.
+func enrollmentKey(config BootstrapConfig) (crypto.Signer, error) {
+	if config.DeviceKey != nil {
+		return config.DeviceKey, nil
+	}
+	private, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate runner key: %w", err)
+	}
+	return private, nil
+}
+
 // enrollmentTLS is the outbound, server-authenticated TLS config for enrollment: the
 // runner presents no client certificate (it has none yet — the token authenticates it)
-// but pins the controller CA and exact DNS identity.
+// but pins the exact DNS identity, against the controller CA when one was given and against
+// the host's own root store when none was.
+//
+// ‼️ A NIL RootCAs IS NOT "TRUST NOTHING" AND IT IS NOT "TRUST ANYTHING" — crypto/tls reads it as
+// "use the host's root store", which is the behaviour a publicly trusted gateway needs and the reason a
+// CA file stopped being a required device input. InsecureSkipVerify is never set on either branch, so
+// both paths still verify a chain and both still run the exact-DNS check below.
+//
+// THE EXACT-DNS CHECK SURVIVES THE CHANGE, AND ON THE PUBLIC BRANCH IT IS STRICTER THAN THE WEB'S. A
+// publicly trusted certificate routinely carries several SANs (apex, www, a wildcard); this requires
+// exactly one and requires it to be the configured name. That is deliberate for a runner gateway — the
+// device is pointed at one hostname by its own config, not by a link somebody clicked — and it is
+// written down here because it is the kind of rule that looks like a bug to whoever first points a
+// device at a multi-SAN certificate.
 func enrollmentTLS(config BootstrapConfig) *tls.Config {
 	now := config.Now
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS13,
-		RootCAs:    config.ControllerCAs.Clone(),
 		ServerName: config.ControllerDNS,
 		Time:       func() time.Time { return now() },
+	}
+	if config.ControllerCAs != nil {
+		tlsConfig.RootCAs = config.ControllerCAs.Clone()
 	}
 	tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
 		if len(state.VerifiedChains) == 0 || len(state.VerifiedChains[0]) == 0 {

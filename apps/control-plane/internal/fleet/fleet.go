@@ -44,6 +44,34 @@ var ErrCapacityNotDeclarable = errors.New("fleet: declared capacity cannot be ne
 // unmapped verb has to be refused by the surface that took it rather than by Postgres.
 var ErrUnknownLifecycleAction = errors.New("fleet: unknown runner lifecycle action")
 
+// ErrRunnerRevoked is returned by Register when the enrolling device key's fingerprint belongs to a row
+// an operator REVOKED.
+//
+// ‼️ IT IS WHAT MAKES A DECOMMISSIONING SURVIVE THE MACHINE STILL HOLDING A LIVE POOL KEY. A pool key is
+// reusable by design — it enrols a fleet, not a box — so before device keys, revoking a Mac and leaving
+// the key on it meant the Mac came back on its next restart under a NEW id and no revocation reached it.
+// The fingerprint is the thing the revocation actually named, so presenting it recovers the revoked row
+// and is refused rather than minting a second identity for the same hardware.
+var ErrRunnerRevoked = errors.New("fleet: this device's runner identity has been revoked")
+
+// ErrIdentityNotRecoverable is returned by Register when a machine claims a runner id its device key
+// cannot support: either the fingerprint resolves to a DIFFERENT row, or it resolves to none at all.
+//
+// THE SECOND SHAPE IS THE ONE WORTH NAMING. A machine whose disk kept the identity file and lost the key
+// (a re-image, a restored backup) presents an id it cannot prove, and honouring that claim would be a way
+// to BECOME another machine by copying one small JSON file. It is refused, and a genuinely new install
+// with a genuinely new key — which presents no claim — becomes a new machine instead.
+var ErrIdentityNotRecoverable = errors.New("fleet: the claimed runner identity does not belong to this device key")
+
+// ErrIsolationUnsupported is returned by Register when the machine's MEASURED isolation modes do not
+// include the one its pool requires (plan §3.5, DoD 9).
+//
+// IT IS THE ONE REFUSAL ON THIS PATH BUILT ON A MEASUREMENT RATHER THAN A DECLARATION. Posture, pool and
+// capacity are all claims the control plane records and cannot verify; whether palai-agentd answered a
+// socket is something the machine found out. Refusing here rather than at placement is the property DoD 9
+// states: a machine that cannot execute never appears as ready capacity.
+var ErrIsolationUnsupported = errors.New("fleet: the machine does not support the isolation mode this pool requires")
+
 // RunnerLifecycle is the LIVE half of a lifecycle decision: the gateway holding that machine's sessions.
 // The durable half is a row, and a row alone would take effect only at the machine's next connect — which
 // for a cordoned Mac serving a two-hour run is two hours away.
@@ -169,6 +197,17 @@ type Registration struct {
 	// It is the fact §3.6 D5 names as the one missing piece of targeted revocation: revoking a key was
 	// all-or-nothing because nothing recorded which key issued which certificate.
 	KeyID string
+	// Version is the agent build the machine reported. Inventory: the support window is enforced at
+	// connect, not at enrolment.
+	Version string
+	// IsolationModes is what the machine MEASURED it can provide. It is checked against the pool's
+	// required mode before the row is written; empty declares nothing and a pool with no requirement
+	// admits it, which is every pool that exists today.
+	IsolationModes []string
+	// RecoverRunnerID is the identity the machine says it already holds (plan §3.4). EMPTY asks for a new
+	// one; non-empty is a CLAIM, and Register refuses it unless the fingerprint resolves to exactly that
+	// row. It is never the id written — that comes from the row the fingerprint found.
+	RecoverRunnerID string
 }
 
 // ListWindow is the keyset page window the read surface passes down, the shape api.ListQuery

@@ -25,6 +25,7 @@ import (
 
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
 	"github.com/palgroup/palai/adapters/sandboxes/posture"
+	"github.com/palgroup/palai/packages/device"
 	"github.com/palgroup/palai/packages/macagent"
 	"github.com/palgroup/palai/packages/runner"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
@@ -38,6 +39,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// ‼️ `enroll` IS THE ONE-TIME INSTALL AND IT IS THE ONLY SUBCOMMAND. It writes this machine's config
+	// and durable identity, installs the service, and returns; everything below is the AGENT, which is
+	// what the service then runs. A device artifact carries exactly these two behaviours — no `up`, no
+	// admin verb, no stack (plan §3.7).
+	if len(os.Args) > 1 && os.Args[1] == "enroll" {
+		if err := runEnroll(ctx, os.Args[2:], os.Stdout); err != nil {
+			log.Fatalf("%v", err)
+		}
+		return
+	}
+
 	// ‼️ BEFORE ENROLMENT, NOT AFTER. A machine that cannot isolate a session does not join the pool at
 	// all — see admitMachine. It runs here rather than inside loadConfig because the property is about
 	// the ORDER: a refusal that arrived after the certificate was issued would be a machine the control
@@ -46,7 +58,8 @@ func main() {
 		log.Fatalf("%v", err)
 	}
 
-	bootstrap, tokenFile, sessionURL, renewURL, settingsURL, controllerDNS, controllerCAs := loadConfig()
+	installed := installedDevice()
+	bootstrap, tokenFile, sessionURL, renewURL, settingsURL, controllerDNS, controllerCAs := loadConfig(installed)
 
 	identity, err := runner.Enroll(ctx, bootstrap)
 	if err != nil {
@@ -129,8 +142,11 @@ func main() {
 		Supervisor: runner.NewStreamSupervisor(driver),
 		Renew:      renew,
 		Reenroll:   reenroll,
-		Now:        time.Now,
-		Log:        log.Printf,
+		// Keep the disk in step with the identity this loop holds. nil on the environment path, which has
+		// no disk identity to keep in step — see persistIdentity for what an unpersisted renewal costs.
+		PersistIdentity: persistIdentity(installed),
+		Now:             time.Now,
+		Log:             log.Printf,
 		// Default 1 (LP-0 + existing stacks unchanged); the delegation-capable stack sets 2 so a
 		// run's parent and its inline child each hold an engine on this runner (spec §25.18).
 		//
@@ -219,7 +235,15 @@ func admitMachine(ctx context.Context, probe *macagent.Prober) error {
 // into the environment, and it is the file the expired-identity recovery path re-reads. Unset
 // leaves the runner with no recovery path — an expired identity is then terminal, and the
 // serve loop says so.
-func loadConfig() (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, renewURL, settingsURL, controllerDNS string, controllerCAs *x509.CertPool) {
+func loadConfig(installed *device.Installation) (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, renewURL, settingsURL, controllerDNS string, controllerCAs *x509.CertPool) {
+	// ‼️ AN INSTALLED DEVICE READS NO ENVIRONMENT AT ALL. This branch is the whole point of `enroll`: its
+	// inputs are the config on disk and this machine's own identity, so the running agent reads zero
+	// `PALAI_` names. Every line below it is the COMPOSE path — the deployments that exist today, which
+	// §3.7 keeps for one release and which no packaged device takes.
+	if installed != nil {
+		return installedBootstrap(installed)
+	}
+
 	token := os.Getenv("PALAI_ENROLLMENT_TOKEN")
 	_ = os.Unsetenv("PALAI_ENROLLMENT_TOKEN")
 	tokenFile = os.Getenv("PALAI_ENROLLMENT_TOKEN_FILE")
@@ -231,14 +255,12 @@ func loadConfig() (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, rene
 		token = strings.TrimSpace(string(raw))
 	}
 
-	caPEM, err := os.ReadFile(mustEnv("PALAI_CONTROLLER_CA"))
-	if err != nil {
-		log.Fatalf("read controller CA: %v", err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		log.Fatal("controller CA file contained no certificates")
-	}
+	// ‼️ PALAI_CONTROLLER_CA IS NO LONGER REQUIRED — it was `mustEnv` here, and that single line made a CA
+	// file a mandatory input on every device in every deployment, including the ones whose gateway carries
+	// a publicly trusted certificate (DoD item 2). Unset now means the host's own root store verifies the
+	// gateway. Nothing is skipped: packages/runner still verifies a chain and still requires the leaf's
+	// single SAN to be the configured name on both branches.
+	pool := caPoolFromFile(os.Getenv("PALAI_CONTROLLER_CA"))
 
 	// ONE ADDRESS INSTEAD OF FOUR. A machine joining a fleet knows where its control plane is; it does not
 	// separately know three URL paths and a DNS name on that same host, and asking an operator for them is
@@ -291,6 +313,150 @@ func loadConfig() (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, rene
 		derivedEnv("PALAI_RENEW_URL", controllerURL, joinPath("/v1/runner/renew")),
 		derivedEnv("PALAI_SETTINGS_URL", controllerURL, joinPath("/v1/runner/settings")),
 		controllerDNS, pool
+}
+
+// installedDevice reads this machine's installation, or nil when it has none.
+//
+// ‼️ `--config <path>` IS AN ARGUMENT AND NOT A VARIABLE, and that is the same decision `enroll` makes
+// about the key: the service file names the path, so `launchctl print` and `systemctl cat` show an
+// operator which config the running agent is on. An environment variable would be one more `PALAI_` name
+// on the very count this task exists to drive to zero.
+//
+// A CONFIG THAT EXISTS AND CANNOT BE READ IS FATAL, and a machine with no config falls through to the
+// environment. The asymmetry is deliberate: "no config" is every Compose and Helm deployment alive today,
+// while "a config with the wrong mode" is a machine somebody enrolled — and letting that one fall back to
+// an environment the service manager did not set would produce an agent that starts and reaches nothing.
+func installedDevice() *device.Installation {
+	paths, err := device.HostPaths()
+	if err != nil {
+		// A machine that cannot name its own home directory has no standard config path to look in. That
+		// is not a failure to start — it is the pre-device state — so the environment path takes over.
+		return nil
+	}
+	if explicit := configFlag(os.Args[1:]); explicit != "" {
+		paths.ConfigFile = explicit
+	}
+	installed, err := device.Load(paths)
+	if err != nil {
+		log.Fatalf("read device configuration: %v", err)
+	}
+	return installed
+}
+
+// configFlag reads `--config <path>` (or `--config=<path>`, or the single-dash spellings) out of the
+// agent's arguments. It is hand-parsed rather than a flag.FlagSet because this binary's argument list is
+// two shapes — `enroll ...` and the agent — and installing a package-level FlagSet would make an
+// unrecognised argument fatal for a service manager that passes one.
+func configFlag(args []string) string {
+	for i, arg := range args {
+		switch {
+		case arg == "--config" || arg == "-config":
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+		case strings.HasPrefix(arg, "--config="):
+			return strings.TrimPrefix(arg, "--config=")
+		case strings.HasPrefix(arg, "-config="):
+			return strings.TrimPrefix(arg, "-config=")
+		}
+	}
+	return ""
+}
+
+// installedBootstrap is the ZERO-VARIABLE branch of loadConfig: every value below comes from this
+// machine's own disk or is derived from the one address in its config.
+//
+// ‼️ THE DEVICE KEY AND THE HELD ID ARE WHAT MAKE A RESTART A RESTART. The key is the same one every
+// previous start used, so the registry recovers the row it already has; the id is presented so the
+// control plane reissues THAT identity rather than minting a second. Neither is an authorisation — the
+// server checks the claim against the fingerprint and refuses a disagreement.
+//
+// WHAT IS ABSENT IS THE CONTRACT. No pool, no posture, no capacity, no runner id, no DNS name, no four
+// derived URLs, no workspace root, no concurrency. Those are the admin plane's or the binary's, and a
+// value added here is a value an operator has to set on every machine in the fleet.
+func installedBootstrap(installed *device.Installation) (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, renewURL, settingsURL, controllerDNS string, controllerCAs *x509.CertPool) {
+	key, err := installed.EnrollmentKey()
+	if err != nil {
+		log.Fatalf("read enrolment key: %v", err)
+	}
+	base := strings.TrimRight(installed.Config.ControllerURL, "/")
+	controllerDNS = hostOf(base)
+	if controllerDNS == "" {
+		log.Fatalf("%s names controller_url %q, which has no host", installed.Paths.ConfigFile, installed.Config.ControllerURL)
+	}
+	facts := device.Measure(runtime.GOOS, runtime.GOARCH, version.Resolve(), agentdReady(context.Background()), dockerReady(context.Background()))
+	return runner.BootstrapConfig{
+			RunnerID:  machineName,
+			RunnerDNS: machineName + ".runner.palai.internal",
+			// The key is passed for THIS enrolment and dropped by main immediately after, exactly as the
+			// environment path's is. The file it came from is named in the config, so the recovery path
+			// re-reads it at the moment it needs it rather than holding it for the process's lifetime.
+			EnrollmentToken: key,
+			EnrollmentURL:   base + "/v1/runner/enroll",
+			ControllerCAs:   installed.CAs,
+			ControllerDNS:   controllerDNS,
+			Now:             time.Now,
+			Posture:         declaredPosture(),
+			DeviceKey:       installed.Key.Signer(),
+			RecoverRunnerID: installed.Identity.RunnerID,
+			OS:              facts.OS,
+			Arch:            facts.Arch,
+			Version:         facts.Version,
+			IsolationModes:  facts.IsolationModes,
+		},
+		installed.Config.EnrollmentKeyFile,
+		base + "/v1/runner/connect",
+		base + "/v1/runner/renew",
+		base + "/v1/runner/settings",
+		controllerDNS, installed.CAs
+}
+
+// persistIdentity writes each renewed or recovered certificate beside this device's durable key, or nil
+// for a machine that has no installation.
+//
+// ‼️ WHAT AN UNPERSISTED RENEWAL COSTS, which is the reason the hook exists at all: the runner rolls its
+// certificate forward in memory, so without this the disk keeps the certificate the machine ENROLLED
+// with. A restart after that one expires then takes the recovery path and spends a pool key to be issued
+// something the machine had already been issued — and on a box whose provisioner deleted the key file
+// after installation, there is no recovery path and the machine is simply out of the fleet.
+//
+// THE FINGERPRINT IS RE-WRITTEN EVERY TIME AND IT IS ALWAYS THE SAME ONE, because the device key never
+// changes. Writing it is what lets LoadIdentity detect a disk whose identity file survived a re-image and
+// whose key did not, and discard the claim locally instead of presenting an id the machine cannot prove.
+func persistIdentity(installed *device.Installation) func(runner.Identity) error {
+	if installed == nil {
+		return nil
+	}
+	return func(identity runner.Identity) error {
+		var leaf []byte
+		if len(identity.Certificate.Certificate) > 0 {
+			leaf = identity.Certificate.Certificate[0]
+		}
+		return device.SaveIdentity(installed.Paths.IdentityFile, device.DeviceIdentity{
+			RunnerID:    identity.RunnerID,
+			Certificate: leaf,
+			NotAfter:    identity.NotAfter,
+			Fingerprint: installed.Key.Fingerprint(),
+		})
+	}
+}
+
+// caPoolFromFile reads an optional trust anchor. EMPTY RETURNS NIL, and nil is what packages/runner reads
+// as "the host's own root store" — not "trust nothing" and not "trust anything". It is the line that
+// stopped a CA file from being a mandatory input on every device (DoD item 2).
+func caPoolFromFile(path string) *x509.CertPool {
+	if path == "" {
+		return nil
+	}
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatalf("read controller CA: %v", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		log.Fatal("controller CA file contained no certificates")
+	}
+	return pool
 }
 
 // machineName is the default identity a machine gives itself: its hostname, or a fixed fallback when the
@@ -349,13 +515,10 @@ func hostOf(base string) string {
 	return u.Hostname()
 }
 
-func mustEnv(name string) string {
-	value := os.Getenv(name)
-	if value == "" {
-		log.Fatalf("%s is required", name)
-	}
-	return value
-}
+// mustEnv IS DELETED RATHER THAN LEFT UNUSED. It had exactly one caller — the PALAI_CONTROLLER_CA read
+// in loadConfig — and that single call was what made a CA file a mandatory input on every device in
+// every deployment (DoD item 2). Keeping the helper with no caller would leave the next person a
+// ready-made way to make another variable required, which is the direction this task exists to reverse.
 
 // envIntDefault reads a positive integer env var, falling back to def when unset or unparseable.
 func envIntDefault(name string, def int) int {

@@ -87,6 +87,22 @@ var migrationUp6 string
 //go:embed migrations/000006_project_scoped_secrets_and_environments.down.sql
 var migrationDown6 string
 
+// The fifth migration after the baseline (zero-touch device agent, T2): a machine's identity becomes its
+// DEVICE KEY. Before it, packages/runner.Enroll generated a fresh keypair on every call and cmd/runner
+// called it once per PROCESS START, so `runners` grew a row per reboot — `public_key_sha256` had existed
+// since 000001 and nothing keyed on it. This adds the partial UNIQUE (pool_id, public_key_sha256) that
+// makes "one machine per device key" structural rather than a convention the recovery path follows, plus
+// the machine's reported agent version and MEASURED isolation modes and the pool's required one.
+//
+// It creates no table and adds no policy: 000002 already sweeps `runners` and `runner_pools`, and a
+// column added to an existing table inherits its policy and grants.
+//
+//go:embed migrations/000007_device_identity_and_pool_isolation.up.sql
+var migrationUp7 string
+
+//go:embed migrations/000007_device_identity_and_pool_isolation.down.sql
+var migrationDown7 string
+
 //go:embed queries/agents.sql
 var agentsSQL string
 
@@ -240,10 +256,11 @@ var knowledgeSQL string
 // the whole chain is safe to re-run — which it is, in full, on every boot.
 func MigrationUp() string {
 	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 +
-		"\n" + migrationUp6
+		"\n" + migrationUp6 + "\n" + migrationUp7
 }
 
-// MigrationDown reverses MigrationUp in the opposite order: 000006 takes project_id back off secret_refs
+// MigrationDown reverses MigrationUp in the opposite order: 000007 drops the device-key uniqueness and the
+// three columns it came with, 000006 takes project_id back off secret_refs
 // and environments and restores their installation policies, 000005 makes zero illegal on runners.capacity
 // again, 000004 takes `metadata` back off responses,
 // 000003 takes its columns back off runner_leases, 000002 drops the policies and the procedures that
@@ -260,7 +277,7 @@ func MigrationUp() string {
 // reddened twenty-five component fixtures that never mention a secret. Every other link here is reversible
 // unconditionally.
 func MigrationDown() string {
-	return migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" +
+	return migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" +
 		migrationDown2 + "\n" + migrationDown
 }
 

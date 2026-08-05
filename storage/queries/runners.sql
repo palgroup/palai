@@ -13,9 +13,62 @@
 -- enrolment request carries no org/project, so the POOL is what resolves the tenant. LIMIT is absent
 -- deliberately — id is the primary key, so this returns at most one row by construction and there is
 -- no ordering ambiguity to resolve (the LIMIT-1-without-ORDER-BY trap this tree has paid for twice).
-SELECT id, project_id, posture, os, arch, strict_enrollment
+--
+-- isolation_mode is 000007's column and EMPTY IS THE SHIPPED VALUE: a pool that requires no particular
+-- session-isolation mechanism admits every machine, which is every pool that exists on the day 000007
+-- applies. Only a pool an operator sets to 'user' / 'accounts' / 'container' refuses a machine whose
+-- MEASURED modes do not include it.
+SELECT id, project_id, posture, os, arch, strict_enrollment, isolation_mode
   FROM runner_pools
  WHERE id = $1;
+
+-- name: ResolveRunnerByFingerprint
+-- The row this DEVICE KEY already owns in this pool, or none (plan §3.4, migration 000007).
+--
+-- THIS STATEMENT IS WHAT MAKES A RESTART A RESTART. Before it, every process start generated a fresh
+-- keypair and took a fresh `rnr_` id, so a rebooted Mac was a machine the registry had never seen — a new
+-- row, and in a strict pool a second approval for a box a human had already approved.
+--
+-- ORDER BY IS NOT DECORATION HERE. 000007 adds a UNIQUE index on (pool_id, public_key_sha256) for a
+-- non-empty fingerprint, so this returns at most one row on any database that has applied it — but the
+-- statement has to be correct on a database mid-upgrade too, and a LIMIT without an ORDER BY is a
+-- non-deterministic answer this tree has already had decide three outcomes, two of them security ones.
+-- Newest wins, and the tiebreak on id makes even that total.
+SELECT id, state, runner_dns
+  FROM runners
+ WHERE pool_id = $1 AND public_key_sha256 = $2 AND public_key_sha256 <> ''
+ ORDER BY enrolled_at DESC, id DESC
+ LIMIT 1;
+
+-- name: RecoverRunner
+-- Re-enrol a machine the registry already holds, keeping its id.
+--
+-- WHAT IS REFRESHED AND WHAT IS NOT is the whole content of this statement. The label, the reported
+-- shape, the version, the measured isolation modes and the key that admitted it are all refreshed —
+-- they are facts about the machine as it is NOW, and a Mac upgraded to a new OS or moved to a new pool
+-- key would otherwise carry last year's inventory forever.
+--
+-- `state` IS NOT TOUCHED, AND THAT IS THE SECURITY HALF. A `pending` machine stays in the strict pool's
+-- waiting room across a restart rather than being promoted by the restart itself, and a `cordoned` one
+-- stays cordoned. A `revoked` one never reaches this statement at all — fleet.Store.Register refuses it
+-- before here (ErrRunnerRevoked), because re-presenting a live pool key must not undo a decommissioning.
+--
+-- `capacity` IS NOT TOUCHED EITHER, for a narrower reason: it is the ADMIN plane's number since plan §3.6,
+-- and letting a re-enrolment write the machine's own declaration back over it would let a box widen a
+-- ceiling an operator set by restarting.
+UPDATE runners
+   SET label = $2,
+       os = coalesce(nullif($3, ''), os),
+       arch = coalesce(nullif($4, ''), arch),
+       agent_version = $5,
+       isolation_modes = $6,
+       enrolled_via_key_id = coalesce(nullif($7, ''), enrolled_via_key_id),
+       enrolled_at = clock_timestamp(),
+       last_seen_at = clock_timestamp()
+ WHERE id = $1
+RETURNING id, project_id, pool_id, label, runner_dns, public_key_sha256,
+          state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
+       config_revision, config_applied, config_reported_at;
 
 -- name: InsertRunner
 -- Record an enrolled machine. The id is minted by the CALLER (server-side, `rnr_`), never by the
@@ -26,10 +79,15 @@ SELECT id, project_id, posture, os, arch, strict_enrollment
 -- $13 is enrolled_via_key_id (E24 T3): WHICH credential admitted this machine. NULL means the file
 -- bootstrap token, which is not a row and cannot be revoked individually — the honest representation
 -- of the pre-pool-key path rather than a sentinel id pointing at nothing.
+--
+-- $14/$15 are 000007's agent_version and isolation_modes: the build the machine reported and the
+-- session-isolation mechanisms it MEASURED it can provide, comma-joined. Both default to '' for a runner
+-- too old to send them, which is every runner on the day 000007 applies.
 INSERT INTO runners (
     id, project_id, pool_id, label, runner_dns, public_key_sha256,
-    state, os, arch, posture, capacity, cert_not_after, enrolled_via_key_id, enrolled_at, last_seen_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, nullif($13, ''), clock_timestamp(), clock_timestamp())
+    state, os, arch, posture, capacity, cert_not_after, enrolled_via_key_id,
+    agent_version, isolation_modes, enrolled_at, last_seen_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, nullif($13, ''), $14, $15, clock_timestamp(), clock_timestamp())
 RETURNING created_at, enrolled_at, last_seen_at;
 
 -- name: AppendRunnerEnrollment

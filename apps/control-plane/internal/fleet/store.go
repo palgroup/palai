@@ -73,11 +73,11 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	var pool struct {
-		id, project, posture, os, arch string
-		strict                         bool
+		id, project, posture, os, arch, isolation string
+		strict                                    bool
 	}
 	err = tx.QueryRow(ctx, storage.Query("ResolveRunnerPool"), reg.PoolID).
-		Scan(&pool.id, &pool.project, &pool.posture, &pool.os, &pool.arch, &pool.strict)
+		Scan(&pool.id, &pool.project, &pool.posture, &pool.os, &pool.arch, &pool.strict, &pool.isolation)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Runner{}, ErrUnknownPool
 	}
@@ -114,6 +114,61 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 		return Runner{}, ErrPostureMismatch
 	}
 
+	// THE MEASURED CHECK, and it is the only refusal on this path that is not a comparison of two
+	// declarations. A pool that names an isolation_mode is a pool whose sessions need that mechanism; a
+	// machine that measured its own modes and does not have it cannot serve them. Refusing HERE rather
+	// than at placement is DoD 9's sentence — a machine that cannot execute never appears as ready
+	// capacity — and refusing before the INSERT is what keeps that true of the row as well as of the
+	// certificate.
+	//
+	// EMPTY ON EITHER SIDE ADMITS. A pool with no requirement is every pool that exists the day 000007
+	// applies, and a machine that measured nothing is every runner built before packages/device. A check
+	// that refused either would refuse every machine in every deployment for a mechanism none of them
+	// declared.
+	if !isolationSatisfied(pool.isolation, reg.IsolationModes) {
+		detail, err := json.Marshal(map[string]string{
+			"label": reg.Label, "pool_isolation_mode": pool.isolation,
+			"machine_isolation_modes": strings.Join(reg.IsolationModes, ","),
+		})
+		if err != nil {
+			return Runner{}, fmt.Errorf("encode refusal detail: %w", err)
+		}
+		if _, err := tx.Exec(ctx, storage.Query("AppendRunnerEnrollment"),
+			s.mintID("renr"), pool.project, reg.ID, pool.id, reg.KeyID, "refused", detail); err != nil {
+			return Runner{}, fmt.Errorf("append refusal entry: %w", err)
+		}
+		// Committed for the reason the posture refusal above is: the record of a machine turned away is
+		// the only thing this transaction produced, and rolling it back makes the refusal invisible.
+		if err := tx.Commit(ctx); err != nil {
+			return Runner{}, fmt.Errorf("commit enrollment refusal: %w", err)
+		}
+		return Runner{}, ErrIsolationUnsupported
+	}
+
+	// ‼️ RECOVERY BEFORE CREATION. A device key the registry already holds in this pool is the SAME
+	// machine, and everything below this block is what happens when it is not. Before device keys this
+	// branch could not exist: every enrolment carried a fresh keypair, so every restart was a new row.
+	recovered, err := s.recover(ctx, tx, pool.project, pool.id, reg)
+	if err != nil {
+		return Runner{}, err
+	}
+	if recovered.ID != "" {
+		if err := tx.Commit(ctx); err != nil {
+			return Runner{}, fmt.Errorf("commit runner recovery: %w", err)
+		}
+		return recovered, nil
+	}
+
+	// A CLAIM THIS FINGERPRINT CANNOT SUPPORT IS REFUSED RATHER THAN TURNED INTO A NEW MACHINE. Reaching
+	// here with a non-empty RecoverRunnerID means the fingerprint matched no row and the machine still
+	// named an identity — a disk that kept identity.json and lost device.key, or a copied identity file.
+	// Minting a new id for it would be the friendlier answer and the wrong one: it hides the fact that
+	// the machine believes it is something it cannot prove, and on the copied-file shape it is the exact
+	// request an attacker makes.
+	if reg.RecoverRunnerID != "" {
+		return Runner{}, ErrIdentityNotRecoverable
+	}
+
 	// The machine inherits the pool's posture: having agreed (or said nothing), what it IS is what the
 	// pool is. Its own os/arch are recorded as reported — they are inventory, and T4 is where a
 	// placement decision may compare them.
@@ -141,6 +196,7 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 	if err := tx.QueryRow(ctx, storage.Query("InsertRunner"),
 		row.ID, row.Project, row.PoolID, row.Label, row.DNS, row.PublicKeySHA256,
 		row.State, row.OS, row.Arch, row.Posture, row.Capacity, nil, reg.KeyID,
+		reg.Version, strings.Join(reg.IsolationModes, ","),
 	).Scan(&created, &row.EnrolledAt, &row.LastSeenAt); err != nil {
 		return Runner{}, fmt.Errorf("insert runner: %w", err)
 	}
@@ -160,6 +216,91 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 		return Runner{}, fmt.Errorf("commit runner registration: %w", err)
 	}
 	return row, nil
+}
+
+// recover resolves the row this device key already owns in this pool and re-enrols it under its
+// existing id, or reports "no such row" as a zero Runner and a nil error.
+//
+// ‼️ IT RUNS INSIDE THE CALLER'S TRANSACTION. The lookup and the update have to see one another or two
+// concurrent enrolments of one key both miss and both insert — and the UNIQUE index 000007 adds is the
+// second half of that same guarantee, for the case where the two enrolments reach two replicas.
+//
+// THE THREE REFUSALS ARE ORDERED, and the order is what makes each of them mean something:
+//
+//  1. A REVOKED row refuses, before anything is written. A pool key is reusable by design, so without
+//     this a decommissioned Mac with the key still on it comes back on its next restart. This is the
+//     line that makes "revoke that machine" survive the machine disagreeing.
+//  2. A CLAIMED id that is not this row's refuses. The fingerprint decided; the claim is checked against
+//     it rather than honoured, which is what stops a copied identity file from being an identity.
+//  3. Everything else re-enrols under the existing id, and `state` is deliberately untouched — see
+//     RecoverRunner in storage/queries/runners.sql for why a restart must not promote a machine out of a
+//     strict pool's waiting room.
+func (s *Store) recover(ctx context.Context, tx pgx.Tx, project, poolID string, reg Registration) (Runner, error) {
+	if reg.PublicKeySHA256 == "" {
+		// A machine with no fingerprint has no durable identity to recover, which is every runner built
+		// before packages/device and every control plane wired without a registry-recording issuer. It
+		// takes the create path exactly as it always did.
+		return Runner{}, nil
+	}
+	var existing struct{ id, state, dns string }
+	err := tx.QueryRow(ctx, storage.Query("ResolveRunnerByFingerprint"), poolID, reg.PublicKeySHA256).
+		Scan(&existing.id, &existing.state, &existing.dns)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Runner{}, nil
+	}
+	if err != nil {
+		return Runner{}, fmt.Errorf("resolve runner by device key: %w", err)
+	}
+	if existing.state == "revoked" {
+		return Runner{}, ErrRunnerRevoked
+	}
+	if reg.RecoverRunnerID != "" && reg.RecoverRunnerID != existing.id {
+		return Runner{}, ErrIdentityNotRecoverable
+	}
+
+	row, err := scanRunner(tx.QueryRow(ctx, storage.Query("RecoverRunner"),
+		existing.id, reg.Label, reg.OS, reg.Arch, reg.Version,
+		strings.Join(reg.IsolationModes, ","), reg.KeyID), false)
+	if err != nil {
+		return Runner{}, fmt.Errorf("recover runner: %w", err)
+	}
+
+	// The journal entry, with the same fields the `issued` entry carries and a kind that says what
+	// happened. 000045 R4's CHECK admits ('requested','approved','refused','issued','revoked','renewed'),
+	// so a re-enrolment is journalled as `renewed` — there is no kind for "recovered" and inventing one
+	// would take a second migration for a word. What matters is that the event is RECORDED: a machine
+	// whose identity was reissued and whose journal says nothing is a certificate no audit can explain.
+	detail, err := json.Marshal(map[string]string{
+		"label": reg.Label, "runner_dns": existing.dns,
+		"public_key_sha256": reg.PublicKeySHA256, "recovered": "device-key",
+	})
+	if err != nil {
+		return Runner{}, fmt.Errorf("encode recovery detail: %w", err)
+	}
+	if _, err := tx.Exec(ctx, storage.Query("AppendRunnerEnrollment"),
+		s.mintID("renr"), project, existing.id, poolID, reg.KeyID, "renewed", detail); err != nil {
+		return Runner{}, fmt.Errorf("append recovery entry: %w", err)
+	}
+	return row, nil
+}
+
+// isolationSatisfied reports whether a machine's MEASURED modes cover the pool's requirement.
+//
+// BOTH EMPTIES ADMIT, and each for its own reason. An empty requirement is every pool that exists the day
+// 000007 applies — a pool nobody configured must refuse nobody. An empty measurement is every runner
+// built before packages/device: it declared nothing, and a pool that requires nothing has nothing to
+// compare it against. The pairing that refuses is the one where the pool asked and the machine measured
+// its modes and the mode asked for is not among them.
+func isolationSatisfied(required string, measured []string) bool {
+	if required == "" || len(measured) == 0 {
+		return true
+	}
+	for _, mode := range measured {
+		if mode == required {
+			return true
+		}
+	}
+	return false
 }
 
 // RecordSeen advances the liveness stamp for the runner holding dns. It reports found=false rather

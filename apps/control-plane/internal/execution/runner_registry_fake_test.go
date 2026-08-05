@@ -24,6 +24,10 @@ type fakeRegistry struct {
 	// refuses a declared posture the pool does not have, so the wire proofs run against the same two
 	// rules the store enforces — a fake that accepts what the store rejects is a proof about nothing.
 	pools map[string]string
+	// isolation is each pool's REQUIRED session-isolation mode (migration 000007), empty for a pool that
+	// requires none — which is every pool that exists today, and the reason this map starts empty rather
+	// than being seeded alongside `pools`.
+	isolation map[string]string
 }
 
 // fakePool is one pool the fake registry knows: an id and the posture that pool IS.
@@ -47,7 +51,14 @@ func newFakeRegistry(pools ...fakePool) *fakeRegistry {
 	for _, p := range pools {
 		known[p.id] = p.posture
 	}
-	return &fakeRegistry{byDNS: map[string]*fleet.Runner{}, pools: known}
+	return &fakeRegistry{byDNS: map[string]*fleet.Runner{}, pools: known, isolation: map[string]string{}}
+}
+
+// requireIsolation gives a pool the session-isolation mode a machine must have MEASURED to join it.
+func (f *fakeRegistry) requireIsolation(poolID, mode string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.isolation[poolID] = mode
 }
 
 func (f *fakeRegistry) Register(_ context.Context, reg fleet.Registration) (fleet.Runner, error) {
@@ -66,6 +77,45 @@ func (f *fakeRegistry) Register(_ context.Context, reg fleet.Registration) (flee
 	// inherits (every pre-E24 machine declares nothing).
 	if reg.Posture != "" && reg.Posture != posture {
 		return fleet.Runner{}, fleet.ErrPostureMismatch
+	}
+	// The MEASURED check (migration 000007). Both empties admit, for the two separate reasons the store's
+	// isolationSatisfied states: a pool with no requirement is every pool alive today, and a machine that
+	// measured nothing is every runner built before packages/device.
+	if required := f.isolation[reg.PoolID]; required != "" && len(reg.IsolationModes) > 0 {
+		supported := false
+		for _, mode := range reg.IsolationModes {
+			if mode == required {
+				supported = true
+			}
+		}
+		if !supported {
+			return fleet.Runner{}, fleet.ErrIsolationUnsupported
+		}
+	}
+	// ‼️ THE DEVICE-KEY RECOVERY RULES, RESTATED — AND THIS FAKE IS NOT THE PROOF OF THEM. The claim
+	// "a restart is one machine row" is about what fleet.Store does against a real Postgres, and it is
+	// proven there (fleet's component suite, against the 000007 unique index). What the fake exists for is
+	// the claim ABOVE it, which the store cannot make: that the GATEWAY signs a certificate for the id the
+	// registry returned rather than for the id it minted. A fake that created a new row on every enrolment
+	// would let that gateway defect pass unseen, because both ids would be new and equal-looking.
+	//
+	// Restating rules in a fake is how a fake reproduces production's bug. The mitigation here is that
+	// these three lines are the CONTRACT (the error values fleet exports), not a copy of the store's
+	// implementation, and the store's own behaviour is measured against a real database.
+	if reg.PublicKeySHA256 != "" {
+		if existing := f.byFingerprint(reg.PoolID, reg.PublicKeySHA256); existing != nil {
+			if existing.State == "revoked" {
+				return fleet.Runner{}, fleet.ErrRunnerRevoked
+			}
+			if reg.RecoverRunnerID != "" && reg.RecoverRunnerID != existing.ID {
+				return fleet.Runner{}, fleet.ErrIdentityNotRecoverable
+			}
+			existing.Label, existing.LastSeenAt = reg.Label, time.Now()
+			return *existing, nil
+		}
+	}
+	if reg.RecoverRunnerID != "" {
+		return fleet.Runner{}, fleet.ErrIdentityNotRecoverable
 	}
 	row := &fleet.Runner{
 		ID: reg.ID, Project: fakeRegistryProject,
@@ -130,6 +180,32 @@ func (f *fakeRegistry) List(_ context.Context, project string, _ fleet.ListWindo
 		}
 	}
 	return out, nil
+}
+
+// byFingerprint is the fake's index for the device-key lookup. It walks the rows rather than keeping a
+// map because the ORDER decides the answer when more than one row could match, and the store's statement
+// says newest wins — walking backwards is the same rule with no second index to keep in step.
+//
+// Called with f.mu already held.
+func (f *fakeRegistry) byFingerprint(poolID, fingerprint string) *fleet.Runner {
+	for i := len(f.rows) - 1; i >= 0; i-- {
+		if f.rows[i].PoolID == poolID && f.rows[i].PublicKeySHA256 == fingerprint {
+			return f.rows[i]
+		}
+	}
+	return nil
+}
+
+// revoke marks a row revoked, so a proof can measure what a re-enrolment does about it without needing
+// the whole lifecycle surface.
+func (f *fakeRegistry) revoke(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, row := range f.rows {
+		if row.ID == id {
+			row.State = "revoked"
+		}
+	}
 }
 
 // snapshot copies the recorded rows for assertion.
