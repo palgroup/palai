@@ -4,9 +4,9 @@
 //
 // In cloud the model keys are ours (spec §4.2), so provider capacity is pooled across every project and
 // one project's blowout must not hand every other project a 429 it did not cause. The mechanism for that
-// is not new: `quotas` has carried an installation-wide scope since E13 Task 6 (a row with project_id='',
-// which the JOIN below sums across every project) and `checkDurableLimits` has enforced it since. What was
-// missing is measured rather than assumed, and it is two things:
+// is not new: `quotas` has carried an installation-wide scope since E13 Task 6 (a row whose project_id is
+// the empty string, which the JOIN below sums across every project) and `checkDurableLimits` has enforced
+// it since. What was missing is measured rather than assumed, and it is two things:
 //
 //  1. NOTHING PROVED THE ROLLING WINDOW. tests/component/postgres/usage_ledger_test.go:399
 //     (TestBudgetScopeNarrowingAcrossSiblingProjects) drives the real AdmitResponse through all three
@@ -32,7 +32,8 @@
 // infer from a green test.
 //
 // EVERY TEST HERE MINTS ITS OWN METER VOCABULARY, and that is not hygiene — it is what makes the
-// installation-wide row usable in a shared database at all. A project_id='' row means EVERY project by
+// installation-wide row usable in a shared database at all. A row whose project_id is the empty string
+// means EVERY project by
 // definition, so a wide row seeded on 'model.' would bind every other test against this database exactly
 // as it binds a real deployment's every project. A prefix unique to one test run is matched by no other
 // test's meters, and the wide row is dropped again in Cleanup so nothing inherits an exhausted pool.
@@ -69,9 +70,13 @@ func seedQuota(t *testing.T, pool *pgxpool.Pool, project, prefix string, limit i
 	return id
 }
 
-// dropInstallationWideQuota removes a project_id='' row again. Callers run it from Cleanup because a
+// dropInstallationWideQuota removes an empty-project_id row again. Callers run it from Cleanup because a
 // t.Fatal must not leave an exhausted pool bound to every project in this shared database — including
 // the projects of every test that runs after this one.
+//
+// The scope is spelled in prose here rather than as the SQL literal on purpose: gofmt rewrites a pair of
+// single quotes inside a DOC comment into a typographic close-quote, so the literal silently stops being
+// the value it names. Free-floating comment blocks elsewhere in this tree keep the literal safely.
 func dropInstallationWideQuota(t *testing.T, pool *pgxpool.Pool, id string) {
 	t.Helper()
 	exec(t, pool, `DELETE FROM quotas WHERE id = $1 AND project_id = ''`, id)
