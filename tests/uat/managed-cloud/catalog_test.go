@@ -67,9 +67,20 @@ var expectedManagedCloudCatalog = map[string]struct {
 		"apps/control-plane/internal/identity/provisioning_component_test.go:TestProvisionSecondTenantViaAPI",
 		"apps/control-plane/internal/identity/provisioning_component_test.go:TestConfigPolicyResolverReachable",
 	}},
+	// The second proof was RE-POINTED 2026-08-05 rather than withdrawn, and NO evidence/superseded row is
+	// written for it because the tree already carries one, in a better place. MCI-002's text says "a
+	// cross-org resolve is denied"; A.2 dropped the organizations table and left secret_refs with no tenant
+	// column at all, so for one phase this repository SHIPPED the open posture and a green test asserting
+	// it, and migration 000006 with `04a340b9` restored the boundary a level down on project_id. All three
+	// names, the inversion in between and the reason it was allowed are written at the successor itself
+	// (secrets_component_test.go, "IS THE THIRD NAME THIS TEST HAS HAD"). A superseded record would have to
+	// name the first one as `rested_on`, and that guard proves absence by sweeping the tree's SOURCE — so
+	// filing one would mean deleting the narration to make the sweep agree. The successor asserts strictly
+	// more than the name it replaces: the foreign miss is a clean ok=false rather than a distinguishable
+	// error, and two projects each hold the same NAME at their own version 1.
 	"MCI-002": {"component-real", []string{
 		"apps/control-plane/internal/identity/secrets_component_test.go:TestSecretRefWriteResolveRotate",
-		"apps/control-plane/internal/identity/secrets_component_test.go:TestSecretRefCrossOrgResolveDenied",
+		"apps/control-plane/internal/identity/secrets_component_test.go:TestASecretNameIsPerProjectAndAForeignOneIsInvisible",
 	}},
 	"MCI-003": {"e2e-deterministic", []string{
 		"apps/control-plane/e2e/responses/list_test.go:TestListResponsesRejectsCrossTenantCursor",

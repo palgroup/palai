@@ -13,7 +13,12 @@ proof:
   - apps/control-plane/internal/execution/runner_pool_birth_component_test.go:TestPoolBirthIsProvisionGatedAndTenantScoped
   - apps/control-plane/internal/execution/runner_pool_birth_component_test.go:TestPoolBirthLeavesTheBornWithPoolBitUnchanged
   - apps/control-plane/internal/fleet/seed_test.go:TestTheDefaultPoolSeedStatementIsUnchanged
-  - apps/control-plane/internal/fleet/seed_test.go:TestTheSeedStatementTakesExactlyThreeParameters
+  # RE-POINTED 2026-08-05, not withdrawn: `2dec6c83 feat(storage): the organizations table is gone` dropped
+  # organization_id from InsertDefaultRunnerPool, so the arity pin RENAMED with the number it pins —
+  # ...ThreeParameters -> ...TwoParameters. The claim is unchanged and strictly tighter (a guard against
+  # "one more parameter" is only as strong as the number it starts from), and the sibling above still pins
+  # the three LITERALS, which A.2 did not touch.
+  - apps/control-plane/internal/fleet/seed_test.go:TestTheSeedStatementTakesExactlyTwoParameters
   - cmd/cli/internal/admin/pool_test.go:TestPoolCreateReachesTheRealRouter
   - cmd/cli/internal/admin/pool_test.go:TestPoolSetStrictReachesTheRealRouter
   - cmd/cli/internal/admin/pool_test.go:TestE24HandoverBlockStillDoesNotWork

@@ -6,4 +6,14 @@ input: "a secret-ref is written (write-only value) and rotated to a new version,
 expect_status: completed
 proof:
   - apps/control-plane/internal/identity/secrets_component_test.go:TestSecretRefWriteResolveRotate
-  - apps/control-plane/internal/identity/secrets_component_test.go:TestSecretRefCrossOrgResolveDenied
+  # RE-POINTED 2026-08-05. `3b61efd2` deleted this case's cross-org-named secret proof because the NOUN it
+  # used no longer exists (A.2 dropped the organizations table); `04a340b9` and migration 000006 restored
+  # the boundary a level down, on project_id. The case TEXT above is shipped and left byte-for-byte: its
+  # clause "a cross-org resolve is denied" is superseded on its noun, NOT on the boundary. The full round
+  # trip — all three names this test has had, and the phase in which the tree shipped the open posture with
+  # a green test asserting it — is recorded at the successor itself, in secrets_component_test.go's own doc
+  # comment, which is why no evidence/superseded row duplicates it here.
+  # The successor asserts more than the name it replaces: the foreign miss is a clean ok=false rather than a
+  # distinguishable error (a distinguishable failure is an existence oracle), and two projects each hold the
+  # same secret NAME at their OWN version 1 rather than one appending to the other.
+  - apps/control-plane/internal/identity/secrets_component_test.go:TestASecretNameIsPerProjectAndAForeignOneIsInvisible
