@@ -10,7 +10,6 @@ proof:
   - adapters/integrations/slack/mention_test.go:TestTheModelCannotChooseWhoIsMentioned
   - adapters/integrations/slack/mention_test.go:TestAnEmptyRequesterSkipsTheMentionAndKeepsTheWords
   - adapters/integrations/slack/mention_test.go:TestAPublicationDisplayCannotBroadcast
-  - adapters/integrations/slack/mention_test.go:TestStatusCannotBroadcast
   - adapters/integrations/slack/mention_test.go:TestAMentionRendersAsAnOrdinarySection
   - adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement
   - tests/component/postgres/migration_test.go:TestMigration43SlackRequester
@@ -22,3 +21,12 @@ proof:
   # checksum reads neither this list nor the text (caseChecksumParts hashes id + run_id + the release's
   # contracts digest), so withdrawing a proof cannot move a committed checksum.
   #   - apps/control-plane/internal/store/slack_mention_component_test.go:TestSlackTerminalRunMentionsTheRequesterAndOnlyTheRequester
+  # WITHDRAWN 2026-08-05 — dfceb769 deleted SetStatus itself as dead HTTP-transport code: Socket Mode
+  # replaced the old bridge, so nothing in production calls assistant.threads.setStatus, and its test was
+  # deleted with it (measured by grep for the symbol outside the adapter, cross-checked against internal
+  # callers). The case TEXT above still names assistant.threads.setStatus in its §3.6 D6 sentence because
+  # that sentence is a historical claim about what E21 built and verified when it shipped, not a claim
+  # about a surface that exists today — same reasoning as the block above, and the checksum is unaffected
+  # for the same reason: it hashes id + run_id + the release's contracts digest, never this list or the
+  # text.
+  #   - adapters/integrations/slack/mention_test.go:TestStatusCannotBroadcast

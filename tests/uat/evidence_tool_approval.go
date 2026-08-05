@@ -446,10 +446,15 @@ var ToolApprovalContracts = []ContractRequirement{
 	{
 		Divergence: "P13",
 		SourceURL:  "https://docs.slack.dev/reference/block-kit/blocks/table-block/ (inherited E21 M14, re-read 2026-07-29)",
-		Requirement: "table block: max 100 rows, 20 cells per row, 10,000 characters per message, cell types " +
-			"rich_text|raw_text|raw_number, NO interactive element. THE HIGHEST-RETURN WIDGET IN THIS EPIC AND IT " +
-			"WAS ALREADY BUILT: one row per argument, two columns (key / value). E20 wrote the block, E21 measured " +
-			"the limits, E23 brought only the content",
+		Requirement: "table block: max 100 rows, 20 cells per row, 10,000 characters per message, NO interactive " +
+			"element. The published union names cell types rich_text|raw_text|raw_number, but raw_number IS NOT A " +
+			"SHAPE THE LIVE API TAKES — MEASURED 2026-08-05 (8ef6ae4f): views.open answers invalid_arguments on " +
+			"the type field in every form of it, chat.postMessage answers invalid_blocks, and a gated call " +
+			"carrying a plain numeric argument posted no approval message at all. cell() renders every cell, " +
+			"numeric or not, as raw_text. THE HIGHEST-RETURN WIDGET IN THIS EPIC AND IT WAS ALREADY BUILT: one " +
+			"row per argument, two columns (key / value). E20 wrote the block, E21 minted the wrong type for " +
+			"the numeric column, E23 brought only the content, and 8ef6ae4f corrected the cell before this " +
+			"bundle claimed it",
 	},
 	{
 		Divergence: "P14",

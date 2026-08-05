@@ -2040,7 +2040,7 @@
     {
       "checksum": "sha256:aff47f005a96a72c5629eff23fa6025838ba42e44307122b0879e75a586d3814",
       "db_assertions": [
-        "TLM-003: proven by 9 in-tree proof(s) at the component-real tier — adapters/integrations/slack/mention_test.go:TestAMentionTheModelWroteIsStillNeutralized; adapters/integrations/slack/mention_test.go:TestMentionMintsExactlyOneIDAndItIsTheDeliveryRows; adapters/integrations/slack/mention_test.go:TestTheModelCannotChooseWhoIsMentioned; adapters/integrations/slack/mention_test.go:TestAnEmptyRequesterSkipsTheMentionAndKeepsTheWords; adapters/integrations/slack/mention_test.go:TestAPublicationDisplayCannotBroadcast; adapters/integrations/slack/mention_test.go:TestStatusCannotBroadcast; adapters/integrations/slack/mention_test.go:TestAMentionRendersAsAnOrdinarySection; adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement; tests/component/postgres/migration_test.go:TestMigration43SlackRequester",
+        "TLM-003: proven by 8 in-tree proof(s) at the component-real tier — adapters/integrations/slack/mention_test.go:TestAMentionTheModelWroteIsStillNeutralized; adapters/integrations/slack/mention_test.go:TestMentionMintsExactlyOneIDAndItIsTheDeliveryRows; adapters/integrations/slack/mention_test.go:TestTheModelCannotChooseWhoIsMentioned; adapters/integrations/slack/mention_test.go:TestAnEmptyRequesterSkipsTheMentionAndKeepsTheWords; adapters/integrations/slack/mention_test.go:TestAPublicationDisplayCannotBroadcast; adapters/integrations/slack/mention_test.go:TestAMentionRendersAsAnOrdinarySection; adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement; tests/component/postgres/migration_test.go:TestMigration43SlackRequester",
         "OPENED BY E21 UNDER THE `TLM-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and — worse — PromoteGateFor selects the E20 family by AgentSurfaceCaseIDs MEMBERSHIP, so an unlisted `SLK-013` would have fallen silently through to a WEAKER gate. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
         "NOT in uat.CapabilityClaims and therefore NOT an input to any tier recompute — which changes nothing about the outcome: `slack` is capped at preview by CapabilityOperatorLegs (§6 leg 1) whatever its claims do, `knowledge-vector` is `disabled` by capabilityUnservable, and NO `mcp` capability exists to move (§3.6 D9 — opening one would shift CapabilityClaimsDigest and redden every case checksum in nineteen committed bundles to advertise something that is an admin connection rather than a discovery surface)",
         "HONEST CEILING: every counterparty is a FAKE built from the published references — a fake Slack, a fake MCP/remote tool and a fake provider. §6 leg 1 (a REAL Slack workspace external receipt) and §6 leg 4 (an end-to-end run against a REAL MCP server) are operator work and are NEVER claimed here",
@@ -2250,7 +2250,7 @@
           },
           {
             "divergence": "M14",
-            "requirement": "a table carries at most 100 rows of at most 20 cells with at most 20 column_settings, and \"a single table's character count across all cells cannot exceed 10,000 characters\"; cell types are rich_text / raw_text / raw_number — E20's constants were EXACTLY right, and the only honest enrichment left was typing a numeric cell",
+            "requirement": "a table carries at most 100 rows of at most 20 cells with at most 20 column_settings, and \"a single table's character count across all cells cannot exceed 10,000 characters\"; E20's constants were EXACTLY right. The page NAMES three cell types, rich_text / raw_text / raw_number, but raw_number IS NOT A SHAPE THE LIVE API TAKES: MEASURED 2026-08-05 (8ef6ae4f) against both surfaces, every form of it — {\"type\":\"raw_number\",\"text\":…}, {\"type\":\"raw_number\",\"value\":…}, {\"type\":\"raw_number\",\"value\":\"…\"} — comes back invalid_arguments on views.open and invalid_blocks on chat.postMessage, and a gated call carrying a plain numeric argument posted no approval message at all. E21's own enrichment minted raw_number for a numeric cell and was WRONG; cell() now renders every cell, numeric or not, as raw_text, and the numeric sort that shape would have earned was never rendered by anything because the block carrying it was refused",
             "source_url": "https://docs.slack.dev/reference/block-kit/blocks/table-block/"
           },
           {
@@ -2279,7 +2279,7 @@
             "source_url": "https://docs.slack.dev/messaging/formatting-message-text/"
           }
         ],
-        "contracts_digest": "sha256:15f151c30dfec7cc25b43f14c4129e46f00f79096d5d40540f3d4ef9cc6cb3ff",
+        "contracts_digest": "sha256:f375f31fe425945f9cafd03d6f53354f3f4ed681abf06b5b0036a54507913d6d",
         "external_tool_authority_gained": 0,
         "external_tool_results": 1,
         "fold_digests": [
@@ -3307,7 +3307,7 @@
           },
           {
             "divergence": "P13",
-            "requirement": "table block: max 100 rows, 20 cells per row, 10,000 characters per message, cell types rich_text|raw_text|raw_number, NO interactive element. THE HIGHEST-RETURN WIDGET IN THIS EPIC AND IT WAS ALREADY BUILT: one row per argument, two columns (key / value). E20 wrote the block, E21 measured the limits, E23 brought only the content",
+            "requirement": "table block: max 100 rows, 20 cells per row, 10,000 characters per message, NO interactive element. The published union names cell types rich_text|raw_text|raw_number, but raw_number IS NOT A SHAPE THE LIVE API TAKES — MEASURED 2026-08-05 (8ef6ae4f): views.open answers invalid_arguments on the type field in every form of it, chat.postMessage answers invalid_blocks, and a gated call carrying a plain numeric argument posted no approval message at all. cell() renders every cell, numeric or not, as raw_text. THE HIGHEST-RETURN WIDGET IN THIS EPIC AND IT WAS ALREADY BUILT: one row per argument, two columns (key / value). E20 wrote the block, E21 minted the wrong type for the numeric column, E23 brought only the content, and 8ef6ae4f corrected the cell before this bundle claimed it",
             "source_url": "https://docs.slack.dev/reference/block-kit/blocks/table-block/ (inherited E21 M14, re-read 2026-07-29)"
           },
           {
@@ -3326,7 +3326,7 @@
             "source_url": "https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request (fetched 2026-07-29)"
           }
         ],
-        "contracts_digest": "sha256:85fc03ac6f2bb98939a029cb42761fb7a469b3d018b1128943eefe353aaa0775",
+        "contracts_digest": "sha256:d525e77de1c5ce0ee1f0f74f10d02ec50bf69e1ecbbc17792293e6121eeb2ba8",
         "decision_ledger": [
           {
             "applied": true,

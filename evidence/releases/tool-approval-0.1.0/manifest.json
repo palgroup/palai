@@ -3,7 +3,7 @@
   "captured_at": "2026-07-29T00:00:00Z",
   "cases": [
     {
-      "checksum": "sha256:09cec0f6b32894363a76b0f246ad86885241e46a36bccdb6c893a02b3edb1467",
+      "checksum": "sha256:f4b7b1140e22f58e69812d009691ef257c9c3b8f19c2cd6a4443782f90cb7016",
       "db_assertions": [
         "A2A-001: proven by 4 in-tree proof(s) at the component-real tier — adapters/integrations/a2a/card_test.go:TestAgentCardNeverLeaksInternalDetail; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_PublicCardNeverLeaksAndAdvertisesExactVersion; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_ExtendedCardRequiresAuth; tests/component/postgres/a2a_store_test.go:TestA2AStoreRLSAndCanonicalRefInvariant",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -73,7 +73,7 @@
         "peer": "loopback",
         "transcript_digest": "sha256:92c9e91af9939198ce4ace6f595bf588bbc11bf68826bfb2ef89c62321cfceea"
       },
-      "checksum": "sha256:b02c535423b83146b1d6489d11e7fb4312c5c29abcbc6110cb3e3f5cd70f231d",
+      "checksum": "sha256:357c2e35ea801d373ef5718d3ad64d8aaba53f0d206dd6b34863ca8ceae4096e",
       "db_assertions": [
         "A2A-002: proven by 8 in-tree proof(s) at the e2e-deterministic tier — adapters/integrations/a2a/card_test.go:TestGovernIdentityIgnoresForgedMetadata; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_SendReturnsTaskWithExternalCanonicalSeparation; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_ForgedMetadataIdentityIsIgnored; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_SendReturnsDirectMessageForCompleteNonDurable; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_InboundFilePartIsIngested; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_StreamTerminalConsistency; adapters/integrations/a2a/conformance_test.go:TestA2ALoopbackExchange; tests/component/postgres/a2a_store_test.go:TestA2AStoreRLSAndCanonicalRefInvariant",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -102,7 +102,7 @@
       }
     },
     {
-      "checksum": "sha256:6651efa8b585a7502a87afe49106d513a2aedce46b00fba72389dbaf216aa959",
+      "checksum": "sha256:8b7593149162c51b04dc64177505c6c7e07f5d7f48130f34f9323653a95c4c02",
       "db_assertions": [
         "A2A-003: proven by 16 in-tree proof(s) at the e2e-deterministic tier — adapters/integrations/a2a/conformance_test.go:TestA2AConformance_InputRequiredMapsToWaiting; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_TaskGetListCancel; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_PushConfigCRUD; adapters/integrations/a2a/conformance_test.go:TestA2APushCRUDIsUnmountedWithoutAPusher; adapters/integrations/a2a/conformance_test.go:TestA2APushFailureDoesNotCorruptTheTask; adapters/integrations/a2a/pusher_test.go:TestPushBodyIsAStreamResponseNotATask; adapters/integrations/a2a/pusher_test.go:TestStreamResponseRequiresExactlyOneMember; adapters/integrations/a2a/pusher_test.go:TestPushRefusesSSRFTargets; adapters/integrations/a2a/pusher_test.go:TestPushAllowlistMatchesTheWholeHost; adapters/integrations/a2a/pusher_test.go:TestPushRevalidatesRedirectsRatherThanDenyingThemAll; adapters/integrations/a2a/pusher_test.go:TestPushCarriesTokenTimestampAndSingleUseID; adapters/integrations/a2a/pusher_test.go:TestPushRetriesWithoutLossWhileTheSinkIsDown; adapters/integrations/a2a/pusher_test.go:TestPushDeadLettersAfterTheAttemptBound; adapters/integrations/a2a/pusher_test.go:TestPushTerminalRejectIsNotRetried; apps/control-plane/api/a2a_wiring_test.go:TestA2APushSurfaceStaysUnmountedWithoutAConfiguredPusher; apps/control-plane/api/a2a_wiring_test.go:TestA2APushMountsOnlyWithAConfiguredPusher",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -134,7 +134,7 @@
       }
     },
     {
-      "checksum": "sha256:7ec715bd2cecb0552e28059e8ca17cded536585f335c3e49b7942f5576071ce7",
+      "checksum": "sha256:4c16088f8062d13e72b5ee8de453c2695ab9e3c0d5a176a006da3c576f229ec2",
       "db_assertions": [
         "A2A-004: proven by 7 in-tree proof(s) at the e2e-deterministic tier — adapters/integrations/a2a/client_test.go:TestA2AClientRefusesInternalCardEndpoint; adapters/integrations/a2a/client_test.go:TestA2AClientRevalidatesRedirectToInternal; adapters/integrations/a2a/client_test.go:TestA2AClientRefusesDisallowedExtensionURI; adapters/integrations/a2a/client_test.go:TestA2AClientVersionNegotiationExplicitFail; adapters/integrations/a2a/client_test.go:TestA2AClientIngestsAndScansPushedFile; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_InboundFilePartIsIngested; packages/egress/egress_test.go:TestVetIPDeniesMetadataPrivateAndSpecialUse",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -163,7 +163,7 @@
       }
     },
     {
-      "checksum": "sha256:4daf3a3616be10c4a85c334122712247e325ad84a8361aa6da1bf55a5ea83ea3",
+      "checksum": "sha256:ca01b5cbc128844822117fa29d3a86539821d9fc70d1fb630c4bfb052995688f",
       "db_assertions": [
         "A2A-005: proven by 6 in-tree proof(s) at the e2e-deterministic tier — adapters/integrations/a2a/client_test.go:TestA2AClientRemoteOutputIsUntrusted; adapters/integrations/a2a/client_test.go:TestA2AClientNeverInheritsParentCredential; adapters/integrations/a2a/client_test.go:TestA2AClientNeedsResolverForAuthConnection; adapters/integrations/a2a/client_test.go:TestA2AClientRemoteTaskIDsAreConnectionScoped; adapters/integrations/a2a/client_test.go:TestA2AClientLoopbackInteropAgainstT2Server; tests/component/postgres/a2a_remote_agent_store_test.go:TestA2ARemoteAgentStoreRLS",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -192,7 +192,7 @@
       }
     },
     {
-      "checksum": "sha256:e5525ea4adcadfa67ab48c77dac8d6fddb50d03744adc9c2cc130e0c1e460641",
+      "checksum": "sha256:3c3d4e9907469785a23b4472c2a55c08b4b421e4a333d7d3f0086dbb3cd1b18a",
       "db_assertions": [
         "AUT-009: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/inbound_component_test.go:TestRedeliveryAfterLostAckDoesNotDuplicate; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect; apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeLostAckRedeliversToExactlyOneRun",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -233,7 +233,7 @@
       }
     },
     {
-      "checksum": "sha256:49382271df571408e9f6bf6da45380903b144117577930b6a959e6848866c700",
+      "checksum": "sha256:e8653c3002305f134eabba83eff594693e0432d99ed1599516cec89c848ab37f",
       "db_assertions": [
         "AUT-010: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/inbound_component_test.go:TestFloodBoundsMemoryReportsDepthApplies429; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterFloodAppliesBackpressureNoDrop; apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeFloodBackpressureNoDropOneRunEach",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -262,7 +262,7 @@
       }
     },
     {
-      "checksum": "sha256:1e657ddf36efce05207fc2cf01b50500a15791edd0a1f8482e20bf04d53a4355",
+      "checksum": "sha256:64d80b01e6aa24562fe76b902090534fb0b02574728e0321366d1cae3cbd9c2d",
       "db_assertions": [
         "AUT-013: proven by 5 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetrySameIdempotencyKeySingleEverything; apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetryDifferentKeySameDedupeSingleAction; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect; apps/control-plane/internal/automation/orchestrator_storm_component_test.go:TestOrchestratorRetryStormSingleRun; apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeLostAckRedeliversToExactlyOneRun",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -291,7 +291,7 @@
       }
     },
     {
-      "checksum": "sha256:35fd28bda59b7b3b14f3a56cba0a08b3778c44df5bf5b3816da0ed572d606d06",
+      "checksum": "sha256:af14f5839fbb2fa614a2c9b24d3acb3b25c767972beb39aa59085e08ec0715e3",
       "db_assertions": [
         "KNO-001: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/knowledge_component_test.go:TestIngestIsImmutableAndVersioned; apps/control-plane/internal/knowledge/knowledge_component_test.go:TestFTSRanksAndCitesWithVerifiableOffsets; apps/control-plane/internal/knowledge/chunk_test.go:TestChunkDocumentIsDeterministicWithVerifiableOffsets",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -320,7 +320,7 @@
       }
     },
     {
-      "checksum": "sha256:2a12c133bcbf48cf5ed483008cbc0f827bb5ab03ffae7b4a9ebd1f9569574a91",
+      "checksum": "sha256:df8736105b254296fb56764d52be3c22dd0a1461ca210f55aa19c59dc86fce29",
       "db_assertions": [
         "KNO-002: proven by 1 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/knowledge_component_test.go:TestFailedRefreshLeavesPriorActiveIntact",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -349,7 +349,7 @@
       }
     },
     {
-      "checksum": "sha256:55971493f04e9791bb6d53c533b0c4d1a1179f620a1834b74c0469bffa607c9a",
+      "checksum": "sha256:7c652618a03c888d9197857cd0340ebc84fc905c679d95f8b7f1a6ec7a8e988d",
       "db_assertions": [
         "KNO-003: proven by 5 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/retrieval_acl_component_test.go:TestForgedACLGrantInBodyIsRejectedAndGovernedByScope; apps/control-plane/internal/knowledge/retrieval_acl_component_test.go:TestPostFilterTopKIsForbidden; apps/control-plane/internal/knowledge/retrieval_acl_component_test.go:TestCrossProjectACLNegative; apps/control-plane/internal/knowledge/knowledge_component_test.go:TestRetrievalIsTenantAndACLScoped; apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestDerivePrincipalGrantsFromKeyScopesOnly",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -395,7 +395,7 @@
       }
     },
     {
-      "checksum": "sha256:1f7faece9400f02b91962d081c4f0ba5cefd936766e7109007032bcbea99cabc",
+      "checksum": "sha256:043b99baa866e68191c78c9dc33e12514cb0b5a43bfbba643afd9e51b99add38",
       "db_assertions": [
         "KNO-004: proven by 1 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/knowledge_component_test.go:TestSourceDeletePropagates",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -424,7 +424,7 @@
       }
     },
     {
-      "checksum": "sha256:6e1993a6d3ba28deaa230a9a0e2714cbefe714450ca9e7dc206ca916fd91f44e",
+      "checksum": "sha256:371e35583a32954dbde6abfb4cab5a4f48902d621bdf830d80166820938fdf2c",
       "db_assertions": [
         "KNO-005: proven by 4 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestHybridStrategyFusesKeywordAndVectorWithCitations; apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestVectorStrategyDisabledByDefault; apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestResolveVectorHitsDropsLeakyRecords; apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestReciprocalRankFusionRewardsBothStrategies",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -453,7 +453,7 @@
       }
     },
     {
-      "checksum": "sha256:e5974896b65e232df0aebf42df3c7b85d0e6670d1f47e0b0ddcb56b0be237e0b",
+      "checksum": "sha256:62690b5cef902ba2fec5d1f0cc0d325069639f43470f40d4b6327f367c632bc7",
       "db_assertions": [
         "KNO-006: proven by 3 in-tree proof(s) at the e2e-deterministic tier — apps/control-plane/internal/execution/tools/knowledge_test.go:TestRetrievalToolQuarantinesUntrustedContent; apps/control-plane/internal/execution/tools/knowledge_test.go:TestRetrievalToolCitesWithOffsets; apps/control-plane/internal/knowledge/retrieval_tool_component_test.go:TestRetrievalToolCitesVerifiableOffsetsEndToEnd",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -482,7 +482,7 @@
       }
     },
     {
-      "checksum": "sha256:0060723489e098a32c5473152e2b7d8596aef463378128fa7aaf31d492ffb3ed",
+      "checksum": "sha256:c1dd965c163e8bde8bdb62b138aadc3e310227f1a8fcd6b67620f64e57705d99",
       "db_assertions": [
         "KNO-007: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestRestrictedSourceNotEmbeddedToDisallowedRegion; apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestEmbeddingPolicyBlocksRestrictedToDisallowedTarget",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -511,7 +511,7 @@
       }
     },
     {
-      "checksum": "sha256:10545de54e3d349c8facbef059c34389b9ae45fc3d066a558db559e9c4bb1583",
+      "checksum": "sha256:8a9ad1260e523f5f0ccf1079afdaecae6d671825c5e4e8eaa8262eb81a6a98c0",
       "db_assertions": [
         "KNO-008: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestFreshnessDeadlineFailsWarnsNeverSilentStale; apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestEvaluateFreshness",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -540,7 +540,7 @@
       }
     },
     {
-      "checksum": "sha256:39e4d6271a8891720f532eae4b0fdf4de02fed618995443e25629baa8d1ed8c9",
+      "checksum": "sha256:fdb87af5158429650b3e2f57c48c87cff602f6f57844ec35e822e2603ebbeb19",
       "db_assertions": [
         "QUA-001: proven by 3 in-tree proof(s) at the unit tier — tests/evals/harness_test.go:TestFourSuitesGreen; tests/evals/harness_test.go:TestDigestIsContentAddressed; tests/evals/integration_test.go:TestIntegrationBenchmark",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -569,7 +569,7 @@
       }
     },
     {
-      "checksum": "sha256:9d6a704f5ecc4a5c725660deefe1ca60250e353f0fbbbb7ac37813087b20ed16",
+      "checksum": "sha256:ddd588aa7f1772f0d5d19ab577278b1066e51cbbbc609d11fc9bc9eaee0885fe",
       "db_assertions": [
         "QUA-002: proven by 3 in-tree proof(s) at the unit tier — tests/evals/harness_test.go:TestModelJudgeNeverSoleGateForProtected; tests/evals/harness_test.go:TestRegressedPolicyIsDetectable; tests/evals/live_test.go:TestModelJudgeCalibrationSmoke",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -598,7 +598,7 @@
       }
     },
     {
-      "checksum": "sha256:3cc7ac84699705284fc4dde163e5a1904d195c56d4aa08b9430a9b42dd941bd6",
+      "checksum": "sha256:c837ce5379b01264b00906359c81e0354546a71c5d333067f7bf02696ca486f5",
       "db_assertions": [
         "QUA-003: proven by 3 in-tree proof(s) at the unit tier — tests/evals/harness_test.go:TestFourSuitesGreen; tests/evals/harness_test.go:TestRegressedPolicyIsDetectable; tests/uat/eval_gate_test.go:TestEvalPromoteGateBlocksRealSecurityRegression",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -627,7 +627,7 @@
       }
     },
     {
-      "checksum": "sha256:70b2a60d9c75e38f571a746840345ac8f923c651c4ba9a0732ece4778f8d1e76",
+      "checksum": "sha256:98cada5992d64479d51de9272280eeb2ef134dd4132677cf3195bf1a9a6f05e0",
       "db_assertions": [
         "QUA-004: proven by 3 in-tree proof(s) at the unit tier — tests/uat/eval_gate_test.go:TestEvalPromoteGateRefusesSubThreshold; tests/uat/eval_gate_test.go:TestEvalPromoteGateBlocksRealSecurityRegression; tests/uat/eval_gate_test.go:TestEvalPromoteGateRefusesMissingProof",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -690,7 +690,7 @@
       }
     },
     {
-      "checksum": "sha256:901cc5200e877865290ddbc485da991c01f5c697dab0c83c4ae29c61a36b4f05",
+      "checksum": "sha256:83098b7b98b25c4b421b550912d06deeb458d52548df47f6e5850186c1084500",
       "db_assertions": [
         "SLK-001: proven by 12 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventNormalizesToCanonicalIdentity; adapters/integrations/slack/inbound_test.go:TestUnwrapSocketFrameFeedsTheSameMapping; adapters/integrations/slack/socket_test.go:TestSocketFrameCarriesAcceptsResponsePayload; adapters/integrations/slack/socket_test.go:TestSocketDisconnectReasonIsDecoded; adapters/integrations/slack/socket_test.go:TestSocketAckShape; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketAcknowledgesBeforeDoingTheWork; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketAckShapeMatchesTheDocumentedEnvelope; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketOverlapsOnWarningAndLosesNoEvents; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketStopsPermanentlyOnLinkDisabled; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketDrainsGracefully; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketNeverLogsTheTokenOrTheTicket; apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModeAndHTTPShareOneCanonicalIdentity",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -748,7 +748,7 @@
       }
     },
     {
-      "checksum": "sha256:61ae8b3f2ab5bd9a51aaa60dbb0b66f7e139134f333eab533a3c26fe3f6dcc16",
+      "checksum": "sha256:4cb0c51492396f4e6e993bdd024cfae861e519256a36f502a7fb673fc778919c",
       "db_assertions": [
         "SLK-002: proven by 3 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventRedeliveryIsIdentityStable; apps/control-plane/internal/automation/dedupe_component_test.go:TestDuplicateDeliveryLinksOriginalSingleAction; apps/control-plane/internal/store/slack_events_component_test.go:TestSlackRetryStormRunsTheEffectOnce",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -777,7 +777,7 @@
       }
     },
     {
-      "checksum": "sha256:db53fee3863a8b5e163d1e1cb1460454cf94a44a9e91829255cd27b2e86a4a0d",
+      "checksum": "sha256:bdeb9f2c23a02ed300efe6926f78d2a3f3e905481b9939b4ad649e73d3eb8c5e",
       "db_assertions": [
         "SLK-003: proven by 20 in-tree proof(s) at the component-real tier — adapters/integrations/slack/history_test.go:TestThreadRepliesCarriesTheDocumentedArguments; adapters/integrations/slack/history_test.go:TestThreadRepliesRefusesAnUnboundedOrUnaddressedRead; adapters/integrations/slack/history_test.go:TestThreadRepliesDropsSubtypedAndEmptyMessages; adapters/integrations/slack/history_test.go:TestThreadRepliesTypesTheAPIRefusal; adapters/integrations/slack/history_test.go:TestThreadRepliesDoesNotRetryARateLimit; adapters/integrations/slack/inbound_test.go:TestMapEventCarriesTheAffectedMessageTS; apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteIsEmptyWhenThereIsNothingToQuote; apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteLeadsWithTheUntrustedLabelAndEndsBeforeTheRequest; apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteAttributesWithoutNamingAnyone; apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteMakesBothTruncationsVisible; apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteQuotesAnInjectionAsData; apps/control-plane/internal/extensions/slack_component_test.go:TestSlackThreadSessionCorrelation; apps/control-plane/internal/store/slack_events_component_test.go:TestSlackThreadCorrelatesToOneSession; apps/control-plane/internal/store/slack_events_component_test.go:TestSlackConcurrentFirstEventsNeverSplitAThread; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryIsFetchedOnceForAThreadWeWereInvitedInto; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackTopLevelMentionReadsNoThread; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadReadAddressesTheEventNotTheContext; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryIsNotReadOutsideTheChannelAllowList; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryRefusalStillAdmitsTheRun; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryRedeliveryStillReplays",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -806,7 +806,7 @@
       }
     },
     {
-      "checksum": "sha256:92277ac90723af2c42a2156228df7e0096db58f7de804594184808b01fa495d6",
+      "checksum": "sha256:d72bea00b7838ab1bd5a9cb047fc3305e43c77c7056be7b2eb19fe09536c6a44",
       "db_assertions": [
         "SLK-004: proven by 5 in-tree proof(s) at the component-real tier — adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace; adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse; apps/control-plane/internal/extensions/slack_component_test.go:TestSlackConnectionCreateReadRLS; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackUnauthorizedClickEnqueuesNothing; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackStaleHashAndForeignThreadDecideNothing",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -835,7 +835,7 @@
       }
     },
     {
-      "checksum": "sha256:52109d6517bb39f388f396d486b01084b82f87a4e91d28f0fa511e1a0f761d84",
+      "checksum": "sha256:4115bec883e87eef1035228001b03242409fa36117db3673936e2544b248dd31",
       "db_assertions": [
         "SLK-005: proven by 14 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventClassifiesEditsAndDeletes; adapters/integrations/slack/files_test.go:TestFetchImageUsesTheTokenOnlyAsABearerHeader; adapters/integrations/slack/files_test.go:TestFetchImageRefusesAnyHostButSlackFiles; adapters/integrations/slack/files_test.go:TestFetchImageRefusesBytesThatAreNotAnImage; apps/control-plane/internal/execution/vision_test.go:TestDecodeMessagesResolvesAnImageRefToBytes; apps/control-plane/internal/execution/vision_test.go:TestDecodeMessagesTakesNothingButBytesFromAnImageItem; apps/control-plane/internal/execution/vision_component_test.go:TestDispatchResolvesAnImageRefIntoTheProviderRequest; adapters/models/provider_one/vision_test.go:TestBuildBodyRendersAnImageAsAContentPart; apps/control-plane/internal/store/slack_events_component_test.go:TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind; apps/control-plane/internal/store/slack_image_component_test.go:TestSlackSharedImageBecomesAnImageRefInTheRunInput; apps/control-plane/internal/store/slack_image_component_test.go:TestSlackImageRedeliveryReplaysOntoTheSameRunAndArtifact; apps/control-plane/internal/store/slack_image_component_test.go:TestSlackNonImageAndOversizeFilesAreRefusedVisibly; apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestArtifactInboundImageWriteIsIdempotentAtACallerChosenID; apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestInboundImageIsReachedByRetentionOnlyOnceAttached",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -864,7 +864,7 @@
       }
     },
     {
-      "checksum": "sha256:573cb65a0e647f170b0d4548c118f238457a8e2425c80b5b8948b9f4e1e6edbf",
+      "checksum": "sha256:bbd1bd7d330ac9199ec2ecd75c93d0fe671453c2e67e12642c9b7bacb70a25f2",
       "db_assertions": [
         "SLK-006: proven by 7 in-tree proof(s) at the component-real tier — adapters/integrations/slack/ratelimit_test.go:TestPostMessageRepairsA429Once; adapters/integrations/slack/ratelimit_test.go:TestPostMessageBoundedRepairThenRateLimited; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionRepairsTheVisibleMessageExactlyOnceUnderA429; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackCoalescedUpdatesArePacedPerChannel; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionSurvivesAPermanentlyRateLimitedSlack; adapters/integrations/slack/stream_test.go:TestStreamCallsTruncateTheirOwnText; apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamAppendRepairsA429WithoutASecondRetryLayer",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -893,7 +893,7 @@
       }
     },
     {
-      "checksum": "sha256:814b7a1f28bc24db4d3beff5869817b0967b107969e437bae65aef60c37caa93",
+      "checksum": "sha256:3fd660e6a43b378f7aba18d71d418080470925ee2803da86afd2fc0b72ed98e8",
       "db_assertions": [
         "SLK-007: proven by 9 in-tree proof(s) at the component-real tier — adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace; adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalDenyIsMapped; adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackAuthorizedClickApprovesThroughTheWholeChain; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDenyClickDeniesThePublication; adapters/integrations/slack/blocks_test.go:TestRenderRefusesToMintAnActionableElementFromModelOutput; adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement; adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement; apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStopStreamCarriesRenderedBlocksAndNoForgedButton",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -922,7 +922,7 @@
       }
     },
     {
-      "checksum": "sha256:195d6bbae86c0676020cc7801d8e89aabeb628ff7d7c1195aba413d43328b600",
+      "checksum": "sha256:306326d2ab0268643fe6528cceb7850ac73aaa2558d6552446b697621bc793f9",
       "db_assertions": [
         "SLK-008: proven by 4 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventDropsBotAndSelfEvents; adapters/integrations/slack/inbound_test.go:TestMapEventDropsNestedBotEdit; apps/control-plane/internal/store/slack_events_component_test.go:TestSlackBotSelfEventBirthsNothing; apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModeSelfEventBirthsNothing",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -951,7 +951,7 @@
       }
     },
     {
-      "checksum": "sha256:8bb8a289fefb0e60bf0eee616383024e13ba11d58471abf363cc6b30d5c838c3",
+      "checksum": "sha256:9d28c82db2552ac3bb0fde7147e421de0f9a1403c2867a0a99fcc6495d0ea5e5",
       "db_assertions": [
         "SUB-007: proven by 9 in-tree proof(s) at the component-real tier — adapters/integrations/a2a/client_test.go:TestA2AClientRemoteChildIsUntrustedAndNoCredentialInheritance; adapters/integrations/a2a/client_test.go:TestA2AClientLoopbackInteropAgainstT2Server; adapters/integrations/a2a/client_test.go:TestA2AClientIngestsAPushedFileOnTheDIRECTMESSAGEBranchToo; apps/control-plane/internal/execution/remote_child_component_test.go:TestRemoteChildDispatchesToTheRegisteredRemote; apps/control-plane/internal/execution/remote_child_component_test.go:TestRemoteChildNeverInheritsTheParentCredential; apps/control-plane/internal/execution/remote_child_component_test.go:TestRemoteChildFailureIsAnHonestParentTerminal; apps/control-plane/internal/execution/remote_child_component_test.go:TestRemoteChildIsRefusedRatherThanRunLocally; apps/control-plane/internal/execution/child_dispatch_test.go:TestRemoteAgentRidesTheChildRequestOnlyWhenNamed; apps/control-plane/internal/execution/child_dispatch_test.go:TestRemoteChildrenCountAgainstFanout",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -987,7 +987,7 @@
       }
     },
     {
-      "checksum": "sha256:21a5a3d9577cfe5f7c198fed58dd103222a0451a431a85c38b4c3530d79d1fd8",
+      "checksum": "sha256:dbd6eb3e49b98d6344090322c719d9d16cdf1f37f03886cf5636cae798b109aa",
       "console_claim": "axe-clean-keyboard-operable-and-every-request-on-the-v1-relay-over-a-FAKE-upstream",
       "console_proof": {
         "api_key_reached_browser": false,
@@ -1037,7 +1037,7 @@
       }
     },
     {
-      "checksum": "sha256:7210d376e0ddb48b35de38fb99e28ce6af0f3e7721974746a5d693eabf7b5e30",
+      "checksum": "sha256:451dd855866d1fd987465da5187b0d665f47a5ebcb0bf59c0dcf720f60d1fd83",
       "db_assertions": [
         "UI-002: proven by 6 in-tree proof(s) at the e2e-deterministic tier — apps/web-console/tests/journey.spec.ts:UI-002: the approval UI shows the authoritative operation/branch/request_hash from the canonical event — the proposal display string does not replace them; apps/web-console/tests/journey.spec.ts:approve proceeds through recovery to a completed run with a downloadable artifact; apps/web-console/tests/journey.spec.ts:deny blocks the operation — the run terminates canceled, the push never completes; apps/web-console/tests/journey.spec.ts:the console renders a run's terminal state end to end — model, status and output from the upstream; apps/web-console/tests/conformance.test.mjs:the fixture's scripted event vocabulary and payload keys match a REAL run's journal; apps/web-console/tests/conformance.test.mjs:no ledger row has gone stale — every row was re-observed against the running real stack",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -1066,7 +1066,7 @@
       }
     },
     {
-      "checksum": "sha256:1c9a4f2f78c04c736ae6ea40cacbdaf0d1865dd2d1008db3282394302731423a",
+      "checksum": "sha256:67a7341178b044936e9fe367b745bfdf65fde19b677d460e2df8daa7b24976be",
       "db_assertions": [
         "WRK-001: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestWorkerEnrollTypedDispatchAndArtifactRoundTrip; apps/control-plane/internal/workers/catalog_test.go:TestAppleBuildCapabilityIsAbsentEverywhere; apps/control-plane/internal/workers/live/worker_live_test.go:TestTwoSidedTypedJobRoundTrip",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -1095,7 +1095,7 @@
       }
     },
     {
-      "checksum": "sha256:ead951c76afd0f073d8195f94bffa46459628a8ef1dbe1b23d675169e725c5e7",
+      "checksum": "sha256:fc5d01a8998a0f524e1ff83f75b3f0315b6cf1a0e0208bc697a3be367ba7b870",
       "db_assertions": [
         "WRK-002: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestWorkerEnrollTypedDispatchAndArtifactRoundTrip; apps/control-plane/internal/workers/catalog_test.go:TestNoTunnel_TypedOperationPassesTheGate; apps/control-plane/internal/workers/live/worker_live_test.go:TestTwoSidedTypedJobRoundTrip",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -1124,7 +1124,7 @@
       }
     },
     {
-      "checksum": "sha256:b0696df7523ba14338513533e4aecf1adcea7b16e9dd00f82d1a0fcdf6bf80c7",
+      "checksum": "sha256:d076c1d1d47c2bdabe3392ac5a7fa71ed8e1e42eb2aaf298e0ba4b56b7671e49",
       "db_assertions": [
         "WRK-003: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestWorkerFenceStaleRejectOnRedispatch; apps/control-plane/internal/workers/workers_component_test.go:TestWorkerHealthChangeCutsLease; apps/control-plane/internal/workers/live/worker_live_test.go:TestFenceStaleRejectThroughGateway",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -1169,7 +1169,7 @@
       }
     },
     {
-      "checksum": "sha256:4b7e57b00224f9f5c53997c1292ed91b9857651be2f418113bcbae77e54ab813",
+      "checksum": "sha256:2a1c1928e415a7c8e617d5ff3b059fb978ff575f8de94cb77d6b132996a91d1b",
       "db_assertions": [
         "WRK-004: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestSecretHandleScopeAndExpiry; apps/control-plane/internal/workers/live/worker_live_test.go:TestTwoSidedTypedJobRoundTrip",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -1198,7 +1198,7 @@
       }
     },
     {
-      "checksum": "sha256:a97f7721a93d8bd067097055804c55aed425c9f4411816b4c95e685b83f05b6b",
+      "checksum": "sha256:4a4c9bcf87e2e57f39158a7e49dc8bc16235a7f0f36ed8479b34d1482f7dcda9",
       "db_assertions": [
         "WRK-005: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestWorkerEnrollTypedDispatchAndArtifactRoundTrip; apps/control-plane/internal/workers/buildcheck_test.go:TestBuildCheckIsHonestAndDeterministic; apps/control-plane/internal/workers/live/worker_live_test.go:TestTwoSidedTypedJobRoundTrip",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -1227,7 +1227,7 @@
       }
     },
     {
-      "checksum": "sha256:0746a8931cf264ce88b3e53a44d316993bc7d403d99918bbdd2120df5ab14695",
+      "checksum": "sha256:2c2ec64c61895b6313c96dd3cd763e59306dcb5adc608b03616609fd2461fc18",
       "db_assertions": [
         "WRK-006: proven by 4 in-tree proof(s) at the unit tier — apps/control-plane/internal/workers/catalog_test.go:TestNoTunnel_UntypedOperationIsRefusedAtDispatch; apps/control-plane/internal/workers/catalog_test.go:TestAppleBuildCapabilityIsAbsentEverywhere; apps/control-plane/internal/workers/workers_component_test.go:TestNoTunnelSubmitForForeignOperationRefused; apps/control-plane/internal/workers/live/worker_live_test.go:TestNoTunnelSurface",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -1256,7 +1256,7 @@
       }
     },
     {
-      "checksum": "sha256:c508df831e9ddc391d26a123f0ea57215d452e9ba1f516b5002f9c74a1a0303e",
+      "checksum": "sha256:49de43636d588b6078256197293d8ad6a507c4a45cab41e38ecdb0b6e2f72805",
       "db_assertions": [
         "WRK-007: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestQuarantineOnUncertain; apps/control-plane/internal/workers/workers_component_test.go:TestWorkerFenceStaleRejectOnRedispatch",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
@@ -1385,7 +1385,7 @@
         "snapshot_source": "carried forward from code-and-ship-0.1.0, which carried it from the E21 bundle and before that from the E19 wiring bundle, where it was read over real HTTP from a FULLY MOUNTED router. E23 mounts one new interactivity branch (the Show-arguments modal) on a route that was already mounted, opens no capability and moves no tier, so the snapshot it would take is the snapshot those releases already earned — and the promote gate re-derives the comparison from committed bytes rather than trusting this sentence",
         "claims_digest": "sha256:f0d46879af1792764ba43cb078666d73618f1d6ca80e9bdac2cd71af0a5a5b26"
       },
-      "checksum": "sha256:468aab512978ac8d8ed070af33d6e100e8cc4d822d92002dfa15653800263be2",
+      "checksum": "sha256:55d37fbc382cd7e9817552bbab40886b48f7cbfb5e7a04c499c53f609a23be52",
       "db_assertions": [
         "RELEASE-LEVEL entry, not a UAT case (it has no tests/uat/cases directory): a capability's maturity tier is not a behaviour one case asserts, it is the RECOMPUTATION over all of them",
         "the verifier RECOMPUTES every tier from the canonical code tables + this bundle's own per-case outcomes and refuses any declared tier or /v1/capabilities snapshot that disagrees — the manifest's own tier copy is never an input (plan §T11)",
@@ -1415,7 +1415,7 @@
       }
     },
     {
-      "checksum": "sha256:6d1a529351b702ae5d179ca731b59e56e05f621b96481d6313339b7c0fb5a28d",
+      "checksum": "sha256:64baafd74743696668e2b0e5855f3b9a7e99188d1b7477e2cbc5d32cbbe3df62",
       "db_assertions": [
         "RELEASE-LEVEL entry, not a UAT case (it has no tests/uat/cases directory): a MOUNT is not a behaviour one case asserts, it is an observation over the whole RUNNING stack — E19 opened no UAT id, per plan §1",
         "the verifier RE-DERIVES every surface's mount from the running stack's OWN /v1/capabilities snapshot and router surface, in BOTH directions: advertised-but-not-mounted is the §3.5 D14 defect verbatim (`capability-workers` was advertised `stable` by a binary that never imported the gateway package), and mounted-but-not-advertised is the same lie inverted",
@@ -1614,7 +1614,7 @@
       }
     },
     {
-      "checksum": "sha256:a849ef440e81944c92f35166a22ab517b1165df3df7c919c9113e4393e9bb5ec",
+      "checksum": "sha256:98c4b8adad9d99229c678f4a4158a65ecad09794cd658bb36a9109d94c41ef40",
       "db_assertions": [
         "SLK-009: proven by 7 in-tree proof(s) at the unit tier — adapters/integrations/slack/stream_test.go:TestStartStreamRefusesWithoutARecipient; adapters/integrations/slack/stream_test.go:TestStartStreamCarriesTheDocumentedArguments; adapters/integrations/slack/stream_test.go:TestOnlyStopStreamCarriesBlocks; adapters/integrations/slack/stream_test.go:TestAppendStreamSurfacesStoppedByUser; adapters/integrations/slack/stream_test.go:TestStreamTextIsTruncatedVisibly; adapters/integrations/slack/agent_test.go:TestSetStatusCarriesTheDocumentedArguments; adapters/integrations/slack/agent_test.go:TestSetStatusCapsLoadingMessagesAtTen",
         "OPENED BY E20 and certified HERE rather than in extensions-0.1.0, which is a measured decision: tests/uat/extensions' catalog IS that shipped bundle's case list and uat.CapabilityClaims feeds a digest folded into its every checksum, so registering these four there would have forced the regeneration of a committed HISTORICAL release. A case belongs to the bundle that certifies it",
@@ -1642,7 +1642,7 @@
       }
     },
     {
-      "checksum": "sha256:9f262a915971046f6229fe64cbe5bb8439fa63c6d0e02b3b2653ac8647c74ce3",
+      "checksum": "sha256:c94f4beb0886df67d8fe5745afbc4229ce2dbe510d00d08cdd84a13f6e022a63",
       "db_assertions": [
         "SLK-010: proven by 6 in-tree proof(s) at the unit tier — adapters/integrations/slack/inbound_test.go:TestMapEventPanelSurfaceEventsBirthNoRun; adapters/integrations/slack/inbound_test.go:TestMapEventCarriesTheDMChannelType; adapters/integrations/slack/inbound_test.go:TestMapEventDropsTheBotsOwnDM; adapters/integrations/slack/manifest_test.go:TestManifestSubscribesToNothingTheAdapterHasNotDecided; adapters/integrations/slack/manifest_test.go:TestManifestAgentViewHonoursThePublishedLimits; adapters/integrations/slack/manifest_test.go:TestManifestGrantsTheScopesTheSubscribedEventsRequire",
         "OPENED BY E20 and certified HERE rather than in extensions-0.1.0, which is a measured decision: tests/uat/extensions' catalog IS that shipped bundle's case list and uat.CapabilityClaims feeds a digest folded into its every checksum, so registering these four there would have forced the regeneration of a committed HISTORICAL release. A case belongs to the bundle that certifies it",
@@ -1670,7 +1670,7 @@
       }
     },
     {
-      "checksum": "sha256:10d3a85b74f3a37da81e010d4cbc549b33ef803915655332ec77bf031c572c3b",
+      "checksum": "sha256:2df29f0fd06160dc90936a0668a26a1efb85f8c5c2fb0d5d6c512d3e67d76e69",
       "db_assertions": [
         "SLK-011: proven by 3 in-tree proof(s) at the unit tier — adapters/integrations/slack/inbound_test.go:TestMapEventCarriesAppContextInRelevanceOrder; adapters/integrations/slack/inbound_test.go:TestMapEventDropsForeignWorkspaceContextEntities; adapters/integrations/slack/inbound_test.go:TestMapEventSurvivesAStructuredContextValue",
         "OPENED BY E20 and certified HERE rather than in extensions-0.1.0, which is a measured decision: tests/uat/extensions' catalog IS that shipped bundle's case list and uat.CapabilityClaims feeds a digest folded into its every checksum, so registering these four there would have forced the regeneration of a committed HISTORICAL release. A case belongs to the bundle that certifies it",
@@ -1698,7 +1698,7 @@
       }
     },
     {
-      "checksum": "sha256:80edc71bd5c270601aa08918e9783a422c13bd245690545ec6049f02440a50e5",
+      "checksum": "sha256:2572f16555e0f313496160d46f7cf03e2d6dcf43aa878af99568e4b1f39d6d93",
       "db_assertions": [
         "SLK-012: proven by 19 in-tree proof(s) at the unit tier — adapters/integrations/slack/blocks_test.go:TestRenderRefusesToMintAnActionableElementFromModelOutput; adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement; adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement; adapters/integrations/slack/blocks_test.go:TestUnknownVariantRendersAsInertText; adapters/integrations/slack/blocks_test.go:TestTaskStatusMapIsExplicitAndFailsClosed; adapters/integrations/slack/blocks_test.go:TestOneTaskIsACardAndSeveralAreAPlan; adapters/integrations/slack/blocks_test.go:TestTableTruncationIsVisible; adapters/integrations/slack/blocks_test.go:TestBlockLimitIsVisible; adapters/integrations/slack/blocks_test.go:TestBlocksNeutralizeBroadcastTokens; adapters/integrations/slack/blocks_test.go:TestFileRefLinksOnlyHTTPAndHTTPS; adapters/integrations/slack/blocks_test.go:TestPostMessageRendersProseAsAMarkdownBlock; adapters/integrations/slack/blocks_test.go:TestMarkdownBlockNeutralizesBroadcastTokens; adapters/integrations/slack/blocks_test.go:TestMarkdownBudgetIsCumulativeAndCutsVisibly; adapters/integrations/slack/blocks_test.go:TestTheStopStreamPathCarriesNoMarkdownBlock; adapters/integrations/slack/blocks_test.go:TestATableCellIsNeverTypedRawNumber; adapters/integrations/slack/approval_widgets_test.go:TestApprovalMessageMintsThreeButtonsAllBoundToTheRequestHash; adapters/integrations/slack/approval_widgets_test.go:TestShowArgumentsIsMappedButCanNeverBecomeADecision; adapters/integrations/slack/approval_widgets_test.go:TestTheRejectedBlocksAreAbsentFromBothSurfaces; adapters/integrations/slack/blocks_test.go:TestTheActionableElementScanIsPackageLocalOnlyAndTheModalIsBuiltInsideIt",
         "OPENED BY E20 and certified HERE rather than in extensions-0.1.0, which is a measured decision: tests/uat/extensions' catalog IS that shipped bundle's case list and uat.CapabilityClaims feeds a digest folded into its every checksum, so registering these four there would have forced the regeneration of a committed HISTORICAL release. A case belongs to the bundle that certifies it",
@@ -1903,7 +1903,7 @@
         ],
         "visible_messages": 3
       },
-      "checksum": "sha256:f0e9d9fd07df973f034c150516f656f4230bcf851091e78633c00672588f092c",
+      "checksum": "sha256:f922028365d7a485bd5a2ace0ec306240bd36f9d6f7c556a45687714a27a89f4",
       "db_assertions": [
         "RELEASE-LEVEL entry, not a UAT case (it has no tests/uat/cases directory): \"the model cannot mint an actionable element\" is not a behaviour one case asserts, it is an observation over a whole journey's outbound traffic — the E19-WIRING / E17-TIER precedent",
         "every counter here was MEASURED by apps/control-plane/internal/store TestAgentSurfaceJourney against REAL PostgreSQL and the shipped routes, in the SAME process that served them: three entrances (an HTTP callback, a Socket Mode envelope and a panel DM), five deliveries of three source events, three runs, three visible messages",
@@ -1937,7 +1937,7 @@
       }
     },
     {
-      "checksum": "sha256:c236f6816b845613e3a71b3ab6a27b8fb37f12263e4161588df79c23792a7435",
+      "checksum": "sha256:5d71b33f088b1feed487cb3f98d65b616ae4d0d639163fa41a3e8c0b8a6b81ed",
       "db_assertions": [
         "TLM-001: proven by 12 in-tree proof(s) at the component-real tier — apps/control-plane/internal/execution/history_compaction_test.go:TestHistoryStaysWithinTheContextBudget; apps/control-plane/internal/execution/history_compaction_test.go:TestHistoryFoldsDeterministically; apps/control-plane/internal/execution/history_compaction_test.go:TestHistoryKeepsTheNewestTurnsVerbatim; apps/control-plane/internal/execution/history_compaction_test.go:TestHistoryFoldIsVisible; apps/control-plane/internal/execution/history_compaction_test.go:TestHistoryUnderBudgetIsUnchanged; apps/control-plane/internal/execution/history_compaction_test.go:TestHistoryFoldsWhenTheBudgetIsUnknown; apps/control-plane/internal/execution/context_overflow_test.go:TestContextOverflowIsClassifiedFromTheProviderCode; apps/control-plane/internal/execution/context_overflow_test.go:TestContextOverflowErrorIsRecognisableThroughWrapping; apps/control-plane/internal/execution/context_overflow_test.go:TestContextOverflowProjectsADiagnosableTerminal; apps/control-plane/api/commands_clear_test.go:TestClearIsAcceptedAtTheHTTPSurface; tests/component/postgres/clear_session_test.go:TestClearSessionEmptiesHistoryAndKeepsTheSessionAlive; tests/component/postgres/clear_session_test.go:TestClearSessionIsIdempotentAndLeavesLiveWorkAlone",
         "OPENED BY E21 UNDER THE `TLM-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and — worse — PromoteGateFor selects the E20 family by AgentSurfaceCaseIDs MEMBERSHIP, so an unlisted `SLK-013` would have fallen silently through to a WEAKER gate. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
@@ -1964,7 +1964,7 @@
       }
     },
     {
-      "checksum": "sha256:7edc33936ac26430749bddbce777a707ecd03af466f1a299d63ff4369c693eb7",
+      "checksum": "sha256:5adce1a5259ad9de49c0f63489c585c809c1c9ac13e42dbaee1bb9f0bb764756",
       "db_assertions": [
         "TLM-002: proven by 5 in-tree proof(s) at the e2e-deterministic tier — cmd/cli/internal/stack/up_secret_e2e_test.go:TestASecretSurvivesARestartOnAStackWithNoSlackApp; cmd/cli/internal/stack/up_operator_test.go:TestMasterKeyPointerIsNotInterpolatedFromTheInvokingShell; cmd/cli/internal/stack/up_operator_test.go:TestEveryBringUpLeavesABootableMasterKey; deploy/compose/slack_wiring_test.go:TestComposeCanRedeemASecretRefHandle; adapters/integrations/mcp/sweep_quiet_test.go:TestSweepPassErrorIsLoggedOncePerProcess",
         "OPENED BY E21 UNDER THE `TLM-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and — worse — PromoteGateFor selects the E20 family by AgentSurfaceCaseIDs MEMBERSHIP, so an unlisted `SLK-013` would have fallen silently through to a WEAKER gate. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
@@ -1991,9 +1991,9 @@
       }
     },
     {
-      "checksum": "sha256:39499627a97964db7474f17118c580d82d054c9b50be6a6a033e737e5f112f0a",
+      "checksum": "sha256:1a7d8c2fd008a7b64c36ac4a9b0d87723bede1b2fdcb101c716ccc6977f868f4",
       "db_assertions": [
-        "TLM-003: proven by 9 in-tree proof(s) at the component-real tier — adapters/integrations/slack/mention_test.go:TestAMentionTheModelWroteIsStillNeutralized; adapters/integrations/slack/mention_test.go:TestMentionMintsExactlyOneIDAndItIsTheDeliveryRows; adapters/integrations/slack/mention_test.go:TestTheModelCannotChooseWhoIsMentioned; adapters/integrations/slack/mention_test.go:TestAnEmptyRequesterSkipsTheMentionAndKeepsTheWords; adapters/integrations/slack/mention_test.go:TestAPublicationDisplayCannotBroadcast; adapters/integrations/slack/mention_test.go:TestStatusCannotBroadcast; adapters/integrations/slack/mention_test.go:TestAMentionRendersAsAnOrdinarySection; adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement; tests/component/postgres/migration_test.go:TestMigration43SlackRequester",
+        "TLM-003: proven by 8 in-tree proof(s) at the component-real tier — adapters/integrations/slack/mention_test.go:TestAMentionTheModelWroteIsStillNeutralized; adapters/integrations/slack/mention_test.go:TestMentionMintsExactlyOneIDAndItIsTheDeliveryRows; adapters/integrations/slack/mention_test.go:TestTheModelCannotChooseWhoIsMentioned; adapters/integrations/slack/mention_test.go:TestAnEmptyRequesterSkipsTheMentionAndKeepsTheWords; adapters/integrations/slack/mention_test.go:TestAPublicationDisplayCannotBroadcast; adapters/integrations/slack/mention_test.go:TestAMentionRendersAsAnOrdinarySection; adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement; tests/component/postgres/migration_test.go:TestMigration43SlackRequester",
         "OPENED BY E21 UNDER THE `TLM-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and — worse — PromoteGateFor selects the E20 family by AgentSurfaceCaseIDs MEMBERSHIP, so an unlisted `SLK-013` would have fallen silently through to a WEAKER gate. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
         "NOT in uat.CapabilityClaims and therefore NOT an input to any tier recompute — which changes nothing about the outcome: `slack` is capped at preview by CapabilityOperatorLegs (§6 leg 1) whatever its claims do, `knowledge-vector` is `disabled` by capabilityUnservable, and NO `mcp` capability exists to move (§3.6 D9 — opening one would shift CapabilityClaimsDigest and redden every case checksum in nineteen committed bundles to advertise something that is an admin connection rather than a discovery surface)",
         "HONEST CEILING: every counterparty is a FAKE built from the published references — a fake Slack, a fake MCP/remote tool and a fake provider. §6 leg 1 (a REAL Slack workspace external receipt) and §6 leg 4 (an end-to-end run against a REAL MCP server) are operator work and are NEVER claimed here",
@@ -2018,7 +2018,7 @@
       }
     },
     {
-      "checksum": "sha256:3ce8ecf2f9a8ec9c9ecd6a171e465da6f7a4a15b6c3dd33da571488e3277805d",
+      "checksum": "sha256:a2a93215a9ea3bae6a74e0b5d9249d36964591b4889c91a8472083d8e3e4d132",
       "db_assertions": [
         "TLM-004: proven by 10 in-tree proof(s) at the component-real tier — apps/control-plane/internal/extensions/tool_class_test.go:TestOnlyControlPlaneOutputIsTrusted; apps/control-plane/internal/extensions/tool_class_test.go:TestTheNoticeSurvivesAnEmptyDescription; apps/control-plane/internal/execution/tool_surface_component_test.go:TestTheRealOrchestratorAdvertisesARegistryToolToTheProvider; apps/control-plane/internal/execution/tool_surface_component_test.go:TestAnExternalToolIsAdvertisedAsUntrustedToTheModel; apps/control-plane/internal/execution/tool_surface_component_test.go:TestARunReachesNoMCPServerItsRiderDoesNotName; apps/control-plane/internal/execution/tool_surface_component_test.go:TestARegistryToolDispatchesThroughTheRealOrchestratorAndTheResultReachesTheEngine; cmd/cli/internal/stack/up_default_tools_test.go:TestBringUpGrantsTheCanonicalDefaultSet; apps/control-plane/internal/execution/config_test.go:TestResolveGrantsToolSetsOnANullProjectBaseline; apps/control-plane/internal/execution/tools/default_set_test.go:TestEveryDefaultToolResolves; apps/control-plane/internal/execution/tools/default_set_test.go:TestNoDefaultToolPublishes",
         "OPENED BY E21 UNDER THE `TLM-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and — worse — PromoteGateFor selects the E20 family by AgentSurfaceCaseIDs MEMBERSHIP, so an unlisted `SLK-013` would have fallen silently through to a WEAKER gate. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
@@ -2045,7 +2045,7 @@
       }
     },
     {
-      "checksum": "sha256:556cb32de2f2ebfcfb942c8e7bd6e5f564047b6ed472a94e47513692ac2008d5",
+      "checksum": "sha256:4b094943bceeb276ca3e20f4841a01c0d352ed1c2a2345ff5bcad941190fb645",
       "db_assertions": [
         "TLM-005: proven by 12 in-tree proof(s) at the component-real tier — apps/control-plane/internal/execution/tools/slack_search_test.go:TestTheSearchToolIsNotOfferedToARunWithNoAuthority; apps/control-plane/internal/execution/tools/slack_search_test.go:TestAnUnrelatedToolNameFallsThroughToTheRegistry; apps/control-plane/internal/execution/tools/slack_search_test.go:TestTheModelCannotWidenTheSearchScope; apps/control-plane/internal/execution/tools/slack_search_test.go:TestAnExhaustedSearchBudgetSaysSoRatherThanReturningNothing; apps/control-plane/internal/execution/tools/slack_search_test.go:TestARegrantDoesNotRefillTheBudget; apps/control-plane/internal/execution/tools/slack_search_test.go:TestTheActionTokenNeverReachesTheModel; apps/control-plane/internal/execution/tools/slack_search_test.go:TestResultsReachTheModelLabelledUntrusted; apps/control-plane/internal/execution/tools/slack_search_test.go:TestASearchResultCarriesNothingActionable; apps/control-plane/internal/execution/tools/slack_search_test.go:TestReleaseEndsTheRunsSearchAuthority; apps/control-plane/internal/execution/tools/slack_search_test.go:TestThePacerIsWorkspaceWideAndPacesTheSecondCall; apps/control-plane/internal/execution/tools/slack_search_test.go:TestTheSearchToolsOutputIsDeclaredUnretained; apps/control-plane/internal/execution/tools_memory_journey_component_test.go:TestToolsMemoryJourney",
         "OPENED BY E21 UNDER THE `TLM-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and — worse — PromoteGateFor selects the E20 family by AgentSurfaceCaseIDs MEMBERSHIP, so an unlisted `SLK-013` would have fallen silently through to a WEAKER gate. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
@@ -2072,7 +2072,7 @@
       }
     },
     {
-      "checksum": "sha256:e3838c7ebf8d9a8c8484eaf4e09b56e81157d68245087deac8794645b82bf7fb",
+      "checksum": "sha256:6403de4956aefcda13193bcb49253b193b8026351869f66ce3e1a8caf199db5c",
       "db_assertions": [
         "RELEASE-LEVEL entry, not a UAT case (it has no tests/uat/cases directory): \"no byte retrieved from the search API was stored\" is not a behaviour one case asserts, it is an observation over everything a whole journey wrote down — the E20-SURFACE / E19-WIRING / E17-TIER precedent",
         "every counter here was MEASURED by apps/control-plane/internal/execution TestToolsMemoryJourney against REAL PostgreSQL and the SHIPPED code, in one process: a 200-turn thread read back through the shipped SessionHistory query folded to 119,073 bytes under a 120,000-byte budget with 143 turns dropped behind a VISIBLE marker; two tools advertised by the REAL Orchestrator into the request the provider received; one dispatched through the fenced path, COMMITTED before it was DELIVERED; one external result carrying an injection payload; one workspace search; one mention",
@@ -2199,7 +2199,7 @@
           },
           {
             "divergence": "M14",
-            "requirement": "a table carries at most 100 rows of at most 20 cells with at most 20 column_settings, and \"a single table's character count across all cells cannot exceed 10,000 characters\"; cell types are rich_text / raw_text / raw_number — E20's constants were EXACTLY right, and the only honest enrichment left was typing a numeric cell",
+            "requirement": "a table carries at most 100 rows of at most 20 cells with at most 20 column_settings, and \"a single table's character count across all cells cannot exceed 10,000 characters\"; E20's constants were EXACTLY right. The page NAMES three cell types, rich_text / raw_text / raw_number, but raw_number IS NOT A SHAPE THE LIVE API TAKES: MEASURED 2026-08-05 (8ef6ae4f) against both surfaces, every form of it — {\"type\":\"raw_number\",\"text\":…}, {\"type\":\"raw_number\",\"value\":…}, {\"type\":\"raw_number\",\"value\":\"…\"} — comes back invalid_arguments on views.open and invalid_blocks on chat.postMessage, and a gated call carrying a plain numeric argument posted no approval message at all. E21's own enrichment minted raw_number for a numeric cell and was WRONG; cell() now renders every cell, numeric or not, as raw_text, and the numeric sort that shape would have earned was never rendered by anything because the block carrying it was refused",
             "source_url": "https://docs.slack.dev/reference/block-kit/blocks/table-block/"
           },
           {
@@ -2228,7 +2228,7 @@
             "source_url": "https://docs.slack.dev/messaging/formatting-message-text/"
           }
         ],
-        "contracts_digest": "sha256:15f151c30dfec7cc25b43f14c4129e46f00f79096d5d40540f3d4ef9cc6cb3ff",
+        "contracts_digest": "sha256:f375f31fe425945f9cafd03d6f53354f3f4ed681abf06b5b0036a54507913d6d",
         "external_tool_authority_gained": 0,
         "external_tool_results": 1,
         "fold_digests": [
@@ -2266,7 +2266,7 @@
       }
     },
     {
-      "checksum": "sha256:9cd2363edf1b81ff0302b320b3f3c117f7f4c216231a5b47e7490e33096187a1",
+      "checksum": "sha256:e631814aba565d451c06d7d28ea20d4ec2f8ee492f96c92218a702d9689191af",
       "db_assertions": [
         "CAS-001: proven by 7 in-tree proof(s) at the unit tier — cmd/cli/internal/stack/up_repository_test.go:TestABringUpBindsTheRepositoryAndSaysWhatItMade; cmd/cli/internal/stack/up_repository_test.go:TestABringUpReusesTheRepositoryBindingItAlreadyMade; cmd/cli/internal/stack/up_repository_test.go:TestAMissingRepositoryConfigurationWarnsRatherThanSkippingSilently; cmd/cli/internal/stack/up_repository_test.go:TestARepositorySurfaceTheStackDoesNotMountIsReportedRatherThanSwallowed; apps/control-plane/internal/execution/tools/default_set_test.go:TestEveryDefaultToolResolves; tests/live/repository/live_test.go:TestLiveSlackBoundRepositoryClonesAtItsBaseBranch; tests/live/workspace/live_test.go:TestLiveSlackBoundRepositoryLandsWhereTheWorkspaceToolsLook",
         "OPENED BY E22 UNDER THE `CAS-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and an id already inside AgentSurfaceCaseIDs or ToolsMemoryCaseIDs would have matched an EARLIER family marker in PromoteGateFor and dispatched this release to a WEAKER gate that knows nothing about the unapproved-publication sweep. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
@@ -2292,7 +2292,7 @@
       }
     },
     {
-      "checksum": "sha256:60b38c89e424ec584a6705fd8b44a304dcf963d1f2518660a1c3631e4c113726",
+      "checksum": "sha256:8271cb59e74f4cec7e21cb009173459c8f52e8ab7ac854c34a68ba0a6621909e",
       "db_assertions": [
         "CAS-002: proven by 15 in-tree proof(s) at the component-real tier — apps/control-plane/internal/execution/tools/publish_test.go:TestNoPublishToolLetsTheModelNameTheDestination; apps/control-plane/internal/execution/tools/publish_test.go:TestPushToolRecordsPendingPublicationAtWorkspaceHead; apps/control-plane/internal/execution/tools/default_set_test.go:TestThePublishToolsAreTheirOwnListAndNeitherPublishes; apps/control-plane/internal/execution/tools/default_set_test.go:TestEveryDefaultToolResolves; cmd/cli/internal/stack/up_publisher_test.go:TestABoundRepositoryWithNoGitHubAppWarnsRatherThanWaitingForever; cmd/cli/internal/stack/up_publisher_test.go:TestAHalfConfiguredGitHubAppIsRefusedByName; cmd/cli/internal/stack/up_publisher_test.go:TestTheGitHubAppKeyRidesAFileSecretAndTheEnvironmentCarriesOnlyAPath; cmd/cli/internal/stack/up_publisher_test.go:TestComposeMountsTheGitHubAppKeyAsAFileSecret; adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement; tests/live/repository/live_test.go:TestLiveApprovedPushAndDraftPullRequest; apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationWaitsForAnApproveAndThenPublishes; apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationDenialPreventsThePushEntirely; apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationTargetsTheBindingsBaseBranch; apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationParksTheRunSoTheApproveLands; apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationDenyWakesTheParkedRunAndPublishesNothing",
         "OPENED BY E22 UNDER THE `CAS-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and an id already inside AgentSurfaceCaseIDs or ToolsMemoryCaseIDs would have matched an EARLIER family marker in PromoteGateFor and dispatched this release to a WEAKER gate that knows nothing about the unapproved-publication sweep. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
@@ -2318,7 +2318,7 @@
       }
     },
     {
-      "checksum": "sha256:7e12bab32979d457bad6c3b7af6bc93c0d5d01c60c559a66760f44820def1077",
+      "checksum": "sha256:3e6dff36791fe6913d6a3684312b168f8afe9e4c8c623aeb463eb393c07f61b0",
       "db_assertions": [
         "CAS-003: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/extensions/jira_ticket_injection_component_test.go:TestJiraTicketBodyCannotInstructTheAgent; adapters/integrations/mcp/jira_live_test.go:TestLiveJiraMCPServerReachableAndEnumerable",
         "OPENED BY E22 UNDER THE `CAS-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and an id already inside AgentSurfaceCaseIDs or ToolsMemoryCaseIDs would have matched an EARLIER family marker in PromoteGateFor and dispatched this release to a WEAKER gate that knows nothing about the unapproved-publication sweep. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
@@ -2344,7 +2344,7 @@
       }
     },
     {
-      "checksum": "sha256:c2290a66c229afe6552a6b64612ae174de5ef6b478ad77ca2850940faec98e6d",
+      "checksum": "sha256:061fb754039505bf96bb55375182a0035c6db125fac40623cd4456b3da3d8f81",
       "db_assertions": [
         "CAS-004: proven by 12 in-tree proof(s) at the component-real tier — adapters/integrations/slack/upload_test.go:TestUploadToThreadFollowsTheThreeDocumentedSteps; adapters/integrations/slack/upload_test.go:TestUploadCarriesTheModelsTextOnlyInInitialComment; adapters/integrations/slack/upload_test.go:TestSniffUploadDerivesTheExtensionFromContentNotFromAName; adapters/integrations/slack/upload_test.go:TestUploadRefusesAnArtifactOverOurOwnCeiling; adapters/integrations/slack/upload_test.go:TestUploadDoesNotRetryARateLimitedStep; adapters/integrations/slack/upload_test.go:TestUploadSurfacesADocumentedAPIRefusal; adapters/integrations/slack/blocks_test.go:TestTaskCardCarriesItsSourcesAndValidatesEveryURL; adapters/integrations/slack/blocks_test.go:TestTaskCardSourceTextIsNeutralised; adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement; adapters/integrations/slack/manifest_test.go:TestManifestGrantsTheScopesTheSubscribedEventsRequire; apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestReadRunArtifactRefusesForeignRunsForeignTenantsAndOversize; tests/live/code-and-ship/upload_live_test.go:TestLiveSlackUploadsAScreenshotAndARecording",
         "OPENED BY E22 UNDER THE `CAS-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and an id already inside AgentSurfaceCaseIDs or ToolsMemoryCaseIDs would have matched an EARLIER family marker in PromoteGateFor and dispatched this release to a WEAKER gate that knows nothing about the unapproved-publication sweep. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
@@ -2370,7 +2370,7 @@
       }
     },
     {
-      "checksum": "sha256:83130cb74885a49165659d30d22c12d1bc8f9d6d13ce27f50fec50e584430c99",
+      "checksum": "sha256:cfbd8f08382c45fa64b53894bc65fea5809d3fed03ee39a0674c6d33f492f6ce",
       "db_assertions": [
         "CAS-005: proven by 20 in-tree proof(s) at the component-real tier — apps/control-plane/internal/execution/tools/shell_host_component_test.go:TestNativeShellPostureRunsTheHostsOwnToolchain; apps/control-plane/internal/execution/tools/shell_host_component_test.go:TestNativeShellPostureSeparatesConcurrentSessionsOnOneMac; apps/control-plane/internal/execution/tools/shell_host_component_test.go:TestShellToolStillFailsCleanlyWithNoPostureConfigured; adapters/sandboxes/host/exec_test.go:TestHostShellDropsTheOperatorsEnvironment; adapters/sandboxes/host/exec_test.go:TestHostShellGivesConcurrentAllocationsDisjointSessionDirectories; adapters/sandboxes/host/exec_test.go:TestSimctlSetIsAdvisoryNotEnforced; adapters/sandboxes/host/exec_test.go:TestHostShellRefusesAReadOnlyAttempt; adapters/sandboxes/host/exec_test.go:TestHostShellRunsInTheWorkspaceRootAndRedactsSecrets; adapters/sandboxes/host/exec_test.go:TestHostShellWallTimeKillsTheWholeProcessGroup; adapters/sandboxes/host/exec_test.go:TestHostShellReportsAMissingCommandAsExit127; adapters/sandboxes/oci/workspace/allocation_test.go:TestSnapshotSkipsThePerSessionDirectoryAsASubtree; apps/control-plane/cmd/palai-control-plane/main_test.go:TestShellPostureAcceptsOnlyTheStringThatSaysWhatItIs; apps/control-plane/cmd/palai-control-plane/main_test.go:TestShellPostureRefusesBothSandboxImageAndNativeHost; cmd/cli/internal/stack/native_test.go:TestNativeWorkspaceRootRefusesAWorldWritableParent; cmd/cli/internal/stack/native_test.go:TestNativeWorkspaceRootResolvesToOneRealPathOnBothSides; deploy/compose/native_control_plane_test.go:TestNativeOverlayBindsTheWorkspaceAtTheSameAbsolutePath; tests/docs/palai_on_a_mac_test.go:TestTheMacOperatingRuleIsVerbatimInBothOperatorPages; apps/control-plane/internal/execution/tools/live/mac_host_live_test.go:TestLiveMacHostDrivesASimulatorThroughShellCalls; apps/control-plane/internal/execution/tools/live/mac_host_live_test.go:TestLiveMacHostBuildsAnXcodeProjectThroughShellCalls; apps/control-plane/internal/execution/tools/live/mac_host_live_test.go:TestLiveMacHostHomeDoesNotSelectTheSimulatorDeviceSet",
         "OPENED BY E22 UNDER THE `CAS-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and an id already inside AgentSurfaceCaseIDs or ToolsMemoryCaseIDs would have matched an EARLIER family marker in PromoteGateFor and dispatched this release to a WEAKER gate that knows nothing about the unapproved-publication sweep. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
@@ -2396,7 +2396,7 @@
       }
     },
     {
-      "checksum": "sha256:5ee4b4c74796e46b1609fac93b1686b6b9f6d34914e34ab7fbcef39cff6556d0",
+      "checksum": "sha256:4652474355098f6459b828f9e821343dc9022986ddd3dc04213f99b94bc84ba3",
       "code_and_ship_claim": "a-thread-bound-to-a-repository-writes-code-runs-the-hosts-tools-and-publishes-nothing-without-a-humans-approval",
       "code_and_ship_proof": {
         "actionable_elements_minted": 0,
@@ -2755,7 +2755,7 @@
       }
     },
     {
-      "checksum": "sha256:bde8ffd9a4fd2c0c74e687de6640e031aa9c9eaa6faeaa2db274a111919a9650",
+      "checksum": "sha256:ad88171e81bdc146e4fd5313029e2a85b21a1754cb7ace6fc8a61c4cc347cbbd",
       "db_assertions": [
         "HIL-001: proven by 7 in-tree proof(s) at the component-real tier — apps/control-plane/internal/execution/tool_approval_component_test.go:TestToolApprovalGateNeverReachesExecuteWithoutAHumanDecision; apps/control-plane/internal/execution/tool_approval_component_test.go:TestToolApprovalApprovedCallRunsExactlyOnceAndWakesTheRun; apps/control-plane/internal/execution/tool_approval_component_test.go:TestToolApprovalDoesNotRunWhenArgumentsChangedAfterTheApproval; apps/control-plane/internal/execution/tool_approval_component_test.go:TestToolApprovalDenyIsAnAnswerTheModelContinuesOn; apps/control-plane/internal/execution/tool_approval_component_test.go:TestToolWithoutApprovalDeclaredIsBitUnchanged; apps/control-plane/internal/execution/mcp_write_approval_component_test.go:TestAGatedMCPWriteToolSendsNoRequestWithoutAHuman; apps/control-plane/internal/execution/mcp_write_approval_component_test.go:TestAToolPinnedTwiceRefusesRatherThanCoinFlippingTheGate",
         "OPENED BY E23 UNDER THE `HIL-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and an id already inside AgentSurfaceCaseIDs, ToolsMemoryCaseIDs or CodeAndShipCaseIDs would have matched an EARLIER family marker in PromoteGateFor and dispatched this release to a WEAKER gate that knows nothing about the ungoverned-side-effect sweep or the screen-authorship fence. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
@@ -2781,7 +2781,7 @@
       }
     },
     {
-      "checksum": "sha256:ee3ff3a23b7c06558884761f2c7cf5571340d7eee9ebf1a737e466c6241f2692",
+      "checksum": "sha256:3249772be6d019756b468a4b864da663183c4625c8af83e5e4fc562821e90367",
       "db_assertions": [
         "HIL-002: proven by 13 in-tree proof(s) at the component-real tier — apps/control-plane/internal/execution/approval_display_test.go:TestToolApprovalScreenCarriesNoServerOrModelText; apps/control-plane/internal/execution/approval_display_test.go:TestToolApprovalScreenShowsEveryArgumentKeySorted; apps/control-plane/internal/execution/approval_display_test.go:TestToolApprovalScreenNamesAnAbsentOperatorLabel; apps/control-plane/internal/execution/approval_display_test.go:TestToolApprovalScreenTruncatesVisibly; apps/control-plane/internal/execution/approval_display_test.go:TestToolApprovalScreenIsDerivedNotStored; apps/control-plane/internal/execution/approval_display_test.go:TestToolApprovalScreenNeutralizesBroadcasts; adapters/integrations/slack/approval_widgets_test.go:TestNeitherSurfaceShowsAServerDescriptionOrModelProse; adapters/integrations/slack/approval_widgets_test.go:TestApprovalMessageShowsEveryArgumentOrSaysItCutOne; adapters/integrations/slack/approval_widgets_test.go:TestApprovalMessageMarksATruncatedArgumentSetRatherThanDroppingIt; adapters/integrations/slack/approval_widgets_test.go:TestAnUnwrittenOperatorLabelIsSaidOutLoud; adapters/integrations/slack/approval_widgets_test.go:TestApprovalModalDumpsEveryLeafAndAsksForADenyReasonWithoutDispatching; adapters/integrations/slack/blocks_test.go:TestTheActionableElementScanIsPackageLocalOnlyAndTheModalIsBuiltInsideIt; apps/control-plane/internal/execution/tool_approval_component_test.go:TestToolApprovalScreenComesFromTheLedgerRowAndNotTheFrame",
         "OPENED BY E23 UNDER THE `HIL-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and an id already inside AgentSurfaceCaseIDs, ToolsMemoryCaseIDs or CodeAndShipCaseIDs would have matched an EARLIER family marker in PromoteGateFor and dispatched this release to a WEAKER gate that knows nothing about the ungoverned-side-effect sweep or the screen-authorship fence. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
@@ -2807,7 +2807,7 @@
       }
     },
     {
-      "checksum": "sha256:94d77e66204516cf0d142d1a5930691b19628d3a911e6565833036e1eea9dbf3",
+      "checksum": "sha256:7f327b74aee4b7e19c9953fddaa151013ab496ca8b5433c631b1ea9a03e49a3e",
       "db_assertions": [
         "HIL-003: proven by 5 in-tree proof(s) at the component-real tier — apps/control-plane/internal/execution/tool_approval_component_test.go:TestToolApprovalParksTheRunRatherThanAnsweringWithoutADecision; apps/control-plane/internal/execution/tool_approval_component_test.go:TestExpiredToolApprovalCancelsTheCallAndWakesTheParkedRun; apps/control-plane/internal/execution/reconciler_test.go:TestReconcilerSweepReportsDeadLetteredWithConfiguredCeiling; apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationParksTheRunSoTheApproveLands; apps/control-plane/internal/execution/publish_approval_component_test.go:TestPublicationDenyWakesTheParkedRunAndPublishesNothing",
         "OPENED BY E23 UNDER THE `HIL-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and an id already inside AgentSurfaceCaseIDs, ToolsMemoryCaseIDs or CodeAndShipCaseIDs would have matched an EARLIER family marker in PromoteGateFor and dispatched this release to a WEAKER gate that knows nothing about the ungoverned-side-effect sweep or the screen-authorship fence. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
@@ -2833,7 +2833,7 @@
       }
     },
     {
-      "checksum": "sha256:6e9bf4da2ddc510b2b9d4bfe465687f52cafd6df8142b2134ee78f6d5636305c",
+      "checksum": "sha256:e68d6adb9ef19e0df66bd2d7789460249dc521d1c1dba000f511608a3f45f370",
       "db_assertions": [
         "HIL-004: proven by 15 in-tree proof(s) at the component-real tier — packages/coordinator/approver_test.go:TestApproverPrincipalRendersEachSurfacesIdentity; packages/coordinator/approver_test.go:TestApproverAllowedIsDenyByDefaultOnlyOnceAListExists; packages/coordinator/approver_test.go:TestApproverAllowedHasExactlyOneProductionCallSite; apps/control-plane/internal/identity/config_policy_test.go:TestConfigPolicyInputAcceptsAnApproverList; apps/control-plane/internal/identity/config_policy_test.go:TestConfigPolicyInputStillRejectsAnUnknownField; apps/control-plane/internal/execution/approver_component_test.go:TestApproverAnyTenantKeyApprovesWhenNoListIsConfigured; apps/control-plane/internal/execution/approver_component_test.go:TestApproverAKeyOutsideTheProjectListDecidesNothing; apps/control-plane/internal/execution/approver_component_test.go:TestApproverAKeyInsideTheProjectListApproves; apps/control-plane/internal/execution/approver_component_test.go:TestApproverADenyFromAnUnlistedKeyDecidesNothingEither; apps/control-plane/internal/execution/approver_component_test.go:TestApproverTheRequestBodyCannotNameItsOwnApprover; apps/control-plane/internal/execution/approver_component_test.go:TestApproverTheListIsReadLiveSoNarrowingTakesPendingApprovalsWithIt; apps/control-plane/internal/execution/approver_component_test.go:TestApproverAnEmptyListIsNotAnEmptyString; cmd/cli/internal/stack/up_approver_test.go:TestApproverListAbsenceIsSaidOutLoud; cmd/cli/internal/stack/up_approver_test.go:TestApproverListPresenceIsSilent; cmd/cli/internal/stack/up_approver_test.go:TestApproverListUnreadableWarnsAboutTheREADNotTheLIST",
         "OPENED BY E23 UNDER THE `HIL-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and an id already inside AgentSurfaceCaseIDs, ToolsMemoryCaseIDs or CodeAndShipCaseIDs would have matched an EARLIER family marker in PromoteGateFor and dispatched this release to a WEAKER gate that knows nothing about the ungoverned-side-effect sweep or the screen-authorship fence. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
@@ -2859,7 +2859,7 @@
       }
     },
     {
-      "checksum": "sha256:77d9a0c70cc107cc70e3b1cf8aabb783a5f67b8284da1593627fd470f6a36693",
+      "checksum": "sha256:9d48bba9a41ffdf76f721e80f0660601ecb34cb276c5b0fb2bcd236ba55b3a15",
       "db_assertions": [
         "HIL-005: proven by 13 in-tree proof(s) at the component-real tier — apps/control-plane/internal/execution/mcp_write_approval_component_test.go:TestApprovedMCPArgumentsReachThePeerByteForByte; apps/control-plane/internal/execution/mcp_write_approval_component_test.go:TestAJiraTicketBodyCannotApproveItself; apps/control-plane/internal/execution/merge_component_test.go:TestMergePullRequestWithoutAnApprovalPublishesNothing; apps/control-plane/internal/execution/merge_component_test.go:TestMergePullRequestRefusesWhenTheHeadMovedAfterTheApproval; apps/control-plane/internal/execution/merge_component_test.go:TestMergePullRequestWithNoPublishedPullRequestRefuses; apps/control-plane/internal/execution/merge_component_test.go:TestMergePullRequestDeniedPreventsTheMergeAndReleasesTheRun; apps/control-plane/internal/execution/merge_component_test.go:TestMergePullRequestMethodComesFromTheBindingNotTheModel; apps/control-plane/internal/execution/tools/publish_test.go:TestNoPublishToolLetsTheModelNameTheDestination; apps/control-plane/internal/execution/tools/default_set_test.go:TestThePublishToolsAreTheirOwnListAndNeitherPublishes; adapters/repositories/publish_github_test.go:TestGitHubMergeAlwaysSendsTheApprovedSHA; adapters/repositories/publish_github_test.go:TestGitHubMergeRefusalIsHonest; adapters/repositories/publish_github_test.go:TestMergeRefusesAnUnknownMethodBeforeCalling; tests/live/repository/live_test.go:TestLiveApprovedMergeRefusesAMovedHead",
         "OPENED BY E23 UNDER THE `HIL-` PREFIX, and that prefix is a GATE decision rather than a naming preference: an `SLK-` id would have regenerated either the shipped extensions-0.1.0 bundle or the shipped slack-agent-surface-0.1.0 bundle, and an id already inside AgentSurfaceCaseIDs, ToolsMemoryCaseIDs or CodeAndShipCaseIDs would have matched an EARLIER family marker in PromoteGateFor and dispatched this release to a WEAKER gate that knows nothing about the ungoverned-side-effect sweep or the screen-authorship fence. A case belongs to the bundle that certifies it, and the prefix is what keeps dispatch unambiguous",
@@ -2885,7 +2885,7 @@
       }
     },
     {
-      "checksum": "sha256:fdd97650f298b41d878b052aee2d3b9b86ab4354803f5f72addfbeb0d269bcb0",
+      "checksum": "sha256:f420fe591a8d33ac08c9a899dd98dd9d1a8c7eb0725f906de71f52dd03e7ce4d",
       "db_assertions": [
         "RELEASE-LEVEL entry, not a UAT case (it has no tests/uat/cases directory): \"nothing side-effecting ran without a human\" is not a behaviour one case asserts, it is an observation over everything a whole journey did and did not do — the E22-CODE-AND-SHIP / E21-TOOLS-MEMORY / E20-SURFACE / E19-WIRING / E17-TIER precedent",
         "THE CROWN CLAIM IS THAT A SIDE-EFFECTING TOOL CALL CANNOT RUN WITHOUT A HUMAN, AND THE GATE IS DECLARED AT REGISTRATION RATHER THAN GUESSED. It is RE-DERIVED from the call ledger rather than declared: every gated call that executed must carry an approve, and the ledger must itself demonstrate all four shapes — an approve that RAN, a deny that did not, an EXPIRY that did not, and an ungated call that ran untouched — because a zero over a corpus nobody ever approved certifies nothing, and a gate that never let anything through is indistinguishable from a broken tool. THE DECLARATION CANNOT COME FROM THE SERVER: the MCP specification says verbatim that clients \"MUST consider tool annotations to be untrusted unless they come from trusted servers\" (fetched 2026-07-29, §3.5 P3), so `destructiveHint` is not a gate — our client does not decode `annotations` at all — and the flag is `tool_revisions.approval_required` (000044 R3) beside the per-tool publish an operator already makes",
@@ -3658,7 +3658,7 @@
           {
             "divergence": "P13",
             "source_url": "https://docs.slack.dev/reference/block-kit/blocks/table-block/ (inherited E21 M14, re-read 2026-07-29)",
-            "requirement": "table block: max 100 rows, 20 cells per row, 10,000 characters per message, cell types rich_text|raw_text|raw_number, NO interactive element. THE HIGHEST-RETURN WIDGET IN THIS EPIC AND IT WAS ALREADY BUILT: one row per argument, two columns (key / value). E20 wrote the block, E21 measured the limits, E23 brought only the content"
+            "requirement": "table block: max 100 rows, 20 cells per row, 10,000 characters per message, NO interactive element. The published union names cell types rich_text|raw_text|raw_number, but raw_number IS NOT A SHAPE THE LIVE API TAKES — MEASURED 2026-08-05 (8ef6ae4f): views.open answers invalid_arguments on the type field in every form of it, chat.postMessage answers invalid_blocks, and a gated call carrying a plain numeric argument posted no approval message at all. cell() renders every cell, numeric or not, as raw_text. THE HIGHEST-RETURN WIDGET IN THIS EPIC AND IT WAS ALREADY BUILT: one row per argument, two columns (key / value). E20 wrote the block, E21 minted the wrong type for the numeric column, E23 brought only the content, and 8ef6ae4f corrected the cell before this bundle claimed it"
           },
           {
             "divergence": "P14",
@@ -3676,7 +3676,7 @@
             "requirement": "⭐ Merge a pull request: PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge, body `commit_title`, `commit_message`, **`sha`** (\"SHA that pull request head must match to allow merge\"), `merge_method ∈ merge|squash|rebase`; errors 405 \"Method Not Allowed if merge cannot be performed\" and 409 \"Conflict if sha was provided and pull request head did not match\". `sha` IS OPTIONAL AND E23 MAKES IT MANDATORY: the approved publication's own head_sha is sent, so a head that moved after the approval takes a 409 and does NOT merge. The vendor hands over a race guard for free and this epic does not decline it. `merge_method` comes from the binding's policy, never from the model"
           }
         ],
-        "contracts_digest": "sha256:85fc03ac6f2bb98939a029cb42761fb7a469b3d018b1128943eefe353aaa0775"
+        "contracts_digest": "sha256:d525e77de1c5ce0ee1f0f74f10d02ec50bf69e1ecbbc17792293e6121eeb2ba8"
       },
       "usage": {
         "input_tokens": 0,

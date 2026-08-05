@@ -135,7 +135,7 @@ var ToolsMemoryContracts = []ContractRequirement{
 	{
 		Divergence:  "M14",
 		SourceURL:   "https://docs.slack.dev/reference/block-kit/blocks/table-block/",
-		Requirement: "a table carries at most 100 rows of at most 20 cells with at most 20 column_settings, and \"a single table's character count across all cells cannot exceed 10,000 characters\"; cell types are rich_text / raw_text / raw_number — E20's constants were EXACTLY right, and the only honest enrichment left was typing a numeric cell",
+		Requirement: "a table carries at most 100 rows of at most 20 cells with at most 20 column_settings, and \"a single table's character count across all cells cannot exceed 10,000 characters\"; E20's constants were EXACTLY right. The page NAMES three cell types, rich_text / raw_text / raw_number, but raw_number IS NOT A SHAPE THE LIVE API TAKES: MEASURED 2026-08-05 (8ef6ae4f) against both surfaces, every form of it — {\"type\":\"raw_number\",\"text\":…}, {\"type\":\"raw_number\",\"value\":…}, {\"type\":\"raw_number\",\"value\":\"…\"} — comes back invalid_arguments on views.open and invalid_blocks on chat.postMessage, and a gated call carrying a plain numeric argument posted no approval message at all. E21's own enrichment minted raw_number for a numeric cell and was WRONG; cell() now renders every cell, numeric or not, as raw_text, and the numeric sort that shape would have earned was never rendered by anything because the block carrying it was refused",
 	},
 	{
 		Divergence:  "M15",

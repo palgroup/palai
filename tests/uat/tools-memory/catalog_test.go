@@ -102,7 +102,10 @@ var expectedToolsMemoryCatalog = map[string]struct {
 		"adapters/integrations/slack/mention_test.go:TestTheModelCannotChooseWhoIsMentioned",
 		"adapters/integrations/slack/mention_test.go:TestAnEmptyRequesterSkipsTheMentionAndKeepsTheWords",
 		"adapters/integrations/slack/mention_test.go:TestAPublicationDisplayCannotBroadcast",
-		"adapters/integrations/slack/mention_test.go:TestStatusCannotBroadcast",
+		// TestStatusCannotBroadcast WITHDRAWN 2026-08-05 — dfceb769 deleted SetStatus itself as dead
+		// HTTP-transport code (Socket Mode replaced the old bridge; nothing calls
+		// assistant.threads.setStatus in production), and its test with it. See the matching WITHDRAWN
+		// note in tests/uat/cases/TLM-003/case.yaml.
 		"adapters/integrations/slack/mention_test.go:TestAMentionRendersAsAnOrdinarySection",
 		"adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement",
 		"tests/component/postgres/migration_test.go:TestMigration43SlackRequester",
