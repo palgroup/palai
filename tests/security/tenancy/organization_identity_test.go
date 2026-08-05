@@ -14,20 +14,14 @@
 // statement now filters `project_id = <an organization id>`. These tests read the argument's NAME against
 // the statement's own SQL, so that edit fails at the file:line where it was made.
 //
-// TWO tests, split by what each can be authoritative about:
+// ONE test: TestNoQueryBindsAnOrganizationIntoAProjectsSlot, the Go-side identity check described above.
 //
-//   - TestNoStatementStillFiltersByOrganization is the SQL-side inventory. It attributes every
-//     organization_id reference in storage/queries to the table it belongs to, and requires a FILTER to
-//     survive only where the database still refuses a NULL or a mismatch. It was this task's worklist and
-//     is now its completion test.
-//   - TestNoQueryBindsAnOrganizationIntoAProjectsSlot is the Go-side identity check described above.
+// THIS SAID "THREE", THEN "TWO", AND IS NOW ONE. Both departures are recorded where the function used to
+// be — TestTenantScopeIsPublishedOrganizationFirst below the surviving test, and the SQL-side inventory
+// TestNoStatementStillFiltersByOrganization above it. The header is the part a reader checks the roster
+// against, so a count it inflates is a guard someone believes is standing.
 //
-// THIS SAID "THREE" AND NAMED TestTenantScopeIsPublishedOrganizationFirst AS THE THIRD. That test is
-// gone: A.2 Task 6 deleted the hazard it watched, and the deletion is recorded in full at the bottom of
-// this file, where the function used to be. The header is the part a reader checks the roster against,
-// so a count it inflates is a guard someone believes is standing.
-//
-// Neither replaces the arity guard next door, and the perturbations recorded in the task report show
+// It does not replace the arity guard next door, and the perturbations recorded in the task report show
 // why: an organization-spelled identifier sitting in a project's slot is invisible to arity and caught
 // here, while passing one argument too many is invisible here and caught there.
 //
@@ -50,186 +44,46 @@ import (
 	"testing"
 )
 
-// identityOrgTables are the tables an organization value must still reach, and the reason for each. The
-// reasons are two DIFFERENT mechanisms and conflating them is how the epic's own plan came to name nine
-// tables with the wrong justification for six of them, so both are measured here, on a database at
-// migration 000063 (2026-08-04):
+// TestNoStatementStillFiltersByOrganization WAS HERE, WITH THE TWO MAPS THAT WERE ITS WORKLIST, AND IT
+// WAS VACUOUS — not loosened into vacuity, but reduced to it by the very sweep it was written to drive.
 //
-//	-- the column itself refuses a NULL (only three; 000063 could not DROP NOT NULL on a primary-key member)
-//	SELECT c.relname FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
-//	  JOIN pg_namespace n ON n.oid = c.relnamespace
-//	 WHERE n.nspname = 'public' AND a.attname = 'organization_id' AND a.attnum > 0
-//	   AND NOT a.attisdropped AND c.relkind = 'r' AND a.attnotnull ORDER BY 1;
-//	-- commands, config_revisions, delivered_messages
+// It attributed every organization_id reference in storage/queries to the table it belonged to, required
+// a FILTER to survive only where the database still refused a NULL or a mismatch, and counted the WRITES
+// it could not yet demand the removal of under a ceiling of 93. identityOrgTables named the eleven tables
+// a value still had to reach and identityOrgWriteTables the thirty-two it still had to be written to: 43
+// entries describing NOT NULL columns, policies reading palai.org_id, and UNIQUE indexes over the column.
 //
-//	-- the row-level-security policy still reads palai.org_id (12 policies, on 12 tables)
-//	SELECT tablename FROM pg_policies WHERE schemaname = 'public'
-//	   AND (coalesce(qual,'') LIKE '%palai.org_id%' OR coalesce(with_check,'') LIKE '%palai.org_id%')
-//	 ORDER BY 1;
-//	-- api_keys, delivery_attempts, environment_values, environments, job_attempts, model_route_revisions,
-//	-- organizations, principals, projects, schedule_occurrences, secret_refs, usage_ledger
+// A.2 Task 6 finished. Every one of those three mechanisms is gone, and so is the column:
 //
-// Only the eleven below appear here. The other four of those twelve — delivery_attempts, job_attempts,
-// model_route_revisions, schedule_occurrences — have NO organization_id column of their own: their policy
-// reads their PARENT's (`EXISTS (SELECT 1 FROM webhook_deliveries d WHERE d.id = delivery_attempts.
-// delivery_id AND d.organization_id = current_setting('palai.org_id', true))`). Nothing about a query's
-// text can satisfy those; what they require is that the CONNECTION still publishes a real palai.org_id,
-// which is storage.scope.organization's job (storage/embed.go, applyScope) and not a bind argument's.
-// Measured, with a control, in one rolled-back transaction:
+//	grep -c organization_id storage/migrations/*.up.sql   -> one hit, in 000006's prose, no DDL (2026-08-05)
+//	grep -c organization_id storage/queries/*.sql         -> two hits, both in comments (2026-08-05)
 //
-//	palai.org_id = 'org_probe' -> delivery_attempts 1 row, webhook_deliveries 1 row
-//	palai.org_id = ''          -> delivery_attempts 0 rows, webhook_deliveries 1 row  <- control: the
-//	                                                                                    refusal is the
-//	                                                                                    policy's, not the
-//	                                                                                    harness's
+// The consequence is not a weakened guard, it is an absent one. identityOrgRefs opened with
+// `if !strings.Contains(sql, "organization_id") { return nil, nil, nil }`, so with no statement containing
+// the string EVERY call returned empty and the loop body below it never ran. Measured by the test's own
+// log line on the tree that deleted it:
 //
-// ALL ELEVEN ARE A.2 TASK 6'S WORK, NOT THIS TASK'S. When T6 drops the columns and the policies, entries
-// leave this map and the tests below tighten by themselves.
-var identityOrgTables = map[string]string{
-	"commands":           "organization_id is NOT NULL — composite primary key member, 000063 could not relax it",
-	"config_revisions":   "organization_id is NOT NULL — composite primary key member, 000063 could not relax it",
-	"delivered_messages": "organization_id is NOT NULL — composite primary key member, 000063 could not relax it",
-	"api_keys":           "tenant_isolation compares its own organization_id to palai.org_id",
-	"environment_values": "tenant_isolation compares its own organization_id to palai.org_id",
-	"environments":       "tenant_isolation compares its own organization_id to palai.org_id",
-	"organizations":      "tenant_isolation compares its id to palai.org_id",
-	"principals":         "tenant_isolation compares its own organization_id to palai.org_id",
-	"projects":           "tenant_isolation compares its own organization_id to palai.org_id",
-	"secret_refs":        "tenant_isolation compares its own organization_id to palai.org_id",
-	"usage_ledger":       "tenant_isolation compares its own organization_id to palai.org_id",
-}
-
-// identityOrgWriteTables are the tables an organization value must still be WRITTEN to. It is a superset
-// of identityOrgTables and the extra members are the ones no plan for this epic has named, because the
-// mechanism holding them announces itself nowhere in the schema's text: the column participates in a
-// UNIQUE index, and a unique index treats NULL as distinct from NULL. Stop writing the column and the
-// index stops constraining anything, with no error at write time and no static signal at all.
+//	organization_id ile FİLTRELEYEN sorgu: 0; YAZAN/projeleyen sorgu: 0 (bunlardan 0'i …);
+//	toplam sorgu: 497; çözümlenemeyen referans: 0
 //
-// Measured on a database at migration 000063 (2026-08-04) as the union of three catalogue queries — the
-// NOT NULL columns, the policies comparing their own organization_id to palai.org_id, and:
+// filtering 0, writing 0, stale 0, unresolved 0 — over 497 parsed statements. The `stale > 93` ceiling
+// could not fire at any value of the tree, and neither t.Errorf could be reached.
 //
-//	SELECT DISTINCT c.relname FROM pg_index x JOIN pg_class c ON c.oid = x.indrelid
-//	  JOIN pg_namespace n ON n.oid = c.relnamespace
-//	 WHERE n.nspname = 'public' AND (x.indisunique OR x.indisprimary)
-//	   AND EXISTS (SELECT 1 FROM pg_attribute a
-//	                WHERE a.attrelid = c.oid AND a.attnum = ANY (x.indkey)
-//	                  AND a.attname = 'organization_id')
-//	 ORDER BY 1;   -- 30 indexes over 29 tables (tools carries two)
+// AND ITS OWN VACUITY GUARD DID NOT SEE THIS, which is the part worth keeping. It read
+// `if len(statements) == 0`, and 497 statements parsed. It checked that the INPUT was found, never that
+// any of it was ATTRIBUTED — so the one number that had collapsed was the one number it did not look at.
+// A vacuity floor belongs on what a sweep MATCHED, not on what it read; the surviving test's floor is on
+// its project binds for exactly that reason, and this file has now shipped both shapes.
 //
-// Ten ON CONFLICT clauses in storage/queries name organization_id first, and those at least fail loudly
-// — Postgres answers `there is no unique or exclusion constraint matching the ON CONFLICT specification`.
-// The silent half is every other write. Both leave with Task 6, which rebuilds the indexes.
-var identityOrgWriteTables = map[string]string{
-	"agent_profiles":         "UNIQUE (organization_id, project_id, name)",
-	"api_keys":               "policy compares its own organization_id to palai.org_id",
-	"budgets":                "UNIQUE (organization_id, project_id, meter_prefix)",
-	"capability_jobs":        "UNIQUE (organization_id, project_id, idempotency_key) — idempotency",
-	"commands":               "NOT NULL, and PRIMARY KEY (organization_id, project_id, id)",
-	"config_revisions":       "NOT NULL, and PRIMARY KEY (organization_id, project_id, id)",
-	"delivered_messages":     "NOT NULL, and PRIMARY KEY (organization_id, project_id, command_id)",
-	"document_revisions":     "UNIQUE (organization_id, project_id, source_id, version)",
-	"environment_values":     "policy compares its own organization_id to palai.org_id",
-	"environments":           "policy compares its own organization_id to palai.org_id, and UNIQUE (organization_id, name)",
-	"hooks":                  "UNIQUE (organization_id, project_id, name)",
-	"idempotency_records":    "UNIQUE (organization_id, project_id, principal_id, method, route, idempotency_key)",
-	"index_revisions":        "UNIQUE (organization_id, project_id, knowledge_base_id, version)",
-	"integration_bots":       "UNIQUE (organization_id, project_id, name)",
-	"knowledge_bases":        "UNIQUE (organization_id, project_id, name)",
-	"mcp_connections":        "UNIQUE (organization_id, project_id, name)",
-	"principals":             "policy compares its own organization_id to palai.org_id",
-	"projects":               "policy compares its own organization_id to palai.org_id, and UNIQUE (organization_id, id)",
-	"publications":           "UNIQUE (organization_id, project_id, idempotency_key)",
-	"quotas":                 "UNIQUE (organization_id, project_id, meter_prefix)",
-	"run_template_revisions": "UNIQUE (organization_id, project_id, template_name, revision_number)",
-	"runner_pools":           "UNIQUE (organization_id, project_id, name)",
-	"schedules":              "UNIQUE (organization_id, project_id, name)",
-	"secret_refs":            "policy compares its own organization_id to palai.org_id, and UNIQUE (organization_id, name, version)",
-	"skills":                 "UNIQUE (organization_id, project_id, name)",
-	"slack_connections":      "UNIQUE (organization_id, project_id, team_id, enterprise_id)",
-	"slack_message_turns":    "UNIQUE (organization_id, project_id, team_id, channel_id, message_ts)",
-	"slack_thread_sessions":  "UNIQUE (organization_id, project_id, team_id, channel_id, thread_ts)",
-	"tool_set_revisions":     "UNIQUE (organization_id, project_id, set_name, revision_number)",
-	"tools":                  "UNIQUE (organization_id, project_id, canonical_name) and (…, model_visible_name)",
-	"triggers":               "UNIQUE (organization_id, project_id, name)",
-	"usage_ledger":           "policy compares its own organization_id to palai.org_id, and UNIQUE (organization_id, project_id, dedupe_key)",
-}
-
-// TestNoStatementStillFiltersByOrganization requires that an `organization_id = $N` comparison survives
-// only on a table whose row-level-security policy still reads palai.org_id, or whose column is still NOT
-// NULL. Everywhere else the comparison is vestigial: 000062 rekeyed the policy to project_id, so the
-// boundary the WHERE clause claims to add is already enforced one layer down, and the bind argument it
-// consumes is the one this epic is removing.
+// IT IS DELETED RATHER THAN LEFT TO PASS, on this file's own precedent below: a guard whose subject no
+// longer exists cannot be made honest by loosening it. Left in place it asserted nothing while its two
+// maps read as live guidance for a schema that does not exist — a header claiming "32 tables must still
+// be WRITTEN with an organization" is worse than absent, because a reader checks the roster against it.
 //
-// IT JUDGES FILTERS, NOT WRITES, AND THE DIFFERENCE IS NOT A TECHNICALITY. A statement may keep naming
-// organization_id in an INSERT column list, an ON CONFLICT target or a SELECT list on a table this test
-// says must not FILTER by it, and that is correct: 32 tables must still be WRITTEN with an organization
-// (identityOrgWriteTables), and 24 of them for a reason no policy and no NOT NULL announces — the column
-// is part of a UNIQUE index, and in a unique index NULL is distinct from NULL. Measured, with a control,
-// on a temporary table with UNIQUE (organization_id, project_id, name):
-//
-//	('org_a', 'proj_a', 'dup') twice -> the second is refused, duplicate key   <- control
-//	(NULL,    'proj_a', 'dup') three times -> all three accepted, 3 rows
-//
-// So dropping the WRITE on those tables does not raise an error; it silently retires the uniqueness
-// guarantee (two agent profiles of one name, two tools of one canonical_name, an idempotency_key
-// processed twice). Those writes leave with Task 6's index rebuild, not with this test.
-//
-// It is red before the cut-over on purpose, and each failure line is one statement to edit.
-func TestNoStatementStillFiltersByOrganization(t *testing.T) {
-	statements := identityStatements(t)
-	if len(statements) == 0 {
-		t.Fatal("no -- name: block parsed out of storage/queries — this test is VACUOUS")
-	}
-
-	var filtering, writing, unresolved, stale int
-	for _, name := range identitySortedNames(statements) {
-		stmt := statements[name]
-		filters, writes, unknown := identityOrgRefs(stmt.sql)
-		if len(writes) > 0 {
-			writing++
-		}
-		if len(filters) > 0 {
-			filtering++
-		}
-		for _, table := range identitySortedStrings(filters) {
-			if _, keep := identityOrgTables[table]; !keep {
-				t.Errorf("%s: statement %s filters on %s.organization_id, and %s's policy has keyed on "+
-					"project_id since 000062 — drop the comparison, renumber the $N below it, and drop the "+
-					"bind argument at every call site", stmt.at, name, table, table)
-			}
-		}
-		for _, table := range identitySortedStrings(writes) {
-			if _, keep := identityOrgWriteTables[table]; !keep {
-				// COUNTED, NOT FAILED, and the asymmetry is deliberate. Dropping a FILTER is this task's
-				// work and is complete above. Dropping a WRITE is not: the value still has to come from
-				// somewhere for the 32 tables that do need it, and until Tenant.Organization's remaining
-				// readers are resolved (A.2 Task 6 removes the columns and the policies) a statement that
-				// merely PROJECTS organization_id is harmless — it feeds a struct field that still exists.
-				// Failing on it here would redden the tree for work this task cannot finish.
-				stale++
-			}
-		}
-		for _, why := range unknown {
-			unresolved++
-			t.Errorf("%s: statement %s has an organization_id reference this test cannot attribute to a table "+
-				"(%s) — an unattributed reference is an unchecked one, so read it by hand and either drop it "+
-				"or qualify it so this test can", stmt.at, name, why)
-		}
-	}
-	// A CEILING on the write debt, so the count cannot grow while it waits for Task 6. 93 references,
-	// 2026-08-04, measured by this test on the tree the cut-over left. A new statement writing
-	// organization_id to a table nothing needs it on fails here; removing one requires lowering this
-	// number, which is the edit that records the work.
-	const identityStaleWriteCeiling = 93
-	if stale > identityStaleWriteCeiling {
-		t.Errorf("%d reference(s) write or project organization_id to a table with no NOT NULL, no org policy "+
-			"and no unique index over it — more than the %d this tree carried when the ceiling was set. "+
-			"Task 6 removes these; nothing should be ADDING them", stale, identityStaleWriteCeiling)
-	}
-	t.Logf("organization_id ile FİLTRELEYEN sorgu: %d; YAZAN/projeleyen sorgu: %d (bunlardan %d'i artık hiçbir "+
-		"kısıtın istemediği bir tabloya — T6'nın işi); toplam sorgu: %d; çözümlenemeyen referans: %d",
-		filtering, writing, stale, len(statements), unresolved)
-}
+// WHAT DID NOT GO WITH IT: identityProjectFloor in the test below. That floor watches identityKind's
+// project spellings, nothing organization-shaped, and it is load-bearing today — a rename or a helper
+// that forwards through a differently-named parameter drops the count while every assertion goes quiet.
+// Measured across this deletion to prove the two are independent: 405 project binds before, 405 after.
 
 // TestNoQueryBindsAnOrganizationIntoAProjectsSlot is the identity half of the arity guard.
 //
@@ -445,24 +299,6 @@ type identityStatement struct {
 	at   string
 }
 
-func identitySortedNames(m map[string]identityStatement) []string {
-	out := make([]string, 0, len(m))
-	for name := range m {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func identitySortedStrings(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for s := range m {
-		out = append(out, s)
-	}
-	sort.Strings(out)
-	return out
-}
-
 func identityDollars(positions map[int]bool) string {
 	out := make([]string, 0, len(positions))
 	for n := range positions {
@@ -521,117 +357,11 @@ func identityStatements(t *testing.T) map[string]identityStatement {
 	return out
 }
 
-var (
-	// identityTableRef matches the table after FROM/JOIN/UPDATE/INTO and its optional alias. The negative
-	// lookahead Go's regexp does not have is done by hand below: a name followed by '(' is a set-returning
-	// function (jsonb_array_elements), not a table.
-	identityTableRef = regexp.MustCompile(`(?is)\b(?:from|join|update|into)\s+([a-z_][a-z0-9_]*)\s*(\(?)\s*(?:(?:as\s+)?([a-z_][a-z0-9_]*))?`)
-	identityCTERef   = regexp.MustCompile(`(?is)(?:\bwith\b|,)\s*([a-z_][a-z0-9_]*)\s+as\s*\(`)
-	identityOrgRef   = regexp.MustCompile(`(?i)(?:\b([a-z_][a-z0-9_]*)\.)?\borganization_id\b`)
-	identityColumnAt = regexp.MustCompile(`(?i)(?:\b[a-z_][a-z0-9_]*\.)?\b(organization_id|project_id)\b\s*(?:=|<>)\s*\$([0-9]+)`)
-	identityTarget   = regexp.MustCompile(`(?is)\b(?:insert\s+into|update|delete\s+from)\s+([a-z_][a-z0-9_]*)`)
-)
-
-// identitySQLKeywords are the words that can stand where a table name or an alias would, so that
-// `DELETE FROM x USING y` and `UPDATE t SET c = 1` do not invent tables called `using` and `set`.
-var identitySQLKeywords = map[string]bool{
-	"all": true, "and": true, "as": true, "asc": true, "by": true, "case": true, "conflict": true,
-	"cross": true, "desc": true, "distinct": true, "do": true, "else": true, "end": true, "exists": true,
-	"for": true, "from": true, "full": true, "group": true, "having": true, "inner": true, "into": true,
-	"is": true, "join": true, "lateral": true, "left": true, "limit": true, "locked": true, "natural": true,
-	"not": true, "nothing": true, "null": true, "of": true, "offset": true, "on": true, "only": true,
-	"or": true, "order": true, "outer": true, "returning": true, "right": true, "select": true,
-	"set": true, "share": true, "skip": true, "then": true, "union": true, "update": true, "using": true,
-	"values": true, "when": true, "where": true, "with": true,
-}
-
-// identityOrgRefs attributes each organization_id reference in a statement to the table it belongs to AND
-// to its role. A reference is a FILTER when it is compared — to a bind parameter (`organization_id = $2`)
-// or to another table's column (`a.organization_id = w.organization_id`, the redundant half of a join
-// predicate). Every other appearance — an INSERT column list, a SET, an ON CONFLICT target, a SELECT or
-// RETURNING list — is a WRITE or a projection. The two are governed by different tables and a sweep that
-// conflated them would demand the removal of writes that silently disable a unique index.
-//
-// It returns, separately, a description of every reference it could not attribute: an unattributed
-// reference is one this sweep is not checking, and the tree has shipped a sweep that reported a cleaner
-// number while covering less.
-func identityOrgRefs(sql string) (filters, writes map[string]bool, unknown []string) {
-	if !strings.Contains(sql, "organization_id") {
-		return nil, nil, nil
-	}
-	ctes := map[string]bool{}
-	for _, m := range identityCTERef.FindAllStringSubmatch(sql, -1) {
-		ctes[strings.ToLower(m[1])] = true
-	}
-
-	alias := map[string]string{}
-	var tables []string
-	for _, m := range identityTableRef.FindAllStringSubmatch(sql, -1) {
-		name := strings.ToLower(m[1])
-		if identitySQLKeywords[name] || ctes[name] || m[2] == "(" {
-			continue // a keyword, a CTE reference, or a set-returning function call — none is a table.
-		}
-		if _, seen := alias[name]; !seen {
-			tables = append(tables, name)
-		}
-		alias[name] = name
-		if a := strings.ToLower(m[3]); a != "" && !identitySQLKeywords[a] {
-			if _, taken := alias[a]; !taken {
-				alias[a] = name
-			}
-		}
-	}
-
-	target := ""
-	if m := identityTarget.FindStringSubmatch(sql); m != nil {
-		if name := strings.ToLower(m[1]); !identitySQLKeywords[name] && !ctes[name] {
-			target = name
-		}
-	}
-
-	filters, writes = map[string]bool{}, map[string]bool{}
-	for _, loc := range identityOrgRef.FindAllStringSubmatchIndex(sql, -1) {
-		qualifier := ""
-		if loc[2] >= 0 {
-			qualifier = strings.ToLower(sql[loc[2]:loc[3]])
-		}
-		var table string
-		switch {
-		case qualifier != "":
-			resolved, ok := alias[qualifier]
-			if !ok {
-				unknown = append(unknown, "qualifier "+qualifier+" names no table this statement reads")
-				continue
-			}
-			table = resolved
-		case len(tables) == 1:
-			table = tables[0]
-		case target != "":
-			// An unqualified column in a statement that writes belongs to the table it writes: Postgres
-			// resolves `SET organization_id`, an INSERT column list and a RETURNING list against the target.
-			table = target
-		default:
-			unknown = append(unknown, fmt.Sprintf("unqualified, and the statement reads %v", tables))
-			continue
-		}
-		if identityFilterAfter.MatchString(sql[loc[1]:]) || identityFilterBefore.MatchString(sql[:loc[0]]) {
-			filters[table] = true
-		} else {
-			writes[table] = true
-		}
-	}
-	return filters, writes, unknown
-}
-
-var (
-	// identityFilterAfter matches a reference standing on the LEFT of a comparison: `organization_id = $2`
-	// and `d.organization_id = w.organization_id`.
-	identityFilterAfter = regexp.MustCompile(`(?is)^\s*(?:=|<>)\s*(?:\$[0-9]+|[a-z_][a-z0-9_]*\.organization_id\b)`)
-	// identityFilterBefore matches one standing on the RIGHT of a comparison against another org column.
-	// Without it the right-hand side of a join predicate is counted as a write and the statement is told
-	// to keep a reference it should drop with its partner.
-	identityFilterBefore = regexp.MustCompile(`(?is)organization_id\s*(?:=|<>)\s*$`)
-)
+// identityColumnAt matches the $N a statement compares a tenant column to. The four regexes that stood
+// beside it — a table/alias reader, a CTE reader, an organization_id finder and an INSERT/UPDATE/DELETE
+// target reader — belonged to identityOrgRefs and went with it; they are recorded at the top of this file.
+// This one is different in kind: it reads the PROJECT half too, which is the half that still exists.
+var identityColumnAt = regexp.MustCompile(`(?i)(?:\b[a-z_][a-z0-9_]*\.)?\b(organization_id|project_id)\b\s*(?:=|<>)\s*\$([0-9]+)`)
 
 // identityCarriesAnOrganization reports whether a statement has any column an organization id belongs in.
 // For every table but one that column is organization_id. The exception is `organizations` itself, whose
