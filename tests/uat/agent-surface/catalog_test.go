@@ -60,14 +60,33 @@ var expectedAgentSurfaceCatalog = map[string]struct {
 	// second stream; stopping a stream does not stop a run), so both halves of each are listed: the
 	// behavioural proof against real Postgres AND the structural source scan that fails if the follower ever
 	// so much as names AcceptCommand.
+	//
+	// FOUR OF THESE LINES BROKE IN `dfceb769` AND THEY DO NOT ALL BREAK THE SAME WAY. That commit deleted
+	// AppendStream, StopStream and SetStatus as dead exports — nothing in production called them once Socket
+	// Mode replaced the HTTP bridge — and it wrote the matching withdrawal in three places (TLM-003's list,
+	// TLM-003/case.yaml, tests/live/slack/stream_live_test.go's S3 note) and missed this one. Sorted:
+	//
+	//   * S12 ("blocks travel on chat.stopStream only") MOVED rather than went. Every stream this relay opens
+	//     sets TaskDisplayMode and is therefore chunk-mode for life, so the blocks-mode pair was replaced by
+	//     the chunk-mode pair below, which asserts the same split at the same two calls: the CLOSING call
+	//     carries the content and the APPEND carries no body text.
+	//   * S11 (`stopped_by_user` stops the STREAM and the RUN KEEPS RUNNING) MOVED to apps/slack-bot, and is
+	//     proven there far better than it was here — the notice is asserted to be said exactly ONCE, the
+	//     answer is asserted to survive a stop discovered mid-stream AND at the close, and two legs prove the
+	//     code DISCRIMINATES (a neighbouring API error is not read as a stop).
+	//   * S3 (a working status through assistant.threads.setStatus, on chat:write and no reinstall) is GONE.
+	//     Nothing in this tree calls that method any more; the working indicator is the chat.startStream
+	//     container headline. Its two proofs are WITHDRAWN 2026-08-05, the case text is left byte-for-byte,
+	//     and the clause is recorded in evidence/superseded/slk-009-setstatus-2026-08-05.json.
 	"SLK-009": {"unit", []string{
 		"adapters/integrations/slack/stream_test.go:TestStartStreamRefusesWithoutARecipient",
 		"adapters/integrations/slack/stream_test.go:TestStartStreamCarriesTheDocumentedArguments",
-		"adapters/integrations/slack/stream_test.go:TestOnlyStopStreamCarriesBlocks",
-		"adapters/integrations/slack/stream_test.go:TestAppendStreamSurfacesStoppedByUser",
+		"adapters/integrations/slack/stream_test.go:TestStopStreamChunksClosesAChunkStream",
+		"adapters/integrations/slack/stream_test.go:TestAppendStreamChunksSendsNoBodyText",
+		"apps/slack-bot/internal/relay/stopped_test.go:TestAStoppedStreamTellsTheThreadTheRunContinuesAndSaysItOnce",
+		"apps/slack-bot/internal/relay/stopped_test.go:TestAStoppedStreamStillDeliversTheAnswer",
+		"apps/slack-bot/internal/relay/stopped_test.go:TestTheStoppedCodeIsTheOnlyOneThatChangesThePath",
 		"adapters/integrations/slack/stream_test.go:TestStreamTextIsTruncatedVisibly",
-		"adapters/integrations/slack/agent_test.go:TestSetStatusCarriesTheDocumentedArguments",
-		"adapters/integrations/slack/agent_test.go:TestSetStatusCapsLoadingMessagesAtTen",
 	}},
 	// E20 T2 — the panel. The DM exemption is a WIDENING, so its three legs are listed together with the
 	// manifest gate that refuses a subscribed event whose scope the manifest does not grant.

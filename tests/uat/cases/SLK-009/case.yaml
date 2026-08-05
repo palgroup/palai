@@ -7,11 +7,32 @@ expect_status: completed
 proof:
   - adapters/integrations/slack/stream_test.go:TestStartStreamRefusesWithoutARecipient
   - adapters/integrations/slack/stream_test.go:TestStartStreamCarriesTheDocumentedArguments
-  - adapters/integrations/slack/stream_test.go:TestOnlyStopStreamCarriesBlocks
-  - adapters/integrations/slack/stream_test.go:TestAppendStreamSurfacesStoppedByUser
+  # S12 RE-POINTED 2026-08-05 — the blocks-mode pair (TestOnlyStopStreamCarriesBlocks,
+  # TestAppendStreamSurfacesStoppedByUser) went with AppendStream/StopStream in `dfceb769`, which deleted
+  # them as dead exports: every stream this relay opens sets TaskDisplayMode and is chunk-mode for life. The
+  # chunk-mode pair asserts the SAME split at the same two calls — the closing call carries the content, the
+  # append carries no body text — so "blocks travel on chat.stopStream only" is unmoved as a claim.
+  - adapters/integrations/slack/stream_test.go:TestStopStreamChunksClosesAChunkStream
+  - adapters/integrations/slack/stream_test.go:TestAppendStreamChunksSendsNoBodyText
+  # S11 RE-POINTED 2026-08-05 — `stopped_by_user` is enforced in apps/slack-bot now, and proven there more
+  # strongly than it was in the adapter: the notice is said exactly ONCE, the answer survives a stop
+  # discovered mid-stream and one discovered at the close, and the code is proven to DISCRIMINATE (a
+  # neighbouring Slack error is not read as a stop). The run keeping running is what all three assert.
+  - apps/slack-bot/internal/relay/stopped_test.go:TestAStoppedStreamTellsTheThreadTheRunContinuesAndSaysItOnce
+  - apps/slack-bot/internal/relay/stopped_test.go:TestAStoppedStreamStillDeliversTheAnswer
+  - apps/slack-bot/internal/relay/stopped_test.go:TestTheStoppedCodeIsTheOnlyOneThatChangesThePath
   - adapters/integrations/slack/stream_test.go:TestStreamTextIsTruncatedVisibly
-  - adapters/integrations/slack/agent_test.go:TestSetStatusCarriesTheDocumentedArguments
-  - adapters/integrations/slack/agent_test.go:TestSetStatusCapsLoadingMessagesAtTen
+  # S3 WITHDRAWN 2026-08-05, and this one is a LOSS rather than a move — the only one in this case.
+  #   - adapters/integrations/slack/agent_test.go:TestSetStatusCarriesTheDocumentedArguments
+  #   - adapters/integrations/slack/agent_test.go:TestSetStatusCapsLoadingMessagesAtTen
+  # `dfceb769` deleted slack.SetStatus itself, with agent.go and agent_test.go, because Socket Mode replaced
+  # the HTTP bridge and nothing in production called it any more. Nothing in this tree calls
+  # assistant.threads.setStatus today; the working indicator is the chat.startStream container headline
+  # (apps/slack-bot/internal/relay/relay.go's setHeadline / PlanUpdateChunk). So the clause above — "A
+  # mention sets a working status through assistant.threads.setStatus ... the one gain an already-installed
+  # app gets with no reinstall" — is FALSE. The case text is shipped and left byte-for-byte; the clause is
+  # recorded in evidence/superseded/slk-009-setstatus-2026-08-05.json, which also carries the live leg's
+  # name (deliberately nowhere else, so that record's absence sweep can still measure it).
   # WITHDRAWN 2026-08-05 — the Slack cutover. The proofs below named files that were deleted with the
   # control plane's in-process Slack bridge (extensions/slack_*, api/slack*, the store's slack_*
   # component suites). Slack is served by apps/slack-bot now, a separate process that reaches this

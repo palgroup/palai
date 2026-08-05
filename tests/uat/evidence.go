@@ -1809,16 +1809,16 @@ var WiringLiveLegs = []LiveLeg{
 		HandoverRow:       "§0.1 — App → Basic Information → App-Level Tokens → Generate, scope connections:write. NO PUBLIC URL IS NEEDED for this leg",
 		WithoutCredential: "skip",
 	},
-	// E20 T1's legs. The first is the cheapest receipt in the whole epic and the one to run first: if
-	// setStatus works on chat:write alone (S3), the owner's EXISTING installation can already show a working
-	// indicator — no reinstall, no agent_view, no new permission. If it does not, that claim is wrong and the
-	// task needs a scope it does not ask for.
-	{
-		Test:              "TestLiveSlackStatusNeedsNoNewScope",
-		EnvVars:           []string{"SLACK_BOT_TOKEN", "SLACK_TEST_CHANNEL"},
-		HandoverRow:       "§0.1 — the bot token and a test channel, UNCHANGED from E19: E20 T1 asks for no new credential and no new scope (S3 — setStatus and the whole chat.*Stream family are chat:write)",
-		WithoutCredential: "skip",
-	},
+	// E20 T1's legs. The FIRST of them is gone, and its removal is the point of this comment rather than a
+	// tidy-up: it was the S3 receipt — that assistant.threads.setStatus works on `chat:write` alone, so an
+	// already-installed app gains a working indicator with no reinstall. That receipt was TAKEN and it came
+	// back TRUE. What removed the leg is that the capability it confirmed was superseded: the working
+	// indicator is the chat.startStream container headline now, `dfceb769` deleted slack.SetStatus with the
+	// rest of the dead HTTP-transport exports, and the live test went with it. An inventory row for a test
+	// nobody can run is the promise rather than the proof — which is exactly what its own guard says, and
+	// what caught this. The confirmed answer is not erased with the row: it is kept at
+	// tests/live/slack/stream_live_test.go's S3 note, because "it once worked" stays a fact after the last
+	// caller goes, and in evidence/superseded/slk-009-setstatus-2026-08-05.json.
 	{
 		Test:              "TestLiveSlackStreamingWorksFromASocketModeApp",
 		EnvVars:           []string{"SLACK_BOT_TOKEN", "SLACK_TEST_CHANNEL", "SLACK_TEAM_ID", "SLACK_APPROVER_IDS", "SLACK_TEST_USER_ID"},

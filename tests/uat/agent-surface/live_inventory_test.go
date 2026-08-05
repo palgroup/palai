@@ -26,8 +26,12 @@ import (
 // agentSurfaceLiveLegs are the legs E20 CONTRIBUTED, by name. They are a SUBSET of uat.WiringLiveLegs — the
 // canonical table — and this list exists so the epic's own contribution can be audited without splitting
 // ownership of the inventory.
+// E20 CONTRIBUTED FOUR AND THREE REMAIN. The status leg was withdrawn 2026-08-05 with the mechanism it
+// measured — see the note in uat.WiringLiveLegs where the canonical row was removed, and
+// evidence/superseded/slk-009-setstatus-2026-08-05.json. It is dropped from BOTH lists rather than only the
+// canonical one, because a subset that names a leg the canonical table no longer carries fails the loop
+// below in the direction that reads as a registration bug rather than as a withdrawal.
 var agentSurfaceLiveLegs = []string{
-	"TestLiveSlackStatusNeedsNoNewScope",
 	"TestLiveSlackStreamingWorksFromASocketModeApp",
 	"TestLiveSlackUnstoppedStreamIsMeasured",
 	"TestLiveSlackStreamRefusesWithoutARecipient",
