@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  palai-agentd — the root daemon that owns session accounts on a Mac.
+
+  INSTALL PATH: /Library/LaunchDaemons/net.pallasite.palai-agentd.plist, root:wheel, mode 0644.
+  Task 2 of this phase installs it; this task does not put anything on a machine.
+
+  WHY A DAEMON AND NOT sudo. There are a hundred of these machines and nobody types a password on
+  them. A sudoers line needs one, silently rewrites the environment (secure_path once made the same
+  command run BSD `find` under sudo and `bfs` in a shell in this repository), and grants everything the
+  named binary can be argued into doing. This grants one socket and a three-word verb set.
+
+  ‼️ THIS IS RunAtLoad + KeepAlive, NOT SOCKET ACTIVATION, AND THE DIFFERENCE IS DELIBERATE.
+  Being handed a listener on demand needs `launch_activate_socket`, a C function in libSystem with no
+  wrapper in the standard library or in golang.org/x/sys. Calling it needs cgo, and this tree has zero
+  cgo: every release build is CGO_ENABLED=0 and CI is ubuntu-24.04, so a cgo daemon is a daemon CI
+  never compiles. What is kept: launchd starts this at boot, restarts it when it dies, and "is it up?"
+  stops being a question. What is lost: the socket does not exist until the daemon has bound it, so a
+  caller racing a cold boot gets ECONNREFUSED rather than a queued connection — which is why Task 2
+  probes the socket before enrolling a machine rather than assuming it.
+
+  THE SOCKET IS THE CREDENTIAL. There is no password, no token and no TTY between a caller and root
+  here: membership of group `palai` is the entire authorisation. The daemon therefore refuses to serve
+  any socket that is not exactly mode 0660 and group `palai` — a permission that protects root is
+  checked, not assumed. Create the group with no members and add exactly the account the control plane
+  runs as:
+
+      sudo dseditgroup -o create -r "Palai agent clients" palai
+      sudo dseditgroup -o edit -a <control-plane-user> -t user palai
+
+  Note for whoever writes the socket-activation version later: launchd's SockPathGroup and
+  SockPathOwner take INTEGERS (a gid and a uid, not names) and SockPathMode is a DECIMAL integer,
+  because property lists have no octal — 0660 is 432. Its own man page calls that a known bug.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>net.pallasite.palai-agentd</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/libexec/palai-agentd</string>
+		<string>-socket</string>
+		<string>/var/run/palai-agentd.sock</string>
+		<string>-group</string>
+		<string>palai</string>
+	</array>
+
+	<!-- Root, because creating and deleting accounts is what this is for. It drops nothing and holds
+	     nothing else: the verb set is the privilege. -->
+	<key>UserName</key>
+	<string>root</string>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<!-- Unconditional restart. A daemon that died leaves a machine that cannot isolate a session, and
+	     an unisolated session is the failure this whole phase exists to prevent — so the answer to a
+	     crash is to come back, not to stay down. -->
+	<key>KeepAlive</key>
+	<true/>
+
+	<!-- 10s between respawns. Without it a daemon that refuses its socket posture on every start (see
+	     the mode check) would spin, and the log line naming what is wrong would scroll past. -->
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+
+	<!-- The environment is NOT inherited from whoever installed this, which is half the reason this
+	     replaces sudo. It is stated here so that what the daemon runs with is a thing somebody read. -->
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+
+	<key>StandardOutPath</key>
+	<string>/var/log/palai-agentd.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/palai-agentd.log</string>
+
+	<key>ProcessType</key>
+	<string>Adaptive</string>
+</dict>
+</plist>
