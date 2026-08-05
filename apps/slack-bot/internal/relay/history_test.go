@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	slack "github.com/palgroup/palai/adapters/integrations/slack"
@@ -19,11 +20,23 @@ type fakeHistory struct {
 	msgs    []slack.ThreadMessage
 	hasMore bool
 	err     error
+	// names is DisplayName's double, keyed by user id. An id with no entry (the zero value for every test
+	// that does not set this) answers as an unresolvable lookup — exactly what a real `missing_scope` or a
+	// deactivated account looks like to speakerNames — so every test written before names existed still
+	// exercises the same "falls back to a numbered label" path it always did. Read-only after the test
+	// constructs the fixture, so it needs no lock of its own.
+	names map[string]string
 
 	calls    int
 	channels []string
 	threads  []string
 	limits   []int
+
+	// nameMu guards nameCalls: speakerNames dials DisplayName CONCURRENTLY, one goroutine per distinct
+	// speaker, which is the property TestSpeakerNamesAreResolvedOncePerDistinctHumanAndNeverForTheBot exists
+	// to pin — so this double has to be safe for concurrent calls rather than merely correct for one.
+	nameMu    sync.Mutex
+	nameCalls int
 }
 
 func (f *fakeHistory) ThreadReplies(_ context.Context, channel, threadTS string, limit int) ([]slack.ThreadMessage, bool, error) {
@@ -35,6 +48,16 @@ func (f *fakeHistory) ThreadReplies(_ context.Context, channel, threadTS string,
 		return nil, false, f.err
 	}
 	return f.msgs, f.hasMore, nil
+}
+
+func (f *fakeHistory) DisplayName(_ context.Context, userID string) (string, error) {
+	f.nameMu.Lock()
+	f.nameCalls++
+	f.nameMu.Unlock()
+	if name, ok := f.names[userID]; ok {
+		return name, nil
+	}
+	return "", &slack.APIError{Code: "missing_scope"}
 }
 
 // newHistoryDeps wires the inbound deps over fakes with BOTH optional halves mounted — the image leg
@@ -285,11 +308,14 @@ func TestAMessageThatBirthsNoRunReadsNothing(t *testing.T) {
 	}
 }
 
-// TestATruncatedPageAttachesNothing pins the rule that makes this read trustworthy at all. Slack's
-// conversations.replies returns "the earliest messages in the time range first", so ONE page is the START of
-// a thread — and the picture this read exists to find is at the tail. When Slack says the thread did not fit
-// (has_more), attaching from that page would hand the model a screenshot from hundreds of messages back and
-// describe it as "shared earlier in this thread": confidently wrong rather than merely incomplete.
+// TestATruncatedPageAttachesNothing pins the rule that makes this read trustworthy at all, for BOTH of its
+// products. Slack's conversations.replies returns "the earliest messages in the time range first", so ONE
+// page is the START of a thread — and both the picture and the exchange this read exists to find are near
+// the tail. When Slack says the thread did not fit (has_more), rendering from that page would hand the model
+// a screenshot from hundreds of messages back, or a conversation missing its own most recent turns, and
+// describe either as "shared earlier in this thread": confidently wrong rather than merely incomplete. See
+// history.go's const block for why text follows images into this refusal rather than keeping the old
+// bridge's "render what fits, say what was cut" choice.
 func TestATruncatedPageAttachesNothing(t *testing.T) {
 	hist := &fakeHistory{hasMore: true, msgs: []slack.ThreadMessage{
 		threadMessage("1.2", "F_ANCIENT"),
@@ -310,6 +336,10 @@ func TestATruncatedPageAttachesNothing(t *testing.T) {
 	if strings.Contains(text, "EARLIER in this Slack thread") {
 		t.Fatalf("the input says %q; a page that never reached the thread's recent messages knows of no "+
 			"earlier images to describe", text)
+	}
+	if text != lateMention().Text {
+		t.Fatalf("the input text is %q, want the human's own words UNCHANGED — a truncated page must quote "+
+			"nothing, not even a partial account of what it read", text)
 	}
 }
 
@@ -494,5 +524,129 @@ func TestTheThreadReadIsBounded(t *testing.T) {
 	}
 	if len(hist.limits) != 1 || hist.limits[0] != threadHistoryMaxMessages {
 		t.Fatalf("the read passed limits %v, want exactly one bounded at %d", hist.limits, threadHistoryMaxMessages)
+	}
+}
+
+// TestTheThreadsWordsReachTheModel is THE test for the text half of this defect, the direct sibling of
+// TestAScreenshotPostedOneMessageEarlierReachesTheModel: a human is invited into a thread late and asks the
+// bot about a conversation it has no record of, and before this half existed the bot saw only the single
+// message that mentioned it.
+func TestTheThreadsWordsReachTheModel(t *testing.T) {
+	hist := &fakeHistory{msgs: []slack.ThreadMessage{
+		{UserID: "U2", TS: "100.001", Text: "has anyone seen this crash before"},
+		{UserID: "U3", TS: "100.002", Text: "yeah I hit it yesterday too"},
+		{UserID: "U2", TS: "100.005", Text: "fix the bug in the screenshot"}, // the trigger, as Slack returns it
+	}}
+	deps, fp, _, up, _ := newHistoryDeps(t, hist)
+
+	if err := HandleEvent(context.Background(), deps, lateMention()); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+	if up.n != 0 {
+		t.Fatalf("uploads = %d, want 0 — none of these messages carried a file", up.n)
+	}
+	text, ok := fp.lastCreateReq.Input.(string)
+	if !ok {
+		t.Fatalf("the run input is %T, want the bare string — no image was ever attached", fp.lastCreateReq.Input)
+	}
+	if !strings.Contains(text, "person 1: has anyone seen this crash before") {
+		t.Fatalf("the input text is %q, want the first earlier speaker's words quoted", text)
+	}
+	if !strings.Contains(text, "person 2: yeah I hit it yesterday too") {
+		t.Fatalf("the input text is %q, want the second earlier speaker's words quoted under a DIFFERENT label", text)
+	}
+	if n := strings.Count(text, "fix the bug in the screenshot"); n != 1 {
+		t.Fatalf("%q appears %d times in %q, want exactly 1 — conversations.replies returns the triggering "+
+			"message too, and quoting it as \"earlier context\" as well as sending it as the request's own "+
+			"text would show the model the same sentence twice", "fix the bug in the screenshot", n, text)
+	}
+	if quoteAt, ownAt := strings.Index(text, "person 1:"), strings.Index(text, "fix the bug in the screenshot"); quoteAt < 0 || ownAt < quoteAt {
+		t.Fatalf("the quoted thread is at %d and the human's own words at %d in %q, want the quote to LEAD — "+
+			"other people's words must never be the most recent instruction in the prompt", quoteAt, ownAt, text)
+	}
+}
+
+// TestTheBotsOwnEarlierTurnIsLabelledYou pins the one label a resolved display name may never override: the
+// bot's own prior turns are marked "you", by BotUserID, the same identity HandleEvent's self-loop guard
+// already keys on — never a numbered placeholder, which would misattribute the bot's own words to some
+// nameless "person" in the room it is itself part of.
+func TestTheBotsOwnEarlierTurnIsLabelledYou(t *testing.T) {
+	hist := &fakeHistory{msgs: []slack.ThreadMessage{
+		{UserID: "U2", TS: "100.001", Text: "@bot what does this error mean"},
+		{UserID: "U_BOT", TS: "100.002", Text: "it means the config is missing a key"},
+		{UserID: "U2", TS: "100.005", Text: "fix the bug in the screenshot"},
+	}}
+	deps, fp, _, _, _ := newHistoryDeps(t, hist)
+
+	if err := HandleEvent(context.Background(), deps, lateMention()); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+	text, _ := fp.lastCreateReq.Input.(string)
+	if !strings.Contains(text, "you: it means the config is missing a key") {
+		t.Fatalf("the input text is %q, want the bot's own earlier turn labelled \"you\"", text)
+	}
+	if strings.Contains(text, "person 2") {
+		t.Fatalf("the input text is %q, want only ONE numbered speaker — the bot's own turn must not consume "+
+			"a \"person N\" slot", text)
+	}
+}
+
+// TestSpeakerNamesAreResolvedOncePerDistinctHumanAndNeverForTheBot pins speakerNames' three careful
+// properties at once: a repeat speaker is looked up once, a resolved name replaces the numbered label it
+// would otherwise have had, and the bot's own id is never sent to DisplayName at all — the app's own turns
+// are "you" by construction and no lookup could change that.
+func TestSpeakerNamesAreResolvedOncePerDistinctHumanAndNeverForTheBot(t *testing.T) {
+	hist := &fakeHistory{names: map[string]string{"U2": "Salih"}, msgs: []slack.ThreadMessage{
+		{UserID: "U2", TS: "100.001", Text: "first message"},
+		{UserID: "U2", TS: "100.002", Text: "second message, same person"},
+		{UserID: "U_BOT", TS: "100.003", Text: "an answer"},
+		{UserID: "U3", TS: "100.004", Text: "a third, unresolvable speaker"},
+		{UserID: "U2", TS: "100.005", Text: "fix the bug in the screenshot"},
+	}}
+	deps, fp, _, _, _ := newHistoryDeps(t, hist)
+
+	if err := HandleEvent(context.Background(), deps, lateMention()); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+	if hist.nameCalls != 2 {
+		t.Fatalf("DisplayName was called %d times, want exactly 2 — one for U2 (deduplicated across two "+
+			"messages) and one for U3, and NONE for the bot's own id", hist.nameCalls)
+	}
+	text, _ := fp.lastCreateReq.Input.(string)
+	if !strings.Contains(text, "Salih: first message") || !strings.Contains(text, "Salih: second message, same person") {
+		t.Fatalf("the input text is %q, want BOTH of U2's messages labelled with the resolved name \"Salih\"", text)
+	}
+	// person 2, not person 1: numbering is minted for every distinct human speaker in the order they appear,
+	// U2 included — U2 simply wears "Salih" instead of the "person 1" it would otherwise have kept. U3 is the
+	// SECOND distinct human this page holds, so it is "person 2" whether or not U2 ever got a name.
+	if !strings.Contains(text, "person 2: a third, unresolvable speaker") {
+		t.Fatalf("the input text is %q, want U3 — never granted a name in this fixture — to keep a numbered "+
+			"label rather than being dropped or crashing the render", text)
+	}
+}
+
+// TestAnOversizedMessageIsCutVisibly pins the one defensive line the old bridge's own comment called out as a
+// real out-of-bounds risk: a message whose rune count is JUST over threadTextMaxChars still cuts through
+// min(), not a bare slice, so the render neither panics nor silently reads past the string.
+func TestAnOversizedMessageIsCutVisibly(t *testing.T) {
+	// 'z' rather than a more obvious filler: neither the note's own boilerplate nor "fix the bug in the
+	// screenshot" contains one, so every 'z' counted below came from the cut message and nowhere else.
+	long := strings.Repeat("z", threadTextMaxChars+500)
+	hist := &fakeHistory{msgs: []slack.ThreadMessage{
+		{UserID: "U2", TS: "100.001", Text: long},
+		{UserID: "U2", TS: "100.005", Text: "fix the bug in the screenshot"},
+	}}
+	deps, fp, _, _, _ := newHistoryDeps(t, hist)
+
+	if err := HandleEvent(context.Background(), deps, lateMention()); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+	text, _ := fp.lastCreateReq.Input.(string)
+	if !strings.Contains(text, "…the rest of this message is not shown") {
+		t.Fatalf("the input text is missing the truncation marker for a %d-rune message over the %d budget",
+			len(long), threadTextMaxChars)
+	}
+	if n := strings.Count(text, "z"); n != threadTextMaxChars {
+		t.Fatalf("the quoted message contributed %d runes, want exactly the %d-rune budget", n, threadTextMaxChars)
 	}
 }

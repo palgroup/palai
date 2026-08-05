@@ -271,9 +271,10 @@ type InboundDeps struct {
 	// above it: with no leg the relay behaves exactly as it did before images existed, so validate() does
 	// not require one. What it must never do is fail quietly — see ImageLeg.Ready and its boot line.
 	Images *ImageLeg
-	// History is the optional thread read (history.go), which finds the pictures shared BEFORE the message
-	// that births a run. Optional on the same terms as Images and for the same reason; without it a thread
-	// this bot is invited into late contributes the triggering message's attachments and nothing more.
+	// History is the optional thread read (history.go), which finds the pictures AND the words shared BEFORE
+	// the message that births a run. Optional on the same terms as Images and for the same reason; without it
+	// a thread this bot is invited into late contributes the triggering message's own attachments and text,
+	// and nothing more.
 	History ThreadHistory
 	// Logf is where the image leg's per-file refusals go. Optional; nil discards them, which is what a
 	// test that is not asserting on logs wants.
@@ -570,13 +571,15 @@ func HandleEvent(ctx context.Context, deps InboundDeps, ev slack.Event) error {
 	}
 
 	// THE THREAD THIS BOT WAS INVITED INTO LATE (history.go owns the rule, the bounds and the authority
-	// argument). It runs HERE, at the one point where BOTH halves of the rule are known — `correlated`, which
-	// only exists between the store read above and the session that is about to be opened, and birthsRun's
-	// yes, so no Slack read is ever made for a message this bot was not addressed in.
+	// argument) — its pictures AND its words, off the one read. It runs HERE, at the one point where BOTH
+	// halves of the rule are known — `correlated`, which only exists between the store read above and the
+	// session that is about to be opened, and birthsRun's yes, so no Slack read is ever made for a message
+	// this bot was not addressed in.
 	var earlier []slack.SharedFile
 	var earlierDropped int
+	var earlierNote string
 	if !correlated && ev.InThread {
-		earlier, earlierDropped = deps.earlierThreadImages(ctx, ev)
+		earlier, earlierDropped, earlierNote = deps.earlierThreadContext(ctx, ev)
 	}
 
 	if !correlated {
@@ -614,7 +617,7 @@ func HandleEvent(ctx context.Context, deps InboundDeps, ev slack.Event) error {
 		deps.state.setActive(tk, false)
 	}
 
-	return deps.startRun(ctx, tk, sessionID, ev, earlier, earlierDropped)
+	return deps.startRun(ctx, tk, sessionID, ev, earlier, earlierDropped, earlierNote)
 }
 
 // openNewSession opens a session for a thread that has never been bound, and BINDS it — never
@@ -712,8 +715,11 @@ func (deps InboundDeps) grantSearchAuthority(ctx context.Context, sessionID stri
 // rebindOrphan handles for Steer, reached here when NO run was active in this process, e.g. a restart)
 // recovers the same way: a fresh session, rebound, retried once.
 // earlier are the images the EARLIER messages of this thread shared (HandleEvent decides whether to look for
-// any; history.go decides which); earlierDropped is how many of those it already left behind.
-func (deps InboundDeps) startRun(ctx context.Context, tk threadKey, sessionID string, ev slack.Event, earlier []slack.SharedFile, earlierDropped int) error {
+// any; history.go decides which); earlierDropped is how many of those it already left behind. earlierNote is
+// those same earlier messages' WORDS, already rendered as the untrusted quoted prefix (history.go's
+// threadTextNote) or "" if there were none to quote — this call only places it, ahead of the human's own
+// text, exactly where images.go's own notes are placed after it.
+func (deps InboundDeps) startRun(ctx context.Context, tk threadKey, sessionID string, ev slack.Event, earlier []slack.SharedFile, earlierDropped int, earlierNote string) error {
 	// The images are fetched and uploaded ONCE, before the create, and the resulting input is reused on the
 	// orphan retry below. Fetching inside the retry instead would pay Slack twice and — worse — mint a
 	// SECOND set of artifacts for one message, leaving the first set attached to nothing.
@@ -738,7 +744,11 @@ func (deps InboundDeps) startRun(ctx context.Context, tk threadKey, sessionID st
 		images.earlier, failed = deps.Images.attach(ctx, earlier, len(earlier), deps.logf)
 		images.missing += failed
 	}
-	input := runInput(ev.Text, images)
+	// earlierNote LEADS, ev.Text CLOSES: the quoted thread is other people's words, and the human's own
+	// current request must stay the most recent thing in the prompt (see threadTextNote's own "LEADING,
+	// NEVER TRAILING"). It is "" whenever there was nothing to quote, so a turn with no earlier context builds
+	// byte-identical input to before this half existed.
+	input := runInput(earlierNote+ev.Text, images)
 
 	// BEFORE the create, not after: a run asks the broker which tools it may have as it starts, so an
 	// authority granted once the response id is known would arrive after the advertisement it is meant to

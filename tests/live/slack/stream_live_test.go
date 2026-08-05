@@ -8,8 +8,12 @@
 // NEWEST surfaces (streaming shipped 2025-10, agent_view 2026-07), which means the fakes standing in for them
 // are this repository's youngest:
 //
-//	S3 — that assistant.threads.setStatus really does work on `chat:write` alone. The scope table says so;
-//	if it is wrong, the whole "no reinstall needed" claim of this task is wrong, and only slack.com can say.
+//	S3 USED TO STAND HERE: that assistant.threads.setStatus really does work on `chat:write` alone. It was
+//	CONFIRMED true against a real workspace, and then the capability it confirmed was superseded — the working
+//	indicator is now the chat.startStream container headline (relay.go's setHeadline / PlanUpdateChunk), and
+//	slack.SetStatus had no production caller left to prove anything for. It was deleted in the 2026-08-05
+//	dead-export cleanup along with this test; S3's confirmed answer is recorded here rather than erased,
+//	because "it once worked" is still a fact even once nothing calls it.
 //
 //	S16(c) — that a Socket-Mode-only app can call the streaming Web API methods at all. The Web API is
 //	outbound, so it SHOULD, but no page says it, and the assumption is load-bearing for a deployment with no
@@ -52,29 +56,6 @@ func openThread(ctx context.Context, t *testing.T, token []byte, channel, text s
 	return posted.MessageTS
 }
 
-// TestLiveSlackStatusNeedsNoNewScope is the cheapest receipt in this task and the one worth running FIRST: if
-// it passes, the owner's existing installation can already show a working indicator, with no reinstall, no
-// agent_view and no new permission.
-func TestLiveSlackStatusNeedsNoNewScope(t *testing.T) {
-	token := []byte(need(t, "SLACK_BOT_TOKEN", "§0.1 — App → OAuth & Permissions → Bot User OAuth Token; scope chat:write"))
-	channel := need(t, "SLACK_TEST_CHANNEL", "§0.1 — the ID of a test channel the bot has been invited to")
-	ctx, cancel := context.WithTimeout(context.Background(), liveWindow(t))
-	defer cancel()
-
-	thread := openThread(ctx, t, token, channel, "E20 T1 live smoke — the status indicator (nothing is running)")
-	if err := slack.SetStatus(ctx, http.DefaultClient, slackAPIBase(), token, channel, thread,
-		"is thinking…", []string{"reading the thread…", "asking the model…"}); err != nil {
-		// A missing_scope here FALSIFIES S3, and that is the single most useful thing this file can report:
-		// the plan's "streaming and status need no new scope" would be wrong, and T1 would need a reinstall.
-		t.Fatalf("assistant.threads.setStatus was refused with only chat:write: %v — S3 says this scope is enough; if the error is missing_scope, the plan's no-reinstall claim is wrong", err)
-	}
-	// Clearing must work too, or a thread is left claiming work that finished.
-	if err := slack.SetStatus(ctx, http.DefaultClient, slackAPIBase(), token, channel, thread, "", nil); err != nil {
-		t.Fatalf("the status could not be cleared: %v", err)
-	}
-	t.Logf("S3 CONFIRMED against a real workspace: setStatus set and cleared on channel %s thread %s with chat:write alone", channel, thread)
-}
-
 // TestLiveSlackStreamingWorksFromASocketModeApp is S16(c)'s assertion and the whole streaming round trip: open,
 // append twice, close. Any refusal is a real one — our fake peer accepts every argument set we send it, so
 // this is the only place an invalid_arguments or a missing_recipient_user_id can appear.
@@ -96,10 +77,16 @@ func TestLiveSlackStreamingWorksFromASocketModeApp(t *testing.T) {
 	thread := openThread(ctx, t, token, channel, "E20 T1 live smoke — the streaming round trip")
 	pacer := &slack.ChannelPacer{}
 
+	// TaskDisplayMode is set here where it was not originally: production NEVER opens a text-mode stream
+	// (relay/inbound.go's channelSlackStream.StartStream always sends TaskDisplayModePlan), and the mode is
+	// fixed for the STREAM'S WHOLE LIFE (StartStream's own doc) — a text-mode open followed by a chunk-mode
+	// append/close would earn `streaming_mode_mismatch` on the very first append, not a mixture. Opening the
+	// mode production actually uses is what makes the round trip below representative of it.
 	ts, err := slack.StartStream(ctx, http.DefaultClient, slackAPIBase(), token, slack.StreamStart{
 		Channel: channel, ThreadTS: thread,
 		RecipientUserID: user, RecipientTeamID: team,
-		MarkdownText: "_Working on it…_",
+		MarkdownText:    "_Working on it…_",
+		TaskDisplayMode: slack.TaskDisplayModePlan,
 	})
 	if err != nil {
 		t.Fatalf("real Slack refused chat.startStream: %v — this is S16(c) (can a Socket-Mode-only app stream?) and S9 (are the recipient ids the ones it wants?) answering NO", err)
@@ -109,11 +96,16 @@ func TestLiveSlackStreamingWorksFromASocketModeApp(t *testing.T) {
 	}
 	t.Logf("S16(c) CONFIRMED: a Socket-Mode-only app opened a stream over the Web API (channel %s ts %s)", channel, ts)
 
+	// Chunks, not markdown_text: a chunk-mode stream (see TaskDisplayMode above) refuses markdown_text on
+	// every call, appendStream included. AppendStream/StopStream — this smoke's original text-mode calls —
+	// were deleted in the 2026-08-05 dead-export cleanup once production stopped opening that mode at all;
+	// this keeps the round trip proving the mode production actually uses.
 	for _, line := range []string{"• running a tool…", "• tool finished"} {
 		if err := pacer.Wait(ctx, channel); err != nil {
 			t.Fatalf("pace the append: %v", err)
 		}
-		if err := slack.AppendStream(ctx, http.DefaultClient, slackAPIBase(), token, channel, ts, line); err != nil {
+		if err := slack.AppendStreamChunks(ctx, http.DefaultClient, slackAPIBase(), token, channel, ts,
+			[]map[string]any{slack.MarkdownChunk(line)}); err != nil {
 			t.Fatalf("chat.appendStream was refused: %v", err)
 		}
 	}
@@ -121,8 +113,8 @@ func TestLiveSlackStreamingWorksFromASocketModeApp(t *testing.T) {
 	if err := pacer.Wait(ctx, channel); err != nil {
 		t.Fatalf("pace the close: %v", err)
 	}
-	if err := slack.StopStream(ctx, http.DefaultClient, slackAPIBase(), token, channel, ts,
-		"E20 T1 live smoke complete. This message was streamed, not posted whole.", nil); err != nil {
+	if err := slack.StopStreamChunks(ctx, http.DefaultClient, slackAPIBase(), token, channel, ts,
+		[]map[string]any{slack.MarkdownChunk("E20 T1 live smoke complete. This message was streamed, not posted whole.")}); err != nil {
 		t.Fatalf("chat.stopStream was refused: %v — the stream would be left open forever", err)
 	}
 
@@ -168,18 +160,21 @@ func TestLiveSlackUnstoppedStreamIsMeasured(t *testing.T) {
 
 	thread := openThread(ctx, t, token, channel,
 		"E20 T1 live smoke — S16(a): this thread's next message is DELIBERATELY left streaming, to show what a control-plane restart looks like")
+	// TaskDisplayMode set for the same reason the S16(c) test above sets it: production only ever opens a
+	// chunk-mode stream, and the mode is fixed for the stream's whole life.
 	ts, err := slack.StartStream(ctx, http.DefaultClient, slackAPIBase(), token, slack.StreamStart{
 		Channel: channel, ThreadTS: thread,
 		RecipientUserID: user, RecipientTeamID: team,
-		MarkdownText: "_Working on it…_ (this stream is intentionally never closed)",
+		MarkdownText:    "_Working on it…_ (this stream is intentionally never closed)",
+		TaskDisplayMode: slack.TaskDisplayModePlan,
 	})
 	if err != nil {
 		t.Fatalf("chat.startStream: %v", err)
 	}
 
 	time.Sleep(30 * time.Second)
-	appendErr := slack.AppendStream(ctx, http.DefaultClient, slackAPIBase(), token, channel, ts,
-		"• still open 30s later")
+	appendErr := slack.AppendStreamChunks(ctx, http.DefaultClient, slackAPIBase(), token, channel, ts,
+		[]map[string]any{slack.MarkdownChunk("• still open 30s later")})
 	if appendErr != nil {
 		if code := slack.APIErrorCode(appendErr); code != "" {
 			t.Logf("S16(a) MEASURED: after 30s an unstopped stream refuses appends with %q — Slack closes or expires it on its own, which BOUNDS the restart ceiling", code)

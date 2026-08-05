@@ -155,29 +155,6 @@ func StartStream(ctx context.Context, doer Doer, apiBase string, token []byte, r
 	return res.MessageTS, nil
 }
 
-// AppendStream adds to an open stream.
-//
-// CONTRACT: https://docs.slack.dev/reference/methods/chat.appendStream/ (checked 2026-07-27) — required
-// `channel`, `ts`, `markdown_text`; optional `chunks`; scope `chat:write`; Tier 4 (100+ per minute). Notable
-// error codes: `stopped_by_user`, `message_not_in_streaming_state`, `message_not_owned_by_app`.
-//
-// THERE IS NO `blocks` PARAMETER HERE AND THAT IS A DECISION, NOT AN OMISSION (S12). Two Slack pages
-// CONTRADICT each other: https://docs.slack.dev/ai/developing-agents/ (checked 2026-07-27) says "Blocks may
-// be used in the chat.stopStream method, but not the chat.startStream or chat.appendStream method", while the
-// chat.appendStream reference above documents a `blocks` chunk type and the invalid_blocks /
-// msg_blocks_too_many errors. An unresolved vendor contradiction is not a design freedom: this takes the
-// CONSERVATIVE reading, so blocks travel only on stopStream. If a live measurement shows appends accept
-// blocks, adding them is a widening with evidence behind it — not a correction.
-func AppendStream(ctx context.Context, doer Doer, apiBase string, token []byte, channel, ts, markdownText string) error {
-	body, _ := json.Marshal(map[string]any{
-		"channel":       channel,
-		"ts":            ts,
-		"markdown_text": TruncateMarkdown(markdownText),
-	})
-	_, err := PostMessage(ctx, doer, PostRequest{MethodURL: apiBase + "/chat.appendStream", Token: token, Body: body}, PostOptions{})
-	return err
-}
-
 // AppendStreamChunks appends CHUNKS rather than body text — the call that puts a run's steps in Slack's
 // task timeline instead of writing them into the answer as prose.
 //
@@ -217,31 +194,6 @@ func StopStreamChunks(ctx context.Context, doer Doer, apiBase string, token []by
 	payload := map[string]any{"channel": channel, "ts": ts}
 	if len(chunks) > 0 {
 		payload["chunks"] = chunks
-	}
-	body, _ := json.Marshal(payload)
-	_, err := PostMessage(ctx, doer, PostRequest{MethodURL: apiBase + "/chat.stopStream", Token: token, Body: body}, PostOptions{})
-	return err
-}
-
-// StopStream closes a stream with its final text and, optionally, the rendered blocks that sit under it.
-//
-// CONTRACT: https://docs.slack.dev/reference/methods/chat.stopStream/ (checked 2026-07-27) — required
-// `channel` and `ts`; optional `markdown_text` (12,000 characters), `blocks`, `chunks`, `metadata`; scope
-// `chat:write`; Tier 2 (20+ per minute). Blocks "will be rendered after" the markdown_text.
-//
-// blocks is raw JSON so this stays PURE WIRE: what the array contains is E20 T4's renderer's business, and
-// the security rule that governs it lives there — an actionable element (`actions`, `button`, `action_id`, …)
-// may only ever be minted by interactions.go. nil omits the field rather than sending a null.
-func StopStream(ctx context.Context, doer Doer, apiBase string, token []byte, channel, ts, markdownText string, blocks json.RawMessage) error {
-	payload := map[string]any{"channel": channel, "ts": ts}
-	// Both optional fields are OMITTED rather than sent empty. E20 T4 made that reachable: an answer whose
-	// whole content is typed (a table and nothing else) has no markdown at all, and sending "" for a field
-	// the reference documents as optional is asking Slack a question no page answers.
-	if markdownText != "" {
-		payload["markdown_text"] = TruncateMarkdown(markdownText)
-	}
-	if len(blocks) > 0 {
-		payload["blocks"] = blocks
 	}
 	body, _ := json.Marshal(payload)
 	_, err := PostMessage(ctx, doer, PostRequest{MethodURL: apiBase + "/chat.stopStream", Token: token, Body: body}, PostOptions{})

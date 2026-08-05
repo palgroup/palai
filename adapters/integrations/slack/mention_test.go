@@ -1,7 +1,6 @@
 package slack
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -131,26 +130,6 @@ func TestAPublicationDisplayCannotBroadcast(t *testing.T) {
 	}
 }
 
-// RED #6 (§3.6 D6, the other hole): assistant.threads.setStatus took its argument straight to the wire. It is
-// fed only constants today — SAFE BY ARGUMENT, not by construction — and this makes it safe by construction,
-// because a status string is exactly the kind of field a later task hands a model's words.
-func TestStatusCannotBroadcast(t *testing.T) {
-	peer := &recordingPeer{reply: `{"ok":true}`}
-	if err := SetStatus(context.Background(), peer, "https://slack.test/api", []byte("x"), "C1", "1.1",
-		"is asking <!channel>…", []string{"pinging <@U012AB3CD>…"}); err != nil {
-		t.Fatalf("SetStatus: %v", err)
-	}
-	got := peer.decode(t, 0)
-	if status, _ := got["status"].(string); strings.Contains(status, "<!channel>") {
-		t.Fatalf("a status reached the wire with a live broadcast: %q", status)
-	}
-	loading, _ := got["loading_messages"].([]any)
-	for _, m := range loading {
-		if s, _ := m.(string); strings.Contains(s, "<@U012AB3CD>") {
-			t.Fatalf("a loading message reached the wire with a live mention: %q", s)
-		}
-	}
-}
 
 // The mention is a TEXT TOKEN, not an actionable element, so it must not need an exception anywhere: the
 // singularity sweep in blocks_test.go stays green with the renderer minting one. Asserted here as well

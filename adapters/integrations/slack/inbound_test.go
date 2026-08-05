@@ -189,19 +189,10 @@ func TestMapEventRejectsMalformedAndNonEvents(t *testing.T) {
 	if _, err := MapEvent([]byte(`{"type":"event_callback"}`), "", false); !errors.Is(err, ErrMalformed) {
 		t.Fatalf("no identity: err = %v, want ErrMalformed", err)
 	}
-	// A url_verification body is not a normal event — it is handled by ParseChallenge, not MapEvent.
+	// A url_verification body is not a normal event — it is the HTTP Events API's Request URL handshake,
+	// unreachable over this app's Socket Mode transport (see ErrNotAnEvent's own doc).
 	if _, err := MapEvent([]byte(`{"type":"url_verification","challenge":"abc"}`), "", false); !errors.Is(err, ErrNotAnEvent) {
 		t.Fatalf("url_verification: err = %v, want ErrNotAnEvent", err)
-	}
-}
-
-func TestParseChallengeReturnsTheHandshake(t *testing.T) {
-	c, ok := ParseChallenge([]byte(`{"token":"x","challenge":"3eZbrw","type":"url_verification"}`))
-	if !ok || c != "3eZbrw" {
-		t.Fatalf("challenge = %q ok = %v, want 3eZbrw true", c, ok)
-	}
-	if _, ok := ParseChallenge([]byte(`{"type":"event_callback"}`)); ok {
-		t.Fatal("event_callback wrongly parsed as a challenge")
 	}
 }
 

@@ -106,62 +106,11 @@ func TestStreamTextIsTruncatedVisibly(t *testing.T) {
 	}
 }
 
-// S11: the user can stop a stream from Slack's own UI. That is a DELIVERY fact, not run control — the caller
-// needs the code to tell it apart from a transport failure, so the API error is typed rather than a string.
-func TestAppendStreamSurfacesStoppedByUser(t *testing.T) {
-	peer := &recordingPeer{reply: `{"ok":false,"error":"stopped_by_user"}`}
-	err := AppendStream(context.Background(), peer, "https://slack.test/api", []byte("xoxb"), "C1", "1.1", "more")
-	if err == nil {
-		t.Fatal("AppendStream on a stopped stream returned nil; the caller must be able to stop appending")
-	}
-	if code := APIErrorCode(err); code != CodeStoppedByUser {
-		t.Fatalf("APIErrorCode = %q, want %q — an untyped error cannot be told from a transport failure", code, CodeStoppedByUser)
-	}
-	if code := APIErrorCode(context.Canceled); code != "" {
-		t.Fatalf("APIErrorCode on a non-API error = %q, want empty", code)
-	}
-}
-
-// S12 is an UNRESOLVED VENDOR CONTRADICTION and the conservative reading is enforced by the SIGNATURES, not
-// by a comment: chat.stopStream takes blocks, chat.appendStream cannot be given any. This test pins the
-// asymmetry so widening it later is a deliberate act with a live measurement behind it.
-func TestOnlyStopStreamCarriesBlocks(t *testing.T) {
-	peer := &recordingPeer{}
-	if err := AppendStream(context.Background(), peer, "https://slack.test/api", []byte("x"), "C1", "1.1", "step done"); err != nil {
-		t.Fatalf("AppendStream: %v", err)
-	}
-	if _, ok := peer.decode(t, 0)["blocks"]; ok {
-		t.Fatalf("appendStream body carried blocks: %q", peer.bodies[0])
-	}
-	if peer.urls[0] != "https://slack.test/api/chat.appendStream" {
-		t.Fatalf("append posted to %q, want chat.appendStream", peer.urls[0])
-	}
-
-	blocks := json.RawMessage(`[{"type":"section","text":{"type":"mrkdwn","text":"done"}}]`)
-	if err := StopStream(context.Background(), peer, "https://slack.test/api", []byte("x"), "C1", "1.1", "the answer", blocks); err != nil {
-		t.Fatalf("StopStream: %v", err)
-	}
-	stop := peer.decode(t, 1)
-	if peer.urls[1] != "https://slack.test/api/chat.stopStream" {
-		t.Fatalf("stop posted to %q, want chat.stopStream", peer.urls[1])
-	}
-	if stop["markdown_text"] != "the answer" {
-		t.Fatalf("stopStream markdown_text = %v, want the final text", stop["markdown_text"])
-	}
-	if _, ok := stop["blocks"]; !ok {
-		t.Fatalf("stopStream dropped the blocks it is documented to accept: %q", peer.bodies[1])
-	}
-	// A nil blocks argument omits the field entirely rather than sending a null Slack would reject.
-	if err := StopStream(context.Background(), peer, "https://slack.test/api", []byte("x"), "C1", "1.1", "plain", nil); err != nil {
-		t.Fatalf("StopStream without blocks: %v", err)
-	}
-	if _, ok := peer.decode(t, 2)["blocks"]; ok {
-		t.Fatalf("stopStream sent a blocks field for a nil argument: %q", peer.bodies[2])
-	}
-}
-
 // The 12,000-character cap is applied by the CALLS, not only by the exported helper — a caller that forgets
-// TruncateMarkdown must not be able to hand Slack an over-long field.
+// TruncateMarkdown must not be able to hand Slack an over-long field. StartStream's own markdown_text argument
+// exercises the TEXT-mode wire shape; AppendStreamChunks/StopStreamChunks exercise the CHUNK-mode shape every
+// production stream actually opens in (relay/inbound.go always sets TaskDisplayMode) — MarkdownChunk is where
+// their truncation lives, so it is what this test drives.
 func TestStreamCallsTruncateTheirOwnText(t *testing.T) {
 	peer := &recordingPeer{}
 	long := strings.Repeat("a", MaxStreamMarkdown+10)
@@ -170,14 +119,23 @@ func TestStreamCallsTruncateTheirOwnText(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StartStream: %v", err)
 	}
-	if err := AppendStream(context.Background(), peer, "https://slack.test/api", []byte("x"), "C1", "1.1", long); err != nil {
-		t.Fatalf("AppendStream: %v", err)
+	if err := AppendStreamChunks(context.Background(), peer, "https://slack.test/api", []byte("x"), "C1", "1.1", []map[string]any{MarkdownChunk(long)}); err != nil {
+		t.Fatalf("AppendStreamChunks: %v", err)
 	}
-	if err := StopStream(context.Background(), peer, "https://slack.test/api", []byte("x"), "C1", "1.1", long, nil); err != nil {
-		t.Fatalf("StopStream: %v", err)
+	if err := StopStreamChunks(context.Background(), peer, "https://slack.test/api", []byte("x"), "C1", "1.1", []map[string]any{MarkdownChunk(long)}); err != nil {
+		t.Fatalf("StopStreamChunks: %v", err)
 	}
-	for i := range peer.bodies {
-		text, _ := peer.decode(t, i)["markdown_text"].(string)
+
+	if text, _ := peer.decode(t, 0)["markdown_text"].(string); len([]rune(text)) != MaxStreamMarkdown {
+		t.Fatalf("StartStream sent %d characters, want the 12,000 cap applied at the call", len([]rune(text)))
+	}
+	for i := 1; i < len(peer.bodies); i++ {
+		chunks, _ := peer.decode(t, i)["chunks"].([]any)
+		if len(chunks) != 1 {
+			t.Fatalf("call %d carried %d chunk(s), want exactly 1", i, len(chunks))
+		}
+		chunk, _ := chunks[0].(map[string]any)
+		text, _ := chunk["text"].(string)
 		if n := len([]rune(text)); n != MaxStreamMarkdown {
 			t.Fatalf("call %d sent %d characters, want the 12,000 cap applied at the call", i, n)
 		}
@@ -208,12 +166,15 @@ func TestModelTextCannotBroadcast(t *testing.T) {
 		t.Fatalf("ordinary text was altered: %q", plain)
 	}
 
-	// Both outbound paths, not just the helper: the streaming calls and the plain thread reply.
+	// Both outbound paths, not just the helper: the streaming calls (chunk mode, the only mode any production
+	// stream opens in) and the plain thread reply.
 	peer := &recordingPeer{}
-	if err := AppendStream(context.Background(), peer, "https://slack.test/api", []byte("x"), "C1", "1.1", hostile); err != nil {
-		t.Fatalf("AppendStream: %v", err)
+	if err := AppendStreamChunks(context.Background(), peer, "https://slack.test/api", []byte("x"), "C1", "1.1", []map[string]any{MarkdownChunk(hostile)}); err != nil {
+		t.Fatalf("AppendStreamChunks: %v", err)
 	}
-	if text, _ := peer.decode(t, 0)["markdown_text"].(string); strings.Contains(text, "<!channel>") {
+	chunks, _ := peer.decode(t, 0)["chunks"].([]any)
+	chunk, _ := chunks[0].(map[string]any)
+	if text, _ := chunk["text"].(string); strings.Contains(text, "<!channel>") {
 		t.Fatalf("a streamed line reached Slack with a live broadcast: %q", text)
 	}
 	// DECODED, and the decode is the whole assertion. Reading the raw marshalled bytes for `<!channel>` is

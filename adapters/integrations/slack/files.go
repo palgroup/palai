@@ -197,15 +197,27 @@ func trustedFileURL(raw string) error {
 // not a delivery.
 //
 // WHAT THIS CODE IS: three HTTP calls in a documented order. It holds no policy. WHICH artifact is uploaded,
-// WHOSE it is and whether it may be published at all is decided by the caller (extensions/slack_upload.go),
-// which is where the tenant and the run are known. This file's whole job is to be exactly what the vendor
-// documents, and to make three rules structural rather than remembered:
+// WHOSE it is and whether it may be published at all is a CALLER's decision, made where the tenant and the
+// run are known. This file's whole job is to be exactly what the vendor documents, and to make three rules
+// structural rather than remembered:
 //
 //  1. THE MODEL'S WORDS TRAVEL IN ONE FIELD. initial_comment, and nothing else. `blocks` is not sent at all
 //     (see completeUpload), so there is exactly one place a caller has to neutralise.
 //  2. THE FILENAME IS A FACT ABOUT THE BYTES. SniffUpload derives it; the caller cannot pass a name a model
 //     chose, because the caller has no name to pass — it asks this file what the bytes are.
 //  3. THE CEILING IS OURS AND IT IS CHECKED BEFORE THE FIRST CALL. An artifact over it costs zero requests.
+//
+// THIS LEG HAS NO CALLER TODAY, measured 2026-08-05 (`grep -rn 'slack\.\(SniffUpload\|UploadToThread\)' --
+// include='*.go' . | grep -v /adapters/integrations/slack/ | grep -v _test.go` → empty) — NOT because the
+// capability is obsolete, unlike the HTTP-transport functions removed alongside this measurement
+// (ParseChallenge, VerifySignature and the rest). The caller that once drove this — the old in-process
+// bridge's extensions/slack_upload.go (E22 T5), which scanned a run's file_ref blocks for artifact ids and
+// uploaded the matching bytes so a screenshot or a screen recording a run produced actually arrived in the
+// thread — was deleted whole with the rest of that bridge in the 2026-08-04 SDK-relay cutover, and no
+// successor has been written for apps/slack-bot's own relay yet. Confirmed SEPARATELY blocked besides that:
+// this deployment's Slack app is not granted `files:write` (files.getUploadURLExternal answers missing_scope
+// with today's token). Both are real, and neither is a reason to delete working code that a wiring task and
+// an OAuth reinstall are what stand between this and the same capability the old bridge had.
 
 // MaxUploadBytes is the largest artifact this integration will publish into a thread. IT IS OUR NUMBER, NOT
 // SLACK'S: neither files.getUploadURLExternal nor files.completeUploadExternal prints a maximum anywhere

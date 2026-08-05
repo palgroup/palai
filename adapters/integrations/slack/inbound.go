@@ -32,14 +32,18 @@ var (
 	// ErrIgnored is a well-formed event the adapter deliberately drops so no run is born: a bot's own
 	// message or any bot event (SLK-008 — the loop guard). The caller ACKs 2xx and does nothing.
 	ErrIgnored = errors.New("slack: event ignored (bot/self — loop guard)")
-	// ErrNotAnEvent is a payload whose outer type is not event_callback (e.g. url_verification, which the
-	// caller handles via ParseChallenge before verifying a normal event, or an unknown outer type).
+	// ErrNotAnEvent is a payload whose outer type is not event_callback (e.g. url_verification — the HTTP
+	// Events API's Request URL handshake, unreachable now that Socket Mode is this app's only transport
+	// (apps.connections.open needs no such handshake) — or an unknown outer type).
 	//
 	// KNOWN MEMBER OF THIS SET, so T2 does not rediscover it: `app_rate_limited` arrives as an OUTER type,
 	// not as an event_callback (https://docs.slack.dev/apis/web-api/rate-limits/, checked 2026-07-25 — a
 	// workspace/app exceeding 30,000 deliveries per 60 minutes is told so with that payload). It therefore
-	// lands here and the Events route answers 400 + x-slack-no-retry, i.e. the notification that we are being
-	// throttled is discarded. Handling it (log + counter) is E19 plan §3.5 row D10, owned by T2.
+	// lands here, and today NOTHING reads it: the HTTP route this comment used to name (a 400 +
+	// x-slack-no-retry response) is gone with the rest of the HTTP transport, and no Socket Mode handler has
+	// been written to log the notification's Socket Mode shape either — a real gap, not a decision, and it is
+	// tracked as one rather than silently carried by a function nothing called (see the 2026-08-05 cleanup
+	// that removed ParseAppRateLimited/ParseChallenge for being unreachable HTTP-transport code).
 	ErrNotAnEvent = errors.New("slack: payload is not an event_callback")
 	// ErrMalformed is a structurally unusable envelope — non-JSON, or missing the team/event identity that
 	// anchors dedupe and tenant correlation. The caller maps it to a 400 (authenticated client error), the
@@ -59,9 +63,11 @@ var (
 
 // Event is a Slack event normalized to the canonical inbound identity PLUS the Slack correlation fields the
 // downstream mapping needs. Source/SourceTenant/SourceEventID/Data ARE the webhook.InboundEvent identity —
-// SourceEventID is Slack's event_id, documented as globally unique across workspaces and ASSUMED (D3, see
-// HeaderRetryNum) to be repeated by a redelivery, so Slack events flow through the exact source-dedupe the
-// webhook seam already proves (AUT-001/AUT-009); no parallel dedupe is invented. The correlation fields
+// SourceEventID is Slack's event_id, documented as globally unique across workspaces and ASSUMED (D3: a
+// redelivery repeats the ORIGINAL event_id rather than minting a new one — published for the HTTP Events API,
+// not confirmed for Socket Mode, and asserted live by tests/live/slack) to hold on every transport, so
+// Slack events flow through the exact source-dedupe the webhook seam already proves (AUT-001/AUT-009); no
+// parallel dedupe is invented. The correlation fields
 // (team/channel/thread/user) drive thread↔session (SLK-003) and the authorization/self-loop guards; Data
 // stays opaque (the mapping validates the inner event later).
 type Event struct {
@@ -260,53 +266,16 @@ type nestedIdentity struct {
 	Text     string `json:"text"`
 }
 
-// ParseChallenge returns the url_verification challenge, if the body is that handshake. Slack POSTs it once
-// when a Request URL is configured; the receiver echoes the challenge back in plaintext. The token field is
-// the deprecated verification token and is ignored. A non-handshake body returns ("", false).
-func ParseChallenge(body []byte) (string, bool) {
-	var probe struct {
-		Type      string `json:"type"`
-		Challenge string `json:"challenge"`
-	}
-	if err := json.Unmarshal(body, &probe); err != nil {
-		return "", false
-	}
-	if probe.Type != "url_verification" {
-		return "", false
-	}
-	return probe.Challenge, true
-}
-
-// ParseTeam reads the workspace identity out of an UNVERIFIED body. It exists because the receiver has a
-// chicken-and-egg: the v0 signature can only be checked against the signing secret of the connection the
-// callback belongs to, and the only thing naming that connection is the payload itself. So this read happens
-// strictly BEFORE authentication and its result is a LOOKUP KEY AND NOTHING ELSE — never an identity, never a
-// tenant selector, never trusted. What makes that safe is the ORDER that follows it: the resolved connection's
-// secret must then verify the signature over this very body, so a forged team_id can at most select a
-// connection whose secret the forger does not hold, and the verify refuses.
-//
-// ok is false when the body carries no team id (non-JSON, a url_verification handshake — which has no
-// team_id at all — or a truncated envelope): with no lookup key there is no secret to verify against, and the
-// caller must refuse rather than guess a connection.
-func ParseTeam(body []byte) (teamID, enterpriseID string, ok bool) {
-	var probe struct {
-		TeamID       string `json:"team_id"`
-		EnterpriseID string `json:"enterprise_id"`
-	}
-	if err := json.Unmarshal(body, &probe); err != nil || probe.TeamID == "" {
-		return "", "", false
-	}
-	return probe.TeamID, probe.EnterpriseID, true
-}
-
 // MapEvent normalizes a verified Events API event_callback body into the canonical Event. botUserID is the
 // app's own bot user id (from the connection registry): an inner event whose user IS the bot, or any event
 // carrying a bot_id, is ErrIgnored so the app never answers itself (SLK-008). retry is whether Slack marked
 // this a redelivery (X-Slack-Retry-Num) — recorded as advisory; identity is the event_id, so a retry
 // deduplicates against the original regardless.
 //
-// The body MUST already have passed VerifySignature: mapping runs strictly after authentication, never
-// before, so a forged payload is rejected before it is decoded.
+// The body MUST already have passed authentication before this runs — never before, so a forged payload is
+// rejected before it is decoded. On this app's only transport that authentication is Socket Mode's own
+// pre-authenticated WebSocket (socket.go's own doc on why nothing here verifies a signature); a body coming
+// from anywhere else would need its own check ahead of this call.
 func MapEvent(body []byte, botUserID string, retry bool) (Event, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	var outer eventCallback

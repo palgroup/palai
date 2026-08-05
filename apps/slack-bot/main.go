@@ -168,10 +168,12 @@ func run(ctx context.Context) error {
 		Doer:      http.DefaultClient,
 		Token:     creds.botToken,
 		Artifacts: relay.NewArtifactCreator(client),
-		// The thread read that finds the pictures shared BEFORE the message that births a run. It is mounted
-		// unconditionally alongside the leg it feeds: it needs no credential of its own (the same bot token,
-		// the same client), and what it finds is worth nothing without a leg to attach it — so a deployment
-		// carrying one and not the other would be a configuration with no meaning.
+		// The thread read that finds the pictures AND the words shared BEFORE the message that births a run.
+		// It is mounted unconditionally alongside the leg it feeds: it needs no credential of its own (the
+		// same bot token, the same client), and history.go gates BOTH of what it finds — the images and the
+		// quoted text alike — on this leg being ready, so a deployment carrying one and not the other would be
+		// a configuration with no meaning today (see history.go's own doc on why the text half took the
+		// image leg's gate rather than reading independently of it).
 	}, log.Printf).WithThreadHistory(relay.NewThreadHistory(http.DefaultClient, slackAPIBase, creds.botToken))
 
 	// SAID AT BOOT, ONCE, because the alternative is how this capability died the last time it was built:

@@ -166,3 +166,113 @@ func threadWithASharedImage(t *testing.T, history map[string]any) string {
 	t.Skip("no thread in this channel's recent history has a human-shared image on it — share a screenshot in a thread and re-run")
 	return ""
 }
+
+// TestARealThreadsWordsBecomeAQuotedNote walks the TEXT half over one real thread — the direct sibling of
+// TestARealThreadsEarlierImageBecomesARealArtifact for the half that leg does not cover.
+//
+// IT NEVER TOUCHES THE CONTROL PLANE, deliberately: unlike the image leg's own live test, rendering a quoted
+// thread note produces nothing a run needs to admit to prove — the note is text this process already has once
+// conversations.replies answers, and threadTextNote is a pure render over it. So this needs only Slack
+// credentials, not a running deployment, and it cannot collide with whatever else is using the shared control
+// plane at the time it runs.
+//
+// IT DOES NOT FABRICATE AN INBOUND EVENT either, for the same reason imageleg_live_test.go's own doc gives:
+// this process IS the bot, and Slack will never deliver this process its own message back as a human's. The
+// event below stands for "somebody just replied", carrying a ts no real message has so nothing on the page is
+// skipped as "the triggering message" — the render is measured over the whole thread.
+func TestARealThreadsWordsBecomeAQuotedNote(t *testing.T) {
+	token := []byte(liveEnv(t, "SLACK_BOT_TOKEN"))
+	channel := liveEnv(t, "SLACK_TEST_CHANNEL")
+	botUserID := liveEnv(t, "SLACK_BOT_USER_ID")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	defer cancel()
+
+	// --- 1. Find a REAL thread with an actual back-and-forth: a human's root plus at least two replies. ---
+	history := slackAPI(ctx, t, token, "conversations.history", url.Values{
+		"channel": {channel}, "limit": {"100"},
+	})
+	threadTS := threadWithARealConversation(t, history)
+	t.Logf("thread carrying a real exchange: %s/%s", channel, threadTS)
+
+	// --- 2. Read it through the PRODUCTION seam, with the production bound. ---
+	prod := NewThreadHistory(http.DefaultClient, "https://slack.com/api", token)
+	msgs, hasMore, err := prod.ThreadReplies(ctx, channel, threadTS, threadHistoryMaxMessages)
+	if err != nil {
+		t.Fatalf("conversations.replies through the production seam: %v", err)
+	}
+	if hasMore {
+		t.Skip("this thread is longer than one page, so the product deliberately renders no text from it — pick a shorter thread")
+	}
+	t.Logf("the page holds %d message(s)", len(msgs))
+
+	// --- 3. Render with the PRODUCTION rule, against an event standing for a reply in that thread. ---
+	deps := InboundDeps{BotUserID: botUserID, History: prod}
+	ev := slack.Event{MessageTS: "9999999999.999999"}
+	note := deps.threadTextNote(ctx, msgs, ev)
+	if note == "" {
+		t.Fatalf("threadTextNote rendered nothing for a real %d-message thread carrying text", len(msgs))
+	}
+	t.Logf("rendered note (%d bytes):\n%s", len(note), note)
+	if !strings.Contains(note, "(untrusted context") {
+		t.Fatalf("the note is missing its own untrusted-data framing: %q", note)
+	}
+
+	var wantText, botLine string
+	haveBotTurn := false
+	for _, m := range msgs {
+		if strings.TrimSpace(m.Text) == "" {
+			continue
+		}
+		if wantText == "" {
+			wantText = m.Text
+		}
+		if m.UserID == botUserID {
+			haveBotTurn, botLine = true, m.Text
+		}
+	}
+	if !strings.Contains(note, wantText) {
+		t.Fatalf("the note %q does not contain %q, a real message this exact thread carries", note, wantText)
+	}
+	if haveBotTurn && !strings.Contains(note, "you: "+threadStripControl(botLine)) {
+		t.Fatalf("the note %q has no \"you:\" line for %q, even though bot user %s spoke in this real thread",
+			note, botLine, botUserID)
+	}
+
+	// --- 4. The one further thing only a live call can say: does users:read let this installation put a
+	// real name on a real speaker, or does every human stay a numbered placeholder here? Either answer is
+	// informative and neither fails the test — this is a POSTURE fact about the workspace, not a defect.
+	for _, m := range msgs {
+		if m.UserID == "" || m.UserID == botUserID {
+			continue
+		}
+		if name, err := prod.DisplayName(ctx, m.UserID); err != nil {
+			t.Logf("DisplayName(%s): %v — this workspace's grant decides whether quoted speakers get real names", m.UserID, err)
+		} else {
+			t.Logf("DisplayName(%s) = %q — a REAL name this installation can resolve for a quoted speaker", m.UserID, name)
+		}
+		break
+	}
+}
+
+// threadWithARealConversation picks the newest thread ROOT in a conversations.history answer that a human
+// started and that carries at least two replies — a real back-and-forth, which is what the text half exists
+// to quote, as opposed to a thread with one lone reply that a fixture could stand in for just as well.
+func threadWithARealConversation(t *testing.T, history map[string]any) string {
+	t.Helper()
+	msgs, _ := history["messages"].([]any)
+	for _, raw := range msgs {
+		m, _ := raw.(map[string]any)
+		if _, isBot := m["bot_id"]; isBot {
+			continue // a thread this app itself started is not a human's conversation
+		}
+		if replyCount, _ := m["reply_count"].(float64); replyCount < 2 {
+			continue
+		}
+		if threadTS, _ := m["ts"].(string); threadTS != "" {
+			return threadTS
+		}
+	}
+	t.Skip("no thread in this channel's recent history has a human root with two or more replies — have a real back-and-forth in a thread and re-run")
+	return ""
+}
