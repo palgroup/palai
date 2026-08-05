@@ -88,8 +88,10 @@ WHERE id = $1 AND project_id = $2 AND notified_at IS NULL
 RETURNING run_id, session_id, response_id, state, exit_code, output_path;
 
 -- CountRunningBackgroundTasks IS THE CEILING'S ONLY SOURCE OF TRUTH (E26 T5, §0.3), and it counts ROWS
--- rather than anything this process remembers — E24 opened `runners.capacity` and no Go expression ever
--- read it, which is the mistake §3.6 D12 names and this query exists not to repeat.
+-- rather than anything this process remembers — E24 opened `runners.capacity` and for the two epics after
+-- it no Go expression read the column, which is the mistake §3.6 D12 names and this query exists not to
+-- repeat. Faz A.4 T5 gave that column a reader on 2026-08-05 (leases.sql's AcquireLease); the mistake it
+-- stands for is the one this note is about, not the column.
 --
 -- THE HOST COUNT IS DELIBERATELY CROSS-TENANT and the run count deliberately is not. A machine ceiling
 -- that saw only the caller's tenant would let every tenant have twenty and the Mac have as many as there

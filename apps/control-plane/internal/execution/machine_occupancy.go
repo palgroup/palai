@@ -30,6 +30,7 @@ package execution
 
 import (
 	"context"
+	"errors"
 	"log"
 
 	"github.com/palgroup/palai/packages/coordinator"
@@ -48,13 +49,42 @@ import (
 // log line is the record, and the NEXT attempt on the same allocation opens the hold that this one missed
 // — HoldMachine opens a row whenever the session has none, so the loss is bounded by one attempt rather
 // than by the life of the session.
+//
+// A CAPACITY REFUSAL IS NOT ONE OF THOSE FAILURES AND IS LOGGED AS ITSELF (Faz A.4 T5). Every other error
+// here means the metering could not be WRITTEN; ErrMachineAtCapacity means it was REFUSED — the machine is
+// already holding as many sessions as `runners.capacity` allows, and this attempt is about to be the one
+// over. Reporting it under the same sentence as a database blip would send the next reader to look for a
+// database blip, which is the failure this tree keeps recording as an assertion pointing at the wrong file.
+//
+// WHAT IT DOES NOT DO IS PARK THE RUN, and that is a ceiling rather than an oversight, measured
+// 2026-08-05. Two facts make the park the wrong move today, and both have to change together:
+//
+//   - NOTHING WAKES ON A SLOT FREEING. The only capacity wake is WakeRunAwaitingCapacity, and the gateway
+//     fires it from handleConnect — when a machine CONNECTS. A run parked because a machine was FULL would
+//     wake on the machine's next connect, dial into the same full machine, and park again, and because
+//     EnqueueWokenRunJob carries the budget already spent, that loop ends in a dead-letter rather than in a
+//     machine. The slot it is waiting for is freed by the idle releaser, which nothing notifies.
+//   - NO MACHINE DECLARES A CAPACITY. The one production `fleet.Registration` (runner_gateway.go) sets no
+//     Capacity field, `packages/runner` never sends one, and storage/queries/runners.sql has no UPDATE for
+//     the column — so the 1 every machine carries is store.go's clamp of an absent value, not a statement
+//     any operator made. Enforcing a placement outcome on it would cap every deployment at one session per
+//     machine on the strength of a default nobody chose.
+//
+// So the refusal is durable and single-winner where it is decided — the occupancy table can never show a
+// machine over its declared capacity — and the attempt still runs, unmetered, with the reason on the record
+// under its own name.
 func (o *Orchestrator) holdMachine(ctx context.Context, tenant coordinator.Tenant, sessionID string, ch EngineChannel) string {
 	machine := machineOf(ch)
 	if machine == "" || sessionID == "" {
 		return ""
 	}
 	occupancyID, err := o.spine.HoldMachine(ctx, tenant, sessionID, machine)
-	if err != nil {
+	switch {
+	case errors.Is(err, coordinator.ErrMachineAtCapacity):
+		log.Printf("session %s: machine %s is over the capacity it declared and this attempt runs on it unmetered: %v",
+			sessionID, machine, err)
+		return ""
+	case err != nil:
 		log.Printf("session %s: machine %s is being occupied unmetered: %v", sessionID, machine, err)
 		return ""
 	}

@@ -426,7 +426,9 @@ func (s *Store) SetBackgroundKiller(kill BackgroundKiller) { s.background = kill
 // scoped in the predicate instead, so the widened session buys exactly the one fact it has to.
 //
 // THE CEILING IT SERVES IS ENFORCED AND NOT DECLARED, which is the whole point of the query existing:
-// E24 opened `runners.capacity` with a CHECK constraint and no Go expression ever read it (§3.6 D12).
+// E24 opened `runners.capacity` with a CHECK constraint and, for the two epics after it, no Go expression
+// read it (§3.6 D12). That particular column stopped being an example on 2026-08-05 — Faz A.4 T5 put a
+// ceiling on it inside AcquireLease's own INSERT — and the lesson it was cited for did not change.
 func (s *Store) CountRunningBackgroundTasks(ctx context.Context, tenant Tenant, runID string) (perRun, perHost int, err error) {
 	if err := s.pool.QueryRow(storage.WithSystemScope(ctx), storage.Query("CountRunningBackgroundTasks"),
 		runID, tenant.Project).Scan(&perRun, &perHost); err != nil {

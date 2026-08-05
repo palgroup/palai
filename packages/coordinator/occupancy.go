@@ -17,9 +17,18 @@ package coordinator
 // Within one hold many runs come and go, so `run_id` cannot key the interval — it stays as it was found.
 //
 // WHAT THIS FILE DOES NOT DO, stated because a reader will look for it here. It settles nothing into
-// usage_ledger (that is the release path's task, with its own dedupe key), it runs no reaper, and it
-// enforces no capacity ceiling — nothing below refuses a second occupancy of a machine that is already
-// held. Those are the tasks after this one; this one is the durable record they all read and write.
+// usage_ledger (that is occupancy_billing.go's SettleOccupancy, with its own dedupe key) and it runs no
+// reaper. What it DID not do until Faz A.4 T5 was refuse anything: AcquireLease now reads
+// `runners.capacity` and a machine already holding that many open occupancies is refused
+// (ErrMachineAtCapacity). The ceiling is the first and so far the only comparison anything in this tree
+// makes against that column.
+//
+// AND THE REFUSAL IS NOT YET A PLACEMENT OUTCOME. It is reached in production — HoldMachine is called from
+// the orchestrator on every attempt that realizes a workspace — but what the orchestrator DOES with a
+// refusal is deliberately still "run this attempt unmetered and say so" (see holdMachine in
+// apps/control-plane/internal/execution/machine_occupancy.go, which names the two costs). Turning it into a
+// park needs a waker that fires when a SLOT FREES, and the only wake in the tree fires when a machine
+// CONNECTS.
 
 import (
 	"context"
@@ -35,11 +44,16 @@ import (
 )
 
 // ReleaseReasonIdle is the one release reason the billed interval branches on: an occupancy the idle
-// reaper ended is billed to `last_activity_at`, and the quiet tail after it is not charged. It is a
-// constant rather than a string at each call site so that the branch is greppable from both ends — the
-// writer here and the `CASE` in storage/queries/leases.sql. The other three reasons ('closed',
-// 'preempted', 'lost') need no constant: nothing branches on them, and migration 000003's CHECK is what
-// keeps the column's vocabulary closed.
+// reaper ended is billed to `last_activity_at`, and the quiet tail after it is not charged.
+//
+// IT IS A SECOND PLACE THE WORD LIVES, so something has to hold the two together: the branch itself is the
+// `CASE` in storage/queries/leases.sql and migration 000003's CHECK is what keeps the column's vocabulary
+// closed, neither of which knows about this line. TestAnIdleClosedOccupancyBillsToLastActivityNotToTheReaper
+// closes a hold with THIS constant and then asserts the stored reason reads "idle", so a constant that
+// drifted from the database's word would redden rather than silently bill the tail.
+//
+// The other three reasons ('closed', 'preempted', 'lost') get no constant: nothing branches on them, so a
+// constant would be a symbol with no reader.
 const ReleaseReasonIdle = "idle"
 
 // ErrOccupancyNotFound reports that no occupancy with this id is visible to this tenant. It is distinct
@@ -53,6 +67,16 @@ var ErrOccupancyNotFound = errors.New("occupancy not found")
 // string — the lesson ErrRunPoolNotRecordable in this package was written for, where a write that matched
 // nothing reported success and two runs sat unreachable for thirty-one hours.
 var ErrMachineUnavailable = errors.New("machine is not one this tenant can occupy")
+
+// ErrMachineAtCapacity reports that AcquireLease wrote no row for the OTHER reason: the machine is real,
+// this tenant may occupy it, and its open occupancies already fill `runners.capacity`.
+//
+// IT IS A SEPARATE SENTINEL FROM ErrMachineUnavailable BECAUSE THE TWO DECIDE OPPOSITE THINGS. An
+// unavailable machine is a configuration fault — the id is wrong, or it belongs to somebody else — and it
+// will still be wrong on the next attempt. A full machine is a TRANSIENT answer that becomes untrue the
+// moment a hold settles. Collapsing them would leave a caller unable to tell "never" from "not yet", which
+// is the same distinction errPoolNotServable was split out of the capacity park for.
+var ErrMachineAtCapacity = errors.New("machine already holds as many occupancies as its capacity allows")
 
 // Occupancy is one row of runner_leases: one session's hold on one machine.
 type Occupancy struct {
@@ -81,12 +105,30 @@ func newLeaseID() (string, error) {
 	return "lse_" + hex.EncodeToString(raw[:]), nil
 }
 
-// AcquireLease opens an occupancy: this session now holds this machine. The id is minted HERE and never
-// taken from a caller, which is the same rule the runner registry applies to a machine's own id.
+// AcquireLease opens an occupancy: this session now holds this machine, IF the machine has a slot free.
+// The id is minted HERE and never taken from a caller, which is the same rule the runner registry applies
+// to a machine's own id.
 //
 // A machine or a session this tenant cannot see writes NO row and returns ErrMachineUnavailable — the
 // statement selects both out of their own tables, so row-level security decides, rather than a predicate
 // this package would have to remember to write.
+//
+// A MACHINE ALREADY HOLDING `runners.capacity` OPEN OCCUPANCIES RETURNS ErrMachineAtCapacity (Faz A.4 T5),
+// AND THAT REFUSAL IS THE STATEMENT'S, NOT THIS FUNCTION'S. The ceiling is a subquery inside AcquireLease's
+// own INSERT and the answer is read from whether a row came back, because a ceiling checked here — count,
+// decide, then write — is not a ceiling at all: under READ COMMITTED two callers taking the last slot at
+// once both read the machine one short of full and both write, the machine goes over what it declared, and
+// neither caller is ever told, because both were told yes.
+//
+// THE TRANSACTION EXISTS FOR THE LOCK AND THE LOCK EXISTS FOR THE TIE. LockMachineForPlacement takes the
+// machine's row `FOR UPDATE`, so contenders for one machine are ordered; the loser blocks there and the
+// INSERT it then runs takes a FRESH snapshot in which the winner's row is committed. Both statements in
+// one transaction is what makes that ordering mean anything.
+//
+// AND THE ZERO-ROW INSERT IS AMBIGUOUS, so it is ASKED rather than guessed — the pattern RecordRunPool and
+// SettleOccupancy in this package already use. Full and unavailable are opposite answers: one becomes
+// untrue the moment a hold settles, the other will be just as true on the next attempt. The re-read happens
+// while the machine's row is still locked, so it reports the number the INSERT judged against.
 func (s *Store) AcquireLease(ctx context.Context, tenant Tenant, sessionID, runnerID string) (string, error) {
 	if sessionID == "" || runnerID == "" {
 		return "", errors.New("a session and a machine are required to open an occupancy")
@@ -96,13 +138,40 @@ func (s *Store) AcquireLease(ctx context.Context, tenant Tenant, sessionID, runn
 	if err != nil {
 		return "", err
 	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return "", fmt.Errorf("begin acquire lease on %s: %w", runnerID, err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	// The machine, locked. No row here is already an answer — this tenant cannot see the machine at all —
+	// and answering it now costs the INSERT below nothing and spares the ambiguity a step.
+	var capacity int
+	switch err := tx.QueryRow(ctx, storage.Query("LockMachineForPlacement"), runnerID, tenant.Project).Scan(&capacity); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", fmt.Errorf("%w: machine %s", ErrMachineUnavailable, runnerID)
+	case err != nil:
+		return "", fmt.Errorf("lock machine %s for placement: %w", runnerID, err)
+	}
+
 	var stored string
-	switch err := s.pool.QueryRow(ctx, storage.Query("AcquireLease"),
+	switch err := tx.QueryRow(ctx, storage.Query("AcquireLease"),
 		leaseID, tenant.Project, runnerID, sessionID).Scan(&stored); {
 	case errors.Is(err, pgx.ErrNoRows):
-		return "", fmt.Errorf("%w: machine %s, session %s", ErrMachineUnavailable, runnerID, sessionID)
+		// The machine is visible, so the two remaining reasons are its ceiling and the session. Ask.
+		var open int
+		if rerr := tx.QueryRow(ctx, storage.Query("MachineOpenOccupancies"), runnerID, tenant.Project).Scan(&open); rerr != nil {
+			return "", fmt.Errorf("read the open occupancies of machine %s: %w", runnerID, rerr)
+		}
+		if open >= capacity {
+			return "", fmt.Errorf("%w: machine %s holds %d of %d", ErrMachineAtCapacity, runnerID, open, capacity)
+		}
+		return "", fmt.Errorf("%w: session %s", ErrMachineUnavailable, sessionID)
 	case err != nil:
 		return "", fmt.Errorf("acquire lease on %s: %w", runnerID, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("commit acquire lease on %s: %w", runnerID, err)
 	}
 	return stored, nil
 }
@@ -111,13 +180,25 @@ func (s *Store) AcquireLease(ctx context.Context, tenant Tenant, sessionID, runn
 // already been released, and deliberately not an error: the touch races the reaper by construction, so a
 // call that lands just after the release is ordinary rather than exceptional. What it must never do is
 // move `last_activity_at` on a closed hold, because that changes a bill that was already settled.
+//
+// A TOUCH THAT MATCHED NO ROW AT ALL IS ErrOccupancyNotFound, and the distinction is the reason this reads
+// the row instead of returning nil on any zero-row update. The two no-matches mean opposite things: an
+// already-released hold is the ordinary race above, while an id nothing answers to means the caller is
+// keeping alive an occupancy that does not exist — and reporting success for that is how a live session
+// gets reaped as idle while every touch it sent returned nil.
 func (s *Store) TouchLease(ctx context.Context, tenant Tenant, leaseID string) error {
 	if leaseID == "" {
 		return errors.New("an occupancy id is required")
 	}
 	ctx = storage.ScopeToTenant(ctx, tenant.Project)
-	if _, err := s.pool.Exec(ctx, storage.Query("TouchLease"), leaseID, tenant.Project); err != nil {
+	tag, err := s.pool.Exec(ctx, storage.Query("TouchLease"), leaseID, tenant.Project)
+	if err != nil {
 		return fmt.Errorf("touch lease %s: %w", leaseID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		if _, rerr := s.Occupancy(ctx, tenant, leaseID); rerr != nil {
+			return rerr
+		}
 	}
 	return nil
 }

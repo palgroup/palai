@@ -1,6 +1,6 @@
 -- MACHINE OCCUPANCY (Faz A.4 T1, migration 000003_lease_occupancy). One row of runner_leases is one
--- interval in which one session held one machine, and these five statements are its whole life: take,
--- keep alive, give back, read one, read a session's.
+-- interval in which one session held one machine, and these seven statements are its whole life: order the
+-- contenders, take, keep alive, give back, read one, read a session's, and say why a take was refused.
 --
 -- WHY THE ROW IS PER OCCUPANCY AND NOT PER SESSION. A session is closed for idleness, its machine account
 -- is destroyed, and the next approval resumes it on whichever machine is free — so one session holds N
@@ -12,8 +12,32 @@
 -- confines the rows to the acquiring scope. That is this tree's rule, and here it is also what makes the
 -- statements readable as the boundary they claim.
 
+-- name: LockMachineForPlacement
+-- Take the machine's row for the duration of an acquire, and report the capacity it declared. Returns no
+-- row for a machine this tenant cannot see, which is the FIRST of AcquireLease's two refusals and the one
+-- that can be told apart without asking anything else.
+--
+-- `FOR UPDATE` IS WHAT MAKES THE CEILING SINGLE-WINNER, AND WITHOUT IT THE PREDICATE IN AcquireLease IS
+-- DECORATION. Under READ COMMITTED every statement takes its own snapshot at the moment it starts, so two
+-- transactions acquiring the last slot at once both count the machine one short of full and both insert:
+-- the machine ends up over its declared capacity and NEITHER caller is told, because both were told yes.
+-- Serializing the contenders on the machine's own row is what turns that into one winner — the loser
+-- blocks here, and the INSERT it runs afterwards takes a FRESH snapshot in which the winner's row is
+-- committed and visible. That ordering is the whole reason this is a separate statement rather than a
+-- `FOR UPDATE` inside AcquireLease's own CTE: a lock taken mid-statement does not re-take the snapshot the
+-- statement's subqueries already read from, so the count would still be the stale one.
+--
+-- It locks `runners` rather than the lease rows because the thing being serialized is the machine's
+-- OCCUPANCY as a whole, and the rows that would have to be locked to serialize it are the ones that do not
+-- exist yet. The lock is held for two statements and no round trip to anything but the database.
+SELECT capacity
+  FROM runners
+ WHERE id = $1 AND project_id = $2
+   FOR UPDATE;
+
 -- name: AcquireLease
--- Take a machine for a session. The row IS the occupancy: it opens now and stays open until released.
+-- Take a machine for a session, IF the machine has a slot free. The row IS the occupancy: it opens now and
+-- stays open until released.
 --
 -- IT IS AN `INSERT ... SELECT` AND THE JOIN IS THE TENANCY CHECK, not decoration. The row's own project_id
 -- is a parameter, so WITH CHECK on runner_leases would happily admit a lease this tenant owns that names
@@ -22,17 +46,49 @@
 -- below say the same thing in the statement — so a foreign machine or a foreign session writes no row at
 -- all and the caller reads the empty result as a refusal.
 --
--- THIS STATEMENT ENFORCES NO CAPACITY CEILING, and saying so is the point of the sentence: nothing here
--- refuses a second occupancy of a machine that is already held. `runners.capacity` exists (000001) and
--- nothing reads it. Placement — which machine a run goes to, and what happens when every machine is full —
--- is a later task in this phase; until it lands, the only thing stopping a double-booking is that exactly
--- one call site will exist.
+-- THE CAPACITY CEILING IS THE SUBQUERY, AND IT IS IN THE WRITE RATHER THAN IN FRONT OF IT (Faz A.4 T5).
+-- `runners.capacity` has existed since 000001 with a `capacity > 0` CHECK, and until this statement NO Go
+-- expression and no other statement compared it to anything — it was written at enrolment, read back for
+-- display, and that was all. A caller that counted the open holds and then inserted would be correct only
+-- until two callers did it at once; here the count is evaluated by the same command that writes, so a
+-- machine that is full matches no row and the caller reads the empty result as the refusal it is.
+--
+-- WHAT IS COUNTED IS `released_at IS NULL` — the OPEN holds, not the holds ever taken. A machine whose
+-- ceiling counted history would be placeable until its first few sessions ended and unplaceable forever
+-- after, which on a fleet is every Mac going dark one by one.
+--
+-- The count is keyed on the MACHINE and carries its project explicitly. A machine belongs to exactly one
+-- project (r.project_id above), so every lease that can name it carries that same project and the
+-- predicate changes no row — it is there because a count that quietly depended on row-level security to be
+-- the right count is a count that changes meaning the day something reads it under a system scope.
 INSERT INTO runner_leases (id, project_id, runner_id, session_id, started_at, last_activity_at)
 SELECT $1, $2, r.id, s.id, clock_timestamp(), clock_timestamp()
   FROM runners r, sessions s
  WHERE r.id = $3 AND r.project_id = $2
    AND s.id = $4 AND s.project_id = $2
+   AND (SELECT count(*)
+          FROM runner_leases l
+         WHERE l.runner_id = r.id
+           AND l.project_id = r.project_id
+           AND l.released_at IS NULL) < r.capacity
 RETURNING id;
+
+-- name: MachineOpenOccupancies
+-- How many holds are open on this machine right now. It is a DIAGNOSIS and never the decision: AcquireLease
+-- above is what refuses, and this only names WHICH refusal that was.
+--
+-- The distinction matters because the two answers a caller can give are opposite. A machine at its ceiling
+-- is a transient no that becomes yes the moment a hold settles; a machine (or a session) this tenant cannot
+-- see is a no that will still be no on the next attempt. A zero-row INSERT cannot tell them apart on its
+-- own, and guessing either way is how a caller ends up retrying forever or giving up on a machine that was
+-- about to free.
+--
+-- It is read INSIDE the acquire's transaction, while LockMachineForPlacement still holds the machine's row,
+-- so the number it reports is the number the INSERT just judged against and not a later one.
+SELECT count(*)
+  FROM runner_leases
+ WHERE runner_id = $1 AND project_id = $2
+   AND released_at IS NULL;
 
 -- name: TouchLease
 -- Move the occupancy's last activity to now. ONE WRITER, TWO READERS: the idle reaper reads this column to

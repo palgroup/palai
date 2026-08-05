@@ -555,12 +555,15 @@ run_postgres() {
     status=$?
   fi
   # The E24 T1 runner registry against a REAL Postgres with RLS enforced (apps/control-plane/internal/fleet
-  # is an internal package, so its component tests cannot live under tests/). It has its OWN leg rather
-  # than a name on a -run list because the package has no other tests: two machines sharing the compose
-  # default label are two rows with two SERVER-minted ids, an unknown pool REFUSES instead of writing a
-  # dangling reference, the enrolment journal entry commits with the row it describes, a pre-registry
-  # runner's certificate is found=false rather than an error (or an upgraded stack would refuse its own
-  # runner), and neither tenant can read or address the other's machines.
+  # is an internal package, so its component tests cannot live under tests/). It runs the WHOLE package
+  # with no -run, which is what keeps a test added beside these from being invisible: two machines sharing
+  # the compose default label are two rows with two SERVER-minted ids, an unknown pool REFUSES instead of
+  # writing a dangling reference, the enrolment journal entry commits with the row it describes, a
+  # pre-registry runner's certificate is found=false rather than an error (or an upgraded stack would
+  # refuse its own runner), neither tenant can read or address the other's machines, a strict pool holds a
+  # machine in a waiting room until a named approver admits it — and, since Faz A.4 T5, a machine that
+  # enrolled DECLARING no capacity holds exactly one occupancy rather than unlimited ones, which is the
+  # only leg that can say so because `fleet.Store.Register` is what turns an absent capacity into a 1.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v ./apps/control-plane/internal/fleet
@@ -575,15 +578,20 @@ run_postgres() {
   # first: a test whose name is missing from a -run allow-list does not run, and a package no line here
   # names does not run either — both report the same green, and the second cannot be found by reading an
   # allow-list because there is nothing to read. There is deliberately NO -run here, for the reason the
-  # internal/fleet leg above gives: this package holds nothing but these three tests, so an allow-list could
-  # only ever exclude a test somebody adds beside them.
+  # internal/fleet leg above gives: an allow-list on this package could only ever EXCLUDE a test somebody
+  # adds beside these, which is the failure the leg exists to prevent. (It has grown from three tests to
+  # eleven across T1, T4 and T5 without this line needing to name any of them, which is the property.)
   #
   # What they run: one session taking TWO machines is TWO rows and the gap between them is not billed (a
   # bill is the sum of the holds, never the session's wall clock); an occupancy the reaper closes late is
   # billed to `last_activity_at` and NOT to `released_at` and NOT to `released_at` minus a fixed TTL — the
   # reaper is run deliberately late, because a sweep is late by construction and a constant-subtracting
-  # build answers that one case wrong; and a run that PARKS for want of a machine owns no row at all, which
-  # is the fence the tasks that wire acquisition into the dispatch path have to stay behind.
+  # build answers that one case wrong; a run that PARKS for want of a machine owns no row at all, which is
+  # the fence the tasks that wire acquisition into the dispatch path have to stay behind; each hold settles
+  # exactly one machine.minutes ledger row and a redelivered release settles none; and (Faz A.4 T5) a
+  # machine is FULL at the capacity it declared — the fourth hold on a three-capacity machine is refused,
+  # a settled occupancy gives back exactly the one slot it held, and two sessions racing for the last slot
+  # produce exactly one winner, which is what a count-then-write ceiling cannot do.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v ./tests/component/fleet

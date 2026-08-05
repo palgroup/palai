@@ -141,9 +141,19 @@ type Registration struct {
 	// ceiling this field carries. Empty declares nothing and is what every runner built before E24
 	// sends, so it inherits the pool's posture and enrols exactly as it did.
 	Posture string
-	// Capacity is the number of concurrent leases the machine says it can hold. It is RECORDED and
-	// nothing enforces it yet — the gateway's per-pool channels are unbuffered and count nothing
-	// (§3.6 D13). T4 is where a placement decision may read it.
+	// Capacity is how many OCCUPANCIES the machine may hold at once — how many sessions' allocations
+	// live on it simultaneously, which outlasts any one lease. Since Faz A.4 T5 it is enforced, in one
+	// place: coordinator.AcquireLease refuses a hold that would put the machine over it
+	// (ErrMachineAtCapacity), decided inside the INSERT so a tie has a loser.
+	//
+	// IT IS STILL NOT A NUMBER ANY MACHINE SENDS, and that is worth knowing before reading a stored 1 as
+	// a declaration. Measured 2026-08-05: the one production Registration (runner_gateway.go's enrolment
+	// handler) sets every other field and not this one, `packages/runner` never mentions capacity, and
+	// storage/queries/runners.sql has no UPDATE that could change it afterwards — so every machine in
+	// every deployment carries the 1 store.go's clamp writes for an absent value.
+	//
+	// The gateway is a separate accounting and remains unconnected to this: its per-pool channels are
+	// unbuffered and its per-machine `active` counts in-flight LEASES, not occupancies (§3.6 D13).
 	Capacity int
 	// KeyID is the pool enrolment key that admitted this machine (E24 T3), written to
 	// runners.enrolled_via_key_id and to the journal entry. EMPTY means the file bootstrap token, which
