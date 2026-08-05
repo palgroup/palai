@@ -303,5 +303,6 @@ func runnerItem(r Runner) api.RunnerItem {
 		// projection is the one place the two shapes meet, so a field dropped here is a field that exists in
 		// the database and on the API type and appears on no response — the shape this tree keeps finding.
 		ConfigRevision: r.ConfigRevision, ConfigApplied: r.ConfigApplied, ConfigReportedAt: r.ConfigReportedAt,
+		AgentVersion: r.AgentVersion, IsolationModes: r.IsolationModes,
 	}
 }

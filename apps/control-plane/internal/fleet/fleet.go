@@ -145,6 +145,12 @@ type Runner struct {
 	ConfigRevision   int64
 	ConfigApplied    map[string]string
 	ConfigReportedAt time.Time
+	// AgentVersion and IsolationModes are what the machine REPORTED at its last enrolment — 000007's two
+	// columns. They are read here because a column written and used in no decision is the defect this
+	// tree has already paid for once with runners.capacity: the panel could not say what build a machine
+	// was running or whether it could isolate a session, while the answer sat in the row.
+	AgentVersion   string
+	IsolationModes string
 	// CreatedAt is the keyset coordinate the list cursor is minted from (api/pagination.go orders on
 	// (created_at, id) DESC). It is the 000001 column; EnrolledAt is 000045's and records the same
 	// instant for every row this code writes, but the page orders on the former.

@@ -46,6 +46,8 @@ type RunnerItem struct {
 	EnrolledAt      time.Time
 	LastSeenAt      time.Time
 	CreatedAt       time.Time
+	AgentVersion    string
+	IsolationModes  string
 	// ActiveLeases is how many leases this machine is serving RIGHT NOW, and it is the one field here that
 	// is not a stored fact — the gateway holding the sessions is the only thing that knows (E24 T5). It is
 	// on the single read rather than the listing because it is a live value: a page of them would be a page
@@ -665,6 +667,12 @@ func runnerView(it RunnerItem) map[string]any {
 		"runner_dns": it.DNS, "public_key_sha256": it.PublicKeySHA256, "state": it.State,
 		"os": it.OS, "arch": it.Arch, "posture": it.Posture, "capacity": it.Capacity,
 		"created_at": it.CreatedAt,
+		// WHAT THE MACHINE REPORTED, rendered unconditionally including empty. 000007 added both columns
+		// and the enrolment writes them; until now nothing read them, so the panel could not say which
+		// build a machine runs or whether it can isolate a session while the answer sat in the row — the
+		// defect this tree already paid for once with runners.capacity. Empty is a real answer: a machine
+		// enrolled before these existed reported neither, and an omitted field would read as "not asked".
+		"agent_version": it.AgentVersion, "isolation_modes": it.IsolationModes,
 	}
 	for key, at := range map[string]time.Time{
 		"cert_not_after": it.CertNotAfter, "enrolled_at": it.EnrolledAt, "last_seen_at": it.LastSeenAt,

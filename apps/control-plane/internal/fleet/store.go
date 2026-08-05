@@ -461,7 +461,7 @@ func scanRunner(row scanRow, withCreatedAt bool) (Runner, error) {
 	dest := []any{
 		&r.ID, &r.Project, &r.PoolID, &r.Label, &r.DNS, &r.PublicKeySHA256,
 		&r.State, &r.OS, &r.Arch, &r.Posture, &r.Capacity, &certNotAfter, &r.EnrolledAt, &lastSeen,
-		&configRevision, &configApplied, &configReportedAt,
+		&configRevision, &configApplied, &configReportedAt, &r.AgentVersion, &r.IsolationModes,
 	}
 	if withCreatedAt {
 		dest = append(dest, &r.CreatedAt)

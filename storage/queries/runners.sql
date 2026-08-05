@@ -68,7 +68,7 @@ UPDATE runners
  WHERE id = $1
 RETURNING id, project_id, pool_id, label, runner_dns, public_key_sha256,
           state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
-       config_revision, config_applied, config_reported_at;
+       config_revision, config_applied, config_reported_at, agent_version, isolation_modes;
 
 -- name: InsertRunner
 -- Record an enrolled machine. The id is minted by the CALLER (server-side, `rnr_`), never by the
@@ -114,7 +114,7 @@ UPDATE runners
  WHERE runner_dns = $1
 RETURNING id, project_id, pool_id, label, runner_dns, public_key_sha256,
           state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
-       config_revision, config_applied, config_reported_at;
+       config_revision, config_applied, config_reported_at, agent_version, isolation_modes;
 
 -- name: SetRunnerState
 -- Cordon, resume or revoke ONE machine, durably (E24 T5). Before this the three were in-memory
@@ -148,7 +148,7 @@ UPDATE runners
    AND (state <> 'pending' OR $3 = 'revoked')
 RETURNING id, project_id, pool_id, label, runner_dns, public_key_sha256,
           state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
-       config_revision, config_applied, config_reported_at, created_at;
+       config_revision, config_applied, config_reported_at, agent_version, isolation_modes, created_at;
 
 -- name: ApproveRunner
 -- Admit ONE machine that is waiting in a strict pool's waiting room (E24 T6). It is a SEPARATE statement
@@ -172,7 +172,7 @@ UPDATE runners
    AND state IN ('pending', 'active')
 RETURNING id, project_id, pool_id, label, runner_dns, public_key_sha256,
           state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
-       config_revision, config_applied, config_reported_at, created_at;
+       config_revision, config_applied, config_reported_at, agent_version, isolation_modes, created_at;
 
 -- name: AppendRunnerDecision
 -- The journal entry for a decision about ONE MACHINE — a decommission (E24 T5, `revoked`) or an
@@ -210,7 +210,7 @@ SELECT $1, $2, $3, $4, '', $5,
 -- handler answers 404 without ever learning whether the id exists elsewhere.
 SELECT id, project_id, pool_id, label, runner_dns, public_key_sha256,
        state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
-       config_revision, config_applied, config_reported_at, created_at
+       config_revision, config_applied, config_reported_at, agent_version, isolation_modes, created_at
   FROM runners
  WHERE id = $1 AND ($2 = '' OR project_id = $2);
 
@@ -220,7 +220,7 @@ SELECT id, project_id, pool_id, label, runner_dns, public_key_sha256,
 -- second round trip.
 SELECT id, project_id, pool_id, label, runner_dns, public_key_sha256,
        state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
-       config_revision, config_applied, config_reported_at, created_at
+       config_revision, config_applied, config_reported_at, agent_version, isolation_modes, created_at
   FROM runners
  WHERE ($1 = '' OR project_id = $1)
    AND ($2::timestamptz IS NULL OR created_at >= $2)
