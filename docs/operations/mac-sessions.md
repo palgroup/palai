@@ -94,9 +94,17 @@ simulator binary. `-a` is what makes `grep` read a binary as text; `strings` is 
 
 Two more rules from the same measurement, both of which produce a **false clean**:
 
-- **Decode before you scan.** A raw byte scan over compressed or encoded output can never fail. Unified
-  logs (`.tracev3`), `.gz` and binary plists must go through `log show`, `gunzip` and `plutil -p`
-  first.
+- **Decode before you scan.** A raw byte scan over compressed or encoded output can never fail.
+  Measured 2026-08-05 with a tenant marker: `/usr/bin/grep -ral <marker> /private/var/db/diagnostics`
+  (2.1 GB of `.tracev3`) answered **0**, while
+  `/usr/bin/log show --start … --predicate 'eventMessage CONTAINS "<marker>"'` over a fifteen-minute
+  window answered **4** — `kernel` and `WindowManager` lines naming the app, its device UDID and the
+  full path of its installed binary. `.gz` and binary plists are the same shape (`gunzip`,
+  `plutil -p`). **And use `/usr/bin/log`, not `log`:** `log` is a zsh builtin and answers
+  `too many arguments` without ever reaching the unified log.
+- **The system unified log is a surface no teardown reaches.** It is root-owned and machine-wide, so
+  deleting an account does not touch it, and the only eraser macOS offers (`log erase`) takes every
+  tenant's history at once. Treat what a run writes there as bounded by rollover, not by teardown.
 - **`find -newermt` reads LOCAL time on the BSD `find` that `sudo` puts on your PATH.** Passing
   `date -u` output silently widens the window by your UTC offset. Use
   `T0=$(date -v-1S +'%Y-%m-%d %H:%M:%S')` — no `-u` — and probe the format with two files, one touched

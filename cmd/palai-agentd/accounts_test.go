@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -68,11 +69,12 @@ func (r *recordingRun) argv(i int) string {
 func newTestAccounts(t *testing.T, rec *recordingRun) *SysadminctlAccounts {
 	t.Helper()
 	return &SysadminctlAccounts{
-		run:         rec.run,
-		foldersRoot: t.TempDir(),
-		hostUUID:    func(context.Context) (string, error) { return testHostUUID, nil },
-		now:         func() time.Time { return time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC) },
-		goos:        "darwin",
+		run:          rec.run,
+		foldersRoot:  t.TempDir(),
+		messagesRoot: t.TempDir(),
+		hostUUID:     func(context.Context) (string, error) { return testHostUUID, nil },
+		now:          func() time.Time { return time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC) },
+		goos:         "darwin",
 	}
 }
 
@@ -490,11 +492,100 @@ func TestDeleteSweepsTheDarwinBucketAfterTheAccountAndFailsLoudlyIfItCannot(t *t
 	rec = deleteScript(goodMarker())
 	a = newTestAccounts(t, rec)
 	a.foldersRoot = root
+
+	// (d) AND THE OTHER PER-UID FAMILY GOES WITH IT. Unlike the bucket, this one is fully exercisable
+	// without root — the directory is identified by its NAME, which is the uid, so a test can build the
+	// real shape. Slot 7's goes; the operator's, one directory over, must not.
+	messages := t.TempDir()
+	a.messagesRoot = messages
+	slotMessages := filepath.Join(messages, "707")
+	operatorMessages := filepath.Join(messages, strconv.Itoa(os.Getuid()))
+	for _, d := range []string{slotMessages, operatorMessages} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "se_SecurityMessages"), make([]byte, 32768), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
 	if _, _, err := a.Delete(context.Background(), 7); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(operatorBucket, "C")); err != nil {
 		t.Fatalf("deleting slot 7 removed a bucket owned by uid %d: %v", os.Getuid(), err)
+	}
+	if _, err := os.Lstat(slotMessages); !os.IsNotExist(err) {
+		t.Errorf("%s survived the delete (%v) — the family the INWARD sweep found is still accumulating", slotMessages, err)
+	}
+	if _, err := os.Stat(operatorMessages); err != nil {
+		t.Fatalf("deleting slot 7 removed uid %d's message directory: %v", os.Getuid(), err)
+	}
+}
+
+// TestTheMessageDirectoryIsRemovedByNameAndOnlyInsideTheNamespace covers what the bucket sweep cannot:
+// this family is keyed by a directory NAME that is the uid, so the whole path — range check, lookup,
+// RemoveAll — runs on any machine without root. That is the difference worth stating, because the
+// sibling test one screen up has to carry a ceiling instead.
+//
+// It exists at all because ONE SWEEP LOOKS IN ONE DIRECTION. Walking /private/var/folders finds an
+// ownerless bucket; it cannot find a family that lives under /private/var/db. The list question —
+// "what does a uid own outside its home?" — is what found this, and on 2026-08-05 it answered SEVEN
+// paths for the orphan uid 701: six the darwin bucket, and this one.
+func TestTheMessageDirectoryIsRemovedByNameAndOnlyInsideTheNamespace(t *testing.T) {
+	root := t.TempDir()
+	mine := strconv.Itoa(os.Getuid())
+
+	// A directory for a session uid, one for root, one for whoever is running this.
+	for _, name := range []string{"707", "0", mine} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	// Every uid outside the namespace is refused, and NOTHING is removed.
+	for _, uid := range []int{0, 1, 501, macagent.UIDBase, macagent.UIDBase + macagent.MaxSlot + 1, -1} {
+		if err := removeMessagesDir(root, uid); err == nil {
+			t.Errorf("uid %d was accepted", uid)
+		}
+	}
+	for _, name := range []string{"707", "0", mine} {
+		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
+			t.Fatalf("a refused call still deleted %s: %v", filepath.Join(root, name), err)
+		}
+	}
+
+	// A session uid's directory goes, and only that one.
+	if err := removeMessagesDir(root, 707); err != nil {
+		t.Fatalf("removeMessagesDir(707): %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "707")); !os.IsNotExist(err) {
+		t.Errorf("707 survived: %v", err)
+	}
+	for _, name := range []string{"0", mine} {
+		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
+			t.Fatalf("removing 707 also removed %s: %v", name, err)
+		}
+	}
+	// A second call is not an error: mds creates this lazily, and a slot that never ran has none.
+	if err := removeMessagesDir(root, 707); err != nil {
+		t.Errorf("removing an absent directory is an error: %v", err)
+	}
+
+	// A symlink planted at that path is DECLINED, not followed — and its target is still there. "Not
+	// removed" and "not followed" are different claims and only the second keeps this from becoming a
+	// way to delete something else as root.
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.MkdirAll(victim, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(victim, filepath.Join(root, "708")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if err := removeMessagesDir(root, 708); err == nil {
+		t.Error("a symlink at the message-directory path was accepted")
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Errorf("the symlink target is gone: %v", err)
 	}
 }
 

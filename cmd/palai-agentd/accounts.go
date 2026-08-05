@@ -52,6 +52,31 @@ const (
 // most live here rather than in the home directory.
 const darwinFoldersRoot = "/private/var/folders"
 
+// mdsMessagesRoot is the metadata server's per-uid message directory, and it is here because ONE
+// SWEEP LOOKS IN ONE DIRECTION. Walking /private/var/folders finds a bucket that exists and has no
+// owner; it cannot find a family that lives somewhere else entirely. The other direction is a list —
+// "what does a uid own outside its home?" — and asking it on 2026-08-05 turned up SEVEN paths for the
+// orphan uid 701, six of them the darwin bucket above and the seventh this:
+//
+//	/usr/bin/find /private/var/db /private/var/folders /Library /Users/Shared /private/tmp -xdev -uid 701
+//	  -> /private/var/db/mds/messages/701/se_SecurityMessages   (32768 B, -rw-------, Aug 3 20:34)
+//	     /private/var/folders/dk/m9lnxdpx6c1fp1s43s2g75n40000nx  (+ its 0/ C/ T/ X/)
+//	id 701 -> no such user
+//
+// It accumulates the same way: `ls /private/var/db/mds/messages/` answered 501, 503, 504 and 701 —
+// four uids on a machine with three accounts.
+//
+// ‼️ WHAT IT CONTAINS WAS NOT MEASURED. The file is mode 600 owned by a uid that no longer exists, so
+// this process could not read it (`cannot open: Permission denied`). It is removed because it is
+// per-uid state that outlives its uid, which is enough; a claim about what is inside it would be a
+// claim nobody here is in a position to make.
+//
+// THE SHAPE DIFFERS FROM THE BUCKET SWEEP AND THE TWO ARE KEPT SEPARATE FOR THAT REASON. A bucket is
+// found by OWNERSHIP because its name is a hash; this directory is found by NAME because its name IS
+// the uid — and the directory itself is root-owned, so an ownership check here would refuse the very
+// thing it must remove. Conflating them would hide that.
+const mdsMessagesRoot = "/private/var/db/mds/messages"
+
 // SysadminctlAccounts is the real implementation: it drives macOS directory services directly.
 //
 // NO SHELL, EVER. Every call below is an argv, not a command line, so there is no word splitting, no
@@ -76,6 +101,10 @@ type SysadminctlAccounts struct {
 	// foldersRoot is darwinFoldersRoot in production, and a temporary directory in tests. A test that
 	// pointed the real path at itself would be a test that can delete the operator's caches.
 	foldersRoot string
+	// messagesRoot is mdsMessagesRoot in production, and a temporary directory in tests, for the same
+	// reason foldersRoot is a field: this one removes a directory named after a uid, and the operator's
+	// own uid names one too.
+	messagesRoot string
 	// hostUUID identifies this Mac, binding a marker to it.
 	hostUUID func(ctx context.Context) (string, error)
 	now      func() time.Time
@@ -87,13 +116,14 @@ type SysadminctlAccounts struct {
 // NewSysadminctlAccounts wires the production implementation.
 func NewSysadminctlAccounts() *SysadminctlAccounts {
 	return &SysadminctlAccounts{
-		run:         runArgv,
-		spawn:       startWorker,
-		workerPath:  macagent.InstalledWorkerPath,
-		foldersRoot: darwinFoldersRoot,
-		hostUUID:    hostUUID,
-		now:         time.Now,
-		goos:        runtime.GOOS,
+		run:          runArgv,
+		spawn:        startWorker,
+		workerPath:   macagent.InstalledWorkerPath,
+		foldersRoot:  darwinFoldersRoot,
+		messagesRoot: mdsMessagesRoot,
+		hostUUID:     hostUUID,
+		now:          time.Now,
+		goos:         runtime.GOOS,
 	}
 }
 
@@ -243,11 +273,15 @@ func (a *SysadminctlAccounts) Delete(ctx context.Context, slot int) (string, str
 		return "", "", macagent.Errorf(macagent.ClassInternal, "the record for %s went but %s did not", name, home)
 	}
 
-	// AND THE CACHE BUCKET, which the account deletion does not touch. Measured: uid 701's bucket
-	// outlived its account entirely.
+	// AND THE PER-UID STATE OUTSIDE THE HOME, which the account deletion does not touch. Measured: uid
+	// 701's bucket AND its mds message directory both outlived its account entirely.
 	if _, err := removeDarwinBuckets(a.foldersRoot, rec.uid); err != nil {
 		return "", "", macagent.Errorf(macagent.ClassInternal,
 			"%s is gone but its darwin cache bucket is not, so its shader cache and simulator residue remain: %v", name, err)
+	}
+	if err := removeMessagesDir(a.messagesRoot, rec.uid); err != nil {
+		return "", "", macagent.Errorf(macagent.ClassInternal,
+			"%s is gone but its metadata-server message directory is not: %v", name, err)
 	}
 	return name, home, nil
 }
@@ -402,6 +436,40 @@ func removeDarwinBuckets(root string, uid int) ([]string, error) {
 		removed = append(removed, path)
 	}
 	return removed, nil
+}
+
+// removeMessagesDir deletes the metadata server's message directory for uid, if there is one.
+//
+// ‼️ THE SAME RANGE CHECK, AND IT CARRIES MORE WEIGHT HERE THAN IT DOES ABOVE. The bucket sweep has two
+// independent filters — the range AND the ownership of what it found. This function has ONE, because
+// the directory it removes is root-owned and named after the uid, so ownership says nothing. Called
+// with 0 or 501 it would name a real directory belonging to root or to the operator, and the only
+// thing standing in front of that is the line below.
+//
+// An absent directory is SUCCESS, not a failure: `delete` runs for slots that never got far enough to
+// have one, and mds creates this lazily. Lstat rather than Stat, and a refusal on a symlink, for the
+// reason darwinBucketsOwnedBy gives: a root process removing directories is not the place to follow a
+// link somebody planted.
+func removeMessagesDir(root string, uid int) error {
+	if _, ok := macagent.SlotFromUID(uid); !ok {
+		return fmt.Errorf("uid %d is outside the session range %d..%d, refusing to remove any message directory",
+			uid, macagent.UIDBase+1, macagent.UIDBase+macagent.MaxSlot)
+	}
+	if root == "" {
+		return fmt.Errorf("no metadata-server message root configured")
+	}
+	path := filepath.Join(root, strconv.Itoa(uid))
+	fi, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory, refusing to remove it", path)
+	}
+	return os.RemoveAll(path)
 }
 
 // darwinBucketsOwnedBy finds every bucket under root that uid owns.
