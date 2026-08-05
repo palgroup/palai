@@ -2,7 +2,6 @@ package stack
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -134,11 +133,6 @@ func Bootstrap(envFile string, native bool) error {
 	// The publication destination's CREDENTIAL must be exported before compose creates the container: a
 	// running control-plane never re-reads its environment. An approved push publishes through a GitHub App
 	// the control-plane resolves at boot, so a stack brought up without one has an approval chain that ends
-	// in silence (see applyGitHubAppEnv). Failures here are reported and carried — a publication path must
-	// not fail a bring-up whose model round-trip is about to be proven.
-	for _, w := range applyGitHubAppEnv(p, get) {
-		fmt.Fprintf(os.Stderr, "        WARNING %s\n", w)
-	}
 	posture := "container control plane (docker compose)"
 	if native {
 		fmt.Fprintln(os.Stderr, "[3/5] stack     NATIVE: postgres + object-store + runner in docker, control plane on this machine")
@@ -293,7 +287,7 @@ func Bootstrap(envFile string, native bool) error {
 	// theoretical one: the environment fallback that used to carry a provider credential was removed
 	// the same day, so a stack whose operator never opened the console reaches no provider.
 	warns = appendWarn(warns, api.missingModelConnectionNotice())
-	warns = appendWarn(warns, api.missingPublisherNotice(get))
+	warns = appendWarn(warns, api.missingPublisherNotice())
 	// WHAT THE FLEET IS DOING (E24 T6), on the report rather than in a warning: a machine held in a strict
 	// pool's waiting room is a machine an operator will otherwise read as broken.
 	printReport(cfg, posture, rt, caps, observedFacts(rt), fleetLine(api.fleet()), red, warns...)
@@ -451,131 +445,6 @@ const defaultModelRouteAlias = "default"
 // containerMasterKeyPath is where compose mounts the master-key file secret. A PATH, never a value,
 // so it rides the compose environment like every other knob.
 const containerMasterKeyPath = "/run/secrets/master_key"
-
-// containerGitHubAppKeyPath is where compose mounts the GitHub App private key file secret. compose.yaml
-// writes it LITERALLY, the way it writes the master key's path: the value an operator puts in .env.local is
-// a HOST path, and interpolating a host path into a container is how you get a control-plane looking for a
-// key at a name that means something else on the other side of the mount.
-const containerGitHubAppKeyPath = "/run/secrets/github_app_key"
-
-// gitHubAppKeySlot is the file-secret source compose bind-mounts the key from.
-const gitHubAppKeySlot = "github-app-key"
-
-// applyGitHubAppEnv wires the GitHub App the approval pump publishes THROUGH (§0.2), and removes the
-// silence around it.
-//
-// THE SILENCE IT REMOVED, and what is left of it after the publisher was un-gated. This function was
-// written when main.repositoryPublisherFromEnv returned nil for a missing App variable and a nil publisher
-// made pumpApprovedPublications a no-op — so an operator could grant the publish tools, watch the agent
-// propose a push, press Approve, see the message repaired to "Approved: push agent/… -> …", and nothing
-// would ever happen: an approved row sitting in the database forever, with a human believing they
-// authorized something.
-//
-// The publisher is no longer gated on the App (main.repositoryPublisher), so that silence is gone: a
-// binding carrying its own connection_ref publishes with no App at all, and a binding carrying none is
-// REFUSED by the publication tool before a human is asked. THIS WARNING STILL FIRES AND STILL EARNS ITS
-// LINE, for the branch it was always really about: the repository `palai up` binds from PALAI_GIT_CLONE_URL
-// has NO connection_ref, so on a stack with no App it is exactly the binding that cannot publish. The
-// operator now learns it at bring-up instead of at the refusal.
-//
-// WHAT RIDES WHERE. The App id and the installation id are identifiers, so they ride the compose
-// environment like every other knob. The PRIVATE KEY does not: its bytes are copied into the 0600
-// $PALAI_HOME/secrets slot compose mounts as a file secret, and what the control-plane reads from the
-// environment is a PATH. The key value therefore appears in no `docker inspect`, no `compose config`, no
-// argv and no log — the same posture the provider credential and the master key already have, and the
-// reason main.go can say it "only mints short-lived scoped tokens against it".
-//
-// It runs BEFORE `docker compose up` because a running control-plane never re-reads its environment: a
-// key staged after the fact stays unresolved until the next bring-up.
-func applyGitHubAppEnv(p paths, get func(string) string) []string {
-	appID := strings.TrimSpace(get("PALAI_GITHUB_APP_ID"))
-	installID := strings.TrimSpace(get("PALAI_GITHUB_APP_INSTALLATION_ID"))
-	keyFile := strings.TrimSpace(get("PALAI_GITHUB_APP_PRIVATE_KEY_FILE"))
-
-	if appID == "" && installID == "" && keyFile == "" {
-		// Nothing configured, and NOTHING SAID HERE. This branch used to warn "a repository is bound but no
-		// GitHub App is configured", gated on PALAI_GIT_CLONE_URL being set — which stopped meaning anything
-		// on 2026-08-05, when bindings became remote-only and that variable lost its last reader. A condition
-		// keyed on a value nothing writes is a warning that can never fire, which is worse than no warning:
-		// it reads as coverage.
-		//
-		// The question it asked is still worth asking, so it moved to where the answer now lives —
-		// missingPublisherNotice, after the stack is up and the bindings can be READ.
-		return nil
-	}
-	if missing := missingNames(map[string]string{
-		"PALAI_GITHUB_APP_ID": appID, "PALAI_GITHUB_APP_INSTALLATION_ID": installID,
-		"PALAI_GITHUB_APP_PRIVATE_KEY_FILE": keyFile,
-	}); len(missing) > 0 {
-		return []string{"the GitHub App is HALF configured (" + strings.Join(missing, " and ") + " unset), so no " +
-			"publisher is wired at all and an approved push would wait forever. All three are required together"}
-	}
-
-	// The key's BYTES, copied into the slot compose mounts. Read failures are warnings rather than fatal: a
-	// bring-up whose model round-trip is about to be proven must not die on a publication path.
-	keyPEM, err := os.ReadFile(keyFile)
-	if err != nil {
-		return []string{fmt.Sprintf("PALAI_GITHUB_APP_PRIVATE_KEY_FILE=%s could not be read (%v), so no publisher "+
-			"is wired and an approved push would wait forever", keyFile, err)}
-	}
-	if len(bytes.TrimSpace(keyPEM)) == 0 {
-		return []string{"PALAI_GITHUB_APP_PRIVATE_KEY_FILE=" + keyFile + " is empty, so no publisher is wired and " +
-			"an approved push would wait forever"}
-	}
-	if err := os.WriteFile(p.secretPath(gitHubAppKeySlot), keyPEM, 0o600); err != nil {
-		return []string{fmt.Sprintf("could not stage the GitHub App key into %s (%v), so no publisher is wired",
-			p.secretPath(gitHubAppKeySlot), err)}
-	}
-
-	var warnings []string
-	exports := map[string]string{
-		"PALAI_GITHUB_APP_ID":               appID,
-		"PALAI_GITHUB_APP_INSTALLATION_ID":  installID,
-		"PALAI_GITHUB_APP_PRIVATE_KEY_FILE": containerGitHubAppKeyPath,
-	}
-	// owner/repo is what the PULL REQUEST half needs (main.go builds the PR client from it); without it a
-	// push still publishes and every pull request answers "no pull-request client wired". §0.2 asks the
-	// operator for PALAI_GIT_REPO, which is also what the repository binding uses, so the two cannot drift.
-	if slug := repositorySlug(get); slug != "" {
-		exports["PALAI_GITHUB_REPO"] = slug
-	} else {
-		warnings = append(warnings, "the GitHub App is configured but owner/repo is not, so a push will publish and "+
-			"every pull request will answer 'no pull-request client wired'. Fix: set PALAI_GIT_REPO=owner/repo")
-	}
-	for name, value := range exports {
-		if err := os.Setenv(name, value); err != nil {
-			warnings = append(warnings, fmt.Sprintf("could not export %s: %v", name, err))
-		}
-	}
-	return warnings
-}
-
-// missingNames returns the names whose value is empty, sorted so the warning reads the same every run.
-func missingNames(values map[string]string) []string {
-	var missing []string
-	for name, v := range values {
-		if v == "" {
-			missing = append(missing, name)
-		}
-	}
-	sort.Strings(missing)
-	return missing
-}
-
-// repositorySlug is owner/repo for the PR client: PALAI_GIT_REPO if the operator set it (§0.2), otherwise
-// derived from the clone URL the SAME way the repository binding derives its identity — one value, one
-// derivation, so the App and the binding can never point at two different repositories.
-func repositorySlug(get func(string) string) string {
-	if slug := strings.TrimSpace(get("PALAI_GIT_REPO")); strings.Contains(slug, "/") {
-		return slug
-	}
-	if cloneURL := strings.TrimSpace(get("PALAI_GIT_CLONE_URL")); cloneURL != "" {
-		if slug := repositoryIdentityFrom(cloneURL); strings.Contains(slug, "/") {
-			return slug
-		}
-	}
-	return ""
-}
 
 // ensureMasterKey makes $PALAI_HOME/secrets/master-key hold a key identity.ParseMasterKey accepts
 // (32 bytes, hex). An EXISTING valid key is never replaced: it seals every secret already in the
@@ -781,20 +650,6 @@ func apiClientFor(cfg Config, p paths) (*apiClient, error) {
 		return nil, fmt.Errorf("read api key: %w", err)
 	}
 	return &apiClient{baseURL: cfg.BaseURL, key: key, http: &http.Client{Timeout: 30 * time.Second}}, nil
-}
-
-// repositoryIdentityFrom derives owner/repo from a clone URL. A best-effort fallback for the operator who
-// set only PALAI_GIT_CLONE_URL; PALAI_GIT_REPO overrides it. Returns the trimmed path, or the URL itself
-// when it parses to nothing — the store requires a non-empty identity and an honest echo beats an empty one.
-func repositoryIdentityFrom(cloneURL string) string {
-	u, err := url.Parse(cloneURL)
-	if err != nil {
-		return cloneURL
-	}
-	if path := strings.TrimSuffix(strings.Trim(u.Path, "/"), ".git"); path != "" {
-		return path
-	}
-	return cloneURL
 }
 
 // approverListWarning exists because a project with no approvers list refuses NOTHING —
@@ -1584,10 +1439,7 @@ func (c *apiClient) seedModelConnection(credential string) string {
 // A binding carrying its own connection_ref publishes WITHOUT the App, so the App's absence is only a
 // problem for bindings that have no connection either. That is why this reads the rows rather than
 // just asking whether the App variables are set.
-func (c *apiClient) missingPublisherNotice(get func(string) string) string {
-	if strings.TrimSpace(get("PALAI_GITHUB_APP_ID")) != "" {
-		return "" // an App is configured; applyGitHubAppEnv already refused a half-configured one
-	}
+func (c *apiClient) missingPublisherNotice() string {
 	var page struct {
 		Data []struct {
 			ID            string `json:"id"`
@@ -1606,11 +1458,10 @@ func (c *apiClient) missingPublisherNotice(get func(string) string) string {
 	if len(stranded) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%d repository binding(s) can propose a push that NOTHING WILL EVER APPLY: %s carry no "+
-		"connection_ref and this deployment has no GitHub App either, so an agent proposes, a human approves, and "+
-		"the publication waits forever with no error anywhere. Fix: give the binding a connection on the console's "+
-		"/repositories screen, or set PALAI_GITHUB_APP_ID, PALAI_GITHUB_APP_INSTALLATION_ID and "+
-		"PALAI_GITHUB_APP_PRIVATE_KEY_FILE in .env.local and re-run `palai up`.",
+	return fmt.Sprintf("%d repository binding(s) cannot publish: %s carry no connection_ref, and there is no "+
+		"deployment-global credential to fall back to. The push is refused at the tool rather than parking a human "+
+		"on an approval for something that could never happen. Fix: give each binding a connection on the console's "+
+		"/repositories screen (provision the credential with POST /v1/secret-refs, then name it from the binding).",
 		len(stranded), strings.Join(stranded, ", "))
 }
 

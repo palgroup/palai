@@ -31,10 +31,23 @@ proof:
   #   up_repository_test.go:TestABringUpWithARepositoryGrantsThePublishToolsAndOneWithoutGrantsNone
   # The clause this case most depends on — that neither publish tool lets the model choose a destination —
   # is UNAFFECTED and keeps both its proofs above (publish_test.go, default_set_test.go).
-  - cmd/cli/internal/stack/up_publisher_test.go:TestABoundRepositoryWithNoGitHubAppWarnsRatherThanWaitingForever
-  - cmd/cli/internal/stack/up_publisher_test.go:TestAHalfConfiguredGitHubAppIsRefusedByName
-  - cmd/cli/internal/stack/up_publisher_test.go:TestTheGitHubAppKeyRidesAFileSecretAndTheEnvironmentCarriesOnlyAPath
-  - cmd/cli/internal/stack/up_publisher_test.go:TestComposeMountsTheGitHubAppKeyAsAFileSecret
+  # PROOF LEDGER CORRECTION, 2026-08-05. The deployment-global GitHub App was REMOVED, and with it
+  # up_publisher_test.go entirely. It could mint only for the repositories one installation covered and
+  # took its owner/repo from an environment variable, so a deployment serving several bindings opened
+  # every pull request against one of them. A binding's connection_ref carries a credential AND an
+  # identity, which is the shape this case's own crown sentence is about.
+  #
+  # WITHDRAWN — the App path they proved does not exist:
+  #   TestABoundRepositoryWithNoGitHubAppWarnsRatherThanWaitingForever
+  #   TestAHalfConfiguredGitHubAppIsRefusedByName
+  #   TestTheGitHubAppKeyRidesAFileSecretAndTheEnvironmentCarriesOnlyAPath
+  #   TestComposeMountsTheGitHubAppKeyAsAFileSecret
+  #
+  # WHAT REPLACES THEIR VALUE: the silent failure they existed for — an approved push that nothing ever
+  # applies — is now refused AT THE TOOL for a binding with no credential, proven by
+  # publish_identity_test.go:TestARefLessPublicationIsWarnedRatherThanSkipped (already listed below),
+  # and named at bring-up by up_repository_test.go:TestABindingWithNoWayToPublishIsNamed.
+  - cmd/cli/internal/stack/up_repository_test.go:TestABindingWithNoWayToPublishIsNamed
   - adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement
   #   - apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackUnauthorizedClickEnqueuesNothing
   - tests/live/repository/live_test.go:TestLiveApprovedPushAndDraftPullRequest

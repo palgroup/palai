@@ -102,7 +102,7 @@ func ensureSecretSlots(p paths) error {
 	// reads the path until PALAI_GITHUB_APP_ID and the installation id are BOTH set — so an empty slot means
 	// "no deployment-global App", not "no publisher" and not "this stack cannot boot": a binding carrying its
 	// own connection_ref publishes without one. applyGitHubAppEnv fills it when the operator configured an App.
-	for _, path := range []string{p.secretPath("provider-one"), p.secretPath(gitHubAppKeySlot)} {
+	for _, path := range []string{p.secretPath("provider-one")} {
 		switch _, err := os.Stat(path); {
 		case err == nil:
 			continue

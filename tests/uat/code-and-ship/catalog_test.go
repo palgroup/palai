@@ -68,10 +68,12 @@ var expectedCodeAndShipCatalog = map[string]struct {
 	// §3.6 D4 measured.
 	"CAS-001": {"unit", []string{
 		// WITHDRAWN 2026-08-04: `1e5fc63e` removed the bring-up's conditional tool grant. Recorded in CAS-001.
-		"cmd/cli/internal/stack/up_repository_test.go:TestABringUpBindsTheRepositoryAndSaysWhatItMade",
-		"cmd/cli/internal/stack/up_repository_test.go:TestABringUpReusesTheRepositoryBindingItAlreadyMade",
-		"cmd/cli/internal/stack/up_repository_test.go:TestAMissingRepositoryConfigurationWarnsRatherThanSkippingSilently",
-		"cmd/cli/internal/stack/up_repository_test.go:TestARepositorySurfaceTheStackDoesNotMountIsReportedRatherThanSwallowed",
+		// 2026-08-05: bindings became REMOTE-ONLY (the console creates them; `palai up` reports them), so the
+		// two "a bring-up CREATES a binding" proofs are withdrawn and the two survivors follow their renames.
+		// Recorded in CAS-001/case.yaml.
+		"cmd/cli/internal/stack/up_repository_test.go:TestTheBringUpREPORTSBindingsAndCreatesNone",
+		"cmd/cli/internal/stack/up_repository_test.go:TestNoBindingIsSaidOutLoudAndNamesTheScreen",
+		"cmd/cli/internal/stack/up_repository_test.go:TestAnUnreadableBindingSurfaceDoesNotClaimThereAreNone",
 		// RENAMED 2026-08-04: the comparison survives, now reading packages/toolset, not a Slack-named literal.
 		"apps/control-plane/internal/execution/tools/default_set_test.go:TestEveryDefaultToolResolves",
 		"tests/live/repository/live_test.go:TestLiveSlackBoundRepositoryClonesAtItsBaseBranch",
@@ -92,10 +94,10 @@ var expectedCodeAndShipCatalog = map[string]struct {
 		// RENAMED 2026-08-04: the comparison survives, now reading packages/toolset, not a Slack-named literal.
 		"apps/control-plane/internal/execution/tools/default_set_test.go:TestEveryDefaultToolResolves",
 		// WITHDRAWN 2026-08-04: same cause; the model-cannot-choose-a-destination clause is unaffected. See CAS-002.
-		"cmd/cli/internal/stack/up_publisher_test.go:TestABoundRepositoryWithNoGitHubAppWarnsRatherThanWaitingForever",
-		"cmd/cli/internal/stack/up_publisher_test.go:TestAHalfConfiguredGitHubAppIsRefusedByName",
-		"cmd/cli/internal/stack/up_publisher_test.go:TestTheGitHubAppKeyRidesAFileSecretAndTheEnvironmentCarriesOnlyAPath",
-		"cmd/cli/internal/stack/up_publisher_test.go:TestComposeMountsTheGitHubAppKeyAsAFileSecret",
+		// 2026-08-05: the deployment-global GitHub App was removed and up_publisher_test.go with it. The
+		// silent failure those proofs existed for is now refused at the tool and named at bring-up.
+		// Recorded in CAS-002/case.yaml.
+		"cmd/cli/internal/stack/up_repository_test.go:TestABindingWithNoWayToPublishIsNamed",
 		"adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement",
 		"tests/live/repository/live_test.go:TestLiveApprovedPushAndDraftPullRequest",
 		// RE-EARNED 2026-08-05 — the same claims, off Slack: AcceptCommand + ApplyApprovalDecision instead

@@ -276,10 +276,9 @@ func nativeEnv(cfg Config, p paths, get func(string) string, engine, listen, roo
 		"PALAI_BOOTSTRAP_API_KEY_FILE": p.apiKey,
 		// The file secrets, at their host paths. The entrypoint's /run/secrets/* destinations name
 		// files that do not exist off a container.
-		"PALAI_SECRET_MASTER_KEY_FILE":      p.masterKey,
-		"PALAI_GITHUB_APP_PRIVATE_KEY_FILE": p.secretPath(gitHubAppKeySlot),
-		"PALAI_ENGINE_IMAGE":                engine,
-		"PALAI_WORKSPACE_ROOT":              root,
+		"PALAI_SECRET_MASTER_KEY_FILE": p.masterKey,
+		"PALAI_ENGINE_IMAGE":           engine,
+		"PALAI_WORKSPACE_ROOT":         root,
 	} {
 		env[k] = v
 	}

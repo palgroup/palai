@@ -706,7 +706,7 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		// resolver reports an honest miss instead.
 		orch.SetEnvironmentSecrets(environmentValueSecret)
 		if root := os.Getenv("PALAI_WORKSPACE_ROOT"); root != "" {
-			orch.SetWorkspaceProvisioner(root, repositoryBrokerFromEnv())
+			orch.SetWorkspaceProvisioner(root, repositoryWorkspaceBroker())
 			// PER-SESSION ACCOUNTS (macOS), ACQUIRE HALF: the uid a session's tools run under, created when the
 			// session first provisions a workspace. It is the SAME INSTANCE the release half holds — they share the
 			// map of which session owns which slot, and two instances would give the releaser an empty one.
@@ -964,34 +964,21 @@ func connectionInspectors() map[string]store.ConnectionInspector {
 	return out
 }
 
-// repositoryBrokerFromEnv builds the credential broker the root-run clone runs behind (spec §30.2-30.3):
-// the GitHub App broker when the App environment is configured (private repos), else the local broker —
-// filesystem credential helpers for a local/dev Git remote or a public repo. The broker stays CP-side;
-// the minted read credential feeds only a Git credential helper and is revoked after the fetch, so the
-// model and the sandbox never see it. A misconfigured App falls back to the local broker rather than
-// disabling provisioning, so a dev/compose stack still clones its local double.
-func repositoryBrokerFromEnv() repositories.Broker {
-	appID := os.Getenv("PALAI_GITHUB_APP_ID")
-	installID := os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID")
-	keyFile := os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE")
-	if appID == "" || installID == "" || keyFile == "" {
-		return repositories.NewAnonymousBroker()
-	}
-	keyPEM, err := os.ReadFile(keyFile)
-	if err != nil {
-		log.Printf("repository broker: read app key file: %v (using local broker)", err)
-		return repositories.NewAnonymousBroker()
-	}
-	cfg := repositories.GitHubAppConfig{AppID: appID, InstallationID: installID, PrivateKeyPEM: keyPEM}
-	if slug := os.Getenv("PALAI_GITHUB_REPO"); strings.IndexByte(slug, '/') > 0 {
-		cfg.Repositories = []string{slug[strings.IndexByte(slug, '/')+1:]}
-	}
-	broker, err := repositories.NewGitHubAppBroker(cfg)
-	if err != nil {
-		log.Printf("repository broker: app broker: %v (using local broker)", err)
-		return repositories.NewAnonymousBroker()
-	}
-	return broker
+// repositoryWorkspaceBroker is the credential broker the root-run clone runs behind (spec §30.2-30.3).
+// It is the LOCAL broker — filesystem credential helpers for a local/dev remote or a public repo — and
+// nothing else, since the deployment-global GitHub App was removed 2026-08-05.
+//
+// WHAT REPLACED IT WAS ALREADY THERE: a binding carrying a connection_ref clones under its own tenant's
+// credential (orch.SetConnectionSecrets), which is per-binding rather than per-deployment. The App could
+// only ever mint for the repositories one installation covered, so on a stack serving several bindings it
+// was the credential for whichever one the installation happened to include.
+//
+// A binding with NO connection_ref reaches this broker, gets no token, and the clone is refused with
+// "clone request carries no read credential" — deliberately, because an anonymous clone SUCCEEDS on a
+// public repository and fails on every private one, so a broken credential path would look like a working
+// deployment until the first private binding.
+func repositoryWorkspaceBroker() repositories.Broker {
+	return repositories.NewAnonymousBroker()
 }
 
 // shellPostureNative is the ONLY accepted value of PALAI_SHELL_NATIVE. It is posture's constant since
@@ -1350,82 +1337,16 @@ func repositoryPublisher() execution.Publisher {
 			return repositories.NewTokenPullRequestClient(token, "", owner, repo)
 		},
 	}
-	publisher.Broker, publisher.PRClient = gitHubAppPublisherFromEnv()
+	// NO DEPLOYMENT-GLOBAL GitHub App. It was removed 2026-08-05 with the rest of the App path: a single
+	// App meant one deployment could publish to the repositories ONE installation covered, however many
+	// bindings it served, and its owner/repo came from an env var — so a stack serving five bindings opened
+	// every pull request against one of them. A binding's own connection_ref carries a credential AND an
+	// identity, which is the shape that was always right.
+	//
+	// publisher.Broker stays nil and that is a supported state, not a gap: credentialFor() returns
+	// CanPublish's refusal for a binding with no connection_ref, so such a binding is refused AT THE TOOL,
+	// before a human is asked to approve something that could never happen.
 	return publisher
-}
-
-// gitHubAppPublisherFromEnv builds the DEPLOYMENT-GLOBAL half — the credential a binding that names no
-// connection_ref of its own publishes under. Both returns are nil when no App is configured, which is a
-// supported deployment and not a failure: see repositoryPublisher above.
-//
-// The App path stays exactly as it was for the fleet case it is right for, where handing a run a tenant
-// PAT would hand it that account's whole reach. What changed is only that its absence no longer removes
-// the other path.
-//
-// "AN APPROVED PUSH WILL WAIT FOREVER" NO LONGER BELONGS AT THIS LOG LINE, and dropping it is a
-// correction rather than a tidy-up: after this change nothing waits silently — a ref-less publication on
-// an App-less deployment is refused at the tool, before a human is asked, and GET /v1/deployment carries
-// the warning. What the half-configured case still deserves is its own line, because it is the one state
-// an operator reaches BELIEVING they finished.
-func gitHubAppPublisherFromEnv() (repositories.Broker, repositories.PullRequestClient) {
-	appID := os.Getenv("PALAI_GITHUB_APP_ID")
-	installID := os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID")
-	keyFile := os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE")
-	if !api.GitHubAppConfigured() {
-		// THE CONDITION IS THE TWO IDENTIFIERS, NOT THE KEY PATH, and it was measured: every bring-up sets
-		// PALAI_GITHUB_APP_PRIVATE_KEY_FILE (native.go's env map and compose.yaml both write it
-		// unconditionally, at a file-secret slot that exists EMPTY until an App is configured), so a line
-		// conditioned on it printed on a stack that had configured NOTHING — seen on the live native stack
-		// 2026-08-02 at boot. `palai up` calls that crying wolf and removed it once already.
-		if appID != "" || installID != "" {
-			log.Printf("repository publisher: PALAI_GITHUB_APP_ID/PALAI_GITHUB_APP_INSTALLATION_ID/" +
-				"PALAI_GITHUB_APP_PRIVATE_KEY_FILE are required TOGETHER; at least one is missing, so the " +
-				"deployment-global App is OFF — only a binding carrying its own connection_ref can publish")
-		}
-		return nil, nil
-	}
-	keyPEM, err := os.ReadFile(keyFile)
-	if err != nil {
-		log.Printf("repository publisher: read app key file: %v (the deployment-global App is OFF)", err)
-		return nil, nil
-	}
-	// owner/repo for the App's pull-request client. PALAI_GITHUB_REPO is this binary's own name for it;
-	// PALAI_GIT_REPO is the one §0.2 asks the operator for and the repository binding already uses, so both
-	// are read rather than letting a stack be configured correctly and publish nothing. It narrows ONLY the
-	// App path: a binding with its own credential brings its own owner/repo (target.Identity), which is why
-	// one stack no longer opens pull requests against exactly one repository however many bindings it serves.
-	owner, repo := "", ""
-	slug := os.Getenv("PALAI_GITHUB_REPO")
-	if slug == "" {
-		slug = os.Getenv("PALAI_GIT_REPO")
-	}
-	if strings.IndexByte(slug, '/') > 0 {
-		i := strings.IndexByte(slug, '/')
-		owner, repo = slug[:i], slug[i+1:]
-	}
-	cfg := repositories.GitHubAppConfig{AppID: appID, InstallationID: installID, PrivateKeyPEM: keyPEM}
-	if repo != "" {
-		cfg.Repositories = []string{repo}
-	}
-	broker, err := repositories.NewGitHubAppBroker(cfg)
-	if err != nil {
-		log.Printf("repository publisher: app broker: %v (the deployment-global App is OFF)", err)
-		return nil, nil
-	}
-	if owner == "" || repo == "" {
-		// A push publishes without this (its remote comes from the binding); a pull request cannot, and
-		// answers "no pull-request client wired" at the pump. Said out loud, because the operator's only
-		// other symptom is an approved PR that never opens.
-		log.Printf("repository publisher: no owner/repo (set PALAI_GIT_REPO=owner/repo) — App pushes publish, " +
-			"App pull requests do NOT")
-		return broker, nil
-	}
-	prClient, err := repositories.NewGitHubPullRequestClient(cfg, owner, repo)
-	if err != nil {
-		log.Printf("repository publisher: pr client: %v (App pull requests disabled)", err)
-		return broker, nil
-	}
-	return broker, prClient
 }
 
 // startWebhookPump launches the supervised outbound-webhook delivery pump (spec §21.4-21.6). It is a

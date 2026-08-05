@@ -116,7 +116,7 @@ func TestAnUnreadableBindingSurfaceDoesNotClaimThereAreNone(t *testing.T) {
 // waits forever with no error anywhere.
 func TestABindingWithNoWayToPublishIsNamed(t *testing.T) {
 	api, _ := bindingStub(t, []map[string]any{{"id": "repo_stranded", "connection_ref": ""}})
-	notice := api.missingPublisherNotice(envGetter(map[string]string{}))
+	notice := api.missingPublisherNotice()
 	if notice == "" {
 		t.Fatal("a binding with neither a connection_ref nor a GitHub App was not reported")
 	}
@@ -129,20 +129,7 @@ func TestABindingWithNoWayToPublishIsNamed(t *testing.T) {
 // the App, so warning about it would be the crying-wolf this file refuses elsewhere.
 func TestABindingWithItsOwnConnectionIsNotReported(t *testing.T) {
 	api, _ := bindingStub(t, []map[string]any{{"id": "repo_ok", "connection_ref": "gh-token"}})
-	if notice := api.missingPublisherNotice(envGetter(map[string]string{})); notice != "" {
+	if notice := api.missingPublisherNotice(); notice != "" {
 		t.Errorf("a binding that can publish on its own was reported as stranded: %q", notice)
-	}
-}
-
-// The identity fallback still has a caller (the pull-request client's owner/repo), so it keeps its test.
-func TestTheRepositoryIdentityFallsBackToTheCloneURLPath(t *testing.T) {
-	for _, tc := range []struct{ url, want string }{
-		{"https://github.com/acme/widgets.git", "acme/widgets"},
-		{"https://github.com/acme/widgets", "acme/widgets"},
-		{"https://ghe.example.test/team/sub/repo.git", "team/sub/repo"},
-	} {
-		if got := repositoryIdentityFrom(tc.url); got != tc.want {
-			t.Fatalf("repositoryIdentityFrom(%q) = %q, want %q", tc.url, got, tc.want)
-		}
 	}
 }

@@ -194,16 +194,6 @@ const (
 	// warnWorkspaceRootPlane: this deployment provisions workspaces, and the SAME variable name has a second
 	// reader on a plane this process cannot see. Advisory, and it clears the moment workspaces are off.
 	warnWorkspaceRootPlane = "workspace_root_runner_plane"
-	// warnPublishAppAbsent: no GitHub App, so the only bindings that can publish are the ones carrying their
-	// own connection_ref. ADVISORY, and the severity is the honest one rather than the loud one: a
-	// single-tenant stack whose bindings each name a panel-provisioned credential publishes perfectly well
-	// with no App, and that configuration is the reason the connection_ref path exists. What an operator
-	// cannot be left to discover is that a binding WITHOUT one has no credential at all here.
-	warnPublishAppAbsent = "publication_no_github_app"
-	// warnPublishAppPartial: one or two of the three App variables. BLOCKING, and it is the sharper of the
-	// pair, because the operator INTENDED to configure an App and this deployment has none — they will
-	// bind repositories expecting the App to carry them.
-	warnPublishAppPartial = "publication_github_app_partial"
 
 	severityBlocking = "blocking"
 	severityAdvisory = "advisory"
@@ -707,27 +697,6 @@ var deploymentCatalogue = []catalogueEntry{
 	// main.startSlackSocket. That function no longer exists: apps/slack-bot holds the connection, one
 	// process per registered bot row, so there is no single-workspace selector to report and no reader to
 	// cite. TestEveryCatalogueCitationResolvesToARealReader is what caught the stale citation.
-	{
-		Name: "PALAI_GITHUB_APP_ID", Group: "integration", Kind: kindValue, Default: "unset — the LOCAL repository broker is used, which reaches public repos and local remotes only",
-		Effect:     "The GitHub App this deployment mints repository read credentials from. All three App variables must be set together; any one missing falls back to the local broker.",
-		Mutability: mutabilityBringUp, ChangeWith: changeCP,
-		ReaderFile: cpMain, ReaderFunc: "repositoryBrokerFromEnv",
-	},
-	{
-		Name: "PALAI_GITHUB_APP_INSTALLATION_ID", Group: "integration", Kind: kindValue, Default: "unset — see PALAI_GITHUB_APP_ID",
-		Effect: "The App installation the credential is minted for.", Mutability: mutabilityBringUp, ChangeWith: changeCP,
-		ReaderFile: cpMain, ReaderFunc: "repositoryBrokerFromEnv",
-	},
-	{
-		Name: "PALAI_GITHUB_APP_PRIVATE_KEY_FILE", Group: "integration", Kind: kindPath, Default: "unset — see PALAI_GITHUB_APP_ID",
-		Effect: "The file holding the App's private key. A PATH; the PEM is never returned.", Mutability: mutabilityBringUp, ChangeWith: changeCP,
-		ReaderFile: cpMain, ReaderFunc: "repositoryBrokerFromEnv",
-	},
-	{
-		Name: "PALAI_GITHUB_REPO", Group: "integration", Kind: kindValue, Default: "unset — the App credential is not narrowed to one repository",
-		Effect: "The owner/name slug the minted App credential is scoped to.", Mutability: mutabilityBringUp, ChangeWith: changeCP,
-		ReaderFile: cpMain, ReaderFunc: "repositoryBrokerFromEnv",
-	},
 
 	// --- what this process says it is -----------------------------------------------------------------
 	// --- THE RUNNER PLANE. Read by cmd/runner, NOT by this process ------------------------------------
@@ -835,12 +804,11 @@ var nonDesiredReason = map[string]string{
 		"Moving it from a form points the store at a file the operator chose and the process reads at boot with no further question.",
 	"PALAI_BOOTSTRAP_API_KEY_FILE": "a path, and the file it names holds the first admin key. It is seeded once at boot; " +
 		"re-pointing it is minting an identity, not configuring a machine.",
-	"PALAI_RUNNER_CA_CERT":              "a path to the fleet's trust root.",
-	"PALAI_RUNNER_CA_KEY":               "a path to the private key every runner certificate is issued from.",
-	"PALAI_RUNNER_SERVER_CERT":          "a path to the gateway listener's certificate; its SANs decide which addresses a runner may dial.",
-	"PALAI_RUNNER_SERVER_KEY":           "a path to the gateway listener's private key.",
-	"PALAI_ENROLLMENT_TOKEN_FILE":       "a path to the credential a machine spends to join the fleet.",
-	"PALAI_GITHUB_APP_PRIVATE_KEY_FILE": "a path to the App's PEM.",
+	"PALAI_RUNNER_CA_CERT":        "a path to the fleet's trust root.",
+	"PALAI_RUNNER_CA_KEY":         "a path to the private key every runner certificate is issued from.",
+	"PALAI_RUNNER_SERVER_CERT":    "a path to the gateway listener's certificate; its SANs decide which addresses a runner may dial.",
+	"PALAI_RUNNER_SERVER_KEY":     "a path to the gateway listener's private key.",
+	"PALAI_ENROLLMENT_TOKEN_FILE": "a path to the credential a machine spends to join the fleet.",
 	"PALAI_FAKE_SCRIPT_FILE": "a path, and the file it names decides what a run's model APPEARS to say. " +
 		"A form that wrote it would let a reader of the panel author a fabricated exchange every credential-less " +
 		"run then replays as if it were an answer.",
@@ -909,10 +877,6 @@ var nonDesiredReason = map[string]string{
 		"where results land.",
 
 	// --- half of a credential triple -----------------------------------------------------------------
-	"PALAI_GITHUB_APP_ID": "one of THREE variables that must be set together, and the third is a path this surface will never write. " +
-		"Writing two of three falls back to the local repository broker with nothing on any screen able to say why.",
-	"PALAI_GITHUB_APP_INSTALLATION_ID": "see PALAI_GITHUB_APP_ID.",
-	"PALAI_GITHUB_REPO":                "it narrows a credential this surface cannot mint; on its own it configures nothing.",
 
 	// --- it has a strictly better live write-path ------------------------------------------------------
 	"PALAI_OPENAI_COMPATIBLE_BASE_URL": "superseded by a LIVE write-path that is strictly better: migration 000051 gave " +
@@ -1182,35 +1146,15 @@ func deploymentWarnings() []deploymentWarning {
 	// configuration a single-tenant stack with a connection_ref binding actually has. Measured on the live
 	// native stack 2026-08-02: App id and installation id unset, publisher nil, no warning anywhere.
 	//
-	// Both warnings derive from GitHubAppConfigured(), which is the SAME function the publisher's App half
-	// calls — so this cannot report an App the publisher does not hold, or miss one it does.
-	switch {
-	case gitHubAppPartiallyConfigured():
-		out = append(out, deploymentWarning{
-			Code: warnPublishAppPartial, Severity: severityBlocking,
-			Headline: "This deployment's GitHub App is half-configured, so it has none.",
-			Detail: "The three App variables are required TOGETHER and " + strings.Join(unsetGitHubAppSettings(), ", ") +
-				" is unset, so no deployment-global publish credential is built. A repository binding that names its own " +
-				"connection_ref still publishes under that; a binding without one has no credential here at all, and the " +
-				"publication tool refuses it rather than parking a human on a push that cannot happen.",
-			Remedy: "Set all three (`palai up` stages the private key into a file secret and passes a PATH), or clear the " +
-				"ones that are set and give each repository binding its own connection_ref instead.",
-			Settings: gitHubAppSettings,
-		})
-	case !GitHubAppConfigured():
-		out = append(out, deploymentWarning{
-			Code: warnPublishAppAbsent, Severity: severityAdvisory,
-			Headline: "Only a repository binding carrying its own credential can publish from this deployment.",
-			Detail: "No GitHub App is configured, so there is no deployment-global publish credential. A binding whose " +
-				"connection_ref names a server-side secret pushes and opens pull requests under THAT — which is the " +
-				"single-tenant configuration this path exists for, and it needs no App. A binding with no connection_ref " +
-				"has no credential to publish under: its push is refused at the tool, before a human is asked to approve " +
-				"it, rather than being approved and never attempted.",
-			Remedy: "Either give each repository binding a connection_ref (provision the credential with POST /v1/secret-refs, " +
-				"then set the binding's connection_ref), or configure a GitHub App with all three variables.",
-			Settings: gitHubAppSettings,
-		})
-	}
+	// NO PUBLISH WARNING IS EMITTED HERE ANY MORE. The two that were — a half-configured GitHub App and an
+	// absent one — described a deployment-global App removed 2026-08-05, and the question that outlived it
+	// ("which bindings cannot publish?") cannot be answered from this function: it reads the process
+	// environment, and the answer is in the repository_bindings rows.
+	//
+	// It is asked where the rows are, by `palai up`'s missingPublisherNotice, which names the bindings
+	// carrying no connection_ref. Reproducing it here from environment variables is what produced the
+	// warnings this replaced — both were derived from variables rather than from the thing they claimed
+	// to be about.
 	if !liveModelProviderConfigured() {
 		out = append(out, deploymentWarning{
 			Code: warnModelFake, Severity: severityAdvisory,
@@ -1230,65 +1174,6 @@ func deploymentWarnings() []deploymentWarning {
 // equality rather than a non-emptiness test: any value other than `provider-one` returns the fake route.
 func liveModelProviderConfigured() bool {
 	return os.Getenv("PALAI_MODEL_PROVIDER") == "provider-one"
-}
-
-// GitHubAppConfigured reports whether the three App variables are set TOGETHER, which is what decides
-// whether this deployment has a deployment-global publish credential at all.
-//
-// IT IS EXPORTED AND main.gitHubAppPublisherFromEnv CALLS IT, which is the difference between this and
-// liveModelProviderConfigured above. That one MIRRORS a branch in main.go and says so; a mirror is two
-// copies of a rule that agree today. Here the surface and the publisher are the SAME call, so the warning
-// below cannot say "no App" while the publisher holds one — the state this warning exists to report is
-// exactly the state that decides the behaviour it reports.
-//
-// It does NOT read the key file. A path that names nothing still counts as configured here, and the
-// publisher logs its own line when the read fails — this answers "did the operator configure an App",
-// which is the question the warning is about.
-func GitHubAppConfigured() bool {
-	return os.Getenv("PALAI_GITHUB_APP_ID") != "" &&
-		os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID") != "" &&
-		os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE") != ""
-}
-
-// gitHubAppPartiallyConfigured is the state an operator reaches by editing .env.local and being
-// interrupted. It must not read as configured and must not read as unconfigured — it is the one case
-// where the operator believes they finished.
-//
-// IT COUNTS THE TWO IDENTIFIERS AND NOT THE KEY PATH, and that distinction was MEASURED rather than
-// reasoned. A first version asked "are one or two of the three set", and on the live native stack
-// (2026-08-02) it reported BLOCKING on a deployment that had configured nothing:
-//
-//	GET /v1/deployment -> publication_github_app_partial, "PALAI_GITHUB_APP_ID, ...INSTALLATION_ID is unset"
-//
-// because EVERY shipped bring-up sets the key PATH regardless of intent — native.go's env map writes
-// PALAI_GITHUB_APP_PRIVATE_KEY_FILE unconditionally and compose.yaml writes it literally, both pointing at
-// a file-secret slot that exists EMPTY until an App is configured. So the path is a property of the
-// bring-up, not a thing the operator decided, and a severity derived from it is a red banner on every
-// healthy single-tenant stack. `palai up` already names that failure in its own words: a warning on every
-// bring-up is crying wolf.
-//
-// The identifiers are different: nothing sets PALAI_GITHUB_APP_ID or PALAI_GITHUB_APP_INSTALLATION_ID
-// except an operator. Naming one of them IS the unfinished intent this warning is about.
-func gitHubAppPartiallyConfigured() bool {
-	started := os.Getenv("PALAI_GITHUB_APP_ID") != "" || os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID") != ""
-	return started && !GitHubAppConfigured()
-}
-
-// gitHubAppSettings are the three names, in one place, because both warnings below quote them and a
-// warning that named two of three would be the defect it reports.
-var gitHubAppSettings = []string{
-	"PALAI_GITHUB_APP_ID", "PALAI_GITHUB_APP_INSTALLATION_ID", "PALAI_GITHUB_APP_PRIVATE_KEY_FILE",
-}
-
-// unsetGitHubAppSettings names which of the three are missing, so the operator is not left diffing.
-func unsetGitHubAppSettings() []string {
-	out := []string{}
-	for _, name := range gitHubAppSettings {
-		if os.Getenv(name) == "" {
-			out = append(out, name)
-		}
-	}
-	return out
 }
 
 func quotedOrUnset(v string) string {

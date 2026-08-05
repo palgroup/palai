@@ -112,31 +112,21 @@ func TestLiveRepositoryCloneCredentialAbsent(t *testing.T) {
 	})
 }
 
-// liveBroker builds the credential broker for the run: a real GitHub App installation-token minter
-// when the App env is present (the strongest tier), else the local broker for a public/local repo.
+// liveBroker builds the credential broker for the run: the token a repository binding's connection_ref
+// resolves to when PALAI_LIVE_REPO_TOKEN supplies one, else the local broker for a public/local repo.
+//
+// It used to mint a GitHub App installation token, which was "the strongest tier" only because it was
+// the deployment-global one. The App was removed 2026-08-05: it could reach the repositories a single
+// installation covered and took its owner/repo from an environment variable, so one deployment opened
+// every pull request against one repository however many bindings it served.
 func liveBroker(t *testing.T, repoURL string) (repositories.Broker, string) {
 	t.Helper()
-	appID := os.Getenv("PALAI_GITHUB_APP_ID")
-	installID := os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID")
-	keyFile := os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE")
-	if appID != "" && installID != "" && keyFile != "" {
-		pem, err := os.ReadFile(keyFile)
-		if err != nil {
-			t.Fatalf("read GitHub App private key: %v", err)
-		}
-		var repos []string
-		if r := os.Getenv("PALAI_GITHUB_APP_REPO"); r != "" {
-			repos = []string{r}
-		}
-		broker, err := repositories.NewGitHubAppBroker(repositories.GitHubAppConfig{
-			AppID: appID, InstallationID: installID, PrivateKeyPEM: pem, Repositories: repos,
-		})
-		if err != nil {
-			t.Fatalf("NewGitHubAppBroker() error = %v", err)
-		}
-		return broker, "github-app-installation-token (real)"
+	// A REAL CREDENTIAL COMES FROM A BINDING NOW, not from a deployment-global App (removed 2026-08-05).
+	// PALAI_LIVE_REPO_TOKEN stands in for what a binding's connection_ref resolves to on a live stack.
+	if token := strings.TrimSpace(os.Getenv("PALAI_LIVE_REPO_TOKEN")); token != "" {
+		return repositories.NewTokenBroker(token), "binding connection_ref token (real)"
 	}
-	return repositories.NewAnonymousBroker(), "local-broker (PALAI_GIT_REPO, no App env)"
+	return repositories.NewAnonymousBroker(), "local-broker (no PALAI_LIVE_REPO_TOKEN)"
 }
 
 func scanForCredentialShape(t *testing.T, surface string, data []byte) {
@@ -321,20 +311,7 @@ func TestLiveApprovedPushAndDraftPullRequest(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	keyPEM, err := os.ReadFile(os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE"))
-	if err != nil {
-		t.Fatalf("read GitHub App private key: %v", err)
-	}
-	cfg := repositories.GitHubAppConfig{
-		AppID:          os.Getenv("PALAI_GITHUB_APP_ID"),
-		InstallationID: os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID"),
-		PrivateKeyPEM:  keyPEM,
-		Repositories:   []string{repo},
-	}
-	broker, err := repositories.NewGitHubAppBroker(cfg)
-	if err != nil {
-		t.Fatalf("NewGitHubAppBroker() error = %v", err)
-	}
+	broker, _ := liveBroker(t, cloneURL)
 
 	// 1. Prepare the workspace the way a run does: clone at the binding's base branch onto a work branch.
 	run := "run_e22t4_" + strconv.FormatInt(time.Now().UnixNano(), 36)
@@ -396,9 +373,9 @@ func TestLiveApprovedPushAndDraftPullRequest(t *testing.T) {
 
 	// 4. The pull request. DRAFT is not an argument here — OpenPullRequest sets it, §30.8 policy — and the
 	// base is the binding's, never the model's.
-	prClient, err := repositories.NewGitHubPullRequestClient(cfg, owner, repo)
+	prClient, err := repositories.NewTokenPullRequestClient(os.Getenv("PALAI_LIVE_REPO_TOKEN"), "", owner, repo)
 	if err != nil {
-		t.Fatalf("NewGitHubPullRequestClient() error = %v", err)
+		t.Fatalf("NewTokenPullRequestClient() error = %v", err)
 	}
 	pr, err := repositories.OpenPullRequest(ctx, prClient, repositories.OpenPRInput{
 		HeadBranch: branch, Base: base,
@@ -473,20 +450,7 @@ func TestLiveApprovedMergeRefusesAMovedHead(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	keyPEM, err := os.ReadFile(os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE"))
-	if err != nil {
-		t.Fatalf("read GitHub App private key: %v", err)
-	}
-	cfg := repositories.GitHubAppConfig{
-		AppID:          os.Getenv("PALAI_GITHUB_APP_ID"),
-		InstallationID: os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID"),
-		PrivateKeyPEM:  keyPEM,
-		Repositories:   []string{repo},
-	}
-	broker, err := repositories.NewGitHubAppBroker(cfg)
-	if err != nil {
-		t.Fatalf("NewGitHubAppBroker() error = %v", err)
-	}
+	broker, _ := liveBroker(t, cloneURL)
 
 	// A real branch with a real commit, pushed — the same shape the push leg above uses.
 	run := "run_e23t6_" + strconv.FormatInt(time.Now().UnixNano(), 36)
@@ -520,9 +484,9 @@ func TestLiveApprovedMergeRefusesAMovedHead(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("PushBranch() error = %v", err)
 	}
-	prClient, err := repositories.NewGitHubPullRequestClient(cfg, owner, repo)
+	prClient, err := repositories.NewTokenPullRequestClient(os.Getenv("PALAI_LIVE_REPO_TOKEN"), "", owner, repo)
 	if err != nil {
-		t.Fatalf("NewGitHubPullRequestClient() error = %v", err)
+		t.Fatalf("NewTokenPullRequestClient() error = %v", err)
 	}
 	pr, err := repositories.OpenPullRequest(ctx, prClient, repositories.OpenPRInput{
 		HeadBranch: branch, Base: base, Title: "Agent changes: " + branch, Body: "live E23 T6",

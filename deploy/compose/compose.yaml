@@ -172,12 +172,8 @@ services:
       #
       # Unset ids leave the publisher nil and the key file unread, so a stack that configured no App is
       # byte-for-byte unchanged and never logs about a key it was never given.
-      PALAI_GITHUB_APP_ID: ${PALAI_GITHUB_APP_ID:-}
-      PALAI_GITHUB_APP_INSTALLATION_ID: ${PALAI_GITHUB_APP_INSTALLATION_ID:-}
-      PALAI_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github_app_key
       # owner/repo for the PULL REQUEST client only (a push needs just the binding's clone_url). Absent, a
       # push still publishes and a pull request answers "no pull-request client wired".
-      PALAI_GITHUB_REPO: ${PALAI_GITHUB_REPO:-}
     secrets:
       - provider_one_key
       - bootstrap_api_key

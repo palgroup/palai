@@ -403,16 +403,17 @@ func (p *RepositoryPublisher) CanPublish(connectionRef string) error {
 	if connectionRef != "" {
 		if p.ConnectionSecrets == nil {
 			return fmt.Errorf("the binding names its own credential %q and no connection-secret resolver is "+
-				"wired on this deployment: refusing to publish under the deployment App", connectionRef)
+				"wired on this deployment, so the reference cannot be redeemed", connectionRef)
 		}
 		return nil
 	}
 	if p.Broker == nil {
-		return errors.New("this binding names no connection_ref, so it would publish under the deployment's " +
-			"GitHub App — and this deployment has no App configured (PALAI_GITHUB_APP_ID, " +
-			"PALAI_GITHUB_APP_INSTALLATION_ID and PALAI_GITHUB_APP_PRIVATE_KEY_FILE are required together). " +
-			"Give the binding its own connection_ref (POST /v1/secret-refs, then the binding's connection_ref), " +
-			"or configure the App")
+		return errors.New("this binding names no connection_ref, so there is no credential to publish under. " +
+			"There is no deployment-global fallback: the GitHub App was removed 2026-08-05 because one App " +
+			"could only reach the repositories a single installation covered, and its owner/repo came from an " +
+			"environment variable — so one deployment opened every pull request against one repository however " +
+			"many bindings it served. Give the binding its own credential: POST /v1/secret-refs, then set the " +
+			"binding's connection_ref")
 	}
 	return nil
 }

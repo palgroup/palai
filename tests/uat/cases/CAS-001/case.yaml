@@ -28,10 +28,24 @@ proof:
   # A bring-up now grants one CANONICAL set (packages/toolset) regardless of the binding, proven by
   # up_default_tools_test.go:TestBringUpGrantsTheCanonicalDefaultSet — which is a DIFFERENT claim and is
   # deliberately not substituted in: this case asserted a conditional grant, and that conditional lapsed.
-  - cmd/cli/internal/stack/up_repository_test.go:TestABringUpBindsTheRepositoryAndSaysWhatItMade
-  - cmd/cli/internal/stack/up_repository_test.go:TestABringUpReusesTheRepositoryBindingItAlreadyMade
-  - cmd/cli/internal/stack/up_repository_test.go:TestAMissingRepositoryConfigurationWarnsRatherThanSkippingSilently
-  - cmd/cli/internal/stack/up_repository_test.go:TestARepositorySurfaceTheStackDoesNotMountIsReportedRatherThanSwallowed
+  # PROOF LEDGER CORRECTION, 2026-08-05. A repository binding became REMOTE-ONLY: `palai up` no longer
+  # registers one from PALAI_GIT_CLONE_URL / PALAI_GIT_BASE_BRANCH, it reports what the deployment holds
+  # (the console's /repositories screen owns creation). The case TEXT above is shipped and left
+  # byte-for-byte; the checksum reads neither this list nor the text.
+  #
+  # WITHDRAWN — these proved a bring-up that CREATED a binding from a dotenv, which is the behaviour that
+  # was removed. They are not renames; the property itself is gone:
+  #   TestABringUpBindsTheRepositoryAndSaysWhatItMade
+  #   TestABringUpReusesTheRepositoryBindingItAlreadyMade
+  #
+  # REPLACED — the two failures that survive the change keep their coverage under new names:
+  #   TestAMissingRepositoryConfigurationWarnsRatherThanSkippingSilently → TestNoBindingIsSaidOutLoudAndNamesTheScreen
+  #   TestARepositorySurfaceTheStackDoesNotMountIsReportedRatherThanSwallowed → TestAnUnreadableBindingSurfaceDoesNotClaimThereAreNone
+  #     (its assertion INVERTED: an unreadable surface must no longer be reported as an absent binding,
+  #      which was right when this function created bindings and is wrong now that it only reports them)
+  - cmd/cli/internal/stack/up_repository_test.go:TestTheBringUpREPORTSBindingsAndCreatesNone
+  - cmd/cli/internal/stack/up_repository_test.go:TestNoBindingIsSaidOutLoudAndNamesTheScreen
+  - cmd/cli/internal/stack/up_repository_test.go:TestAnUnreadableBindingSurfaceDoesNotClaimThereAreNone
   # RENAMED 2026-08-04: the comparison survives, reading packages/toolset instead of a Slack-named literal.
   - apps/control-plane/internal/execution/tools/default_set_test.go:TestEveryDefaultToolResolves
   - tests/live/repository/live_test.go:TestLiveSlackBoundRepositoryClonesAtItsBaseBranch

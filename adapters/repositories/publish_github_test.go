@@ -16,6 +16,10 @@ import (
 // It mints a pull_request-scoped App token, and OpenPullRequest FINDS before it creates: the first call
 // opens one draft PR, the second finds it and opens none (REP-008). The installation token rides only
 // the Authorization header, never a leaked field.
+// bindingToken stands in for what a repository binding's connection_ref resolves to. It replaced
+// fakeInstallationToken, which was minted by the deployment-global GitHub App removed 2026-08-05.
+const bindingToken = "ghs_binding_connection_ref_value"
+
 func TestGitHubPRClientFindBeforeCreate(t *testing.T) {
 	var opens int
 	var existing *githubPR
@@ -26,10 +30,10 @@ func TestGitHubPRClientFindBeforeCreate(t *testing.T) {
 			authTokens[bearer] = true
 		}
 		switch {
-		// The App-JWT -> installation-token exchange (reused from the broker minting path).
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/access_tokens"):
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]any{"token": fakeInstallationToken, "expires_at": "2999-01-01T00:00:00Z"})
+		// NO TOKEN EXCHANGE. The client publishes under the credential a binding's connection_ref
+		// resolved to, so it signs no JWT and mints nothing. A request to any exchange endpoint would
+		// mean the deployment-global App path came back; the default arm below fails the test if one
+		// ever arrives.
 		// Find: return the existing PR if one was opened, else an empty list.
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls"):
 			out := []githubPR{}
@@ -55,12 +59,9 @@ func TestGitHubPRClientFindBeforeCreate(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := NewGitHubPullRequestClient(GitHubAppConfig{
-		AppID: "12345", InstallationID: "67890", PrivateKeyPEM: testRSAKeyPEM(t),
-		Repositories: []string{"repo"}, BaseURL: srv.URL, HTTPClient: srv.Client(),
-	}, "o", "r")
+	client, err := NewTokenPullRequestClient(bindingToken, srv.URL, "o", "r")
 	if err != nil {
-		t.Fatalf("NewGitHubPullRequestClient() error = %v", err)
+		t.Fatalf("NewTokenPullRequestClient() error = %v", err)
 	}
 	in := OpenPRInput{HeadBranch: "agent/s/r", Base: "main", Title: "t", Body: "b"}
 
@@ -81,8 +82,8 @@ func TestGitHubPRClientFindBeforeCreate(t *testing.T) {
 	if opens != 1 {
 		t.Fatalf("PR opens = %d, want exactly 1 (find-before-create against the real transport)", opens)
 	}
-	if authTokens[fakeInstallationToken] != true {
-		t.Fatal("the client must authenticate with the minted installation token")
+	if authTokens[bindingToken] != true {
+		t.Fatal("the client must authenticate with the BINDING's own credential, which is the only one it has")
 	}
 }
 
@@ -101,11 +102,8 @@ type mergeDouble struct {
 func newMergeServer(t *testing.T, d *mergeDouble) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/access_tokens") {
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]any{"token": fakeInstallationToken, "expires_at": "2999-01-01T00:00:00Z"})
-			return
-		}
+		// No token exchange: the client carries the binding's own credential and mints nothing. A request
+		// here would mean the deployment-global App path returned, and the 404 below states that.
 		if r.Method != http.MethodPut || !strings.HasSuffix(r.URL.Path, "/merge") {
 			http.Error(w, "unexpected", http.StatusNotFound)
 			return
@@ -135,12 +133,9 @@ func newMergeServer(t *testing.T, d *mergeDouble) *httptest.Server {
 
 func newMergeClient(t *testing.T, srv *httptest.Server) PullRequestClient {
 	t.Helper()
-	client, err := NewGitHubPullRequestClient(GitHubAppConfig{
-		AppID: "12345", InstallationID: "67890", PrivateKeyPEM: testRSAKeyPEM(t),
-		Repositories: []string{"repo"}, BaseURL: srv.URL, HTTPClient: srv.Client(),
-	}, "o", "r")
+	client, err := NewTokenPullRequestClient(bindingToken, srv.URL, "o", "r")
 	if err != nil {
-		t.Fatalf("NewGitHubPullRequestClient() error = %v", err)
+		t.Fatalf("NewTokenPullRequestClient() error = %v", err)
 	}
 	return client
 }

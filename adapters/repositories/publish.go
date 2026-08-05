@@ -2,7 +2,6 @@ package repositories
 
 import (
 	"context"
-	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -326,19 +325,23 @@ func OpenPullRequest(ctx context.Context, client PullRequestClient, in OpenPRInp
 // still the ENV VAR for a binding without one, which is the deployment-global path and unchanged. So the
 // honest sentence is: owner/repo come from the binding when the binding brought its own credential, and
 // from the deployment otherwise — never from the model, which is the half that was always true.
+// githubEndpoint is where this client talks and with what. It replaced GitHubAppConfig, which carried an
+// App id, an installation id, a PEM and a repository allow-list that this file never read — the fields
+// existed because one type served both the App broker and the PR client, and the broker is gone.
+type githubEndpoint struct {
+	BaseURL    string
+	HTTPClient *http.Client
+}
+
 type githubPRClient struct {
-	cfg   GitHubAppConfig
-	key   *rsa.PrivateKey
+	cfg   githubEndpoint
 	owner string
 	repo  string
 	now   func() time.Time
-	// static is a credential the CALLER already holds — the token a repository binding's connection_ref
-	// resolved to. When set, token() returns it and no App JWT is signed and no installation token is
-	// minted; `key` is then nil and MUST NOT be dereferenced.
-	//
-	// It is the pull-request twin of tokenBroker (broker.go), and it exists for the same reason: an
-	// installation token and a PAT are both redeemed as `x-access-token`, so the API path does not care
-	// which one it holds. What differs is narrowing — see token().
+	// static is the credential this client publishes under: the token a repository binding's
+	// connection_ref resolved to. It is the ONLY source since the deployment-global GitHub App was removed
+	// (2026-08-05), which is why it has no zero-value branch any more — a client with no token is refused
+	// at construction rather than falling back to something deployment-wide.
 	static string
 }
 
@@ -354,31 +357,12 @@ func NewTokenPullRequestClient(token, baseURL, owner, repo string) (PullRequestC
 	if owner == "" || repo == "" {
 		return nil, fmt.Errorf("github pr client: owner and repo are required")
 	}
-	cfg := GitHubAppConfig{BaseURL: baseURL}
+	cfg := githubEndpoint{BaseURL: baseURL}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://api.github.com"
 	}
 	cfg.HTTPClient = &http.Client{Timeout: 30 * time.Second}
 	return &githubPRClient{cfg: cfg, owner: owner, repo: repo, now: time.Now, static: token}, nil
-}
-
-// NewGitHubPullRequestClient builds a PR client for one repository from the App config. It parses the
-// key once (no network) and mints pull_request-scoped tokens lazily per call.
-func NewGitHubPullRequestClient(cfg GitHubAppConfig, owner, repo string) (PullRequestClient, error) {
-	key, err := parseRSAPrivateKey(cfg.PrivateKeyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("github pr client: %w", err)
-	}
-	if owner == "" || repo == "" {
-		return nil, fmt.Errorf("github pr client: owner and repo are required")
-	}
-	if cfg.BaseURL == "" {
-		cfg.BaseURL = "https://api.github.com"
-	}
-	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = &http.Client{Timeout: 30 * time.Second}
-	}
-	return &githubPRClient{cfg: cfg, key: key, owner: owner, repo: repo, now: time.Now}, nil
 }
 
 // Find returns the open PR whose head is headBranch and base is base, if any (spec §30.10 idempotency).
@@ -461,13 +445,10 @@ func (c *githubPRClient) base() string {
 // A tenant that holds its own credential is choosing to scope it itself. That is the trade the owner asked
 // for — a credential provisioned ONCE from the admin panel instead of an App installation per machine —
 // and stating it here is better than quietly implying a narrowing that does not happen.
-func (c *githubPRClient) token(ctx context.Context) (string, error) {
-	if c.static != "" {
-		return c.static, nil
-	}
-	token, _, err := mintGitHubInstallationToken(ctx, c.cfg, c.key, c.now(), ScopePullRequest)
-	return token, err
-}
+// token returns the binding's own credential. It takes a context it no longer uses, and keeping the
+// signature is deliberate: every caller is on a request path, and a token source that cannot be
+// cancelled today may be one that dials tomorrow.
+func (c *githubPRClient) token(context.Context) (string, error) { return c.static, nil }
 
 // do issues one authenticated GitHub API call and decodes a wantStatus response into out.
 func (c *githubPRClient) do(ctx context.Context, method, endpoint, token string, body []byte, wantStatus int, out any) error {

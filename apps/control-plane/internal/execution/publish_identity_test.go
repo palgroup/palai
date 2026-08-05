@@ -214,14 +214,14 @@ func TestAPublishUnderABindingCredentialNeverAuthenticatesAsTheApp(t *testing.T)
 	}
 }
 
-// TestAnAppLessDeploymentWarnsARefLessPublicationRatherThanSkippingIt is what the operator gets at the
+// TestARefLessPublicationIsWarnedRatherThanSkipped is what the operator gets at the
 // pump when a publication has no credential path at all.
 //
 // This is the case that used to be INVISIBLE: no App meant no publisher, no publisher meant the pump
 // returned before reading anything, and the row sat at `approved` forever with a human believing they
 // authorized a push. Now the publisher exists, refuses, and the refusal lands where every other publish
 // failure lands — a warning on the publication row (REP-010) that the run and the screen can read.
-func TestAnAppLessDeploymentWarnsARefLessPublicationRatherThanSkippingIt(t *testing.T) {
+func TestARefLessPublicationIsWarnedRatherThanSkipped(t *testing.T) {
 	requireGitExec(t)
 	ctx := context.Background()
 	root := t.TempDir()
@@ -256,7 +256,11 @@ func TestAnAppLessDeploymentWarnsARefLessPublicationRatherThanSkippingIt(t *test
 		t.Fatal("nothing was published and NOTHING WAS WARNED: this is the silent skip the whole change " +
 			"exists to remove — an approved row, a human who pressed Approve, and no surface saying why")
 	}
-	for _, want := range []string{"PALAI_GITHUB_APP_ID", "connection_ref"} {
+	// It must name the REMEDY, and the remedy is now one thing rather than two. This assertion used to
+	// require "PALAI_GITHUB_APP_ID" as well, because a ref-less binding had a second way to publish — the
+	// deployment-global GitHub App, removed 2026-08-05. Naming a variable nothing reads would send an
+	// operator to configure something that cannot help them.
+	for _, want := range []string{"connection_ref", "/v1/secret-refs"} {
 		if !strings.Contains(warning, want) {
 			t.Fatalf("the warning does not name %q, so it does not say what to do: %q", want, warning)
 		}
