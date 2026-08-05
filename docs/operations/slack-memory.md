@@ -14,7 +14,7 @@ them if you are reading an older deployment's output.
 | | |
 |---|---|
 | Docker, and enough disk for four containers | `palai local doctor` tells you if not |
-| A live model credential | `PALAI_PROVIDER_ONE_API_KEY` in `.env.local` — `palai up` refuses to bring up a stack that would silently run the fake adapter |
+| A live model credential | Sealed on the console's **/registry** screen: the key is encrypted into the secret store and a model connection names it. `PALAI_PROVIDER_ONE_API_KEY` was never read by anything — the bring-up's bootstrap variable is `OPENAI_API_KEY`, and as of 2026-08-05 it is only a SEED: `palai up` moves it into the store and tells you to delete it |
 | A Slack app | https://api.slack.com/apps → **Create New App → From a manifest**, pasting `deploy/slack/app-manifest.yaml` |
 | Three values off that app | signing secret, bot token, app-level token (below) |
 
@@ -43,7 +43,10 @@ Two more, both optional and both worth setting deliberately:
 
 ```sh
 cat >> .env.local <<'EOF'
-PALAI_PROVIDER_ONE_API_KEY=...
+# A one-time SEED only. `palai up` seals it into the encrypted store and reports that this line
+# can be removed; the durable home is the console's /registry screen. The old name in this file,
+# PALAI_PROVIDER_ONE_API_KEY, had no reader anywhere in the tree.
+OPENAI_API_KEY=...
 SLACK_TEAM_ID=T01234567
 SLACK_SIGNING_SECRET=...
 SLACK_BOT_TOKEN=xoxb-...
