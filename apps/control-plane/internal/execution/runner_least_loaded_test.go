@@ -279,6 +279,32 @@ func TestAMachineAtItsCeilingIsPassedOverAndAFullPoolIsStillHandedOne(t *testing
 	})
 }
 
+// TestTwoEquallyEmptyMachinesGoInParkOrder — THE TIE-BREAK IS THE IDLE FLEET'S ORDINARY PATH, NOT AN EDGE
+// CASE, WHICH IS THE ONLY REASON IT IS WORTH A TEST OF ITS OWN.
+//
+// Every machine in a quiet pool is weighed at zero, so on a fleet that is doing nothing the tie is what
+// decides EVERY placement — the preference has nothing to separate the candidates with until the first
+// hold opens. An unnamed tie is then not a rare coin toss, it is the whole behaviour of an idle fleet, and
+// this tree has twice recorded what an unordered pick decides when nobody writes the order down.
+//
+// The order is the one the queue already had: longest parked first. That makes this claim conservative
+// rather than new — with nothing to prefer, the machine chosen is the machine that shipped before any of
+// this existed.
+func TestTwoEquallyEmptyMachinesGoInParkOrder(t *testing.T) {
+	f := newGatewayFixture(t, newOneUseTokens("tie-a", "tie-b"))
+	f.gateway.SetRegistry(newFakeRegistry())
+	loads := newFakeMachineLoads()
+	f.gateway.SetMachineLoadView(loads)
+
+	first, second, idFirst, idSecond := twoParkedMachines(t, f, "tie-a", "tie-b")
+	loads.declare(idFirst, 0, 0)
+	loads.declare(idSecond, 0, 0)
+
+	ch := leaseAttempt(t, f, "run_tie")
+	defer ch.Close()
+	wantLeased(t, "the machine parked longest", first, second)
+}
+
 // TestOneMachineIsChosenWithoutWeighingAnything — NOTHING TO CHOOSE, NOTHING ASKED.
 //
 // A pool with a single machine has no placement decision in it, and a stack with no tenant on the attempt
