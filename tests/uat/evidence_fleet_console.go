@@ -910,11 +910,24 @@ const FleetConsolePolicyLedger = `[
 // tests/uat/fleet-console/source_test.go and diffed against `AXE ROUTE COVERAGE — …` by journey_test.go.
 // `/login` is deliberately absent: it is not in CONSOLE_ROUTES and must not be, since the nav renders from
 // that list and a link to the login page from inside a session is a link to nowhere.
+//
+// TWO ROWS MOVED 2026-08-05, and the re-derivation guard is what found both — which is the whole reason it
+// re-derives instead of being maintained by hand:
+//
+//   - `/` swapped its readiness signal. A.2 unmounted the organizations route and the overview panel became
+//     `panel-projects`; a ledger still naming the old testid would have had the axe sweep waiting for a
+//     signal the page never emits, which is the failure this field exists to prevent, arriving through the
+//     ledger rather than through the page.
+//   - `/bots` is a page the console gained and the ledger did not. Every row here is one axe test — the spec
+//     generates one scan per CONSOLE_ROUTES row and playwright.config.ts runs every spec under a light and a
+//     dark project — so the page WAS being scanned all along; what was wrong is that the bundle certified
+//     "every declared route was scanned" over a console with one more page than it had counted.
 const FleetConsoleRouteLedger = `[
-  {"path": "/", "ready_test_id": "panel-organizations", "axe_scanned_in": ["light", "dark"]},
+  {"path": "/", "ready_test_id": "panel-projects", "axe_scanned_in": ["light", "dark"]},
   {"path": "/sessions", "ready_test_id": "panel-sessions", "axe_scanned_in": ["light", "dark"]},
   {"path": "/runs", "ready_test_id": "run-button", "axe_scanned_in": ["light", "dark"]},
   {"path": "/environments", "ready_test_id": "panel-environments", "axe_scanned_in": ["light", "dark"]},
+  {"path": "/bots", "ready_test_id": "panel-bots", "axe_scanned_in": ["light", "dark"]},
   {"path": "/approvals", "ready_test_id": "panel-approvals", "axe_scanned_in": ["light", "dark"]},
   {"path": "/repositories", "ready_test_id": "panel-repository-bindings", "axe_scanned_in": ["light", "dark"]},
   {"path": "/agents", "ready_test_id": "panel-agent-profiles", "axe_scanned_in": ["light", "dark"]},
