@@ -59,12 +59,12 @@ The work is complete only when all of the following are true at once:
 16. **There is no whole-stack device path.** The admin plane and the device agent are two products that
     meet over one URL. No device command starts a control plane, a database, an object store or a Compose
     project, and no device command builds a binary from a source checkout.
-17. **The device reads exactly three `PALAI_` names**, and the count is the gate. Measured 2026-08-05,
+17. **The running agent reads ZERO `PALAI_` names**, and the count is the gate. Measured 2026-08-05,
     `cmd/runner` + `packages/runner` read **26** (`grep -rhoE 'PALAI_[A-Z_]+' cmd/runner/ packages/runner/
-    | sort -u | wc -l`). Everything except `PALAI_CONTROLLER_URL`, `PALAI_ENROLLMENT_TOKEN_FILE` and the
-    optional `PALAI_CONTROLLER_CA` is either derived by the binary, delivered by the admin plane after
-    enrolment, or deleted. A per-run value passed to a session's shell is not a bootstrap variable and is
-    out of this count.
+    | sort -u | wc -l`). The URL, the key file and the optional CA are **arguments to `enroll`**, which
+    runs once; everything else is derived by the binary, delivered by the admin plane after enrolment, or
+    deleted. A per-run value passed to a session's shell is not a bootstrap variable and is out of this
+    count.
 18. **A session's tree follows the session, not the machine.** When a machine is stopped, drained,
     terminated or simply loses the placement, the next attempt restores that session's workspace from the
     object store on whichever machine takes it, or the run refuses. A resumed session that continues over
@@ -75,6 +75,24 @@ The work is complete only when all of the following are true at once:
     admin plane refuses to place two projects on a `user`-mode machine. A hosted fleet serving many
     customers runs `accounts` mode, where a session holds its own macOS account and the account is deleted
     when the session's workspace has been archived.
+20. **A power cycle is a non-event.** After `enroll`, the machine is rebooted with nobody touching it and
+    returns to the fleet as the same runner id, ready, within a bounded time that the gate names. This is
+    asserted by rebooting, not by reading a plist.
+
+    **AND THE ONE UNMEASURED CASE IS NAMED RATHER THAN ASSUMED.** Measured 2026-07-28 on macOS 26.3 /
+    Xcode 26.6 (`docs/operations/palai-on-a-mac.md` §3): the **launch context is not the discriminator** —
+    a cron job in the system bootstrap namespace with no Aqua session drove `simctl bootstatus`,
+    `simctl io screenshot`, `open -a Simulator` and `axe tap` **identically** to a Terminal session. The
+    real discriminator was **time**: the accessibility translation service answers roughly 7 s after
+    `bootstatus` returns, and an earlier experiment mistook its own 12 s wait for a requirement that a
+    window be open.
+
+    What both of those contexts shared is that **a user was logged in graphically**. A Mac with nobody
+    logged in at all — precisely the state a rebooted headless fleet machine is in — was recorded as
+    **not measured**, and it stays not measured until this gate runs. Two outcomes, both acceptable, and
+    the gate must say which one it got: either a LaunchDaemon serves sessions with no GUI login (and
+    `user` mode gets a LaunchAgent purely for a sane `HOME`), or a graphical auto-login is a documented
+    prerequisite of a Mac fleet machine. What is not acceptable is shipping either sentence unmeasured.
 
 ---
 
@@ -126,21 +144,36 @@ reserved. The device never receives an admin API key.
 
 ### 3.2 One device contract, no invitation protocol
 
-Foreground contract:
+**Enrolment is a one-time INSTALL, not a runtime contract.** One command runs once per machine:
 
 ```sh
-PALAI_CONTROLLER_URL=https://runner.example.com:8443 \
-PALAI_ENROLLMENT_TOKEN_FILE=/secure/path/pool-key \
-palai
+palai enroll --url https://runner.example.com:8443 --key-file /secure/path/pool-key
 ```
 
-For a public server certificate this is the complete contract. A private PKI adds
-`PALAI_CONTROLLER_CA=/secure/path/ca.pem`.
+It writes config and device identity, **installs and starts the service**, and returns. Nothing else is
+typed on that machine again. The running agent reads **zero** `PALAI_` variables: after enrolment its
+inputs are its own on-disk identity and the configuration the admin plane sends it.
 
-For a background service, the package reads the same values from a user-owned config file and points at a
-separate mode-0600 key file. Environment variables override non-secret config for automation; a key value
-is accepted from `PALAI_ENROLLMENT_TOKEN` for ephemeral CI only, immediately cleared as it is today, and is
-never accepted as an argv flag.
+`--key-file`, never `--key`. **A secret on argv is readable by every process on the machine**, measured
+on this tree 2026-08-04: `ps -E -p <pid>` listed 62 environment variables **with their values**, and
+`os.Unsetenv` did not hide them because macOS serves `ps` from the kernel's start-time copy
+(`KERN_PROCARGS2`). argv is at least as exposed. The key file is read once, consumed, and never copied
+into the config.
+
+A private PKI adds `--ca-file /secure/path/ca.pem`; a publicly trusted server needs nothing.
+
+**The service is what makes a reboot a non-event.** `enroll` installs it, so a machine that is powered
+off and back on returns to the fleet with no human on it — that is the property the whole device design
+exists for, and it is a gate rather than a hope (DoD 20).
+
+| Platform | Mode | Service installed by `enroll` |
+|---|---|---|
+| macOS, `user` | one customer, no root | LaunchAgent in `~/Library/LaunchAgents` |
+| macOS, `accounts` | one macOS account per slot | LaunchDaemon; `palai-agentd` is already exactly this shape (`RunAtLoad` + `KeepAlive`), and enabling the mode is the one administrator action in the product |
+| Linux | container posture | systemd **user** unit, plus `loginctl enable-linger` so it survives logout |
+
+For ephemeral CI, `PALAI_ENROLLMENT_TOKEN` remains accepted by `enroll` only, cleared immediately as it
+is today. It is not a way to run the agent; it is a way to script `enroll`.
 
 Suggested default paths:
 
@@ -640,6 +673,9 @@ hostname first:
 - the Mac appears in Fleet, an SDK-created session runs there, and `whoami` / `sw_vers` /
   `xcodebuild -version` return **that Mac's** values and not the plane's;
 - restart the agent three times: one machine row, one id;
+- **power the Mac off and on with nobody touching it**: it returns online by itself, same id, and serves
+  the next session — this is the leg that measures the case §1.20 records as unmeasured, and its result
+  decides whether a Mac fleet machine needs graphical auto-login;
 - change concurrency in the panel: the machine applies it and says it applied it.
 
 **Go when that passes with T2 and T3 complete.** T1 then becomes what it should be — putting a public
