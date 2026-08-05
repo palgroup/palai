@@ -3,7 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
+    "predev": "pnpm --filter @palai/sdk build",
     "dev": "next dev -p 3100",
+    "prebuild": "pnpm --filter @palai/sdk build",
     "build": "next build",
     "start": "next start -p 3100",
     "test:e2e": "next build && playwright test"

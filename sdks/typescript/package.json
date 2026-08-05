@@ -1,19 +1,43 @@
 {
   "name": "@palai/sdk",
   "version": "0.1.0",
-  "private": true,
+  "description": "TypeScript client for the Palai control plane: responses, sessions, agents, fleet and admin.",
+  "license": "Apache-2.0",
   "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "browser": "./src/index.browser.ts",
-      "default": "./src/index.ts"
+      "browser": {
+        "types": "./dist/index.browser.d.ts",
+        "default": "./dist/index.browser.js"
+      },
+      "default": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
     },
-    "./browser": "./src/index.browser.ts",
+    "./browser": {
+      "types": "./dist/index.browser.d.ts",
+      "default": "./dist/index.browser.js"
+    },
     "./admin": {
-      "default": "./src/index.admin.ts"
+      "types": "./dist/index.admin.d.ts",
+      "default": "./dist/index.admin.js"
     }
   },
   "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "prepack": "pnpm run build",
     "test": "node --test --experimental-strip-types test/*.test.ts",
     "typecheck": "tsc --project tsconfig.json"
   },

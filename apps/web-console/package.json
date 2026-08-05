@@ -3,9 +3,12 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
+    "predev": "pnpm --filter @palai/sdk build",
     "dev": "next dev -p 3200",
+    "prebuild": "pnpm --filter @palai/sdk build",
     "build": "next build",
     "start": "next start -p 3200",
+    "pretypecheck": "pnpm --filter @palai/sdk build",
     "typecheck": "tsc --noEmit",
     "test:e2e": "next build && playwright test",
     "test:e2e:real": "PALAI_CONSOLE_PROFILE=real next build && PALAI_CONSOLE_PROFILE=real playwright test",
