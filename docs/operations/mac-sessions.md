@@ -74,6 +74,40 @@ whether two accounts can do it at the same time. Recording does not need an Aqua
 does. Until you run this on your own hardware, treat "8 sessions per Mac" as a hope and "1 session
 per Mac" as the number you can defend.
 
+### 4.1 Checking a torn-down session left nothing — and the tool that lies about it
+
+`down` deletes the account and its home. If you want to confirm a tenant's name is gone from this
+machine, **the one thing you must not use is a bare `grep`.**
+
+```sh
+# WRONG — on a shell where `grep` is ugrep (Claude Code's snapshot wraps it with -I), this skips
+# binaries silently and reports a clean machine while the tenant's compiled binary sits right there.
+grep -rl 'AcmeCorpApp' ~/Library
+
+# RIGHT
+/usr/bin/grep -ral 'AcmeCorpApp' ~/Library/Developer ~/Library/Logs ~/Library/Caches
+```
+
+Measured 2026-08-05 (`palai-cloud docs/measurements/faz-a5-residue.md` §6 T3): the first form
+answered "0 files carry the tenant string" while the tenant's source line was inside the installed
+simulator binary. `-a` is what makes `grep` read a binary as text; `strings` is the other honest form.
+
+Two more rules from the same measurement, both of which produce a **false clean**:
+
+- **Decode before you scan.** A raw byte scan over compressed or encoded output can never fail. Unified
+  logs (`.tracev3`), `.gz` and binary plists must go through `log show`, `gunzip` and `plutil -p`
+  first.
+- **`find -newermt` reads LOCAL time on the BSD `find` that `sudo` puts on your PATH.** Passing
+  `date -u` output silently widens the window by your UTC offset. Use
+  `T0=$(date -v-1S +'%Y-%m-%d %H:%M:%S')` — no `-u` — and probe the format with two files, one touched
+  hours ago and one now, before trusting a count.
+
+**And the ceiling, which is a limit and not an omission: 131 paths under a home directory cannot be
+scanned at all** — `Library/Containers`, `Group Containers`, `Mail`, `Messages`, `Safari`, `Desktop`,
+`Mobile Documents`, `Photos Library`, `Daemon Containers`. They are TCC-protected and refuse **root**
+without Full Disk Access. A scan that comes back empty has not shown those are clean; it has shown it
+could not look. Source: same measurement, §1.
+
 ## 5. What is guaranteed, and where each claim comes from
 
 | Claim | Holds? | source |
