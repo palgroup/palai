@@ -303,13 +303,39 @@ func (s *WorkspaceServer) clone(ctx context.Context, root string, req map[string
 	if err := remarshal(req, "clone", &in); err != nil {
 		return nil, err
 	}
+	broker := repositories.Broker(repositories.NewTokenBroker(in.Token))
 	if in.Token == "" {
-		// FAIL CLOSED. An empty token would clone anonymously, which SUCCEEDS for a public repository
-		// and fails for every private one — so a broken credential path would look like a working
-		// deployment until the first private binding, which is the most expensive moment to find out.
-		return nil, errors.New("clone request carries no read credential")
+		// FAIL CLOSED, BUT ONLY ON A SILENCE — an ABSENT token, never a DECLARED-EMPTY one, and the
+		// difference between those two is a defect this refusal shipped with for three days.
+		//
+		// The reasoning below is still the reasoning: an empty token clones anonymously, which succeeds
+		// for a public repository and fails for every private one, so a broken credential path would
+		// look like a working deployment until the first private binding. What it missed is that an
+		// empty token is ALSO how this tree's brokers say "offer no credential" ON PURPOSE —
+		// credentialVault.Secret and writeHelper both document that meaning in those words, and
+		// AnonymousBroker.Mint was changed to mint exactly it on 2026-08-02 because a fabricated
+		// `palai-local-…` token BROKE clones that work anonymously. So the same empty string meant
+		// "deliberately anonymous" on the control plane's own disk and "credential path is broken" here,
+		// and the machine's reading won every clone that reached a machine.
+		//
+		// MEASURED 2026-08-05 against the running native stack: a public binding with no connection_ref
+		// (octocat/Hello-World) failed `workspace_provisioning_failed` with this very sentence, and 22 of
+		// the 84 workspaces on that deployment sat in `preparing` behind clone failures of which this was
+		// the most recent class. On a native Mac EVERY clone reaches a machine, so on the one shipped
+		// configuration the 2026-08-02 fix was unreachable.
+		//
+		// AllowAnonymous is what the control plane says when it means it. An absent flag still refuses,
+		// so a caller that drops the token in marshalling — or one that predates the flag — is answered
+		// exactly as before; the fail-closed property is kept and only the DECLARED case is opened.
+		if !in.AllowAnonymous {
+			return nil, errors.New("clone request carries no read credential")
+		}
+		// NewTokenBroker("") cannot serve this: its Mint fails closed on an empty token. The anonymous
+		// broker is the same one the control plane uses on its own disk for this case, so both halves of
+		// the split now run the identical code path for a credential-less clone.
+		broker = repositories.NewAnonymousBroker()
 	}
-	result, err := repositories.Prepare(ctx, repositories.NewTokenBroker(in.Token), repositories.Request{
+	result, err := repositories.Prepare(ctx, broker, repositories.Request{
 		CloneURL:      in.CloneURL,
 		RequestedRef:  in.RequestedRef,
 		DefaultBranch: in.DefaultBranch,
@@ -340,6 +366,15 @@ type WorkspaceCloneRequest struct {
 	Policy        repositories.Policy   `json:"policy"`
 	Audience      repositories.Audience `json:"audience"`
 	Token         string                `json:"token"`
+	// AllowAnonymous declares that an EMPTY Token is the control plane's decision rather than its
+	// silence: the binding names no connection_ref and the deployment configured no GitHub App, so the
+	// broker deliberately offers no credential and the clone is meant to be unauthenticated.
+	//
+	// It is a separate field rather than an inference from Token because the machine cannot tell the two
+	// apart on its own, and guessing has a direction: guessing "anonymous" turns a broken credential
+	// path into a deployment that looks healthy until its first private binding. See clone() for the
+	// measurement that made this necessary.
+	AllowAnonymous bool `json:"allow_anonymous,omitempty"`
 }
 
 // openAllocation creates the §29.9 layout for one allocation and returns its absolute path. It is

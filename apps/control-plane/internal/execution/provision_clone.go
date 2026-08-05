@@ -122,6 +122,27 @@ func (o *Orchestrator) cloneOnMachine(ctx context.Context, ops toolbroker.Worksp
 		Policy:        policyFromBinding(binding.Policy),
 		Audience:      audience,
 		Token:         token,
+		// AN EMPTY TOKEN HERE IS A DECISION, AND SAYING SO IS THE WHOLE OF THIS FIELD.
+		//
+		// It is reached exactly when the binding names no connection_ref and repositoryBrokerFromEnv fell
+		// back to the anonymous broker — a deployment with no GitHub App configured, which is every
+		// self-hosted stack that has not set one up. That broker MINTS an empty token on purpose
+		// (AnonymousBroker.Mint, changed 2026-08-02 because a fabricated token broke clones that work
+		// anonymously), and the local half of this function honours it: PrepareRepository hands the same
+		// broker to repositories.Prepare, writeHelper writes no helper, and the public repository clones.
+		//
+		// The machine could not see that decision. It received an empty string and read it as a broken
+		// credential path, so the branch above this one worked and this one refused — and since a native
+		// Mac takes THIS branch for every run, the 2026-08-02 fix never ran on the shipped configuration.
+		// Measured 2026-08-05 on the live stack: a fresh run against a public binding with no
+		// connection_ref failed `workspace_provisioning_failed` ("clone request carries no read
+		// credential") and left its workspace in `preparing`, joining 22 others.
+		//
+		// Deriving it from `token == ""` rather than from the broker's type is deliberate: the empty
+		// token IS the package's documented way of saying "offer no credential" (credentialVault.Secret
+		// says so in those words), so this reads the same signal the local branch reads instead of
+		// inventing a second one that could disagree with it.
+		AllowAnonymous: token == "",
 	})
 	if err != nil {
 		return err
