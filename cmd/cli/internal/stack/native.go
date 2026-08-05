@@ -60,9 +60,21 @@ func UpNative(get func(string) string) (string, error) {
 	//
 	// It probes before it installs, so a machine that already has one is not reinstalled, and it installs
 	// only where it can elevate with nobody watching. See agentd.go.
+	// ‼️ A MISSING DAEMON IS A NARROWER MACHINE, NOT A REFUSED ONE, and this is the same decision T4 made
+	// on the agent side. `accounts` isolation needs palai-agentd and one administrator action; `user`
+	// isolation needs neither, because there the boundary is the login account the operator already
+	// intended. Refusing the bring-up made that one action a precondition for running Palai at all — and
+	// a machine that cannot elevate silently is precisely the machine nobody is standing at.
+	//
+	// WHAT REFUSES IS STILL THERE AND IS ELSEWHERE: the agent reports the modes it measured and the
+	// gateway refuses a machine a pool's isolation_mode is not satisfied by (fleet.Store.Register). So a
+	// multi-tenant pool still cannot be joined by this machine; a single-customer one can.
 	agentd, err := EnsureAgentd(context.Background(), p)
 	if err != nil {
-		return "", err
+		agentd = AgentdStatus{Warnings: []string{
+			"palai-agentd is not installed, so this machine can offer `user` isolation only — one customer, " +
+				"one uid, no cross-tenant boundary. A pool requiring `accounts` will refuse it. Cause: " + err.Error(),
+		}}
 	}
 	for _, w := range agentd.Warnings {
 		fmt.Fprintf(os.Stderr, "        WARNING %s\n", w)

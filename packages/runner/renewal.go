@@ -94,14 +94,7 @@ func renewTLS(current Identity, config RenewConfig) *tls.Config {
 		Time:         func() time.Time { return now() },
 	}
 	tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
-		if len(state.VerifiedChains) == 0 || len(state.VerifiedChains[0]) == 0 {
-			return errors.New("controller certificate chain was not verified")
-		}
-		leaf := state.VerifiedChains[0][0]
-		if len(leaf.DNSNames) != 1 || leaf.DNSNames[0] != config.ControllerDNS {
-			return errors.New("controller certificate DNS identity is not exact")
-		}
-		return nil
+		return verifyControllerIdentity(state, config.ControllerDNS)
 	}
 	return tlsConfig
 }

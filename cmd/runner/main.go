@@ -163,7 +163,9 @@ func main() {
 		SettingsInterval: envDurationDefault("PALAI_SETTINGS_INTERVAL", 0),
 		// The managed allocation root every leased workspace path must sit under before this runner
 		// bind-mounts it (spec §30.13, carry (b)). Unset disables the check (pre-E09 behaviour).
-		WorkspaceRoot: os.Getenv("PALAI_WORKSPACE_ROOT"),
+		//
+		// ‼️ AN INSTALLED DEVICE ANSWERS THIS ITSELF — see workspaceRoot.
+		WorkspaceRoot: workspaceRoot(installed),
 		// Opt this runner into honouring a lease's §30.13 unsafe local bind (REP-012). Default off so a
 		// control plane alone cannot make the runner mount an arbitrary host path (§24 trust boundary).
 		AllowUnsafeBind: os.Getenv("PALAI_WORKSPACE_UNSAFE_BIND") == "1",
@@ -396,10 +398,30 @@ func installedBootstrap(installed *device.Installation) (bootstrap runner.Bootst
 			IsolationModes:  facts.IsolationModes,
 		},
 		installed.Config.EnrollmentKeyFile,
-		base + "/v1/runner/connect",
+		outboundSessionURL(base),
 		base + "/v1/runner/renew",
 		base + "/v1/runner/settings",
 		controllerDNS, installed.CAs
+}
+
+// outboundSessionURL turns the one controller address into the websocket address the lease session
+// dials. The session refuses anything that is not `wss://` (packages/runner.Session.openConnection),
+// because an outbound-only agent that could be pointed at `ws://` would be an agent whose lease traffic
+// can be read.
+//
+// ‼️ IT IS HERE BECAUSE IT WAS NOWHERE. The swap lived in three shell bridges — the compose entrypoint,
+// the host package's launcher and the native runner's env map — and in no Go code at all, so the device
+// path built `https://…/v1/runner/connect` and every lease attempt answered "session URL must be
+// outbound wss; retrying", forever, on a machine that had enrolled successfully and appeared healthy in
+// Fleet. Measured 2026-08-06 on the real agent. A derivation copied into three scripts is a derivation
+// the fourth caller does not have.
+func outboundSessionURL(base string) string {
+	if rest, ok := strings.CutPrefix(base, "https://"); ok {
+		return "wss://" + rest + "/v1/runner/connect"
+	}
+	// Left as-is so the session's own guard produces the refusal, naming the URL it was given. Rewriting
+	// an http:// base to wss:// here would hide an operator's mistake behind a connection error.
+	return base + "/v1/runner/connect"
 }
 
 // persistIdentity writes each renewed or recovered certificate beside this device's durable key, or nil
@@ -578,6 +600,27 @@ func shellRunnerFromEnv() toolbroker.ShellRunner {
 		log.Fatalf("shell posture: %v", err)
 	}
 	return shell
+}
+
+// workspaceRoot is the directory every leased session's workspace is allocated under.
+//
+// ‼️ IT IS THE DEVICE'S OWN, NOT THE ADMIN PLANE'S, and the control plane is what settled that: writing
+// PALAI_WORKSPACE_ROOT through the desired-configuration surface is REFUSED, with the reason "naming the
+// host directory every coding workspace is allocated under, from a web form, is a filesystem write
+// primitive wearing a settings control." That refusal is correct, so the machine answers instead — it is
+// the party that knows where its own disk is.
+//
+// Measured 2026-08-06, before this existed: an installed device has no PALAI_WORKSPACE_ROOT, so a
+// correctly enrolled Mac renewed its certificate forever, took no lease, and the only thing the operator
+// saw was a model saying "the shell tool is unavailable due to workspace constraints".
+//
+// The environment still answers for the compose and systemd deployments that set it today; an installed
+// device never reads it (plan §3.7 — the compatibility window is theirs, not the packaged agent's).
+func workspaceRoot(installed *device.Installation) string {
+	if installed != nil {
+		return installed.Paths.WorkspaceRoot
+	}
+	return os.Getenv("PALAI_WORKSPACE_ROOT")
 }
 
 func planeIntDefault(settings map[string]string, name string, def int) int {

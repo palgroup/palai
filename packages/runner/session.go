@@ -373,14 +373,7 @@ func (s Session) tlsConfig() *tls.Config {
 		Time:         func() time.Time { return now() },
 	}
 	config.VerifyConnection = func(state tls.ConnectionState) error {
-		if len(state.VerifiedChains) == 0 || len(state.VerifiedChains[0]) == 0 {
-			return errors.New("controller certificate chain was not verified")
-		}
-		leaf := state.VerifiedChains[0][0]
-		if len(leaf.DNSNames) != 1 || leaf.DNSNames[0] != s.ControllerDNS {
-			return errors.New("controller certificate DNS identity is not exact")
-		}
-		return nil
+		return verifyControllerIdentity(state, s.ControllerDNS)
 	}
 	return config
 }

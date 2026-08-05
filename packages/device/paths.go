@@ -36,6 +36,14 @@ type Paths struct {
 	ServiceFile string
 	// LogFile is where the service manager is told to send the agent's output.
 	LogFile string
+	// WorkspaceRoot is the directory every leased session's workspace is allocated under.
+	//
+	// ‼️ IT IS THE DEVICE'S OWN PROPERTY AND NOT THE ADMIN PLANE'S, and the control plane says so in the
+	// refusal it gives when someone tries: "naming the host directory every coding workspace is allocated
+	// under, from a web form, is a filesystem write primitive wearing a settings control." That refusal is
+	// right, which is why this is here: the machine knows where its own disk is, and an installed device
+	// has no operator to set an environment variable for it.
+	WorkspaceRoot string
 }
 
 // StateDir is the directory the three 0600 files live in. It is derived rather than stored so there is
@@ -75,6 +83,7 @@ func DefaultPaths(goos, home string, env func(string) string) Paths {
 			IdentityFile:  filepath.Join(support, "identity.json"),
 			ServiceFile:   filepath.Join(home, "Library", "LaunchAgents", ServiceLabel+".plist"),
 			LogFile:       filepath.Join(home, "Library", "Logs", "Palai", "agent.log"),
+			WorkspaceRoot: filepath.Join(support, "workspaces"),
 		}
 	}
 	configHome := env("XDG_CONFIG_HOME")
@@ -92,6 +101,7 @@ func DefaultPaths(goos, home string, env func(string) string) Paths {
 		IdentityFile:  filepath.Join(state, "identity.json"),
 		ServiceFile:   filepath.Join(configHome, "systemd", "user", SystemdUnitName),
 		LogFile:       filepath.Join(state, "agent.log"),
+		WorkspaceRoot: filepath.Join(state, "workspaces"),
 	}
 }
 
