@@ -400,6 +400,7 @@ func main() {
 	startRetention(ctx, repo, supervisor, artStore)
 	startOrphanGC(ctx, repo, supervisor, artStore)
 	startIdleRelease(ctx, repo, supervisor, artStore, sessionAccounts)
+	startLeaseReclaim(ctx, repo, supervisor)
 
 	log.Printf("palai control-plane listening on %s", addr)
 	serveWithGracefulDrain(srv, gateway)
@@ -1662,6 +1663,38 @@ func startIdleRelease(ctx context.Context, repo *store.Store, supervisor *coordi
 	}
 	log.Printf("workspace idle release enabled: a session's machine is handed back after %s idle, and restored from its archive on the next message", ttl)
 	go supervisor.Supervise(ctx, "workspace-idle-release", func(ctx context.Context) error { return releaser.Run(ctx, 30*time.Second) })
+}
+
+// startLeaseReclaim launches the abandoned-writer-lease sweep, which returns a workspace whose holder run
+// reached terminal from `leased` back to `ready`.
+//
+// IT IS THE IDLE RELEASER'S FEEDER, NOT ITS RIVAL, and wiring the two together is the point. The idle
+// releaser only ever considers a `ready` workspace with no active lease; a lease nobody releases from the
+// inside leaves the workspace `leased` forever, which is invisible to it. So without this the sweep above
+// simply never sees a whole class of held machine — the class produced by the ordinary end of a thread.
+//
+// TWO WAYS A LEASE OUTLIVES ITS RUN, and only one of them was ever repaired. A crash mid-attempt is
+// covered, because the next attempt on that allocation reclaims the dangling lease (acquireWriterLease).
+// A thread that simply ENDS is not: there is no next attempt, so there is no reclaim, and until this
+// existed the only cure was a human typing into that thread again.
+//
+// NO artStore GATE, unlike startIdleRelease, and the asymmetry is deliberate rather than an oversight.
+// That gate is a correctness gate because the release DELETES a directory and only an archive makes that
+// survivable. This sweep deletes nothing: it releases a lease row and moves a state to `ready`, both
+// reversible by the next attempt that wants the workspace. What it hands the workspace to — the idle
+// releaser — keeps its own refusal, so an object-store-less deployment reclaims leases and never deletes
+// bytes, which is the correct behaviour for it rather than a degraded one.
+//
+// PALAI_WORKSPACE_ROOT gates it for the same honest reason it gates the releaser: a deployment that
+// provisions no workspaces has no leases to reclaim.
+func startLeaseReclaim(ctx context.Context, repo *store.Store, supervisor *coordinator.Supervisor) {
+	if os.Getenv("PALAI_WORKSPACE_ROOT") == "" {
+		return // no workspaces provisioned here, so no lease to reclaim
+	}
+	grace := envDurationOr("PALAI_ABANDONED_LEASE_GRACE", execution.DefaultAbandonedLeaseGrace)
+	reclaimer := execution.NewLeaseReclaimer(repo.Spine(), grace)
+	log.Printf("abandoned writer-lease reclaim enabled: a workspace whose holder run has been terminal for %s returns to ready, where the idle sweep can hand its machine back", grace)
+	go supervisor.Supervise(ctx, "workspace-lease-reclaim", func(ctx context.Context) error { return reclaimer.Run(ctx, 30*time.Second) })
 }
 
 // minArtifactGCGrace floors PALAI_ARTIFACT_GC_GRACE: a typo'd sub-floor value (e.g. "1s")

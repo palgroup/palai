@@ -59,6 +59,54 @@ SELECT id, run_id FROM workspace_leases
 WHERE allocation_id = $1 AND state = 'active'
 LIMIT 1;
 
+-- name: AbandonedWriterLeases
+-- The reclaim sweep's bounded candidate set: active writer leases whose holder run REACHED TERMINAL and
+-- whose workspace is still `leased`, so nothing will ever release them from the inside. $1 is the grace
+-- in milliseconds, $2 the per-pass batch bound. Cross-tenant by construction like IdleWorkspacesForRelease,
+-- and every row carries its own project for the per-candidate writes that follow.
+--
+-- WHY THIS EXISTS AT ALL. WorkspaceLeaseHolder above is read from ONE place, acquireWriterLease, and only
+-- on a CONFLICT — so the reclaim it documents fires when a SECOND attempt arrives on the same allocation
+-- and never otherwise. A thread whose last run ended and which nobody writes to again keeps its lease, its
+-- workspace stays `leased`, and IdleWorkspacesForRelease (which wants `ready`) can never see it: the
+-- directory and the uid slot are held forever. Measured on the running stack 2026-08-05, after the release
+-- defer was repaired: 19 active leases, 19 `leased` workspaces, ZERO with a live run — 16 completed, 2
+-- canceled, 1 failed — holding 197MB across 18 allocation directories, the oldest for 9h43m.
+--
+-- TERMINAL IS THE GUARD, NOT A TTL. A run that reached completed/failed/canceled/timed_out/
+-- budget_exceeded will never write to this workspace again, so releasing its lease cannot interrupt work.
+-- That is a stronger claim than "idle for N minutes", which is true of a run merely parked between
+-- attempts. TestAbandonedLeaseTerminalsMatchTheRunTable recomputes this list from
+-- statemachines.TerminalStates(RunTable) so a new terminal state cannot silently leave leases behind.
+--
+-- THE LIVE-JOB CHECK IS NOT REDUNDANT WITH IT. UpdateRunState commits the terminal transition before
+-- ExecuteAttempt's deferred release has run, so for that window the run reads terminal while the process
+-- that owns the lease is still finishing with the directory. This is the same DB-clock liveness proof
+-- acquireWriterLease reclaims on (RunHasLiveResponseJob), and the grace on updated_at covers the rest of
+-- the same window: between them, the sweep only ever names a lease no live process is holding.
+--
+-- ORDER BY l.id is a total order over the primary key, so the LIMIT takes a determinate batch rather than
+-- an arbitrary one; a candidate skipped this pass is a candidate on the next one.
+SELECT l.id, l.workspace_id, l.project_id, l.run_id
+FROM workspace_leases l
+JOIN workspaces w ON w.id = l.workspace_id AND w.project_id = l.project_id
+JOIN runs r ON r.id = l.run_id AND r.project_id = l.project_id
+WHERE l.state = 'active'
+  AND w.state = 'leased'
+  AND r.state IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
+  AND r.updated_at < clock_timestamp() - ($1::bigint * interval '1 millisecond')
+  AND NOT EXISTS (
+      SELECT 1 FROM durable_jobs j
+      WHERE j.kind = 'response.run'
+        AND j.payload->>'run_id' = l.run_id
+        AND j.project_id = l.project_id
+        AND j.status = 'running'
+        AND j.lease_expires_at IS NOT NULL
+        AND j.lease_expires_at > clock_timestamp()
+  )
+ORDER BY l.id
+LIMIT $2;
+
 -- name: CreateWorkspaceSnapshot
 -- Record a create-side snapshot, but ONLY when the uploading allocation is the workspace's
 -- current (max-fence) allocation. A stale allocation whose fence a host move has superseded

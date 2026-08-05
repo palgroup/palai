@@ -238,6 +238,47 @@ func (s *Store) WorkspaceLeaseHolder(ctx context.Context, allocationID string) (
 	return h, true, nil
 }
 
+// AbandonedLease is one candidate of the reclaim sweep: an active writer lease whose holder run reached
+// terminal while the workspace stayed `leased`. Project travels on the row because the sweep spans
+// tenants and every write that follows is tenant-scoped.
+type AbandonedLease struct {
+	LeaseID     string
+	WorkspaceID string
+	Project     string
+	RunID       string
+}
+
+// AbandonedWriterLeases returns up to limit writer leases whose holder run reached terminal at least
+// grace ago and whose workspace is still `leased`. It is a MAINTENANCE read spanning every tenant, like
+// IdleWorkspacesForRelease, so it runs under the system scope and each row carries its own project.
+//
+// A NEGATIVE GRACE IS REFUSED rather than clamped, for the reason IdleWorkspacesForRelease refuses one:
+// it would put the cutoff in the FUTURE and select leases whose terminal transition has not settled,
+// which is precisely the window where a live process is still finishing with the directory.
+func (s *Store) AbandonedWriterLeases(ctx context.Context, grace time.Duration, limit int) ([]AbandonedLease, error) {
+	if grace < 0 {
+		return nil, errors.New("abandoned lease grace must not be negative")
+	}
+	ctx = storage.WithSystemScope(ctx)
+	rows, err := s.pool.Query(ctx, storage.Query("AbandonedWriterLeases"), grace.Milliseconds(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("abandoned writer leases: %w", err)
+	}
+	defer rows.Close()
+	var out []AbandonedLease
+	for rows.Next() {
+		var c AbandonedLease
+		if err := rows.Scan(&c.LeaseID, &c.WorkspaceID, &c.Project, &c.RunID); err != nil {
+			return nil, fmt.Errorf("scan abandoned writer lease: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("abandoned writer leases: %w", err)
+	}
+	return out, nil
+}
+
 // ReleaseWriterLease frees the single-writer slot for the next writer (spec §29.8).
 func (s *Store) ReleaseWriterLease(ctx context.Context, leaseID string) error {
 	if _, err := s.pool.Exec(ctx, storage.Query("ReleaseWriterLease"), leaseID); err != nil {
