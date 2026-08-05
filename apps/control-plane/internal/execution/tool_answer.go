@@ -92,8 +92,16 @@ func exceedsToolAnswerErrorBudget(count int) bool {
 // THE MESSAGE GOES THROUGH BOTH REDACTORS. It is about to be written to the tool ledger and read by a
 // model, which are the same two destinations a shell result reaches, so it gets the same treatment: the
 // shape-based scan for provider keys and bearer tokens, and the VALUE-based scan for this attempt's own
-// environment values. Without the second one a tool error that echoed a credential — "connect to
-// postgres://user:<password>@…" is the everyday form — would land verbatim in a durable row.
+// environment values.
+//
+// THE EXAMPLE THIS COMMENT USED TO GIVE STOPPED BEING ONE, and counting which half survives rather than
+// writing "now it works": "connect to postgres://user:<password>@…" WAS the case only RedactValues caught,
+// and since `0e608545` (2026-08-04) secretPatterns carries a URL-credential pattern that masks it too — so
+// that form now has two independent guards and is no longer evidence for needing the second redactor. What
+// still is: a credential with no recognisable shape around it, which is the ordinary driver error
+// (`pq: password authentication failed for user "palai" (tried <value>)`), an internal base URL, or a Jira
+// token. RedactSecrets is a no-op on every one of them, and without RedactValues they land verbatim in a
+// durable row. Both legs are pinned separately in tool_answer_test.go for exactly this reason.
 func answerResult(name string, answer *toolbroker.AnswerError, env toolbroker.ExecEnv) map[string]any {
 	message := toolbroker.RedactSecrets(answer.Error())
 	message = toolbroker.RedactValues(message, toolbroker.EnvValueList(env.EnvValues))

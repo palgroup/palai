@@ -84,30 +84,59 @@ func TestARefusalIsDistinguishableFromASuccessThatHasAStatusField(t *testing.T) 
 
 // TestARefusalMessageIsRedactedOnItsWayToTheModelAndTheLedger. The message is about to be written to a
 // durable tool_calls row AND read by a model — the same two destinations a shell result reaches — so it
-// gets the same two redactors. Without the value-based one a tool error echoing a connection string
-// would land verbatim in the database.
+// gets the same two redactors. Without the value-based one a tool error echoing a credential would land
+// verbatim in the database.
+//
+// THE NON-VACUITY LEG NAMES A SECRET NO SHAPE PATTERN CAN SEE, and the reason is a measurement rather than
+// a preference. It used to use `postgres://palai:<value>@db:5432`, and that was distinguishing until
+// `0e608545` (2026-08-04 23:52) added the URL-credential pattern to RedactSecrets — after which the SHAPE
+// redactor masks that message on its own and the value-based one has nothing left to demonstrate. The leg
+// then failed saying "the message body was DESTROYED", which was not what had happened:
+//
+//	RedactSecrets("connect to postgres://palai:s3cr3t-database-password@db:5432 failed; also tried bearer abcdefghijklmnop")
+//	  -> "connect to postgres://***@db:5432 failed; also tried ***"     (scheme, host, port and sentence all intact)
+//
+// So the URL form now has TWO independent guards and is asserted as such below, while the leg that has to
+// isolate RedactValues moved to the everyday message its own doc comment names — a driver echoing an
+// operator's password with no URL and no bearer prefix around it, which matches none of the four patterns.
 func TestARefusalMessageIsRedactedOnItsWayToTheModelAndTheLedger(t *testing.T) {
 	const envValue = "s3cr3t-database-password"
-	answer := mustAnswer(toolbroker.Answerf(toolbroker.AnswerFailed,
-		"connect to postgres://palai:%s@db:5432 failed; also tried bearer abcdefghijklmnop", envValue))
+	declared := toolbroker.ExecEnv{EnvValues: map[string]string{"DB_PASSWORD": envValue}}
 
-	out := answerResult("some.tool", answer, toolbroker.ExecEnv{EnvValues: map[string]string{"DB_PASSWORD": envValue}})
-	raw, _ := json.Marshal(out)
-	if strings.Contains(string(raw), envValue) {
-		t.Fatalf("the attempt's own environment VALUE survived into the refusal: %s", raw)
+	// (1) The URL form, which BOTH redactors now cover. It is asserted under an EMPTY ExecEnv precisely so
+	// the value-based one cannot be what passes it: this is the shape redactor alone.
+	urlAnswer := mustAnswer(toolbroker.Answerf(toolbroker.AnswerFailed,
+		"connect to postgres://palai:%s@db:5432 failed; also tried bearer abcdefghijklmnop", envValue))
+	shapeOnly, _ := json.Marshal(answerResult("some.tool", urlAnswer, toolbroker.ExecEnv{}))
+	if strings.Contains(string(shapeOnly), envValue) {
+		t.Fatalf("a URL-embedded credential survived with no environment values declared: %s", shapeOnly)
 	}
-	if strings.Contains(string(raw), "bearer abcdefghijklmnop") {
-		t.Fatalf("a bearer token survived into the refusal: %s", raw)
+	if strings.Contains(string(shapeOnly), "bearer abcdefghijklmnop") {
+		t.Fatalf("a bearer token survived into the refusal: %s", shapeOnly)
 	}
-	// Non-vacuity: the same message with NO environment values keeps its non-secret text, so the
-	// assertions above are the redactors working rather than the message being empty.
-	plain, _ := json.Marshal(answerResult("some.tool", answer, toolbroker.ExecEnv{}))
-	if !strings.Contains(string(plain), "postgres://palai") {
-		t.Fatalf("the message body was destroyed rather than redacted: %s", plain)
+	// And it is REDACTED rather than destroyed: an operator debugging a refused connection still reads
+	// where it pointed. This is the assertion the old non-vacuity leg was reaching for.
+	if !strings.Contains(string(shapeOnly), "postgres://***@db:5432") {
+		t.Fatalf("the message lost the scheme and host it must keep: %s", shapeOnly)
 	}
-	if !strings.Contains(string(plain), envValue) {
-		t.Fatal("with no environment values declared there is nothing for RedactValues to mask; " +
-			"if this fails the first assertion proves nothing")
+
+	// (2) The leg that isolates RedactValues: a message NO pattern in secretPatterns matches. Verified in
+	// the same breath rather than assumed — the undeclared rendering must still carry the value, or the
+	// assertion below it proves nothing about the value-based redactor.
+	bare := mustAnswer(toolbroker.Answerf(toolbroker.AnswerFailed,
+		`pq: password authentication failed for user "palai" (tried %s)`, envValue))
+	undeclared, _ := json.Marshal(answerResult("some.tool", bare, toolbroker.ExecEnv{}))
+	if !strings.Contains(string(undeclared), envValue) {
+		t.Fatalf("a shape pattern already masks this message, so declaring the value proves nothing about "+
+			"RedactValues — pick a message secretPatterns cannot see: %s", undeclared)
+	}
+	masked, _ := json.Marshal(answerResult("some.tool", bare, declared))
+	if strings.Contains(string(masked), envValue) {
+		t.Fatalf("the attempt's own environment VALUE survived into the refusal: %s", masked)
+	}
+	// The rest of the sentence is what the model has to read to know WHICH failure this was.
+	if !strings.Contains(string(masked), "password authentication failed") {
+		t.Fatalf("the message body was destroyed rather than redacted: %s", masked)
 	}
 }
 
