@@ -241,7 +241,7 @@ func TestDeleteRefusesAnAccountThisDaemonDidNotCreate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			why := deletionRefusedBecause(tc.rec, testHostUUID, protected)
+			why := notOurAccountBecause(tc.rec, testHostUUID, protected)
 			if why == "" {
 				t.Fatalf("PERMITTED: %+v", tc.rec)
 			}
@@ -254,15 +254,15 @@ func TestDeleteRefusesAnAccountThisDaemonDidNotCreate(t *testing.T) {
 	// THE CONTROL: a record that really is ours must be permitted, or every refusal above is green for
 	// a reason that has nothing to do with the case it names.
 	ours := dsRecord{exists: true, name: "palai-s07", uid: 707, marker: goodMarker()}
-	if why := deletionRefusedBecause(ours, testHostUUID, protected); why != "" {
+	if why := notOurAccountBecause(ours, testHostUUID, protected); why != "" {
 		t.Fatalf("a record this daemon created was refused: %s", why)
 	}
 	// And a host with no identity matches nothing, rather than matching everything.
-	if why := deletionRefusedBecause(ours, "", protected); why == "" {
+	if why := notOurAccountBecause(ours, "", protected); why == "" {
 		t.Error("a host with no identity permitted a deletion")
 	}
 	// And the protected set wins even over a perfect record.
-	if why := deletionRefusedBecause(ours, testHostUUID, map[int]bool{707: true}); why == "" {
+	if why := notOurAccountBecause(ours, testHostUUID, map[int]bool{707: true}); why == "" {
 		t.Error("a protected uid was permitted")
 	}
 }

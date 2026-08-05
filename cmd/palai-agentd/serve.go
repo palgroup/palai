@@ -149,6 +149,12 @@ func (s *Server) answer(ctx context.Context, line string) macagent.Response {
 			return responseFor(err)
 		}
 		return macagent.OKList(slots)
+	case macagent.VerbSpawn:
+		name, pid, err := s.Accounts.Spawn(ctx, req.Slot)
+		if err != nil {
+			return responseFor(err)
+		}
+		return macagent.OKSpawn(name, pid)
 	case macagent.VerbVersion:
 		// It touches no account and takes no argument, so it is answered without consulting Accounts at
 		// all — including on a machine that is not a Mac, where every other verb is `unsupported`. A
@@ -156,7 +162,7 @@ func (s *Server) answer(ctx context.Context, line string) macagent.Response {
 		// else.
 		return macagent.OKVersion(s.Version)
 	}
-	// Unreachable while ParseRequest only ever produces the three verbs above, and a response rather
+	// Unreachable while ParseRequest only ever produces the verbs above, and a response rather
 	// than a panic because a root daemon that crashes on an unexpected value is a denial of service
 	// anyone in the group can trigger.
 	return macagent.Err(macagent.ClassUnknownVerb, "verb "+req.Verb.String()+" has no handler")

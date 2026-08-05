@@ -35,6 +35,7 @@ type fakeAccounts struct {
 	mu      sync.Mutex
 	created map[int]string
 	deleted []int
+	spawned []int
 	calls   int
 }
 
@@ -57,6 +58,25 @@ func (f *fakeAccounts) Create(_ context.Context, slot int) (string, string, erro
 	}
 	f.created[slot] = name
 	return name, home, nil
+}
+
+// Spawn answers only for a slot this fake has CREATED, because that is the shape the real one has: a
+// spawn is refused for a record that is not there. A fake more generous than production is how a caller
+// ends up written against a shape that does not exist.
+func (f *fakeAccounts) Spawn(_ context.Context, slot int) (string, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	name, ok := f.created[slot]
+	if !ok {
+		derived, err := macagent.AccountName(slot)
+		if err != nil {
+			return "", 0, err
+		}
+		return "", 0, macagent.Errorf(macagent.ClassNotFound, "%s has no account", derived)
+	}
+	f.spawned = append(f.spawned, slot)
+	return name, 10000 + slot, nil
 }
 
 func (f *fakeAccounts) Delete(_ context.Context, slot int) (string, string, error) {
@@ -339,8 +359,8 @@ func TestTheProtocolCannotExpressAnAccountNameAtAll(t *testing.T) {
 				m.Names[0].Name, got)
 		}
 	}
-	if methods != 3 {
-		t.Errorf("Accounts has %d methods, want exactly 3 (Create, Delete, List); the verb set is the privilege", methods)
+	if methods != 4 {
+		t.Errorf("Accounts has %d methods, want exactly 4 (Create, Delete, List, Spawn); the verb set is the privilege", methods)
 	}
 
 	// The claim is only as strong as the parse. If either lookup silently found nothing, everything

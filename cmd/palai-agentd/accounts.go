@@ -25,6 +25,10 @@ type Accounts interface {
 	Create(ctx context.Context, slot int) (name, home string, err error)
 	Delete(ctx context.Context, slot int) (name, home string, err error)
 	List(ctx context.Context) ([]int, error)
+	// Spawn starts the session worker as slot N's account and answers its pid. It takes a slot and
+	// NOTHING ELSE — no program, no argv, no environment — which is the property that makes a `run`
+	// verb on a root daemon defensible; see macagent.InstalledWorkerPath.
+	Spawn(ctx context.Context, slot int) (name string, pid int, err error)
 }
 
 // markerAttr, markerMagic and markerVersion mirror mac-sessions.sh exactly, and they have to.
@@ -59,6 +63,16 @@ type SysadminctlAccounts struct {
 	// run is the exec boundary and a field so tests can drive every path without root. It takes an
 	// argv, never a command string.
 	run func(ctx context.Context, name string, args ...string) (string, error)
+	// spawn is the OTHER exec boundary, and it is separate from run for two reasons that are both about
+	// what it does differently rather than about testing: it STARTS a process and does not wait for its
+	// output, and it is the only place in this daemon that spends a uid other than root's. A field for
+	// the same reason run is one — every machine an agent works on is unprivileged, and a boundary
+	// reachable only with root is a boundary no test ever sees.
+	spawn func(ctx context.Context, w sessionWorker) (int, error)
+	// workerPath is macagent.InstalledWorkerPath in production, and a temporary file in tests. It is a
+	// field and NOT a caller-reachable input: see that constant for why the difference is the whole
+	// safety argument for the spawn verb.
+	workerPath string
 	// foldersRoot is darwinFoldersRoot in production, and a temporary directory in tests. A test that
 	// pointed the real path at itself would be a test that can delete the operator's caches.
 	foldersRoot string
@@ -74,6 +88,8 @@ type SysadminctlAccounts struct {
 func NewSysadminctlAccounts() *SysadminctlAccounts {
 	return &SysadminctlAccounts{
 		run:         runArgv,
+		spawn:       startWorker,
+		workerPath:  macagent.InstalledWorkerPath,
 		foldersRoot: darwinFoldersRoot,
 		hostUUID:    hostUUID,
 		now:         time.Now,
@@ -208,7 +224,7 @@ func (a *SysadminctlAccounts) Delete(ctx context.Context, slot int) (string, str
 	if err != nil {
 		return "", "", macagent.Errorf(macagent.ClassInternal, "this host has no IOPlatformUUID, so no marker can be matched against it: %v", err)
 	}
-	if why := deletionRefusedBecause(rec, huuid, a.protectedUIDs()); why != "" {
+	if why := notOurAccountBecause(rec, huuid, a.protectedUIDs()); why != "" {
 		return "", "", macagent.Errorf(macagent.ClassRefused, "%s", why)
 	}
 
@@ -320,13 +336,13 @@ func (a *SysadminctlAccounts) protectedUIDs() map[int]bool {
 	return protected
 }
 
-// deletionRefusedBecause is the deletion guard, and it returns prose only when it REFUSES: empty means
+// notOurAccountBecause is the deletion guard, and it returns prose only when it REFUSES: empty means
 // permitted. It is a free function over a record so its whole table of cases can be exercised without a
 // Mac and without root, which is the only reason the destructive path has any test coverage at all.
 //
 // A NAME IS NOT AUTHORITY. Every condition below is one way an account can be named like ours and not
 // be ours.
-func deletionRefusedBecause(rec dsRecord, thisHost string, protected map[int]bool) string {
+func notOurAccountBecause(rec dsRecord, thisHost string, protected map[int]bool) string {
 	slot, ok := macagent.IsAccountName(rec.name)
 	if !ok {
 		return fmt.Sprintf("%q is not an account this daemon names", rec.name)

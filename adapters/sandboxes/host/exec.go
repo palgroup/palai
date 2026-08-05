@@ -95,6 +95,23 @@ func credentialFor(runAs *toolbroker.RunAs) (*syscall.Credential, error) {
 // leave that refusal in place and every test green. Passing it makes both branches reachable from any
 // machine, which is the difference between measuring the privilege drop and measuring the absence of
 // privilege. macagent.DetectElevation takes geteuid the same way and for the same reason.
+// ‼️ AND SINCE A.5 T4 THE DROP BRANCH FIRES ON NOTHING, WHICH IS A STATEMENT ABOUT THE DESIGN AND NOT
+// AN ADMISSION THAT IT IS DEAD. Count the conditions rather than trusting the sentence: a non-nil
+// Credential needs a non-nil RunAs, which the control plane only sends when a session-account layer is
+// wired; spending it needs euid 0, and NO execer in this tree is uid 0 — this package runs as the
+// operator on a Mac and inside the sandbox on Linux. Both halves have to hold and the second never
+// does, so as of this commit the refusal below is what a request carrying a RunAs receives, every time,
+// on every machine.
+//
+// THE DROP MOVED, IT WAS NOT REMOVED. cmd/palai-agentd is the one Palai process that is root, and its
+// `spawn` verb starts a session worker AS palai-sNN, so the tenant's work arrives already at the right
+// uid and there is nothing here left to drop. That is why neither this Credential nor a chown is on the
+// working path any more, and it is why this code is kept rather than deleted: it is the arm that fires
+// if an execer is ever handed a RunAs it cannot honour — a worker started at the wrong uid, or a
+// posture wired to a plane the account layer does not reach. A refusal is the only correct answer
+// there, because the alternative is running a tenant's command as whoever this process already is while
+// a run record says otherwise, and that is the exact shape docs/measurements/faz-a5-residue.md §2
+// found.
 func procAttrFor(runAs *toolbroker.RunAs, euid int) (*syscall.SysProcAttr, error) {
 	credential, err := credentialFor(runAs)
 	if err != nil {
@@ -102,7 +119,9 @@ func procAttrFor(runAs *toolbroker.RunAs, euid int) (*syscall.SysProcAttr, error
 	}
 	if credential != nil && euid != 0 {
 		return nil, fmt.Errorf("%w: this executor runs as uid %d and only uid 0 may become another; the "+
-			"command was NOT run as %d and was not run as %d either (docs/plans/2026-08-05-faz-a5-mac-izolasyon.md Task 3)",
+			"command was NOT run as %d and was not run as %d either — a session's work is meant to arrive "+
+			"already at its own uid, started by palai-agentd's spawn verb, so reaching this line means the "+
+			"process that ran it is not the session worker it should be",
 			ErrCannotDropPrivilege, euid, runAs.UID, euid)
 	}
 	return &syscall.SysProcAttr{Setpgid: true, Credential: credential}, nil

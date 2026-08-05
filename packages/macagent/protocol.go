@@ -10,6 +10,14 @@
 // [Request], which has no string-kinded field anywhere in it. `delete salih` is not refused; it is
 // unwriteable.
 //
+// ‼️ AND THAT SHAPE IS WHAT LETS THIS DAEMON START A PROCESS AT ALL. [VerbSpawn] runs a session worker
+// as `palai-sNN`, which is the only way a tenant's work is ever the tenant's own uid — the execers
+// cannot drop privilege themselves, because only uid 0 may become another uid and no execer is uid 0.
+// A root daemon with a `run` verb would ordinarily be the worst thing in a system; this one is
+// tolerable for one reason and it is structural: the caller chooses an integer and the daemon chooses
+// the program, from [InstalledWorkerPath]. Adding a string field to [Request] would not weaken this
+// verb, it would DELETE the argument for having it.
+//
 // TestTheProtocolCannotExpressAnAccountNameAtAll in cmd/palai-agentd reads that shape back out of the
 // AST, because an absence has no behaviour to observe and the only way to regress it is to change a
 // declaration.
@@ -17,6 +25,7 @@ package macagent
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -62,16 +71,24 @@ type Verb uint8
 // scripts/ops/palai-session-account applies unchanged here — the shape of the privilege IS the
 // privilege.
 //
-// VerbVersion is the one addition since Task 1 and it grants NOTHING: it takes no argument, touches no
-// account, and answers a build stamp packages/version already calls a build identifier and never a
-// secret. It exists because the alternative was worse — see [Prober.Probe] for why the RUNNING daemon's
-// answer, and not the binary sitting on disk, is what an upgrade decision has to be made on.
+// VerbVersion grants NOTHING: it takes no argument, touches no account, and answers a build stamp
+// packages/version already calls a build identifier and never a secret. It exists because the
+// alternative was worse — see [Prober.Probe] for why the RUNNING daemon's answer, and not the binary
+// sitting on disk, is what an upgrade decision has to be made on.
+//
+// ‼️ VerbSpawn IS THE ONE VERB THAT STARTS A PROCESS, AND IT TAKES THE SAME SINGLE INTEGER THE OTHERS
+// DO. That is not a convenience, it is the whole reason a root daemon may have this verb at all: the
+// caller says WHICH SLOT and the daemon decides WHAT TO RUN, from [InstalledWorkerPath], which is a
+// constant here and settable by nobody. The opposite spelling — a caller that names a program, an argv
+// or an environment — would turn this socket into `sudo ANY`, which is the sentence the whole package
+// was shaped to make unwriteable. See the package comment, and TestSpawnCannotBeToldWhatToRun.
 const (
 	VerbUnknown Verb = iota
 	VerbCreate
 	VerbDelete
 	VerbList
 	VerbVersion
+	VerbSpawn
 )
 
 // Word is the token this verb is spelled with on the wire. An unknown verb has no word, and that is
@@ -86,6 +103,8 @@ func (v Verb) Word() string {
 		return "list"
 	case VerbVersion:
 		return "version"
+	case VerbSpawn:
+		return "spawn"
 	default:
 		return ""
 	}
@@ -95,7 +114,7 @@ func (v Verb) Word() string {
 // than a comparison repeated at each site because a verb added without a slot — VerbVersion was — must
 // join the zero-argument branch of the parser, the encoder AND the dispatcher, and three separate
 // comparisons is three places to only update two of.
-func (v Verb) TakesSlot() bool { return v == VerbCreate || v == VerbDelete }
+func (v Verb) TakesSlot() bool { return v == VerbCreate || v == VerbDelete || v == VerbSpawn }
 
 func (v Verb) String() string {
 	if w := v.Word(); w != "" {
@@ -128,16 +147,21 @@ const (
 	// ClassBadRequest: the line is not a request — wrong arity, empty, over-long, or carrying bytes a
 	// request never carries.
 	ClassBadRequest Class = "bad_request"
-	// ClassUnknownVerb: the first token is not one of the three verbs.
+	// ClassUnknownVerb: the first token is not one of the verbs.
 	ClassUnknownVerb Class = "unknown_verb"
 	// ClassBadSlot: the slot token is not exactly two digits naming 01..99.
 	ClassBadSlot Class = "bad_slot"
 	// ClassExists: create was asked for a slot that already has an account.
 	ClassExists Class = "exists"
-	// ClassNotFound: delete was asked for a slot that has no account.
+	// ClassNotFound: delete or spawn was asked for a slot that has no account. Spawn shares the class
+	// rather than getting its own because the caller's next step is the same one: create it first.
 	ClassNotFound Class = "not_found"
 	// ClassRefused: an account with that name exists but is not one this daemon created on this Mac,
-	// so it will not be touched. This is the interesting refusal — see the deletion guard.
+	// so it will not be touched. This is the interesting refusal — see [notOurAccountBecause] in
+	// cmd/palai-agentd, which both delete and spawn go through. The two directions are worth naming
+	// together: refusing to DELETE a record we did not create keeps this daemon from erasing somebody
+	// else's account, and refusing to SPAWN as one keeps it from starting a process as somebody else's
+	// uid. It is the same fact — a name is not authority — spent twice.
 	ClassRefused Class = "refused"
 	// ClassUnsupported: this is not a Mac, so there are no session accounts to manage.
 	ClassUnsupported Class = "unsupported"
@@ -252,8 +276,10 @@ func ParseRequest(line string) (Request, error) {
 		verb = VerbList
 	case "version":
 		verb = VerbVersion
+	case "spawn":
+		verb = VerbSpawn
 	default:
-		return Request{}, Errorf(ClassUnknownVerb, "%q is not one of create, delete, list, version", fields[0])
+		return Request{}, Errorf(ClassUnknownVerb, "%q is not one of create, delete, list, version, spawn", fields[0])
 	}
 
 	if !verb.TakesSlot() {
@@ -312,6 +338,12 @@ type Response struct {
 	// Version is the build stamp of the daemon that ANSWERED, and it is deliberately not read from the
 	// binary on disk. See [Prober.Probe].
 	Version string
+	// PID is the session worker a spawn started. It is here because a caller needs something it can
+	// OBSERVE: "the daemon says it started one" is a claim, and a pid is the handle that turns it into
+	// a measurement anybody with `ps` can take. It is not a capability — the caller may not signal a
+	// process it does not own — and it is the daemon telling the caller what it derived, which is what
+	// this whole direction of the protocol is for.
+	PID int
 
 	Class   Class
 	Message string
@@ -327,6 +359,16 @@ func OKList(slots []int) Response { return Response{OK: true, Verb: VerbList, Sl
 
 // OKVersion is the reply to a version.
 func OKVersion(stamp string) Response { return Response{OK: true, Verb: VerbVersion, Version: stamp} }
+
+// OKSpawn is the reply to a spawn: the account the worker was started as, and its pid.
+//
+// IT ANSWERS THE NAME AS WELL AS THE PID because the name is the thing the caller could not say. A
+// reply carrying only a pid would leave the caller trusting that the slot it asked for is the account
+// the process got; this way the daemon states which uid it spent, and a caller comparing that against
+// the slot it sent is comparing two derivations of the same integer.
+func OKSpawn(name string, pid int) Response {
+	return Response{OK: true, Verb: VerbSpawn, Name: name, PID: pid}
+}
 
 // Err is an error reply.
 func Err(class Class, message string) Response {
@@ -354,6 +396,9 @@ func (r Response) Line() string {
 		// to any string, and one carrying a newline would turn one response into two and desynchronise a
 		// caller reading line by line.
 		return "ok version " + flattenLine(r.Version) + "\n"
+	}
+	if r.Verb == VerbSpawn {
+		return fmt.Sprintf("ok spawn %s %d\n", r.Name, r.PID)
 	}
 	return fmt.Sprintf("ok %s %s %s\n", r.Verb.Word(), r.Name, r.Home)
 }
@@ -396,6 +441,17 @@ func ParseResponse(line string) (Response, error) {
 				return Response{}, fmt.Errorf("malformed version response %q", line)
 			}
 			return OKVersion(strings.Join(fields[2:], " ")), nil
+		case "spawn":
+			if len(fields) != 4 {
+				return Response{}, fmt.Errorf("malformed spawn response %q", line)
+			}
+			// The pid is parsed rather than carried as text, so a reply this side cannot make sense of is
+			// a protocol error here instead of a zero the caller reports as a running worker.
+			pid, err := strconv.Atoi(fields[3])
+			if err != nil || pid <= 0 {
+				return Response{}, fmt.Errorf("malformed pid %q in %q", fields[3], line)
+			}
+			return OKSpawn(fields[2], pid), nil
 		case "create", "delete":
 			if len(fields) != 4 {
 				return Response{}, fmt.Errorf("malformed %s response %q", fields[1], line)

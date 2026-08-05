@@ -9,8 +9,15 @@
 // environment (secure_path once made the same command run BSD `find` under sudo and `bfs` in a shell in
 // this repository, opening a three-hour window in an ISO8601 stamp), and a sudoers line grants
 // everything the named binary can be argued into doing. A root LaunchDaemon behind a group-owned unix
-// socket closes all three: no password, no TTY, no inherited environment, and a verb set that is three
+// socket closes all three: no password, no TTY, no inherited environment, and a verb set that is five
 // words long.
+//
+// WHY IT ALSO STARTS PROCESSES. An account nothing runs under is a directory, not a boundary — and
+// nothing could run under one, because dropping to another uid needs uid 0 and no other Palai process
+// has it. So `spawn` starts a session worker AS `palai-sNN`, and that is the point at which a tenant's
+// work stops being the operator's own uid. It is the one verb that runs a program and it is still only
+// an integer wide: the caller says which slot, the daemon says which program
+// (macagent.InstalledWorkerPath, a constant).
 //
 // WHAT IT WILL NOT DO. It takes a slot number. It does not take a name, a path, or a flag, and it never
 // runs a shell. See packages/macagent for why that is a property of the type rather than a check.

@@ -12,6 +12,29 @@ import (
 // the same string rather than trusting two files to agree.
 const InstalledBinaryPath = "/usr/local/libexec/palai-agentd"
 
+// InstalledWorkerPath is the program [VerbSpawn] starts as a session account, and it is a CONSTANT for
+// the same reason namePrefix in protocol.go is not overridable: this is the one thing a root daemon
+// executes, and a settable one is a root daemon somebody can aim.
+//
+// ‼️ THE CALLER CANNOT NAME IT, CANNOT PREFIX IT AND CANNOT PASS IT A FLAG. That asymmetry is the whole
+// safety argument for having a spawn verb at all — the caller supplies an integer, the daemon supplies
+// the program — and it is why this is not a `-worker` flag beside `-socket` and `-group`. Those two
+// bound who may REACH the daemon; this one decides what it RUNS, and the difference is that a wrong
+// value for either of those is a daemon nobody can talk to, while a wrong value here is arbitrary code
+// started by root at a uid of the caller's choosing.
+//
+// It is a SIBLING of the daemon rather than the same binary, and deliberately: palai-agentd is
+// root-owned, root-run, and its verb set is the privilege. A worker is the opposite — it holds a
+// tenant's work and runs as the tenant — and one binary being both is one binary whose argv decides
+// which, which is a decision made in the place this package refuses to make decisions.
+//
+// ‼️ NOTHING INSTALLS IT YET, AND THAT IS STATED HERE RATHER THAN DISCOVERED. macagent.Install lays down
+// the daemon, the group, the plist and the job; it does not lay down a worker, because no worker binary
+// exists in this tree. A spawn on a machine today therefore fails at [SysadminctlAccounts.Spawn]'s
+// executable check with a message naming this path. That refusal is the honest state of the mechanism:
+// the account is real, the uid is real, the drop is real, and the program is not there.
+const InstalledWorkerPath = "/usr/local/libexec/palai-session-worker"
+
 // LaunchDaemonLabel is the job's label, and LaunchDaemonPlistPath where launchd reads it from. `launchctl
 // bootout` takes the label, `bootstrap` takes the path, and an installer needs both.
 const (
