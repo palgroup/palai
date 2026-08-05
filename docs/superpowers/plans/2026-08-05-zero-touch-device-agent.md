@@ -323,7 +323,13 @@ metrics or an unauthenticated admin surface.
 **Acceptance:** A throwaway client outside the Compose network enrols through the public DNS name and an
 internal-only service remains unreachable.
 
-### T2 — Build zero-touch bootstrap and durable device identity
+### T2 — Build zero-touch bootstrap and durable device identity ✅ DONE (`0cfdd4b7`, 2026-08-06)
+
+> `palai enroll --url --key-file [--ca-file]` ships; `PALAI_CONTROLLER_CA` is no longer `mustEnv` and
+> `mustEnv` itself is deleted; identity is a device keypair + signed CSR keyed by fingerprint;
+> migration `000007_device_identity_and_pool_isolation` follows `000006`. Six component tests against
+> real Postgres, each `--- PASS` observed on `TEST=postgres scripts/test/component` (607 PASS / 0 FAIL).
+> **NOT done here:** the running agent still reads 26 `PALAI_` names (DoD 17 wants zero) — that is T3.
 
 **Goal:** URL + pool key starts a ready agent and a reboot returns the same machine.
 
@@ -591,7 +597,15 @@ tap repository (§6.3), and Milestone B's gate is the install script rather than
 binary, `palai enroll` writes identity and loads the service, and Fleet shows the same machine after a
 service restart and an in-place upgrade. T10 repeats this against the public release assets.
 
-#### T7b — `install.sh`, because a provisioner is not a person
+#### T7b — `install.sh`, because a provisioner is not a person ✅ DONE (`7db770bd`, 2026-08-05)
+
+> `scripts/install/install.sh` + `install_test.go`, which **execs the real script** rather than
+> reimplementing it. Six cases, four of them refusals, each asserting the binary is ABSENT afterwards:
+> tampered archive, manifest missing the artifact, truncated download, unsupported architecture, plus
+> the happy path and idempotence. Perturbed twice (digest comparison, idempotence branch): both RED.
+> Driven live 2026-08-06 against a local file server — installed `palai 0.1.0-local (darwin-arm64)`,
+> digest `39a15a41…` verified.
+> **NOT done here:** the release does not yet publish `palai-<v>-<os>-<arch>.tar.gz`; that is T7.
 
 **One script is the only install path, for a person and for a provisioner alike.** A freshly booted
 cloud Mac may have no Homebrew at all, so installing it first would be a second unattended installer
@@ -643,7 +657,16 @@ changes nothing. Note that `deploy/airgap/install.sh` already exists and serves 
 bundle — this is a different artifact for a different consumer and T0 must say so in both files, or the
 next reader will assume one supersedes the other.
 
-### T8 — Turn `@palai/sdk` into a real npm package
+### T8 — Turn `@palai/sdk` into a real npm package ✅ PACKAGING DONE (`8be90b95`, 2026-08-06); PUBLISH DEFERRED
+
+> One export map pointing at `dist` (the `publishConfig` dual-map was written and then removed — two
+> maps means the thing developed against and the thing shipped are different objects). Build needs
+> `rewriteRelativeImportExtensions`, since all 76 relative imports end in `.ts`; `noEmitOnError`, since
+> the first build produced 51 errors AND a full `dist/`. The guard rides `make verify`, packs the real
+> package, walks the export map, and installs the tarball into an empty directory with `--offline`.
+> Perturbed by pointing exports back at src: 2 of 3 RED.
+> **Owner decision recorded:** the SDK gets its own PUBLIC repository and npm publication happens from
+> there; until then the reference stays local (`workspace:*`).
 
 **Goal:** A normal TypeScript/JavaScript consumer can install and use the SDK without repository tooling.
 
@@ -802,6 +825,21 @@ cordoned/drained/terminated according to the configured provider floor.
 ## 5. Milestones and stop/go gates
 
 ### Milestone A0 — The same contract, no DNS required
+
+**Progress, 2026-08-06 (live, on this machine):**
+
+| leg | state |
+|---|---|
+| a plane the device did not start | ✅ measured — `http://127.0.0.1:60351/healthz` → `ok` |
+| the agent installed by `install.sh` | ✅ measured — `palai 0.1.0-local (darwin-arm64)`, digest verified |
+| `palai enroll` with only URL + key file | ⛔ blocked, then FIXED: the gateway certificate carried `DNS:control-plane` and nothing else, so enrolment by address failed `x509: … doesn't contain any IP SANs`. `8e058415` adds `localhost`, `127.0.0.1`, `::1` to the SERVER certificate. Re-measured on a fresh stack home: SANs present. |
+| the machine appears in Fleet | ⏳ pending a running plane on the fresh home |
+| an SDK session runs on THAT Mac | ⏳ |
+| three restarts, one machine row | ⏳ |
+| power cycle with nobody touching it | ⏳ (DoD 20's unmeasured case) |
+
+**A bring-up finding worth keeping:** `local up` builds the control-plane image and that build hangs on this machine (a recorded Docker-frontend hang). The NATIVE posture — control plane as a process, only Postgres/object-store in Docker — needs no such image and is also the posture a Mac fleet machine is in.
+
 
 **This milestone exists because every other one is blocked on an owner input, and that is a sequencing
 defect rather than a fact about the work.** T1's live gate needs a public DNS name and certificates
