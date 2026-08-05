@@ -57,6 +57,20 @@ func (d *dispatcher) OnEventsAPI(ctx context.Context, payload json.RawMessage) {
 	case errors.Is(err, slack.ErrNoRun):
 		d.log("slack-bot: acknowledged panel surface event %q (tab=%q channel=%s) and birthed no run", ev.Type, ev.Tab, ev.ChannelID)
 		return
+	case errors.Is(err, slack.ErrAppRateLimited):
+		// LOUD, AND FOR A REASON THE OTHER LINES DO NOT HAVE: every other refusal here is about ONE
+		// envelope that arrived. This one is about the ones that did NOT. Slack is shedding deliveries for
+		// the whole workspace, so the turns being lost leave no trace anywhere — no envelope, no ack, no
+		// event_id, nothing to correlate later. This line is the only record that a gap existed at all,
+		// which is why it names the workspace and the minute rather than saying "rate limited".
+		//
+		// Slack repeats the notification for each minute it keeps shedding, so a run of these lines IS the
+		// duration of the outage; a single one is a single minute.
+		d.log("slack-bot: SLACK IS SHEDDING THIS APP'S EVENTS — team=%s since_minute=%d. Deliveries past "+
+			"30,000 per workspace per 60 minutes are dropped by Slack before they reach this process, so "+
+			"messages written during this window get no answer and leave no other trace: %v",
+			ev.TeamID, ev.RateLimitedMinute, err)
+		return
 	case err != nil:
 		d.log("slack-bot: a malformed events_api envelope arrived: %v", err)
 		return

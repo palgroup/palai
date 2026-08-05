@@ -36,15 +36,33 @@ var (
 	// Events API's Request URL handshake, unreachable now that Socket Mode is this app's only transport
 	// (apps.connections.open needs no such handshake) — or an unknown outer type).
 	//
-	// KNOWN MEMBER OF THIS SET, so T2 does not rediscover it: `app_rate_limited` arrives as an OUTER type,
-	// not as an event_callback (https://docs.slack.dev/apis/web-api/rate-limits/, checked 2026-07-25 — a
-	// workspace/app exceeding 30,000 deliveries per 60 minutes is told so with that payload). It therefore
-	// lands here, and today NOTHING reads it: the HTTP route this comment used to name (a 400 +
-	// x-slack-no-retry response) is gone with the rest of the HTTP transport, and no Socket Mode handler has
-	// been written to log the notification's Socket Mode shape either — a real gap, not a decision, and it is
-	// tracked as one rather than silently carried by a function nothing called (see the 2026-08-05 cleanup
-	// that removed ParseAppRateLimited/ParseChallenge for being unreachable HTTP-transport code).
+	// `app_rate_limited` USED TO LAND HERE AND IS NOW ITS OWN ANSWER — see ErrAppRateLimited. What is left
+	// in this set is url_verification (the HTTP Events API's Request URL handshake) and genuinely unknown
+	// outer types, which is what the sentence above already says.
 	ErrNotAnEvent = errors.New("slack: payload is not an event_callback")
+	// ErrAppRateLimited is SLACK REFUSING TO DELIVER, and it is the only inbound answer that says nothing
+	// about any one message: the app exceeded 30,000 event deliveries for this workspace in 60 minutes and
+	// Slack is shedding the rest.
+	//
+	// CONTRACT: https://docs.slack.dev/apis/events-api/ (checked 2026-08-05) prints the payload —
+	// {token, type:"app_rate_limited", team_id, minute_rate_limited, api_app_id} — and
+	// https://docs.slack.dev/apis/web-api/rate-limits/ (same day) gives the 30,000/60-minute figure and says
+	// "you'll receive these callbacks for each of the minutes your app is rate limited for that workspace",
+	// so a sustained limit is a LINE PER MINUTE rather than one notification.
+	//
+	// UNMEASURED, AND SAID PLAINLY RATHER THAN ASSUMED: no page states whether Socket Mode delivers this at
+	// all. The Events API page describes delivery "to your server via the Events API"; the Socket Mode page
+	// (checked 2026-08-05) lists envelope types events_api / interactive / slash_commands and does not
+	// mention rate limiting anywhere. No such payload has been observed on this deployment. It is handled
+	// here because THIS is where it lands if it arrives wrapped in an events_api envelope, which is the only
+	// shape that would reach a mapping at all — and because the alternative was what shipped before: the
+	// same payload read as ErrNotAnEvent and logged by dispatch.go as "a malformed events_api envelope",
+	// which is the one sentence guaranteed to send a reader looking for a parsing bug.
+	//
+	// IT RETURNS A POPULATED Event ALONGSIDE THE ERROR, like ErrNoRun: TeamID names the workspace being
+	// shed and RateLimitedMinute names when the shedding began, and both are useless to a caller that has
+	// only a sentinel.
+	ErrAppRateLimited = errors.New("slack: this app is being rate limited; Slack is shedding event deliveries")
 	// ErrMalformed is a structurally unusable envelope — non-JSON, or missing the team/event identity that
 	// anchors dedupe and tenant correlation. The caller maps it to a 400 (authenticated client error), the
 	// ParseInbound malformed shape.
@@ -117,6 +135,11 @@ type Event struct {
 	// Tab is app_home_opened's `tab` — "home" or "messages". Only "messages" is the agent panel; the App Home
 	// *home* tab is a separate surface this app subscribes to no behaviour for. Empty on every other event.
 	Tab string
+	// RateLimitedMinute is the Unix minute Slack began shedding this workspace's event deliveries, and it is
+	// populated ONLY alongside ErrAppRateLimited — zero on every real event. It rides an Event rather than a
+	// separate return type because the caller already switches on the error, and the two fields that matter
+	// for that answer (TeamID and this) have somewhere to sit here.
+	RateLimitedMinute int64
 	// Text is WHAT THE HUMAN WROTE, with the app's own mention removed (see stripMention). It is the only
 	// field of an event that belongs in a prompt: everything beside it — channel, user, team — is scope the
 	// control plane enforces server-side, and repeating scope into the conversation would invite a model to
@@ -195,6 +218,11 @@ type eventCallback struct {
 	// level carries it. Both are read, the inner one wins, and being wrong is SILENT in the other direction:
 	// a token that never arrives looks exactly like a workspace that granted no search scope.
 	ActionToken string `json:"action_token"`
+	// MinuteRateLimited rides the app_rate_limited payload ONLY (see ErrAppRateLimited): the Unix minute at
+	// which Slack began shedding this workspace's deliveries. It is decoded on this struct rather than on a
+	// second one because that payload's other two fields — type and team_id — are already here, and a
+	// parallel struct for one extra field is how two spellings of one envelope start.
+	MinuteRateLimited int64 `json:"minute_rate_limited"`
 }
 
 // innerEvent is the subset of the inner event object the mapping reads to classify + correlate. bot_id (or
@@ -281,6 +309,18 @@ func MapEvent(body []byte, botUserID string, retry bool) (Event, error) {
 	var outer eventCallback
 	if err := dec.Decode(&outer); err != nil {
 		return Event{}, ErrMalformed
+	}
+	if outer.Type == "app_rate_limited" {
+		// NOT AN EVENT AND NOT MALFORMED — a third thing, which is the whole reason it is answered here
+		// rather than falling through to ErrNotAnEvent. It carries no event_id and no channel, so every
+		// check below it would refuse it for the wrong reason. See ErrAppRateLimited.
+		return Event{
+			Source:            Source,
+			SourceTenant:      outer.TeamID,
+			TeamID:            outer.TeamID,
+			Type:              "app_rate_limited",
+			RateLimitedMinute: outer.MinuteRateLimited,
+		}, ErrAppRateLimited
 	}
 	if outer.Type != "event_callback" {
 		return Event{}, ErrNotAnEvent
