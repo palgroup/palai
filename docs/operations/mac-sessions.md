@@ -94,14 +94,20 @@ simulator binary. `-a` is what makes `grep` read a binary as text; `strings` is 
 
 Two more rules from the same measurement, both of which produce a **false clean**:
 
-- **Decode before you scan.** A raw byte scan over compressed or encoded output can never fail.
-  Measured 2026-08-05 with a tenant marker: `/usr/bin/grep -ral <marker> /private/var/db/diagnostics`
-  (2.1 GB of `.tracev3`) answered **0**, while
+- **Decode before you scan.** A raw byte scan over compressed or encoded output cannot tell you what
+  is in it. Measured 2026-08-05 with a tenant marker:
+  `/usr/bin/grep -ral <marker> /private/var/db/diagnostics` (2.1 GB of `.tracev3`) answered **3
+  files** — which files hold the bytes, and nothing about what was logged — while
   `/usr/bin/log show --start … --predicate 'eventMessage CONTAINS "<marker>"'` over a fifteen-minute
-  window answered **4** — `kernel` and `WindowManager` lines naming the app, its device UDID and the
-  full path of its installed binary. `.gz` and binary plists are the same shape (`gunzip`,
+  window answered **4 messages**: `kernel` and `WindowManager` lines naming the app, its device UDID
+  and the full path of its installed binary. `.gz` and binary plists are the same shape (`gunzip`,
   `plutil -p`). **And use `/usr/bin/log`, not `log`:** `log` is a zsh builtin and answers
   `too many arguments` without ever reaching the unified log.
+- **`timeout` does not exist on macOS, and a missing tool returns NOTHING rather than failing.** The
+  raw figure above read `0` until it was re-run: the command had been written
+  `timeout 120 /usr/bin/grep …`, the shell answered `127`, no scan ran, and the empty output read as
+  a clean machine. Check the exit code of the scan itself, not of the pipeline it was in — and on
+  zsh `${PIPESTATUS[0]}` is empty, so do not put a scan you intend to trust behind a pipe.
 - **The system unified log is a surface no teardown reaches.** It is root-owned and machine-wide, so
   deleting an account does not touch it, and the only eraser macOS offers (`log erase`) takes every
   tenant's history at once. Treat what a run writes there as bounded by rollover, not by teardown.
