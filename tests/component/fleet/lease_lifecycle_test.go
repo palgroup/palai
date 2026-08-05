@@ -30,6 +30,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -73,7 +75,14 @@ type fleetEnv struct {
 
 func newFleetEnv(t *testing.T) *fleetEnv {
 	t.Helper()
-	cs := openHarness(t)
+	return seedFleet(t, openHarness(t))
+}
+
+// seedFleet puts a fresh tenant on an EXISTING store, so a test needing a second tenant does not pay for a
+// second Migrate — the chain is re-applied in full on every open, which on a loaded machine is the most
+// expensive thing in this package.
+func seedFleet(t *testing.T, cs *coordinator.Store) *fleetEnv {
+	t.Helper()
 	env := &fleetEnv{
 		cs:      cs,
 		tenant:  coordinator.Tenant{Project: newID("prj")},
@@ -205,7 +214,7 @@ func TestOneSessionTwoOccupanciesTwoRows(t *testing.T) {
 const reaperIdleTTL = 1 * time.Second
 
 // billingTolerance bounds clock and scheduling noise between a client-side sleep and a server-side
-// clock_timestamp(). The three candidate answers this test distinguishes are separated by more than a
+// clock_timestamp(). The three candidate answers this test tells apart are separated by more than a
 // second, so this can be generous without weakening anything — and the test asserts that separation
 // rather than assuming it.
 const billingTolerance = 400 * time.Millisecond
@@ -231,15 +240,34 @@ func TestAnIdleClosedOccupancyBillsToLastActivityNotToTheReaper(t *testing.T) {
 
 	// The TTL expires ~1.2s from now and the reaper does not arrive until well after that.
 	time.Sleep(2200 * time.Millisecond)
-	env.mustRelease(t, lease, "idle")
+	env.mustRelease(t, lease, coordinator.ReleaseReasonIdle)
 
 	rows := env.occupancies(t, session)
 	if len(rows) != 1 {
 		t.Fatalf("%d lease row(s), want 1", len(rows))
 	}
 	row := rows[0]
+	// The Go constant above is closed over the DATABASE's word here, on purpose: the billing branch is a
+	// literal 'idle' in storage/queries/leases.sql and a CHECK in 000003, and neither of them knows the
+	// constant exists. A constant that drifted would otherwise close every hold under a word the CASE does
+	// not match, and every idle tail would quietly be billed.
 	if row.ReleaseReason != "idle" {
-		t.Fatalf("release reason = %q, want idle — the billing rule keys on it, so a hold closed under any other word is billed to released_at", row.ReleaseReason)
+		t.Fatalf("release reason = %q, want idle — the billing rule keys on that exact word, so a hold closed under any other one is billed to released_at", row.ReleaseReason)
+	}
+
+	// A LATE TOUCH CHANGES NOTHING. The bill stops at last_activity_at, so a touch landing after the
+	// release would raise an amount that was already settled — and a touch racing a reaper's release is the
+	// ordinary case rather than an exotic one, which is exactly why it must be harmless.
+	env.mustTouch(t, lease)
+	if again := env.occupancies(t, session)[0]; !again.LastActivityAt.Equal(row.LastActivityAt) {
+		t.Fatalf("a touch after the release moved last_activity_at from %s to %s — it raised a bill that had already settled",
+			row.LastActivityAt, again.LastActivityAt)
+	}
+	// AND A TOUCH OF AN OCCUPANCY THAT DOES NOT EXIST IS AN ERROR rather than a silent success. A caller
+	// keeping a hold alive against an id nothing answers to would otherwise see every touch return nil
+	// while the reaper closed the session out from under it.
+	if err := env.cs.TouchLease(context.Background(), env.tenant, "lse_no_such_occupancy"); !errors.Is(err, coordinator.ErrOccupancyNotFound) {
+		t.Fatalf("TouchLease on an unknown id = %v, want ErrOccupancyNotFound", err)
 	}
 
 	toLastActivity := row.LastActivityAt.Sub(row.StartedAt) // the right answer
@@ -253,17 +281,34 @@ func TestAnIdleClosedOccupancyBillsToLastActivityNotToTheReaper(t *testing.T) {
 			toLastActivity, toFixedTTL, toRelease, billingTolerance)
 	}
 
+	// ONE ASSERTION, AND THE OTHER TWO ANSWERS ARE A DIAGNOSIS RATHER THAN ASSERTIONS OF THEIR OWN. Writing
+	// "and billed is not released_at - started_at" beside this would read like a third check and could never
+	// fire: the separation above guarantees that anything within tolerance of toLastActivity is outside
+	// tolerance of the other two. A defeated assertion never says anything, so the wrong answers are named
+	// in the failure instead, where they tell the reader WHICH mistake was made.
 	billed := env.billed(t, lease)
 	if diff := billed - toLastActivity; diff < -billingTolerance || diff > billingTolerance {
-		t.Fatalf("billed %s, want %s (last_activity_at - started_at)", billed, toLastActivity)
+		t.Fatalf("billed %s, want %s (last_activity_at - started_at)%s",
+			billed, toLastActivity, diagnoseBilling(billed, toRelease, toFixedTTL))
 	}
-	if diff := billed - toRelease; diff > -billingTolerance && diff < billingTolerance {
-		t.Fatalf("billed %s, which is released_at - started_at (%s) — the idle tail was charged to the customer", billed, toRelease)
+}
+
+// diagnoseBilling names which wrong answer a failed billing assertion gave, when it is one of the two this
+// test exists to tell apart. It returns "" for anything else rather than guessing.
+func diagnoseBilling(billed, toRelease, toFixedTTL time.Duration) string {
+	switch {
+	case within(billed, toRelease, billingTolerance):
+		return fmt.Sprintf(" — that is released_at - started_at (%s): the whole idle tail was charged to the customer", toRelease)
+	case within(billed, toFixedTTL, billingTolerance):
+		return fmt.Sprintf(" — that is released_at minus a fixed %s TTL (%s): a constant was subtracted instead of reading last_activity_at, so the customer pays for however late the reaper was",
+			reaperIdleTTL, toFixedTTL)
 	}
-	if diff := billed - toFixedTTL; diff > -billingTolerance && diff < billingTolerance {
-		t.Fatalf("billed %s, which is released_at - a fixed %s TTL (%s) — a constant was subtracted instead of reading last_activity_at, so the customer pays for however late the reaper was",
-			billed, reaperIdleTTL, toFixedTTL)
-	}
+	return ""
+}
+
+func within(got, want, tolerance time.Duration) bool {
+	diff := got - want
+	return diff > -tolerance && diff < tolerance
 }
 
 // TestAParkedRunTakesNoLeaseAndIsNeverBilled — A PARKED RUN HOLDS NOTHING, SO IT IS BILLED NOTHING.
@@ -313,5 +358,52 @@ func TestAParkedRunTakesNoLeaseAndIsNeverBilled(t *testing.T) {
 	if rows := env.occupancies(t, session); len(rows) != 0 {
 		t.Fatalf("a parked run owns %d occupancy row(s), want 0 — it is holding no machine, so billing it charges the customer for waiting in a queue (machine %q)",
 			len(rows), rows[0].RunnerID)
+	}
+}
+
+// TestALeaseCannotNameAnotherTenantsMachineOrSession — AN OCCUPANCY IS BILLED TO SOMEBODY, so who it may
+// name is a tenancy question and not a validation one.
+//
+// The row's own project_id is a PARAMETER, so `runner_leases`'s WITH CHECK is satisfied by a lease this
+// tenant owns that points at somebody else's machine — the boundary the policy enforces is on the row, not
+// on what the row references. AcquireLease closes that by selecting the machine and the session out of
+// their own tables, which row-level security confines, so the statement writes no row at all.
+//
+// BOTH HALVES ARE HERE because they fail differently and only one of them is guessable: a foreign MACHINE
+// would attribute another tenant's hardware to this bill, and a foreign SESSION would attribute this
+// tenant's hardware to a session it cannot see.
+func TestALeaseCannotNameAnotherTenantsMachineOrSession(t *testing.T) {
+	mine := newFleetEnv(t)
+	theirs := seedFleet(t, mine.cs)
+	ctx := context.Background()
+	session := mine.seedSession(t)
+
+	if _, err := mine.cs.AcquireLease(ctx, mine.tenant, session, theirs.runnerA); !errors.Is(err, coordinator.ErrMachineUnavailable) {
+		t.Fatalf("AcquireLease on another tenant's machine = %v, want ErrMachineUnavailable", err)
+	}
+	if _, err := mine.cs.AcquireLease(ctx, mine.tenant, theirs.seedSession(t), mine.runnerA); !errors.Is(err, coordinator.ErrMachineUnavailable) {
+		t.Fatalf("AcquireLease for another tenant's session = %v, want ErrMachineUnavailable", err)
+	}
+
+	// A REFUSAL THAT STILL WROTE WOULD BE WORSE THAN THE ERROR, so the rows are counted rather than
+	// inferred from the two returns above — and counted on BOTH sides, because a row written under this
+	// tenant and a row written under theirs are two different failures.
+	if rows := mine.occupancies(t, session); len(rows) != 0 {
+		t.Fatalf("a refused acquire wrote %d row(s) for this tenant, want 0", len(rows))
+	}
+	var total int
+	if err := mine.cs.Pool().QueryRow(storage.WithSystemScope(ctx),
+		`SELECT count(*) FROM runner_leases WHERE project_id IN ($1, $2)`,
+		mine.tenant.Project, theirs.tenant.Project).Scan(&total); err != nil {
+		t.Fatalf("count leases across both tenants: %v", err)
+	}
+	if total != 0 {
+		t.Fatalf("the two refused acquires left %d lease row(s) across the two tenants, want 0", total)
+	}
+
+	// NON-VACUITY: the same call with this tenant's OWN machine and session succeeds, so the two refusals
+	// above are about WHOSE they are and not about the fixture being unusable.
+	if _, err := mine.cs.AcquireLease(ctx, mine.tenant, session, mine.runnerA); err != nil {
+		t.Fatalf("AcquireLease on this tenant's own machine = %v, want success — the refusals above proved nothing if no acquire can succeed at all", err)
 	}
 }
