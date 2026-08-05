@@ -35,32 +35,28 @@ import (
 	"time"
 )
 
-// nativeRunnerBinary resolves the runner binary to run, the same way nativeBinary resolves the control
-// plane's: built from a checkout, or named by PALAI_RUNNER_BIN outside one.
-func nativeRunnerBinary(p paths) (string, error) {
-	if bin := strings.TrimSpace(os.Getenv("PALAI_RUNNER_BIN")); bin != "" {
-		if _, err := os.Stat(bin); err != nil {
-			return "", fmt.Errorf("PALAI_RUNNER_BIN=%s: %w", bin, err)
-		}
-		return bin, nil
+// nativeRunnerBinary names a build of the agent to start beside the plane, or EMPTY when this machine
+// has none to start.
+//
+// ‼️ IT NO LONGER COMPILES ONE, AND THE DELETION IS THE POINT (device plan §3.7). It used to run
+// `go build -o … ./cmd/runner` from the checkout, which put a source tree and a Go toolchain on the path
+// a machine joins a fleet by — and, worse, meant the packaged path was never the one exercised. Measured
+// 2026-08-06: the Milestone A0 session was served by this conjured runner while the enrolled device sat
+// parked beside it, so nobody noticed the device had no shell executor at all. A fallback that quietly
+// supplies what the product is supposed to install is a fallback that hides whether the product works.
+//
+// EMPTY IS NOT AN ERROR. A control plane with no agent beside it is a correct deployment — capacity comes
+// from devices that installed and enrolled themselves, which is the whole design. PALAI_RUNNER_BIN stays
+// for the checkout and for CI, where an agent is built deliberately rather than conjured.
+func nativeRunnerBinary() (string, error) {
+	bin := strings.TrimSpace(os.Getenv("PALAI_RUNNER_BIN"))
+	if bin == "" {
+		return "", nil
 	}
-	root, fromSource := buildContext(p.compose)
-	if !fromSource {
-		return "", fmt.Errorf("the native posture runs the RUNNER on this machine and there is no source tree here to build " +
-			"it from — fix: set PALAI_RUNNER_BIN to a darwin build of ./cmd/runner, or run from a checkout")
+	if _, err := os.Stat(bin); err != nil {
+		return "", fmt.Errorf("PALAI_RUNNER_BIN=%s: %w", bin, err)
 	}
-	out := filepath.Join(p.home, "bin", "palai-runner")
-	if err := os.MkdirAll(filepath.Dir(out), 0o700); err != nil {
-		return "", err
-	}
-	fmt.Fprintf(os.Stderr, "        building the runner for this machine (%s)\n", out)
-	cmd := exec.Command("go", "build", "-o", out, "./cmd/runner")
-	cmd.Dir = root
-	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("build the runner: %w", err)
-	}
-	return out, nil
+	return bin, nil
 }
 
 // nativeRunnerEnv is the environment the native runner runs with: what the compose service's

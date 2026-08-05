@@ -127,9 +127,21 @@ func UpNative(get func(string) string) (string, error) {
 	// Linux box with no Xcode in it. It starts LAST for the reason the container one did — cmd/runner
 	// log.Fatalf's on a failed enroll with nothing behind it to retry — and the control plane above is
 	// already serving by the time this line runs.
-	runnerBin, err := nativeRunnerBinary(p)
+	runnerBin, err := nativeRunnerBinary()
 	if err != nil {
 		return "", err
+	}
+	// NO AGENT HERE IS A CORRECT STACK. Capacity comes from machines that installed and enrolled
+	// themselves; a plane that manufactured one would be the fallback §3.7 deletes, and the one that hid
+	// a device with no shell executor for a whole night.
+	if runnerBin == "" {
+		fmt.Fprintf(os.Stderr, "        no agent on this machine — capacity comes from devices that enrol themselves:\n"+
+			"            curl -fsSL https://releases.palai.dev/install.sh | sh\n"+
+			"            palai enroll --url https://127.0.0.1:%d --server-name %s --key-file <pool key>\n",
+			cfg.RunnerPort, cfg.ControllerDNS)
+		fmt.Fprintf(os.Stderr, "stack up: api %s (native control plane, pid %d), no local agent\n", cfg.BaseURL, pid)
+		return fmt.Sprintf("NATIVE control plane, pid %d, log %s — NO local agent — postgres/object-store in Docker (%s)",
+			pid, p.nativeLog, nativeOverlayFile), nil
 	}
 	runnerPID, err := startNativeRunner(cfg, p, runnerBin, nativeRunnerEnv(cfg, p, get, envValue(env, "PALAI_ENGINE_IMAGE"), root))
 	if err != nil {
