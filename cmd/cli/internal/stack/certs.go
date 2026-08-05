@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
 	"os"
 	"time"
 )
@@ -46,10 +47,22 @@ func writeLocalCA(p paths) error {
 	if err != nil {
 		return fmt.Errorf("generate server key: %w", err)
 	}
+	// LOOPBACK IP SANs, BECAUSE A DEVICE IS GIVEN AN ADDRESS AND NOT A COMPOSE HOSTNAME. The DNS name
+	// alone is what a container on the compose network resolves; an agent installed on the host — which
+	// is the whole point of the device contract — is handed a URL, and the only address that is always
+	// correct for a self-host plane on this machine is loopback.
+	//
+	// Measured 2026-08-06 without these: `palai enroll --url https://127.0.0.1:<gateway>` fails with
+	// "x509: cannot validate certificate for 127.0.0.1 because it doesn't contain any IP SANs", and the
+	// operator's only cures were editing /etc/hosts (root) or re-minting the certificate by hand.
+	//
+	// It is the SERVER certificate only. The runner's client certificate and the CA are untouched, and
+	// the gateway still requires mTLS, so widening the names a client may VERIFY widens no authority.
 	serverTemplate := &x509.Certificate{
 		SerialNumber: serial(),
 		Subject:      pkix.Name{CommonName: controllerDNS},
-		DNSNames:     []string{controllerDNS},
+		DNSNames:     []string{controllerDNS, "localhost"},
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().AddDate(10, 0, 0),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
