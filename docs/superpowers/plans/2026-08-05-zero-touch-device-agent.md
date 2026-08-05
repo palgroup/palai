@@ -83,11 +83,22 @@ The work is complete only when all of the following are true at once:
     the ids, the pool, the posture or the capacity. Those 15 belong to compose, Helm and the systemd unit,
     which is the compatibility window §3.7 grants them.
 
-    **FIVE REMAIN ON THE INSTALLED PATH and they are what T3 has left to do:** `PALAI_SHELL_NATIVE` and
-    `PALAI_SANDBOX_IMAGE` (posture — should come from the pool profile the gateway returns, since the
-    machine already measures and reports what it can do), `PALAI_SETTINGS_INTERVAL` and
-    `PALAI_WORKSPACE_UNSAFE_BIND` (behaviour knobs — the admin plane's desired document is their home),
-    and `PALAI_COMPOSE_PROJECT` (a compose-only label an installed device has no use for).
+    **FIVE REMAINED ON THE INSTALLED PATH; FOUR ARE CLOSED (2026-08-06).** `PALAI_SHELL_NATIVE` and
+    `PALAI_SANDBOX_IMAGE` are gone from it: a darwin device is native by construction — `user` and
+    `accounts` both mean commands run on this host — so `posture.RunnerForInstalledDevice` answers from
+    what the machine measured. `PALAI_SETTINGS_INTERVAL` is gone: a device takes the package default,
+    because the value could only reach a device as a per-machine variable and a fleet whose poll interval
+    differs per box for unrecorded reasons is one whose configuration lag cannot be reasoned about.
+    `PALAI_WORKSPACE_UNSAFE_BIND` is gone and that one is a NARROWING: an installed device never opts into
+    honouring a lease's unsafe local bind, because the opt-in exists so a control plane alone cannot make
+    a runner mount an arbitrary host path — and on a device the machine's half of that yes could only be
+    typed as an environment variable on the box.
+
+    **ONE REMAINS AND IT IS NOT A DEVICE INPUT:** `PALAI_COMPOSE_PROJECT`, read by the supervisor to label
+    a container so `palai local down` can find it. On a device it reads empty and nothing depends on it;
+    deleting it would break compose, and keeping it imposes nothing on a machine. Verified by inspecting
+    the `installed != nil` branch of every device-facing helper — `settingsInterval`, `allowUnsafeBind`,
+    `workspaceRoot`, `shellRunner` — none reads the environment.
 18. **A session's tree follows the session, not the machine.** When a machine is stopped, drained,
     terminated or simply loses the placement, the next attempt restores that session's workspace from the
     object store on whichever machine takes it, or the run refuses. A resumed session that continues over

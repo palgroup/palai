@@ -157,18 +157,14 @@ func main() {
 		// having to restart it. It authenticates with the certificate this machine already holds — no new
 		// credential, and no inbound port, which is the property cmd/runner's header states and this must
 		// not cost.
-		Settings: settingsPoll(settingsURL, controllerCAs, controllerDNS),
-		// Unset uses packages/runner's own default (30s). It is read here rather than baked so an operator
-		// running a large fleet can lengthen it, and a demo can shorten it, without a new build.
-		SettingsInterval: envDurationDefault("PALAI_SETTINGS_INTERVAL", 0),
+		Settings:         settingsPoll(settingsURL, controllerCAs, controllerDNS),
+		SettingsInterval: settingsInterval(installed),
 		// The managed allocation root every leased workspace path must sit under before this runner
 		// bind-mounts it (spec §30.13, carry (b)). Unset disables the check (pre-E09 behaviour).
 		//
 		// ‼️ AN INSTALLED DEVICE ANSWERS THIS ITSELF — see workspaceRoot.
-		WorkspaceRoot: workspaceRoot(installed),
-		// Opt this runner into honouring a lease's §30.13 unsafe local bind (REP-012). Default off so a
-		// control plane alone cannot make the runner mount an arbitrary host path (§24 trust boundary).
-		AllowUnsafeBind: os.Getenv("PALAI_WORKSPACE_UNSAFE_BIND") == "1",
+		WorkspaceRoot:   workspaceRoot(installed),
+		AllowUnsafeBind: allowUnsafeBind(installed),
 		// The executor an exec.request runs on. nil on every deployment that has not declared a posture,
 		// which is all of them today — see shellRunnerFromEnv.
 		Shell: shellRunner(installed),
@@ -619,6 +615,38 @@ func shellRunner(installed *device.Installation) toolbroker.ShellRunner {
 		return shell
 	}
 	return shellRunnerFromEnv()
+}
+
+// settingsInterval is how often the agent re-asks the admin plane for its configuration. An INSTALLED
+// device takes the package default; the environment answers for compose, Helm and the systemd unit,
+// where an operator running a large fleet can lengthen it without a new build.
+//
+// A DEVICE HAS NOWHERE TO PUT IT, which is the whole reason it is not read there: the value would have to
+// arrive as a per-machine environment variable, and a fleet where the poll interval differs per box for
+// reasons nobody recorded is a fleet whose configuration lag cannot be reasoned about. If it ever needs
+// to vary, its home is the desired document the agent already polls — not the machine.
+func settingsInterval(installed *device.Installation) time.Duration {
+	if installed != nil {
+		return 0 // packages/runner's own default
+	}
+	return envDurationDefault("PALAI_SETTINGS_INTERVAL", 0)
+}
+
+// allowUnsafeBind opts this runner into honouring a lease's §30.13 unsafe local bind (REP-012).
+//
+// ‼️ AN INSTALLED DEVICE NEVER OPTS IN, and this is a narrowing rather than a default. The flag exists so
+// a control plane ALONE cannot make a runner mount an arbitrary host path — the machine has to have said
+// yes too (§24 trust boundary). On a device that yes could only be typed as an environment variable on
+// the box, which is precisely the surface the device contract removes; and a fleet machine that mounts
+// host paths on request is the one shape the isolation work exists to prevent.
+//
+// Compose, Helm and the systemd unit keep it: they are deployments where an operator edits a file they
+// own, and REP-012 is theirs.
+func allowUnsafeBind(installed *device.Installation) bool {
+	if installed != nil {
+		return false
+	}
+	return os.Getenv("PALAI_WORKSPACE_UNSAFE_BIND") == "1"
 }
 
 // workspaceRoot is the directory every leased session's workspace is allocated under.
