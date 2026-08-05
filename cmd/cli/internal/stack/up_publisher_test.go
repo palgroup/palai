@@ -52,23 +52,29 @@ func clearAppEnv(t *testing.T) {
 	}
 }
 
-// TestABoundRepositoryWithNoGitHubAppWarnsRatherThanWaitingForever is the RED this task's third deliverable
-// names: the stack that can PROPOSE a push and can never perform one says so, before compose is even built.
-func TestABoundRepositoryWithNoGitHubAppWarnsRatherThanWaitingForever(t *testing.T) {
+// TestApplyGitHubAppEnvIsSilentWhenNothingIsConfigured replaces a test that asserted a warning HERE.
+//
+// That warning ("a repository is bound but no GitHub App is configured") was gated on
+// PALAI_GIT_CLONE_URL, and on 2026-08-05 bindings became remote-only and that variable lost its last
+// reader. The condition became unsatisfiable — the warning could never fire again while still reading,
+// to anyone scanning this file, as coverage of the failure it named.
+//
+// The question is still worth asking and now runs where the answer LIVES: missingPublisherNotice reads
+// the actual binding rows after the stack is up, and refuses only the bindings that carry no
+// connection_ref either. Its tests are in up_repository_test.go.
+//
+// What is asserted here is what remains true of this function: with nothing configured it exports
+// nothing and says nothing.
+func TestApplyGitHubAppEnvIsSilentWhenNothingIsConfigured(t *testing.T) {
 	clearAppEnv(t)
 	warns := applyGitHubAppEnv(tempPaths(t), envGetter(map[string]string{
+		// Set deliberately: these no longer bind anything, and this function must not have grown an
+		// opinion about them again.
 		"PALAI_GIT_CLONE_URL":   "https://github.com/acme/widgets.git",
 		"PALAI_GIT_BASE_BRANCH": "dev",
 	}))
-	if len(warns) != 1 {
-		t.Fatalf("a bound repository with no GitHub App produced %d warnings, want 1: the operator's only other "+
-			"symptom is an approval that lands and does nothing, forever", len(warns))
-	}
-	for _, want := range []string{"PALAI_GITHUB_APP_ID", "PALAI_GITHUB_APP_INSTALLATION_ID",
-		"PALAI_GITHUB_APP_PRIVATE_KEY_FILE"} {
-		if !strings.Contains(warns[0], want) {
-			t.Fatalf("the warning does not name %s, so it does not say what to set: %q", want, warns[0])
-		}
+	if len(warns) != 0 {
+		t.Fatalf("applyGitHubAppEnv warned about a repository it no longer knows anything about: %v", warns)
 	}
 }
 

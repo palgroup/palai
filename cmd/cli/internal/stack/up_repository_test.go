@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,149 +9,132 @@ import (
 	"time"
 )
 
-// E22 T3: `palai up` binds the repository a run codes against — WHICH repository, and which branch a pull
-// request will target. Two failure shapes this file exists to refuse, both of which this repository has
-// already shipped once:
+// A repository binding is REMOTE configuration and the console owns it (/repositories). Until 2026-08-05
+// `palai up` also created one from PALAI_GIT_CLONE_URL, PALAI_GIT_BASE_BRANCH and PALAI_GIT_REPO in
+// .env.local, which made two paths to one binding — the defect this tree spent a week deleting, where
+// both paths work and no operator can tell which one their deployment is on.
 //
-//   - the SILENT SKIP (E21 T2): configuration absent, bring-up green, the agent quietly unable to do the
-//     thing the operator installed it for.
-//   - the DUPLICATE BINDING: `palai up` is re-run constantly, so a fresh binding per bring-up would pile up
-//     rows and move the repository underneath whatever already references the old id.
+// It was the worse of the two in one specific way: a dotenv binding could not express a connection_ref,
+// so it was structurally the binding that could never publish.
+//
+// This file now refuses the shape that would bring it back, plus the failures the old file existed for
+// and which have not changed:
+//
+//   - the DOTENV PATH returning: a bring-up that POSTs a binding from environment variables.
+//   - the SILENT SKIP (E21 T2): no binding, bring-up green, and the agent quietly unable to do the thing
+//     the operator installed it for.
+//   - "could not ask" being reported as "there are none".
 
-// TestABringUpBindsTheRepositoryAndSaysWhatItMade: the binding is created BY this command (§0.2 asks the
-// operator for a clone URL and a base branch, not for a Palai id nobody can obtain yet), and the report names
-// what it made — including the base branch, because "open the PR against dev" IS that value.
-func TestABringUpBindsTheRepositoryAndSaysWhatItMade(t *testing.T) {
-	api, calls := fakeProvisioningAPI(t)
-	repo := resolveRepository(api, envGetter(map[string]string{
-		"PALAI_GIT_REPO":        "acme/widgets",
-		"PALAI_GIT_CLONE_URL":   "https://github.com/acme/widgets.git",
-		"PALAI_GIT_BASE_BRANCH": "dev",
-	}))
-	if repo.warn != "" {
-		t.Fatalf("a fully configured repository still warned: %q", repo.warn)
-	}
-	if repo.id == "" {
-		t.Fatal("no repository binding was created, so nothing on this stack has a repository to reference and " +
-			"no run can clone anything")
-	}
-	if !strings.Contains(repo.resolved, repo.id) || !strings.Contains(repo.resolved, "acme/widgets") ||
-		!strings.Contains(repo.resolved, "dev") {
-		t.Fatalf("the bring-up does not say what it made: %q — an operator needs the binding id, the repository "+
-			"and the base branch a pull request will target", repo.resolved)
-	}
-	posted := 0
-	for _, c := range *calls {
-		if c == "POST /v1/repository-bindings" {
-			posted++
-		}
-	}
-	if posted != 1 {
-		t.Fatalf("%d POSTs to /v1/repository-bindings, want 1", posted)
-	}
-}
-
-// A re-run must REUSE. `palai up` is run constantly and a binding is not an idempotent operation: a fresh one
-// per bring-up would pile up duplicates and move the repository underneath a run that is already using it.
-func TestABringUpReusesTheRepositoryBindingItAlreadyMade(t *testing.T) {
-	api, calls := fakeProvisioningAPI(t)
-	env := map[string]string{
-		"PALAI_GIT_CLONE_URL":   "https://github.com/acme/widgets.git",
-		"PALAI_GIT_BASE_BRANCH": "dev",
-	}
-	first := resolveRepository(api, envGetter(env))
-	if first.id == "" {
-		t.Fatalf("first resolve bound nothing: %q", first.warn)
-	}
-	before := len(*calls)
-	second := resolveRepository(api, envGetter(env))
-	if second.id != first.id {
-		t.Fatalf("a second bring-up bound %s after %s: the repository would move under the operator, and a "+
-			"run already holding the old id would keep working against it", second.id, first.id)
-	}
-	for _, c := range (*calls)[before:] {
-		if strings.HasPrefix(c, "POST ") {
-			t.Fatalf("an unchanged repository configuration wrote %q", c)
-		}
-	}
-	if !strings.Contains(second.resolved, "reused") {
-		t.Fatalf("the second bring-up reports its reused binding as though it made it: %q", second.resolved)
-	}
-
-	// Retargeting the base branch is a REAL change and must not be silently inert. A binding still saying
-	// `main` after the operator asked for `dev` would open every pull request against the wrong branch.
-	env["PALAI_GIT_BASE_BRANCH"] = "main"
-	retargeted := resolveRepository(api, envGetter(env))
-	if retargeted.id == first.id {
-		t.Fatal("changing PALAI_GIT_BASE_BRANCH reused the binding that carries the OLD branch: every pull " +
-			"request would target a branch the operator stopped asking for, with a green bring-up saying so")
-	}
-}
-
-// TestAMissingRepositoryConfigurationWarnsRatherThanSkippingSilently is E21 T2's lesson, and this file has
-// now learned it twice. Half-configured is warned about too: one of the two values is the state an operator
-// reaches by editing .env.local and stopping halfway.
-func TestAMissingRepositoryConfigurationWarnsRatherThanSkippingSilently(t *testing.T) {
-	api, calls := fakeProvisioningAPI(t)
-	for _, tc := range []struct {
-		name string
-		env  map[string]string
-	}{
-		{"neither", nil},
-		{"clone url only", map[string]string{"PALAI_GIT_CLONE_URL": "https://github.com/acme/widgets.git"}},
-		{"base branch only", map[string]string{"PALAI_GIT_BASE_BRANCH": "dev"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			repo := resolveRepository(api, envGetter(tc.env))
-			if repo.id != "" {
-				t.Fatalf("a %s configuration bound %s anyway", tc.name, repo.id)
-			}
-			if repo.warn == "" {
-				t.Fatalf("a %s configuration skipped SILENTLY inside a green bring-up: the operator's only other "+
-					"symptom is an agent that keeps answering 'no workspace bound for this run'", tc.name)
-			}
-			if !strings.Contains(repo.warn, "PALAI_GIT_") {
-				t.Fatalf("the warning does not name the variable to set: %q", repo.warn)
-			}
-		})
-	}
-	for _, c := range *calls {
-		if strings.HasPrefix(c, "POST ") {
-			t.Fatalf("an unconfigured repository still wrote %q", c)
-		}
-	}
-}
-
-// A control-plane that mounts NO repository-binding surface is a real state — api.NewRouter leaves those
-// three routes unmounted when it is wired no BindingRegistrar — and it must be a WARNING, not a swallowed
-// error and not a failed bring-up. An absent repository is a legitimate posture; an absent repository the
-// operator was never told about is the silent skip again.
-func TestARepositorySurfaceTheStackDoesNotMountIsReportedRatherThanSwallowed(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"detail":"no such route"}`))
+// bindingStub serves GET /v1/repository-bindings with `rows` and records every call, so a test can assert
+// what the bring-up did AND what it did not do.
+func bindingStub(t *testing.T, rows []map[string]any) (*apiClient, *[]string) {
+	t.Helper()
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": rows})
 	}))
 	t.Cleanup(srv.Close)
-	api := &apiClient{baseURL: srv.URL, key: "test", http: &http.Client{Timeout: 5 * time.Second}}
+	return &apiClient{baseURL: srv.URL, key: "test", http: &http.Client{Timeout: 5 * time.Second}}, &calls
+}
 
-	repo := resolveRepository(api, envGetter(map[string]string{
-		"PALAI_GIT_CLONE_URL":   "https://github.com/acme/widgets.git",
-		"PALAI_GIT_BASE_BRANCH": "dev",
-	}))
-	if repo.id != "" {
-		t.Fatalf("a stack with no binding surface still reported binding %s", repo.id)
+// TestTheBringUpREPORTSBindingsAndCreatesNone is the load-bearing one, and the environment variables are
+// set ON PURPOSE: a test that only checked the report would pass against the old code too. What must be
+// true is that nothing is WRITTEN while they are set.
+func TestTheBringUpREPORTSBindingsAndCreatesNone(t *testing.T) {
+	t.Setenv("PALAI_GIT_CLONE_URL", "https://github.com/acme/widgets.git")
+	t.Setenv("PALAI_GIT_BASE_BRANCH", "dev")
+	t.Setenv("PALAI_GIT_REPO", "acme/widgets")
+
+	api, calls := bindingStub(t, []map[string]any{
+		{"id": "repo_abc123", "clone_url": "https://github.com/acme/widgets.git"},
+	})
+	repo := resolveRepository(api)
+
+	if repo.warn != "" {
+		t.Errorf("a deployment WITH a binding still warned: %q", repo.warn)
 	}
-	if repo.warn == "" {
-		t.Fatal("a repository the stack could not bind was swallowed: the operator configured one, none exists, " +
-			"and nothing said so")
+	if repo.id != "repo_abc123" {
+		t.Errorf("id = %q, want the binding the deployment already holds", repo.id)
 	}
-	if !strings.Contains(repo.warn, "repository-bindings") {
-		t.Fatalf("the warning does not carry what went wrong: %q", repo.warn)
+	if !strings.Contains(repo.resolved, "repo_abc123") {
+		t.Errorf("the report does not name the binding: %q", repo.resolved)
+	}
+	for _, c := range *calls {
+		if strings.HasPrefix(c, "POST") {
+			t.Errorf("the bring-up WROTE %q with the dotenv variables set: the dotenv path is back", c)
+		}
 	}
 }
 
-// The identity fallback: an operator who set only PALAI_GIT_CLONE_URL still gets a binding rather than a 400
-// on a required field they were never asked for.
+// TestNoBindingIsSaidOutLoudAndNamesTheScreen — E21 T2's lesson arriving in this file again: a bring-up
+// that quietly does nothing is indistinguishable from one that worked, and the operator otherwise meets
+// the gap only as a run answering "no workspace bound for this run".
+//
+// The message must name the CONSOLE, because that is the only path now. Telling someone to set an
+// environment variable nothing reads is exactly how the previous version of this warning became useless.
+func TestNoBindingIsSaidOutLoudAndNamesTheScreen(t *testing.T) {
+	api, _ := bindingStub(t, nil)
+	repo := resolveRepository(api)
+	if repo.warn == "" {
+		t.Fatal("a deployment with no repository binding was told nothing")
+	}
+	if !strings.Contains(repo.warn, "/repositories") {
+		t.Errorf("the warning does not name the screen that fixes it: %q", repo.warn)
+	}
+	if strings.Contains(repo.warn, "Set both in .env.local") {
+		t.Errorf("the warning still tells the operator to set variables nothing reads: %q", repo.warn)
+	}
+}
+
+// TestAnUnreadableBindingSurfaceDoesNotClaimThereAreNone — "could not ask" and "there are none" are
+// different facts, and only one of them should send an operator to create something they may already
+// have. The old file asserted the opposite (it WARNED on a 404), which was right when this function
+// created bindings and is wrong now that it only reports them.
+func TestAnUnreadableBindingSurfaceDoesNotClaimThereAreNone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	api := &apiClient{baseURL: srv.URL, key: "test", http: &http.Client{Timeout: 5 * time.Second}}
+
+	repo := resolveRepository(api)
+	if repo.warn != "" {
+		t.Errorf("an unreadable surface was reported as an absent binding: %q", repo.warn)
+	}
+	if repo.id != "" {
+		t.Errorf("id = %q from a 404", repo.id)
+	}
+}
+
+// TestABindingWithNoWayToPublishIsNamed covers the warning that MOVED. It used to live in
+// applyGitHubAppEnv gated on PALAI_GIT_CLONE_URL — and when that variable lost its last reader the
+// condition became unsatisfiable, so the warning could never fire while still reading as coverage.
+//
+// The failure it names is silent: an agent proposes a push, a human approves it, and the publication
+// waits forever with no error anywhere.
+func TestABindingWithNoWayToPublishIsNamed(t *testing.T) {
+	api, _ := bindingStub(t, []map[string]any{{"id": "repo_stranded", "connection_ref": ""}})
+	notice := api.missingPublisherNotice(envGetter(map[string]string{}))
+	if notice == "" {
+		t.Fatal("a binding with neither a connection_ref nor a GitHub App was not reported")
+	}
+	if !strings.Contains(notice, "repo_stranded") {
+		t.Errorf("the notice does not name the binding that cannot publish: %q", notice)
+	}
+}
+
+// TestABindingWithItsOwnConnectionIsNotReported — a binding carrying a connection_ref publishes WITHOUT
+// the App, so warning about it would be the crying-wolf this file refuses elsewhere.
+func TestABindingWithItsOwnConnectionIsNotReported(t *testing.T) {
+	api, _ := bindingStub(t, []map[string]any{{"id": "repo_ok", "connection_ref": "gh-token"}})
+	if notice := api.missingPublisherNotice(envGetter(map[string]string{})); notice != "" {
+		t.Errorf("a binding that can publish on its own was reported as stranded: %q", notice)
+	}
+}
+
+// The identity fallback still has a caller (the pull-request client's owner/repo), so it keeps its test.
 func TestTheRepositoryIdentityFallsBackToTheCloneURLPath(t *testing.T) {
 	for _, tc := range []struct{ url, want string }{
 		{"https://github.com/acme/widgets.git", "acme/widgets"},

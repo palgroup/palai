@@ -237,7 +237,7 @@ func Bootstrap(envFile string, native bool) error {
 	var warns []string
 	// WHICH REPOSITORY A SESSION CAN CODE AGAINST (E22 T3). The binding is created from the two values
 	// §0.2 asks the operator for; a session, an agent or a bot then references it by id.
-	repo := resolveRepository(api, get)
+	repo := resolveRepository(api)
 	if repo.resolved != "" {
 		fmt.Fprintf(os.Stderr, "        %s\n", repo.resolved)
 	}
@@ -293,6 +293,7 @@ func Bootstrap(envFile string, native bool) error {
 	// theoretical one: the environment fallback that used to carry a provider credential was removed
 	// the same day, so a stack whose operator never opened the console reaches no provider.
 	warns = appendWarn(warns, api.missingModelConnectionNotice())
+	warns = appendWarn(warns, api.missingPublisherNotice(get))
 	// WHAT THE FLEET IS DOING (E24 T6), on the report rather than in a warning: a machine held in a strict
 	// pool's waiting room is a machine an operator will otherwise read as broken.
 	printReport(cfg, posture, rt, caps, observedFacts(rt), fleetLine(api.fleet()), red, warns...)
@@ -492,16 +493,15 @@ func applyGitHubAppEnv(p paths, get func(string) string) []string {
 	keyFile := strings.TrimSpace(get("PALAI_GITHUB_APP_PRIVATE_KEY_FILE"))
 
 	if appID == "" && installID == "" && keyFile == "" {
-		// Nothing configured. Warn ONLY when this stack is about to grant the publish tools — an operator who
-		// bound no repository did not ask to publish anything, and warning them on every bring-up is the
-		// crying-wolf `palai up` already refuses elsewhere.
-		if strings.TrimSpace(get("PALAI_GIT_CLONE_URL")) == "" || strings.TrimSpace(get("PALAI_GIT_BASE_BRANCH")) == "" {
-			return nil
-		}
-		return []string{"a repository is bound but NO GitHub App is configured, so the agent can propose a push " +
-			"and a human can approve it and NOTHING WILL HAPPEN: the approved publication waits forever with no " +
-			"error anywhere. Fix: set PALAI_GITHUB_APP_ID, PALAI_GITHUB_APP_INSTALLATION_ID and " +
-			"PALAI_GITHUB_APP_PRIVATE_KEY_FILE in .env.local (§0.2) and re-run `palai up`"}
+		// Nothing configured, and NOTHING SAID HERE. This branch used to warn "a repository is bound but no
+		// GitHub App is configured", gated on PALAI_GIT_CLONE_URL being set — which stopped meaning anything
+		// on 2026-08-05, when bindings became remote-only and that variable lost its last reader. A condition
+		// keyed on a value nothing writes is a warning that can never fire, which is worse than no warning:
+		// it reads as coverage.
+		//
+		// The question it asked is still worth asking, so it moved to where the answer now lives —
+		// missingPublisherNotice, after the stack is up and the bindings can be READ.
+		return nil
 	}
 	if missing := missingNames(map[string]string{
 		"PALAI_GITHUB_APP_ID": appID, "PALAI_GITHUB_APP_INSTALLATION_ID": installID,
@@ -663,59 +663,49 @@ type repositoryBinding struct {
 	warn     string // a condition the final report must repeat, because its only other symptom is silence
 }
 
-// resolveRepository creates (or reuses) the repository binding a run codes against, from the two values
-// §0.2 asks the operator for. Nothing here attaches it: the id is durable configuration, and what
-// references it — a session, an agent revision, a bot row — is chosen afterwards in the console.
+// resolveRepository REPORTS the repository bindings this deployment holds. It creates none, and that is
+// the change: until 2026-08-05 it read PALAI_GIT_CLONE_URL, PALAI_GIT_BASE_BRANCH and PALAI_GIT_REPO out
+// of .env.local and registered a binding from them.
 //
-// IT WARNS RATHER THAN SKIPPING SILENTLY, and that is E21 T2's lesson arriving in the same file for the
-// second time: a bring-up that quietly does nothing is indistinguishable from one that worked. An operator
-// who expected the agent to write code would otherwise meet the gap only as an agent that keeps answering
-// "no workspace bound for this run", with no line anywhere connecting that to a variable they never set.
+// WHY THAT WENT. A repository is REMOTE configuration — it names a real repo, a real branch, and (with a
+// connection_ref) a real credential — and the console already owns that surface at /repositories. Two
+// paths to one binding is the defect this tree spent the week deleting: with an env fallback beside an
+// encrypted store BOTH worked and no operator could tell which one their deployment was on. Here it was
+// worse in one specific way: the dotenv path could not express a connection_ref at all, so a binding
+// created by a bring-up was structurally the one that could never publish — which is exactly what
+// applyGitHubAppEnv's warning below had to exist to explain.
 //
-// ponytail: no PALAI_REPOSITORY_BINDING_ID override. Every other id in this file has one because the
-// operator may already hold it; a binding is created BY this command, so an operator holding one can pass
-// its clone_url and get it reused by the lookup below. Add the override when someone has a binding they
-// cannot describe.
-func resolveRepository(api *apiClient, get func(string) string) repositoryBinding {
-	cloneURL := strings.TrimSpace(get("PALAI_GIT_CLONE_URL"))
-	branch := strings.TrimSpace(get("PALAI_GIT_BASE_BRANCH"))
-	switch {
-	case cloneURL == "" && branch == "":
-		return repositoryBinding{warn: "no repository is bound on this stack: PALAI_GIT_CLONE_URL and " +
-			"PALAI_GIT_BASE_BRANCH are unset, so a run can read and search but CANNOT clone, edit or commit " +
-			"anything. Set both in .env.local and re-run `palai up` to bind one, or register one on /repositories."}
-	case cloneURL == "":
-		return repositoryBinding{warn: "PALAI_GIT_BASE_BRANCH is set but PALAI_GIT_CLONE_URL is not: a binding needs " +
-			"BOTH — the clone URL says WHICH repository, the base branch says which branch a pull request will " +
-			"target. No repository was bound."}
-	case branch == "":
-		return repositoryBinding{warn: "PALAI_GIT_CLONE_URL is set but PALAI_GIT_BASE_BRANCH is not: a binding needs " +
-			"BOTH, and the base branch is not a default worth guessing — it is the branch every pull request against " +
-			"this repository will target. No repository was bound."}
+// IT STILL SPEAKS WHEN THERE IS NOTHING, for the reason the old comment gave and which has not changed: a
+// bring-up that quietly does nothing is indistinguishable from one that worked, and an operator who
+// expected the agent to write code would otherwise meet the gap only as a run answering "no workspace
+// bound for this run", with no line connecting that to anything they could do about it.
+func resolveRepository(api *apiClient) repositoryBinding {
+	var page struct {
+		Data []struct {
+			ID       string `json:"id"`
+			CloneURL string `json:"clone_url"`
+		} `json:"data"`
 	}
-	// The provider repository identity is the authoritative name (spec §30.1); the clone URL is not trusted as
-	// identity. PALAI_GIT_REPO is what §0.2 asks for; deriving it from the URL is the fallback so an operator
-	// who set only the URL still gets a binding rather than a 400.
-	identity := strings.TrimSpace(get("PALAI_GIT_REPO"))
-	if identity == "" {
-		identity = repositoryIdentityFrom(cloneURL)
+	status, err := api.do(http.MethodGet, "/v1/repository-bindings", nil, &page)
+	if err != nil || status != http.StatusOK {
+		// "Could not ask" is not "there are none", and only one of those deserves a warning telling an
+		// operator to go and create something they may already have.
+		return repositoryBinding{}
 	}
-	id, reused, err := api.ensureRepositoryBinding(identity, cloneURL, branch)
-	if err != nil {
-		return repositoryBinding{warn: "no repository was bound: " + err.Error() +
-			". Nothing on this stack can clone, edit or commit until this is fixed."}
+	if len(page.Data) == 0 {
+		return repositoryBinding{warn: "no repository is bound on this deployment, so a run can read and " +
+			"search but CANNOT clone, edit or commit anything. Register one on the console's /repositories " +
+			"screen — that is the only path now: PALAI_GIT_CLONE_URL and PALAI_GIT_BASE_BRANCH are no longer " +
+			"read, because a binding is remote configuration and a dotenv copy could never carry the " +
+			"connection_ref a publish needs."}
 	}
-	verb := "registered"
-	if reused {
-		verb = "reused"
+	first := page.Data[0]
+	resolved := fmt.Sprintf("repository: %d binding(s) registered on this deployment; runs use the one their "+
+		"session or agent revision names (first is %s)", len(page.Data), first.ID)
+	if first.CloneURL != "" {
+		resolved += " (clone " + first.CloneURL + ")"
 	}
-	return repositoryBinding{
-		id: id,
-		// The BASE BRANCH is named because it is the whole of "open the PR against dev": the publication
-		// destination is resolved from this binding's default_branch and is never asked of the model.
-		resolved: fmt.Sprintf("repository: %s %s for %s (clone %s, base branch %s — a pull request against this "+
-			"binding targets %s, and no model chooses that)", verb, id, identity, cloneURL, branch, branch),
-	}
+	return repositoryBinding{id: first.ID, resolved: resolved}
 }
 
 // reportRepositoryBinding resolves this stack's repository binding and prints what it did, for a
@@ -731,7 +721,7 @@ func reportRepositoryBinding(cfg Config, p paths, get func(string) string) error
 	if err != nil {
 		return err
 	}
-	repo := resolveRepository(api, get)
+	repo := resolveRepository(api)
 	if repo.resolved != "" {
 		fmt.Fprintf(os.Stderr, "        %s\n", repo.resolved)
 	}
@@ -805,59 +795,6 @@ func repositoryIdentityFrom(cloneURL string) string {
 		return path
 	}
 	return cloneURL
-}
-
-// ensureRepositoryBinding returns the id of a binding for this clone URL + base branch, reusing one this
-// project already has. Reuse is by (clone_url, default_branch) because those two ARE the binding an operator
-// described in .env.local: `palai up` is re-run constantly, and a fresh binding each time would leave a pile
-// of duplicates and — worse — move the repository underneath whatever already references the old id.
-//
-// It matches on default_branch too rather than clone_url alone, so an operator who retargets
-// PALAI_GIT_BASE_BRANCH from `main` to `dev` gets a binding that says `dev` instead of a silently inert
-// change.
-func (c *apiClient) ensureRepositoryBinding(identity, cloneURL, branch string) (id string, reused bool, err error) {
-	var page struct {
-		Data []struct {
-			ID            string `json:"id"`
-			CloneURL      string `json:"clone_url"`
-			DefaultBranch string `json:"default_branch"`
-		} `json:"data"`
-	}
-	status, err := c.do(http.MethodGet, "/v1/repository-bindings", nil, &page)
-	switch {
-	case err != nil:
-		return "", false, fmt.Errorf("list repository bindings: %w", err)
-	case status == http.StatusNotFound:
-		return "", false, fmt.Errorf("GET /v1/repository-bindings = 404: this control-plane mounts no repository " +
-			"binding surface, so no repository can be bound on this stack")
-	case status != http.StatusOK:
-		return "", false, fmt.Errorf("GET /v1/repository-bindings = %d, want 200", status)
-	}
-	for _, b := range page.Data {
-		if b.CloneURL == cloneURL && b.DefaultBranch == branch {
-			return b.ID, true, nil
-		}
-	}
-	var created struct {
-		ID     string `json:"id"`
-		Detail string `json:"detail"`
-	}
-	// allowed_operations is left empty on purpose and it is NOT a permission grant this omits: nothing in the
-	// tree reads that column today (it is stored and projected, never evaluated), so writing a list here would
-	// be a security-shaped string that enforces nothing. What actually bounds a run is its tool list.
-	status, err = c.do(http.MethodPost, "/v1/repository-bindings", map[string]any{
-		"provider":            "github",
-		"repository_identity": identity,
-		"clone_url":           cloneURL,
-		"default_branch":      branch,
-	}, &created)
-	switch {
-	case err != nil:
-		return "", false, fmt.Errorf("register the repository binding: %w", err)
-	case status != http.StatusCreated || created.ID == "":
-		return "", false, fmt.Errorf("POST /v1/repository-bindings = %d, want 201 with an id: %s", status, created.Detail)
-	}
-	return created.ID, false, nil
 }
 
 // approverListWarning exists because a project with no approvers list refuses NOTHING —
@@ -1631,6 +1568,50 @@ func (c *apiClient) seedModelConnection(credential string) string {
 	return fmt.Sprintf("sealed the %s credential into the encrypted store as %q and bound a %s connection to it. "+
 		"It is no longer read from the environment, so you can remove %s from .env.local — the console's "+
 		"/registry screen is where it lives now.", credentialEnv, ref, liveSelector, credentialEnv)
+}
+
+// missingPublisherNotice reports that this deployment holds a repository binding but cannot publish
+// from it, or "" when it can, has none, or cannot be asked.
+//
+// IT IS THE OLD applyGitHubAppEnv WARNING, MOVED TO WHERE THE ANSWER LIVES. That one was gated on
+// PALAI_GIT_CLONE_URL, and when bindings became remote-only (2026-08-05) the variable lost its last
+// reader — so the condition could never be true and the warning could never fire. Moving it here is
+// what makes it a warning again rather than a comment with a string in it.
+//
+// THE FAILURE IT NAMES IS SILENT, which is why it is worth a line at all: an agent proposes a push, a
+// human approves it, and the approved publication waits forever with no error anywhere.
+//
+// A binding carrying its own connection_ref publishes WITHOUT the App, so the App's absence is only a
+// problem for bindings that have no connection either. That is why this reads the rows rather than
+// just asking whether the App variables are set.
+func (c *apiClient) missingPublisherNotice(get func(string) string) string {
+	if strings.TrimSpace(get("PALAI_GITHUB_APP_ID")) != "" {
+		return "" // an App is configured; applyGitHubAppEnv already refused a half-configured one
+	}
+	var page struct {
+		Data []struct {
+			ID            string `json:"id"`
+			ConnectionRef string `json:"connection_ref"`
+		} `json:"data"`
+	}
+	if status, err := c.do(http.MethodGet, "/v1/repository-bindings", nil, &page); err != nil || status != http.StatusOK {
+		return ""
+	}
+	var stranded []string
+	for _, b := range page.Data {
+		if strings.TrimSpace(b.ConnectionRef) == "" {
+			stranded = append(stranded, b.ID)
+		}
+	}
+	if len(stranded) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d repository binding(s) can propose a push that NOTHING WILL EVER APPLY: %s carry no "+
+		"connection_ref and this deployment has no GitHub App either, so an agent proposes, a human approves, and "+
+		"the publication waits forever with no error anywhere. Fix: give the binding a connection on the console's "+
+		"/repositories screen, or set PALAI_GITHUB_APP_ID, PALAI_GITHUB_APP_INSTALLATION_ID and "+
+		"PALAI_GITHUB_APP_PRIVATE_KEY_FILE in .env.local and re-run `palai up`.",
+		len(stranded), strings.Join(stranded, ", "))
 }
 
 // missingModelConnectionNotice reports that this deployment has no model connection, or "" when it has
