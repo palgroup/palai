@@ -40,6 +40,10 @@ func (h *artifactsHarness) seedIdleWorkspace(t *testing.T) (project, session, wo
 	t.Helper()
 	project, workspaceID, allocationID, hostPath = h.seedAllocationOnDisk(t)
 	session = sessionOf(t, h, workspaceID)
+	// EVERY CANDIDATE THIS FUNCTION MINTS IS RETIRED WHEN ITS TEST ENDS, AND THAT IS REGISTERED HERE RATHER
+	// THAN LEFT TO EACH TEST TO REMEMBER. See retireCandidate: it is registered before the fixture is filled
+	// in, so a t.Fatal anywhere below still retires it.
+	h.retireCandidate(t, workspaceID)
 	// A prior run finished: the workspace is back to ready, still holding its host directory.
 	h.exec(t, `UPDATE workspaces SET state='ready' WHERE id=$1`, workspaceID)
 	h.ageSession(t, session, time.Hour)
@@ -65,14 +69,40 @@ func (h *artifactsHarness) ageSession(t *testing.T, session string, by time.Dura
 // touchSession brings a session's run activity back to now, which is what a REAL resume implies: the
 // workspace came back because a new message arrived, and that message's run moves runs.updated_at.
 //
-// It is not bookkeeping. Without it a resumed workspace is left `ready` with an hour-old clock — a
-// candidate the very next sweep releases — while Go's t.TempDir cleanup has already removed the directory
-// underneath it, so that sweep fails trying to archive a path that is gone and takes an unrelated test
-// down with it. Leaving the fixture in a state production never produces is what made the suite's failure
-// point at the wrong test.
+// IT IS NARRATIVE, NOT CLEANUP, AND THAT DISTINCTION IS THE WHOLE OF retireCandidate BELOW. Until
+// 2026-08-05 this function was both: five fixtures in this package leaked a `ready` workspace whose
+// t.TempDir directory was about to be removed, and what kept a LATER test's sweep from adopting that
+// workspace and failing on the missing path was that touchSession had bought five minutes on the idle
+// clock. That worked, with a measured margin of roughly 1300x — and it is still a TIMING rather than a
+// FACT. A leg that slows past the TTL turns it red and blames a test that touched none of it, which is the
+// exact failure the margin was protecting against in the first place.
 func (h *artifactsHarness) touchSession(t *testing.T, session string) {
 	t.Helper()
 	h.exec(t, `UPDATE runs SET updated_at = clock_timestamp() WHERE session_id=$1`, session)
+}
+
+// retireCandidate takes a workspace out of the idle sweep's candidate set PERMANENTLY, by recording the one
+// fact that stops being true when a test ends: `IdleWorkspacesForRelease` requires `a.host_path <> ''` on
+// the workspace's current allocation, and the directory these fixtures point at is a t.TempDir that Go
+// removes on the way out. An allocation row still naming a path that no longer exists is the lie; blanking
+// it is not fixture bookkeeping but the truth, and it is the same thing the release path itself records
+// when it hands a machine back.
+//
+// WHY A FACT RATHER THAN THE CLOCK. Five fixtures were clock-protected before this and only five of the ten
+// were fact-protected, which is a coin-flip a reader has to re-derive per test. A blanked host_path cannot
+// elapse: no TTL, no load, no ordering between packages. And two of the five had a second weakness the
+// clock hid — idle_release_billing_component_test.go's hand-back was the LAST STATEMENT OF THE TEST BODY
+// rather than a t.Cleanup, so any Fatal above it armed the landmine it existed to disarm.
+//
+// It is registered from seedIdleWorkspace so that a test added to this package inherits it without knowing
+// it exists. Cleanups run LIFO, so this fires BEFORE the t.TempDir removal registered inside
+// seedAllocationOnDisk; the order does not matter to a later sweep, but it does mean the row is honest at
+// every instant rather than for a window.
+func (h *artifactsHarness) retireCandidate(t *testing.T, workspaceID string) {
+	t.Helper()
+	t.Cleanup(func() {
+		h.exec(t, `UPDATE workspace_allocations SET host_path='' WHERE workspace_id=$1`, workspaceID)
+	})
 }
 
 // workspaceState reads a workspace's lifecycle state directly, so an assertion about it never goes
@@ -242,23 +272,24 @@ func TestASweepThatFailsOneCandidateStillReleasesTheOthers(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
 
-	_, sessA, wsA, _, hostA := h.seedIdleWorkspace(t)
-	_, sessB, wsB, _, hostB := h.seedIdleWorkspace(t)
+	_, _, wsA, _, hostA := h.seedIdleWorkspace(t)
+	_, _, wsB, _, hostB := h.seedIdleWorkspace(t)
 
 	// IdleWorkspacesForRelease orders by w.id, a total order over a random id (storage/queries/workspaces.sql)
 	// — NOT insertion order. Which of these two the sweep reaches first is decided here, or this test could
 	// pass by accident: if the failing one happened to sort LAST, even a sweep that stopped at the first
 	// failure would still show released=1, and the bug this guards against would go uncaught.
-	badWS, badSession, badHost, goodWS, goodHost := wsA, sessA, hostA, wsB, hostB
+	badWS, badHost, goodWS, goodHost := wsA, hostA, wsB, hostB
 	if wsB < wsA {
-		badWS, badSession, badHost, goodWS, goodHost = wsB, sessB, hostB, wsA, hostA
+		badWS, badHost, goodWS, goodHost = wsB, hostB, wsA, hostA
 	}
 
 	// The bad candidate is LEFT `ready` on purpose (that is what this test asserts), and its t.TempDir
 	// directory dies with this test — exactly the shared-database trap TestIdleReleaseRefusesWithoutASnapshotSink
-	// already names: without handing the clock back, the NEXT test's sweep re-adopts this workspace as an
-	// idle candidate, finds its directory gone, and fails at a test that touched none of this.
-	t.Cleanup(func() { h.touchSession(t, badSession) })
+	// already names: the NEXT test's sweep would otherwise re-adopt this workspace as an idle candidate, find
+	// its directory gone, and fail at a test that touched none of this. seedIdleWorkspace's retireCandidate
+	// closes it on the allocation's host_path, so `ready` here is a claim about THIS sweep and not a debt the
+	// idle clock has to keep paying.
 
 	// The bad candidate's directory is gone before the sweep claims it, so its capture fails outright and
 	// deterministically — no size bound or injected remover needed to make exactly one candidate fail.
@@ -324,6 +355,11 @@ func TestABusyWorkspaceIsNotReleased(t *testing.T) {
 
 	t.Run("a session with a live response.run job keeps its machine", func(t *testing.T) {
 		project, session, workspaceID, _, hostPath := h.seedIdleWorkspace(t)
+		// The five-minute lease window is this sub-test's SUBJECT, not its cleanup: the query proves liveness
+		// on the DATABASE clock (`j.lease_expires_at > clock_timestamp()`), so a live job has to be one. What
+		// it is NOT any more is what keeps this workspace from leaking into a later test's sweep — until
+		// 2026-08-05 it was both, and this was the one leg in the file with no hand-back at all because the
+		// window happened to cover the rest of the run. retireCandidate owns that half now.
 		h.exec(t, `INSERT INTO durable_jobs (id, project_id, kind, payload, status, lease_expires_at)
 			VALUES ($1,$2,'response.run',$3,'running', clock_timestamp() + interval '5 minutes')`,
 			newID("job"), project, `{"run_id":"`+runOf(t, h, workspaceID)+`"}`)
@@ -342,10 +378,10 @@ func TestABusyWorkspaceIsNotReleased(t *testing.T) {
 // that defence and this is the second.
 func TestIdleReleaseRefusesWithoutASnapshotSink(t *testing.T) {
 	h := openArtifactsHarness(t)
-	_, session, _, _, hostPath := h.seedIdleWorkspace(t)
-	// This test deliberately leaves a real candidate behind, and its directory dies with t.TempDir. Hand
-	// the clock back so no later sweep in this shared database tries to archive a path that is gone.
-	t.Cleanup(func() { h.touchSession(t, session) })
+	// This test deliberately leaves a real candidate behind — a refusal that released nothing is the point —
+	// and its directory dies with t.TempDir. seedIdleWorkspace's retireCandidate is what stops a later sweep
+	// in this shared database from trying to archive a path that is gone.
+	_, _, _, _, hostPath := h.seedIdleWorkspace(t)
 
 	releaser := execution.NewIdleReleaser(h.repo.Spine(), nil, idleTestTTL)
 	if _, err := releaser.Sweep(context.Background()); err == nil {

@@ -125,7 +125,7 @@ func occupancyOf(t *testing.T, h *artifactsHarness, tenant coordinator.Tenant, l
 func TestACaptureThatFailedLeavesTheMachineHeldAndBillsNothing(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	tenant, session, workspaceID, hostPath, leaseID := h.seedOccupiedIdleWorkspace(t)
+	tenant, _, workspaceID, hostPath, leaseID := h.seedOccupiedIdleWorkspace(t)
 
 	// The bytes this sweep would have archived are not there.
 	if err := os.RemoveAll(hostPath); err != nil {
@@ -154,9 +154,10 @@ func TestACaptureThatFailedLeavesTheMachineHeldAndBillsNothing(t *testing.T) {
 	if rows := h.settledMachineMinutes(t, tenant.Project); len(rows) != 0 {
 		t.Fatalf("a cancelled release settled %d machine.minutes row(s), want 0 — the customer was billed for a hold that is still running (%v)", len(rows), rows)
 	}
-	// Put the fixture back where production would leave it, so the next sweep in this shared database does
-	// not pick up a candidate whose directory this test deleted.
-	h.touchSession(t, session)
+	// THE CANDIDATE THIS TEST DELETED THE DIRECTORY OF IS RETIRED BY seedIdleWorkspace'S t.Cleanup, and the
+	// hand-back that used to sit here was a `h.touchSession` on this last line — outside any cleanup, so
+	// every Fatal above skipped it and armed the landmine it existed to disarm. The allocation's blanked
+	// host_path is not skippable and does not elapse.
 }
 
 // TestAReleaseWhoseBytesLeakedStillClosesAndBillsTheHold — THE MACHINE WENT BACK, SO THE HOLD IS OVER.
