@@ -110,12 +110,10 @@ func runEnroll(ctx context.Context, args []string, out io.Writer) error {
 		}
 	}
 
-	// STEP 2 — THE SAME ISOLATION GATE THE AGENT RUNS, and running it here is what makes it a gate on
-	// INSTALLATION rather than on start-up alone: a Mac that cannot isolate a session is told so by the
-	// person standing at it, not by a log line nobody reads three weeks later.
-	if err := admitMachine(ctx, macagent.NewProber(macagent.DefaultSocketPath)); err != nil {
-		return err
-	}
+	// STEP 2 — THE SAME ISOLATION MEASUREMENT THE AGENT REPORTS, said out loud here because the person
+	// running `enroll` is standing at the machine. If this Mac can only offer `user`, they learn it now
+	// rather than from a gateway refusal whose reason arrives as an exit code.
+	reportIsolation(ctx, macagent.NewProber(macagent.DefaultSocketPath))
 
 	// STEP 3 — MEASUREMENT. Both probes are answers this machine can give about ITSELF, which is the
 	// difference between these and the posture/pool/capacity declarations the control plane records and

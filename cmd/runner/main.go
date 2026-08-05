@@ -50,13 +50,10 @@ func main() {
 		return
 	}
 
-	// ‼️ BEFORE ENROLMENT, NOT AFTER. A machine that cannot isolate a session does not join the pool at
-	// all — see admitMachine. It runs here rather than inside loadConfig because the property is about
-	// the ORDER: a refusal that arrived after the certificate was issued would be a machine the control
-	// plane has already counted.
-	if err := admitMachine(ctx, macagent.NewProber(macagent.DefaultSocketPath)); err != nil {
-		log.Fatalf("%v", err)
-	}
+	// ‼️ BEFORE ENROLMENT, NOT AFTER. What this machine can isolate with is measured here so it travels
+	// WITH the enrolment request; a fact that arrived after the certificate was issued would describe a
+	// machine the control plane had already counted.
+	reportIsolation(ctx, macagent.NewProber(macagent.DefaultSocketPath))
 
 	installed := installedDevice()
 	bootstrap, tokenFile, sessionURL, renewURL, settingsURL, controllerDNS, controllerCAs := loadConfig(installed)
@@ -176,54 +173,48 @@ func main() {
 	}.Serve(ctx)
 }
 
-// admitMachine refuses to enrol a machine that would run a tenant's shell commands on itself with no
-// per-session account behind them.
+// reportIsolation logs what this machine can isolate a session with. The MEASUREMENT that decides
+// admission travels with the enrolment (device.Measure -> Facts.IsolationModes); this is the operator's
+// copy of it, on the machine, at the moment it mattered.
 //
-// ‼️ THE MACHINE ASKS ITSELF BECAUSE NOTHING ELSE CAN SEE THE ANSWER. Posture, pool and capacity are all
-// DECLARATIONS the control plane records and cannot verify — packages/runner says exactly that in each
-// field's comment. This is one more statement of the same kind, with the one difference that matters:
-// this machine can MEASURE it before it makes it, by dialling palai-agentd and getting an answer. So a
-// machine that cannot measure it does not make it.
+// ‼️ THE REFUSAL MOVED, IT DID NOT DISAPPEAR, and where it moved to is the point. This function used to
+// be `admitMachine` and it killed the process whenever a native Mac had no palai-agentd. That was
+// fail-closed in the wrong place: it made a daemon — and therefore one administrator action — a
+// precondition for a machine to join ANY pool, including a single-customer one where the login account
+// IS the boundary the operator intended. A hundred cloud Macs cannot each wait for a person.
 //
-// ‼️ AND UNTIL THIS LINE THE OPPOSITE SHIPPED, measured on 2026-08-05: the socket did not exist, no
-// launchd job was installed, the `palai` group did not exist — and a native bring-up enrolled anyway and
-// looked like it was working. Every tenant ran as uid 501, which is the operator's own uid, so the 0700
-// mode on each home directory protected nothing: one principal, and permissions between a principal and
-// itself are not a boundary.
+// The machine now states what it measured and the GATEWAY refuses, because only the gateway knows what
+// the pool requires (fleet.Store.Register -> isolationSatisfied). A pool that requires `accounts` still
+// refuses a Mac with no daemon, before any certificate is issued; a pool that requires nothing still
+// admits it. THE HOLE THAT ARGUMENT LEAVES IS REAL AND IS CLOSED SOMEWHERE ELSE: a multi-tenant pool
+// must declare `isolation_mode=accounts` (plan DoD 19), because on a `user`-mode Mac every session runs
+// as the login uid and permissions between one principal and itself are not a boundary.
 //
-// THE PROBE RETRIES, so a runner started by a first-boot hook that beat launchd is not refused for being
-// early — see macagent.ColdBootProbe for why that window exists at all and why it opens on precisely the
-// zero-touch path.
+// ‼️ IT RETRIES ONLY WHEN THERE IS SOMETHING TO WAIT FOR, and that is a measurement rather than a knob.
+// macagent.ColdBootProbe dials twelve times over tens of seconds because a runner started by a first-boot
+// hook can beat launchd, and a machine refused for being EARLY is refused for the wrong cause. But a
+// machine with no daemon INSTALLED has nothing arriving: the plist is absent, so every one of those
+// attempts is spent waiting for a process that will never bind. Measured 2026-08-06, paying it
+// unconditionally added ~38 s to each start on a `user`-mode Mac — which is every Mac in the default
+// posture, on every boot.
 //
-// The container posture is not gated: there the boundary is the sandbox, not the account, and requiring
-// a macOS daemon of a Linux runner would refuse every machine in every deployment that exists today.
-// The prober is a PARAMETER so a test can drive this exact function — the same posture derivation, the
-// same Admit, the same refusal — against a socket that is genuinely absent, substituting only the clock.
-// main passes the real one, and TestTheAdmissionGateRunsBeforeEnrolmentOnTheRealSocket reads that call
-// out of main's own body, because a gate wired nowhere is the shape this tree keeps finding.
-func admitMachine(ctx context.Context, probe *macagent.Prober) error {
-	// The SAME derivation the executor is built from (shellRunnerFromEnv -> posture.RunnerFromEnv), not a
-	// second reading of PALAI_SHELL_NATIVE. Two readings is two things to keep in step, and the one that
-	// decides where a command runs must be the one that decides whether this machine may take work.
-	native, err := posture.Resolve(os.Getenv("PALAI_SANDBOX_IMAGE"), os.Getenv("PALAI_SHELL_NATIVE"))
+// The installed plist is the discriminator because it is what launchd reads: present means a daemon is
+// coming, absent means one was never installed.
+func reportIsolation(ctx context.Context, probe *macagent.Prober) {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	if _, err := os.Stat(macagent.LaunchDaemonPlistPath); err != nil {
+		probe.Policy = macagent.ProbePolicy{Attempts: 1}
+	}
+	health, err := probe.Probe(ctx)
 	if err != nil {
-		// A contradictory or misspelled declaration is already fatal further down (shellRunnerFromEnv).
-		// Returning nil here would be this gate deciding a machine is admissible on an input it could not
-		// read; the refusal below is the same one, arriving earlier.
-		return fmt.Errorf("shell posture: %w", err)
+		log.Printf("session isolation: palai-agentd did not answer on %s, so this machine claims %q only and a pool requiring %q will refuse it: %v",
+			probe.SocketPath, device.IsolationUser, device.IsolationAccounts, err)
+		return
 	}
-	health, err := macagent.Admit(ctx, macagent.Admission{
-		Native: native,
-		GOOS:   runtime.GOOS,
-		Probe:  probe,
-	})
-	if err != nil {
-		return err
-	}
-	if native && runtime.GOOS == "darwin" {
-		log.Printf("session isolation: palai-agentd answering on %s, %d session account(s) open", probe.SocketPath, len(health.Slots))
-	}
-	return nil
+	log.Printf("session isolation: palai-agentd answering on %s, %d session account(s) open — this machine claims %q and %q",
+		probe.SocketPath, len(health.Slots), device.IsolationUser, device.IsolationAccounts)
 }
 
 // loadConfig reads the bootstrap input from the environment and immediately clears the

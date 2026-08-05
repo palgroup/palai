@@ -35,14 +35,9 @@ func TestTheMachineRunnerIsNotSpawnedAsASessionAccount(t *testing.T) {
 		// line it is sent. Only the clock is substituted, so the real attempt policy is spent.
 		prober, sent := recordingDaemon(t)
 
-		health, err := macagent.Admit(context.Background(), macagent.Admission{
-			Native: true,
-			// Passed rather than read, so this runs on the Linux box CI uses as well as on a Mac. It is
-			// the same field cmd/runner fills from runtime.GOOS, and Admit's darwin branch is the one that
-			// probes at all — a test that let it take the non-darwin early return would measure nothing.
-			GOOS:  "darwin",
-			Probe: prober,
-		})
+		// The prober directly: it is what reportIsolation and device.Measure both drive, and it runs on
+		// the Linux box CI uses as well as on a Mac because the socket is the fake one above.
+		health, err := prober.Probe(context.Background())
 		if err != nil {
 			t.Fatalf("a machine whose daemon is answering was refused: %v", err)
 		}
@@ -93,6 +88,25 @@ func containsVerb(lines []string, verb string) bool {
 		}
 	}
 	return false
+}
+
+// absentDaemon is a prober pointed at a path where no socket exists, with the clock substituted so the
+// real attempt policy is spent without the wall time. It lives here because this file is its only user:
+// the admission suite that owned it asserted a refusal that no longer exists.
+// os.MkdirTemp, NOT t.TempDir, and the reason is a limit rather than a preference: t.TempDir bakes the
+// test's NAME into the path, and a unix socket address is capped at ~104 bytes on Darwin. Binding under
+// this test's name fails with `bind: invalid argument`, which reads like a permissions problem and is
+// not one.
+func absentDaemon(t *testing.T) *macagent.Prober {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "palai-probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	prober := macagent.NewProber(filepath.Join(dir, "s.sock"))
+	prober.Sleep = func(time.Duration) {}
+	return prober
 }
 
 // recordingDaemon is presentDaemon with a transcript: it answers the way palai-agentd does and keeps
