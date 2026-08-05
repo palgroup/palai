@@ -209,6 +209,32 @@ func (s *Store) TouchLease(ctx context.Context, tenant Tenant, leaseID string) e
 // ReleaseLease closes an occupancy with the reason it closed. The reason decides the bill:
 // ReleaseReasonIdle bills to `last_activity_at`, everything else to the release itself.
 //
+// DO NOT CALL THIS TO END A HOLD. SettleOccupancy IS THE ONLY WAY TO CLOSE ONE, and this function's
+// having no production caller is a decision, not an oversight waiting to be corrected.
+//
+// It closes and does NOTHING ELSE, and the two things it omits are both irreversible:
+//
+//   - IT BILLS NOTHING. SettleOccupancy closes and settles the machine time IN ONE TRANSACTION; this
+//     writes `released_at` alone. Afterwards nothing can tell the row apart from one that settled
+//     correctly — `released_at` is set either way — so the lost revenue is not merely lost, it is
+//     undetectable. That is the whole reason the settle is one transaction rather than two calls.
+//   - IT ANNOUNCES NOTHING. SettleOccupancy calls announceFreedSlot (Faz A.4 T6), which is what wakes a
+//     run parked waiting for capacity. A hold closed here frees a slot that nothing is told about, and
+//     the parked run keeps waiting for a machine that is already free.
+//
+// COUNTED 2026-08-05, because "no caller" is a claim about the whole tree and decays silently:
+//
+//	grep -rn '\.ReleaseLease(' --include='*.go' . | grep -v node_modules   -> 1 hit, and it is a TEST
+//
+// That one is fleetEnv.mustRelease in tests/component/fleet/lease_lifecycle_test.go, used at three call
+// sites in that one file to drive the close path directly. Production reaches the close only through
+// SettleOccupancy, whose own callers are three: HoldMachine's "lost" arm, the idle release's timely
+// settle, and the recovery sweep for the settle that failed.
+//
+// What is NOT dead is the SQL. storage/queries/leases.sql's ReleaseLease statement has two Go callers —
+// this function and SettleOccupancy's transaction — so the statement is live and load-bearing, and a
+// reader who greps the name finds production use. The unused thing is this METHOD.
+//
 // IT IS WRITE-ONCE AND A REPEAT IS NOT AN ERROR, and the pair is the point. Write-once because moving
 // `released_at` forward extends the bill, so a redelivered release must change nothing. Not-an-error
 // because a release is repeated by ordinary means — a retried command, a reaper meeting a session that
