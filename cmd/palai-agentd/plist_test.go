@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	macosdeploy "github.com/palgroup/palai/deploy/macos"
+	"github.com/palgroup/palai/packages/macagent"
 )
 
 // plistPath is the deployment descriptor Task 2 will install. It is asserted against the daemon's own
@@ -72,6 +75,36 @@ func TestThePlistAgreesWithTheDaemonItStarts(t *testing.T) {
 		if !flagIsDeclared(t, strings.TrimPrefix(flagName, "-")) {
 			t.Errorf("the plist passes %s but main.go declares no such flag", flagName)
 		}
+	}
+
+	// ‼️ AND THE PATHS THE INSTALLER WRITES TO. Task 2 copies the binary to InstalledBinaryPath and the
+	// job description to LaunchDaemonPlistPath, and if either disagreed with this file the install would
+	// succeed and launchd would still run nothing — a machine that looks installed to every check that
+	// reads a path, and answers nothing on the socket that decides anything. The label is asserted for
+	// the same reason: `launchctl bootout` takes it, so a label that drifts makes every UPGRADE a no-op
+	// that reports success while the old daemon keeps serving.
+	for _, want := range []string{
+		"<string>" + macagent.InstalledBinaryPath + "</string>",
+		"<string>" + macagent.LaunchDaemonLabel + "</string>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the plist does not contain %s, so the installer and launchd do not name the same file", want)
+		}
+	}
+	if filepath.Base(macagent.LaunchDaemonPlistPath) != macagent.LaunchDaemonLabel+".plist" {
+		t.Errorf("LaunchDaemonPlistPath is %s and the label is %s; bootstrap takes the path and bootout takes the label, and an upgrade needs both to name one job",
+			macagent.LaunchDaemonPlistPath, macagent.LaunchDaemonLabel)
+	}
+
+	// THE BYTES AN INSTALL ACTUALLY DELIVERS ARE THESE BYTES. deploy/macos embeds this file and the
+	// installer writes what it embeds, so there is ONE writing of the job description rather than a
+	// second renderer that drifts from the file an operator reads and MDM pushes.
+	embedded, err := macosdeploy.LaunchDaemonPlist()
+	if err != nil {
+		t.Fatalf("the plist this binary carries is unreadable, so a packaged install has nothing to write: %v", err)
+	}
+	if string(embedded) != body {
+		t.Error("the embedded job description and deploy/macos/net.pallasite.palai-agentd.plist differ; the installer would put bytes on a machine that nobody reviewed")
 	}
 
 	// SOCKET ACTIVATION IS NOT CLAIMED. This tree has no cgo and launch_activate_socket has no

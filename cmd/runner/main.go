@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
 	"github.com/palgroup/palai/adapters/sandboxes/posture"
+	"github.com/palgroup/palai/packages/macagent"
 	"github.com/palgroup/palai/packages/runner"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 	"github.com/palgroup/palai/packages/version"
@@ -35,6 +37,14 @@ func main() {
 	// stop (SIGTERM on container teardown), renewing its certificate as it nears expiry.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// ‼️ BEFORE ENROLMENT, NOT AFTER. A machine that cannot isolate a session does not join the pool at
+	// all — see admitMachine. It runs here rather than inside loadConfig because the property is about
+	// the ORDER: a refusal that arrived after the certificate was issued would be a machine the control
+	// plane has already counted.
+	if err := admitMachine(ctx, macagent.NewProber(macagent.DefaultSocketPath)); err != nil {
+		log.Fatalf("%v", err)
+	}
 
 	bootstrap, tokenFile, sessionURL, renewURL, settingsURL, controllerDNS, controllerCAs := loadConfig()
 
@@ -148,6 +158,56 @@ func main() {
 		// which is all of them today — see shellRunnerFromEnv.
 		Shell: shellRunnerFromEnv(),
 	}.Serve(ctx)
+}
+
+// admitMachine refuses to enrol a machine that would run a tenant's shell commands on itself with no
+// per-session account behind them.
+//
+// ‼️ THE MACHINE ASKS ITSELF BECAUSE NOTHING ELSE CAN SEE THE ANSWER. Posture, pool and capacity are all
+// DECLARATIONS the control plane records and cannot verify — packages/runner says exactly that in each
+// field's comment. This is one more statement of the same kind, with the one difference that matters:
+// this machine can MEASURE it before it makes it, by dialling palai-agentd and getting an answer. So a
+// machine that cannot measure it does not make it.
+//
+// ‼️ AND UNTIL THIS LINE THE OPPOSITE SHIPPED, measured on 2026-08-05: the socket did not exist, no
+// launchd job was installed, the `palai` group did not exist — and a native bring-up enrolled anyway and
+// looked like it was working. Every tenant ran as uid 501, which is the operator's own uid, so the 0700
+// mode on each home directory protected nothing: one principal, and permissions between a principal and
+// itself are not a boundary.
+//
+// THE PROBE RETRIES, so a runner started by a first-boot hook that beat launchd is not refused for being
+// early — see macagent.ColdBootProbe for why that window exists at all and why it opens on precisely the
+// zero-touch path.
+//
+// The container posture is not gated: there the boundary is the sandbox, not the account, and requiring
+// a macOS daemon of a Linux runner would refuse every machine in every deployment that exists today.
+// The prober is a PARAMETER so a test can drive this exact function — the same posture derivation, the
+// same Admit, the same refusal — against a socket that is genuinely absent, substituting only the clock.
+// main passes the real one, and TestTheAdmissionGateRunsBeforeEnrolmentOnTheRealSocket reads that call
+// out of main's own body, because a gate wired nowhere is the shape this tree keeps finding.
+func admitMachine(ctx context.Context, probe *macagent.Prober) error {
+	// The SAME derivation the executor is built from (shellRunnerFromEnv -> posture.RunnerFromEnv), not a
+	// second reading of PALAI_SHELL_NATIVE. Two readings is two things to keep in step, and the one that
+	// decides where a command runs must be the one that decides whether this machine may take work.
+	native, err := posture.Resolve(os.Getenv("PALAI_SANDBOX_IMAGE"), os.Getenv("PALAI_SHELL_NATIVE"))
+	if err != nil {
+		// A contradictory or misspelled declaration is already fatal further down (shellRunnerFromEnv).
+		// Returning nil here would be this gate deciding a machine is admissible on an input it could not
+		// read; the refusal below is the same one, arriving earlier.
+		return fmt.Errorf("shell posture: %w", err)
+	}
+	health, err := macagent.Admit(ctx, macagent.Admission{
+		Native: native,
+		GOOS:   runtime.GOOS,
+		Probe:  probe,
+	})
+	if err != nil {
+		return err
+	}
+	if native && runtime.GOOS == "darwin" {
+		log.Printf("session isolation: palai-agentd answering on %s, %d session account(s) open", probe.SocketPath, len(health.Slots))
+	}
+	return nil
 }
 
 // loadConfig reads the bootstrap input from the environment and immediately clears the

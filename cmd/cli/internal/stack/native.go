@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -51,6 +52,22 @@ func UpNative(get func(string) string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// ‼️ THE ISOLATION MECHANISM COMES BEFORE THE STACK, and it comes before any Docker work so a refusal
+	// costs nothing. On this posture a tenant's shell commands run on THIS machine as THIS uid, and the
+	// only boundary between one tenant and the next is a per-session account palai-agentd owns. Bringing
+	// the stack up first and checking after would produce the state this phase exists to delete: a
+	// machine serving tenant work that nobody can say either way about.
+	//
+	// It probes before it installs, so a machine that already has one is not reinstalled, and it installs
+	// only where it can elevate with nobody watching. See agentd.go.
+	agentd, err := EnsureAgentd(context.Background(), p)
+	if err != nil {
+		return "", err
+	}
+	for _, w := range agentd.Warnings {
+		fmt.Fprintf(os.Stderr, "        WARNING %s\n", w)
+	}
+	fmt.Fprintf(os.Stderr, "        %s\n", agentdLine(agentd))
 	overlay := filepath.Join(filepath.Dir(p.compose), nativeOverlayFile)
 	if _, err := os.Stat(overlay); err != nil {
 		return "", fmt.Errorf("the native overlay is not beside the compose file (%s): %w", overlay, err)

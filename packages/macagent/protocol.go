@@ -51,11 +51,17 @@ type Verb uint8
 // is no pass-through, no flag, and no escape hatch, because the sudoers lesson in
 // scripts/ops/palai-session-account applies unchanged here — the shape of the privilege IS the
 // privilege.
+//
+// VerbVersion is the one addition since Task 1 and it grants NOTHING: it takes no argument, touches no
+// account, and answers a build stamp packages/version already calls a build identifier and never a
+// secret. It exists because the alternative was worse — see [Prober.Probe] for why the RUNNING daemon's
+// answer, and not the binary sitting on disk, is what an upgrade decision has to be made on.
 const (
 	VerbUnknown Verb = iota
 	VerbCreate
 	VerbDelete
 	VerbList
+	VerbVersion
 )
 
 // Word is the token this verb is spelled with on the wire. An unknown verb has no word, and that is
@@ -68,10 +74,18 @@ func (v Verb) Word() string {
 		return "delete"
 	case VerbList:
 		return "list"
+	case VerbVersion:
+		return "version"
 	default:
 		return ""
 	}
 }
+
+// TakesSlot reports whether this verb carries the one integer a caller chooses. It is a method rather
+// than a comparison repeated at each site because a verb added without a slot — VerbVersion was — must
+// join the zero-argument branch of the parser, the encoder AND the dispatcher, and three separate
+// comparisons is three places to only update two of.
+func (v Verb) TakesSlot() bool { return v == VerbCreate || v == VerbDelete }
 
 func (v Verb) String() string {
 	if w := v.Word(); w != "" {
@@ -226,13 +240,15 @@ func ParseRequest(line string) (Request, error) {
 		verb = VerbDelete
 	case "list":
 		verb = VerbList
+	case "version":
+		verb = VerbVersion
 	default:
-		return Request{}, Errorf(ClassUnknownVerb, "%q is not one of create, delete, list", fields[0])
+		return Request{}, Errorf(ClassUnknownVerb, "%q is not one of create, delete, list, version", fields[0])
 	}
 
-	if verb == VerbList {
+	if !verb.TakesSlot() {
 		if len(fields) != 1 {
-			return Request{}, Errorf(ClassBadRequest, "list takes no argument, got %d", len(fields)-1)
+			return Request{}, Errorf(ClassBadRequest, "%s takes no argument, got %d", verb, len(fields)-1)
 		}
 		return Request{Verb: verb}, nil
 	}
@@ -265,8 +281,8 @@ func (r Request) Line() (string, error) {
 	if word == "" {
 		return "", Errorf(ClassUnknownVerb, "verb %d has no wire spelling", r.Verb)
 	}
-	if r.Verb == VerbList {
-		return "list\n", nil
+	if !r.Verb.TakesSlot() {
+		return word + "\n", nil
 	}
 	if err := ValidSlot(r.Slot); err != nil {
 		return "", err
@@ -283,6 +299,9 @@ type Response struct {
 	Name  string
 	Home  string
 	Slots []int
+	// Version is the build stamp of the daemon that ANSWERED, and it is deliberately not read from the
+	// binary on disk. See [Prober.Probe].
+	Version string
 
 	Class   Class
 	Message string
@@ -295,6 +314,9 @@ func OKAccount(verb Verb, name, home string) Response {
 
 // OKList is the reply to a list.
 func OKList(slots []int) Response { return Response{OK: true, Verb: VerbList, Slots: slots} }
+
+// OKVersion is the reply to a version.
+func OKVersion(stamp string) Response { return Response{OK: true, Verb: VerbVersion, Version: stamp} }
 
 // Err is an error reply.
 func Err(class Class, message string) Response {
@@ -317,7 +339,17 @@ func (r Response) Line() string {
 		}
 		return out + "\n"
 	}
+	if r.Verb == VerbVersion {
+		// Flattened for the reason a message is: PALAI_VERSION lets an operator pin the reported stamp
+		// to any string, and one carrying a newline would turn one response into two and desynchronise a
+		// caller reading line by line.
+		return "ok version " + flattenLine(r.Version) + "\n"
+	}
 	return fmt.Sprintf("ok %s %s %s\n", r.Verb.Word(), r.Name, r.Home)
+}
+
+func flattenLine(s string) string {
+	return strings.NewReplacer("\n", " ", "\r", " ").Replace(s)
 }
 
 // ParseResponse reads one reply. It is the caller's half of the protocol, and it exists here rather
@@ -331,6 +363,9 @@ func ParseResponse(line string) (Response, error) {
 			return Response{}, fmt.Errorf("malformed err response %q", line)
 		}
 		return Response{Class: Class(fields[1]), Message: strings.Join(fields[2:], " ")}, nil
+	// A daemon too old to know the verb answers `err unknown_verb ...`, which lands on the branch above
+	// and is a perfectly good answer: it says a daemon is THERE and cannot name itself, which is a
+	// reason to upgrade rather than a reason to be unreachable.
 	case "ok":
 		if len(fields) < 2 {
 			return Response{}, fmt.Errorf("malformed ok response %q", line)
@@ -346,6 +381,11 @@ func ParseResponse(line string) (Response, error) {
 				slots = append(slots, slot)
 			}
 			return OKList(slots), nil
+		case "version":
+			if len(fields) < 3 {
+				return Response{}, fmt.Errorf("malformed version response %q", line)
+			}
+			return OKVersion(strings.Join(fields[2:], " ")), nil
 		case "create", "delete":
 			if len(fields) != 4 {
 				return Response{}, fmt.Errorf("malformed %s response %q", fields[1], line)

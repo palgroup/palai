@@ -30,15 +30,20 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/palgroup/palai/packages/macagent"
 	"github.com/palgroup/palai/packages/version"
 )
 
-// defaultSocketPath is where the plist in deploy/macos puts the socket.
-const defaultSocketPath = "/var/run/palai-agentd.sock"
-
-// defaultGroup is the group whose members may reach this daemon. Membership in it is the entire
-// credential, which is why deploy/macos creates it with no members and Task 2 adds exactly one.
-const defaultGroup = "palai"
+// defaultSocketPath is where the plist in deploy/macos puts the socket, and defaultGroup is the group
+// whose members may reach this daemon — membership in it is the entire credential.
+//
+// BOTH NOW COME FROM packages/macagent RATHER THAN BEING WRITTEN HERE, because Task 2 gave them a second
+// reader: every caller dials the same path and the installer puts the same account in the same group. A
+// path written twice is a path an install can land beside rather than on.
+const (
+	defaultSocketPath = macagent.DefaultSocketPath
+	defaultGroup      = macagent.DefaultGroup
+)
 
 func main() {
 	socketPath := flag.String("socket", defaultSocketPath, "unix socket to serve on")
@@ -83,6 +88,10 @@ func run(ctx context.Context, socketPath, groupName string, logger *log.Logger) 
 		SocketPath: socketPath,
 		WantGID:    gid,
 		Logger:     logger,
+		// The stamp of the daemon that is ACTUALLY SERVING, which is the only version an upgrade
+		// decision may be made on: a copy that landed at InstalledBinaryPath and a launchd job that was
+		// never restarted disagree, and the file is the one that lies.
+		Version: version.Resolve(),
 	}
 	logger.Printf("serving %s for group %s (gid %d)", socketPath, groupName, gid)
 	if err := srv.Serve(ctx, ln); err != nil && !errors.Is(err, context.Canceled) {

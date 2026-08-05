@@ -35,6 +35,11 @@ type Server struct {
 	// at startup, where a missing group is a refusal to start rather than a per-request surprise.
 	WantGID int
 	Logger  *log.Logger
+	// Version is this daemon's build stamp, answered on the wire so a caller compares against what is
+	// RUNNING rather than against a file on disk. Empty is a daemon that was wired without one, and it
+	// answers an empty stamp rather than refusing: a version is not a credential and no verb depends on
+	// it.
+	Version string
 }
 
 // Serve verifies the socket, then answers on it until ctx is done.
@@ -144,6 +149,12 @@ func (s *Server) answer(ctx context.Context, line string) macagent.Response {
 			return responseFor(err)
 		}
 		return macagent.OKList(slots)
+	case macagent.VerbVersion:
+		// It touches no account and takes no argument, so it is answered without consulting Accounts at
+		// all — including on a machine that is not a Mac, where every other verb is `unsupported`. A
+		// caller asking "what is running here" deserves an answer from a daemon that cannot do anything
+		// else.
+		return macagent.OKVersion(s.Version)
 	}
 	// Unreachable while ParseRequest only ever produces the three verbs above, and a response rather
 	// than a panic because a root daemon that crashes on an unexpected value is a denial of service
