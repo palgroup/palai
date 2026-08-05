@@ -118,7 +118,9 @@ func TestSDKParityJourney(t *testing.T) {
 			"openai-compatible": openaicompatible.Adapter{Adapter: providerone.Adapter{BaseURL: standIn.URL}, Prober: openaicompatible.NewProber()},
 		},
 		Secrets: execution.RouteSecretResolver{
-			Lookup: func(name string) ([]byte, bool, error) { return secretStore.Resolve(ctx, name) },
+			Lookup: func(forTenant coordinator.Tenant, name string) ([]byte, bool, error) {
+				return secretStore.Resolve(ctx, forTenant, name)
+			},
 			Fallback: modelbroker.EnvResolver{
 				"provider-one": credentialEnv,
 				"provider-two": anthropicCredentialEnv,

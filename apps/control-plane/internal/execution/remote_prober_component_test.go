@@ -14,6 +14,7 @@ import (
 	"github.com/palgroup/palai/adapters/integrations/webhook"
 	remotehttp "github.com/palgroup/palai/adapters/tools/http"
 	"github.com/palgroup/palai/apps/control-plane/api"
+	"github.com/palgroup/palai/packages/coordinator"
 
 	"github.com/palgroup/palai/storage"
 )
@@ -31,7 +32,7 @@ func TestLateCallbackAfterDeadlineEntersReconciliationNotSilentCommit(t *testing
 	ops := remotehttp.NewOperations(pool)
 	secret := []byte("remote-tool-late-secret")
 
-	resolver := func(ref string) ([]byte, error) {
+	resolver := func(_ coordinator.Tenant, ref string) ([]byte, error) {
 		if ref == "sig-ref" {
 			return secret, nil
 		}

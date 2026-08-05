@@ -38,6 +38,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/packages/contracts"
+	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 
@@ -317,7 +318,7 @@ func TestScheduledInvestigationJourneyDeterministic(t *testing.T) {
 		t.Fatalf("reconciler tick (arm callback): %v", err)
 	}
 	pump := automation.NewWebhookPump(h.webhooks, webhook.NewSender(),
-		func(ref string) ([]byte, error) {
+		func(_ coordinator.Tenant, ref string) ([]byte, error) {
 			if ref == "cbref" {
 				return callbackSecret, nil
 			}

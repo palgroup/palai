@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/palgroup/palai/packages/coordinator"
 )
 
 // TestSignEmptySecretIsRetryableNotPanic pins F1: a resolved secret that is empty or whitespace-only
@@ -16,7 +18,7 @@ func TestSignEmptySecretIsRetryableNotPanic(t *testing.T) {
 			t.Fatalf("sign panicked on an empty secret (poison-row DoS): %v", r)
 		}
 	}()
-	p := &WebhookPump{secrets: func(_ string) ([]byte, error) { return []byte("  \n\t"), nil }, now: time.Now}
+	p := &WebhookPump{secrets: func(_ coordinator.Tenant, _ string) ([]byte, error) { return []byte("  \n\t"), nil }, now: time.Now}
 	if _, err := p.sign(dueDelivery{EndpointID: "whe_1", SecretRef: "ref", Payload: []byte("{}")}, time.Now(), 1); err == nil {
 		t.Fatal("sign with an empty/whitespace secret must return a retryable error, not a signed delivery")
 	}
@@ -25,14 +27,14 @@ func TestSignEmptySecretIsRetryableNotPanic(t *testing.T) {
 // TestSignTrimsSecretWhitespace pins F12: a trailing newline in a secret file is stripped so a secret
 // stored as "whsec_x\n" is not silently a different (broken) key from "whsec_x".
 func TestSignTrimsSecretWhitespace(t *testing.T) {
-	trimmed := func(_ string) ([]byte, error) { return []byte("whsec_padded\n"), nil }
+	trimmed := func(_ coordinator.Tenant, _ string) ([]byte, error) { return []byte("whsec_padded\n"), nil }
 	p := &WebhookPump{secrets: trimmed, now: time.Now}
 	sig, err := p.sign(dueDelivery{EndpointID: "whe_1", SecretRef: "ref", Payload: []byte("{}")}, time.Unix(1784203200, 0), 1)
 	if err != nil {
 		t.Fatalf("sign error = %v", err)
 	}
 	// The signature must match the TRIMMED secret, not the raw newline-padded bytes.
-	unpaddedPump := &WebhookPump{secrets: func(_ string) ([]byte, error) { return []byte("whsec_padded"), nil }, now: time.Now}
+	unpaddedPump := &WebhookPump{secrets: func(_ coordinator.Tenant, _ string) ([]byte, error) { return []byte("whsec_padded"), nil }, now: time.Now}
 	sig2, _ := unpaddedPump.sign(dueDelivery{EndpointID: "whe_1", SecretRef: "ref", Payload: []byte("{}")}, time.Unix(1784203200, 0), 1)
 	if sig.dst.Headers["Webhook-Signature"] != sig2.dst.Headers["Webhook-Signature"] {
 		t.Fatal("a trailing newline changed the signature — secret whitespace is not trimmed")
@@ -50,7 +52,7 @@ func TestSignTrimsSecretWhitespace(t *testing.T) {
 // therefore signs with the SAME secret — which is what this asserts, so the day that stops being
 // acceptable the assertion is here to break.
 func TestSignResolvesSecretByRefAlone(t *testing.T) {
-	resolver := func(ref string) ([]byte, error) {
+	resolver := func(_ coordinator.Tenant, ref string) ([]byte, error) {
 		if ref == "shared" {
 			return []byte("whsec_shared_secret"), nil
 		}

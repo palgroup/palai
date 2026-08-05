@@ -100,7 +100,7 @@ func TestLiveInboundWebhookRun(t *testing.T) {
 	// `PALAI_INBOUND_SECRET_FILE_<REF>` with no org segment and no `__` separator. A test that kept the
 	// two-part key would set a variable production never reads and then prove a resolver nobody runs.
 	t.Setenv("PALAI_INBOUND_SECRET_FILE_"+inboundEnvKey(ref), secretFile)
-	resolver := func(r string) ([]byte, error) {
+	resolver := func(_ coordinator.Tenant, r string) ([]byte, error) {
 		path := os.Getenv("PALAI_INBOUND_SECRET_FILE_" + inboundEnvKey(r))
 		if path == "" {
 			return nil, os.ErrNotExist

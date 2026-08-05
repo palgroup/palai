@@ -17,6 +17,7 @@ import (
 
 	"github.com/palgroup/palai/adapters/integrations/a2a"
 	"github.com/palgroup/palai/packages/contracts"
+	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -177,7 +178,7 @@ func newRemoteChildFixture(t *testing.T, peer *fakeRemotePeer, authRef string) *
 	// gone from the seam, so the only boundary left here is the ref. What still holds the tenant boundary
 	// is the caller — the resolver is handed refs that came from THIS tenant's binding — and that is a
 	// property of the production wiring, not of this closure.
-	secrets := func(ref string) ([]byte, error) {
+	secrets := func(_ coordinator.Tenant, ref string) ([]byte, error) {
 		if ref != authRef || ref == "" {
 			return nil, fmt.Errorf("unknown secret ref %q", ref)
 		}

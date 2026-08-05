@@ -57,7 +57,7 @@ WHERE id = $1 AND state = 'pending';
 -- (to resolve the signing secret), the token hash (constant-time compared in Go), and the current
 -- state + result_hash (to decide idempotent-200 vs 409 on a second callback). No row = generic 404.
 -- name: RemoteOperationForCallback
-SELECT secret_ref, callback_token_hash, state, result_hash
+SELECT project_id, secret_ref, callback_token_hash, state, result_hash
 FROM remote_tool_operations WHERE id = $1;
 
 -- ConsumeRemoteCallback is the atomic one-use token consume: it flips a pending/timed_out row to

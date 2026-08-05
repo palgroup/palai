@@ -167,7 +167,9 @@ func TestVerifyModelConnectionMakesARealRequest(t *testing.T) {
 	}
 	s := (&Store{}).WithModelConnectionInspectors(
 		map[string]ConnectionInspector{"openai-compatible": providerone.Adapter{}},
-		func(ref string) ([]byte, bool, error) { return []byte("sk-the-operators-key"), true, nil },
+		func(_ coordinator.Tenant, ref string) ([]byte, bool, error) {
+			return []byte("sk-the-operators-key"), true, nil
+		},
 	)
 
 	probe := s.probeConnection(context.Background(), coordinator.Tenant{Project: "prj_1"}, rec)
@@ -195,14 +197,14 @@ func TestVerifyModelConnectionMakesARealRequest(t *testing.T) {
 func TestVerifyModelConnectionNeverInventsAGreen(t *testing.T) {
 	tenant := coordinator.Tenant{Project: "prj_1"}
 	rec := coordinator.ModelConnectionRecord{ID: "mconn_1", Provider: "provider-one", SecretRef: "k"}
-	resolves := func(ref string) ([]byte, bool, error) { return []byte("sk-x"), true, nil }
+	resolves := func(_ coordinator.Tenant, ref string) ([]byte, bool, error) { return []byte("sk-x"), true, nil }
 
 	cases := map[string]*Store{
 		"no prober wired for the family": (&Store{}).WithModelConnectionInspectors(map[string]ConnectionInspector{}, resolves),
 		"no secret store wired":          (&Store{}).WithModelConnectionInspectors(map[string]ConnectionInspector{"provider-one": providerone.Adapter{}}, nil),
 		"the secret ref does not resolve": (&Store{}).WithModelConnectionInspectors(
 			map[string]ConnectionInspector{"provider-one": providerone.Adapter{}},
-			func(ref string) ([]byte, bool, error) { return nil, false, nil }),
+			func(_ coordinator.Tenant, ref string) ([]byte, bool, error) { return nil, false, nil }),
 	}
 	for name, s := range cases {
 		probe := s.probeConnection(context.Background(), tenant, rec)

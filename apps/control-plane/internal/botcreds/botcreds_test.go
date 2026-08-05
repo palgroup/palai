@@ -10,6 +10,7 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
+	"github.com/palgroup/palai/packages/coordinator"
 )
 
 // fakeRegistry answers one bot projection, or a miss, and records the scope it was read with.
@@ -42,17 +43,24 @@ func (f *fakeRegistry) GetBot(_ context.Context, scope middleware.Scope, id stri
 	return api.BotResult{Body: body}, nil
 }
 
-// fakeSecrets holds sealed values by (org, name) and records EVERY name it was asked for — which is what
-// several assertions below are actually about: not what came back, but what was asked.
+// fakeSecrets holds sealed values by name and records EVERY name it was asked for — which is what several
+// assertions below are actually about: not what came back, but what was asked.
+//
+// It ALSO records the tenant of each ask, and that field is the reason this fake was touched at all. The
+// struct used to carry an `org` nothing set and nothing read, left behind when A.2 removed organizations;
+// replacing it with a recorded ask is the difference between a fake that mirrors the seam and one that can
+// be asserted against — this tree has shipped fakes that inherited production's bug precisely because they
+// only mirrored it.
 type fakeSecrets struct {
-	sealed map[string]string
-	asked  []string
-	org    string
-	err    error
+	sealed       map[string]string
+	asked        []string
+	askedTenants []string
+	err          error
 }
 
-func (f *fakeSecrets) Resolve(_ context.Context, name string) ([]byte, bool, error) {
+func (f *fakeSecrets) Resolve(_ context.Context, tenant coordinator.Tenant, name string) ([]byte, bool, error) {
 	f.asked = append(f.asked, name)
+	f.askedTenants = append(f.askedTenants, tenant.Project)
 	if f.err != nil {
 		return nil, false, f.err
 	}

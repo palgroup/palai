@@ -128,9 +128,14 @@ func Auth(v Verifier) func(http.Handler) http.Handler {
 			// same boundary the handlers' WHERE clauses claim. This is the ONLY place a request's
 			// tenant enters the DB scope — it comes from the credential, never from a body field
 			// (spec §39.2). There is no organization to publish (A.2 Task 3) and no palai.org_id left
-			// to publish it into (A.2 Task 6): every tenant policy reads palai.project_id, and the
-			// three tables that carry no project column at all (environments, environment_values,
-			// secret_refs) are reached only through storage.WithInstallationScope.
+			// to publish it into (A.2 Task 6): every tenant policy reads palai.project_id.
+			//
+			// IT NAMED THREE EXCEPTIONS AND THERE ARE NONE ON THIS PATH. environments,
+			// environment_values and secret_refs carried no project column between A.2 and migration
+			// 000006 and were reached through storage.WithInstallationScope; 000006 keys all three on
+			// project_id (environment_values through its parent), so every table a request touches is
+			// now covered by the scope published here. The only remaining WithInstallationScope caller
+			// is coordinator's host quarantine, which no request path reaches.
 			ctx := storage.WithTenant(r.Context(), scope.Project)
 			ctx = context.WithValue(ctx, scopeKey{}, scope)
 			next.ServeHTTP(w, r.WithContext(ctx))

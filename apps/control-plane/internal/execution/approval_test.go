@@ -291,7 +291,7 @@ func TestPublishUnderABindingCredentialNeverFallsBackToTheDeploymentApp(t *testi
 	var askedRef string
 	publisher := &RepositoryPublisher{
 		Broker: repositories.NewAnonymousBroker(), // the deployment-global broker, which MUST NOT be used
-		ConnectionSecrets: func(ref string) ([]byte, error) {
+		ConnectionSecrets: func(_ coordinator.Tenant, ref string) ([]byte, error) {
 			askedRef = ref
 			return nil, errors.New("no such secret ref")
 		},

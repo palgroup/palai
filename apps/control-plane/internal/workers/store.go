@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -336,7 +337,10 @@ func (s *Store) RedeemSecretHandle(ctx context.Context, claim Claim, handleName 
 	if cur.deadline == nil || !s.now().Before(*cur.deadline) {
 		return nil, ErrHandleExpired
 	}
-	value, ok, err := s.secrets.Resolve(sctx, handleName)
+	// The tenant comes from the CLAIM, which is the worker's verified enrolment scope — never from anything
+	// the worker sent. It was already used to scope sctx three lines up; passing it on is what stops the
+	// resolve itself from widening back out to the installation, which is what it did until 000006.
+	value, ok, err := s.secrets.Resolve(sctx, coordinator.Tenant{Project: claim.Tenant.Project}, handleName)
 	if err != nil {
 		return nil, fmt.Errorf("resolve secret handle: %w", err)
 	}

@@ -102,7 +102,7 @@ func newHarness(t *testing.T) *harness {
 	inboundSecret := []byte("whsec_journey_" + newID("s"))
 	webhooks := automation.NewWebhookStore(repo.Spine().Pool())
 	triggers := automation.NewTriggerStore(repo.Spine().Pool()).WithAdmitter(repo.Spine()).
-		WithInboundSecrets(func(_ string) ([]byte, error) { return inboundSecret, nil }).
+		WithInboundSecrets(func(_ coordinator.Tenant, _ string) ([]byte, error) { return inboundSecret, nil }).
 		WithInboundGate(log.Printf, 0, 256, 0)
 	schedules := automation.NewScheduleStore(repo.Spine().Pool(), triggers)
 	srv := httptest.NewServer(api.NewRouter(repo, repo, repo, repo, repo, repo, webhooks, triggers, schedules, nil, nil, nil, nil, nil, nil, api.SSEConfig{}, nil, nil))

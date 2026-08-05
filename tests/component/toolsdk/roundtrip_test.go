@@ -81,7 +81,7 @@ func TestToolSDKServerVariantSignedRoundtrip(t *testing.T) {
 	// via env, so a genuine HMAC is enforced on both directions.
 	secret := []byte("tool-sdk-component-hmac-secret")
 	ops := remotehttp.NewOperations(pool)
-	resolver := func(ref string) ([]byte, error) {
+	resolver := func(_ coordinator.Tenant, ref string) ([]byte, error) {
 		if ref == "sig-ref" {
 			return secret, nil
 		}

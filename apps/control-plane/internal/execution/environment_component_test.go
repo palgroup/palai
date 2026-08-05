@@ -15,6 +15,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/apps/control-plane/internal/identity"
 	"github.com/palgroup/palai/packages/contracts"
+	"github.com/palgroup/palai/packages/coordinator"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
@@ -84,8 +85,8 @@ func TestAnEnvironmentReachesARunsShellAndItsValueEntersNoDurableRow(t *testing.
 	orch := &Orchestrator{
 		spine: cs,
 		// The resolver main.go wires, minus the env-file fallback this feature has no use for.
-		envSecrets: func(ref string) ([]byte, error) {
-			v, ok, err := secrets.Resolve(ctx, ref)
+		envSecrets: func(forTenant coordinator.Tenant, ref string) ([]byte, error) {
+			v, ok, err := secrets.Resolve(ctx, forTenant, ref)
 			if err != nil {
 				return nil, err
 			}

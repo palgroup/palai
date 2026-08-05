@@ -1,5 +1,7 @@
-// This file adds the ENVIRONMENT surface to the identity package (E25 T3, migration 000046): a named
-// group of key→value pairs an agent's shell receives.
+// This file adds the ENVIRONMENT surface to the identity package (E25 T3): a named group of key→value
+// pairs an agent's shell receives. (It arrived in the old chain's 000046; the 2026-08-04 squash folded
+// that file into 000001_core, so the number is not cited — a migration this tree no longer has is one a
+// reader cannot go and check.)
 //
 // IT LIVES ON *SecretStore, AND THAT IS THE DESIGN RATHER THAN A CONVENIENCE. An environment value IS a
 // secret_refs version under a derived name (`env:<environment_id>:<key>`) — there is no second table, no
@@ -61,8 +63,13 @@ type environmentKeyView struct {
 }
 
 // CreateEnvironment registers a named environment with no keys. The empty-keys start is deliberate and is
-// half the reason environments is a table at all (migration 000046's header): the operator's flow is
-// create the group, then fill it.
+// half the reason environments is a table at all: the operator's flow is create the group, then fill it.
+//
+// THE EMPTY-PROJECT REFUSAL IS putVersion's, FOR putVersion's REASON, and it is repeated rather than
+// shared because the two write paths do not otherwise meet: 000006 leaves pre-existing rows with an
+// EMPTY project_id and its policy still admits those from every scope, so a create that inherited an
+// empty project would put a NEW environment into that legacy bucket — visible to every tenant, and named
+// by a UNIQUE (project_id, name) row that then blocks the name for everyone.
 func (s *SecretStore) CreateEnvironment(ctx context.Context, scope middleware.Scope, body []byte) (api.ProvisionResult, error) {
 	var in struct {
 		Name        string `json:"name"`
@@ -74,14 +81,29 @@ func (s *SecretStore) CreateEnvironment(ctx context.Context, scope middleware.Sc
 	if strings.TrimSpace(in.Name) == "" {
 		return api.ProvisionResult{MissingField: "name"}, nil
 	}
+	if scope.Project == "" {
+		return api.ProvisionResult{InsufficientScope: "project"}, nil
+	}
 	ctx = provisioningScope(ctx, scope)
 	id := middleware.NewID("env")
 	var createdAt time.Time
-	err := s.pool.QueryRow(ctx, storage.Query("InsertEnvironment"), id, in.Name, in.Description).Scan(&createdAt)
+	err := s.pool.QueryRow(ctx, storage.Query("InsertEnvironment"), id, scope.Project, in.Name, in.Description).Scan(&createdAt)
 	if isUniqueViolation(err) {
 		// A duplicate NAME, not a duplicate id. Reported as a conflict rather than silently returning the
 		// existing row: "create production" answered with someone else's production environment is how an
 		// operator writes a credential into a group they did not mean.
+		//
+		// Since 000006 the constraint is `UNIQUE (project_id, name)`, so this fires on exactly one thing: a
+		// name THIS project already uses. Another project's `production` no longer collides, which is the
+		// whole change — `environments_name_key UNIQUE (name)` had made an environment name
+		// installation-wide, with no version dimension at all.
+		//
+		// A LEGACY EMPTY-PROJECT ENVIRONMENT DOES NOT COLLIDE EITHER, and the consequence is stated because it is
+		// visible to the operator: (empty, "production") and ("prj_x", "production") are distinct rows, so a
+		// project may create `production` while a pre-000006 `production` exists — and ListEnvironments
+		// then shows the caller BOTH, same name, different ids. That is untidy and it is the correct
+		// untidiness: the alternative is either refusing a project a name it does not own, or hiding rows
+		// this installation still resolves secrets from.
 		return api.ProvisionResult{Conflict: true}, nil
 	}
 	if err != nil {
@@ -92,8 +114,11 @@ func (s *SecretStore) CreateEnvironment(ctx context.Context, scope middleware.Sc
 	})}, nil
 }
 
-// ListEnvironments lists the installation's environments with their key COUNTS (000066: the table has
-// no tenant column, so there is nothing narrower to list).
+// ListEnvironments lists the CALLER'S PROJECT's environments with their key COUNTS, plus any written
+// before 000006 (those carry an EMPTY project_id and stay readable to every scope — see that migration for
+// why none of them was assigned an owner). The narrowing is the policy's; no predicate here names a
+// project, which is why this doc has to. Until 000006 the table had no tenant column at all and this
+// listed the whole installation.
 func (s *SecretStore) ListEnvironments(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
 	ctx = provisioningScope(ctx, scope)
 	rows, err := s.pool.Query(ctx, storage.Query("ListEnvironments"))
@@ -135,7 +160,7 @@ func (s *SecretStore) GetEnvironment(ctx context.Context, scope middleware.Scope
 	}
 	v.CreatedAt = &createdAt
 
-	rows, err := s.pool.Query(ctx, storage.Query("ListEnvironmentKeys"), id)
+	rows, err := s.pool.Query(ctx, storage.Query("ListEnvironmentKeys"), scope.Project, id)
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("list environment keys: %w", err)
 	}
@@ -199,6 +224,9 @@ func (s *SecretStore) PutEnvironmentValue(ctx context.Context, scope middleware.
 		return api.ProvisionResult{BadField: true}, nil
 	}
 
+	if scope.Project == "" {
+		return api.ProvisionResult{InsufficientScope: "project"}, nil
+	}
 	ctx = provisioningScope(ctx, scope)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -206,9 +234,10 @@ func (s *SecretStore) PutEnvironmentValue(ctx context.Context, scope middleware.
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	// The environment must exist IN THIS TENANT. Read inside the transaction and under the org scope, so
-	// a foreign id is invisible (RLS) and reported as a 404 rather than as a foreign-key error naming
-	// another tenant's table state.
+	// The environment must exist IN THIS TENANT. Read inside the transaction and under the tenant scope, so
+	// a foreign id is invisible (the policy 000006 installed) and reported as a 404 rather than as a
+	// foreign-key error naming another tenant's table state. Before 000006 that sentence described a check
+	// that could not fail: every project saw every environment.
 	if err := tx.QueryRow(ctx, storage.Query("EnvironmentExists"), id).Scan(new(int)); errors.Is(err, pgx.ErrNoRows) {
 		return api.ProvisionResult{NotFound: true}, nil
 	} else if err != nil {
@@ -219,7 +248,12 @@ func (s *SecretStore) PutEnvironmentValue(ctx context.Context, scope middleware.
 	}
 	// requireExisting=false: a first write and a rotation are the same call, so there is no name for
 	// which this should 404.
-	version, createdAt, err := s.insertVersion(ctx, tx, environmentSecretName(id, in.Key), in.Value, false)
+	//
+	// The version is written under the CALLER'S project, not under the environment's. Those differ in
+	// exactly one case — a legacy EMPTY-PROJECT environment the caller can see but does not own — and writing under
+	// the caller is the right answer there: the value becomes that project's, and ResolveSecretRef's
+	// precedence serves it to that project while every other tenant keeps reading the legacy version.
+	version, createdAt, err := s.insertVersion(ctx, tx, scope.Project, environmentSecretName(id, in.Key), in.Value, false)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -238,7 +272,7 @@ func (s *SecretStore) PutEnvironmentValue(ctx context.Context, scope middleware.
 // operator who believes a credential is gone will not rotate it.
 //
 // The bytes stay as secret_refs versions: that table grants no DELETE and re-asserts the REVOKE on every
-// boot (000031:45), on purpose — version history is retained for audit. What removal achieves is real
+// boot, on purpose — version history is retained for audit. What removal achieves is real
 // and worth stating precisely: nothing names those versions afterwards (the derived name is only ever
 // built from a membership row), and no run receives the key.
 func (s *SecretStore) DeleteEnvironmentValue(ctx context.Context, scope middleware.Scope, id, key string) (api.ProvisionResult, error) {
@@ -261,7 +295,7 @@ func (s *SecretStore) DeleteEnvironmentValue(ctx context.Context, scope middlewa
 }
 
 // isUniqueViolation reports whether err is a Postgres 23505 unique_violation — here, a second
-// environment claiming a name already taken in this organization. The third copy of this three-line
+// environment claiming a name already taken in this PROJECT (000006; it was the installation before). The third copy of this three-line
 // predicate in the tree (internal/extensions/registry.go, internal/automation/deliver.go); it stays local
 // rather than becoming a shared helper, because a shared one would need a home package that every store
 // imports and none of them currently does.

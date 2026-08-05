@@ -99,13 +99,16 @@ func TestLiveModelRoutePerProject(t *testing.T) {
 	secretStore := identity.NewSecretStore(pool, key)
 
 	// The broker is production's shape: a tenant-qualified ref (minted by a DB route) redeems from the
-	// secret store under its own org; anything else falls back to the env deployment bridge.
+	// secret store UNDER THE PROJECT THE REF NAMES; anything else falls back to the env deployment bridge.
+	// It said "under its own org" while the store resolved installation-wide.
 	broker := modelbroker.New(modelbroker.Config{
 		Adapters: map[string]modelbroker.ModelAdapter{"provider-one": providerone.Adapter{}},
 		Secrets: execution.RouteSecretResolver{
 			// main.go's dbSecret adds a bounded timeout around this same call; the smoke calls the store
 			// directly so a resolve failure surfaces as itself rather than as a timeout.
-			Lookup:   func(name string) ([]byte, bool, error) { return secretStore.Resolve(ctx, name) },
+			Lookup: func(forTenant coordinator.Tenant, name string) ([]byte, bool, error) {
+				return secretStore.Resolve(ctx, forTenant, name)
+			},
 			Fallback: modelbroker.EnvResolver{"provider-one": credentialEnv},
 		},
 	})

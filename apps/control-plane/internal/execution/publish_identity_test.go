@@ -100,7 +100,7 @@ func TestAnAppLessPublishAuthenticatesAsTheBindingsOwnCredential(t *testing.T) {
 	publisher := &RepositoryPublisher{
 		// NO DEPLOYMENT-GLOBAL BROKER. This is the state that used to make the whole publisher nil.
 		Broker: nil,
-		ConnectionSecrets: func(ref string) ([]byte, error) {
+		ConnectionSecrets: func(_ coordinator.Tenant, ref string) ([]byte, error) {
 			if ref != "rcon_tenant_pat" {
 				t.Errorf("resolver asked for ref=%q, want the binding's own", ref)
 			}
@@ -151,7 +151,7 @@ func TestAPublishUnderABindingCredentialNeverAuthenticatesAsTheApp(t *testing.T)
 
 	publisher := &RepositoryPublisher{
 		Broker:            repositories.NewTokenBroker(deploymentToken),
-		ConnectionSecrets: func(string) ([]byte, error) { return []byte(tenantToken), nil },
+		ConnectionSecrets: func(coordinator.Tenant, string) ([]byte, error) { return []byte(tenantToken), nil },
 	}
 
 	// HALF ONE: the binding names its own credential, and the write lands.
@@ -235,7 +235,7 @@ func TestAnAppLessDeploymentWarnsARefLessPublicationRatherThanSkippingIt(t *test
 	pump := newFakePump(pub)
 	// An App-less deployment: the connection resolver is wired (it always is), the App broker is not.
 	publisher := &RepositoryPublisher{
-		ConnectionSecrets: func(string) ([]byte, error) {
+		ConnectionSecrets: func(coordinator.Tenant, string) ([]byte, error) {
 			t.Error("the connection resolver was consulted for a binding that names no connection_ref")
 			return nil, nil
 		},

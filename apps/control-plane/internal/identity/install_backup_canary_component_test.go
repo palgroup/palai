@@ -21,6 +21,7 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/identity"
+	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -36,27 +37,33 @@ func TestInstallRestoreSecretCanaryTwoMasterKeys(t *testing.T) {
 
 	// Seal a secret under master key A (the source stack's key).
 	storeA := identity.NewSecretStore(cs.Pool(), keyA)
-	// The name is per-run: secret_refs' UNIQUE is (name, version) since 000065, installation-wide, so a
-	// literal "provider-one" makes this fixture the SECOND version of whichever sibling wrote it first.
+	// The name is per-run because this database is shared across dozens of harnesses within one project
+	// seed prefix: a literal "provider-one" makes this fixture the SECOND version of whichever sibling
+	// wrote it first. Since 000006 the uniqueness is (project_id, name, version) rather than
+	// installation-wide, which narrows that collision without removing it.
 	canaryName := "provider-one-" + newID("canary")
 	if _, err := storeA.CreateSecretRef(ctx, scope, []byte(`{"name":"`+canaryName+`","value":"sk-live"}`)); err != nil {
 		t.Fatalf("CreateSecretRef: %v", err)
 	}
 
 	// Read the raw ciphertext exactly as the canary does (SELECT encode(ciphertext,'hex')), BUT NAMING THE
-	// ROW. This read was `FROM secret_refs LIMIT 1` — no WHERE, no ORDER BY — and it worked only because
-	// migration 000031's policy confined it to this fixture's own organization, so "some row" and "my row"
-	// were the same row. A.2 Task 6's 000066 keys secret_refs on the INSTALLATION, this suite shares one
-	// database across dozens of harnesses, and the unordered LIMIT 1 then returned a SIBLING TEST's blob
-	// sealed under a different master key: `cipher: message authentication failed`, from an assertion whose
-	// subject is master-key interop. This tree already records an unordered LIMIT 1 deciding two security
-	// outcomes; this is the same defect surviving because a policy was holding it up.
+	// ROW. This read was `FROM secret_refs LIMIT 1` — no WHERE, no ORDER BY — and it worked only because a
+	// policy confined it to this fixture's own tenant, so "some row" and "my row" were the same row. When
+	// A.2 keyed secret_refs on the INSTALLATION, the unordered LIMIT 1 over a database shared by dozens of
+	// harnesses returned a SIBLING TEST's blob sealed under a different master key: `cipher: message
+	// authentication failed`, from an assertion whose subject is master-key interop. This tree already
+	// records an unordered LIMIT 1 deciding two security outcomes; the WHERE and ORDER BY stay whatever the
+	// policy does.
+	//
+	// THE SCOPE MOVED WITH 000006 AND THE MOVE IS THE POINT. It read under storage.WithInstallationScope,
+	// which was then the only scope that could see this table at all. That scope now publishes an EMPTY
+	// palai.project_id, and the tenant policy reads an empty project as the pre-000006 legacy bucket — so
+	// this read returned `no rows in result set` for a row it had just written. A fixture reading through
+	// the widest scope available is a fixture that stops finding its own data the moment a boundary lands.
 	var ctHex string
-	// secret_refs carries no tenant column at all since A.2 Task 6; WithInstallationScope is the exception WithTenant no
-	// longer allows for an empty project (A.2 Task 1).
-	if err := cs.Pool().QueryRow(storage.WithInstallationScope(ctx),
-		"SELECT encode(ciphertext, 'hex') FROM secret_refs WHERE name = $1 ORDER BY version DESC LIMIT 1",
-		canaryName).Scan(&ctHex); err != nil {
+	if err := cs.Pool().QueryRow(storage.WithTenant(ctx, project),
+		"SELECT encode(ciphertext, 'hex') FROM secret_refs WHERE project_id = $1 AND name = $2 ORDER BY version DESC LIMIT 1",
+		project, canaryName).Scan(&ctHex); err != nil {
 		t.Fatalf("read ciphertext: %v", err)
 	}
 	sealed, err := hex.DecodeString(ctHex)
@@ -75,7 +82,7 @@ func TestInstallRestoreSecretCanaryTwoMasterKeys(t *testing.T) {
 
 	// And the control-plane's own resolver fails closed with ErrSecretDecrypt under the wrong key —
 	// the silent-death symptom the canary exists to catch before the first provider call.
-	if _, ok, err := identity.NewSecretStore(cs.Pool(), keyB).Resolve(ctx, canaryName); ok || !errors.Is(err, identity.ErrSecretDecrypt) {
+	if _, ok, err := identity.NewSecretStore(cs.Pool(), keyB).Resolve(ctx, coordinator.Tenant{Project: project}, canaryName); ok || !errors.Is(err, identity.ErrSecretDecrypt) {
 		t.Fatalf("Resolve under a mismatched master key must be ErrSecretDecrypt, got ok=%v err=%v", ok, err)
 	}
 }

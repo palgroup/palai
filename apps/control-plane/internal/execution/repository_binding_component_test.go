@@ -74,13 +74,17 @@ func newBindingSecretHarness(t *testing.T) *bindingSecretHarness {
 	return &bindingSecretHarness{spine: cs, secrets: identity.NewSecretStore(cs.Pool(), master)}
 }
 
-// resolver is the production-shaped bridge from (org, ref) to the credential bytes: the DB-backed store
+// resolver is the production-shaped bridge from (tenant, ref) to the credential bytes: the DB-backed store
 // first, a MISS is an error (a binding that names its own credential never falls back to the global one)
 // — exactly what main.go's repositoryConnectionSecret does.
+//
+// It said "(org, ref)" while the store resolved installation-wide, so the tuple named one element it had
+// and one it did not. The tenant is FORWARDED rather than dropped, because dropping it here would make
+// every assertion below pass under a resolver production no longer has.
 func (h *bindingSecretHarness) resolver(calls *int) SecretResolver {
-	return func(ref string) ([]byte, error) {
+	return func(forTenant coordinator.Tenant, ref string) ([]byte, error) {
 		*calls++
-		v, ok, err := h.secrets.Resolve(context.Background(), ref)
+		v, ok, err := h.secrets.Resolve(context.Background(), forTenant, ref)
 		if err != nil {
 			return nil, err
 		}

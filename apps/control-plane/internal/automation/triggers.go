@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -25,7 +26,7 @@ type TriggerStore struct {
 	// Inbound signed-webhook config (E11 Task 5), wired via WithInboundSecrets / WithInboundGate. Nil
 	// resolver ⇒ inbound ingestion is unwired (every inbound POST is a generic 404 — the management-only
 	// surface tiers keep them off). See inbound.go.
-	inboundSecrets   func(ref string) ([]byte, error)
+	inboundSecrets   func(tenant coordinator.Tenant, ref string) ([]byte, error)
 	inboundAudit     func(string, ...any)
 	inboundTolerance time.Duration
 	inboundInflight  chan struct{} // in-flight semaphore (nil ⇒ unbounded); bounds concurrent-request memory
@@ -44,9 +45,10 @@ func (s *TriggerStore) WithAdmitter(a RunAdmitter) *TriggerStore {
 }
 
 // WithInboundSecrets binds the source-secret resolver the signed-inbound receiver verifies under (the
-// org-scoped env-file bridge in production, the WithAdmitter shape). Returns the store for chaining. A
+// two-half bridge in production — DB store scoped to the trigger's project since 000006, env-file fallback
+// deployment-global — in the WithAdmitter shape). Returns the store for chaining. A
 // nil resolver keeps inbound ingestion unwired.
-func (s *TriggerStore) WithInboundSecrets(resolver func(ref string) ([]byte, error)) *TriggerStore {
+func (s *TriggerStore) WithInboundSecrets(resolver func(tenant coordinator.Tenant, ref string) ([]byte, error)) *TriggerStore {
 	s.inboundSecrets = resolver
 	return s
 }

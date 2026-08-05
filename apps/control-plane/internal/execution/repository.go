@@ -19,11 +19,13 @@ type RepositoryStore interface {
 	RecordPreparationReceipt(ctx context.Context, tenant coordinator.Tenant, in coordinator.PreparationReceiptInput) error
 }
 
-// SecretResolver bridges a server-minted (organization, secret ref) to the secret bytes at use time —
+// SecretResolver bridges a server-minted (tenant, secret ref) to the secret bytes at use time. It named an
+// ORGANIZATION until 000006, and for the phase between A.2 and that migration it named a two-element tuple
+// with one element: the ref was all the redemption used —
 // the same shape the webhook / inbound / remote-tool / MCP resolvers already take in their packages. The
 // composition root satisfies it from the DB-backed secret-ref store (E13 Task 3). The org is never
 // tenant-supplied, so a ref can only ever name a secret provisioned under the caller's OWN organization.
-type SecretResolver func(ref string) ([]byte, error)
+type SecretResolver func(tenant coordinator.Tenant, ref string) ([]byte, error)
 
 // PrepareRepositoryInput is the infrastructure-owned input to a run's repository-preparation step
 // (spec §30.3). It comes from the resolved binding and the run, never from model output, so the
@@ -134,7 +136,11 @@ func bindingBroker(global repositories.Broker, tenant coordinator.Tenant, bindin
 	if secrets == nil {
 		return nil, fmt.Errorf("prepare repository: binding names connection ref %q but no secret resolver is wired", binding.ConnectionRef)
 	}
-	token, err := secrets(binding.ConnectionRef)
+	// The tenant has been in this signature all along and the redeem did not take it: the binding row is
+	// the tenant's, and until 000006 the CREDENTIAL behind its connection_ref was not. main.go's own
+	// repositoryConnectionSecret said so in words — "a connection_ref names the same row for every
+	// project" — which is a clone authenticating as whoever wrote that ref first.
+	token, err := secrets(tenant, binding.ConnectionRef)
 	if err != nil {
 		return nil, fmt.Errorf("prepare repository: resolve connection ref %q: %w", binding.ConnectionRef, err)
 	}

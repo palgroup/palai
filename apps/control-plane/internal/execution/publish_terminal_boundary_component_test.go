@@ -128,7 +128,7 @@ func newTerminalPublishFixture(t *testing.T) *terminalPublishFixture {
 	// GitHub App: no deployment-global broker, the connection resolver wired.
 	f.orch = NewOrchestrator(repo, nil, modelbroker.New(modelbroker.Config{}), toolbroker.New())
 	f.orch.SetPublisher(&RepositoryPublisher{
-		ConnectionSecrets: func(ref string) ([]byte, error) {
+		ConnectionSecrets: func(_ coordinator.Tenant, ref string) ([]byte, error) {
 			if ref != "demo-local-token" {
 				t.Errorf("resolver asked for ref=%q, want the binding's own", ref)
 			}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
+	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/egress"
 )
 
@@ -31,7 +32,13 @@ const defaultMaxTimeout = 90 * time.Second
 // enters argv, a log, or a DB row. It is the manager's own type (adapters never import control-plane
 // internal): lookup.go maps an extensions.Connection into this.
 type ConnConfig struct {
-	ID          string
+	ID string
+	// Project is the tenant the connection belongs to, and it is here because resolveBearer needs it: the
+	// secret_ref below is a HANDLE redeemed at request time, and since 000006 a handle names a row inside
+	// ONE project. Before that migration this field would have selected nothing — the resolver ran
+	// installation-wide — which is exactly why it did not exist. CallScope carries the same project for a
+	// progress event; this one travels with the DIAL, which happens before any scope is in hand.
+	Project     string
 	Name        string
 	Transport   string // "stdio" | "http"
 	ImageDigest string // stdio
@@ -61,8 +68,13 @@ type ProgressSink interface {
 }
 
 // SecretResolver bridges a connection's secret_ref handle to the bearer bytes at request time (the
-// webhookSecretResolver pattern: an org-scoped env-file bridge, never inline, never logged). Nil ⇒ no auth.
-type SecretResolver func(ref string) ([]byte, error)
+// webhookSecretResolver pattern, never inline, never logged). Nil ⇒ no auth.
+//
+// The tenant is the CONNECTION'S, off ConnConfig.Project, and it selects a row rather than describing one:
+// 000006 keys secret_refs on project_id. This said "an org-scoped env-file bridge" while the resolver behind
+// it reached every project, and the env-file half it named is still deployment-global — only the DB half in
+// front of it narrowed.
+type SecretResolver func(tenant coordinator.Tenant, ref string) ([]byte, error)
 
 // Config wires the manager. Driver nil ⇒ stdio unsupported (a stdio call fails cleanly, never escapes).
 // The http egress knobs mirror the webhook sender; AllowPrivate is the test-harness-only self-host flag.
@@ -301,7 +313,7 @@ func (m *Manager) resolveBearer(conn ConnConfig) (string, error) {
 	if m.cfg.Secrets == nil {
 		return "", fmt.Errorf("%w: connection needs a secret_ref but no resolver is wired", ErrProtocol)
 	}
-	b, err := m.cfg.Secrets(conn.SecretRef)
+	b, err := m.cfg.Secrets(coordinator.Tenant{Project: conn.Project}, conn.SecretRef)
 	if err != nil {
 		return "", fmt.Errorf("%w: resolve connection secret: %v", ErrProtocol, err)
 	}

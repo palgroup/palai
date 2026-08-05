@@ -157,7 +157,7 @@ func TestAnExternalToolIsAdvertisedAsUntrustedToTheModel(t *testing.T) {
 	orch, st, adapter, _ := toolSurfaceOrchestrator(cs, tenant, sessionOf(t, cs, runID), runID)
 	// remote_http stays binder-less without an invoker, so wire the seam the production path wires.
 	registry := extensions.New(cs.Pool())
-	registry.SetRemoteInvoker(stubRemoteInvoker{}, func(string) ([]byte, error) { return nil, nil })
+	registry.SetRemoteInvoker(stubRemoteInvoker{}, func(coordinator.Tenant, string) ([]byte, error) { return nil, nil })
 	broker := toolbroker.New()
 	broker.SetLookup(registryLookup(registry))
 	orch.tools = broker

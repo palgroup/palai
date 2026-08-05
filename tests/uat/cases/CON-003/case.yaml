@@ -12,7 +12,7 @@ proof:
   - "apps/control-plane/internal/execution/environment_component_test.go:TestARunsEnvironmentIsPinnedToItsRevisionNotToTheLatest"
   - "apps/control-plane/internal/identity/environments_component_test.go:TestEnvironmentWriteResolveRotateAndUnbind"
   - "apps/control-plane/internal/identity/environments_component_test.go:TestEnvironmentRefusesReservedAndMalformedKeyNames"
-  - "apps/control-plane/internal/identity/environments_component_test.go:TestAForeignTenantCannotReachAnotherOrgsEnvironment"
+  - "apps/control-plane/internal/identity/environments_component_test.go:TestAForeignProjectCannotReachAnotherProjectsEnvironment"
   - "apps/control-plane/internal/identity/environments_view_test.go:TestSecretAndEnvironmentViewsCarryNoValueField"
   - "storage/ciphertext_sweep_test.go:TestOnlyTwoQueriesTouchTheCiphertextColumn"
   - "adapters/sandboxes/host/exec_test.go:TestHostShellRefusesAnEnvironmentKeyThatShadowsItsOwn"

@@ -25,8 +25,13 @@ const RuntimeRole = "palai_app"
 //
 // A migration that CREATES a table carrying project_id MUST, in its own up.sql:
 //
-//	CALL palai_apply_tenant_policy('<table>', 'project_id', false);
+//	CALL palai_apply_tenant_policy('<table>', 'project_id');
 //	GRANT ... ON TABLE <table> TO palai_app;
+//
+// THAT CALL TOOK A THIRD ARGUMENT UNTIL THE SQUASH AND THIS RULE KEPT WRITING IT, which cost a plan a
+// whole step: 000002 removed `has_project` because the procedure's body never read it, and a rule whose
+// example does not compile is worse than no example — an author copying it gets a boot failure, not a
+// policy. Copy it from 000006, which is the first migration written against the two-argument form.
 //
 // The catalogue sweep re-applies policies for the whole chain on every boot, so an omission is repaired
 // on the NEXT restart — which is exactly why no runtime test can see it. What it leaves is a window on
@@ -67,7 +72,8 @@ type scope struct {
 	project string
 	system  bool
 	// installation marks a scope built by WithInstallationScope: a deliberate, narrow exception to the
-	// project-required rule below, for the two tables that carry no project column at all. Never set by
+	// project-required rule below, for the ONE table that carries no project column at all
+	// (host_quarantine — a machine belongs to no tenant). Never set by
 	// WithTenant.
 	installation bool
 }
@@ -81,8 +87,7 @@ type scope struct {
 // that names no project, returning ErrProjectRequired. An empty project would publish an empty
 // palai.project_id, which the policies read as a row whose own project_id is the empty string — not as
 // a boundary. A caller that genuinely needs the reach of a table with no project column
-// (identity's secret store, automation's environment check) uses WithInstallationScope instead, not an
-// empty string here.
+// (coordinator's host quarantine) uses WithInstallationScope instead, not an empty string here.
 func WithTenant(ctx context.Context, project string) context.Context {
 	return context.WithValue(ctx, scopeKey{}, scope{project: project})
 }
@@ -90,20 +95,27 @@ func WithTenant(ctx context.Context, project string) context.Context {
 // WithInstallationScope binds ctx to the whole installation, with no project — the one deliberate,
 // narrow exception to WithTenant's project-required rule. It is what A.2 Task 6 left of WithOrgScope.
 //
-// ITS LIST OF PRODUCTION CALLERS IS TWO, and both read a table with no project_id at all:
-// identity.SecretStore.Resolve over secret_refs and automation's verifyEnvironment over environments.
-// The tenant-policy rekey keyed BOTH on the installation, so what this supplies for them
-// is no longer a boundary — it is only a scope declaration, which those policies still require (they
-// admit `palai.project_id IS NOT NULL`, and set_config with an empty string satisfies that while a
-// context that declared nothing does not).
+// ITS PRODUCTION CALL SITES ARE THREE AND THEY ARE ALL ONE SUBJECT: coordinator's host quarantine
+// (QuarantineHost / IsHostQuarantined / ListQuarantinedHosts, packages/coordinator/workspace.go). A
+// quarantined HOST is a machine, not a tenant's row — `host_quarantine` takes no policy at all because
+// there is no project a physical host belongs to.
 //
-// SAYING THAT PLAINLY: on this installation every project can read every environment, every environment
-// value and every secret ref. That is the same reach these tables had before A.2 (one installation held
-// one organization), but it is now the ABSENCE of a boundary rather than one. An installation meant to
-// hold two customers must give those tables a project_id before it does.
+// THIS PARAGRAPH SAID "TWO" AND NAMED TWO DIFFERENT CALLERS, and both are gone rather than renamed:
+// identity.SecretStore.Resolve over secret_refs and automation's verifyEnvironment over environments.
+// Both tables lost their tenant column in A.2 and got it back in migration 000006, so both reads now
+// inherit the caller's project — verifyEnvironment's call here was in fact WIDENING a context that had
+// already been scoped, which is the shape worth naming: this helper cannot narrow anything, it can only
+// discard a narrowing that was already in hand.
+//
+// The sentence that followed is deleted rather than softened because it is no longer true: it read "on
+// this installation every project can read every environment, every environment value and every secret
+// ref … an installation meant to hold two customers must give those tables a project_id before it does."
+// 000006 is that work. What remains true of it, and what that migration's header carries, is that rows
+// written BEFORE it keep an empty project_id and stay readable to every scope.
 //
 // Like WithSystemScope, it is deliberately greppable: every call site is a place the per-project
-// boundary does NOT apply, so each should stay as narrow as it is today.
+// boundary does NOT apply, so each should stay as narrow as it is today. A NEW one that is not about a
+// host is the thing to argue with.
 func WithInstallationScope(ctx context.Context) context.Context {
 	return context.WithValue(ctx, scopeKey{}, scope{installation: true})
 }

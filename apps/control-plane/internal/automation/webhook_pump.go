@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/adapters/integrations/webhook"
+	"github.com/palgroup/palai/packages/coordinator"
 
 	"github.com/palgroup/palai/storage"
 )
@@ -70,7 +71,7 @@ func (c PumpConfig) withDefaults() PumpConfig {
 // ORG because SigningSecretRef is tenant input: without the org, tenant A could name tenant B's ref and
 // sign its own deliveries with B's secret (a cross-tenant HMAC-forgery oracle). The bytes never touch a
 // log or the delivery row. A func type, not an interface — the two callers are a closure each.
-type SecretResolver func(ref string) ([]byte, error)
+type SecretResolver func(tenant coordinator.Tenant, ref string) ([]byte, error)
 
 // WebhookPump is the supervised delivery loop.
 type WebhookPump struct {
@@ -255,7 +256,11 @@ func (p *WebhookPump) sign(d dueDelivery, ts time.Time, attempt int) (signed, er
 		if ref == "" {
 			continue
 		}
-		s, err := p.secrets(ref) // org-scoped: a tenant cannot resolve another tenant's ref (F2)
+		// The delivery's OWN project, off the due row. This line said "org-scoped: a tenant cannot resolve
+		// another tenant's ref (F2)" while the resolver it calls ran installation-wide — the claim was
+		// false from A.2 until 000006, on the exact line a reader would audit it. It is true now because
+		// the tenant is passed, not because the sentence was rewritten.
+		s, err := p.secrets(coordinator.Tenant{Project: d.Project}, ref)
 		if err != nil {
 			return signed{}, fmt.Errorf("resolve signing secret: %w", err)
 		}

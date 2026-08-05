@@ -7,12 +7,13 @@ import (
 	"time"
 
 	remotehttp "github.com/palgroup/palai/adapters/tools/http"
+	"github.com/palgroup/palai/packages/coordinator"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
 // The remote_http hook binding (spec §28.17, E12 T8). A tenant hook runs OFF the API process — it reuses the
 // SAME T4 signed transport the remote-tool executor uses (the Store's remoteInvoker + remoteSecret, the
-// lookup.go remoteExec idiom): the signing secret is resolved FRESH per invoke from the org-scoped bridge and
+// lookup.go remoteExec idiom): the signing secret is resolved FRESH per invoke from the tenant-scoped bridge and
 // never held in a closure, the egress SSRF vet runs inside Invoke for free, and the tool-http.v1 envelope is
 // signed by the shared webhook signer. The hook contract is SYNCHRONOUS: a 200 returns the decision inline.
 // A 202 opens an async operation the sync hook contract does not resolve (no hook-callback flow is wired), so
@@ -42,9 +43,11 @@ func (s *Store) runRemoteHook(ctx context.Context, h loadedHook, ev HookEvent) (
 	if s.hookBreaker != nil && !s.hookBreaker.Allow(h.ID) {
 		return HookDecision{}, fmt.Errorf("remote hook %s: circuit breaker open (worker shed)", h.ID)
 	}
-	// Resolve the signing secret FRESH per invoke (org-scoped), never captured in a closure (the remoteExec
-	// idiom): a hook binding holds only non-secret wiring (url, secret_ref handle).
-	secret, err := s.remoteSecret(h.SecretRef)
+	// Resolve the signing secret FRESH per invoke, for the FIRING EVENT'S tenant, never captured in a
+	// closure (the remoteExec idiom): a hook binding holds only non-secret wiring (url, secret_ref handle).
+	// This line said "(org-scoped)" while the resolver reached every project; 000006 gave it a tenant to be
+	// scoped BY, and ev.Project is where it comes from.
+	secret, err := s.remoteSecret(coordinator.Tenant{Project: ev.Project}, h.SecretRef)
 	if err != nil {
 		s.recordHookFailure(h.ID)
 		return HookDecision{}, fmt.Errorf("resolve remote hook secret for %s: %w", h.ID, err)

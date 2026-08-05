@@ -11,6 +11,7 @@ import (
 
 	remotehttp "github.com/palgroup/palai/adapters/tools/http"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
+	"github.com/palgroup/palai/packages/coordinator"
 )
 
 // callbackTolerance is the replay window a signed tool-http.v1 callback's timestamp must fall within
@@ -32,14 +33,19 @@ type ToolCallbackStore interface {
 // ONLY through the waiting executor under a live fence — this handler NEVER touches the ledger.
 type toolCallbackHandler struct {
 	ops       ToolCallbackStore
-	resolver  func(ref string) ([]byte, error)
+	resolver  func(tenant coordinator.Tenant, ref string) ([]byte, error)
 	tolerance time.Duration
 	now       func() time.Time
 }
 
-// NewToolCallbackHandler builds the callback endpoint over the operation ledger + the org-scoped secret
+// NewToolCallbackHandler builds the callback endpoint over the operation ledger + the TENANT-scoped secret
 // resolver (the same handle bridge the outbound invoke signs with). nil in tiers that never touch it.
-func NewToolCallbackHandler(ops ToolCallbackStore, resolver func(ref string) ([]byte, error)) http.Handler {
+//
+// It said "org-scoped" and the resolver behind it reached the whole installation. The tenant now comes from
+// the OPERATION ROW this handler already reads, never from the request — which is the only source available
+// here, because the route is unauthenticated by design (§28.24: its auth is the per-operation HMAC plus a
+// one-use audience-bound token) and mounts on the top mux above middleware.Auth.
+func NewToolCallbackHandler(ops ToolCallbackStore, resolver func(tenant coordinator.Tenant, ref string) ([]byte, error)) http.Handler {
 	h := &toolCallbackHandler{ops: ops, resolver: resolver, tolerance: callbackTolerance, now: time.Now}
 	return http.HandlerFunc(h.receive)
 }
@@ -66,7 +72,7 @@ func (h *toolCallbackHandler) receive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secret, serr := h.resolver(row.SecretRef)
+	secret, serr := h.resolver(coordinator.Tenant{Project: row.Project}, row.SecretRef)
 	if serr != nil || len(secret) == 0 {
 		// An unresolvable secret is indistinguishable from an unknown operation — a generic 404, never an
 		// oracle for "this operation exists but its secret bridge is missing".

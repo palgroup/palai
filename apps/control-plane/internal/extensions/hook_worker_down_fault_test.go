@@ -63,7 +63,7 @@ func openHookFaultStore(t *testing.T) (*Store, *pgxpool.Pool, string) {
 	// verifies the HMAC; here the point is the down worker + the breaker).
 	s.SetRemoteInvoker(
 		remotehttp.NewExecutor(remotehttp.NewOperations(pool)),
-		func(_ string) ([]byte, error) { return []byte("fault-signing-secret"), nil },
+		func(_ coordinator.Tenant, _ string) ([]byte, error) { return []byte("fault-signing-secret"), nil },
 	)
 	return s, pool, project
 }

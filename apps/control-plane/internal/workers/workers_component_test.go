@@ -79,7 +79,7 @@ func newStore(cs *coordinator.Store, secrets workers.SecretResolver, now func() 
 // marker so a leak is unmissable.
 type fakeSecrets struct{ vals map[string]string }
 
-func (f fakeSecrets) Resolve(_ context.Context, name string) ([]byte, bool, error) {
+func (f fakeSecrets) Resolve(_ context.Context, _ coordinator.Tenant, name string) ([]byte, bool, error) {
 	v, ok := f.vals[name]
 	return []byte(v), ok, nil
 }

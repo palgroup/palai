@@ -43,7 +43,7 @@ func prechecked(h *publishHarness, publisher Publisher) toolbroker.PublicationRe
 // connection resolver wired, the deployment-global broker nil.
 func appLessPublisher(t *testing.T) *RepositoryPublisher {
 	return &RepositoryPublisher{
-		ConnectionSecrets: func(string) ([]byte, error) {
+		ConnectionSecrets: func(coordinator.Tenant, string) ([]byte, error) {
 			return []byte("tenant-provisioned-token"), nil
 		},
 	}

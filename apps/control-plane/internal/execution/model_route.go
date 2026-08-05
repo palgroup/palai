@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 )
 
@@ -18,35 +19,53 @@ import (
 // composition root) is no longer the only answer — it is the deployment-default FALLBACK underneath the
 // project's route. A project with no published route runs exactly as it did before this task.
 
-// tenantSecretRefPrefix marks a credential handle as one a TENANT ROUTE minted, which is a routing
-// distinction and NOT a tenant boundary — read TenantSecretRef below, which says so at length. It used to
-// say "belonging to one organization … one tenant's ref NAME can never redeem another tenant's credential,
-// even if both call it openai"; secret_refs is keyed on the installation (000066), so two projects naming
-// a ref "openai" name the SAME row and always did once the org segment came off.
+// tenantSecretRefPrefix marks a credential handle as one a TENANT ROUTE minted: it selects the DB-backed
+// store over the deployment env bridge, and since 000006 the segment that FOLLOWS it names the owner.
 const tenantSecretRefPrefix = "tenant:"
 
 // TenantSecretRef marks a connection's secret-ref handle as one a TENANT ROUTE minted, so Redeem sends it
-// to the DB-backed store instead of the deployment env bridge. It stays a HANDLE: no credential value is
-// ever encoded here.
+// to the DB-backed store instead of the deployment env bridge, AND names the project it must be redeemed
+// for. It stays a HANDLE: no credential value is ever encoded here.
 //
-// IT USED TO CARRY THE OWNING ORGANIZATION as a path segment, and A.2 Task 6 removed it rather than
-// swapping in the project. The segment was never a boundary the redemption enforced: identity's secret
-// store looked the name up under an org SCOPE, and migration 000066 keys secret_refs on the installation
-// (the table has no tenant column at all), so a project segment here would read as an isolation this
-// deployment does not have. The prefix keeps the one distinction Redeem actually draws — tenant route vs
-// deployment env — and nothing persists this form: it is built per dispatch from the stored bare name.
-func TenantSecretRef(name string) modelbroker.SecretRef {
-	return modelbroker.SecretRef(tenantSecretRefPrefix + name)
+// THE OWNER SEGMENT IS BACK, AND THE ROUND TRIP IS WHY THIS PARAGRAPH IS LONG. It carried the owning
+// ORGANIZATION originally; A.2 Task 6 removed it rather than swapping in the project, and that was the
+// right call at the time for a reason worth keeping: identity's secret store had stopped enforcing any
+// boundary, so a project segment would have "read as an isolation this deployment does not have". The
+// segment was deleted because it had become decoration. 000006 gives secret_refs a project_id, so the
+// isolation exists again and the segment is load-bearing again — this time it is not decoration, because
+// RouteSecretResolver.Redeem SPENDS it on the lookup rather than only carrying it.
+//
+// WHY IN THE REF AT ALL, rather than in the broker's signature: modelbroker.SecretResolver is
+// `Redeem(ref) (string, error)` with no tenant and no context, and it is implemented four times over
+// (StaticResolver, EnvResolver, ChainResolver, this) plus the conformance corpus. The ref is the only
+// channel that already reaches every implementation, and nothing persists this form except the config
+// snapshot's provenance field — it is built per dispatch from the stored bare name.
+//
+// The separator is a single colon and the SPLIT IS ON THE FIRST ONE ONLY, because a secret name may
+// legitimately contain colons: an environment value is stored under `env:<environment_id>:<key>`. A
+// project id carries none (`prj_` + hex), so `tenant:<project>:<name>` parses back exactly.
+func TenantSecretRef(project, name string) modelbroker.SecretRef {
+	return modelbroker.SecretRef(tenantSecretRefPrefix + project + ":" + name)
 }
 
 // SplitTenantSecretRef reverses TenantSecretRef. ok=false means the ref is an unqualified deployment
 // handle (the env route's), which redeems through the env bridge exactly as before.
-func SplitTenantSecretRef(ref modelbroker.SecretRef) (name string, ok bool) {
+//
+// A ref carrying the prefix but NO owner segment is ALSO ok=false, and that is deliberate rather than
+// lenient: it is the pre-000006 form, and the only safe reading of it is "this handle names no project".
+// Treating it as a bare name would send it to the store under whatever tenant happened to be at hand,
+// which is the failure this whole change exists to remove — so it falls through to the env bridge, and if
+// no fallback is wired it is refused.
+func SplitTenantSecretRef(ref modelbroker.SecretRef) (project, name string, ok bool) {
 	rest, found := strings.CutPrefix(string(ref), tenantSecretRefPrefix)
-	if !found || rest == "" {
-		return "", false
+	if !found {
+		return "", "", false
 	}
-	return rest, true
+	project, name, split := strings.Cut(rest, ":")
+	if !split || project == "" || name == "" {
+		return "", "", false
+	}
+	return project, name, true
 }
 
 // RouteSecretResolver is the broker's credential redemption for DB-backed routes. A tenant-qualified ref
@@ -56,8 +75,8 @@ func SplitTenantSecretRef(ref modelbroker.SecretRef) (name string, ok bool) {
 // A tenant-qualified ref the store cannot resolve FAILS CLOSED. Falling back to the deployment credential
 // would silently run — and bill — one tenant's project on the operator's own key.
 type RouteSecretResolver struct {
-	// Lookup resolves a ref name to the credential value; ok=false is a clean miss.
-	Lookup func(name string) ([]byte, bool, error)
+	// Lookup resolves a ref name to the credential value FOR ONE TENANT; ok=false is a clean miss.
+	Lookup func(tenant coordinator.Tenant, name string) ([]byte, bool, error)
 	// Fallback redeems unqualified deployment refs (the env bridge). Nil rejects every such ref.
 	Fallback modelbroker.SecretResolver
 }
@@ -65,7 +84,7 @@ type RouteSecretResolver struct {
 // Redeem implements modelbroker.SecretResolver. The value lives only in the returned frame — it is never
 // logged, and the error text names the ref, never the credential.
 func (r RouteSecretResolver) Redeem(ref modelbroker.SecretRef) (string, error) {
-	name, ok := SplitTenantSecretRef(ref)
+	project, name, ok := SplitTenantSecretRef(ref)
 	if !ok {
 		if r.Fallback == nil {
 			return "", fmt.Errorf("%w: %s", modelbroker.ErrUnknownSecret, ref)
@@ -75,7 +94,7 @@ func (r RouteSecretResolver) Redeem(ref modelbroker.SecretRef) (string, error) {
 	if r.Lookup == nil {
 		return "", fmt.Errorf("%w: no tenant secret store is wired for %s", modelbroker.ErrUnknownSecret, name)
 	}
-	value, found, err := r.Lookup(name)
+	value, found, err := r.Lookup(coordinator.Tenant{Project: project}, name)
 	if err != nil {
 		return "", fmt.Errorf("redeem model connection credential %q: %w", name, err)
 	}
@@ -110,7 +129,7 @@ func (o *Orchestrator) effectiveRoute(ctx context.Context, st *attemptState) (Mo
 		route = ModelRoute{
 			Provider:   target.Provider,
 			Model:      target.Model,
-			Secret:     TenantSecretRef(target.SecretRef),
+			Secret:     TenantSecretRef(st.tenant.Project, target.SecretRef),
 			BaseURL:    target.BaseURL,
 			RevisionID: target.RevisionID,
 			Revision:   target.Revision,

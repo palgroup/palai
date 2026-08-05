@@ -18,6 +18,7 @@ import (
 
 	mcpclient "github.com/palgroup/palai/adapters/integrations/mcp"
 	"github.com/palgroup/palai/packages/contracts"
+	"github.com/palgroup/palai/packages/coordinator"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 
 	"github.com/palgroup/palai/storage"
@@ -165,7 +166,7 @@ func realManagerFor(t *testing.T, srv *httptest.Server, secretRef string) *mcpcl
 	pool := x509.NewCertPool()
 	pool.AddCert(srv.Certificate())
 	return mcpclient.NewManager(mcpclient.Config{
-		Secrets: func(ref string) ([]byte, error) {
+		Secrets: func(_ coordinator.Tenant, ref string) ([]byte, error) {
 			if ref != secretRef {
 				t.Errorf("secret resolver asked for ref %q, want the connection's own %q", ref, secretRef)
 			}

@@ -16,6 +16,7 @@ import (
 	remotehttp "github.com/palgroup/palai/adapters/tools/http"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/contracts"
+	"github.com/palgroup/palai/packages/coordinator"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 
 	"github.com/palgroup/palai/storage"
@@ -62,7 +63,7 @@ func TestHookWorkerBeforeToolDenyAndAllow(t *testing.T) {
 	ext := extensions.New(pool)
 	ext.SetRemoteInvoker(
 		remotehttp.NewExecutor(remotehttp.NewOperations(pool)),
-		func(_ string) ([]byte, error) { return []byte("component-hook-secret"), nil },
+		func(_ coordinator.Tenant, _ string) ([]byte, error) { return []byte("component-hook-secret"), nil },
 	)
 
 	var pushRuns, fileRuns int32

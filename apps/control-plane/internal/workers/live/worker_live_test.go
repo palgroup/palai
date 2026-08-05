@@ -73,7 +73,7 @@ const secretMarker = "LIVE-SECRET-do-not-leak-4b7e21"
 
 type fakeSecrets struct{ vals map[string]string }
 
-func (f fakeSecrets) Resolve(_ context.Context, name string) ([]byte, bool, error) {
+func (f fakeSecrets) Resolve(_ context.Context, _ coordinator.Tenant, name string) ([]byte, bool, error) {
 	v, ok := f.vals[name]
 	return []byte(v), ok, nil
 }

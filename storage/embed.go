@@ -74,6 +74,19 @@ var migrationUp5 string
 //go:embed migrations/000005_capacity_declaration.down.sql
 var migrationDown5 string
 
+// The fourth migration after the baseline (Faz A.6 T0): secret_refs and environments gain project_id, and
+// environment_values resolves its parent's. A.2 carried organization_id to project_id everywhere else; on
+// these three it dropped the column, so 000002 could only key them on the installation and every project
+// could read every secret. It creates no table — the policy calls below replace 000002's installation
+// policy on tables that already exist, and 000001's grants carry over — but it is the one migration in this
+// chain that MOVES A BOUNDARY, so read its header before changing anything it touches.
+//
+//go:embed migrations/000006_project_scoped_secrets_and_environments.up.sql
+var migrationUp6 string
+
+//go:embed migrations/000006_project_scoped_secrets_and_environments.down.sql
+var migrationDown6 string
+
 //go:embed queries/agents.sql
 var agentsSQL string
 
@@ -226,10 +239,12 @@ var knowledgeSQL string
 // MigrationUp is the forward chain, applied in version order. Each file is individually idempotent, so
 // the whole chain is safe to re-run — which it is, in full, on every boot.
 func MigrationUp() string {
-	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5
+	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 +
+		"\n" + migrationUp6
 }
 
-// MigrationDown reverses MigrationUp in the opposite order: 000005 makes zero illegal on runners.capacity
+// MigrationDown reverses MigrationUp in the opposite order: 000006 takes project_id back off secret_refs
+// and environments and restores their installation policies, 000005 makes zero illegal on runners.capacity
 // again, 000004 takes `metadata` back off responses,
 // 000003 takes its columns back off runner_leases, 000002 drops the policies and the procedures that
 // install them, then 000001 drops the
@@ -237,8 +252,16 @@ func MigrationUp() string {
 // component tier leans on that to return a shared database to empty between tests — so "reverses" has to
 // mean NOTHING is left behind, including the role, which is a cluster object the next database in the same
 // cluster would see.
+//
+// 000006 IS THE ONE LINK THAT MAY REFUSE TO REVERSE, and its own header says why rather than leaving the
+// reader to find out: it restores a NARROWER uniqueness than it dropped, so a database where two projects
+// took the same secret name cannot go back. Its down file also has to take the POLICIES off before the
+// columns, because a policy is a dependent object of every column it names — written the other way round it
+// reddened twenty-five component fixtures that never mention a secret. Every other link here is reversible
+// unconditionally.
 func MigrationDown() string {
-	return migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
+	return migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" +
+		migrationDown2 + "\n" + migrationDown
 }
 
 var namedQueries = parseNamedQueries(usageSQL, agentsSQL, jobsSQL, eventsSQL, responsesSQL, identitySQL, provisioningSQL, secretsSQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL, recoverySQL, webhooksSQL, triggersSQL, schedulesSQL, toolsSQL, remoteToolsSQL, mcpSQL, skillsSQL, hooksSQL, modelRoutesSQL, metricsSQL, knowledgeSQL, queuesSQL, a2aSQL, workersSQL, runnersSQL, leasesSQL, environmentsSQL, backgroundSQL, deploymentSQL, botsSQL)

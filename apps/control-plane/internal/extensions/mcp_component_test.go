@@ -115,7 +115,7 @@ func TestMCPConnectionSamplingAuthConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
-	cc := connConfig(got)
+	cc := connConfig(project, got)
 	if !cc.SamplingEnabled || cc.SamplingMaxTokens != 50 || cc.Audience != "https://mcp.example.test" {
 		t.Fatalf("connConfig = %+v, want sampling on, budget 50, audience bound", cc)
 	}

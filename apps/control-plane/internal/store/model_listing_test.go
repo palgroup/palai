@@ -35,7 +35,9 @@ func TestListConnectionModelsMakesARealRequestWithTheConnectionsOwnCredential(t 
 	}
 	s := (&Store{}).WithModelConnectionInspectors(
 		map[string]ConnectionInspector{"openai-compatible": providerone.Adapter{}},
-		func(ref string) ([]byte, bool, error) { return []byte("sk-the-operators-key"), true, nil },
+		func(_ coordinator.Tenant, ref string) ([]byte, bool, error) {
+			return []byte("sk-the-operators-key"), true, nil
+		},
 	)
 
 	got := s.listConnectionModels(context.Background(), coordinator.Tenant{Project: "prj_1"}, rec)
@@ -58,7 +60,7 @@ func TestListConnectionModelsMakesARealRequestWithTheConnectionsOwnCredential(t 
 func TestListConnectionModelsNeverAnswersAnEmptyListForAQuestionItDidNotAsk(t *testing.T) {
 	tenant := coordinator.Tenant{Project: "prj_1"}
 	rec := coordinator.ModelConnectionRecord{ID: "mconn_1", Provider: "provider-one", SecretRef: "k"}
-	resolves := func(ref string) ([]byte, bool, error) { return []byte("sk-x"), true, nil }
+	resolves := func(_ coordinator.Tenant, ref string) ([]byte, bool, error) { return []byte("sk-x"), true, nil }
 
 	cases := map[string]*Store{
 		"no inspector wired for the family": (&Store{}).WithModelConnectionInspectors(map[string]ConnectionInspector{}, resolves),
@@ -66,7 +68,7 @@ func TestListConnectionModelsNeverAnswersAnEmptyListForAQuestionItDidNotAsk(t *t
 			map[string]ConnectionInspector{"provider-one": providerone.Adapter{}}, nil),
 		"the secret ref does not resolve": (&Store{}).WithModelConnectionInspectors(
 			map[string]ConnectionInspector{"provider-one": providerone.Adapter{}},
-			func(ref string) ([]byte, bool, error) { return nil, false, nil }),
+			func(_ coordinator.Tenant, ref string) ([]byte, bool, error) { return nil, false, nil }),
 	}
 	for name, s := range cases {
 		got := s.listConnectionModels(context.Background(), tenant, rec)

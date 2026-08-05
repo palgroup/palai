@@ -363,7 +363,7 @@ func TestRemoteHTTPToolResolvesThroughRegistryLookup(t *testing.T) {
 	// Wire the signed executor (a fake) + an org-scoped resolver, then resolve + run through the broker.
 	inv := &fakeInvoker{result: map[string]any{"echoed": true}}
 	var resolvedRef string
-	s.SetRemoteInvoker(inv, func(ref string) ([]byte, error) {
+	s.SetRemoteInvoker(inv, func(_ coordinator.Tenant, ref string) ([]byte, error) {
 		resolvedRef = ref
 		return []byte("resolved-secret-" + ref), nil
 	})

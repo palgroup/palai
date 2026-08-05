@@ -21,6 +21,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/apps/control-plane/internal/identity"
 	"github.com/palgroup/palai/packages/contracts"
+	"github.com/palgroup/palai/packages/coordinator"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 
 	"github.com/palgroup/palai/storage"
@@ -117,9 +118,9 @@ func newSecretFixture(t *testing.T) *secretFixture {
 		}
 	}
 
-	f.orch.SetEnvironmentSecrets(func(ref string) ([]byte, error) {
+	f.orch.SetEnvironmentSecrets(func(forTenant coordinator.Tenant, ref string) ([]byte, error) {
 		atomic.AddInt32(&f.resolves, 1)
-		v, ok, err := secrets.Resolve(ctx, ref)
+		v, ok, err := secrets.Resolve(ctx, forTenant, ref)
 		if err != nil {
 			return nil, err
 		}

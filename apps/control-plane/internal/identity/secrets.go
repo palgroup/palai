@@ -1,7 +1,7 @@
 // This file adds the secret-ref store to the identity package (E13 Task 3, SEC-002/MCI-002): the durable,
 // envelope-encrypted secret store behind the restart-less secret write-path. It lives beside the tenancy
-// provisioning Store because it shares that surface's scoping discipline (orgScope), strict decode, and
-// metadata-only projection helpers — a secret-ref is another org-admin tenant resource. Its Resolve method
+// provisioning Store because it shares that surface's scoping discipline (provisioningScope), strict
+// decode, and metadata-only projection helpers — a secret-ref is another tenant-admin resource. Its Resolve
 // is the DB-backed hook main.go puts IN FRONT of the env-file secret bridge: a hit returns the decrypted
 // value, a miss falls through to the env bridge, so the E09 credential-broker seam is preserved.
 //
@@ -27,6 +27,7 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
+	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -36,9 +37,15 @@ import (
 // would silently defeat the rotation (the SEC-002 failure). A miss returns ok=false with a nil error.
 var ErrSecretDecrypt = errors.New("secret ref exists but could not be decrypted")
 
-// SecretStore envelope-encrypts each secret value at rest and resolves the latest version at request time.
-// It shares one pool with the provisioning Store; each method scopes itself to the caller's org, so RLS
-// (migration 000031) isolates one tenant's secrets from another's.
+// SecretStore envelope-encrypts each secret value at rest and resolves the effective version at request
+// time. It shares one pool with the provisioning Store; every method scopes itself to the caller's PROJECT,
+// so the row-level-security policy 000006 installed isolates one tenant's secrets from another's.
+//
+// THAT SENTENCE WAS TRUE, THEN FALSE FOR A WHILE, AND IS TRUE AGAIN — worth the three lines because the
+// middle state is what a reader of any surrounding comment written in it will have absorbed. It named
+// `organization_id` until A.2 dropped that column; A.2 added no project_id here, so 000002 could only give
+// secret_refs `palai_apply_installation_policy` and every project in the installation resolved the same
+// row. 000006 adds project_id, and this store is the surface that fills it.
 type SecretStore struct {
 	pool *pgxpool.Pool
 	aead cipher.AEAD
@@ -110,12 +117,28 @@ func (s *SecretStore) RotateSecretRef(ctx context.Context, scope middleware.Scop
 }
 
 // putVersion seals the value and inserts the next version. The version is computed and inserted in one
-// transaction; the UNIQUE (name, version) constraint — `(organization_id, name, version)` until A.2 T6's
-// 000065 removed the leading column — is the backstop against a concurrent insert of the same version. A
-// secret ref name is now unique across the INSTALLATION rather than within an organization, which is what
-// 000066's header calls out: secret_refs carries no project_id, so there is nothing narrower to key on.
-// requireExisting turns a rotate of a never-created name into a NotFound.
+// transaction; the `UNIQUE (project_id, name, version)` constraint 000006 installed (still NAMED
+// secret_refs_name_version_key — see that file for why the baseline's name is kept) is the backstop
+// against a concurrent insert of the same version. A secret ref name is unique WITHIN A PROJECT: two
+// customers may each hold `github-token`, which the installation-wide `UNIQUE (name, version)` this
+// replaced made impossible. requireExisting turns a rotate of a never-created name into a NotFound — and
+// since 000006 that includes a name owned by ANOTHER project, because NextSecretVersion does not see it.
+//
+// THE EMPTY-PROJECT REFUSAL IS THE WRITE HALF OF 000006 AND IT IS NOT DECORATION. That migration leaves
+// existing rows with an EMPTY project_id, which its policy still admits from every scope — a deliberate record
+// of the past. A DEFAULT is a value a writer inherits by saying nothing, so without this check the first
+// new secret written by a key that names no project would land in that same installation-wide bucket and
+// the boundary would be undone by its own compatibility provision. provisioningScope hands a `system` key
+// a system scope, under which every policy admits, so the credential is the only thing standing between
+// such a key and an empty-project write; there is no database constraint that could catch it.
+//
+// It is 403 rather than 400 because the request is well-formed — what is missing is in the CREDENTIAL, and
+// a 400 would send an operator looking at their request body for a field that does not exist.
+// identity.TestANewSecretCannotBeWrittenWithoutAProject is the guard.
 func (s *SecretStore) putVersion(ctx context.Context, scope middleware.Scope, name, value string, requireExisting bool) (api.ProvisionResult, error) {
+	if scope.Project == "" {
+		return api.ProvisionResult{InsufficientScope: "project"}, nil
+	}
 	ctx = provisioningScope(ctx, scope)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -123,7 +146,7 @@ func (s *SecretStore) putVersion(ctx context.Context, scope middleware.Scope, na
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	version, createdAt, err := s.insertVersion(ctx, tx, name, value, requireExisting)
+	version, createdAt, err := s.insertVersion(ctx, tx, scope.Project, name, value, requireExisting)
 	if err != nil {
 		return api.ProvisionResult{}, err
 	}
@@ -150,13 +173,18 @@ func (s *SecretStore) putVersion(ctx context.Context, scope middleware.Scope, na
 //
 // version 0 with a nil error is the "rotate of a name that has no prior version" answer, which the caller
 // renders as a 404; every other failure is an error.
-func (s *SecretStore) insertVersion(ctx context.Context, tx pgx.Tx, name, value string, requireExisting bool) (int, time.Time, error) {
+//
+// project is the OWNER the version is written under (000006). It is threaded explicitly rather than read
+// back out of ctx because both callers already hold it and a context value would make the owner ambient —
+// the property this whole cut-over exists to remove. Both callers reject an empty project before reaching
+// here, so this function does not re-check it; what it must never do is DEFAULT one.
+func (s *SecretStore) insertVersion(ctx context.Context, tx pgx.Tx, project, name, value string, requireExisting bool) (int, time.Time, error) {
 	sealed, err := s.seal([]byte(value))
 	if err != nil {
 		return 0, time.Time{}, err
 	}
 	var version int
-	if err := tx.QueryRow(ctx, storage.Query("NextSecretVersion"), name).Scan(&version); err != nil {
+	if err := tx.QueryRow(ctx, storage.Query("NextSecretVersion"), project, name).Scan(&version); err != nil {
 		return 0, time.Time{}, fmt.Errorf("next secret version: %w", err)
 	}
 	if requireExisting && version == 1 {
@@ -164,22 +192,25 @@ func (s *SecretStore) insertVersion(ctx context.Context, tx pgx.Tx, name, value 
 	}
 	var createdAt time.Time
 	if err := tx.QueryRow(ctx, storage.Query("InsertSecretRef"),
-		middleware.NewID("sec"), name, version, sealed).Scan(&createdAt); err != nil {
+		middleware.NewID("sec"), project, name, version, sealed).Scan(&createdAt); err != nil {
 		return 0, time.Time{}, fmt.Errorf("insert secret ref: %w", err)
 	}
 	return version, createdAt, nil
 }
 
 // ListSecretRefs lists secret-ref METADATA (name/version/updated_at) — never a value or ciphertext. One
-// row per name, at its latest version.
+// row per name, at its EFFECTIVE version.
 //
-// The set is the INSTALLATION's, not the caller's: provisioningScope narrows to the caller's project, but
-// secret_refs carries the installation policy (any connection that declared a scope matches every row), so
-// a tenant admin and the platform get the identical list. Resolve's doc records the same for the read
-// path. It said "for the caller's organization", which named a narrowing that is not here.
+// THE SET IS THE CALLER'S PROJECT PLUS THE PRE-000006 ROWS, and both halves are real rather than one being
+// a rounding of the other. A secret another project owns is not in this list — that narrowing was absent
+// between A.2 and 000006, and this comment claimed a wider set correctly for that whole interval. A secret
+// written before 000006 carries `project_id = ”` and IS in the list, for every project, because 000006
+// assigns those rows to nobody; that residue is the honest ceiling, not an oversight here. The statement's
+// precedence makes a name held in both scopes appear once, at the project's own version, so this list
+// cannot disagree with Resolve about which secret a name means.
 func (s *SecretStore) ListSecretRefs(ctx context.Context, scope middleware.Scope) (api.ProvisionResult, error) {
 	ctx = provisioningScope(ctx, scope)
-	rows, err := s.pool.Query(ctx, storage.Query("ListSecretRefs"))
+	rows, err := s.pool.Query(ctx, storage.Query("ListSecretRefs"), scope.Project)
 	if err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("list secret refs: %w", err)
 	}
@@ -198,11 +229,13 @@ func (s *SecretStore) ListSecretRefs(ctx context.Context, scope middleware.Scope
 	return api.ProvisionResult{Body: mustJSON(listView{Object: "list", Data: data})}, nil
 }
 
-// GetSecretRef reads one secret's metadata. There is no FOREIGN name to miss on — see ListSecretRefs for
-// why the scope is the installation — so an ABSENT name is the only 404 this can produce.
+// GetSecretRef reads one secret's metadata. Since 000006 it produces TWO 404s and renders them
+// identically: a name this installation does not hold, and a name ANOTHER project owns. Conflating them is
+// the intended answer — distinguishing them would tell a caller that a name exists somewhere it cannot
+// reach. Between A.2 and 000006 only the first of the two existed, and this comment said so.
 func (s *SecretStore) GetSecretRef(ctx context.Context, scope middleware.Scope, name string) (api.ProvisionResult, error) {
 	ctx = provisioningScope(ctx, scope)
-	v, err := scanSecretRef(s.pool.QueryRow(ctx, storage.Query("GetSecretRef"), name))
+	v, err := scanSecretRef(s.pool.QueryRow(ctx, storage.Query("GetSecretRef"), scope.Project, name))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.ProvisionResult{NotFound: true}, nil
 	}
@@ -212,24 +245,42 @@ func (s *SecretStore) GetSecretRef(ctx context.Context, scope middleware.Scope, 
 	return api.ProvisionResult{Body: mustJSON(v)}, nil
 }
 
-// Resolve returns the decrypted latest value for name, or ok=false when the installation holds no such
-// secret. It is the DB-backed hook main.go puts in FRONT of the env-file bridge: ok=false means "fall back
-// to the env bridge".
+// Resolve returns the decrypted effective value of name FOR ONE TENANT, or ok=false when that tenant has
+// no such secret. It is the DB-backed hook main.go puts in FRONT of the env-file bridge: ok=false means
+// "fall back to the env bridge".
 //
-// THE SENTENCE THAT USED TO BE HERE IS NO LONGER TRUE, and it is corrected rather than softened. It read:
-// "the read is scoped to that org and RLS denies any foreign row — a shared ref name never crosses
-// tenants." Migration 000066 keys secret_refs' policy on the INSTALLATION, because the table carries no
-// project_id (000031) and organizations are gone, so there is nothing narrower to key on: a ref name is
-// single-occupancy across the whole installation and every caller in it reads the same row.
-// TestSecretRefNamesAreInstallationWide asserts that directly. A.2 Task 6 then dropped the `org`
-// argument, because a parameter that selects nothing is a boundary the signature keeps claiming.
-func (s *SecretStore) Resolve(ctx context.Context, name string) ([]byte, bool, error) {
+// THE TENANT ARGUMENT IS THE POINT OF THIS METHOD AND IT HAS BEEN REMOVED ONCE ALREADY, so the history is
+// here rather than in a commit message. It used to take an `org`; A.2 Task 6 deleted it, correctly, because
+// by then the column it selected on was gone and "a parameter that selects nothing is a boundary the
+// signature keeps claiming". What that left was worse than an inert parameter: the method ran under
+// storage.WithInstallationScope, so EVERY project in the installation resolved the same row, and a caller
+// could not have named a tenant even if it wanted to. 000006 gives secret_refs a project_id, and this is
+// the read that spends it.
+//
+// WHAT IT REFUSES, IN THREE BRANCHES, because "project-scoped" alone would be a claim a reader cannot check:
+//   - a name no scope holds — ok=false, the clean miss the resolver chain treats as "try the env bridge".
+//   - a name ANOTHER project owns — also ok=false, and this branch is the boundary 000006 restored. It is
+//     indistinguishable from the first by design.
+//   - a name written BEFORE 000006 (an EMPTY project_id) — RESOLVED, for every tenant. Those rows are
+//     assigned to nobody, so this is the pre-000006 behaviour deliberately preserved; applying the
+//     migration must not stop a running installation's existing secrets from resolving. It is the residual
+//     leak, it is not closed here, and ResolveSecretRef's ORDER BY makes the tenant's OWN row win whenever
+//     both exist.
+//
+// AN EMPTY PROJECT IS REFUSED OUTRIGHT rather than widened. storage.WithTenant would publish an empty
+// palai.project_id, which the policy reads as a row whose own project_id is EMPTY — that is not "every
+// project", but it IS exactly the legacy bucket, so an unscoped caller would silently acquire the reach of
+// every pre-000006 secret in the installation. Refusing costs a caller nothing that is not a bug.
+func (s *SecretStore) Resolve(ctx context.Context, tenant coordinator.Tenant, name string) ([]byte, bool, error) {
 	if name == "" {
 		return nil, false, nil
 	}
-	ctx = storage.WithInstallationScope(ctx)
+	if tenant.Project == "" {
+		return nil, false, errors.New("identity: resolve secret ref: no project — a credential is always resolved on behalf of someone")
+	}
+	ctx = storage.WithTenant(ctx, tenant.Project)
 	var ciphertext []byte
-	err := s.pool.QueryRow(ctx, storage.Query("ResolveSecretRef"), name).Scan(&ciphertext)
+	err := s.pool.QueryRow(ctx, storage.Query("ResolveSecretRef"), tenant.Project, name).Scan(&ciphertext)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
 	}

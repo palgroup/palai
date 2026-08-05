@@ -10,8 +10,9 @@
 //     no restart. The DB-backed store fronts the env-file bridge (the E09 credential-broker seam is preserved).
 //  2. RESTART-LESS ROTATION (SEC-002): a rotate inserts a new version the next Resolve reads immediately, on
 //     the same live process.
-//  3. TENANT ISOLATION (live): a second tenant resolving the SAME ref name is denied by migration 000031's
-//     row-level security — it gets a clean miss, never the other tenant's bytes.
+//  3. TENANT ISOLATION (live): a second tenant resolving the SAME ref name is denied by the row-level
+//     security migration 000006 installed — it gets a clean miss, never the other tenant's bytes. This leg
+//     ASSERTED THE OPPOSITE for one phase; step (3) in the body carries the whole record of why.
 //  4. GENUINELY LIVE STACK: the provisioned tenant then drives a REAL provider-one completion, so the store
 //     the secrets round-trip through is the same one serving real runs.
 //
@@ -43,6 +44,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/apps/control-plane/internal/identity"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
+	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 
@@ -84,6 +86,7 @@ func TestLiveSecretRefRestartlessRotation(t *testing.T) {
 	// Provision a brand-new tenant on the LIVE store (the second-tenant-with-no-restart path).
 	project := provisionLiveTenant(t, idstore, "live-secret-tenant")
 	scope := middleware.Scope{Project: project}
+	tenant := coordinator.Tenant{Project: project}
 
 	const refName = "provider-upstream-token"
 
@@ -96,7 +99,7 @@ func TestLiveSecretRefRestartlessRotation(t *testing.T) {
 		t.Fatalf("create projection disclosed the value: %s", body)
 	}
 	// The SAME running process resolves it on the very next request — no restart.
-	if got, ok, err := secretStore.Resolve(ctx, refName); err != nil || !ok || string(got) != "sk-live-secret-v1" {
+	if got, ok, err := secretStore.Resolve(ctx, tenant, refName); err != nil || !ok || string(got) != "sk-live-secret-v1" {
 		t.Fatalf("Resolve(v1) = (%q, ok=%v, err=%v), want (sk-live-secret-v1, true, nil) — restart-less write failed", got, ok, err)
 	}
 
@@ -104,36 +107,38 @@ func TestLiveSecretRefRestartlessRotation(t *testing.T) {
 	if _, err := secretStore.RotateSecretRef(ctx, scope, refName, []byte(`{"value":"sk-live-secret-v2"}`)); err != nil {
 		t.Fatalf("RotateSecretRef error = %v", err)
 	}
-	if got, ok, err := secretStore.Resolve(ctx, refName); err != nil || !ok || string(got) != "sk-live-secret-v2" {
+	if got, ok, err := secretStore.Resolve(ctx, tenant, refName); err != nil || !ok || string(got) != "sk-live-secret-v2" {
 		t.Fatalf("Resolve after rotate = (%q, ok=%v, err=%v), want (sk-live-secret-v2, ...) — rotation not visible without restart", got, ok, err)
 	}
 
-	// (3) THE TENANT BOUNDARY ON SECRET REFS IS GONE, AND THIS STEP NOW RECORDS THAT RATHER THAN ASSERTING
-	// IT. Until A.2 this leg proved a second tenant was RLS-denied the first tenant's ref. It cannot be
-	// restated in terms of the project, because the boundary was not MOVED to the project — it was REMOVED,
-	// deliberately and with the reason written down. Migration 000066 says so in its own words: "this is the
-	// one place in A.2 where removing organizations REMOVES a boundary instead of moving it.
-	// environments, environment_values and secret_refs carry NO project_id at all (000046, 000031) — there
-	// is nothing narrower than the installation for a policy to key on, and giving them one would be a
-	// product change (whose project owns an existing environment?) rather than the removal this epic is."
+	// (3) THE TENANT BOUNDARY IS BACK, AND THIS LEG HAS NOW ASSERTED IT, ITS ABSENCE, AND IT AGAIN. The
+	// full record, because a reader meeting the middle version elsewhere in the tree needs it:
 	//
-	// Three measurements agree (2026-08-04, against the live schema at revision 66):
-	//   - SecretStore.Resolve opens with storage.WithInstallationScope(ctx) — it takes no tenant at all;
-	//   - secret_refs' columns are (id, organization_id, name, version, ciphertext, created_at) — no
-	//     project_id, and nothing writes the organization_id that remains;
-	//   - its only non-primary index is UNIQUE (name, version) — installation-wide, so two projects cannot
-	//     even hold the same ref NAME, let alone be isolated from each other's copy.
+	//   - Before A.2 this proved a second tenant was RLS-denied the first tenant's ref.
+	//   - A.2 removed organizations and left secret_refs with NO tenant column, so there was nothing
+	//     narrower than the installation for a policy to key on. A.3 T8 INVERTED this leg rather than
+	//     deleting it, and was right to: "an absence nobody asserts is an absence that changes without
+	//     anyone noticing". Its own words were that if a per-project boundary were ever added back, THIS
+	//     test would fail and name the change.
+	//   - Migration 000006 adds project_id. This is that failure, paid.
 	//
-	// SO THIS ASSERTS THE STANDING FACT INSTEAD OF THE LOST ONE, because an absence nobody asserts is an
-	// absence that changes without anyone noticing: a second tenant resolving the same name gets the SAME
-	// secret. If a per-project boundary is ever added back, THIS test fails and names the change — which is
-	// the only honest thing a suite can do about a property its subject no longer has.
-	other := provisionLiveTenant(t, idstore, "live-secret-other")
-	_ = other
-	if got, ok, err := secretStore.Resolve(ctx, refName); err != nil {
-		t.Fatalf("Resolve(second tenant) error = %v", err)
-	} else if !ok || string(got) != "sk-live-secret-v2" {
-		t.Fatalf("a second tenant resolved (%q, ok=%v) for the first tenant's ref — secret_refs is installation-wide since A.2, so the expected answer is the SAME secret; a change here means the boundary moved and this comment is stale", got, ok)
+	// AND THE INVERTED VERSION HAD A DEFECT WORTH RECORDING SEPARATELY, because it is a shape this tree
+	// keeps finding rather than a typo: it provisioned a second tenant, wrote `_ = other`, and then called
+	// `secretStore.Resolve(ctx, refName)` — the signature took no tenant, so THE SECOND TENANT WAS NEVER
+	// PART OF THE MEASUREMENT. The leg passed because the first tenant resolved its own secret. A test
+	// asserting a cross-tenant fact through an API with no tenant parameter cannot have been measuring one,
+	// and nothing in the file said so.
+	otherProject := provisionLiveTenant(t, idstore, "live-secret-other")
+	otherTenant := coordinator.Tenant{Project: otherProject}
+	if got, ok, err := secretStore.Resolve(ctx, otherTenant, refName); err != nil {
+		t.Fatalf("Resolve(second tenant) error = %v — a foreign name must be a clean miss, not an error", err)
+	} else if ok {
+		t.Fatalf("a second tenant resolved (%q) for the first tenant's ref — 000006 keys secret_refs on project_id, so this must be a miss", got)
+	}
+	// AND THE FIRST TENANT STILL READS ITS OWN, checked after the refusal so a policy that denied everyone
+	// could not pass this step. A boundary that also blocks the owner is an outage, not isolation.
+	if got, ok, err := secretStore.Resolve(ctx, tenant, refName); err != nil || !ok || string(got) != "sk-live-secret-v2" {
+		t.Fatalf("the owning tenant lost its own secret after the boundary check: (%q, ok=%v, err=%v)", got, ok, err)
 	}
 
 	// (4) GENUINELY LIVE STACK: the provisioned tenant drives a REAL provider-one completion.
@@ -162,7 +167,10 @@ func TestLiveSecretRefRestartlessRotation(t *testing.T) {
 		t.Fatalf("completed model_requests = %d, want >=1 (the real provider must have answered)", n)
 	}
 
-	t.Logf("secret-rotation-restartless PASS: tenant %s wrote + ROTATED a secret through the API with NO restart, the same live process resolved each version, a second tenant was RLS-denied the ref, and the tenant ran a REAL provider completion (run %s).", project, runID)
+	// The transcript names what each leg actually measured. It said "a second tenant was RLS-denied the ref"
+	// through the entire phase in which step (3) asserted the exact opposite — a PASS line is the thing an
+	// operator reads instead of the test, so a stale one ships a false transcript.
+	t.Logf("secret-rotation-restartless PASS: tenant %s wrote + ROTATED a secret through the API with NO restart, the same live process resolved each version, a SECOND tenant (%s) was refused that ref while the owner kept it, and the tenant ran a REAL provider completion (run %s).", project, otherProject, runID)
 }
 
 // provisionLiveTenant opens a new tenant through the identity store's installation-scoped creation path

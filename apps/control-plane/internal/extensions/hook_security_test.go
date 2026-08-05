@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	remotehttp "github.com/palgroup/palai/adapters/tools/http"
+	"github.com/palgroup/palai/packages/coordinator"
 )
 
 // TestHookSecurityCapabilityEscalationDenied is the E12 Task 8 capability-escalation corpus (spec §28.17, the
@@ -56,7 +57,7 @@ func TestHookSecurityRemoteHookGetsNoPlatformAuthority(t *testing.T) {
 	s := New(nil)
 	// The resolver returns the HOOK's org-scoped secret. A platform bearer would be a DIFFERENT value the
 	// binding must never thread; there is no field on the Invocation for one.
-	s.SetRemoteInvoker(capture, func(ref string) ([]byte, error) {
+	s.SetRemoteInvoker(capture, func(_ coordinator.Tenant, ref string) ([]byte, error) {
 		return []byte("hook-own-secret-" + ref), nil
 	})
 	hook := loadedHook{ID: "hook_x", Point: HookPointBeforeTool, Category: HookCategoryPolicy, Executor: HookExecutorRemote, URL: "https://hooks.example/x", SecretRef: "sref_hook"}

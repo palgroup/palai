@@ -115,7 +115,7 @@ func TestPrepareRepositoryResolvesBindingConnectionRef(t *testing.T) {
 	// A named ref is resolved by the binding's ref alone (A.2 Task 6: secret_refs is installation-wide).
 	var gotRef string
 	calls := 0
-	if err := prepare(t, "git-conn", func(ref string) ([]byte, error) {
+	if err := prepare(t, "git-conn", func(_ coordinator.Tenant, ref string) ([]byte, error) {
 		calls, gotRef = calls+1, ref
 		return []byte("palai-REPMARK-binding-token"), nil
 	}); err != nil {
@@ -126,7 +126,7 @@ func TestPrepareRepositoryResolvesBindingConnectionRef(t *testing.T) {
 	}
 
 	// A ref-less binding takes the global broker unchanged: the resolver is never consulted.
-	if err := prepare(t, "", func(ref string) ([]byte, error) {
+	if err := prepare(t, "", func(_ coordinator.Tenant, ref string) ([]byte, error) {
 		t.Fatalf("ref-less binding consulted the secret resolver for %q", ref)
 		return nil, nil
 	}); err != nil {
@@ -142,7 +142,7 @@ func TestPrepareRepositoryResolvesBindingConnectionRef(t *testing.T) {
 
 	// A resolver failure fails CLOSED — it must not silently fall back to the deployment-global
 	// credential — and the message names the ref, never the value.
-	err := prepare(t, "git-conn", func(string) ([]byte, error) {
+	err := prepare(t, "git-conn", func(coordinator.Tenant, string) ([]byte, error) {
 		return []byte("palai-REPMARK-binding-token"), errors.New("secret ref exists but could not be decrypted")
 	})
 	if err == nil {
@@ -153,7 +153,7 @@ func TestPrepareRepositoryResolvesBindingConnectionRef(t *testing.T) {
 	}
 
 	// An empty resolved credential is a misconfiguration, not an anonymous clone.
-	if err := prepare(t, "git-conn", func(string) ([]byte, error) { return nil, nil }); err == nil {
+	if err := prepare(t, "git-conn", func(coordinator.Tenant, string) ([]byte, error) { return nil, nil }); err == nil {
 		t.Fatal("PrepareRepository with an empty resolved credential returned nil error, want fail-closed")
 	}
 }

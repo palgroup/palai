@@ -78,7 +78,11 @@ func (s *Store) CreateMCPConnection(ctx context.Context, project string, raw []b
 	// not only at the first dial. A binderless store (no client wired) skips it, symmetric with the current
 	// creatable-but-not-discoverable posture; the static egress.VetURL in validateConnectionConfig still ran.
 	if s.mcp != nil {
-		vetConn := connConfig(Connection{Name: in.Name, Transport: in.Transport, Config: in.Config})
+		// The project is threaded even though VetConnection never redeems a secret: a ConnConfig with an
+		// empty Project would be one this package builds and cannot explain, and the next reader would
+		// have to prove the dial path does not reach it. Vetting a not-yet-stored connection is the one
+		// place the value is not read back off a row.
+		vetConn := connConfig(project, Connection{Name: in.Name, Transport: in.Transport, Config: in.Config})
 		if err := s.mcp.VetConnection(ctx, vetConn); err != nil {
 			return Connection{}, fmt.Errorf("%w: %v", ErrInvalidConnectionConfig, err)
 		}

@@ -38,12 +38,14 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/palgroup/palai/packages/coordinator"
 )
 
 // Tenant is the org/project a worker and its jobs are scoped to. It comes from the enrolling worker's
 // verified enrollment scope, never from anything the worker sends over the wire.
 type Tenant struct {
-	Project      string
+	Project string
 }
 
 // WorkerSpec is what an enrolling worker declares about itself (§31.2). ToolchainDigests pins what the worker
@@ -116,11 +118,22 @@ type Outcome struct {
 	OutputRefs []string
 }
 
-// SecretResolver resolves a secret_ref name to its value within an organization. It is exactly
-// identity.SecretStore.Resolve; the workers package depends on this narrow seam to avoid an import cycle. The
-// resolved value is handed to the worker for use and NEVER written to the journal, a log, or evidence.
+// SecretResolver resolves a secret_ref name to its value ON BEHALF OF ONE TENANT. It is exactly
+// identity.SecretStore.Resolve; the workers package depends on this narrow seam rather than on the identity
+// package itself. The resolved value is handed to the worker for use and NEVER written to the journal, a
+// log, or evidence.
+//
+// THE TENANT PARAMETER ARRIVED WITH 000006 AND IT IS NOT CEREMONIAL HERE. This seam's one production
+// implementation ran under storage.WithInstallationScope, so a redeem inside RedeemSecretHandle already
+// carried a tenant (the worker's verified claim) and then threw it away one call later — the handle was
+// scoped to the job, the SECRET behind it was not scoped to anything. The doc said "within an
+// organization" the entire time.
+//
+// It names coordinator.Tenant rather than this package's own Tenant, which is why store.go converts at the
+// call site. A bare `project string` beside `name string` would be two adjacent strings — the shape this
+// tree wrote a whole AST guard for, because swapping them compiles.
 type SecretResolver interface {
-	Resolve(ctx context.Context, name string) ([]byte, bool, error)
+	Resolve(ctx context.Context, tenant coordinator.Tenant, name string) ([]byte, bool, error)
 }
 
 var (

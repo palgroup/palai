@@ -73,7 +73,7 @@ func newHarness(t *testing.T) *harness {
 	exec(t, pool, `INSERT INTO runs (id, project_id, session_id) VALUES ($1,$2,$3)`, runID, project, session)
 
 	ops := remotehttp.NewOperations(pool)
-	resolver := func(ref string) ([]byte, error) {
+	resolver := func(_ coordinator.Tenant, ref string) ([]byte, error) {
 		if ref == testSecretRef {
 			return testSecret, nil
 		}

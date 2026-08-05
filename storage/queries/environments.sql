@@ -1,5 +1,7 @@
--- Environment store (E25 T3). The write and read halves of migration 000046's two tables: the
--- grouping identity and the key MEMBERSHIP rows.
+-- Environment store (E25 T3). The write and read halves of the two tables `environments` and
+-- `environment_values`: the grouping identity and the key MEMBERSHIP rows. (They arrived in the old
+-- chain's 000046; the 2026-08-04 squash folded that file into 000001_core, so the number is not cited —
+-- a reference to a migration this tree no longer has is a reference a reader cannot check.)
 --
 -- NOT ONE STATEMENT IN THIS FILE MENTIONS `ciphertext`, AND THAT IS A GUARDED PROPERTY RATHER THAN A
 -- convention: storage/ciphertext_sweep_test.go counts the NAME of every query in storage/queries/*.sql
@@ -11,14 +13,29 @@
 -- route below returns names, versions and times; the value has no read-back path at all, exactly as
 -- secret_refs has none (storage/queries/secrets.sql).
 --
--- environments HAS NO TENANT COLUMN AT ALL, and since migration 000066 no tenant boundary either: its
--- policy admits any connection that declared a scope, so an environment is INSTALLATION-WIDE. That is
--- the same reach it had before (one installation held one organization), but it is now the absence of a
--- boundary rather than one — an installation meant to hold two customers must give this table a
--- project_id first. No statement here carries a tenant predicate, because there is no column to name.
+-- BOTH TABLES ARE TENANT-SCOPED SINCE 000006, AND NEITHER WAS BEFORE IT. A.2 dropped their
+-- organization_id without adding a project_id, so 000002 could only give them
+-- `palai_apply_installation_policy` and an environment was INSTALLATION-WIDE — every project read every
+-- environment and every membership row. 000006 adds `environments.project_id` with
+-- `UNIQUE (project_id, name)`, and `environment_values` resolves its PARENT's project through
+-- `palai_apply_child_policy`: it holds no project column of its own, because its
+-- `environment_values_environment_id_fkey -> environments(id) ON DELETE CASCADE` already answers the
+-- question once, and a second copy would be a second source of truth.
+--
+-- WHAT THAT MEANS FOR THE STATEMENTS BELOW, in two branches rather than one sentence:
+--   - the METADATA reads (ListEnvironments, GetEnvironment, EnvironmentExists, DeleteEnvironmentValue,
+--     RunEnvironmentKeys) carry NO tenant predicate and lean on the policy alone. Before 000006 that was
+--     a policy admitting everyone; now it is a boundary, so the 404 those routes describe is real.
+--   - the two statements that touch a SECRET's version take the caller's project explicitly, because
+--     secret_refs holds two visible scopes and a read that ignored the precedence would report a version
+--     the resolver does not serve. See storage/queries/secrets.sql for the rule.
+--
+-- LEGACY ROWS: an environment written before 000006 carries project_id = '' and stays readable to every
+-- scope — 000006 assigns none of them, for the reasons in its header. That is the same leak secrets.sql
+-- records, and it is not closed here.
 
 -- name: InsertEnvironment
-INSERT INTO environments (id, name, description) VALUES ($1, $2, $3)
+INSERT INTO environments (id, project_id, name, description) VALUES ($1, $2, $3, $4)
 RETURNING created_at;
 
 -- ListEnvironments returns one row per environment with its KEY COUNT — the count rather than the keys,
@@ -47,14 +64,25 @@ SELECT id, name, description, created_at FROM environments WHERE id = $1;
 -- secret version is missing is a state the write path makes impossible (both rows land in ONE
 -- transaction), so version 0 would mean the database was edited by hand. Reporting 0 shows that
 -- honestly instead of dropping the key from the list, which would make a hand-edit invisible.
+--
+-- IT WAS `max(s.version)` OVER A PLAIN JOIN UNTIL 000006, AND THAT NOW REPORTS THE WRONG NUMBER. Since
+-- 000006 a caller sees secret_refs rows in two scopes — its own project and the legacy '' — and
+-- ResolveSecretRef serves the PROJECT's row even when a legacy row carries a higher version. A `max` would
+-- announce that legacy version while the agent's shell received the project's, which is a list disagreeing
+-- with the read about which secret a key means. The lateral below is ResolveSecretRef's ordering, per key,
+-- so the two cannot diverge. $1 is the caller's project, $2 the environment.
 -- name: ListEnvironmentKeys
-SELECT v.key,
-       COALESCE(max(s.version), 0) AS version,
-       max(s.created_at)           AS updated_at
+SELECT v.key, COALESCE(s.version, 0) AS version, s.updated_at
 FROM environment_values v
-LEFT JOIN secret_refs s ON s.name = 'env:' || v.environment_id || ':' || v.key
-WHERE v.environment_id = $1
-GROUP BY v.key
+LEFT JOIN LATERAL (
+    SELECT r.version, r.created_at AS updated_at
+    FROM secret_refs r
+    WHERE r.name = 'env:' || v.environment_id || ':' || v.key
+      AND r.project_id IN ($1, '')
+    ORDER BY (r.project_id = $1) DESC, r.version DESC
+    LIMIT 1
+) s ON true
+WHERE v.environment_id = $2
 ORDER BY v.key;
 
 -- UpsertEnvironmentValue records the MEMBERSHIP half of a create-or-rotate. It is ON CONFLICT DO
@@ -66,7 +94,8 @@ INSERT INTO environment_values (environment_id, key) VALUES ($1, $2)
 ON CONFLICT (environment_id, key) DO NOTHING;
 
 -- DeleteEnvironmentValue removes the BINDING and nothing else. The sealed versions stay in secret_refs,
--- which grants no DELETE (000031:45) and re-asserts that REVOKE on every boot; after this runs, nothing
+-- which grants no DELETE (000001_core.up.sql's `GRANT SELECT,INSERT ON TABLE secret_refs TO palai_app`, and
+-- the whole chain re-asserts its grants on every boot); after this runs, nothing
 -- names them, because the derived name is only ever built from a membership row. RETURNING key so the
 -- caller can 404 a key the environment never had rather than reporting a success it did not achieve.
 -- name: DeleteEnvironmentValue

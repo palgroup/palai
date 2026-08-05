@@ -90,7 +90,7 @@ func TestCallbackWiredIntoRunningBinary(t *testing.T) {
 	supervisor := coordinator.NewSupervisor(log.Printf, time.Second)
 	rec := automation.NewDeliveryReconciler(triggerStore, 40*time.Millisecond, time.Hour, 100, nil)
 	pump := automation.NewWebhookPump(webhookStore, webhook.NewSender(webhook.WithTLSConfig(&tls.Config{RootCAs: certs})),
-		func(ref string) ([]byte, error) {
+		func(_ coordinator.Tenant, ref string) ([]byte, error) {
 			if ref == "cbref" {
 				return secret, nil
 			}

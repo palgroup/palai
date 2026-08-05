@@ -25,6 +25,7 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/identity"
+	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -44,6 +45,21 @@ func createEnvironment(t *testing.T, store *identity.SecretStore, scope middlewa
 	}
 	if r.ID == "" {
 		t.Fatalf("CreateEnvironment returned no id: %s", out.Body)
+	}
+	return r.ID
+}
+
+// extractEnvironmentID reads the id out of a CreateEnvironment body when the caller needs the RESULT rather
+// than the helper's fatal-on-error convenience — the duplicate-name leg below asserts about the answer
+// first and only then wants its id.
+func extractEnvironmentID(t *testing.T, body []byte) string {
+	t.Helper()
+	var r struct{ ID string }
+	if err := json.Unmarshal(body, &r); err != nil {
+		t.Fatalf("decode environment body: %v", err)
+	}
+	if r.ID == "" {
+		t.Fatalf("no environment id in body: %s", body)
 	}
 	return r.ID
 }
@@ -107,7 +123,7 @@ func TestEnvironmentWriteResolveRotateAndUnbind(t *testing.T) {
 	// what makes RunEnvironmentKeys' `'env:' || environment_id || ':' || key` construction correct; if the
 	// two disagreed, every run would resolve nothing and fail closed silently.
 	derived := "env:" + envID + ":JIRA_TOKEN"
-	value, ok, err := store.Resolve(ctx, derived)
+	value, ok, err := store.Resolve(ctx, coordinator.Tenant{Project: scope.Project}, derived)
 	if err != nil || !ok {
 		t.Fatalf("Resolve(%q) ok=%v err=%v — the derived name the orchestrator builds does not address the stored value", derived, ok, err)
 	}
@@ -116,7 +132,7 @@ func TestEnvironmentWriteResolveRotateAndUnbind(t *testing.T) {
 	}
 	// And NOT by the bare key name, which is the collision an installation-wide flat namespace would have
 	// produced: two environments each holding JIRA_TOKEN must not share one secret.
-	if _, ok, _ := store.Resolve(ctx, "JIRA_TOKEN"); ok {
+	if _, ok, _ := store.Resolve(ctx, coordinator.Tenant{Project: scope.Project}, "JIRA_TOKEN"); ok {
 		t.Fatal("the bare key name resolves a value — the environment id is not part of the secret's address, so two environments would share one credential")
 	}
 
@@ -129,7 +145,7 @@ func TestEnvironmentWriteResolveRotateAndUnbind(t *testing.T) {
 	if !strings.Contains(string(rotated.Body), `"version":2`) {
 		t.Fatalf("a rotation did not move the version: %s", rotated.Body)
 	}
-	if v, _, _ := store.Resolve(ctx, derived); string(v) != sentinelValue+"-v2" {
+	if v, _, _ := store.Resolve(ctx, coordinator.Tenant{Project: scope.Project}, derived); string(v) != sentinelValue+"-v2" {
 		t.Fatalf("Resolve after rotate = %q, want the v2 value", v)
 	}
 
@@ -155,7 +171,7 @@ func TestEnvironmentWriteResolveRotateAndUnbind(t *testing.T) {
 	}
 	// The sealed versions are STILL THERE. Nothing names them — the derived name is only ever built from a
 	// membership row — but they were not deleted, because secret_refs grants no DELETE.
-	if v, ok, _ := store.Resolve(ctx, derived); !ok || string(v) != sentinelValue+"-v2" {
+	if v, ok, _ := store.Resolve(ctx, coordinator.Tenant{Project: scope.Project}, derived); !ok || string(v) != sentinelValue+"-v2" {
 		t.Fatalf("removing the binding DELETED the stored versions (ok=%v) — secret_refs is supposed to be append-only, and the API's own message tells the operator the bytes are retained", ok)
 	}
 
@@ -200,27 +216,31 @@ func TestEnvironmentRefusesReservedAndMalformedKeyNames(t *testing.T) {
 	}
 }
 
-// TestEnvironmentsAreInstallationWide REPLACES TestAForeignTenantCannotReachAnotherOrgsEnvironment, and
-// the inversion is the finding of this task rather than a test being repaired.
+// TestAForeignProjectCannotReachAnotherProjectsEnvironment IS THE THIRD NAME THIS TEST HAS HAD, and the
+// round trip is the record rather than a repair.
 //
-// That test drove all five environment paths as tenant B against tenant A's environment and required every
-// one to refuse, naming the consequence in its own words: "A's agent receiving B's credential". A.2 Task 6
-// removes organizations, and `environments`/`environment_values` carry NO project_id (000046) — exactly the
-// posture secret_refs has had since 000031 — so after migration 000066 their policy keys on the
-// INSTALLATION, because there is nothing narrower left to key on. Every one of those five paths now
-// reaches, and this test says so in full rather than being deleted.
+//  1. Its first name paired "a foreign tenant" with "another org's environment". It drove all five
+//     environment paths as tenant B against tenant A's environment and required every one to refuse,
+//     naming the consequence in its own words: "A's agent receiving B's credential". The exact identifier
+//     is deliberately not written here: it is the `rested_on` of
+//     evidence/superseded/con-003-environment-boundary-2026-08-05.json, and that guard proves a superseded
+//     symbol is GONE by sweeping the tree for it — a history note spelling it out would keep it alive and
+//     turn the record into an opinion.
+//  2. A.2 Task 6 removed organizations and left `environments`/`environment_values` with NO project_id, so
+//     their policy could only key on the INSTALLATION. Every one of those five paths began to REACH, and
+//     the test was renamed TestEnvironmentsAreInstallationWide and inverted to say so — deliberately, and
+//     correctly: a test asserting a boundary the tree does not have is worse than no test.
+//  3. Migration 000006 gives both tables project_id. The five paths refuse again, so the assertions come
+//     back to what (1) asserted.
 //
-// WHY THAT IS THE CHOSEN ANSWER AND NOT AN OVERSIGHT: it is EXACTLY today's behaviour, restated. These
-// tables were organization-wide, and an installation has one organization — so nothing an operator can
-// observe changes. What changes is the reason: it held because of a boundary, and now it holds because
-// there is none. Palai's model after A.2 is one installation per customer (Palai Cloud is the layer that
-// keeps customers apart), and within one customer these are that customer's own projects. An installation
-// that ever hosts two customers needs project_id on these tables FIRST — 000066's header carries the same
-// sentence, and this test is the executable half of it.
+// WHY (2) IS WRITTEN DOWN INSTEAD OF BEING QUIETLY DROPPED. For one phase this tree SHIPPED the open
+// posture and a green test that said so. Someone reading a comment written in that phase — and there are
+// several, in main.go and in storage/queries — will have absorbed "an environment is installation-wide" as
+// a property of the design. It was a property of a MISSING COLUMN. Recording the interval is what stops the
+// next person from "fixing" this test back to (2) when they meet one of those sentences.
 //
-// The one boundary that DOES survive is asserted at the end: a connection that declared no scope still
-// sees nothing, because 000066's expression is `system OR palai.project_id IS NOT NULL`, never `true`.
-func TestEnvironmentsAreInstallationWide(t *testing.T) {
+// The five paths below are the ones a read-only tenancy sweep would miss: three of them WRITE.
+func TestAForeignProjectCannotReachAnotherProjectsEnvironment(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
 	idstore := identity.New(cs.Pool())
@@ -230,65 +250,84 @@ func TestEnvironmentsAreInstallationWide(t *testing.T) {
 	projectB, _ := provisionOrg(t, idstore, "env-tenant-b")
 	scopeA := middleware.Scope{Project: projectA}
 	scopeB := middleware.Scope{Project: projectB}
+	tenantA := coordinator.Tenant{Project: projectA}
+	tenantB := coordinator.Tenant{Project: projectB}
 
-	// The name is per-run because the uniqueness under test is INSTALLATION-wide: a literal would make this
-	// test pass once against a retained database and fail on the next run for a reason unrelated to it.
+	// Per-run because this database is retained between component runs and shared with neighbouring
+	// packages; a literal would collide for a reason unrelated to the claim.
 	sharedName := "a-production-" + newID("env")
 	envA := createEnvironment(t, store, scopeA, sharedName)
 	if out, err := store.PutEnvironmentValue(ctx, scopeA, envA, []byte(`{"key":"JIRA_TOKEN","value":"`+sentinelValue+`"}`)); err != nil || out.BadField {
 		t.Fatalf("seed A's key: %+v %v", out, err)
 	}
 
-	// PATH 1 — GET /v1/environments/{id}: the other project READS it.
-	got, err := store.GetEnvironment(ctx, scopeB, envA)
-	if err != nil || got.NotFound {
-		t.Fatalf("GetEnvironment as B notFound=%v err=%v — environments are installation-wide", got.NotFound, err)
+	// PATH 1 — GET /v1/environments/{id}: the other project must MISS, and the miss must be the same 404 an
+	// absent id produces. Distinguishing them would make this route an existence oracle.
+	if got, err := store.GetEnvironment(ctx, scopeB, envA); err != nil || !got.NotFound {
+		t.Fatalf("GetEnvironment as B notFound=%v err=%v — B read A's environment", got.NotFound, err)
 	}
 
-	// PATH 2 — GET /v1/environments: it is in the other project's list.
+	// PATH 2 — GET /v1/environments: it must not be in the other project's list.
 	list, err := store.ListEnvironments(ctx, scopeB)
 	if err != nil {
 		t.Fatalf("ListEnvironments as B error = %v", err)
 	}
-	if !strings.Contains(string(list.Body), envA) {
-		t.Fatalf("B's list does not carry the installation's environment: %s", list.Body)
+	if strings.Contains(string(list.Body), envA) {
+		t.Fatalf("B's list carries A's environment: %s", list.Body)
 	}
 
-	// PATH 3 — POST /v1/environments/{id}/values: the other project WRITES into it. This is the leg the
-	// replaced test called the one a read-only tenancy test would miss, and it is the one that costs the
-	// most to have open: the value an agent receives is now writable by any project in the installation.
+	// PATH 3 — POST /v1/environments/{id}/values: the other project must not WRITE into it. This is the leg
+	// that costs the most when it is open — the value an agent receives becomes writable by another
+	// project — and it is the one a read-only sweep never reaches.
 	put, err := store.PutEnvironmentValue(ctx, scopeB, envA, []byte(`{"key":"INJECTED","value":"b-controlled"}`))
-	if err != nil || put.NotFound {
-		t.Fatalf("PutEnvironmentValue as B notFound=%v err=%v", put.NotFound, err)
+	if err != nil || !put.NotFound {
+		t.Fatalf("PutEnvironmentValue as B notFound=%v err=%v — B wrote into A's environment", put.NotFound, err)
 	}
-	if v, ok, _ := store.Resolve(ctx, "env:"+envA+":INJECTED"); !ok || string(v) != "b-controlled" {
-		t.Fatalf("the other project's write is not readable as A (ok=%v) — the claim above would be untested", ok)
+	// AND THE WRITE LANDED NOWHERE. A refusal reported to the caller while a row was still written is a
+	// shape this tree has shipped, so the refusal is checked at the STORE and not only in the answer.
+	if v, ok, _ := store.Resolve(ctx, tenantA, "env:"+envA+":INJECTED"); ok {
+		t.Fatalf("the refused write is resolvable as A (%q) — the refusal was reported, not performed", v)
 	}
 
-	// PATH 4 — DELETE .../values/{key}: the other project unbinds a key it did not write.
+	// PATH 4 — DELETE .../values/{key}: the other project must not unbind a key it did not write. Checked
+	// twice: the answer is a 404, AND A's own value still resolves afterwards.
 	del, err := store.DeleteEnvironmentValue(ctx, scopeB, envA, "JIRA_TOKEN")
-	if err != nil || del.NotFound {
-		t.Fatalf("DeleteEnvironmentValue as B notFound=%v err=%v", del.NotFound, err)
+	if err != nil || !del.NotFound {
+		t.Fatalf("DeleteEnvironmentValue as B notFound=%v err=%v — B unbound A's key", del.NotFound, err)
+	}
+	if v, ok, err := store.Resolve(ctx, tenantA, "env:"+envA+":JIRA_TOKEN"); !ok || err != nil || string(v) != sentinelValue {
+		t.Fatalf("A's own value did not survive B's delete attempt (ok=%v err=%v)", ok, err)
 	}
 
-	// PATH 5 — POST /v1/environments: the NAME is now single-occupancy. UNIQUE was
-	// (organization_id, name) and 000065 rebuilt it as (name), so a second project asking for
-	// "a-production" is refused rather than given its own. The replaced test asserted the opposite, and
-	// deliberately: a 409 used to be a cross-tenant existence oracle. With one installation there is no
-	// second tenant for it to disclose anything to.
-	// The refusal is a typed OUTCOME, not a Go error — CreateEnvironment maps the unique violation to
-	// ProvisionResult{Conflict} and the handler renders 409. Asserting `err == nil` here would have been
-	// a test failing for a reason unrelated to its claim: the product WAS refusing.
+	// PATH 5 — POST /v1/environments: the NAME is per-project again. 000006 rebuilt the constraint as
+	// `UNIQUE (project_id, name)`, so B asking for the same name gets its OWN environment rather than a
+	// 409. The 409 was a cross-tenant existence oracle, which is exactly why the middle phase's version of
+	// this test asserted one: with `UNIQUE (name)` the product genuinely refused.
 	dup, err := store.CreateEnvironment(ctx, scopeB, []byte(`{"name":"`+sharedName+`"}`))
 	if err != nil {
-		t.Fatalf("CreateEnvironment(duplicate name) error = %v, want a typed conflict", err)
+		t.Fatalf("CreateEnvironment(same name, other project) error = %v", err)
 	}
-	if !dup.Conflict {
-		t.Fatalf("a second project created an environment with a name the installation already holds: %+v", dup)
+	if dup.Conflict {
+		t.Fatalf("B was refused a name A holds — the constraint is still installation-wide: %+v", dup)
+	}
+	if strings.Contains(string(dup.Body), envA) {
+		t.Fatalf("B was handed A's environment id instead of its own: %s", dup.Body)
 	}
 
-	// The boundary that SURVIVES: a connection that declared no scope at all still sees nothing. This is
-	// what makes 000066's expression a policy rather than a formality, and it is the reason these tables
+	// AND THE TWO ENVIRONMENTS ARE SEPARATE CREDENTIAL SPACES. Same name, same key, two values — which is
+	// the property the whole change exists for and the one the middle phase could not have.
+	envB := extractEnvironmentID(t, dup.Body)
+	if out, err := store.PutEnvironmentValue(ctx, scopeB, envB, []byte(`{"key":"JIRA_TOKEN","value":"b-own-value"}`)); err != nil || out.BadField {
+		t.Fatalf("seed B's key: %+v %v", out, err)
+	}
+	aVal, aOK, _ := store.Resolve(ctx, tenantA, "env:"+envA+":JIRA_TOKEN")
+	bVal, bOK, _ := store.Resolve(ctx, tenantB, "env:"+envB+":JIRA_TOKEN")
+	if !aOK || !bOK || string(aVal) == string(bVal) {
+		t.Fatalf("two projects' same-named keys share a value (a=%q ok=%v, b=%q ok=%v)", aVal, aOK, bVal, bOK)
+	}
+
+	// The boundary that held through all three phases: a connection that declared no scope at all sees
+	// nothing. This is what makes the policy a policy rather than a formality, and the reason these tables
 	// stay ENABLED and FORCED instead of having row-level security switched off.
 	var visible int
 	unscoped := cs.Pool()

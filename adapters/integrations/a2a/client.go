@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/egress"
 )
 
@@ -102,10 +103,13 @@ type RemoteAgent struct {
 }
 
 // RemoteSecretResolver redeems a remote connection's auth secret_ref handle for its bearer bytes at call time
-// (the MCP SecretResolver pattern). It is scoped to (org, ref): it can resolve ONLY a secret the tenant owns,
+// (the MCP SecretResolver pattern). It is scoped to (tenant, ref) — the tenant being the REMOTE AGENT ROW'S
+// own project — so it resolves only a secret that project owns. It said "(org, ref) … ONLY a secret the
+// tenant owns" from A.2 until 000006, a phase in which secret_refs had no tenant column at all and the claim
+// was false on the line that declared the seam,
 // and it is the SOLE source of the outbound Authorization. There is no path to hand the client any other
 // credential — that is the structural no-credential-inheritance guarantee (A2A-005/SUB-007).
-type RemoteSecretResolver func(ref string) ([]byte, error)
+type RemoteSecretResolver func(tenant coordinator.Tenant, ref string) ([]byte, error)
 
 // ClientConfig wires the client. Resolver/Dial/AllowPrivate mirror the MCP HTTP transport egress knobs;
 // AllowPrivate is the test-harness-only self-host flag (production leaves it false, so loopback/RFC1918 are
@@ -429,7 +433,7 @@ func (c *Client) resolveBearer(agent RemoteAgent) (string, error) {
 	if c.cfg.Secrets == nil {
 		return "", ErrNoSecretResolver
 	}
-	b, err := c.cfg.Secrets(agent.AuthConnectionRef)
+	b, err := c.cfg.Secrets(coordinator.Tenant{Project: agent.Project}, agent.AuthConnectionRef)
 	if err != nil {
 		return "", fmt.Errorf("a2a client: resolve auth connection: %w", err)
 	}

@@ -55,10 +55,10 @@ func (s *Store) DiscoverConnection(ctx context.Context, project, connID string) 
 	// name that rebound since registration), or whose bearer audience no longer matches its origin, is
 	// rejected here rather than dialed (the pinned dialer would still deny at connect — this is the early,
 	// cheaper reject on the admin path).
-	if err := s.mcp.VetConnection(ctx, connConfig(conn)); err != nil {
+	if err := s.mcp.VetConnection(ctx, connConfig(project, conn)); err != nil {
 		return DiscoverResult{}, fmt.Errorf("vet connection %s: %w", connID, err)
 	}
-	tools, err := s.mcp.Discover(ctx, connConfig(conn))
+	tools, err := s.mcp.Discover(ctx, connConfig(project, conn))
 	if err != nil {
 		return DiscoverResult{}, fmt.Errorf("discover connection %s: %w", connID, err)
 	}
@@ -170,10 +170,13 @@ func (s *Store) latestRevisionDigest(ctx context.Context, toolID string) (string
 }
 
 // connConfig maps a stored connection to the adapter's dial config (the secret stays a HANDLE — the manager
-// resolves it at request time).
-func connConfig(conn Connection) mcp.ConnConfig {
+// resolves it at request time). The project travels with it because that redemption is tenant-scoped since
+// 000006: the row this Connection was read from is already inside one project, and passing it explicitly is
+// what stops the dial from re-widening to the installation.
+func connConfig(project string, conn Connection) mcp.ConnConfig {
 	cc := mcp.ConnConfig{
 		ID:        conn.ID,
+		Project:   project,
 		Name:      conn.Name,
 		Transport: conn.Transport,
 		SecretRef: conn.SecretRef,

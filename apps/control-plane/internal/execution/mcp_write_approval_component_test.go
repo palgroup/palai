@@ -271,7 +271,7 @@ func newJiraWriteFixture(t *testing.T, ticket map[string]any) *jiraWriteFixture 
 	pool.AddCert(srv.Certificate())
 	registry := extensions.New(cs.Pool())
 	registry.SetMCP(mcpclient.NewManager(mcpclient.Config{
-		Secrets: func(ref string) ([]byte, error) {
+		Secrets: func(_ coordinator.Tenant, ref string) ([]byte, error) {
 			if ref != secretRef {
 				t.Errorf("secret resolver asked for ref %q, want the connection's own %q", ref, secretRef)
 			}

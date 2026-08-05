@@ -96,7 +96,7 @@ func TestLiveRemoteToolAsyncRoundtrip(t *testing.T) {
 	// shipped signature is func(ref string). The org comparison this used to make is not moved down to the
 	// project — it is GONE, because the resolver no longer receives a tenant at all and inventing one here
 	// would assert a boundary the production seam does not have.
-	resolver := func(ref string) ([]byte, error) {
+	resolver := func(_ coordinator.Tenant, ref string) ([]byte, error) {
 		if ref == "sig-ref" {
 			return secret, nil
 		}

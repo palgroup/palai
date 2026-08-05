@@ -161,7 +161,8 @@ func main() {
 	// The trigger store is shared by the HTTP surface (trigger management + manual/API delivery + the signed
 	// inbound-webhook receiver) and the delivery-reconciler (spec §20.2.2, E11 Task 2/5). It admits a
 	// triggered run through the durable spine — the SAME §20.9 admission path a POST /v1/responses takes. The
-	// inbound receiver verifies against the org-scoped secret bridge, audits rejects (log-only ceiling — E13/
+	// inbound receiver verifies against the two-half secret bridge (000006: the DB store is scoped to the
+	// TRIGGER'S OWN project, the env-file fallback stays deployment-global), audits rejects (log-only ceiling — E13/
 	// E15 durable store), and bounds a flood (in-flight semaphore default 256, per-trigger backlog opt-in).
 	triggerStore := automation.NewTriggerStore(repo.Spine().Pool()).WithAdmitter(repo.Spine()).
 		WithInboundSecrets(inboundSecretResolver).
@@ -382,7 +383,9 @@ func main() {
 		// can surface the supervisor's restart counters over /healthz/supervisor.
 		// The signed remote-tool result callback endpoint (spec §28.24, E12 T4): its auth IS the per-operation
 		// HMAC signature + one-use token, so it rides the top mux unauthenticated (like the inbound receiver).
-		// The SAME org-scoped secret bridge signs the outbound invoke and verifies the inbound callback.
+		// The SAME secret bridge signs the outbound invoke and verifies the inbound callback — and since 000006
+		// both ends redeem for the OPERATION'S OWN project, which the callback takes off the stored row because
+		// its request carries no scope to take it from.
 		// The §20.12 edge admission control (E13 T7): the per-API-key request-rate limiter and the
 		// per-project concurrent/queued run caps, read from the environment. Every value defaults to
 		// zero = disabled, so a stack that configures none admits exactly as before.
@@ -597,7 +600,8 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		toolRegistry := extensions.New(spine.Pool())
 		// Wire the E12 T4 remote_http executor: a registered remote-tool revision resolves to a signed HTTP
 		// invoke over the shared egress layer, opening a durable async operation the signed callback resolves
-		// under a live fence. The signing secret is resolved fresh per invoke from the org-scoped file bridge
+		// under a live fence. The signing secret is resolved fresh per invoke, for the RUN'S project (000006;
+		// the env-file half of the bridge is still deployment-global)
 		// (never held). PALAI_TOOL_CALLBACK_BASE_URL is this CP's public base the 202 result is posted back to;
 		// unset leaves the async callback URL empty (a remote tool can then only answer synchronously).
 		toolRegistry.SetRemoteInvoker(
@@ -624,7 +628,7 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		startMCPOrphanSweep(ctx, supervisor)
 		// Wire the E12 T8 hooks (spec §28.17): the registry fires a run's registered hooks at the five pinned
 		// dispatch points. platform_inline hooks dispatch to the code-defined handler table (deny-all is the
-		// deny-visible fixture); remote_http hooks reuse the SAME T4 signed transport + org-scoped secret
+		// deny-visible fixture); remote_http hooks reuse the SAME T4 signed transport + tenant-scoped secret
 		// resolver wired above. The orchestrator fires through the registry (SetHookFirer); no hook fires unless
 		// an admin registers one, so a hook-less run is bit-unchanged.
 		toolRegistry.SetHookHandlers(extensions.PlatformHookHandlers())
@@ -646,7 +650,7 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		// — AllowPrivate stays false, so a remote agent registered at a loopback/RFC1918/metadata address is
 		// refused by egress before any dial, and no Files sink is wired, so a remote that returns a file part
 		// fails its child honestly rather than losing the file. The bearer is redeemed ONLY from the agent
-		// row's auth_connection_ref by the org-scoped resolver — there is no parameter through which this
+		// row's auth_connection_ref, for the AGENT ROW'S OWN project (000006) — there is no parameter through which this
 		// process could hand the remote the parent's or the platform's credential (A2A-005/SUB-007).
 		//
 		// Unconditional, like SetHookFirer: it needs no external key material and a project that registered
@@ -1091,7 +1095,8 @@ func sandboxLimitsFromEnv() oci.Limits { return posture.Limits() }
 // mcpManagerFromEnv builds the MCP client the discovered-tool dispatch + admin discover paths share (spec
 // §28.13-28.14, E12 T5). The stdio transport needs a Docker interactive driver (a per-call, network-less,
 // mount-less sandbox); absent it, stdio MCP fails cleanly while HTTP MCP still works. The bearer for an HTTP
-// connection is resolved from its secret_ref at request time via the org-scoped file bridge (never inline),
+// connection is resolved from its secret_ref at request time for the CONNECTION'S OWN project (000006; the
+// env-file half of the bridge remains deployment-global, never inline),
 // and progress notifications journal advisory tool_call.progress.v1 events through the spine.
 //
 // E12 T6: a sampling-enabled connection routes a server sampling/createMessage as a SEPARATE budgeted model
@@ -1139,15 +1144,27 @@ const secretResolveTimeout = 2 * time.Second
 //   - a timeout / DB-unavailable error (bounded by secretResolveTimeout) or a genuine miss degrades to the
 //     env bridge (the allowed fallback), so a store hiccup does not fail an env-satisfiable lookup.
 //
-// A.2 Task 6 removed the org argument: secret_refs carries no tenant column and migration 000066 keys it
-// on the INSTALLATION, so the argument selected nothing — see identity.SecretStore.Resolve.
-func dbSecret(ref string) ([]byte, bool, error) {
+// THE TENANT ARGUMENT CAME BACK IN 000006, AND ITS HISTORY IS THE REASON THIS PARAGRAPH EXISTS. A.2 Task 6
+// removed an `org` argument because secret_refs had lost the column it selected on — correct at the time,
+// and it left this function calling Resolve under storage.WithInstallationScope, i.e. resolving every
+// tenant's credentials out of one shared namespace. 000006 gives the table a project_id; the argument is
+// now a real selector rather than a decorative one, and every one of the seven resolvers below had to grow
+// a way to say who it is resolving for.
+//
+// HONEST CEILING, AND IT IS THE HALF THIS FUNCTION DOES NOT FIX: only the DB lookup is tenant-scoped. The
+// env-file fallback each caller reaches on a miss (PALAI_*_SECRET_FILE_<REF>) is keyed on the ref ALONE and
+// is a DEPLOYMENT-GLOBAL file, so two projects naming one ref that exists only in the environment still
+// read the same bytes. That bridge is an operator-provided file whose name is a published operator
+// interface; narrowing it would be an operator-facing rename, not a code change, and it is not in this
+// task. What 000006 buys is that a secret PROVISIONED OVER THE API belongs to one project — and the API is
+// the path that scales to more than one customer.
+func dbSecret(tenant coordinator.Tenant, ref string) ([]byte, bool, error) {
 	if dbSecretStore == nil {
 		return nil, false, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), secretResolveTimeout)
 	defer cancel()
-	v, ok, err := dbSecretStore.Resolve(ctx, ref)
+	v, ok, err := dbSecretStore.Resolve(ctx, tenant, ref)
 	if err != nil {
 		if errors.Is(err, identity.ErrSecretDecrypt) {
 			return nil, false, err // fail closed: never fall back to a superseded env secret
@@ -1175,11 +1192,11 @@ func dbSecret(ref string) ([]byte, bool, error) {
 // HONEST CEILING: there is no per-tenant GitHub App ONBOARDING surface (installing an App per tenant and
 // capturing its installation credential is product/SaaS work). This resolves whatever token the tenant
 // already provisioned under the ref — a PAT or an installation token it manages itself.
-func repositoryConnectionSecret(ref string) ([]byte, error) {
+func repositoryConnectionSecret(tenant coordinator.Tenant, ref string) ([]byte, error) {
 	if ref == "" {
 		return nil, errors.New("empty repository connection ref")
 	}
-	v, ok, err := dbSecret(ref)
+	v, ok, err := dbSecret(tenant, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -1207,11 +1224,11 @@ func repositoryConnectionSecret(ref string) ([]byte, error) {
 // read to it and RLS denies any foreign row"; dbSecret runs under WithInstallationScope, so there is no
 // per-tenant scoping to lean on and the minting is doing all the work. The error names the ref, never the
 // value.
-func environmentValueSecret(ref string) ([]byte, error) {
+func environmentValueSecret(tenant coordinator.Tenant, ref string) ([]byte, error) {
 	if ref == "" {
 		return nil, errors.New("empty environment ref")
 	}
-	v, ok, err := dbSecret(ref)
+	v, ok, err := dbSecret(tenant, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -1232,11 +1249,11 @@ func environmentValueSecret(ref string) ([]byte, error) {
 // binary could not produce. The org segment is gone from the key AND from the property: a ref name is
 // single-occupancy across the installation (000066), so there is no per-tenant namespace here to enforce.
 // See identity.SecretStore.Resolve, which records the same correction for the DB half.
-func mcpSecretResolver(ref string) ([]byte, error) {
+func mcpSecretResolver(tenant coordinator.Tenant, ref string) ([]byte, error) {
 	if ref == "" {
 		return nil, errors.New("empty mcp secret ref")
 	}
-	if v, ok, err := dbSecret(ref); err != nil {
+	if v, ok, err := dbSecret(tenant, ref); err != nil {
 		return nil, err
 	} else if ok {
 		return v, nil
@@ -1483,11 +1500,11 @@ func startScheduleTicker(ctx context.Context, store *automation.ScheduleStore, s
 // never existed after A.2 Task 6, and the boundary it described does not either: a ref name is
 // installation-wide (000066). An unresolved ref still fails the attempt (a retry), never an unsigned
 // delivery — that half was always about resolution, not about tenancy, and it still holds.
-func webhookSecretResolver(ref string) ([]byte, error) {
+func webhookSecretResolver(tenant coordinator.Tenant, ref string) ([]byte, error) {
 	if ref == "" {
 		return nil, errors.New("empty webhook secret ref")
 	}
-	if v, ok, err := dbSecret(ref); err != nil {
+	if v, ok, err := dbSecret(tenant, ref); err != nil {
 		return nil, err
 	} else if ok {
 		return v, nil
@@ -1507,11 +1524,11 @@ func webhookSecretResolver(ref string) ([]byte, error) {
 // PALAI_WEBHOOK_SECRET_FILE_ one, so the two secret sets remain non-interchangeable — that separation is
 // carried by the PREFIX, which no tenant ever supplied.
 // An unresolved ref fails verification (a generic 404 upstream — no config oracle), never an unsigned accept.
-func inboundSecretResolver(ref string) ([]byte, error) {
+func inboundSecretResolver(tenant coordinator.Tenant, ref string) ([]byte, error) {
 	if ref == "" {
 		return nil, errors.New("empty inbound secret ref")
 	}
-	if v, ok, err := dbSecret(ref); err != nil {
+	if v, ok, err := dbSecret(tenant, ref); err != nil {
 		return nil, err
 	} else if ok {
 		return v, nil
@@ -1531,11 +1548,11 @@ func inboundSecretResolver(ref string) ([]byte, error) {
 // name is installation-wide (000066). The remote-tool namespace is still DISTINCT from the
 // webhook/inbound ones — three PREFIXES, so the three secret sets stay non-interchangeable. An unresolved
 // ref fails the invoke (a retry) / a generic-404 callback, never an unsigned request or accept.
-func remoteToolSecretResolver(ref string) ([]byte, error) {
+func remoteToolSecretResolver(tenant coordinator.Tenant, ref string) ([]byte, error) {
 	if ref == "" {
 		return nil, errors.New("empty remote tool secret ref")
 	}
-	if v, ok, err := dbSecret(ref); err != nil {
+	if v, ok, err := dbSecret(tenant, ref); err != nil {
 		return nil, err
 	} else if ok {
 		return v, nil
@@ -1558,11 +1575,11 @@ func remoteToolSecretResolver(ref string) ([]byte, error) {
 // webhook/inbound/remote-tool/Slack ones — five PREFIXES, so the five secret sets stay
 // non-interchangeable. This is the ONLY bearer a remote child dial can carry: an unresolved ref FAILS
 // the dispatch (an honest child failure), it never falls back to the platform's or the parent's credential.
-func a2aRemoteSecretResolver(ref string) ([]byte, error) {
+func a2aRemoteSecretResolver(tenant coordinator.Tenant, ref string) ([]byte, error) {
 	if ref == "" {
 		return nil, errors.New("empty a2a remote secret ref")
 	}
-	if v, ok, err := dbSecret(ref); err != nil {
+	if v, ok, err := dbSecret(tenant, ref); err != nil {
 		return nil, err
 	} else if ok {
 		return v, nil

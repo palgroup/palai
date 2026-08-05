@@ -313,10 +313,11 @@ type ConnectionInspector interface {
 }
 
 // ConnectionSecretResolver redeems a connection's credential for a probe. It is the SAME shape the model
-// broker's own resolver has and it is given the same value in production (the T3 secret store, org-scoped),
+// broker's own resolver has and it is given the same value in production (the T3 secret store, scoped to the
+// tenant since 000006 — it was installation-wide, and this line said "org-scoped" for the whole of it),
 // so the probe checks the bytes a run would actually send — a probe that read the credential by any other
 // path would be verifying something other than what ships.
-type ConnectionSecretResolver func(ref string) ([]byte, bool, error)
+type ConnectionSecretResolver func(tenant coordinator.Tenant, ref string) ([]byte, bool, error)
 
 // WithModelConnectionInspectors wires the verify action and the models list. A store built WITHOUT it
 // still serves every other model-routing route and answers both honestly — "nothing is wired on this
@@ -385,12 +386,17 @@ func (s *Store) probeConnection(ctx context.Context, tenant coordinator.Tenant, 
 // inspectorFor redeems the connection's credential and finds its family's inspector. A non-empty refusal
 // is the sentence to render, and it always names what was NOT done — the one thing neither caller may do
 // is answer as though it had asked.
+//
+// `tenant` WAS IN THIS SIGNATURE AND NOTHING READ IT until 000006. That is the exact shape 000002's header
+// warns about — "a parameter nothing reads is a boundary a reader will believe in" — and here the belief
+// was load-bearing: this function redeems a MODEL PROVIDER credential, and every caller passed a tenant to
+// a redemption that ran across the whole installation. The parameter is spent now.
 func (s *Store) inspectorFor(tenant coordinator.Tenant, rec coordinator.ModelConnectionRecord, what, verb string) (ConnectionInspector, []byte, string) {
 	inspector, ok := s.connectionInspectors[rec.Provider]
 	if !ok || s.connectionSecrets == nil {
 		return nil, nil, "this deployment wires no " + what + " for the " + rec.Provider + " family, so NOTHING was " + verb
 	}
-	value, found, err := s.connectionSecrets(rec.SecretRef)
+	value, found, err := s.connectionSecrets(tenant, rec.SecretRef)
 	if err != nil || !found {
 		// The two causes are named together for the reason the broker's own resolver names them: an operator
 		// hunting a missing ref during a store outage looks in the wrong place for a long time.

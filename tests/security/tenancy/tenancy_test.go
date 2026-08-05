@@ -151,23 +151,36 @@ func (s *suite) seedTenant(t *testing.T, project string) {
 		{`INSERT INTO repository_bindings (id, project_id, provider, repository_identity, clone_url, archived_at)
 		  VALUES ($1, $2, 'github', 'palai/retired', 'https://example.invalid/retired.git', now())`,
 			[]any{archivedBinding, project}},
-		// The E25 T3 environment pair (000046). Both are ORG-scoped rather than project-scoped, matching
-		// secret_refs (000031:16), so both are seeded with the project and no project — a mismatch would make the
-		// WHERE-less canary below pass for the wrong reason.
+		// The E25 T3 environment pair, PROJECT-scoped since 000006 — they were installation-wide for one
+		// phase, which is why the surrounding comments changed with them.
 		//
 		// THEY ARE SEEDED BECAUSE THE CATALOGUE-DRIVEN TESTS ALONE ARE NOT ENOUGH. TestEveryTenantTableIsRow-
 		// LevelSecured and TestConnectionWithoutTenantContextSeesNoTenantRows both walk pg_class, so they cover
 		// a new table the moment it exists — but they can only prove "no rows come back", and a table with no
 		// rows in it satisfies that vacuously. The canary below needs a row in EACH project to have anything to
 		// fail on.
-		// THE NAME IS PER-TENANT SINCE A.2 T6's 000065, and the collision it avoids is the finding, not a
-		// fixture detail: environments carries no project_id, so its uniqueness was `(organization_id, name)`
-		// and is now `(name)` — INSTALLATION-WIDE. Two tenants can no longer both own an environment called
-		// "production", and this fixture, which seeds two, was the first thing to say so.
-		{`INSERT INTO environments (id, name) VALUES ($1, $2)`,
-			[]any{environment, "production-" + project}},
+		//
+		// THE NAME STAYS PER-TENANT EVEN THOUGH 000006 NO LONGER REQUIRES IT. Uniqueness went
+		// `(organization_id, name)` -> `(name)` -> `(project_id, name)`, so two tenants may both own a
+		// "production" again. The suffix is kept because this database is RETAINED between runs and shared:
+		// a literal would collide with an earlier run's row in the SAME project. That is a fixture reason,
+		// not a schema one, and saying which is the point — the middle phase's version of this comment
+		// claimed the schema forced it, and a reader would have deleted the suffix on seeing the constraint
+		// change.
+		{`INSERT INTO environments (id, project_id, name) VALUES ($1, $2, $3)`,
+			[]any{environment, project, "production-" + project}},
 		{`INSERT INTO environment_values (environment_id, key) VALUES ($1, $2)`,
 			[]any{environment, "JIRA_TOKEN"}},
+		// usage_ledger, and it was NOT seeded until 000006 — which made the one claim its own test carried
+		// unmeasurable. TestOnlyUsageLedgerStaysInstallationWide (below, then called
+		// TestInstallationWideTablesAreVisibleToEveryTenant) named four tables and drove its VISIBILITY arm
+		// against two of them; usage_ledger and secret_refs appeared only in the deny-by-default loop, where
+		// every table answers zero. So "usage_ledger stays installation-wide" was asserted by a test name and
+		// by a paragraph, and by no statement. It is the only such claim left in that test now, so the row
+		// exists for it to be about.
+		{`INSERT INTO usage_ledger (id, project_id, meter, quantity, unit, dedupe_key)
+		  VALUES ($1, $2, 'model.input_tokens', 1, 'token', $3)`,
+			[]any{"usg_" + project, project, "seed-" + project}},
 		// The E25 T7 registry trio, and these are PROJECT-scoped (000024) — the opposite of the environment
 		// pair above, which is why they are seeded separately rather than folded into it.
 		//
@@ -288,26 +301,37 @@ func TestWhereLessQueryIsRejectedByTheDatabase(t *testing.T) {
 		// count because RLS is the layer that decides VISIBILITY while `deleted_at` is the layer that
 		// decides RELEVANCE — a leak here would expose a deleted schedule as readily as a live one.
 		"triggers": 1, "schedules": 2, "hooks": 1,
+		// environments and environment_values CAME BACK to this map with 000006, and the round trip is the
+		// record. They left it in A.2 Task 6 — not silently, and the comment that carried them out said so:
+		// with no project_id on either table the canary's claim ("the caller sees ONE row and the other
+		// tenant's zero") had become false about them, so they moved to
+		// TestInstallationWideTablesAreVisibleToEveryTenant, which asserted the OPPOSITE property. 000006
+		// gives environments a project_id and environment_values its parent's, so the original claim is true
+		// again and this is where it belongs.
+		"environments": 1, "environment_values": 1,
 	}
-	// environments and environment_values LEFT THIS MAP in A.2 Task 6, and they left with a replacement
-	// rather than a deletion: TestInstallationWideTablesAreVisibleToEveryTenant below asserts the opposite
-	// property on the same two tables and on usage_ledger. Neither carries a project_id (000046), and with
-	// organizations gone 000066 keys them on the installation, so this canary — whose whole claim is that
-	// the caller sees ONE row and the other tenant's zero — would now be asserting something false about
-	// them. Moving them out silently is the failure this comment exists to prevent: the count would drop
-	// from fourteen tables to twelve and read as tidying.
 	for table, want := range seeded {
 		s.asProject(t, s.projectA, func(tx pgx.Tx) {
 			var foreign int
 			// The only predicate names the OTHER tenant: the query asks for exactly the rows the
 			// caller must never see, so a non-zero count is a leak and nothing else.
-			// `projects` is its own tenant key — the policy compares its `id`, not a project_id column
-			// it does not have. Every other table in this map carries project_id.
-			key := "project_id"
-			if table == "projects" {
-				key = "id"
+			//
+			// TWO TABLES CANNOT BE ASKED WITH A BARE COLUMN, and each is a different shape rather than an
+			// exception to one rule:
+			//   - `projects` IS its own tenant key; the policy compares its `id`.
+			//   - `environment_values` carries no tenant column at all. 000006 gave it
+			//     palai_apply_child_policy, so its project is its PARENT's — the predicate has to reach
+			//     through the FK, and a bare `project_id` here fails with 42703 rather than passing
+			//     vacuously. That error is what put this branch here.
+			query := fmt.Sprintf(`SELECT count(*) FROM %s WHERE project_id = $1`, table)
+			switch table {
+			case "projects":
+				query = `SELECT count(*) FROM projects WHERE id = $1`
+			case "environment_values":
+				query = `SELECT count(*) FROM environment_values v
+				           JOIN environments e ON e.id = v.environment_id
+				          WHERE e.project_id = $1`
 			}
-			query := fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s = $1`, table, key)
 			if err := tx.QueryRow(context.Background(), query, s.projectB).Scan(&foreign); err != nil {
 				t.Fatalf("%s: count foreign rows: %v", table, err)
 			}
@@ -325,19 +349,29 @@ func TestWhereLessQueryIsRejectedByTheDatabase(t *testing.T) {
 	}
 }
 
-// TestInstallationWideTablesAreVisibleToEveryTenant is the OTHER half of the sweep above, and it exists
-// because A.2 Task 6 removed a boundary rather than moving it. environments, environment_values and
-// secret_refs carry no project_id at all (000046, 000031); usage_ledger carries one but must stay wider
-// than it, or an installation-wide budget sums only the caller's own project and fails OPEN (000062's own
-// header measured that). Migration 000066 keys all four on the INSTALLATION.
+// TestOnlyUsageLedgerStaysInstallationWide is the OTHER half of the sweep above, and it has now asserted
+// the property in BOTH directions on the same tables — which is the whole reason it was not deleted when
+// the direction changed.
 //
-// So the property is asserted in the direction it now holds. A test suite that merely dropped these tables
-// from the confinement canary would leave a reader with the impression the boundary is still there — and
-// would go GREEN if somebody later keyed usage_ledger on project and broke every installation-wide budget.
+// IT WAS TestInstallationWideTablesAreVisibleToEveryTenant AND IT NAMED FOUR TABLES. A.2 Task 6 removed a
+// boundary rather than moving it: environments, environment_values and secret_refs carried no project_id at
+// all, so 000002 could only key them on the installation, and this test asserted that a scoped tenant READ
+// the other tenant's rows. Its own comment explained why it existed in that form: "a test suite that merely
+// dropped these tables from the confinement canary would leave a reader with the impression the boundary is
+// still there."
 //
-// The one guarantee that SURVIVES is the last assertion: a connection that declared no scope still sees
-// nothing, because 000066's expression is `system OR palai.project_id IS NOT NULL`, never `true`.
-func TestInstallationWideTablesAreVisibleToEveryTenant(t *testing.T) {
+// Migration 000006 puts the boundary back on three of the four. Those three returned to the confinement
+// canary above; usage_ledger stays HERE, and it is the reason this test survives rather than being deleted
+// with them.
+//
+// WHY usage_ledger MUST STAY WIDE, restated because it is now the ONLY claim this test carries: it does
+// carry a project_id, but an installation-wide budget that summed only the caller's own project would fail
+// OPEN. Narrowing it is a change that looks like tidying and silently disables a spend ceiling, so it is
+// asserted rather than assumed.
+//
+// The guarantee that survived every phase is the first assertion: a connection that declared no scope sees
+// nothing, because the policy expression is `system OR palai.project_id IS NOT NULL`, never `true`.
+func TestOnlyUsageLedgerStaysInstallationWide(t *testing.T) {
 	s := newSuite(t)
 	ctx := context.Background()
 
@@ -352,12 +386,10 @@ func TestInstallationWideTablesAreVisibleToEveryTenant(t *testing.T) {
 	// non-NULL project GUC and this policy admits it. Asserted before anything has published, this measures
 	// the world it names; asserted after, it would measure the harness.
 	//
-	// WHAT THAT MAKES THE GUARD WORTH, stated rather than implied: in production storage.OpenPool's
-	// PrepareConn publishes a scope on EVERY acquisition, so no application connection is ever in the state
-	// asserted here after its first use. These four tables are, for the running control plane,
-	// unconditionally readable. The guard is what keeps them under a policy at all — so a project_id column
-	// added later can be keyed on without re-enabling row-level security — and it is what a raw connection
-	// that never declared anything still meets.
+	// IT STILL COVERS ALL FOUR TABLES even though three are now project-keyed, and that is deliberate: the
+	// project-keyed expression has the same deny-by-default arm, so this is the one assertion that did not
+	// need to change when the policies did. A table that lost row-level security entirely — rather than
+	// being re-keyed — fails here.
 	fresh, err := s.app.Acquire(ctx)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -370,22 +402,30 @@ func TestInstallationWideTablesAreVisibleToEveryTenant(t *testing.T) {
 		}
 		if visible != 0 {
 			fresh.Release()
-			t.Fatalf("%s: a connection that never declared a scope saw %d row(s); the installation policy is not deny-by-default", table, visible)
+			t.Fatalf("%s: a connection that never declared a scope saw %d row(s); the policy is not deny-by-default", table, visible)
 		}
 	}
 	fresh.Release()
 
-	// And the visibility the epic actually chose: a scoped tenant reads the OTHER tenant's rows.
-	//
-	// THESE TWO TABLES CARRY NO TENANT COLUMN AT ALL since A.2 Task 6 — 000067 dropped the organization_id
-	// they were keyed on, and they never had a project_id (that is exactly why 000066 moved them onto the
-	// installation). So the other tenant's row cannot be named by a tenant predicate; it is named by the
-	// value seedTenant gave it, `production-<project>`, which is unique per seeded tenant.
-	//
-	// COUNTING ALL ROWS WOULD NOT DO. This suite re-seeds two tenants per test against one shared database,
-	// so an installation-wide table holds every earlier test's rows too — the count was 10 on the run that
-	// found this. A total says only "something is visible"; naming projectB's own row is what says the
-	// boundary is not there.
+	// usage_ledger STAYS WIDE. Named by the other tenant's own dedupe key rather than counted in total: this
+	// suite re-seeds two tenants per test against one shared database, so a total says only "something is
+	// visible" while the other tenant's specific row says the reach is still there.
+	foreignUsage := "seed-" + s.projectB
+	s.asProject(t, s.projectA, func(tx pgx.Tx) {
+		var seen int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM usage_ledger WHERE dedupe_key = $1`, foreignUsage).Scan(&seen); err != nil {
+			t.Fatalf("usage_ledger: count the other tenant's row: %v", err)
+		}
+		if seen != 1 {
+			t.Fatalf("usage_ledger: the other tenant's seeded row is visible %d time(s), want 1 — this table "+
+				"must stay installation-wide or an installation-wide budget sums only the caller and fails OPEN", seen)
+		}
+	})
+
+	// AND THE THREE THAT NARROWED ARE CLOSED. Asserted here as well as in the confinement canary above,
+	// because the two ask different questions: the canary asks "does the caller see its OWN row", and this
+	// asks "does it see the OTHER tenant's". A policy that admitted everything would pass the canary.
 	foreignEnv := "production-" + s.projectB
 	s.asProject(t, s.projectA, func(tx pgx.Tx) {
 		var seen int
@@ -393,9 +433,9 @@ func TestInstallationWideTablesAreVisibleToEveryTenant(t *testing.T) {
 			`SELECT count(*) FROM environments WHERE name = $1`, foreignEnv).Scan(&seen); err != nil {
 			t.Fatalf("environments: count the other tenant's row: %v", err)
 		}
-		if seen != 1 {
-			t.Fatalf("environments: the other tenant's seeded row is visible %d time(s), want 1 — this table "+
-				"is installation-wide after 000066, and a 0 here means it was narrowed again", seen)
+		if seen != 0 {
+			t.Fatalf("environments: the other tenant's row is visible %d time(s), want 0 — 000006 keys this "+
+				"table on project_id", seen)
 		}
 		if err := tx.QueryRow(ctx,
 			`SELECT count(*) FROM environment_values v
@@ -403,8 +443,9 @@ func TestInstallationWideTablesAreVisibleToEveryTenant(t *testing.T) {
 			  WHERE e.name = $1`, foreignEnv).Scan(&seen); err != nil {
 			t.Fatalf("environment_values: count the other tenant's row: %v", err)
 		}
-		if seen != 1 {
-			t.Fatalf("environment_values: the other tenant's seeded row is visible %d time(s), want 1", seen)
+		if seen != 0 {
+			t.Fatalf("environment_values: the other tenant's row is visible %d time(s), want 0 — its policy "+
+				"resolves its PARENT's project, so a 1 here means the child policy is not installed", seen)
 		}
 	})
 }

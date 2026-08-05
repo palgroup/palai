@@ -90,8 +90,15 @@ func TestProjectModelRouteRoutesPerProject(t *testing.T) {
 	if routeA.Secret == routeB.Secret {
 		t.Fatalf("both projects redeemed the SAME credential ref %q — a per-project route must carry a per-project credential", routeA.Secret)
 	}
-	if routeA.Secret != TenantSecretRef("openai-a") {
+	if routeA.Secret != TenantSecretRef(projectA.Project, "openai-a") {
 		t.Fatalf("project A ref = %q, want the tenant-qualified handle for its own connection", routeA.Secret)
+	}
+	// THE OWNER SEGMENT IS PROJECT A'S, and it is asserted separately from the ref equality above because
+	// those two can pass for different reasons: the equality would still hold if TenantSecretRef stopped
+	// embedding an owner at all, since both sides would lose it together. Splitting it back out is what
+	// pins the value that reaches the store.
+	if owner, name, ok := SplitTenantSecretRef(routeA.Secret); !ok || owner != projectA.Project || name != "openai-a" {
+		t.Fatalf("A's ref splits to (%q, %q, %v), want (%s, openai-a, true)", owner, name, ok, projectA.Project)
 	}
 	if routeA.RevisionID == "" || routeB.RevisionID == "" {
 		t.Fatal("a DB-resolved route must carry the revision id it selected (spec §27.6)")

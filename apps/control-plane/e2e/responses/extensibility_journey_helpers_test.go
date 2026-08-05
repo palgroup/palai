@@ -35,6 +35,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/contracts"
+	"github.com/palgroup/palai/packages/coordinator"
 	extsdk "github.com/palgroup/palai/packages/extension-sdk"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
@@ -177,7 +178,7 @@ func (h *harness) setupExtensions(t *testing.T, ctx context.Context) *extSetup {
 	// (2) A signed remote_http tool — the async 202 -> signed-callback surface (the callback proof).
 	secret := []byte("whsec_journey_remote_" + newID("s")) // whsec_ shape: the manifest redaction needles it
 	ops := remotehttp.NewOperations(pool)
-	resolver := func(ref string) ([]byte, error) {
+	resolver := func(_ coordinator.Tenant, ref string) ([]byte, error) {
 		if ref == "sig-ref" {
 			return secret, nil
 		}

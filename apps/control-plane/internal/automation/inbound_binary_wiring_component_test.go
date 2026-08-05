@@ -23,10 +23,19 @@ import (
 	"github.com/palgroup/palai/storage"
 )
 
-// envFileInboundResolver mirrors main.go's inboundSecretResolver (the PALAI_INBOUND_SECRET_FILE_<ORG>__<REF>
+// envFileInboundResolver mirrors main.go's inboundSecretResolver (the PALAI_INBOUND_SECRET_FILE_<REF>
 // bridge — a FILE PATH, never inline bytes), so the wiring test proves the SAME resolver shape the binary
 // wires, not a bespoke closure.
-func envFileInboundResolver(ref string) ([]byte, error) {
+//
+// IT SAID `<ORG>__<REF>` UNTIL 000006 while the line four below read the ref alone, which is the defect
+// this file was mirroring rather than the shape. main.go's own copy of that sentence had already been
+// corrected; this one had not, so the mirror was of a resolver that never existed.
+//
+// The tenant is accepted and DELIBERATELY UNUSED, which is the honest shape here rather than an omission:
+// the env-file half of the bridge is keyed on the ref alone and is a deployment-global file. Only the DB
+// half that main.go consults first is tenant-scoped. A parameter this function pretended to spend would
+// claim a narrowing the environment does not have.
+func envFileInboundResolver(_ coordinator.Tenant, ref string) ([]byte, error) {
 	path := os.Getenv("PALAI_INBOUND_SECRET_FILE_" + secretEnvKey(ref))
 	if path == "" {
 		return nil, os.ErrNotExist

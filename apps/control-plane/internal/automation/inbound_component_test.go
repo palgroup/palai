@@ -26,6 +26,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
+	"github.com/palgroup/palai/packages/coordinator"
 
 	"github.com/palgroup/palai/storage"
 )
@@ -93,7 +94,7 @@ func newInboundHarness(t *testing.T, maxInflight, backlogMax int) *inboundHarnes
 
 	secret := []byte("whsec_inbound_" + randID("s"))
 	secretsByRef := map[string][]byte{inboundSecretRef: secret}
-	resolver := func(ref string) ([]byte, error) {
+	resolver := func(_ coordinator.Tenant, ref string) ([]byte, error) {
 		if b, ok := secretsByRef[ref]; ok {
 			return b, nil
 		}

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/palgroup/palai/adapters/integrations/webhook"
+	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
 	"github.com/palgroup/palai/storage"
 )
@@ -95,7 +96,7 @@ func (s *TriggerStore) IngestInbound(ctx context.Context, triggerID string, head
 	// its scope — the route is unauthenticated, but it is not unscoped. Nothing has been written yet;
 	// the signature is verified below, before the first durable row.
 	ctx = storage.WithTenant(ctx, tr.project)
-	secrets := s.inboundSecretsFor(tr.secretRef, tr.secretRefNext)
+	secrets := s.inboundSecretsFor(coordinator.Tenant{Project: tr.project}, tr.secretRef, tr.secretRefNext)
 	if len(secrets) == 0 {
 		return InboundResult{}, ErrInboundNotAvailable // a set-but-unresolvable ref: no oracle, log server-side
 	}
@@ -302,7 +303,13 @@ func (s *TriggerStore) resolveInboundTrigger(ctx context.Context, triggerID stri
 // inboundSecretsFor redeems the trigger's 1-2 active source-secret handles to bytes via the resolver. A
 // ref that fails to resolve is skipped (a rotation may reference a not-yet-provisioned secret); the caller
 // treats an empty result as unavailable. Secret bytes never leave this call.
-func (s *TriggerStore) inboundSecretsFor(ref, refNext string) [][]byte {
+//
+// THE TENANT IS THE TRIGGER'S OWN, and it is passed rather than assumed because until 000006 there was
+// nothing to pass: the resolver ran installation-wide, so a trigger in one project verified against a
+// signing secret any project could have provisioned. IngestInbound has already resolved it from the
+// trigger id and scoped ctx with it one line above the call — the route is unauthenticated, but by this
+// point the request IS that tenant's work.
+func (s *TriggerStore) inboundSecretsFor(tenant coordinator.Tenant, ref, refNext string) [][]byte {
 	if s.inboundSecrets == nil {
 		return nil
 	}
@@ -311,7 +318,7 @@ func (s *TriggerStore) inboundSecretsFor(ref, refNext string) [][]byte {
 		if r == "" {
 			continue
 		}
-		if b, err := s.inboundSecrets(r); err == nil && len(b) > 0 {
+		if b, err := s.inboundSecrets(tenant, r); err == nil && len(b) > 0 {
 			out = append(out, b)
 		}
 	}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/palgroup/palai/adapters/integrations/mcp"
 	remotehttp "github.com/palgroup/palai/adapters/tools/http"
+	"github.com/palgroup/palai/packages/coordinator"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 	"github.com/palgroup/palai/storage"
 )
@@ -22,9 +23,10 @@ type RemoteInvoker interface {
 }
 
 // SecretResolver bridges a tool_revision.secret_ref handle to the signing-secret bytes at invoke time
-// (the org-scoped file-secret bridge, spec §28.4). It mirrors main.go's webhook/inbound resolvers; the
+// (spec §28.4). It mirrors main.go's webhook/inbound resolvers and, like them, has two halves since 000006:
+// the DB store resolves for the tenant this seam is given, the env-file fallback is deployment-global. The
 // bytes are resolved fresh per invoke and never held in the binder closure.
-type SecretResolver func(ref string) ([]byte, error)
+type SecretResolver func(tenant coordinator.Tenant, ref string) ([]byte, error)
 
 // SetRemoteInvoker wires the remote_http executor + its secret resolver (E12 T4). A nil invoker keeps the
 // binder-less behaviour: a remote_http revision is creatable but not resolvable/advertised (the T2
@@ -137,7 +139,8 @@ func (s *Store) LookupTool(ctx context.Context, project, runID, name string) (to
 
 // remoteExec binds a remote_http revision to the signed HTTP executor. The closure holds only NON-secret
 // wiring (URL, self-host flag, revision identity, timeout); the signing secret is resolved fresh per
-// invoke through the org-scoped resolver and never captured. The tool_call_id + live fence arrive on
+// invoke through the TENANT-scoped resolver and never captured. That said "org-scoped" while the resolver
+// behind it reached the whole installation; 000006 is what made the adjective true. The tool_call_id + live fence arrive on
 // ExecEnv (broker per-call), so the invoke keys its Idempotency-Key and stamps its operation row.
 func (s *Store) remoteExec(name, canonical string, revisionNumber int, configJSON []byte, secretRef *string, timeoutMS *int) func(context.Context, toolbroker.ExecEnv, map[string]any) (map[string]any, error) {
 	return func(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
@@ -151,7 +154,11 @@ func (s *Store) remoteExec(name, canonical string, revisionNumber int, configJSO
 		if ref == "" {
 			return nil, fmt.Errorf("remote_http tool %q has no secret_ref (a signed transport needs a secret)", name)
 		}
-		secret, err := s.remoteSecret(ref)
+		// env.Scope.Project rather than the project this closure was BUILT with: both are the run's, and
+		// taking it off the ExecEnv means the tenant a credential is redeemed for is the one the broker is
+		// executing under at this instant, not one captured at lookup time. Until 000006 neither was
+		// passed, because the resolver had nowhere to put it.
+		secret, err := s.remoteSecret(coordinator.Tenant{Project: env.Scope.Project}, ref)
 		if err != nil {
 			return nil, fmt.Errorf("resolve remote tool secret for %q: %w", name, err)
 		}
@@ -206,7 +213,7 @@ func (s *Store) mcpTool(ctx context.Context, project, runID, name, description s
 		// The connection is not in the run's rider (or is disabled / out of tenant) — capability ceiling.
 		return toolbroker.Tool{}, false, nil
 	}
-	cc := connConfig(conn)
+	cc := connConfig(project, conn)
 	if timeoutMS != nil {
 		cc.TimeoutMS = *timeoutMS
 	}
@@ -219,7 +226,7 @@ func (s *Store) mcpTool(ctx context.Context, project, runID, name, description s
 		ReplayClass:  toolbroker.ReplayClass(replayClass),
 		Exec: func(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
 			return s.mcp.Call(ctx, mcp.CallScope{
-				Project: env.Scope.Project,
+				Project:   env.Scope.Project,
 				SessionID: env.Scope.SessionID, ResponseID: env.Scope.ResponseID,
 				RunID: env.Scope.RunID, CallID: string(env.CallID),
 			}, cc, remoteName, args)

@@ -14,6 +14,7 @@ import (
 	"github.com/palgroup/palai/adapters/sandboxes/posture"
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
+	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
@@ -31,6 +32,12 @@ import (
 // What SURVIVES and is asserted here: the five namespaces are still DISTINCT, so a webhook-bridged ref
 // cannot satisfy a remote-tool lookup. That was the other half of the original test and it is the half
 // this deployment still has.
+// canaryTenant is the tenant every resolver call below is made on behalf of. This file is about the
+// ENV-FILE half of the bridge — which namespace prefix reads which file — and that half is keyed on the
+// ref alone, so the value is immaterial to the claim. It is a named constant rather than an inline
+// literal so nobody reads a bare struct here as a tenant assertion.
+var canaryTenant = coordinator.Tenant{Project: "prj_env_bridge_canary"}
+
 func TestSecretResolverNamespacesAreNonInterchangeable(t *testing.T) {
 	dir := t.TempDir()
 	secretFile := filepath.Join(dir, "b.secret")
@@ -40,20 +47,20 @@ func TestSecretResolverNamespacesAreNonInterchangeable(t *testing.T) {
 	t.Setenv("PALAI_REMOTE_TOOL_SECRET_FILE_"+secretEnvKey("sig-ref"), secretFile)
 	t.Setenv("PALAI_WEBHOOK_SECRET_FILE_"+secretEnvKey("only-webhook"), secretFile)
 
-	if _, err := remoteToolSecretResolver("only-webhook"); err == nil {
+	if _, err := remoteToolSecretResolver(canaryTenant, "only-webhook"); err == nil {
 		t.Fatal("the remote-tool resolver read a WEBHOOK-namespaced secret — namespaces must be non-interchangeable")
 	}
-	if _, err := webhookSecretResolver("sig-ref"); err == nil {
+	if _, err := webhookSecretResolver(canaryTenant, "sig-ref"); err == nil {
 		t.Fatal("the webhook resolver read a REMOTE-TOOL-namespaced secret — namespaces must be non-interchangeable")
 	}
-	got, err := remoteToolSecretResolver("sig-ref")
+	got, err := remoteToolSecretResolver(canaryTenant, "sig-ref")
 	if err != nil {
 		t.Fatalf("the remote-tool resolver failed on its own bridged ref: %v", err)
 	}
 	if string(got) != "rtsec_shared" {
 		t.Fatalf("resolved secret = %q, want rtsec_shared", got)
 	}
-	if _, err := remoteToolSecretResolver("never-bridged"); err == nil {
+	if _, err := remoteToolSecretResolver(canaryTenant, "never-bridged"); err == nil {
 		t.Fatal("an unbridged ref must fail rather than resolve something else")
 	}
 }
@@ -80,10 +87,10 @@ func TestArtifactGCGraceFloorsTinyValue(t *testing.T) {
 // names a ref resolves NOTHING — and that is an error, never a silent fall-back to the deployment-global
 // GitHub App credential the tenant did not choose.
 func TestRepositoryConnectionSecretFailsClosed(t *testing.T) {
-	if _, err := repositoryConnectionSecret("github-conn"); err == nil {
+	if _, err := repositoryConnectionSecret(canaryTenant, "github-conn"); err == nil {
 		t.Fatal("resolved a connection ref with no secret store configured; want fail-closed")
 	}
-	if _, err := repositoryConnectionSecret(""); err == nil {
+	if _, err := repositoryConnectionSecret(canaryTenant, ""); err == nil {
 		t.Fatal("resolved an empty ref; want an error")
 	}
 }

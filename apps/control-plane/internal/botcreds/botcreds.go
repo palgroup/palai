@@ -18,6 +18,7 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
+	"github.com/palgroup/palai/packages/coordinator"
 )
 
 // refSuffix is the convention: a config key ending in it names a sealed secret rather than holding a
@@ -34,9 +35,14 @@ type Registry interface {
 }
 
 // Secrets is the redemption seam; *identity.SecretStore satisfies it. ok=false means no secret is sealed
-// under that name in this installation — a configuration fact, not an error.
+// under that name FOR THIS TENANT — a configuration fact, not an error.
+//
+// It said "in this installation" and that was accurate until 000006: the store resolved under
+// storage.WithInstallationScope, so a bot in project A and a bot in project B naming the same handle
+// redeemed the same bytes. The tenant argument is what makes the sentence above narrower than the
+// installation, and ResolveBotCredentials passes the caller's verified scope into it.
 type Secrets interface {
-	Resolve(ctx context.Context, name string) ([]byte, bool, error)
+	Resolve(ctx context.Context, tenant coordinator.Tenant, name string) ([]byte, bool, error)
 }
 
 // Resolver implements api.BotCredentials.
@@ -85,7 +91,7 @@ func (r *Resolver) ResolveBotCredentials(ctx context.Context, scope middleware.S
 			result.Unresolved = append(result.Unresolved, h.key)
 			continue
 		}
-		value, ok, err := r.secrets.Resolve(ctx, h.name)
+		value, ok, err := r.secrets.Resolve(ctx, coordinator.Tenant{Project: scope.Project}, h.name)
 		if err != nil {
 			// Named by CONFIG KEY. The wrapped error still carries the secret's name (the store puts it
 			// there) and that is fine internally — a name is not a value — but the key is what an operator

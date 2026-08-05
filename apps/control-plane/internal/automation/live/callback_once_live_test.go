@@ -181,7 +181,7 @@ func TestLiveCallbackOnce(t *testing.T) {
 	// The supervised loops in production; here we tick the sweep + pump directly until the callback settles.
 	pump := automation.NewWebhookPump(webhookStore,
 		webhook.NewSender(webhook.WithTLSConfig(&tls.Config{RootCAs: certs})),
-		func(ref string) ([]byte, error) {
+		func(_ coordinator.Tenant, ref string) ([]byte, error) {
 			if ref == "cbref" {
 				return signingSecret, nil
 			}

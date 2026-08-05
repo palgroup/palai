@@ -94,6 +94,12 @@ func (o *Operations) Timeout(ctx context.Context, operationID string) error {
 
 // CallbackRow is the verify-before-persist inputs the callback endpoint reads for an operation id.
 type CallbackRow struct {
+	// Project is the operation's OWNING tenant, read off the stored row. The callback arrives
+	// unauthenticated — its auth IS the HMAC token — so there is no scope on the request to take a tenant
+	// from, and the row is the only trustworthy source. Since 000006 the signing secret behind SecretRef
+	// lives inside one project, so verifying the signature requires knowing which; before it, this field
+	// would have selected nothing, which is why the row did not carry it.
+	Project    string
 	SecretRef  string
 	TokenHash  string
 	State      string
@@ -106,7 +112,7 @@ func (o *Operations) ForCallback(ctx context.Context, operationID string) (Callb
 	ctx = storage.WithSystemScope(ctx) // callback/prober path: keyed by opaque operation id, tenant not yet established (auth is the HMAC token)
 	var row CallbackRow
 	err := o.pool.QueryRow(ctx, storage.Query("RemoteOperationForCallback"), operationID).
-		Scan(&row.SecretRef, &row.TokenHash, &row.State, &row.ResultHash)
+		Scan(&row.Project, &row.SecretRef, &row.TokenHash, &row.State, &row.ResultHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CallbackRow{}, false, nil
 	}

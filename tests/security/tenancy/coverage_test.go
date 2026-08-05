@@ -30,19 +30,18 @@ import (
 
 // installationWideOnly are the tables the sweep below finds row-level secured with NO project_id — the
 // shape no catalogue-driven policy rule could have reached, so each needs a decision recorded by hand.
-// Three of the four are installation-wide, which is what names the list; `projects` is the exception and
-// says so at its own entry. A.2 Task 3 found them by sweeping for organization_id with no
-// project_id; A.2 Task 6 removed the organization and 000066 keys them where the sweep said they were.
 //
-// THE COST IS NAMED HERE BECAUSE THIS IS THE LIST A READER CHECKS. While organizations existed these tables
-// had a real boundary and an installation could hold two tenants apart on them. It cannot any more: within
-// one installation every project reads every row of these three. That is exactly today's observable
-// behaviour (one installation has held one organization since A.2 Task 1), and it is acceptable only under
-// Palai's post-A.2 model of one installation per customer. An installation that ever hosts two customers
-// needs project_id on these tables FIRST.
+// IT HELD FOUR ENTRIES AND NOW HOLDS TWO, AND THE PARAGRAPH THAT LEFT WITH THEM IS WORTH QUOTING BECAUSE
+// IT WAS ACTED ON. It read: "within one installation every project reads every row of these three … an
+// installation that ever hosts two customers needs project_id on these tables FIRST." Migration 000006 is
+// that work. secret_refs, environments and environment_values left this list: the first two are keyed on
+// their own project_id, and environment_values resolves its PARENT's, so it moved to parentResolved above
+// rather than out of the sweep.
 //
 // A NEW table that lands here unnamed is what this allowlist exists to catch: it forces the same three-way
-// decision (project column / installation-wide / drop) rather than letting it slide as an accident.
+// decision (project column / installation-wide / drop) rather than letting it slide as an accident. That
+// the list SHRANK is the evidence it did its job — an allowlist entry is a recorded debt, not a permanent
+// exemption, and this is what paying one looks like.
 // parentResolved are the tables the same sweep finds secured with no project_id of their own, whose
 // policy resolves their PARENT's project through an EXISTS instead (000029 wrote them that way, 000066
 // re-keyed them onto project). They are NOT installation-wide and must not be listed as such — every one
@@ -62,18 +61,14 @@ var parentResolved = map[string]bool{
 	"model_route_revisions": true,
 	// schedule_occurrences (000022) -> schedules.
 	"schedule_occurrences": true,
+	// environment_values -> environments (000006). It arrived here from installationWideOnly rather than
+	// from nowhere: it holds no project_id because its FK to environments(id) ON DELETE CASCADE already
+	// answers the question once, and a second copy of one fact is what this tree refuses. It is the FIFTH
+	// child the paragraph above said should stop a build — it did not, because it is named here.
+	"environment_values": true,
 }
 
 var installationWideOnly = map[string]bool{
-	// secret_refs (000031) — the secret store fronting the env-file bridge (identity.SecretStore.Resolve).
-	// A.2 Task 6's 000066 keys it on the INSTALLATION: with organizations gone and no project_id column,
-	// there is nothing narrower left. TestSecretRefNamesAreInstallationWide is the executable form.
-	"secret_refs": true,
-	// environments, environment_values (000046) — an agent's named env-var groups, the same posture and
-	// the same 000066 decision. TestEnvironmentsAreInstallationWide and
-	// TestInstallationWideTablesAreVisibleToEveryTenant assert it in both directions.
-	"environments":       true,
-	"environment_values": true,
 	// projects — NOT installation-wide, and it is on this list because the list's QUESTION is narrower than
 	// its name: the sweep asks "carries organization_id, carries no project_id, so no catalogue-driven rule
 	// could have reached it — was that decided?", and for projects the answer is yes and it is the

@@ -201,23 +201,28 @@ func (s *Store) PublishRevision(ctx context.Context, project, revisionID string)
 	return s.publish(ctx, "PublishAgentRevision", "AgentRevisionPublished", revisionID, project)
 }
 
-// verifyEnvironment refuses an `environment` that names no row in the caller's organization. An EMPTY
-// environment is the no-environment case and always passes — that is every revision that existed before
-// migration 000046, and the column's DEFAULT ” is what makes it representable without a nullable FK.
+// verifyEnvironment refuses an `environment` that names no row THE CALLER CAN SEE. An EMPTY environment is
+// the no-environment case and always passes — that is every revision written before environments existed,
+// and the column's DEFAULT empty string is what makes it representable without a nullable FK.
 //
-// THE READ IS INSTALLATION-SCOPED SINCE A.2 T6's 000066, and the previous sentence here is corrected
-// rather than trimmed. It claimed "a foreign environment id is invisible under RLS and refused as absent…
-// an operator must not learn from an error message that an id exists in another tenant". environments
-// carries no project_id (000046, the secret_refs posture of 000031:16) and organizations are gone, so its
-// policy keys on the installation: every environment id in the installation is visible here, and this
-// check answers "does it exist" rather than "does it exist in your tenant". Within one installation those
-// are the same question; across two customers sharing one, they are not — which is why 000066's header
-// names this table as needing a project_id BEFORE such an installation exists.
+// IT RAN UNDER storage.WithInstallationScope AND THE OVERRIDE IS NOW DELETED, which is the whole change
+// here. Both callers scope ctx to the project on their first line (ScopeToTenant), so the override was
+// actively WIDENING a context that already carried the right answer. Its own doc said so plainly, and was
+// right for its phase: "every environment id in the installation is visible here, and this check answers
+// 'does it exist' rather than 'does it exist in your tenant'". 000006 gives environments a project_id, so
+// those are the same question again and the inherited scope asks it.
+//
+// WHAT THAT BUYS, precisely: a revision can no longer PIN another project's environment id. That was
+// reachable — an operator who learned an id could publish a revision naming it — and the run would then
+// have resolved that environment's keys. It is refused as absent, and absent is also what an id that does
+// not exist returns, so the error discloses nothing either way.
+//
+// It still passes an environment whose project_id is the pre-000006 empty string, because that policy arm
+// admits every scope. That is the migration's stated residue, not a hole opened here.
 func (s *Store) verifyEnvironment(ctx context.Context, environment string) error {
 	if environment == "" {
 		return nil
 	}
-	ctx = storage.WithInstallationScope(ctx)
 	switch err := s.pool.QueryRow(ctx, storage.Query("EnvironmentExists"), environment).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return fmt.Errorf("%w: %q", ErrEnvironmentNotFound, environment)
