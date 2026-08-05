@@ -508,6 +508,58 @@ Official publication contracts checked 2026-08-05:
 the two bootstrap inputs, then `brew services start palai`; Fleet shows the same machine after a service
 restart and a formula upgrade. T10 repeats this from the public `palai/tap` location.
 
+#### T7b — `install.sh`, because a provisioner is not a person
+
+**Homebrew is the human path and it cannot be the fleet path.** A freshly booted cloud Mac may have no
+Homebrew at all; installing it first is a second unattended installer with its own prompts, its own
+prefix and its own update schedule. An autoscaler that waits for `brew` has made a package manager part
+of its critical path. So the fleet path is one script and one manifest, and Homebrew stays for the
+person installing on their own laptop.
+
+**Contract**
+
+```sh
+curl -fsSL https://<host>/install.sh | sh          # latest stable
+PALAI_VERSION=1.4.2 curl -fsSL … | sh              # pinned, which is what an image bake uses
+```
+
+It installs the **binary only**. It never enrols, never asks for a key, never writes a service unit —
+those are `palai enroll`'s job (§3.2), and keeping them apart is what lets an image be baked with no
+secret in it and enrolled later from provider user-data.
+
+**Requirements, each one a defence against a measured failure rather than a style preference**
+
+- **The whole script is one `main` function invoked on the last line.** A download truncated mid-flight
+  otherwise executes the half it received. This is the single most valuable line in the pattern and it
+  is why Tailscale's installer is written that way.
+- **It verifies a checksum it did not get from the artifact.** The manifest is fetched separately from
+  the archive, and T10's release job already produces digests; the script refuses on mismatch rather
+  than warning. A checksum served beside the file it protects, by the same credential, protects nothing.
+- **It is not interactive and does not elevate.** No prompt, no `sudo`. `accounts` mode's one
+  administrator action stays explicit and separate (§3.5).
+- **It pins and reports what it installed** — version, digest, install path, target triple — so a fleet
+  of a hundred machines can be asked what they are running without logging into any of them.
+- **It is idempotent**: running it twice leaves one binary and does not disturb an enrolled identity or
+  a running service.
+- **It refuses an unsupported OS/arch by name**, rather than installing a binary that cannot run.
+
+**Two consumers, and the plan owes both**
+
+| Consumer | Path |
+|---|---|
+| A person with a Mac | Homebrew tap (T7), or `install.sh` if they prefer |
+| A provisioner / autoscaler | Bake `install.sh --version <pinned>` into the image, **or** run it from user-data. The pool key never enters the image; it arrives at boot through the provider's secret mechanism and `enroll` consumes it (T11) |
+
+**Likely files:** `scripts/install/install.sh`, the release job that publishes it beside the manifest,
+a test that runs it against a local file server with a corrupted archive, a truncated download and an
+unsupported arch.
+
+**Acceptance:** In a clean container/VM with no Palai anything, the script installs a pinned version
+whose digest matches the manifest; a corrupted archive and a truncated script both refuse; a second run
+changes nothing. Note that `deploy/airgap/install.sh` already exists and serves the air-gapped **server**
+bundle — this is a different artifact for a different consumer and T0 must say so in both files, or the
+next reader will assume one supersedes the other.
+
 ### T8 — Turn `@palai/sdk` into a real npm package
 
 **Goal:** A normal TypeScript/JavaScript consumer can install and use the SDK without repository tooling.
@@ -542,6 +594,18 @@ Official npm contracts checked 2026-08-05:
 
 **External owner gate:** the `@palai` npm scope/package and trusted-publisher binding must exist. Ask for
 this setup only when the dry-run, packed consumer and release approval gates are green.
+
+**There is no npm token to store, and that is deliberate.** The obvious shape is an automation token in
+a CI secret; this plan does not use one. npm trusted publishing exchanges the workflow's short-lived
+OIDC identity for publish rights at the moment of publication, so the repository holds **no long-lived
+credential that can be exfiltrated from a log, a fork or a compromised action**. The owner binds the
+package to this repository and workflow once, in npm's settings, and never hands over a secret. It also
+produces provenance, which is what lets a consumer verify the tarball came from this commit rather than
+from someone's laptop — and "never publish from a workstation" (T10) is only enforceable because of it.
+
+If the scope binding turns out to be unavailable for the chosen npm plan, the fallback is a granular
+automation token scoped to that one package, stored in the protected release environment only, and the
+plan records that as a **downgrade with a named reason** rather than swapping it in silently.
 
 **Acceptance:** Install the packed tarball into an empty directory and run a real response/session against
 the self-host. T10 repeats the same consumer test against the registry version and verifies provenance.
