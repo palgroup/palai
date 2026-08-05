@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -245,8 +246,27 @@ func TestNativeEnvironmentHasNoDuplicateKeys(t *testing.T) {
 }
 
 // TestNativeStopKillsTheProcessGroupAndClearsTheRecord is item 3: a `palai local down` that leaves
-// a control plane holding the runner port is worse than one that never started. The child here is a
-// real process in its own group with a real child of its own.
+// a control plane holding the runner port is worse than one that never started.
+//
+// THE STAND-IN IS A LEADER THAT DIES ON SIGTERM AND A CHILD THAT OUTLIVES IT, which is the case the
+// production comment names (a compiler still running under a reaped parent) and the case this test
+// could not previously reach. It used to be `sleep 120 & sleep 120`: both children took the group
+// SIGTERM and died within milliseconds of the leader, so whether the code waited for the LEADER or for
+// the GROUP made no difference except under load — which is exactly how it behaved, passing 11 of 11
+// runs in isolation and failing about half the full-tree runs at `-count=1` (measured 2026-08-05).
+// A test whose verdict is decided by the machine's load is not measuring the product.
+//
+// The child now IGNORES SIGTERM (`trap ” TERM` in a subshell, which SIG_IGN carries across the exec
+// into `sleep`) and exits on its own shortly after, while the LEADER keeps the default disposition and
+// dies at once. Measured on Darwin 25.3.0: at +100ms the leader is `Z <defunct>` and the child is still
+// `S`; by +500ms the group is empty but for the unreaped leader. So the two implementations are
+// separated with no timing luck: waiting for the LEADER returns at ~100ms with the child still running
+// (deterministically red), waiting for the GROUP returns at ~500ms with it gone (deterministically
+// green, well inside nativeStopGrace).
+//
+// The leader is deliberately ALIVE when stopNative is called, because that is the product's own
+// sequence — the control plane is running when `palai local down` reaches it. See the note on the
+// `!running` branch in native.go for the case where it is not.
 func TestNativeStopKillsTheProcessGroupAndClearsTheRecord(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("PALAI_HOME", home)
@@ -254,7 +274,7 @@ func TestNativeStopKillsTheProcessGroupAndClearsTheRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve paths: %v", err)
 	}
-	cmd := exec.Command("/bin/sh", "-c", "sleep 120 & sleep 120")
+	cmd := exec.Command("/bin/sh", "-c", "(trap '' TERM; sleep 0.6) & sleep 120")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start the stand-in process: %v", err)
@@ -263,6 +283,11 @@ func TestNativeStopKillsTheProcessGroupAndClearsTheRecord(t *testing.T) {
 	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
 	if err := writeNativeRecord(p, pid, "/bin/sh"); err != nil {
 		t.Fatalf("write the pid record: %v", err)
+	}
+	// NON-VACUITY: the straggler must actually be there when the stop begins, or "the group went down"
+	// is a sentence about an empty group and the assertions below prove nothing.
+	if !groupIsRunning(t, pid) {
+		t.Fatal("the stand-in group was already gone before stopNative ran; this test would then assert nothing")
 	}
 
 	stopped, err := stopNative(p)
@@ -275,9 +300,69 @@ func TestNativeStopKillsTheProcessGroupAndClearsTheRecord(t *testing.T) {
 	if _, err := os.Stat(p.nativePID); !os.IsNotExist(err) {
 		t.Fatalf("the pid record survived the stop (%v): the next `up` would refuse against a process that is gone", err)
 	}
-	if err := syscall.Kill(-pid, 0); err == nil {
-		t.Fatal("the process group is still alive after stopNative")
+	if groupIsRunning(t, pid) {
+		t.Fatal("a process from the group is still running after stopNative — the parent was reaped and its child kept going, " +
+			"which is the leak stopNative's own comment says it closes")
 	}
+}
+
+// TestNativeStopEscalatesToSIGKILLWhenTheGroupIgnoresSIGTERM covers the branch a ten-second grace makes
+// unreachable in an ordinary test, and an unreachable branch is one nothing measures. The child ignores
+// SIGTERM and never exits on its own, so the ONLY way this returns is the escalation.
+func TestNativeStopEscalatesToSIGKILLWhenTheGroupIgnoresSIGTERM(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PALAI_HOME", home)
+	p, err := resolvePaths()
+	if err != nil {
+		t.Fatalf("resolve paths: %v", err)
+	}
+	prev := nativeStopGrace
+	nativeStopGrace = 300 * time.Millisecond
+	t.Cleanup(func() { nativeStopGrace = prev })
+
+	cmd := exec.Command("/bin/sh", "-c", "(trap '' TERM; sleep 120) & sleep 120")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the stand-in process: %v", err)
+	}
+	pid := cmd.Process.Pid
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+	if err := writeNativeRecord(p, pid, "/bin/sh"); err != nil {
+		t.Fatalf("write the pid record: %v", err)
+	}
+	if !groupIsRunning(t, pid) {
+		t.Fatal("the stand-in group was already gone before stopNative ran")
+	}
+
+	if _, err := stopNative(p); err != nil {
+		t.Fatalf("stopNative: %v", err)
+	}
+	if groupIsRunning(t, pid) {
+		t.Fatal("a SIGTERM-ignoring process survived stopNative: the grace expired and nothing escalated to SIGKILL")
+	}
+	if _, err := os.Stat(p.nativePID); !os.IsNotExist(err) {
+		t.Fatalf("the pid record survived a successful escalation (%v)", err)
+	}
+}
+
+// groupIsRunning asks `ps` directly rather than calling the production helper, so a bug in that helper
+// is visible here instead of being asserted with itself. It applies the same zombie rule, and it must:
+// measured on Darwin 25.3.0 2026-08-05, a group whose only member is an unreaped zombie leader answers
+// EPERM to `kill(-pgid, 0)` — non-nil, which the ORIGINAL form of this assertion read as "gone". That
+// happened to be the right verdict for the wrong reason, and it could not tell an empty group from one
+// it merely lacked permission to signal.
+func groupIsRunning(t *testing.T, pgid int) bool {
+	t.Helper()
+	out, err := exec.Command("ps", "-o", "state=", "-g", strconv.Itoa(pgid)).Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if state := strings.TrimSpace(line); state != "" && !strings.HasPrefix(state, "Z") {
+			return true
+		}
+	}
+	return false
 }
 
 // TestNativeStopRefusesAPidThatIsNotTheControlPlane is the pid-reuse guard. A stale record plus a

@@ -418,26 +418,101 @@ func stopNative(p paths) (bool, error) {
 		return false, fmt.Errorf("%s records pid %d as the control plane (%s) but that pid is running %q — refusing to kill it. "+
 			"Fix: the process is gone and its pid was reused; delete %s", p.nativePID, pid, bin, comm, p.nativePID)
 	case !running:
-		// Already gone (a crash, a reboot). Clearing the record is the whole job.
+		// Already gone (a crash, a reboot). Clearing the record is the whole job — FOR THE LEADER, and
+		// that qualifier is a gap this branch does not close rather than a description of one it does.
+		//
+		// A crashed control plane that left an `xcodebuild` behind has a LIVE group under a DEAD leader,
+		// and this returns without signalling it. That is the same leak the group wait below closes, at
+		// an earlier line, and it was found by the test fixture written for that one: a stand-in whose
+		// leader exits first never reaches the signal at all.
+		//
+		// IT IS NAMED HERE RATHER THAN FIXED because the fix has a real damage mode and no evidence to
+		// choose with. Tearing down the group would mean signalling a pgid whose leader is gone, and the
+		// pid-reuse guard above cannot cover it: it works by matching the leader's binary, and after a
+		// reboot this record may name a pid some unrelated process now leads. The orphan we want to kill
+		// is `xcodebuild`, not the control-plane binary, so a binary match on the SURVIVORS refuses
+		// exactly the case it would exist for. Doing this safely needs the record to carry something
+		// that does not survive a reboot (a boot id), which is a change to what `up` writes, not to what
+		// `down` reads.
 		return false, os.Remove(p.nativePID)
 	}
-	// The GROUP, not the pid: an `xcodebuild` this control plane spawned is a child of it, and a
-	// reaped parent that leaves a compiler running is the leak the host executor's own kill closes.
+	// The GROUP, not the pid: an `xcodebuild` this control plane spawned is a child of it, and a reaped
+	// parent that leaves a compiler running is the leak the host executor's own kill closes.
+	//
+	// COUNTING WHICH HALVES OF THAT SENTENCE THE CODE ACTUALLY HAD, because until 2026-08-05 it had one
+	// of three. The SIGNAL went to the group and always did. The WAIT watched the LEADER — so this
+	// function returned as soon as the parent was gone, which is the exact moment the sentence above
+	// calls the leak. And the escalating SIGKILL fired only when the LEADER outlived the grace, so a
+	// parent that died promptly while its child kept building was never escalated against at all.
+	// Now all three are the group: signal, wait, escalate — and the escalation is waited on too, since
+	// returning straight after SIGKILL is the same defect with a shorter fuse.
 	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
 		return false, fmt.Errorf("stop the native control plane (pid %d): %w", pid, err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	if !waitForGroupToExit(pid, nativeStopGrace) {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		if !waitForGroupToExit(pid, nativeKillGrace) {
+			// The record is deliberately LEFT: a teardown that cannot confirm the group is gone must not
+			// clear the thing that makes the next `up` refuse rather than race a survivor for the port.
+			return true, fmt.Errorf("process group %d still holds a running process after SIGKILL; %s is left "+
+				"in place so the next `up` refuses rather than starting beside it", pid, p.nativePID)
+		}
+	}
+	return true, os.Remove(p.nativePID)
+}
+
+// nativeStopGrace is how long the group is given to go down on SIGTERM, and nativeKillGrace how long the
+// SIGKILL is given to take effect. They are vars rather than consts for one reason: the escalation branch
+// is unreachable in a test that has to wait ten seconds for it, and an unreachable branch is one nothing
+// measures. Production never writes them.
+var (
+	nativeStopGrace = 10 * time.Second
+	nativeKillGrace = 2 * time.Second
+)
+
+// waitForGroupToExit polls until no RUNNING process remains in the group, or the grace expires. It
+// reports whether the group went down.
+func waitForGroupToExit(pgid int, grace time.Duration) bool {
+	deadline := time.Now().Add(grace)
 	for {
-		if running, _ := processCommand(pid); !running {
-			break
+		if !groupHasRunningProcess(pgid) {
+			return true
 		}
 		if time.Now().After(deadline) {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-			break
+			return false
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return true, os.Remove(p.nativePID)
+}
+
+// groupHasRunningProcess asks whether the process GROUP still holds something that is running. It is the
+// group-wide form of processCommand's question and it applies processCommand's ZOMBIE rule for the same
+// reason: a zombie is a pid slot waiting to be reaped, not a process holding a port or a compiler open.
+//
+// THE OBVIOUS PRIMITIVE DOES NOT WORK HERE AND THAT WAS MEASURED, not assumed. `syscall.Kill(-pgid, 0)`
+// reads like the right question and answers it wrongly on this platform: measured on Darwin 25.3.0
+// 2026-08-05, a group whose only remaining member is an unreaped zombie leader answers EPERM — not
+// ESRCH — for as long as nobody reaps it, and nothing reaps the native control plane, because `palai up`
+// starts it detached and no parent is left to Wait. A loop waiting for ESRCH would therefore spend the
+// whole grace and then escalate against a group that had already gone quiet. Reading `ps` state and
+// treating `Z` as gone is the same question this file already asks one pid at a time.
+//
+// CEILING, stated rather than hidden: a `ps` that fails for any reason reads as "gone", which is
+// processCommand's behaviour too. There is no second signal here that distinguishes an empty group (ps
+// exits 1 with no output) from a broken ps, so the honest thing is to match the file's existing rule
+// rather than invent a distinction this cannot actually make.
+func groupHasRunningProcess(pgid int) bool {
+	out, err := exec.Command("ps", "-o", "state=", "-g", strconv.Itoa(pgid)).Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		state := strings.TrimSpace(line)
+		if state != "" && !strings.HasPrefix(state, "Z") {
+			return true
+		}
+	}
+	return false
 }
 
 // writeNativeRecord records what was started: the pid on the first line, the binary on the second.
