@@ -82,8 +82,9 @@ func (h *artifactsHarness) touchSession(t *testing.T, session string) {
 }
 
 // retireCandidate takes a workspace out of the idle sweep's candidate set PERMANENTLY, by recording the one
-// fact that stops being true when a test ends: `IdleWorkspacesForRelease` requires `a.host_path <> ''` on
-// the workspace's current allocation, and the directory these fixtures point at is a t.TempDir that Go
+// fact that stops being true when a test ends: `IdleWorkspacesForRelease` requires a NON-EMPTY
+// `a.host_path` on the workspace's current allocation, and the directory these fixtures point at is a
+// t.TempDir that Go
 // removes on the way out. An allocation row still naming a path that no longer exists is the lie; blanking
 // it is not fixture bookkeeping but the truth, and it is the same thing the release path itself records
 // when it hands a machine back.
