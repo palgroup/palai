@@ -100,12 +100,12 @@ host it is a child of the control-plane process, so without an explicit list it 
 operator's own environment: `SLACK_BOT_TOKEN`, `PALAI_GITHUB_APP_*`, the master key, cloud
 credentials.
 
-The command receives exactly these six, and **nothing else** — three **inherited** from the control
-plane, three **derived** from the run's own workspace allocation:
+The command receives exactly these seven, and **nothing else** — three **inherited** from the control
+plane, four **derived** from the run's own workspace allocation:
 
 ```
 inherited:  PATH  LANG  DEVELOPER_DIR
-derived:    HOME  TMPDIR  PALAI_SIMCTL_SET
+derived:    HOME  TMPDIR  PALAI_SIMCTL_SET  PALAI_DERIVED_DATA
 ```
 
 The inherited half is built *from* that list rather than filtered *against* a deny-list, so a
@@ -114,11 +114,16 @@ fails on any name outside the list). A variable unset on the control plane is un
 too — never defaulted.
 
 The derived half is §2's per-session separation, and it points at
-`<allocation>/.palai-session/{home,tmp,simulators}`. Two runs at once get two of each
+`<allocation>/.palai-session/{home,tmp,simulators,derived}`. Two runs at once get two of each
 (`TestHostShellGivesConcurrentAllocationsDisjointSessionDirectories`,
 `TestNativeShellPostureSeparatesConcurrentSessionsOnOneMac`). They are **created by the runner**, so
 a variable never points at a directory that does not exist; a directory that cannot be created is an
 error rather than a fallback to the operator's own.
+
+**The last two are ADVISORY and the first two are not**, and §2.1 is why: `HOME` really does move
+`git`, `ssh` and every dotfile-reading tool, and it moves **nothing** in the Apple toolchain.
+`PALAI_SIMCTL_SET` and `PALAI_DERIVED_DATA` are directories the runner *offers* for argv flags it
+cannot require.
 
 Two consequences an operator should expect, both deliberate:
 
@@ -146,9 +151,9 @@ same sentence as row `MAC-P6`.
 
 The second half of that rule is now partly mechanical. Every run already had its own workspace
 allocation and ran there as its working directory; what it *also* had, until E22 T2, was the control
-plane's own `HOME` and `TMPDIR` — so two concurrent runs shared one home directory, one DerivedData,
-one set of toolchain caches, and the operator's `~/.ssh` and `~/.gitconfig` sat in it. Now each run
-gets `<allocation>/.palai-session/{home,tmp,simulators}` (§1.1).
+plane's own `HOME` and `TMPDIR` — so two concurrent runs shared one home directory, one set of
+dotfiles and one scratch space, and the operator's `~/.ssh` and `~/.gitconfig` sat in it. Now each run
+gets `<allocation>/.palai-session/{home,tmp,simulators,derived}` (§1.1).
 
 **The question that decided the design (E22 X20) was measured before anything was built, and the
 answer was not the convenient one.**
@@ -159,18 +164,57 @@ answer was not the convenient one.**
 > (`~/Library/Developer/CoreSimulator/Devices`), was listed identically from both `HOME`s, and left
 > **nothing at all** under the scratch directory (`find` → 0 entries).
 
-The mechanism is why it will not change: `simctl` is a thin client. The device set belongs to
-`com.apple.CoreSimulator.CoreSimulatorService`, a **launchd-managed per-user XPC service** that is
-already running under the login session's own `HOME` — the calling process's `HOME` never reaches
-it.
+X20's explanation was that `simctl` is a thin client and the device set belongs to
+`com.apple.CoreSimulator.CoreSimulatorService`, a **launchd-managed per-user XPC service** already
+running under the login session's own `HOME`.
+
+### 2.2 That explanation was true and TOO NARROW — MEASURED 2026-08-05
+
+This page said, in this section, that per-session `HOME` stopped two runs from sharing "one
+DerivedData". **It does not, and it never did.** Re-measured on this machine (Darwin 25.3.0 /
+Xcode 26.6) while closing Faz A.5:
+
+```
+env HOME=<scratch> swift homeprobe.swift
+  NSHomeDirectory=/Users/salih          ← NOT the scratch directory
+  getenv(HOME)=<scratch>
+  libraryDirectory=/Users/salih/Library
+
+env HOME=<scratch> TMPDIR=<scratch>/tmp xcodebuild -scheme … -destination 'platform=macOS' build
+  ** BUILD SUCCEEDED **
+  ~/Library/Developer/Xcode/DerivedData   0 entries → 4 entries / 16 296 KB   ← the OPERATOR's home
+  find <scratch>                          1 line: the scratch directory itself
+```
+
+**`NSHomeDirectory()` reads the user record (`getpwuid`), not `$HOME`.** So the rule is not about
+CoreSimulator and not about XPC: `xcodebuild` resolves DerivedData in-process, with no service in the
+path, and lands in the login user's home just the same. Every Foundation-based Apple tool does.
+
+What `HOME` **does** move, measured the same day: `git config --global user.name` under a scratch
+`HOME` wrote `<scratch>/.gitconfig` and left the operator's file untouched (`grep -c` → 0). POSIX
+tools follow `$HOME`; the Apple toolchain does not.
+
+**The only thing that moves an Apple tool's output off a shared surface is a different uid.** That is
+what Faz A.5's session accounts buy, and it is why the operating rule's parenthesis — *or different
+uids* — is doing real work rather than hedging.
 
 So the free version of this isolation does not exist, and the fallback is the one the research
-measured (T21): `simctl --set <dir>` partitions device sets cleanly, in both directions. **But
-`--set` is an argv flag, and argv belongs to the model.** The runner rewrites no argv, so it can
-*offer* a per-session device set and can never *enforce* one. That is stated in the name of the
-proof rather than in a comment: **`TestSimctlSetIsAdvisoryNotEnforced`**, which re-runs the X20
-measurement rather than recalling it, so the day `HOME` starts partitioning device sets the test
-fails and this section is what gets fixed.
+measured (T21): `simctl --set <dir>` partitions device sets cleanly, in both directions, and
+`xcodebuild -derivedDataPath <dir>` does the same for a build tree. **But both are argv flags, and
+argv belongs to the model.** The runner rewrites no argv, so it can *offer* a per-session device set
+and build tree and can never *enforce* either. That is stated in the names of the proofs rather than
+in a comment: **`TestSimctlSetIsAdvisoryNotEnforced`** and
+**`TestDerivedDataPathIsAdvisoryTheSameWaySimctlSetIs`**, plus
+**`TestLiveMacHostHomeDoesNotRedirectDerivedData`**, which re-runs the 2026-08-05 measurement against
+a real `xcodebuild` rather than recalling it. The day `HOME` starts partitioning either one, those
+tests fail and this section is what gets fixed.
+
+**What the two advisory variables DO buy unconditionally is a remover.** Both point inside the
+allocation, and `IdleReleaser.release` / `WorkspaceRecovery` remove the allocation directory
+(`idle_release.go:182`, `workspace_recovery.go:227`). A build tree written to the operator's
+`~/Library` instead has **no remover at all** — nothing in Palai, and nothing in macOS, deletes it.
+Measured on this machine on 2026-08-05 by the operator (`du -sh ~/Library/Developer/Xcode/DerivedData`,
+emptied and re-read four hours later): **0 → 5.6 GB in four hours** of ordinary agent work.
 
 **What an agent must therefore do** — this is §5's rule, restated here because it is the operator's
 concern too:
@@ -575,9 +619,15 @@ macOS 26's `FrontBoard` on every call, and Meta's WebDriverAgent is archived.
 **Build once, test many.** `xcodebuild test` = build + run every time. Prefer:
 
 ```
-xcodebuild build-for-testing   -project X.xcodeproj -scheme S -destination 'platform=iOS Simulator,id=<udid>' -derivedDataPath DD CODE_SIGNING_ALLOWED=NO
-xcodebuild test-without-building -xctestrun DD/Build/Products/*.xctestrun -destination 'platform=iOS Simulator,id=<udid>'
+xcodebuild build-for-testing   -project X.xcodeproj -scheme S -destination 'platform=iOS Simulator,id=<udid>' -derivedDataPath "$PALAI_DERIVED_DATA" CODE_SIGNING_ALLOWED=NO
+xcodebuild test-without-building -xctestrun "$PALAI_DERIVED_DATA"/Build/Products/*.xctestrun -destination 'platform=iOS Simulator,id=<udid>'
 ```
+
+**Always pass `-derivedDataPath "$PALAI_DERIVED_DATA"` to every `xcodebuild` call**, for the same
+reason as `--set` below and with the same limit. Omit it and Xcode writes a multi-gigabyte build tree
+into the **operator's** `~/Library/Developer/Xcode/DerivedData`, shared with every other run on this
+Mac and deleted by nothing (§2.2, measured: 0 → 5.6 GB in four hours). `HOME` does **not** do this for
+you — Foundation resolves `~` from the user record, not from `$HOME`.
 
 `-destination` requires `platform`; `name`/`id` and `OS` narrow it. A **simulator build needs no
 signing identity** — measured: `** BUILD SUCCEEDED **` with `CODE_SIGNING_ALLOWED=NO`, and the
@@ -616,12 +666,15 @@ because a udid is unambiguous once the device exists.
 still *booted* when that happens leaves a `CoreSimulatorService` process holding a directory that no
 longer exists. End with `xcrun simctl --set "$PALAI_SIMCTL_SET" shutdown all`.
 
-**Your own environment is six variables** (§1.1) — `PATH`, `LANG`, `DEVELOPER_DIR` inherited, and
-`HOME`, `TMPDIR`, `PALAI_SIMCTL_SET` derived from your own workspace allocation. Anything else you
-expect to inherit is not there, and that is deliberate.
+**Your own environment is seven variables** (§1.1) — `PATH`, `LANG`, `DEVELOPER_DIR` inherited, and
+`HOME`, `TMPDIR`, `PALAI_SIMCTL_SET`, `PALAI_DERIVED_DATA` derived from your own workspace allocation.
+Anything else you expect to inherit is not there, and that is deliberate.
 
 **`HOME` is yours, not the operator's**, so nothing you write there touches another run — and nothing
-you *expect* to be there is. There is no `~/.gitconfig`, so `git commit` fails with *"Author identity
+you *expect* to be there is. **But `HOME` does not reach the Apple toolchain** (§2.2, measured):
+`xcodebuild` and `simctl` resolve `~` from the machine's user record, so their output lands in the
+operator's `~/Library` unless *your argv* says otherwise. That is what the two variables below are
+for. There is no `~/.gitconfig`, so `git commit` fails with *"Author identity
 unknown"* until your argv supplies one (`git -c user.name=… -c user.email=…`). There is no `~/.ssh`
 either. Publishing a branch is `push`/`pull_request`, not `git push` — those go through the
 repositories adapter and carry their own credentials.
@@ -637,9 +690,11 @@ message.
 | Claim | Proof |
 |---|---|
 | Environment is an allow-list, and `HOME` is **not** the operator's | `TestHostShellDropsTheOperatorsEnvironment` |
-| Two concurrent runs get disjoint `HOME`/`TMPDIR`/`PALAI_SIMCTL_SET`, and neither sees the other's files | `TestHostShellGivesConcurrentAllocationsDisjointSessionDirectories`, `TestNativeShellPostureSeparatesConcurrentSessionsOnOneMac` (`make test-component TEST=native-shell`) |
+| Two concurrent runs get disjoint `HOME`/`TMPDIR`/`PALAI_SIMCTL_SET`/`PALAI_DERIVED_DATA`, and neither sees the other's files | `TestHostShellGivesConcurrentAllocationsDisjointSessionDirectories`, `TestNativeShellPostureSeparatesConcurrentSessionsOnOneMac` (`make test-component TEST=native-shell`) |
 | **`simctl --set` is advice this runner cannot enforce**, and `HOME` does not select the device set (X20) | `TestSimctlSetIsAdvisoryNotEnforced` — the ceiling is in the NAME |
+| **`-derivedDataPath` is advice this runner cannot enforce**, and `HOME` does not redirect DerivedData either (§2.2) | `TestDerivedDataPathIsAdvisoryTheSameWaySimctlSetIs` — the ceiling is in the NAME |
 | The X20 and T21 measurements, re-run against real devices rather than recalled | `TestLiveMacHostHomeDoesNotSelectTheSimulatorDeviceSet` (`make test-live-mac`) |
+| The §2.2 measurement, re-run against a real `xcodebuild` rather than recalled | `TestLiveMacHostHomeDoesNotRedirectDerivedData` (`make test-live-mac`) |
 | A run's session directory never enters a workspace snapshot | `TestSnapshotSkipsThePerSessionDirectoryAsASubtree` |
 | A workspace root under `/private/tmp` or `/Users/Shared` is refused at bring-up, on the RESOLVED path | `TestNativeWorkspaceRootRefusesAWorldWritableParent` |
 | The operating rule is word-for-word in both operator pages, with its source and date | `TestTheMacOperatingRuleIsVerbatimInBothOperatorPages` |

@@ -419,6 +419,85 @@ func TestEveryBucketTheUIDOwnsIsFoundNotJustTheFirst(t *testing.T) {
 	}
 }
 
+// TestDeleteSweepsTheDarwinBucketAfterTheAccountAndFailsLoudlyIfItCannot is the COMPOSITION, which the
+// two tests around it do not cover: they exercise removeDarwinBuckets directly, so a Delete that never
+// called it — or called it with the wrong uid, or swallowed its error — would leave them both green.
+//
+// It matters more than it looks. Faz A.5's residue measurement found uid 701's /private/var/folders
+// bucket still on disk with its `0/ C/ T/ X/` subdirectories while `id 701` answered `no such user`,
+// and that bucket is where the Metal shader cache and the simulator scratch live — the two families
+// that survive `sysadminctl -deleteUser -secure` because they are OUTSIDE the home directory. A Delete
+// that returned success without sweeping would report the exact opposite of what happened.
+//
+// ‼️ CEILING, and it is the same one TestEveryBucketTheUIDOwnsIsFoundNotJustTheFirst carries: no test
+// here can chown a directory to uid 707, so the RemoveAll of a real session bucket is not exercised by
+// anything that runs without root. What IS pinned below is every seam around it — that the sweep is
+// reached, with the retiring record's uid, AFTER the account is gone, and that its failure becomes the
+// caller's failure.
+//
+// It also inherits one condition from the tests above rather than owning it: HomeDir is derived, not
+// injected, so Delete's post-condition needs /Users/palai-s07 to be absent. On a machine that really
+// has slot 7 provisioned these tests fail at that check — which is the honest outcome, not a flake.
+func TestDeleteSweepsTheDarwinBucketAfterTheAccountAndFailsLoudlyIfItCannot(t *testing.T) {
+	// (a) THE SWEEP IS REACHED, AND WITH AN IN-RANGE UID. foldersRoot is a regular FILE, so the read
+	// inside the sweep fails with ENOTDIR — a failure only a call that got that far can produce. And the
+	// message distinguishes the two ways it could have gone wrong: a Delete passing 0, or 501, or the
+	// slot number instead of the uid would come back with the range refusal instead.
+	notADir := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	rec := deleteScript(goodMarker())
+	a := newTestAccounts(t, rec)
+	a.foldersRoot = notADir
+
+	_, _, err := a.Delete(context.Background(), 7)
+	if err == nil {
+		t.Fatal("Delete reported success while its cache-bucket sweep could not run — the shader cache and simulator residue would be left behind under a success")
+	}
+	var e *macagent.Error
+	if !errors.As(err, &e) || e.Class != macagent.ClassInternal {
+		t.Errorf("a failed bucket sweep answered %v, want class %s", err, macagent.ClassInternal)
+	}
+	if !strings.Contains(err.Error(), "cache bucket") {
+		t.Errorf("Delete failed with %q, which does not say the cache bucket is what is left", err)
+	}
+	if strings.Contains(err.Error(), "outside the session range") {
+		t.Errorf("Delete reached the sweep with a uid the range check rejects, so it never swept slot 7's bucket: %v", err)
+	}
+
+	// (b) AND THE ACCOUNT WENT FIRST. The order is the property: the bucket is swept after the record and
+	// the home are verified gone, so a sweep that fails leaves an account already deleted and says so,
+	// rather than leaving an account alive and claiming the bucket was the problem.
+	deleted := false
+	for _, call := range rec.calls {
+		if strings.Join(call, " ") == "sysadminctl -deleteUser palai-s07 -secure" {
+			deleted = true
+		}
+	}
+	if !deleted {
+		t.Errorf("the sweep failed before the account was deleted; calls were %v", rec.calls)
+	}
+
+	// (c) THE SWEEP IS SCOPED TO THE RETIRING UID. A bucket this process owns — which stands in for the
+	// operator's, since 501 is exactly the uid whose caches must never be touched — is still there after
+	// a successful Delete.
+	root := t.TempDir()
+	operatorBucket := filepath.Join(root, "8h", "td_8rv2j6fzghcrvp4q4d9ph")
+	if err := os.MkdirAll(filepath.Join(operatorBucket, "C"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	rec = deleteScript(goodMarker())
+	a = newTestAccounts(t, rec)
+	a.foldersRoot = root
+	if _, _, err := a.Delete(context.Background(), 7); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(operatorBucket, "C")); err != nil {
+		t.Fatalf("deleting slot 7 removed a bucket owned by uid %d: %v", os.Getuid(), err)
+	}
+}
+
 // TestNoBucketIsRemovedForAUIDOutsideTheSessionRange is the guard that keeps this from being a way to
 // delete the operator's caches. Everything on disk must still be there afterwards.
 func TestNoBucketIsRemovedForAUIDOutsideTheSessionRange(t *testing.T) {

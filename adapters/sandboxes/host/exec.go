@@ -159,25 +159,51 @@ const sessionDir = ".palai-session"
 
 // sessionDirs are the variables the runner DERIVES from the allocation rather than inheriting, one
 // directory each under <allocation>/.palai-session. Every run already got its own allocation and ran
-// there as its cwd; these three were the state it still shared with every other concurrent run.
+// there as its cwd; these were the state it still shared with every other concurrent run.
 //
-//   - HOME — toolchain caches, DerivedData, and (until E22 T2) the OPERATOR's own ~/.ssh, ~/.aws and
-//     ~/.gitconfig. Deriving it means the agent's `git` has no operator identity to commit as, which
-//     is the correct outcome and is stated in docs/operations/palai-on-a-mac.md §5.
+//   - HOME — the POSIX home, and (until E22 T2) the OPERATOR's own ~/.ssh, ~/.aws and ~/.gitconfig.
+//     Deriving it means the agent's `git` has no operator identity to commit as, which is the correct
+//     outcome and is stated in docs/operations/palai-on-a-mac.md §5.
 //   - TMPDIR — the scratch space. It must not fall back to /private/tmp, which is drwxrwxrwt
 //     (docs/research/macos-isolation-without-accounts.md §6).
 //   - PALAI_SIMCTL_SET — a per-run CoreSimulator device set for the agent to pass as
 //     `simctl --set "$PALAI_SIMCTL_SET"`.
+//   - PALAI_DERIVED_DATA — a per-run Xcode build tree for the agent to pass as
+//     `xcodebuild -derivedDataPath "$PALAI_DERIVED_DATA"`. Same spelling scripts/ops/mac-sessions.sh
+//     exports for the accounts posture, so an agent's argv reads the same on both.
 //
-// THE LAST ONE IS ADVISORY AND CANNOT BE OTHERWISE, which is why the proof is named
-// TestSimctlSetIsAdvisoryNotEnforced rather than explained here. MEASURED 2026-07-28 (E22 X20): HOME
-// does NOT select the device set — `simctl` is a thin client and the set belongs to a launchd-managed
-// per-user CoreSimulatorService already running under the login session's HOME. The set is selected
-// by an argv flag, and argv belongs to the model.
+// ‼️ HOME IS A POSIX REDIRECT AND NOTHING MORE, AND THIS COMMENT USED TO CLAIM OTHERWISE. It said HOME
+// carried "toolchain caches, DerivedData"; MEASURED 2026-08-05 on Darwin 25.3.0 / Xcode 26.6, the
+// DerivedData half is FALSE:
+//
+//	env HOME=<scratch> swift homeprobe.swift  -> NSHomeDirectory=/Users/salih  (NOT <scratch>),
+//	                                             getenv(HOME)=<scratch>
+//	env HOME=<scratch> xcodebuild -scheme … build  -> ** BUILD SUCCEEDED **, and
+//	    ~/Library/Developer/Xcode/DerivedData went 0 -> 4 entries / 16296 KB in the OPERATOR's home
+//	    while `find <scratch>` answered ONE line: the scratch directory itself.
+//
+// Foundation resolves `~` from the USER RECORD (getpwuid), not from $HOME. E22 X20 recorded one
+// instance of this — HOME does not select the CoreSimulator device set — and explained it by
+// CoreSimulatorService being a launchd-managed per-user XPC service the calling process's HOME never
+// reaches. THE MECHANISM IS WIDER THAN THAT EXPLANATION: `xcodebuild` resolves DerivedData in-process
+// with no XPC service anywhere, and lands in the login user's home just the same. So what HOME moves
+// is `git`, `ssh` and every other dotfile-reading tool (measured the same day: a `git config --global`
+// under a scratch HOME wrote <scratch>/.gitconfig and left the operator's untouched, 0 matches), and
+// what it does not move is the Apple toolchain.
+//
+// THE LAST TWO ARE THEREFORE ADVISORY AND CANNOT BE OTHERWISE, which is why the proof is named
+// TestSimctlSetIsAdvisoryNotEnforced rather than explained here: each is selected by an argv flag, and
+// argv belongs to the model. The runner can offer a directory and can never require one. What it does
+// buy is a REMOVER — both directories are inside the allocation, so IdleReleaser.release and
+// WorkspaceRecovery reclaim them with the allocation (idle_release.go:182, workspace_recovery.go:227),
+// which is more than the operator's ~/Library ever gets. The only thing that moves an Apple tool's
+// output off a shared surface is a different uid: that is palai-agentd's session account, whose
+// `delete <slot>` takes the account's whole ~/Library AND its /private/var/folders bucket.
 var sessionDirs = [][2]string{
 	{"HOME", "home"},
 	{"TMPDIR", "tmp"},
 	{"PALAI_SIMCTL_SET", "simulators"},
+	{"PALAI_DERIVED_DATA", "derived"},
 }
 
 // Executor runs one argv on the host and returns its bounded, redacted result. It implements

@@ -67,7 +67,7 @@ func TestHostShellDropsTheOperatorsEnvironment(t *testing.T) {
 	// nobody thought to name here cannot arrive either.
 	allowed := map[string]bool{
 		"PATH": true, "LANG": true, "DEVELOPER_DIR": true, // inherited from the control plane
-		"HOME": true, "TMPDIR": true, "PALAI_SIMCTL_SET": true, // derived from the allocation
+		"HOME": true, "TMPDIR": true, "PALAI_SIMCTL_SET": true, "PALAI_DERIVED_DATA": true, // derived from the allocation
 	}
 	for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
 		if line == "" {
@@ -95,10 +95,15 @@ func envValue(dump, name string) string {
 }
 
 // TestHostShellGivesConcurrentAllocationsDisjointSessionDirectories is E22 T2's mechanism. Every run
-// already gets its own allocation directory and the shell already runs there as its cwd — but HOME,
-// TMPDIR and the CoreSimulator device set that follows HOME were INHERITED from the control-plane
-// process, so every concurrent run shared one of each. Two runs could wipe each other's DerivedData,
-// each other's caches, and (through HOME) each other's simulators.
+// already gets its own allocation directory and the shell already runs there as its cwd — but HOME and
+// TMPDIR were INHERITED from the control-plane process, so every concurrent run shared one of each and
+// two runs could overwrite each other's dotfiles and each other's scratch.
+//
+// ‼️ WHAT IT DOES NOT SEPARATE, AND THE ORIGINAL VERSION OF THIS COMMENT SAID IT DID: DerivedData and
+// the CoreSimulator device set do NOT follow HOME. Foundation resolves `~` from the user record, not
+// from $HOME (measured 2026-08-05; see sessionDirs in exec.go for the two commands). Those two are
+// separated only by the ADVISORY PALAI_DERIVED_DATA / PALAI_SIMCTL_SET argv flags this test also
+// checks are populated — and by nothing at all if the model does not pass them.
 //
 // THIS IS NOT A BOUNDARY. Both runs are the same uid and each can open the other's directory by
 // path at any time. It is accident prevention: the adversary is a confused agent, not an attacker.
@@ -124,7 +129,7 @@ func TestHostShellGivesConcurrentAllocationsDisjointSessionDirectories(t *testin
 				return
 			}
 			env := map[string]string{}
-			for _, name := range []string{"HOME", "TMPDIR", "PALAI_SIMCTL_SET"} {
+			for _, name := range []string{"HOME", "TMPDIR", "PALAI_SIMCTL_SET", "PALAI_DERIVED_DATA"} {
 				env[name] = envValue(res.Stdout, name)
 			}
 			dumps[i] = dump{env: env}
@@ -267,6 +272,63 @@ func TestSimctlSetIsAdvisoryNotEnforced(t *testing.T) {
 	}
 }
 
+// TestDerivedDataPathIsAdvisoryTheSameWaySimctlSetIs is the second advisory variable, and it exists
+// because a comment on sessionDirs claimed for three epics that HOME carried DerivedData. It does not.
+//
+// MEASURED 2026-08-05 on this machine (Darwin 25.3.0 / Xcode 26.6): with HOME pointed at a scratch
+// directory, `xcodebuild -scheme … build` succeeded and wrote FOUR entries / 16296 KB into the
+// OPERATOR's ~/Library/Developer/Xcode/DerivedData, while `find <scratch>` answered one line — the
+// scratch directory itself. The mechanism is not a CoreSimulator quirk: `NSHomeDirectory()` under that
+// same scratch HOME answered `/Users/salih`, because Foundation resolves `~` from the user record and
+// not from $HOME. So E22 X20 is one instance of a wider rule, and `xcodebuild` — which has no XPC
+// service anywhere in its path — obeys it too.
+//
+// The consequence is exactly `--set`'s: the runner can OFFER a per-allocation build tree and can never
+// REQUIRE one, because `-derivedDataPath` is an argv flag and argv belongs to the model. The real
+// measurement lives in the live tier (TestLiveMacHostHomeDoesNotRedirectDerivedData) where a real
+// xcodebuild runs; what is deterministic — and what a broken allow-list would silently take away — is
+// that the variable the doc tells the agent to expand is actually there.
+func TestDerivedDataPathIsAdvisoryTheSameWaySimctlSetIs(t *testing.T) {
+	root := t.TempDir()
+
+	res, err := run(t, 10*time.Second, toolbroker.ShellCommand{
+		Argv: []string{"printf", "%s", "$PALAI_DERIVED_DATA"}, WorkspaceRoot: root, Shell: true,
+	})
+	if err != nil {
+		t.Fatalf("expand PALAI_DERIVED_DATA: %v", err)
+	}
+	if res.Stdout == "" {
+		t.Fatal("PALAI_DERIVED_DATA expands to nothing — the instruction in palai-on-a-mac.md would produce `xcodebuild -derivedDataPath ''`")
+	}
+	// It points INSIDE the allocation, which is the half that is not advisory: IdleReleaser.release and
+	// WorkspaceRecovery remove the allocation directory, so this build tree has a remover. A variable
+	// pointing anywhere else would be a directory nothing on this machine ever deletes.
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", root, err)
+	}
+	realDerived, err := filepath.EvalSymlinks(res.Stdout)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", res.Stdout, err)
+	}
+	if !strings.HasPrefix(realDerived+string(filepath.Separator), realRoot+string(filepath.Separator)) {
+		t.Fatalf("PALAI_DERIVED_DATA is %q, outside the allocation %q — nothing reclaims it when the allocation goes", realDerived, realRoot)
+	}
+
+	// And it is NOT enforced: an argv naming a different build tree reaches the machine verbatim, and an
+	// argv naming none at all writes into the login user's home. Both are the ceiling, neither is a bug.
+	elsewhere := filepath.Join(t.TempDir(), "someone-elses-derived-data")
+	res, err = run(t, 10*time.Second, toolbroker.ShellCommand{
+		Argv: []string{"echo", "xcodebuild", "-derivedDataPath", elsewhere, "build"}, WorkspaceRoot: root,
+	})
+	if err != nil {
+		t.Fatalf("echo an argv: %v", err)
+	}
+	if got := strings.TrimSpace(res.Stdout); got != "xcodebuild -derivedDataPath "+elsewhere+" build" {
+		t.Fatalf("the runner altered the argv it was handed: %q", got)
+	}
+}
+
 // firstUDID returns the first device UDID in `simctl list devices` output, or "" if there are none.
 func firstUDID(listing string) string {
 	re := "0123456789ABCDEF"
@@ -357,10 +419,11 @@ func TestHostShellRefusesAnEnvironmentKeyThatShadowsItsOwn(t *testing.T) {
 	}
 
 	// Every name this file's two lists produce, plus the reserved prefix and three malformed shapes. The
-	// first six are read from the allow-list's own vocabulary rather than invented: PATH/LANG/
-	// DEVELOPER_DIR are inherited, HOME/TMPDIR/PALAI_SIMCTL_SET are derived per allocation.
+	// first seven are read from the allow-list's own vocabulary rather than invented: PATH/LANG/
+	// DEVELOPER_DIR are inherited, HOME/TMPDIR/PALAI_SIMCTL_SET/PALAI_DERIVED_DATA are derived per
+	// allocation.
 	for _, key := range []string{
-		"PATH", "LANG", "DEVELOPER_DIR", "HOME", "TMPDIR", "PALAI_SIMCTL_SET",
+		"PATH", "LANG", "DEVELOPER_DIR", "HOME", "TMPDIR", "PALAI_SIMCTL_SET", "PALAI_DERIVED_DATA",
 		"PALAI_ANYTHING", "lowercase", "WITH-DASH", "1LEADING_DIGIT", "",
 	} {
 		res, err := run(t, 10*time.Second, toolbroker.ShellCommand{
@@ -414,10 +477,10 @@ func TestHostShellLayersTheAttemptsEnvironmentAndRedactsItsValues(t *testing.T) 
 	if envValue(res.Stdout, "JIRA_TOKEN") != "***" {
 		t.Fatalf("JIRA_TOKEN's value is %q, want the redaction mask", envValue(res.Stdout, "JIRA_TOKEN"))
 	}
-	// And the closed list is still closed: the two derived names are present, nothing else new is.
+	// And the closed list is still closed: the derived names are present, nothing else new is.
 	allowed := map[string]bool{
 		"PATH": true, "LANG": true, "DEVELOPER_DIR": true,
-		"HOME": true, "TMPDIR": true, "PALAI_SIMCTL_SET": true,
+		"HOME": true, "TMPDIR": true, "PALAI_SIMCTL_SET": true, "PALAI_DERIVED_DATA": true,
 		"JIRA_TOKEN": true, "DATABASE_URL": true,
 	}
 	for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {

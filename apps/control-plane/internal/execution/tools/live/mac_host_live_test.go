@@ -229,6 +229,98 @@ func TestLiveMacHostHomeDoesNotSelectTheSimulatorDeviceSet(t *testing.T) {
 	t.Logf("T21 holds: --set %s partitions in both directions", simctlSet)
 }
 
+// TestLiveMacHostHomeDoesNotRedirectDerivedData is X20's sibling, and it exists because a comment on
+// sessionDirs said for three epics that the per-run HOME carried "toolchain caches, DerivedData". It
+// does not, and the reason is not the one X20 gave for the device set.
+//
+// X20 explained HOME-independence by CoreSimulatorService being a launchd-managed per-user XPC service
+// the caller's HOME never reaches. That explanation is true and TOO NARROW: `xcodebuild` resolves
+// DerivedData in-process, with no XPC service in the path, and still lands in the login user's home.
+// Measured 2026-08-05 on Darwin 25.3.0 / Xcode 26.6, the mechanism underneath both is Foundation —
+// `NSHomeDirectory()` under a scratch HOME answered `/Users/<login user>`, because it reads the USER
+// RECORD (getpwuid) and not $HOME. So the only thing that moves an Apple tool's output off a shared
+// surface is a different UID, which is what Faz A.5's session accounts buy; per-run directories buy an
+// ADVISORY argv flag and a remover, and nothing more.
+//
+// This test builds a throwaway SwiftPM package for macOS: no simulator, no signing identity, no
+// PALAI_IOS_PROJECT. If it ever fails, HOME has started redirecting DerivedData, the ceiling in
+// sessionDirs is stale, and `-derivedDataPath` stops being the mechanism.
+func TestLiveMacHostHomeDoesNotRedirectDerivedData(t *testing.T) {
+	for _, tool := range []string{"xcodebuild", "swift"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not on this host's PATH: %v", tool, err)
+		}
+	}
+	loginHome := os.Getenv("HOME")
+	if loginHome == "" {
+		t.Skip("this process has no HOME, so there is no operator home to compare against")
+	}
+	root := t.TempDir()
+
+	sessionHome, _, code := shellOnHost(t, root, true, `echo "$HOME"`)
+	sessionHome = strings.TrimSpace(sessionHome)
+	if code != 0 || sessionHome == "" {
+		t.Fatalf("the shell reported no HOME (exit %d)", code)
+	}
+	if sessionHome == loginHome {
+		t.Fatalf("the agent's shell has the operator's own HOME (%q) — E22 T2's separation is not wired", sessionHome)
+	}
+	derivedVar, _, _ := shellOnHost(t, root, true, `echo "$PALAI_DERIVED_DATA"`)
+	if strings.TrimSpace(derivedVar) == "" {
+		t.Fatal("the shell received no PALAI_DERIVED_DATA, so the advisory fallback has no directory to name")
+	}
+
+	// The operator's DerivedData BEFORE. Counting entries rather than diffing the tree keeps the
+	// assertion honest on a machine where Xcode is also open: a new entry appearing is the finding, and
+	// an entry that was already there proves nothing either way.
+	operatorDerived := filepath.Join(loginHome, "Library", "Developer", "Xcode", "DerivedData")
+	before := map[string]bool{}
+	if entries, err := os.ReadDir(operatorDerived); err == nil {
+		for _, e := range entries {
+			before[e.Name()] = true
+		}
+	}
+
+	// A package with a name nothing else on this machine can collide with, so the entry that appears is
+	// unambiguously this build's. `swift package init` names the module after the directory.
+	pkg := filepath.Join(root, "PalaiDerivedDataProbe")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if out, err := exec.Command("swift", "package", "--package-path", pkg, "init", "--type", "library").CombinedOutput(); err != nil {
+		t.Skipf("swift package init failed on this host: %v: %s", err, tail(string(out)))
+	}
+	// NO -derivedDataPath, which is the whole point: this is what an agent that does not pass the
+	// advisory flag gets. HOME and TMPDIR are the per-run ones the executor derives.
+	if _, stderr, code := shellOnHost(t, pkg, false,
+		"xcodebuild", "-scheme", "PalaiDerivedDataProbe", "-destination", "platform=macOS", "build"); code != 0 {
+		t.Skipf("xcodebuild of a throwaway SwiftPM package exited %d on this host: %s", code, tail(stderr))
+	}
+
+	// (1) The per-run HOME got NO DerivedData at all.
+	if entries, err := os.ReadDir(filepath.Join(sessionHome, "Library", "Developer", "Xcode", "DerivedData")); err == nil && len(entries) > 0 {
+		t.Fatalf("the per-run HOME now holds a DerivedData tree (%d entries) — HOME redirects it after all, "+
+			"and the ceiling recorded on sessionDirs in adapters/sandboxes/host/exec.go is stale", len(entries))
+	}
+	// (2) The OPERATOR's did, and the entry is this build's. Asserted in the direction that hurts.
+	after, err := os.ReadDir(operatorDerived)
+	if err != nil {
+		t.Fatalf("a build wrote DerivedData nowhere this test can see, including %s: %v", operatorDerived, err)
+	}
+	appeared := ""
+	for _, e := range after {
+		if !before[e.Name()] && strings.HasPrefix(e.Name(), "PalaiDerivedDataProbe-") {
+			appeared = e.Name()
+		}
+	}
+	if appeared == "" {
+		t.Fatalf("no PalaiDerivedDataProbe-* entry appeared under %s — either xcodebuild no longer resolves "+
+			"DerivedData from the login user's home, or this build wrote somewhere neither leg of this test looked", operatorDerived)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(operatorDerived, appeared)) })
+	t.Logf("HOME=%s and the build tree landed in %s/%s", sessionHome, operatorDerived, appeared)
+}
+
 // lastLine returns the final non-empty line of output. simctl prefixes `create` with an advisory
 // notice, so the identifier it produced is the last line rather than the whole of stdout.
 func lastLine(s string) string {

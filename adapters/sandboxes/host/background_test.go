@@ -234,7 +234,7 @@ func TestABackgroundTaskGetsTheSameClosedEnvironmentAsASynchronousOne(t *testing
 	if strings.Contains(body, "PALAI_BG_LEAK_CANARY") {
 		t.Fatalf("the background task inherited the control plane's own environment:\n%s", body)
 	}
-	for _, derived := range []string{"HOME=", "TMPDIR=", "PALAI_SIMCTL_SET="} {
+	for _, derived := range []string{"HOME=", "TMPDIR=", "PALAI_SIMCTL_SET=", "PALAI_DERIVED_DATA="} {
 		if !strings.Contains(body, derived) {
 			t.Fatalf("the background task is missing the per-session %s the synchronous posture derives:\n%s", derived, body)
 		}

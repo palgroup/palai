@@ -117,11 +117,15 @@ func TestPalaiOnAMacQuotesThePostureTheBinaryParses(t *testing.T) {
 
 	// The allow-list is the page's sharpest promise to an agent AND its sharpest promise to an
 	// operator; it must match the runner's own list, name for name. Since E22 T2 the list has two
-	// halves — three variables INHERITED from the control plane and three DERIVED from the run's own
+	// halves — three variables INHERITED from the control plane and four DERIVED from the run's own
 	// allocation — and the page states both, because an agent that believes HOME is the operator's
 	// home writes argv against the wrong directory.
+	//
+	// PALAI_DERIVED_DATA joined the derived half in Faz A.5 T4, and it is the one whose ABSENCE from
+	// this page costs the most: measured 2026-08-05, `HOME` does not redirect DerivedData, so an agent
+	// that is not told to pass `-derivedDataPath` writes gigabytes into the operator's own ~/Library.
 	exec := readDoc(t, "adapters/sandboxes/host/exec.go")
-	for _, name := range []string{"PATH", "LANG", "DEVELOPER_DIR", "HOME", "TMPDIR", "PALAI_SIMCTL_SET"} {
+	for _, name := range []string{"PATH", "LANG", "DEVELOPER_DIR", "HOME", "TMPDIR", "PALAI_SIMCTL_SET", "PALAI_DERIVED_DATA"} {
 		if !strings.Contains(exec, `"`+name+`"`) {
 			t.Errorf("%s promises the command receives %s and the host runner does not pass it", macHostDoc, name)
 		}
@@ -129,7 +133,7 @@ func TestPalaiOnAMacQuotesThePostureTheBinaryParses(t *testing.T) {
 			t.Errorf("%s does not name %s, which the host runner puts in every command's environment", macHostDoc, name)
 		}
 	}
-	if !strings.Contains(doc, "PATH  LANG  DEVELOPER_DIR") || !strings.Contains(doc, "HOME  TMPDIR  PALAI_SIMCTL_SET") {
+	if !strings.Contains(doc, "PATH  LANG  DEVELOPER_DIR") || !strings.Contains(doc, "HOME  TMPDIR  PALAI_SIMCTL_SET  PALAI_DERIVED_DATA") {
 		t.Errorf("%s no longer states the environment allow-list verbatim, inherited half and derived half", macHostDoc)
 	}
 
