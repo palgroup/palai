@@ -232,6 +232,19 @@ type LimitExceeded struct {
 	Limit       float64
 	Used        float64
 	ResetAt     *time.Time
+	// InstallationWide reports which SCOPE refused: the caller's own project limit, or the
+	// installation-wide row (project_id = '') that pools every project's settled spend. It decides
+	// whether the remediation the caller is handed is true — raising a project limit clears the first and
+	// changes nothing about the second — and on a pooled refusal it is also what makes `Used` readable,
+	// since that number then sums projects other than the caller's and may exceed anything the caller
+	// itself has ever spent.
+	//
+	// It is a BOOLEAN and not the project_id the query could equally have returned. An installation-wide
+	// refusal is rendered for a caller who may have drained none of the pool, so a tenant identifier on
+	// this struct would be one format string away from telling one customer that another exists and how
+	// much it spends. With a bool that cannot happen by mistake rather than by discipline; the field list
+	// is pinned in apps/control-plane/api/limit_scope_test.go so a later field has to argue for itself.
+	InstallationWide bool
 }
 
 // checkDurableLimits reports the first budget or quota the caller has already exhausted, or nil when
@@ -248,6 +261,12 @@ type LimitExceeded struct {
 // each query's HAVING catches every exhausted row and any one of them refuses the admission. What is
 // determined here is which one the caller is told about.
 //
+// AND SINCE A.6 TASK 2 THE ANSWER SAYS WHICH SCOPE IT IS (InstallationWide). Picking the row a caller can
+// act on was only half a remediation while the body rendered the same sentence for both: the reader could
+// not tell "raise your own limit" from "the shared provider pool is drained", and under the second one the
+// numbers reported are not that caller's own. Nothing about which rows are enforced, or which one is
+// picked, changed with it.
+//
 // ponytail: two small aggregate reads per fresh admission, under ReadCommitted with no row lock. Two
 // admissions racing the exact limit boundary can therefore BOTH pass — the ledger stays exact, but the
 // gate is accurate to ±the runs in flight. That is the documented variance BIL-003 allows, and it is the
@@ -258,7 +277,7 @@ func checkDurableLimits(ctx context.Context, tx pgx.Tx, tenant Tenant) (*LimitEx
 	out := LimitExceeded{Kind: "budget"}
 	var periodStart time.Time
 	switch err := tx.QueryRow(ctx, storage.Query("ExhaustedBudget"), tenant.Project).
-		Scan(&out.MeterPrefix, &out.Limit, &out.Used, &periodStart); {
+		Scan(&out.MeterPrefix, &out.Limit, &out.Used, &periodStart, &out.InstallationWide); {
 	case err == nil:
 		return &out, nil
 	case !errors.Is(err, pgx.ErrNoRows):
@@ -269,7 +288,7 @@ func checkDurableLimits(ctx context.Context, tx pgx.Tx, tenant Tenant) (*LimitEx
 	var windowSeconds int64
 	var oldest *time.Time
 	switch err := tx.QueryRow(ctx, storage.Query("ExhaustedQuota"), tenant.Project).
-		Scan(&out.MeterPrefix, &out.Limit, &out.Used, &windowSeconds, &oldest); {
+		Scan(&out.MeterPrefix, &out.Limit, &out.Used, &windowSeconds, &oldest, &out.InstallationWide); {
 	case err == nil:
 		// The oldest in-window row is the first to age out, so that is when capacity next releases. It
 		// is always present on an exhausted quota (a quota can only be exhausted by rows in its window).

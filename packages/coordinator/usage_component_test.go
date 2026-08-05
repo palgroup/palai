@@ -72,11 +72,18 @@ func limitArrangements() []limitArrangement {
 	}
 }
 
-// The two limits are given DIFFERENT quantities on purpose. LimitExceeded carries no scope field, so the
-// only way an operator (or this test) can tell which row answered is the pair of numbers the 429's
-// detail line renders — `(<used> of <limit> used)`, apps/control-plane/api/responses.go:142-150. A
-// sibling project's spend is seeded so the two rows differ in USED as well as in LIMIT: the org row sums
-// every project of the organization, the project row sums only its own.
+// The two limits are given DIFFERENT quantities on purpose, and a sibling project's spend is seeded so
+// the two rows differ in USED as well as in LIMIT: the installation-wide row sums every project in the
+// installation, the project row sums only its own.
+//
+// THAT USED TO BE THE ONLY DISCRIMINATOR, and the sentence here said so — "LimitExceeded carries no scope
+// field, so the only way an operator (or this test) can tell which row answered is the pair of numbers".
+// A.6 Task 2 added the field (InstallationWide), for the reason this file's own subject implies: picking
+// the row a caller can act on is half a remediation while the 429 renders the same sentence either way.
+// So the numbers are now the SECOND discriminator rather than the only one, and both are asserted —
+// describeLimit renders the scope beside them, so an answer that named the wide row differs here in the
+// word as well as in the digits. Keeping the numbers distinct still earns its place: it is what catches a
+// scope word that is right while the aggregate behind it is the other row's.
 const (
 	narrowLimit = 100 // the project budget/quota: the one a project operator can raise
 	narrowUsed  = 150 // this project's own settled spend
@@ -184,8 +191,13 @@ func assertOneAnswer(t *testing.T, kind string, answers map[string]string) {
 		kind, len(distinct), want, report)
 }
 
+// describeLimit renders the facts an operator is actually handed, which is why the scope is in it: the
+// four arrangements must agree on WHICH LIMIT answered, and the scope word is the part of that answer a
+// reader acts on. It is rendered as installation_wide=%v rather than as prose because this string is
+// compared, not read.
 func describeLimit(l LimitExceeded) string {
-	return fmt.Sprintf("%s meter_prefix=%q limit=%g used=%g", l.Kind, l.MeterPrefix, l.Limit, l.Used)
+	return fmt.Sprintf("%s meter_prefix=%q limit=%g used=%g installation_wide=%v",
+		l.Kind, l.MeterPrefix, l.Limit, l.Used, l.InstallationWide)
 }
 
 // readDurableLimit drives the production gate exactly as AdmitResponse does: the tenant-scoped context,

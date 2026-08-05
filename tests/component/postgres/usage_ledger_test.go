@@ -409,11 +409,13 @@ func TestBudgetScopeNarrowingAcrossSiblingProjects(t *testing.T) {
 	// Every budget below opens its period BEFORE that spend. Without this the spend would sit outside the
 	// period a just-created budget starts (correct behaviour — a new budget does not retroactively charge
 	// history) and all three assertions would pass vacuously, pinning nothing.
-	setBudget := func(project string, limit int) {
+	setBudget := func(project string, limit int) string {
 		t.Helper()
+		id := newID("bdg")
 		exec(t, cs.Pool(), `INSERT INTO budgets (id, project_id, meter_prefix, limit_quantity, period_start)
 		     VALUES ($1, $2, 'model.', $3, now() - interval '1 hour')`,
-			newID("bdg"), project, limit)
+			id, project, limit)
+		return id
 	}
 
 	admit := func(t *testing.T, key string) *coordinator.LimitExceeded {
@@ -458,7 +460,16 @@ func TestBudgetScopeNarrowingAcrossSiblingProjects(t *testing.T) {
 	// deliberately does NOT delete the '' installation-wide rows: those are shared with every other test
 	// against this database, and a blanket DELETE here would reach into them.
 	exec(t, cs.Pool(), `DELETE FROM budgets WHERE project_id = ANY($1)`, []string{tenant.Project, sibling})
-	setBudget("", 100)
+	// THE WIDE ROW THIS TEST WRITES IS DELETED AGAIN, and until A.6 Task 2 it was not — the one row here
+	// that had to be. The comment four lines above is right that the '' rows are shared with every other
+	// test against this database, and that is exactly why leaving an EXHAUSTED one behind is not a leftover
+	// but a live limit: it binds every project, checkDurableLimits reads budgets before it reads any quota
+	// and returns on the first exhausted one, so every later admission in this shared database answered 429
+	// naming a budget it had nothing to do with. What made it invisible is that no test after this one
+	// asserted an ADMISSION until the quota fairness proof next door did, and that proof would have failed
+	// pointing at its own subject. Deleting by id reaches into nobody else's row.
+	wideID := setBudget("", 100)
+	t.Cleanup(func() { exec(t, cs.Pool(), `DELETE FROM budgets WHERE id = $1 AND project_id = ''`, wideID) })
 	limit := admit(t, "scope-c")
 	if limit == nil {
 		t.Fatal("an installation-wide budget did not see the sibling project's spend; the wide limit under-counts (it fails OPEN)")
@@ -469,6 +480,13 @@ func TestBudgetScopeNarrowingAcrossSiblingProjects(t *testing.T) {
 	if baseline < 140 {
 		t.Fatalf("the baseline is %v, below the sibling's own 140 — the sum is not crossing projects at all", baseline)
 	}
+	// The scope the caller is TOLD, on the budget half of the pair (A.6 Task 2). This refusal quotes a
+	// total the reading project did not spend, so a body that called it the project's own limit would be
+	// wrong twice: the wrong remediation, and a number the reader cannot reconcile with its own usage.
+	if !limit.InstallationWide {
+		t.Fatalf("the installation-wide budget refused with scope project (%+v); the caller is told to raise a limit that is not the one holding it", *limit)
+	}
+	exec(t, cs.Pool(), `DELETE FROM budgets WHERE id = $1 AND project_id = ''`, wideID)
 }
 
 // TestTwoModelCallsInOneRunAreAttributedToTheirOwnSteps is the attribution contract, and it is written

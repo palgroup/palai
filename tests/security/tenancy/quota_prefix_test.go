@@ -98,16 +98,22 @@ func (s *suite) exhaustedLimit(t *testing.T, kind, project string) (prefix strin
 	s.asProject(t, project, func(tx pgx.Tx) {
 		var limit float64
 		var err error
+		// installationWide is the scope predicate both statements return last (A.6 Task 2). This corpus
+		// seeds project-scoped limits only, so it is scanned to keep the read honest about the statement's
+		// shape rather than asserted on — the scope itself is proven where it is rendered
+		// (apps/control-plane/api/limit_scope_test.go) and where it is pooled
+		// (tests/component/postgres/provider_fairness_test.go).
+		var installationWide bool
 		switch kind {
 		case "budget":
 			var periodStart time.Time
 			err = tx.QueryRow(context.Background(), storage.Query("ExhaustedBudget"), project).
-				Scan(&prefix, &limit, &used, &periodStart)
+				Scan(&prefix, &limit, &used, &periodStart, &installationWide)
 		case "quota":
 			var windowSeconds int64
 			var oldest *time.Time
 			err = tx.QueryRow(context.Background(), storage.Query("ExhaustedQuota"), project).
-				Scan(&prefix, &limit, &used, &windowSeconds, &oldest)
+				Scan(&prefix, &limit, &used, &windowSeconds, &oldest, &installationWide)
 		default:
 			t.Fatalf("unknown limit kind %q", kind)
 		}

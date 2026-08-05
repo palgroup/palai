@@ -81,8 +81,18 @@ ON CONFLICT (project_id, dedupe_key) DO NOTHING;
 -- ENFORCEMENT IS UNCHANGED, and the distinction matters: both rows were enforced before this ordering
 -- and both are enforced after. The HAVING catches both and either produces the 429. What changed is
 -- which one is NAMED.
+--
+-- THE LAST COLUMN SAYS WHICH SCOPE ANSWERED, and it is a BOOLEAN rather than b.project_id deliberately
+-- (A.6 Task 2). Naming the narrowest row is only half a remediation while the caller cannot tell which
+-- row that was: raising its own limit clears a project refusal and does nothing at all to the
+-- installation-wide pool, and the 429 said the same sentence either way. Returning the project_id itself
+-- would answer that too, and it is the wrong shape: on an installation-wide refusal the reported `used`
+-- sums OTHER projects' spend, so a body built from a project column is one careless format string away
+-- from telling one customer about another. The predicate cannot be: it is true or false about the row
+-- that refused, and it carries no tenant. See apps/control-plane/api/limit_scope_test.go, which pins both
+-- halves — the scope word the remediation needs, and the tenant facts the body must never acquire.
 -- name: ExhaustedBudget
-SELECT b.meter_prefix, b.limit_quantity, coalesce(sum(l.quantity), 0), b.period_start
+SELECT b.meter_prefix, b.limit_quantity, coalesce(sum(l.quantity), 0), b.period_start, (b.project_id = '')
 FROM budgets b
 LEFT JOIN usage_ledger l
        ON (b.project_id = '' OR l.project_id = b.project_id)
@@ -108,8 +118,15 @@ LIMIT 1;
 -- the ordering: the prefix predicate below is ExhaustedBudget's too, for the same reason and with the same
 -- measurement, and the wildcard defect it closes was shipped in BOTH queries. The security corpus runs
 -- every case against both for exactly this reason.
+--
+-- The scope predicate is the last column here too, for ExhaustedBudget's reason and by the same rule: a
+-- property proven or fixed on one of this pair and not the other leaves half of it shipped. It is the
+-- rolling window that carries the pooled provider key in practice (A.6), and until Task 2 nothing proved
+-- this query crossed projects at all — the sibling-scope proof at
+-- tests/component/postgres/usage_ledger_test.go:399 drove BUDGETS only, and the quota twin now sits
+-- beside it in provider_fairness_test.go.
 -- name: ExhaustedQuota
-SELECT q.meter_prefix, q.limit_quantity, coalesce(sum(l.quantity), 0), q.window_seconds, min(l.occurred_at)
+SELECT q.meter_prefix, q.limit_quantity, coalesce(sum(l.quantity), 0), q.window_seconds, min(l.occurred_at), (q.project_id = '')
 FROM quotas q
 LEFT JOIN usage_ledger l
        ON (q.project_id = '' OR l.project_id = q.project_id)

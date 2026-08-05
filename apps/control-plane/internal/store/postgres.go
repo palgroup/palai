@@ -148,11 +148,12 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 	// so the HTTP surface renders its remediation body without depending on the store package.
 	if adm.LimitExceeded != nil {
 		result.LimitExceeded = &api.LimitExceeded{
-			Kind:        adm.LimitExceeded.Kind,
-			MeterPrefix: adm.LimitExceeded.MeterPrefix,
-			Limit:       adm.LimitExceeded.Limit,
-			Used:        adm.LimitExceeded.Used,
-			ResetAt:     adm.LimitExceeded.ResetAt,
+			Kind:             adm.LimitExceeded.Kind,
+			MeterPrefix:      adm.LimitExceeded.MeterPrefix,
+			Limit:            adm.LimitExceeded.Limit,
+			Used:             adm.LimitExceeded.Used,
+			ResetAt:          adm.LimitExceeded.ResetAt,
+			InstallationWide: adm.LimitExceeded.InstallationWide,
 		}
 	}
 	// On a purged replay the body is gone; the tombstone identity is the resource id.

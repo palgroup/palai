@@ -188,16 +188,49 @@ type LimitExceeded struct {
 	Limit       float64
 	Used        float64
 	ResetAt     *time.Time
+	// InstallationWide marks the refusal as coming from the installation-wide row (project_id = '') that
+	// pools every project's settled spend, rather than from the caller's own project limit. It changes
+	// what the remediation may honestly say and how `Used` should be read — see detail(), and see
+	// coordinator.LimitExceeded for why the scope is a bool and never a tenant identifier.
+	InstallationWide bool
 }
 
 // detail renders the stable remediation line the 429 carries. It names the limit in the caller's own
-// terms and says what makes the request admit again — a raised budget, or a window that releases.
+// terms — which SCOPE, which dimension, how much of how much — and says what makes the request admit
+// again: a window that releases, or a raised budget where raising it is actually the reader's to do.
+//
+// THE SCOPE WORD IS THE REMEDIATION, not decoration on it. A project limit and the installation-wide pool
+// produce refusals that look identical and want opposite responses, and until A.6 Task 2 this line said
+// the same sentence for both — so a project operator's only move was to raise its own limit and find out.
+// Under the pool that changes nothing, and the numbers quoted were never that caller's to begin with.
+//
+// WHAT A POOLED REFUSAL MAY SAY ABOUT THE SPEND, and where the line is drawn. `Used` on an
+// installation-wide row sums every project, so a caller that has spent nothing can be handed a total made
+// entirely of other customers' usage. The total is reported anyway — without it the refusal is
+// unfalsifiable and an exhausted pool reads exactly like a misconfigured one — but it is labelled as a
+// sum so it is not mistaken for the reader's own, and nothing beneath it is disclosed: not which projects
+// spent, not how many there are, not their share. That is a boundary rather than a wording preference,
+// and it is held by the type as much as by this function (LimitExceeded carries no tenant field at all)
+// and pinned in limit_scope_test.go.
 func (l LimitExceeded) detail() string {
 	quantity := func(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
-	base := fmt.Sprintf("the %s for meters starting with %q is exhausted (%s of %s used)",
-		l.Kind, l.MeterPrefix, quantity(l.Used), quantity(l.Limit))
+	scope, summed := "project", ""
+	if l.InstallationWide {
+		scope, summed = "installation-wide", ", summed across every project"
+	}
+	base := fmt.Sprintf("the %s %s for meters starting with %q is exhausted (%s of %s used%s)",
+		scope, l.Kind, l.MeterPrefix, quantity(l.Used), quantity(l.Limit), summed)
+	// A quota's window releases capacity on its own, whichever scope it belongs to: the honest next step
+	// is a time, and it is the same time for both.
 	if l.ResetAt != nil {
 		return base + "; capacity returns at " + l.ResetAt.UTC().Format(time.RFC3339)
+	}
+	// A budget never releases (there is no rollover in this phase), so the only way forward is a higher
+	// limit — and the two scopes differ on WHOSE that is. Telling a project operator to raise a budget it
+	// does not own sends it to a screen that cannot change the outcome, which is worse than saying
+	// nothing: it reads as an action and consumes the one the reader had.
+	if l.InstallationWide {
+		return base + "; that budget is not this project's to raise"
 	}
 	return base + "; raise the budget to admit further runs"
 }
@@ -398,8 +431,9 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The durable budget/quota gate (E13 T6). It shares the §20.10 registered 429 quota_exceeded with
-	// nothing else on this surface, and its detail is the STABLE remediation body: which limit, how it is
-	// denominated, what it allows, what has been used, and what the caller can do about it. A quota also
+	// nothing else on this surface, and its detail is the STABLE remediation body: which limit — including
+	// WHOSE, the caller's own or the installation-wide pool (A.6 T2) — how it is denominated, what it
+	// allows, what has been used, and what the caller can do about it. A quota also
 	// carries Retry-After, because a window releases capacity on its own; a budget does not, so it
 	// deliberately carries none — a fabricated retry hint on a limit that will never lift is a lie.
 	if out.LimitExceeded != nil {
