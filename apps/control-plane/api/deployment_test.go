@@ -638,3 +638,23 @@ func TestGitHubAppConfiguredIsTheOneReaderThePublisherUses(t *testing.T) {
 		t.Fatalf("unsetGitHubAppSettings() = %v with all three set", got)
 	}
 }
+
+// TestEveryCatalogueEntryExplainsWhatItDoes guards the field the console renders as "What it does".
+//
+// It was worth adding the moment that column existed, and not before: `effect` had been in the
+// catalogue and on the wire since it was written, and NOTHING displayed it — so an entry added with an
+// empty one broke nothing an operator could see. The column changes that. An empty cell on a
+// configuration screen is worse than an absent column, because it reads as "this setting does nothing"
+// rather than "nobody wrote it down".
+//
+// The check is emptiness only, deliberately. Whether a sentence is a GOOD explanation is not a property
+// a test can hold, and the neighbouring citation guard already proves the sentence is about a variable
+// something really reads.
+func TestEveryCatalogueEntryExplainsWhatItDoes(t *testing.T) {
+	for _, entry := range deploymentCatalogue {
+		if strings.TrimSpace(entry.Effect) == "" {
+			t.Errorf("%s has no effect sentence: the console's \"What it does\" column would render an empty "+
+				"cell, which an operator reads as a setting that does nothing", entry.Name)
+		}
+	}
+}

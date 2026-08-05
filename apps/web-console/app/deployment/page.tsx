@@ -144,6 +144,23 @@ export default function DeploymentPage() {
             render: (row) => <NameCell name={row.name} id={row.group} />,
           },
           {
+            // WHAT THE SETTING IS FOR, in the operator's own screen. The catalogue has carried `effect` since
+            // it was written and the API has always serialised it; this column is the first thing to RENDER
+            // it. Until now an operator looking at PALAI_FLEET_PARK_TTL on this page could see its value, its
+            // desired value and how to change it, and had no way to learn what it does short of reading Go.
+            //
+            // It is prose and it WRAPS — the rule this file already states for remedy sentences (a block
+            // wraps rather than scrolls, globals.css:525). A truncated purpose is worse than none: it reads
+            // as an answer and is not one.
+            //
+            // NOT HARDCODED HERE, for the same reason TestTheDeploymentPageHardcodesNoRemedySentence forbids
+            // quoting a remedy: a copy in this file is a copy that drifts from the catalogue, and the
+            // catalogue is where the reader citation proves the sentence is about a real variable.
+            header: "What it does",
+            sort: (row) => row.effect,
+            render: (row) => <span>{row.effect}</span>,
+          },
+          {
             header: "Value",
             sort: (row) => row.value,
             render: (row) => <ValueCell row={row} />,
