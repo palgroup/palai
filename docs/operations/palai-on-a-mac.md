@@ -28,55 +28,6 @@ The shell tool runs in one of two postures, and a deployment declares which:
 
 In the host posture **the boundary is the uid**, and there is nothing behind it.
 
-### 1.1 Putting the agent on the other side of that uid (`PALAI_AGENT_USER`)
-
-"The boundary is the uid" reads like a limitation until you notice it is also the instruction. By
-default the runner — and therefore every tool command — runs as the same account as the control
-plane, so the boundary is between the agent and *nothing*. Set `PALAI_AGENT_USER` and the bring-up
-starts the runner under a second account instead:
-
-```sh
-# .env.local
-PALAI_AGENT_USER=palai-agent
-```
-
-**Why the runner is the process that moves.** A synchronous tool command no longer runs in the
-control plane — it runs on the machine holding the attempt's lease, which is the runner. And the
-runner needs very little: `PALAI_WORKSPACE_ROOT`, its own `PALAI_ENROLLMENT_TOKEN_FILE`, and
-`PALAI_CONTROLLER_CA` (a public certificate). It reads **none** of `.palai/api-key`,
-`.palai/secrets/master-key` or `.palai/ca/ca.key` — measured 2026-08-05. So the two sides genuinely
-need different things, which is the only place a boundary like this holds.
-
-**Why an account and not a sandbox.** `docs/research/macos-isolation-without-accounts.md` measured
-this on this hardware: `CoreSimulatorService` is a per-user launchd job, so `simctl spawn` produces a
-child of `launchd` with no parent edge for a sandbox to be inherited along. seatbelt, the App Sandbox
-and TCC were each escaped that way. The uid is the only boundary on the same axis as the daemon.
-
-**Setup, once, and it needs `sudo`:**
-
-```sh
-# 1. a non-admin service account with no login
-sudo sysadminctl -addUser palai-agent -password - -home /var/empty
-
-# 2. let this operator start the runner as that account, without a password prompt
-#    (the bring-up runs `sudo -n`; it never prompts, so a missing rule fails fast)
-echo "$(whoami) ALL=(palai-agent) NOPASSWD: /path/to/.palai/bin/palai-runner" \
-  | sudo tee /etc/sudoers.d/palai-agent
-
-# 3. the workspace root must belong to the account that writes in it
-sudo chown -R palai-agent "$PALAI_WORKSPACE_ROOT"
-
-# 4. and .palai/ must NOT be readable by it — this is the whole point
-chmod 700 .palai
-```
-
-**What this does and does not buy, stated plainly.** It puts the credential files on the other side
-of a uid from the agent's shell. It does **not** yet close `ps`: whether one account can read
-another's environment on macOS is *unmeasured*, so until it is, treat the gain as file access only.
-Background tasks also still run on the control plane's own host (they outlive the attempt that
-started them), so they are not covered by this boundary.
-
-Leaving `PALAI_AGENT_USER` unset keeps today's behaviour exactly.
 
 Setting **both is fatal at boot**. There is no "sometimes sandboxed" state, because in that state
 nobody can read off a deployment where a given call ran
