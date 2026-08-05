@@ -5,11 +5,14 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -244,7 +247,24 @@ func TestAnInstallationSeededBeforeTheScopeChangeIsRepairedOnBoot(t *testing.T) 
 
 	// Restore whatever key_local had, so this test does not decide another test's fixture.
 	var original []string
-	if err := repo.Spine().Pool().QueryRow(sys, `SELECT scopes FROM api_keys WHERE id = 'key_local'`).Scan(&original); err != nil {
+	err = repo.Spine().Pool().QueryRow(sys, `SELECT scopes FROM api_keys WHERE id = 'key_local'`).Scan(&original)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// OWN THE FIXTURE RATHER THAN INHERIT ONE. Bootstrap above only seeds key_local through
+		// ProvisionFirstTenant when api_keys is GLOBALLY empty; it takes the reconcileBootstrapScopes
+		// branch instead the moment ANY row exists, and that branch only UPDATEs a key_local row that is
+		// already there — it never creates one. This package runs every component-real test against ONE
+		// shared database in ONE process, and another test in this file (TestTenantAdminKeyCannotOpenAnotherTenant,
+		// TestAKeyCannotMintAKeyMoreCapableThanItself) opens its own tenant first when the whole package
+		// runs without a -run filter, so api_keys already holds rows by the time this test's Bootstrap call
+		// above ran and key_local was never born. This test's claim is about the UPGRADE PATH, not about
+		// running before every other test in the package, so it provisions the fixture itself instead of
+		// depending on table-wide emptiness it does not control.
+		if err := identity.New(repo.Spine().Pool()).ProvisionFirstTenant(ctx, "component-bootstrap-key"); err != nil {
+			t.Fatalf("provision the key_local fixture this test owns: %v", err)
+		}
+		err = repo.Spine().Pool().QueryRow(sys, `SELECT scopes FROM api_keys WHERE id = 'key_local'`).Scan(&original)
+	}
+	if err != nil {
 		t.Fatalf("read key_local: %v", err)
 	}
 	t.Cleanup(func() {

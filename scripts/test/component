@@ -533,37 +533,46 @@ run_postgres() {
   # exercises. The Slack half was the one that proved transport invariance — one source event, two
   # deliveries, one run — and nothing here replaces it. apps/slack-bot admits through POST /v1/responses like
   # any other client, so the equivalent proof belongs to whoever gives that relay a journey.
-  # TestSessionListJourneyRendersTheScreenFromOneCall is named for the same reason, and it is the E29
-  # session-list journey: the shipped router with ONLY the session family mounted, over a real Postgres,
-  # creating a labelled session and a bodyless one through POST, renaming through PATCH, and reading the
-  # whole Sessions screen — label, the agents its runs pinned, metered tokens, activity span — out of ONE
-  # GET /v1/sessions. It exists on top of the coordinator's own tests because those prove the SQL and
-  # cannot prove the route: a field can be selected, scanned, and then dropped by the marshaller, which
-  # looks like success from either side alone.
-  # TestDesiredConfigJourneyWritesADocumentTheDeploymentReadReports is E29's desired configuration, and it
-  # is named here for the SAME reason a third time: the shipped router with only that seam mounted, over a
-  # real Postgres, writing a document through PUT /v1/deployment/desired and reading it back out of
-  # GET /v1/deployment. Two of its four properties are DATABASE guarantees no Go test can assert — the
-  # append-only REVOKE denying the runtime role UPDATE and DELETE, and "current" meaning the highest
-  # REVISION rather than whatever an unordered LIMIT returns.
-  # TestTenantAdminKeyCannotOpenAnotherTenant is Faz A.1 Task 2, and it needs its OWN alternative for the
-  # reason this list keeps rediscovering: none of the words already on this line is a substring of it. It
-  # drives the SHIPPED router with the real identity store mounted over a real Postgres: a tenant admin key
-  # (empty Scopes, unrestricted under HasScope) gets 403 insufficient_scope from POST /v1/organizations, a
-  # key carrying `system` gets 201, and the leak assertion — ordered AFTER the response-code assertion, on
-  # purpose — confirms the refused call wrote no organizations row at all.
-  # TestEveryFleetRouteRefusesATenantKey is Faz A.1 Task 3, and it needs its OWN alternative for the same
-  # reason: none of the words already on this line is a substring of it, so without one this test would ride
-  # `make test-component` reporting nothing at all — this repository's signature failure. It reads its route
-  # list off apps/control-plane/api/router.go's OWN source (never a pasted list) and drives EVERY runner /
+  # TestSessionListJourneyRendersTheScreenFromOneCall is the E29 session-list journey: the shipped router
+  # with ONLY the session family mounted, over a real Postgres, creating a labelled session and a bodyless
+  # one through POST, renaming through PATCH, and reading the whole Sessions screen — label, the agents its
+  # runs pinned, metered tokens, activity span — out of ONE GET /v1/sessions. It exists on top of the
+  # coordinator's own tests because those prove the SQL and cannot prove the route: a field can be
+  # selected, scanned, and then dropped by the marshaller, which looks like success from either side alone.
+  # TestDesiredConfigJourneyWritesADocumentTheDeploymentReadReports is E29's desired configuration: the
+  # shipped router with only that seam mounted, over a real Postgres, writing a document through
+  # PUT /v1/deployment/desired and reading it back out of GET /v1/deployment. Two of its four properties are
+  # DATABASE guarantees no Go test can assert — the append-only REVOKE denying the runtime role UPDATE and
+  # DELETE, and "current" meaning the highest REVISION rather than whatever an unordered LIMIT returns.
+  # TestTenantAdminKeyCannotOpenAnotherTenant is Faz A.1 Task 2: it drives the SHIPPED router with the real
+  # identity store mounted over a real Postgres — a tenant admin key (empty Scopes, unrestricted under
+  # HasScope) gets 403 insufficient_scope from POST /v1/organizations, a key carrying `system` gets 201, and
+  # the leak assertion — ordered AFTER the response-code assertion, on purpose — confirms the refused call
+  # wrote no organizations row at all.
+  # TestEveryFleetRouteRefusesATenantKey is Faz A.1 Task 3: it reads its route list off
+  # apps/control-plane/api/router.go's OWN source (never a pasted list) and drives EVERY runner /
   # runner-pool / runner-pool-key route the shipped router registers, over a real Postgres with the REAL
   # fleet.RegistryAPI mounted: a tenant key is refused on every one, and a system-scoped key (carrying
   # `provision` and `approve` too, so the ONLY thing standing between it and a route is systemOnly) is not.
+  #
+  # THIS PACKAGE RAN FILTERED UNTIL 2026-08-05, AND THE FILTER WAS THIS REPOSITORY'S SIGNATURE FAILURE AGAIN
+  # — the shape the fleet leg below was already written unfiltered to avoid. Measured while repairing
+  # TestAnInstallationSeededBeforeTheScopeChangeIsRepairedOnBoot's order-dependency (it read `key_local`
+  # assuming Bootstrap had seeded it, which only holds when api_keys is globally empty — a precondition an
+  # earlier test in this SAME package, run without a `-run` filter, quietly removes):
+  #
+  #   comm -23 <(grep -rhn '^func Test' apps/control-plane/internal/store/*_test.go | \
+  #     sed -E 's/^[0-9]+:func (Test[A-Za-z0-9_]+).*/\1/' | sort) <(printf '%s\n' <the six names above> | sort)
+  #     -> 16 of this package's 22 top-level tests, including every ORG-granular-key refusal
+  #        (TestListConnectionModelsRejectsAnOrgGranularKey, TestModelRouteWritesRejectAnOrgGranularKey,
+  #        TestModelRouteReadsRejectAnOrgGranularKey) and TestAKeyCannotMintAKeyMoreCapableThanItself, never
+  #        ran in `make test-component TEST=postgres` at all.
+  #
+  # So the fix is not a 17th alternative: it is deleting the filter, the way the fleet leg already does, for
+  # the same reason its own comment gives — "what keeps a test added beside these from being invisible."
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
-      go test -tags=component -count=1 -v \
-        -run 'TestA2ARealAdmitterBirthsRun|TestSessionListJourneyRendersTheScreenFromOneCall|TestSessionsCapabilityAgreesWithTheServedSurface|TestDesiredConfigJourneyWritesADocumentTheDeploymentReadReports|TestTenantAdminKeyCannotOpenAnotherTenant|TestEveryFleetRouteRefusesATenantKey' \
-        ./apps/control-plane/internal/store
+      go test -tags=component -count=1 -v ./apps/control-plane/internal/store
     status=$?
   fi
   # The E24 T1 runner registry against a REAL Postgres with RLS enforced (apps/control-plane/internal/fleet
