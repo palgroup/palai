@@ -592,7 +592,7 @@
     {
       "checksum": "sha256:357ac57c8d0bb0b1cc3e2985aa3dffebeb79fa6b1a430786923209413ce250ae",
       "db_assertions": [
-        "SLK-001: proven by 12 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventNormalizesToCanonicalIdentity; adapters/integrations/slack/inbound_test.go:TestUnwrapSocketFrameFeedsTheSameMapping; adapters/integrations/slack/socket_test.go:TestSocketFrameCarriesAcceptsResponsePayload; adapters/integrations/slack/socket_test.go:TestSocketDisconnectReasonIsDecoded; adapters/integrations/slack/socket_test.go:TestSocketAckShape; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketAcknowledgesBeforeDoingTheWork; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketAckShapeMatchesTheDocumentedEnvelope; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketOverlapsOnWarningAndLosesNoEvents; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketStopsPermanentlyOnLinkDisabled; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketDrainsGracefully; apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketNeverLogsTheTokenOrTheTicket; apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModeAndHTTPShareOneCanonicalIdentity",
+        "SLK-001: proven by 5 in-tree proof(s) at the unit tier — adapters/integrations/slack/inbound_test.go:TestMapEventNormalizesToCanonicalIdentity; adapters/integrations/slack/inbound_test.go:TestUnwrapSocketFrameFeedsTheSameMapping; adapters/integrations/slack/socket_test.go:TestSocketFrameCarriesAcceptsResponsePayload; adapters/integrations/slack/socket_test.go:TestSocketDisconnectReasonIsDecoded; adapters/integrations/slack/socket_test.go:TestSocketAckShape",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
         "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran",
         "NO REAL WORKSPACE: every Slack proof this case COUNTS runs against a FAKE peer — a fixture that signs the way the verification page documents, a local HTTP server standing in for slack.com/api, and a fake WSS server built from the Socket Mode page. The shipped routes (events + interactivity), the Socket Mode connect loop, and the decision chain are exercised end to end over real Postgres, but nothing here is a receipt from a real workspace: no test that runs WITHOUT credentials opens a socket to slack.com. That receipt is §6 leg 1 and is what caps `slack` at preview — and Socket Mode is the cheapest way to collect it, since it needs no public URL",
@@ -607,7 +607,7 @@
       "id": "SLK-001",
       "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
       "mtls_enroll": "component-tier: no runner enrollment",
-      "proof_class": "component-real",
+      "proof_class": "unit",
       "provider_request_id": "prov_e17_deterministic",
       "run_id": "run_e17_slk_001",
       "slack_mapping_claim": "one-canonical-session-one-effect-per-event-on-a-FAKE-peer",
@@ -645,7 +645,7 @@
     {
       "checksum": "sha256:256626a5f77b34141fea8efe3238d897b45b277e1f5b2bc826cefc97f951ecf7",
       "db_assertions": [
-        "SLK-002: proven by 3 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventRedeliveryIsIdentityStable; apps/control-plane/internal/automation/dedupe_component_test.go:TestDuplicateDeliveryLinksOriginalSingleAction; apps/control-plane/internal/store/slack_events_component_test.go:TestSlackRetryStormRunsTheEffectOnce",
+        "SLK-002: proven by 2 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventRedeliveryIsIdentityStable; apps/control-plane/internal/automation/dedupe_component_test.go:TestDuplicateDeliveryLinksOriginalSingleAction",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
         "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
       ],
@@ -669,7 +669,7 @@
     {
       "checksum": "sha256:6a7b466952575c6a6528431d9e3d6eda0334e5ae16ca45942aeed9eb76191697",
       "db_assertions": [
-        "SLK-003: proven by 20 in-tree proof(s) at the component-real tier — adapters/integrations/slack/history_test.go:TestThreadRepliesCarriesTheDocumentedArguments; adapters/integrations/slack/history_test.go:TestThreadRepliesRefusesAnUnboundedOrUnaddressedRead; adapters/integrations/slack/history_test.go:TestThreadRepliesDropsSubtypedAndEmptyMessages; adapters/integrations/slack/history_test.go:TestThreadRepliesTypesTheAPIRefusal; adapters/integrations/slack/history_test.go:TestThreadRepliesDoesNotRetryARateLimit; adapters/integrations/slack/inbound_test.go:TestMapEventCarriesTheAffectedMessageTS; apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteIsEmptyWhenThereIsNothingToQuote; apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteLeadsWithTheUntrustedLabelAndEndsBeforeTheRequest; apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteAttributesWithoutNamingAnyone; apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteMakesBothTruncationsVisible; apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteQuotesAnInjectionAsData; apps/control-plane/internal/extensions/slack_component_test.go:TestSlackThreadSessionCorrelation; apps/control-plane/internal/store/slack_events_component_test.go:TestSlackThreadCorrelatesToOneSession; apps/control-plane/internal/store/slack_events_component_test.go:TestSlackConcurrentFirstEventsNeverSplitAThread; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryIsFetchedOnceForAThreadWeWereInvitedInto; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackTopLevelMentionReadsNoThread; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadReadAddressesTheEventNotTheContext; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryIsNotReadOutsideTheChannelAllowList; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryRefusalStillAdmitsTheRun; apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryRedeliveryStillReplays",
+        "SLK-003: proven by 9 in-tree proof(s) at the component-real tier — adapters/integrations/slack/history_test.go:TestThreadRepliesCarriesTheDocumentedArguments; adapters/integrations/slack/history_test.go:TestThreadRepliesRefusesAnUnboundedOrUnaddressedRead; adapters/integrations/slack/history_test.go:TestThreadRepliesDropsSubtypedAndEmptyMessages; adapters/integrations/slack/history_test.go:TestThreadRepliesTypesTheAPIRefusal; adapters/integrations/slack/history_test.go:TestThreadRepliesDoesNotRetryARateLimit; adapters/integrations/slack/inbound_test.go:TestMapEventCarriesTheAffectedMessageTS; apps/slack-bot/internal/store/threads_test.go:TestASecondEventInTheSameThreadReusesTheSession; apps/slack-bot/internal/store/threads_test.go:TestTwoBotsInOneThreadDoNotShareASession; apps/slack-bot/internal/store/threads_test.go:TestRebindThreadConcurrentCallersOnlyOneWins",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
         "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
       ],
@@ -693,14 +693,14 @@
     {
       "checksum": "sha256:185ad9a9cc488294f278c93bb6c78de59f1d31c98f962cc5a6871edbadca93d4",
       "db_assertions": [
-        "SLK-004: proven by 5 in-tree proof(s) at the component-real tier — adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace; adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse; apps/control-plane/internal/extensions/slack_component_test.go:TestSlackConnectionCreateReadRLS; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackUnauthorizedClickEnqueuesNothing; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackStaleHashAndForeignThreadDecideNothing",
+        "SLK-004: proven by 2 in-tree proof(s) at the unit tier — adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace; adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
         "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
       ],
       "id": "SLK-004",
       "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
       "mtls_enroll": "component-tier: no runner enrollment",
-      "proof_class": "component-real",
+      "proof_class": "unit",
       "provider_request_id": "prov_e17_deterministic",
       "run_id": "run_e17_slk_004",
       "status": "PASS",
@@ -717,7 +717,7 @@
     {
       "checksum": "sha256:64466890403925046a5cf0c9840ed76fbf95e9740930fc6cf5541075dedef12e",
       "db_assertions": [
-        "SLK-005: proven by 14 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventClassifiesEditsAndDeletes; adapters/integrations/slack/files_test.go:TestFetchImageUsesTheTokenOnlyAsABearerHeader; adapters/integrations/slack/files_test.go:TestFetchImageRefusesAnyHostButSlackFiles; adapters/integrations/slack/files_test.go:TestFetchImageRefusesBytesThatAreNotAnImage; apps/control-plane/internal/execution/vision_test.go:TestDecodeMessagesResolvesAnImageRefToBytes; apps/control-plane/internal/execution/vision_test.go:TestDecodeMessagesTakesNothingButBytesFromAnImageItem; apps/control-plane/internal/execution/vision_component_test.go:TestDispatchResolvesAnImageRefIntoTheProviderRequest; adapters/models/provider_one/vision_test.go:TestBuildBodyRendersAnImageAsAContentPart; apps/control-plane/internal/store/slack_events_component_test.go:TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind; apps/control-plane/internal/store/slack_image_component_test.go:TestSlackSharedImageBecomesAnImageRefInTheRunInput; apps/control-plane/internal/store/slack_image_component_test.go:TestSlackImageRedeliveryReplaysOntoTheSameRunAndArtifact; apps/control-plane/internal/store/slack_image_component_test.go:TestSlackNonImageAndOversizeFilesAreRefusedVisibly; apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestArtifactInboundImageWriteIsIdempotentAtACallerChosenID; apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestInboundImageIsReachedByRetentionOnlyOnceAttached",
+        "SLK-005: proven by 10 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventClassifiesEditsAndDeletes; adapters/integrations/slack/files_test.go:TestFetchImageUsesTheTokenOnlyAsABearerHeader; adapters/integrations/slack/files_test.go:TestFetchImageRefusesAnyHostButSlackFiles; adapters/integrations/slack/files_test.go:TestFetchImageRefusesBytesThatAreNotAnImage; apps/control-plane/internal/execution/vision_test.go:TestDecodeMessagesResolvesAnImageRefToBytes; apps/control-plane/internal/execution/vision_test.go:TestDecodeMessagesTakesNothingButBytesFromAnImageItem; apps/control-plane/internal/execution/vision_component_test.go:TestDispatchResolvesAnImageRefIntoTheProviderRequest; adapters/models/provider_one/vision_test.go:TestBuildBodyRendersAnImageAsAContentPart; apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestArtifactInboundImageWriteIsIdempotentAtACallerChosenID; apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestInboundImageIsReachedByRetentionOnlyOnceAttached",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
         "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
       ],
@@ -741,14 +741,14 @@
     {
       "checksum": "sha256:3e99d323d6c972527bfe405beb3604a9b3fb4864b2f9a097561f2e6683d08836",
       "db_assertions": [
-        "SLK-006: proven by 7 in-tree proof(s) at the component-real tier — adapters/integrations/slack/ratelimit_test.go:TestPostMessageRepairsA429Once; adapters/integrations/slack/ratelimit_test.go:TestPostMessageBoundedRepairThenRateLimited; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionRepairsTheVisibleMessageExactlyOnceUnderA429; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackCoalescedUpdatesArePacedPerChannel; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionSurvivesAPermanentlyRateLimitedSlack; adapters/integrations/slack/stream_test.go:TestStreamCallsTruncateTheirOwnText; apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamAppendRepairsA429WithoutASecondRetryLayer",
+        "SLK-006: proven by 3 in-tree proof(s) at the unit tier — adapters/integrations/slack/ratelimit_test.go:TestPostMessageRepairsA429Once; adapters/integrations/slack/ratelimit_test.go:TestPostMessageBoundedRepairThenRateLimited; adapters/integrations/slack/stream_test.go:TestStreamCallsTruncateTheirOwnText",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
         "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
       ],
       "id": "SLK-006",
       "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
       "mtls_enroll": "component-tier: no runner enrollment",
-      "proof_class": "component-real",
+      "proof_class": "unit",
       "provider_request_id": "prov_e17_deterministic",
       "run_id": "run_e17_slk_006",
       "status": "PASS",
@@ -765,14 +765,14 @@
     {
       "checksum": "sha256:081772c2063ce49d0dd362d6a47cd6f6221e8b8d8101ec67de34fbcf775fcf02",
       "db_assertions": [
-        "SLK-007: proven by 9 in-tree proof(s) at the component-real tier — adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace; adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalDenyIsMapped; adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackAuthorizedClickApprovesThroughTheWholeChain; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDenyClickDeniesThePublication; adapters/integrations/slack/blocks_test.go:TestRenderRefusesToMintAnActionableElementFromModelOutput; adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement; adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement; apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStopStreamCarriesRenderedBlocksAndNoForgedButton",
+        "SLK-007: proven by 6 in-tree proof(s) at the unit tier — adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace; adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalDenyIsMapped; adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse; adapters/integrations/slack/blocks_test.go:TestRenderRefusesToMintAnActionableElementFromModelOutput; adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement; adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
         "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
       ],
       "id": "SLK-007",
       "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
       "mtls_enroll": "component-tier: no runner enrollment",
-      "proof_class": "component-real",
+      "proof_class": "unit",
       "provider_request_id": "prov_e17_deterministic",
       "run_id": "run_e17_slk_007",
       "status": "PASS",
@@ -789,14 +789,14 @@
     {
       "checksum": "sha256:e3adf967c93d9f681b6abc8be415a0fe330a5439fdd6e1017a650fdb8a2bc8af",
       "db_assertions": [
-        "SLK-008: proven by 4 in-tree proof(s) at the component-real tier — adapters/integrations/slack/inbound_test.go:TestMapEventDropsBotAndSelfEvents; adapters/integrations/slack/inbound_test.go:TestMapEventDropsNestedBotEdit; apps/control-plane/internal/store/slack_events_component_test.go:TestSlackBotSelfEventBirthsNothing; apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModeSelfEventBirthsNothing",
+        "SLK-008: proven by 2 in-tree proof(s) at the unit tier — adapters/integrations/slack/inbound_test.go:TestMapEventDropsBotAndSelfEvents; adapters/integrations/slack/inbound_test.go:TestMapEventDropsNestedBotEdit",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
         "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
       ],
       "id": "SLK-008",
       "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
       "mtls_enroll": "component-tier: no runner enrollment",
-      "proof_class": "component-real",
+      "proof_class": "unit",
       "provider_request_id": "prov_e17_deterministic",
       "run_id": "run_e17_slk_008",
       "status": "PASS",
