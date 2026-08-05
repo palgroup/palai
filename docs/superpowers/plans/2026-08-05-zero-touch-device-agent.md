@@ -64,12 +64,30 @@ The work is complete only when all of the following are true at once:
 16. **There is no whole-stack device path.** The admin plane and the device agent are two products that
     meet over one URL. No device command starts a control plane, a database, an object store or a Compose
     project, and no device command builds a binary from a source checkout.
-17. **The running agent reads ZERO `PALAI_` names**, and the count is the gate. Measured 2026-08-05,
-    `cmd/runner` + `packages/runner` read **26** (`grep -rhoE 'PALAI_[A-Z_]+' cmd/runner/ packages/runner/
-    | sort -u | wc -l`). The URL, the key file and the optional CA are **arguments to `enroll`**, which
-    runs once; everything else is derived by the binary, delivered by the admin plane after enrolment, or
-    deleted. A per-run value passed to a session's shell is not a bootstrap variable and is out of this
-    count.
+17. **An INSTALLED agent reads ZERO `PALAI_` names**, and the count is the gate. The URL, the key file
+    and the optional CA are **arguments to `enroll`**, which runs once; everything else is derived by the
+    binary, delivered by the admin plane, or deleted.
+
+    **THE FIRST VERSION OF THIS ITEM COUNTED THE WRONG THING, and correcting it is worth more than the
+    number was.** It said 26, from `grep -rhoE 'PALAI_[A-Z_]+' … | sort -u | wc -l` — which counts
+    comments, doc references, and a DENYLIST of names the runner refuses to pass into an engine. Counting
+    a name the code exists to REJECT as a name the code reads is the same defect this plan keeps finding
+    elsewhere. Re-measured 2026-08-06 against the readers rather than the spellings:
+
+    ```bash
+    grep -rhoE '(os\.Getenv|os\.LookupEnv|envDurationDefault|envIntDefault|planeIntDefault|derivedEnv|defaultEnv|mustEnv)\("PALAI_[A-Z_]+"' \
+      cmd/runner/ packages/runner/ packages/device/ | grep -oE 'PALAI_[A-Z_]+' | sort -u | wc -l
+    ```
+    → **20** (2026-08-06), of which **15 are on the environment branch alone**: `loadConfig` returns
+    `installedBootstrap` before reaching any of them, so a device that was enrolled never reads the URLs,
+    the ids, the pool, the posture or the capacity. Those 15 belong to compose, Helm and the systemd unit,
+    which is the compatibility window §3.7 grants them.
+
+    **FIVE REMAIN ON THE INSTALLED PATH and they are what T3 has left to do:** `PALAI_SHELL_NATIVE` and
+    `PALAI_SANDBOX_IMAGE` (posture — should come from the pool profile the gateway returns, since the
+    machine already measures and reports what it can do), `PALAI_SETTINGS_INTERVAL` and
+    `PALAI_WORKSPACE_UNSAFE_BIND` (behaviour knobs — the admin plane's desired document is their home),
+    and `PALAI_COMPOSE_PROJECT` (a compose-only label an installed device has no use for).
 18. **A session's tree follows the session, not the machine.** When a machine is stopped, drained,
     terminated or simply loses the placement, the next attempt restores that session's workspace from the
     object store on whichever machine takes it, or the run refuses. A resumed session that continues over

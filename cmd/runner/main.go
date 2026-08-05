@@ -251,8 +251,9 @@ func loadConfig(installed *device.Installation) (bootstrap runner.BootstrapConfi
 	// ‼️ PALAI_CONTROLLER_CA IS NO LONGER REQUIRED — it was `mustEnv` here, and that single line made a CA
 	// file a mandatory input on every device in every deployment, including the ones whose gateway carries
 	// a publicly trusted certificate (DoD item 2). Unset now means the host's own root store verifies the
-	// gateway. Nothing is skipped: packages/runner still verifies a chain and still requires the leaf's
-	// single SAN to be the configured name on both branches.
+	// gateway. Nothing is skipped: packages/runner still verifies a chain, and still refuses a certificate
+	// that vouches for anyone but the configured host — every DNS name must BE that host and every IP must
+	// be loopback (verifyControllerIdentity). Both branches, unchanged by this.
 	pool := caPoolFromFile(os.Getenv("PALAI_CONTROLLER_CA"))
 
 	// ONE ADDRESS INSTEAD OF FOUR. A machine joining a fleet knows where its control plane is; it does not
