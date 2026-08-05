@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -312,6 +313,14 @@ func TestEveryComposeSettingIsCataloguedOrDeclaredUnreported(t *testing.T) {
 //
 // The citation is a FUNCTION and not a line number on purpose: a line number reddens on every unrelated
 // edit above it, which trains people to update citations without reading them.
+//
+// IT RESOLVES ONE CONSTANT HOP, and that is a correctness fix rather than a loosening. A reader that spells
+// the variable as a named constant — `os.Getenv(fakeScriptFileEnv)`, which main.go does so its refusal text
+// and its read cannot drift apart — reads the setting exactly as much as a literal does, and a substring
+// scan cannot see it. Rejecting it would have pushed the next person toward the WORSE code (a second
+// spelling of the name at the call site) to satisfy the guard, which is the guard bending the tree. The hop
+// is narrow on purpose: the constant must be declared in the SAME file and its value must equal the setting
+// name exactly, so a function that names neither still fails.
 func TestEveryCatalogueCitationResolvesToARealReader(t *testing.T) {
 	root := repoRootFromTest(t)
 	for _, entry := range deploymentCatalogue {
@@ -331,6 +340,8 @@ func TestEveryCatalogueCitationResolvesToARealReader(t *testing.T) {
 			t.Errorf("%s cites %s, which does not parse: %v", entry.Name, entry.ReaderFile, err)
 			continue
 		}
+		// The names the file binds to this exact setting string, so a read through one of them counts.
+		aliases := constantsBoundTo(file, entry.Name)
 		found := false
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
@@ -339,15 +350,52 @@ func TestEveryCatalogueCitationResolvesToARealReader(t *testing.T) {
 			}
 			found = true
 			body := string(src[fset.Position(fn.Pos()).Offset:fset.Position(fn.End()).Offset])
-			if !strings.Contains(body, entry.Name) {
-				t.Errorf("%s cites %s.%s, but that function's source never mentions %s — the citation points at code that does not read the setting",
-					entry.Name, entry.ReaderFile, entry.ReaderFunc, entry.Name)
+			mentions := strings.Contains(body, entry.Name)
+			for _, alias := range aliases {
+				mentions = mentions || strings.Contains(body, alias)
+			}
+			if !mentions {
+				t.Errorf("%s cites %s.%s, but that function's source never mentions %s (nor any of the file's constants bound to it: %v) — the citation points at code that does not read the setting",
+					entry.Name, entry.ReaderFile, entry.ReaderFunc, entry.Name, aliases)
 			}
 		}
 		if !found {
 			t.Errorf("%s cites %s.%s, and that file declares no such function", entry.Name, entry.ReaderFile, entry.ReaderFunc)
 		}
 	}
+}
+
+// constantsBoundTo returns the identifiers a file declares as `const NAME = "<setting>"`. It resolves the ONE
+// indirection a reader may legitimately put between itself and the setting name; anything further (a variable
+// reassigned at runtime, a name built by concatenation, a constant from another package) is deliberately not
+// followed, because past that point the guard would be guessing what the code reads rather than reading it.
+func constantsBoundTo(file *ast.File, setting string) []string {
+	var names []string
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range value.Names {
+				if i >= len(value.Values) {
+					continue
+				}
+				lit, ok := value.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				if unquoted, err := strconv.Unquote(lit.Value); err == nil && unquoted == setting {
+					names = append(names, name.Name)
+				}
+			}
+		}
+	}
+	return names
 }
 
 // TestDeploymentRefusesAKeyWithoutTheProvisionCapability. A machine's configuration is an OPERATOR read,

@@ -500,6 +500,17 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "modelBrokerFromEnv",
 	},
 	{
+		// It is a PATH and it changes what a run ANSWERS, which is why it is reported rather than exempted.
+		// `f24b430e` added it to compose.yaml and to no list; the walk-vs-list guard found it, which is the
+		// direction that guard exists for. The runner-scoped exemptions in unreportedSettings say "this
+		// process holds no copy" — untrue here: modelBrokerFromEnv reads it in THIS process, at boot.
+		Name: "PALAI_FAKE_SCRIPT_FILE", Group: "model", Kind: kindPath,
+		Default:    "unset — the deterministic adapter replays the built-in registry.FakeScript and nothing about a run changes",
+		Effect:     "A JSON file holding the exchange the DETERMINISTIC adapter replays, so a stack with no provider credential can drive a run that calls a tool and reads its result. It is reachable only as the deployment default: no model connection can name the fake family, so with PALAI_MODEL_PROVIDER=provider-one this file is REFUSED at boot rather than loaded and never consulted. A set-but-unreadable file is fatal at boot for the same reason — it is the only input that can make modelBrokerFromEnv fail.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "modelBrokerFromEnv",
+	},
+	{
 		Name: "PALAI_ENGINE_IMAGE", Group: "execution", Kind: kindValue, Default: "none — a lease pins no image and a dispatched run cannot start an engine",
 		Effect:     "The engine image digest the control plane pins into every lease. The runner refuses a mutable tag, so this is an immutable sha256 reference.",
 		Mutability: mutabilityBringUp, ChangeWith: changeAll,
@@ -819,6 +830,9 @@ var nonDesiredReason = map[string]string{
 	"PALAI_RUNNER_SERVER_KEY":           "a path to the gateway listener's private key.",
 	"PALAI_ENROLLMENT_TOKEN_FILE":       "a path to the credential a machine spends to join the fleet.",
 	"PALAI_GITHUB_APP_PRIVATE_KEY_FILE": "a path to the App's PEM.",
+	"PALAI_FAKE_SCRIPT_FILE": "a path, and the file it names decides what a run's model APPEARS to say. " +
+		"A form that wrote it would let a reader of the panel author a fabricated exchange every credential-less " +
+		"run then replays as if it were an answer.",
 
 	// --- images: what CODE runs on this machine ------------------------------------------------------
 	"PALAI_ENGINE_IMAGE": "an IMAGE REFERENCE. The control plane pins it into every lease and the runner starts it — so a form " +
