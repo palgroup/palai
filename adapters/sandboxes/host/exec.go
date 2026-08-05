@@ -206,6 +206,27 @@ var sessionDirs = [][2]string{
 	{"PALAI_DERIVED_DATA", "derived"},
 }
 
+// SessionDirs reports the list above — variable name paired with its directory name — and
+// SessionDirRoot reports the subdirectory they live under. Together they are the ALLOCATION-RELATIVE
+// path of every surface this posture points a tenant's tools at.
+//
+// THEY EXIST FOR ONE CALLER AND THE REASON IS THE CALLER'S WHOLE POINT. Until 2026-08-05 the proof
+// that a release leaves no tenant residue was a MANUAL measurement — one Mac, one marker, one pass
+// (A.5 T4: 40 files under the marker before the cleanup, 0 after) — and nothing re-ran it. The guard
+// that replaced it is apps/control-plane/internal/artifacts/residue_component_test.go, and it reads
+// THIS list rather than restating it: a guard holding its own copy would go on reporting green the
+// day a fifth entry is added here, which is precisely the failure ("a sweep that narrows silently
+// still reports green") it was written to prevent. A copy is returned so the canonical slice cannot
+// be rewritten through the accessor.
+func SessionDirs() [][2]string {
+	out := make([][2]string, len(sessionDirs))
+	copy(out, sessionDirs)
+	return out
+}
+
+// SessionDirRoot is the allocation subdirectory SessionDirs live under (".palai-session").
+func SessionDirRoot() string { return sessionDir }
+
 // Executor runs one argv on the host and returns its bounded, redacted result. It implements
 // toolbroker.ShellRunner.
 type Executor struct {

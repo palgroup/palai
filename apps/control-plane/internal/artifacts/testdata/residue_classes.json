@@ -1,0 +1,111 @@
+{
+  "_comment": [
+    "THE MEASURED RESIDUE CLASSES OF ONE TENANT'S OCCUPANCY OF ONE MAC. residue_component_test.go reads",
+    "this file; it does not restate it. A HARD-CODED list inside the test would miss the directory Xcode",
+    "starts writing tomorrow and the test would stay GREEN, which is this tree's most repeated defect",
+    "shape: a sweep that narrows silently still reports green.",
+    "",
+    "Measured 2026-08-05 on Darwin 25.3.0 / Xcode 26.6 by Faz A.5 T4 (palai-cloud",
+    ".superpowers/sdd/2026-08-05-faz-a5-mac-izolasyon/task-4-report.md, sections 3-5 and 7). Every number",
+    "in a 'ceiling' below is from that run; re-measure before moving one, do not carry it forward.",
+    "",
+    "closed_by is the MECHANISM, not a wish:",
+    "  allocation_scoped_removal - inside the allocation root, so IdleReleaser.release and",
+    "                              WorkspaceRecovery.DestroyAllocation reclaim it with the directory.",
+    "                              This is the ONLY value the guard drives, and it drives every one.",
+    "  session_account           - only a different uid moves it; palai-agentd's `delete <slot>` is the",
+    "                              remover. CEILING TODAY: the daemon is installed on no machine, so no",
+    "                              account has ever been created or destroyed here.",
+    "  none                      - nothing in the product closes it. The guard must NOT report these as",
+    "                              failures; a hygiene test that fails on the system unified log is",
+    "                              wrong about the product, not about the machine."
+  ],
+  "measured_on": "2026-08-05",
+  "source": "palai-cloud/.superpowers/sdd/2026-08-05-faz-a5-mac-izolasyon/task-4-report.md",
+  "classes": [
+    {
+      "id": "allocation_root",
+      "scope": "allocation",
+      "env": "",
+      "rel": ".",
+      "closed_by": "allocation_scoped_removal"
+    },
+    {
+      "id": "session_home",
+      "scope": "allocation",
+      "env": "HOME",
+      "rel": ".palai-session/home",
+      "closed_by": "allocation_scoped_removal"
+    },
+    {
+      "id": "session_tmpdir",
+      "scope": "allocation",
+      "env": "TMPDIR",
+      "rel": ".palai-session/tmp",
+      "closed_by": "allocation_scoped_removal"
+    },
+    {
+      "id": "session_simulator_set",
+      "scope": "allocation",
+      "env": "PALAI_SIMCTL_SET",
+      "rel": ".palai-session/simulators",
+      "closed_by": "allocation_scoped_removal"
+    },
+    {
+      "id": "session_derived_data",
+      "scope": "allocation",
+      "env": "PALAI_DERIVED_DATA",
+      "rel": ".palai-session/derived",
+      "closed_by": "allocation_scoped_removal"
+    },
+    {
+      "id": "operator_xcode_derived_data",
+      "scope": "shared",
+      "path": "~/Library/Developer/Xcode/DerivedData",
+      "closed_by": "session_account",
+      "ceiling": "HOME DOES NOT REDIRECT IT. Measured 2026-08-05: `env HOME=<scratch> swift homeprobe.swift` answered NSHomeDirectory=/Users/salih while getenv(HOME)=<scratch>, and `env HOME=<scratch> TMPDIR=<scratch>/tmp xcodebuild ... build` succeeded with ~/Library/Developer/Xcode/DerivedData going 0 -> 4 entries / 16296 KB in the OPERATOR's home while `find <scratch>` answered one line. Foundation resolves ~ from the user record (getpwuid). PALAI_DERIVED_DATA is therefore ADVISORY: it is an argv flag the model must pass, and argv belongs to the model. Only a different uid moves this, and palai-agentd is installed on no machine."
+    },
+    {
+      "id": "coresimulator_device_logs",
+      "scope": "shared",
+      "path": "~/Library/Logs/CoreSimulator",
+      "closed_by": "none",
+      "ceiling": "REFUSED DELIBERATELY, four measurements. 2026-08-05: du -sh -> 959 MB across 196 device directories, 192 of them dead devices; CoreSimulator.log carried 66 lines matching a tenant marker; CoreSimulator.prev.log was 964144611 B, so macOS ALREADY rotates near 1 GB. CoreSimulatorService holds the file open, so a foreign truncate leaves a sparse file the daemon keeps writing past. And `simctl delete` APPENDS the device it deleted (82 -> 92 lines) - cleaning lengthens the log. In the shipped accountless posture this is the OPERATOR's file, and rewriting it is the one-integer-away danger removeDarwinBuckets' range check exists to prevent."
+    },
+    {
+      "id": "darwin_user_bucket",
+      "scope": "shared",
+      "path": "/private/var/folders/<xx>/<yyyy>",
+      "closed_by": "session_account",
+      "ceiling": "cmd/palai-agentd's `delete <slot>` sweeps it (removeDarwinBuckets, found by OWNERSHIP because the name is a hash). Its composition is tested; NO INSTANCE EXISTS. RemoveAll over a real 7xx bucket needs root, and no account was ever created or destroyed on this machine. Disk support 2026-08-05: `ls -ld /private/var/folders/*/*/` shows a uid-701 bucket with 0/ C/ T/ X/ still present while `id 701` answers `no such user`."
+    },
+    {
+      "id": "mds_messages_dir",
+      "scope": "shared",
+      "path": "/private/var/db/mds/messages/<uid>",
+      "closed_by": "session_account",
+      "ceiling": "Found 2026-08-05 by a CANONICAL-LIST sweep, not by a walk: `/usr/bin/find /private/var/db /private/var/folders /Library /Users/Shared /private/tmp -xdev -uid 701` answered 7 paths, 6 darwin buckets and /private/var/db/mds/messages/701/se_SecurityMessages (32768 B, -rw-------). Closed by removeMessagesDir, which is keyed BY NAME (the directory is the uid) and therefore needs no root - the removal, the range check and the refusal of a planted symlink all run unprivileged. Still a ceiling for the same reason as the bucket: no account has ever been created or destroyed here. Its CONTENTS were not measured (mode 600, uid gone, Permission denied); it is removed because it is per-uid state outliving the uid, not because of anything known about what is in it."
+    },
+    {
+      "id": "metal_shader_cache",
+      "scope": "shared",
+      "path": "~/Library/Caches/com.apple.metal/*/functions.data",
+      "closed_by": "none",
+      "ceiling": "REFUSED after measuring it EMPTY of tenant strings. 2026-08-05: functions.data was 10125312 B and the tenant marker, the bundle id, the application name and two older project names all matched 0 times (rc=1, a real no-match, not a broken scan); `strings -n 12` showed only system Metal functions. Measured ONLY for an application carrying no custom Metal shader - a tenant that ships one is unmeasured."
+    },
+    {
+      "id": "system_unified_log",
+      "scope": "shared",
+      "path": "/private/var/db/diagnostics + /private/var/db/uuidtext",
+      "closed_by": "none",
+      "ceiling": "CANNOT BE CLOSED, and a guard that reported it as a failure would be wrong. Root-owned and machine-wide, outside every home and every /private/var/folders bucket, so no account deletion touches it. Measured 2026-08-05: a raw scan of /private/var/db/diagnostics matched 3 Persist/*.tracev3 files, and the DECODED read (`/usr/bin/log show`, 15 minutes) returned 4 lines from kernel and WindowManager naming the application, the simulator device UDID and the installed binary's full path. macOS's only eraser is `log erase`, which takes EVERY tenant's history at once, so the bound is rollover alone. Recorded as MAC-P8. (A raw byte scan over compressed/encoded state cannot fail: decode before scanning.)"
+    },
+    {
+      "id": "tcc_protected_paths",
+      "scope": "shared",
+      "path": "~/Library/{Containers,Mail,Messages,Safari,Photos Library,...}",
+      "closed_by": "none",
+      "ceiling": "NOT MEASURED, which is a different claim from 'clean'. 131 TCC-protected paths refused even root on 2026-08-05. It is named here so the guard's output keeps saying it was never looked at; if it is ever dropped from this file, the drop is a claim nobody measured."
+    }
+  ]
+}
