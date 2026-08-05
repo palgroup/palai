@@ -287,6 +287,19 @@ func (h *publishHarness) setApprovers(policy string) {
 // approveAs is approve for a NAMED principal, so a test can drive a decision by somebody the project's
 // approver list does not name. It returns 0 applied rows for a refusal rather than an error: a principal
 // who may not decide decides nothing, which is a count and not an exception.
+//
+// AND THE COUNT IS NOT THE PROPERTY, WHICH IS WHY EVERY CALL ALSO CHECKS THE TWO DURABLE FACTS IT STANDS
+// FOR. On 2026-08-05 nine publication/merge tests turned red at once and the reason is the whole argument
+// for the lines below: they asserted a real property (`0` = nothing was applied, `1` = exactly one row
+// moved) against a production function that was returning the session's next EVENT-JOURNAL SEQUENCE, and
+// the two agreed by COINCIDENCE until the Slack cutover added an event to that stream. The return value was
+// corrected — but the assertion stayed anchored to a value only this file reads, so the next refactor that
+// shifts the number reproduces the same nine reds and they look like fixture rot again.
+//
+// So the count stays, because it is the cheap first line, and the facts it is a proxy FOR are asserted
+// beside it: the `publications` row's own state, and the journalled approval.approved/denied.v1. Those are
+// what "an approve applied" MEANS — a row a human can no longer decide, and an audit record naming the
+// decision — and neither can drift into agreement with a counter by accident.
 func (h *publishHarness) approveAs(principal, decision, requestHash string) int64 {
 	h.t.Helper()
 	ctx := context.Background()
@@ -296,6 +309,21 @@ func (h *publishHarness) approveAs(principal, decision, requestHash string) int6
 	}); err != nil {
 		h.t.Fatalf("AcceptCommand(%s): %v", decision, err)
 	}
+
+	// READ BEFORE THE DECISION, because both facts are DIFFERENCES. The pending row has to be identified
+	// before it stops being pending, and an event count means nothing without the count it rose from — a
+	// suite that seeds several decisions into one session would otherwise read another decision's event and
+	// call it this one's.
+	event, wantState := "approval.approved.v1", "approved"
+	if decision == "deny" {
+		event, wantState = "approval.denied.v1", "denied"
+	}
+	pending, hadPending, err := h.spine.PendingApprovalForSession(ctx, h.tenant, h.sessionID)
+	if err != nil {
+		h.t.Fatalf("read the session's pending approval before the decision: %v", err)
+	}
+	eventsBefore := h.decisionEvents(event)
+
 	applied, err := h.spine.ApplyApprovalDecision(ctx, h.tenant, h.sessionID, h.respID, h.runID,
 		commandID, decision, requestHash, principal)
 	// A REFUSAL IS THE VALUE THIS HELPER PROMISES, NOT AN ERROR TO REPORT — and until 2026-08-05 the three
@@ -312,7 +340,77 @@ func (h *publishHarness) approveAs(principal, decision, requestHash string) int6
 	if err != nil && !errors.Is(err, coordinator.ErrApproverNotAuthorized) {
 		h.t.Fatalf("ApplyApprovalDecision(%s): %v", decision, err)
 	}
+	h.assertDecisionLanded(decision, applied, hadPending, pending.ID, wantState, event, eventsBefore)
 	return applied
+}
+
+// assertDecisionLanded is the half of the count that is not a number. It runs on EVERY decision this harness
+// drives rather than in the tests that happened to think of it — which is the actual finding behind it:
+// publish_approval_component_test.go asserts the publication's state after both its refusals, and
+// merge_component_test.go's unauthorized MERGE asserts only the count, on the least reversible operation
+// this system performs.
+//
+// The `default` arm is the one that would have caught 2026-08-05 outright. A journal position is a number
+// like any other and agrees with `1` roughly whenever a session is one event old; it cannot agree with the
+// statement "a transition moves at most one row", so that is the statement made here.
+func (h *publishHarness) assertDecisionLanded(decision string, applied int64, hadPending bool, pubID, wantState, event string, eventsBefore int) {
+	h.t.Helper()
+	eventsAfter := h.decisionEvents(event)
+	switch applied {
+	case 0:
+		if hadPending {
+			if got := h.publicationState(pubID); got != "pending_approval" {
+				h.t.Fatalf("%s applied 0 row(s) and left publication %s in %q — a decision that authorized "+
+					"nothing must leave a row a human can still decide", decision, pubID, got)
+			}
+		}
+		if eventsAfter != eventsBefore {
+			h.t.Fatalf("%s applied 0 row(s) and journalled %d new %s — the count says nobody decided anything "+
+				"and the audit stream says somebody did, and the audit stream is the record",
+				decision, eventsAfter-eventsBefore, event)
+		}
+	case 1:
+		if !hadPending {
+			h.t.Fatalf("%s applied 1 row with no pending approval for it to have moved", decision)
+		}
+		if got := h.publicationState(pubID); got != wantState {
+			h.t.Fatalf("%s applied 1 row and publication %s is %q, want %q — the number is the count of rows "+
+				"ONE transition moved, so the row it counts has to be the row that moved",
+				decision, pubID, got, wantState)
+		}
+		if eventsAfter != eventsBefore+1 {
+			h.t.Fatalf("%s applied 1 row and journalled %d new %s, want exactly 1 — the transition and its "+
+				"audit record commit in one transaction or the ledger is not the record",
+				decision, eventsAfter-eventsBefore, event)
+		}
+	default:
+		h.t.Fatalf("%s applied %d row(s) — ApplyApprovalDecision counts the rows one publication's transition "+
+			"moved, so any value outside {0,1} is a journal position wearing a row count's name", decision, applied)
+	}
+}
+
+// publicationState reads ONE publication by id. publicationRow reads by operation, which is the wrong handle
+// here: the row this helper judges is the one that was pending when the decision was made, and naming it by
+// id is what keeps that true for a session holding more than one publication.
+func (h *publishHarness) publicationState(pubID string) string {
+	h.t.Helper()
+	var state string
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT state FROM publications WHERE id = $1`, pubID).Scan(&state); err != nil {
+		h.t.Fatalf("read publication %s: %v", pubID, err)
+	}
+	return state
+}
+
+// decisionEvents counts one event type in this session's journal.
+func (h *publishHarness) decisionEvents(eventType string) int {
+	h.t.Helper()
+	var n int
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT count(*) FROM events WHERE session_id = $1 AND type = $2`, h.sessionID, eventType).Scan(&n); err != nil {
+		h.t.Fatalf("count %s events: %v", eventType, err)
+	}
+	return n
 }
 
 // publicationRow reads one durable publication of this run by operation.
