@@ -410,6 +410,12 @@ type attemptState struct {
 	// provisioned and its writer lease, released at attempt end. Empty on a run with no attached binding.
 	workspaceID      string
 	workspaceLeaseID string
+	// workspaceOps is the filesystem this attempt's allocation is ON — the machine's when the dial reached
+	// one, this process's otherwise (Faz A.5 T5). It is carried here for ONE reader, and that reader is the
+	// pause boundary's snapshot: captureBoundarySnapshot tarred `attempt.WorkspaceHostPath` off the control
+	// plane's own disk, so on a split deploy it archived a directory that was not the run's. Nil on an
+	// attempt with no workspace, which is what every non-provisioning caller passes.
+	workspaceOps toolbroker.WorkspaceOps
 	// Engine handshake identity, captured from engine.ready — the §26.2 checkpoint provenance the
 	// engine's opaque offer does not carry.
 	engineVersion   string
@@ -702,8 +708,17 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	// IT IS BEFORE THE ENGINE IS SPOKEN TO, WHICH IS THE ORDERING THAT MATTERS. The runner started the
 	// engine when it admitted the lease, but the engine says nothing until it is asked and no tool call
 	// can arrive before this returns — so the repository is on disk before anything could look for it.
+	//
+	// THE ATTEMPT'S FILESYSTEM, DERIVED ONCE (Faz A.5 T5). It used to be derived inside
+	// realizeRootWorkspace and thrown away there, so every later thing that needed to know WHOSE disk the
+	// allocation is on — the pause boundary's snapshot, above all — silently used this process's. One
+	// value, resolved from the connection, handed to everything downstream: provisioning and the capture
+	// cannot end up on two different hosts, which is the same argument workspaceOpsFor itself makes about
+	// provisioning and the tools.
+	var workspaceOps toolbroker.WorkspaceOps
 	if wsPlanned {
-		hostPath, leaseID, wsID, perr := o.realizeRootWorkspace(ctx, ch, tenant, wsPlan, string(attempt.RunID), attempt.JobID, attempt.Fence)
+		workspaceOps = workspaceOpsFor(ch, wsPlan.hostPath)
+		hostPath, leaseID, wsID, perr := o.realizeRootWorkspace(ctx, workspaceOps, tenant, wsPlan, string(attempt.RunID), attempt.JobID, attempt.Fence)
 		if perr != nil {
 			// A PROVISIONING FAILURE IS THE PLATFORM'S OWN, AND IT MUST SAY SO. Before this it returned an
 			// error into the retry ladder and the run dead-lettered into the generic terminal — "the run
@@ -765,6 +780,7 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		attempt: attempt, tenant: tenant, sessionID: sessionID, responseID: responseID,
 		ch: ch, ledger: runner.NewFrameLedger(),
 		workspaceID: workspaceID, workspaceLeaseID: workspaceLeaseID,
+		workspaceOps: workspaceOps,
 		attemptStart: time.Now(),
 	}
 

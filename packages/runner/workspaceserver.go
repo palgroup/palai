@@ -1,12 +1,14 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/palgroup/palai/adapters/repositories"
+	"github.com/palgroup/palai/adapters/sandboxes/oci/snapshot"
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/packages/contracts"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
@@ -55,6 +57,23 @@ const (
 	WorkspaceOpCommit   = "commit"   // commit the worktree under the platform's fixed identity
 	WorkspaceOpGlob     = "glob"     // confined filename search, newest modification first
 	WorkspaceOpGrep     = "grep"     // confined content search, RE2 syntax
+	// WorkspaceOpArchive and WorkspaceOpRestore move an allocation BETWEEN machines (Faz A.5 T5). They
+	// are the two verbs without which a pool of Macs cannot exist: everything above acts on a tree that
+	// is already on this machine, and these two are how a tree GETS here from somewhere else.
+	//
+	// WHY THEY ARE ON THIS SURFACE AND NOT ON THE CONTROL PLANE'S. The control plane already had both —
+	// snapshot.Archive and snapshot.Restore — and called them against ITS OWN filesystem, which is
+	// correct exactly while the control plane and the machine are one host and silently wrong the moment
+	// they are not (idle_release.go named that ceiling; this is it being paid). The bytes live where the
+	// lease placed them, so the party that can tar them is the party holding them.
+	//
+	// THE ARCHIVE CROSSES WHOLE, AND THAT IS THE BOUND ON THEM. One ws.request carries one tar, so an
+	// allocation bigger than the lease's frame limit cannot move — the same bound
+	// execution.MaxSnapshotArchiveBytes already places on what the object store will take back. A
+	// streaming pair is what a repository larger than that needs, and it is a different design, not a
+	// bigger number.
+	WorkspaceOpArchive = "archive" // tar this allocation (SAN-005 manifest) for the control plane
+	WorkspaceOpRestore = "restore" // untar a control-plane-held archive into this allocation, verified
 )
 
 // WorkspaceRequestData builds the data payload of a ws.request. Correlation is this pair's own field,
@@ -160,6 +179,36 @@ func (s *WorkspaceServer) perform(ctx context.Context, op, root string, req map[
 			return nil, err
 		}
 		return map[string]any{"commit": sha}, nil
+	case WorkspaceOpArchive:
+		// The whole allocation, .git included and `secrets/` excluded — snapshot.Archive's own rule, not a
+		// second copy of it here. The manifest travels with the bytes because the control plane records it
+		// as the snapshot row's checksums and hands it back on the restore; deriving it on that side
+		// instead would derive it from a tree that side cannot see.
+		var buf bytes.Buffer
+		manifest, err := snapshot.Archive(root, &buf)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"archive": buf.Bytes(), "manifest": manifest}, nil
+	case WorkspaceOpRestore:
+		var body []byte
+		if err := remarshal(req, "archive", &body); err != nil {
+			return nil, err
+		}
+		var want workspace.Manifest
+		if err := remarshal(req, "manifest", &want); err != nil {
+			return nil, err
+		}
+		// SAN-005 IS VERIFIED HERE, ON THE MACHINE, AND THAT PLACEMENT IS THE POINT. The control plane
+		// holds the archive and the expected checksums, but the tree that has to match them is this one —
+		// a verification performed on the sending side would attest to bytes in memory rather than to the
+		// allocation a run is about to be handed. A mismatch refuses, and the caller fails the migration
+		// rather than starting a session on a tree that is not the one it left.
+		restored, err := snapshot.Restore(bytes.NewReader(body), root, want)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"manifest": restored}, nil
 	}
 
 	// The confined operations. The filesystem is bound HERE rather than in Handle, because binding it

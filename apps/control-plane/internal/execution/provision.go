@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -86,6 +87,31 @@ type workspacePlan struct {
 	resume bool
 }
 
+// errWorkspaceNotOnThisMachine reports that the allocation this attempt planned to REUSE is not on the
+// machine the dial landed on: the directory the machine opened holds no repository. It is the workspace
+// affinity ceiling A.3 T5 named, and it is a SENTINEL rather than a message because realizeRootWorkspace
+// answers it with a migration and every other provisioning failure with a terminal.
+//
+// ‼️ WHAT IT REPLACES WAS NOT A LOUDER VERSION OF ITSELF — IT WAS SILENCE, and the correction matters
+// because a whole phase was planned on the belief that this case "already fails loudly". Measured
+// 2026-08-05, on `main`:
+//
+//   - Attempt 1 clones on machine A and RECORDS A PREPARATION RECEIPT for (binding, run)
+//     (provision_clone.go's RecordPreparationReceipt).
+//   - The attempt parks — a machine at its declared capacity, or any other reason that ends it — and the
+//     deferred releaseWorkspace drives the workspace back to `ready`.
+//   - The wake is keyed on the POOL, so attempt 2 of the SAME run may land on machine B. `ready` is
+//     planRootWorkspace's reuse arm, so the plan names machine A's allocation and A's path.
+//   - `RemoteWorkspace.Open` on machine B CREATES that path (workspaceserver.go exempts `open` from the
+//     under-root resolve and openAllocation MkdirAlls it): an EMPTY allocation.
+//   - reuseAllocation then found the receipt attempt 1 had recorded — same run id — and returned before
+//     reading the tree at all.
+//
+// So the run continued on machine B against an empty directory, with no error, no log line and no
+// terminal. The head read that was believed to be the guard runs only on a run's FIRST reuse, and a
+// park-then-wake is precisely a run's SECOND one. The reorder below is what makes the sentence true.
+var errWorkspaceNotOnThisMachine = errors.New("workspace allocation is not on this machine")
+
 // planRootWorkspace decides the session's coding workspace for the ROOT run without touching disk or
 // writing a row. A session with no attachment yields found=false — the run then has no workspace,
 // exactly as before.
@@ -152,9 +178,8 @@ func (o *Orchestrator) planRootWorkspace(ctx context.Context, tenant coordinator
 // host's — the deterministic e2e tier, and the hand-built component orchestrators, which have no
 // machine at all. It derives them from the CHANNEL, which is what every later tool call does too
 // (tool_dispatch.go execEnv), so provisioning and the tools cannot end up on two different hosts.
-func (o *Orchestrator) realizeRootWorkspace(ctx context.Context, ch EngineChannel, tenant coordinator.Tenant, plan workspacePlan, runID, jobID string, fence uint64) (hostPath, leaseID, workspaceID string, err error) {
+func (o *Orchestrator) realizeRootWorkspace(ctx context.Context, ops toolbroker.WorkspaceOps, tenant coordinator.Tenant, plan workspacePlan, runID, jobID string, fence uint64) (hostPath, leaseID, workspaceID string, err error) {
 	ws := plan.ws
-	ops := workspaceOpsFor(ch, plan.hostPath)
 
 	// THE ALLOCATION IS OPENED BY WHOEVER HOLDS THE DISK, which is the one line where the two cases
 	// genuinely differ and so the one place that names them. Both are idempotent — a later run in the
@@ -194,11 +219,18 @@ func (o *Orchestrator) realizeRootWorkspace(ctx context.Context, ch EngineChanne
 			AllocationID: plan.allocID,
 			HostPath:     plan.hostPath,
 			HostID:       o.provisionRoot,
+			// The restore lands on THIS attempt's disk (Faz A.5 T5). Before this it always landed on the
+			// control plane's, which is why the sentence above it — "THE MACHINE MAY BE A DIFFERENT ONE,
+			// and nothing here has to know" — was true of the ROWS and false of the BYTES.
+			Ops: ops,
 		})
 	case plan.fresh:
 		alloc, err = o.provisionFreshAllocation(ctx, ops, tenant, plan, runID, fence)
 	default:
 		alloc, err = o.reuseAllocation(ctx, ops, tenant, ws, plan.allocID, runID)
+		if errors.Is(err, errWorkspaceNotOnThisMachine) {
+			alloc, err = o.migrateAllocationHere(ctx, ops, tenant, plan, runID, err)
+		}
 	}
 	if err != nil {
 		return "", "", "", err
@@ -404,6 +436,23 @@ func (o *Orchestrator) reuseAllocation(ctx context.Context, ops toolbroker.Works
 		return coordinator.Allocation{}, fmt.Errorf("workspace %s changed allocation between planning (%s) and the dial (%s)",
 			ws.WorkspaceID, allocID, alloc.ID)
 	}
+	// THE TREE IS ASKED FOR ITS HEAD FIRST, AND THE ORDER IS THE WHOLE OF THIS FIX (Faz A.5 T5). The head
+	// is read WHERE THE REPOSITORY IS, so a reused allocation whose machine is not the one this attempt
+	// dialed has nothing to answer with — and that is the ONLY signal this side has that the bytes are
+	// elsewhere, because no row in the database says which machine an allocation is on (measured
+	// 2026-08-05: workspace_allocations is id, workspace_id, project_id, fence, host_path, state,
+	// created_at). Asking the disk is also the stronger test of the two a column could offer: a column
+	// says where the bytes were PUT, the disk says whether they are THERE.
+	//
+	// IT USED TO SIT BELOW THE RECEIPT SHORT-CIRCUIT, which made it unreachable for exactly the case it
+	// was written for — see errWorkspaceNotOnThisMachine for the five-step measurement. The cost of the
+	// move is one `git rev-parse` on a resumed attempt that would previously have skipped it; the cost of
+	// not moving it is a session silently continuing on an empty checkout.
+	head, tree, err := ops.Head(ctx)
+	if err != nil {
+		return coordinator.Allocation{}, fmt.Errorf("%w: allocation %s of workspace %s answered no head: %v",
+			errWorkspaceNotOnThisMachine, alloc.ID, ws.WorkspaceID, err)
+	}
 	// A pause/resume re-enters this for the SAME run: recording a second receipt at the (advanced) head
 	// would make RunBaseCommit pick the newest and the changeset miss the pre-pause commits (REP-005). A
 	// run keeps the ONE base it started from, so skip when this run already recorded a receipt.
@@ -411,14 +460,6 @@ func (o *Orchestrator) reuseAllocation(ctx context.Context, ops toolbroker.Works
 		return coordinator.Allocation{}, err
 	} else if found {
 		return alloc, nil
-	}
-	// The head is read WHERE THE REPOSITORY IS. A reused allocation whose machine is not the one this
-	// attempt dialed has no repository to read and this fails loudly — see the workspace-affinity note
-	// in the A.3 T5 report; a silent empty head would record a base commit of "" and make the run's
-	// whole changeset wrong.
-	head, tree, err := ops.Head(ctx)
-	if err != nil {
-		return coordinator.Allocation{}, err
 	}
 	if err := o.spine.RecordPreparationReceipt(ctx, tenant, coordinator.PreparationReceiptInput{
 		ReceiptID:    "prep_" + randHex16(),
@@ -431,6 +472,95 @@ func (o *Orchestrator) reuseAllocation(ctx context.Context, ops toolbroker.Works
 	}); err != nil {
 		return coordinator.Allocation{}, err
 	}
+	return alloc, nil
+}
+
+// migrateAllocationHere brings a session's workspace ONTO THE MACHINE THIS ATTEMPT DIALED, from the
+// latest byte-archived snapshot, when the allocation it planned to reuse turned out to be on another
+// one. It is the answer to workspace affinity that does not narrow WHERE a session may run — the third
+// of the three A.3 T5 named, and the only one that serves "the next message runs on the emptiest Mac".
+//
+// WHY NOT PREFER THE OLD MACHINE INSTEAD, which is the cheaper-sounding answer. Preferring it requires
+// being able to ASK for it, and the rendezvous cannot be asked: poolQueue hands over whichever machine
+// is parked, in FIFO order, and runner_gateway.go states the reason it has no per-machine match inside
+// the handover ("a comparison inside the handover would need the queue to consult per-runner state under
+// its own lock"). A preference that cannot be expressed at the dial can only be expressed by REFUSING
+// the machine that answered — which is a park, and a run that parks until one specific Mac frees is a
+// run a permanently busy Mac never releases. Migration has no such failure mode.
+//
+// IT NEEDS AN ARCHIVE AND SAYS SO WHEN THERE IS NONE. A workspace whose bytes are on a machine that is
+// not here and that has never been archived cannot be moved by anyone; the honest answer is the refusal
+// the caller turns into a provisioning terminal, NOT a fresh clone. A re-clone would present a session's
+// uncommitted work as a clean checkout — the same loss planRootWorkspace's `paused` arm exists to avoid,
+// arriving through a different door.
+//
+// THE NEW ALLOCATION KEEPS THE PATH THE MACHINE ALREADY OPENED, and that is forced rather than chosen:
+// the lease offer carried the path before the dial and the runner bind-mounted it, so a path minted here
+// would name a directory nothing has mounted. What the new ROW buys is the FENCE — a straggler on the
+// old machine can no longer record a snapshot against this workspace (CreateWorkspaceSnapshot is
+// fence-guarded, SAN-006), so the archive this migration just restored from cannot be overwritten by the
+// tree it was taken from.
+func (o *Orchestrator) migrateAllocationHere(ctx context.Context, ops toolbroker.WorkspaceOps, tenant coordinator.Tenant, plan workspacePlan, runID string, why error) (coordinator.Allocation, error) {
+	ws := plan.ws
+	if o.snapshots == nil {
+		return coordinator.Allocation{}, fmt.Errorf("%w, and no snapshot sink is wired to move it here", why)
+	}
+	snapshotID, found, err := o.spine.LatestRestorableWorkspaceSnapshot(ctx, tenant, ws.WorkspaceID)
+	if err != nil {
+		return coordinator.Allocation{}, err
+	}
+	if !found {
+		return coordinator.Allocation{}, fmt.Errorf("%w, and no byte-archived snapshot exists to move it here — "+
+			"this session's work is on the machine that holds allocation %s and only that machine can archive it", why, plan.allocID)
+	}
+	// The uid the migrated tree's tools run under, acquired BEFORE the bytes land, for the reason
+	// provisionFreshAllocation and ResumeReleasedWorkspace both give: an account minted afterwards
+	// inherits a tree written by somebody else. It carries the SAME declared ceiling as those two — the
+	// account is minted on the control plane's host — rather than a new one; see A.5 T3.
+	var account SessionAccount
+	if o.sessionAccounts != nil {
+		acquired, aerr := o.sessionAccounts.Acquire(ctx, plan.sessionID)
+		if aerr != nil {
+			return coordinator.Allocation{}, fmt.Errorf("migrate %s: %w", ws.WorkspaceID, aerr)
+		}
+		account = acquired
+	}
+	allocID := "alloc_" + randHex16()
+	alloc, err := o.spine.AllocateWorkspace(storage.ScopeToTenant(ctx, tenant.Project), allocID, ws.WorkspaceID, plan.hostPath)
+	if err != nil {
+		return coordinator.Allocation{}, err
+	}
+	// THE ROW IS MINTED BEFORE THE BYTES ARRIVE, so a restore that dies half-way leaves a workspace whose
+	// CURRENT allocation is the one on THIS machine — the next attempt re-enters here, finds an empty
+	// tree again, and restores again. Minting it after would leave the current allocation pointing at the
+	// old machine while a half-restored tree sat here, which is the one arrangement no later attempt can
+	// tell apart from the case this function exists to repair.
+	manifest, err := o.snapshots.RestoreThrough(ctx, tenant, snapshotID, plan.hostPath, ops)
+	if err != nil {
+		return coordinator.Allocation{}, fmt.Errorf("%w: restore snapshot %s onto this machine: %v", ErrRecoveryImpossible, snapshotID, err)
+	}
+	if account.Bound() {
+		if err := HandTreeTo(plan.hostPath, account); err != nil {
+			return coordinator.Allocation{}, fmt.Errorf("migrate %s: %w", ws.WorkspaceID, err)
+		}
+	}
+	// The run keeps the ONE preparation receipt it started from (REP-005): this is the same run on a new
+	// disk, not a new base. A migration that recorded a second receipt would move the base commit its
+	// changeset diffs from and silently drop everything the run had already committed.
+	payload, _ := json.Marshal(map[string]any{
+		"workspace_id":      ws.WorkspaceID,
+		"run_id":            runID,
+		"new_allocation_id": alloc.ID,
+		"new_fence":         alloc.Fence,
+		"snapshot_id":       snapshotID,
+		"tree_checksum":     manifest.TreeChecksum,
+		"reason":            "machine_affinity",
+	})
+	if _, err := o.spine.RecordRecoveryEvent(ctx, tenant, plan.sessionID, "", eventWorkspaceRestored, payload); err != nil {
+		return coordinator.Allocation{}, err
+	}
+	log.Printf("workspace %s: allocation %s was on another machine; restored snapshot %s onto this one as %s (fence %d)",
+		ws.WorkspaceID, plan.allocID, snapshotID, alloc.ID, alloc.Fence)
 	return alloc, nil
 }
 

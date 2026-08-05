@@ -11,6 +11,7 @@ import (
 
 	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
+	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 
 	"github.com/palgroup/palai/storage"
 )
@@ -385,6 +386,10 @@ type ResumeInput struct {
 	HostPath     string
 	// HostID is the placement identity the quarantine guard consults (the provision root, on this tier).
 	HostID string
+	// Ops is the filesystem HostPath is a path ON (Faz A.5 T5). Nil is this process's own — the recovery
+	// ladder and the deterministic tiers — and an attempt's ops put the restored tree on the machine that
+	// took the lease, which is what the "THE MACHINE MAY BE A DIFFERENT ONE" paragraph below now buys.
+	Ops toolbroker.WorkspaceOps
 }
 
 // ResumeReleasedWorkspace brings back a workspace the idle releaser handed a machine back for: it drives
@@ -401,12 +406,20 @@ type ResumeInput struct {
 // resumes on whichever Mac the control plane is provisioning on now, with the previous host's writes
 // already fenced out at the DB (SAN-006).
 //
-// HONEST CEILING — THE RESTORE WRITES TO THIS PROCESS'S FILESYSTEM. snapshot.Restore untars locally, so
-// the bytes land wherever the control plane is, exactly as RecoverWorkspace's restore does. On a native
-// Mac serving its own runs — the configuration this is being shipped for — the control plane and the
-// machine are the same host and this is correct. On a split deploy it would restore onto the wrong disk,
-// which is the same shape as the session-account ceiling provisionFreshAllocation already names, and it
-// is reported rather than worked around.
+// ~~HONEST CEILING — THE RESTORE WRITES TO THIS PROCESS'S FILESYSTEM~~ — CLOSED 2026-08-05 (Faz A.5 T5),
+// and the shipped sentence is kept rather than deleted because a superseded ceiling has to be checkable.
+// It said snapshot.Restore untars locally so the bytes land wherever the control plane is, and that a
+// split deploy would restore onto the wrong disk. The restore now goes through `in.Ops` — the machine's
+// own ws.restore, which untars AND verifies SAN-005 on the far side — so a caller inside an attempt
+// restores onto the machine that took the lease. A caller with no attempt (nil Ops) is unchanged.
+//
+// THE CAPTURE HALF IS STILL OPEN AND IS NOT THE SAME SHAPE. IdleReleaser.release archives c.HostPath
+// with no Ops, because a sweep has no lease and therefore no connection to any machine; and the machine
+// stops serving ws.* the moment the engine exits (packages/runner/serve.go cancels the lease context
+// when supervisor.Stream returns), so there is no attempt-end hook to hang one off either. The archives
+// a machine's allocation CAN produce today are the ones cut while the engine is live — the pause
+// boundary (checkpointBeforePause → captureBoundarySnapshot). Anything else needs the machine's
+// workspace service to outlive its engine, which is a lease-lifecycle change and not this task's.
 //
 // A workspace with no restorable snapshot FAILS rather than resuming on an empty tree: a paused workspace
 // whose archive is gone has lost its work, and re-cloning the binding would present that loss as a fresh
@@ -481,7 +494,7 @@ func ResumeReleasedWorkspace(
 	if err != nil {
 		return coordinator.Allocation{}, err
 	}
-	manifest, err := snapshots.RestoreTo(ctx, tenant, snapshotID, in.HostPath)
+	manifest, err := snapshots.RestoreThrough(ctx, tenant, snapshotID, in.HostPath, in.Ops)
 	if err != nil {
 		return coordinator.Allocation{}, fmt.Errorf("%w: restore snapshot %s: %v", ErrRecoveryImpossible, snapshotID, err)
 	}

@@ -186,6 +186,50 @@ func (w *RemoteWorkspace) Clone(ctx context.Context, in runner.WorkspaceCloneReq
 	return out.Receipt, out.Findings, nil
 }
 
+// Archive tars this allocation ON THE MACHINE and returns the bytes with the manifest the machine
+// derived from its own tree (Faz A.5 T5). It is the read half of moving a session between Macs: the
+// control plane owns the object store and the snapshot row, and the machine owns the bytes, so the
+// archive is produced there and stored here.
+//
+// THE MANIFEST IS THE MACHINE'S ANSWER AND NOT THIS SIDE'S GUESS. Restore verifies against it, so a
+// manifest computed here — over a tree this process cannot see — would verify the archive against
+// itself and prove nothing.
+func (w *RemoteWorkspace) Archive(ctx context.Context) ([]byte, workspace.Manifest, error) {
+	data, err := w.call(ctx, runner.WorkspaceOpArchive, nil)
+	if err != nil {
+		return nil, workspace.Manifest{}, err
+	}
+	var out struct {
+		Archive  []byte             `json:"archive"`
+		Manifest workspace.Manifest `json:"manifest"`
+	}
+	if err := remarshalInto(data, &out); err != nil {
+		return nil, workspace.Manifest{}, err
+	}
+	return out.Archive, out.Manifest, nil
+}
+
+// Restore untars a control-plane-held archive into this allocation on the machine, requiring the
+// restored tree to re-derive `want` (SAN-005). It is the write half of Archive, and the verification
+// happens on the far side for the reason stated there: what must match is the tree a run is about to be
+// given, not the bytes this process is about to send.
+//
+// The allocation must be FRESH — snapshot.Restore's own requirement — which on this path is guaranteed
+// by the caller opening a newly-named allocation on the machine immediately before.
+func (w *RemoteWorkspace) Restore(ctx context.Context, body []byte, want workspace.Manifest) (workspace.Manifest, error) {
+	data, err := w.call(ctx, runner.WorkspaceOpRestore, map[string]any{"archive": body, "manifest": want})
+	if err != nil {
+		return workspace.Manifest{}, err
+	}
+	var out struct {
+		Manifest workspace.Manifest `json:"manifest"`
+	}
+	if err := remarshalInto(data, &out); err != nil {
+		return workspace.Manifest{}, err
+	}
+	return out.Manifest, nil
+}
+
 func (w *RemoteWorkspace) Read(ctx context.Context, rel string, maxBytes int64) ([]byte, bool, error) {
 	data, err := w.call(ctx, runner.WorkspaceOpRead, map[string]any{"path": rel, "max_bytes": maxBytes})
 	if err != nil {
