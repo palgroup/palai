@@ -110,6 +110,18 @@ var (
 // STRING and comes back as one, so an archive handed to the server as a live []byte would exercise a
 // decode path production never takes — and the restore verb's whole payload is bytes. A double that
 // skipped the encoding would be green here and broken on the wire.
+//
+// AND THE ANSWER'S `root` IS REWRITTEN BACK INTO THE CONTROL PLANE'S SPELLING, which is the line that
+// makes this model able to fail at all. Two Macs configure the SAME PALAI_WORKSPACE_ROOT, so one
+// allocation path is one string on both of them and two different directories; here it is one string
+// and `diskPath` is the only thing that reaches either directory. Letting the open answer with this
+// machine's real path instead would hand the control plane a path IT can open — and then a restore that
+// never crossed the wire would land in exactly the right place and every assertion below would pass. A
+// perturbation removing the remote branch of restoreAllocation was measured green under that model and
+// red under this one, which is the whole difference between the two.
+//
+// What the rewrite gives up is the symlink resolution a real macOS runner performs (/var -> /private/var
+// in the open's answer). That is remote_workspace_test.go's subject and not this file's.
 func (c macChannel) StartWorkspace(ctx context.Context, wsID, op, root string, payload map[string]any) (<-chan WorkspaceAnswer, func(), error) {
 	encoded, err := json.Marshal(contracts.RunnerMessage{
 		Protocol: runner.RunnerProtocolV1,
@@ -130,6 +142,9 @@ func (c macChannel) StartWorkspace(ctx context.Context, wsID, op, root string, p
 	var result contracts.RunnerMessage
 	if err := json.Unmarshal(back, &result); err != nil {
 		return nil, nil, err
+	}
+	if answered, ok := result.Data["root"].(string); ok && answered == c.mac.diskPath(root) {
+		result.Data["root"] = root
 	}
 	answers := make(chan WorkspaceAnswer, 1)
 	answers <- decodeWorkspaceAnswer(result.Data)
@@ -472,8 +487,8 @@ func TestARunResumedOnADifferentMachineContinuesFromItsSnapshot(t *testing.T) {
 	if after.Fence <= before.Fence {
 		t.Fatalf("the migrated allocation's fence is %d, want more than %d — the machine the tree came from is not fenced out", after.Fence, before.Fence)
 	}
-	if after.HostPath != f.free.diskPath(f.allocPath) {
-		t.Fatalf("the migrated allocation's host path is %q, want the path on the machine that is running it (%q)", after.HostPath, f.free.diskPath(f.allocPath))
+	if after.HostPath != f.allocPath {
+		t.Fatalf("the migrated allocation's host path is %q, want the path the machine opened and the lease mounted (%q) — a migration that renames the allocation names a directory nothing has mounted", after.HostPath, f.allocPath)
 	}
 	if snapID == "" {
 		t.Fatal("no snapshot id")
