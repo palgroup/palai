@@ -95,9 +95,9 @@ func TestReasoningNeverReachesTheAnswerBody(t *testing.T) {
 	fake := runCards(t, liveRun())
 
 	body := map[string][]string{
-		"chat.startStream markdown_text": {fake.startedText},
-		"chat.appendStream markdown_text": fake.appended,
-		"chat.stopStream markdown_text":  {fake.stoppedText},
+		"chat.startStream markdown_text":     {fake.startedText},
+		"chat.appendStream markdown_text":    fake.appended,
+		"chat.stopStream markdown_text":      {fake.stoppedText},
 		"chat.postMessage (the rescue path)": fake.posted,
 	}
 	// Every fragment separately: a check for the whole reasoning would pass on a relay that leaked half

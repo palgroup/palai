@@ -29,7 +29,7 @@ func TestA2AStoreRLSAndCanonicalRefInvariant(t *testing.T) {
 
 	// Publish an interface for tenant A, projected from a revision carrying distinctive sensitive markers.
 	iface := a2a.ProjectInterface("rev_pinned", a2a.RevisionSource{
-		Project: tenantA.Project,
+		Project:      tenantA.Project,
 		Model:        "provider-model-CONFIDENTIAL",
 		Tools:        []string{"internal_TOOL"},
 		Instructions: "SYSTEM-PROMPT-CONFIDENTIAL",

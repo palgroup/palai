@@ -41,12 +41,12 @@ const notScanned = "not_scanned"
 // MediaType/LogicalType/Provenance are optional — a caller with no classification leaves
 // them zero and the row stores the empty defaults.
 type WriteRequest struct {
-	Project      string
-	RunID        string
-	Content      []byte
-	MediaType    string         // e.g. text/x-diff, text/plain (§22.6)
-	LogicalType  string         // report/patch/diff/log/test-result (§22.6)
-	Provenance   map[string]any // links back to the producing changeset/run/tool (§22.6)
+	Project     string
+	RunID       string
+	Content     []byte
+	MediaType   string         // e.g. text/x-diff, text/plain (§22.6)
+	LogicalType string         // report/patch/diff/log/test-result (§22.6)
+	Provenance  map[string]any // links back to the producing changeset/run/tool (§22.6)
 }
 
 // Writer persists artifacts: bytes to the object Store, then an index row in Postgres.

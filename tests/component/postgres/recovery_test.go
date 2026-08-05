@@ -31,7 +31,7 @@ func baseCheckpointInput(tenant coordinator.Tenant, runID, attemptID string) rec
 	return recovery.PersistInput{
 		CheckpointID: newID("chk"), BoundaryID: newID("bnd"),
 		Project: tenant.Project,
-		RunID: runID, AttemptID: attemptID,
+		RunID:   runID, AttemptID: attemptID,
 		EngineVersion: "0.1.0", ProtocolVersion: "engine.v1",
 		Format: "reference-kernel", FormatVersion: 1,
 		ConfigSnapshotHash: "sha256:cfg", TranscriptSequence: 7,

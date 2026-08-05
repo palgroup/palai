@@ -58,11 +58,11 @@ func TestResolveVectorHitsDropsLeakyRecords(t *testing.T) {
 		"kchk_ok": {ChunkID: "kchk_ok", Content: "authorized", DocumentRevisionID: "kdoc_1"},
 	}
 	recs := []VectorRecord{
-		{Project: project, KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_ok"},         // authorized, in-scope
-				{Project: "proj_other", KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_ok"},    // foreign project -> dropped
-		{Project: project, KnowledgeBaseID: "kb_other", IndexRevisionID: idxID, ChunkID: "kchk_ok"},   // foreign KB -> dropped
-		{Project: project, KnowledgeBaseID: kbID, IndexRevisionID: "kidx_old", ChunkID: "kchk_ok"},    // foreign revision -> dropped
-		{Project: project, KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_secret"},     // not in admitted set -> dropped
+		{Project: project, KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_ok"},       // authorized, in-scope
+		{Project: "proj_other", KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_ok"},  // foreign project -> dropped
+		{Project: project, KnowledgeBaseID: "kb_other", IndexRevisionID: idxID, ChunkID: "kchk_ok"}, // foreign KB -> dropped
+		{Project: project, KnowledgeBaseID: kbID, IndexRevisionID: "kidx_old", ChunkID: "kchk_ok"},  // foreign revision -> dropped
+		{Project: project, KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_secret"},   // not in admitted set -> dropped
 	}
 	got := resolveVectorHits(recs, project, kbID, idxID, admitted)
 	if len(got) != 1 || got[0].ChunkID != "kchk_ok" {

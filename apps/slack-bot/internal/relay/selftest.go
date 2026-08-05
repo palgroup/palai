@@ -5,10 +5,10 @@
 // FOUR LEGS, IN ORDER, AND THE FIRST FAILURE STOPS. Each leg is a different repair on a different screen,
 // which is the whole reason they are separate results rather than one boolean:
 //
-//	1. auth.test          the bot token is valid, and names the workspace this row claims
-//	2. Socket Mode        an app-level token opens a connection, and it closes cleanly
-//	3. chat.postMessage   the app is in the channel and can speak in it
-//	4. the stream trio    startStream → append → append → stopStream, read back
+//  1. auth.test          the bot token is valid, and names the workspace this row claims
+//  2. Socket Mode        an app-level token opens a connection, and it closes cleanly
+//  3. chat.postMessage   the app is in the channel and can speak in it
+//  4. the stream trio    startStream → append → append → stopStream, read back
 //
 // A LEG IS NEVER RENAMED AND NEITHER IS ITS ERROR. Slack's own code rides into Detail verbatim
 // (`invalid_auth`, `missing_scope`, `not_in_channel`, `channel_not_found`), because those are the words the

@@ -1459,7 +1459,6 @@ func TestMigration30APIKeyScope(t *testing.T) {
 		t.Fatalf("api_keys row security enabled=%v forced=%v, want both true", enabled, forced)
 	}
 
-
 	// M1: the runtime role may READ the ledger but not write it.
 	assertPriv := func(priv string, want bool) {
 		var got bool
@@ -2072,7 +2071,7 @@ func TestMigration45RunnerFleet(t *testing.T) {
 		t.Fatalf("count the default pool after the chain: %v", err)
 	}
 	if seeded != 0 {
-		t.Fatalf("the migration chain left a 'pool_default' row behind; no migration seeds a tenant row, "+
+		t.Fatalf("the migration chain left a 'pool_default' row behind; no migration seeds a tenant row, " +
 			"and identity.Store.provision is the only writer of the default pool")
 	}
 

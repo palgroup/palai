@@ -122,22 +122,22 @@ type Request struct {
 	// IT IS AN ADDRESS, NEVER A CREDENTIAL. The value is vetted through packages/egress before it is ever
 	// stored, and any error that quotes it redacts userinfo and query first (redactBaseURL) — a gateway
 	// URL can carry a token, and this string reaches logs and run outcomes.
-	BaseURL       string        `json:"base_url,omitempty"`
-	RouteRevision int           `json:"route_revision"`
-	ModelStepID   string        `json:"model_step_id"`
-	Model         string        `json:"model"`
-	Messages      []Message     `json:"messages"`
-	Tools         []ToolSchema  `json:"tools,omitempty"`
-	ForceToolCall bool          `json:"force_tool_call,omitempty"`
+	BaseURL       string       `json:"base_url,omitempty"`
+	RouteRevision int          `json:"route_revision"`
+	ModelStepID   string       `json:"model_step_id"`
+	Model         string       `json:"model"`
+	Messages      []Message    `json:"messages"`
+	Tools         []ToolSchema `json:"tools,omitempty"`
+	ForceToolCall bool         `json:"force_tool_call,omitempty"`
 	// Thinking is whether this call should return the model's reasoning where a person can read it.
 	// Empty (ThinkingDefault) on every request that did not ask, which keeps such a request's provider
 	// body byte-identical to the pre-thinking one.
-	Thinking ThinkingMode `json:"thinking,omitempty"`
-	OutputSchema  *OutputSchema `json:"output_schema,omitempty"`
-	Deadline      time.Time     `json:"deadline"`
-	Privacy       PrivacyFlags  `json:"privacy,omitempty"`
-	Reservation   Reservation   `json:"reservation"`
-	Secret        SecretRef     `json:"secret"`
+	Thinking     ThinkingMode  `json:"thinking,omitempty"`
+	OutputSchema *OutputSchema `json:"output_schema,omitempty"`
+	Deadline     time.Time     `json:"deadline"`
+	Privacy      PrivacyFlags  `json:"privacy,omitempty"`
+	Reservation  Reservation   `json:"reservation"`
+	Secret       SecretRef     `json:"secret"`
 }
 
 // ToolCall is a tool the model asked to run. Arguments is the provider-generated
@@ -198,13 +198,13 @@ type Result struct {
 	// and those are three different facts — see ThinkingVisible. An empty Thinking on a request that asked
 	// for it is therefore not an error: measured 2026-08-04, claude-sonnet-5 answers a simple arithmetic
 	// prompt with no thinking block at all, because an adaptive model decides per request whether to think.
-	Thinking  string     `json:"thinking,omitempty"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
-	Deltas            []Delta                  `json:"deltas,omitempty"`
-	Usage             contracts.Usage          `json:"usage"`
-	FinishReason      string                   `json:"finish_reason,omitempty"`
-	Attempts          int                      `json:"attempts"`
-	Error             *SanitizedError          `json:"error,omitempty"`
+	Thinking     string          `json:"thinking,omitempty"`
+	ToolCalls    []ToolCall      `json:"tool_calls,omitempty"`
+	Deltas       []Delta         `json:"deltas,omitempty"`
+	Usage        contracts.Usage `json:"usage"`
+	FinishReason string          `json:"finish_reason,omitempty"`
+	Attempts     int             `json:"attempts"`
+	Error        *SanitizedError `json:"error,omitempty"`
 }
 
 // Validate reports whether the result honors the canonical contract every adapter

@@ -130,7 +130,6 @@ func TestAPublicationDisplayCannotBroadcast(t *testing.T) {
 	}
 }
 
-
 // The mention is a TEXT TOKEN, not an actionable element, so it must not need an exception anywhere: the
 // singularity sweep in blocks_test.go stays green with the renderer minting one. Asserted here as well
 // because "it renders as a section like any other text" is the property that keeps it out of that test's

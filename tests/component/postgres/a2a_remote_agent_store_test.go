@@ -24,7 +24,7 @@ func TestA2ARemoteAgentStoreRLS(t *testing.T) {
 	ctx := context.Background()
 
 	agent := a2a.RemoteAgent{
-		Project: tenantA.Project,
+		Project:              tenantA.Project,
 		Name:                 "Remote Planner",
 		CardURL:              "https://peer.example/agent-card.json",
 		Endpoint:             "https://peer.example/v1/a2a",

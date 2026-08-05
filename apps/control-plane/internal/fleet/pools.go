@@ -40,12 +40,12 @@ var ErrPostureMismatch = errors.New("fleet: declared posture is not the pool's")
 // Pool is one runner pool: the posture its machines have, the shape of machine it expects, and the
 // name that is unique within its project.
 type Pool struct {
-	ID           string
-	Project      string
-	Name         string
-	Posture      string
-	OS           string
-	Arch         string
+	ID      string
+	Project string
+	Name    string
+	Posture string
+	OS      string
+	Arch    string
 	// StrictEnrollment is T6's waiting room: with it set an enrolment needs a human. It is read here so
 	// the surface does not have to grow a field later, and NOTHING in E24 T2 acts on it — T6 does.
 	StrictEnrollment bool
