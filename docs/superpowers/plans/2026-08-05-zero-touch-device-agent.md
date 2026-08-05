@@ -21,10 +21,13 @@ The work is complete only when all of the following are true at once:
 1. A production self-host exposes two authenticated surfaces:
    - the existing HTTPS API/admin edge;
    - a public TLS runner gateway used only by agents.
-2. A device needs exactly these bootstrap inputs:
-   - `PALAI_CONTROLLER_URL`;
-   - `PALAI_ENROLLMENT_TOKEN_FILE`, containing a pool-scoped `rpk_...` key;
-   - `PALAI_CONTROLLER_CA` only for a private/self-signed deployment. Public TLS uses system roots.
+2. A device is set up by exactly one command, run exactly once, taking exactly these inputs:
+   - `palai enroll --url <controller>`;
+   - `--key-file <path>`, a file holding a pool-scoped `rpk_...` key — never `--key`, because a secret
+     on argv is readable by every process on the machine (§3.2);
+   - `--ca-file <path>` only for a private/self-signed deployment. Public TLS uses system roots.
+
+   These are arguments to a **one-time install**, not a runtime contract; see item 17.
 3. `PALAI_RUNNER_POOL`, `PALAI_RUNNER_POSTURE`, runner id, DNS name, OS, architecture and capacity are not
    required operator inputs. The key chooses the pool, the binary measures the machine, and the admin
    plane chooses concurrency.
@@ -48,8 +51,8 @@ The work is complete only when all of the following are true at once:
     isolation mode, desired/applied configuration, current occupancy and historical sessions.
 11. A real session created through the packed TypeScript SDK runs `hostname`, file operations and
     `xcodebuild -version` on a remote Mac rather than on the control-plane host.
-12. A clean Mac installs from the Homebrew tap and a clean Linux user installs from a signed release
-    archive without a source checkout.
+12. A clean Mac and a clean Linux user each install from one signed release archive through one install
+    script, with no source checkout and no package manager in the path.
 13. `npm install @palai/sdk` installs compiled JavaScript plus declarations; a clean consumer can create,
     stream and inspect a session against the self-host.
 14. Two Macs on different networks pass the live fleet gate simultaneously. No device opens an inbound
@@ -402,8 +405,8 @@ mode remains fail-closed and explicit.
 - Replace the unconditional `admitMachine` gate with a pre-enrolment capability probe; after the gateway
   selects the pool profile, bind only the mode that the probe proved available.
 - Wire the measured `dirs` machinery into runner workspace/session setup.
-- Keep `palai-agentd` in the package as the optional accounts-mode helper; do not install it during the
-  default Homebrew flow.
+- Keep `palai-agentd` in the package as the optional accounts-mode helper; the default install never
+  places or loads it, and enabling accounts mode stays one explicit administrator action.
 - Add preflight output that is useful in service logs but carries no secret.
 - State the security ceiling in Fleet and docs: user mode is one customer/one uid; accounts mode is still
   not a cross-customer Mac boundary.
@@ -482,39 +485,46 @@ transition appears on Fleet with the correct runner/session identity.
 - Release index must contain `palai` for Darwin/Linux × amd64/arm64 and must identify `palai-selfhost`
   separately.
 - Extracting the device package must reveal no server/admin command implementation.
-- Homebrew formula install/test/service runs against an immutable URL and SHA-256.
+- The install script resolves an immutable URL and verifies a SHA-256 it fetched separately (T7b).
 - A package built from a dirty tree or carrying an unstamped version is refused by the release gate.
+
+**THERE IS NO HOMEBREW TAP, AND DROPPING IT IS A CORRECTION RATHER THAN A SCOPE CUT.** An earlier draft
+of this plan had Homebrew as the human path and `install.sh` as the fleet path. That is **two installers
+for one binary, and worse, two SERVICE installers**: `brew services start palai` writes its own
+LaunchAgent, while §3.2 makes writing and loading the service `palai enroll`'s job. Whichever ran second
+would silently own the machine, and a fleet where two mechanisms can each claim the agent is a fleet
+where "why is this Mac not connected" has two answers. One installer, one service owner.
+
+What is given up is discoverability on a developer's laptop, and it is worth giving up: this is a fleet
+agent that a provisioner installs, not a developer tool someone reaches for. If a tap is ever wanted, it
+is added later as a **thin wrapper that calls the same script and does not define a service** — that
+constraint is the whole reason this paragraph exists.
+
+Consequences elsewhere in this plan: T10 no longer updates a tap, the owner no longer needs to create a
+tap repository (§6.3), and Milestone B's gate is the install script rather than a formula.
 
 **Implementation**
 
 - Extend the existing deterministic/signature/SBOM release spine rather than adding a second packager.
 - Produce macOS archives containing `palai`, optional `palai-agentd`, license/readme and service metadata;
   produce equivalent Linux archives and user unit.
-- Prepare immutable GitHub-release asset names and generate a tap formula with architecture-specific
-  checksums. Exercise it through a temporary/local tap in this task; T10 performs the external publish.
-- Define a Homebrew `service` that runs as the current user. `brew services start palai` therefore uses a
-  LaunchAgent, not a root LaunchDaemon.
-- Keep installation and enrolment separate: the package may install with no secret, and the service starts
-  only after automation has placed valid config/key files.
+- Publish immutable GitHub-release asset names plus a **separately served checksum manifest**, which is
+  what `install.sh` verifies against.
+- Keep installation and enrolment separate: the package installs with no secret, and the service is
+  written and started by `enroll`, never by the installer.
 - Add upgrade/rollback tests that preserve config and device identity.
 
-Official publication contracts checked 2026-08-05:
-
-- Homebrew taps/formulae: <https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap>
-- Formula/service and audit requirements: <https://docs.brew.sh/Formula-Cookbook> and
-  <https://docs.brew.sh/Adding-Software-to-Homebrew>
-
-**Acceptance:** On a clean Mac with no Palai checkout, install through the generated temporary tap, place
-the two bootstrap inputs, then `brew services start palai`; Fleet shows the same machine after a service
-restart and a formula upgrade. T10 repeats this from the public `palai/tap` location.
+**Acceptance:** On a clean Mac with no Palai checkout and no package manager, `install.sh` places the
+binary, `palai enroll` writes identity and loads the service, and Fleet shows the same machine after a
+service restart and an in-place upgrade. T10 repeats this against the public release assets.
 
 #### T7b — `install.sh`, because a provisioner is not a person
 
-**Homebrew is the human path and it cannot be the fleet path.** A freshly booted cloud Mac may have no
-Homebrew at all; installing it first is a second unattended installer with its own prompts, its own
-prefix and its own update schedule. An autoscaler that waits for `brew` has made a package manager part
-of its critical path. So the fleet path is one script and one manifest, and Homebrew stays for the
-person installing on their own laptop.
+**One script is the only install path, for a person and for a provisioner alike.** A freshly booted
+cloud Mac may have no Homebrew at all, so installing it first would be a second unattended installer
+with its own prompts, prefix and update schedule, and an autoscaler that waits for `brew` has put a
+package manager in its critical path. The deciding argument is narrower than convenience though, and it
+is in T7: `brew services` would be a **second service installer** competing with `palai enroll`.
 
 **Contract**
 
@@ -547,7 +557,7 @@ secret in it and enrolled later from provider user-data.
 
 | Consumer | Path |
 |---|---|
-| A person with a Mac | Homebrew tap (T7), or `install.sh` if they prefer |
+| A person with a Mac | The same `install.sh`. There is no second path to maintain, and no package manager to wait for |
 | A provisioner / autoscaler | Bake `install.sh --version <pinned>` into the image, **or** run it from user-data. The pool key never enters the image; it arrives at boot through the provider's secret mechanism and `enroll` consumes it (T11) |
 
 **Likely files:** `scripts/install/install.sh`, the release job that publishes it beside the manifest,
@@ -619,7 +629,7 @@ the self-host. T10 repeats the same consumer test against the registry version a
 - one cloud-hosted self-host control plane with public API and runner gateway DNS/TLS;
 - Mac A and Mac B on different networks, neither with an inbound Palai port;
 - one Linux VM on a third network;
-- device artifacts installed from the signed release/Homebrew path;
+- device artifacts installed by `install.sh` from the signed release assets;
 - SDK installed from the packed or staged npm artifact, never imported from the checkout.
 
 **Live cases**
@@ -643,7 +653,7 @@ the self-host. T10 repeats the same consumer test against the registry version a
 
 - source commit and version;
 - public API URL and runner DNS name, with secrets redacted;
-- package checksums and Homebrew formula commit;
+- package checksums and the install script's own digest;
 - npm tarball/version/provenance identity;
 - each physical/VM machine's OS/arch and opaque runner id;
 - timestamps and session/run ids;
@@ -659,7 +669,7 @@ when repository policy permits.
 
 **RED first**
 
-- Publication refuses an existing GitHub asset, npm name/version or Homebrew formula version.
+- Publication refuses an existing GitHub asset or npm name/version.
 - Publication refuses without the protected-environment approval and required OIDC permissions.
 - Upgrade keeps device id/config and running leases; rollback remains protocol-compatible within the
   declared support window.
@@ -667,8 +677,8 @@ when repository policy permits.
 **Implementation**
 
 - Give the protected job only the minimum `contents`/`id-token` authority needed by the actual registries.
-- Upload signed GitHub release assets, publish/stage npm, then update the tap from the immutable asset
-  digests. Never publish from a workstation.
+- Upload signed GitHub release assets and the checksum manifest, then publish/stage npm. Never publish
+  from a workstation.
 - Verify every public artifact by downloading it back from its public location into a clean consumer.
 - Keep snapshot/RC/stable labels truthful. Current one-maintainer policy may publish development snapshots
   but must continue refusing RC/stable until the two-person environment exists.
@@ -722,7 +732,7 @@ cordoned/drained/terminated according to the configured provider floor.
 
 **This milestone exists because every other one is blocked on an owner input, and that is a sequencing
 defect rather than a fact about the work.** T1's live gate needs a public DNS name and certificates
-(owner input 1); T9 needs three machines on three networks; T7/T8 need a tap and an npm scope. None of
+(owner input 1); T9 needs three machines on three networks; T8 needs an npm scope. None of
 those are needed to demonstrate the thing this plan is actually about — **an agent that is handed a URL
 and a key and joins a plane it did not start.**
 
@@ -774,7 +784,7 @@ terminated. Until then the product truth is “autoscale-ready bootstrap and cap
 
 1. Public DNS names and certificate paths for the API edge and runner gateway (T1 live gate).
 2. Two real Macs and one Linux VM reachable outbound to the runner gateway (T9).
-3. GitHub release environment/two-maintainer policy and the separate Homebrew tap repository (T10).
+3. GitHub release environment and two-maintainer policy (T10). No tap repository is needed.
 4. Ownership of the `@palai/sdk` npm name/scope and its trusted-publisher binding (T8/T10).
 5. First autoscale provider choice and live credentials (T11 only).
 
