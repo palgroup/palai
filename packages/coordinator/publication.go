@@ -393,7 +393,10 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 		Scan(&pubID, &pendingHash, &expiresAt); {
 	case errors.Is(err, pgx.ErrNoRows):
 		// No pending approval (already resolved by a racing path): settle the command, transition nothing.
-		return settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID)
+		if err := settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
+			return 0, err
+		}
+		return 0, nil
 	case err != nil:
 		return 0, fmt.Errorf("lock pending approval: %w", err)
 	}
@@ -412,7 +415,7 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 		return 0, err
 	}
 	if !allowed {
-		if _, err := settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
+		if err := settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
 			return 0, err
 		}
 		return 0, ErrApproverNotAuthorized
@@ -433,7 +436,7 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 		if err := wakeParkedRunTx(ctx, tx, tenant, runID); err != nil {
 			return 0, err
 		}
-		if _, err := settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
+		if err := settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
 			return 0, err
 		}
 		return 0, nil
@@ -442,7 +445,7 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 	// A stale one-shot token (the head moved -> a new pending approval carries a new hash, or the args
 	// were edited) authorizes nothing: settle the command without transitioning the publication.
 	if requestHash != "" && requestHash != pendingHash {
-		if _, err := settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
+		if err := settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
 			return 0, err
 		}
 		return 0, nil
@@ -459,7 +462,7 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 	// a terminal run cannot support, so only the last act is refused. The command is settled first because
 	// nothing will ever apply it; leaving it queued is the half of this defect that outlived the 500.
 	if runEnded && newState == "approved" {
-		if _, err := settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
+		if err := settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
 			return 0, err
 		}
 		return 0, fmt.Errorf("%w: run %s is %s, so an approved publication would never be published", ErrRunTerminal, runID, runState)
@@ -470,10 +473,15 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 	// genuine approve reported "applied 6" — whatever the session's next journal sequence happened to be.
 	// No production caller noticed (command_pump.go, auto_approve.go and store/approvals.go all discard
 	// this return value and check only the error), but the callers THIS function was written for — a
-	// caller asserting a refusal as 0 "rather than reading it off an error string" — could not: every
-	// refusal path already returns an explicit 0 or forwards one (unauthorized, terminal-run), so the
-	// missing half was the SUCCESS path, now the actual rows the transition applied (0 or 1, never a
-	// journal position).
+	// caller asserting a refusal as 0 "rather than reading it off an error string" — could not.
+	//
+	// THAT CORRECTION LANDED AT THREE EXITS AND MISSED A FOURTH, which is why this paragraph is dated twice.
+	// The no-pending-approval arm above kept `return settleApprovalCommandTx(...)`, so the ONE exit that
+	// transitions nothing at all was the ONE exit still answering with a journal position. It is closed at
+	// the helper rather than at the call site: settleApprovalCommandTx now returns only an error, so EVERY
+	// refusal path here returns a literal 0 that no future edit can turn back into a sequence, and the only
+	// number this function computes is the transition's own RowsAffected() (0 or 1, never a journal
+	// position).
 	transitionTag, err := tx.Exec(ctx, storage.Query("SetPublicationState"),
 		pubID, tenant.Project, newState, "pending_approval")
 	if err != nil {
@@ -542,15 +550,26 @@ func approverAuthorizedTx(ctx context.Context, tx pgx.Tx, tenant Tenant, approve
 // command that stays queued is re-read by the boundary pump at every subsequent boundary for the life of
 // the run. Two of these three exits shipped as a bare `return applyCommandInTx(...)`, which the deferred
 // rollback undid, so the settle the comments promised never reached the database.
-func settleApprovalCommandTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, responseID, commandID string) (int64, error) {
-	seq, err := applyCommandInTx(ctx, tx, tenant, sessionID, responseID, commandID)
-	if err != nil {
-		return 0, err
+//
+// IT RETURNS ONLY AN ERROR, AND THE MISSING int64 IS THE POINT. It used to forward applyCommandInTx's
+// event-journal SEQUENCE, which four of its five call sites discarded into `_` while the fifth — the
+// no-pending-approval arm — returned it to ApplyApprovalDecision's caller as an applied-rows count. So the
+// one path in this function that transitions NOTHING was the one path that could answer a non-zero number,
+// and the number it answered was wherever the session's journal happened to be. That is the same defect
+// 2026-08-05 corrected at three other exits of the same function, still live at the fourth.
+//
+// Dropping the value rather than discarding it at the last site is what makes the class unrepeatable: a
+// settle authorizes nothing, so there is no count for it to report, and the next exit written here cannot
+// forward one by accident. The rows a decision APPLIED are the transition's own RowsAffected(), measured at
+// the one place a transition happens.
+func settleApprovalCommandTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, responseID, commandID string) error {
+	if _, err := applyCommandInTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
+		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit settled approval command: %w", err)
+		return fmt.Errorf("commit settled approval command: %w", err)
 	}
-	return seq, nil
+	return nil
 }
 
 // expirePublicationTx drives a publication fromState -> expired single-winner and journals
