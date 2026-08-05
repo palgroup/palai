@@ -927,6 +927,7 @@ const FleetConsoleRouteLedger = `[
   {"path": "/sessions", "ready_test_id": "panel-sessions", "axe_scanned_in": ["light", "dark"]},
   {"path": "/runs", "ready_test_id": "run-button", "axe_scanned_in": ["light", "dark"]},
   {"path": "/environments", "ready_test_id": "panel-environments", "axe_scanned_in": ["light", "dark"]},
+  {"path": "/mcp", "ready_test_id": "panel-mcp-connections", "axe_scanned_in": ["light", "dark"]},
   {"path": "/bots", "ready_test_id": "panel-bots", "axe_scanned_in": ["light", "dark"]},
   {"path": "/approvals", "ready_test_id": "panel-approvals", "axe_scanned_in": ["light", "dark"]},
   {"path": "/repositories", "ready_test_id": "panel-repository-bindings", "axe_scanned_in": ["light", "dark"]},

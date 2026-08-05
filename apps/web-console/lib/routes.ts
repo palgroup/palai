@@ -124,6 +124,18 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // except the environment picker, and BOTH of its states — a select, or the "create one first" note — are
   // real states worth scanning), while the panel is the one part that can still be a spinner.
   { path: "/environments", label: "Environments", group: "Build", readyTestId: "panel-environments", lead: "The named KEY=value sets an agent's shell commands run against. A value is written here and never read back." },
+  // MCP — the screen that closes a chain whose other two links already worked. `/agents/[id]` has read
+  // /mcp-connections and written revision-mcp-connection for some time, and at run time the revision's
+  // mcp_connections is a capability ceiling (extensions/lookup.go). What was missing was the definition
+  // surface, so a live stack sat at zero connections and the agent picker rendered empty in silence.
+  //
+  // IN "Build" BESIDE Tools AND REPOSITORIES for the reason that group exists: you BUILD the things a run
+  // needs. An MCP server is a source of tools, which makes it a sibling of Tools, not of Deployment.
+  //
+  // The readiness signal is the list panel — the one part that can still be a spinner — and it is EMPTY on a
+  // bootstrap stack, so the axe sweep covers the empty state, which is the state a first-day operator meets
+  // and the one this screen was written for.
+  { path: "/mcp", label: "MCP", group: "Build", readyTestId: "panel-mcp-connections", lead: "The MCP servers an agent can be given tools from. A connection here is a definition, not a grant — a run reaches a server only when its agent revision names this connection." },
   // IN "Build" BESIDE Tools AND NOT IN "Manage", and the distinction is the one this console's nav is
   // organised around: you BUILD the things a run needs. A bot is a way for a person to start one, which
   // makes it a sibling of Agents and Repositories rather than of Deployment.

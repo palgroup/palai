@@ -5346,6 +5346,14 @@
             ]
           },
           {
+            "path": "/mcp",
+            "ready_test_id": "panel-mcp-connections",
+            "axe_scanned_in": [
+              "light",
+              "dark"
+            ]
+          },
+          {
             "path": "/bots",
             "ready_test_id": "panel-bots",
             "axe_scanned_in": [
@@ -5442,8 +5450,8 @@
             ]
           }
         ],
-        "routes_declared": 16,
-        "routes_axe_scanned": 16,
+        "routes_declared": 17,
+        "routes_axe_scanned": 17,
         "action_ledger": [
           {
             "action": "runner-revoke-dialog",
