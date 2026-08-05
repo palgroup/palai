@@ -47,8 +47,10 @@ The work is complete only when all of the following are true at once:
 9. Before enrolment, the agent measures its engine driver, workspace, platform and supported isolation
    modes. The gateway checks those facts against the key's pool before issuing an identity. A machine that
    cannot execute never appears as ready capacity.
-10. The Fleet screen shows, per machine: live connection state, last seen, agent version, measured shape,
-    isolation mode, desired/applied configuration, current occupancy and historical sessions.
+10. The Fleet screen shows, per machine: live connection state, last seen, **running agent version and
+    the version it should be running**, measured shape, isolation mode, desired/applied configuration,
+    current occupancy and historical sessions. A newer version can be rolled out from the panel, and the
+    device updates itself without a human on it (T6b).
 11. A real session created through the packed TypeScript SDK runs `hostname`, file operations and
     `xcodebuild -version` on a remote Mac rather than on the control-plane host.
 12. A clean Mac and a clean Linux user each install from one signed release archive through one install
@@ -475,6 +477,77 @@ service, survives reboot/login and executes a real SDK-created session.
 
 **Acceptance:** Pull a network cable, reconnect it, start/end a session and alter concurrency; every state
 transition appears on Fleet with the correct runner/session identity.
+
+#### T6b — Remote update: one more field, drained first, and reversible
+
+**Goal:** The panel shows what version each machine runs, offers the newer one, and a click updates the
+device without a human on it and without killing a session.
+
+**IT IS NOT A NEW CHANNEL, AND THAT IS THE WHOLE DESIGN.** T3 already makes the admin plane the
+configuration authority: a desired document is polled, the agent applies it, and the applied value is
+shown only after the agent says it applied it. `desired_agent_version` is one more field in that
+document. A separate update channel would be a second way to instruct a machine, with its own auth, its
+own retry semantics and its own failure states — and this plan has already paid once for removing a
+second path (T7's two service installers).
+
+**THE PLANE NAMES A VERSION; IT NEVER SERVES BYTES.** The agent fetches the artifact from the release
+location and verifies it against the **separately served checksum manifest** — the same rule as
+`install.sh` (T7b), for the same reason. A control plane that hands out binaries is a CDN with a
+database attached, and every deployment's trust story then includes "whatever my plane served me".
+
+**DRAIN FIRST, AND REUSE THE PRIMITIVE THAT ALREADY EXISTS.** An agent holding leases must not swap its
+own binary underneath a running session. The sequence is cordon → wait for occupancies to reach zero →
+swap → restart, which is exactly T11's scale-down sequence minus the terminate. If T6b invents a second
+drain, one of the two will be the one that is wrong when a session is lost.
+
+**REVERSIBLE, BECAUSE THIS IS REMOTE CODE EXECUTION OVER THE WHOLE FLEET.** A bad release reaching every
+Mac at once is the worst failure a fleet-update feature has, and it is the one it must be designed
+against rather than tested for:
+
+- the new binary is written beside the old one and swapped by atomic rename; the previous binary is kept;
+- after restart the agent must re-connect and report ready within a bounded window, or it **rolls back to
+  the kept binary by itself** and reports why — a machine that cannot phone home cannot be told to
+  roll back;
+- an update is refused if the resolved version is absent from the signed manifest, if the digest
+  disagrees, or if it is **below the pool's minimum-version floor**, so a rollback cannot be used to
+  reintroduce a version with a known hole;
+- a pool-wide update applies in **batches with a configured size**, so a version that fails everywhere
+  takes down one batch rather than the fleet;
+- the plane keeps serving agents on version N while N+1 rolls out; the support window is T10's.
+
+**RED first**
+
+- A machine running an occupancy does not swap; it cordons, finishes, then swaps. The session's output
+  is unaffected and its lease is never cut.
+- A manifest-absent version, a digest mismatch and a below-floor downgrade are each refused **by name**
+  and leave the running binary untouched.
+- An update whose new binary fails to reconnect within the window rolls back automatically, and Fleet
+  shows the machine online on the OLD version with the failure recorded — not `offline`, and not
+  silently on the new one.
+- A pool-wide update with batch size 2 across 5 machines never has 3 draining at once.
+- The applied version is read from the **running agent's report**, never from the desired document —
+  a panel that shows the version it asked for is a panel that cannot show a failed update.
+
+**Implementation**
+
+- Add `desired_agent_version` and a pool `minimum_agent_version` to the existing desired-config
+  documents and their API/UI, with the same override precedence T3 defines.
+- Add the agent-side updater: resolve, fetch, verify against the separate manifest, stage, cordon, drain,
+  atomic swap, restart through the service manager, health-gate, roll back on failure.
+- Extend the machine detail view with running version, desired version, latest available, and update
+  state (`idle`, `draining`, `downloading`, `verifying`, `restarting`, `rolled_back`, `failed`).
+- Add a per-pool update action with batch size and a per-machine one; both write the same field.
+- Surface the refusal reasons from the RED list as actionable states, not as a generic error.
+
+**Acceptance:** With three machines enrolled and one running a session, set the pool's desired version;
+the idle two update and return online on the new version, the busy one waits for its session to finish
+and then updates, and none of the three loses a lease. Then publish a deliberately broken build, set it,
+and watch every machine roll back by itself and say so on Fleet.
+
+**Version drift self-heals, which is why `install.sh` needs no version logic.** A machine installed
+today and one installed next month converge on whatever the plane's desired version says, at their first
+settings poll. Pinning stays available for image bakes (`PALAI_VERSION`, T7b) and is not the mechanism
+that keeps a fleet consistent.
 
 ### T7 — Cut the real device distributions
 
