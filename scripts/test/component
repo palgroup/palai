@@ -631,7 +631,8 @@ run_postgres() {
   # allow-list because there is nothing to read. There is deliberately NO -run here, for the reason the
   # internal/fleet leg above gives: an allow-list on this package could only ever EXCLUDE a test somebody
   # adds beside these, which is the failure the leg exists to prevent. (It has grown from three tests to
-  # eleven across T1, T4 and T5 without this line needing to name any of them, which is the property.)
+  # thirteen across T1, T4, T5 and A.5 T6 without this line needing to name any of them, which is the
+  # property — `grep -rh '^func Test' tests/component/fleet/*.go | wc -l` -> 13, 2026-08-05.)
   #
   # What they run: one session taking TWO machines is TWO rows and the gap between them is not billed (a
   # bill is the sum of the holds, never the session's wall clock); an occupancy the reaper closes late is
@@ -642,7 +643,11 @@ run_postgres() {
   # exactly one machine.minutes ledger row and a redelivered release settles none; and (Faz A.4 T5) a
   # machine is FULL at the capacity it declared — the fourth hold on a three-capacity machine is refused,
   # a settled occupancy gives back exactly the one slot it held, and two sessions racing for the last slot
-  # produce exactly one winner, which is what a count-then-write ceiling cannot do.
+  # produce exactly one winner, which is what a count-then-write ceiling cannot do. And (Faz A.5 T6) the
+  # read a placement PREFERS by: each machine of a pool weighed by its own open holds, the declared ceiling
+  # returned raw so an undeclared machine is unlimited rather than full, one tenant's machines only — and
+  # that a stale weighing losing the race costs a park and never an over-allocation, because the preference
+  # chooses and only the acquire refuses.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v ./tests/component/fleet
