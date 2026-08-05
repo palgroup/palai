@@ -12,6 +12,9 @@ package execution
 // and never as a source — so this test has no copy of the answer to get wrong either.
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"regexp"
 	"sort"
@@ -66,5 +69,63 @@ func TestAbandonedLeaseTerminalsMatchTheRunTable(t *testing.T) {
 			"A terminal state missing from the query is a class of workspace that stays `leased` forever "+
 			"and never reaches the idle sweep; an extra one names a state a run can still leave, whose "+
 			"lease must not be taken.", got, want)
+	}
+}
+
+// THE ORDER OF reclaim's TWO WRITES IS A ONE-WAY DOOR, AND IT IS UNOBSERVABLE FROM ITS RESULT. Uninterrupted,
+// releasing the lease first and moving the state first end in exactly the same place — which is why the
+// behavioural sweep tests stay green under a reversal, and why they are not the wrong tests: the property
+// they assert genuinely still holds. What differs is only what a crash BETWEEN the two statements leaves:
+//
+//	lease first (shipped)   interrupted -> still `leased` with an active lease. Unchanged from the start,
+//	                        and this sweep's own candidate query finds it again on the next tick.
+//	state first (reversed)  interrupted -> `ready` WITH an active lease. IdleWorkspacesForRelease requires
+//	                        no active lease, so it skips it; this sweep requires `leased`, so it skips it
+//	                        too. The workspace is invisible to both, forever.
+//
+// So the guard reads the SHAPE, for the same reason workspace_release_defer_test.go does: there is no
+// behaviour to observe, because the difference only exists in a window a test cannot open without a seam
+// invented solely to open it.
+func TestReclaimReleasesTheLeaseBeforeItMovesTheState(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "lease_reclaim.go", nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse lease_reclaim.go: %v", err)
+	}
+
+	var body *ast.BlockStmt
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "reclaim" && fn.Body != nil {
+			body = fn.Body
+		}
+	}
+	if body == nil {
+		t.Fatal("reclaim not found in lease_reclaim.go — this guard fails rather than passing over an empty walk")
+	}
+
+	releaseAt, advanceAt := -1, -1
+	ast.Inspect(body, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		switch sel.Sel.Name {
+		case "ReleaseWriterLease":
+			if releaseAt < 0 {
+				releaseAt = fset.Position(sel.Pos()).Line
+			}
+		case "AdvanceWorkspace":
+			if advanceAt < 0 {
+				advanceAt = fset.Position(sel.Pos()).Line
+			}
+		}
+		return true
+	})
+
+	if releaseAt < 0 || advanceAt < 0 {
+		t.Fatalf("reclaim calls ReleaseWriterLease at line %d and AdvanceWorkspace at line %d; it must call BOTH, or a reclaimed workspace is left half-returned", releaseAt, advanceAt)
+	}
+	if releaseAt > advanceAt {
+		t.Fatalf("reclaim moves the workspace state (line %d) BEFORE it releases the lease (line %d). A crash between them leaves `ready` with an active lease, which the idle sweep skips (it requires no active lease) and this sweep skips too (it requires `leased`) — stuck for good. Release the lease first.", advanceAt, releaseAt)
 	}
 }
