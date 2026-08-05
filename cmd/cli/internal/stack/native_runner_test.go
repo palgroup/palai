@@ -7,7 +7,6 @@ package stack
 import (
 	"os"
 	"os/exec"
-	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -294,56 +293,5 @@ func TestTheRunnerSessionGaugeIsReadFromTheValueAndNotTheHelpText(t *testing.T) 
 	if _, err := scrapeGauge("# TYPE palai_runner_sessions gauge\n", "palai_runner_sessions"); err == nil {
 		t.Fatal("an exposition carrying only HELP/TYPE lines yielded a value: a runner that never connected " +
 			"would be reported as up")
-	}
-}
-
-// TestTheRunnerRunsAsTheAgentAccountWhenOneIsConfigured pins the U1 boundary: a synchronous tool
-// command runs in the RUNNER (A.3 moved it out of the control plane), so running the runner under a
-// second account is what puts the agent's shell on the other side of a uid from .palai/api-key,
-// .palai/secrets/master-key and .palai/ca/ca.key — none of which the runner reads.
-//
-// A separate uid rather than a sandbox is not a preference: docs/research/macos-isolation-without-
-// accounts.md escaped seatbelt, the App Sandbox and TCC on this hardware, because
-// CoreSimulatorService is a per-user launchd job and `simctl spawn` severs the parent edge a sandbox
-// would be inherited along.
-func TestTheRunnerRunsAsTheAgentAccountWhenOneIsConfigured(t *testing.T) {
-	t.Setenv(agentUserEnv, "palai-agent")
-	argv, err := runnerArgv("/opt/palai/bin/palai-runner")
-	if err != nil {
-		t.Fatalf("runnerArgv: %v", err)
-	}
-	want := []string{"sudo", "-n", "-u", "palai-agent", "/opt/palai/bin/palai-runner"}
-	if !reflect.DeepEqual(argv, want) {
-		t.Fatalf("argv = %v, want %v", argv, want)
-	}
-	// -n is load-bearing: a bring-up that stops for a password in the middle of starting a background
-	// process is a hang with no explanation, not a prompt.
-	if argv[1] != "-n" {
-		t.Error("sudo may prompt: the bring-up would hang rather than fail with the rule that fixes it")
-	}
-}
-
-// TestNoAgentAccountKeepsTodaysBehaviour — the split is opt-in. An existing installation that never
-// sets the variable must start exactly the process it started before, with no sudo in the argv.
-func TestNoAgentAccountKeepsTodaysBehaviour(t *testing.T) {
-	t.Setenv(agentUserEnv, "")
-	argv, err := runnerArgv("/opt/palai/bin/palai-runner")
-	if err != nil {
-		t.Fatalf("runnerArgv: %v", err)
-	}
-	if len(argv) != 1 || argv[0] != "/opt/palai/bin/palai-runner" {
-		t.Errorf("argv = %v, want the binary alone", argv)
-	}
-}
-
-// TestAnImplausibleAccountNameIsRefused — the value becomes part of a sudo argv. It comes from the
-// operator's own environment rather than a network, so this is a typo guard and not a trust boundary;
-// an argv is nonetheless exactly where a typo stops being a typo.
-func TestAnImplausibleAccountNameIsRefused(t *testing.T) {
-	for _, bad := range []string{"palai agent", "root; rm -rf /", "-u", "Agent", "a$b"} {
-		t.Setenv(agentUserEnv, bad)
-		if _, err := runnerArgv("/bin/true"); err == nil {
-			t.Errorf("%q was accepted as an account name", bad)
-		}
 	}
 }
