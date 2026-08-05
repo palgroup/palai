@@ -730,14 +730,7 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		// It is INSIDE the `wsPlanned` arm because the occupancy is the ALLOCATION's hold: the idle
 		// releaser is what ends it, and the releaser is driven by workspaces. Opening one for a run with
 		// no workspace would open a hold nothing can ever close (machine_occupancy.go names that ceiling).
-		// A machine already holding every session it declared REFUSES this one, and the attempt ends here
-		// rather than running on it unmetered (A.4 T5). It is the only error this call returns: a metering
-		// failure still lets the work through, because that is the customer's benefit of the doubt, while a
-		// refusal is the machine saying it will not take this session at all.
-		var herr error
-		if machineOccupancyID, herr = o.holdMachine(ctx, tenant, sessionID, ch); herr != nil {
-			return herr
-		}
+		machineOccupancyID = o.holdMachine(ctx, tenant, sessionID, ch)
 	}
 
 	st := &attemptState{

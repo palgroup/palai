@@ -62,12 +62,19 @@ ALTER TABLE runners ALTER COLUMN capacity SET DEFAULT 0;
 -- doing nothing — under the new meaning a stored 1 reads as "the operator declared one", so all
 -- forty-four machines would become genuinely capped at a single session each, which is the fiction this
 -- migration removes, now enforced.
+--
+-- `WHERE capacity = 1` IS THE MEASUREMENT WRITTEN AS A PREDICATE, and it is why this is not a bare UPDATE.
+-- What is being erased is THE CLAMP'S ARTEFACT, not everybody's declaration, and the clamp only ever wrote
+-- 1. On this tree the two are the same set of rows — `distinct_capacities=1` — so the predicate changes no
+-- behaviour today; on an installation where that premise does not hold, a 5 somebody meant SURVIVES, which
+-- is the right answer. A migration should carry its own premise in its statement, so that a database the
+-- premise is false about is not quietly included.
 DO $$
 BEGIN
     IF to_regclass('public.runners') IS NOT NULL
        AND to_regclass('public.schema_migrations') IS NOT NULL
        AND NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 5) THEN
-        UPDATE runners SET capacity = 0;
+        UPDATE runners SET capacity = 0 WHERE capacity = 1;
     END IF;
 END
 $$;

@@ -56,47 +56,48 @@ import (
 // over. Reporting it under the same sentence as a database blip would send the next reader to look for a
 // database blip, which is the failure this tree keeps recording as an assertion pointing at the wrong file.
 //
-// A CAPACITY REFUSAL ENDS THE ATTEMPT RATHER THAN RUNNING IT UNMETERED, and the distinction from the
-// paragraph above is the whole of this function (Faz A.4 T5). Running anyway would re-open exactly the hole
-// T4 closed: a machine held, work done on it, and no row saying so. "The metering row would not write" and
-// "this machine is not allowed to take this session" are opposite facts, and only one of them is the
-// customer's benefit of the doubt.
+// A CAPACITY REFUSAL IS LOGGED UNDER ITS OWN NAME AND THE ATTEMPT STILL RUNS, and that is a ceiling held
+// deliberately rather than an unfinished branch (Faz A.4 T5). It reads like the wrong answer — the machine
+// said no and the work happens anyway, unmetered — so the two reasons it is the right one today are written
+// here, and NEITHER may be closed alone:
 //
-// WHAT IT DOES NOT DO IS PARK THE RUN. A park is a promise that something will come, and nothing today
-// wakes a run when a SLOT FREES: the only capacity wake is WakeRunAwaitingCapacity, fired from the
-// gateway's handleConnect when a machine CONNECTS. A run parked for a full machine would wake on that
-// machine's next connect, dial the same full machine, and park again — and because EnqueueWokenRunJob
-// carries the budget already spent, the loop ends in a dead-letter rather than in a machine. The waker keyed
-// on a settling occupancy is its own task; until it exists, the honest answer is an ended attempt with a
-// reason, not a promise that cannot be kept.
+//   - NOTHING WAKES A RUN WHEN A SLOT FREES. The only capacity wake is WakeRunAwaitingCapacity, fired from
+//     the gateway's handleConnect when a machine CONNECTS. A run parked for a full machine would wake on
+//     that machine's next connect, dial the same full machine, and park again — and because
+//     EnqueueWokenRunJob carries the budget already spent, the loop ends in a dead-letter, not a machine.
+//   - OCCUPANCIES LEAK, so a ceiling that ENDED attempts would be a run killer with a delay fuse. The only
+//     thing that closes an open hold is the idle releaser, and it only ever sees a workspace that came back
+//     to `ready`: measured 2026-08-05 on the live stack, `ready` was ZERO of 84 workspaces (19 leased, 22
+//     preparing, 10 requested, 33 paused), so it had no candidate at all. Worse, release() moves the
+//     workspace to `paused` BEFORE it settles, so a settle that fails leaves a hold nothing can ever reach
+//     again. A declared fleet would therefore lose a slot at a time, permanently, and start refusing real
+//     work for a reason nobody could see. Killing the attempt would turn a silent leak into a silent outage.
 //
-// AND TODAY IT CANNOT FIRE AT ALL, which is why this is safe to ship ahead of that waker. No machine
-// declares a capacity — the runner sends the field only when an operator configures one — so
-// `runners.capacity` is 0 everywhere, the ceiling in leases.sql is not enforced, and every attempt takes
-// its occupancy exactly as it did before. This branch exists for the deployment that opts in.
-func (o *Orchestrator) holdMachine(ctx context.Context, tenant coordinator.Tenant, sessionID string, ch EngineChannel) (string, error) {
+// So the order is: close the leak, then the waker (park + wake on a settling occupancy), and only then may
+// a refusal decide what happens to the attempt. Until all three, the honest cost is an unmetered attempt on
+// an over-subscribed machine, logged where an operator can find it.
+//
+// AND TODAY IT CANNOT FIRE AT ALL. No machine declares a capacity — the runner sends the field only when an
+// operator configures one — so `runners.capacity` is 0 everywhere, the ceiling in leases.sql never binds,
+// every hold succeeds, and every attempt is metered exactly as it was. This branch exists for the first
+// deployment that opts in, and it must not be the thing that breaks it.
+func (o *Orchestrator) holdMachine(ctx context.Context, tenant coordinator.Tenant, sessionID string, ch EngineChannel) string {
 	machine := machineOf(ch)
 	if machine == "" || sessionID == "" {
-		return "", nil
+		return ""
 	}
 	occupancyID, err := o.spine.HoldMachine(ctx, tenant, sessionID, machine)
 	switch {
 	case errors.Is(err, coordinator.ErrMachineAtCapacity):
-		log.Printf("session %s: machine %s already holds the capacity it declared; this attempt is refused rather than run unmetered: %v",
+		log.Printf("session %s: machine %s already holds the capacity it declared; this attempt runs on it unmetered: %v",
 			sessionID, machine, err)
-		return "", errMachineAtCapacity
+		return ""
 	case err != nil:
 		log.Printf("session %s: machine %s is being occupied unmetered: %v", sessionID, machine, err)
-		return "", nil
+		return ""
 	}
-	return occupancyID, nil
+	return occupancyID
 }
-
-// errMachineAtCapacity ends an attempt whose machine is already holding every session it declared it could.
-// It is a FAILURE and not a park, for the reason holdMachine gives: a park needs a waker that fires when a
-// slot frees, and the only capacity wake in this tree fires when a machine connects. The attempt rides the
-// existing retry ladder, which is also what the gateway does today when every machine in a pool is leased.
-var errMachineAtCapacity = errors.New("run_machine_at_capacity")
 
 // keepMachineHeld moves the occupancy's last-activity stamp as an attempt ends.
 //

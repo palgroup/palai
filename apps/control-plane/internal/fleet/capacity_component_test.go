@@ -35,6 +35,9 @@ package fleet_test
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"testing"
 
@@ -148,17 +151,25 @@ func declaringCapacity(poolID string, capacity int) fleet.Registration {
 	return reg
 }
 
-// TestADeclaredMachineAtItsCeilingRefusesRatherThanRunningUnmetered — THE REFUSAL IS AN ANSWER THE CALLER
-// GETS, NOT A ROW THAT QUIETLY DOES NOT EXIST.
+// TestADeclaredFullMachineRefusesTheHoldWithoutKillingTheAttempt — THE REFUSAL IS AN ANSWER, AND TODAY IT
+// DELIBERATELY DOES NOT DECIDE THE RUN'S FATE.
 //
-// This is the ceiling on the ceiling, and it is asserted rather than assumed because the alternative shipped
-// for several hours on 2026-08-05: the acquire refused, the orchestrator logged it, and the attempt RAN on
-// that machine anyway with no occupancy row. That is a billing hole — machine time held and nobody charged —
-// and it is exactly the hole the previous task closed by giving the occupancy a writer at all.
+// Both halves are asserted because both are ceilings, and a ceiling is claimed rather than assumed. The hold
+// IS refused, under its own name, and the machine never goes over what it declared. And the attempt is NOT
+// killed: holdMachine has no error result at all, so a capacity refusal cannot end a run.
 //
-// It asserts on the STORE because that is where the answer is decided; the orchestrator's job is only to not
-// discard it, which machine_occupancy.go does by returning errMachineAtCapacity instead of "".
-func TestADeclaredMachineAtItsCeilingRefusesRatherThanRunningUnmetered(t *testing.T) {
+// WHY NOT KILL IT, which is the half a reader will push on. Two things have to land first and neither has:
+// nothing wakes a run when a slot FREES (the only capacity wake fires when a machine CONNECTS), and open
+// occupancies still LEAK — the idle releaser is the only thing that closes one and it only sees a workspace
+// that returned to `ready`, which on the live stack was ZERO of 84. A ceiling that ended attempts on top of
+// a leak is a run killer with a delay fuse: a declared fleet would lose a slot at a time, permanently, and
+// begin refusing real work for a reason nobody could see. Overstating a ceiling is as expensive in this tree
+// as understating one.
+//
+// THE SIGNATURE IS THE PROOF FOR THE SECOND HALF, not a comment. `holdMachine` returning a bare string means
+// there is no channel through which this refusal could fail an attempt — checked below by reading the
+// declaration, because a future edit that adds an error result is exactly the change this pins.
+func TestADeclaredFullMachineRefusesTheHoldWithoutKillingTheAttempt(t *testing.T) {
 	pool := openPool(t)
 	spine := openSpine(t)
 	project, poolID := tenantFixture(t, pool, "unsandboxed-host")
@@ -207,4 +218,38 @@ func TestADeclaredMachineAtItsCeilingRefusesRatherThanRunningUnmetered(t *testin
 	if open != 1 {
 		t.Fatalf("%d open hold(s) on a machine that declared 1 — the ceiling did not hold", open)
 	}
+
+	// AND THE ATTEMPT IS NOT KILLED. Read off the declaration rather than asserted in prose: if
+	// `holdMachine` ever grows an error result, a refusal gains a path to end a run, and that must not
+	// happen until the leak and the waker are both closed.
+	assertHoldMachineCannotFailAnAttempt(t)
+}
+
+// assertHoldMachineCannotFailAnAttempt parses the orchestrator's own source and requires that holdMachine
+// returns exactly one value, a string. It is a source check rather than a behavioural one because the
+// property is an ABSENCE — there is no error to observe — and the only way an absence regresses is a
+// signature change.
+func assertHoldMachineCannotFailAnAttempt(t *testing.T) {
+	t.Helper()
+	const path = "../execution/machine_occupancy.go"
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "holdMachine" {
+			continue
+		}
+		results := fn.Type.Results
+		if results == nil || len(results.List) != 1 {
+			t.Fatalf("holdMachine returns %d values, want exactly 1 — a second result is an error path, and a capacity refusal must not be able to end an attempt while occupancies still leak and nothing wakes on a freed slot",
+				len(results.List))
+		}
+		if name, ok := results.List[0].Type.(*ast.Ident); !ok || name.Name != "string" {
+			t.Fatalf("holdMachine returns a %v, want string — see above", results.List[0].Type)
+		}
+		return
+	}
+	t.Fatalf("no holdMachine declaration in %s — this guard is measuring nothing", path)
 }
