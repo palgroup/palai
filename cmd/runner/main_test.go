@@ -55,6 +55,55 @@ func TestThePlaneWinsOverTheBoxsOwnEnvironment(t *testing.T) {
 	})
 }
 
+// TestAMachineDeclaresItsOwnCeiling covers the link that did not exist: `runners.capacity` was declarable
+// on the wire (packages/runner enrollmentRequest), read by the enrolment handler, written by the store and
+// enforced by coordinator.AcquireLease — and NOTHING IN THIS BINARY FILLED IT. Measured 2026-08-05 on a live
+// stack: 47 machines, one distinct capacity, `0`. Since AcquireLease guards its ceiling with `capacity > 0`,
+// ErrMachineAtCapacity could not fire in any deployment, and the two `awaiting_capacity` attempts on that
+// stack were the NULL-pool park (placement.go), never the ceiling.
+//
+// The value is read here rather than from the admin plane's settings document because it is needed at
+// ENROLMENT, and the document arrives in the enrolment RESPONSE — a ceiling delivered after the fact cannot
+// bound the enrolment that carried it.
+func TestAMachineDeclaresItsOwnCeiling(t *testing.T) {
+	const name = "PALAI_RUNNER_CAPACITY"
+
+	// UNSET DECLARES NOTHING, and this leg is the compatibility claim: `omitempty` keeps the field off the
+	// wire entirely, so a machine nobody configured sends the bytes it always sent and enrols with no ceiling.
+	t.Run("unset declares nothing", func(t *testing.T) {
+		t.Setenv(name, "")
+		if got := declaredCapacity(); got != 0 {
+			t.Fatalf("capacity = %d, want 0 — an unconfigured machine must enrol exactly as it did before this "+
+				"reader existed, or every deployment gains a ceiling nobody chose", got)
+		}
+	})
+
+	t.Run("a number is what the machine declares", func(t *testing.T) {
+		t.Setenv(name, "1")
+		if got := declaredCapacity(); got != 1 {
+			t.Fatalf("capacity = %d, want 1", got)
+		}
+	})
+
+	// A NEGATIVE IS PASSED THROUGH, NOT CLAMPED, and that is the whole reason this is not envIntDefault.
+	// The control plane refuses it by name (fleet.ErrCapacityNotDeclarable → 400 "declared capacity cannot
+	// be negative"); clamping to 0 here would make that shipped refusal unreachable from the only binary
+	// that can reach it — the same "declared but nothing writes it" defect this reader exists to fix.
+	t.Run("a negative reaches the control plane's refusal", func(t *testing.T) {
+		t.Setenv(name, "-2")
+		if got := declaredCapacity(); got != -2 {
+			t.Fatalf("capacity = %d, want -2 — clamping here leaves ErrCapacityNotDeclarable with no caller", got)
+		}
+	})
+
+	t.Run("an unparseable value declares nothing", func(t *testing.T) {
+		t.Setenv(name, "four")
+		if got := declaredCapacity(); got != 0 {
+			t.Fatalf("capacity = %d, want 0", got)
+		}
+	})
+}
+
 // TestOneAddressDerivesWhatFourVariablesUsedToCarry is the "one CLI" half of the install: a machine
 // joining a fleet knows WHERE its control plane is, and should not separately be told three URL paths and
 // a DNS name on that same host. Asking for them is how a one-command install becomes a file to edit on

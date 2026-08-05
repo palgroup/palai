@@ -216,6 +216,15 @@ func loadConfig() (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, rene
 		// Unset declares nothing and inherits the key's pool, which keeps the single-runner install
 		// bit-unchanged for the same reason PALAI_RUNNER_POSTURE does: the body is byte-identical without it.
 		PoolID: os.Getenv("PALAI_RUNNER_POOL"),
+		// PALAI_RUNNER_CAPACITY is how many sessions this machine says it can hold AT ONCE, and reading it
+		// here is what makes the ceiling exist at all. Every other link had shipped — the field, the wire,
+		// the handler, the store, and AcquireLease's refusal — and this one had not, so every machine in
+		// every deployment enrolled with capacity 0 and ErrMachineAtCapacity could never fire.
+		//
+		// It is read at ENROLMENT and not from the admin plane's settings document, unlike
+		// PALAI_RUNNER_CONCURRENCY above: the document arrives in the enrolment RESPONSE, so a ceiling
+		// delivered by it could not bound the enrolment that carried it.
+		Capacity: declaredCapacity(),
 	}
 	return bootstrap, tokenFile,
 		derivedEnv("PALAI_SESSION_URL", controllerURL, joinPath("/v1/runner/connect")),
@@ -294,6 +303,28 @@ func envIntDefault(name string, def int) int {
 		return n
 	}
 	return def
+}
+
+// declaredCapacity reads this machine's declared session ceiling, and it is deliberately not
+// envIntDefault: that helper clamps anything non-positive to its default, and both ends of the range
+// matter here.
+//
+// ZERO IS THE SHIPPED POSTURE, NOT A FALLBACK. Unset declares nothing, `omitempty` keeps the field off
+// the wire, and the store records a 0 that AcquireLease's `capacity > 0` guard reads as "no ceiling" —
+// so a machine nobody configured enrols byte-for-byte as it always did.
+//
+// A NEGATIVE IS PASSED THROUGH RATHER THAN CLAMPED, because the control plane already refuses it by name
+// (fleet.ErrCapacityNotDeclarable → 400 "declared capacity cannot be negative") and clamping here would
+// leave that shipped refusal with no caller — the same "declared but nothing reaches it" shape this
+// reader exists to close, one layer down.
+//
+// An unparseable value declares nothing, which is the position every other reader in this file takes.
+func declaredCapacity() int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("PALAI_RUNNER_CAPACITY")))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // planeIntDefault reads a positive-integer setting the ADMIN PLANE sent with this machine's identity,

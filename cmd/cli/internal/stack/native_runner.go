@@ -128,7 +128,11 @@ func nativeRunnerEnv(cfg Config, p paths, get func(string) string, engine, root 
 	}
 	// Read through `get` rather than inherited, for the reason the tool-error budget taught this tree:
 	// a value that lives only in .env.local never reaches a child unless it is named here.
-	for _, name := range []string{"PALAI_RUNNER_CONCURRENCY", "PALAI_RUNNER_POOL", "PALAI_RUNNER_POSTURE", "PALAI_SANDBOX_WALL_TIME", "PALAI_VERSION"} {
+	// PALAI_RUNNER_CAPACITY joins this list for the reason the list exists: cmd/runner reads it at enrolment
+	// to declare its session ceiling, and a name missing from here never reaches the binary however
+	// carefully .env.local sets it. Wiring the reader without this line would have closed one link of a
+	// two-link chain and changed nothing observable.
+	for _, name := range []string{"PALAI_RUNNER_CONCURRENCY", "PALAI_RUNNER_CAPACITY", "PALAI_RUNNER_POOL", "PALAI_RUNNER_POSTURE", "PALAI_SANDBOX_WALL_TIME", "PALAI_VERSION"} {
 		if v := strings.TrimSpace(get(name)); v != "" {
 			env[name] = v
 		}

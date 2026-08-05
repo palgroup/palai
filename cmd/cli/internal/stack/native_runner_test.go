@@ -140,6 +140,36 @@ func TestTheNativeRunnerCarriesTheShellPostureAndTheWorkspaceRoot(t *testing.T) 
 	}
 }
 
+// TestTheNativeRunnerCarriesTheDeclaredCapacity is the second half of a link that is useless alone: this
+// process calls exec.Command on the binary directly, so a variable not NAMED in the forward list below
+// never reaches the runner however carefully .env.local sets it. The same shape this tree already records
+// for compose, which passes only the keys it interpolates.
+//
+// Together with cmd/runner's reader this is what makes `runners.capacity` reachable at all: before both,
+// the column was declarable, stored and enforced, and no machine had ever sent a value.
+func TestTheNativeRunnerCarriesTheDeclaredCapacity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PALAI_HOME", home)
+	p, err := resolvePaths()
+	if err != nil {
+		t.Fatalf("resolve paths: %v", err)
+	}
+
+	get := getFrom(map[string]string{"PALAI_RUNNER_CAPACITY": "1"})
+	got := envMapOf(nativeRunnerEnv(nativeRunnerTestConfig(), p, get, "sha256:deadbeef", "/tmp/palai-workspaces"))
+	if got["PALAI_RUNNER_CAPACITY"] != "1" {
+		t.Fatalf("PALAI_RUNNER_CAPACITY = %q, want 1 from .env.local — unforwarded, the ceiling is unreachable "+
+			"on the one posture this epic measures", got["PALAI_RUNNER_CAPACITY"])
+	}
+
+	// UNSET STAYS UNSET. A default here would put a ceiling on every native machine that nobody chose —
+	// the clamp the store deleted for exactly that reason.
+	bare := envMapOf(nativeRunnerEnv(nativeRunnerTestConfig(), p, getFrom(nil), "sha256:deadbeef", "/tmp/x"))
+	if v, present := bare["PALAI_RUNNER_CAPACITY"]; present && v != "" {
+		t.Errorf("an undeclared capacity became %q: a ceiling must be declared, never defaulted", v)
+	}
+}
+
 // TestNativeRunnerEnvironmentHasNoDuplicateKeys is the same non-style check its control-plane twin is:
 // os.Getenv in the child returns the FIRST occurrence of a key, so an override appended to os.Environ()
 // is silently ignored.
