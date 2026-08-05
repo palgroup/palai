@@ -215,6 +215,26 @@ func (a *RegistryAPI) GetRunner(ctx context.Context, project, id string) (api.Ru
 	return a.decorate(row), true, nil
 }
 
+// ListRunners is the Store's page with the live gateway's answer joined to every row.
+//
+// ‼️ IT IS OVERRIDDEN HERE BECAUSE THE SCREEN IS A LISTING. RegistryAPI embeds Store, so without this
+// method the page fell through undecorated and the Fleet screen — the surface DoD 10 names — showed no
+// connection state at all, while a single read of one machine showed it. That asymmetry was measured
+// 2026-08-06, after the field had already been verified live on GetRunner alone.
+func (a *RegistryAPI) ListRunners(ctx context.Context, project string, w api.RunnerListWindow) ([]api.RunnerItem, error) {
+	items, err := a.Store.ListRunners(ctx, project, w)
+	if err != nil || a.live == nil {
+		return items, err
+	}
+	for i := range items {
+		leases := a.live.RunnerActiveLeases(items[i].ID)
+		items[i].ActiveLeases = &leases
+		connections := a.live.RunnerConnections(items[i].ID)
+		items[i].Connections = &connections
+	}
+	return items, nil
+}
+
 // decorate adds what only the live gateway knows. It is deliberately the ONLY place a runtime fact joins a
 // stored one, so the read projection cannot grow a field whose source nobody can name.
 func (a *RegistryAPI) decorate(row Runner) api.RunnerItem {

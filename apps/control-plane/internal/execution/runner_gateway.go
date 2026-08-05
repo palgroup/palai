@@ -407,6 +407,11 @@ type runnerLifecycle struct {
 	cordoned bool
 	revoked  bool
 	changed  chan struct{}
+	// sessions counts THIS machine's live gateway connections. It is a counter on the machine rather
+	// than a walk of the gateway's session set because the Fleet LISTING asks it once per row: a walk
+	// would be O(machines x sessions) per page, and the answer is already known at the two points that
+	// change it.
+	sessions atomic.Int64
 	// active counts THIS machine's in-flight leases. The whole-gateway Drain sums these; the read surface
 	// publishes one machine's as `active_leases`, which is the question a cordon exists to let an operator
 	// ask ("can I unplug it yet?").
@@ -582,14 +587,12 @@ func (g *RunnerGateway) RunnerConnections(runnerID string) int64 {
 		return 0
 	}
 	g.machinesMu.RLock()
-	defer g.machinesMu.RUnlock()
-	var n int64
-	for pr := range g.sessions {
-		if pr.runnerID == runnerID {
-			n++
-		}
+	life, ok := g.machines[runnerID]
+	g.machinesMu.RUnlock()
+	if !ok {
+		return 0
 	}
-	return n
+	return life.sessions.Load()
 }
 
 // RunnerActiveLeases reports how many leases ONE machine is currently serving — the answer to the
@@ -1495,12 +1498,18 @@ func (g *RunnerGateway) addSession(pr *pendingRunner) {
 	g.machinesMu.Lock()
 	g.sessions[pr] = struct{}{}
 	g.machinesMu.Unlock()
+	if pr.life != nil {
+		pr.life.sessions.Add(1)
+	}
 }
 
 func (g *RunnerGateway) removeSession(pr *pendingRunner) {
 	g.machinesMu.Lock()
 	delete(g.sessions, pr)
 	g.machinesMu.Unlock()
+	if pr.life != nil {
+		pr.life.sessions.Add(-1)
+	}
 }
 
 // Dial offers a machine IN THE ATTEMPT'S POOL the attempt's lease and returns the bridged
