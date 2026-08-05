@@ -159,3 +159,65 @@ func HostSecretFileValues() []string {
 	}
 	return out
 }
+
+// RedactAnyValues walks a decoded structure and masks `values` in every string it contains, returning a
+// new value; the input is not mutated.
+//
+// IT EXISTS BECAUSE A TOOL RESULT IS NOT A STRING. RedactSecrets and RedactValues take text, which fits
+// shell output exactly and fits nothing else: an MCP tool answers with a decoded map, and applying a
+// string redactor to it means either skipping the nested values or re-serialising to JSON first. The
+// second is the trap — encoding/json escapes `<`, `>` and `&`, so a value containing one would travel as
+// an escape sequence and a substring match would never fire. This tree has paid for that twice. So the
+// walk happens on the DECODED structure, where a string is the string the model will read.
+//
+// Map KEYS are walked too. A server that answers `{"<token>": "ok"}` puts the secret in the key, and a
+// redactor that only visited values would hand it back intact.
+func RedactAnyValues(v any, values []string) any {
+	if len(values) == 0 {
+		return v
+	}
+	switch t := v.(type) {
+	case string:
+		return RedactValues(t, values)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, item := range t {
+			out[RedactValues(k, values)] = RedactAnyValues(item, values)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, item := range t {
+			out[i] = RedactAnyValues(item, values)
+		}
+		return out
+	default:
+		// Numbers, bools and nil carry no secret a value-match could find, and JSON decoding produces
+		// nothing else. A type this does not know is returned unchanged rather than stringified — a
+		// redactor that rewrites what it does not understand corrupts results to no benefit.
+		return v
+	}
+}
+
+// RedactAnySecrets applies the SHAPE blocklist to every string in a decoded structure, the way
+// RedactSecrets does for text. Same walk, same reason.
+func RedactAnySecrets(v any) any {
+	switch t := v.(type) {
+	case string:
+		return RedactSecrets(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, item := range t {
+			out[RedactSecrets(k)] = RedactAnySecrets(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, item := range t {
+			out[i] = RedactAnySecrets(item)
+		}
+		return out
+	default:
+		return v
+	}
+}

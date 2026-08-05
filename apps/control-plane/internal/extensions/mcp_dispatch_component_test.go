@@ -5,6 +5,7 @@ package extensions
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/palgroup/palai/adapters/integrations/mcp"
@@ -283,4 +284,74 @@ func TestMCPToolTenantIsolated(t *testing.T) {
 	if _, found, err := s.LookupTool(ctx, projectA, runA, "docs__echo"); err != nil || found {
 		t.Fatalf("tenant A resolve of B's mcp tool found=%v err=%v, want found=false (tenant-isolated)", found, err)
 	}
+}
+
+// TestMCPResultIsRedactedOnTheWayBack drives the REAL dispatch path — broker.Execute through the
+// lookup's Exec closure — because that is the only thing that proves the closure CALLS the redactor.
+// Unit-testing the redactor proves it selects; a perturbation this week showed a deleted call site
+// leaves every such unit test green.
+//
+// THE GAP IT CLOSES, measured 2026-08-05: a shell result passed two redactors and an MCP result passed
+// NONE, while going to both the model and the ledger. This is the one executor whose counterparty is
+// untrusted by construction (see externalOutputNotice), so it is the last one that should have been
+// exempt.
+//
+// The fake echoes `args["message"]` back, which is what lets the test put a secret on the RETURN path
+// without inventing a second double.
+func TestMCPResultIsRedactedOnTheWayBack(t *testing.T) {
+	s, project := openStore(t)
+	ctx := context.Background()
+	fake := &fakeMCP{tools: []mcp.RemoteTool{{Name: "echo", Description: "echoes", InputSchema: map[string]any{"type": "object"}}}}
+	s.SetMCP(fake)
+
+	connID := createStdioConnection(t, s, project, "docs")
+	setID := publishDiscoveredIntoSet(t, s, project, connID, "mcp.docs.echo")
+	runID := seedRunWithMCPRider(t, s, project, setID, `["`+connID+`"]`)
+	broker := brokerWithLookup(s)
+	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Project: project, RunID: runID}}
+
+	t.Run("a shape the blocklist knows", func(t *testing.T) {
+		leaked := "sk-" + "proj-notarealkeyvalue-for-this-test"
+		out, err := broker.Execute(ctx, contracts.ToolCallID("tc_red1"), "docs__echo",
+			map[string]any{"message": leaked}, 1, env)
+		if err != nil {
+			t.Fatalf("dispatch: %v", err)
+		}
+		if got, _ := out.Result["echoed"].(string); strings.Contains(got, "notarealkeyvalue") {
+			t.Errorf("a provider-shaped key came back through an MCP tool result: %q", got)
+		}
+	})
+
+	t.Run("a shape only the name test knows", func(t *testing.T) {
+		// Assembled at runtime: GitHub push protection blocks a literal Slack token, which is itself
+		// evidence the shape is distinctive — and that the four-regexp blocklist does not know it.
+		leaked := "xoxb-" + "44556677889-99887766554-mcpresultmustnotcarrythis"
+		if toolbroker.RedactSecrets(leaked) != leaked {
+			t.Skip("the blocklist already covers this shape; nothing for the name path to prove")
+		}
+		t.Setenv("PALAI_PROBE_MCP_TOKEN", leaked)
+		out, err := broker.Execute(ctx, contracts.ToolCallID("tc_red2"), "docs__echo",
+			map[string]any{"message": leaked}, 1, env)
+		if err != nil {
+			t.Fatalf("dispatch: %v", err)
+		}
+		if got, _ := out.Result["echoed"].(string); strings.Contains(got, "mcpresultmustnotcarrythis") {
+			t.Errorf("a secret the blocklist cannot see came back through an MCP tool result: %q", got)
+		}
+	})
+
+	t.Run("an ordinary result is unchanged", func(t *testing.T) {
+		// Over-masking is its own defect: a redactor that mangles results gets switched off.
+		out, err := broker.Execute(ctx, contracts.ToolCallID("tc_red3"), "docs__echo",
+			map[string]any{"message": "the quick brown fox"}, 1, env)
+		if err != nil {
+			t.Fatalf("dispatch: %v", err)
+		}
+		if got, _ := out.Result["echoed"].(string); got != "the quick brown fox" {
+			t.Errorf("an ordinary MCP result was altered: %q", got)
+		}
+		if out.Result["conn"] != connID {
+			t.Errorf("redaction changed the result's shape: conn = %v", out.Result["conn"])
+		}
+	})
 }

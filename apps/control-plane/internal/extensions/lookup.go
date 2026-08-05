@@ -225,11 +225,35 @@ func (s *Store) mcpTool(ctx context.Context, project, runID, name, description s
 		OutputSchema: decodeSchema(outputJSON),
 		ReplayClass:  toolbroker.ReplayClass(replayClass),
 		Exec: func(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
-			return s.mcp.Call(ctx, mcp.CallScope{
+			out, err := s.mcp.Call(ctx, mcp.CallScope{
 				Project:   env.Scope.Project,
 				SessionID: env.Scope.SessionID, ResponseID: env.Scope.ResponseID,
 				RunID: env.Scope.RunID, CallID: string(env.CallID),
 			}, cc, remoteName, args)
+			if err != nil {
+				return nil, err
+			}
+			// REDACTED ON THE WAY BACK, and until 2026-08-05 it was not: a shell result passed two
+			// redactors (host/exec.go) and an MCP result passed none, while going to BOTH the model and
+			// the ledger. A remote server can echo an Authorization header, its own token, or a DSN — by
+			// accident or on purpose, since this is the one executor whose counterparty is untrusted by
+			// construction (see externalOutputNotice below).
+			//
+			// Three sources, the same three the shell uses: the shape blocklist, this process's
+			// secret-named environment VALUES, and the CONTENTS of the credential files that environment
+			// points at. The walk is over the DECODED map rather than re-serialised JSON, because
+			// encoding/json escapes `<`, `>` and `&` and a substring match over escaped bytes can never
+			// fire — the vacuous-scan shape this tree has paid for twice.
+			redacted := toolbroker.RedactAnySecrets(out)
+			redacted = toolbroker.RedactAnyValues(redacted, toolbroker.HostSecretValues())
+			redacted = toolbroker.RedactAnyValues(redacted, toolbroker.HostSecretFileValues())
+			result, ok := redacted.(map[string]any)
+			if !ok {
+				// RedactAny* preserves shape, so this cannot happen; returning the unredacted map on a
+				// shape surprise would be the one outcome worth refusing outright.
+				return nil, fmt.Errorf("mcp result changed shape during redaction (%T): refusing to return it", redacted)
+			}
+			return result, nil
 		},
 	}
 	return tool, true, nil
