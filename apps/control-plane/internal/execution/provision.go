@@ -337,12 +337,20 @@ func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, ops toolbro
 	// its own runs — this is unchanged and correct. On a split deploy it names a uid that does not own
 	// anything, and moving it is the same shape as the rest of this task (a verb the machine performs)
 	// rather than a hole in it; it is reported, not worked around.
+	//
+	// THE RETURN VALUE IS SPENT, NOT LOGGED, and that sentence is this whole task (A.5 T3). It used to
+	// be a log.Printf saying "session S runs as palai-sNN" while nothing anywhere ran as palai-sNN —
+	// docs/measurements/faz-a5-residue.md §2 measured every tenant on uid 501, the operator's own, so
+	// the 0700 mode on each home directory separated a principal from itself. The uid now leaves this
+	// function twice: HandTreeTo below gives it the bytes, and SlotAccounts.Lookup gives it to execEnv,
+	// which puts it on every ShellCommand this session runs.
+	var account SessionAccount
 	if o.sessionAccounts != nil {
-		account, err := o.sessionAccounts.Acquire(ctx, plan.sessionID)
+		acquired, err := o.sessionAccounts.Acquire(ctx, plan.sessionID)
 		if err != nil {
 			return coordinator.Allocation{}, fmt.Errorf("provision %s: %w", allocID, err)
 		}
-		log.Printf("workspace %s: session %s runs as %s", ws.WorkspaceID, plan.sessionID, account)
+		account = acquired
 	}
 	// Drive requested→provisioning→preparing idempotently: a retry after a failed clone re-enters from
 	// `provisioning` or `preparing`, so an already-applied transition (ErrInvalidState) is skipped —
@@ -361,6 +369,19 @@ func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, ops toolbro
 	// sees (spec §30.2-30.3) — minted here, spent on the machine, revoked here on every return path.
 	if err := o.cloneOnMachine(ctx, ops, tenant, plan, runID, fence); err != nil {
 		return coordinator.Allocation{}, err
+	}
+	// AFTER THE CLONE, BECAUSE THIS IS WHERE THE BYTES ARE. The account was acquired before it — an
+	// account minted afterwards would be handed a tree somebody else had already been recorded as
+	// owning — but the hand-over itself has to follow the writer, and the writer is the clone. A
+	// chown before it would give away an empty directory.
+	//
+	// A FAILURE FAILS THE PROVISION. The alternative is an allocation whose bytes belong to the control
+	// plane while the run has been told it owns them, which is a permission error arriving later, in the
+	// middle of a build, attributed to the build.
+	if account.Bound() {
+		if err := HandTreeTo(dir, account); err != nil {
+			return coordinator.Allocation{}, fmt.Errorf("provision %s: %w", allocID, err)
+		}
 	}
 	if err := o.spine.AdvanceWorkspace(ctx, tenant, ws.WorkspaceID, statemachines.WorkspaceCmdMarkReady); err != nil {
 		return coordinator.Allocation{}, err

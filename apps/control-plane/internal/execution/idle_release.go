@@ -449,12 +449,31 @@ func ResumeReleasedWorkspace(
 	// The uid the restored tree's tools run under, acquired BEFORE the bytes land for the reason
 	// provisionFreshAllocation gives: an account minted afterwards inherits a tree written by somebody
 	// else. The session's slot was released when the machine was handed back, so this mints a new one.
+	//
+	// ‼️ THAT FIRST SENTENCE WAS FALSE FROM THE DAY IT WAS WRITTEN UNTIL A.5 T3, AND IT IS WORTH SAYING
+	// WHICH BRANCHES IT IS TRUE OF NOW RATHER THAN WRITING "it is true now". Counted:
+	//
+	//   1. accounts wired, account acquired, tree handed over, executor root — the restored tree's tools
+	//      DO run under this uid. This is the branch the sentence always claimed and never had.
+	//   2. accounts wired, executor NOT root — nothing runs at all. HandTreeTo below fails at the first
+	//      entry and this function returns; if it somehow did not, host.credentialFor refuses every
+	//      command rather than running one as the control plane's uid. The sentence is true by vacuity
+	//      and the machine says so, which is the point of the refusal.
+	//   3. accounts NOT wired (`accounts == nil`) — no uid is named, no tree is handed over, and the
+	//      restored tree's tools run as this process. THE SENTENCE DOES NOT APPLY HERE, and this is the
+	//      branch every deployment before A.5 is on and the one macagent/admission.go refuses to enrol a
+	//      Mac in. It is a declared posture, not a hole: docs/operations/palai-on-a-mac.md.
+	//
+	// AND ONE ARM STILL RUNS AS THE CONTROL PLANE IN BRANCH 1, deliberately: this function's own restore.
+	// snapshots.RestoreTo untars as this process, which is why the hand-over is AFTER it. The bytes are
+	// written by the control plane and then given away; they are never written by the session.
+	var account SessionAccount
 	if accounts != nil {
-		account, aerr := accounts.Acquire(ctx, in.SessionID)
+		acquired, aerr := accounts.Acquire(ctx, in.SessionID)
 		if aerr != nil {
 			return coordinator.Allocation{}, fmt.Errorf("resume %s: %w", in.WorkspaceID, aerr)
 		}
-		log.Printf("workspace %s: session %s resumes as %s", in.WorkspaceID, in.SessionID, account)
+		account = acquired
 	}
 	// Scoped for the reason RecoverWorkspace's identical call is: AllocateWorkspace reads the tenant off
 	// the context, and this context may carry none.
@@ -465,6 +484,14 @@ func ResumeReleasedWorkspace(
 	manifest, err := snapshots.RestoreTo(ctx, tenant, snapshotID, in.HostPath)
 	if err != nil {
 		return coordinator.Allocation{}, fmt.Errorf("%w: restore snapshot %s: %v", ErrRecoveryImpossible, snapshotID, err)
+	}
+	// The restored bytes are given to the session that will run on them, for provisionFreshAllocation's
+	// reason and at the same point in the sequence: after the writer, never before it. A snapshot is
+	// untarred by THIS process, so every entry it lays down belongs to the control plane until here.
+	if account.Bound() {
+		if err := HandTreeTo(in.HostPath, account); err != nil {
+			return coordinator.Allocation{}, fmt.Errorf("resume %s: %w", in.WorkspaceID, err)
+		}
 	}
 	if err := spine.AdvanceWorkspace(ctx, tenant, in.WorkspaceID, statemachines.WorkspaceCmdMarkReady); err != nil {
 		return coordinator.Allocation{}, err

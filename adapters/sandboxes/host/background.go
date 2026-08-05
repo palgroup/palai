@@ -87,13 +87,23 @@ func (e *Executor) Start(ctx context.Context, cmd toolbroker.ShellCommand, spec 
 		runArgv = []string{"/bin/sh", "-c", strings.Join(cmd.Argv, " ")}
 	}
 
+	// procAttrFor is the SYNCHRONOUS path's function, called here rather than re-implemented for the
+	// reason the two env calls below are shared: a background task's identity must be bit-identical to a
+	// synchronous one's. A process that outlives its attempt is the LAST place a privilege drop should
+	// be written twice — it is also the one nobody is waiting on to notice that it ran as the wrong uid.
+	// It resolves BEFORE the directories are made, so a refusal cannot leave a tree half handed over.
+	procAttr, err := procAttrFor(cmd.RunAs, os.Geteuid())
+	if err != nil {
+		return toolbroker.Handle{}, err
+	}
+
 	// allowedEnv and LayerEnv are the SAME two calls the synchronous path makes, in the same order, with
 	// the same reserved-name set. The environment allow-list (a variable nobody named cannot arrive) and
 	// the collision refusal (a variable this posture derived cannot be replaced) are therefore not
 	// re-implemented here and cannot drift; a background task's environment is bit-identical to a
 	// synchronous one's. The refusal happens BEFORE the process exists, for exec.go's reason: a command
 	// that ran under a caller-supplied PATH and reported an error afterwards has already run.
-	env, err := allowedEnv(cmd.WorkspaceRoot)
+	env, err := allowedEnv(cmd.WorkspaceRoot, cmd.RunAs)
 	if err != nil {
 		return toolbroker.Handle{}, err
 	}
@@ -125,7 +135,7 @@ func (e *Executor) Start(ctx context.Context, cmd toolbroker.ShellCommand, spec 
 	c.Stdout, c.Stderr = logFile, logFile
 	// Setpgid is kept from the synchronous path for the same reason and to a larger effect: the kill has
 	// to reach a whole build tree, and here nobody is waiting around to notice if it does not.
-	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	c.SysProcAttr = procAttr
 
 	if err := c.Start(); err != nil {
 		_ = os.Remove(logPath)

@@ -150,7 +150,7 @@ func (a *SysadminctlAccounts) Create(ctx context.Context, slot int) (string, str
 		"-addUser", name,
 		"-fullName", fmt.Sprintf("Palai session s%02d", slot),
 		"-UID", strconv.Itoa(uid),
-		"-GID", "20",
+		"-GID", strconv.Itoa(macagent.AccountGID),
 		"-shell", "/bin/zsh",
 		"-home", home,
 	); err != nil {

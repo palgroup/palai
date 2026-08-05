@@ -3,8 +3,12 @@ package execution
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
+
+	"github.com/palgroup/palai/packages/macagent"
 )
 
 // SESSION ACCOUNTS: the uid a workspace's tools run under, created with the allocation and destroyed
@@ -33,8 +37,77 @@ import (
 // Acquire is idempotent per session for the same reason: every run of a session asks, and only the first
 // one creates.
 type SessionAccounts interface {
-	Acquire(ctx context.Context, sessionID string) (account string, err error)
+	Acquire(ctx context.Context, sessionID string) (SessionAccount, error)
+	// Lookup answers what THIS process already minted for a session, without minting anything. It is
+	// how the exec path reaches the uid the provision path acquired.
+	//
+	// IT MINTS NOTHING, AND THAT IS THE WHOLE DIFFERENCE FROM Acquire. A tool call arriving for a
+	// session this process does not know must not become a new account: the session's tree is owned by
+	// the uid of the account it already has, and a fresh slot would hand the run a directory it cannot
+	// write. The `false` is therefore the answer, and execEnv turns it into a refusal rather than into
+	// a command that quietly runs as the control plane's own uid.
+	Lookup(sessionID string) (SessionAccount, bool)
 	Release(ctx context.Context, sessionID string) error
+}
+
+// SessionAccount is one session's identity on this machine: the account name, and the uid/gid pair a
+// privilege drop actually spends.
+//
+// THE NUMBERS ARE THE FIELD THAT MATTERS AND THE NAME IS NOT LOAD-BEARING. Nothing acts on Name — it is
+// carried for the operator reading a refusal — because the kernel reads integers and because this tree
+// has already decided once that a privileged path must not take a caller-supplied account name
+// (packages/macagent's package comment). The uid is ARITHMETIC from the slot (macagent.AccountUID), so
+// it cannot disagree with the account the daemon created unless the arithmetic itself changes, in one
+// place, for both.
+type SessionAccount struct {
+	Name string
+	UID  int
+	GID  int
+}
+
+// Bound reports whether this value names an account at all. A zero SessionAccount is what a
+// no-session-account deployment carries, and it must never be mistaken for uid 0.
+func (a SessionAccount) Bound() bool { return a.Name != "" && a.UID > 0 }
+
+// ErrCannotHandOverTree is the refusal a tree hand-over returns when this process cannot perform it.
+// It is a named error because the caller's answer to it is FAIL, not continue: an allocation whose
+// bytes still belong to the control plane's uid, handed to a session that was told it owns them, is a
+// run that cannot write its own workspace and a boundary that was reported and not built.
+var ErrCannotHandOverTree = fmt.Errorf("this process cannot give a workspace tree to another uid")
+
+// HandTreeTo gives an allocation's tree to the account its commands run as. It is called where BYTES
+// LAND — after the clone in provisionFreshAllocation, after the restore in ResumeReleasedWorkspace —
+// rather than at Acquire, because a chown before the write owns an empty directory and the writer is
+// somebody else.
+//
+// ‼️ Lchown, NEVER Chown, AND THAT IS THE ONLY REASON THIS IS A FUNCTION AND NOT THREE LINES INLINE.
+// os.Chown FOLLOWS a symlink and chowns its TARGET. The tree being walked is a repository this run's
+// own model may already have written into, so `ln -s /etc/passwd x` inside it would make a privileged
+// walk hand /etc/passwd to the tenant. os.Lchown changes the link itself. filepath.WalkDir does not
+// descend through symlinks either, so the walk stays inside the allocation.
+//
+// A FAILURE STOPS THE WALK. Half a tree owned by the session is worse than none of it: the run fails
+// somewhere in the middle of a build with a permission error nobody can attribute, rather than at the
+// provision that could say what is missing. On a control plane that is not root every call fails at
+// the first entry, which is the honest report that this machine has no privilege drop — see
+// docs/plans/2026-08-05-faz-a5-mac-izolasyon.md Task 3.
+func HandTreeTo(root string, account SessionAccount) error {
+	if root == "" {
+		return fmt.Errorf("hand over tree: no allocation path")
+	}
+	if !account.Bound() {
+		return fmt.Errorf("hand over tree %s: no session account to give it to", root)
+	}
+	return filepath.WalkDir(root, func(path string, _ os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if lerr := os.Lchown(path, account.UID, account.GID); lerr != nil {
+			return fmt.Errorf("%w: giving %s to %s (uid %d): %v",
+				ErrCannotHandOverTree, path, account.Name, account.UID, lerr)
+		}
+		return nil
+	})
 }
 
 // maxSessionSlots is the index range scripts/ops/mac-sessions.sh allocates and the privileged wrapper
@@ -90,15 +163,42 @@ func NewSudoSessionAccounts(wrapper string) *SlotAccounts {
 	}
 }
 
+// accountFor builds the identity of a slot. The name comes from the formatter this type was built with
+// (production and test spell it the same way); the uid and gid are ARITHMETIC, from the one place that
+// owns the namespace, so the pair cannot drift from the account palai-agentd actually created.
+func (a *SlotAccounts) accountFor(slot int) (SessionAccount, error) {
+	uid, err := macagent.AccountUID(slot)
+	if err != nil {
+		return SessionAccount{}, fmt.Errorf("session account: slot %d has no uid: %w", slot, err)
+	}
+	return SessionAccount{Name: a.name(slot), UID: uid, GID: macagent.AccountGID}, nil
+}
+
+// Lookup answers what this process already holds for a session. See the interface comment for why it
+// mints nothing.
+func (a *SlotAccounts) Lookup(sessionID string) (SessionAccount, bool) {
+	a.mu.Lock()
+	slot, ok := a.slots[sessionID]
+	a.mu.Unlock()
+	if !ok {
+		return SessionAccount{}, false
+	}
+	account, err := a.accountFor(slot)
+	if err != nil {
+		return SessionAccount{}, false
+	}
+	return account, true
+}
+
 // Acquire returns the account for this allocation, creating it on first call.
-func (a *SlotAccounts) Acquire(ctx context.Context, sessionID string) (string, error) {
+func (a *SlotAccounts) Acquire(ctx context.Context, sessionID string) (SessionAccount, error) {
 	if sessionID == "" {
-		return "", fmt.Errorf("session account: a session id is required")
+		return SessionAccount{}, fmt.Errorf("session account: a session id is required")
 	}
 	a.mu.Lock()
 	if slot, ok := a.slots[sessionID]; ok {
 		a.mu.Unlock()
-		return a.name(slot), nil // idempotent: a re-entered provision reuses its own slot
+		return a.accountFor(slot) // idempotent: a re-entered provision reuses its own slot
 	}
 	slot := 0
 	for i := 1; i <= maxSessionSlots; i++ {
@@ -109,7 +209,7 @@ func (a *SlotAccounts) Acquire(ctx context.Context, sessionID string) (string, e
 	}
 	if slot == 0 {
 		a.mu.Unlock()
-		return "", fmt.Errorf("session account: all %d slots are held; this machine cannot isolate another session", maxSessionSlots)
+		return SessionAccount{}, fmt.Errorf("session account: all %d slots are held; this machine cannot isolate another session", maxSessionSlots)
 	}
 	// RESERVED BEFORE THE PRIVILEGED CALL, so two concurrent provisions cannot pick the same slot while
 	// the first one is still creating its account. Released again on failure below — a slot held by an
@@ -123,9 +223,9 @@ func (a *SlotAccounts) Acquire(ctx context.Context, sessionID string) (string, e
 		delete(a.held, slot)
 		delete(a.slots, sessionID)
 		a.mu.Unlock()
-		return "", err
+		return SessionAccount{}, err
 	}
-	return a.name(slot), nil
+	return a.accountFor(slot)
 }
 
 // Release destroys the allocation's account. An allocation this instance never acquired is not an error:

@@ -29,8 +29,84 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/palgroup/palai/packages/macagent"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
+
+// ErrCannotDropPrivilege refuses a command that asked to run as a session account this process cannot
+// become. It is SEPARATE from a malformed request (ErrRunAsOutsideNamespace) because the two are
+// different findings about different things: one says the control plane sent a uid nobody should
+// spend, the other says this machine was asked for a boundary it cannot build.
+//
+// ‼️ THE REFUSAL IS THE POINT. The alternative is to run the command as whoever this process already
+// is, which is the operator's own uid on every Mac measured — and a tenant command running as uid 501
+// under a request that named uid 707 is not a degraded boundary, it is a boundary that was REPORTED
+// and does not exist. That is the exact shape docs/measurements/faz-a5-residue.md §2 found: an account
+// minted, a home directory created, and every tenant still running as one principal.
+var ErrCannotDropPrivilege = errors.New("this process cannot drop privilege to a session account")
+
+// ErrRunAsOutsideNamespace refuses a uid that is not one palai-agentd allocates.
+var ErrRunAsOutsideNamespace = errors.New("run-as uid is outside the session-account namespace")
+
+// credentialFor turns a wire RunAs into the kernel credential a child is spawned with, or refuses.
+//
+// MEASURED ON THIS PLATFORM, 2026-08-05, Darwin 25.3.0, from a parent at uid 501:
+//
+//	Credential{Uid:701, NoSetGroups:true}   -> fork/exec: operation not permitted
+//	Credential{Uid:self, NoSetGroups:true}  -> runs, child is 501
+//	Credential{Uid:self, NoSetGroups:false} -> fork/exec: operation not permitted
+//	os.Chown(f, 701, 20)                    -> operation not permitted
+//
+// Two things follow and both are in the code below. Changing to ANOTHER uid needs euid 0, so the check
+// is on the process rather than on the request — no session account is reachable from an unprivileged
+// execer, and the third line says even the identity credential is not, because Go calls setgroups()
+// for a Credential and setgroups() always needs root.
+//
+// SUPPLEMENTARY GROUPS ARE DROPPED, WHICH IS WHY NoSetGroups IS LEFT FALSE. A root parent's group list
+// includes wheel and admin on a Mac; NoSetGroups would make the child KEEP them, so a process that had
+// just been given a tenant's uid would carry the supervisor's group memberships and the drop would give
+// back most of what it took. Leaving it false makes Go call setgroups(0, NULL) with the nil Groups
+// below, and the child ends with its uid, its gid, and nothing else.
+func credentialFor(runAs *toolbroker.RunAs) (*syscall.Credential, error) {
+	if runAs == nil {
+		return nil, nil // no session-account layer: unchanged, and the identity is this process's own
+	}
+	// THE UID IS BOUNDED BEFORE ANYTHING IS SPENT ON IT. This value crossed a wire from a process the
+	// tenant's model can influence; `Uid: 0` is expressible there and must not be expressible here.
+	if _, ok := macagent.SlotFromUID(runAs.UID); !ok {
+		return nil, fmt.Errorf("%w: uid %d is not one palai-agentd allocates (%d..%d)",
+			ErrRunAsOutsideNamespace, runAs.UID, macagent.UIDBase+1, macagent.UIDBase+macagent.MaxSlot)
+	}
+	if runAs.GID != macagent.AccountGID {
+		return nil, fmt.Errorf("%w: gid %d is not the group session accounts are created in (%d)",
+			ErrRunAsOutsideNamespace, runAs.GID, macagent.AccountGID)
+	}
+	return &syscall.Credential{Uid: uint32(runAs.UID), Gid: uint32(runAs.GID)}, nil
+}
+
+// procAttrFor is the SysProcAttr every command this package starts is given: the process group both
+// postures have always set, plus the privilege drop when one was requested. It is ONE function for the
+// synchronous and the background path because those two have drifted before — background.go's header
+// records the one line that legitimately differs between them, and this is not it.
+//
+// ‼️ euid IS A PARAMETER AND NOT os.Geteuid(), FOR A TESTING REASON THAT IS ALSO THE POINT OF THE TEST.
+// Every machine an agent works on is unprivileged, so a function that read the real euid could only
+// ever be observed taking the REFUSING branch — and a change that dropped the Credential entirely would
+// leave that refusal in place and every test green. Passing it makes both branches reachable from any
+// machine, which is the difference between measuring the privilege drop and measuring the absence of
+// privilege. macagent.DetectElevation takes geteuid the same way and for the same reason.
+func procAttrFor(runAs *toolbroker.RunAs, euid int) (*syscall.SysProcAttr, error) {
+	credential, err := credentialFor(runAs)
+	if err != nil {
+		return nil, err
+	}
+	if credential != nil && euid != 0 {
+		return nil, fmt.Errorf("%w: this executor runs as uid %d and only uid 0 may become another; the "+
+			"command was NOT run as %d and was not run as %d either (docs/plans/2026-08-05-faz-a5-mac-izolasyon.md Task 3)",
+			ErrCannotDropPrivilege, euid, runAs.UID, euid)
+	}
+	return &syscall.SysProcAttr{Setpgid: true, Credential: credential}, nil
+}
 
 // ErrReadOnlyUnsupported refuses a read-only execution request on the host. The OCI executor honours
 // ReadOnly with a read-only bind mount; there is no host equivalent of that mount, and running the
@@ -133,7 +209,14 @@ func (e *Executor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (toolbr
 		defer cancel()
 	}
 
-	env, err := allowedEnv(cmd.WorkspaceRoot)
+	// THE PRIVILEGE DROP IS RESOLVED BEFORE THE DIRECTORIES ARE MADE, because allowedEnv gives the ones
+	// it creates to the same account and a refusal after a chown would leave a tree half handed over.
+	procAttr, err := procAttrFor(cmd.RunAs, os.Geteuid())
+	if err != nil {
+		return toolbroker.ShellResult{}, err
+	}
+
+	env, err := allowedEnv(cmd.WorkspaceRoot, cmd.RunAs)
 	if err != nil {
 		return toolbroker.ShellResult{}, err
 	}
@@ -153,8 +236,9 @@ func (e *Executor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (toolbr
 	c.Env = env
 	// Setpgid puts the command in its own process group; Cancel kills that GROUP, so a wall-time
 	// expiry reaps the tree a build spawns, not just the shell at its root. WaitDelay bounds the wait
-	// on a descendant that still holds the output pipe open.
-	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// on a descendant that still holds the output pipe open. Credential, when this attempt named a
+	// session account, is the uid it becomes — see procAttrFor.
+	c.SysProcAttr = procAttr
 	c.Cancel = func() error { return syscall.Kill(-c.Process.Pid, syscall.SIGKILL) }
 	c.WaitDelay = 2 * time.Second
 
@@ -227,17 +311,49 @@ func (e *Executor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (toolbr
 // posture that has them: an OCI run gets its separation from the container. A directory that could
 // not be created is an ERROR, not a silently-inherited fallback — a HOME pointing nowhere is worse
 // than the shared one it replaced.
-func allowedEnv(workspaceRoot string) ([]string, error) {
+//
+// AND THEY ARE GIVEN TO THE SESSION ACCOUNT HERE FOR THE SAME REASON THEY ARE CREATED HERE: nothing
+// else knows they exist. execution.HandTreeTo hands over the allocation as the clone or the restore
+// leaves it, and these three appear afterwards, made by this process and therefore owned by it. A HOME
+// the command cannot write is the same failure as a HOME pointing nowhere, arriving later and reading
+// as a broken toolchain.
+func allowedEnv(workspaceRoot string, runAs *toolbroker.RunAs) ([]string, error) {
 	env := make([]string, 0, len(envAllowList)+len(sessionDirs))
 	for _, name := range envAllowList {
 		if value, ok := os.LookupEnv(name); ok {
 			env = append(env, name+"="+value)
 		}
 	}
+	// Lchown rather than Chown throughout, for the reason execution.HandTreeTo gives at length: Chown
+	// follows a symlink and gives away its TARGET, and everything under the allocation root is reachable
+	// by a model that already ran once in this tree.
+	give := func(label, path string) error {
+		if runAs == nil {
+			return nil
+		}
+		if err := os.Lchown(path, runAs.UID, runAs.GID); err != nil {
+			return fmt.Errorf("%w: giving per-session %s (%s) to uid %d: %v",
+				ErrCannotDropPrivilege, label, path, runAs.UID, err)
+		}
+		return nil
+	}
+	// The PARENT is handed over too. MkdirAll below creates .palai-session on the way to the first
+	// subdirectory, so it is this process's; a command that cannot write it cannot create the bg/
+	// directory a background task needs (background.go), and that failure would arrive one seam away
+	// from anything naming a uid.
+	if err := os.MkdirAll(filepath.Join(workspaceRoot, sessionDir), 0o700); err != nil {
+		return nil, fmt.Errorf("prepare per-session directory: %w", err)
+	}
+	if err := give(sessionDir, filepath.Join(workspaceRoot, sessionDir)); err != nil {
+		return nil, err
+	}
 	for _, d := range sessionDirs {
 		path := filepath.Join(workspaceRoot, sessionDir, d[1])
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			return nil, fmt.Errorf("prepare per-session %s: %w", d[0], err)
+		}
+		if err := give(d[0], path); err != nil {
+			return nil, err
 		}
 		env = append(env, d[0]+"="+path)
 	}

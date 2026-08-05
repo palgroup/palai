@@ -3,7 +3,12 @@ package execution
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"syscall"
 	"testing"
+
+	"github.com/palgroup/palai/packages/macagent"
 )
 
 // fakeSlots drives SlotAccounts without a sudoers entry. The privileged call is one exec; the parts with
@@ -37,9 +42,9 @@ func TestSessionAccountsMapAllocationsOntoSlots(t *testing.T) {
 		if err != nil {
 			t.Fatalf("acquire: %v", err)
 		}
-		if first == second {
-			t.Fatalf("both allocations got %q — two sessions sharing a uid is the collision the accounts "+
-				"exist to prevent", first)
+		if first.UID == second.UID {
+			t.Fatalf("both allocations got uid %d — two sessions sharing a uid is the collision the accounts "+
+				"exist to prevent", first.UID)
 		}
 		if len(*calls) != 2 {
 			t.Fatalf("privileged calls = %v, want one create each", *calls)
@@ -57,7 +62,7 @@ func TestSessionAccountsMapAllocationsOntoSlots(t *testing.T) {
 			t.Fatalf("second acquire: %v", err)
 		}
 		if again != first {
-			t.Fatalf("re-acquire gave %q, want the same %q", again, first)
+			t.Fatalf("re-acquire gave %+v, want the same %+v", again, first)
 		}
 		if len(*calls) != 1 {
 			t.Fatalf("privileged calls = %v, want the second acquire to make none", *calls)
@@ -72,7 +77,7 @@ func TestSessionAccountsMapAllocationsOntoSlots(t *testing.T) {
 		}
 		next, _ := a.Acquire(ctx, "alloc_b")
 		if next != first {
-			t.Fatalf("next allocation got %q, want the freed %q — a machine that never reuses a slot runs "+
+			t.Fatalf("next allocation got %+v, want the freed %+v — a machine that never reuses a slot runs "+
 				"out after 99 sessions", next, first)
 		}
 	})
@@ -103,7 +108,7 @@ func TestSessionAccountsMapAllocationsOntoSlots(t *testing.T) {
 		*fail = nil
 		next, _ := a.Acquire(ctx, "alloc_b")
 		if next == first {
-			t.Fatalf("the next allocation was handed %q, the slot whose account may still exist — two "+
+			t.Fatalf("the next allocation was handed %+v, the slot whose account may still exist — two "+
 				"sessions would share a uid", next)
 		}
 	})
@@ -127,4 +132,166 @@ func TestSessionAccountsMapAllocationsOntoSlots(t *testing.T) {
 			t.Fatal("acquired a slot for an allocation with no id")
 		}
 	})
+}
+
+// TestAnAcquiredAccountCarriesTheUidTheDaemonWouldHaveCreated is A.5 Task 3's first assertion, and it
+// is about a RETURN VALUE rather than about behaviour. Until this task Acquire answered with a name and
+// both call sites passed it to log.Printf; docs/measurements/faz-a5-residue.md §2 measured the result —
+// an account created, a home directory populated, and every tenant still running as the operator's uid.
+// A name has nothing anyone can spend. A uid does.
+func TestAnAcquiredAccountCarriesTheUidTheDaemonWouldHaveCreated(t *testing.T) {
+	a, _, _ := fakeSlots()
+	account, err := a.Acquire(context.Background(), "sess_a")
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	// SLOT 1 IS THE FIRST FREE ONE, so the uid is the one macagent computes for it — spelled through the
+	// same function palai-agentd creates the account with, never as a literal beside it.
+	want, err := macagent.AccountUID(1)
+	if err != nil {
+		t.Fatalf("AccountUID(1): %v", err)
+	}
+	if account.UID != want {
+		t.Errorf("UID = %d, want %d — a uid that disagrees with the account the daemon created is a "+
+			"privilege drop into a user that does not exist", account.UID, want)
+	}
+	if account.GID != macagent.AccountGID {
+		t.Errorf("GID = %d, want %d, the group sysadminctl -addUser -GID puts the account in",
+			account.GID, macagent.AccountGID)
+	}
+	if !account.Bound() {
+		t.Error("Bound() is false for an account that was just created")
+	}
+	// A ZERO UID IS ROOT. The whole point of Bound is that the zero value of this struct can never be
+	// mistaken for one, because a caller that forgot to check would hand root to a tenant.
+	if (SessionAccount{}).Bound() {
+		t.Error("a zero SessionAccount reports itself bound: uid 0 is root")
+	}
+}
+
+// TestLookupNamesOnlyASessionThisProcessAcquired is the seam the EXEC path reads. It mints nothing, and
+// the `false` it returns for an unknown session is what execEnv turns into a refusal rather than into a
+// command that quietly runs as the control plane.
+func TestLookupNamesOnlyASessionThisProcessAcquired(t *testing.T) {
+	ctx := context.Background()
+	a, calls, _ := fakeSlots()
+
+	if _, ok := a.Lookup("sess_never_seen"); ok {
+		t.Fatal("Lookup answered for a session this process never acquired")
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("privileged calls = %v — Lookup created an account", *calls)
+	}
+
+	acquired, err := a.Acquire(ctx, "sess_a")
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	found, ok := a.Lookup("sess_a")
+	if !ok {
+		t.Fatal("Lookup did not find the session that was just acquired: every tool call it makes would " +
+			"be refused for want of a uid this process is holding")
+	}
+	if found != acquired {
+		t.Errorf("Lookup gave %+v, Acquire gave %+v — the exec path and the provision path would name two "+
+			"different users for one session", found, acquired)
+	}
+
+	// AND IT STOPS ANSWERING WHEN THE SLOT GOES BACK. A released slot is handed to the next session, so a
+	// Lookup that kept answering would aim one session's commands at another session's uid.
+	if err := a.Release(ctx, "sess_a"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if _, ok := a.Lookup("sess_a"); ok {
+		t.Fatal("Lookup still answers for a released session")
+	}
+}
+
+// TestHandingOverATreeChangesTheLinkAndNeverItsTarget is the sharpest test in this file, and the reason
+// HandTreeTo is a function rather than three lines inline.
+//
+// os.Chown FOLLOWS a symlink. The tree being walked is a repository this session's own model may
+// already have written into, so `ln -s /etc/passwd anything` inside it would make a ROOT walk hand
+// /etc/passwd to the tenant. os.Lchown changes the link itself.
+//
+// ‼️ THE DISCRIMINATOR IS A DANGLING LINK, AND IT WAS CHOSEN BECAUSE IT NEEDS NO PRIVILEGE. Ownership
+// cannot be observed changing on an unprivileged machine — the only uid this process may write is its
+// own — so a test that chowned to a real target and read the owner back would measure nothing. But
+// os.Chown on a link with no target fails ENOENT while os.Lchown succeeds, so the two functions are
+// distinguishable here by their ERROR at any privilege level. Perturbing Lchown to Chown reddens this.
+func TestHandingOverATreeChangesTheLinkAndNeverItsTarget(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "repo", "src"), 0o755); err != nil {
+		t.Fatalf("seed tree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "repo", "src", "main.swift"), []byte("import Foundation\n"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(root, "nothing-is-here"), filepath.Join(root, "repo", "dangling")); err != nil {
+		t.Fatalf("seed dangling symlink: %v", err)
+	}
+
+	// The current uid is the only one an unprivileged process may give anything to, and giving a tree to
+	// the uid that already owns it is a no-op the kernel still validates — which is exactly what makes it
+	// a usable stand-in for the walk itself.
+	self := SessionAccount{Name: "palai-s01", UID: os.Getuid(), GID: os.Getgid()}
+	if err := HandTreeTo(root, self); err != nil {
+		t.Fatalf("HandTreeTo over a tree containing a dangling symlink: %v\n"+
+			"an ENOENT here means the walk used os.Chown, which resolves a link to its TARGET — and a "+
+			"privileged walk doing that gives away whatever the tenant pointed at", err)
+	}
+}
+
+// TestHandingOverATreeFailsClosedWhenTheUidIsUnreachable is the other half, and the branch every
+// unprivileged machine takes. An allocation whose bytes still belong to the control plane, handed to a
+// session that was told it owns them, is a permission error arriving in the middle of a build and
+// attributed to the build.
+//
+// BOTH BRANCHES ASSERT. On a privileged execer the hand-over succeeds and the OWNER IS READ BACK OFF
+// THE DISK, which is the evidence the plan asks for and which no unprivileged machine can produce.
+func TestHandingOverATreeFailsClosedWhenTheUidIsUnreachable(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "cloned.swift")
+	if err := os.WriteFile(file, []byte("// tenant bytes\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	uid, err := macagent.AccountUID(7)
+	if err != nil {
+		t.Fatalf("AccountUID(7): %v", err)
+	}
+	account := SessionAccount{Name: "palai-s07", UID: uid, GID: macagent.AccountGID}
+
+	err = HandTreeTo(root, account)
+
+	if os.Geteuid() == 0 {
+		if err != nil {
+			t.Fatalf("HandTreeTo as root: %v", err)
+		}
+		info, serr := os.Lstat(file)
+		if serr != nil {
+			t.Fatalf("stat after hand-over: %v", serr)
+		}
+		if owner := int(info.Sys().(*syscall.Stat_t).Uid); owner != uid {
+			t.Fatalf("the cloned file is owned by uid %d, want %d", owner, uid)
+		}
+		return
+	}
+
+	if !errors.Is(err, ErrCannotHandOverTree) {
+		t.Fatalf("HandTreeTo at euid %d = %v, want ErrCannotHandOverTree — a tree that was not handed "+
+			"over while the provision reported success is a boundary that exists only in the log",
+			os.Geteuid(), err)
+	}
+}
+
+// TestATreeIsNeverHandedToNobody keeps the zero value out of the privileged path. uid 0 is root, and a
+// SessionAccount nobody filled in is uid 0.
+func TestATreeIsNeverHandedToNobody(t *testing.T) {
+	root := t.TempDir()
+	if err := HandTreeTo(root, SessionAccount{}); err == nil {
+		t.Fatal("a zero account was accepted: every entry in the allocation would be chowned to uid 0")
+	}
+	if err := HandTreeTo("", SessionAccount{Name: "palai-s01", UID: 701, GID: 20}); err == nil {
+		t.Fatal("an empty root was accepted")
+	}
 }

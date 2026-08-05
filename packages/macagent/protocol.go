@@ -30,6 +30,16 @@ const MaxSlot = 99
 // hand-edited account fails to look like ours.
 const UIDBase = 700
 
+// AccountGID is the primary group every session account is created in: 20, `staff`.
+//
+// IT IS A CONSTANT HERE BECAUSE IT HAS TWO WRITERS AND ONE READER THAT MUST AGREE WITH BOTH. The
+// writers are the creators — cmd/palai-agentd/accounts.go's `-GID` argument and mac-sessions.sh:440's
+// — and the reader is the control plane, which hands a uid/gid pair to whatever drops privilege to it
+// (execution.SessionAccount). A gid the account was not created with is not a smaller boundary, it is
+// a command that cannot open its own home directory, so the number lives in one place and both
+// creators spend it.
+const AccountGID = 20
+
 // namePrefix is the account-name prefix this daemon owns. Unlike mac-sessions.sh's PREFIX it is NOT
 // overridable. That script needed a variable so its own test suite could scan a namespace no real
 // machine uses; a root daemon has no such need, and an environment-settable prefix on a privileged

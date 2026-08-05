@@ -269,3 +269,68 @@ func readMessage(t *testing.T, conn *websocket.Conn) contracts.RunnerMessage {
 	}
 	return message
 }
+
+// TestTheSessionUidSurvivesTheWire is A.5 Task 3's crossing. The control plane mints the account and the
+// MACHINE is the only side that can spend the uid, so the number has to arrive intact — and it arrives
+// through JSON, as a map[string]any, on a struct that never carried a pointer field before.
+//
+// THE MESSAGE IS ACTUALLY SERIALISED HERE rather than handed over as a Go value. That is the whole
+// point: decodeExecCommand re-marshals whatever it is given, so a struct passed in memory would round
+// trip through a path the wire never takes, and this tree has already shipped a value that crossed a
+// boundary and came back subtly different.
+func TestTheSessionUidSurvivesTheWire(t *testing.T) {
+	var seen toolbroker.ShellCommand
+	exec := shellFunc(func(_ context.Context, cmd toolbroker.ShellCommand) (toolbroker.ShellResult, error) {
+		seen = cmd
+		return toolbroker.ShellResult{ExitCode: 0}, nil
+	})
+
+	encoded, err := json.Marshal(execRequest(t, "exec-uid", toolbroker.ShellCommand{
+		Argv:          []string{"swift", "build"},
+		WorkspaceRoot: "/workspace",
+		RunAs:         &toolbroker.RunAs{UID: 707, GID: 20},
+	}))
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	var onTheWire contracts.RunnerMessage
+	if err := json.Unmarshal(encoded, &onTheWire); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+
+	NewToolServer(exec).Handle(context.Background(), onTheWire)
+
+	if seen.RunAs == nil {
+		t.Fatal("the uid did not survive the crossing: this machine would run the tenant's build as its " +
+			"own executor, and the control plane would have no way to tell")
+	}
+	if seen.RunAs.UID != 707 || seen.RunAs.GID != 20 {
+		t.Fatalf("RunAs = %+v, want {707 20}", *seen.RunAs)
+	}
+}
+
+// TestACommandWithNoSessionAccountCrossesTheWireUnchanged is the no-regression half: every command in
+// every deployment today carries no RunAs, and a nil pointer must arrive as a nil pointer rather than as
+// a zero-valued one — uid 0 is root.
+func TestACommandWithNoSessionAccountCrossesTheWireUnchanged(t *testing.T) {
+	var seen toolbroker.ShellCommand
+	exec := shellFunc(func(_ context.Context, cmd toolbroker.ShellCommand) (toolbroker.ShellResult, error) {
+		seen = cmd
+		return toolbroker.ShellResult{}, nil
+	})
+
+	encoded, _ := json.Marshal(execRequest(t, "exec-plain", toolbroker.ShellCommand{
+		Argv:          []string{"uname", "-s"},
+		WorkspaceRoot: "/workspace",
+	}))
+	var onTheWire contracts.RunnerMessage
+	if err := json.Unmarshal(encoded, &onTheWire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	NewToolServer(exec).Handle(context.Background(), onTheWire)
+
+	if seen.RunAs != nil {
+		t.Fatalf("a command that named no session account arrived carrying %+v — uid %d", *seen.RunAs, seen.RunAs.UID)
+	}
+}

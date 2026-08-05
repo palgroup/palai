@@ -732,8 +732,13 @@ func resolveNewAllocationDir(path, root string) (string, error) {
 		info, err := os.Lstat(current)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
-			// 0o755 mirrors workspace.Prepare's mode: the allocation is handed to the run's own uid by
-			// the session-account layer, not by being world-writable here.
+			// 0o755 mirrors workspace.Prepare's mode. The sentence that used to finish this comment —
+			// "the allocation is handed to the run's own uid by the session-account layer" — named a
+			// hand-over nothing performed; docs/measurements/faz-a5-residue.md §2 measured every tenant
+			// running as uid 501. It now happens in exactly one place and this is not it:
+			// execution.HandTreeTo, called after the clone and after a restore, on the control plane.
+			// When no session-account layer is wired, nothing is handed to anybody and this directory
+			// stays this process's — which is the declared unsandboxed-host posture, not a boundary.
 			if err := os.Mkdir(current, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
 				return "", fmt.Errorf("create allocation directory: %w", err)
 			}

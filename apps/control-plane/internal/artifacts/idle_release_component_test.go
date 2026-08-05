@@ -120,13 +120,42 @@ func workspaceState(t *testing.T, h *artifactsHarness, workspaceID string) strin
 // recordingAccounts is a SessionAccounts that records which sessions were acquired and released rather
 // than touching a real uid — the privileged half needs root, and the mapping is the part with behaviour.
 type recordingAccounts struct {
+	// uid/gid is the identity Acquire answers with. Zero means THIS PROCESS'S OWN, and that default is a
+	// statement about the machine the test runs on rather than about production.
+	//
+	// ‼️ WHY NOT 701, WHICH IS WHAT macagent.AccountUID(1) REALLY RETURNS. Since A.5 T3 the resume path
+	// does not merely record the account, it HANDS THE RESTORED TREE OVER to it (execution.HandTreeTo) —
+	// and chowning to another uid needs root, measured on this platform 2026-08-05. A fake answering 701
+	// would make every run of this suite assert the FAILURE branch, on every unprivileged machine, which
+	// is every machine. So the default names the one uid an unprivileged process may give a tree to, the
+	// hand-over really happens, and the round trip below is measured over a tree that really changed
+	// hands. The production arithmetic (700+slot, gid 20) is asserted where it belongs and where no
+	// privilege is needed to see it: execution.TestAnAcquiredAccountCarriesTheUidTheDaemonWouldHaveCreated.
+	uid, gid int
 	acquired []string
 	released []string
 }
 
-func (a *recordingAccounts) Acquire(_ context.Context, sessionID string) (string, error) {
+func (a *recordingAccounts) account() execution.SessionAccount {
+	uid, gid := a.uid, a.gid
+	if uid == 0 {
+		uid, gid = os.Getuid(), os.Getgid()
+	}
+	return execution.SessionAccount{Name: "palai-s01", UID: uid, GID: gid}
+}
+
+func (a *recordingAccounts) Acquire(_ context.Context, sessionID string) (execution.SessionAccount, error) {
 	a.acquired = append(a.acquired, sessionID)
-	return "palai-s01", nil
+	return a.account(), nil
+}
+
+func (a *recordingAccounts) Lookup(sessionID string) (execution.SessionAccount, bool) {
+	for _, s := range a.acquired {
+		if s == sessionID {
+			return a.account(), true
+		}
+	}
+	return execution.SessionAccount{}, false
 }
 
 func (a *recordingAccounts) Release(_ context.Context, sessionID string) error {
@@ -435,4 +464,65 @@ func runOf(t *testing.T, h *artifactsHarness, workspaceID string) string {
 		t.Fatalf("read workspace run: %v", err)
 	}
 	return runID
+}
+
+// TestAResumeWhoseTreeCannotBeHandedOverFailsInsteadOfReadying is A.5 Task 3's fail-closed leg on the
+// real resume path, and it is the leg that proves execution.HandTreeTo is actually CALLED here rather
+// than merely existing. It drives the shipped ResumeReleasedWorkspace against a machine whose session
+// account this process cannot become — uid 701, the uid palai-agentd really gives slot 1 — and asserts
+// that the workspace does NOT reach `ready`.
+//
+// WHY THE REFUSAL IS THE PRODUCT BEHAVIOUR AND NOT A TEST ARTEFACT. A workspace marked ready whose bytes
+// still belong to the control plane is a run that will fail somewhere inside a build, with a permission
+// error attributed to the build. The whole finding this task came from — docs/measurements/faz-a5-residue.md
+// §2 — was a machine that reported a boundary it did not have, so a hand-over that could not happen must
+// stop the resume rather than be logged past.
+//
+// A PRIVILEGED RUN OF THIS SUITE TAKES THE OTHER BRANCH, and it is written out rather than skipped: as
+// root the chown succeeds and the resume must complete, with the restored bytes owned by 701.
+func TestAResumeWhoseTreeCannotBeHandedOverFailsInsteadOfReadying(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	project, session, workspaceID, _, _ := h.seedIdleWorkspace(t)
+	tenant := coordinator.Tenant{Project: project}
+	// 701 is macagent.AccountUID(1) — a real session uid, and one no unprivileged process may chown to.
+	accounts := &recordingAccounts{uid: 701, gid: 20}
+
+	releaser := execution.NewIdleReleaser(h.repo.Spine(), execution.NewSnapshotSink(h.s3, h.repo.Spine()), idleTestTTL).
+		WithSessionAccounts(accounts)
+	if _, err := releaser.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep() error = %v", err)
+	}
+
+	newRoot := t.TempDir()
+	if r, err := filepath.EvalSymlinks(newRoot); err == nil {
+		newRoot = r
+	}
+	newAlloc := newID("alloc")
+	_, err := execution.ResumeReleasedWorkspace(ctx, h.repo.Spine(), execution.NewSnapshotSink(h.s3, h.repo.Spine()), accounts, tenant,
+		execution.ResumeInput{
+			WorkspaceID:  workspaceID,
+			SessionID:    session,
+			AllocationID: newAlloc,
+			HostPath:     filepath.Join(newRoot, newAlloc),
+		})
+
+	if os.Geteuid() == 0 {
+		if err != nil {
+			t.Fatalf("ResumeReleasedWorkspace() as root: %v — the hand-over is possible here and must succeed", err)
+		}
+		return
+	}
+
+	if !errors.Is(err, execution.ErrCannotHandOverTree) {
+		t.Fatalf("ResumeReleasedWorkspace() = %v, want ErrCannotHandOverTree — this process cannot give the "+
+			"restored tree to uid 701, so a resume that reported success would hand the session a workspace "+
+			"it cannot write and a boundary that exists only in the log", err)
+	}
+	// AND THE WORKSPACE DID NOT GO READY. The error alone is not the property: a caller that logged and
+	// carried on would find a `ready` workspace and dial against it.
+	if state := workspaceState(t, h, workspaceID); state == "ready" {
+		t.Fatalf("workspace state = %q after a refused hand-over: the run would dial against a tree owned "+
+			"by the control plane", state)
+	}
 }

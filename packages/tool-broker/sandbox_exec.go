@@ -37,6 +37,18 @@ type ExecEnv struct {
 	// handle. Nil on an attempt with no background orchestration wired — the background parameter is then
 	// refused, never silently downgraded to a synchronous run.
 	Background BackgroundTasks
+	// RunAs is the uid/gid this attempt's commands drop to, and RunAsUnresolved says the machine has a
+	// session-account layer that could not name one.
+	//
+	// ‼️ THEY ARE TWO FIELDS BECAUSE THERE ARE THREE STATES AND ONE POINTER CAN ONLY HOLD TWO. A nil
+	// RunAs with RunAsUnresolved false is "this deployment mints no accounts" — the declared
+	// unsandboxed-host posture, every stack before A.5, and a legitimate configuration. A nil RunAs with
+	// RunAsUnresolved TRUE is "this machine claims to isolate sessions and cannot name this one's uid",
+	// which is the opposite of a legitimate configuration and is refused by tools/shell.go rather than
+	// run. Collapsing the two into one nil is exactly how a machine that had stopped isolating anything
+	// would keep answering tool calls as the operator's own uid, which is the defect A.5 exists to end.
+	RunAs           *RunAs
+	RunAsUnresolved bool
 	// CallID and Fence are the per-call identity Execute stamps on a COPY of the env before invoking a
 	// tool (never on the caller's template). A remote_http tool (E12 T4) keys its invoke Idempotency-Key
 	// on CallID (a duplicate retry settles one server-side execution) and stamps Fence on the durable
@@ -121,6 +133,30 @@ type ShellCommand struct {
 	ReadOnly      bool
 	Shell         bool
 	Env           map[string]string
+	// RunAs is the uid/gid this command must drop to before it runs. Nil means the executor's own
+	// identity, which is what every command carried before A.5 T3 and what a deployment with no
+	// session-account layer still carries.
+	RunAs *RunAs
+}
+
+// RunAs is one session's kernel identity, crossing the wire from the control plane that minted the
+// account to the machine that spawns the process.
+//
+// ‼️ IT CARRIES NO NAME, AND THE ABSENCE IS THE SECURITY PROPERTY — the same one packages/macagent's
+// package comment builds its whole protocol around. The receiving side is about to spend privilege on
+// these numbers, and it is reachable from a process the tenant's model can influence. A name field
+// would be a string a compromised control plane could aim; two integers bounded to one namespace are
+// not. The executor derives the account name back FROM the uid (macagent.SlotFromUID) when it needs
+// one to report, so the only producer of a name is still arithmetic.
+//
+// THE NUMBERS ARE NOT TRUSTED EITHER. An executor that honours this MUST check the uid is inside the
+// session-account namespace before spending anything on it (see adapters/sandboxes/host's
+// credentialFor); `Uid: 0` is expressible on this wire and is refused where it lands, because a struct
+// with two integers cannot make a bad integer unwriteable the way a missing field makes a name
+// unwriteable.
+type RunAs struct {
+	UID int
+	GID int
 }
 
 // ShellResult is the captured outcome of a sandboxed command: bounded, already-redacted output, the

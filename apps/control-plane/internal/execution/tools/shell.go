@@ -80,6 +80,16 @@ func shellExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any)
 		return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable,
 			"shell tool: no workspace bound for this run")
 	}
+	// A MACHINE THAT MINTS SESSION UIDS AND CANNOT NAME THIS SESSION'S RUNS NOTHING (A.5 T3). It is an
+	// ANSWER rather than an error for the reason every refusal in this function is one — the model is
+	// told and the run continues — but it is not a soft one: the alternative is a tenant command running
+	// as the control plane's own uid on a deployment whose whole claim is that it does not do that.
+	// env.RunAs == nil ALONE never reaches here; see toolbroker.ExecEnv on why these are two fields.
+	if env.RunAsUnresolved {
+		return nil, toolbroker.Answerf(toolbroker.AnswerUnavailable,
+			"shell tool: this machine isolates sessions by uid and no session account is bound to this run, "+
+				"so the command was not run as anybody")
+	}
 	argv, err := toArgv(args["argv"])
 	if err != nil {
 		return nil, toolbroker.Answerf(toolbroker.AnswerInvalidArguments, "shell tool: %w", err)
@@ -106,6 +116,10 @@ func shellExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any)
 		// this function must not be able to put a value into `findings`, into an error message or into the
 		// returned map, all three of which are committed to the tool ledger.
 		Env: env.EnvValues,
+		// The uid this command drops to on whichever machine runs it. It rides the SAME struct as the
+		// argv so that the synchronous and the background branch below cannot disagree about it: a
+		// background task is the one process nobody is waiting on to notice it ran as the wrong user.
+		RunAs: env.RunAs,
 	}
 
 	// THE BACKGROUND BRANCH (E26 T2). It is the LAST thing this function decides and the whole synchronous

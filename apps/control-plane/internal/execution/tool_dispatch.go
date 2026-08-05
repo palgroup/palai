@@ -484,15 +484,47 @@ func shellFor(ch EngineChannel) toolbroker.ShellRunner {
 	return NewRemoteShell(conn)
 }
 
+// runAsFor answers what uid this session's commands must run as, and — separately — whether this
+// control plane mints uids at all.
+//
+// THE TWO RETURNS ARE THREE STATES, and the third is the one worth having. `(nil, false)` is a
+// deployment with no session-account layer: nothing is claimed and nothing is refused, which is every
+// stack before A.5 and the declared unsandboxed-host posture. `(account, false)` is the isolated case.
+// `(nil, TRUE)` is a control plane that mints accounts and cannot name THIS session's — and it is not
+// hypothetical: SlotAccounts keeps its session→slot map in process, a limit its own type comment
+// declares, so a control plane that restarted mid-session holds no slot for a session whose tree is
+// already owned by the uid of the account it was given. Acquiring a NEW one there would be worse than
+// useless: the fresh uid does not own the tree, so the run would fail on its own files.
+//
+// The refusal that follows lives in tools/shell.go, where the model can be told. What must not happen
+// is the fourth thing, which is what shipped before this: run the command anyway, as the control
+// plane's own uid, and report nothing.
+func (o *Orchestrator) runAsFor(sessionID string) (*toolbroker.RunAs, bool) {
+	if o.sessionAccounts == nil {
+		return nil, false
+	}
+	account, ok := o.sessionAccounts.Lookup(sessionID)
+	if !ok || !account.Bound() {
+		return nil, true
+	}
+	return &toolbroker.RunAs{UID: account.UID, GID: account.GID}, false
+}
+
 // execEnv is the per-attempt sandbox context the broker hands a workspace-touching tool: the
 // allocation root every path confines to, whether this attempt holds a read-only snapshot, and the
 // shell runner this attempt's machine answers on. A workspace-less attempt (no host path) yields a
 // zero root, so a workspace tool fails cleanly instead of touching the control plane's own filesystem.
 func (o *Orchestrator) execEnv(st *attemptState) toolbroker.ExecEnv {
+	runAs, unresolved := o.runAsFor(st.sessionID)
 	return toolbroker.ExecEnv{
 		WorkspaceRoot: st.attempt.WorkspaceHostPath,
 		ReadOnly:      st.attempt.WorkspaceReadOnly,
 		Shell:         shellFor(st.ch),
+		// The uid this session's commands drop to, and whether a machine that mints uids failed to name
+		// one. See runAsFor — the two are the difference between a deployment that isolates nothing on
+		// purpose and one that has stopped isolating without saying so.
+		RunAs:           runAs,
+		RunAsUnresolved: unresolved,
 		// The workspace this attempt's coding tools act on, derived from the SAME connection shellFor
 		// derives the executor from (A.3 T5) and derived the same way, per call. That symmetry is the
 		// reason it is not cached on the attempt: the two must agree about which host they are on, and

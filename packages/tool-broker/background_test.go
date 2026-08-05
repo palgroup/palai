@@ -19,6 +19,23 @@ import (
 //
 // ShellResult is the model-facing half: a field appearing or changing type here changes what every
 // non-background tool call returns, which is the definition of the regression this task must not cause.
+//
+// ‼️ ShellCommand's BASELINE MOVED ONCE, 2026-08-05, A.5 T3 — five fields to six, adding RunAs. It is
+// recorded here rather than silently re-counted, because a guard whose number changes without a reason
+// beside it stops being a guard. Two things make it a legitimate move rather than the regression this
+// test exists to catch:
+//
+//   - IT IS NOT A BACKGROUND FIELD. The sentence in the error below — "a background feature must not
+//     change what a non-background call sends" — still holds: RunAs is read identically by the
+//     synchronous and the detached path (adapters/sandboxes/host's procAttrFor is called by both), so a
+//     `background: true` call and a plain one differ by exactly what they always differed by.
+//   - THE OBJECTION THE PARAGRAPH ABOVE RAISES IS ANSWERED RATHER THAN OVERRULED. It says a field added
+//     here would be "meaningless on the far side of a wire, and the relay that will need that property
+//     is still ahead (E27)". That relay SHIPPED — packages/runner/toolserver.go marshals this struct
+//     onto runner.v1 — and RunAs is the one field that is meaningless on THIS side: the control plane
+//     mints the uid and the machine is the only thing that can spend it.
+//
+// ShellResult has never moved and this test would still be worth having if that were all it asserted.
 func TestTheSynchronousShellSeamIsFieldForFieldUnchanged(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -31,6 +48,7 @@ func TestTheSynchronousShellSeamIsFieldForFieldUnchanged(t *testing.T) {
 			"ReadOnly":      "bool",
 			"Shell":         "bool",
 			"Env":           "map[string]string",
+			"RunAs":         "*toolbroker.RunAs",
 		}},
 		{"ShellResult", toolbroker.ShellResult{}, map[string]string{
 			"ExitCode":   "int",
@@ -45,7 +63,7 @@ func TestTheSynchronousShellSeamIsFieldForFieldUnchanged(t *testing.T) {
 	} {
 		typ := reflect.TypeOf(tc.value)
 		if typ.NumField() != len(tc.fields) {
-			t.Errorf("%s has %d fields, want the %d it had before background execution existed",
+			t.Errorf("%s has %d fields, want the %d this seam is pinned to (see the recorded baseline move above)",
 				tc.name, typ.NumField(), len(tc.fields))
 		}
 		for i := 0; i < typ.NumField(); i++ {
