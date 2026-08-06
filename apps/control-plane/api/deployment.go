@@ -661,6 +661,34 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "main",
 	},
 
+	// --- the MCP client's own bounds --------------------------------------------------------------------
+	{
+		Name: "PALAI_MCP_TIMEOUT", Group: "egress", Kind: kindValue, Default: "30s",
+		Effect: "The default deadline on one MCP call. It bounds a tool waiting on somebody else's server: " +
+			"without it a slow or hung MCP endpoint holds a run's turn for as long as it likes, and the run " +
+			"reads as thinking rather than as blocked.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "mcpManagerFromEnv",
+	},
+	{
+		Name: "PALAI_MCP_SWEEP_GRACE", Group: "egress", Kind: kindValue, Default: "2m — comfortably past a per-call container's wall time",
+		Effect: "How long an MCP stdio container is spared before the orphan sweep reclaims it. The margin is " +
+			"the same shape as the artifact collector's: a container still serving a call must not be read as " +
+			"an orphan, so the default sits past what one call may take.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startMCPOrphanSweep",
+	},
+	{
+		Name: "PALAI_MCP_SWEEP_INTERVAL", Group: "egress", Kind: kindValue, Default: "1m",
+		Effect: "How often that sweep runs. Its FIRST pass is synchronous at boot and doubles as the " +
+			"reachability probe: it reclaims what the previous process left behind, and a deployment with no " +
+			"Docker socket disables the loop with one line naming the reason rather than failing once a " +
+			"minute forever. A daemon hiccup exactly at boot therefore disables the sweep for that process's " +
+			"life, and the next boot's probe reclaims the orphans — a stated ceiling, not an accident.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startMCPOrphanSweep",
+	},
+
 	// --- the durable queue and the schedule ticker ------------------------------------------------------
 	{
 		Name: "PALAI_QUEUE_TICK", Group: "execution", Kind: kindValue, Default: "1s",
@@ -1143,37 +1171,6 @@ var secretFilePrefixes = []string{
 	"PALAI_WEBHOOK_SECRET_FILE_",
 }
 
-// uncataloguedSettings is a LEDGER OF DEBT, not an exemption list, and the difference is what it is for.
-//
-// ‼️ EVERY GUARD IN THIS FILE LOOKED ONE WAY UNTIL 2026-08-06: compose -> catalogue, and catalogue ->
-// compose for the writable entries. A variable the BINARY READS that no compose file names was invisible
-// to both, and `PALAI_WORKSPACE_IDLE_TTL` — which decides when EVERY session's machine is handed back —
-// sat in exactly that blind spot with a default, so nothing was red while no operator surface named it.
-//
-// Measured the same day: the composition root reads 64 `PALAI_` names and 42 of them were neither
-// catalogued nor declared unreported. Inventing 34 catalogue entries in one sitting would have produced
-// 34 sentences about defaults and effects that nobody verified — the catalogue's value is that its prose
-// is TRUE, and filling it fast is how that stops being so. So they are written down instead, with the
-// reason they are a group, and TestEverySettingTheCompositionRootReadsIsAccountedFor makes the list a
-// CEILING: a name added to main.go and not to the catalogue fails, which is the hole this closes. The
-// list shrinks as entries are catalogued properly; it must never grow.
-var uncataloguedSettings = func() map[string]string {
-	groups := []struct {
-		reason string
-		names  []string
-	}{
-		{"MCP client sweep and dial timeout. The boundary of this family — PALAI_MCP_ALLOW_PRIVATE — was catalogued on 2026-08-06 and left this list; what remains is pacing.",
-			[]string{"PALAI_MCP_SWEEP_GRACE", "PALAI_MCP_SWEEP_INTERVAL", "PALAI_MCP_TIMEOUT"}},
-	}
-	out := map[string]string{}
-	for _, g := range groups {
-		for _, name := range g.names {
-			out[name] = g.reason
-		}
-	}
-	return out
-}()
-
 // credentialBearingSettings never enter the catalogue: their VALUE is the secret, so a row naming them —
 // even with an empty value — tells a reader the shape of the deployment's credentials.
 // TestNoCredentialBearingVariableIsCatalogued is the rule; this names the composition root's own three so
@@ -1225,6 +1222,9 @@ var nonDesiredReason = map[string]string{
 	"PALAI_S3_REGION": "it travels with the endpoint credential pair as one decision about WHERE this " +
 		"deployment's artifacts live and how it signs for them. Splitting one of the four off into a form " +
 		"would let a panel change a signature's region while the endpoint it is signing for stays put.",
+	"PALAI_MCP_TIMEOUT":             "read once, when the manager is built, and held by it for the process's life.",
+	"PALAI_MCP_SWEEP_GRACE":         "it is the margin that keeps a container still serving a call from being reclaimed as an orphan. Read once, when the sweep starts.",
+	"PALAI_MCP_SWEEP_INTERVAL":      "read once, when the sweep starts.",
 	"PALAI_QUEUE_TICK":              "read once, when the bridge starts, and held by it.",
 	"PALAI_QUEUE_DELIVERY_BACKOFF":  "read once, when the bridge starts. It is also what keeps a failing broker from being retried without pause.",
 	"PALAI_SCHEDULE_TICK":           "read once, when the ticker starts.",

@@ -555,10 +555,17 @@ func compositionRootReads(t *testing.T) []string {
 // handed back, appeared in zero deploy files, zero docs and no catalogue, and nothing was red — because
 // it has a default, so the sweep ran and no operator could see or change the number it ran with.
 //
-// Four ways to be accounted for, and each says something different: catalogued (an operator can read it),
-// declared unreported (its value must not reach the surface), a secret-file PREFIX (there is no fixed
-// name to hold), or written into uncataloguedSettings with a reason. The fourth is a debt ledger, and
-// this test is what makes it a CEILING: a name added to main.go and to none of the four fails here.
+// THREE ways to be accounted for, and each says something different: catalogued (an operator can read
+// it), declared unreported (its value must not reach the surface), or a secret-file PREFIX (the full name
+// carries the secret's own reference, so there is no fixed name a row could hold). A name added to
+// main.go and to none of the three fails here.
+//
+// ‼️ THERE WAS A FOURTH, AND ITS DELETION IS THE POINT. When this guard was written the composition root
+// read 64 PALAI_ names and 42 were accounted for nowhere, so they went into a debt LEDGER — grouped by
+// the reason they were a group — rather than into 42 catalogue entries whose prose nobody had verified.
+// The ledger emptied on 2026-08-06 and went with it: an escape hatch nobody needs is a place for the
+// next setting to hide, and the rule it carried ("the list must never grow") is enforced more simply by
+// there being no list.
 func TestEverySettingTheCompositionRootReadsIsAccountedFor(t *testing.T) {
 	catalogued := map[string]bool{}
 	for _, entry := range deploymentCatalogue {
@@ -588,26 +595,17 @@ func TestEverySettingTheCompositionRootReadsIsAccountedFor(t *testing.T) {
 		case catalogued[name]:
 		case unreportedSettings[name] != "":
 		case credential[name]:
-		case uncataloguedSettings[name] != "":
 		default:
 			if isSecretFilePrefix(name) {
 				continue
 			}
 			t.Errorf("the composition root reads %s and nothing accounts for it. An operator cannot see it, "+
 				"cannot change it from any deployment file this repository ships, and no guard would notice "+
-				"if its default were wrong. Catalogue it, declare it unreported, or add it to "+
-				"uncataloguedSettings WITH the reason it is not yet a row", name)
+				"if its default were wrong. Catalogue it — with a Default this file's own guard can check, "+
+				"and either a DesiredValue grammar or a stated refusal", name)
 		}
 	}
 
-	// The ledger may not name something that is already accounted for elsewhere: two sources of truth about
-	// one setting is how a stale exemption survives the change that made it a real entry.
-	for name := range uncataloguedSettings {
-		if catalogued[name] || unreportedSettings[name] != "" {
-			t.Errorf("uncataloguedSettings names %s, which is already catalogued or declared unreported — "+
-				"delete the ledger entry, it is the one that will go stale", name)
-		}
-	}
 }
 
 func isSecretFilePrefix(name string) bool {
