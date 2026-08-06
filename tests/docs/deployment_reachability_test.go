@@ -36,6 +36,15 @@ var unreachableByDesign = map[string]string{
 		"capability on for a deployment that cannot serve it, so `palai up --native` stays the path.",
 	"PALAI_SESSION_ACCOUNT_HELPER": "a privileged HOST path that mints macOS session accounts. A Linux " +
 		"container has none, and a host path interpolated into one names a file that is not there.",
+	"PALAI_CAPABILITY_WORKER_LISTEN_ADDR": "a SHIPPED release manifest states that no deployment config " +
+		"sets it and that no deployed binary serves the capability map. Passing it here would make a " +
+		"released sentence false while every test of that sentence stayed green — which is what " +
+		"scripts/release's TestNoDeploymentMountsTheCapabilityWorkerGateway caught when this sweep first " +
+		"added it. Mounting the gateway is a deliberate change that corrects the release's claim in the " +
+		"same commit, never a side effect of making a knob reachable.",
+	"PALAI_CAPABILITY_WORKER_IDENTITY_TTL": "it bounds an identity the capability gateway issues, and the " +
+		"gateway is unmounted in every deployment by the release claim above. A TTL for a service nothing " +
+		"serves is a setting whose only effect would be to suggest the service is there.",
 }
 
 func TestEveryCatalogedSettingIsReachableFromTheShippedDeployment(t *testing.T) {
