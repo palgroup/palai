@@ -39,15 +39,35 @@ const MaxSlot = 99
 // hand-edited account fails to look like ours.
 const UIDBase = 700
 
-// AccountGID is the primary group every session account is created in: 20, `staff`.
+// AccountGroupName is the group every session account is created in, and AccountGID is its id.
+//
+// ‼️ IT IS NOT `staff` (20), AND IT USED TO BE, AND THAT WAS THE WHOLE ISOLATION MISSING ITS POINT.
+// Measured on this machine on 2026-08-06: `/Users/salih` is `drwxr-x---` owned by `salih:staff`, and
+// every local macOS account is created with PrimaryGroupID 20 unless told otherwise. So a session
+// account in `staff` traverses the operator's home by the GROUP bit and reads every project under it —
+// `ls /Users/salih/workspace` from inside a session listed sixteen unrelated checkouts. The uid drop
+// would have isolated sessions from EACH OTHER and left the machine's owner completely exposed, which
+// is worse than no isolation, because a deployment that wired it would believe it had a boundary.
+//
+// A DEDICATED GROUP IS THE BOUNDARY, and it is only a boundary while nothing else joins it. Nothing
+// does: the two creators below put session accounts in it and no other code adds a member, so the
+// operator's home admits these accounts by neither owner, group, nor other.
+//
+// 700 mirrors [UIDBase] deliberately — slot N is uid 700+N and the group they share is 700, so an
+// operator reading `ls -l` sees one namespace rather than two unrelated numbers. Both were free on a
+// stock macOS (701/702 are Apple's sharepoint groups; 700 is not allocated).
 //
 // IT IS A CONSTANT HERE BECAUSE IT HAS TWO WRITERS AND ONE READER THAT MUST AGREE WITH BOTH. The
-// writers are the creators — cmd/palai-agentd/accounts.go's `-GID` argument and mac-sessions.sh:440's
-// — and the reader is the control plane, which hands a uid/gid pair to whatever drops privilege to it
+// writers are the creators — cmd/palai-agentd/accounts.go's `-GID` argument and mac-sessions.sh's —
+// and the reader is the control plane, which hands a uid/gid pair to whatever drops privilege to it
 // (execution.SessionAccount). A gid the account was not created with is not a smaller boundary, it is
 // a command that cannot open its own home directory, so the number lives in one place and both
-// creators spend it.
-const AccountGID = 20
+// creators spend it. The shell one spent a LITERAL `20` until 2026-08-06 while this comment already
+// claimed otherwise; TestBothAccountCreatorsSpendTheSameGroup now measures the claim.
+const (
+	AccountGroupName = "palai-sessions"
+	AccountGID       = 700
+)
 
 // namePrefix is the account-name prefix this daemon owns. Unlike mac-sessions.sh's PREFIX it is NOT
 // overridable. That script needed a variable so its own test suite could scan a namespace no real

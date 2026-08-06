@@ -160,6 +160,65 @@ func (a *SysadminctlAccounts) requireMac() error {
 	return nil
 }
 
+// ensureGroup makes the group every session account belongs to, once, idempotently.
+//
+// ‼️ THIS GROUP IS THE BOUNDARY, NOT BOOKKEEPING. A macOS home directory is `drwxr-x---` owned by
+// `<operator>:staff`, and a local account created without `-GID` lands in `staff` — so a session
+// account in the default group reads the operator's entire home by the group bit, every checkout under
+// it included. Putting sessions in a group nothing else joins is what makes the operator's home
+// unreachable by owner, group AND other. See macagent.AccountGroupName.
+//
+// IT REFUSES RATHER THAN ADAPTS, on both collisions:
+//
+//   - the NAME exists with a different gid — that group is somebody else's, and creating accounts in
+//     it would hand them whatever it can reach;
+//   - the GID is held under a different name — same hazard from the other direction, and `sysadminctl
+//     -GID` names the number, not the record.
+//
+// Either way the honest answer is to stop: an account created into the wrong group is a boundary that
+// reports success and does not exist.
+func (a *SysadminctlAccounts) ensureGroup(ctx context.Context) error {
+	const path = "/Groups/" + macagent.AccountGroupName
+
+	if out, err := a.run(ctx, "dscl", ".", "-read", path, "PrimaryGroupID"); err == nil {
+		got := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), "PrimaryGroupID:"))
+		if got == strconv.Itoa(macagent.AccountGID) {
+			return nil
+		}
+		return macagent.Errorf(macagent.ClassInternal,
+			"group %s already exists with gid %s, not %d: it is not the one this daemon owns, and creating "+
+				"session accounts in it would give them whatever that group can reach",
+			macagent.AccountGroupName, got, macagent.AccountGID)
+	}
+
+	// The gid may be held under another name even when the name is free. `-search` answers the records
+	// that hold it; anything at all here is a collision.
+	if out, err := a.run(ctx, "dscl", ".", "-search", "/Groups", "PrimaryGroupID", strconv.Itoa(macagent.AccountGID)); err == nil {
+		if holder := strings.TrimSpace(out); holder != "" {
+			return macagent.Errorf(macagent.ClassInternal,
+				"gid %d is already held on this machine (%s), so it cannot be %s: session accounts would share a "+
+					"group with whatever holds it",
+				macagent.AccountGID, strings.Fields(holder)[0], macagent.AccountGroupName)
+		}
+	}
+
+	for _, args := range [][]string{
+		{".", "-create", path},
+		{".", "-create", path, "PrimaryGroupID", strconv.Itoa(macagent.AccountGID)},
+		{".", "-create", path, "RealName", "Palai session accounts"},
+		// A password of `*` is the no-login form for a group record, matching what macOS writes for its
+		// own service groups. Without it `dscl -read` answers a record with no Password attribute, which
+		// some tools read as an empty password rather than as an absent one.
+		{".", "-create", path, "Password", "*"},
+	} {
+		if out, err := a.run(ctx, "dscl", args...); err != nil {
+			return macagent.Errorf(macagent.ClassInternal,
+				"creating group %s failed: %v: %s", macagent.AccountGroupName, err, strings.TrimSpace(out))
+		}
+	}
+	return nil
+}
+
 // Create makes slot N's account, its home, and the marker that makes it deletable later.
 func (a *SysadminctlAccounts) Create(ctx context.Context, slot int) (string, string, error) {
 	if err := a.requireMac(); err != nil {
@@ -186,6 +245,13 @@ func (a *SysadminctlAccounts) Create(ctx context.Context, slot int) (string, str
 	huuid, err := a.hostUUID(ctx)
 	if err != nil {
 		return "", "", macagent.Errorf(macagent.ClassInternal, "this host has no IOPlatformUUID, so a marker cannot be bound to it: %v", err)
+	}
+
+	// THE GROUP IS MADE BEFORE THE ACCOUNT, because `-GID` on a group that does not exist produces a
+	// user whose primary group resolves to nothing — a login that cannot open its own home, reported as
+	// a successful create. See ensureGroup for why the group is a boundary rather than bookkeeping.
+	if err := a.ensureGroup(ctx); err != nil {
+		return "", "", err
 	}
 
 	// NO -password. The account is created without one, so it is reachable by root and by no login

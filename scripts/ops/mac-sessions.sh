@@ -63,6 +63,17 @@ PREFIX="${PALAI_MAC_SESSIONS_PREFIX:-palai-s}"
 # index 01, which the operator's real `palai-s01` already holds — measured 2026-08-02, the dry run refused
 # with "uid 701 already belongs to palai-s01". A namespace is a name AND a uid range or it is neither.
 UID_BASE="${PALAI_MAC_SESSIONS_UID_BASE:-700}"
+# SESSION_GROUP/SESSION_GID mirror macagent.AccountGroupName and macagent.AccountGID, and mirroring them
+# is the point rather than a convenience: this script and cmd/palai-agentd create the same accounts, and
+# an account created into a different group is a different boundary.
+#
+# ‼️ THIS WAS A LITERAL `20` — `staff` — UNTIL 2026-08-06, WHICH MEANT THERE WAS NO BOUNDARY. A macOS home
+# is `drwxr-x---` owned by `<operator>:staff`, so every session account read the operator's whole home and
+# every checkout under it. Measured from inside a live session: `ls /Users/salih/workspace` listed sixteen
+# unrelated projects. Unlike PREFIX and UID_BASE these are NOT overridable — a namespace may be renamed for
+# a test, but a test that could aim real accounts at `staff` would reintroduce exactly this.
+SESSION_GROUP="palai-sessions"
+SESSION_GID=700
 MAX_SESSIONS=99
 MARKER_ATTR="dsAttrTypeNative:palai_mac_session"
 MARKER_MAGIC="palai-mac-sessions"
@@ -427,17 +438,41 @@ cmd_plan() {
 # ---------------------------------------------------------------------------------------------------
 # up
 # ---------------------------------------------------------------------------------------------------
+# ensure_session_group makes the group session accounts belong to, idempotently, and REFUSES both
+# collisions rather than adapting to them: a name held at another gid, or the gid held under another
+# name. Either would put session accounts in a group somebody else owns — a boundary that reports
+# success and is not one. Mirrors ensureGroup in cmd/palai-agentd/accounts.go.
+ensure_session_group() {
+	local existing holder
+	if existing="$(dscl . -read "/Groups/$SESSION_GROUP" PrimaryGroupID 2>/dev/null | awk '{print $2}')"; then
+		if [ -n "$existing" ]; then
+			[ "$existing" = "$SESSION_GID" ] && return 0
+			die "group $SESSION_GROUP already exists with gid $existing, not $SESSION_GID: it is not ours, and creating session accounts in it would give them whatever it can reach"
+		fi
+	fi
+	holder="$(dscl . -search /Groups PrimaryGroupID "$SESSION_GID" 2>/dev/null | awk 'NR==1{print $1}')"
+	[ -n "$holder" ] && die "gid $SESSION_GID is already held on this machine ($holder), so it cannot be $SESSION_GROUP"
+	say "  creating group $SESSION_GROUP (gid $SESSION_GID)"
+	dscl . -create "/Groups/$SESSION_GROUP"
+	dscl . -create "/Groups/$SESSION_GROUP" PrimaryGroupID "$SESSION_GID"
+	dscl . -create "/Groups/$SESSION_GROUP" RealName "Palai session accounts"
+	dscl . -create "/Groups/$SESSION_GROUP" Password "*"
+}
+
 create_account() { # create_account <index>
 	local n="$1" name uid
 	name="$(session_name "$n")"
 	uid="$(session_uid "$n")"
-	say "  creating $name (uid $uid, /Users/$name), no password, non-admin"
+	# THE GROUP IS MADE BEFORE THE ACCOUNT: -GID naming a group that does not exist produces a user whose
+	# primary group resolves to nothing — a login that cannot open its own home, reported as a success.
+	ensure_session_group
+	say "  creating $name (uid $uid, gid $SESSION_GID, /Users/$name), no password, non-admin"
 	# No -password: the account is created without one, so it is reachable by root (`sudo -u`) and
 	# not by any login path. Passing one here would put it in argv, where every user on the box reads
 	# it out of `ps`. Post-conditions are checked below rather than trusted.
 	sysadminctl -addUser "$name" \
 		-fullName "Palai session $(session_id "$n")" \
-		-UID "$uid" -GID 20 -shell /bin/zsh -home "/Users/$name" 2>&1 | sed 's/^/    /'
+		-UID "$uid" -GID "$SESSION_GID" -shell /bin/zsh -home "/Users/$name" 2>&1 | sed 's/^/    /'
 	dscl . -create "/Users/$name" "$MARKER_ATTR" "$(marker_for "$name" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
 	# -home ASSIGNS a home directory; it does not CREATE one. sysadminctl says so in its own output —
 	# "Home directory is assigned (not created!)" — and this script used to read straight past it into a
