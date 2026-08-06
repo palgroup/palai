@@ -33,7 +33,7 @@
 -- exist yet. The lock is held for two statements and no round trip to anything but the database.
 SELECT capacity
   FROM runners
- WHERE id = $1 AND project_id = $2
+ WHERE id = $1 AND (project_id = $2 OR project_id IS NULL)
    FOR UPDATE;
 
 -- name: AcquireLease
@@ -78,21 +78,24 @@ SELECT capacity
 -- ceiling counted history would be placeable until its first few sessions ended and unplaceable forever
 -- after, which on a fleet is every Mac going dark one by one.
 --
--- The count is keyed on the MACHINE and carries its project explicitly. A machine belongs to exactly one
--- project (r.project_id above), so every lease that can name it carries that same project and the
--- predicate changes no row — it is there because a count that quietly depended on row-level security to be
--- the right count is a count that changes meaning the day something reads it under a system scope.
+-- ‼️ A MACHINE THE PLANE OWNS IS SERVABLE TO EVERY PROJECT, which is why the predicate is not a bare
+-- equality. `runners.project_id IS NULL` is the free fleet (000002's palai_apply_fleet_policy), and
+-- `NULL = $2` is NULL — so the equality alone silently refused every shared machine while the row sat
+-- there, online, in the pool the run had already been placed into.
+--
+-- ‼️ AND THE COUNT LOST ITS PROJECT PREDICATE, which is the same change seen from the other side. It used
+-- to read `l.project_id = r.project_id` under a paragraph arguing the predicate changed no row "because a
+-- machine belongs to exactly one project". A machine on the free fleet belongs to NONE, and many projects
+-- take turns on it — so that predicate stopped being a no-op and became a per-tenant ceiling: three
+-- tenants each holding one session on a three-capacity Mac would each count 1, each be admitted, and the
+-- Mac would carry double what it declared. palai_machine_open_occupancies (000003) counts the machine
+-- across tenants, which is the property renting a Mac rests on.
 INSERT INTO runner_leases (id, project_id, runner_id, session_id, started_at, last_activity_at)
 SELECT $1, $2, r.id, s.id, clock_timestamp(), clock_timestamp()
   FROM runners r, sessions s
- WHERE r.id = $3 AND r.project_id = $2
+ WHERE r.id = $3 AND (r.project_id = $2 OR r.project_id IS NULL)
    AND s.id = $4 AND s.project_id = $2
-   AND (r.capacity = 0
-        OR (SELECT count(*)
-              FROM runner_leases l
-             WHERE l.runner_id = r.id
-               AND l.project_id = r.project_id
-               AND l.released_at IS NULL) < r.capacity)
+   AND (r.capacity = 0 OR palai_machine_open_occupancies(r.id) < r.capacity)
 RETURNING id;
 
 -- name: MachineOpenOccupancies
@@ -115,10 +118,7 @@ RETURNING id;
 -- ceiling and left here, a machine that was genuinely full refused the acquire and the caller was told
 -- "machine is not one this tenant can occupy" — an answer that sends the next reader to look at tenancy for
 -- a capacity problem. Change one, change all three.
-SELECT count(*)
-  FROM runner_leases
- WHERE runner_id = $1 AND project_id = $2
-   AND released_at IS NULL;
+SELECT palai_machine_open_occupancies($1);
 
 -- name: PoolMachineOccupancies
 -- Every machine in one pool with the two numbers a PLACEMENT PREFERENCE needs: how many holds are open on
@@ -155,14 +155,9 @@ SELECT count(*)
 -- ORDER BY r.id makes the result total. The caller folds these rows into a map keyed by machine, so this
 -- order decides nothing today; it is here so a reader who turns them into a slice does not inherit an
 -- arbitrary one.
-SELECT r.id, r.capacity,
-       (SELECT count(*)
-          FROM runner_leases l
-         WHERE l.runner_id = r.id
-           AND l.project_id = r.project_id
-           AND l.released_at IS NULL)
+SELECT r.id, r.capacity, palai_machine_open_occupancies(r.id)
   FROM runners r
- WHERE r.project_id = $1 AND r.pool_id = $2
+ WHERE (r.project_id = $1 OR r.project_id IS NULL) AND r.pool_id = $2
  ORDER BY r.id;
 
 -- name: MachinePool
@@ -177,9 +172,17 @@ SELECT r.id, r.capacity,
 --
 -- NO ROW IS NOT AN ERROR AT THE CALLER: a machine that has been deleted since the hold opened frees a slot
 -- on a pool nobody can name, and the honest answer is to announce nothing rather than to guess a pool.
+-- ‼️ A MACHINE THE PLANE OWNS IS SERVABLE TO EVERY PROJECT, which is why the predicate is not a bare
+-- equality. `runners.project_id IS NULL` is the free fleet (000002's palai_apply_fleet_policy), and
+-- `NULL = $2` is NULL — so the equality alone silently refused every shared machine while the row sat
+-- there, online, in the pool the run had already been placed into.
+--
+-- ‼️ THIS IS THE ONE WHOSE FAILURE WAS SILENT. A hold settling on a free machine resolved NO pool, and the
+-- caller's documented answer to no row is to announce nothing — so the runs parked on that pool were never
+-- told a slot had opened. Nothing errored and nothing was logged; the fleet simply stopped waking.
 SELECT pool_id
   FROM runners
- WHERE id = $1 AND project_id = $2;
+ WHERE id = $1 AND (project_id = $2 OR project_id IS NULL);
 
 -- name: TouchLease
 -- Move the occupancy's last activity to now. ONE WRITER, TWO READERS: the idle reaper reads this column to

@@ -314,7 +314,15 @@ func (s *Store) WakeRunAwaitingCapacity(ctx context.Context, tenant Tenant, pool
 	if poolID == "" {
 		return "", nil
 	}
-	ctx = storage.ScopeToTenant(ctx, tenant.Project)
+	// A machine the PLANE owns announces capacity for every project parked on its pool, and has no tenant
+	// of its own to publish — storage.PrepareConn refuses a project-less tenant scope outright, so this is
+	// the system scope or nothing. It is the same authority the enrolment path already runs under, and the
+	// statement below is what confines it: one pool, one parked run, locked.
+	if tenant.Project == "" {
+		ctx = storage.WithSystemScope(ctx)
+	} else {
+		ctx = storage.ScopeToTenant(ctx, tenant.Project)
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return "", fmt.Errorf("begin capacity wake: %w", err)
@@ -340,14 +348,19 @@ func (s *Store) WakeRunAwaitingCapacity(ctx context.Context, tenant Tenant, pool
 // It returns "" with a nil error when the pool had nothing parked, which is the ordinary outcome for both
 // callers and never an error for either.
 func wakeRunAwaitingCapacityTx(ctx context.Context, tx pgx.Tx, tenant Tenant, poolID string) (string, error) {
-	var runID string
+	var runID, owner string
 	switch err := tx.QueryRow(ctx, storage.Query("OldestRunAwaitingCapacity"),
-		tenant.Project, poolID).Scan(&runID); {
+		tenant.Project, poolID).Scan(&runID, &owner); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", nil // capacity appeared on the pool and nothing was waiting on it
 	case err != nil:
 		return "", fmt.Errorf("select run awaiting capacity: %w", err)
 	}
+	// THE RUN'S OWN TENANT, not the announcer's. A machine on the free fleet belongs to no project and
+	// announces capacity for a pool whose parked runs belong to many, so everything below is written for
+	// whoever owns the run that was actually selected. For a private pool the two are the same value and
+	// this assignment changes nothing.
+	tenant = Tenant{Project: owner}
 	// The transition + enqueue pair: waiting -> running under the run lock (single-winner, so two
 	// announcements cannot re-enter one run) and the job that makes a worker open a fresh attempt.
 	if _, err := applyRunTransitionTx(ctx, tx, tenant, runID, statemachines.RunCmdResume); err != nil {

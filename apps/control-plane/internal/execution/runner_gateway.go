@@ -1389,6 +1389,11 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 		release: make(chan struct{}), disconnected: make(chan struct{}), taken: make(chan struct{}),
 	}
 	queue := g.queueFor(tenant, poolID)
+	// The rendezvous a machine actually joined, named once per connect. It is the ONE fact that decides
+	// whether an attempt can ever be handed to this machine, and it was unobservable: a machine could be
+	// enrolled, online, counted in `connections` and still be sitting in a queue no attempt would ever ask
+	// for. Three separate defects hid behind that, each looking fine from its own side.
+	log.Printf("machine %s joined rendezvous (tenant %q, pool %s)", pr.runnerID, tenant.Project, poolKey(poolID))
 	pr.queue = queue
 	// The session joins the set the heartbeat pings, the reaper cuts and a cordon evicts, for exactly as
 	// long as it is held open. Registered AFTER its queue is set, so an eviction can never see a session
@@ -1562,6 +1567,47 @@ func (g *RunnerGateway) removeSession(pr *pendingRunner) {
 	}
 }
 
+// rendezvousTenant is the tenant half of the queue key, and it is the POOL's owner rather than the
+// caller's. The two are the same value for a private pool and deliberately differ for a free one.
+//
+// ‼️ IT EXISTS BECAUSE THE FREE FLEET MET NOBODY. queueKey is (tenant, pool), and the machine side takes
+// its tenant from the REGISTRY ROW — a machine the plane owns carries no project, so it parked in the
+// ("", pool) queue while every attempt waited on ("prj_x", pool). Two queues, one pool, and a Mac sitting
+// online with nothing ever handed to it: the run parked instantly with ErrPoolHasNoRunner and nothing was
+// logged, because from the queue's point of view there genuinely was no machine.
+//
+// The security property queueKey was built for is UNCHANGED, and it is worth saying why rather than
+// asserting it. That property is that a cross-tenant offer is unreachable rather than refused. Both sides
+// now derive the key from the same durable fact — `runner_pools.project_id` — so a private pool's queue is
+// still keyed by its owner and an attempt of another tenant still cannot name it. What changed is only
+// that a pool whose row says "no owner" is one BOTH sides agree has no owner.
+//
+// A read failure returns the caller's own tenant, which is the pre-free-fleet behaviour exactly: it can
+// only ever narrow the rendezvous, never widen it.
+func (g *RunnerGateway) rendezvousTenant(ctx context.Context, attempt AttemptDescriptor) coordinator.Tenant {
+	if g.registry == nil || attempt.PoolID == "" {
+		return attempt.Tenant
+	}
+	pool, found, err := g.registry.Pool(ctx, attempt.PoolID)
+	if err != nil || !found {
+		return attempt.Tenant
+	}
+	return coordinator.Tenant{Project: pool.Project}
+}
+
+// queueForAttempt is the DIAL SIDE of the rendezvous: the queue this attempt waits on, and the tenant
+// half of the key it was found under.
+//
+// It exists as its own method so the property can be tested where it is USED. A guard on
+// rendezvousTenant alone passes with the call site deleted — measured by perturbation on 2026-08-06,
+// which is the "assertion points at the wrong file" shape this tree keeps paying for. Asserting that this
+// returns the SAME queue object queueFor gives the machine binds the two sides by identity rather than by
+// two computations of the same string.
+func (g *RunnerGateway) queueForAttempt(ctx context.Context, attempt AttemptDescriptor) (coordinator.Tenant, *poolQueue) {
+	rendezvous := g.rendezvousTenant(ctx, attempt)
+	return rendezvous, g.queueFor(rendezvous, attempt.PoolID)
+}
+
 // Dial offers a machine IN THE ATTEMPT'S POOL the attempt's lease and returns the bridged
 // EngineChannel. It blocks until such a machine is free or ctx is done, then publishes the channel to
 // the connection's readLoop and writes the lease.offer. It is the production EngineDialer the
@@ -1590,13 +1636,15 @@ func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (En
 	if queuedAt.IsZero() {
 		queuedAt = g.now()
 	}
-	queue := g.queueFor(attempt.Tenant, attempt.PoolID)
+	rendezvous, queue := g.queueForAttempt(ctx, attempt)
+	log.Printf("attempt %s asks rendezvous (tenant %q, pool %s), %d machine(s) parked there",
+		attempt.AttemptID, rendezvous.Project, poolKey(attempt.PoolID), queue.members())
 	// WHICH MACHINE IN THE POOL, and it is a preference rather than a decision (A.5 T6). The pool was
 	// already chosen — placement.go did that before the attempt got here — and until this line the machine
 	// was whichever one sat at the head of the parked list. The weights are read BEFORE the queue's lock is
 	// taken, so the queue consults no per-runner state of its own, and nil (no view, no tenant, nothing to
 	// choose between, or a read that failed) leaves the handover exactly as it was.
-	prefer := g.emptiestFirst(ctx, attempt.Tenant, attempt.PoolID, queue.parkedMachines())
+	prefer := g.emptiestFirst(ctx, rendezvous, attempt.PoolID, queue.parkedMachines())
 	waiter := queue.wait(queuedAt, prefer)
 	select {
 	case pr := <-waiter.ch:
@@ -1672,7 +1720,12 @@ func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (En
 // machine's NEXT connect (a runner re-dials after every lease) tries again. What it must never do is
 // wake the WRONG run, and that is not a matter of error handling — the predicate is in the query.
 func (g *RunnerGateway) wakeParkedRun(ctx context.Context, tenant coordinator.Tenant, poolID string) {
-	if g.wake == nil || tenant.Project == "" {
+	// ‼️ IT USED TO RETURN EARLY ON AN EMPTY PROJECT, and that is what made the free fleet look dead. A
+	// machine the plane owns carries no project, so this guard fired on every connect from one: no wake,
+	// no error, no log line — the runs parked on its pool simply never learned a machine had arrived. An
+	// empty tenant is now the ordinary case rather than a missing one, and the wake reads it as "the
+	// plane", waking the oldest parked run on the pool whoever owns it.
+	if g.wake == nil {
 		return
 	}
 	_, _ = g.wake.WakeRunAwaitingCapacity(ctx, tenant, poolKey(poolID))

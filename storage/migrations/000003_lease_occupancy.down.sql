@@ -1,3 +1,4 @@
+DROP FUNCTION IF EXISTS palai_machine_open_occupancies(TEXT);
 -- Reverse 000003: take the occupancy back off runner_leases and leave the skeleton 000001 declared.
 -- Every statement is guarded, because Store.Rollback runs the whole down chain to return a shared
 -- component database to empty and may reach this after the table itself is gone.

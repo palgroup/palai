@@ -160,7 +160,9 @@ func (s *Store) AcquireLease(ctx context.Context, tenant Tenant, sessionID, runn
 	case errors.Is(err, pgx.ErrNoRows):
 		// The machine is visible, so the two remaining reasons are its ceiling and the session. Ask.
 		var open int
-		if rerr := tx.QueryRow(ctx, storage.Query("MachineOpenOccupancies"), runnerID, tenant.Project).Scan(&open); rerr != nil {
+		// ONE argument: the count is a property of the MACHINE, not of this tenant. It used to carry the
+		// project and that made it wrong on a shared machine — see the statement's own paragraph.
+		if rerr := tx.QueryRow(ctx, storage.Query("MachineOpenOccupancies"), runnerID).Scan(&open); rerr != nil {
 			return "", fmt.Errorf("read the open occupancies of machine %s: %w", runnerID, rerr)
 		}
 		// The statement's own guard, ASKED rather than restated: a machine that declared nothing has no

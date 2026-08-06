@@ -75,3 +75,30 @@ CREATE INDEX IF NOT EXISTS runner_leases_session_idx
     ON runner_leases USING btree (project_id, session_id, started_at);
 
 INSERT INTO schema_migrations (version) VALUES (3) ON CONFLICT DO NOTHING;
+
+-- ‼️ AN OCCUPANCY COUNT IS A PROPERTY OF THE MACHINE, NOT OF A TENANT, and on a SHARED machine those two
+-- answers differ. runner_leases carries the tenant policy — correctly, a lease IS somebody's work and the
+-- bill is made of these rows — so a count taken under one tenant's scope sees only that tenant's holds.
+-- On a machine the PLANE owns, which many projects take turns on, that count is not the machine's load:
+-- three tenants each holding one session on a three-capacity Mac would each read 1 and each be admitted,
+-- and the Mac would carry double what it declared.
+--
+-- The whole product requirement for renting Macs is that the ceiling holds ACROSS tenants, so the count
+-- has to see rows the caller may not. SECURITY DEFINER, returning a COUNT and nothing else: no row, no id
+-- and no tenant name crosses the boundary, and the only thing a caller learns is how loaded a machine it
+-- already named is.
+--
+-- STABLE rather than IMMUTABLE: it reads a table, and marking it immutable would let the planner fold it
+-- to a constant across a statement that also writes leases.
+CREATE OR REPLACE FUNCTION palai_machine_open_occupancies(machine TEXT)
+RETURNS bigint
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+    SELECT count(*) FROM runner_leases WHERE runner_id = machine AND released_at IS NULL;
+$$;
+
+REVOKE ALL ON FUNCTION palai_machine_open_occupancies(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION palai_machine_open_occupancies(TEXT) TO palai_app;

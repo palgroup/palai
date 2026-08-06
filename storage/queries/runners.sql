@@ -524,12 +524,19 @@ UPDATE attempts
 -- of millions it is not. The upgrade is one line in the next epic's migration:
 -- `CREATE INDEX ... ON runs (project_id, pool_id) WHERE state = 'waiting'` — a partial
 -- index, because the rows this asks about are a vanishing fraction of the table.
-SELECT r.id
+-- ‼️ $1 = '' IS THE PLANE, AND IT IS THE HALF THAT MAKES A SHARED FLEET WAKE AT ALL. The queue's key is
+-- the POOL; the tenant was a second predicate that happened to be redundant while every pool belonged to
+-- one project. A pool the plane owns holds runs from MANY projects, and the machine that connects to it
+-- belongs to none — so a wake keyed on the machine's tenant matched nothing and every parked run stayed
+-- parked, silently, because the caller's documented answer to "no row" is that nothing was waiting.
+-- The run's own project comes back with it, so the transition and the job are written for the tenant
+-- that owns the run rather than for whoever announced the capacity.
+SELECT r.id, r.project_id
   FROM runs r
- WHERE r.project_id = $1 AND r.pool_id = $2 AND r.state = 'waiting'
+ WHERE ($1 = '' OR r.project_id = $1) AND r.pool_id = $2 AND r.state = 'waiting'
    AND EXISTS (SELECT 1
                  FROM attempts a
-                WHERE a.run_id = r.id AND a.project_id = $1
+                WHERE a.run_id = r.id AND a.project_id = r.project_id
                   AND a.state = 'awaiting_capacity')
  ORDER BY r.created_at, r.id
  LIMIT 1

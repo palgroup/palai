@@ -13,6 +13,7 @@ package execution
 
 import (
 	"errors"
+	"log"
 
 	"context"
 
@@ -130,5 +131,16 @@ func (o *Orchestrator) parkForCapacity(ctx context.Context, tenant coordinator.T
 	if err := o.spine.ParkRunForCapacity(ctx, tenant, string(attempt.RunID), string(attempt.AttemptID), attempt.JobID); err != nil {
 		return err
 	}
+	// ‼️ THE PARK SAYS SO, and it did not until a free fleet was stood up and nothing ran.
+	//
+	// A park is the ONE outcome on this path that is neither an error nor progress: nothing is returned to
+	// the caller, no terminal is written, and the response sits `in_progress` for as long as it takes.
+	// With no line here, an operator watching a Mac that is enrolled, online and idle sees a run that never
+	// moves and a control-plane log that says NOTHING AT ALL — which is exactly how three separate
+	// rendezvous defects hid behind each other while the queue, the wake and the lease each looked fine in
+	// isolation. It names the pool and the tenant because the pool is the rendezvous and the tenant is the
+	// half that used to be wrong.
+	log.Printf("run %s parked for capacity: pool %s has no machine free for tenant %q (attempt %s)",
+		attempt.RunID, attempt.PoolID, tenant.Project, attempt.AttemptID)
 	return errRunAwaitingCapacity
 }

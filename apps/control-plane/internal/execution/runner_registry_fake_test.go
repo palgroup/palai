@@ -28,6 +28,17 @@ type fakeRegistry struct {
 	// requires none — which is every pool that exists today, and the reason this map starts empty rather
 	// than being seeded alongside `pools`.
 	isolation map[string]string
+	// free is the set of pools the PLANE owns: `runner_pools.project_id IS NULL`, which every project may
+	// be placed onto. A pool absent from this set belongs to fakeRegistryProject, which is what every pool
+	// in this fake was before the free fleet existed.
+	//
+	// ‼️ THE FAKE COULD NOT SAY THIS, AND A FAKE THAT CANNOT SAY IT PROVES NOTHING ABOUT IT. Pool()
+	// returned fakeRegistryProject unconditionally, so no wire proof in this package could tell a plane
+	// pool from a tenant's — and the gateway's rendezvous, which reads exactly this field to build its
+	// queue key, was measured broken on a live stack while every proof here stayed green. It is seeded by
+	// no test today and is kept for that reason: the next wire proof over a shared fleet needs a fake that
+	// can express one, and re-deriving that is how the gap reopens.
+	free map[string]bool
 }
 
 // fakePool is one pool the fake registry knows: an id and the posture that pool IS.
@@ -153,8 +164,12 @@ func (f *fakeRegistry) Pool(_ context.Context, poolID string) (fleet.Pool, bool,
 	if !known {
 		return fleet.Pool{}, false, nil
 	}
+	project := fakeRegistryProject
+	if f.free[poolID] {
+		project = ""
+	}
 	return fleet.Pool{
-		ID: poolID, Project: fakeRegistryProject,
+		ID: poolID, Project: project,
 		Name: "default", Posture: posture,
 	}, true, nil
 }

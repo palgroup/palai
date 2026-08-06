@@ -49,7 +49,17 @@ type Pool struct {
 	// StrictEnrollment is T6's waiting room: with it set an enrolment needs a human. It is read here so
 	// the surface does not have to grow a field later, and NOTHING in E24 T2 acts on it — T6 does.
 	StrictEnrollment bool
-	CreatedAt        time.Time
+	// IsolationMode is 000007's requirement: the session-isolation mechanism a machine must be able to
+	// provide to enrol here. Empty is the shipped value and admits every machine.
+	//
+	// ‼️ IT IS HERE BECAUSE ITS ABSENCE BROKE Pool() SILENTLY. ResolveRunnerPool has selected seven
+	// columns since 000007 and this Scan took six, so every call returned a scan error — for a YEAR of
+	// this tree's history, in a function whose two callers both treat an error as "no such pool". One of
+	// them is recordSeen's fallback for a machine the registry has no row for; the other is the gateway's
+	// rendezvous. Nothing was logged and nothing was red: a mismatched column count is not a compile
+	// error, and both callers had an error arm that looked like a legitimate answer.
+	IsolationMode string
+	CreatedAt     time.Time
 }
 
 // postureMatches reports whether a machine's DECLARED posture is compatible with the pool's. An empty
@@ -85,7 +95,7 @@ func (s *Store) Pool(ctx context.Context, poolID string) (Pool, bool, error) {
 	ctx = storage.WithSystemScope(ctx)
 	var p Pool
 	err := s.pool.QueryRow(ctx, storage.Query("ResolveRunnerPool"), poolID).
-		Scan(&p.ID, &p.Project, &p.Posture, &p.OS, &p.Arch, &p.StrictEnrollment)
+		Scan(&p.ID, &p.Project, &p.Posture, &p.OS, &p.Arch, &p.StrictEnrollment, &p.IsolationMode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Pool{}, false, nil
 	}
