@@ -392,6 +392,29 @@ type ResumeInput struct {
 	Ops toolbroker.WorkspaceOps
 }
 
+// failRestore drives restoring→failed and returns the cause unchanged, so a restore that cannot finish
+// leaves an EXPLICIT terminal state instead of lingering in `restoring`. It is WorkspaceRecovery.fail
+// under another name and deliberately the same shape: the sibling path has had this since §26.3 rung 4,
+// and the difference between the two was the defect rather than a design.
+//
+// ‼️ WHICH ARMS CALL IT IS THE WHOLE DECISION, and the discriminator is already in the code: the arms
+// that return ErrRecoveryImpossible. Those two say the restore CANNOT be completed -- there is no
+// snapshot, or the bytes will not read -- and the state is made to agree with the claim the error
+// already makes. Every other failure on this path is transient and must NOT burn the workspace: a
+// quarantined host is about the HOST (another one can restore it), a snapshot lookup error is the
+// database, and an account acquisition is the machine. Failing on those would destroy a recoverable
+// workspace because a Mac was briefly unreachable.
+//
+// An already-terminal workspace tolerates the illegal transition, exactly as fail() does: the returned
+// cause stays the authority the caller reads, and no event is journaled beyond workspace.failed.v1 --
+// naming a failure "restored" would be worse than a quiet transition.
+func failRestore(ctx context.Context, spine *coordinator.Store, tenant coordinator.Tenant, workspaceID string, cause error) error {
+	if err := spine.AdvanceWorkspace(ctx, tenant, workspaceID, statemachines.WorkspaceCmdFail); err != nil && !errors.Is(err, statemachines.ErrInvalidState) {
+		return err
+	}
+	return cause
+}
+
 // ResumeReleasedWorkspace brings back a workspace the idle releaser handed a machine back for: it drives
 // paused→restoring, records the caller's NEW fenced allocation, restores the latest byte-archived snapshot
 // into it (checksum-verified, SAN-005), then restoring→ready and journals workspace.restored.v1.
@@ -457,7 +480,8 @@ func ResumeReleasedWorkspace(
 		return coordinator.Allocation{}, err
 	}
 	if !found {
-		return coordinator.Allocation{}, fmt.Errorf("%w: no byte-archived snapshot for paused workspace %s", ErrRecoveryImpossible, in.WorkspaceID)
+		return coordinator.Allocation{}, failRestore(ctx, spine, tenant, in.WorkspaceID,
+			fmt.Errorf("%w: no byte-archived snapshot for paused workspace %s", ErrRecoveryImpossible, in.WorkspaceID))
 	}
 	// The uid the restored tree's tools run under, acquired BEFORE the bytes land for the reason
 	// provisionFreshAllocation gives: an account minted afterwards inherits a tree written by somebody
@@ -496,7 +520,8 @@ func ResumeReleasedWorkspace(
 	}
 	manifest, err := snapshots.RestoreThrough(ctx, tenant, snapshotID, in.HostPath, in.Ops)
 	if err != nil {
-		return coordinator.Allocation{}, fmt.Errorf("%w: restore snapshot %s: %v", ErrRecoveryImpossible, snapshotID, err)
+		return coordinator.Allocation{}, failRestore(ctx, spine, tenant, in.WorkspaceID,
+			fmt.Errorf("%w: restore snapshot %s: %v", ErrRecoveryImpossible, snapshotID, err))
 	}
 	// The restored bytes are given to the session that will run on them, for provisionFreshAllocation's
 	// reason and at the same point in the sequence: after the writer, never before it. A snapshot is

@@ -34,6 +34,7 @@ func TestWorkspaceBindingTransitions(t *testing.T) {
 		{WorkspaceSnapshotting, WorkspaceCmdPause, WorkspacePaused, "workspace.paused.v1"},
 		{WorkspacePaused, WorkspaceCmdRestore, WorkspaceRestoring, "workspace.restoring.v1"},
 		{WorkspaceRestoring, WorkspaceCmdMarkReady, WorkspaceReady, "workspace.ready.v1"},
+		{WorkspaceRestoring, WorkspaceCmdFail, WorkspaceFailed, "workspace.failed.v1"},
 		// Host loss → recovery → ready or failed.
 		{WorkspaceLeased, WorkspaceCmdLoseHost, WorkspaceHostLost, "workspace.host_lost.v1"},
 		{WorkspaceHostLost, WorkspaceCmdRecover, WorkspaceRecovering, "workspace.recovering.v1"},

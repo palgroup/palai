@@ -68,6 +68,16 @@ var WorkspaceTable = []Transition[WorkspaceState, WorkspaceCommand]{
 	{WorkspaceReady, WorkspaceCmdPause, WorkspacePaused, "workspace.paused.v1"},
 	{WorkspacePaused, WorkspaceCmdRestore, WorkspaceRestoring, "workspace.restoring.v1"},
 	{WorkspaceRestoring, WorkspaceCmdMarkReady, WorkspaceReady, "workspace.ready.v1"},
+	// ‼️ RESTORING'S TERMINAL EDGE, and it was missing while its sibling had one. `recovering` could
+	// always fail; `restoring` could only mark_ready, so a restore that could not finish left the
+	// workspace in `restoring` FOREVER -- and `restoring` is not destroyable, so nothing could clear it
+	// either. provision.go re-enters the same arm on every following message, takes the same error, and
+	// tolerates the illegal transition: a permanent wedge that no operator surface could act on.
+	//
+	// The cost is not lost bytes -- the refusal is fail-closed and nothing is overwritten. It is
+	// INDISTINGUISHABILITY: "restoring right now" and "this restore will never succeed" were the same
+	// state, so no doctor could tell a slow resume from a dead one.
+	{WorkspaceRestoring, WorkspaceCmdFail, WorkspaceFailed, "workspace.failed.v1"},
 
 	{WorkspaceLeased, WorkspaceCmdLoseHost, WorkspaceHostLost, "workspace.host_lost.v1"},
 	{WorkspaceHostLost, WorkspaceCmdRecover, WorkspaceRecovering, "workspace.recovering.v1"},

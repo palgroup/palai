@@ -446,6 +446,67 @@ func TestResumeRefusesWhenTheArchiveIsGone(t *testing.T) {
 	if !errors.Is(err, execution.ErrRecoveryImpossible) {
 		t.Fatalf("ResumeReleasedWorkspace() error = %v, want ErrRecoveryImpossible", err)
 	}
+	// ‼️ THE ERROR TYPE WAS THE ONLY THING THIS TEST ASSERTED, AND THE STATE IS WHERE THE DEFECT LIVED.
+	// The refusal is fail-closed and loses no bytes, but the workspace was left in `restoring` — a state
+	// whose ONLY exit was mark_ready, so nothing could clear it and nothing could destroy it. Every later
+	// message re-entered this same arm, took this same error, and tolerated the illegal transition: a
+	// permanent wedge, and a doctor surface could not tell it from a resume that was merely slow.
+	if got := workspaceStateOf(t, h, workspaceID); got != "failed" {
+		t.Fatalf("after an impossible restore the workspace is %q, want \"failed\" — `restoring` has one exit "+
+			"(mark_ready) and this restore can never take it, so the session is wedged for good", got)
+	}
+}
+
+// workspaceStateOf reads a workspace's durable state. System-scoped, so the assertion is not itself
+// confined by the policy it is checking.
+func workspaceStateOf(t *testing.T, h *artifactsHarness, workspaceID string) string {
+	t.Helper()
+	var state string
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT state FROM workspaces WHERE id=$1`, workspaceID).Scan(&state); err != nil {
+		t.Fatalf("read workspace state: %v", err)
+	}
+	return state
+}
+
+// TestATransientResumeFailureLeavesTheWorkspaceRESTORABLE is the other half, and without it the change
+// above is one line from being much worse than the defect it fixed.
+//
+// Burning the workspace on EVERY error would turn a Mac that is briefly unreachable — or a quarantined
+// host, or a database blip — into permanent data loss: `failed` is terminal and destroyable, and the
+// snapshot it was going to restore is still sitting in the object store. So only the arms that return
+// ErrRecoveryImpossible fail the workspace; a host refusal must leave it exactly where a later attempt
+// on another machine can pick it up.
+//
+// The quarantine arm is chosen because it is the one transient refusal this function raises ITSELF,
+// rather than one that would have to be injected through a fake — a fake generous enough to produce a
+// database error here would be proving something about the fake.
+func TestATransientResumeFailureLeavesTheWorkspaceRESTORABLE(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	project, session, workspaceID, _, _ := h.seedIdleWorkspace(t)
+	h.exec(t, `UPDATE workspaces SET state='paused' WHERE id=$1`, workspaceID)
+
+	host := newID("host")
+	if err := h.repo.Spine().QuarantineHost(ctx, host, "a teardown could not reclaim this host's bytes"); err != nil {
+		t.Fatalf("quarantine the host: %v", err)
+	}
+	dir := filepath.Join(t.TempDir(), "alloc")
+	_, err := execution.ResumeReleasedWorkspace(ctx, h.repo.Spine(), execution.NewSnapshotSink(h.s3, h.repo.Spine()), nil,
+		coordinator.Tenant{Project: project},
+		execution.ResumeInput{WorkspaceID: workspaceID, SessionID: session, AllocationID: newID("alloc"),
+			HostPath: dir, HostID: host})
+	if err == nil {
+		t.Fatal("a resume onto a QUARANTINED host succeeded; SAN-008 says those bytes are not to be trusted")
+	}
+	if errors.Is(err, execution.ErrRecoveryImpossible) {
+		t.Fatalf("a quarantined host was reported as an impossible recovery: %v — the host is the thing that "+
+			"is unusable, and another machine can still restore this workspace", err)
+	}
+	if got := workspaceStateOf(t, h, workspaceID); got == "failed" {
+		t.Fatal("a quarantined HOST burned the WORKSPACE. `failed` is terminal and destroyable, so a machine " +
+			"that was briefly untrusted has just cost this session the snapshot it was about to restore")
+	}
 }
 
 // projectOf reads the project a workspace belongs to, for the tenant an assertion needs.
