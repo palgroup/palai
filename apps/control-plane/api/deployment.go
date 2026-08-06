@@ -593,6 +593,18 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "a2aPusherFromEnv",
 	},
 
+	{
+		Name: "PALAI_SESSION_ACCOUNT_HELPER", Group: "shell", Kind: kindPath, Default: "unset — no privileged path exists; every session's commands run as the agent's own uid, which is same-customer accident isolation and NOT a boundary",
+		Effect: "The program this process invokes as `sudo -n <helper> {create|destroy} NN` to mint and " +
+			"destroy a macOS session account per slot. It is the MOST PRIVILEGED thing this deployment does, " +
+			"and setting it is what turns `accounts` isolation on: with it, each session gets its own uid and " +
+			"its own home, and a release takes the whole account. `-n` is deliberate — without a sudoers " +
+			"entry sudo would PROMPT, and a control plane has no terminal, so a missing entry would hang " +
+			"allocation provisioning instead of failing it.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "main",
+	},
+
 	// --- where a shell command runs, which is a security posture rather than a feature ---------------
 	{
 		Name: "PALAI_SANDBOX_IMAGE", Group: "shell", Kind: kindValue, Default: "none — there is no shell tool; a shell call fails cleanly rather than escaping",
@@ -897,7 +909,7 @@ var uncataloguedSettings = func() map[string]string {
 		{"Durable queue and schedule pacing.",
 			[]string{"PALAI_QUEUE_DELIVERY_BACKOFF", "PALAI_QUEUE_TICK", "PALAI_SCHEDULE_BATCH", "PALAI_SCHEDULE_TICK"}},
 		{"Object-store region, metrics disk path, drain timeout, abandoned-lease grace, the session-account helper and the Slack API base. Unrelated to each other; grouped only by having no family.",
-			[]string{"PALAI_ABANDONED_LEASE_GRACE", "PALAI_DRAIN_TIMEOUT", "PALAI_METRICS_DISK_PATH", "PALAI_S3_REGION", "PALAI_SESSION_ACCOUNT_HELPER", "PALAI_SLACK_API_BASE_URL"}},
+			[]string{"PALAI_ABANDONED_LEASE_GRACE", "PALAI_DRAIN_TIMEOUT", "PALAI_METRICS_DISK_PATH", "PALAI_S3_REGION", "PALAI_SLACK_API_BASE_URL"}},
 	}
 	out := map[string]string{}
 	for _, g := range groups {
@@ -931,6 +943,10 @@ var nonDesiredReason = map[string]string{
 	"PALAI_RUNNER_SERVER_CERT":    "a path to the gateway listener's certificate; its SANs decide which addresses a runner may dial.",
 	"PALAI_RUNNER_SERVER_KEY":     "a path to the gateway listener's private key.",
 	"PALAI_ENROLLMENT_TOKEN_FILE": "a path to the credential a machine spends to join the fleet.",
+	"PALAI_SESSION_ACCOUNT_HELPER": "a path, and the sharpest one on this list after the master key: the " +
+		"file it names is executed as ROOT, by this process, on every allocation. A form that wrote it would " +
+		"be arbitrary privileged execution reached through a settings screen — the sudoers entry that admits " +
+		"it is installed by an administrator, and the path must be the one they admitted.",
 	"PALAI_FAKE_SCRIPT_FILE": "a path, and the file it names decides what a run's model APPEARS to say. " +
 		"A form that wrote it would let a reader of the panel author a fabricated exchange every credential-less " +
 		"run then replays as if it were an answer.",
