@@ -173,6 +173,67 @@ services:
       # carrying none is refused AT THE TOOL, before a human is asked to approve something that could not
       # happen. So this deployment needs no App variable and no App key, and the `github_app_key` secret
       # that was still declared below goes with them.
+
+      # ‼️ THE CATALOGUE ADVERTISED 71 SETTINGS AND THIS FILE COULD SET 36 OF THEM. Measured 2026-08-06 by
+      # matching real YAML keys — never a grep, which counts a name in a comment as a passed variable and
+      # which is how the first attempt at this number came out wrong. compose passes ONLY the keys it
+      # lists: there is no env_file passthrough for an unlisted name, so a knob absent here is one an
+      # operator of the shipped deployment cannot turn AT ALL, however carefully the settings screen
+      # documents it. That is the same shape as a declared-but-unbound symbol, one layer out.
+      #
+      # THE `${VAR:-}` FORM IS BEHAVIOUR-PRESERVING AND THAT WAS CHECKED RATHER THAN ASSUMED. Unset, it
+      # yields a variable that is PRESENT and EMPTY (measured on this Docker, 2026-08-04, recorded in the
+      # runner block below). Every reader here treats empty as absent — envDurationOr falls to its default
+      # on a zero parse, the two egress gates compare `== "1"`, and the settings API reports Set only when
+      # `raw != ""` — so an existing deployment that sets none of these is byte-for-byte unchanged.
+      #
+      # WHAT IS DELIBERATELY STILL ABSENT, named so the next reader does not "fix" it:
+      #   * PALAI_WORKSPACE_ROOT — capabilities.go gates the whole `workspaces` capability on it, and no
+      #     service here mounts a workspace tree. Passing it would let an operator switch the capability
+      #     on for a deployment that cannot serve it; `palai up --native` remains the path.
+      #   * PALAI_SESSION_ACCOUNT_HELPER — a privileged HOST path that mints macOS session accounts. A
+      #     Linux container has none, and a path interpolated into one names a file that is not there.
+      # tests/docs/deployment_reachability_test.go holds both, with these reasons, and fails on a 42nd.
+      PALAI_PUBLIC_BASE_URL: ${PALAI_PUBLIC_BASE_URL:-}
+      PALAI_TOOL_CALLBACK_BASE_URL: ${PALAI_TOOL_CALLBACK_BASE_URL:-}
+      PALAI_OPENAI_COMPATIBLE_BASE_URL: ${PALAI_OPENAI_COMPATIBLE_BASE_URL:-}
+      PALAI_S3_REGION: ${PALAI_S3_REGION:-}
+      PALAI_METRICS_DISK_PATH: ${PALAI_METRICS_DISK_PATH:-}
+      PALAI_WORKSPACE_IDLE_TTL: ${PALAI_WORKSPACE_IDLE_TTL:-}
+      PALAI_ABANDONED_LEASE_GRACE: ${PALAI_ABANDONED_LEASE_GRACE:-}
+      PALAI_DRAIN_TIMEOUT: ${PALAI_DRAIN_TIMEOUT:-}
+      PALAI_QUEUE_TICK: ${PALAI_QUEUE_TICK:-}
+      PALAI_QUEUE_DELIVERY_BACKOFF: ${PALAI_QUEUE_DELIVERY_BACKOFF:-}
+      PALAI_SCHEDULE_TICK: ${PALAI_SCHEDULE_TICK:-}
+      PALAI_SCHEDULE_BATCH: ${PALAI_SCHEDULE_BATCH:-}
+      PALAI_TRIGGER_RECONCILE_TICK: ${PALAI_TRIGGER_RECONCILE_TICK:-}
+      PALAI_TRIGGER_RECONCILE_BATCH: ${PALAI_TRIGGER_RECONCILE_BATCH:-}
+      PALAI_TRIGGER_MAPPED_GRACE: ${PALAI_TRIGGER_MAPPED_GRACE:-}
+      PALAI_WEBHOOK_TICK: ${PALAI_WEBHOOK_TICK:-}
+      PALAI_WEBHOOK_BACKOFF_BASE: ${PALAI_WEBHOOK_BACKOFF_BASE:-}
+      PALAI_WEBHOOK_BACKOFF_MAX: ${PALAI_WEBHOOK_BACKOFF_MAX:-}
+      PALAI_SSE_HEARTBEAT: ${PALAI_SSE_HEARTBEAT:-}
+      PALAI_SSE_POLL_INTERVAL: ${PALAI_SSE_POLL_INTERVAL:-}
+      PALAI_SSE_WRITE_TIMEOUT: ${PALAI_SSE_WRITE_TIMEOUT:-}
+      PALAI_SSE_BATCH_LIMIT: ${PALAI_SSE_BATCH_LIMIT:-}
+      PALAI_ARTIFACT_GC_INTERVAL: ${PALAI_ARTIFACT_GC_INTERVAL:-}
+      PALAI_ARTIFACT_GC_GRACE: ${PALAI_ARTIFACT_GC_GRACE:-}
+      PALAI_INBOUND_RAW_TTL: ${PALAI_INBOUND_RAW_TTL:-}
+      PALAI_INBOUND_MAX_INFLIGHT: ${PALAI_INBOUND_MAX_INFLIGHT:-}
+      PALAI_INBOUND_BACKLOG_MAX: ${PALAI_INBOUND_BACKLOG_MAX:-}
+      PALAI_INBOUND_TOLERANCE: ${PALAI_INBOUND_TOLERANCE:-}
+      PALAI_MCP_TIMEOUT: ${PALAI_MCP_TIMEOUT:-}
+      PALAI_MCP_SWEEP_INTERVAL: ${PALAI_MCP_SWEEP_INTERVAL:-}
+      PALAI_MCP_SWEEP_GRACE: ${PALAI_MCP_SWEEP_GRACE:-}
+      # The two egress gates open loopback and RFC1918 and both read `== "1"`, so an unset deployment
+      # stays CLOSED — which is why passing them costs nothing and withholding them cost a self-host
+      # operator the only way to reach an MCP server on their own network.
+      PALAI_MCP_ALLOW_PRIVATE: ${PALAI_MCP_ALLOW_PRIVATE:-}
+      PALAI_A2A_PUSH_ALLOW_PRIVATE: ${PALAI_A2A_PUSH_ALLOW_PRIVATE:-}
+      PALAI_A2A_PUSH_ALLOWED_HOSTS: ${PALAI_A2A_PUSH_ALLOWED_HOSTS:-}
+      PALAI_CAPABILITY_WORKER_LISTEN_ADDR: ${PALAI_CAPABILITY_WORKER_LISTEN_ADDR:-}
+      PALAI_CAPABILITY_WORKER_IDENTITY_TTL: ${PALAI_CAPABILITY_WORKER_IDENTITY_TTL:-}
+      PALAI_SLACK_API_BASE_URL: ${PALAI_SLACK_API_BASE_URL:-}
     secrets:
       - provider_one_key
       - bootstrap_api_key
@@ -260,6 +321,16 @@ services:
       PALAI_SANDBOX_IMAGE: ${PALAI_SANDBOX_IMAGE:-}
       PALAI_SHELL_NATIVE: ${PALAI_SHELL_NATIVE:-}
       PALAI_SANDBOX_WALL_TIME: ${PALAI_SANDBOX_WALL_TIME:-}
+      # ‼️ WHICH POOL THIS MACHINE JOINS, AND UNDER WHICH POSTURE. cmd/runner/main.go has read both since
+      # enrolment existed and compose passed NEITHER, so every containerised machine landed wherever the
+      # unnamed default put it — measured 2026-08-06, alongside PALAI_RUNNER_CAPACITY three lines up,
+      # which this file did pass. A fleet whose machines cannot be told apart is one where "devices are
+      # free, and a device may belong to one project" is a sentence with no way to say it.
+      #
+      # Unset leaves both empty and the enrolment behaves exactly as it did, which is what makes adding
+      # them safe on a running deployment.
+      PALAI_RUNNER_POOL: ${PALAI_RUNNER_POOL:-}
+      PALAI_RUNNER_POSTURE: ${PALAI_RUNNER_POSTURE:-}
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
       - "${PALAI_HOME}/ca/ca.crt:/palai/ca/ca.crt:ro"
