@@ -22,6 +22,12 @@ func (s *Store) MachineOccupancies(ctx context.Context, project, runnerID string
 	if err != nil {
 		return nil, err
 	}
+	return occupancyItems(rows), nil
+}
+
+// occupancyItems maps coordinator rows onto the API type, and is shared by both reads so a hold cannot
+// render one way per machine and another per session.
+func occupancyItems(rows []coordinator.Occupancy) []api.MachineOccupancyItem {
 	items := make([]api.MachineOccupancyItem, 0, len(rows))
 	for _, r := range rows {
 		items = append(items, api.MachineOccupancyItem{
@@ -37,5 +43,17 @@ func (s *Store) MachineOccupancies(ctx context.Context, project, runnerID string
 			BilledSeconds: r.Billed.Seconds(),
 		})
 	}
-	return items, nil
+	return items
+}
+
+// SessionOccupancies implements the other half of api.MachineOccupancyAPI: every machine ONE session has
+// held. It shares occupancyItems with its sibling for the reason that one is a projection — the billed
+// interval's rule lives in a single SQL CASE, and a second mapping here would be a second answer to a
+// question a customer is billed on.
+func (s *Store) SessionOccupancies(ctx context.Context, project, sessionID string) ([]api.MachineOccupancyItem, error) {
+	rows, err := s.spine.SessionOccupancies(ctx, coordinator.Tenant{Project: project}, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return occupancyItems(rows), nil
 }

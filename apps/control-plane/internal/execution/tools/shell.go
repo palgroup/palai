@@ -20,8 +20,18 @@ import (
 // validator is the upgrade path if free-choice tool calls need it.
 func ShellTool() toolbroker.Tool {
 	return toolbroker.Tool{
-		Name:        "palai.workspace.shell",
-		Description: "Run an explicit command (argv) inside the run's hardened, no-network sandbox and return its bounded, secret-redacted output.",
+		Name: "palai.workspace.shell",
+		// ‼️ THE DESCRIPTION NAMES THE LAYOUT, because the model has no other way to learn it and the cost
+		// of guessing is silent. Commands run at the ALLOCATION ROOT; a bound repository is checked out
+		// one level down, at `repo/` (adapters/sandboxes/oci/workspace.RepoDir). Measured on a live run
+		// 2026-08-06: the agent edited repo/SwiftUIList/View/AddEditTodoView.swift correctly — the editor
+		// says "relative to the workspace root" — and then ran `git diff --stat` at the root, where there
+		// is no repository, and reported to the user that the change could not be confirmed. The edit had
+		// landed. The tool that was supposed to show it was pointed one directory too high.
+		Description: "Run an explicit command (argv) inside the run's hardened, no-network sandbox and " +
+			"return its bounded, secret-redacted output. Commands start at the workspace root; when the " +
+			"run has a repository bound it is checked out at ./repo, so git and build commands belong " +
+			"there (e.g. argv [\"git\",\"-C\",\"repo\",\"diff\",\"--stat\"]).",
 		ReplayClass: toolbroker.ClassIrreversible, // arbitrary side effects; a kill-after-run must not auto-replay (§26.6, TOL-003)
 		InputSchema: map[string]any{
 			"type": "object",

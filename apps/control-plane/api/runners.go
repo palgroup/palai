@@ -287,6 +287,20 @@ type runnerHandler struct {
 // decide a security outcome twice.
 type MachineOccupancyAPI interface {
 	MachineOccupancies(ctx context.Context, project, runnerID string, before time.Time, beforeID string, limit int) ([]MachineOccupancyItem, error)
+	// SessionOccupancies is the same rows read the OTHER way: every machine ONE session has held, oldest
+	// first. It is the session's machine bill.
+	//
+	// ‼️ THE STORE METHOD EXISTED AND NOTHING CALLED IT. coordinator.Store.SessionOccupancies has carried
+	// the comment "This IS the session's machine bill" since A.4 T4, and machine_occupancy.go's own
+	// header records that it was "called from exactly zero non-test files". So a tenant could be billed
+	// for machine minutes it had no way to read: the only occupancy route on the surface was
+	// /v1/runners/{id}/occupancies, which is systemOnly and asks about a MACHINE — the plane's question,
+	// not the customer's.
+	//
+	// NO PAGE WINDOW, unlike its sibling. A machine accumulates holds from every tenant that ever ran on
+	// it and needs a cursor; a session holds one machine at a time and releases it on idle, so its whole
+	// history is a handful of rows and a cursor nobody needs is a cursor to keep in step with nothing.
+	SessionOccupancies(ctx context.Context, project, sessionID string) ([]MachineOccupancyItem, error)
 }
 
 // MachineOccupancyItem is one hold as the panel reads it.
@@ -563,6 +577,40 @@ func (h *runnerHandler) listMachineOccupancies(w http.ResponseWriter, r *http.Re
 		return
 	}
 	items, err := h.occupancies.MachineOccupancies(r.Context(), scope.Project, runnerID, before, beforeID, q.Limit)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	views := make([]map[string]any, 0, len(items))
+	for _, it := range items {
+		views = append(views, machineOccupancyView(it))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": views})
+}
+
+// listSessionOccupancies reads ONE session's machine bill (GET /v1/sessions/{session_id}/occupancies):
+// every machine it has held, oldest first, with the billed interval of each.
+//
+// ‼️ IT IS TENANT-SCOPED AND NOT systemOnly, unlike the machine route beside it, and that is the whole
+// point rather than a relaxation. "Which sessions has this Mac carried" is the PLANE's question and is
+// answered behind the system capability; "what machine time did my session use" is the CUSTOMER's, and
+// on a shared fleet it is the only occupancy question a tenant can be answered at all — the machine's
+// own history contains other tenants' sessions.
+//
+// The session id is verified against the caller's project before anything is read, so a session in
+// another project is 404 rather than an empty list: an empty list would tell a caller the id exists.
+func (h *runnerHandler) listSessionOccupancies(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	sessionID := strings.TrimSpace(r.PathValue("session_id"))
+	if sessionID == "" {
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such session in this project")
+		return
+	}
+	items, err := h.occupancies.SessionOccupancies(r.Context(), scope.Project, sessionID)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return

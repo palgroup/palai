@@ -508,6 +508,10 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		// "this deployment does not record them".
 		if rh.occupancies != nil {
 			mux.HandleFunc("GET /v1/runners/{runner_id}/occupancies", systemOnly(rh.listMachineOccupancies))
+			// The SAME rows read the other way, and deliberately NOT systemOnly: this one answers "what
+			// machine time did MY session use", which is the customer's question and the only occupancy
+			// question a tenant on a shared fleet can be answered at all.
+			mux.HandleFunc("GET /v1/sessions/{session_id}/occupancies", rh.listSessionOccupancies)
 		}
 		// The pools those machines are in (E24 T2), and THE BIRTH PATH THAT WAS MISSING (E28 T1).
 		//
