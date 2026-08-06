@@ -239,6 +239,7 @@ export interface ResourceEnvelope {
 }
 
 export interface Response {
+  agent_revision_id?: string;
   created_at: string;
   error?: Problem | null;
   id: ResponseId;

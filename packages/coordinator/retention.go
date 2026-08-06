@@ -51,6 +51,10 @@ type ResponseView struct {
 	// after a retention purge has scrubbed it). It comes from its own column rather than from Output,
 	// so no projection rewrite can drop it — see the GetResponse query's own note.
 	Metadata []byte
+	// AgentRevisionID is the revision the run RESOLVED to, empty when no agent steered it. It is what
+	// makes a run reproducible — response-create.json promises exactly that — and until 2026-08-07 the
+	// promise had no read: the column was written, and every surface answered null.
+	AgentRevisionID string
 }
 
 // GetResponse reads a response's terminal projection within the tenant scope. A missing
@@ -64,8 +68,12 @@ func (s *Store) GetResponse(ctx context.Context, tenant Tenant, id string) (Resp
 		purgedAt *time.Time
 	)
 	var metadata []byte
+	// NULLABLE, and scanned through a pointer for it: a response with no run — a queued one, or one whose
+	// run row has not been written yet — has no revision to report, and that is a different fact from the
+	// empty string a non-null column would give.
+	var agentRevisionID *string
 	err := s.pool.QueryRow(ctx, storage.Query("GetResponse"), id, tenant.Project).
-		Scan(&view.State, &output, &purgedAt, &view.CreatedAt, &metadata)
+		Scan(&view.State, &output, &purgedAt, &view.CreatedAt, &metadata, &agentRevisionID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ResponseView{}, nil
 	}
@@ -76,5 +84,8 @@ func (s *Store) GetResponse(ctx context.Context, tenant Tenant, id string) (Resp
 	view.Output = output
 	view.Metadata = metadata
 	view.Purged = purgedAt != nil
+	if agentRevisionID != nil {
+		view.AgentRevisionID = *agentRevisionID
+	}
 	return view, nil
 }

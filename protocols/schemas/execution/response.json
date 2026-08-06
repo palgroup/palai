@@ -19,7 +19,11 @@
     "usage": {"$ref": "usage.json"},
     "error": {"oneOf": [{"$ref": "../common/problem.json"}, {"type": "null"}]},
     "session_id": {"$ref": "../common/id.json#/$defs/session_id"},
-    "run_id": {"$ref": "../common/id.json#/$defs/run_id"}
+    "run_id": {"$ref": "../common/id.json#/$defs/run_id"},
+    "agent_revision_id": {
+      "type": "string",
+      "description": "The agent revision this run RESOLVED to, absent when no agent steered it. response-create.json promises exactly this — a request naming `agent_id` is pinned at admission to that agent's highest published revision 'so the run is reproducible from its recorded agent_revision_id even though the request did not name one' — and until 2026-08-07 the promise had no read: the column was written on `runs` by 000019, the resolution happened, and every surface answered null. Reproducing a run means naming the revision that answered, so the id has to leave the plane."
+    }
   },
   "additionalProperties": true,
   "$defs": {

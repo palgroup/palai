@@ -46,10 +46,29 @@ FOR UPDATE;
 -- lasts until the first of those writers forgets to re-copy it. This column has one reader and no writer
 -- that can drop it. PurgeExpiredStoreFalse scrubs this column alongside `input`, and retrieval reads
 -- 410 off purged_at before it would render the empty object that leaves.
+--
+-- ‼️ THE AGENT REVISION COMES FROM `runs`, AND UNTIL 2026-08-07 NOTHING HANDED IT BACK AT ALL.
+-- response-create.json's own description promises it — "the server resolves it to that agent's
+-- highest-numbered PUBLISHED revision at admission and pins the run to it, so the run is reproducible
+-- from its recorded agent_revision_id even though the request did not name one" — and
+-- coordinator/store.go repeats the claim. The column exists (000019 put it on `runs`), the resolution
+-- happens, and no route, no event and no projection carried it: measured on a live plane, a run driven
+-- by an agent answered `agent_revision_id: null`. A customer could run an agent and not learn which
+-- revision had answered them, which is the whole of "reproducible" unsaid.
+--
+-- IT IS A SCALAR SUBQUERY AND NOT A JOIN, deliberately: a response with two run rows would multiply this
+-- row under a join and the handler would read whichever came first. ORDER BY created_at DESC is what
+-- makes "the run that answered" a decision rather than whatever the planner returned — this tree has
+-- twice had a LIMIT without an ORDER BY decide a security outcome.
 -- name: GetResponse
-SELECT state, output, purged_at, created_at, metadata
-FROM responses
-WHERE id = $1 AND project_id = $2;
+SELECT r.state, r.output, r.purged_at, r.created_at, r.metadata,
+       (SELECT run.agent_revision_id
+          FROM runs run
+         WHERE run.response_id = r.id AND run.project_id = r.project_id
+         ORDER BY run.created_at DESC
+         LIMIT 1) AS agent_revision_id
+FROM responses r
+WHERE r.id = $1 AND r.project_id = $2;
 
 -- ListResponses pages a project's run history newest-first (spec §22.3, E13 T4). It is tenant-scoped
 -- by RLS; the project predicate is defence-in-depth (the same belt-and-braces every

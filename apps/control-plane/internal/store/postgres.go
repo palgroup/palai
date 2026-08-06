@@ -191,6 +191,14 @@ func (s *Store) GetResponse(ctx context.Context, scope middleware.Scope, id stri
 		CreatedAt: view.CreatedAt.UTC().Format(time.RFC3339Nano),
 		Output:    []contracts.ContentItem{},
 		Usage:     contracts.Usage{},
+		// The revision that ANSWERED, from the run rather than from the request: a caller who named an
+		// `agent_id` never learns the revision any other way, and that id is the whole of what
+		// response-create.json calls reproducible. `omitempty` keeps it off a response no agent steered.
+		//
+		// It sits OUTSIDE the projection blob below for the reason metadata does: every terminal path
+		// rewrites that blob and none of them carries this, so a field kept inside it would survive a
+		// completion and vanish on a timeout, a cancel or a capacity park.
+		AgentRevisionID: view.AgentRevisionID,
 	}
 	// The caller's `metadata`, from its own column. It is decoded BEFORE the projection blob below and
 	// independently of it, which is the property worth keeping: every terminal path rewrites that blob
