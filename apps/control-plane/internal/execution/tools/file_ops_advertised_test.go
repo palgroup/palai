@@ -30,6 +30,14 @@ import (
 //	(1) every advertised op is one fileExec really answers, driven rather than read; and
 //	(2) every op fileExec answers is advertised — the direction a sweep over the schema alone cannot see,
 //	    which this tree records as the one-directional-sweep failure.
+//
+// THE REST OF THE PACKAGE WAS SWEPT AND THIS WAS THE ONLY ONE, which is worth writing down because the
+// first sweep reported two more and READING BOTH CLEARED THEM. `palai.workspace.grep` advertises
+// `files_with_matches` and has no `case` for it — it is the `default:` arm, so the matcher was counting
+// case labels and calling a handled value missing. `str_replace_based_edit_tool` looked like it carried
+// no enum at all — it spells one as `[]string{…}` where this file's matcher looked for `[]any{…}`, and
+// its four commands match its dispatch exactly. Two false findings from one loose pattern, in a sweep
+// written to catch exactly that kind of mistake.
 
 // advertisedFileOps reads the enum out of the shipped advertisement. It is deliberately taken from
 // FileTool() and never from a copy: a list written twice is a list that disagrees once.
