@@ -679,7 +679,20 @@ func workspaceUnderRoot(path, root string) error {
 	}
 	rel, err := filepath.Rel(realRoot, realPath)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return errors.New("workspace path is outside the runner allocation root")
+		// ‼️ THE REFUSAL NAMES BOTH ROOTS, because the two are configured in different places and the
+		// message without them is unactionable. The control plane allocates under its own
+		// PALAI_WORKSPACE_ROOT and sends an ABSOLUTE path; an installed agent uses its own
+		// device.Paths.WorkspaceRoot and reads no environment at all (that is deliberate — the machine
+		// owns its disk). So on any deployment where the plane and the machine are different hosts the
+		// two roots differ BY CONSTRUCTION, and every run fails here.
+		//
+		// HONEST CEILING, and it is a wire-contract one rather than a bug in this function: the lease
+		// offer carries WorkspaceHostPath and no allocation IDENTITY, so this machine cannot derive
+		// `<its own root>/<allocation id>` and check that instead. Until the offer carries the id, a
+		// remote Mac needs the plane's root and the device's root to name the same directory.
+		return fmt.Errorf("workspace path %q is outside this runner's allocation root %q: the control plane "+
+			"allocated under ITS workspace root and this machine manages a different one, so the two must "+
+			"name the same directory until the lease offer carries the allocation id", path, root)
 	}
 	return nil
 }

@@ -52,6 +52,25 @@ wherever the control plane was. That ceiling is closed and its history is record
 DNS*. The contract has been proven on loopback (device plan milestone A0); publishing the gateway is
 still open.
 
+### The workspace root is named twice, and a remote machine is where that costs something
+
+The control plane allocates a session's directory under **its own** `PALAI_WORKSPACE_ROOT` and sends the
+result as an **absolute path** on the lease offer. An installed agent allocates under **its own**
+`device.Paths.WorkspaceRoot` and reads no environment at all — deliberately, because the machine owns its
+disk and an operator should not be editing variables on a fleet member. The agent then refuses any leased
+path outside its root (`workspaceUnderRoot`), which is the right check: a path the plane names is exactly
+the trust boundary §30.13 draws.
+
+Those two are the same directory only when the plane and the machine are the **same host**, which is what
+a single-Mac self-host install is and what milestone A0 measured. On a remote Mac they differ by
+construction, and every run fails with the workspace path refused.
+
+**This is a wire-contract ceiling, not a configuration one.** The lease offer carries
+`WorkspaceHostPath` and no allocation IDENTITY, so the machine cannot compute
+`<its own root>/<allocation id>` and check that instead — which is what would let each side own its own
+disk layout. Until the offer carries the id, a remote deployment must make the two roots name the same
+directory. The refusal says so, with both paths in it.
+
 ## Configuration flows one way
 
 Nothing is edited on a machine. It is enrolled once with a URL and a pool key, and everything after that
