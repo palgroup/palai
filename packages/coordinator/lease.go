@@ -197,11 +197,21 @@ type deadLetteredRun struct {
 	responseID string
 }
 
-// SweepDeadLetteredRuns drives every dead-lettered response.run job whose run is still
-// non-terminal to a failed run terminal (spec §24.4 -> §22.3). A run whose every attempt
-// hit a deterministic engine/protocol violation exhausts its ceiling and its durable job
-// dead-letters, but the run never self-reports, so without this bridge the response hangs
-// in running and its SSE stream never closes. Each run is driven with RunCmdFail — the
+// SweepDeadLetteredRuns drives every SETTLED response.run job whose run is still non-terminal to a
+// failed run terminal (spec §24.4 -> §22.3). A run whose every attempt hit a deterministic
+// engine/protocol violation exhausts its ceiling and its durable job dead-letters, but the run never
+// self-reports, so without this bridge the response hangs in running and its SSE stream never closes.
+//
+// ‼️ SETTLED NOW INCLUDES `completed`, AND THE NAME IS KEPT DELIBERATELY. Measured on a live plane
+// 2026-08-07: a coding run's job finished `completed` at attempt_count 2 and 3 while the run sat
+// `running` twenty-five minutes later — the machine's engine failed, the runner could not write the
+// result back ("use of closed network connection"), and this side returned without a hard error. A dead
+// job was caught and a completed one over a non-terminal run was caught by nothing, which is the worse
+// failure: it looks healthy from every angle. The query carries the grace that keeps an ordinary run
+// from racing into a false failure; see DeadLetteredResponseRuns.
+//
+// The method keeps its name because renaming it would touch the reconciler interface and every caller
+// for no behaviour, and the sentence a reader needs is here rather than in the identifier. Each run is driven with RunCmdFail — the
 // transition, the run.failed.v1 terminal event, and its outbox row commit together in
 // ApplyRunTransition — and its response projection is finalized to failed so a retrieval
 // reads a terminal failure. It is idempotent: a run already terminal is excluded by the

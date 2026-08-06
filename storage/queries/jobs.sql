@@ -192,20 +192,43 @@ SET outcome = $3, error = $4
 WHERE job_id = $1 AND fence = $2;
 
 -- name: DeadLetteredResponseRuns
--- Reconciler bridge (spec §24.4 -> §22.3): a response.run job that dead-lettered while
--- its run is still non-terminal names a run that will otherwise hang in running forever —
--- its response never projects terminal and its SSE stream never closes. Return each such
--- run and its response, tenant-scoped and bounded per sweep. Runs already terminal are
--- excluded (only the states RunCmdFail is legal from), so a run failed by an earlier sweep
--- is never reprocessed and terminal monotonicity holds.
+-- Reconciler bridge (spec §24.4 -> §22.3): a response.run job that has SETTLED while its run is still
+-- non-terminal names a run that will otherwise hang in running forever — its response never projects
+-- terminal and its SSE stream never closes. Return each such run and its response, tenant-scoped and
+-- bounded per sweep. Runs already terminal are excluded (only the states RunCmdFail is legal from), so a
+-- run failed by an earlier sweep is never reprocessed and terminal monotonicity holds.
+--
+-- ‼️ SETTLED IS `dead` OR `completed`, AND IT WAS ONLY `dead` UNTIL 2026-08-07. That covered the case the
+-- bridge was written for — every attempt exhausted, job dead-lettered — and left the one measured on a
+-- live plane that night wide open: a coding run whose job finished `completed` at attempt_count 2 and 3
+-- while its run sat `running` twenty-five minutes later, its response `in_progress`, output empty. The
+-- machine's own log says how:
+--
+--   engine exceeded wall-time bound
+--   send workspace result: failed to write msg: use of closed network connection
+--   engine wait did not complete after stdout closed
+--
+-- The runner could not report the failure, the control-plane side of the attempt returned without a hard
+-- error, and the job was marked done. A job that dead-letters is caught; a job that COMPLETES over a run
+-- that never terminalised was caught by nothing, which is the worse of the two because it looks healthy
+-- from every angle — a settled queue, no dead letters, and one response that never ends.
+--
+-- ‼️ THE GRACE APPLIES TO `completed` AND NOT TO `dead`, because the two are different claims. A dead job
+-- is settled for good and its run can be failed at once. A completed one has a legitimate window: the
+-- run's terminal transition and the job's completion commit in separate transactions, so a sweep with no
+-- grace would race an ordinary run to a false failure. Two minutes is far outside that window and far
+-- inside a human's patience for a hung response.
 SELECT j.project_id, j.payload->>'run_id' AS run_id, r.response_id
 FROM durable_jobs j
 JOIN runs r
   ON r.id = j.payload->>'run_id'
  AND r.project_id = j.project_id
-WHERE j.status = 'dead'
-  AND j.kind = 'response.run'
+WHERE j.kind = 'response.run'
   AND r.state IN ('queued', 'provisioning', 'running', 'waiting')
+  AND (
+        j.status = 'dead'
+     OR (j.status = 'completed' AND j.updated_at < now() - interval '2 minutes')
+      )
 ORDER BY j.updated_at
 LIMIT $1;
 
