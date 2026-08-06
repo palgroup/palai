@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestThePlaneWinsOverTheBoxsOwnEnvironment is the runner half of the desired-configuration round trip, and
 // it exists because the control-plane binary's own round-trip guard structurally cannot cover it: that guard
@@ -115,16 +118,41 @@ func TestAMachineDeclaresItsOwnCeiling(t *testing.T) {
 func TestOneAddressDerivesWhatFourVariablesUsedToCarry(t *testing.T) {
 	const base = "https://cp.example.internal:8443"
 
-	t.Run("the paths are the gateway's own routes", func(t *testing.T) {
-		for _, tc := range []struct{ name, path, want string }{
-			{"PALAI_ENROLLMENT_URL", "/v1/runner/enroll", base + "/v1/runner/enroll"},
-			{"PALAI_SESSION_URL", "/v1/runner/connect", base + "/v1/runner/connect"},
-			{"PALAI_RENEW_URL", "/v1/runner/renew", base + "/v1/runner/renew"},
+	// ‼️ EACH CASE CARRIES THE DERIVATION loadConfig PASSES, NOT ONE THE TEST CHOOSES. The table used to
+	// hand `joinPath(tc.path)` to every name, which measured the helper and not the wiring — and that is
+	// how the session URL was derived as `https://…/v1/runner/connect` for as long as it was: the session
+	// refuses anything that is not wss, so every deployment had to be handed a pre-built value by a shell
+	// bridge, and three scripts spelled the swap while no Go code did.
+	t.Run("the paths are the gateway's own routes, and the session is wss", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, want string
+			derive     func(string) string
+		}{
+			{"PALAI_ENROLLMENT_URL", base + "/v1/runner/enroll", joinPath("/v1/runner/enroll")},
+			{"PALAI_SESSION_URL", "wss://cp.example.internal:8443/v1/runner/connect", outboundSessionURL},
+			{"PALAI_RENEW_URL", base + "/v1/runner/renew", joinPath("/v1/runner/renew")},
+			{"PALAI_SETTINGS_URL", base + "/v1/runner/settings", joinPath("/v1/runner/settings")},
 		} {
 			t.Setenv(tc.name, "")
-			if got := derivedEnv(tc.name, base, joinPath(tc.path)); got != tc.want {
+			if got := derivedEnv(tc.name, base, tc.derive); got != tc.want {
 				t.Errorf("%s derived %q, want %q", tc.name, got, tc.want)
 			}
+		}
+	})
+
+	// ‼️ AND THIS ONE DRIVES loadConfig ITSELF, because the table above still does not. Naming the right
+	// derivation in a test's own table proves the table: reverting loadConfig to joinPath left every case
+	// above GREEN, measured 2026-08-06. The only assertion that can see that revert is one that calls the
+	// function production calls and reads what it returns.
+	t.Run("loadConfig itself returns a wss session URL", func(t *testing.T) {
+		t.Setenv("PALAI_CONTROLLER_URL", base)
+		t.Setenv("PALAI_ENROLLMENT_TOKEN", "rpk_test")
+		for _, name := range []string{"PALAI_SESSION_URL", "PALAI_ENROLLMENT_URL", "PALAI_RENEW_URL", "PALAI_SETTINGS_URL", "PALAI_CONTROLLER_CA"} {
+			t.Setenv(name, "")
+		}
+		_, _, sessionURL, _, _, _, _ := loadConfig(nil)
+		if !strings.HasPrefix(sessionURL, "wss://") {
+			t.Fatalf("loadConfig derived session URL %q; the session refuses anything that is not wss, so this machine would retry forever while looking healthy in Fleet", sessionURL)
 		}
 	})
 

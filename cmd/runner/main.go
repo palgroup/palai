@@ -299,7 +299,11 @@ func loadConfig(installed *device.Installation) (bootstrap runner.BootstrapConfi
 		Capacity: declaredCapacity(),
 	}
 	return bootstrap, tokenFile,
-		derivedEnv("PALAI_SESSION_URL", controllerURL, joinPath("/v1/runner/connect")),
+		// ‼️ THE SESSION URL IS wss, AND THE OTHER THREE ARE https — one derivation, not four. Deriving
+		// this one with joinPath produced `https://…/v1/runner/connect`, which the session refuses
+		// ("session URL must be outbound wss"), so every deployment had to be handed a pre-built value by
+		// a shell bridge. That is why three scripts spelled the swap and no Go code did.
+		derivedEnv("PALAI_SESSION_URL", controllerURL, outboundSessionURL),
 		derivedEnv("PALAI_RENEW_URL", controllerURL, joinPath("/v1/runner/renew")),
 		derivedEnv("PALAI_SETTINGS_URL", controllerURL, joinPath("/v1/runner/settings")),
 		controllerDNS, pool
