@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -243,6 +244,51 @@ type runnerHandler struct {
 	// answer than one that always reports "no document", which would be indistinguishable from a
 	// deployment nobody had configured.
 	desired DesiredConfigAPI
+	// occupancies serves ONE machine's session history. Nil on a deployment with no durable spine, in
+	// which case the route is not registered — an absent route is a better answer than one that always
+	// reports an empty history, which an operator would read as "this Mac has never held a session".
+	occupancies MachineOccupancyAPI
+}
+
+// MachineOccupancyAPI is the read behind the machine-detail view: what this machine is holding now and
+// what it held before, newest first (device plan T6, DoD 10).
+//
+// THE CURSOR IS THE PAIR, not the timestamp. Two holds can begin in the same clock tick, and a page
+// ordered on time alone can drop or repeat a row between requests — this tree has had an unordered LIMIT
+// decide a security outcome twice.
+type MachineOccupancyAPI interface {
+	MachineOccupancies(ctx context.Context, project, runnerID string, before time.Time, beforeID string, limit int) ([]MachineOccupancyItem, error)
+}
+
+// MachineOccupancyItem is one hold as the panel reads it.
+type MachineOccupancyItem struct {
+	ID             string
+	SessionID      string
+	StartedAt      time.Time
+	LastActivityAt time.Time
+	ReleasedAt     time.Time
+	ReleaseReason  string
+	BilledSeconds  float64
+}
+
+// machineOccupancyView renders one hold. An OPEN hold has no released_at and no reason, and both are
+// omitted rather than rendered empty: "still running" and "released for a reason nobody recorded" are
+// different answers, and a blank string would collapse them.
+func machineOccupancyView(it MachineOccupancyItem) map[string]any {
+	view := map[string]any{
+		"object": "machine_occupancy", "id": it.ID, "session_id": it.SessionID,
+		"started_at": it.StartedAt, "billed_seconds": it.BilledSeconds,
+		// Rendered even at zero: a hold that has never seen activity is a real state, and an absent field
+		// would read as "not measured".
+		"last_activity_at": it.LastActivityAt,
+	}
+	if !it.ReleasedAt.IsZero() {
+		view["released_at"] = it.ReleasedAt
+	}
+	if it.ReleaseReason != "" {
+		view["release_reason"] = it.ReleaseReason
+	}
+	return view
 }
 
 // listRunners returns a tenant-scoped page of enrolled machines (GET /v1/runners).
@@ -439,6 +485,69 @@ func (h *runnerHandler) getRunner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, runnerView(item))
+}
+
+// listMachineOccupancies reads ONE machine's session history (GET /v1/runners/{runner_id}/occupancies).
+//
+// ‼️ THE MACHINE IS RESOLVED FIRST AND THAT IS THE TENANCY BOUNDARY. An id in another project answers
+// 404 from GetRunner, so this route cannot be used to learn that a machine exists elsewhere by the shape
+// of its answer — and the occupancy query carries the project in its WHERE as well, so neither layer is
+// the only one holding it.
+func (h *runnerHandler) listMachineOccupancies(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	runnerID := r.PathValue("runner_id")
+	if _, found, err := h.runners.GetRunner(r.Context(), scope.Project, runnerID); err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	} else if !found {
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such runner in this project")
+		return
+	}
+	// The SAME limit parse every list route uses, so a page of holds cannot be bounded differently from
+	// a page of anything else. Its cursor half is not used here: this route's cursor is the
+	// (started_at, id) pair below, which the opaque list cursor cannot express.
+	q, ok := beginList(w, r, "machine_occupancy", scope)
+	if !ok {
+		return
+	}
+	before, beforeID, err := occupancyCursor(r)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	items, err := h.occupancies.MachineOccupancies(r.Context(), scope.Project, runnerID, before, beforeID, q.Limit)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	views := make([]map[string]any, 0, len(items))
+	for _, it := range items {
+		views = append(views, machineOccupancyView(it))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": views})
+}
+
+// occupancyCursor reads the (started_at, id) pair a caller continues a page from. BOTH or NEITHER: a
+// timestamp with no id cannot break a tie, which is the whole reason the cursor is a pair, and accepting
+// it would hand back a page that silently drops rows.
+func occupancyCursor(r *http.Request) (time.Time, string, error) {
+	rawTime := strings.TrimSpace(r.URL.Query().Get("starting_before"))
+	rawID := strings.TrimSpace(r.URL.Query().Get("starting_before_id"))
+	switch {
+	case rawTime == "" && rawID == "":
+		return time.Time{}, "", nil
+	case rawTime == "" || rawID == "":
+		return time.Time{}, "", errors.New("starting_before and starting_before_id are a pair: a timestamp alone cannot break a tie between two holds that began in the same tick")
+	}
+	at, err := time.Parse(time.RFC3339Nano, rawTime)
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("starting_before must be an RFC3339 timestamp: %w", err)
+	}
+	return at, rawID, nil
 }
 
 // THE KEY SURFACE (E24 T3). Three routes, all gated on `provision`, and the value of a key exists on

@@ -366,6 +366,45 @@ func (s *Store) SessionOccupancies(ctx context.Context, tenant Tenant, sessionID
 	return out, nil
 }
 
+// MachineOccupancies is ONE MACHINE's session history, newest first — what it is holding now and what it
+// held before. It is the read behind the panel's machine-detail view (device plan T6, DoD 10), which is
+// the question an operator asks before unplugging a Mac.
+//
+// ‼️ IT IS KEYSET-PAGINATED ON (started_at, id) AND THE PAIR IS THE POINT. `started_at` alone ties
+// whenever two holds begin in the same clock tick, and a LIMIT over a tie is a page that can drop or
+// repeat a row between requests. This tree has had an unordered LIMIT decide a security outcome twice;
+// a paginated history is the same hazard wearing a UI.
+//
+// A zero `before` starts at the newest row. The caller passes the last row of the previous page to
+// continue, which is why both halves of the cursor are parameters rather than one.
+func (s *Store) MachineOccupancies(ctx context.Context, tenant Tenant, runnerID string, before time.Time, beforeID string, limit int) ([]Occupancy, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	ctx = storage.ScopeToTenant(ctx, tenant.Project)
+	var cursor any
+	if !before.IsZero() {
+		cursor = before
+	}
+	rows, err := s.pool.Query(ctx, storage.Query("MachineOccupancies"), runnerID, tenant.Project, cursor, beforeID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read occupancies of machine %s: %w", runnerID, err)
+	}
+	defer rows.Close()
+	var out []Occupancy
+	for rows.Next() {
+		occupancy, err := scanOccupancy(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan occupancy of machine %s: %w", runnerID, err)
+		}
+		out = append(out, occupancy)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read occupancies of machine %s: %w", runnerID, err)
+	}
+	return out, nil
+}
+
 // scanOccupancy is the ONE place the occupancy column list is read, shared by the single read and the list
 // read above — two hand-written copies is how they would come to return different shapes of the same row.
 // It takes this package's existing scanRow (publication.go), which is what a pgx.Row and a pgx.Rows have in

@@ -500,9 +500,15 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	// going through systemOnly is one that test catches rather than one a reviewer has to remember to
 	// check by eye.
 	if cfg.runners != nil {
-		rh := &runnerHandler{runners: cfg.runners, desired: cfg.desired}
+		rh := &runnerHandler{runners: cfg.runners, desired: cfg.desired, occupancies: cfg.occupancies}
 		mux.HandleFunc("GET /v1/runners", systemOnly(rh.listRunners))
 		mux.HandleFunc("GET /v1/runners/{runner_id}", systemOnly(rh.getRunner))
+		// The machine-detail history. Registered ONLY when a spine backs it: a route that always answered
+		// an empty list would read as "this Mac has never held a session", which is a different claim from
+		// "this deployment does not record them".
+		if rh.occupancies != nil {
+			mux.HandleFunc("GET /v1/runners/{runner_id}/occupancies", systemOnly(rh.listMachineOccupancies))
+		}
 		// The pools those machines are in (E24 T2), and THE BIRTH PATH THAT WAS MISSING (E28 T1).
 		//
 		// THE COMMENT THAT STOOD HERE SAID "Read-only: creating and deleting a pool is T5/T6's", and the same

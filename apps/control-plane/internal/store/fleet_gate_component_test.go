@@ -78,7 +78,12 @@ func TestEveryFleetRouteRefusesATenantKey(t *testing.T) {
 			Scopes: []string{middleware.ScopeSystem, "provision", "approve"}},
 	}
 	router := api.NewRouter(verifier, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		api.SSEConfig{}, nil, nil, api.WithRunners(runnerAPI), api.WithDesiredConfig(repo))
+		api.SSEConfig{}, nil, nil, api.WithRunners(runnerAPI), api.WithDesiredConfig(repo),
+		// The machine-detail history, bound the way production binds it. Without it the route is in
+		// router.go's source — so this sweep DRIVES it — and absent from the mux, which answers 404 and
+		// reads as "the gate let a tenant key through" when the truth is "the test's router is not the
+		// one production builds".
+		api.WithMachineOccupancies(repo))
 	ts := httptest.NewServer(router)
 	defer ts.Close()
 

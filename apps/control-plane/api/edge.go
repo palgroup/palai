@@ -47,6 +47,9 @@ type AdmissionLimits struct {
 type RouterOption func(*routerConfig)
 
 type routerConfig struct {
+	// occupancies serves one machine's session history. Nil is the shipped state of every deployment
+	// built before it, and the route is skipped rather than answering an empty list.
+	occupancies MachineOccupancyAPI
 	// sessionAccounts releases a session's uid when it closes. Nil mints and releases nothing.
 	sessionAccounts SessionAccountReleaser
 	edge            EdgeLimits
@@ -108,6 +111,12 @@ func WithSessionAccounts(a SessionAccountReleaser) RouterOption {
 
 func WithDesiredConfig(desired DesiredConfigAPI) RouterOption {
 	return func(c *routerConfig) { c.desired = desired }
+}
+
+// WithMachineOccupancies mounts the machine-detail history (device plan T6). Absent on a deployment with
+// no durable spine, and the route is then not registered at all — see runnerHandler.occupancies.
+func WithMachineOccupancies(o MachineOccupancyAPI) RouterOption {
+	return func(c *routerConfig) { c.occupancies = o }
 }
 
 // WithEdgeLimits supplies the §20.12 request-rate limiter and per-project admission caps.

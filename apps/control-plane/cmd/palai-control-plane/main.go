@@ -275,6 +275,10 @@ func main() {
 	// on the master key would leave the write path unmounted on exactly the deployments that have the most
 	// configuration and the least tooling to change it.
 	routerOpts = append(routerOpts, api.WithDesiredConfig(repo))
+	// The machine-detail history rides the same spine, so it is bound beside the desired document rather
+	// than behind its own gate: both are absent exactly when there is no durable store, and the route is
+	// skipped in that case rather than answering an empty list.
+	routerOpts = append(routerOpts, api.WithMachineOccupancies(repo))
 	// The A2A 1.0 server projection (E17 T2, spec §38): the DB-backed interface + task store over the same
 	// spine pool, wired behind the api.Admitter so an inbound A2A message admits through the SAME §20.9 path a
 	// POST /v1/responses takes (no invented run identity, §34.1) under the SAME per-project caps. Mounting it

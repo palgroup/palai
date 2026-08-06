@@ -233,6 +233,34 @@ SELECT id, runner_id, session_id, started_at, last_activity_at, released_at,
   FROM runner_leases
  WHERE id = $1 AND project_id = $2;
 
+-- name: MachineOccupancies
+-- ONE MACHINE'S SESSION HISTORY, newest first: what it is holding now and what it held before (device
+-- plan T6, DoD 10). The panel's machine-detail view reads this to answer "what is this Mac doing, and
+-- what did it do" — the question an operator asks before unplugging one.
+--
+-- IT IS TENANT-SCOPED IN THE WHERE, NOT IN THE HANDLER. A machine id belonging to another project
+-- returns NO rows, so a caller cannot learn that one exists elsewhere by the shape of the answer.
+--
+-- THE ORDERING IS TOTAL AND THAT IS NOT DECORATION. `started_at DESC` alone ties whenever two holds
+-- begin inside the same clock tick, and a LIMIT over a tie is a page that can drop or repeat a row
+-- between requests — this tree has already had an unordered LIMIT decide a security outcome twice. The
+-- id breaks it, and the keyset below reads the same pair.
+--
+-- The billed interval is the SAME `CASE` GetOccupancy derives, and it is duplicated here rather than
+-- shared because the two are read in different transactions; if they ever disagree, the panel and the
+-- ledger would answer a customer differently about one hold. Change one, change both.
+SELECT id, runner_id, session_id, started_at, last_activity_at, released_at,
+       coalesce(release_reason, ''),
+       extract(epoch FROM (
+           CASE WHEN release_reason = 'idle' THEN last_activity_at
+                ELSE coalesce(released_at, clock_timestamp()) END
+           - started_at))::double precision
+  FROM runner_leases
+ WHERE runner_id = $1 AND project_id = $2
+   AND ($3::timestamptz IS NULL OR (started_at, id) < ($3, $4))
+ ORDER BY started_at DESC, id DESC
+ LIMIT $5;
+
 -- name: StrandedOccupancies
 -- The holds whose closer never ran: still open, on a machine that was demonstrably handed back. $1 bounds
 -- one pass. A MAINTENANCE read spanning every tenant, like IdleWorkspacesForRelease, so it runs under the
