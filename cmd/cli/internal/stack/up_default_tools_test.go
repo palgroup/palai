@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -214,18 +215,43 @@ func TestABringUpCredentialIsSealedIntoTheStoreNotTheEnvironment(t *testing.T) {
 	if line := client.seedModelConnection("sk-bring-up-seed-value"); line == "" {
 		t.Fatal("a bring-up with a credential and no connection seeded nothing")
 	}
-	if len(*posts) != 2 {
-		t.Fatalf("got %d POSTs, want 2 (seal the secret, then name it from a connection): %v", len(*posts), *posts)
+	// ‼️ THE COUNT WAS A PROXY AND IT BROKE ON A CORRECT CHANGE. This asserted "exactly 2 POSTs" as a
+	// stand-in for "the value goes to the seal and nowhere else" — so publishing the model route, which
+	// the sealed credential is USELESS without, failed a test about credential handling. The property is
+	// asserted directly now: the value appears in ONE body, and it is the seal's.
+	sealed := 0
+	for _, call := range *posts {
+		if !strings.Contains(call, "sk-bring-up-seed-value") {
+			continue
+		}
+		sealed++
+		if !strings.HasPrefix(call, "/v1/secret-refs ") {
+			t.Errorf("the credential VALUE appears in %q — every other call must name the ref instead", call)
+		}
 	}
+	if sealed != 1 {
+		t.Fatalf("the credential value appears in %d bodies, want exactly 1 (the seal): %v", sealed, *posts)
+	}
+	// The ORDER still matters: a connection naming a ref that has not been sealed yet is a connection
+	// pointing at nothing.
 	if !strings.HasPrefix((*posts)[0], "/v1/secret-refs ") {
 		t.Errorf("the first call is %q, want the secret to be SEALED first", (*posts)[0])
 	}
-	if !strings.HasPrefix((*posts)[1], "/v1/model-connections ") {
-		t.Errorf("the second call is %q, want the connection to NAME the ref", (*posts)[1])
+	if len(*posts) < 2 || !strings.HasPrefix((*posts)[1], "/v1/model-connections ") {
+		t.Errorf("the second call is %v, want the connection to NAME the ref", *posts)
 	}
-	// The connection must carry the REF, never the value — that is the property the whole design rests on.
-	if strings.Contains((*posts)[1], "sk-bring-up-seed-value") {
-		t.Errorf("the connection body carries the credential VALUE: %q", (*posts)[1])
+	// AND THE ROUTE IS PUBLISHED, because a connection nothing routes to is a credential no run can
+	// reach: a project's effective route is its published one, and the deployment default names an
+	// unqualified ref that RouteSecretResolver can no longer redeem (the env bridge is gone).
+	var published bool
+	for _, call := range *posts {
+		if strings.Contains(call, "/publish") {
+			published = true
+		}
+	}
+	if !published {
+		t.Fatalf("the bring-up sealed a credential and bound a connection but published NO route: every "+
+			"run on this stack falls to the deployment default, which redeems nothing (%v)", *posts)
 	}
 }
 
@@ -253,5 +279,28 @@ func TestAnUnreadableConnectionListDoesNotSeed(t *testing.T) {
 	client := &apiClient{baseURL: srv.URL, key: "apik_stub", http: srv.Client()}
 	if line := client.seedModelConnection("sk-value"); line != "" {
 		t.Errorf("seeded against a deployment whose state could not be read: %s", line)
+	}
+}
+
+// TestTheBringUpFallbackModelMatchesTheControlPlanes binds two strings that live in binaries sharing no
+// package: the model a published bring-up route names, and the one modelBrokerFromEnv falls back to when
+// PALAI_MODEL is unset.
+//
+// If they drift, a deployment behaves differently depending on whether a route happens to exist — the
+// same stack, the same env, two models — and nothing anywhere would say so.
+func TestTheBringUpFallbackModelMatchesTheControlPlanes(t *testing.T) {
+	body, err := os.ReadFile("../../../../apps/control-plane/cmd/palai-control-plane/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// modelBrokerFromEnv's own fallback, read out of the source rather than restated here — restating it
+	// would make this test agree with itself.
+	const fallback = `		model := os.Getenv("PALAI_MODEL")
+		if model == "" {
+			model = "` + bringUpFallbackModel + `"
+		}`
+	if !strings.Contains(string(body), fallback) {
+		t.Fatalf("the control plane's unset-PALAI_MODEL fallback is not %q — a bring-up route naming that "+
+			"model would send runs somewhere the deployment default does not", bringUpFallbackModel)
 	}
 }

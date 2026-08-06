@@ -236,13 +236,21 @@ func TestNativeRunnerStopKillsTheProcessGroupAndClearsTheRecord(t *testing.T) {
 	// control plane's twin of this test asserts immediately and flakes about one run in three
 	// (TestNativeStopKillsTheProcessGroupAndClearsTheRecord, measured 2026-08-04); this is the same
 	// property without the race.
-	for i := 0; i < 200; i++ {
+	//
+	// ‼️ THE BOUND IS A LIVENESS BOUND, NOT A SPEED ONE, and at two seconds it was the second. Measured
+	// 2026-08-06: this test passes in 0.33s in isolation and failed TWICE inside `make verify` on a
+	// machine at load 12–60 — a red that belongs to the machine and not to the product, which is the
+	// worse kind because it blocks every ship while naming the wrong thing. The property is that the
+	// group DIES; how many milliseconds a loaded kernel needs to reap it is not this test's subject.
+	// Fifteen seconds costs nothing on an idle machine (the loop returns on the first iteration) and
+	// stops a busy one from failing a claim it actually satisfies.
+	for i := 0; i < 1500; i++ {
 		if err := syscall.Kill(-pid, 0); err != nil {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("the process group is still alive two seconds after stopNativeRunner")
+	t.Fatal("the process group is still alive fifteen seconds after stopNativeRunner")
 }
 
 // TestNativeRunnerStopRefusesAPidThatIsNotTheRunner is the pid-reuse guard: a stale record plus a
@@ -296,5 +304,36 @@ func TestTheRunnerSessionGaugeIsReadFromTheValueAndNotTheHelpText(t *testing.T) 
 	if _, err := scrapeGauge("# TYPE palai_runner_sessions gauge\n", "palai_runner_sessions"); err == nil {
 		t.Fatal("an exposition carrying only HELP/TYPE lines yielded a value: a runner that never connected " +
 			"would be reported as up")
+	}
+}
+
+// TestThePrintedEnrolCommandCarriesTheLocalCA is a guard on a SENTENCE, and it is here because the
+// sentence is an instruction an operator copies and runs.
+//
+// ‼️ IT DID NOT WORK. The line `up --native` printed for a plane with no agent omitted `--ca-file`, so a
+// device following it fell back to the SYSTEM trust store — where this stack's self-signed local CA is
+// not. On macOS the refusal is not even "unknown authority": Apple's verifier rejects a certificate whose
+// validity exceeds 825 days FIRST, and `palai init` mints a ten-year local CA, so the operator reads
+// `x509: "control-plane" certificate is not standards compliant` and has no path from that message to the
+// missing flag. Measured 2026-08-06 by running the printed line against a live stack.
+//
+// The path is asserted to be the one this bring-up actually wrote, not merely that a flag is present: a
+// --ca-file pointing somewhere else is the same failure with an extra step.
+func TestThePrintedEnrolCommandCarriesTheLocalCA(t *testing.T) {
+	body, err := os.ReadFile("native.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(body)
+	const printed = "palai enroll --url https://127.0.0.1:%d --server-name %s --ca-file %s --key-file <pool key>"
+	if !strings.Contains(source, printed) {
+		t.Fatalf("the enrol line this bring-up prints is not %q — an operator who copies it reaches the "+
+			"system trust store, which does not carry this stack's local CA", printed)
+	}
+	// The argument must be the CA this bring-up wrote. `p.caCert` is that path (config.go), and naming it
+	// here is what stops the flag from being satisfied by an empty string or a placeholder.
+	if !strings.Contains(source, "cfg.RunnerPort, cfg.ControllerDNS, p.caCert)") {
+		t.Fatal("the printed --ca-file is not filled from p.caCert: a flag pointing anywhere else is the " +
+			"same failure with an extra step")
 	}
 }

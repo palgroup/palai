@@ -111,10 +111,16 @@ func UpNative(get func(string) string) (string, error) {
 	// themselves; a plane that manufactured one would be the fallback §3.7 deletes, and the one that hid
 	// a device with no shell executor for a whole night.
 	if runnerBin == "" {
+		// ‼️ THE PRINTED COMMAND CARRIES --ca-file, AND IT DID NOT UNTIL 2026-08-06. Without it the device
+		// falls back to the SYSTEM trust store, where this stack's self-signed local CA is not — and on
+		// macOS the refusal is not even "unknown authority": Apple's verifier rejects a certificate whose
+		// validity exceeds 825 days first, so `palai init`'s ten-year local CA produces
+		// `x509: "control-plane" certificate is not standards compliant`. An operator reading that has no
+		// path from it to the missing flag. Measured by running the line this function prints.
 		fmt.Fprintf(os.Stderr, "        no agent on this machine — capacity comes from devices that enrol themselves:\n"+
 			"            curl -fsSL https://releases.palai.dev/install.sh | sh\n"+
-			"            palai enroll --url https://127.0.0.1:%d --server-name %s --key-file <pool key>\n",
-			cfg.RunnerPort, cfg.ControllerDNS)
+			"            palai enroll --url https://127.0.0.1:%d --server-name %s --ca-file %s --key-file <pool key>\n",
+			cfg.RunnerPort, cfg.ControllerDNS, p.caCert)
 		fmt.Fprintf(os.Stderr, "stack up: api %s (native control plane, pid %d), no local agent\n", cfg.BaseURL, pid)
 		return fmt.Sprintf("NATIVE control plane, pid %d, log %s — NO local agent — postgres/object-store in Docker (%s)",
 			pid, p.nativeLog, nativeOverlayFile), nil

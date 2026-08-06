@@ -34,6 +34,12 @@ import (
 // anything else instead of inheriting that fallback.
 const liveSelector = "provider-one"
 
+// bringUpFallbackModel is the model a published bring-up route names when the deployment set no
+// PALAI_MODEL. It is the SAME string modelBrokerFromEnv falls back to, restated here because the two
+// binaries share no package — and a route naming a different model than the deployment default would
+// make the stack behave differently depending on whether a route happened to exist.
+const bringUpFallbackModel = "gpt-4o-mini"
+
 // fakeModel is the model id main.go scripts the fake adapter with. It is the needle the live proof
 // looks for: a terminal projection carrying it means the run never left the process.
 const fakeModel = "fake"
@@ -1422,13 +1428,83 @@ func (c *apiClient) seedModelConnection(credential string) string {
 		map[string]any{"name": ref, "value": credential}, nil); err != nil || (status != http.StatusCreated && status != http.StatusOK) {
 		return ""
 	}
+	var connection struct {
+		ID string `json:"id"`
+	}
 	if status, err := c.do(http.MethodPost, "/v1/model-connections",
-		map[string]any{"provider": liveSelector, "secret_ref": ref}, nil); err != nil || (status != http.StatusCreated && status != http.StatusOK) {
+		map[string]any{"provider": liveSelector, "secret_ref": ref}, &connection); err != nil || (status != http.StatusCreated && status != http.StatusOK) {
 		return ""
 	}
-	return fmt.Sprintf("sealed the %s credential into the encrypted store as %q and bound a %s connection to it. "+
-		"It is no longer read from the environment, so you can remove %s from .env.local — the console's "+
-		"/registry screen is where it lives now.", credentialEnv, ref, liveSelector, credentialEnv)
+	// ‼️ A CONNECTION NOTHING ROUTES TO IS A CREDENTIAL NO RUN CAN USE, and this function stopped one line
+	// short of that for as long as it has existed. A project's effective route is its PUBLISHED model
+	// route, and only when it has none does the deployment default apply — and that default names the
+	// UNQUALIFIED secret ref `provider-one`, which RouteSecretResolver sends to the env bridge. There is
+	// no env bridge any more (it was removed 2026-08-04 so a provider key could not live in the control
+	// plane's environment), so the default route can never redeem anything.
+	//
+	// Measured on this Mac 2026-08-06: `up` sealed the credential, bound the connection, and every run on
+	// the stack died with `redeem credential: unknown_secret: provider-one` — the engine reached
+	// `safe_boundary before_model` and stopped. Publishing the route here is what turns the sealed
+	// credential into one a run actually reaches, and it is the same three calls an operator would make.
+	if route := c.publishBringUpRoute(connection.ID); route == "" {
+		return fmt.Sprintf("sealed the %s credential as %q and bound a %s connection — but could NOT publish a "+
+			"model route for it, so runs will fall to the deployment default, which redeems nothing. "+
+			"Publish one: POST /v1/model-routes, then a revision naming this connection, then /publish.",
+			credentialEnv, ref, liveSelector)
+	}
+	return fmt.Sprintf("sealed the %s credential into the encrypted store as %q, bound a %s connection to it "+
+		"and PUBLISHED the route that uses it. It is no longer read from the environment, so you can remove "+
+		"%s from .env.local — the console's /registry screen is where it lives now.",
+		credentialEnv, ref, liveSelector, credentialEnv)
+}
+
+// publishBringUpRoute publishes the project's default model route over the connection just sealed, and
+// returns the published revision id ("" when it did not land).
+//
+// IT REFUSES TO TOUCH AN EXISTING ROUTE, for seedModelConnection's own reason: a bring-up that
+// re-published somebody's route would move where every run on the deployment goes, and "cannot tell" is
+// not "has none" — a read that fails stands down rather than seeding.
+//
+// The model is the deployment's own PALAI_MODEL, or the same fallback the control plane applies when it
+// is unset. Choosing a different one here would make the route disagree with the deployment default the
+// stack is otherwise running on.
+func (c *apiClient) publishBringUpRoute(connectionID string) string {
+	if strings.TrimSpace(connectionID) == "" {
+		return ""
+	}
+	var routes struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if status, err := c.do(http.MethodGet, "/v1/model-routes", nil, &routes); err != nil || status != http.StatusOK || len(routes.Data) > 0 {
+		return ""
+	}
+	model := os.Getenv("PALAI_MODEL")
+	if model == "" {
+		model = bringUpFallbackModel
+	}
+	var route struct {
+		ID string `json:"id"`
+	}
+	if status, err := c.do(http.MethodPost, "/v1/model-routes", map[string]any{"name": "default"}, &route); err != nil ||
+		(status != http.StatusCreated && status != http.StatusOK) || route.ID == "" {
+		return ""
+	}
+	var revision struct {
+		ID string `json:"id"`
+	}
+	if status, err := c.do(http.MethodPost, "/v1/model-routes/"+url.PathEscape(route.ID)+"/revisions",
+		map[string]any{"connection_id": connectionID, "model": model}, &revision); err != nil ||
+		(status != http.StatusCreated && status != http.StatusOK) || revision.ID == "" {
+		return ""
+	}
+	if status, err := c.do(http.MethodPost,
+		"/v1/model-routes/"+url.PathEscape(route.ID)+"/revisions/"+url.PathEscape(revision.ID)+"/publish",
+		nil, nil); err != nil || status != http.StatusOK {
+		return ""
+	}
+	return revision.ID
 }
 
 // missingPublisherNotice reports that this deployment holds a repository binding but cannot publish
