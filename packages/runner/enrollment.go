@@ -239,6 +239,20 @@ func Enroll(ctx context.Context, config BootstrapConfig) (Identity, error) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
+		// ‼️ THE REASON IS IN THE BODY AND THIS USED TO THROW IT AWAY. The gateway writes a distinct
+		// sentence for every refusal — "declared posture is not this pool's", "this machine does not
+		// support the isolation mode this pool requires", "the claimed runner identity does not belong to
+		// this device key" — and printing only `response.Status` reduced all of them to "409 Conflict".
+		// The person reading it is standing at the machine with a key file in their hand; the difference
+		// between those three sentences is the difference between minting another key, choosing another
+		// pool, and re-imaging the box. Measured 2026-08-06: three rounds of guessing on a real enrolment
+		// that the server had already explained.
+		//
+		// Bounded and trimmed, because it is server-controlled text going into a local error string.
+		reason, _ := io.ReadAll(io.LimitReader(response.Body, 4*1024))
+		if detail := strings.TrimSpace(string(reason)); detail != "" {
+			return Identity{}, fmt.Errorf("enrollment rejected: %s: %s", response.Status, detail)
+		}
 		return Identity{}, fmt.Errorf("enrollment rejected: %s", response.Status)
 	}
 
