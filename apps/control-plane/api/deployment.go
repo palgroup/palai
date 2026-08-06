@@ -661,6 +661,34 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "main",
 	},
 
+	// --- how a delivery a crashed process left behind is picked back up --------------------------------
+	{
+		Name: "PALAI_TRIGGER_RECONCILE_TICK", Group: "execution", Kind: kindValue, Default: "1s",
+		Effect: "The delivery reconciler's loop cadence. It is a SYSTEM loop serving every project's deferred " +
+			"deliveries and inert until one is deferred: each pass admits the FIFO head of every gate-opened " +
+			"correlation group and re-decides remnants a crash stranded. The durable rows are the source of " +
+			"truth, so a missed tick resumes next pass.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startDeliveryReconciler",
+	},
+	{
+		Name: "PALAI_TRIGGER_MAPPED_GRACE", Group: "execution", Kind: kindValue, Default: "1m",
+		Effect: "How long a delivery may sit mid-transition before it is treated as a CRASH REMNANT and " +
+			"re-decided. It is the same shape as the abandoned-lease grace and carries the same hazard from " +
+			"the other side: too short and a delivery a live process is still mapping is taken away from it; " +
+			"too long and a genuinely stranded one waits that long to be noticed.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startDeliveryReconciler",
+	},
+	{
+		Name: "PALAI_TRIGGER_RECONCILE_BATCH", Group: "execution", Kind: kindValue, Default: "100",
+		Effect: "How many stuck remnants one pass may recover. It bounds the work a single tick does after an " +
+			"outage that stranded many deliveries at once, so recovery is spread across passes rather than " +
+			"attempted in one.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startDeliveryReconciler",
+	},
+
 	// --- how hard a failing outbound endpoint is retried -----------------------------------------------
 	{
 		Name: "PALAI_WEBHOOK_TICK", Group: "execution", Kind: kindValue, Default: "1s",
@@ -1097,8 +1125,6 @@ var uncataloguedSettings = func() map[string]string {
 		reason string
 		names  []string
 	}{
-		{"Trigger reconcile loop: how often it runs, how much it takes, and how long a mapped trigger is held.",
-			[]string{"PALAI_TRIGGER_MAPPED_GRACE", "PALAI_TRIGGER_RECONCILE_BATCH", "PALAI_TRIGGER_RECONCILE_TICK"}},
 		{"MCP client sweep and dial timeout. The boundary of this family — PALAI_MCP_ALLOW_PRIVATE — was catalogued on 2026-08-06 and left this list; what remains is pacing.",
 			[]string{"PALAI_MCP_SWEEP_GRACE", "PALAI_MCP_SWEEP_INTERVAL", "PALAI_MCP_TIMEOUT"}},
 		{"Durable queue and schedule pacing.",
@@ -1164,13 +1190,16 @@ var nonDesiredReason = map[string]string{
 	"PALAI_S3_REGION": "it travels with the endpoint credential pair as one decision about WHERE this " +
 		"deployment's artifacts live and how it signs for them. Splitting one of the four off into a form " +
 		"would let a panel change a signature's region while the endpoint it is signing for stays put.",
-	"PALAI_WEBHOOK_TICK":         "read once, when the pump starts, and held by it for the process's life.",
-	"PALAI_WEBHOOK_BACKOFF_BASE": "read once, when the pump starts. It is also the bound that keeps a failing receiver from being hammered, so a form offering it offers to remove somebody else's protection.",
-	"PALAI_WEBHOOK_BACKOFF_MAX":  "read once, when the pump starts.",
-	"PALAI_SSE_HEARTBEAT":        "read once, when the router is built: a written value would not be the one in force until a restart.",
-	"PALAI_SSE_POLL_INTERVAL":    "read once, when the router is built, and the same reason.",
-	"PALAI_SSE_WRITE_TIMEOUT":    "read once, when the router is built. It is also the bound that drops a stalled consumer, so a form offering it offers to remove the protection against one.",
-	"PALAI_SSE_BATCH_LIMIT":      "read once, when the router is built, and it bounds per-connection memory.",
+	"PALAI_TRIGGER_RECONCILE_TICK":  "read once, when the reconciler starts, and held by it.",
+	"PALAI_TRIGGER_MAPPED_GRACE":    "it is the margin between a process still working on a delivery and a crash remnant, and shortening it takes work away from a live process. Read once, when the reconciler starts.",
+	"PALAI_TRIGGER_RECONCILE_BATCH": "read once, when the reconciler starts.",
+	"PALAI_WEBHOOK_TICK":            "read once, when the pump starts, and held by it for the process's life.",
+	"PALAI_WEBHOOK_BACKOFF_BASE":    "read once, when the pump starts. It is also the bound that keeps a failing receiver from being hammered, so a form offering it offers to remove somebody else's protection.",
+	"PALAI_WEBHOOK_BACKOFF_MAX":     "read once, when the pump starts.",
+	"PALAI_SSE_HEARTBEAT":           "read once, when the router is built: a written value would not be the one in force until a restart.",
+	"PALAI_SSE_POLL_INTERVAL":       "read once, when the router is built, and the same reason.",
+	"PALAI_SSE_WRITE_TIMEOUT":       "read once, when the router is built. It is also the bound that drops a stalled consumer, so a form offering it offers to remove the protection against one.",
+	"PALAI_SSE_BATCH_LIMIT":         "read once, when the router is built, and it bounds per-connection memory.",
 	"PALAI_INBOUND_MAX_INFLIGHT": "a flood bound whose `0` means UNBOUNDED. A form offering it would let one " +
 		"edit remove the ceiling protecting every tenant on the process, and the value that does it is the one " +
 		"a reader would type to mean \"none\". Read once, at bring-up.",
