@@ -16,6 +16,7 @@ package fleet_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	api2 "github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/internal/fleet"
@@ -49,10 +50,14 @@ type stubPresence struct {
 
 func (s stubPresence) RunnerActiveLeases(id string) int64 { return s.leases[id] }
 func (s stubPresence) RunnerConnections(id string) int64  { return s.connections[id] }
-func (s stubPresence) CordonRunner(string)                {}
-func (s stubPresence) ResumeRunner(string)                {}
-func (s stubPresence) RevokeRunner(string)                {}
-func (s stubPresence) ApproveRunner(string)               {}
+
+// RunnerRefusal answers empty: these cases are about presence, and a stub that invented a refusal would
+// put an unrelated fact on the projection under test.
+func (s stubPresence) RunnerRefusal(string) (string, time.Time) { return "", time.Time{} }
+func (s stubPresence) CordonRunner(string)                      {}
+func (s stubPresence) ResumeRunner(string)                      {}
+func (s stubPresence) RevokeRunner(string)                      {}
+func (s stubPresence) ApproveRunner(string)                     {}
 
 // Waiting completes the interface. Zero because these cases are about ONE machine's presence, not about
 // a pool's queue depth — and a stub that invented a number here would put an unrelated fact on the

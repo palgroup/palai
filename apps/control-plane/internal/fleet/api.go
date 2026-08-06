@@ -231,6 +231,7 @@ func (a *RegistryAPI) ListRunners(ctx context.Context, project string, w api.Run
 		items[i].ActiveLeases = &leases
 		connections := a.live.RunnerConnections(items[i].ID)
 		items[i].Connections = &connections
+		items[i].ConnectionRefusal, items[i].ConnectionRefusedAt = a.live.RunnerRefusal(items[i].ID)
 	}
 	return items, nil
 }
@@ -244,6 +245,7 @@ func (a *RegistryAPI) decorate(row Runner) api.RunnerItem {
 		item.ActiveLeases = &leases
 		connections := a.live.RunnerConnections(row.ID)
 		item.Connections = &connections
+		item.ConnectionRefusal, item.ConnectionRefusedAt = a.live.RunnerRefusal(row.ID)
 	}
 	return item
 }

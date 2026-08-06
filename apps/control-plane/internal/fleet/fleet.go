@@ -97,6 +97,10 @@ type RunnerLifecycle interface {
 	// answer to "is it connected", which last_seen_at is not: a durable timestamp says when a machine
 	// last spoke, not whether it is there.
 	RunnerConnections(runnerID string) int64
+	// RunnerRefusal is why that machine's LAST connect was turned away, empty when it succeeded. It is
+	// what separates a Mac somebody unplugged from a Mac that is trying every thirty seconds and being
+	// rejected — both of which read as `offline` and only one of which is a job.
+	RunnerRefusal(runnerID string) (string, time.Time)
 	// Waiting is how many attempts are queued for a POOL with no machine free to take them (E28 T1's rider,
 	// closing `FLT-P14`). It is on this interface because this is already the seam through which a stored
 	// fact meets a live one, and the gateway already had the method — what it had never had was a reader.

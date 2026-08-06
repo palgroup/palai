@@ -50,6 +50,9 @@ type RunnerItem struct {
 	AgentVersion    string
 	IsolationModes  string
 	Connections     *int64
+	// ConnectionRefusal is why the machine's last connect was turned away, empty when it succeeded.
+	ConnectionRefusal   string
+	ConnectionRefusedAt time.Time
 	// ActiveLeases is how many leases this machine is serving RIGHT NOW, and it is the one field here that
 	// is not a stored fact — the gateway holding the sessions is the only thing that knows (E24 T5). It is
 	// on the single read rather than the listing because it is a live value: a page of them would be a page
@@ -813,6 +816,17 @@ func runnerView(it RunnerItem) map[string]any {
 		// Beside the state because they are different facts: one machine parking two loops is ONE online
 		// machine with room for two leases.
 		view["connections"] = *it.Connections
+		// WHY IT IS OFFLINE, WHEN THE GATEWAY KNOWS. A machine rejected on every attempt closes its
+		// websocket and changes no row, so `state` stays `active` and the panel shows `offline` — the
+		// same thing it shows for a Mac somebody took home. Only one of those needs an operator, and
+		// without this they cannot tell which. Rendered only when there IS one: an absent field means
+		// the last attempt succeeded, which is a different answer from "refused for no stated reason".
+		if it.ConnectionRefusal != "" {
+			view["connection_refusal"] = it.ConnectionRefusal
+			if !it.ConnectionRefusedAt.IsZero() {
+				view["connection_refused_at"] = it.ConnectionRefusedAt
+			}
+		}
 	}
 	// THE CONFIGURATION REPORT IS RENDERED ONLY WHEN THE MACHINE HAS MADE ONE, and the absence is the
 	// message: a machine that has never reported is one this control plane has never confirmed is running

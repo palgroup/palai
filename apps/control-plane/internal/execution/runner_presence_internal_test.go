@@ -12,7 +12,10 @@ package execution
 // No websocket is needed: addSession/removeSession are the two points that change the count, and they
 // take the session record directly.
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func presenceGateway() *RunnerGateway {
 	return &RunnerGateway{
@@ -94,5 +97,35 @@ func TestAMachineTheGatewayNeverSawReportsZero(t *testing.T) {
 	}
 	if n := g.RunnerConnections(""); n != 0 {
 		t.Fatalf("an empty runner id reports %d connections, want 0", n)
+	}
+}
+
+// TestARefusedMachineSaysWHY is the difference between the two states that look identical on every
+// other surface. A machine rejected at connect closes its websocket and changes no row: `state` stays
+// `active`, no session is registered, and the panel shows `offline` — exactly what it shows for a Mac
+// somebody took home. Only one of those is a job for an operator.
+func TestARefusedMachineSaysWHY(t *testing.T) {
+	g := presenceGateway()
+	const id = "rnr_too_old"
+	at := time.Date(2026, 8, 6, 4, 0, 0, 0, time.UTC)
+
+	if reason, when := g.RunnerRefusal(id); reason != "" || !when.IsZero() {
+		t.Fatalf("a machine nobody refused reports %q at %v, want empty", reason, when)
+	}
+
+	g.lifecycle(id).refuse("runner 1.0.0 is outside the support window; upgrade to 3.x first", at)
+	reason, when := g.RunnerRefusal(id)
+	if reason == "" {
+		t.Fatal("a refused machine reports no reason: an operator cannot tell it from one that was unplugged")
+	}
+	if !when.Equal(at) {
+		t.Fatalf("refused at %v, want %v", when, at)
+	}
+
+	// A SUCCESSFUL connect forgets it. Leaving it would show a live-looking problem beside a machine
+	// that is connected and serving.
+	g.lifecycle(id).clearRefusal()
+	if reason, when := g.RunnerRefusal(id); reason != "" || !when.IsZero() {
+		t.Fatalf("after a successful connect the machine still reports %q at %v: a stale reason reads as a current one", reason, when)
 	}
 }

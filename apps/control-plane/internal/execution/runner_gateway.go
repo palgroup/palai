@@ -407,6 +407,17 @@ type runnerLifecycle struct {
 	cordoned bool
 	revoked  bool
 	changed  chan struct{}
+	// refusal is why this machine's LAST connect attempt was turned away, and when. It is here because
+	// a refused machine is indistinguishable from an unplugged one on every other surface: the websocket
+	// closes, no row changes, `state` stays `active`, and the panel shows `offline`. An operator then
+	// cannot tell a Mac somebody took home from a Mac that is trying every thirty seconds and being
+	// rejected — and only one of those needs them to do something.
+	//
+	// In memory rather than durable, deliberately: it describes an attempt, not a decision, and a
+	// control-plane restart has genuinely not seen one yet. It is cleared on the first success.
+	refusalMu     sync.Mutex
+	refusalReason string
+	refusalAt     time.Time
 	// sessions counts THIS machine's live gateway connections. It is a counter on the machine rather
 	// than a walk of the gateway's session set because the Fleet LISTING asks it once per row: a walk
 	// would be O(machines x sessions) per page, and the answer is already known at the two points that
@@ -569,6 +580,38 @@ func (g *RunnerGateway) evict(runnerID string) {
 			pr.queue.unpark(pr)
 		}
 	}
+}
+
+// refuse records why this machine's last connect was turned away. clearRefusal forgets it on the next
+// success, so the field always describes the machine's CURRENT standing rather than its history.
+func (l *runnerLifecycle) refuse(reason string, at time.Time) {
+	l.refusalMu.Lock()
+	l.refusalReason, l.refusalAt = reason, at
+	l.refusalMu.Unlock()
+}
+
+func (l *runnerLifecycle) clearRefusal() {
+	l.refusalMu.Lock()
+	l.refusalReason, l.refusalAt = "", time.Time{}
+	l.refusalMu.Unlock()
+}
+
+// RunnerRefusal reports why ONE machine's last connect attempt was turned away, or empty when its last
+// attempt succeeded — which is the difference between a Mac somebody unplugged and a Mac that is trying
+// and being rejected. Only one of those is a job for an operator.
+func (g *RunnerGateway) RunnerRefusal(runnerID string) (string, time.Time) {
+	if runnerID == "" {
+		return "", time.Time{}
+	}
+	g.machinesMu.RLock()
+	life, ok := g.machines[runnerID]
+	g.machinesMu.RUnlock()
+	if !ok {
+		return "", time.Time{}
+	}
+	life.refusalMu.Lock()
+	defer life.refusalMu.Unlock()
+	return life.refusalReason, life.refusalAt
 }
 
 // RunnerConnections reports how many live sessions ONE machine is holding on this gateway right now.
@@ -1325,6 +1368,10 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// (an enroll-time check would miss it: the runner never re-enrolls). The close reason carries the
 	// required intermediate-hop message the runner logs. Two unstamped dev builds compare equal (skip).
 	if ok, message := version.Supported(g.cpVersion, helloRunnerVersion(helloPayload)); !ok {
+		// Recorded before the close, so a machine that is rejected on every attempt reads as REFUSED on
+		// the panel rather than as merely offline. The message is the operator's — the same intermediate
+		// hop the runner logs — not a code.
+		life.refuse(message, g.now())
 		_ = conn.Close(websocket.StatusPolicyViolation, truncateCloseReason(message))
 		return
 	}
@@ -1333,6 +1380,9 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// runs (parked, then leased). Count it here and release the count on any return path below.
 	g.connected.Add(1)
 	defer g.connected.Add(-1)
+	// The handshake succeeded, so whatever turned this machine away last time is history. Leaving it
+	// would show a stale reason beside a machine that is connected, which reads as a live problem.
+	life.clearRefusal()
 
 	pr := &pendingRunner{
 		conn: conn, runnerID: runnerIDFromDNS(dns), dns: dns, life: life,
