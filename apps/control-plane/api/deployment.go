@@ -811,6 +811,76 @@ var unreportedSettings = map[string]string{
 // STRUCTURALLY rather than by this map (desiredWritable drops Kind == kindPath before it ever reads a name)
 // and are listed anyway, because a reader asking "why can I not set the master key path here" deserves the
 // sentence rather than an inference from a missing row.
+// secretFilePrefixes are read as PREFIXES rather than as variables: the full name carries the secret's
+// own reference (`PALAI_MCP_SECRET_FILE_<REF>`), so there is no fixed name a catalogue could hold. They
+// are also credential-bearing, which TestNoCredentialBearingVariableIsCatalogued keeps out on purpose.
+var secretFilePrefixes = []string{
+	"PALAI_A2A_REMOTE_SECRET_FILE_",
+	"PALAI_INBOUND_SECRET_FILE_",
+	"PALAI_MCP_SECRET_FILE_",
+	"PALAI_REMOTE_TOOL_SECRET_FILE_",
+	"PALAI_WEBHOOK_SECRET_FILE_",
+}
+
+// uncataloguedSettings is a LEDGER OF DEBT, not an exemption list, and the difference is what it is for.
+//
+// ‼️ EVERY GUARD IN THIS FILE LOOKED ONE WAY UNTIL 2026-08-06: compose -> catalogue, and catalogue ->
+// compose for the writable entries. A variable the BINARY READS that no compose file names was invisible
+// to both, and `PALAI_WORKSPACE_IDLE_TTL` — which decides when EVERY session's machine is handed back —
+// sat in exactly that blind spot with a default, so nothing was red while no operator surface named it.
+//
+// Measured the same day: the composition root reads 64 `PALAI_` names and 42 of them were neither
+// catalogued nor declared unreported. Inventing 34 catalogue entries in one sitting would have produced
+// 34 sentences about defaults and effects that nobody verified — the catalogue's value is that its prose
+// is TRUE, and filling it fast is how that stops being so. So they are written down instead, with the
+// reason they are a group, and TestEverySettingTheCompositionRootReadsIsAccountedFor makes the list a
+// CEILING: a name added to main.go and not to the catalogue fails, which is the hole this closes. The
+// list shrinks as entries are catalogued properly; it must never grow.
+var uncataloguedSettings = func() map[string]string {
+	groups := []struct {
+		reason string
+		names  []string
+	}{
+		{"SSE tuning for the events stream. Operator-visible behaviour (how fast a client sees output, when a slow reader is dropped), so these belong in the catalogue.",
+			[]string{"PALAI_SSE_BATCH_LIMIT", "PALAI_SSE_HEARTBEAT", "PALAI_SSE_POLL_INTERVAL", "PALAI_SSE_WRITE_TIMEOUT"}},
+		{"Outbound webhook delivery pacing and retry envelope.",
+			[]string{"PALAI_WEBHOOK_BACKOFF_BASE", "PALAI_WEBHOOK_BACKOFF_MAX", "PALAI_WEBHOOK_TICK"}},
+		{"Trigger reconcile loop: how often it runs, how much it takes, and how long a mapped trigger is held.",
+			[]string{"PALAI_TRIGGER_MAPPED_GRACE", "PALAI_TRIGGER_RECONCILE_BATCH", "PALAI_TRIGGER_RECONCILE_TICK"}},
+		{"MCP client posture and sweep. PALAI_MCP_ALLOW_PRIVATE is a NETWORK BOUNDARY and is the first of this list that should be catalogued: it decides whether a tool may reach a private address.",
+			[]string{"PALAI_MCP_ALLOW_PRIVATE", "PALAI_MCP_SWEEP_GRACE", "PALAI_MCP_SWEEP_INTERVAL", "PALAI_MCP_TIMEOUT"}},
+		{"Inbound intake bounds: backlog, in-flight ceiling, raw retention and clock tolerance.",
+			[]string{"PALAI_INBOUND_BACKLOG_MAX", "PALAI_INBOUND_MAX_INFLIGHT", "PALAI_INBOUND_RAW_TTL", "PALAI_INBOUND_TOLERANCE"}},
+		{"A2A push posture. PALAI_A2A_PUSH_ALLOW_PRIVATE is a NETWORK BOUNDARY for the same reason the MCP one is.",
+			[]string{"PALAI_A2A_PUSH_ALLOWED_HOSTS", "PALAI_A2A_PUSH_ALLOW_PRIVATE"}},
+		{"Artifact garbage collection cadence and the grace an artifact gets before it is eligible.",
+			[]string{"PALAI_ARTIFACT_GC_GRACE", "PALAI_ARTIFACT_GC_INTERVAL"}},
+		{"The capability worker's own listener and the TTL of the job-scoped identity it hands out.",
+			[]string{"PALAI_CAPABILITY_WORKER_IDENTITY_TTL", "PALAI_CAPABILITY_WORKER_LISTEN_ADDR"}},
+		{"Durable queue and schedule pacing.",
+			[]string{"PALAI_QUEUE_DELIVERY_BACKOFF", "PALAI_QUEUE_TICK", "PALAI_SCHEDULE_BATCH", "PALAI_SCHEDULE_TICK"}},
+		{"Object-store region, metrics disk path, drain timeout, abandoned-lease grace, the session-account helper and the Slack API base. Unrelated to each other; grouped only by having no family.",
+			[]string{"PALAI_ABANDONED_LEASE_GRACE", "PALAI_DRAIN_TIMEOUT", "PALAI_METRICS_DISK_PATH", "PALAI_S3_REGION", "PALAI_SESSION_ACCOUNT_HELPER", "PALAI_SLACK_API_BASE_URL"}},
+	}
+	out := map[string]string{}
+	for _, g := range groups {
+		for _, name := range g.names {
+			out[name] = g.reason
+		}
+	}
+	return out
+}()
+
+// credentialBearingSettings never enter the catalogue: their VALUE is the secret, so a row naming them —
+// even with an empty value — tells a reader the shape of the deployment's credentials.
+// TestNoCredentialBearingVariableIsCatalogued is the rule; this names the composition root's own three so
+// the accounting guard can tell "deliberately absent" from "forgotten".
+var credentialBearingSettings = []string{
+	"PALAI_DATABASE_URL",
+	"PALAI_S3_ACCESS_KEY",
+	"PALAI_S3_SECRET_KEY",
+}
+
 var nonDesiredReason = map[string]string{
 	// --- filesystem handles. desiredWritable REFUSES THESE BY KIND; the sentences are for the reader. ----
 	"PALAI_WORKSPACE_ROOT": "a path. Naming the host directory every coding workspace is allocated under, from a web form, " +

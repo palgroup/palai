@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -518,4 +520,100 @@ func TestEveryCatalogueEntryExplainsWhatItDoes(t *testing.T) {
 				"cell, which an operator reads as a setting that does nothing", entry.Name)
 		}
 	}
+}
+
+// compositionRootReads is every PALAI_ name the control-plane binary's composition root reads. It scans
+// the SOURCE, because the question is what the process consults — not what somebody remembered to write
+// down, which is the thing being checked.
+var compositionRootRead = regexp.MustCompile(`"(PALAI_[A-Z0-9_]+)"`)
+
+func compositionRootReads(t *testing.T) []string {
+	t.Helper()
+	root := repoRootFromTest(t)
+	body, err := os.ReadFile(filepath.Join(root, "apps/control-plane/cmd/palai-control-plane/main.go"))
+	if err != nil {
+		t.Fatalf("read the composition root: %v", err)
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, m := range compositionRootRead.FindAllStringSubmatch(string(body), -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			names = append(names, m[1])
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// TestEverySettingTheCompositionRootReadsIsAccountedFor closes the direction nothing in this file looked.
+//
+// ‼️ THE GUARDS HERE WALK COMPOSE -> CATALOGUE, AND CATALOGUE -> COMPOSE FOR THE WRITABLE ENTRIES. A
+// variable the BINARY reads that no compose file names is invisible to both, and one sat in that blind
+// spot until 2026-08-06: PALAI_WORKSPACE_IDLE_TTL decides when EVERY session's machine is archived and
+// handed back, appeared in zero deploy files, zero docs and no catalogue, and nothing was red — because
+// it has a default, so the sweep ran and no operator could see or change the number it ran with.
+//
+// Four ways to be accounted for, and each says something different: catalogued (an operator can read it),
+// declared unreported (its value must not reach the surface), a secret-file PREFIX (there is no fixed
+// name to hold), or written into uncataloguedSettings with a reason. The fourth is a debt ledger, and
+// this test is what makes it a CEILING: a name added to main.go and to none of the four fails here.
+func TestEverySettingTheCompositionRootReadsIsAccountedFor(t *testing.T) {
+	catalogued := map[string]bool{}
+	for _, entry := range deploymentCatalogue {
+		catalogued[entry.Name] = true
+	}
+	// A positive control: the scan must find a name this file certainly catalogues, or it is reading the
+	// wrong file (or the wrong pattern) and its silence means nothing.
+	reads := compositionRootReads(t)
+	var sawCatalogued bool
+	for _, name := range reads {
+		if catalogued[name] {
+			sawCatalogued = true
+			break
+		}
+	}
+	if !sawCatalogued {
+		t.Fatal("the scan of the composition root found no catalogued setting at all — it is reading the " +
+			"wrong file or has stopped matching, and every assertion below would pass on an empty set")
+	}
+
+	credential := map[string]bool{}
+	for _, name := range credentialBearingSettings {
+		credential[name] = true
+	}
+	for _, name := range reads {
+		switch {
+		case catalogued[name]:
+		case unreportedSettings[name] != "":
+		case credential[name]:
+		case uncataloguedSettings[name] != "":
+		default:
+			if isSecretFilePrefix(name) {
+				continue
+			}
+			t.Errorf("the composition root reads %s and nothing accounts for it. An operator cannot see it, "+
+				"cannot change it from any deployment file this repository ships, and no guard would notice "+
+				"if its default were wrong. Catalogue it, declare it unreported, or add it to "+
+				"uncataloguedSettings WITH the reason it is not yet a row", name)
+		}
+	}
+
+	// The ledger may not name something that is already accounted for elsewhere: two sources of truth about
+	// one setting is how a stale exemption survives the change that made it a real entry.
+	for name := range uncataloguedSettings {
+		if catalogued[name] || unreportedSettings[name] != "" {
+			t.Errorf("uncataloguedSettings names %s, which is already catalogued or declared unreported — "+
+				"delete the ledger entry, it is the one that will go stale", name)
+		}
+	}
+}
+
+func isSecretFilePrefix(name string) bool {
+	for _, prefix := range secretFilePrefixes {
+		if name == prefix {
+			return true
+		}
+	}
+	return false
 }
