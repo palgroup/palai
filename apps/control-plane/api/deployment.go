@@ -650,6 +650,36 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "main",
 	},
 
+	// --- what a flood of inbound deliveries may consume, and how long its bytes are kept --------------
+	{
+		Name: "PALAI_INBOUND_MAX_INFLIGHT", Group: "retention", Kind: kindValue, Default: "256 — and 0 means UNBOUNDED, not zero",
+		Effect: "The size of the semaphore bounding how many signed inbound deliveries are processed at once. " +
+			"It is the flood bound: without it a burst on one trigger consumes the process's concurrency for " +
+			"every tenant on it. `0` disables the semaphore entirely rather than admitting nothing, which is " +
+			"the opposite of what the number reads like.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "main",
+	},
+	{
+		Name: "PALAI_INBOUND_BACKLOG_MAX", Group: "retention", Kind: kindValue, Default: "0 — UNBOUNDED; the per-trigger ceiling is an operator opt-in",
+		Effect: "The per-trigger durable backlog ceiling that AUT-010 backpressure enforces: how many " +
+			"undelivered inbound events one trigger may accumulate before further deliveries are refused. " +
+			"Unset it is unbounded, so a trigger whose runs are failing grows its backlog until something " +
+			"else stops it.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "main",
+	},
+	{
+		Name: "PALAI_INBOUND_RAW_TTL", Group: "retention", Kind: kindValue, Default: "unset — DISABLED: a terminal delivery's raw payload is kept indefinitely",
+		Effect: "How long a TERMINAL inbound delivery's raw payload is kept before the reconciler scrubs it. " +
+			"That payload is whatever a third party POSTed — customer data, and whatever a sender put in a " +
+			"body — so this is a retention decision rather than a cleanup interval. Unset it is disabled, the " +
+			"same operator opt-in shape PALAI_RETENTION_STORE_FALSE_TTL has. NO encryption-at-rest claim is " +
+			"attached to it either way.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startDeliveryReconciler",
+	},
+
 	// --- how long work in flight is given before something is taken from it ---------------------------
 	{
 		Name: "PALAI_ABANDONED_LEASE_GRACE", Group: "execution", Kind: kindValue, Default: "2m",
@@ -989,8 +1019,6 @@ var uncataloguedSettings = func() map[string]string {
 			[]string{"PALAI_TRIGGER_MAPPED_GRACE", "PALAI_TRIGGER_RECONCILE_BATCH", "PALAI_TRIGGER_RECONCILE_TICK"}},
 		{"MCP client sweep and dial timeout. The boundary of this family — PALAI_MCP_ALLOW_PRIVATE — was catalogued on 2026-08-06 and left this list; what remains is pacing.",
 			[]string{"PALAI_MCP_SWEEP_GRACE", "PALAI_MCP_SWEEP_INTERVAL", "PALAI_MCP_TIMEOUT"}},
-		{"Inbound intake bounds: backlog, in-flight ceiling and raw retention. The security bound of this family — PALAI_INBOUND_TOLERANCE, the replay window — was catalogued on 2026-08-06 and left this list.",
-			[]string{"PALAI_INBOUND_BACKLOG_MAX", "PALAI_INBOUND_MAX_INFLIGHT", "PALAI_INBOUND_RAW_TTL"}},
 		{"Durable queue and schedule pacing.",
 			[]string{"PALAI_QUEUE_DELIVERY_BACKOFF", "PALAI_QUEUE_TICK", "PALAI_SCHEDULE_BATCH", "PALAI_SCHEDULE_TICK"}},
 		{"Object-store region, metrics disk path, drain timeout, abandoned-lease grace, the session-account helper and the Slack API base. Unrelated to each other; grouped only by having no family.",
@@ -1051,6 +1079,13 @@ var nonDesiredReason = map[string]string{
 		"with the workspace mounted. Choosing it is a supply-chain decision made at install time, not a setting.",
 
 	// --- what this deployment may DIAL ---------------------------------------------------------------
+	"PALAI_INBOUND_MAX_INFLIGHT": "a flood bound whose `0` means UNBOUNDED. A form offering it would let one " +
+		"edit remove the ceiling protecting every tenant on the process, and the value that does it is the one " +
+		"a reader would type to mean \"none\". Read once, at bring-up.",
+	"PALAI_INBOUND_BACKLOG_MAX": "the same shape one layer down, per trigger, and the same `0`.",
+	"PALAI_INBOUND_RAW_TTL": "it decides how long third-party payloads are kept. Retention is a policy " +
+		"decision with a legal shape, not a tuning knob, and it is read once by the reconciler that then " +
+		"holds it.",
 	"PALAI_ABANDONED_LEASE_GRACE": "it is the margin between a run reading terminal and the process that " +
 		"owns its workspace actually finishing. A form offering the number invites shortening it, and the " +
 		"failure it buys — a workspace reclaimed under a live attempt — surfaces far from the edit. Read once, " +
