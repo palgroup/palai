@@ -42,3 +42,15 @@ __pycache__/
 
 # Karsilastirma ekran goruntuleri (referans vs bizimki). Uretilir, versiyonlanmaz.
 .shots/
+
+# API READBACK DUMPS AT THE ROOT, and this one is worth naming for what it nearly cost. A
+# `details-readback.json` sat here from 2026-08-05 to 2026-08-06 — a raw Slack conversations.history
+# response carrying team, app and bot ids and message text — untracked, UNIGNORED, at the top of a
+# PUBLIC repository. Nothing was wrong with capturing it; what was wrong is where it landed, one
+# `git add -A` away from being published. That command is already forbidden here because this checkout
+# is shared, and a file like this is exactly the reason the rule exists rather than a general caution.
+#
+# Captures belong in the session scratchpad. This pattern is the net under that habit, not a substitute
+# for it: it catches the shape (`*-readback.json`) and only at the root, so a fixture that legitimately
+# carries the name inside a test corpus is unaffected.
+/*-readback.json
