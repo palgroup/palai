@@ -220,7 +220,7 @@ func TestNoPoolFlagCarriesACredential(t *testing.T) {
 // replacement is the point rather than an incidental rename.
 //
 // This test used to be TestPoolCreateNeedsAProjectScope, and it was correct when it was written: the
-// tenant RLS expression spelled "shared" as the empty string, `project_id = ''` violates
+// tenant RLS expression spelled "shared" as the empty string, `project_id = ”` violates
 // runner_pools_project_id_fkey, and `fleet.Store.Register` therefore refused to enrol a machine into a
 // pool with no project. A project-less pool really was a row nothing could ever join.
 //

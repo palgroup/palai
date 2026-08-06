@@ -36,14 +36,14 @@ type fakeFleet struct {
 	// The E28 T1 birth path: what the control plane was asked to CREATE, and which pool it was asked to open
 	// the waiting room on. `strict` is a pointer so "asked for false" and "never asked" stay different
 	// answers — the same reason api.RunnerItem.ActiveLeases is one.
-	created  createdPool
+	created createdPool
 	// createdProject is the SCOPE the create arrived under, and it is recorded because it is the field the
 	// free-pool contract is about: "" is the plane's pool, a project is one reserved to that tenant. The
 	// method used to take it as `_`, so a fake could not tell the two apart -- and a fake that discards the
 	// deciding field answers every question about it with silence.
 	createdProject string
-	strictID string
-	strict   *bool
+	strictID       string
+	strict         *bool
 }
 
 // createdPool is what a `pool create` reached the control plane with. It is declared here rather than
