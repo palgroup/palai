@@ -650,6 +650,17 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "main",
 	},
 
+	{
+		Name: "PALAI_METRICS_DISK_PATH", Group: "storage", Kind: kindPath, Default: "/ — the root filesystem",
+		Effect: "The filesystem whose free and total bytes back `palai_disk_*_bytes`, which is what the disk " +
+			"alert fires on. It exists because the volume that matters is often NOT the root one — a stack " +
+			"whose workspaces and object store live on a mounted disk will watch the wrong device until this " +
+			"names the right one, and the alert stays quiet while the disk that fills is the one nobody is " +
+			"measuring.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "main",
+	},
+
 	// --- what a flood of inbound deliveries may consume, and how long its bytes are kept --------------
 	{
 		Name: "PALAI_INBOUND_MAX_INFLIGHT", Group: "retention", Kind: kindValue, Default: "256 — and 0 means UNBOUNDED, not zero",
@@ -755,6 +766,15 @@ var deploymentCatalogue = []catalogueEntry{
 	{
 		Name: "PALAI_S3_BUCKET", Group: "storage", Kind: kindValue, Default: "palai-artifacts",
 		Effect:     "The bucket artifacts are written to.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "artifactStoreFromEnv",
+	},
+	{
+		Name: "PALAI_S3_REGION", Group: "storage", Kind: kindValue, Default: "unset — the SDK's own resolution, which is what a MinIO or path-style endpoint expects",
+		Effect: "The region the object-store client signs with. It travels with PALAI_S3_ENDPOINT and matters " +
+			"for a real S3: a signature computed for the wrong region is refused by the service, which surfaces " +
+			"as artifact writes failing rather than as a configuration error. It carries no credential of its " +
+			"own — the pair that does is deliberately absent from this catalogue.",
 		Mutability: mutabilityBringUp, ChangeWith: changeCP,
 		ReaderFile: cpMain, ReaderFunc: "artifactStoreFromEnv",
 	},
@@ -1021,8 +1041,6 @@ var uncataloguedSettings = func() map[string]string {
 			[]string{"PALAI_MCP_SWEEP_GRACE", "PALAI_MCP_SWEEP_INTERVAL", "PALAI_MCP_TIMEOUT"}},
 		{"Durable queue and schedule pacing.",
 			[]string{"PALAI_QUEUE_DELIVERY_BACKOFF", "PALAI_QUEUE_TICK", "PALAI_SCHEDULE_BATCH", "PALAI_SCHEDULE_TICK"}},
-		{"Object-store region, metrics disk path, drain timeout, abandoned-lease grace, the session-account helper and the Slack API base. Unrelated to each other; grouped only by having no family.",
-			[]string{"PALAI_METRICS_DISK_PATH", "PALAI_S3_REGION"}},
 	}
 	out := map[string]string{}
 	for _, g := range groups {
@@ -1060,6 +1078,8 @@ var nonDesiredReason = map[string]string{
 		"file it names is executed as ROOT, by this process, on every allocation. A form that wrote it would " +
 		"be arbitrary privileged execution reached through a settings screen — the sudoers entry that admits " +
 		"it is installed by an administrator, and the path must be the one they admitted.",
+	"PALAI_METRICS_DISK_PATH": "a path. Naming which filesystem a process statfs's from a web form is a " +
+		"probe primitive wearing a settings control, and the value is read once when the collector is built.",
 	"PALAI_FAKE_SCRIPT_FILE": "a path, and the file it names decides what a run's model APPEARS to say. " +
 		"A form that wrote it would let a reader of the panel author a fabricated exchange every credential-less " +
 		"run then replays as if it were an answer.",
@@ -1079,6 +1099,9 @@ var nonDesiredReason = map[string]string{
 		"with the workspace mounted. Choosing it is a supply-chain decision made at install time, not a setting.",
 
 	// --- what this deployment may DIAL ---------------------------------------------------------------
+	"PALAI_S3_REGION": "it travels with the endpoint credential pair as one decision about WHERE this " +
+		"deployment's artifacts live and how it signs for them. Splitting one of the four off into a form " +
+		"would let a panel change a signature's region while the endpoint it is signing for stays put.",
 	"PALAI_INBOUND_MAX_INFLIGHT": "a flood bound whose `0` means UNBOUNDED. A form offering it would let one " +
 		"edit remove the ceiling protecting every tenant on the process, and the value that does it is the one " +
 		"a reader would type to mean \"none\". Read once, at bring-up.",
