@@ -661,6 +661,43 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "main",
 	},
 
+	// --- the durable queue and the schedule ticker ------------------------------------------------------
+	{
+		Name: "PALAI_QUEUE_TICK", Group: "execution", Kind: kindValue, Default: "1s",
+		Effect: "The queue bridge's loop cadence: how often the consume-to-admit half looks for queued work. " +
+			"It is a system loop serving every project, inert until a binding is registered. Note what it does " +
+			"NOT decide — a queue flood is shed by the SAME per-project §20.12 admission caps a POST flood is, " +
+			"not by this number and not by a second policy.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startQueueBridges",
+	},
+	{
+		Name: "PALAI_QUEUE_DELIVERY_BACKOFF", Group: "execution", Kind: kindValue, Default: "30s",
+		Effect: "The outbox pump's retry delay after a failed outbound delivery. Flat rather than the webhook " +
+			"pump's exponential curve, and the two are separate on purpose: this one delivers a RESULT to a " +
+			"broker the customer chose, so its pacing belongs with that binding rather than with the " +
+			"deployment's webhook policy.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startQueueBridges",
+	},
+	{
+		Name: "PALAI_SCHEDULE_TICK", Group: "execution", Kind: kindValue, Default: "1s",
+		Effect: "The schedule ticker's cadence. It is a SIBLING of the delivery reconciler rather than an " +
+			"extension of it: the reconciler sweeps delivery remnants, this claims due occurrences and hands " +
+			"pending ones off. A killed process misses ticks; the next run resumes from the durable schedule " +
+			"and occurrence rows, so this is how LATE a schedule may fire, never whether it fires.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startScheduleTicker",
+	},
+	{
+		Name: "PALAI_SCHEDULE_BATCH", Group: "execution", Kind: kindValue, Default: "100",
+		Effect: "How many due occurrences one tick claims. It bounds the work a single pass does when many " +
+			"schedules come due together — midnight, an hour boundary — so a thundering herd is spread across " +
+			"passes rather than attempted at once.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startScheduleTicker",
+	},
+
 	// --- how a delivery a crashed process left behind is picked back up --------------------------------
 	{
 		Name: "PALAI_TRIGGER_RECONCILE_TICK", Group: "execution", Kind: kindValue, Default: "1s",
@@ -1127,8 +1164,6 @@ var uncataloguedSettings = func() map[string]string {
 	}{
 		{"MCP client sweep and dial timeout. The boundary of this family — PALAI_MCP_ALLOW_PRIVATE — was catalogued on 2026-08-06 and left this list; what remains is pacing.",
 			[]string{"PALAI_MCP_SWEEP_GRACE", "PALAI_MCP_SWEEP_INTERVAL", "PALAI_MCP_TIMEOUT"}},
-		{"Durable queue and schedule pacing.",
-			[]string{"PALAI_QUEUE_DELIVERY_BACKOFF", "PALAI_QUEUE_TICK", "PALAI_SCHEDULE_BATCH", "PALAI_SCHEDULE_TICK"}},
 	}
 	out := map[string]string{}
 	for _, g := range groups {
@@ -1190,6 +1225,10 @@ var nonDesiredReason = map[string]string{
 	"PALAI_S3_REGION": "it travels with the endpoint credential pair as one decision about WHERE this " +
 		"deployment's artifacts live and how it signs for them. Splitting one of the four off into a form " +
 		"would let a panel change a signature's region while the endpoint it is signing for stays put.",
+	"PALAI_QUEUE_TICK":              "read once, when the bridge starts, and held by it.",
+	"PALAI_QUEUE_DELIVERY_BACKOFF":  "read once, when the bridge starts. It is also what keeps a failing broker from being retried without pause.",
+	"PALAI_SCHEDULE_TICK":           "read once, when the ticker starts.",
+	"PALAI_SCHEDULE_BATCH":          "read once, when the ticker starts, and it is what spreads a thundering herd of due schedules across passes.",
 	"PALAI_TRIGGER_RECONCILE_TICK":  "read once, when the reconciler starts, and held by it.",
 	"PALAI_TRIGGER_MAPPED_GRACE":    "it is the margin between a process still working on a delivery and a crash remnant, and shortening it takes work away from a live process. Read once, when the reconciler starts.",
 	"PALAI_TRIGGER_RECONCILE_BATCH": "read once, when the reconciler starts.",
