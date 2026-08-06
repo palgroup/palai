@@ -517,10 +517,36 @@ service, survives reboot/login and executes a real SDK-created session.
 >   reddened ZERO tests: the projection guards drive a stub, so they say nothing about whether the
 >   gateway counts.
 >
+> **The six "actionable failure states" were re-measured one by one on 2026-08-06, because the list was
+> written as a list rather than as six claims about writers — and three of the six were already surfaced,
+> one had no producer at all, and one reached the panel in a form nothing could read.**
+>
+> | State | Writer | Surfaced |
+> |---|---|---|
+> | incompatible version | `runner_gateway.go:1374` — the ONE production caller of `refuse()` | ✅ `connection_refusal` |
+> | cordoned | `CordonRunner` → the `state` column | ✅ `state` |
+> | revoked | `RevokeRunner` / `ErrRunnerRevoked` at enrolment → `state` | ✅ `state` |
+> | at capacity | placement parks the run (`8f69dd2b`) | ⚠️ DERIVABLE, not distinct: `capacity` and `connections` are both on the view, and an operator compares them. Named here so it is not read as a field |
+> | config refused | `serve.go:359`, the machine's own verdict | ✅ **fixed 2026-08-06** — see below |
+> | preflight refused | **NONE.** `grep -rn 'preflight' --include='*.go' apps packages cmd adapters` finds only `coordinator/migrate.go`, the boot MIGRATION check. There is no device preflight in this tree | ❌ a state with no producer; surfacing it would be a field nothing writes |
+>
+> **`config refused` reached the panel and nothing could classify it.** `"refused: not a positive integer"`
+> was an ad-hoc string literal at one call site, beside two declared constants (`applied`, `not_read`). So
+> the reason travelled and "show me the machines that rejected a setting" had no answer — the panel is
+> TypeScript and cannot ask Go what a refusal looks like, and a second refusal arm would have written
+> "rejected" or "invalid" and reached the panel as a verdict nothing grouped with the others. The prefix
+> is now the contract (`VerdictRefused`, `RefusedVerdict`, `IsRefused`), and the guard drives the REAL apply
+> path over a setting this build reads, one it does not, and a value it will not take.
+> The existing refusal test asserted `!= VerdictApplied`, which passes on `not_read`, on `""` and on any
+> word at all; it now asserts the machine says refused AND says why. Perturbed both ways: RED, RED.
+>
+> **And the comment that would have been read while adding a verdict was wrong.** It sent its reader to
+> "settingApplier below" — a symbol that exists nowhere in the tree; the dispatch is a `switch` in another
+> file. Corrected to name `ServeConfig.applySettings`.
+>
 > **NOT done, and none of it is claimed:** the machine-detail VIEW (the owner supplies designs — no UI is
-> invented here); the actionable failure states (incompatible version, preflight refused, config refused,
-> at capacity, cordoned, revoked) as distinct surfaced reasons; the bounded live refresh (a fleet event
-> stream or one documented poll); and reading a FINISHED session's transcript from the panel.
+> invented here); the bounded live refresh (a fleet event stream or one documented poll); and reading a
+> FINISHED session's transcript from the panel.
 
 **Goal:** The admin screen answers whether a device is connected, what it is doing and what it did.
 

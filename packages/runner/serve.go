@@ -355,7 +355,7 @@ func (cfg ServeConfig) applySettings(ctx context.Context, leases *leasePool, wg 
 				// machine says so by name. The control plane's write path applies the same grammar before
 				// storing, so reaching this arm means the two disagree — which is exactly the state an
 				// operator needs to see rather than have silently rounded to a default.
-				verdict[name] = "refused: not a positive integer"
+				verdict[name] = RefusedVerdict("not a positive integer")
 				continue
 			}
 			if was := leases.current(); n != was {

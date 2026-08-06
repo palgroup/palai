@@ -149,8 +149,17 @@ func TestAMalformedConcurrencyIsRefusedByNameRatherThanCoerced(t *testing.T) {
 	for _, value := range []string{"0", "-1", "four", "2.5", ""} {
 		verdict := ServeConfig{}.applySettings(ctx, leases, &wg, &serveState{}, func(string, ...any) {}, time.Millisecond,
 			map[string]string{"PALAI_RUNNER_CONCURRENCY": value})
-		if got := verdict["PALAI_RUNNER_CONCURRENCY"]; got == VerdictApplied {
-			t.Errorf("the machine reported %q applied for PALAI_RUNNER_CONCURRENCY=%q", got, value)
+		// ‼️ NOT `!= VerdictApplied`, WHICH IS WHAT THIS ASSERTED UNTIL 2026-08-06. That form passes on
+		// "not_read", on the empty string, and on any word at all — every one of which tells an operator
+		// something different from "this machine rejected the number you typed". A refusal is only useful
+		// if a reader can RECOGNISE it, and the panel reading it speaks no Go.
+		if got := verdict["PALAI_RUNNER_CONCURRENCY"]; !IsRefused(got) {
+			t.Errorf("the machine reported %q for PALAI_RUNNER_CONCURRENCY=%q — an operator cannot tell a "+
+				"refusal from a setting this build ignores", got, value)
+		}
+		if got := verdict["PALAI_RUNNER_CONCURRENCY"]; got == VerdictRefused {
+			t.Errorf("PALAI_RUNNER_CONCURRENCY=%q was refused with NO reason. The verdict is the operator's "+
+				"only account of why, on a machine they may have no shell on", value)
 		}
 		if got := leases.current(); got != 2 {
 			t.Fatalf("PALAI_RUNNER_CONCURRENCY=%q resized the machine to %d. A value this binary's own reader "+
@@ -232,5 +241,43 @@ func TestShrinkingConcurrencyRetiresLoopsAndNeverBelowOne(t *testing.T) {
 	leases.resize(ctx, &wg, ServeConfig{}, &serveState{}, noop, time.Millisecond, 0)
 	if got := leases.current(); got != 1 {
 		t.Errorf("a resize to 0 left the pool wanting %d, want 1", got)
+	}
+}
+
+// TestEveryVerdictThisBinaryCanReportIsOneOfTheDECLAREDForms is the vocabulary's own guard, and it drives
+// the REAL apply path rather than listing the constants back.
+//
+// ‼️ IT EXISTS BECAUSE THE REFUSAL WAS NOT A CONSTANT. `"refused: not a positive integer"` was a literal at
+// one call site, so the wire form was whatever that line happened to say — a second refusal arm would have
+// written "rejected", "invalid" or "refused (not an integer)", and each would have reached the panel as a
+// verdict nothing could group with the others. What is asserted is the SHAPE of every answer the switch can
+// give, over settings this build reads, settings it does not, and a value it will not take.
+func TestEveryVerdictThisBinaryCanReportIsOneOfTheDECLAREDForms(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	leases := &leasePool{}
+	leases.resize(ctx, &wg, ServeConfig{}, &serveState{}, func(string, ...any) {}, time.Millisecond, 1)
+
+	verdict := ServeConfig{}.applySettings(ctx, leases, &wg, &serveState{}, func(string, ...any) {}, time.Millisecond,
+		map[string]string{
+			"PALAI_RUNNER_CONCURRENCY": "3",          // read, and takeable
+			"PALAI_WORKSPACE_ROOT":     "/srv/palai", // catalogued on the plane, not read by this binary
+		})
+	verdict["refused"] = ServeConfig{}.applySettings(ctx, leases, &wg, &serveState{}, func(string, ...any) {}, time.Millisecond,
+		map[string]string{"PALAI_RUNNER_CONCURRENCY": "four"})["PALAI_RUNNER_CONCURRENCY"]
+
+	for name, got := range verdict {
+		switch {
+		case got == VerdictApplied, got == VerdictNotRead, IsRefused(got):
+		default:
+			t.Errorf("%s reported %q, which is none of the declared verdicts (%q, %q, %q-prefixed). A verdict "+
+				"nothing declares is a word only its author can read", name, got, VerdictApplied, VerdictNotRead, VerdictRefused)
+		}
+	}
+
+	// And the classifier separates them, so it cannot pass by calling everything a refusal.
+	if IsRefused(VerdictApplied) || IsRefused(VerdictNotRead) || IsRefused("") {
+		t.Error("IsRefused accepts a verdict that is not a refusal — a classifier that says yes to everything sorts nothing")
 	}
 }

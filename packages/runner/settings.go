@@ -56,13 +56,36 @@ const (
 	// showing a saved value against a machine that will never act on it, which is the defect the whole
 	// surface exists to prevent, moved one hop further away where it is harder to see.
 	VerdictNotRead = "not_read"
-	// NOTE ON THE THIRD VERDICT THAT IS NOT HERE. `pending_restart` — held, and live at the next restart —
-	// has NO PRODUCER in this binary today, and declaring a constant nothing writes is the "declared, and
-	// nothing happens" defect this tree keeps finding. Every setting cmd/runner takes from the plane
-	// document is in settingApplier below, and every one of those is applied live; anything else is
-	// genuinely not read. The day a setting is added that this process can only consume at exec, it gets an
-	// entry in that table whose applier returns the new verdict, and the table is the only place to change.
+	// VerdictRefused is the PREFIX of a refusal, and the prefix — not the whole string — is the contract.
+	// A machine that will not take a value says so WITH its reason attached ("refused: not a positive
+	// integer"), because "refused" on its own sends an operator to read logs on a machine they may have no
+	// shell on. Until 2026-08-06 that string was an ad-hoc literal at one call site: the reason reached the
+	// panel and NOTHING COULD CLASSIFY IT. The panel is TypeScript and cannot ask Go what a refusal looks
+	// like, so "show me the machines that rejected a setting" had no answer, and a second refusal site would
+	// have invented its own wording. Build one with RefusedVerdict and read one with IsRefused.
+	VerdictRefused = "refused"
+
+	// NOTE ON THE VERDICT THAT IS NOT HERE. `pending_restart` — held, and live at the next restart — has NO
+	// PRODUCER in this binary today, and declaring a constant nothing writes is the "declared, and nothing
+	// happens" defect this tree keeps finding. Every setting cmd/runner takes from the plane document has a
+	// case in ServeConfig.applySettings (serve.go), and every one of those is applied live; anything else is
+	// genuinely not read. The day a setting is added that this process can only consume at exec, that switch
+	// gains an arm returning the new verdict, and the switch is the only place to change.
+	//
+	// ‼️ THIS PARAGRAPH USED TO SAY THE ARMS LIVED IN "settingApplier below". There is no such symbol
+	// anywhere in the tree — the dispatch is a switch, in another file — so the sentence sent its reader to
+	// look for a table that does not exist, at exactly the line they would consult before adding a verdict.
 )
+
+// RefusedVerdict is the verdict a machine reports for a value it will not take. The reason is the operator's
+// only account of WHY, so it names the value's fault rather than the code path that noticed it.
+func RefusedVerdict(reason string) string { return VerdictRefused + ": " + reason }
+
+// IsRefused classifies a reported verdict. It accepts the bare word as well as the prefixed form so a
+// reader is not the thing that breaks when a refusal is reported without a reason.
+func IsRefused(verdict string) bool {
+	return verdict == VerdictRefused || strings.HasPrefix(verdict, VerdictRefused+": ")
+}
 
 // settingsDocument is the wire shape of the control plane's answer.
 type settingsDocument struct {
