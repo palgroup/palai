@@ -69,12 +69,6 @@ func dispatch(args []string) error {
 			return errors.New("palai admin needs a resource, e.g. `palai admin runner list`")
 		}
 		return admin.Run(args[1], args[2:], os.Stdout, os.Stdin)
-	// `palai agentd install` is the ONE command a machine that cannot elevate silently is told to run,
-	// and `agentd status` the read-only half. It is a top-level verb rather than a flag on `up` because
-	// the sentence it answers is about the MACHINE and not about a stack: it is run once with sudo, and
-	// what it installs outlives every bring-up after it.
-	case "agentd":
-		return agentd(args[1:])
 	case "backup":
 		return backup(args[1:])
 	case "restore":
@@ -155,24 +149,6 @@ func local(args []string) error {
 		return stack.Doctor(*jsonOut)
 	default:
 		return fmt.Errorf("unknown local subcommand %q", args[0])
-	}
-}
-
-// agentd dispatches `palai agentd <install|status>` — the root LaunchDaemon that owns the per-session
-// accounts a Mac isolates tenants with. `install` is the one command the bring-up's refusal names; it
-// drives the SAME ensure `palai up --native` does, so the path an operator types and the path a cloud
-// Mac takes with passwordless sudo are one code path rather than two that have to agree.
-func agentd(args []string) error {
-	if len(args) == 0 {
-		return errors.New("usage: palai agentd <install|status>")
-	}
-	switch args[0] {
-	case "install":
-		return stack.AgentdInstall()
-	case "status":
-		return stack.AgentdStatusReport()
-	default:
-		return fmt.Errorf("unknown agentd subcommand %q", args[0])
 	}
 }
 
@@ -370,13 +346,6 @@ func usage() {
   palai local down                stop the stack, retaining data volumes
   palai local reset --confirm     stop and DELETE the data volumes
   palai local doctor [--json]     run the health checks (15: adds disk/queue/callback/runner_identity)
-  palai agentd install            install the root LaunchDaemon that owns per-session accounts on a
-                                  Mac. Needs root or passwordless sudo — run it as
-                                  "sudo palai agentd install". "palai up --native" does this ITSELF
-                                  where it can elevate silently, which is every cloud Mac, and refuses
-                                  to bring a stack up on a Mac that has no daemon: there the only
-                                  boundary between one tenant and the next is the uid this owns.
-  palai agentd status             probe the daemon and report what answered
   palai provider add <ref>        store a provider secret (value on stdin)
   palai response create --input <text>
 
