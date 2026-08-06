@@ -68,3 +68,21 @@ func TestTheShellDescriptionNamesTheRepositoryDirectory(t *testing.T) {
 			"out into: %q", workspace.RepoDir, got)
 	}
 }
+
+// TestTheEditorDescriptionNamesTheRepositoryDirectory is the shell guard's twin, and it exists because
+// fixing ONE of the two descriptions fixed nothing.
+//
+// ‼️ MEASURED ON A LIVE PUBLISH, 2026-08-06. The shell tool had been taught to say "./repo"; the editor
+// still said only "paths are relative to the workspace root". The agent believed it — it wrote
+// PALAI_AGENT.md at the ALLOCATION root, `palai.workspace.commit` operates on the repository one level
+// down and saw nothing new, and the branch that reached GitHub carried a commit whose message announced
+// a file the commit did not contain. Two tools describe one layout; an agent can only learn it from what
+// it is told, and it will believe whichever tool it asks.
+func TestTheEditorDescriptionNamesTheRepositoryDirectory(t *testing.T) {
+	got := TextEditorTool().Description
+	if !strings.Contains(got, "./"+workspace.RepoDir) {
+		t.Fatalf("the editor description does not name ./%s, the directory a bound repository is checked "+
+			"out into — a file written outside it is invisible to commit and to publish: %q",
+			workspace.RepoDir, got)
+	}
+}

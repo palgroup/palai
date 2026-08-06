@@ -35,7 +35,7 @@ func TestBrokerMintMaterializeRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writeHelper() error = %v", err)
 	}
-	helperPath := strings.TrimPrefix(helperCfg, "store --file=")
+	helperPath := helperFile(t, helperCfg)
 	body, err := os.ReadFile(helperPath)
 	if err != nil {
 		t.Fatalf("read helper file: %v", err)
@@ -94,7 +94,7 @@ func TestTokenBrokerMaterializesSuppliedCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writeHelper() error = %v", err)
 	}
-	helperPath := strings.TrimPrefix(helperCfg, "store --file=")
+	helperPath := helperFile(t, helperCfg)
 	body, err := os.ReadFile(helperPath)
 	if err != nil {
 		t.Fatalf("read helper file: %v", err)
@@ -160,4 +160,26 @@ func TestValidateSubmoduleURLRejectsRCEVectors(t *testing.T) {
 			t.Errorf("validateSubmoduleURL(%q) = %v, want allowed", u, err)
 		}
 	}
+}
+
+// helperFile reads the path out of a `credential.helper` value THE WAY GIT DOES, which is the only
+// reading that means anything here: a value containing a space is handed to a shell, so the path is
+// SHELL-QUOTED and stripping the prefix alone yields a string with quotes in it that opens nothing.
+//
+// It exists because the test used to strip the prefix and stop. That was a proxy for "the file the
+// helper names", and it broke the moment the production value started quoting — which it had to, since
+// device.Paths.WorkspaceRoot on darwin is `~/Library/Application Support/Palai/workspaces` and git split
+// the unquoted value on those two spaces (measured on a live clone, 2026-08-06).
+func helperFile(t *testing.T, helperCfg string) string {
+	t.Helper()
+	const prefix = "store --file="
+	if !strings.HasPrefix(helperCfg, prefix) {
+		t.Fatalf("helper value %q does not start with %q", helperCfg, prefix)
+	}
+	quoted := strings.TrimPrefix(helperCfg, prefix)
+	if !strings.HasPrefix(quoted, "'") || !strings.HasSuffix(quoted, "'") {
+		t.Fatalf("helper path %q is not shell-quoted: git splits an unquoted value on whitespace, and the "+
+			"macOS workspace root always contains spaces", quoted)
+	}
+	return strings.ReplaceAll(strings.Trim(quoted, "'"), `'\''`, "'")
 }

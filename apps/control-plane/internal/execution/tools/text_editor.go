@@ -45,10 +45,23 @@ func TextEditorTool() toolbroker.Tool {
 	return toolbroker.Tool{
 		Name: "str_replace_based_edit_tool",
 		Type: "text_editor_20250728",
+		// ‼️ THE DESCRIPTION NAMES THE LAYOUT, and the sentence it replaces cost a whole publish. It said
+		// only "relative to the workspace root", which is true and useless: the workspace root is the
+		// ALLOCATION root, and a bound repository is checked out one level down at `repo/`. Measured
+		// 2026-08-06 on a live run against a private GitHub repository — the agent wrote
+		// PALAI_AGENT.md at the allocation root, `palai.workspace.commit` operates on the repository and
+		// therefore saw nothing new, and the branch that reached GitHub did not contain the file while the
+		// commit message said it did.
+		//
+		// The shell tool's description already names this for the same reason. Two tools, one layout, and
+		// an agent that can only learn it from what it is told.
 		Description: "View and edit files in the run's workspace. `view` reads a file (optionally a line " +
 			"range) or lists a directory; `create` writes a file, replacing it if it exists; `str_replace` " +
 			"replaces ONE exact occurrence of old_str and refuses when the span is ambiguous or absent; " +
-			"`insert` inserts text after a line number. Paths are relative to the workspace root.",
+			"`insert` inserts text after a line number. Paths are relative to the workspace root, and when " +
+			"the run has a repository bound it is checked out at ./repo — so a file that belongs to the " +
+			"repository is written under repo/ (e.g. repo/README.md), and only a path under repo/ is " +
+			"committed or published.",
 		// The four commands textEditorExec implements, and nothing it does not: `undo_edit` is absent
 		// here for the same reason it is absent from the switch below.
 		InputSchema: map[string]any{
@@ -58,7 +71,7 @@ func TextEditorTool() toolbroker.Tool {
 					"type": "string",
 					"enum": []string{"view", "create", "str_replace", "insert"},
 				},
-				"path":        map[string]any{"type": "string", "description": "path relative to the workspace root"},
+				"path":        map[string]any{"type": "string", "description": "path relative to the workspace root; repository files live under repo/"},
 				"file_text":   map[string]any{"type": "string", "description": "the whole file body (create)"},
 				"old_str":     map[string]any{"type": "string", "description": "the exact text to replace, once (str_replace)"},
 				"new_str":     map[string]any{"type": "string", "description": "the replacement text (str_replace)"},

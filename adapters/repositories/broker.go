@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -143,7 +144,27 @@ func (v *credentialVault) writeHelper(handle, cloneURL, dir string) (string, err
 	}
 	sec.helperPath = path
 	v.secrets[handle] = sec
-	return "store --file=" + path, nil
+	return "store --file=" + shellQuote(path), nil
+}
+
+// shellQuote wraps a path so Git's helper parsing cannot split it on whitespace.
+//
+// ‼️ IT IS NOT DEFENSIVE, IT IS THE macOS DEFAULT. Git treats a `credential.helper` value CONTAINING A
+// SPACE as a shell command rather than as a helper name plus arguments — so an unquoted
+// `store --file=/Users/x/Library/Application Support/Palai/workspaces/…` becomes three words, git runs
+// `git credential-store --file=/Users/x/Library/Application` with `Support` and the rest as further
+// arguments, and answers with its own usage text. Measured 2026-08-06 on a live clone:
+// `git fetch: exit status 128: kullanım: git credential-store [<options>] <action> --[no-]file <yol>`.
+//
+// And that path is not exotic: device.Paths.WorkspaceRoot on darwin IS
+// `~/Library/Application Support/Palai/workspaces`, so EVERY Mac running the installed agent produces a
+// credential-store path with two spaces in it. A repository binding carrying a connection_ref could not
+// clone on any of them — the failure surfaces as a workspace-provisioning error naming git's usage
+// string, which points at nothing an operator can act on.
+//
+// Single quotes with the embedded-quote escape, which is the only form that is total for a POSIX shell.
+func shellQuote(path string) string {
+	return "'" + strings.ReplaceAll(path, "'", `'\''`) + "'"
 }
 
 // HostSpendable is a broker whose minted secret can be spent on ANOTHER HOST, and it exists because
