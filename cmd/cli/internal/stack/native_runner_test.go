@@ -5,8 +5,10 @@ package stack
 // DNS name on this machine, and it is the ONLY runner in the pool while it does.
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -251,6 +253,91 @@ func TestNativeRunnerStopKillsTheProcessGroupAndClearsTheRecord(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("the process group is still alive fifteen seconds after stopNativeRunner")
+}
+
+// TestNativeRunnerStopWaitsForAChildThatOutlivesItsLeader — THE PROMISE IS THE GROUP, AND THE LOOP USED
+// TO WATCH THE LEADER.
+//
+// ‼️ THIS DEFECT'S ONLY WITNESS WAS A LOAD-DEPENDENT RED, which is why it survived. stopNativeRunner's
+// wait called processCommand(pid) — one process — so a leader that left on SIGTERM ended the wait while a
+// child it had spawned was still running, and the next statement deleted the pid record, the only handle
+// anything had on that group. The test above could not see it: its children take SIGTERM and die, so on
+// an idle machine the group really was gone. It failed inside `make verify` on 2026-08-06 with the group
+// alive fifteen seconds later, passed three times in isolation, and reads exactly like a flake.
+//
+// So the child here IGNORES SIGTERM. Now the difference between watching the leader and watching the
+// group is not a race that a fast machine hides — it is the whole outcome, every run, on any machine.
+//
+// The leader sleeps rather than exiting immediately, because stopNativeRunner returns EARLY for a pid
+// that is already gone (a stale record) and the fixture would then be measuring that arm instead.
+func TestNativeRunnerStopWaitsForAChildThatOutlivesItsLeader(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PALAI_HOME", home)
+	p, err := resolvePaths()
+	if err != nil {
+		t.Fatalf("resolve paths: %v", err)
+	}
+	// Short enough to keep this a fast test, long enough that the SIGTERM really is given its chance
+	// first — at zero the escalation would be indistinguishable from killing outright.
+	previous := nativeRunnerStopGrace
+	nativeRunnerStopGrace = 300 * time.Millisecond
+	t.Cleanup(func() { nativeRunnerStopGrace = previous })
+
+	// ‼️ THE TRAPPING SHELL MUST BE THE ONE THAT SURVIVES, AND THE FIRST WRITING OF THIS LINE WAS
+	// `trap "" TERM; sleep 120`. That protects the SHELL and not the `sleep` it runs in the foreground:
+	// SIGTERM killed the sleep, the shell's command returned, and the shell exited — so the whole group
+	// died on SIGTERM and the perturbation that should have reddened this test stayed GREEN. A busy loop
+	// keeps the ignoring process itself alive: each `sleep 1` child dies to the signal and the shell,
+	// which cannot receive it, spawns another.
+	//
+	// ‼️ AND IT TOUCHES A MARKER, BECAUSE THE FIXTURE'S SECOND WRITING WAS STILL VACUOUS. The perturbation
+	// passed in 0.01s: SIGTERM reached the group before the outer shell had forked the child at all, so
+	// what was signalled was a group of one and the whole thing died no matter which loop ran. The test
+	// was measuring a world in which its own subject did not exist yet — the shape this tree records as a
+	// fixture making the case unreachable — and only waiting for the child makes the two loops differ.
+	marker := filepath.Join(home, "child-is-up")
+	cmd := exec.Command("/bin/sh", "-c",
+		fmt.Sprintf(`/bin/sh -c 'trap "" TERM; : > %s; while :; do sleep 1; done' & sleep 120`, marker))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the stand-in process: %v", err)
+	}
+	pid := cmd.Process.Pid
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+	// ‼️ THE LEADER IS REAPED, AND WITHOUT THIS LINE THIS TEST PROVED NOTHING. A child no one calls Wait on
+	// becomes a ZOMBIE, and a zombie is still a row in `ps` — so processCommand() answers "running" for a
+	// leader that has already exited. The leader-watching loop this test exists to fail therefore never
+	// broke early either: it ran to its deadline, escalated to SIGKILL, and killed the group anyway. The
+	// perturbation stayed GREEN and the fixture was the reason, not the product. Reaping makes the leader
+	// really gone, which is the only state in which watching it and watching the group differ.
+	go func() { _ = cmd.Wait() }()
+	if err := writeNativeRunnerRecord(p, pid, "/bin/sh"); err != nil {
+		t.Fatalf("write the pid record: %v", err)
+	}
+	// WAIT FOR THE SUBJECT TO EXIST. Without this the stop below races the fork and signals a group of one.
+	var up bool
+	for i := 0; i < 200 && !up; i++ {
+		if _, err := os.Stat(marker); err == nil {
+			up = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !up {
+		t.Fatal("the TERM-ignoring child never started, so nothing below is a statement about the group")
+	}
+
+	if _, err := stopNativeRunner(p); err != nil {
+		t.Fatalf("stopNativeRunner: %v", err)
+	}
+	// ASSERTED THE INSTANT IT RETURNS, WITH NO POLLING, and that is the point rather than an economy.
+	// The record is already deleted by now — a group still alive here is one nothing can name again, so
+	// "it goes away shortly afterwards" is not a weaker version of this claim, it is a different one.
+	if !groupGone(pid) {
+		t.Fatal("stopNativeRunner returned with a live member still in the group, and it has already " +
+			"deleted the pid record: whatever is running is now unreachable — no `palai` verb, no operator " +
+			"and no later stop can name it, and it holds this Mac's workspace until someone finds it by hand")
+	}
 }
 
 // TestNativeRunnerStopRefusesAPidThatIsNotTheRunner is the pid-reuse guard: a stale record plus a

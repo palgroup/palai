@@ -273,18 +273,55 @@ func stopNativeRunner(p paths) (bool, error) {
 	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
 		return false, fmt.Errorf("stop the native runner (pid %d): %w", pid, err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if running, _ := processCommand(pid); !running {
-			break
-		}
+	// ‼️ THE WAIT WATCHES THE GROUP, AND IT USED TO WATCH THE LEADER. `processCommand(pid)` answers about
+	// ONE process, so a leader that exited on SIGTERM ended this loop while a child it had spawned was
+	// still running — and the next line deletes the pid record, which is the ONLY handle anything has on
+	// that group. The function returned `true`, the operator was told the runner had stopped, and an
+	// `xcodebuild` kept a workspace and a Mac busy with nothing left that could name it.
+	//
+	// Measured 2026-08-06: TestNativeRunnerStopKillsTheProcessGroupAndClearsTheRecord passes in 0.4s in
+	// isolation and failed inside `make verify` with the group ALIVE fifteen seconds after this returned.
+	// That is not the machine being slow — the leader had gone in milliseconds either way; it is this
+	// loop having finished for a reason unrelated to what it promises.
+	//
+	// AND THE ESCALATION NOW WAITS FOR ITS OWN KILL. `SIGKILL` then `break` reported success at the
+	// instant the signal was queued, which is the same defect one layer down.
+	deadline := time.Now().Add(nativeRunnerStopGrace)
+	for !groupGone(pid) {
 		if time.Now().After(deadline) {
 			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			for i := 0; i < 50 && !groupGone(pid); i++ {
+				time.Sleep(100 * time.Millisecond)
+			}
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	return true, os.Remove(p.nativeRunnerPID)
+}
+
+// nativeRunnerStopGrace is how long a SIGTERM'd group is given to leave on its own before SIGKILL. Ten
+// seconds is a build's chance to finish writing what it had open.
+//
+// IT IS A VAR SO A TEST CAN SHORTEN IT, AND IT IS NOT CONFIGURATION. No environment variable reads it and
+// no catalogue entry names it: an operator has no decision to make here, and the only caller that needs a
+// different number is the one proving that the escalation happens at all — which at ten seconds would be
+// a ten-second unit test, and a suite that slow gets run less, which costs more than the knob saves.
+var nativeRunnerStopGrace = 10 * time.Second
+
+// groupGone answers whether process group `pid` has any live member left.
+//
+// ESRCH is "no member". EPERM is what Darwin answers for a group whose only remaining members are
+// ZOMBIES — measured on this tree, and a zombie holds no workspace, no port and no file — so it counts as
+// gone. ANY OTHER ERROR COUNTS AS STILL THERE, deliberately: the caller deletes the pid record on the
+// strength of this answer, and a wrong "gone" leaks a process nothing can ever name again.
+func groupGone(pid int) bool {
+	switch err := syscall.Kill(-pid, 0); err {
+	case syscall.ESRCH, syscall.EPERM:
+		return true
+	default:
+		return false
+	}
 }
 
 func writeNativeRunnerRecord(p paths, pid int, bin string) error {
