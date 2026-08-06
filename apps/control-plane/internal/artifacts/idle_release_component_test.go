@@ -14,13 +14,16 @@ package artifacts
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
+	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
 
 	"github.com/palgroup/palai/storage"
@@ -524,5 +527,78 @@ func TestAResumeWhoseTreeCannotBeHandedOverFailsInsteadOfReadying(t *testing.T) 
 	if state := workspaceState(t, h, workspaceID); state == "ready" {
 		t.Fatalf("workspace state = %q after a refused hand-over: the run would dial against a tree owned "+
 			"by the control plane", state)
+	}
+}
+
+// TestAFinishedSessionIsREADABLEAfterItsMachineIsGone is the device plan's T6 leg that says a finished
+// session is answerable "without shell access to the device".
+//
+// ‼️ THE FAILURE IT REFUSES IS NAMED IN THE PLAN: a view that reads a file on the machine. That file is
+// gone by design here — the idle release deletes the allocation directory and hands the uid slot back —
+// and on a `user`-mode Mac it is worse than gone, because the machine belongs to a person. The record was
+// never on the machine, and this asserts it: the same journal read that serves
+// GET /v1/sessions/{id}/events answers AFTER the deletion that a support question always follows.
+//
+// The order is what makes it a proof rather than a coincidence: the event is written through the
+// PRODUCTION journal writer while the machine still exists, the sweep then really deletes, and both facts
+// are asserted before the read. A test that read the journal without proving the deletion happened would
+// pass on a machine that was never released.
+func TestAFinishedSessionIsREADABLEAfterItsMachineIsGone(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	project, session, _, _, hostPath := h.seedIdleWorkspace(t)
+
+	// COALESCE, because a run's response_id is genuinely NULLABLE: appendEvent stores it through
+	// nullableText, and a run seeded without a response is a shape production writes rather than a fixture
+	// shortcut. Scanning it as a bare string made this test fail on the fixture instead of on the property.
+	var runID, responseID string
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
+		`SELECT id, COALESCE(response_id, '') FROM runs WHERE session_id=$1 ORDER BY id LIMIT 1`,
+		session).Scan(&runID, &responseID); err != nil {
+		t.Fatalf("read the session's run: %v", err)
+	}
+
+	tenant := coordinator.Tenant{Project: project}
+	const said = `{"delta":"the machine answered this before it was handed back"}`
+	if err := h.repo.Spine().JournalRunEvent(ctx, tenant, session, responseID, runID,
+		"response.output_text.delta", []byte(said)); err != nil {
+		t.Fatalf("journal a run event: %v", err)
+	}
+
+	accounts := &recordingAccounts{}
+	releaser := execution.NewIdleReleaser(h.repo.Spine(), execution.NewSnapshotSink(h.s3, h.repo.Spine()), idleTestTTL).
+		WithSessionAccounts(accounts)
+	if _, err := releaser.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep() error = %v", err)
+	}
+
+	// The machine really is gone. Without these two the read below proves nothing.
+	if _, err := os.Stat(hostPath); !os.IsNotExist(err) {
+		t.Fatalf("the allocation directory survived the sweep (stat err=%v) — this test would then be reading "+
+			"a session whose machine was never reclaimed", err)
+	}
+	if len(accounts.released) != 1 || accounts.released[0] != session {
+		t.Fatalf("accounts.released = %v, want exactly [%s] — the uid slot was not handed back", accounts.released, session)
+	}
+
+	events, err := store.NewJournal(h.pool).After(ctx, project, session, 0, 100)
+	if err != nil {
+		t.Fatalf("the journal behind GET /v1/sessions/{id}/events refused a session whose machine is gone: %v", err)
+	}
+	var found bool
+	for _, e := range events {
+		// The event's PAYLOAD, not merely its type: a journal that kept the row and lost the text would
+		// answer "the session said something" and not what it said.
+		body, err := json.Marshal(e.Data)
+		if err != nil {
+			t.Fatalf("marshal event data: %v", err)
+		}
+		if strings.Contains(string(body), "handed back") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the session's own output is not readable after its machine was reclaimed (%d events) — "+
+			"\"what did that session do\" would have to be answered from a disk that no longer exists", len(events))
 	}
 }

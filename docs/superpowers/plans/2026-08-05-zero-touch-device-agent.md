@@ -544,9 +544,22 @@ service, survives reboot/login and executes a real SDK-created session.
 > "settingApplier below" — a symbol that exists nowhere in the tree; the dispatch is a `switch` in another
 > file. Corrected to name `ServeConfig.applySettings`.
 >
+> **A finished session is readable after its machine is gone (2026-08-06).** The reads were already
+> mounted — `GET /v1/sessions/{id}/events`, `/v1/responses/{id}/tool-calls`, `/…/artifacts` — and what had
+> no guard was the leg's actual sentence: that the answer survives the machine. The idle release deletes
+> the allocation directory and hands the uid slot back, and on a `user`-mode Mac that disk belongs to a
+> person, so a view reading a file there is the failure this leg names.
+> `TestAFinishedSessionIsREADABLEAfterItsMachineIsGone` journals through the PRODUCTION writer while the
+> machine still exists, sweeps, asserts the directory is gone AND the account was released — without those
+> two the read proves nothing — then reads the same journal the events route serves and checks the
+> PAYLOAD, not the row: a journal that kept the row and lost the text would answer "the session said
+> something" rather than what it said. Perturbed by deleting the session's events (the shape a cascading
+> "cleanup" would have): RED.
+> Its first RED was the fixture, not the property — `runs.response_id` is genuinely NULLABLE
+> (`appendEvent` stores it through `nullableText`) and the test scanned it as a bare string.
+>
 > **NOT done, and none of it is claimed:** the machine-detail VIEW (the owner supplies designs — no UI is
-> invented here); the bounded live refresh (a fleet event stream or one documented poll); and reading a
-> FINISHED session's transcript from the panel.
+> invented here); and the bounded live refresh (a fleet event stream or one documented poll).
 
 **Goal:** The admin screen answers whether a device is connected, what it is doing and what it did.
 
