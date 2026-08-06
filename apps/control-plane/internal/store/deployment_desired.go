@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
+	"github.com/palgroup/palai/packages/runner"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -242,6 +245,10 @@ func (s *Store) PutDesiredConfig(ctx context.Context, scope middleware.Scope, bo
 // IT IS SYSTEM-SCOPED because it is keyed on a certificate rather than on a tenant: the machine proved its
 // identity in TLS, and the row it may write is the one its own certificate names. There is no tenant in
 // that sentence to scope by.
+// settingConcurrency is the one setting whose applied value is also a SERVER-side ceiling, so the two
+// halves must be the same word in both places.
+const settingConcurrency = "PALAI_RUNNER_CONCURRENCY"
+
 func (s *Store) RecordRunnerConfigReport(ctx context.Context, dns string, revision int64, applied map[string]string, at time.Time) (bool, error) {
 	if dns == "" {
 		return false, nil
@@ -265,5 +272,58 @@ func (s *Store) RecordRunnerConfigReport(ctx context.Context, dns string, revisi
 	if err != nil {
 		return false, fmt.Errorf("record runner %s configuration report: %w", dns, err)
 	}
+	if err := s.setCapacityFromReport(ctx, id, poolID, revision, applied); err != nil {
+		return true, err
+	}
 	return true, nil
+}
+
+// setCapacityFromReport turns the concurrency the machine SAYS IT APPLIED into the server's occupancy
+// ceiling, which is the half of §3.6 that had no writer.
+//
+// ‼️ `capacity` WAS WRITTEN ONCE, AT ENROLMENT, FROM A VARIABLE THE DEVICE PATH DELETED. RecoverRunner's
+// comment already calls it "the ADMIN plane's number since plan §3.6" and deliberately refuses to let a
+// re-enrolment overwrite it — correctly, and leaving the admin plane with no way to set it at all. A
+// packaged agent reads no PALAI_ variables, so it enrolled with `capacity = 0`, which AcquireLease reads
+// as NO CEILING, while the desired document had it serving N lease loops. Placement then handed it more
+// occupancies than it had loops, and the extra sessions waited on a loop that never frees.
+//
+// TWO CONDITIONS, AND BOTH ARE ABOUT NOT WRITING A NUMBER NOBODY IS SERVING:
+//
+//   - the verdict must be APPLIED. `not_read` means this build has no such setting and `refused:` means
+//     it would not take the value, and ceiling a machine at a number it told us it is not running is
+//     worse than leaving the old one.
+//   - the report's revision must be the one this machine is currently owed. A machine reporting an older
+//     revision applied an older value; resolving today's document for it would write a ceiling from a
+//     document it has never seen, which is the stale-measurement trap this tree keeps finding.
+//
+// A machine that has fallen behind keeps its previous ceiling until its next report catches up, which is
+// the honest answer rather than a confident wrong one.
+func (s *Store) setCapacityFromReport(ctx context.Context, runnerID, poolID string, revision int64, applied map[string]string) error {
+	if applied[settingConcurrency] != runner.VerdictApplied {
+		return nil
+	}
+	settings, current, err := s.DesiredSettingsForMachine(ctx, poolID, runnerID)
+	if err != nil {
+		return fmt.Errorf("resolve desired settings for runner %s: %w", runnerID, err)
+	}
+	if current != revision {
+		return nil
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(settings[settingConcurrency]))
+	if err != nil || n < 1 {
+		// The machine reported APPLIED for a value this plane cannot parse, which means the two disagree
+		// about the grammar. Leaving the ceiling alone keeps the disagreement visible in config_applied
+		// rather than resolving it into a number.
+		return nil
+	}
+	var id string
+	err = s.spine.Pool().QueryRow(storage.WithSystemScope(ctx), storage.Query("SetRunnerCapacity"), runnerID, n).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("set runner %s capacity to %d: %w", runnerID, n, err)
+	}
+	return nil
 }

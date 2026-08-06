@@ -508,6 +508,29 @@ SELECT r.id
 -- constraint can only refuse — it cannot offer.
 SELECT EXISTS (SELECT 1 FROM runners WHERE id = $1);
 
+-- name: SetRunnerCapacity
+-- The machine's occupancy ceiling, set from the concurrency it REPORTED IT APPLIED.
+--
+-- ‼️ IT EXISTS BECAUSE `capacity` HAD NO WRITER AFTER ENROLMENT, WHILE RecoverRunner's own comment SAYS
+-- IT IS "the ADMIN plane's number since plan §3.6". Nothing made that true: the column was written once,
+-- at Register, from the device's `PALAI_RUNNER_CAPACITY` — a variable the device path DELETED (§3.7). So
+-- a packaged agent enrolled with `capacity = 0`, which `AcquireLease` reads as NO CEILING, while the
+-- admin plane's desired document set it to serve N lease loops. The placement would then hand a machine
+-- more occupancies than it has loops to run them on, and the extra sessions wait on a loop that will
+-- never free.
+--
+-- IT IS DRIVEN BY THE MACHINE'S REPORT AND NOT BY THE DOCUMENT'S WRITE, which is the same rule
+-- config_applied follows: a control plane that set the ceiling when an operator SAVED the value would be
+-- claiming a machine had resized before it said so, and a machine that refused the value would be
+-- ceilinged at a number it is not serving.
+--
+-- RETURNING so a caller can tell "set" from "matched nothing" — the silent zero-row UPDATE that
+-- RecordRunPool was fixed for.
+UPDATE runners
+   SET capacity = $2
+ WHERE id = $1
+RETURNING id;
+
 -- name: RecordRunnerConfigReport
 -- The machine's own answer about the configuration it holds: which revision it resolved, and its verdict
 -- per setting (`applied` / `pending_restart`).

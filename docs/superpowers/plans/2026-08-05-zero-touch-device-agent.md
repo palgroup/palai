@@ -419,7 +419,28 @@ and queries, one `000007_*` migration, security tests.
 **Acceptance:** Kill and restart the agent three times, including across certificate expiry; Fleet still
 contains one machine id and a strict pool does not ask for a second approval.
 
-### T3 — Make pool policy the machine's automatic configuration
+### T3 — Make pool policy the machine's automatic configuration ⏳ PARTLY DONE (2026-08-06)
+
+> **THE SERVER'S CEILING NOW FOLLOWS THE CONCURRENCY THE MACHINE SAYS IT APPLIED — the half of this task's
+> third RED that had no writer at all.** `runners.capacity` was written ONCE, at `Register`, from the
+> device's `PALAI_RUNNER_CAPACITY` — a variable §3.7 DELETED from the device path. So a packaged agent,
+> which reads no `PALAI_` at all, enrolled with `capacity = 0`, and `AcquireLease` reads 0 as **NO
+> CEILING**, while the admin plane's document had it serving N lease loops. Placement then handed that
+> machine more occupancies than it had loops to run them on, and the extra sessions waited on a loop that
+> never frees.
+> **`RecoverRunner`'s own comment already called capacity "the ADMIN plane's number since plan §3.6"** and
+> deliberately refused to let a re-enrolment overwrite it — correctly, and leaving the admin plane with no
+> way to set it. A named authority with no writer, in a comment written to protect it.
+> The write is driven by the machine's REPORT, not by the operator's save: a control plane that ceilinged
+> a machine when the value was written would be claiming it had resized before it said so. Two conditions,
+> both about not writing a number nobody is serving — the verdict must be `applied` (`not_read` and
+> `refused:` keep the previous ceiling), and the reported revision must be the one the machine is currently
+> owed, or a machine that has fallen behind would be ceilinged from a document it has never seen.
+> Guards run against real PostgreSQL in `apps/control-plane/internal/store` (an internal package, so they
+> cannot live under `tests/`; that leg runs with NO `-run` filter, which is what keeps them visible).
+> Perturbed by disabling the staleness guard: RED, capacity 8 where the machine is serving 2.
+> **Still open:** the other three REDs of this task — the shape-mismatch refusal by name, the applied
+> report shown only after the agent says so, and a machine override winning over its pool document.
 
 **Goal:** Nothing except URL/key/optional CA is edited per device.
 
