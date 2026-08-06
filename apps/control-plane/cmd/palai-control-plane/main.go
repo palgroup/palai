@@ -439,10 +439,11 @@ func serveWithGracefulDrain(srv *http.Server, gateway *execution.RunnerGateway) 
 	case <-sigCtx.Done():
 	}
 
-	drainTimeout := envDuration("PALAI_DRAIN_TIMEOUT")
-	if drainTimeout <= 0 {
-		drainTimeout = 20 * time.Second
-	}
+	// envDurationOr, not envDuration plus a hand-rolled fallback: it is the same semantics in one line, and
+	// it puts the default where the catalogue's guard can READ it. A default expressed inside the consumer
+	// is prose somebody has to verify by hand (deployment_test.go's stated ceiling); one expressed at the
+	// call site is checked on every run.
+	drainTimeout := envDurationOr("PALAI_DRAIN_TIMEOUT", 20*time.Second)
 	if gateway != nil {
 		drainCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 		if err := gateway.Drain(drainCtx); err != nil {

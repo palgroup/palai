@@ -650,6 +650,29 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "main",
 	},
 
+	// --- how long work in flight is given before something is taken from it ---------------------------
+	{
+		Name: "PALAI_ABANDONED_LEASE_GRACE", Group: "execution", Kind: kindValue, Default: "2m",
+		Effect: "How long after a run reaches TERMINAL the sweep waits before returning its workspace from " +
+			"`leased` to `ready`. The window is not politeness: a run reaches terminal BEFORE the deferred " +
+			"release has finished unwinding, so for the length of that unwind the row reads terminal while the " +
+			"process that owns the lease is still working. Shortening it reclaims a workspace out from under " +
+			"an attempt that has not finished with it. It has no effect unless PALAI_WORKSPACE_ROOT is set — a " +
+			"deployment that provisions no workspaces has no lease to reclaim.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startLeaseReclaim",
+	},
+	{
+		Name: "PALAI_DRAIN_TIMEOUT", Group: "execution", Kind: kindValue, Default: "20s",
+		Effect: "How long a SIGTERM'd control plane waits for the runner gateway to quiesce before it stops " +
+			"waiting. It does not kill anything: on expiry the drain reports that it did not fully quiesce and " +
+			"the interrupted work recovers on the next control plane, so the number trades restart latency " +
+			"against how much recovery the next process has to do. It bounds only the runner drain; the HTTP " +
+			"server's own shutdown has a separate fixed 5s.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "serveWithGracefulDrain",
+	},
+
 	// --- when bytes nobody references are deleted -----------------------------------------------------
 	{
 		Name: "PALAI_ARTIFACT_GC_GRACE", Group: "retention", Kind: kindValue, Default: "1h — and a configured value BELOW the floor is raised to it, with a log line saying so",
@@ -971,7 +994,7 @@ var uncataloguedSettings = func() map[string]string {
 		{"Durable queue and schedule pacing.",
 			[]string{"PALAI_QUEUE_DELIVERY_BACKOFF", "PALAI_QUEUE_TICK", "PALAI_SCHEDULE_BATCH", "PALAI_SCHEDULE_TICK"}},
 		{"Object-store region, metrics disk path, drain timeout, abandoned-lease grace, the session-account helper and the Slack API base. Unrelated to each other; grouped only by having no family.",
-			[]string{"PALAI_ABANDONED_LEASE_GRACE", "PALAI_DRAIN_TIMEOUT", "PALAI_METRICS_DISK_PATH", "PALAI_S3_REGION"}},
+			[]string{"PALAI_METRICS_DISK_PATH", "PALAI_S3_REGION"}},
 	}
 	out := map[string]string{}
 	for _, g := range groups {
@@ -1028,6 +1051,12 @@ var nonDesiredReason = map[string]string{
 		"with the workspace mounted. Choosing it is a supply-chain decision made at install time, not a setting.",
 
 	// --- what this deployment may DIAL ---------------------------------------------------------------
+	"PALAI_ABANDONED_LEASE_GRACE": "it is the margin between a run reading terminal and the process that " +
+		"owns its workspace actually finishing. A form offering the number invites shortening it, and the " +
+		"failure it buys — a workspace reclaimed under a live attempt — surfaces far from the edit. Read once, " +
+		"when the sweep starts.",
+	"PALAI_DRAIN_TIMEOUT": "read once, at SIGTERM, by the shutdown path itself: there is no running process " +
+		"for a panel write to reach, because the only process that would read it is already exiting.",
 	"PALAI_ARTIFACT_GC_GRACE": "it is the margin that keeps a half-written artifact from being collected as " +
 		"garbage. The code floors a too-small value rather than trusting it, and a form offering the number " +
 		"would invite the edit the floor exists to survive. Both are read once, when the sweep starts.",
