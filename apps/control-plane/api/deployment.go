@@ -661,6 +661,45 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "main",
 	},
 
+	// --- what a client watching a run sees, and when a slow one is dropped -----------------------------
+	// Every default here is applied by SSEConfig.withDefaults (api/events.go) rather than at the read, so
+	// these four are the family deployment_test.go's default guard names as its stated ceiling: the numbers
+	// below were read from that function and are verified by hand, not on every run.
+	{
+		Name: "PALAI_SSE_HEARTBEAT", Group: "execution", Kind: kindValue, Default: "15s",
+		Effect: "How long a stream may be idle before a keep-alive comment is written. It exists for the " +
+			"middle boxes between this process and a browser: a proxy that sees nothing for its own idle " +
+			"timeout closes the connection, and the client experiences a run that stopped rather than a run " +
+			"that is thinking.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "sseConfigFromEnv",
+	},
+	{
+		Name: "PALAI_SSE_POLL_INTERVAL", Group: "execution", Kind: kindValue, Default: "500ms",
+		Effect: "How often a live stream tails the journal for new events. It is the floor on how late a " +
+			"token can be — the latency a person watching a run actually feels — traded against a query per " +
+			"connection per interval.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "sseConfigFromEnv",
+	},
+	{
+		Name: "PALAI_SSE_WRITE_TIMEOUT", Group: "execution", Kind: kindValue, Default: "15s",
+		Effect: "The per-write deadline on a stream. A consumer that cannot accept a write within it is " +
+			"DROPPED — that is the point rather than a side effect: without it one stalled reader holds a " +
+			"connection and its buffers for as long as it likes, and enough of them exhaust the process for " +
+			"everybody else.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "sseConfigFromEnv",
+	},
+	{
+		Name: "PALAI_SSE_BATCH_LIMIT", Group: "execution", Kind: kindValue, Default: "256",
+		Effect: "How many journal events one poll reads. It bounds per-connection memory: a client that " +
+			"reconnects after a long gap has a large backlog waiting, and this is what keeps that backlog " +
+			"from being materialised in one read.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "sseConfigFromEnv",
+	},
+
 	// --- what a flood of inbound deliveries may consume, and how long its bytes are kept --------------
 	{
 		Name: "PALAI_INBOUND_MAX_INFLIGHT", Group: "retention", Kind: kindValue, Default: "256 — and 0 means UNBOUNDED, not zero",
@@ -1031,8 +1070,6 @@ var uncataloguedSettings = func() map[string]string {
 		reason string
 		names  []string
 	}{
-		{"SSE tuning for the events stream. Operator-visible behaviour (how fast a client sees output, when a slow reader is dropped), so these belong in the catalogue.",
-			[]string{"PALAI_SSE_BATCH_LIMIT", "PALAI_SSE_HEARTBEAT", "PALAI_SSE_POLL_INTERVAL", "PALAI_SSE_WRITE_TIMEOUT"}},
 		{"Outbound webhook delivery pacing and retry envelope.",
 			[]string{"PALAI_WEBHOOK_BACKOFF_BASE", "PALAI_WEBHOOK_BACKOFF_MAX", "PALAI_WEBHOOK_TICK"}},
 		{"Trigger reconcile loop: how often it runs, how much it takes, and how long a mapped trigger is held.",
@@ -1102,6 +1139,10 @@ var nonDesiredReason = map[string]string{
 	"PALAI_S3_REGION": "it travels with the endpoint credential pair as one decision about WHERE this " +
 		"deployment's artifacts live and how it signs for them. Splitting one of the four off into a form " +
 		"would let a panel change a signature's region while the endpoint it is signing for stays put.",
+	"PALAI_SSE_HEARTBEAT":     "read once, when the router is built: a written value would not be the one in force until a restart.",
+	"PALAI_SSE_POLL_INTERVAL": "read once, when the router is built, and the same reason.",
+	"PALAI_SSE_WRITE_TIMEOUT": "read once, when the router is built. It is also the bound that drops a stalled consumer, so a form offering it offers to remove the protection against one.",
+	"PALAI_SSE_BATCH_LIMIT":   "read once, when the router is built, and it bounds per-connection memory.",
 	"PALAI_INBOUND_MAX_INFLIGHT": "a flood bound whose `0` means UNBOUNDED. A form offering it would let one " +
 		"edit remove the ceiling protecting every tenant on the process, and the value that does it is the one " +
 		"a reader would type to mean \"none\". Read once, at bring-up.",
