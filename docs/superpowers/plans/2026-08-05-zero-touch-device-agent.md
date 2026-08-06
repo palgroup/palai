@@ -323,7 +323,31 @@ Each task uses one implementation writer, one fresh consolidated reviewer, one f
 reproduced Critical/Important issue exists, one source commit, and one final `make verify`. Expensive live
 evidence runs once after the source commit. Evidence-only changes receive their own commit.
 
-### T0 — Freeze the truthful contract and delete stale current claims
+### T0 — Freeze the truthful contract and delete stale current claims ✅ DONE (2026-08-06)
+
+> **All three REDs re-measured, and the third one found a defect nobody had looked for.**
+> - Every coding tool resolves a machine executor and refuses when it is withheld — `packages/runner`'s
+>   `toolserver_test.go` (`TestToolServerAnswersWhenNoExecutorIsWired`,
+>   `TestExecRequestRunsOnTheMachineAndAnswersOverTheWire`) plus the `tests/uat/tool-execution` catalog.
+> - The stale operator claim was `FLT-P15`, *"THERE IS NO REMOTE EXECUTION AT ALL"*, and it was worse than
+>   stale: a stray `||` had glued it onto `FLT-P13`'s row, so the 13-cell row lost its tail and **no guard
+>   had ever checked its decision or owner**. Closed with the `FLT-P14` convention (the 2026-07-30 sentence
+>   stands; the closure is appended), two more ragged rows fixed, `splitRow` taught to split the way a
+>   renderer does — it and the page were different documents — and a guard added for the shape itself.
+> - The device composition root dispatches ONE verb (`enroll`) and links no `apps/` package
+>   (`cmd/runner/surface_test.go`). `cmd/cli` is deliberately not a second denied root: the compiler
+>   already closes it, and a branch that cannot fire takes credit for a guarantee it does not provide.
+>
+> **And the outbound-only property had no guard at all.** §3.2 says no device listener is added, and the
+> only thing enforcing it was that nobody had written one — a health endpoint added "just for debugging"
+> would have lost it on every machine in the fleet at once. `TestTheDeviceOPENSNoListener` scans the
+> device's production sources and checks its own pattern against the control plane's `main.go` first, so a
+> regex that stopped matching fails instead of reporting silence. Perturbed with a debug listener: RED.
+>
+> **The architecture page is `docs/architecture/two-planes.md`**, and every claim on it cites a Go test or
+> a UAT case that `TestTwoPlanesEvidenceResolves` re-resolves — because a page written to stop two wrong
+> conclusions becomes a third, stated more confidently, the day it stops being measured. Perturbed by
+> renaming one citation: RED.
 
 **Goal:** Make the repository agree on what is already built and what this plan is adding.
 

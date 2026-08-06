@@ -14,7 +14,10 @@ package main
 // see it.
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -74,5 +77,90 @@ func TestTheDeviceBinaryLinksNoServerOrAdminCode(t *testing.T) {
 					"%s implementation it has no business running", dep, strings.TrimSuffix(root, "/"))
 			}
 		}
+	}
+}
+
+// listenerCall matches the ways a Go program starts accepting connections. It is deliberately narrow —
+// these are the calls, not a word that appears near them.
+var listenerCall = regexp.MustCompile(`\b(net\.Listen|net\.ListenTCP|net\.ListenUnix|tls\.Listen|http\.ListenAndServe|http\.ListenAndServeTLS|\.ListenAndServe\(|\.Serve\()`)
+
+// deviceSource returns the production (non-test) Go sources a packaged agent is built from.
+func deviceSource(t *testing.T) map[string][]byte {
+	t.Helper()
+	root := repoRootOf(t)
+	out := map[string][]byte{}
+	for _, dir := range []string{"cmd/runner", "packages/runner"} {
+		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			rel, _ := filepath.Rel(root, path)
+			out[rel] = b
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", dir, err)
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("no device sources were read — a scan over an empty corpus reports the same clean result as a device with no listener")
+	}
+	return out
+}
+
+// TestTheDeviceOPENSNoListener is the outbound-only property, which is what makes a fleet installable on
+// machines nobody port-forwards to and what keeps a rented Mac from being reachable from the internet.
+//
+// ‼️ IT HELD AND NOTHING GUARDED IT. The whole device design rests on the machine dialling the gateway —
+// §3.2's "no reverse connection or device listener is added" — and the only thing enforcing it was that
+// nobody had written one. A health endpoint added "just for debugging" is how this property is lost, and
+// it would be lost on every machine in the fleet at once.
+//
+// ‼️ AND THE SCAN IS CHECKED AGAINST A POSITIVE CONTROL. A regex that stopped matching — a rename, a
+// wrapper, a typo — would report the same clean result as a device with no listener, so the same pattern
+// is run over the control plane's own composition root, which certainly does listen. If that finds
+// nothing, this test fails instead of passing.
+func TestTheDeviceOPENSNoListener(t *testing.T) {
+	control, err := os.ReadFile(filepath.Join(repoRootOf(t), "apps/control-plane/cmd/palai-control-plane/main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !listenerCall.Match(control) {
+		t.Fatal("the listener pattern does not match the control plane's own main.go — it has stopped " +
+			"recognising a listener, so its silence about the device means nothing")
+	}
+
+	for path, body := range deviceSource(t) {
+		if loc := listenerCall.FindIndex(body); loc != nil {
+			line := 1 + strings.Count(string(body[:loc[0]]), "\n")
+			t.Errorf("%s:%d opens a listener (%q). A device dials OUT and is never dialled: this one would "+
+				"be reachable on every machine the fleet installs it on", path, line, body[loc[0]:loc[1]])
+		}
+	}
+}
+
+// repoRootOf resolves the module root from this package's directory.
+func repoRootOf(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("no go.mod above the test's working directory")
+		}
+		dir = parent
 	}
 }

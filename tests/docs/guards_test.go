@@ -481,3 +481,44 @@ func ownedDocs(t *testing.T) []string {
 	}
 	return docs
 }
+
+// --- the two-planes architecture page ----------------------------------------------------------------
+
+const twoPlanesPath = "docs/architecture/two-planes.md"
+
+// TestTwoPlanesEvidenceResolves is the guard that keeps an architecture page from becoming the thing it
+// was written to prevent.
+//
+// ‼️ THE PAGE EXISTS BECAUSE A READER COULD REACH TWO OPPOSITE WRONG CONCLUSIONS from this repository —
+// that a remote Mac already worked end to end, or that remote execution was absent entirely (device plan
+// T0). A page that answers that and is then never re-measured becomes a third wrong conclusion, stated
+// more confidently than either. So every claim on it cites a Go test or a UAT case, and a citation that
+// stops resolving fails HERE rather than misleading somebody a year from now.
+//
+// It counts what it checked: a page whose tables stopped parsing would otherwise report the same clean
+// result as a page whose every citation holds.
+func TestTwoPlanesEvidenceResolves(t *testing.T) {
+	checked := 0
+	for _, row := range parseTables(readDoc(t, twoPlanesPath)) {
+		cell, ok := row.cells["evidence"]
+		if !ok {
+			continue
+		}
+		ids := backticked.FindAllStringSubmatch(cell, -1)
+		if len(ids) == 0 {
+			t.Errorf("%s:%d row %q cites no evidence — a claim on this page without one is prose",
+				twoPlanesPath, row.line, row.first)
+			continue
+		}
+		for _, m := range ids {
+			checked++
+			if why := resolveEvidence(t, m[1]); why != "" {
+				t.Errorf("%s:%d row %q cites %q which %s", twoPlanesPath, row.line, row.first, m[1], why)
+			}
+		}
+	}
+	if checked < 15 {
+		t.Fatalf("only %d citations were checked on %s — the tables stopped parsing, and a guard that reads "+
+			"nothing reports no defects", checked, twoPlanesPath)
+	}
+}
