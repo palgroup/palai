@@ -24,10 +24,12 @@ Wants=network-online.target
 
 [Service]
 Type=exec
-# The operator's runner inputs: PALAI_CONTROLLER_URL, PALAI_CONTROLLER_DNS, PALAI_RUNNER_ID,
-# PALAI_RUNNER_DNS, PALAI_RUNNER_CA_CERT, PALAI_ENROLLMENT_TOKEN_FILE, PALAI_ENGINE_IMAGE.
-# The launcher derives the enroll/session/renew URLs from PALAI_CONTROLLER_URL, exactly like
-# the compose runner-entrypoint. Secrets (the bootstrap token) are FILES, never env values.
+# The operator's inputs: PALAI_CONTROLLER_URL, PALAI_ENROLLMENT_TOKEN_FILE, PALAI_ENGINE_IMAGE, and
+# PALAI_CONTROLLER_CA only for a private PKI. The identity fields this used to name — PALAI_RUNNER_ID
+# and PALAI_RUNNER_DNS — are GONE: a machine generates a device keypair on first start and proves it
+# with a signed CSR, so it comes back as the same machine without anybody naming it.
+# The BINARY derives the enroll/session/renew addresses from PALAI_CONTROLLER_URL; the launcher only
+# reads the key out of its FILE, because a secret must not sit in an environment file.
 EnvironmentFile=/etc/palai/runner.env
 ExecStart=/opt/palai-runner/palai-runner.sh
 Restart=always

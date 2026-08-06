@@ -96,9 +96,7 @@ docker run -d --name "$runner_ctr" --network "$net" \
 	-v "$PALAI_HOME/runner-token:/palai/runner-token:ro" \
 	-e PALAI_CONTROLLER_URL="https://host.docker.internal:$RUNNER_PORT" \
 	-e PALAI_CONTROLLER_DNS=control-plane \
-	-e PALAI_RUNNER_ID=runner-splitvm \
-	-e PALAI_RUNNER_DNS=runner-splitvm.runners.palai.internal \
-	-e PALAI_RUNNER_CA_CERT=/palai/ca.crt \
+	-e PALAI_CONTROLLER_CA=/palai/ca.crt \
 	-e PALAI_ENROLLMENT_TOKEN_FILE=/palai/runner-token \
 	-e PALAI_ENGINE_IMAGE="$engine_digest" \
 	--entrypoint /opt/palai-runner/palai-runner.sh \
