@@ -172,6 +172,35 @@ test("agents.list / retrieve / listRevisions / publishRevision hit the right rou
   assert.ok(calls[3]!.url.endsWith("/v1/agents/agt_1/revisions/arev_1/publish"));
 });
 
+test("agents.create / createRevision author the lineage the publish transition needs", async () => {
+  const { fetch: f, calls } = recordingFetch((call) => {
+    if (call.url.endsWith("/v1/agents")) return json(201, { id: "agt_2", object: "agent" });
+    return json(201, { id: "arev_2", object: "agent_revision", state: "draft" });
+  });
+  const client = newClient(f);
+
+  const profile = await client.agents.create({ name: "release notes" });
+  assert.equal(profile.id, "agt_2");
+  const revision = await client.agents.createRevision("agt_2", {
+    instructions: "Summarise what changed.",
+    model_route_id: "mroute_1",
+  });
+  assert.equal(revision.id, "arev_2");
+
+  // ‼️ THE BODY IS ASSERTED, NOT JUST THE ROUTE. The plane hands a revision body to its agent service
+  // UNPARSED, so a field this client dropped or renamed would reach a handler that never sees it and
+  // never complains — a revision that steers nothing, created successfully.
+  assert.equal(calls[0]!.method, "POST");
+  assert.ok(calls[0]!.url.endsWith("/v1/agents"));
+  assert.equal(JSON.parse(String(calls[0]!.body)).name, "release notes");
+
+  assert.equal(calls[1]!.method, "POST");
+  assert.ok(calls[1]!.url.endsWith("/v1/agents/agt_2/revisions"));
+  const sent = JSON.parse(String(calls[1]!.body));
+  assert.equal(sent.instructions, "Summarise what changed.");
+  assert.equal(sent.model_route_id, "mroute_1");
+});
+
 // --- artifacts ----------------------------------------------------------------------
 
 test("artifacts.retrieve returns metadata; listForResponse lists a run's artifacts", async () => {

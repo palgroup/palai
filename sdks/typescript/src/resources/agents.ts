@@ -15,13 +15,58 @@ export interface AgentRevision {
   [key: string]: unknown;
 }
 
-// Agents is the /v1/agents read + publish resource. It exposes the read side (list/get + a profile's
-// revisions) and the publish transition — the authoring writes (create profile/revision) are the E11
-// management surface, out of this parity task's scope.
+// AgentRevisionCreateParams is the revision body, passed through as the caller wrote it.
+//
+// IT IS OPEN BECAUSE THE SERVER OWNS THE SHAPE. The control plane hands this body to the agent service
+// unparsed (api/agents.go: `CreateAgentRevision(ctx, scope, agentID, raw)`), so the schema lives there
+// and a closed interface here would be a second, quietly diverging copy of it — the SDK would start
+// refusing fields the plane accepts. `instructions` and `model_route_id` are named because every caller
+// sends them and a bare index signature gives an author nothing to autocomplete.
+export interface AgentRevisionCreateParams {
+  instructions?: string;
+  model_route_id?: string;
+  [key: string]: unknown;
+}
+
+// Agents is the /v1/agents resource: author a profile and its revisions, read them back, and publish.
+//
+// ‼️ THE AUTHORING WRITES WERE ABSENT AND THE COMMENT HERE SAID SO — "out of this parity task's scope".
+// That was true of the task and false of the product: with only list/retrieve/publish, an SDK holder
+// could publish a revision they had no way to create, on a profile they had no way to open. The plane
+// has had POST /v1/agents and POST /v1/agents/{id}/revisions the whole time; what was missing was the
+// half of the SDK that reaches them, and "a customer creates an agent and opens a session with the key
+// we minted for them" is not a sentence the SDK could complete.
 export class Agents {
   #client: Palai;
   constructor(client: Palai) {
     this.#client = client;
+  }
+
+  // create opens a new agent-profile lineage. The profile is an IDENTITY and carries no behaviour: what
+  // an agent does lives on its revisions, which is why this takes a name and nothing else.
+  async create(params: { name: string }, options: CallOptions = {}): Promise<AgentProfile> {
+    const r = await this.#client.request<AgentProfile>("POST", "/v1/agents", { body: params, ...callArgs(options) });
+    return r.body;
+  }
+
+  // createRevision adds a DRAFT revision to a profile (201). A draft steers no run — publishRevision is
+  // the transition that makes it the one a session resolves — so authoring and arming stay two calls a
+  // reader can tell apart.
+  //
+  // The 201 carries the id and NO Location header, and that is the plane's deliberate choice rather than
+  // an omission: `/v1/agent-revisions/{id}` is not a mounted address, and a correct-looking wrong URL is
+  // worse than none. Read it from the returned body.
+  async createRevision(
+    agentID: string,
+    params: AgentRevisionCreateParams,
+    options: CallOptions = {},
+  ): Promise<AgentRevision> {
+    const r = await this.#client.request<AgentRevision>(
+      "POST",
+      `/v1/agents/${enc(agentID)}/revisions`,
+      { body: params, ...callArgs(options) },
+    );
+    return r.body;
   }
 
   // list returns a tenant-scoped page of agent-profile lineages.
