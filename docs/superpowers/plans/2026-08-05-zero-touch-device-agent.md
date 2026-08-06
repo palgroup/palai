@@ -499,7 +499,28 @@ uses no privilege elevation and a remote session returns that Mac's `whoami`, `s
 **Acceptance:** A clean Linux VM installs the signed archive under the user's prefix, enables the user
 service, survives reboot/login and executes a real SDK-created session.
 
-### T6 — Add authoritative fleet presence and machine/session inspection
+### T6 — Add authoritative fleet presence and machine/session inspection ⏳ PARTLY DONE (2026-08-06)
+
+> **Shipped, each with a guard rather than a live measurement:**
+> - `connection_state` + `connections`, from the gateway and not from `last_seen_at` (`9001ac10`). A
+>   durable timestamp says when a machine last spoke; presence says whether it is there, and on a Mac
+>   unplugged four minutes ago the two disagree in the direction that decides whether work is sent to it.
+> - The Fleet **listing** carries it too (`40ddb068`). It did not at first: `RegistryAPI` embeds `Store`
+>   and defined only `GetRunner`, so a single read showed presence and the SCREEN showed none.
+> - `agent_version` and `isolation_modes` reach the projection (`7e88e86c`) — two columns 000007 added,
+>   enrolment wrote, and every projection dropped.
+> - `GET /v1/runners/{id}/occupancies`, keyset-paginated on `(started_at, id)` (`80c24e8c`), with its
+>   own behaviour guards (`d7acefb4`) and the fixture that makes the tie case reachable at all.
+> - `admin.fleet.runners.occupancies()` on the SDK's admin entrypoint, cursor typed as one object so it
+>   cannot be halved (`0ca2b56c`), proven against the PACKED tarball with `tsc --noEmit`.
+> - The gateway's own bookkeeping (`d7e1c4ea`), added after measuring that deleting the counter increment
+>   reddened ZERO tests: the projection guards drive a stub, so they say nothing about whether the
+>   gateway counts.
+>
+> **NOT done, and none of it is claimed:** the machine-detail VIEW (the owner supplies designs — no UI is
+> invented here); the actionable failure states (incompatible version, preflight refused, config refused,
+> at capacity, cordoned, revoked) as distinct surfaced reasons; the bounded live refresh (a fleet event
+> stream or one documented poll); and reading a FINISHED session's transcript from the panel.
 
 **Goal:** The admin screen answers whether a device is connected, what it is doing and what it did.
 
