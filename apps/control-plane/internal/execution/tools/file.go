@@ -33,7 +33,20 @@ func FileTool() toolbroker.Tool {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"op":      map[string]any{"type": "string"},
+				// ‼️ THE OPS ARE ENUMERATED, AND `"type": "string"` ALONE COST A LIVE RUN ITS WHOLE BUDGET.
+				// Measured 2026-08-06 against this deployment: asked to write one file, the model spent
+				// ELEVEN tool calls and NINE of them were refused `unknown op` — it tried "create",
+				// "str_replace", "view" and "insert", the text-editor vocabulary, because nothing in the
+				// advertisement said which words this tool knows. The prose named the ops in a sentence,
+				// and a sentence is not a constraint: a schema that accepts any string is a schema that
+				// says every string is worth trying.
+				//
+				// The list is the switch in fileExec below, and the two must stay equal — a value here
+				// that the dispatch does not answer is exactly the failure this enum exists to end.
+				"op": map[string]any{
+					"type": "string",
+					"enum": []any{"read", "write", "list", "stat", "checksum"},
+				},
 				"path":    map[string]any{"type": "string"},
 				"content": map[string]any{"type": "string"},
 			},
