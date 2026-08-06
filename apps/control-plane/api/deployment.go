@@ -605,6 +605,30 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "main",
 	},
 
+	{
+		Name: "PALAI_CAPABILITY_WORKER_LISTEN_ADDR", Group: "egress", Kind: kindValue, Default: "unset — the capability-worker gateway is NOT MOUNTED, and no shipped deployment config sets it",
+		Effect: "The address the out-of-process capability-worker gateway listens on: the enrol/claim/redeem/" +
+			"result surface a worker dials. Setting it opens a THIRD listener beside the API edge and the runner " +
+			"gateway. ‼️ THE COMMITTED release-1.0.0-rc1 MANIFEST STATES THAT NO SHIPPED DEPLOYMENT CONFIG SETS " +
+			"IT — that sentence is what makes the published capability map honest, and a deployment that mounts " +
+			"the gateway makes it false. `TestNoDeploymentMountsTheCapabilityWorkerGateway` fails if the " +
+			"variable appears anywhere under deploy/, so mounting it and leaving the claim in place cannot both " +
+			"happen quietly.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		// main, not startCapabilityWorkerGateway: the function takes the address as a PARAMETER and the
+		// environment is read at the call site. The catalogue names the READER, and the guard checks it.
+		ReaderFile: cpMain, ReaderFunc: "main",
+	},
+	{
+		Name: "PALAI_CAPABILITY_WORKER_IDENTITY_TTL", Group: "egress", Kind: kindValue, Default: "10m — the gateway's own value for an unset or non-positive duration",
+		Effect: "The lifetime of the short-lived workload identity the capability-worker gateway hands out at " +
+			"claim time and requires at redeem. It bounds how long a leaked handle is worth anything, so it is " +
+			"a credential lifetime rather than pacing. It has no effect at all unless " +
+			"PALAI_CAPABILITY_WORKER_LISTEN_ADDR mounts the gateway, which no shipped deployment does.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startCapabilityWorkerGateway",
+	},
+
 	// --- where a shell command runs, which is a security posture rather than a feature ---------------
 	{
 		Name: "PALAI_SANDBOX_IMAGE", Group: "shell", Kind: kindValue, Default: "none — there is no shell tool; a shell call fails cleanly rather than escaping",
@@ -904,8 +928,6 @@ var uncataloguedSettings = func() map[string]string {
 			[]string{"PALAI_INBOUND_BACKLOG_MAX", "PALAI_INBOUND_MAX_INFLIGHT", "PALAI_INBOUND_RAW_TTL", "PALAI_INBOUND_TOLERANCE"}},
 		{"Artifact garbage collection cadence and the grace an artifact gets before it is eligible.",
 			[]string{"PALAI_ARTIFACT_GC_GRACE", "PALAI_ARTIFACT_GC_INTERVAL"}},
-		{"The capability worker's own listener and the TTL of the job-scoped identity it hands out.",
-			[]string{"PALAI_CAPABILITY_WORKER_IDENTITY_TTL", "PALAI_CAPABILITY_WORKER_LISTEN_ADDR"}},
 		{"Durable queue and schedule pacing.",
 			[]string{"PALAI_QUEUE_DELIVERY_BACKOFF", "PALAI_QUEUE_TICK", "PALAI_SCHEDULE_BATCH", "PALAI_SCHEDULE_TICK"}},
 		{"Object-store region, metrics disk path, drain timeout, abandoned-lease grace, the session-account helper and the Slack API base. Unrelated to each other; grouped only by having no family.",
@@ -966,6 +988,13 @@ var nonDesiredReason = map[string]string{
 		"with the workspace mounted. Choosing it is a supply-chain decision made at install time, not a setting.",
 
 	// --- what this deployment may DIAL ---------------------------------------------------------------
+	"PALAI_CAPABILITY_WORKER_LISTEN_ADDR": "it OPENS A LISTENER, and a settings form that could open one " +
+		"decides this deployment's attack surface from inside the application it protects. It would also " +
+		"falsify a sentence a SHIPPED release makes about every deployment, which is a change that belongs in " +
+		"the same commit as the correction — not in a form submission.",
+	"PALAI_CAPABILITY_WORKER_IDENTITY_TTL": "a credential lifetime on a surface no shipped deployment mounts. " +
+		"Writing it from a panel would report a value that is not in force anywhere, which is the failure mode " +
+		"a settings screen exists to prevent.",
 	"PALAI_MCP_ALLOW_PRIVATE": "it widens what this deployment may DIAL. Set from a form, a reader of the " +
 		"panel could point a tool at loopback and at everything on the deployment's own network — the " +
 		"metadata service, an unauthenticated admin port, a database — and the request would leave this " +
