@@ -549,6 +549,16 @@ var deploymentCatalogue = []catalogueEntry{
 		Mutability: mutabilityBringUp, ChangeWith: changeCP,
 		ReaderFile: cpMain, ReaderFunc: "startDispatch",
 	},
+	{
+		Name: "PALAI_WORKSPACE_IDLE_TTL", Group: "execution", Kind: kindValue, Default: "5m",
+		Effect: "How long a session's workspace is held before its machine is handed back: the allocation is " +
+			"archived, its directory and account are deleted, and the next message restores it onto whichever " +
+			"machine is free. A knob, not a switch — there is no value that turns the sweep off, because \"off\" " +
+			"is the state that left 107 allocation directories and 97 uid slots held by sessions idle for days. " +
+			"The idle tail is NOT billed: an occupancy closed by this sweep is billed to its last activity.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startIdleRelease",
+	},
 
 	// --- where a shell command runs, which is a security posture rather than a feature ---------------
 	{
@@ -817,6 +827,13 @@ var nonDesiredReason = map[string]string{
 	"PALAI_FAKE_SCRIPT_FILE": "a path, and the file it names decides what a run's model APPEARS to say. " +
 		"A form that wrote it would let a reader of the panel author a fabricated exchange every credential-less " +
 		"run then replays as if it were an answer.",
+
+	// --- read once, at bring-up, by a sweep that then holds the value ---------------------------------
+	"PALAI_WORKSPACE_IDLE_TTL": "read ONCE, by startIdleRelease, and held by the sweep for the process's life. " +
+		"A form that wrote it would report a value no running sweep is using until the control plane restarts — " +
+		"a settings screen answering with a number that is not in force, which is worse than one that refuses. " +
+		"It is also plane-wide rather than per-machine: the desired document is a MACHINE's, and this decides " +
+		"when EVERY session's machine is handed back. Change it where it is read, then restart.",
 
 	// --- images: what CODE runs on this machine ------------------------------------------------------
 	"PALAI_ENGINE_IMAGE": "an IMAGE REFERENCE. The control plane pins it into every lease and the runner starts it — so a form " +
