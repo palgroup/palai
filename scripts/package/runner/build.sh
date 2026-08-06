@@ -64,6 +64,25 @@ echo "build: cross-compiling cmd/runner (${OS}/${ARCH}) as palai at ${STAMP}" >&
 	-ldflags="-s -w -buildid= -X github.com/palgroup/palai/packages/version.Stamp=${STAMP}" \
 	-o "$stage/palai" ./cmd/runner )
 
+# ‼️ THE DARWIN ARCHIVE CARRIES palai-agentd, WHICH THE PLAN SAID IT ALREADY DID. §3.3: "The same package
+# carries `palai-agentd`, but enabling it is one explicit administrator action." It did not: the archive
+# held `palai` alone, so a Mac with no checkout and no Go toolchain could not turn `accounts` isolation on
+# at all — `palai agentd install` builds the daemon FROM SOURCE and refuses without a source tree, which
+# is exactly the defect §3.7 already deleted for the runner.
+#
+# The INSTALLER still does not place it: `install.sh` installs the `palai` member and nothing else, so the
+# default install remains rootless and the daemon stays an administrator's deliberate step (T4). Carrying
+# it is what makes that step possible without a compiler.
+#
+# Linux carries none of it: palai-agentd owns macOS session accounts and has no meaning there.
+echo "build: cross-compiling cmd/palai-agentd (${OS}/${ARCH}) at ${STAMP}" >&2
+if [ "$OS" = "darwin" ]; then
+	( cd "$root" && CGO_ENABLED=0 GOOS="$OS" GOARCH="$ARCH" GOPROXY=off GOFLAGS=-mod=readonly \
+		go build -trimpath -buildvcs=false \
+		-ldflags="-s -w -buildid= -X github.com/palgroup/palai/packages/version.Stamp=${STAMP}" \
+		-o "$stage/palai-agentd" ./cmd/palai-agentd )
+fi
+
 # Stage the package members FLAT (no subdirs, so tar member order is fully controlled).
 here="$root/scripts/package/runner"
 cp "$root/docs/operations/runner-host.md" "$stage/runner-host.md"
@@ -79,6 +98,9 @@ fi
 
 # Normalize perms then mtime (perms first — touch is last so nothing re-stamps it).
 chmod 0755 "$stage/palai"
+if [ "$OS" = "darwin" ]; then
+	chmod 0755 "$stage/palai-agentd"
+fi
 chmod 0644 "$stage/runner-host.md"
 if [ "$OS" = "linux" ]; then
 	chmod 0755 "$stage/palai-runner.sh"

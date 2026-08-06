@@ -138,3 +138,62 @@ func TestAnEmptyStampIsUnreachableRatherThanAccepted(t *testing.T) {
 		t.Fatalf("an empty VERSION did not fall back to the packager's default:\n%s", combined)
 	}
 }
+
+// TestTheDarwinArchiveCarriesTheAccountsDaemonAndLinuxDoesNot is §3.3's sentence, measured: "The same
+// package carries `palai-agentd`, but enabling it is one explicit administrator action."
+//
+// ‼️ IT DID NOT. Until 2026-08-06 the archive held `palai` alone, so a Mac with no checkout and no Go
+// toolchain could not turn `accounts` isolation on at all: `agentd install` BUILDS the daemon from source
+// and refuses without a source tree — the same defect §3.7 already deleted for the runner, still standing
+// one binary over. A fleet Mac is exactly the machine that has neither.
+//
+// The two halves are asserted together because either alone is the wrong package: darwin must carry it,
+// and linux must not — palai-agentd owns macOS session accounts and has no meaning on Linux, where it
+// would be dead weight in every archive and a file somebody eventually wonders about.
+func TestTheDarwinArchiveCarriesTheAccountsDaemonAndLinuxDoesNot(t *testing.T) {
+	for _, tc := range []struct {
+		os    string
+		wants bool
+	}{{"darwin", true}, {"linux", false}} {
+		t.Run(tc.os, func(t *testing.T) {
+			out := t.TempDir()
+			cmd := exec.Command("/usr/bin/env", "bash", "build.sh")
+			cmd.Env = append(os.Environ(), "OUT="+out, "ARCH=arm64", "VERSION=18.0.0", "STAMP=18.0.0", "OS="+tc.os)
+			if combined, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("build.sh OS=%s: %v\n%s", tc.os, err, combined)
+			}
+			members := tarMembers(t, filepath.Join(out, "palai-18.0.0-"+tc.os+"-arm64.tar.gz"))
+			if got := members["palai-agentd"]; got != tc.wants {
+				if tc.wants {
+					t.Fatalf("the %s archive carries no palai-agentd — a Mac with no source tree cannot enable "+
+						"accounts isolation, which is the one administrator action the product has", tc.os)
+				}
+				t.Fatalf("the %s archive carries palai-agentd, which owns macOS session accounts and does "+
+					"nothing here", tc.os)
+			}
+			// The device binary is in both, always: that is what install.sh places.
+			if !members["palai"] {
+				t.Fatalf("the %s archive has no `palai` member", tc.os)
+			}
+		})
+	}
+}
+
+// TestTheInstallerPlacesTheAGENTAndNotTheDaemon is the other half of the same sentence: carrying the
+// daemon must not install it. T4 — "the default install never places or loads it, and enabling accounts
+// mode stays one explicit administrator action" — and an installer that quietly placed a root daemon
+// would turn a rootless install into a privileged one without anybody deciding.
+func TestTheInstallerPlacesTheAGENTAndNotTheDaemon(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "install", "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `install_binary "$work/palai" "$dest"`) {
+		t.Fatal("install.sh no longer installs the `palai` member by name — this guard is reading a script " +
+			"that has changed shape, and its silence about palai-agentd means nothing")
+	}
+	if strings.Contains(string(body), "palai-agentd") {
+		t.Error("install.sh names palai-agentd: the default install must stay rootless, and placing a root " +
+			"LaunchDaemon is the one action the product asks an administrator to take deliberately")
+	}
+}
