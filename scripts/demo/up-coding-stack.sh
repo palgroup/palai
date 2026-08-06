@@ -28,7 +28,10 @@
 # Set these in the env file you pass as $ENV_FILE (default ./.env.local):
 #
 #   OPENAI_API_KEY=...                      the live provider credential
-#   PALAI_WORKSPACE_ROOT=/abs/path          where workspaces are allocated (absolute, not /tmp)
+#   PALAI_WORKSPACE_ROOT="/abs/path"        where workspaces are allocated (absolute, not /tmp).
+#                                           QUOTE IT: this file is sourced, and the canonical macOS
+#                                           location carries a space
+#                                           ("~/Library/Application Support/Palai/workspaces").
 #   PALAI_SHELL_NATIVE=unsandboxed-host     READ THE WARNING BELOW BEFORE SETTING THIS
 #   PALAI_GIT_CLONE_URL=https://github.com/owner/repo.git
 #   PALAI_GIT_BASE_BRANCH=main
@@ -91,8 +94,31 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 1
 fi
 
+# ‼️ AN UNQUOTED VALUE WITH A SPACE IS REFUSED BEFORE THE SOURCE, WITH THE LINE NAMED. The file is
+# SOURCED, so `PALAI_WORKSPACE_ROOT=/Users/me/Library/Application Support/Palai/workspaces` makes bash
+# read `Support/Palai/workspaces` as a COMMAND — and `set -e` kills the script on
+#
+#   ./.env.local: line 2: Support/Palai/workspaces: No such file or directory
+#
+# before a single one of the legible checks below has run. Measured 2026-08-06 by following this file's
+# own header, which said `PALAI_WORKSPACE_ROOT=/abs/path` and never mentioned quoting: `~/Library/
+# Application Support` is where macOS puts application data and is exactly where the stack this script
+# was run against allocates its workspaces, so the space is not an exotic input — it is the ordinary one.
+while IFS= read -r line; do
+  case "$line" in
+    ''|'#'*) continue ;;
+  esac
+  value="${line#*=}"
+  case "$value" in
+    \"*|\'*) continue ;;                      # already quoted, bash will read it whole
+    *\ *) echo "UNQUOTED SPACE in $ENV_FILE: ${line%%=*} — this file is sourced, so a value with a space" \
+            "must be quoted (NAME=\"/a path/with spaces\") or bash reads the rest as a command" >&2
+          exit 1 ;;
+  esac
+done < "$ENV_FILE"
+
 # The env file is SOURCED, never echoed, and `set -x` is never enabled: it carries the provider
-# credential and the path to a GitHub App private key.
+# credential and any repository token.
 set -a
 # shellcheck disable=SC1090
 . "$ENV_FILE"
@@ -112,6 +138,14 @@ echo "==> checking what this env file actually carries"
 missing=0
 require PALAI_WORKSPACE_ROOT "the host directory workspaces are allocated under; its presence is what turns the workspaces capability on" || missing=1
 require PALAI_SHELL_NATIVE   "must be exactly 'unsandboxed-host'; without it the control plane wires NO shell runner and every shell call refuses" || missing=1
+# ‼️ AND THE TOOL ITSELF, which this script checked five environment variables and not once. Measured
+# 2026-08-06: without `palai` on PATH it printed two sections of output, ran `palai init`, and died on
+# `line 136: palai: command not found` — a raw shell error, after the operator had been told twice that
+# things were fine. A preflight that validates its inputs and not its dependencies is half a preflight.
+command -v palai >/dev/null 2>&1 || {
+  echo "MISSING: the \`palai\` CLI is not on PATH — this script drives the stack through it" >&2
+  missing=1
+}
 [ "$missing" -eq 0 ] || exit 1
 
 if [ "${PALAI_SHELL_NATIVE}" != "unsandboxed-host" ]; then
