@@ -161,25 +161,23 @@ services:
       # POINTER to their key was. `palai up`'s ensureSecretSlots is what guarantees the file this
       # path names holds a parseable key on every bring-up; the control-plane log.Fatalf's otherwise.
       PALAI_SECRET_MASTER_KEY_FILE: /run/secrets/master_key
-      # The GitHub App an APPROVED publication publishes through (E22 T4, §0.2). Until these lines existed
-      # compose passed nothing, so repositoryPublisherFromEnv returned nil on every stack and an approved
-      # push waited FOREVER — no error, no log, no retry, with a human believing they had authorized it.
+      # ‼️ TWELVE LINES DESCRIBING A DEPLOYMENT-GLOBAL GITHUB APP STOOD HERE, ABOVE NO KEYS AT ALL. They
+      # explained how PALAI_GITHUB_APP_ID / _INSTALLATION_ID / _PRIVATE_KEY_FILE reached the container and
+      # what breaks without them — and `9ad0665d` deleted that path on 2026-08-05, taking the keys with it
+      # and leaving the prose exactly where a reader audits the wiring. A comment is what a reader accepts
+      # INSTEAD of reading the caller, which is why one describing a deleted mechanism is worse than none.
       #
-      # The two ids interpolate (they are identifiers, not credentials); the KEY does not. Its path is
-      # written LITERALLY, exactly as the master key's is, because the value in .env.local is a HOST path
-      # and interpolating one into a container names a file that is not there. `palai up` copies the key's
-      # bytes into the 0600 slot below, so the value rides a file secret and appears in no `docker inspect`.
-      #
-      # Unset ids leave the publisher nil and the key file unread, so a stack that configured no App is
-      # byte-for-byte unchanged and never logs about a key it was never given.
-      # owner/repo for the PULL REQUEST client only (a push needs just the binding's clone_url). Absent, a
-      # push still publishes and a pull request answers "no pull-request client wired".
+      # What replaced it: main.go's repositoryPublisher builds the publisher UNCONDITIONALLY, and a
+      # publication authenticates with the BINDING's own connection_ref — a secret-ref name, written over
+      # POST /v1/secret-refs and pointed at with PUT /v1/repository-bindings/{id}/connection. A binding
+      # carrying none is refused AT THE TOOL, before a human is asked to approve something that could not
+      # happen. So this deployment needs no App variable and no App key, and the `github_app_key` secret
+      # that was still declared below goes with them.
     secrets:
       - provider_one_key
       - bootstrap_api_key
       - pg_password
       - master_key
-      - github_app_key
     volumes:
       - "${PALAI_HOME}/ca:/palai/ca:ro"
       - "${PALAI_HOME}/runner-token:/palai/runner-token:ro"
@@ -283,11 +281,14 @@ secrets:
   # the production overlay and `palai restore verify`'s secret canary already use.
   master_key:
     file: "${PALAI_HOME}/secrets/master-key"
-  # The GitHub App private key. EMPTY on every stack that configured no App (ensureSecretSlots creates it,
-  # like provider-one, because a missing mount source fails `compose up`), and never read while
-  # PALAI_GITHUB_APP_ID is unset — so an empty slot means "no publication destination", not a broken stack.
-  github_app_key:
-    file: "${PALAI_HOME}/secrets/github-app-key"
+  # ‼️ A `github_app_key` FILE SECRET WAS DECLARED HERE AND NOTHING CREATED THE FILE. Its comment said
+  # "ensureSecretSlots creates it, like provider-one, because a missing mount source fails `compose up`" —
+  # and ensureSecretSlots' loop names provider-one and nothing else, while applyGitHubAppEnv, the function
+  # that used to fill it, went with the deployment-global App on 2026-08-05. So the sentence explaining why
+  # the file must exist was the proof it no longer did: a fresh `palai up` never wrote it, and the first
+  # containerised bring-up on a clean home would have failed on a mount source that was never there.
+  # Removed with the mechanism it belonged to; a publication now authenticates with the binding's own
+  # connection_ref, which is a database row and not a mount.
 
 volumes:
   palai-pg: {}

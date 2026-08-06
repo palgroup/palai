@@ -10,46 +10,45 @@
 # WHAT IT NEEDS FROM YOU, AND WHAT IT CANNOT DO FOR YOU
 # ---------------------------------------------------------------------------------------------
 #
-# It cannot create your GitHub App. That is the one step with no automation, and burying it is how
-# an operator discovers at the end that the PR half was never going to work. Do this FIRST:
+# ‼️ THE GITHUB APP IS GONE AND THESE INSTRUCTIONS USED TO CREATE ONE. Six steps stood here telling an
+# operator to register a GitHub App, generate a .pem and set PALAI_GITHUB_APP_ID /
+# PALAI_GITHUB_APP_INSTALLATION_ID / PALAI_GITHUB_APP_PRIVATE_KEY_FILE — and `9ad0665d` deleted the
+# deployment-global App path on 2026-08-05, so on 2026-08-06 NOTHING IN THIS TREE READ ANY OF THEM.
+# The preflight below printed "GitHub App: configured (push and pull_request can publish)" off those
+# three variables, which was a sentence about a mechanism that no longer existed; unset, it printed
+# "push and pull_request will NOT publish", which was equally false in the other direction. An operator
+# following this file spent the GitHub App step for nothing and was then told the wrong thing twice.
 #
-#   1. github.com/settings/apps -> "New GitHub App". Any name, any homepage URL.
-#      UNCHECK "Active" under Webhook — nothing here consumes webhooks.
-#   2. Repository permissions — set exactly these:
-#          Contents        Read and write
-#          Pull requests   Read and write
-#          Checks          Read and write     (only if you want check runs)
-#      MEASURED (adapters/repositories/broker_github.go permissionsForScope): the control plane
-#      asks for `contents:write` to push, and `pull_requests:write` + `contents:read` to open a PR.
-#      GitHub only ever grants a SUBSET of what the installation already holds, so under-granting
-#      here yields a token quietly missing the permission rather than an error you can read.
-#   3. "Where can this GitHub App be installed?" -> Only on this account. Create.
-#   4. Copy the App ID from the App page.
-#   5. "Generate a private key" -> downloads a .pem. Save it OUTSIDE this repository
-#      (e.g. ~/.palai-secrets/github-app.pem, chmod 600). `palai up` copies its BYTES into the
-#      0600 $PALAI_HOME secrets slot and the control plane only ever reads a PATH, so the key
-#      appears in no `docker inspect`, no `compose config`, no argv and no log.
-#   6. "Install App" -> pick ONE repository. The browser URL then ends
-#      /settings/installations/<NUMBER> — that number is the installation id.
+# WHY IT WENT (cmd/cli/internal/stack/up.go resolveRepository, main.go repositoryPublisher): one App per
+# deployment meant one stack could publish only where ONE installation reached, however many bindings it
+# served, and its owner/repo came from an env var — so a stack serving five bindings opened every pull
+# request against one of them. The credential AND the identity now live on the BINDING, as a
+# connection_ref, which is the shape that was always right.
 #
-# Then set these in the env file you pass as $ENV_FILE (default ./.env.local):
+# Set these in the env file you pass as $ENV_FILE (default ./.env.local):
 #
 #   OPENAI_API_KEY=...                      the live provider credential
 #   PALAI_WORKSPACE_ROOT=/abs/path          where workspaces are allocated (absolute, not /tmp)
 #   PALAI_SHELL_NATIVE=unsandboxed-host     READ THE WARNING BELOW BEFORE SETTING THIS
-#   PALAI_GITHUB_APP_ID=...                 from step 4
-#   PALAI_GITHUB_APP_INSTALLATION_ID=...    from step 6
-#   PALAI_GITHUB_APP_PRIVATE_KEY_FILE=...   from step 5 (a path, outside the tree)
-#   PALAI_GIT_REPO=owner/repo               MEASURED: without it a push publishes but every pull
-#                                           request answers "no pull-request client wired"
-#                                           (cmd/cli/internal/stack/up.go:524-528)
 #   PALAI_GIT_CLONE_URL=https://github.com/owner/repo.git
 #   PALAI_GIT_BASE_BRANCH=main
+#   PALAI_GIT_REPO=owner/repo               OPTIONAL. This SCRIPT uses it as the binding's identity;
+#                                           it defaults to the clone URL's basename. It is no longer
+#                                           read by `palai up` — that reader went with the App.
+#   PALAI_GIT_TOKEN=ghp_...                 OPTIONAL, AND IT IS THE WHOLE PUBLISH HALF. Without it the
+#                                           binding carries no connection_ref, which means: a PUBLIC
+#                                           repo still clones, a PRIVATE one cannot, and every publish
+#                                           is REFUSED AT THE TOOL before a human is asked — the
+#                                           refusal names the missing credential, so it is legible
+#                                           rather than silent. With it the script writes the bytes to
+#                                           POST /v1/secret-refs and points the binding at that NAME,
+#                                           so what this script's argv and environment carry is a
+#                                           handle and the credential rides one request body.
 #
-# ALL THREE APP VARIABLES OR NONE. up.go:491 refuses a half-configuration, because a nil publisher
-# makes the approval pump a no-op: you would grant the publish tools, watch the agent propose a
-# push, press Approve, and NOTHING would happen — no error, no log line, an approved row sitting in
-# the database forever with a human believing they authorised something.
+# A fine-grained token needs Contents: read and write (to clone and push) and Pull requests: read and
+# write (to open one). MEASURED (adapters/repositories/broker_github.go permissionsForScope): the
+# control plane asks for contents:write to push and pull_requests:write + contents:read to open a PR,
+# and an under-granted token fails at the operation rather than at configuration time.
 #
 # ---------------------------------------------------------------------------------------------
 # THE PRICE OF THE NATIVE POSTURE, STATED PLAINLY
@@ -121,14 +120,16 @@ if [ "${PALAI_SHELL_NATIVE}" != "unsandboxed-host" ]; then
   exit 1
 fi
 
-# The App is optional for clone+shell+commit and REQUIRED for push/pull_request. Say which stack
-# this is going to be, up front, rather than letting it be discovered at the approval step.
-if [ -n "${PALAI_GITHUB_APP_ID:-}" ] && [ -n "${PALAI_GITHUB_APP_INSTALLATION_ID:-}" ] && [ -n "${PALAI_GITHUB_APP_PRIVATE_KEY_FILE:-}" ]; then
-  echo "    GitHub App: configured (push and pull_request can publish)"
-  [ -n "${PALAI_GIT_REPO:-}" ] || echo "    WARNING: PALAI_GIT_REPO is unset — a push will publish, every pull request will answer 'no pull-request client wired'"
-  [ -r "${PALAI_GITHUB_APP_PRIVATE_KEY_FILE}" ] || { echo "    ERROR: cannot read ${PALAI_GITHUB_APP_PRIVATE_KEY_FILE}" >&2; exit 1; }
+# A credential is optional for clone-from-public + shell + commit and REQUIRED for a private clone and
+# for every publish. Say which stack this is going to be, up front, rather than letting it be discovered
+# at the approval step — which is what the dead GitHub App block above did for a mechanism that had
+# already been deleted.
+if [ -n "${PALAI_GIT_TOKEN:-}" ]; then
+  echo "    repository credential: a token is set — it becomes a secret-ref and the binding points at it"
+  echo "                           (private clone, push and pull_request all reachable)"
 else
-  echo "    GitHub App: NOT configured — clone, shell and commit will work; push and pull_request will NOT publish"
+  echo "    repository credential: NONE — a public repo clones, a private one does not, and every"
+  echo "                           publish is REFUSED AT THE TOOL naming the missing connection_ref"
 fi
 
 echo "==> palai init (no-op if this home is already initialised)"
@@ -282,7 +283,7 @@ curl -fsS -X PATCH \
 if [ -n "${PALAI_GIT_CLONE_URL:-}" ] && [ -n "${PALAI_GIT_BASE_BRANCH:-}" ]; then
   echo "==> registering the repository binding"
   IDENTITY="${PALAI_GIT_REPO:-$(basename "${PALAI_GIT_CLONE_URL}" .git)}"
-  curl -fsS -X POST \
+  BINDING="$(curl -fsS -X POST \
     -H "Authorization: Bearer ${API_KEY}" \
     -H "Content-Type: application/json" \
     -d "$(python3 - "$IDENTITY" "$PALAI_GIT_CLONE_URL" "$PALAI_GIT_BASE_BRANCH" <<'PY'
@@ -292,7 +293,41 @@ print(json.dumps({"provider":"github","repository_identity":sys.argv[1],
 PY
 )" \
     "${BASE_URL}/v1/repository-bindings" \
-  | python3 -c "import sys,json;b=json.load(sys.stdin);print('    binding',b['id'],'->',b['repository_identity'],'@',b['default_branch'])"
+  | python3 -c "import sys,json;b=json.load(sys.stdin);print(b['id'],b['repository_identity'],b['default_branch'])")"
+  # READ BY NAME AND NEVER PATTERN-MATCHED. A create response carries several ids and a regex over the
+  # body picks whichever one appears first — measured on 2026-08-06, where that mistake handed a pool
+  # key's `id` to an enrolment and the enrolment answered 401.
+  set -- $BINDING
+  BINDING_ID="$1"
+  echo "    binding $1 -> $2 @ $3"
+
+  # THE CREDENTIAL IS A SECOND CALL AND A SEPARATE OBJECT, which is the property rather than an extra
+  # step: POST /v1/secret-refs takes the bytes and answers a NAME, and PUT .../connection moves a
+  # POINTER. The binding's row never holds a credential, and this script's environment never holds one
+  # after this line — which matters here more than usual, because `ps -E` on this platform serves a live
+  # process's environment WITH VALUES to the same uid (measured 2026-08-04).
+  if [ -n "${PALAI_GIT_TOKEN:-}" ]; then
+    echo "==> attaching the repository credential"
+    REF="demo-repo-token"
+    curl -fsS -X POST \
+      -H "Authorization: Bearer ${API_KEY}" \
+      -H "Content-Type: application/json" \
+      -d "$(python3 - "$REF" "$PALAI_GIT_TOKEN" <<'PY'
+import json,sys
+print(json.dumps({"name":sys.argv[1],"value":sys.argv[2]}))
+PY
+)" \
+      "${BASE_URL}/v1/secret-refs" >/dev/null
+    curl -fsS -X PUT \
+      -H "Authorization: Bearer ${API_KEY}" \
+      -H "Content-Type: application/json" \
+      -d "{\"connection_ref\":\"${REF}\"}" \
+      "${BASE_URL}/v1/repository-bindings/${BINDING_ID}/connection" >/dev/null
+    echo "    binding ${BINDING_ID} now points at secret-ref ${REF} (private clone, push, pull_request)"
+  else
+    echo "==> no repository credential — the binding carries no connection_ref, so a private clone and"
+    echo "    every publish are refused. Set PALAI_GIT_TOKEN and re-run, or attach one on the console."
+  fi
 else
   echo "==> no repository binding (PALAI_GIT_CLONE_URL / PALAI_GIT_BASE_BRANCH unset)"
 fi

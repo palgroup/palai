@@ -96,22 +96,34 @@ func ensureSecretSlots(p paths) error {
 	if err := ensureMasterKey(p); err != nil {
 		return err
 	}
-	// github-app-key joins provider-one as a slot that exists EMPTY on every stack: compose names it as a
-	// file secret unconditionally, and a missing mount source fails `compose up` outright. Empty is the
-	// correct unconfigured state here (unlike the master key) because main.gitHubAppPublisherFromEnv never
-	// reads the path until PALAI_GITHUB_APP_ID and the installation id are BOTH set — so an empty slot means
-	// "no deployment-global App", not "no publisher" and not "this stack cannot boot": a binding carrying its
-	// own connection_ref publishes without one. applyGitHubAppEnv fills it when the operator configured an App.
-	for _, path := range []string{p.secretPath("provider-one")} {
-		switch _, err := os.Stat(path); {
-		case err == nil:
-			continue
-		case !os.IsNotExist(err):
-			return fmt.Errorf("stat %s: %w", path, err)
-		}
-		if err := os.WriteFile(path, []byte{}, 0o600); err != nil {
-			return fmt.Errorf("create secret slot %s: %w", path, err)
-		}
+	// provider-one exists EMPTY on every stack: compose names it as a file secret unconditionally, and a
+	// missing mount source fails `compose up` outright. Empty is the correct unconfigured state here,
+	// unlike the master key, because a deployment that configured no provider credential should come up
+	// and refuse at the model call rather than refuse to boot.
+	//
+	// ‼️ THE PARAGRAPH HERE ALSO CLAIMED github-app-key, AND THE LOOP HAS NEVER NAMED IT. It said the slot
+	// "joins provider-one" and that applyGitHubAppEnv fills it — while the range names one path, and that
+	// function went with the deployment-global App on 2026-08-05. compose still declared the secret, so the
+	// sentence explaining why the file had to exist was the evidence that nothing made it. Both are gone;
+	// a publication authenticates with the binding's own connection_ref, which is a row and not a mount.
+	//
+	// It is a plain call rather than a range over one element: a loop over a single literal reads as a set
+	// that could grow, and this one shrank to one BECAUSE the second member was a mechanism that no longer
+	// exists. Spelling it out is what makes the next reader ask which secrets belong here.
+	return ensureEmptySlot(p.secretPath("provider-one"))
+}
+
+// ensureEmptySlot creates a 0600 file with no contents when one is not already there, and leaves an
+// existing slot untouched — the operator's credential must survive a re-run of the bring-up.
+func ensureEmptySlot(path string) error {
+	switch _, err := os.Stat(path); {
+	case err == nil:
+		return nil
+	case !os.IsNotExist(err):
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if err := os.WriteFile(path, []byte{}, 0o600); err != nil {
+		return fmt.Errorf("create secret slot %s: %w", path, err)
 	}
 	return nil
 }
