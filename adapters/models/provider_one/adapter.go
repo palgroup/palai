@@ -279,14 +279,17 @@ func buildBody(req modelbroker.Request) ([]byte, map[string]string, error) {
 				return nil, nil, fmt.Errorf("tool name %q collides with %q on the wire (both encode to %q)", t.Name, existing, wire)
 			}
 			names[wire] = t.Name
-			// A TYPED TOOL CANNOT CROSS THIS ADAPTER, AND IT MUST NOT BE DROPPED QUIETLY. This provider
-			// speaks OpenAI's chat/completions shape, where an Anthropic-defined tool type has no
-			// meaning. Skipping it would leave the model with no editor and no sign anything was
-			// missing — the run would simply stop being able to change a line while looking healthy.
-			// Failing here names the route as the thing to fix. Also covers openai_compatible, which
-			// embeds this Adapter and shares this builder.
-			if t.Type != "" {
-				return nil, nil, fmt.Errorf("tool %q declares the Anthropic-defined type %q, which this OpenAI-compatible provider cannot carry; route this agent to an Anthropic model or drop the tool from its set", t.Name, t.Type)
+			// A TYPE HAS NO MEANING IN OpenAI's chat/completions shape, so this adapter carries the
+			// tool's SCHEMA instead — which is why a portable tool declares both. The exec is the same
+			// either way; only the advertisement differs.
+			//
+			// A TYPED TOOL WITH NO SCHEMA STILL CANNOT CROSS, AND MUST NOT BE DROPPED QUIETLY: there is
+			// nothing to advertise it with, and skipping it would leave the model with no editor and no
+			// sign anything was missing — the run would simply stop being able to change a line while
+			// looking healthy. Failing names the route as the thing to fix. Also covers
+			// openai_compatible, which embeds this Adapter and shares this builder.
+			if t.Type != "" && len(t.Parameters) == 0 {
+				return nil, nil, fmt.Errorf("tool %q declares the Anthropic-defined type %q and carries no input schema, so this OpenAI-compatible provider has nothing to advertise it with; route this agent to an Anthropic model, or give the tool a schema so it can cross both", t.Name, t.Type)
 			}
 			fn := map[string]any{"name": wire, "parameters": t.Parameters}
 			if t.Description != "" {

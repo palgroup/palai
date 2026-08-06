@@ -61,10 +61,23 @@ type Tool struct {
 	// is T2's job (§28.2 untrusted-claim discipline). Empty is allowed (a bare conformance tool).
 	Description string
 	// Type is the Anthropic-defined tool type (e.g. "text_editor_20250728"), empty for an ordinary
-	// custom tool. A typed tool's SHAPE LIVES IN THE MODEL rather than in InputSchema: the provider is
-	// sent {type, name} and no schema, because the schema the tool was trained against is not ours to
-	// restate. A tool carrying a Type therefore leaves InputSchema and Description empty, and the
-	// adapter refuses the combination rather than sending both.
+	// custom tool. A typed tool's SHAPE LIVES IN THE MODEL: an Anthropic provider is sent {type, name}
+	// and no schema, because the schema the tool was trained against is not ours to restate.
+	//
+	// ‼️ A TYPED TOOL MAY ALSO CARRY InputSchema, AND THAT COMBINATION IS THE PORTABLE ONE. The sentence
+	// here used to say a typed tool "leaves InputSchema and Description empty, and the adapter refuses
+	// the combination" — which made every typed tool ANTHROPIC-ONLY, and the editor is the tool an agent
+	// changes code with. Measured 2026-08-06 on a live OpenAI-routed stack: `palai up` grants the
+	// canonical baseline (which contains str_replace_based_edit_tool) to every project AND routes the
+	// deployment to provider-one, so the two halves of one bring-up were mutually exclusive and every
+	// run died at dispatch — "route this agent to an Anthropic model or drop the tool from its set", on
+	// a stack whose own bring-up had chosen both.
+	//
+	// One tool, two ADVERTISEMENTS: Anthropic takes the type and ignores the schema (the trained shape
+	// is the better one there); every other provider advertises the schema as an ordinary function. The
+	// EXEC is identical, because the tool's job never depended on the wire shape. A typed tool with NO
+	// schema is still Anthropic-only, and the OpenAI adapter still refuses it loudly rather than
+	// dropping it — a model with no editor and no sign anything is missing is the worse failure.
 	Type         string
 	InputSchema  map[string]any
 	OutputSchema map[string]any

@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	providertwo "github.com/palgroup/palai/adapters/models/provider_two"
@@ -103,27 +102,38 @@ func TestACustomToolIsUnchangedByTheTypedBranch(t *testing.T) {
 	}
 }
 
-// TestATypedToolCarryingASchemaIsRefused — declaring both is a programming error, and sending both
-// would be a request shape no model was trained on. Failing names the tool so the mistake is fixable.
-func TestATypedToolCarryingASchemaIsRefused(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, cannedStream)
-	}))
-	defer srv.Close()
-
-	req := toolSchemaRequest()
-	req.ForceToolCall = false
-	req.Tools = []modelbroker.ToolSchema{{
-		Name:       "str_replace_based_edit_tool",
-		Type:       "text_editor_20250728",
-		Parameters: map[string]any{"type": "object"},
-	}}
-	_, err := (providertwo.Adapter{BaseURL: srv.URL}).Execute(context.Background(), req, sentinelSecret, nil)
-	if err == nil {
-		t.Fatal("a typed tool carrying an input schema was accepted")
+// TestATypedToolsSchemaNeverReachesTheWire replaces TestATypedToolCarryingASchemaIsRefused, and the
+// swap is what keeps the property while dropping the wrong subject.
+//
+// That test asserted the combination was REFUSED, on the grounds that declaring both is a programming
+// error. The property underneath it — an Anthropic request must not carry OUR schema for a tool whose
+// shape the model already knows — is unchanged and is what is asserted here. What changed is that the
+// combination stopped being an error: a typed tool that ALSO carries a schema is the PORTABLE one, and
+// refusing it made every typed tool Anthropic-only. Measured 2026-08-06 on a live OpenAI-routed stack,
+// that cost the editor entirely: `palai up` granted the canonical baseline containing it and routed the
+// deployment to provider-one, and every run died at dispatch.
+//
+// So this adapter takes the type and DROPS the schema, which is the same wire it always sent — asserted
+// here on the request body rather than on the refusal that used to stand in for it.
+func TestATypedToolsSchemaNeverReachesTheWire(t *testing.T) {
+	tools := captureToolsBody(t, []modelbroker.ToolSchema{{
+		Name:        "str_replace_based_edit_tool",
+		Type:        "text_editor_20250728",
+		Description: "a description the other providers read",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}},
+	}})
+	if len(tools) != 1 {
+		t.Fatalf("sent %d tools, want 1", len(tools))
 	}
-	if !strings.Contains(err.Error(), "str_replace_based_edit_tool") {
-		t.Errorf("error = %v, want it to name the offending tool", err)
+	got := tools[0]
+	if got["type"] != "text_editor_20250728" {
+		t.Errorf("type = %v, want the Anthropic tool type", got["type"])
+	}
+	for _, key := range []string{"input_schema", "description"} {
+		if _, present := got[key]; present {
+			t.Errorf("the request carried %q for a TYPED tool (%v) — that is a different request shape "+
+				"than the one this tool's behaviour was trained against, and the schema exists only for "+
+				"providers that cannot carry a type", key, got[key])
+		}
 	}
 }

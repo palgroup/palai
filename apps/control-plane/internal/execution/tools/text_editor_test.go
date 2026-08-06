@@ -176,21 +176,48 @@ func TestAWorkspacelessEditorAnswersInsteadOfTouchingLocalDisk(t *testing.T) {
 	}
 }
 
-// TestTheEditorDeclaresATypeAndNoSchema pins the shape provider_two's typed branch depends on. A
-// schema here would be refused by that adapter — deliberately, because the schema this tool works to
-// lives in the model.
-func TestTheEditorDeclaresATypeAndNoSchema(t *testing.T) {
+// TestTheEditorIsDeclaredForBOTHKindsOfProvider replaces a test that pinned the OPPOSITE, and the swap
+// is the record of why.
+//
+// It was TestTheEditorDeclaresATypeAndNoSchema, and it asserted that this tool carries no schema and no
+// description because "the schema this tool works to lives in the model". That is still true OF AN
+// ANTHROPIC REQUEST — and it was the wrong subject: the test pinned the DECLARATION as a proxy for the
+// wire, so it also forbade the one thing that made the tool reachable anywhere else. Measured on a live
+// OpenAI-routed stack 2026-08-06, that proxy cost the whole product: `palai up` grants the canonical
+// baseline (which contains this tool) AND routes the deployment to provider-one, and the OpenAI adapter
+// refused a typed tool — so every run died at dispatch and an agent could not change a line of code.
+//
+// The property that mattered is asserted where it actually lives now: provider_two's builder sends the
+// type and NOT the schema (its own test), and provider_one advertises the schema as a function. Here the
+// claim is only that both halves are present to be chosen between — a tool with a type and no schema is
+// Anthropic-only, and one with a schema and no type loses the trained shape.
+func TestTheEditorIsDeclaredForBOTHKindsOfProvider(t *testing.T) {
 	tool := TextEditorTool()
 	if tool.Type != "text_editor_20250728" {
-		t.Errorf("Type = %q", tool.Type)
+		t.Errorf("Type = %q — without it an Anthropic route loses the shape the model was trained on", tool.Type)
 	}
 	if tool.Name != "str_replace_based_edit_tool" {
 		t.Errorf("Name = %q — this literal is what the model was trained on", tool.Name)
 	}
-	if len(tool.InputSchema) != 0 {
-		t.Errorf("InputSchema is non-empty (%v); an Anthropic-defined tool carries no schema", tool.InputSchema)
+	if len(tool.InputSchema) == 0 {
+		t.Fatal("InputSchema is empty: every non-Anthropic provider has nothing to advertise this tool " +
+			"with, so an OpenAI-routed deployment gets no editor and its agents cannot change a line")
 	}
-	if tool.Description != "" {
-		t.Errorf("Description is set (%q); the platform does not restate what this tool does", tool.Description)
+	if tool.Description == "" {
+		t.Error("Description is empty: a provider reading the schema has no statement of what the tool does")
+	}
+	// The schema must describe the commands textEditorExec actually implements. A schema naming a verb
+	// the exec does not have is a model instructed to call something that answers with an error.
+	props, _ := tool.InputSchema["properties"].(map[string]any)
+	command, _ := props["command"].(map[string]any)
+	enum, _ := command["enum"].([]string)
+	want := map[string]bool{"view": true, "create": true, "str_replace": true, "insert": true}
+	if len(enum) != len(want) {
+		t.Fatalf("command enum = %v, want exactly the four the exec implements", enum)
+	}
+	for _, name := range enum {
+		if !want[name] {
+			t.Errorf("command enum offers %q, which textEditorExec does not implement", name)
+		}
 	}
 }

@@ -16,10 +16,23 @@ const maxEditorReadBytes = 1 << 20
 // TextEditorTool is Anthropic's client-side text editor (`text_editor_20250728`), executed here
 // against the run's workspace.
 //
-// IT CARRIES NO SCHEMA AND NO DESCRIPTION, and that is the point rather than an omission. The shape
-// of its arguments and the discipline for using them are trained into the model; the request sends
-// {type, name} and the model supplies calls it already knows how to make. Writing our own schema
-// would describe a slightly different tool than the one it learned.
+// ON AN ANTHROPIC ROUTE IT CARRIES NEITHER SCHEMA NOR DESCRIPTION, and that is the point rather than an
+// omission: the shape of its arguments and the discipline for using them are trained into the model, the
+// request sends {type, name}, and the model supplies calls it already knows how to make.
+//
+// ‼️ IT NOW ALSO CARRIES A SCHEMA, FOR EVERY OTHER PROVIDER, and the reason is not portability for its
+// own sake. Measured on a live stack 2026-08-06: `palai up` grants the canonical tool baseline — which
+// contains this tool — to every project, AND routes the deployment to provider-one when
+// PALAI_MODEL_PROVIDER says so. Those two halves of one bring-up were mutually exclusive: the OpenAI
+// adapter refused a typed tool, so every run on an OpenAI-routed stack died at dispatch with "route this
+// agent to an Anthropic model or drop the tool from its set" — advice nobody could act on, because the
+// stack's own bring-up had chosen both. An agent that cannot reach this tool cannot change a line of
+// code, which is the whole product.
+//
+// THE SCHEMA IS A RESTATEMENT AND THE ANTHROPIC PATH DOES NOT SEE IT. provider_two takes the type and
+// leaves the schema unsent, so the trained shape is unchanged there and nothing about an Anthropic run
+// moves. Everywhere else the model reads this description instead — a slightly different tool than the
+// one Anthropic learned, which is the honest trade against having no editor at all.
 //
 // WHAT IT REPLACES IS WHOLE-FILE REWRITING. Before it, the only way to change a line was to send the
 // entire file back through the file tool's write — every untouched line re-generated, every one of
@@ -30,8 +43,33 @@ const maxEditorReadBytes = 1 << 20
 // `undo_edit` IS NOT PART OF THIS VERSION and is deliberately not implemented.
 func TextEditorTool() toolbroker.Tool {
 	return toolbroker.Tool{
-		Name:         "str_replace_based_edit_tool",
-		Type:         "text_editor_20250728",
+		Name: "str_replace_based_edit_tool",
+		Type: "text_editor_20250728",
+		Description: "View and edit files in the run's workspace. `view` reads a file (optionally a line " +
+			"range) or lists a directory; `create` writes a file, replacing it if it exists; `str_replace` " +
+			"replaces ONE exact occurrence of old_str and refuses when the span is ambiguous or absent; " +
+			"`insert` inserts text after a line number. Paths are relative to the workspace root.",
+		// The four commands textEditorExec implements, and nothing it does not: `undo_edit` is absent
+		// here for the same reason it is absent from the switch below.
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{
+					"type": "string",
+					"enum": []string{"view", "create", "str_replace", "insert"},
+				},
+				"path":        map[string]any{"type": "string", "description": "path relative to the workspace root"},
+				"file_text":   map[string]any{"type": "string", "description": "the whole file body (create)"},
+				"old_str":     map[string]any{"type": "string", "description": "the exact text to replace, once (str_replace)"},
+				"new_str":     map[string]any{"type": "string", "description": "the replacement text (str_replace)"},
+				"insert_line": map[string]any{"type": "integer", "description": "insert after this 1-based line (insert)"},
+				"view_range": map[string]any{
+					"type": "array", "items": map[string]any{"type": "integer"},
+					"description": "[start, end] 1-based inclusive line range (view)",
+				},
+			},
+			"required": []string{"command", "path"},
+		},
 		ReplayClass:  toolbroker.ClassReversible, // a workspace edit is revertible via the snapshot (§26.6)
 		OutputSchema: map[string]any{"type": "object"},
 		Exec:         textEditorExec,
