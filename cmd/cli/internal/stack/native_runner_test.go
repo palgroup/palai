@@ -90,14 +90,17 @@ func TestTheNativeRunnerDialsLoopbackAndVerifiesTheNameOnTheCertificate(t *testi
 		t.Errorf("the CA and the enrollment token are not at their host paths: ca=%q token=%q",
 			got["PALAI_CONTROLLER_CA"], got["PALAI_ENROLLMENT_TOKEN_FILE"])
 	}
-	// The session URL is a WEBSOCKET dial (packages/runner/session.go refuses anything not prefixed
-	// wss://), and cmd/runner's own derivedEnv/joinPath fallback does not do that scheme swap — it just
-	// appends the path onto PALAI_CONTROLLER_URL, which is https://. Both shipped bridge scripts special-case
-	// this one URL for exactly that reason; this process must too, or the runner's own loadConfig hands
-	// Session.Connect an "https://" URL and it refuses before it ever dials.
-	if want := "wss://127.0.0.1:18443/v1/runner/connect"; got["PALAI_SESSION_URL"] != want {
-		t.Errorf("PALAI_SESSION_URL = %q, want %q — cmd/runner's own derivation does not swap https for wss, "+
-			"so this must be set explicitly or the session dial refuses at the prefix check", got["PALAI_SESSION_URL"], want)
+	// ‼️ THE SESSION URL IS NOT SET HERE, AND THIS ASSERTS ITS ABSENCE. It used to be, with a comment
+	// saying cmd/runner's derivation "does not swap https for wss" — true when written, and the reason
+	// all three bridges special-cased one URL while the binary's own path went unexercised. loadConfig
+	// derives it now (outboundSessionURL), so setting it here would restore the third copy of a
+	// derivation whose whole defect was having three.
+	//
+	// The absence is what the guard has to hold: a map that starts setting it again would silently make
+	// this process the only one whose session URL is not the binary's.
+	if got, set := got["PALAI_SESSION_URL"]; set {
+		t.Errorf("PALAI_SESSION_URL = %q, want it UNSET: the binary derives it, and a fourth copy of that "+
+			"derivation is how the first three came to disagree with it", got)
 	}
 }
 

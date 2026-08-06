@@ -100,13 +100,12 @@ func nativeRunnerEnv(cfg Config, p paths, get func(string) string, engine, root 
 		// is a name only the compose/systemd bridge scripts translate, which this process is instead of.
 		"PALAI_CONTROLLER_CA":         p.caCert,
 		"PALAI_ENROLLMENT_TOKEN_FILE": p.runnerToken,
-		// cmd/runner's own PALAI_CONTROLLER_URL derivation (loadConfig's "one address instead of four")
-		// gets the other three endpoints right for free — joinPath is a plain path append and enroll/renew/
-		// settings stay https — but NOT this one: the session dial is a WEBSOCKET (session.go refuses
-		// anything not prefixed "wss://"), and joinPath never swaps the scheme. Both shipped bridge scripts
-		// special-case exactly this URL for that reason; this process has no bridge script, so it does the
-		// same swap here rather than relying on a derivation path no shipped deployment has ever exercised.
-		"PALAI_SESSION_URL":     "wss://" + strings.TrimPrefix(controllerURL, "https://") + "/v1/runner/connect",
+		// ‼️ PALAI_SESSION_URL IS NO LONGER SET HERE, and the comment that used to justify it was true when
+		// it was written and false by the time it was read: cmd/runner's derivation DID leave the session
+		// on https, so all three bridges — this map, the compose entrypoint and the host launcher —
+		// special-cased the swap, and the binary's own path was one no shipped deployment ever exercised.
+		// It exercises it now (loadConfig -> outboundSessionURL), so the swap lives in one place and this
+		// process relies on it exactly as a packaged agent does.
 		"PALAI_ENGINE_IMAGE":    engine,
 		"PALAI_COMPOSE_PROJECT": cfg.Project,
 		// The allocation root, which on this posture is one path on one filesystem: the control plane
