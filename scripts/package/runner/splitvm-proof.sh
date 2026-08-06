@@ -79,7 +79,7 @@ docker compose -p "$project" \
 
 step "build + VERIFY the signed runner host package"
 OUT="$pkgout" ARCH="$arch" bash "$root/scripts/package/runner/build.sh" >/dev/null
-tarball="$(cd "$pkgout" && ls palai-runner-host-*.tar.gz)"
+tarball="$(cd "$pkgout" && ls palai-*-linux-*.tar.gz)"
 # In this local proof the emitted pubkey IS the trusted key (same session, no channel attacker);
 # a real operator passes a key obtained out of band instead of the one beside the tarball.
 ( cd "$pkgout" && ./verify.sh "$tarball" palai-runner-signing.pub ) >&2

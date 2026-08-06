@@ -257,7 +257,7 @@ echo "provisioned org=$org_id project=$prj_id apikey=$key_id" >&2
 step "enroll the SIGNED E14 runner package from the host (outbound-only, SAN control-plane)"
 pkgout="$work/pkg"; extract="$work/extract"
 OUT="$pkgout" ARCH="$(docker version --format '{{.Server.Arch}}')" bash "$root/scripts/package/runner/build.sh" >/dev/null
-tarball="$(cd "$pkgout" && ls palai-runner-host-*.tar.gz)"
+tarball="$(cd "$pkgout" && ls palai-*-linux-*.tar.gz)"
 ( cd "$pkgout" && ./verify.sh "$tarball" palai-runner-signing.pub ) >&2
 mkdir -p "$extract"; tar -xzf "$pkgout/$tarball" -C "$extract"
 printf '%s' "$runner_token" >"$work/runner-token"

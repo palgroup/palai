@@ -146,7 +146,7 @@ func TestBundleBuildsAndVerifies(t *testing.T) {
 		}
 	}
 	// The runner host package (E14 T5 tarball) is inside runner/.
-	if m, _ := filepath.Glob(filepath.Join(bundle, "runner", "palai-runner-host-*.tar.gz")); len(m) == 0 {
+	if m, _ := filepath.Glob(filepath.Join(bundle, "runner", "palai-*.tar.gz")); len(m) == 0 {
 		t.Fatal("bundle missing the E14 runner host package under runner/")
 	}
 
