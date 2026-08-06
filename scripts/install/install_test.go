@@ -23,6 +23,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/palgroup/palai/packages/device"
 )
 
 const testVersion = "9.9.9"
@@ -252,5 +254,97 @@ func TestRunningTheInstallerTwiceChangesNothingTheSecondTime(t *testing.T) {
 	}
 	if !strings.Contains(out, "already installed") {
 		t.Fatalf("the second run did not say it was a no-op:\n%s", out)
+	}
+}
+
+// TestAnUpgradeLeavesTheDEVICEIdentityUntouched is T7's last claim: an in-place upgrade preserves the
+// machine's config and identity, so Fleet shows the SAME machine afterwards rather than a new one
+// waiting to be enrolled.
+//
+// ‼️ IT HOLDS BY CONSTRUCTION TODAY AND THAT IS EXACTLY WHY IT NEEDS A GUARD. install.sh writes one
+// path — the binary — and knows nothing about the device's state directory, so the property is a
+// consequence of the installer's shape rather than a rule it enforces. One `rm -rf` added to "clean up
+// an old install", one mkdir with the wrong parent, and every upgraded machine in the fleet comes back
+// as an unenrolled stranger holding a key the registry has never seen. The files below are the real
+// paths packages/device resolves for THIS platform, not names invented here.
+func TestAnUpgradeLeavesTheDEVICEIdentityUntouched(t *testing.T) {
+	home := t.TempDir()
+	paths := device.DefaultPaths(runtime.GOOS, home, func(string) string { return "" })
+	state := map[string][]byte{
+		paths.ConfigFile:    []byte(`{"controller_url":"https://controller.example:8443"}`),
+		paths.DeviceKeyFile: []byte("-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----\n"),
+		paths.IdentityFile:  []byte(`{"runner_id":"rnr_upgrade_survivor"}`),
+	}
+	for path, body := range state {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Two DIFFERENT versions, so the installer takes its upgrade path rather than its no-op path — the
+	// case that matters is the one where it actually replaces the binary.
+	const older, newer = "9.9.8", "9.9.9"
+	archives := map[string][]byte{older: fakeArchive(t, older), newer: fakeArchive(t, newer)}
+	mux := http.NewServeMux()
+	for version, archive := range archives {
+		name := fmt.Sprintf("palai-%s-%s.tar.gz", version, triple())
+		body := archive
+		mux.HandleFunc("/"+version+"/"+name, func(w http.ResponseWriter, r *http.Request) { w.Write(body) })
+		digest := fmt.Sprintf("%s  %s\n", sha256hex(body), name)
+		mux.HandleFunc("/"+version+"/checksums.txt", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, digest)
+		})
+	}
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	prefix := t.TempDir()
+	install := func(version string) string {
+		t.Helper()
+		cmd := exec.Command("/bin/sh", installerPath(t))
+		cmd.Env = []string{
+			"PALAI_INSTALL_BASE_URL=" + srv.URL,
+			"PALAI_INSTALL_PREFIX=" + prefix,
+			"PALAI_VERSION=" + version,
+			"HOME=" + home, // the SAME home across both installs: an upgrade happens on one machine
+			"PATH=" + os.Getenv("PATH"),
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("installing %s failed: %v\n%s", version, err, out)
+		}
+		return string(out)
+	}
+	install(older)
+	install(newer)
+
+	// The upgrade happened...
+	installed, err := os.ReadFile(filepath.Join(prefix, "palai"))
+	if err != nil {
+		t.Fatalf("no binary after the upgrade: %v", err)
+	}
+	if !strings.Contains(string(installed), newer) {
+		t.Fatalf("the second install did not replace the binary — this test would prove nothing about an upgrade")
+	}
+
+	// ...and it took nothing with it.
+	for path, want := range state {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("the upgrade REMOVED %s: %v — the machine comes back as a stranger the registry has never seen", path, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("the upgrade REWROTE %s", path)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s came out of the upgrade with mode %v, want 0600", path, info.Mode().Perm())
+		}
 	}
 }

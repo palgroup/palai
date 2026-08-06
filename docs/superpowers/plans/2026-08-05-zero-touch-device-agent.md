@@ -698,7 +698,16 @@ tap repository (§6.3), and Milestone B's gate is the install script rather than
   what `install.sh` verifies against.
 - Keep installation and enrolment separate: the package installs with no secret, and the service is
   written and started by `enroll`, never by the installer.
-- Add upgrade/rollback tests that preserve config and device identity.
+- ✅ Add upgrade/rollback tests that preserve config and device identity —
+  `TestAnUpgradeLeavesTheDEVICEIdentityUntouched` installs one version over another (two versions, so
+  the installer takes its REPLACE path rather than its no-op path) with one HOME across both, against
+  the real paths `packages/device` resolves for this platform. It holds by construction today —
+  install.sh writes one path and knows nothing about the state directory — which is precisely why it
+  needed a guard: perturbed with a plausible `rm -rf` "clean up an old install" line, RED, and every
+  upgraded machine would have come back as a stranger holding a key the registry has never seen.
+  **Rollback is not covered:** `install.sh` installs any version it is given, so a downgrade is the
+  same code path with a smaller number; what is untested is a downgrade whose agent then meets a
+  NEWER control plane, which is the §48.2 window's job and not the installer's.
 
 **Acceptance:** On a clean Mac with no Palai checkout and no package manager, `install.sh` places the
 binary, `palai enroll` writes identity and loads the service, and Fleet shows the same machine after a
