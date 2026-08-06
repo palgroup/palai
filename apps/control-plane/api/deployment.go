@@ -629,6 +629,16 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "startCapabilityWorkerGateway",
 	},
 
+	{
+		Name: "PALAI_SLACK_API_BASE_URL", Group: "egress", Kind: kindValue, Default: "https://slack.com/api — the vendor root, applied when a deployment names none",
+		Effect: "The Slack Web API root every bot's sealed token is spent against. A deployment names one to " +
+			"point at a proxy or a test double; unset, the vendor root is used. It is the CONTROL PLANE's own " +
+			"knowledge on purpose — the grant route deliberately has no `api_base` field, because accepting one " +
+			"would let a CALLER aim a bot's sealed token at a host of its choosing.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "main",
+	},
+
 	// --- where a shell command runs, which is a security posture rather than a feature ---------------
 	{
 		Name: "PALAI_SANDBOX_IMAGE", Group: "shell", Kind: kindValue, Default: "none — there is no shell tool; a shell call fails cleanly rather than escaping",
@@ -931,7 +941,7 @@ var uncataloguedSettings = func() map[string]string {
 		{"Durable queue and schedule pacing.",
 			[]string{"PALAI_QUEUE_DELIVERY_BACKOFF", "PALAI_QUEUE_TICK", "PALAI_SCHEDULE_BATCH", "PALAI_SCHEDULE_TICK"}},
 		{"Object-store region, metrics disk path, drain timeout, abandoned-lease grace, the session-account helper and the Slack API base. Unrelated to each other; grouped only by having no family.",
-			[]string{"PALAI_ABANDONED_LEASE_GRACE", "PALAI_DRAIN_TIMEOUT", "PALAI_METRICS_DISK_PATH", "PALAI_S3_REGION", "PALAI_SLACK_API_BASE_URL"}},
+			[]string{"PALAI_ABANDONED_LEASE_GRACE", "PALAI_DRAIN_TIMEOUT", "PALAI_METRICS_DISK_PATH", "PALAI_S3_REGION"}},
 	}
 	out := map[string]string{}
 	for _, g := range groups {
@@ -988,6 +998,11 @@ var nonDesiredReason = map[string]string{
 		"with the workspace mounted. Choosing it is a supply-chain decision made at install time, not a setting.",
 
 	// --- what this deployment may DIAL ---------------------------------------------------------------
+	"PALAI_SLACK_API_BASE_URL": "it names the host every bot's sealed token is spent against. The grant " +
+		"route refuses an `api_base` on the wire for exactly this reason, in its own words — accepting one " +
+		"\"would let a caller aim a bot's sealed credential at a host of its choosing\" — and a settings form " +
+		"is the same shape with a longer reach: one write and EVERY bot's token goes to the writer's host, on " +
+		"the next search rather than on the next request they happen to make.",
 	"PALAI_CAPABILITY_WORKER_LISTEN_ADDR": "it OPENS A LISTENER, and a settings form that could open one " +
 		"decides this deployment's attack surface from inside the application it protects. It would also " +
 		"falsify a sentence a SHIPPED release makes about every deployment, which is a change that belongs in " +
