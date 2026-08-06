@@ -439,8 +439,23 @@ contains one machine id and a strict pool does not ask for a second approval.
 > Guards run against real PostgreSQL in `apps/control-plane/internal/store` (an internal package, so they
 > cannot live under `tests/`; that leg runs with NO `-run` filter, which is what keeps them visible).
 > Perturbed by disabling the staleness guard: RED, capacity 8 where the machine is serving 2.
-> **Still open:** the other three REDs of this task — the shape-mismatch refusal by name, the applied
-> report shown only after the agent says so, and a machine override winning over its pool document.
+> **The other three REDs were re-measured on 2026-08-06 and all three already held:** the shape mismatch
+> refuses by name (`ErrIsolationUnsupported` / `ErrPostureMismatch`, each with the refusal journalled and a
+> 409 that says which side is wrong); the applied report is written only by the machine's own report
+> (`TestAPanelEditReachesAMachineThatIsAlreadyRunning` asserts an unconfigured machine reports revision 0
+> with no verdicts before any edit); and a machine document overrides its pool's without rewriting it
+> (`runner_settings_component_test.go:217,230`).
+>
+> **AND THE DEPRECATION BULLET BELOW CONTRADICTS §3.7, WHICH IS WORTH RESOLVING RATHER THAN PICKING A
+> SIDE.** §3.7 lists `PALAI_RUNNER_POOL` / `PALAI_RUNNER_POSTURE` / `PALAI_RUNNER_CAPACITY` as things that
+> "stop existing"; this task says to keep compatibility readers for one release. Measured: they are NOT
+> dead code. `declaredPool` is a CROSS-CHECK — a machine that names a pool its key does not admit into is
+> refused 409 rather than quietly redirected — and `postureMatches` is the same shape. On a PACKAGED
+> device both are already gone by construction: it reads no `PALAI_` at all, so both are empty and both
+> checks are no-ops. Deleting the readers would therefore remove a live refusal from the Compose path
+> while changing nothing on the device path. §3.7's row is about the device CONTRACT; the readers are the
+> Compose window it grants. **What §3.7's row genuinely required and did not have is the capacity writer
+> above** — "the admin plane sets concurrency" had no implementation until 2026-08-06.
 
 **Goal:** Nothing except URL/key/optional CA is edited per device.
 

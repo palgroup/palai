@@ -194,11 +194,20 @@ type Registration struct {
 	// place: coordinator.AcquireLease refuses a hold that would put the machine over it
 	// (ErrMachineAtCapacity), decided inside the INSERT so a tie has a loser.
 	//
-	// IT IS STILL NOT A NUMBER ANY MACHINE SENDS, and that is worth knowing before reading a stored 1 as
-	// a declaration. Measured 2026-08-05: the one production Registration (runner_gateway.go's enrolment
-	// handler) sets every other field and not this one, `packages/runner` never mentions capacity, and
-	// storage/queries/runners.sql has no UPDATE that could change it afterwards — so every machine in
-	// every deployment carries the 1 store.go's clamp writes for an absent value.
+	// ‼️ THIS PARAGRAPH USED TO SAY IT WAS "STILL NOT A NUMBER ANY MACHINE SENDS", AND ALL THREE OF ITS
+	// MEASUREMENTS HAVE SINCE FLIPPED. It was true on 2026-08-05 and re-measured on 2026-08-06:
+	//
+	//	grep -c 'Capacity' packages/runner/enrollment.go                    -> 5  (was: never mentions it)
+	//	grep -c 'Capacity: request.Capacity' …/runner_gateway.go            -> 1  (was: sets every field but this)
+	//	grep -c 'SET capacity' storage/queries/runners.sql                  -> 1  (was: no UPDATE could change it)
+	//
+	// So a stored capacity now has TWO writers and they answer different questions. `Register` records
+	// what the machine DECLARED at enrolment — which on a packaged device is 0, because §3.7 deleted
+	// `PALAI_RUNNER_CAPACITY` from the device path and 0 means "no ceiling" to AcquireLease. After that it
+	// is the ADMIN plane's number: `SetRunnerCapacity` writes the concurrency the machine REPORTED IT
+	// APPLIED (store.setCapacityFromReport), which is the authority RecoverRunner's comment already named
+	// and nothing had implemented. A re-enrolment still cannot touch it, for the reason that comment
+	// gives — a box must not widen an operator's ceiling by restarting.
 	//
 	// The gateway is a separate accounting and remains unconnected to this: its per-pool channels are
 	// unbuffered and its per-machine `active` counts in-flight LEASES, not occupancies (§3.6 D13).
