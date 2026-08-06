@@ -631,8 +631,11 @@ run_postgres() {
   # allow-list because there is nothing to read. There is deliberately NO -run here, for the reason the
   # internal/fleet leg above gives: an allow-list on this package could only ever EXCLUDE a test somebody
   # adds beside these, which is the failure the leg exists to prevent. (It has grown from three tests to
-  # thirteen across T1, T4, T5 and A.5 T6 without this line needing to name any of them, which is the
-  # property — `grep -rh '^func Test' tests/component/fleet/*.go | wc -l` -> 13, 2026-08-05.)
+  # eighteen across T1, T4, T5, A.5 T6 and the tenant-exclusivity pair without this line needing to name
+  # any of them, which is the property — `grep -rh '^func Test' tests/component/fleet/*.go | wc -l` -> 18,
+  # 2026-08-06. The line above this one said thirteen and was already stale by five when it was re-run,
+  # which is the argument for the missing -run rather than against it: the leg kept covering tests the
+  # comment had lost track of.)
   #
   # What they run: one session taking TWO machines is TWO rows and the gap between them is not billed (a
   # bill is the sum of the holds, never the session's wall clock); an occupancy the reaper closes late is
@@ -647,7 +650,10 @@ run_postgres() {
   # read a placement PREFERS by: each machine of a pool weighed by its own open holds, the declared ceiling
   # returned raw so an undeclared machine is unlimited rather than full, one tenant's machines only — and
   # that a stale weighing losing the race costs a park and never an over-allocation, because the preference
-  # chooses and only the acquire refuses.
+  # chooses and only the acquire refuses. And (000008) a shared Mac serves ONE CUSTOMER AT A TIME: a second
+  # tenant is refused a free-fleet machine the first is holding even though it declared 3 and holds 1 — the
+  # room is what makes it a tenancy test rather than a second capacity one — the first tenant still takes
+  # its own second slot, and the machine reopens only when the first tenant's LAST hold settles.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v ./tests/component/fleet

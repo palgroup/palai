@@ -78,6 +78,22 @@ var ErrMachineUnavailable = errors.New("machine is not one this tenant can occup
 // is the same distinction errPoolNotServable was split out of the capacity park for.
 var ErrMachineAtCapacity = errors.New("machine already holds as many occupancies as its capacity allows")
 
+// ErrMachineHeldByAnotherTenant reports the THIRD reason AcquireLease writes no row (000008): the machine
+// is real, this tenant may be served by it, it has room — and a DIFFERENT customer is on it right now.
+//
+// ‼️ IT IS A BOUNDARY AND NOT A CEILING, WHICH IS WHY IT IS NOT ErrMachineAtCapacity. `runners.capacity`
+// asks how many SESSIONS fit on a Mac; this asks whose sessions may be on it AT ONCE, and the answer is
+// one customer's — docs/operations/mac-sessions.md §5 records that a uid boundary does not survive a
+// local-root escalation and that three of those were patched in 2026 alone. Both machines this plane had
+// enrolled on 2026-08-06 were free-fleet and capacity 0 ("undeclared, admits everything"), so before that
+// migration an unlimited number of customers could hold one Mac simultaneously.
+//
+// LIKE ErrMachineAtCapacity IT IS TRANSIENT — it becomes untrue the moment the other customer's last hold
+// settles — so a caller parks rather than fails. What it must NOT be collapsed into is ErrMachineUnavailable:
+// that one says "this will still be wrong next time", and answering it here would make placement give up on
+// a Mac that is simply busy with somebody else.
+var ErrMachineHeldByAnotherTenant = errors.New("machine is currently held by another tenant, and a machine serves one at a time")
+
 // Occupancy is one row of runner_leases: one session's hold on one machine.
 type Occupancy struct {
 	ID        string
@@ -158,6 +174,17 @@ func (s *Store) AcquireLease(ctx context.Context, tenant Tenant, sessionID, runn
 	switch err := tx.QueryRow(ctx, storage.Query("AcquireLease"),
 		leaseID, tenant.Project, runnerID, sessionID).Scan(&stored); {
 	case errors.Is(err, pgx.ErrNoRows):
+		// EXCLUSIVITY IS ASKED FIRST, because a machine another customer holds may ALSO be at its ceiling
+		// and naming capacity there sends an operator to buy a bigger Mac for what is a boundary. The
+		// reverse cannot happen: a machine full of this tenant's own holds is not held by another.
+		var heldByAnother bool
+		if rerr := tx.QueryRow(ctx, storage.Query("MachineHeldByAnotherTenant"), runnerID, tenant.Project).Scan(&heldByAnother); rerr != nil {
+			return "", fmt.Errorf("ask whether machine %s is held by another tenant: %w", runnerID, rerr)
+		}
+		if heldByAnother {
+			return "", fmt.Errorf("%w: machine %s", ErrMachineHeldByAnotherTenant, runnerID)
+		}
+
 		// The machine is visible, so the two remaining reasons are its ceiling and the session. Ask.
 		var open int
 		// ONE argument: the count is a property of the MACHINE, not of this tenant. It used to carry the

@@ -202,14 +202,15 @@ func (a *SysadminctlAccounts) ensureGroup(ctx context.Context) error {
 		}
 	}
 
+	// THREE ATTRIBUTES AND NO PASSWORD. A group password authenticates nothing on modern macOS, and the
+	// `*` placeholder Apple's own service groups carry is a shell metacharacter — which this daemon's
+	// TestCreateRunsArgvAndNeverACommandLine forbids in ANY argument, and rightly: the rule is that no
+	// privileged call may contain something a shell would read, and an exception for a harmless one is how
+	// the rule stops being checkable. The attribute is not needed, so it is not written.
 	for _, args := range [][]string{
 		{".", "-create", path},
 		{".", "-create", path, "PrimaryGroupID", strconv.Itoa(macagent.AccountGID)},
 		{".", "-create", path, "RealName", "Palai session accounts"},
-		// A password of `*` is the no-login form for a group record, matching what macOS writes for its
-		// own service groups. Without it `dscl -read` answers a record with no Password attribute, which
-		// some tools read as an empty password rather than as an absent one.
-		{".", "-create", path, "Password", "*"},
 	} {
 		if out, err := a.run(ctx, "dscl", args...); err != nil {
 			return macagent.Errorf(macagent.ClassInternal,

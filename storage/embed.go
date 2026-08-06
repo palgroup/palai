@@ -103,6 +103,22 @@ var migrationUp7 string
 //go:embed migrations/000007_device_identity_and_pool_isolation.down.sql
 var migrationDown7 string
 
+// 000008 makes "one customer at a time on a shared Mac" structural. `runners.capacity` bounded SESSIONS
+// and nothing bounded CUSTOMERS: both machines enrolled here are free-fleet and capacity 0 — "undeclared,
+// admits everything" — so any number of different tenants could hold one Mac at once, while
+// docs/operations/mac-sessions.md §5 recorded that they may not, because a uid boundary does not survive
+// a local-root escalation.
+//
+// It creates no table and adds no policy, only a SECURITY DEFINER predicate AcquireLease spends. The
+// definer rights are the whole point rather than an optimisation: runner_leases is under RLS, so the
+// same test written inline sees only the acquiring tenant's rows, finds no conflict and admits everyone.
+//
+//go:embed migrations/000008_machine_tenant_exclusivity.up.sql
+var migrationUp8 string
+
+//go:embed migrations/000008_machine_tenant_exclusivity.down.sql
+var migrationDown8 string
+
 //go:embed queries/agents.sql
 var agentsSQL string
 
@@ -256,7 +272,7 @@ var knowledgeSQL string
 // the whole chain is safe to re-run — which it is, in full, on every boot.
 func MigrationUp() string {
 	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 +
-		"\n" + migrationUp6 + "\n" + migrationUp7
+		"\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8
 }
 
 // MigrationDown reverses MigrationUp in the opposite order: 000007 drops the device-key uniqueness and the
@@ -277,7 +293,7 @@ func MigrationUp() string {
 // reddened twenty-five component fixtures that never mention a secret. Every other link here is reversible
 // unconditionally.
 func MigrationDown() string {
-	return migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" +
+	return migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" +
 		migrationDown2 + "\n" + migrationDown
 }
 

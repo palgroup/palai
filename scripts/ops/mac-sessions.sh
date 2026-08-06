@@ -456,7 +456,6 @@ ensure_session_group() {
 	dscl . -create "/Groups/$SESSION_GROUP"
 	dscl . -create "/Groups/$SESSION_GROUP" PrimaryGroupID "$SESSION_GID"
 	dscl . -create "/Groups/$SESSION_GROUP" RealName "Palai session accounts"
-	dscl . -create "/Groups/$SESSION_GROUP" Password "*"
 }
 
 create_account() { # create_account <index>

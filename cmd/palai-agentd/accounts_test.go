@@ -84,11 +84,21 @@ func newTestAccounts(t *testing.T, rec *recordingRun) *SysadminctlAccounts {
 // The second half is the one with history: `sysadminctl -home` assigns a home directory and does not
 // create one — it says so in its own output — and createhomedir exits 0 on paths it did not populate.
 // mac-sessions.sh shipped a defect reading past exactly this, so the check is here and so is its test.
+//
+// ‼️ AND THE SEQUENCE NOW OPENS WITH THE GROUP, WHICH IS ORDER AND NOT DECORATION. `-GID` naming a group
+// that does not exist produces an account whose primary group resolves to nothing — a user that cannot
+// open its own home, reported as a successful create — so the group has to be made first and the pin is
+// what keeps it there. The gid in the expectation is 700 and NOT 20: `staff` is the operator's own login
+// group and a macOS home is drwxr-x--- owned by <operator>:staff, so an account created there read the
+// whole home. This expectation carried `-GID 20` until 2026-08-06 and asserting it was asserting the bug.
 func TestCreateRunsArgvAndNeverACommandLine(t *testing.T) {
 	rec := &recordingRun{answers: map[string]string{
-		"sysadminctl -addUser palai-s07 -fullName Palai session s07 -UID 707 -GID 20 -shell /bin/zsh -home /Users/palai-s07":           "",
+		"dscl . -create /Groups/palai-sessions":                                                                                        "",
+		"dscl . -create /Groups/palai-sessions PrimaryGroupID 700":                                                                     "",
+		"dscl . -create /Groups/palai-sessions RealName Palai session accounts":                                                        "",
+		"sysadminctl -addUser palai-s07 -fullName Palai session s07 -UID 707 -GID 700 -shell /bin/zsh -home /Users/palai-s07":          "",
 		"dscl . -create /Users/palai-s07 " + markerAttr + " " + markerMagic + ":1:" + testHostUUID + ":palai-s07:2026-08-05T12:00:00Z": "",
-		"createhomedir -c -u palai-s07": "",
+		"createhomedir -c -u palai-s07":                                                                                                "",
 	}}
 	a := newTestAccounts(t, rec)
 
@@ -104,7 +114,15 @@ func TestCreateRunsArgvAndNeverACommandLine(t *testing.T) {
 	}
 
 	want := []string{
-		"sysadminctl -addUser palai-s07 -fullName Palai session s07 -UID 707 -GID 20 -shell /bin/zsh -home /Users/palai-s07",
+		// The group, probed then made. The probe answers ErrNotExist here (nothing scripts it), which is
+		// what dscl does for a record that is not there, so this run takes the create path.
+		"dscl . -read /Groups/palai-sessions PrimaryGroupID",
+		"dscl . -search /Groups PrimaryGroupID 700",
+		"dscl . -create /Groups/palai-sessions",
+		"dscl . -create /Groups/palai-sessions PrimaryGroupID 700",
+		"dscl . -create /Groups/palai-sessions RealName Palai session accounts",
+		// Only then the account, and it names the group that now exists.
+		"sysadminctl -addUser palai-s07 -fullName Palai session s07 -UID 707 -GID 700 -shell /bin/zsh -home /Users/palai-s07",
 		"dscl . -create /Users/palai-s07 " + markerAttr + " " + markerMagic + ":1:" + testHostUUID + ":palai-s07:2026-08-05T12:00:00Z",
 		"createhomedir -c -u palai-s07",
 	}

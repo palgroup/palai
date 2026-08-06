@@ -767,7 +767,13 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		// since provisioning moved after the dial — but a capacity park is a new way to MEET it, because
 		// the wake is keyed on the pool and not on the machine whose slot freed.
 		occupancyID, herr := o.holdMachine(ctx, tenant, sessionID, ch)
-		if errors.Is(herr, coordinator.ErrMachineAtCapacity) {
+		// ‼️ BOTH TRANSIENT REFUSALS PARK, AND ONLY THE TRANSIENT ONES. ErrMachineHeldByAnotherTenant
+		// (000008) asks a different question from the ceiling — whose sessions may share a Mac, not how
+		// many fit — but from here it has the same shape: it becomes untrue the moment the other
+		// customer's last hold settles, so the attempt waits rather than fails. Letting it reach the
+		// generic error path would fail a run over a Mac that is merely busy, which is precisely what
+		// ErrMachineUnavailable is reserved to mean and this one deliberately is not.
+		if errors.Is(herr, coordinator.ErrMachineAtCapacity) || errors.Is(herr, coordinator.ErrMachineHeldByAnotherTenant) {
 			if perr := o.parkForCapacity(ctx, tenant, attempt); !errors.Is(perr, errRunAwaitingCapacity) {
 				return perr
 			}

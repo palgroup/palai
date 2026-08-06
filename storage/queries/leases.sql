@@ -90,12 +90,25 @@ SELECT capacity
 -- tenants each holding one session on a three-capacity Mac would each count 1, each be admitted, and the
 -- Mac would carry double what it declared. palai_machine_open_occupancies (000003) counts the machine
 -- across tenants, which is the property renting a Mac rests on.
+--
+-- ‼️ AND THE THIRD PREDICATE IS A DIFFERENT QUESTION FROM THE OTHER TWO, which is why capacity did not
+-- already answer it. Capacity asks "how many SESSIONS fits on this machine" — a resource ceiling, and a
+-- Mac declaring 0 admits everything. Tenancy asks "whose sessions may be on it AT ONCE", and on this
+-- plane the answer is one customer's, because docs/operations/mac-sessions.md §5 records that a uid
+-- boundary does not survive a local-root escalation and three of those were patched in 2026 alone. Both
+-- enrolled machines here are free-fleet and capacity 0, so before 000008 an unlimited number of
+-- different customers could hold this Mac simultaneously and every layer would have reported success.
+--
+-- The refusal is a REFUSAL, not a smaller number: the INSERT selects no row, AcquireLease answers no
+-- lease, and placement parks the run until the machine is free. A run that waits for a Mac is the
+-- product working; a run that starts beside another customer's is not.
 INSERT INTO runner_leases (id, project_id, runner_id, session_id, started_at, last_activity_at)
 SELECT $1, $2, r.id, s.id, clock_timestamp(), clock_timestamp()
   FROM runners r, sessions s
  WHERE r.id = $3 AND (r.project_id = $2 OR r.project_id IS NULL)
    AND s.id = $4 AND s.project_id = $2
    AND (r.capacity = 0 OR palai_machine_open_occupancies(r.id) < r.capacity)
+   AND NOT palai_machine_held_by_another_tenant(r.id, $2)
 RETURNING id;
 
 -- name: MachineOpenOccupancies
@@ -119,6 +132,23 @@ RETURNING id;
 -- "machine is not one this tenant can occupy" — an answer that sends the next reader to look at tenancy for
 -- a capacity problem. Change one, change all three.
 SELECT palai_machine_open_occupancies($1);
+
+-- name: MachineHeldByAnotherTenant
+-- Whether a DIFFERENT customer is holding this machine right now. Like the count above it is a DIAGNOSIS
+-- and never the decision — AcquireLease's own predicate refuses — and it exists for the same reason: a
+-- zero-row INSERT cannot say which of its guards turned the caller away.
+--
+-- ‼️ IT IS ASKED BEFORE THE CEILING, and the order is the answer's accuracy rather than a preference. A
+-- machine held by another tenant may ALSO be at its ceiling, and reporting capacity there would tell an
+-- operator to buy a bigger Mac for what is a boundary. The reverse is not possible: a machine full of this
+-- tenant's own holds is not held by another, so asking exclusivity first never mislabels a capacity
+-- refusal. Without it the caller fell through to "session %s is not one this tenant can occupy" — an
+-- answer pointing at the session when the truth was another customer, which is the exact failure this
+-- file's paragraph above already records once.
+--
+-- Read INSIDE the acquire's transaction while LockMachineForPlacement still holds the machine's row, so
+-- the other tenant cannot settle between the judgement and the explanation.
+SELECT palai_machine_held_by_another_tenant($1, $2);
 
 -- name: PoolMachineOccupancies
 -- Every machine in one pool with the two numbers a PLACEMENT PREFERENCE needs: how many holds are open on
