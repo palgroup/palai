@@ -258,11 +258,55 @@ export class Runners {
     return r.body;
   }
 
+  // occupancies reads ONE machine's session history, newest first: what it is holding now and what it
+  // held before. It is the question an operator asks before unplugging a Mac.
+  //
+  // ‼️ THE CURSOR IS A PAIR AND BOTH HALVES TRAVEL TOGETHER. Two holds can begin in the same clock tick,
+  // so a page ordered on time alone drops or repeats rows between requests; the control plane refuses a
+  // half cursor by name rather than guessing, and this signature makes the pair unsplittable by typing
+  // it as one object.
+  async occupancies(
+    runnerID: string,
+    page: { limit?: number; startingBefore?: { at: string; id: string } } = {},
+    options: CallOptions = {},
+  ): Promise<ListView<MachineOccupancy>> {
+    const query = new URLSearchParams();
+    if (page.limit !== undefined) query.set("limit", String(page.limit));
+    if (page.startingBefore) {
+      query.set("starting_before", page.startingBefore.at);
+      query.set("starting_before_id", page.startingBefore.id);
+    }
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const r = await this.#client.request<ListView<MachineOccupancy>>(
+      "GET",
+      `/v1/runners/${enc(runnerID)}/occupancies${suffix}`,
+      callArgs(options),
+    );
+    return r.body;
+  }
+
   // revoke decommissions a machine. Irreversible.
   async revoke(runnerID: string, options: CallOptions = {}): Promise<Runner> {
     const r = await this.#client.request<Runner>("POST", `/v1/runners/${enc(runnerID)}/revoke`, callArgs(options));
     return r.body;
   }
+}
+
+// MachineOccupancy is one hold as the machine-detail view reads it.
+//
+// `releasedAt` and `releaseReason` are OPTIONAL because an open hold has neither, and the control plane
+// omits them rather than sending empty strings: "still running" and "released for a reason nobody
+// recorded" are different answers, and a blank would collapse them. `billedSeconds` is present on both —
+// an open hold bills the time it has held so far, because "in progress" is not "free".
+export interface MachineOccupancy {
+  object: "machine_occupancy";
+  id: string;
+  session_id: string;
+  started_at: string;
+  last_activity_at: string;
+  billed_seconds: number;
+  released_at?: string;
+  release_reason?: string;
 }
 
 // --- Fleet -------------------------------------------------------------------------------------------

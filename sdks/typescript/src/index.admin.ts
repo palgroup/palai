@@ -20,3 +20,22 @@ export type {
   ProjectCreateParams,
   ProjectPolicyParams,
 } from "./resources/provisioning.ts";
+
+// The FLEET surface, exported here for the reason the provisioning block above states: an admin-only
+// consumer who imports "@palai/sdk/admin" and never "@palai/sdk" can type a call against
+// admin.fleet.pools / poolKeys / runners without a second import for the param and result shapes.
+//
+// It is types only. The classes are reached through PalaiAdmin, which is what binds them to a client
+// carrying a credential — exporting them as constructors here would invite a consumer to build one
+// against a client that has none, and get a 401 instead of a compile error.
+export type {
+  DesiredConfig,
+  MachineOccupancy,
+  Runner,
+  RunnerPool,
+  RunnerPoolCreateParams,
+  RunnerPoolKey,
+  RunnerPoolKeyEnrollment,
+  RunnerPoolKeyMintParams,
+  RunnerPoolPatchParams,
+} from "./resources/fleet.ts";
