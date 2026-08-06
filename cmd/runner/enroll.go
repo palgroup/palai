@@ -135,11 +135,22 @@ func enrol(ctx context.Context, args []string, out io.Writer, seams enrolSeams) 
 	// rather than from a gateway refusal whose reason arrives as an exit code.
 	reportIsolation(ctx, macagent.NewProber(macagent.DefaultSocketPath))
 
-	// STEP 3 — MEASUREMENT. Both probes are answers this machine can give about ITSELF, which is the
+	// STEP 3 — MEASUREMENT. Every probe is an answer this machine can give about ITSELF, which is the
 	// difference between these and the posture/pool/capacity declarations the control plane records and
 	// cannot verify.
+	//
+	// THE WORKSPACE PREFLIGHT REFUSES HERE RATHER THAN REPORTING ZERO MODES, and the difference matters:
+	// a pool with no isolation requirement admits a machine that declares nothing, so a machine with
+	// nowhere to write would still have joined and still have taken sessions. It also refuses BEFORE the
+	// gateway is called — the same shape as the unsafe-key refusal above — because the operator standing
+	// at this machine is the one who can fix a directory, and a gateway rejection reaches them as an exit
+	// code.
+	if err := device.PreflightWorkspaceRoot(paths.WorkspaceRoot); err != nil {
+		return fmt.Errorf("preflight: %w\n  this machine cannot hold a session's files, so enrolling it would "+
+			"add capacity that fails on its first lease", err)
+	}
 	facts := device.Measure(runtime.GOOS, runtime.GOARCH, version.Resolve(),
-		agentdReady(ctx), dockerReady(ctx))
+		agentdReady(ctx), dockerReady(ctx), true)
 
 	// STEP 4 — THE DURABLE KEY. Generated and persisted on the first run; LOADED on every later one, which
 	// is what makes a second `enroll` recover this machine's identity instead of creating a second machine.

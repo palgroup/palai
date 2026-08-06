@@ -294,7 +294,9 @@ func TestAMeasuredMachineClaimsOnlyWhatItCanDo(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			facts := Measure(tc.goos, "arm64", "9.9.9", tc.agentd, tc.docker)
+			// A usable workspace throughout: these cases are about the DAEMONS, and passing false here
+			// would make every row pass for the preflight's reason instead of its own.
+			facts := Measure(tc.goos, "arm64", "9.9.9", tc.agentd, tc.docker, true)
 			if strings.Join(facts.IsolationModes, ",") != strings.Join(tc.want, ",") {
 				t.Fatalf("modes = %v, want %v", facts.IsolationModes, tc.want)
 			}

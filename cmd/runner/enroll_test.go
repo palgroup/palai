@@ -495,3 +495,54 @@ func devicePathsFor(t *testing.T, home string) device.Paths {
 // newDiscardLogger silences the TLS server's own error log; a client that hangs up on a refused
 // handshake is an expected event in these proofs, not a failure worth printing.
 func newDiscardLogger() *log.Logger { return log.New(io.Discard, "", 0) }
+
+// TestAMachineWithNowhereToWriteIsRefusedBeforeTheGatewayIsCalled is the preflight's own refusal, asserted
+// the way the unsafe-key one is: by the number of requests the gateway received, not by the order of lines
+// in the source.
+//
+// ‼️ IT REFUSES RATHER THAN REPORTING ZERO MODES, and that is the whole point of doing it here. A pool with
+// no isolation requirement admits a machine that declares nothing (Facts.Supports("") is true for every
+// machine, deliberately, so every pool that existed before isolation modes keeps working), so a machine
+// with nowhere to write would have enrolled anyway and taken sessions it fails at the first file write of.
+// Refusing at the machine also puts the reason where the person who can fix a directory is standing.
+func TestAMachineWithNowhereToWriteIsRefusedBeforeTheGatewayIsCalled(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: a 0500 directory does not refuse this process, so the case cannot be built here")
+	}
+	f := newEnrollFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// The workspace root's PARENT is made unwritable, so the root itself cannot be created — which is the
+	// shape a fresh machine hits (a home directory the agent does not own), rather than a root somebody
+	// had already made and then locked.
+	paths := devicePathsFor(t, f.home)
+	parent := filepath.Dir(paths.WorkspaceRoot)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+
+	var out strings.Builder
+	err := enrol(ctx, f.args(), &out, f.seams())
+	if err == nil {
+		t.Fatal("a machine that cannot create its workspace root enrolled — it becomes ready capacity and " +
+			"every session placed on it fails at its first file write")
+	}
+	if !strings.Contains(err.Error(), "preflight") {
+		t.Fatalf("the refusal does not say it was a preflight: %v", err)
+	}
+	f.stub.mu.Lock()
+	requests := f.stub.requests
+	f.stub.mu.Unlock()
+	if requests != 0 {
+		t.Fatalf("the gateway received %d request(s) before the preflight refusal — the pool key was spent to "+
+			"register a machine that cannot serve a session", requests)
+	}
+	if _, statErr := os.Stat(paths.DeviceKeyFile); statErr == nil {
+		t.Fatal("the refused enrolment still minted and persisted a device key")
+	}
+}

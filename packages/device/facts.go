@@ -53,8 +53,19 @@ type Facts struct {
 // `dockerReady` is whether an OCI driver could be constructed. A Linux machine without one cannot run a
 // session at all, so it claims no container mode and a container pool refuses it — which is DoD 9's
 // whole sentence: a machine that cannot execute never appears as ready capacity.
-func Measure(goos, goarch, version string, agentdReady, dockerReady bool) Facts {
+//
+// `workspaceUsable` is PreflightWorkspaceRoot's verdict, and it gates EVERY mode rather than one of them.
+// Until 2026-08-06 `user` was claimed on darwin unconditionally, on the reasoning below — which is true
+// about installation and silent about writing. A machine that cannot hold a file cannot serve a session
+// in any posture, so it claims nothing, and a pool with a requirement refuses it at enrolment.
+func Measure(goos, goarch, version string, agentdReady, dockerReady, workspaceUsable bool) Facts {
 	facts := Facts{OS: goos, Arch: goarch, Version: version}
+	if !workspaceUsable {
+		// Deliberately BEFORE the per-mode arms rather than subtracted after them: a machine with nowhere
+		// to write has no mode to lose, and the next mode added here inherits the rule instead of having to
+		// remember it.
+		return facts
+	}
 	if goos == "darwin" {
 		// `user` mode needs nothing installed — it IS the login account this process is already running
 		// as. Claiming it is therefore a fact about the platform and not about the machine's setup.

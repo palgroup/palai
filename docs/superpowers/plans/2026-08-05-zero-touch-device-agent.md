@@ -446,20 +446,43 @@ contains one machine id and a strict pool does not ask for a second approval.
 **Acceptance:** A machine with only the public three bootstrap variables becomes configuration revision N,
 serves the configured number of sessions, and reports exactly what it applied.
 
-### T4 — Make the macOS agent genuinely sudo-free in `user` mode
+### T4 — Make the macOS agent genuinely sudo-free in `user` mode ⏳ MOSTLY DONE (2026-08-06)
 
 **Goal:** A normal logged-in Mac user can install and run Palai without `sudo`, while privileged account
 mode remains fail-closed and explicit.
 
-**RED first**
+**RED first** — re-measured one at a time on 2026-08-06, because three of the four already held.
 
-- `isolation_mode=user` on Darwin must not dial `palai-agentd`, invoke `sudo`, `sysadminctl`, `dscl` or
-  write outside user-owned directories.
-- `isolation_mode=accounts` must be absent from the measured supported-mode set when the daemon socket is
-  absent, causing the gateway to refuse enrolment into an accounts pool.
-- Two user-mode sessions get distinct workspace, DerivedData and simulator-set paths.
-- A missing Docker daemon, Xcode toolchain, writable workspace or named user produces a preflight failure
-  and no ready capacity.
+- ✅ `isolation_mode=user` must not invoke `sudo`, `sysadminctl` or `dscl` — every such call lives in
+  `cmd/palai-agentd`, a separate `package main` the device binary cannot import at all. The compiler
+  provides this, so no denied-root entry claims credit for it (see `cmd/runner/surface_test.go`, which
+  lists `apps/` alone for the same reason). The only socket dial is the enrolment PROBE, which is what
+  DECIDES the mode set rather than a use of it.
+- ✅ `isolation_mode=accounts` absent without the daemon socket, and the gateway refuses — `facts.go:62`
+  adds it only when `agentdReady`, and `fleet/store.go:128` refuses the registration with
+  `machine_isolation_modes` recorded on the refusal event.
+- ✅ Two user-mode sessions get distinct workspace/DerivedData/simulator-set paths —
+  `TestHostShellGivesConcurrentAllocationsDisjointSessionDirectories`, over the canonical `SessionDirs()`
+  list the residue guard also reads rather than restating.
+- ⏳ **PREFLIGHT: the workspace half is BUILT (2026-08-06); Xcode and "named user" are not.**
+  `Measure` claimed `user` on darwin UNCONDITIONALLY, on reasoning that is true and incomplete — its own
+  comment says the mode "needs nothing INSTALLED", which is right, and silent about needing somewhere to
+  WRITE. A Mac whose workspace root could not be created (a home the agent does not own, an unmounted
+  volume, a directory made read-only) measured `user`, enrolled, and became ready capacity; every session
+  placed on it then failed at its first file write — after the placement, after the lease, on a machine
+  the panel showed as healthy.
+  `PreflightWorkspaceRoot` CREATES the root and writes and removes a probe, because that is the operation
+  the first lease performs anyway and a mode bit does not decide the answer on its own (an ACL, a
+  read-only mount and a full disk each defeat a permission check that says yes). It gates EVERY mode
+  rather than one, placed before the per-mode arms so the next mode inherits the rule.
+  `enrol` REFUSES on it rather than reporting zero modes, and the difference is load-bearing: a pool with
+  no isolation requirement admits a machine that declares nothing — deliberately, so pools older than
+  isolation modes keep working — so a machine with nowhere to write would have joined anyway. The refusal
+  is asserted by the gateway's REQUEST COUNT, not by line order, and the running agent re-runs the
+  preflight on every start because a volume can fail to mount after a reboot.
+  Perturbed twice: remove the gate in `Measure` → RED; remove the refusal in `enrol` → RED.
+  **Still open:** an Xcode-toolchain check and a "named user" check. Neither has a producer, and neither
+  is invented here — `docs/operations` has no Xcode probe and the accounts-mode user is `palai-agentd`'s.
 
 **Implementation**
 

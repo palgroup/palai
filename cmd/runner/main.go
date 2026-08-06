@@ -381,7 +381,16 @@ func installedBootstrap(installed *device.Installation) (bootstrap runner.Bootst
 	if controllerDNS == "" {
 		log.Fatalf("%s names controller_url %q, which has no host", installed.Paths.ConfigFile, installed.Config.ControllerURL)
 	}
-	facts := device.Measure(runtime.GOOS, runtime.GOARCH, version.Resolve(), agentdReady(context.Background()), dockerReady(context.Background()))
+	// The preflight is re-run on every start, not trusted from enrolment: a workspace root that was
+	// writable when the operator enrolled can be gone after a reboot mounted one volume less, and a machine
+	// that reports its modes from a stale measurement is the "declared, and nothing happens" defect with a
+	// day's delay. A failure claims NO mode, so a pool with a requirement stops placing sessions here.
+	workspaceUsable := device.PreflightWorkspaceRoot(installed.Paths.WorkspaceRoot) == nil
+	if !workspaceUsable {
+		log.Printf("preflight FAILED: workspace root %s is unusable — this machine claims no isolation mode "+
+			"and a pool that requires one will not place sessions on it", installed.Paths.WorkspaceRoot)
+	}
+	facts := device.Measure(runtime.GOOS, runtime.GOARCH, version.Resolve(), agentdReady(context.Background()), dockerReady(context.Background()), workspaceUsable)
 	return runner.BootstrapConfig{
 			RunnerID:  machineName,
 			RunnerDNS: machineName + ".runner.palai.internal",
