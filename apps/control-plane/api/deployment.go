@@ -650,6 +650,27 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "main",
 	},
 
+	// --- when bytes nobody references are deleted -----------------------------------------------------
+	{
+		Name: "PALAI_ARTIFACT_GC_GRACE", Group: "retention", Kind: kindValue, Default: "1h — and a configured value BELOW the floor is raised to it, with a log line saying so",
+		Effect: "How long an object with no artifact row is spared before the orphan collector deletes it. It " +
+			"exists for the write path's PUT→row-insert gap: an object whose row is still committing has no " +
+			"referrer yet and must not be read as garbage. A REFERENCED object is never deleted at all — the " +
+			"delete decision is the pure absence of a row plus this window — so shortening it does not reclaim " +
+			"live data, it narrows the margin protecting an in-flight write. The floor is enforced in code " +
+			"rather than trusted to the value.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startOrphanGC",
+	},
+	{
+		Name: "PALAI_ARTIFACT_GC_INTERVAL", Group: "retention", Kind: kindValue, Default: "1h",
+		Effect: "How often the orphan sweep runs. It is hourly rather than frequent because a full bucket " +
+			"listing is heavier than the retention reaper's bounded DB purge. A killed process simply misses " +
+			"ticks; the next run resumes the sweep, so this paces cost and never correctness.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startOrphanGC",
+	},
+
 	// --- where a shell command runs, which is a security posture rather than a feature ---------------
 	{
 		Name: "PALAI_SANDBOX_IMAGE", Group: "shell", Kind: kindValue, Default: "none — there is no shell tool; a shell call fails cleanly rather than escaping",
@@ -947,8 +968,6 @@ var uncataloguedSettings = func() map[string]string {
 			[]string{"PALAI_MCP_SWEEP_GRACE", "PALAI_MCP_SWEEP_INTERVAL", "PALAI_MCP_TIMEOUT"}},
 		{"Inbound intake bounds: backlog, in-flight ceiling and raw retention. The security bound of this family — PALAI_INBOUND_TOLERANCE, the replay window — was catalogued on 2026-08-06 and left this list.",
 			[]string{"PALAI_INBOUND_BACKLOG_MAX", "PALAI_INBOUND_MAX_INFLIGHT", "PALAI_INBOUND_RAW_TTL"}},
-		{"Artifact garbage collection cadence and the grace an artifact gets before it is eligible.",
-			[]string{"PALAI_ARTIFACT_GC_GRACE", "PALAI_ARTIFACT_GC_INTERVAL"}},
 		{"Durable queue and schedule pacing.",
 			[]string{"PALAI_QUEUE_DELIVERY_BACKOFF", "PALAI_QUEUE_TICK", "PALAI_SCHEDULE_BATCH", "PALAI_SCHEDULE_TICK"}},
 		{"Object-store region, metrics disk path, drain timeout, abandoned-lease grace, the session-account helper and the Slack API base. Unrelated to each other; grouped only by having no family.",
@@ -1009,6 +1028,11 @@ var nonDesiredReason = map[string]string{
 		"with the workspace mounted. Choosing it is a supply-chain decision made at install time, not a setting.",
 
 	// --- what this deployment may DIAL ---------------------------------------------------------------
+	"PALAI_ARTIFACT_GC_GRACE": "it is the margin that keeps a half-written artifact from being collected as " +
+		"garbage. The code floors a too-small value rather than trusting it, and a form offering the number " +
+		"would invite the edit the floor exists to survive. Both are read once, when the sweep starts.",
+	"PALAI_ARTIFACT_GC_INTERVAL": "read once, by the sweep that then holds it: a written value would not be " +
+		"the one in force until the control plane restarts.",
 	"PALAI_INBOUND_TOLERANCE": "it is the window a captured request stays replayable in. A form that widened " +
 		"it would extend that window for every trigger in the deployment at once, and the change would look " +
 		"like a tuning edit rather than what it is. It is also read ONCE, at bring-up, so a written value " +
