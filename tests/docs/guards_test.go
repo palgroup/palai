@@ -149,13 +149,26 @@ type tableRow struct {
 
 var separatorCell = regexp.MustCompile(`^:?-{2,}:?$`)
 
+// splitRow splits a Markdown table row the way a RENDERER does: on a pipe that is not escaped.
+//
+// ‼️ IT USED TO SPLIT ON EVERY PIPE, SO THIS PARSER AND THE PAGE AN OPERATOR READS WERE DIFFERENT
+// DOCUMENTS. A cell containing a literal pipe — a status enumeration, a shell pipeline — renders as one
+// cell and parsed as several, which pushes every later cell one column left: the guards in this package
+// read `decision`, `owner` and `evidence` BY HEADER, so they would silently check the wrong text, or
+// none. Measured 2026-08-06 in known-gaps-1.0.md. The escape is written `\|` and the cell keeps the
+// literal pipe, because what the guard compares must be what the reader sees.
+var unescapedPipe = regexp.MustCompile(`(^|[^\\])\|`)
+
 func splitRow(line string) []string {
 	line = strings.TrimSpace(line)
 	line = strings.TrimPrefix(line, "|")
 	line = strings.TrimSuffix(line, "|")
-	parts := strings.Split(line, "|")
+	// Mark the unescaped pipes, split on the marker, then restore every escaped one as the literal pipe it
+	// renders as. \x00 cannot occur in a source document.
+	marked := unescapedPipe.ReplaceAllString(line, "${1}\x00")
+	parts := strings.Split(marked, "\x00")
 	for i := range parts {
-		parts[i] = strings.TrimSpace(parts[i])
+		parts[i] = strings.TrimSpace(strings.ReplaceAll(parts[i], `\|`, "|"))
 	}
 	return parts
 }

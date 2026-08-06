@@ -496,3 +496,51 @@ func TestKnownGapsNamesItsOwner(t *testing.T) {
 		}
 	}
 }
+
+// TestNoTriageRowLosesCellsToAnUnescapedPipe is the guard that would have caught the way FLT-P15 hid.
+//
+// ‼️ EVERY GUARD IN THIS FILE READS A ROW BY ITS HEADER — decision, owner, evidence — and parseTables maps
+// only the cells a header names. A row with MORE cells than the header therefore loses its tail SILENTLY:
+// the checks pass because they never see the missing columns, and the rendered page shows an operator a
+// row spilling into columns that do not exist. Measured 2026-08-06: three rows in this table were ragged.
+// One of them, FLT-P15 — the fleet's largest ceiling — was glued onto FLT-P13's row by a stray `||`, so
+// its decision and owner had never been checked by TestKnownGapsEveryRowIsDecidedAndOwned at all. The
+// other two carried a literal pipe inside prose (a status enumeration, a shell pipeline) that Markdown
+// read as a column break.
+//
+// A literal pipe in a cell is written `\|`. That is the whole rule.
+func TestNoTriageRowLosesCellsToAnUnescapedPipe(t *testing.T) {
+	doc := readDoc(t, knownGapsDoc)
+	lines := strings.Split(doc, "\n")
+
+	var headers int
+	var checked int
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "|") {
+			headers = 0
+			continue
+		}
+		cells := splitRow(trimmed)
+		if isSeparator(cells) {
+			continue
+		}
+		if headers == 0 {
+			if i+1 < len(lines) && isSeparator(splitRow(lines[i+1])) {
+				headers = len(cells)
+			}
+			continue
+		}
+		checked++
+		if len(cells) != headers {
+			t.Errorf("%s:%d has %d cells but its header has %d — the extra ones are dropped by every guard "+
+				"that reads this table by header, and the page renders them as columns that do not exist. "+
+				"A literal pipe inside a cell is written \\|. Row starts: %.60s",
+				knownGapsDoc, i+1, len(cells), headers, cells[0])
+		}
+	}
+	if checked < 20 {
+		t.Fatalf("only %d rows were checked — the parser or the table shrank, and a guard that reads nothing "+
+			"reports no defects", checked)
+	}
+}
