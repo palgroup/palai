@@ -37,6 +37,11 @@ type fakeFleet struct {
 	// the waiting room on. `strict` is a pointer so "asked for false" and "never asked" stay different
 	// answers — the same reason api.RunnerItem.ActiveLeases is one.
 	created  createdPool
+	// createdProject is the SCOPE the create arrived under, and it is recorded because it is the field the
+	// free-pool contract is about: "" is the plane's pool, a project is one reserved to that tenant. The
+	// method used to take it as `_`, so a fake could not tell the two apart -- and a fake that discards the
+	// deciding field answers every question about it with silence.
+	createdProject string
 	strictID string
 	strict   *bool
 }
@@ -75,7 +80,8 @@ func (f *fakeFleet) ListRunnerPools(context.Context, string, capi.RunnerListWind
 }
 
 // CreateRunnerPool and SetRunnerPoolStrictEnrollment are the E28 T1 surface `palai pool` fronts.
-func (f *fakeFleet) CreateRunnerPool(_ context.Context, _ string, in capi.RunnerPoolCreate) (capi.RunnerPoolItem, error) {
+func (f *fakeFleet) CreateRunnerPool(_ context.Context, project string, in capi.RunnerPoolCreate) (capi.RunnerPoolItem, error) {
+	f.createdProject = project
 	f.created = createdPool{Name: in.Name, Posture: in.Posture, OS: in.OS, Arch: in.Arch, StrictEnrollment: in.StrictEnrollment}
 	return capi.RunnerPoolItem{
 		ID: "pool_created", Name: in.Name, Posture: in.Posture, OS: in.OS, Arch: in.Arch,

@@ -342,8 +342,26 @@ func TestWhereLessQueryIsRejectedByTheDatabase(t *testing.T) {
 			if err := tx.QueryRow(context.Background(), fmt.Sprintf(`SELECT count(*) FROM %s`, table)).Scan(&visible); err != nil {
 				t.Fatalf("%s: count visible rows: %v", table, err)
 			}
+			// runner_pools GAINED A SECOND LEGITIMATE SOURCE OF ROWS, and the count is corrected rather
+			// than loosened. A pool with no project is the PLANE's and every tenant may see it
+			// (palai_apply_fleet_policy), so `visible == seeded` stopped being a statement about tenancy
+			// the moment one existed — it became a statement about how many free pools the corpus happens
+			// to have created, which is not this test's subject.
+			//
+			// The free rows are counted by the OWNER, so the subtraction cannot be inflated by the very
+			// policy under test: if RLS began exposing a foreign PRIVATE pool, visible would exceed
+			// want+free and this still fails. `>= want` would not have.
+			if table == "runner_pools" {
+				var free int
+				if err := s.owner.QueryRow(context.Background(),
+					`SELECT count(*) FROM runner_pools WHERE project_id IS NULL`).Scan(&free); err != nil {
+					t.Fatalf("count free pools as the owner: %v", err)
+				}
+				want += free
+			}
 			if visible != want {
-				t.Fatalf("%s: own tenant sees %d row(s), want exactly the %d seeded", table, visible, want)
+				t.Fatalf("%s: own tenant sees %d row(s), want exactly the %d seeded (plus any free pools)",
+					table, visible, want)
 			}
 		})
 	}

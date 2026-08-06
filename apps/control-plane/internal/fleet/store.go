@@ -84,12 +84,11 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 	if err != nil {
 		return Runner{}, fmt.Errorf("resolve runner pool: %w", err)
 	}
-	if pool.project == "" {
-		// A pool with no project cannot give a row a project_id, and 000045's tenant policy for
-		// `runners` narrows on one. Refusing beats writing a row that its own tenant cannot read back.
-		return Runner{}, ErrUnknownPool
-	}
-
+	// A POOL WITH NO PROJECT IS THE PLANE'S, and enrolling into it is the ordinary case rather than an
+	// error: the machine serves every project on the installation. This used to refuse, because the
+	// tenant policy spelled "shared" as '' and could not see a NULL, so the row would have been one its
+	// own reader could never read back. 000002's palai_apply_fleet_policy is what changed; pool.project
+	// stays "" here and the statements convert it at the boundary.
 	// THE POSTURE IS COMPARED, NOT VERIFIED (E24 T2). A pool IS a posture (§1 R1), so a machine that
 	// declares a different one is a machine in the wrong pool — and the realistic way that happens is
 	// an operator handing a Mac the Linux pool's enrolment key. It is refused at the door, and the

@@ -99,11 +99,13 @@ func (s *Store) Pool(ctx context.Context, poolID string) (Pool, bool, error) {
 // runner_pools UNIQUE (project_id, name) index surfacing as an answer rather than as a 500. It is a
 // typed value rather than a raw pgx error so the handler renders a 409 without parsing a SQLSTATE.
 //
-// It was declared as (organization_id, project_id, name) and rebuilt without the organization during the
-// A.2 organization removal. Verify by NAME rather than by migration number, which a chain rewrite
-// changes: `SELECT indexdef FROM pg_indexes WHERE indexname = 'runner_pools_name_key';`. Its api-layer
-// twin (api.ErrRunnerPoolNameTaken) carries the same note and the reasoning for why the error's meaning
-// did not change.
+// TWO indexes raise it, not one, and the split is not cosmetic: a UNIQUE index treats NULLs as DISTINCT,
+// so a single (project_id, name) index would have stopped refusing duplicates for FREE pools the moment
+// the owner became optional. Verify by NAME rather than by migration number, which a chain rewrite
+// changes: `SELECT indexname, indexdef FROM pg_indexes WHERE indexname LIKE 'runner_pools%name_key';`
+// -> runner_pools_free_name_key (name, WHERE project_id IS NULL) and runner_pools_name_key
+// ((project_id, name), WHERE project_id IS NOT NULL). Its api-layer twin (api.ErrRunnerPoolNameTaken)
+// carries the same note.
 var ErrPoolNameTaken = errors.New("fleet: a runner pool with that name already exists in this project")
 
 // CreatePool writes ONE operator-created pool and returns it (E28 T1).
@@ -118,11 +120,9 @@ var ErrPoolNameTaken = errors.New("fleet: a runner pool with that name already e
 // is the only tenant authority, so it publishes it and RLS confines it. Register runs system-scoped because
 // the enrolment wire genuinely carries no tenant; an operator's request does.
 func (s *Store) CreatePool(ctx context.Context, project string, in Pool) (Pool, error) {
-	if project == "" {
-		// A project-less pool is one nothing can enrol into (Register refuses it), so refusing here keeps a
-		// created pool USABLE rather than merely written.
-		return Pool{}, ErrUnknownPool
-	}
+	// project == "" creates a FREE pool: one the plane owns and every project may run on. It is reachable
+	// only from a system-scoped caller, because a tenant-scoped request publishes its own project and
+	// cannot present the empty one -- so a tenant cannot mint a pool outside its own boundary.
 	row := Pool{
 		ID: s.mintID("pool"), Project: project, Name: in.Name,
 		Posture: in.Posture, OS: in.OS, Arch: in.Arch, StrictEnrollment: in.StrictEnrollment,

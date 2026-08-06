@@ -20,8 +20,10 @@ $$;
 
 DROP PROCEDURE IF EXISTS palai_apply_child_policy(TEXT, TEXT, TEXT);
 DROP PROCEDURE IF EXISTS palai_apply_installation_policy(TEXT);
+DROP PROCEDURE IF EXISTS palai_apply_fleet_policy(TEXT, TEXT);
 DROP PROCEDURE IF EXISTS palai_apply_tenant_policy(TEXT, TEXT);
 DROP FUNCTION IF EXISTS palai_installation_policy_expression();
+DROP FUNCTION IF EXISTS palai_fleet_policy_expression(TEXT);
 DROP FUNCTION IF EXISTS palai_tenant_policy_expression(TEXT);
 
 -- Guarded: the down chain runs 000002 before 000001, but a re-run reaches this after 000001 has already

@@ -375,14 +375,16 @@ func (h *runnerHandler) createRunnerPool(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	if scope.Project == "" {
-		// A pool with no project is a pool nothing can enrol into: fleet.Store.Register refuses one, because
-		// 000045's tenant policy for `runners` narrows on a project. Refusing here keeps a created pool
-		// USABLE rather than merely written.
-		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request",
-			"a runner pool belongs to a project; use an API key scoped to one")
-		return
-	}
+	// scope.Project == "" CREATES A FREE POOL: one the plane owns, that every project on the installation
+	// may be placed onto. It is the ordinary case for a fleet — a device enrols once and serves everybody —
+	// and a key scoped to a project still gets a PRIVATE pool reserved to it.
+	//
+	// ‼️ THIS ROUTE USED TO ANSWER 400 HERE, and that refusal is the reason "the pool must not be
+	// project-bound" could not be configured on a shipped plane. It was not wrong when it was written: the
+	// tenant policy spelled shared as '', which runner_pools_project_id_fkey forbids, so a project-less
+	// pool really was a row nothing could enrol into. 000002's palai_apply_fleet_policy is what makes NULL
+	// readable, and deleting the 400 is the other half of the same change — a policy a human surface still
+	// refuses to exercise is a policy nobody has.
 	var body struct {
 		Name             string `json:"name"`
 		Posture          string `json:"posture"`

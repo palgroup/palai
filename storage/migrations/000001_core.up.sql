@@ -838,7 +838,7 @@ CREATE TABLE IF NOT EXISTS run_template_revisions (
 
 CREATE TABLE IF NOT EXISTS runner_enrollments (
     id text NOT NULL,
-    project_id text NOT NULL,
+    project_id text,
     runner_id text NOT NULL,
     pool_id text NOT NULL,
     key_id text DEFAULT ''::text NOT NULL,
@@ -863,7 +863,7 @@ CREATE TABLE IF NOT EXISTS runner_leases (
 
 CREATE TABLE IF NOT EXISTS runner_pool_keys (
     id text NOT NULL,
-    project_id text NOT NULL,
+    project_id text,
     pool_id text NOT NULL,
     key_sha256 text NOT NULL,
     key_prefix text DEFAULT ''::text NOT NULL,
@@ -4666,7 +4666,14 @@ CREATE INDEX IF NOT EXISTS runner_enrollments_runner_seq_idx ON runner_enrollmen
 
 CREATE INDEX IF NOT EXISTS runner_pool_keys_pool_idx ON runner_pool_keys USING btree (pool_id);
 
-CREATE UNIQUE INDEX IF NOT EXISTS runner_pools_name_key ON runner_pools USING btree (project_id, name);
+-- Two partial indexes rather than one composite: a UNIQUE index treats NULLs as DISTINCT, so
+-- (project_id, name) would stop refusing duplicates the moment project_id became optional -- every
+-- free pool could take a name another free pool already had, and the refusal InsertRunnerPool
+-- relies on (it carries NO `ON CONFLICT`) would simply never fire.
+CREATE UNIQUE INDEX IF NOT EXISTS runner_pools_free_name_key ON runner_pools USING btree (name)
+    WHERE (project_id IS NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS runner_pools_name_key ON runner_pools USING btree (project_id, name)
+    WHERE (project_id IS NOT NULL);
 
 CREATE UNIQUE INDEX IF NOT EXISTS runners_dns_key ON runners USING btree (runner_dns) WHERE (runner_dns <> ''::text);
 

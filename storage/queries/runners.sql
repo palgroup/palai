@@ -18,7 +18,7 @@
 -- session-isolation mechanism admits every machine, which is every pool that exists on the day 000007
 -- applies. Only a pool an operator sets to 'user' / 'accounts' / 'container' refuses a machine whose
 -- MEASURED modes do not include it.
-SELECT id, project_id, posture, os, arch, strict_enrollment, isolation_mode
+SELECT id, coalesce(project_id, '') AS project_id, posture, os, arch, strict_enrollment, isolation_mode
   FROM runner_pools
  WHERE id = $1;
 
@@ -66,7 +66,7 @@ UPDATE runners
        enrolled_at = clock_timestamp(),
        last_seen_at = clock_timestamp()
  WHERE id = $1
-RETURNING id, project_id, pool_id, label, runner_dns, public_key_sha256,
+RETURNING id, coalesce(project_id, '') AS project_id, pool_id, label, runner_dns, public_key_sha256,
           state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
        config_revision, config_applied, config_reported_at, agent_version, isolation_modes;
 
@@ -87,7 +87,7 @@ INSERT INTO runners (
     id, project_id, pool_id, label, runner_dns, public_key_sha256,
     state, os, arch, posture, capacity, cert_not_after, enrolled_via_key_id,
     agent_version, isolation_modes, enrolled_at, last_seen_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, nullif($13, ''), $14, $15, clock_timestamp(), clock_timestamp())
+) VALUES ($1, nullif($2, ''), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, nullif($13, ''), $14, $15, clock_timestamp(), clock_timestamp())
 RETURNING created_at, enrolled_at, last_seen_at;
 
 -- name: AppendRunnerEnrollment
@@ -99,7 +99,7 @@ RETURNING created_at, enrolled_at, last_seen_at;
 INSERT INTO runner_enrollments (
     id, project_id, runner_id, pool_id, key_id, entry_kind, entry_seq, detail
 )
-SELECT $1, $2, $3, $4, $5, $6,
+SELECT $1, nullif($2, ''), $3, $4, $5, $6,
        coalesce((SELECT max(entry_seq) FROM runner_enrollments WHERE runner_id = $3), 0) + 1,
        $7::jsonb;
 
@@ -112,7 +112,7 @@ UPDATE runners
    SET last_seen_at = $2,
        cert_not_after = coalesce($3, cert_not_after)
  WHERE runner_dns = $1
-RETURNING id, project_id, pool_id, label, runner_dns, public_key_sha256,
+RETURNING id, coalesce(project_id, '') AS project_id, pool_id, label, runner_dns, public_key_sha256,
           state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
        config_revision, config_applied, config_reported_at, agent_version, isolation_modes;
 
@@ -146,7 +146,7 @@ UPDATE runners
  WHERE id = $1 AND ($2 = '' OR project_id = $2)
    AND (state <> 'revoked' OR $3 = 'revoked')
    AND (state <> 'pending' OR $3 = 'revoked')
-RETURNING id, project_id, pool_id, label, runner_dns, public_key_sha256,
+RETURNING id, coalesce(project_id, '') AS project_id, pool_id, label, runner_dns, public_key_sha256,
           state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
        config_revision, config_applied, config_reported_at, agent_version, isolation_modes, created_at;
 
@@ -170,7 +170,7 @@ UPDATE runners
    SET state = 'active'
  WHERE id = $1 AND ($2 = '' OR project_id = $2)
    AND state IN ('pending', 'active')
-RETURNING id, project_id, pool_id, label, runner_dns, public_key_sha256,
+RETURNING id, coalesce(project_id, '') AS project_id, pool_id, label, runner_dns, public_key_sha256,
           state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
        config_revision, config_applied, config_reported_at, agent_version, isolation_modes, created_at;
 
@@ -198,7 +198,7 @@ RETURNING id, project_id, pool_id, label, runner_dns, public_key_sha256,
 INSERT INTO runner_enrollments (
     id, project_id, runner_id, pool_id, key_id, entry_kind, entry_seq, detail
 )
-SELECT $1, $2, $3, $4, '', $5,
+SELECT $1, nullif($2, ''), $3, $4, '', $5,
        coalesce((SELECT max(entry_seq) FROM runner_enrollments WHERE runner_id = $3), 0) + 1,
        $6::jsonb
  WHERE NOT EXISTS (SELECT 1
@@ -208,21 +208,21 @@ SELECT $1, $2, $3, $4, '', $5,
 -- name: GetRunner
 -- One runner inside the caller's tenant. A row belonging to another tenant returns NO row, so the
 -- handler answers 404 without ever learning whether the id exists elsewhere.
-SELECT id, project_id, pool_id, label, runner_dns, public_key_sha256,
+SELECT id, coalesce(project_id, '') AS project_id, pool_id, label, runner_dns, public_key_sha256,
        state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
        config_revision, config_applied, config_reported_at, agent_version, isolation_modes, created_at
   FROM runners
- WHERE id = $1 AND ($2 = '' OR project_id = $2);
+ WHERE id = $1 AND ($2 = '' OR project_id = $2 OR project_id IS NULL);
 
 -- name: ListRunners
 -- The tenant-scoped keyset page: (created_at, id) DESC, the ordering api/pagination.go mints its
 -- cursor from. $5 is the over-fetch (page size + 1) so the handler detects a further page without a
 -- second round trip.
-SELECT id, project_id, pool_id, label, runner_dns, public_key_sha256,
+SELECT id, coalesce(project_id, '') AS project_id, pool_id, label, runner_dns, public_key_sha256,
        state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at,
        config_revision, config_applied, config_reported_at, agent_version, isolation_modes, created_at
   FROM runners
- WHERE ($1 = '' OR project_id = $1)
+ WHERE ($1 = '' OR project_id = $1 OR project_id IS NULL)
    AND ($2::timestamptz IS NULL OR created_at >= $2)
    AND ($3::timestamptz IS NULL OR created_at <= $3)
    AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5))
@@ -234,6 +234,11 @@ SELECT id, project_id, pool_id, label, runner_dns, public_key_sha256,
 -- born with (identity.Store.provision). Idempotent by both keys the row can already exist under: the
 -- id (a re-boot against a retained volume) and the (org, project, name) uniqueness 000045 R1 adds
 -- (migration 000045 R6 having already seeded it on an upgrading install).
+-- ‼️ $2 IS NOT WRAPPED IN nullif() AND THE STATEMENT BELOW IS. This one writes the row a PROJECT is
+-- born with, so an empty project here is a bug at the call site, not a request for a free pool -- and
+-- nullif would have turned it into one: a second pool named 'default' with no owner, colliding with the
+-- plane's own free default and taking placements from every tenant that has no pool of its own.
+-- TestTheDefaultPoolSeedStatementIsUnchanged pins this text for exactly that reason.
 INSERT INTO runner_pools (id, project_id, name, posture, strict_enrollment)
 VALUES ($1, $2, 'default', 'sandboxed-linux', false)
     ON CONFLICT DO NOTHING;
@@ -244,15 +249,17 @@ VALUES ($1, $2, 'default', 'sandboxed-linux', false)
 -- every installation alive today has it, so its three literals stay literal and a second pool is a second
 -- statement. Two statements, two subjects.
 --
--- NO `ON CONFLICT`: the UNIQUE (project_id, name) index on runner_pools is what makes a duplicate
--- name a 409 an operator can act on, and swallowing the conflict here would answer 201 for a pool that was
--- not created.
+-- NO `ON CONFLICT`: the UNIQUE indexes on runner_pools are what make a duplicate name a 409 an operator
+-- can act on, and swallowing the conflict here would answer 201 for a pool that was not created. There
+-- are TWO of them (000001): free pool names are unique across the plane, private ones within a project.
 --
--- project_id is NOT NULLABLE HERE even though the column allows it: fleet.Store.Register refuses to enrol a
--- machine into a project-less pool (000045's tenant policy for `runners` narrows on a project), so a pool
--- created without one would be a row nothing could ever join. The route refuses it before this runs.
+-- $2 IS NULL IS THE POINT: a pool with no project is the PLANE's, and every project on the installation
+-- may run on it. A pool that names one is private to that tenant. The refusal that used to stand here --
+-- fleet.Store.Register turning away a machine whose pool had no project -- was the write half of a
+-- boundary whose read half (the RLS tenant expression) spelled shared as '' and could never agree with
+-- it; 000002's palai_apply_fleet_policy is the two halves made to agree.
 INSERT INTO runner_pools (id, project_id, name, posture, os, arch, strict_enrollment)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+VALUES ($1, nullif($2, ''), $3, $4, $5, $6, $7)
 RETURNING created_at;
 
 -- name: SetRunnerPoolStrictEnrollment
@@ -267,7 +274,7 @@ UPDATE runner_pools
    SET strict_enrollment = $3
  WHERE ($1 = '' OR project_id = $1)
    AND id = $2
-RETURNING id, project_id, name, posture, os, arch, strict_enrollment, created_at;
+RETURNING id, coalesce(project_id, '') AS project_id, name, posture, os, arch, strict_enrollment, created_at;
 
 -- name: ListRunnerPools
 -- The tenant-scoped keyset page of pools: (created_at, id) DESC, the ordering api/pagination.go mints
@@ -281,9 +288,9 @@ RETURNING id, project_id, name, posture, os, arch, strict_enrollment, created_at
 -- ON DELETE CASCADE on this table (000045 R2), so removing a pool would silently remove its enrolment
 -- keys, and what happens to the machines whose `pool_id` points here is a separate decision nobody has
 -- asked for. This comment names no future owner, because a comment cannot schedule work.
-SELECT id, project_id, name, posture, os, arch, strict_enrollment, created_at
+SELECT id, coalesce(project_id, '') AS project_id, name, posture, os, arch, strict_enrollment, created_at
   FROM runner_pools
- WHERE ($1 = '' OR project_id = $1)
+ WHERE ($1 = '' OR project_id = $1 OR project_id IS NULL)
    AND ($2::timestamptz IS NULL OR created_at >= $2)
    AND ($3::timestamptz IS NULL OR created_at <= $3)
    AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5))
@@ -394,7 +401,10 @@ SELECT id, label, runner_dns, state, pool_id, enrolled_at, last_seen_at
 SELECT r.pool_id, r.created_at,
        coalesce((SELECT p.id
                    FROM runner_pools p
-                  WHERE p.project_id = $2 AND p.name = 'default'), '')
+                  WHERE p.name = 'default'
+                    AND (p.project_id = $2 OR p.project_id IS NULL)
+                  ORDER BY (p.project_id IS NULL)
+                  LIMIT 1), '')
   FROM runs r
  WHERE r.id = $1 AND r.project_id = $2;
 

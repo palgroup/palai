@@ -216,29 +216,40 @@ func TestNoPoolFlagCarriesACredential(t *testing.T) {
 	}
 }
 
-// TestPoolCreateNeedsAProjectScope is the refusal that keeps a created pool USABLE, and it is a
-// correctness requirement rather than a validation preference: `fleet.Store.Register` refuses to enrol a
-// machine into a pool with no project — 000045's tenant policy for `runners` narrows on one — so a pool
-// created without a project would be a row nothing could ever join.
+// TestPoolCreateWithNoProjectScopeCreatesAFreePool is the contract that REPLACED a refusal, and the
+// replacement is the point rather than an incidental rename.
 //
-// It is proved here rather than at the component tier because the scope is what decides it, and a fake
-// verifier is the only thing that can hand the real router a scope with no project.
-func TestPoolCreateNeedsAProjectScope(t *testing.T) {
+// This test used to be TestPoolCreateNeedsAProjectScope, and it was correct when it was written: the
+// tenant RLS expression spelled "shared" as the empty string, `project_id = ''` violates
+// runner_pools_project_id_fkey, and `fleet.Store.Register` therefore refused to enrol a machine into a
+// pool with no project. A project-less pool really was a row nothing could ever join.
+//
+// 000002's palai_apply_fleet_policy makes NULL the free pool: one the PLANE owns, that every project on
+// the installation may be placed onto. A device enrols once and serves everybody, which is what a fleet
+// is. So the surface must CREATE one — a route that still answered 400 would leave the policy reachable
+// by nothing a human drives.
+//
+// It is proved here rather than at the component tier for the same reason the refusal was: the scope is
+// what decides it, and a fake verifier is the only thing that can hand the real router a scope with no
+// project.
+func TestPoolCreateWithNoProjectScopeCreatesAFreePool(t *testing.T) {
 	fleet := &fakeFleet{}
 	srv := poolCLIServer(t, fleet, middleware.Scope{Scopes: []string{"provision"}})
 	t.Setenv("PALAI_BASE_URL", srv.URL)
-	t.Setenv("PALAI_API_KEY", "org-wide-key")
+	t.Setenv("PALAI_API_KEY", "plane-wide-key")
 
 	var out bytes.Buffer
-	err := Run("pool", []string{"create", "--name", "orphan", "--posture", "sandboxed-linux"}, &out, strings.NewReader(""))
-	if err == nil {
-		t.Fatal("a key with no project created a pool: nothing could ever enrol into it")
+	if err := Run("pool", []string{"create", "--name", "free", "--posture", "unsandboxed-host"}, &out, strings.NewReader("")); err != nil {
+		t.Fatalf("a plane-scoped key could not create a free pool: %v", err)
 	}
-	if !strings.Contains(err.Error(), "invalid_request") {
-		t.Errorf("the refusal was %v, want the route's own bad-input answer", err)
+	if fleet.created.Name != "free" {
+		t.Fatalf("the store was asked to create %q, want the free pool", fleet.created.Name)
 	}
-	if fleet.created.Name != "" {
-		t.Fatalf("the store was asked to create %q with no project to put it in", fleet.created.Name)
+	// The recorded project is the whole claim: an empty one is what the statement converts to NULL, and a
+	// non-empty one would be a pool reserved to a tenant the caller never named.
+	if fleet.createdProject != "" {
+		t.Fatalf("the free pool was created inside project %q; a pool nobody asked to reserve must stay the "+
+			"plane's, or one tenant silently owns the machines every other tenant runs on", fleet.createdProject)
 	}
 }
 
